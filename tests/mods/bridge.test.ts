@@ -1,7 +1,7 @@
 import { describe, expect, test, tier } from 'claude-code/testing'
 import type { EngineInterface, On } from 'claude-code'
 
-import { ASK_TOOL, deliveryText } from '../../hooks/mods/ask'
+import { ASK_TOOL, deliveryText, registerAsk, resetAsk } from '../../hooks/mods/ask'
 import {
   AGENTS_REFRESH_MS,
   BACKGROUND_WINDOW_MS,
@@ -3106,6 +3106,21 @@ describe('requests from outside: questions', () => {
     await h.turn('t9')
     await h.complete('t9')
     expect(h.ofType('settled').map((e) => e.request)).not.toContain('toolu_a3')
+  })
+
+  test("an async question open before the bridge started (a reloaded module's, taken up from the last) is pending in its first resync", async () => {
+    resetAsk()
+    const askHooks: { event: string; matcher?: Record<string, unknown>; handler: (...args: unknown[]) => Promise<unknown> }[] = []
+    registerAsk(((event: string, ...rest: unknown[]) => {
+      askHooks.push({ event, matcher: rest.length > 1 ? (rest[0] as Record<string, unknown>) : undefined, handler: rest.at(-1) as (typeof askHooks)[number]['handler'] })
+      return { catch: () => {} }
+    }) as unknown as On)
+    const asked = askHooks.find((x) => x.event === 'tool.call' && x.matcher?.tool === ASK_TOOL)
+    await asked?.handler({ ui: { invalidate: () => {} } }, { tool: ASK_TOOL, tool_use_id: 'toolu_r1', questions: [FRUIT], async: true }, async () => ({}))
+    const h = harness()
+    await h.ready()
+    expect(h.ofType('resync')[0]).toMatchObject({ pending: [expect.objectContaining({ request: 'toolu_r1', tool: ASK_TOOL, input: { questions: [FRUIT] }, async: true })] })
+    resetAsk()
   })
 
   test("the ask mod's blocking question: raised under its dialog with the outer call's toolUseId; the dialog's own call and result are not posted", async () => {

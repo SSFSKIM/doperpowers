@@ -9,6 +9,7 @@
   "homepage": "https://github.com/SSFSKIM/doperpowers",
   "repository": "https://github.com/SSFSKIM/doperpowers",
   "license": "MIT",
+  "types": "./types/doperpowers.d.ts",
   "workflows": [
     "./skills/review-code/workflows/code-review.js"
   ],

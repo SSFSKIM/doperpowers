@@ -189,6 +189,8 @@ function harness(
     run?: (argv: readonly string[]) => Promise<{ exitCode: number; stdout: string; isStdoutTruncated: boolean }>
     /** Runs while `$.fs.stat` is awaited, before it answers. */
     whileStat?: (path: string) => void
+    /** The host's `$.state` for the session, which outlives a reload of the module: pass one harness's to the next. */
+    kept?: Map<string, unknown>
   } = {},
 ) {
   const hooks: { event: string; matcher: Matcher; handler: Handler; onFailure?: Handler }[] = []
@@ -205,6 +207,7 @@ function harness(
   // A file system of folders and their file names; a file's bytes are its path.
   const dirs = new Map(Object.entries(options.dirs ?? { '/tmp': ['claude-0', 'claude-501', 'other'], '/tmp/claude-501': [], '/tmp/claude-0': [] }))
   const unreadable = new Set(options.unreadable ?? ['/tmp/claude-0'])
+  const kept = options.kept ?? new Map<string, unknown>()
   const $ = {
     env: { get: async (name: string) => (name === 'CLAUDE_CODE_TMPDIR' ? options.tmpdir : name === 'MAWS_NATIVE_TO_HUMAN' ? options.maws : undefined) },
     fs: {
@@ -270,6 +273,11 @@ function harness(
       invalidate: (event: string) => calls.push({ op: 'ui.invalidate', args: event }),
     },
     turn: { abort: async (args: unknown) => void calls.push({ op: 'turn.abort', args }) },
+    // The host keeps a value as JSON, so a later change of the object written is not in it.
+    state: {
+      get: async (ref: { plugin: string; key: string }) => ({ value: kept.get(`${ref.plugin}.${ref.key}`), version: 0 }),
+      set: async (ref: { plugin: string; key: string }, value: unknown) => (kept.set(`${ref.plugin}.${ref.key}`, JSON.parse(JSON.stringify(value))), { isSet: true }),
+    },
   }
   resetAsk()
   registerAskBand(on)
@@ -412,7 +420,7 @@ function harness(
 
   const submitted = () => calls.filter((c) => c.op === 'prompt.submit').map((c) => c.args as string)
 
-  return { calls, raises, start, call, raise, settle, describe, registered, engine, dispatch, paste, classicStart, turnStart, step, fail, turnComplete, prompt, press, submitted }
+  return { calls, raises, start, call, raise, settle, describe, registered, engine, dispatch, paste, classicStart, turnStart, step, fail, turnComplete, prompt, press, submitted, kept }
 }
 
 describe('registerAsk: the tool and the built-in', () => {
@@ -1452,6 +1460,104 @@ describe('a resumed session', () => {
     await h.classicStart(T, 's', 'compact')
     expect(asyncAsks().length).toBe(1)
     await h.classicStart(T, 's2', 'clear')
+    expect(asyncAsks()).toEqual([])
+  })
+})
+
+describe('a reload of the module', () => {
+  /** The module loaded again into the running session: its variables start over, the host's state stays. */
+  const reload = async (h: ReturnType<typeof harness>) => {
+    const next = harness({ kept: h.kept })
+    await next.start()
+    return next
+  }
+  /** An async ask, pressed and answered in `h`. */
+  const answer = async (h: ReturnType<typeof harness>) => {
+    await h.call(ASK_TOOL, { questions: [BACKEND], async: true })
+    const id = asyncAsks().at(-1)?.id ?? ''
+    const pressed = h.press(`ask-answer:${id}`)
+    await h.settle()
+    await h.raise(h.raises.length - 1, answered(ANSWER))
+    await pressed
+    await h.settle()
+    return id
+  }
+
+  test('an open ask is taken up: drawn open again, and a press answers it, pictures found where the session keeps them', async () => {
+    const h = harness()
+    await h.classicStart('/p/-repo/s.jsonl', 's')
+    await h.start()
+    await h.call(ASK_TOOL, { questions: [BACKEND], async: true })
+    const id = asyncAsks()[0]?.id ?? ''
+    const r = await reload(h)
+    expect(asyncAsks()).toEqual([{ id, questions: [BACKEND], status: 'open' }])
+    expect(r.calls.some((c) => c.op === 'ui.invalidate' && c.args === 'ui.render')).toBe(true)
+    const pressed = r.press(`ask-answer:${id}`)
+    await r.settle()
+    await r.raise(0, answered(ANSWER))
+    await pressed
+    await r.settle()
+    expect(r.submitted()).toEqual([deliveryText(id, ANSWER)])
+    expect(r.calls.filter((c) => c.op === 'ui.log').map((c) => c.args)).not.toContainEqual(expect.stringContaining('no SessionStart payload'))
+  })
+
+  test('an answer held while a turn runs is taken up, and rides the next model call', async () => {
+    const h = harness()
+    await h.start()
+    await h.turnStart()
+    const id = await answer(h)
+    const r = await reload(h)
+    expect((await r.call('Bash', { command: 'ls' })).result).toEqual({ ref: 9, result: 'ran', text: 'ran', context: [deliveryText(id, ANSWER)] })
+    await r.turnComplete('answer')
+    await r.settle()
+    expect(r.submitted()).toEqual([])
+  })
+
+  test("an answer kept for the human's next prompt after a stop is taken up, and rides it", async () => {
+    const h = harness()
+    await h.start()
+    await h.turnStart()
+    const id = await answer(h)
+    await h.turnComplete('aborted')
+    const r = await reload(h)
+    expect((await r.prompt('go on')).context).toEqual([deliveryText(id, ANSWER)])
+  })
+
+  test('an answer whose prompt had not entered when the module was reloaded is held again: twice rather than never', async () => {
+    const h = harness({ submit: () => new Promise(() => {}) })
+    await h.start()
+    const id = await answer(h)
+    expect(h.submitted()).toEqual([deliveryText(id, ANSWER)])
+    const r = await reload(h)
+    expect((await r.prompt('go on')).context).toEqual([deliveryText(id, ANSWER)])
+  })
+
+  test("a resumed session's asks are kept, whichever of the two session starts comes first", async () => {
+    const T = '/p/-repo/s.jsonl'
+    const transcript = [
+      JSON.stringify({ type: 'assistant', uuid: 'u1', parentUuid: null, message: { role: 'assistant', content: [{ type: 'tool_use', id: 't-open', name: ASK_TOOL, input: { questions: [BACKEND], async: true } }] } }),
+      JSON.stringify({ type: 'user', uuid: 'u2', parentUuid: 'u1', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't-open', content: ASYNC_RESULT }] } }),
+    ].join('\n')
+    for (const isClassicFirst of [true, false]) {
+      const h = harness({ files: { [T]: transcript } })
+      if (isClassicFirst) {
+        await h.classicStart(T, 's', 'resume')
+        await h.start()
+      } else {
+        await h.start()
+        await h.classicStart(T, 's', 'resume')
+      }
+      await reload(h)
+      expect(asyncAsks().map((a) => [a.id, a.status])).toEqual([['t-open', 'open']])
+    }
+  })
+
+  test("a new conversation (/clear) takes up none of the last one's asks", async () => {
+    const h = harness()
+    await h.start()
+    await h.call(ASK_TOOL, { questions: [BACKEND], async: true })
+    await h.classicStart('/p/-repo/s2.jsonl', 's2', 'clear')
+    await reload(h)
     expect(asyncAsks()).toEqual([])
   })
 })
