@@ -108,7 +108,10 @@ member too, seat-less, from the first call that reads its project.
 A member's name is its alias: a seat's alias (a seat sminos spawns runs under
 it as its harness name), or a seat-less session's harness name. Aliases are
 display names and can collide; `alias#short` (the session's first eight hex
-digits) tells two apart. A bare name resolves only in the caller's project (a
+digits) tells two apart. A seat-less session never takes, from its harness
+name, an alias a seat or another current member of its project holds (a
+`--bg` copy inherits its source's name): it keeps the alias it has, else its
+short. A bare name resolves only in the caller's project (a
 seat's own, for a seat); `@short` and `alias#short` reach a session in any
 project known here, `project/alias` (a stray: `machine/alias`) one in another;
 on a machine not enrolled, from a directory that is no project, a bare name
@@ -2479,7 +2482,7 @@ def join_on_sight(project, sid, seat, peer, running, by=None, recheck=None, mark
                 old = handed_to(project, sid)
             if old:
                 held = own_alias(_own_events(project, old), old)
-        alias, source = held_alias(*held, peer, sid)
+        alias, source = held_alias(*held, peer, sid, shadowing(project, sid))
         fields = joined_fields(alias or sid[:8], source or "derived",
                                launch_cwd(sid, fallback=str(peer.get("cwd") or ""), fresh=True), by=by,
                                session_kind=str(peer.get("kind") or ""))
@@ -2507,21 +2510,54 @@ def handed_to(project, session):
     return None
 
 
-def held_alias(logged, logged_source, peer, session):
+def held_alias(logged, logged_source, peer, session, shadowed=None):
     """(alias, name_source) a seat-less session goes by: its harness name
     when someone gave it, else the alias the log already holds for it
     (`logged`, own_alias: its own, or the one of the session it continues),
     else its harness name; ("", "") for none. A name the harness made up
     (GENERATED_NAMES) changes with each process — a resume draws a new
     suffix, a background job gets a title — so it never replaces an alias
-    already held: the address stays the one its peers know."""
+    already held: the address stays the one its peers know.
+
+    Nor is a harness name taken that would shadow a live identity, the alias
+    of a seat or of another current member of the project (`shadowed`, from
+    shadowing): a `--bg` copy inherits its source's name, and the engine's
+    record says `user` for it as for a /rename. The session keeps the alias
+    it holds, else its short id, and its title still shows the name."""
     name = str((peer or {}).get("name") or "")
     source = str((peer or {}).get("nameSource") or "derived")
     if logged == session[:8]:   # the placeholder a nameless session joined under
         logged = ""
-    if name and (source not in GENERATED_NAMES or not logged):
+    if name and (source not in GENERATED_NAMES or not logged) \
+            and not (name != logged and shadowed is not None and shadowed(name)):
         return name, source
     return (logged, logged_source) if logged else ("", "")
+
+
+def shadowing(project, session, info=None, all_seats=None):
+    """held_alias's `shadowed` for a session of `project`: whether a name is
+    the alias of a seat of the project that is not retired, or of a current
+    member of it (its latest membership `joined`) other than the session and
+    the sessions it continues. `info` (_projection) and `all_seats` when the
+    caller holds them; else read at the first question, which only a harness
+    name that differs from the alias the session holds raises."""
+    if project is None:
+        return None
+
+    def shadowed(name):
+        nonlocal info, all_seats
+        if info is None:
+            info = _projection(log_read(project, kinds=MEMBERSHIP + ("renamed",)))
+        mine = {session, *lineage(session, info)}
+        if any(sid not in mine and r["latest"] and r["latest"]["kind"] == "joined"
+               and logged_alias(sid, info)[0] == name for sid, r in info.items()):
+            return True
+        if all_seats is None:
+            all_seats = seats()
+        return any(s["alias"] == name and s["status"] != "retired" and s["current"] not in mine
+                   and (p := seat_project(s)) is not None and p.id == project.id for s in all_seats)
+
+    return shadowed
 
 
 def own_alias(events, session):
@@ -2828,7 +2864,7 @@ def ts_age(ts):
     return max(0.0, time.time() - then)
 
 
-def _member(sid, r, seat, peer, local, title=True, info=None):
+def _member(sid, r, seat, peer, local, title=True, info=None, shadowed=None):
     """One row of the projection: what the log says of the session, and, on
     this machine, its seat record and its process. A session that continues
     others (lineage, in `info`) is the member they stood for: what it has
@@ -2841,7 +2877,7 @@ def _member(sid, r, seat, peer, local, title=True, info=None):
     if seat:
         alias, name_source = seat["alias"], "seat"
     else:
-        alias, name_source = held_alias(*logged_alias(sid, info), peer, sid)
+        alias, name_source = held_alias(*logged_alias(sid, info), peer, sid, shadowed)
     machine = str(j.get("machine") or "")
     local = local or bool(seat) or not machine or is_self(machine, sid)
     age = active = None
@@ -2944,7 +2980,8 @@ def view_of(project, all_seats=None, titles=True):
     joined = [(sid, r) for sid, r in info.items()
               if r["latest"] and r["latest"]["kind"] == "joined" and sid not in forks]
     joined.sort(key=lambda x: (x[1]["joined"]["ts"], x[0]), reverse=True)
-    out = [_member(sid, r, by_session.get(sid), local.get(sid, {}).get("peer"), sid in local, titles, info)
+    out = [_member(sid, r, by_session.get(sid), local.get(sid, {}).get("peer"), sid in local, titles, info,
+                   shadowing(project, sid, info, all_seats))
            for sid, r in joined]
     sessions = {m.session for m in out}
     rest = sorted((s for s in all_seats if (not s["current"] or s["current"] not in sessions)
@@ -4289,7 +4326,8 @@ def _member_alias(project, session, seat, peer, marked=False):
         own = _own_events(project, session)
     if latest_membership(own) != "joined":
         return None
-    return (seat or {}).get("alias") or held_alias(*own_alias(own, session), peer, session)[0] or session[:8]
+    return (seat or {}).get("alias") or held_alias(*own_alias(own, session), peer, session,
+                                                    shadowing(project, session))[0] or session[:8]
 
 
 def export_live(cwd, session, records):
@@ -7121,7 +7159,7 @@ def default_from(explicit):
     peer = next((r for r in peer_records() if r.get("sessionId") == sid), None)
     project = caller_project()
     held = own_alias(_own_events(project, sid), sid) if project is not None else ("", "")
-    return held_alias(*held, peer, sid)[0] or "session:%s" % sid[:8]
+    return held_alias(*held, peer, sid, shadowing(project, sid))[0] or "session:%s" % sid[:8]
 
 
 def wait_socket_turn(s, marker, was_idle, guard):
@@ -8301,7 +8339,8 @@ def guide_text(session, launch, source="", title=""):
     home = resolve_project(launch)
     # The alias it goes by, as its own say would sign it (default_from).
     alias = seat["alias"] if seat else \
-        held_alias(*own_alias(_own_events(project, session), session), peer, session)[0]
+        held_alias(*own_alias(_own_events(project, session), session), peer, session,
+                   shadowing(project, session))[0]
     who = "%s [%s]" % (alias, session[:8]) if alias and alias != session[:8] else "[%s]" % session[:8]
     cli = os.path.join(SCRIPT_DIR, "sminos")
     if home is not None and home.id != project.id:
@@ -8562,7 +8601,8 @@ def session_address(session, fallback_cwd=""):
     own = _own_events(project, session)
     if latest_membership(own) != "joined" and not joinable(seat, peer, member_mark(peer)):
         return ""
-    alias = seat["alias"] if seat else held_alias(*own_alias(own, session), peer, session)[0]
+    alias = seat["alias"] if seat else held_alias(*own_alias(own, session), peer, session,
+                                                  shadowing(project, session))[0]
     # A name that is no name — a `claude --bg "<prompt>"` job joins under its
     # prompt, the harness's first name for it — would make the line a
     # paragraph the model rewrites: the short goes alone.

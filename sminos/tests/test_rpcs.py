@@ -113,9 +113,12 @@ def holders_of(sid):
 
 def ended_session(root):
     """A terminal session of the project at `root` that ran here and ended:
-    joined, its process gone, its membership retired `ended`."""
+    joined, its process gone, its membership retired `ended`, its transcript
+    kept."""
     s = tpr.Session(root, inbox=False)
     sminos.reconcile(tpr.project_of(root))
+    append_row(s.sid, {"type": "user", "uuid": str(uuidlib.uuid4()), "timestamp": iso(time.time()), "cwd": root,
+                       "sessionId": s.sid, "message": {"role": "user", "content": "hello"}})
     s.end()
     sminos.reconcile(tpr.project_of(root))
     latest = sminos.view_of(tpr.project_of(root), titles=False).info[s.sid]["latest"]
@@ -438,6 +441,38 @@ class Checks(unittest.TestCase):
         self.refused(ahead, "stale")
         self.assertEqual(self.mod.ops("interrupt"), [])
         self.assertEqual(self.ledger()[old["nonce"]]["outcome"]["error"]["code"], "stale", "kept: one answer a nonce")
+
+    def test_c_a_stale_rpc_is_said_in_daemon_log_with_its_times(self):
+        """One line: when the browser created it, when the stream's reader
+        took it, and its age when checked, so a hold on the way (the hub's
+        queue, the uplink's main thread) can be told from a late send."""
+        created = time.time() - 61.5
+        received = self.clock[0] - 0.75
+        rpc = sign(KEY, "interrupt", self.pid, {"session": self.bridged.sid}, created=iso(created))
+        self.r.receive(rpc, self.here, received)
+        self.refused(rpc, "stale")
+        with open(os.path.join(os.environ["SMINOS_HOME"], "daemon.log")) as f:
+            lines = [line for line in f if rpc["nonce"] in line]
+        self.assertEqual(len(lines), 1, lines)
+        self.assertIn("refused stale", lines[0])
+        self.assertIn("created %s" % rpc["created"], lines[0])
+        self.assertIn("received %s" % rpcs.stamp(received), lines[0])
+        self.assertIn("%.3f s old" % (self.clock[0] - rpcs.created_at(rpc["created"])), lines[0])
+
+    def test_c_the_ledger_keeps_each_rpcs_created_and_when_it_was_done(self):
+        """A Resume's breakdown (click → claim → launch → done) reads off its
+        entry: `created`, `at`, `launched_at`, `done_at`. A refusal kept from
+        the ledger on carries them too."""
+        self.mod.turn = "t1"
+        ran = self.send("steer", {"session": self.bridged.sid, "text": "timed"}, created=iso(self.clock[0] - 2))
+        self.assertEqual(self.outcome(ran)["state"], "done")
+        stale = self.send("interrupt", {"session": self.bridged.sid}, created=iso(self.clock[0] - 90))
+        self.refused(stale, "stale")
+        for rpc in (ran, stale):
+            e = self.ledger()[rpc["nonce"]]
+            self.assertAlmostEqual(e["created"], rpcs.created_at(rpc["created"]), places=3)
+            self.assertGreaterEqual(e["done_at"], e["at"])
+            self.assertLessEqual(e["created"], e["at"])
 
     # ------------------------------------------------ the policy
 
@@ -1105,6 +1140,18 @@ class Checks(unittest.TestCase):
         self.assertIn("running here", self.refused(again, "session-live")["error"]["message"])
         self.assertEqual(len(resumes(self.claude, sid)), 1, "launched once")
 
+    def test_j_a_session_this_machine_holds_no_transcript_of_is_not_resumed(self):
+        """A --bg copy that ended before it wrote a row: `claude --resume`
+        would start an empty session under its id and call it done."""
+        sid = ended_session(self.root)
+        os.unlink(transcript(sid))
+        self.here.sessions.add(sid)
+        rpc = self.send("resume", {"session": sid})
+        o = self.refused(rpc, "unsupported")
+        self.assertIn("no transcript", o["error"]["message"])
+        self.assertEqual(resumes(self.claude, sid), [], "nothing launched")
+        self.assertNotIn("launched_at", self.ledger()[rpc["nonce"]], "refused before the claim")
+
     def test_j_resume_is_refused_while_the_session_is_live(self):
         self.refused(self.send("resume", {"session": self.plain.sid}), "session-live")
         self.refused(self.send("resume", {"session": self.bridged.sid}), "session-live")
@@ -1149,6 +1196,8 @@ class Checks(unittest.TestCase):
         sid = str(uuidlib.uuid4())
         sminos.meta_set(sid, {"uuid": sid, "current": sid, "alias": "resumable", "group": "rpcproj", "cwd": self.root,
                               "status": "idle"})
+        append_row(sid, {"type": "user", "uuid": str(uuidlib.uuid4()), "timestamp": iso(time.time()),
+                         "cwd": self.root, "message": {"role": "user", "content": "hello"}})
         sminos.forget_caches()
         sminos.reconcile(tpr.project_of(self.root))
         self.here.sessions.add(sid)
@@ -1342,6 +1391,105 @@ class Checks(unittest.TestCase):
         self.assertEqual((o["state"], o["result"]["turnId"]), ("done", "turn-i2"), "the outcome it reached, kept now")
         self.assertEqual(self.ledger()[nonce]["outcome"], o)
         self.assertEqual(len(results(self.frames, nonce)), 1, "sent once")
+
+
+class CopyNames(unittest.TestCase):
+    """A seat-less session never takes, from its harness name, the alias of
+    a seat or of another current member of its project: a `--bg` copy
+    inherits its source's name (with `nameSource: user`), and the desk's
+    Resume of 2026-10-19 picked such a copy for its seat. A name no live
+    identity holds is taken as before, a retired member's included."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.root, cls.pid = tpr.make_project("copynames")
+        cls.project = tpr.project_of(cls.root)
+        cls.sessions = []
+
+    @classmethod
+    def tearDownClass(cls):
+        for s in cls.sessions:
+            s.end()
+
+    def session(self, name, source="user"):
+        s = tpr.Session(self.root, inbox=False)
+        self.sessions.append(s)
+        self.rename(s, name, source)
+        return s
+
+    def rename(self, s, name, source="user"):
+        with open(s.path) as f:
+            rec = json.load(f)
+        rec.update(name=name, nameSource=source)
+        with open(s.path, "w") as f:
+            json.dump(rec, f)
+        sminos.forget_caches()
+
+    def tick(self):
+        """The daemon's reconciliation and its renames, as a tick runs them."""
+        import sminos_daemon as daemon
+        sminos.forget_caches()
+        sminos.reconcile(self.project)
+        sminos.forget_caches()
+        return daemon.publish_renames(self.project, sminos.view_of(self.project, titles=False))
+
+    def alias_of(self, sid):
+        sminos.forget_caches()
+        info = sminos.view_of(self.project, titles=False).info[sid]
+        return (info["renamed"] or info["joined"])["alias"]
+
+    def test_a_copy_does_not_take_a_stopped_seats_alias(self):
+        seat = str(uuidlib.uuid4())
+        sminos.meta_set(seat, {"uuid": seat, "current": seat, "alias": "acc-ask71", "group": "copynames",
+                               "cwd": self.root, "status": "idle"})
+        self.tick()
+        self.assertEqual(self.alias_of(seat), "acc-ask71", "the seat is a member, stopped")
+        # Joined before the engine named it, then named as its source: the
+        # rename the desk's Resume took for the seat.
+        copy = self.session("s-copy", "derived")
+        self.tick()
+        self.rename(copy, "acc-ask71")
+        self.tick()
+        self.assertEqual(self.alias_of(copy.sid), "s-copy", "no rename onto the seat's alias")
+        self.assertEqual(tpr.member_of(self.project, copy.sid).alias, "s-copy", "nor goes by it")
+        # Joined already named as its source: under its short id.
+        born = self.session("acc-ask71")
+        self.tick()
+        self.assertEqual(self.alias_of(born.sid), born.sid[:8])
+        self.assertEqual(self.tick(), 0, "and no rename follows")
+        self.assertEqual(tpr.member_of(self.project, born.sid).alias, born.sid[:8])
+        # What it signs with, read at hook time from its own file: the
+        # address line its commits carry, and its say's sender.
+        sminos.forget_caches()
+        self.assertIn(": %s (" % born.sid[:8], sminos.session_address(born.sid, self.root))
+        self.assertEqual(sminos._member_alias(self.project, born.sid, None, sminos._on_sight(
+            self.project, born.sid)[1]), born.sid[:8])
+
+    def test_b_a_copy_does_not_take_a_current_members_alias(self):
+        first = self.session("pair-one")
+        self.tick()
+        self.assertEqual(self.alias_of(first.sid), "pair-one")
+        second = self.session("pair-one")
+        self.tick()
+        self.assertEqual(self.alias_of(second.sid), second.sid[:8], "the member's alias stays its own")
+        self.assertEqual(self.alias_of(first.sid), "pair-one")
+
+    def test_c_a_name_no_live_identity_holds_is_taken(self):
+        gone = self.session("was-here")
+        self.tick()
+        gone.end()
+        self.sessions.remove(gone)
+        self.tick()
+        sminos.forget_caches()
+        self.assertEqual(sminos.view_of(self.project, titles=False).info[gone.sid]["latest"]["kind"], "retired")
+        again = self.session("was-here")
+        self.tick()
+        self.assertEqual(self.alias_of(again.sid), "was-here", "a retired member's name is free")
+        fresh = self.session("s-fresh", "derived")
+        self.tick()
+        self.rename(fresh, "brand-new")
+        self.tick()
+        self.assertEqual(self.alias_of(fresh.sid), "brand-new", "a rename onto a free name is published")
 
 
 class LaunchStart(unittest.TestCase):
