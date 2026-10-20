@@ -160,9 +160,12 @@ class Consumer:
     History reads each loop's rows up to and including its cut row when that
     row is on disk, and every row on disk when it is not (rows reach disk in
     notice order, so nothing past a row not yet flushed is flushed): the
-    snapshot waits for nothing. The cut's row not on disk then counts as a
-    notice, as does each block the snapshot's `streaming` carries named (its
-    `uuid`) whose row is not in history. Live, disk rows are emitted strictly
+    snapshot waits for nothing. Each block the snapshot's `streaming` carries
+    named (its `uuid`) whose row is not in history counts as a notice of its
+    step. The cut's own row not on disk, when no carried block names it, is a
+    loose notice, as the plane holds it (open-fast M5): due 5 s after the
+    snapshot whatever step is open, and past that forgotten, not an end —
+    nothing drawn waits on it. Live, disk rows are emitted strictly
     in disk order, a row past the cut released on whichever comes first — its
     own notice, a notice for any later row of the same loop (a row passed
     over is unnamed), or 2 s after it was first seen on disk with neither —
@@ -194,6 +197,7 @@ class Consumer:
         self.snapshot = None
         self.status = None
         self.lines = []          # every stream line after the snapshot
+        self.forgotten = []      # loose notices let go past their due
         self.stop = threading.Event()
         self.thread = threading.Thread(target=self.run, daemon=True)
         self.thread.start()
@@ -228,6 +232,7 @@ class Consumer:
         steps = {key(m) for m in self.snapshot.get("streaming") or []}   # requests open
         named = {}               # uuid → the step open when its notice came (None: none), for a row not yet emitted
         due = {}                 # uuid → when its row is due: its step's end, or its notice, plus FLUSH_WAIT
+        loose = set()            # noticed rows nothing drawn awaits (the cut's own): past due, forgotten
         released = {}            # loop → how many of its disk rows are emitted
         if self.snapshot.get("namedBlocks") is not True:
             deadline = time.time() + FLUSH_WAIT
@@ -238,16 +243,14 @@ class Consumer:
                         return self.end("the cut's row %s is not on disk" % at)
                     time.sleep(0.02)
         now = time.time()
+        absent = []              # each loop's cut whose row is not on disk yet
         for loop in self.loops:
             at = cut.get(loop)
             rows = self.disk.rows(loop) if at is not None else []
             if at in rows:
                 rows = rows[:rows.index(at) + 1]
             elif at is not None:
-                # The cut's row not on disk yet: every row that is goes, and the cut's row is a notice.
-                named[at] = open_step(steps, loop)
-                if named[at] is None:
-                    due[at] = now + FLUSH_WAIT
+                absent.append(at)   # every row that is on disk goes
             for uuid in rows:
                 self.emit(uuid, "history")
             released[loop] = len(rows)
@@ -256,7 +259,11 @@ class Consumer:
                 if (m.get("agentId") or "main") in self.loops and isinstance(b.get("uuid"), str) \
                         and b["uuid"] not in self.how:
                     named[b["uuid"]] = key(m)   # a carried named block: due once its step ends
-                    due.pop(b["uuid"], None)
+        for at in absent:
+            if at not in named:
+                # The cut's own row, no carried block's: loose.
+                named[at], due[at] = None, now + FLUSH_WAIT
+                loose.add(at)
         first_seen = {}          # a disk row past the cut → when it was first seen on disk
         stream_over = False
         while not self.stop.is_set():
@@ -303,6 +310,7 @@ class Consumer:
                         self.emit(head, "notice")
                         del named[head]
                         due.pop(head, None)
+                        loose.discard(head)
                     elif any(u in named for u in rows[released[loop] + 1:]):
                         self.emit(head, "unnamed")
                     elif now - first_seen[head] >= UNNAMED_AFTER:
@@ -311,6 +319,11 @@ class Consumer:
                         break
                     released[loop] += 1
             late = [u for u, t in due.items() if now > t]
+            for u in [u for u in late if u in loose]:
+                del named[u], due[u]
+                loose.discard(u)
+                self.forgotten.append(u)
+            late = [u for u in late if u in due]
             if late:
                 return self.end("%s is not on disk %ss after its step's end or its notice" % (late[0], FLUSH_WAIT))
             # Once the stream is over, rows whose due has begun still drain;
@@ -795,9 +808,10 @@ def cut_wait():
           "%s then %s" % (early, c.out))
     child.resync(cut={"main": "never"})
     d = Consumer(child, disk)
-    d.wait("the end", FLUSH_WAIT + 2, lambda: d.ended)
-    check("a cut whose row is not on disk within 5 s, no step open, is a discontinuity",
-          d.ended == "never is not on disk %ss after its step's end or its notice" % FLUSH_WAIT
+    d.wait("the cut forgotten", FLUSH_WAIT + 2, lambda: "never" in (getattr(d, "forgotten", None) or ()))
+    time.sleep(0.3)
+    check("a cut whose row is not on disk within 5 s is forgotten, not an end: nothing drawn waits on it",
+          d.ended is None and "never" in (getattr(d, "forgotten", None) or ())
           and d.out == [("h1", "history"), ("h2", "history"), ("h3", "history")], "%s; %s" % (d.ended, d.out))
     child.stop()
 
@@ -909,8 +923,106 @@ def subagent_loop():
     child.stop()
 
 
+
+BLOCK_TAIL = 65536   # the child's: a block's catch-up text past it is its tail, marked truncated
+
+
+def chunk(i, text, kind="text", index=0, turn="t1"):
+    body = {"kind": kind, "index": index, ("json" if kind == "input" else "text"): text}
+    return {"type": "chunk", "turnId": turn, "agentId": None, "step": 0, "chunkIndex": i, "chunk": body}
+
+
+def truncated_blocks():
+    """A block past BLOCK_TAIL characters (a huge tool input streaming): the
+    snapshot carries its last BLOCK_TAIL, marked `truncated`, whether the
+    child folded its chunks or a resync carried it (A7); chunk events stay
+    whole, so a subscriber that streamed from the start holds every character."""
+    child = Child()
+    child.resync()
+    child.post({"type": "turn", "phase": "start", "turnId": "t1", "agentId": None},
+               {"type": "step", "phase": "start", "turnId": "t1", "agentId": None, "step": 0, "model": "m"},
+               {"type": "chunk", "turnId": "t1", "agentId": None, "step": 0, "chunkIndex": 0,
+                "chunk": {"kind": "tool", "index": 0, "id": "toolu_big", "name": "Write"}})
+    early = Sub(child)
+    pieces = [chr(97 + i % 26) * 1000 for i in range(100)]
+    child.post(*[chunk(i + 1, p, "input") for i, p in enumerate(pieces)])
+    whole = "".join(pieces)
+    until(3, lambda: len(early.lines) >= 100)
+    streamed = "".join((e.get("chunk") or {}).get("json") or "" for e in early.lines if e.get("type") == "chunk")
+    snap = Sub(child).snapshot
+    block = snap["streaming"][0]["blocks"][0]
+    check("a block past BLOCK_TAIL: the snapshot carries its last BLOCK_TAIL characters marked truncated; "
+          "the chunks a subscriber streamed carry it whole",
+          block.get("truncated") is True and block["text"] == whole[-BLOCK_TAIL:] and streamed == whole,
+          "truncated %s, %d characters, tail %s; streamed %d" % (
+              block.get("truncated"), len(block["text"]), block["text"] == whole[-BLOCK_TAIL:], len(streamed)))
+    # The mod's resync after a new child's hello carries the block so marked.
+    tail = whole[-BLOCK_TAIL:]
+    child.resync(cut={"main": None}, streaming=[
+        {"turnId": "t1", "agentId": None, "step": 0, "model": "m", "upTo": 100, "settled": [],
+         "blocks": [{"index": 0, "kind": "tool", "text": tail, "upTo": 100, "id": "toolu_big", "name": "Write",
+                     "truncated": True}]}])
+    after = Sub(child).snapshot["streaming"][0]["blocks"][0]
+    check("after the mod's resync, the snapshot carries the block it gave, marked truncated",
+          after == {"index": 0, "kind": "tool", "text": tail, "upTo": 100, "id": "toolu_big", "name": "Write",
+                    "truncated": True}, {k: (v if k != "text" else len(v)) for k, v in after.items()})
+    child.post(chunk(101, "Z" * 10, "input"))
+    time.sleep(0.2)
+    later = Sub(child).snapshot["streaming"][0]["blocks"][0]
+    check("a chunk after it keeps the block truncated and bounded",
+          later.get("truncated") is True and later["text"] == (tail + "Z" * 10)[-BLOCK_TAIL:],
+          "truncated %s, %d characters" % (later.get("truncated"), len(later["text"])))
+    # A resync whose block is longer (a mod from before the bound) is cut as it is taken.
+    child.resync(streaming=[
+        {"turnId": "t1", "agentId": None, "step": 0, "model": "m", "upTo": 100, "settled": [],
+         "blocks": [{"index": 0, "kind": "tool", "text": whole, "upTo": 100}]}])
+    old = Sub(child).snapshot["streaming"][0]["blocks"][0]
+    check("a resync's block past BLOCK_TAIL is cut to its tail as it is taken, marked truncated",
+          old.get("truncated") is True and old["text"] == whole[-BLOCK_TAIL:],
+          "truncated %s, %d characters" % (old.get("truncated"), len(old["text"])))
+    short = Child()
+    short.resync()
+    short.post({"type": "step", "phase": "start", "turnId": "t1", "agentId": None, "step": 0, "model": "m"},
+               chunk(0, "x" * BLOCK_TAIL))
+    exact = Sub(short).snapshot["streaming"][0]["blocks"][0]
+    check("a block of exactly BLOCK_TAIL characters is whole, and says nothing of truncation",
+          "truncated" not in exact and len(exact["text"]) == BLOCK_TAIL, sorted(exact))
+    child.stop()
+    short.stop()
+
+
+def loose_cut():
+    """The plane's rule for the cut's own row when it is not on disk and no
+    carried block names it (a loose notice, open-fast M5): due NOTICE_WAIT
+    after the snapshot whatever step is open, and past that forgotten, not an
+    end; nothing drawn waits on it."""
+    child, disk = Child(), Disk("loose")
+    disk.write("main", "l1")
+    child.resync(cut={"main": "l2"}, turns=[{"turnId": "t1", "agentId": None}], streaming=[
+        {"turnId": "t1", "agentId": None, "step": 0, "model": "m", "upTo": 0, "settled": [],
+         "blocks": [{"index": 0, "kind": "text", "text": "streaming", "upTo": 0}]}])
+    c = Consumer(child, disk)
+    c.wait("history", 3, lambda: c.out)
+    t0 = time.time()
+    time.sleep(FLUSH_WAIT + 1)
+    check("a loose cut not on disk past its due, a step open: forgotten, the subscription goes on",
+          c.ended is None and c.out == [("l1", "history")] and "l2" in (getattr(c, "forgotten", None) or ()),
+          "%s; %s; forgotten %s" % (c.ended, c.out, getattr(c, "forgotten", None)))
+    disk.write("main", "l2")
+    child.post(seen("l3"))
+    disk.write("main", "l3")
+    c.wait("l3", 4, lambda: len(c.out) >= 3)
+    check("its row, flushed later, goes as any row past the cut; the rows after it on their notices",
+          c.out == [("l1", "history"), ("l2", "unnamed"), ("l3", "notice")] and c.ended is None,
+          "%s; %s" % (c.out, c.ended))
+    child.post({"type": "step", "phase": "end", "turnId": "t1", "agentId": None, "step": 0})
+    time.sleep(0.3)
+    check("the step's end, after, changes nothing", c.ended is None, c.ended)
+    child.stop()
+
+
 for case in (readiness, verbs_retry_not_ready, cut, step_end_drops, seed, rows_past, flush_ahead, between_chunk_and_row, named_carried, named_never_flushed, notice_past_bound, passed_over,
-             compaction_named, cut_wait, undeclared, seeded, fence, subagent_loop):
+             compaction_named, cut_wait, undeclared, seeded, fence, subagent_loop, truncated_blocks, loose_cut):
     try:
         case()
     except Exception as e:  # noqa: BLE001 — a case that cannot go on is a failed case

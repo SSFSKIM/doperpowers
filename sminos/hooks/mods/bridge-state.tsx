@@ -10,7 +10,12 @@ import type { Place } from './bridge-place'
 
 /** The longest string an event carries; the rest is in the transcript. */
 export const TEXT_CAP = 65_536
-export const RESPAWN_FIRST_MS = 1_000
+/** A child that ended on its own is started again after this long, the first time (after a stable run, or ever)... */
+export const RESPAWN_FIRST_MS = 0
+/** ...and this long the next time it ends at once, doubling from there while it keeps doing so. */
+export const RESPAWN_STEP_MS = 1_000
+/** Characters of a block's text a snapshot or a resync carries: past it, its tail, marked `truncated`. */
+export const BLOCK_TAIL = 65_536
 export const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
 export type Effort = (typeof EFFORTS)[number]
 
@@ -65,7 +70,7 @@ export type Interrupt = { recorded: Promise<void> }
  * the row and `namedAt` the notice's stamp (ms). A named block is kept until
  * its step ends, since the engine flushes its row only then.
  */
-export type Block = { index: number; kind: string; text: string; upTo: number; id?: string; name?: string; uuid?: string; namedAt?: number }
+export type Block = { index: number; kind: string; text: string; upTo: number; id?: string; name?: string; uuid?: string; namedAt?: number; truncated?: true }
 /**
  * A message still streaming, as the child's snapshot carries it (DX4): its
  * blocks, named or not, the ones a row settled, and `upTo`, its last chunk.

@@ -1,5 +1,5 @@
-import { isEffort, isRecord, loopKey, message, state } from './bridge-state'
-import type { BridgeEvent, Override, Refusal, Request, Streaming } from './bridge-state'
+import { BLOCK_TAIL, isEffort, isRecord, loopKey, message, state } from './bridge-state'
+import type { Block, BridgeEvent, Override, Refusal, Request, Streaming } from './bridge-state'
 
 /**
  * The stream: the mod's copy of the session's live state, and the poster that
@@ -18,6 +18,14 @@ import type { BridgeEvent, Override, Refusal, Request, Streaming } from './bridg
  * `run` resolves; the events it resolves take its place. Rows no hook saw (a
  * compaction's, bridge-rows.tsx) are named through one, so their notices go
  * out ahead of anything later, though their uuids are read from the disk.
+ *
+ * Every post fits the engine's limit on a body (`$.http.fetch` refuses one
+ * past POST_MAX characters, and a refused resync would be queued again for
+ * ever): a block's kept text is its last BLOCK_TAIL characters, marked
+ * `truncated` (chunk events still carry every chunk whole, so only the
+ * catch-up copy a resync gives is the tail); a resync is posted alone and
+ * drops streaming messages, oldest first, past RESYNC_MAX; and a batch too
+ * long for one post is split.
  */
 
 export type Hold = BridgeEvent & {
@@ -43,6 +51,10 @@ export const isHold = (e: BridgeEvent | undefined): e is Hold => e?.type === '@h
 const isWithheld = (e: BridgeEvent | undefined) => state.place !== 'safe' && e?.type === 'tool'
 
 const BATCH_MAX = 500
+/** The longest body `$.http.fetch` sends, in characters (2.1.300). */
+const POST_MAX = 4_194_304
+/** Characters of a resync's JSON: past it, streaming messages are dropped, oldest first. */
+export const RESYNC_MAX = 4_000_000
 const QUEUE_MAX = 10_000
 /** After a post that failed, the next waits this long. */
 const RETRY_MS = 500
@@ -86,6 +98,17 @@ function trackChunk(e: BridgeEvent) {
     b.text += c.json ?? ''
   }
   b.upTo = chunkIndex
+  if (b.text.length > BLOCK_TAIL) {
+    keepTail(b)
+  }
+}
+
+/** A block's text cut to its last BLOCK_TAIL characters, never starting inside a surrogate pair. */
+function keepTail(b: Block) {
+  const tail = b.text.slice(-BLOCK_TAIL)
+  const first = tail.charCodeAt(0)
+  b.text = first >= 0xdc00 && first <= 0xdfff ? tail.slice(1) : tail
+  b.truncated = true
 }
 
 /** Folds an event into the session's live state. */
@@ -166,8 +189,31 @@ export const raisedFields = (r: Request) => ({
   ...(r.toolUseId !== undefined && { toolUseId: r.toolUseId }),
 })
 
-/** The live state whole, and what the child keeps for this session: what it replaces its own with. */
+/**
+ * The live state whole, and what the child keeps for this session: what it
+ * replaces its own with. One whose JSON passes RESYNC_MAX (thousands of open
+ * messages: each block is already bounded) drops streaming messages, oldest
+ * first, until it fits, and says so (`truncated`); the child takes what it
+ * carries.
+ */
 export function resyncEvent(): BridgeEvent {
+  const resync = wholeResync()
+  let size = JSON.stringify(resync).length
+  if (size <= RESYNC_MAX) {
+    return resync
+  }
+  const streaming = resync.streaming as unknown[]
+  // `"truncated":true,` and a comma for each message dropped.
+  size += 18
+  let dropped = 0
+  while (size > RESYNC_MAX && dropped < streaming.length) {
+    size -= JSON.stringify(streaming[dropped]).length + 1
+    dropped++
+  }
+  return { ...resync, streaming: streaming.slice(dropped), truncated: true }
+}
+
+function wholeResync(): BridgeEvent {
   return {
     type: 'resync',
     turns: [...state.turns.values()],
@@ -344,8 +390,14 @@ export async function poster() {
       }
       continue
     }
-    const held = state.queue.findIndex((e) => isHold(e) || isWithheld(e))
-    const batch = state.queue.splice(0, held === -1 ? BATCH_MAX : Math.min(held, BATCH_MAX))
+    // A resync goes alone: the batch ends before one, and one is a batch by itself.
+    const held = state.queue.findIndex((e, i) => isHold(e) || isWithheld(e) || (i > 0 && e.type === 'resync'))
+    const batch = state.queue.splice(0, head?.type === 'resync' ? 1 : held === -1 ? BATCH_MAX : Math.min(held, BATCH_MAX))
+    let body = JSON.stringify(batch)
+    while (body.length > POST_MAX && batch.length > 1) {
+      state.queue.unshift(...batch.splice(Math.ceil(batch.length / 2)))
+      body = JSON.stringify(batch)
+    }
     const generation = state.generation
     let failed = false
     state.isPosting = true
@@ -359,7 +411,7 @@ export async function poster() {
       }
     }
     let isFenced = false
-    await post(socketPath, nonce, JSON.stringify(batch)).then(
+    await post(socketPath, nonce, body).then(
       (res) => {
         // Refused under the nonce of the child this module still holds: the
         // path is served by a child another instance spawned (a reload).

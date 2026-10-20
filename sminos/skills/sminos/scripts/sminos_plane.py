@@ -65,7 +65,10 @@ row order, composite cd2667d8):
   the subscription carries is kept and its block-row relayed. The cut's own
   row, not on disk at the snapshot, is awaited as a notice too, so it goes
   out as it lands; nothing drawn waits on it, so past its due it is
-  forgotten rather than ending anything;
+  forgotten rather than ending anything. A streaming block whose text
+  passed the bridge's BLOCK_TAIL (65,536 characters: a huge tool input)
+  carries only its tail there, marked `truncated: true`, which the snapshot
+  passes on as it is: its chunks, and its row once it lands, are whole;
 - that is for a bridge whose snapshot says `namedBlocks: true` (its child
   keeps named blocks and its mod's last resync declared it). Any other — a
   mod and child from before it, still running after the uplink was
