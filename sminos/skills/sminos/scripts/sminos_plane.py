@@ -53,6 +53,13 @@ row order, composite cd2667d8):
   row, not on disk at the snapshot, is awaited as a notice too, so it goes
   out as it lands; nothing drawn waits on it, so past its due it is
   forgotten rather than ending anything;
+- that is for a bridge whose snapshot says `namedBlocks: true` (its child
+  keeps named blocks and its mod's last resync declared it). Any other — a
+  mod and child from before it, still running after the uplink was
+  upgraded, which drop a block at its block-row, so its cut may name a row
+  neither on disk nor carried — gets the wait from before: history waits for
+  the cut's row to be on disk, a build asked again on each pump, and the
+  subscription ends NOTICE_WAIT after the bridge's snapshot without it;
 - live, each loop's rows go out strictly in disk order: a row past the cut
   is released by its own notice, by a notice for any later row of the loop,
   or UNNAMED_WAIT after it was first seen on disk with neither (rows written
@@ -86,8 +93,8 @@ where the time went — when the bridge's snapshot reached its reader and
 when the open took it (the main thread's absence between), how the build
 came (cold or warm), its CPU on the worker and the rows it holds, whether
 the cut's row was on disk, and `waits` (how many builds answered
-"waiting": 0 since the snapshot waits for nothing, kept so the line reads
-the same on any version).
+"waiting": 0 from a bridge that keeps named blocks, whose snapshot waits
+for nothing).
 
 A gap in the bridge's stream, and its end while the session runs (the child
 ends every subscription on a module reload), end the subscription with
@@ -627,13 +634,15 @@ class Built:
         self.facts = None
 
 
-def build(t, cut, bridged):
+def build(t, cut, bridged, wait=False):
     """An open's build on the worker: the index brought up to the file's end
     (a file replaced since an earlier subscription read it starts over: this
     one holds nothing of the old), the history to the cut — every row on
     disk while the cut's row is not, since nothing past it is flushed either
-    — the newest of it that fits read back, and the rows past the cut. It
-    never waits."""
+    — the newest of it that fits read back, and the rows past the cut.
+    `wait`, for a bridge that does not keep named blocks: ("waiting", (how,
+    cpu_ms, rows)) while the cut's row is not on disk instead, what the build
+    that waited cost, for the open's line."""
     try:
         index = t.extended()
     except Reset:
@@ -641,6 +650,8 @@ def build(t, cut, bridged):
     n = len(index.uuids)
     if cut is not None:
         at = index.at.get(cut)
+        if at is None and wait:
+            return "waiting", (t.how, t.cpu_ms, n)
         split = n if at is None else at + 1
     else:
         # No cut: a bridged loop had no rows when the module loaded (all are
@@ -1110,9 +1121,11 @@ class Subscription:
         self.snap = None              # the bridge's snapshot line
         self.snapped_at = None        # when the open took it (clock)
         self.snap_arrived = None      # when it reached the reader (wall)
-        # What the open line says of its build: how its index came, its CPU,
-        # the rows it held; whether the cut's row was on disk; how many builds
-        # answered "waiting" (none does any more: the line's field is kept).
+        # What the open line says of its builds — one, or, from a bridge that
+        # does not keep named blocks, one per ask while the cut's row was not
+        # on disk: how the first's index came, their CPU together, the rows
+        # the last held; whether the cut's row was on disk; how many answered
+        # "waiting".
         self.build_how = None
         self.cpu_ms = 0
         self.build_rows = 0
@@ -1218,8 +1231,10 @@ class Subscription:
 
     def ask(self, path, read):
         """`read(transcript)` on the transcript's worker; its answer, (kind,
-        value), comes back through `answers`, and wakes the uplink; a Reset is
-        ("reset", why), any other failure ("failed", why)."""
+        value), comes back through `answers`; any answer but "waiting" wakes
+        the uplink (a waiting build is asked again on the next pump, not at
+        once, which would spin); a Reset is ("reset", why), any other failure
+        ("failed", why)."""
         if self.source is None:
             self.source = self.transcripts.acquire(path)
         answers, wake = self.answers, self.wake
@@ -1232,7 +1247,8 @@ class Subscription:
             except Exception as e:  # noqa: BLE001 — the subscription ends with it, not the worker
                 answer = ("failed", "reading the transcript failed: %r" % e)
             answers.put(answer)
-            wake()
+            if answer[0] != "waiting":
+                wake()
 
         self.source.submit(job)
 
@@ -1268,9 +1284,18 @@ class Subscription:
             out += self.end("discontinuity", str(e))
         return out
 
+    def keeps_named(self):
+        """The bridge's snapshot declares that it keeps a block after its
+        block-row (open-fast M5): only then does the open go without waiting
+        for the cut's row. A bridge from before it — its mod and child, still
+        running after the uplink was upgraded — drops the block at its
+        block-row, so its cut may name a row neither on disk nor carried."""
+        return self.snap.get("namedBlocks") is True
+
     def open(self, now, out):
         """The snapshot, once the bridge's (if any) is in and the build has
-        answered; False while it waits for either."""
+        answered — and, from a bridge that does not keep named blocks, once
+        the cut's row is on disk; False while it waits."""
         if self.bridged and self.snap is None:
             while self.snap is None:
                 try:
@@ -1296,20 +1321,23 @@ class Subscription:
                     out += self.end("discontinuity", "the bridge sent no snapshot",
                                     how="timeout: the bridge sent no snapshot in %g s" % OPEN_WAIT)
                 return False
-        # The history is read on the transcript's worker (build), once. A
-        # null cut (or one that does not name this loop) with a bridge: the
-        # loop had no rows when the module loaded, and none was noticed since
-        # — the seed covers every older row. Empty history; all rows live.
+        # The history is read on the transcript's worker (build): once, or,
+        # from a bridge that does not keep named blocks, again while the
+        # cut's row is not on disk. A null cut (or one that does not name
+        # this loop) with a bridge: the loop had no rows when the module
+        # loaded, and none was noticed since — the seed covers every older
+        # row. Empty history; all rows live.
         cut = self.cut()
         path = self.path(now)
+        wait = self.bridged and not self.keeps_named()
         if not self.building:
             if not path:
-                return self.unlocated(now, cut, out)
+                return self.unlocated(now, cut, wait, out)
             self.building = True
             bridged, looked = self.bridged, self.looker()
 
             def opening(t):
-                kind, built = build(t, cut, bridged)
+                kind, built = build(t, cut, bridged, wait)
                 if kind == "built":
                     built.facts = looked()
                 return kind, built
@@ -1321,6 +1349,13 @@ class Subscription:
         except queue.Empty:
             return False
         self.building = False
+        if kind == "waiting":
+            self.counted(*built)
+            self.waits += 1
+            self.cut_state = "not on disk"
+            if now - self.snapped_at > NOTICE_WAIT:
+                out += self.end("discontinuity", "the snapshot's cut, row %s, never reached the transcript" % cut)
+            return False
         if kind != "built":
             out += self.end("discontinuity" if kind == "reset" else "error", built)
             return False
@@ -1337,15 +1372,21 @@ class Subscription:
                 self.pool[u] = [row, now]
         return self.snapshot(now, built.shown, built.more, out)
 
-    def unlocated(self, now, cut, out):
+    def unlocated(self, now, cut, wait, out):
         """The open while the session's transcript is not found: with no
         process, `session-ended` (the machine does not hold it); else an
-        empty snapshot at once, cut or no cut, and its rows as they come."""
+        empty snapshot at once, cut or no cut, and its rows as they come —
+        but with a cut and `wait` (a bridge that does not keep named
+        blocks), as long as a cut row may take."""
         if not self.alive():
             out += self.end("session-ended", "no transcript of the session on this machine")
             return False
         if cut is not None:
             self.cut_state = "not on disk"
+            if wait:
+                if now - self.snapped_at > NOTICE_WAIT:
+                    out += self.end("discontinuity", "the snapshot's cut, row %s, never reached the transcript" % cut)
+                return False
         return self.snapshot(now, [], False, out)
 
     def snapshot(self, now, shown, more, out):

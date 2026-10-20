@@ -2753,7 +2753,8 @@ describe('streaming per content block', () => {
       h.children[0]!.write(hello())
       await h.settle()
       const resync = h.posts.at(-1)!.events[1]!
-      expect(resync).toMatchObject({ type: 'resync' })
+      // It declares that it keeps named blocks, so the child's snapshot may say so.
+      expect(resync).toMatchObject({ type: 'resync', namedBlocks: true })
       expect(resync.streaming).toEqual([
         {
           turnId: 't1',

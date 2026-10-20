@@ -30,8 +30,11 @@ carries as each loop's cut; the mod's row notices move it from there. A
 block a `block-row` named stays in the snapshot's `streaming`, its text kept
 and marked with its row's `uuid` and `namedAt`, until its step ends: the
 engine flushes a message's rows only at its end, and until then the text the
-mod streamed is the only copy outside the engine. The rows no hook of the
-mod's sees (a manual compaction's) it reads here too:
+mod streamed is the only copy outside the engine. The snapshot says so
+(`namedBlocks: true`) only when the mod's last resync declared it keeps them
+too: a mod from before that resyncs copies without the blocks it named, and
+a reader of a snapshot that does not say so waits for the cut's row on disk.
+The rows no hook of the mod's sees (a manual compaction's) it reads here too:
 
     GET  /rows?loop=&after=<uuid>      a loop's whole rows on disk past <uuid> (404 while it is not)
 
@@ -558,6 +561,11 @@ class Bridge:
         # Per loop, the uuid of the last row whose notice was applied (null:
         # none since the module loaded), under the lock that guards streaming.
         self.cut = {"main": None}
+        # Whether the mod's last resync declared that it keeps a block after
+        # its block-row, as this child does (open-fast M5): a mod from before
+        # it sends copies without them, so a block this child named is gone
+        # after such a resync. The snapshot says it (`namedBlocks`).
+        self.named_blocks = False
         self.failing = False     # the last write failed (said once, and again when one succeeds)
 
     # -- the mod's events
@@ -687,6 +695,7 @@ class Bridge:
                 streaming[_key(entry)] = m
             self.streaming = streaming
             self.agents = {a.get("agentId"): dict(a) for a in e.get("agents") or []}
+            self.named_blocks = e.get("namedBlocks") is True
             self.broken = set()
             cut = e.get("cut") if isinstance(e.get("cut"), dict) else {}
             self.cut = {"main": None, **{str(k): v for k, v in cut.items() if v is None or isinstance(v, str)}}
@@ -891,6 +900,12 @@ class Bridge:
                 # to it is the transcript's (on disk, or due at its step's
                 # end), none of them still streaming unnamed.
                 "cut": dict(self.cut),
+                # True when a block stays here after its block-row, carrying
+                # its uuid, until its step ends: this child keeps them, and
+                # the mod's last resync declared that it does too. A
+                # subscriber that reads no true here (a bridge from before
+                # open-fast M5) waits for the cut's row before its history.
+                "namedBlocks": self.named_blocks,
                 # The requests pending in the session, and the ones settled
                 # recently, so a subscriber that arrives after a request
                 # settled sees it settled rather than still raised.
