@@ -273,7 +273,8 @@ def heartbeat_at(data):
 
 class Stream(threading.Thread):
     """One connection's reader: everything it reads goes to `items` as
-    ("frame", event, data), and its end as ("closed", why), but for the
+    ("frame", event, data, when it was read: epoch s), and its end as
+    ("closed", why), but for the
     `org` frame, the latest of which waits aside (take_org) for the main
     thread to handle ahead of what is queued: it is the whole directory, and
     nothing queued depends on its order. It calls nothing of sminos.
@@ -336,7 +337,7 @@ class Stream(threading.Thread):
                         self.org = data
                     self.items.put(("org",))
                     continue
-                self.items.put(("frame", event, data))
+                self.items.put(("frame", event, data, time.time()))
             self.items.put(("closed", "the hub ended the stream"))
         except Exception as e:  # noqa: BLE001 — a connection closed from this end raises from deep inside http.client
             self.items.put(("closed", "closed by this end" if self.closing.is_set() else str(e) or repr(e)))
@@ -678,6 +679,7 @@ class Link:
         self.next_confirm = 0.0   # when the opened projects are `hello`ed again (sminos_archive)
         self.nudge = daemon.nudged_at()
         self.passed = set()
+        self.received = None      # when the reader took the frame being dispatched (epoch s), when known
         self.failing = self.plane_failing = ""
         self.plane = plane.Plane(cred["machine"], wake, bridges)
         self.requests = reqs or requests.Requests(cred["key"], cred["machine"])  # kept across streams by the uplink
@@ -832,7 +834,7 @@ class Link:
             self.post_session(self.plane.output(frame))
 
     def on_rpc(self, frame, _stream):
-        self.rpcs.receive(frame.get("rpc"), Here(self))
+        self.rpcs.receive(frame.get("rpc"), Here(self), self.received)
 
     def on_rpc_ack(self, frame, _stream):
         self.rpcs.ack(frame)
@@ -1118,6 +1120,7 @@ def serve_link(link, stream, ended, woken):
                         if isinstance(frame, dict) and frame.get("t") == "welcome":
                             welcomed = True
                         if frame is not None:
+                            link.received = item[3] if len(item) > 3 else None
                             link.dispatch(frame, stream)
                     taken += 1
                     if taken >= DRAIN_FRAMES or time.monotonic() >= until or ended():
