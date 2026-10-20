@@ -1219,6 +1219,15 @@ class Link:
         if hl is None:
             log("the hub refused: %s" % json.dumps(frame.get("refusal"), ensure_ascii=False)[:300])
             return
+        refusal = frame.get("refusal") if isinstance(frame.get("refusal"), dict) else {}
+        if refusal.get("reason") == "not-open" and hl.project.id in self.opening:
+            # A hello of it is out, so the frame refused went before that hello
+            # (the hub's chains answer apart: its `have` may be here already),
+            # and the hello opens it again. Its vector stands; a loss after
+            # it is refused again once the hello is answered, and handled then.
+            log("the hub refused in %s: not-open, while a hello of it is out: that hello opens it" %
+                hl.project.name)
+            return
         hl.on_refused(frame)
         if hl.have is None and hl.project.id in self.opened and hl.project.id not in self.opening:
             # The hub no longer has it open (`not-open`): opened anew, once

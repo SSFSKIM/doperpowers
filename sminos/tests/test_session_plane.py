@@ -3240,16 +3240,22 @@ class Lifecycle(unittest.TestCase):
         link.on_refused(refused, None)
         link.on_refused(refused, None)
         self.assertTrue(wait_for(lambda: len(hub.posts) == 2), "the second hello reached the hub, which holds it")
+        # The hub's two chains (M4): the held hello's `have` comes ahead of its
+        # 200, and a refusal of a frame sent before that hello comes after it.
+        link.on_have({"t": "have", "project": project.id, "have": {}}, None)
+        link.on_refused(refused, None)
         link.post_session([plane.envelope(project.id, "testhost", runs, "presence", None, None, {"after": True})])
         time.sleep(0.4)
         self.assertEqual(len(hub.posts), 2, "nothing of the project passes its held hello")
         hub.release.set()
         self.answered(link, items)
-        self.assertTrue(wait_for(lambda: len(hub.posts) == 3))
+        self.assertTrue(wait_for(lambda: ["session"] in self.kinds(hub)), "released: the message goes")
         time.sleep(0.3)
-        self.assertEqual([body[0] for body in self.kinds(hub)], ["hello", "hello", "session"],
-                         "one hello again, then the message it held")
-        self.assertEqual(hub.bodies()[2][0]["message"]["body"], {"after": True})
+        heads = [body[0] for body in self.kinds(hub)]
+        self.assertEqual(heads.count("hello"), 2, "opened again once: %s" % heads)
+        self.assertEqual(heads.index("session"), len(heads) - 1, "the message after the hello it waited for")
+        self.assertEqual(hub.bodies()[-1][0]["message"]["body"], {"after": True})
+        self.assertEqual(hl.have, {}, "the vector the new hello brought stands: its uploads go on")
 
     def test_each_hellos_answer_takes_the_presence_read_it_carried(self):
         """Two presence-bearing hellos of one project in flight, answered 200
