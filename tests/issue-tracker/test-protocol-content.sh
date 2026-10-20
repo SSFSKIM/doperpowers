@@ -612,7 +612,8 @@ assert_contains "$pexec" "opus at high effort, sol at xhigh" "...and it dispatch
 assert_contains "$pexec" "escalated to that
 session" "...an input only the human or the owners can give — friction, an approval, a fork — is escalated to the session that dispatched it"
 assert_contains "$pexec" "## Checkpoints" "...and it messages its dispatcher when it holds something the dispatcher needs"
-assert_contains "$pexec" "needs no message" "...and a milestone that landed as the spec foresaw is no reason to message"
+assert_contains "$pexec" "needs no message of its own" "...and a milestone that landed as the spec foresaw is no reason to message"
+assert_contains "$pexec" "two or three milestones" "...yet two or three clean milestones in silence get a line on where the plan stands"
 assert_contains "$pexec" "no reply means proceed" "...and it asks for no confirmation: silence is proceed"
 assert_contains "$pexec" "Keep building" "...without stopping for the answer"
 assert_contains "$pexec" "never write the board" "...and writes no board state; the dispatching session owns that"
