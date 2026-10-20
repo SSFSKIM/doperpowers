@@ -58,6 +58,7 @@ on Linux (it loads nothing); `status` prints the last tick per project.
 
 import contextlib
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -90,8 +91,8 @@ UPLINK_STOP_GRACE = 3
 # environment: it ends whenever its parent is another process.
 UPLINK_PARENT_ENV = "SMINOS_UPLINK_PARENT"
 # A change to the daemon's code is acted on once its scripts have held still
-# this long (a plugin update is a git pull: one in progress finishes first),
-# and at the latest this long after it was seen.
+# this long (a git pull in progress finishes first), and at the latest this
+# long after it was seen.
 CODE_SETTLE = 1.0
 CODE_SETTLE_MAX = 10.0
 LABEL = "com.doperpowers.sminos-daemon"
@@ -1009,11 +1010,20 @@ def run_lock_path():
     return daemon_path("run.lock")
 
 
+_digests = {}   # script name -> ((mtime_ns, size), sha-256 of its bytes)
+
+
 def own_code():
-    """Every script beside this one, with its mtime: what this loop and its
-    uplink import, now or later, is among them, and a script added or removed
-    changes the set. When it changes (a plugin update), the loop restarts in
-    place on the new code (restart_in_place)."""
+    """Every script beside this one, with a digest of its bytes: what this
+    loop and its uplink import, now or later, is among them, and a script
+    added or removed changes the set. When it changes (a plugin update), the
+    loop restarts in place on the new code (restart_in_place).
+
+    By content, not mtime: a marketplace update re-clones the whole
+    marketplace (Claude Code's refresh clones afresh and swaps the directory
+    in), so every script gets a new mtime whether or not sminos changed. The
+    stat is the cheap test each tick; a script is read again only when its
+    mtime or size moved."""
     here = os.path.dirname(os.path.realpath(__file__))
     out = {}
     try:
@@ -1021,11 +1031,20 @@ def own_code():
     except OSError:
         return out
     for name in names:
-        if name.endswith(".py"):
-            try:
-                out[name] = os.stat(os.path.join(here, name)).st_mtime_ns
-            except OSError:
-                pass  # removed since the listing
+        if not name.endswith(".py"):
+            continue
+        path = os.path.join(here, name)
+        try:
+            st = os.stat(path)
+            sig = (st.st_mtime_ns, st.st_size)
+            kept = _digests.get(name)
+            if kept is None or kept[0] != sig:
+                with open(path, "rb") as f:
+                    kept = (sig, hashlib.sha256(f.read()).hexdigest())
+                _digests[name] = kept
+        except OSError:
+            continue  # removed since the listing
+        out[name] = kept[1]
     return out
 
 

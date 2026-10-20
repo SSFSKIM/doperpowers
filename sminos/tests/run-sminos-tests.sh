@@ -6173,8 +6173,17 @@ RUNC_LOG="$MD/inst/sminos/daemon.log"
 # until the loop notices, rather than once after a guessed start-up time; a
 # change waits for the scripts to hold still, so each is given time to.
 run_restarted() { grep -Fq "daemon run (pid $RUNC): its code changed; restarting in place" "$RUNC_LOG" 2>/dev/null; }
+# A marketplace update re-clones the marketplace: every script is a new file
+# with a new mtime, most of them the same bytes. That is no change of code.
+run_began() { grep -Fq "daemon run started (pid $RUNC," "$RUNC_LOG" 2>/dev/null; }
+wait_until run_began || true
+sleep 1  # its code is read just after that line
+for f in "$CACHE"/skills/sminos/scripts/*.py; do cp "$f" "$f.new" && mv "$f.new" "$f"; done
+sleep 4  # a tick (1 s) and the settle (1 s) would have restarted it by now
+if kill -0 "$RUNC" 2>/dev/null && ! run_restarted; then pass "run keeps running when its scripts are re-made with the same bytes"; else
+  fail "run keeps running when its scripts are re-made with the same bytes"; fi
 run_noticed_code() {
-  touch "$CACHE/skills/sminos/scripts/sminos_daemon.py"
+  printf '\n' >> "$CACHE/skills/sminos/scripts/sminos_daemon.py"
   for _ in $(seq 1 60); do run_restarted && return 0; sleep 0.05; done
   return 1
 }
