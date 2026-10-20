@@ -13,6 +13,7 @@ import {
   RECORD_WAIT_MS,
   ROWS_POLLS,
   ROWS_POLL_MS,
+  RESYNC_INPUT_CAP,
   RESYNC_MAX,
   STEER_LINE,
   STEP_END_WAIT_MS,
@@ -684,6 +685,75 @@ describe('the child', () => {
     h.children.at(-1)!.end()
     await h.settle()
     expect(respawns().map((t) => t.ms)).toEqual([0, 1000, 2000, 0])
+  })
+
+  test("a post in flight when its child dies fails without holding up the successor: the successor's session start and resync go at once", async () => {
+    const h = harness({ hold: true })
+    const releaseAll = async () => {
+      for (let i = 0; i < h.posts.length; i++) {
+        h.posts[i]!.release()
+        await h.settle()
+      }
+    }
+    await h.ready()
+    await releaseAll()
+    await h.turn('t1')
+    await h.settle()
+    const inFlight = h.posts.at(-1)!
+    const timers = h.timers.length
+    h.children[0]!.end()
+    await h.settle()
+    h.timers[timers]!.fn()
+    await h.settle()
+    h.children[1]!.write(hello(SID, SOCK, undefined, 'n1'))
+    await h.settle()
+    inFlight.fail()
+    await h.settle()
+    expect(h.timers.filter((t) => t.kind === 'after' && t.ms === 500).length).toBe(0)
+    const start = h.posts.at(-1)!
+    expect([start.nonce, start.events.map((e) => e.type)]).toEqual(['n1', ['session']])
+    start.release()
+    await h.settle()
+    expect(h.posts.at(-1)!.events.map((e) => e.type)).toEqual(['resync'])
+  })
+
+  test("a retry's wait set for a child that then died does not hold up its successor, nor does its end clear the successor's own", async () => {
+    const h = harness({ hold: true })
+    const releaseAll = async () => {
+      for (let i = 0; i < h.posts.length; i++) {
+        h.posts[i]!.release()
+        await h.settle()
+      }
+    }
+    await h.ready()
+    await releaseAll()
+    await h.turn('t1')
+    await h.settle()
+    // The post fails while its child still stands: the retry waits RETRY_MS.
+    h.posts.at(-1)!.fail()
+    await h.settle()
+    const obsolete = h.timers.filter((t) => t.kind === 'after' && t.ms === 500)
+    expect(obsolete.length).toBe(1)
+    const timers = h.timers.length
+    h.children[0]!.end()
+    await h.settle()
+    h.timers[timers]!.fn()
+    await h.settle()
+    h.children[1]!.write(hello(SID, SOCK, undefined, 'n1'))
+    await h.settle()
+    const start = h.posts.at(-1)!
+    expect([start.nonce, start.events.map((e) => e.type)]).toEqual(['n1', ['session']])
+    // The successor's own post fails: its wait stands through the obsolete one's end.
+    start.fail()
+    await h.settle()
+    const posted = h.posts.length
+    obsolete[0]!.fn()
+    await h.settle()
+    expect(h.posts.length).toBe(posted)
+    h.timers.filter((t) => t.kind === 'after' && t.ms === 500).at(-1)!.fn()
+    await h.settle()
+    expect(h.posts.length).toBe(posted + 1)
+    expect(h.posts.at(-1)!.events.map((e) => e.type)).toEqual(['gap'])
   })
 
   test('a session whose id changed (a /clear) gets a child under the new id, the old one stopped', async () => {
@@ -2937,6 +3007,52 @@ describe("a post fits the engine's limit", () => {
     expect(h.ofType('gap')).toEqual([])
   })
 
+  test('a block of exactly BLOCK_TAIL UTF-16 units is whole; one unit more is cut to its last BLOCK_TAIL', async () => {
+    const h = harness()
+    await h.ready()
+    let resync: Record<string, unknown> | undefined
+    await h.step({ turnId: 't1', index: 0, model: 'm', messageCount: 1 }, [{ kind: 'text', index: 0, text: 'x'.repeat(BLOCK_TAIL) }, { kind: 'text', index: 1, text: `y${'x'.repeat(BLOCK_TAIL)}` }], async () => {
+      h.children[0]!.write(hello())
+      await h.settle()
+      resync = h.ofType('resync').at(-1)
+    })
+    const [exact, over] = (resync!.streaming as Shown[])[0]!.blocks
+    expect([exact!.truncated, (exact!.text as string).length]).toEqual([undefined, BLOCK_TAIL])
+    expect([over!.truncated, (over!.text as string).length, (over!.text as string).startsWith('y')]).toEqual([true, BLOCK_TAIL, false])
+  })
+
+  test("a cut that would split a surrogate pair drops the pair's lone half: the tail is BLOCK_TAIL - 1 units and starts on a whole character", async () => {
+    const h = harness()
+    await h.ready()
+    // One unit of 'x', then astral characters: the last BLOCK_TAIL units begin on a low surrogate.
+    const text = `x${'😀'.repeat(BLOCK_TAIL / 2)}z`
+    let resync: Record<string, unknown> | undefined
+    await h.step({ turnId: 't1', index: 0, model: 'm', messageCount: 1 }, [{ kind: 'text', index: 0, text }], async () => {
+      h.children[0]!.write(hello())
+      await h.settle()
+      resync = h.ofType('resync').at(-1)
+    })
+    const block = (resync!.streaming as Shown[])[0]!.blocks[0]!
+    const tail = block.text as string
+    expect(tail.length).toBe(BLOCK_TAIL - 1)
+    expect(tail.charCodeAt(0)).toBe(0xd83d)
+    expect(tail === text.slice(-(BLOCK_TAIL - 1))).toBe(true)
+  })
+
+  test('the bound counts UTF-16 units, as the engine measures a body: astral text is cut at half as many characters (the child counts code points, bridge_order pins it)', async () => {
+    const h = harness()
+    await h.ready()
+    const text = '😀'.repeat(40_000)
+    let resync: Record<string, unknown> | undefined
+    await h.step({ turnId: 't1', index: 0, model: 'm', messageCount: 1 }, [{ kind: 'text', index: 0, text }], async () => {
+      h.children[0]!.write(hello())
+      await h.settle()
+      resync = h.ofType('resync').at(-1)
+    })
+    const block = (resync!.streaming as Shown[])[0]!.blocks[0]!
+    expect([block.truncated, (block.text as string).length, [...(block.text as string)].length]).toEqual([true, BLOCK_TAIL, BLOCK_TAIL / 2])
+  })
+
   test('a resync under RESYNC_MAX is whole and says nothing of truncation', async () => {
     const h = harness()
     await h.ready()
@@ -2947,6 +3063,59 @@ describe("a post fits the engine's limit", () => {
     const resync = h.ofType('resync').at(-1)!
     expect('truncated' in resync).toBe(false)
     expect((resync.streaming as Shown[])[0]!.blocks).toEqual([{ index: 0, kind: 'text', text: 'short', upTo: 0 }])
+  })
+
+  test("a resync whose pending requests alone pass RESYNC_MAX shortens the permissions' inputs, largest first, each marked truncated: every request keeps its id and tool, and the post fits", async () => {
+    const h = harness()
+    await h.ready()
+    await h.turn('t1')
+    // 65 Write permissions pending, each input at the per-string cap.
+    const content = 'w'.repeat(TEXT_CAP)
+    for (let i = 0; i < 65; i++) {
+      const input = { file_path: `/w/f${i}`, content }
+      await h.called(`toolu_w${i}`, 'Write', input)
+      void h.permission('Write', input)
+      await h.settle()
+    }
+    expect(h.ofType('raised').length).toBe(65)
+    h.children[0]!.write(hello())
+    await h.settle()
+    const resync = h.ofType('resync').at(-1)!
+    expect(resync.truncated).toBe(true)
+    expect(JSON.stringify(resync).length).toBeLessThanOrEqual(RESYNC_MAX)
+    const pending = resync.pending as { request: string; tool: string; input: { file_path: string; content: string }; truncated?: boolean }[]
+    expect(pending.map((p) => [p.request, p.tool, p.input.file_path])).toEqual(Array.from({ length: 65 }, (_, i) => [`toolu_w${i}`, 'Write', `/w/f${i}`]))
+    const shortened = pending.filter((p) => p.input.content.length < TEXT_CAP)
+    expect(shortened.length).toBeGreaterThan(0)
+    expect(shortened.length).toBeLessThan(65)
+    expect(shortened.every((p) => p.truncated === true && p.input.content.length === RESYNC_INPUT_CAP)).toBe(true)
+    expect(h.posts.filter((p) => p.size > ENGINE_BODY_MAX).map((p) => p.size)).toEqual([])
+    expect(h.ofType('gap')).toEqual([])
+  })
+
+  test("a question's input is kept whole when a resync is shortened: its answers are matched against it", async () => {
+    const h = harness()
+    await h.ready()
+    await h.turn('t1')
+    const content = 'w'.repeat(TEXT_CAP)
+    for (let i = 0; i < 64; i++) {
+      const input = { file_path: `/w/f${i}`, content }
+      await h.called(`toolu_w${i}`, 'Write', input)
+      void h.permission('Write', input)
+      await h.settle()
+    }
+    const question = 'q'.repeat(TEXT_CAP)
+    const ask = { questions: [{ question, header: 'H', options: [{ label: 'a' }, { label: 'b' }], multiSelect: false }] }
+    await h.called('toolu_q', 'AskUserQuestion', ask)
+    void h.permission('AskUserQuestion', ask)
+    await h.settle()
+    h.children[0]!.write(hello())
+    await h.settle()
+    const resync = h.ofType('resync').at(-1)!
+    expect(JSON.stringify(resync).length).toBeLessThanOrEqual(RESYNC_MAX)
+    const asked = (resync.pending as { request: string; input: typeof ask; truncated?: boolean }[]).find((p) => p.request === 'toolu_q')!
+    expect(asked.input.questions[0]!.question === question).toBe(true)
+    expect(asked.truncated).toBeUndefined()
   })
 
   test('what queued while a post was in flight goes in posts that each fit, in order, nothing lost', async () => {

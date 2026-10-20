@@ -28,7 +28,7 @@ import { claimAgent, forgetAgents, refreshAgents, watchAgents } from './bridge-a
 
 export { OFF_LINE, ON_LINE } from './bridge-place'
 export { BLOCK_TAIL, TEXT_CAP, capped, resetBridge } from './bridge-state'
-export { RESYNC_MAX, STEP_END_WAIT_MS } from './bridge-stream'
+export { RESYNC_INPUT_CAP, RESYNC_MAX, STEP_END_WAIT_MS } from './bridge-stream'
 export { RECORD_WAIT_MS, TRANSCRIPT_RETRY_MS, onAskNote } from './bridge-requests'
 export { ROWS_POLLS, ROWS_POLL_MS, compacted } from './bridge-rows'
 export { AGENTS_REFRESH_MS } from './bridge-agents'

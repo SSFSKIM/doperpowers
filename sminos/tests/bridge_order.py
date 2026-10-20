@@ -991,6 +991,28 @@ def truncated_blocks():
     short.stop()
 
 
+def code_points():
+    """The child bounds a block in code points, as Python counts a string; the
+    mod in UTF-16 units, as the engine measures a body. Astral text is the
+    one place they differ, deliberately: 40,000 emoji (80,000 units) the mod
+    cuts to 32,768 of them, the child keeps whole; a block from the mod is
+    never longer in code points than in units, so the child never cuts one
+    the mod kept."""
+    child = Child()
+    child.resync()
+    child.post({"type": "step", "phase": "start", "turnId": "t1", "agentId": None, "step": 0, "model": "m"},
+               chunk(0, "\U0001F600" * BLOCK_TAIL, index=0), chunk(1, "\U0001F600" * (BLOCK_TAIL + 1), index=1),
+               chunk(2, "\U0001F600" * 40000, index=2))
+    exact, over, astral = Sub(child).snapshot["streaming"][0]["blocks"]
+    check("a block of exactly BLOCK_TAIL code points is whole; one more is cut to its last BLOCK_TAIL code points",
+          "truncated" not in exact and len(exact["text"]) == BLOCK_TAIL
+          and over.get("truncated") is True and len(over["text"]) == BLOCK_TAIL,
+          (len(exact["text"]), exact.get("truncated"), len(over["text"]), over.get("truncated")))
+    check("40,000 astral characters (80,000 UTF-16 units, past the mod's bound) are whole in the child",
+          "truncated" not in astral and len(astral["text"]) == 40000, (len(astral["text"]), astral.get("truncated")))
+    child.stop()
+
+
 def loose_cut():
     """The plane's rule for the cut's own row when it is not on disk and no
     carried block names it (a loose notice, open-fast M5): due NOTICE_WAIT
@@ -1022,7 +1044,7 @@ def loose_cut():
 
 
 for case in (readiness, verbs_retry_not_ready, cut, step_end_drops, seed, rows_past, flush_ahead, between_chunk_and_row, named_carried, named_never_flushed, notice_past_bound, passed_over,
-             compaction_named, cut_wait, undeclared, seeded, fence, subagent_loop, truncated_blocks, loose_cut):
+             compaction_named, cut_wait, undeclared, seeded, fence, subagent_loop, truncated_blocks, code_points, loose_cut):
     try:
         case()
     except Exception as e:  # noqa: BLE001 — a case that cannot go on is a failed case

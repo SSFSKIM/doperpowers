@@ -200,8 +200,12 @@ export type BridgeState = {
   /** The poster loop (started in session.start) and, while it sleeps, what wakes it. */
   isPosterRunning: boolean
   wake?: () => void
-  /** A post failed: the next waits for RETRY_MS. */
-  isWaiting: boolean
+  /**
+   * A post to the child of `generation` failed: that child's next post waits
+   * RETRY_MS. A wait set for a child since replaced holds up nothing: its
+   * successor posts at once.
+   */
+  retry?: { generation: number }
   /**
    * Between a /clear's session.end and the new session's child: nothing is
    * sent (the old child must not get the new session's events), and the live
@@ -352,7 +356,6 @@ const fresh = (): BridgeState => ({
   queue: [],
   isPosting: false,
   isPosterRunning: false,
-  isWaiting: false,
   isEnding: false,
   turns: new Map(),
   messages: new Map(),
@@ -389,19 +392,19 @@ export const parsed = (text: string): Record<string, unknown> | undefined => {
 }
 
 /**
- * A value with every string in it, at any depth, held to TEXT_CAP; `cut`
- * says whether any was.
+ * A value with every string in it, at any depth, held to `cap` (TEXT_CAP);
+ * `cut` says whether any was.
  */
-export function capped(value: unknown): Capped {
+export function capped(value: unknown, cap = TEXT_CAP): Capped {
   if (typeof value === 'string') {
-    return value.length > TEXT_CAP ? { value: value.slice(0, TEXT_CAP), cut: true } : { value, cut: false }
+    return value.length > cap ? { value: value.slice(0, cap), cut: true } : { value, cut: false }
   }
   if (Array.isArray(value)) {
-    const items = value.map(capped)
+    const items = value.map((v) => capped(v, cap))
     return { value: items.map((i) => i.value), cut: items.some((i) => i.cut) }
   }
   if (typeof value === 'object' && value !== null) {
-    const entries = Object.entries(value).map(([k, v]) => [k, capped(v)] as const)
+    const entries = Object.entries(value).map(([k, v]) => [k, capped(v, cap)] as const)
     return { value: Object.fromEntries(entries.map(([k, c]) => [k, c.value])), cut: entries.some(([, c]) => c.cut) }
   }
   return { value, cut: false }

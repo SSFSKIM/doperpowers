@@ -1,4 +1,4 @@
-import { BLOCK_TAIL, isEffort, isRecord, loopKey, message, state } from './bridge-state'
+import { BLOCK_TAIL, capped, isEffort, isRecord, loopKey, message, state } from './bridge-state'
 import type { Block, BridgeEvent, Override, Refusal, Request, Streaming } from './bridge-state'
 
 /**
@@ -55,6 +55,8 @@ const BATCH_MAX = 500
 const POST_MAX = 4_194_304
 /** Characters of a resync's JSON: past it, streaming messages are dropped, oldest first. */
 export const RESYNC_MAX = 4_000_000
+/** Characters of each string a shortened permission's input keeps in a resync past RESYNC_MAX. */
+export const RESYNC_INPUT_CAP = 1_024
 const QUEUE_MAX = 10_000
 /** After a post that failed, the next waits this long. */
 const RETRY_MS = 500
@@ -191,10 +193,14 @@ export const raisedFields = (r: Request) => ({
 
 /**
  * The live state whole, and what the child keeps for this session: what it
- * replaces its own with. One whose JSON passes RESYNC_MAX (thousands of open
- * messages: each block is already bounded) drops streaming messages, oldest
- * first, until it fits, and says so (`truncated`); the child takes what it
- * carries.
+ * replaces its own with. One whose JSON passes RESYNC_MAX says so
+ * (`truncated`) and is cut until it fits, in two steps: streaming messages
+ * dropped, oldest first (their catch-up copy only: their rows still land);
+ * then pending permissions' inputs, largest first, each string held to
+ * RESYNC_INPUT_CAP and the request marked `truncated`, as `raised` marks an
+ * input cut to TEXT_CAP. Every request keeps its id, tool, agent and window,
+ * which deciding it needs; a question's input stays whole, since its answers
+ * are matched against its questions. The child takes what it carries.
  */
 export function resyncEvent(): BridgeEvent {
   const resync = wholeResync()
@@ -203,14 +209,28 @@ export function resyncEvent(): BridgeEvent {
     return resync
   }
   const streaming = resync.streaming as unknown[]
-  // `"truncated":true,` and a comma for each message dropped.
+  // `"truncated":true,`, and a comma for each entry dropped (estimates that only overcount).
   size += 18
   let dropped = 0
   while (size > RESYNC_MAX && dropped < streaming.length) {
     size -= JSON.stringify(streaming[dropped]).length + 1
     dropped++
   }
-  return { ...resync, streaming: streaming.slice(dropped), truncated: true }
+  const pending = [...(resync.pending as Record<string, unknown>[])]
+  const kept = new Set([...state.requests.values()].filter((r) => r.isQuestion || r.isAsync).map((r) => r.id))
+  const largest = pending
+    .map((p, i) => ({ i, length: JSON.stringify(p).length }))
+    .filter(({ i }) => !kept.has(String(pending[i]!.request)))
+    .sort((a, b) => b.length - a.length)
+  for (const { i, length } of largest) {
+    if (size <= RESYNC_MAX) {
+      break
+    }
+    const short = { ...pending[i]!, input: capped(pending[i]!.input, RESYNC_INPUT_CAP).value, truncated: true }
+    size -= length - JSON.stringify(short).length
+    pending[i] = short
+  }
+  return { ...resync, streaming: streaming.slice(dropped), pending, truncated: true }
 }
 
 function wholeResync(): BridgeEvent {
@@ -376,7 +396,8 @@ export function pump() {
 export async function poster() {
   for (;;) {
     const { post, socket: socketPath, nonce } = state
-    if (post === undefined || socketPath === undefined || state.isWaiting || state.queue.length === 0 || isWithheld(state.queue[0])) {
+    const isWaiting = state.retry !== undefined && state.retry.generation === state.generation
+    if (post === undefined || socketPath === undefined || isWaiting || state.queue.length === 0 || isWithheld(state.queue[0])) {
       await new Promise<void>((resolve) => (state.wake = resolve))
       state.wake = undefined
       continue
@@ -431,10 +452,15 @@ export async function poster() {
       retire()
       return
     }
-    if (failed && state.after !== undefined) {
-      state.isWaiting = true
+    // A post to a child since replaced failed with it: its successor's posts
+    // (its session start, its resync) are not held up.
+    if (failed && generation === state.generation && state.after !== undefined) {
+      const retry = { generation }
+      state.retry = retry
       state.after(RETRY_MS, () => {
-        state.isWaiting = false
+        if (state.retry === retry) {
+          state.retry = undefined
+        }
         pump()
       })
     }
