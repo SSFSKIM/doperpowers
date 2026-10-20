@@ -39,7 +39,7 @@ before it is built (Decision Log).
 
 ## Progress
 
-- [ ] M1 — The open line stamped at arrival; the reference consumer and the inventory; the fixtures
+- [x] M1 — The open line stamped at arrival; the reference consumer and the inventory; the fixtures (2026-10-20, reviewed clean after three fix rounds; 9bd55c49..c762b8d7, sminos 1.2.2)
 - [ ] M2 — The instruments: `bench_open.py` (micro and full path), `bench_scale.py opens`
 - [ ] M3 — The web keeps a carried block across a reconnect (MAWS)
 - [x] M4 — The hub's reply chain decoupled (MAWS) (2026-10-20, reviewed clean; MAWS `desk-open-fast-hub` fba324cc4..beb065470, master merged at ef190e5e2)
@@ -1844,6 +1844,37 @@ beside; a single reviewer reads one of those well in a pass.
   `{"proxy", "control"}`; its `held` counts bytes read and not forwarded
   plus `FIONREAD` on the hub socket, keeping the maximum after resume.
   Date/Author: 2026-10-20, the M1 executor, folded by the controller.
+
+- Decision (M1, three review rounds): the inventory's `check(consumer)`
+  returns six keys — `holes`, `vanished`, `partial`, `dups`, `undrawn`,
+  `residual`. An own-loop block that streamed (in the DX5 source), whose row
+  reached the subscription live (a `row` after the snapshot, not history or a
+  page) and was never drawn before it landed, is `undrawn`, unless the DX5
+  source positively shows §2's accepted hole: the snapshot event naming that
+  subscription (`{"type":"snapshot","sub":<the DX4 sub it served>, …}`) comes
+  after that request's step `end` (a turn `complete` does not count). With no
+  such keyed snapshot event the block is `undrawn` — the strict reading: a
+  run whose DX5 source records no keyed snapshots can never report
+  `residual`. A page holding a row twice is held once and recorded as a dup
+  (a held row paged again is not). A truncated tool block's tail is not
+  compared against a reserialized row (JSON whitespace is free); the
+  inventory checks it as an exact suffix of the input the source streamed,
+  a mismatch reported as `partial`. Inventory source reads raise on any
+  failure but a missing transcript. A waiting build answer carries its
+  figures, so an open that ends waiting reports the first build's kind, the
+  CPU summed across builds and the last build's rows. The consumer's page
+  marks apply only to the rows a page newly holds, as `desk-transcript.ts`
+  does. The web's own `older()` does not dedupe within a page (left to M3).
+  Date/Author: 2026-10-20, the M1 executor and its reviewer, folded by the
+  controller.
+- Decision (for M2): a live instrument that wants `residual` to be
+  reportable records, in one ordered DX5 stream, the bridge's snapshot line
+  for each subscription stamped with the DX4 `sub` it served, and the step
+  ends. The plane knows which subscription a snapshot line served and the
+  bridge does not; how the instrument learns it (a probe of its own, or a
+  log line in the plane) is M2's to choose, within M2's "does not touch any
+  behavior".
+  Date/Author: 2026-10-20, the controller.
 
 ## Outcomes & Retrospective
 
