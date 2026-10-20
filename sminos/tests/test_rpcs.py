@@ -1458,6 +1458,12 @@ class CopyNames(unittest.TestCase):
         self.assertEqual(self.alias_of(born.sid), born.sid[:8])
         self.assertEqual(self.tick(), 0, "and no rename follows")
         self.assertEqual(tpr.member_of(self.project, born.sid).alias, born.sid[:8])
+        # What it signs with, read at hook time from its own file: the
+        # address line its commits carry, and its say's sender.
+        sminos.forget_caches()
+        self.assertIn(": %s (" % born.sid[:8], sminos.session_address(born.sid, self.root))
+        self.assertEqual(sminos._member_alias(self.project, born.sid, None, sminos._on_sight(
+            self.project, born.sid)[1]), born.sid[:8])
 
     def test_b_a_copy_does_not_take_a_current_members_alias(self):
         first = self.session("pair-one")
