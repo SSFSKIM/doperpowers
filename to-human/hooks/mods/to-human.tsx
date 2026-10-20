@@ -1130,6 +1130,17 @@ export function registerToHuman(on: On) {
     return result
   })
 
+  // A plugin update the doperpowers plugin's reload applied leaves its line
+  // (`/reload-plugins: Reloaded: N plugins · …`), the machinery's and no row
+  // of the report. The engine draws such a line through no render hook, so
+  // the view cannot fold it once drawn: while the report folds, the line goes
+  // to the debug log as it is logged. The full transcript keeps it, and a
+  // reload that failed, whose line says no `Reloaded:`, stays in both.
+  on('ui.log', { to: 'transcript', text: /^\/reload-plugins: Reloaded: / }, async ($, e, next) => {
+    if (await native($, e)) return next(e)
+    return next(isFolding() ? { ...e, to: 'debug' } : e)
+  })
+
   // A plain click on a span's file link opens it in VS Code, at its line.
   on('ui.press', { element: /^to-human-links:/ }, async ($, e, next) => {
     const url = e.link === undefined ? undefined : editorUrl(e.link.href)

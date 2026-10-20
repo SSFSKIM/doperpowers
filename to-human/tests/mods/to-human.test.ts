@@ -1,8 +1,8 @@
-import type { On } from 'claude-code'
+import type { EngineInterface, On } from 'claude-code'
 import { describe, expect, mock, test, tier } from 'claude-code/testing'
 
 import type { RowKind } from '../../hooks/mods/to-human'
-import { editorUrl, fileLinks, isRead, markdownBlocks, newView, parse, placeAll, placeArgs, placesIn, promptRow, reorder, runEnd, runStart } from '../../hooks/mods/to-human'
+import { editorUrl, fileLinks, isRead, markdownBlocks, newView, parse, placeAll, placeArgs, placesIn, promptRow, registerToHuman, reorder, runEnd, runStart } from '../../hooks/mods/to-human'
 
 // The kit runs tests with the timer the hooks' declarations leave out.
 declare const setTimeout: (callback: (value?: unknown) => void, ms: number) => unknown
@@ -617,6 +617,54 @@ describe('rows', () => {
     await first.press({ key: 'to-human-toggle' })
     expect(await note.find({ type: 'Button', text: 'fold to report' })).toBeDefined()
     expect(await first.find({ type: 'Button', text: 'fold to report' })).toBeUndefined()
+  })
+
+})
+
+describe('the reload line', () => {
+  // The engine's test kit carries no `$.ui.log` and refuses one from a test's
+  // hook, so the hooks are called as the engine would call them, as
+  // to-human-native.test.ts does.
+  test('stays out of the report and in the full transcript; a failed reload\'s stays in both', async () => {
+    type Event = Record<string, unknown>
+    type Handler = (engine: EngineInterface, e: Event, next: (e: Event) => Promise<unknown>) => unknown
+    const hooks: { event: string; matcher: Event; handler: Handler }[] = []
+    const on = ((event: string, ...rest: unknown[]) => {
+      hooks.push({ event, matcher: rest.length > 1 ? rest[0] as Event : {}, handler: rest[rest.length - 1] as Handler })
+    }) as unknown as On
+    registerToHuman(on)
+    const engine = {
+      env: { get: async () => undefined },
+      ui: { resolve: () => ({ Box: 'Box', Text: 'Text', Button: 'Button', Markdown: 'Markdown' }), invalidate: () => {} },
+    } as unknown as EngineInterface
+    const hook = (event: string, component?: string) => hooks.find((h) => h.event === event && h.matcher.component === component)!
+    const draw = (component: string, props: Event) => hook('ui.render', component).handler(engine, { surface: 'terminal', component, requestId: 'r1', props }, async () => null)
+
+    const line = hook('ui.log')
+    const reloaded = '/reload-plugins: Reloaded: 11 plugins · 24 skills · 17 agents'
+    const to = async () => {
+      let sent: unknown
+      await line.handler(engine, { text: reloaded, to: 'transcript' }, async (e) => { sent = e.to })
+      return sent
+    }
+    expect(line.matcher.to).toBe('transcript')
+    expect(reloaded).toMatch(line.matcher.text as RegExp)
+    expect('/reload-plugins: Failed to reload plugins: ENOENT').not.toMatch(line.matcher.text as RegExp)
+
+    // Before the first mark nothing folds; after it the report does, until
+    // the band switches to the full transcript.
+    expect(await to()).toBe('transcript')
+    await draw('AssistantMessage', { text: '<message>Done.</message>', isFirstOfReply: true })
+    expect(await to()).toBe('debug')
+    const findPress = (node: unknown): (() => void) | undefined => {
+      if (typeof node !== 'object' || node === null) return undefined
+      if ('onPress' in node && typeof node.onPress === 'function') return node.onPress as () => void
+      return Object.values(node).map(findPress).find((press) => press !== undefined)
+    }
+    const band = await draw('AbovePrompt', { hasSurvey: false })
+    expect(JSON.stringify(band)).toContain('full transcript')
+    findPress(band)!()
+    expect(await to()).toBe('transcript')
   })
 })
 
