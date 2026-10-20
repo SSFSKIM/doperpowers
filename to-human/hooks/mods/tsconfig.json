@@ -6,5 +6,6 @@
     "noEmit": true, "skipLibCheck": true,
     "jsx": "react", "jsxFactory": "h", "jsxFragmentFactory": "Fragment"
   },
-  "include": ["../../.claude-plugin/types", ".", "../../tests/mods"]
+  "include": ["../../.claude-plugin/types", ".", "../../tests/mods"],
+  "exclude": ["../../tests/mods/session-places.ts"]
 }

@@ -99,7 +99,8 @@ assert_contains "$first" "machine alpha" "and its machine"
 assert_contains "$OUT" "$STRAY" "it names the launch directory"
 assert_contains "$OUT" "no .smns" "and why the machine's project holds it: no .smns claims the directory"
 assert_contains "$OUT" "$SCRIPTS/sminos " "the CLI is named by its absolute path"
-for verb in "list" "--here" "--org" "who <commit|PR>" "@<short>" "@<project>/<alias>" "join <project>" "charge"; do
+for verb in "list" "--here" "--org" "who <commit|PR>" 'say "..."' "wakes no one" "@<short>" "@<project>/<alias>" \
+    "say --org|--project P|--machine M|--here" "join <project>" "charge"; do
   assert_contains "$OUT" "$verb" "it names $verb"
 done
 assert_equals "$(cat "$T/err")" "" "nothing on stderr"
