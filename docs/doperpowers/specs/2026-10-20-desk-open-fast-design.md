@@ -46,7 +46,7 @@ before it is built (Decision Log).
 - [x] M5 — The snapshot goes at once; a notice's row is due at its step's end (2026-10-20, reviewed clean; 8d7fae3f, sminos 1.2.6; the legacy-bridge fix ba3816df reviewed clean and merged at 417210c8, sminos 1.2.9)
 - [x] M6 — The uplink's sender lanes, with connection reuse proven (2026-10-20, reviewed clean after two fix rounds; d5fa1d6a..aa57759b; the A9 by-hand hour of the owner's daemon.log pending the roll)
 - [x] M7 — The build saved and warmed, bounded; the look off the open path (2026-10-20, reviewed clean after two fix rounds; 63683909..7a9fdccb, sminos 1.2.10, gate GREEN 39469065139; the by-hand A3 line on the owner's Mac pending the roll)
-- [ ] M8 — The child respawns at once; a resync fits the engine's limit
+- [x] M8 — The child respawns at once; a resync fits the engine's limit (2026-10-20, reviewed clean after one fix round; 1aa1a002..227187e8, sminos 1.2.12, gate GREEN 39482745539; one A6 trial of ten over the bound, 0.525 s, recorded)
 - [ ] M9 — Acceptance, documents, the branch review
 
 ## Terms
@@ -768,13 +768,35 @@ enough. Two bounds, and a rule:
   events still carry every chunk whole: a subscriber that streamed from the
   start holds the whole text; only the catch-up copy a snapshot or a resync
   gives is the tail. The flag reaches DX4's `StreamingBlock` as an extra key
-  the web passes over.
-- **A resync is posted alone.** The poster ends a batch before a resync and
-  after it, so a body holding one holds nothing else. `resyncEvent` measures
-  its JSON and, over `RESYNC_MAX` (4,000,000 characters — the bounded blocks
-  make this a pathological case of thousands of open requests), drops
-  streaming entries oldest first and marks the resync `truncated: true`; the
-  child takes what it carries.
+  the web passes over. The bound counts UTF-16 units in the mod (as the
+  engine measures a body) and code points in the child (as Python counts a
+  string): astral text is cut at half as many characters in the mod, never
+  splitting a surrogate pair (a tail that would start on a low surrogate is
+  one unit shorter), and the child never cuts a block the mod kept.
+  [M8, 2026-10-20]
+- **A resync is posted alone, and fits.** The poster ends a batch before a
+  resync and after it, so a body holding one holds nothing else; a batch of
+  other events whose body would pass the engine's limit is split (the second
+  half back at the queue's head) until it fits or holds one event.
+  `resyncEvent` measures its JSON and, over `RESYNC_MAX` (4,000,000
+  characters), marks the resync `truncated: true` and cuts it in two steps
+  until it fits: streaming entries dropped, oldest first (a catch-up copy
+  only: their rows still land); then pending permissions' inputs, largest
+  first, each string held to `RESYNC_INPUT_CAP` (1,024 characters) and the
+  entry marked `truncated: true` as `raised` marks an input cut to
+  `TEXT_CAP`. Every pending entry keeps its identity (`request`, `tool`,
+  `agentId`, `deadline`, `async`, `toolUseId`, `t`); a question's input
+  stays whole, since the child matches a decision's answers against its
+  questions. The child takes what it carries. Not covered, by choice:
+  pending questions whose whole inputs alone pass the budget (about 64
+  pending asks each near 64 KiB) still give an oversized resync, lost and
+  retried as before; questions are human-rate and short, and shortening one
+  would break answer matching (residue). [M8 review, 2026-10-20]
+- **A failed post's retry belongs to its child.** The 500 ms wait after a
+  failed post (`RETRY_MS`) is scoped to the generation of the child it was
+  posted to: a post in flight when its child died sets none, and a wait set
+  for a child that then died holds up nothing of its successor's, so a
+  respawn's session start and resync go at once. [M8 review, 2026-10-20]
 - Pending requests' inputs are already cut at 65,536 characters with
   `truncated: true` (DX5); unchanged.
 
@@ -1434,7 +1456,9 @@ each next patch per sminos milestone; `scripts/bump-version.sh --check
   turn completes. `settled` is unchanged. This holds in the mod's
   `resyncEvent` and in the child's snapshot line alike.
 - A resync travels in a post of its own; `resyncEvent` may carry
-  `truncated: true` when it dropped streaming entries to fit `RESYNC_MAX`.
+  `truncated: true` when it dropped streaming entries or shortened pending
+  permissions' inputs to fit `RESYNC_MAX` (a shortened entry carries
+  `truncated: true` itself) [M8 review, 2026-10-20].
 - The consumer rule: a notice's row is due `NOTICE_WAIT` after the end of
   the loop's step open when the notice came, or after the notice when none
   was; the rest of the rule as written.
@@ -1520,6 +1544,7 @@ export const RESPAWN_FIRST_MS = 0
 export const RESPAWN_STEP_MS = 1_000
 export const BLOCK_TAIL = 65_536          // characters of a block's catch-up text kept
 export const RESYNC_MAX = 4_000_000       // characters of a resync's JSON
+export const RESYNC_INPUT_CAP = 1_024     // characters of each string a shortened permission's input keeps [M8 review]
 type Block = { index: number; kind: string; text: string; upTo: number; id?: string; name?: string; uuid?: string; namedAt?: number; truncated?: true }
 ```
 
@@ -1728,6 +1753,35 @@ beside; a single reviewer reads one of those well in a pass.
   bench restarts once) and the by-hand A3 line on the owner's Mac, which
   needs the roll (M9).
   Evidence: `.doperpowers/sde/2026-10-20-desk-open-fast-design/task-7-report.md`.
+
+- Observation (M8): A6, live haiku through the local hub (MAWS 0f9c18d65
+  with M4), load 10.5–15.3 (outside the 100–300 band, which stays
+  incomplete), kills of a child aged 31–40 s: E_kill 0.165–0.218 s in nine
+  of ten trials, one at 0.525 s, over the 0.5 s bound — the successor
+  answered at once but held the subscription 0.33 s for the mod's first
+  resync, a barrier the snapshot needs (no fixed timer is on that path;
+  likely the engine under load). Before: 1.17–1.41 s on the pre-M8 scripts
+  in the same rig, 1.26–6.55 s at M2. Kills back to back measure §6's
+  backoff instead (0.189 / 1.183 / 2.413 s). If the outlier recurs in M9's
+  kill run, measure hello → session-start → resync applied before choosing
+  a change.
+- Observation (M8): one run's inventory reported `holes` 2 / 3 / 0 after a
+  kill. The kill scenario took its inventory at the session's `result` line,
+  when the turn's last rows (the response, then `system/stop_hook_summary`
+  about 0.19 s later) are on disk but not yet at the client; `after-prompt`
+  and `long-answer` already waited `last_row_held`, `kill` did not. With the
+  wait (3d842d16) a run reports `rows_after_result` 0 / 1 / 0 and `holes` 0,
+  and pre-M8 (fbf8051a) and M8 scripts alike gave 0 holes in six more
+  trials. The race is supported, not traced: the original run kept no
+  directory, so its hole rows were never named. Each kill also reports 1
+  `vanished`, before M8 and after: the named block streaming at the kill,
+  dropped on the transcript-only snapshots the plane serves while the dead
+  child's socket is stale (5–7, about 25 ms apart), redrawn from the
+  successor's bridged snapshot (residue).
+- Observation (M8): in `claude plugin test`, a failing assertion whose diff
+  carries megabytes ends the file's run with no report ("the file did not
+  load"); `Date.now` is frozen in the mods' test runtime.
+  Evidence: `.doperpowers/sde/2026-10-20-desk-open-fast-design/task-8-report.md`.
 
 ## Decision Log
 
@@ -2155,6 +2209,33 @@ beside; a single reviewer reads one of those well in a pass.
   pruning a pending round.
   Date/Author: 2026-10-20, the M7 executor and its reviewer, folded by the
   controller.
+
+- Decision (M8, beyond §6–7, accepted on review): a child's stable run is
+  timed on the engine's clock (`$.clock.now`), which the mod's tests can
+  move. The poster splits any batch whose body would pass 4,194,304
+  characters, so A7's "every post fits" holds for chunk traffic too; one
+  event alone over the limit is still a lost post. The child bounds every
+  block it takes, a resync's included (`_message`), so an old mod's long
+  block is cut as it arrives. `bridge_order.py`'s reader holds the cut's own
+  row as the plane does: loose (due from the snapshot whatever step is open,
+  forgotten past its due), a carried named block's cut strict (the M5
+  review's deferred Minor). `bench_open --scenario kill` kills only a child
+  that has run `STABLE_MS` (30.5 s with margin), since §6 backs off a crash
+  within 30 s of the last, and waits up to 5 s for the transcript's last
+  row before its inventory (`rows_after_result`), so a hole is a row the
+  plane never delivered. DX5 amended (`[open-fast M8, 2026-10-20]`).
+  Date/Author: 2026-10-20, the M8 executor, folded by the controller.
+- Decision (M8 review): the retry wait is scoped to its child's generation
+  (`state.retry = { generation }`), inert once a successor exists rather
+  than cleared at its hello. A resync over `RESYNC_MAX` shortens pending
+  permissions' inputs after dropping streaming (§7, `RESYNC_INPUT_CAP`
+  1,024); question and async-ask inputs are never shortened. The case of
+  whole questions alone passing the budget is scoped out and recorded as
+  residue (§7): it takes about 64 pending asks each near 64 KiB, questions
+  are human-rate and short, and the only cuts available (shortening a
+  question, or dropping a pending request from the catch-up) would break
+  answer matching or lose a request.
+  Date/Author: 2026-10-20, the controller, on the M8 reviewer's finding.
 
 ## Outcomes & Retrospective
 
