@@ -1,7 +1,7 @@
 {
   "name": "to-human",
   "description": "The report view of a session under the to-human output style: assistant messages fold to their <message> spans, and tool calls, unmarked text and deliveries from agents and other sessions fold behind [ working record ] buttons; each message the model sends raises a native notification through the person's own channel, which their Notification hooks read as plugin_notification",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "author": {
     "name": "SSFSKIM",
     "email": "supremekim17@gmail.com"

@@ -2,12 +2,15 @@ import type { EngineInterface, On } from 'claude-code'
 import { describe, expect, mock, test, tier } from 'claude-code/testing'
 
 import type { RowKind } from '../../hooks/mods/to-human'
-import { editorUrl, fileLinks, isRead, markdownBlocks, newView, parse, placeAll, placeArgs, placesIn, promptRow, registerToHuman, reorder, runEnd, runStart } from '../../hooks/mods/to-human'
+import { editorUrl, fileLinks, isRead, markdownBlocks, newView, parse, placeAll, placeArgs, placesIn, promptRow, registerToHuman, reorder, runEnd, runStart, sessionPlaceArgs } from '../../hooks/mods/to-human'
 
 // The kit runs tests with the timer the hooks' declarations leave out.
 declare const setTimeout: (callback: (value?: unknown) => void, ms: number) => unknown
 
 tier('user')
+
+/** A `next` as the engine hands a hook the tests call themselves: the chain beneath, and the dispatch's signal. */
+const beneath = <F extends (e: Record<string, unknown>) => Promise<unknown>>(chain: F) => Object.assign(chain, { signal: { aborted: false } })
 
 describe('register', () => {
   test('parse splits marked spans from the working record', async () => {
@@ -431,6 +434,174 @@ describe('transcript order', () => {
   })
 })
 
+// The fullscreen transcript holds a row off its window at the height it last
+// had and lets go of it as the row scrolls back in at the window's top edge,
+// where the release reads as the transcript pulling the person back down. So
+// the view does not fold a row it drew with height while that row may be off
+// the window: not after its module starts over, and not after a fold the
+// person asked for, whose run's first row it brings into view.
+describe('rows off the window', () => {
+  const PLUGIN = 'to-human'
+
+  test("a module that starts over in a session that has sent a mark folds from its first answer, its rows in the transcript's order", async ($, on) => {
+    mock.env(on, {})
+    mock.store(on)
+    // Any next(e) for a row is an answer that came out as the engine draws it.
+    let rawAnswers = 0
+    on('ui.render', (_, e) => {
+      if (e.component !== 'AbovePrompt') rawAnswers += 1
+      return { type: 'Text', children: [String((e.props as { text?: string }).text ?? e.component)] }
+    })
+    on('session.messages', () => ({ value: [{ role: 'assistant', text: '<message>Earlier.</message>', toolUses: [] }] }))
+    on('session.id', () => ({ value: 's1' }))
+    const searches: (readonly string[])[] = []
+    const transcript = ['m1', 'r1', 'r2', 'm2'].map((id) => `"uuid":"${id}"`).join('\n')
+    on('process.run', async (_, e) => {
+      searches.push(e.argv)
+      return { value: { exitCode: 0, stdout: transcript, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    })
+    const message = (requestId: string, text: string) =>
+      $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AssistantMessage', requestId, props: { text, isFirstOfReply: false } })
+
+    // No session start: the rows are asked about as they stand, newest first.
+    const r2 = await message('r2', 'Testing.')
+    const r1 = await message('r1', 'Reading.')
+
+    expect(rawAnswers).toBe(0)
+    expect(await r1.find({ type: 'Button', text: 'working record' })).toBeDefined()
+    expect(await r2.find({ type: 'Button' })).toBeUndefined()
+    expect(searches).toEqual([sessionPlaceArgs('s1')])
+  })
+
+  // The kit's mounted rows do not say where the transcript scrolls, so the
+  // hooks are called as the engine would call them, as the reload line's are.
+  test("a fold brings the run's first row into view only when its top is out of the window, by the requestId it draws under", async () => {
+    type Event = Record<string, unknown>
+    type Handler = (engine: EngineInterface, e: Event, next: (e: Event) => Promise<unknown>) => unknown
+    const hooks: { event: string; matcher: Event; handler: Handler }[] = []
+    const on = ((event: string, ...rest: unknown[]) => {
+      hooks.push({ event, matcher: rest.length > 1 ? rest[0] as Event : {}, handler: rest[rest.length - 1] as Handler })
+    }) as unknown as On
+    registerToHuman(on)
+    const scrolls: unknown[] = []
+    const engine = {
+      env: { get: async () => undefined },
+      session: { messages: async () => [], id: async () => 's1' },
+      process: { run: async () => ({ exitCode: 1, stdout: '', stderr: '' }) },
+      ui: {
+        resolve: () => ({ Box: 'Box', Text: 'Text', Button: 'Button', Markdown: 'Markdown' }),
+        invalidate: () => {},
+        log: () => {},
+        scroll: async (args: unknown) => (scrolls.push(args), {}),
+      },
+    } as unknown as EngineInterface
+    const render = (component: string) => hooks.find((h) => h.event === 'ui.render' && h.matcher.component === component)!
+    const toggle = hooks.find((h) => h.event === 'ui.press' && h.matcher.element === 'to-human-toggle')!
+    const draw = (component: string, requestId: string, props: Event) =>
+      render(component).handler(engine, { surface: 'terminal', component, requestId, props }, beneath(async () => ({ type: 'Text', children: [component] })))
+    // The closure of the button labelled `label` in a drawn tree.
+    const pressOf = (node: unknown, label: string): (() => void) | undefined => {
+      if (typeof node !== 'object' || node === null) return undefined
+      const element = node as { props?: { label?: string }; onPress?: () => void }
+      if (element.props?.label === label && typeof element.onPress === 'function') return element.onPress
+      return Object.values(node).map((child) => pressOf(child, label)).find((press) => press !== undefined)
+    }
+    // A press as the engine makes it: the hooks, then the button's own closure beneath them.
+    const press = (tree: unknown, label: string, surface = 'terminal') =>
+      toggle.handler(engine, { surface, element: 'to-human-toggle' }, beneath(async () => (pressOf(tree, label)!(), { element: 'to-human-toggle' })))
+
+    await draw('AssistantMessage', 'm1', { text: '<message>One.</message>', isFirstOfReply: true })
+    const calls = [{ tool_use_id: 't1', tool: 'Read', input: {} }]
+    // The run's first row, a group, as the window last showed it.
+    const start = (onScreen?: unknown) => draw('ToolGroup', 'collapsed-1', { calls, isExpanded: false, ...(onScreen !== undefined && { onScreen }) })
+    const end = () => draw('AssistantMessage', 'r2', { text: 'Reading.', isFirstOfReply: false })
+    await start()
+    await end()
+    await draw('AssistantMessage', 'm2', { text: '<message>Two.</message>', isFirstOfReply: true })
+    // Unfolded from the group, the run read down to its end, the group shown
+    // as given, then folded at the end.
+    const unfoldAndFold = async (shown: unknown, surface = 'terminal') => {
+      await press(await start(), 'working record', surface)
+      await start(shown)
+      await press(await end(), 'fold to report', surface)
+    }
+
+    // Unfolding moves nothing, nor does folding a run whose first row stands
+    // whole in the window, or at least its top does: a reveal would stop the
+    // transcript following its bottom. Nor where no window says (the main
+    // screen holds no row).
+    await press(await start(), 'working record')
+    await press(await end(), 'fold to report')
+    expect(scrolls).toEqual([])
+    await unfoldAndFold({ first: 0, last: 3, of: 4 })
+    await unfoldAndFold({ first: 0, last: 1, of: 4 })
+    expect(scrolls).toEqual([])
+
+    // Out of the window, or its top cut off, the group is brought into view
+    // by the id its row draws under.
+    await unfoldAndFold(null)
+    expect(scrolls).toEqual([{ to: { requestId: 'collapsed-1' }, block: 'nearest' }])
+    await unfoldAndFold({ first: 2, last: 3, of: 4 })
+    expect(scrolls.length).toBe(2)
+
+    // Another surface keeps where it is: the hold is the fullscreen terminal's.
+    await unfoldAndFold(null, 'desktop')
+    expect(scrolls.length).toBe(2)
+  })
+
+  test('a start-up read cut short by its dispatch is made again by the hooks still waiting', async () => {
+    type Event = Record<string, unknown>
+    type Handler = (engine: EngineInterface, e: Event, next: unknown) => unknown
+    const hooks: { event: string; matcher: Event; handler: Handler }[] = []
+    const on = ((event: string, ...rest: unknown[]) => {
+      hooks.push({ event, matcher: rest.length > 1 ? rest[0] as Event : {}, handler: rest[rest.length - 1] as Handler })
+    }) as unknown as On
+    registerToHuman(on)
+    let reads = 0
+    let release = () => {}
+    const gate = new Promise<void>((resolve) => (release = resolve))
+    const engine = {
+      env: { get: async () => undefined },
+      session: {
+        messages: async () => ((reads += 1), await gate, [{ role: 'assistant', text: '<message>Earlier.</message>', toolUses: [] }]),
+        id: async () => 's1',
+      },
+      process: { run: async () => ({ exitCode: 1, stdout: '', stderr: '' }) },
+      ui: { resolve: () => ({ Box: 'Box', Text: 'Text', Button: 'Button', Markdown: 'Markdown' }), invalidate: () => {}, log: () => {} },
+    } as unknown as EngineInterface
+    const assistant = hooks.find((h) => h.event === 'ui.render' && h.matcher.component === 'AssistantMessage')!
+    const draw = (requestId: string, signal: { aborted: boolean }) =>
+      assistant.handler(engine, { surface: 'terminal', component: 'AssistantMessage', requestId, props: { text: 'Reading.', isFirstOfReply: true } },
+        Object.assign(async () => ({ type: 'Text', children: ['raw'] }), { signal }))
+
+    // The first row's dispatch starts the read and is superseded while it runs.
+    const first = { aborted: false }
+    const superseded = draw('r1', first)
+    for (let i = 0; i < 100 && reads === 0; i++) await new Promise((resolve) => setTimeout(resolve, 1))
+    const waiting = draw('r2', { aborted: false })
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    first.aborted = true
+    release()
+    await superseded
+
+    expect(JSON.stringify(await waiting)).not.toContain('raw')
+    expect(reads).toBe(2)
+  })
+
+  test('a session that has sent no mark still draws as the engine does, and no transcript yet places nothing', async ($, on) => {
+    mock.env(on, {})
+    mock.store(on)
+    on('ui.render', (_, e) => ({ type: 'Text', children: [String((e.props as { text?: string }).text ?? e.component)] }))
+    on('session.messages', () => ({ value: [{ role: 'assistant', text: '`<message>` marks a message.', toolUses: [] }] }))
+    on('session.id', () => ({ value: 's1' }))
+    on('process.run', async () => ({ value: { exitCode: 1, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
+    const row = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AssistantMessage', requestId: 'r1', props: { text: 'Reading.', isFirstOfReply: true } })
+
+    expect(await row.find({ type: 'Text', text: 'Reading.' })).toBeDefined()
+    expect(await row.find({ type: 'Button' })).toBeUndefined()
+  })
+})
+
 describe('promptRow', () => {
   test('a prompt the person typed, or one of unknown origin, is theirs', async () => {
     expect(promptRow({ origin: { kind: 'composer' } })).toBe('user')
@@ -637,15 +808,16 @@ describe('the reload line', () => {
     registerToHuman(on)
     const engine = {
       env: { get: async () => undefined },
-      session: { messages: async () => conversation.map((text) => ({ role: 'assistant', text, toolUses: [] })) },
+      session: { messages: async () => conversation.map((text) => ({ role: 'assistant', text, toolUses: [] })), id: async () => 's1' },
+      process: { run: async () => ({ exitCode: 1, stdout: '', stderr: '' }) },
       ui: { resolve: () => ({ Box: 'Box', Text: 'Text', Button: 'Button', Markdown: 'Markdown' }), invalidate: () => {} },
     } as unknown as EngineInterface
     const hook = (event: string, component?: string) => hooks.find((h) => h.event === event && h.matcher.component === component)!
-    const draw = (component: string, props: Event) => hook('ui.render', component).handler(engine, { surface: 'terminal', component, requestId: 'r1', props }, async () => null)
+    const draw = (component: string, props: Event) => hook('ui.render', component).handler(engine, { surface: 'terminal', component, requestId: 'r1', props }, beneath(async () => null))
     const line = hook('ui.log')
     const to = async () => {
       let sent: unknown
-      await line.handler(engine, { text: reloaded, to: 'transcript' }, async (e) => { sent = e.to })
+      await line.handler(engine, { text: reloaded, to: 'transcript' }, beneath(async (e) => { sent = e.to }))
       return sent
     }
     return { draw, line, to }

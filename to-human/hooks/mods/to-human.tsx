@@ -560,6 +560,24 @@ const isSpawn = (tool: string) => tool === 'Agent' || tool === 'Workflow'
 /** Questions (the built-in's and the ask mod's) and agent spawns stay in the report; messaging is working record. */
 export const isRead = (tool: string) => tool === 'AskUserQuestion' || ASK_TOOLS.includes(tool) || isSpawn(tool)
 
+/** A row's `onScreen`: the units of it the window shows, `null` while it is out of the window. */
+type Shown = { first: number; last: number; of: number } | null
+
+/**
+ * Whether a fold of the run that starts at a row can pull the view down: the
+ * row is out of the window, or its top is (it shows from a unit past its
+ * first). Where no `onScreen` was said (a surface that holds no row, the main
+ * screen), nothing is held, so nothing can.
+ */
+export const isTopOut = (shown: Shown | undefined) => shown === null || (shown !== undefined && shown.first > 0)
+
+/** Notes where a row stood in the window as it drew (`View.shown`). */
+function note(view: View, id: string, props: { onScreen?: Shown }) {
+  if (props.onScreen !== undefined) {
+    view.shown.set(id, props.onScreen)
+  }
+}
+
 /**
  * What the view keeps between draws: the rows unfolded by a button (a marked
  * message by its own, a run of working record by the one button that stands
@@ -570,9 +588,9 @@ export const isRead = (tool: string) => tool === 'AskUserQuestion' || ASK_TOOLS.
  * transcript lays out only the rows near its window, a resumed session's
  * newest first, and a row that arrived while the human was scrolled away
  * draws once they scroll to it. So each row's place is read from the
- * transcript file when a session is resumed and taken from each append after;
- * a row that draws before its place is known stands after every row appended
- * by then.
+ * transcript file when the module starts and when a session is resumed, and
+ * taken from each append after; a row that draws before its place is known
+ * stands after every row appended by then.
  */
 export type View = {
   unfolded: Set<string>
@@ -584,6 +602,14 @@ export type View = {
   guess: Map<string, number>
   /** The rows appended since the module loaded, each placed past the file's. */
   appended: number
+  /** The `requestId` the engine draws a row under, where the view knows it by another id (a group, by its first call's). */
+  requestIds: Map<string, string>
+  /** The run a press just folded, by its first row, which the press then brings into view if its top is out of the window. */
+  folded?: string
+  /** Where each row stood in the window when it last drew, as its `onScreen` said; only the fullscreen transcript says. */
+  shown: Map<string, Shown>
+  /** The module's start-up read (`started`), once begun: true once it finished under a dispatch that ran on. */
+  starting?: Promise<boolean>
   /** Whether the view folds now: a mark has been seen and the whole transcript is not asked for. */
   isFolding: () => boolean
 }
@@ -595,6 +621,8 @@ export const newView = (isFolding: () => boolean): View => ({
   place: new Map(),
   guess: new Map(),
   appended: 0,
+  requestIds: new Map(),
+  shown: new Map(),
   isFolding,
 })
 
@@ -648,12 +676,24 @@ export function placeAll(view: View, ids: readonly string[], at = 0, step = 1) {
   })
 }
 
-/**
- * The search that lists a transcript's rows in its order: each row's id, and
- * a tool call's id where its call is written.
- */
+/** What a transcript search lists: each row's id, and a tool call's id where its call is written. */
+const PLACES = '"uuid":"[^"]+"|"type":"tool_use","id":"[^"]+"'
+
+/** The search that lists a transcript's rows in its order (`PLACES`). */
 export function placeArgs(path: string): string[] {
-  return ['grep', '-o', '-E', '"uuid":"[^"]+"|"type":"tool_use","id":"[^"]+"', path]
+  return ['grep', '-o', '-E', PLACES, path]
+}
+
+/**
+ * The same search over the session's own transcript, found by its id under
+ * the configuration's `projects/` (the engine names the file after the
+ * session): what a module that starts mid-session reads, with no path to go
+ * by. A session with no file yet (a new one, a fork before its first write)
+ * lists no rows, as grep does.
+ */
+export function sessionPlaceArgs(sessionId: string): string[] {
+  const script = 'for f in "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"/projects/*/"$1".jsonl; do [ -f "$f" ] && exec grep -o -E "$2" "$f"; done; exit 1'
+  return ['sh', '-c', script, 'sh', sessionId, PLACES]
 }
 
 /** The ids `placeArgs`' output names, in the transcript's order. */
@@ -706,11 +746,12 @@ function see($: EngineInterface, view: View, requestId: string, kind: RowKind) {
   }
 }
 
-function toggle(unfolded: Set<string>, id: string) {
-  if (unfolded.has(id)) {
-    unfolded.delete(id)
+/** Unfolds the run or message `id` stands for, or folds it, noting the fold for the press's hook. */
+function toggle(view: View, id: string) {
+  if (view.unfolded.delete(id)) {
+    view.folded = id
   } else {
-    unfolded.add(id)
+    view.unfolded.add(id)
   }
 }
 
@@ -741,7 +782,7 @@ async function recordRow<E extends RenderInput>(
 ): Promise<RenderElement> {
   const { Box, Text, Button } = $.ui.resolve(e)
   const start = runStart(view.order, view.rowOf, id)
-  const toggleRun = () => toggle(view.unfolded, start)
+  const toggleRun = () => toggle(view, start)
 
   if (!view.unfolded.has(start)) {
     return opens && start === id ? (
@@ -767,6 +808,98 @@ async function recordRow<E extends RenderInput>(
   )
 }
 
+/**
+ * Places the rows a transcript search lists (see `View`). A transcript can be
+ * far past what one read takes whole, so a search lists its rows; one that
+ * fails, or is cut, leaves the rows it could not place to draw in the order
+ * they come. `signal` is the dispatch's that searches: a search its abort cut
+ * short says nothing.
+ */
+async function place($: EngineInterface, view: View, search: string[], signal: AbortSignal) {
+  try {
+    const found = await $.process.run(search)
+    // grep: 0 found, 1 none, anything else a failure.
+    if (found.exitCode > 1) {
+      throw new Error(`grep exited ${found.exitCode}`)
+    }
+    placeAll(view, placesIn(found.stdout))
+    if (reorder(view) && view.isFolding()) {
+      $.ui.invalidate('ui.render')
+    }
+  } catch (error) {
+    if (!signal.aborted) {
+      $.ui.log(`to-human: the transcript's order could not be read (${String(error)}); its runs follow the order rows draw in`, { to: 'debug' })
+    }
+  }
+}
+
+/** Whether the conversation holds a marked assistant message. */
+async function sentMark($: EngineInterface, signal: AbortSignal): Promise<boolean> {
+  try {
+    return (await $.session.messages()).some((m) => m.role === 'assistant' && parse(m.text).spans.length > 0)
+  } catch (error) {
+    if (!signal.aborted) {
+      $.ui.log(`to-human: the conversation could not be read for a mark (${String(error)})`, { to: 'debug' })
+    }
+    return false
+  }
+}
+
+/** Places the rows of the session's own transcript, found by its id. */
+async function placeSession($: EngineInterface, view: View, signal: AbortSignal) {
+  try {
+    await place($, view, sessionPlaceArgs(await $.session.id()), signal)
+  } catch (error) {
+    if (!signal.aborted) {
+      $.ui.log(`to-human: the session's id could not be read (${String(error)}); its runs follow the order rows draw in`, { to: 'debug' })
+    }
+  }
+}
+
+/**
+ * Reads, under one dispatch, whether the session has sent a mark (`onMark`
+ * runs if so) and where its rows stand; false when that dispatch was aborted
+ * before the read finished, which leaves it for another to make.
+ */
+async function startUp($: EngineInterface, view: View, signal: AbortSignal, onMark: () => void): Promise<boolean> {
+  const [isMarked] = await Promise.all([sentMark($, signal), placeSession($, view, signal)])
+  if (signal.aborted) {
+    return false
+  }
+  if (isMarked) {
+    onMark()
+  }
+  return true
+}
+
+/**
+ * What the module reads once, before its first answer: whether the session
+ * has sent a mark, and where its rows stand. A module that starts over in a
+ * running session (an update the reload applied, a `/reload-plugins`) is
+ * asked about every row the transcript holds at once. Answered as the engine
+ * draws them until a mark turned up, and only then folded, the rows off the
+ * screen kept the engine's height: the fullscreen transcript holds a row off
+ * its window at the height it last had and lets go of it as the row scrolls
+ * back in at the window's top edge, where the release reads as the transcript
+ * pulling the person back down. Every hook that draws, or keeps a line out of
+ * what is drawn, waits on this read; the rows keep what they drew meanwhile.
+ * The read runs under the dispatch that asked first, and one superseded
+ * meanwhile (a row drawn again) cuts it short: the hooks still waiting read
+ * again under their own. `$.session.messages()` starts at the last
+ * compaction, so a mark sent only before one is not found.
+ */
+async function started($: EngineInterface, view: View, signal: AbortSignal, onMark: () => void) {
+  while (!signal.aborted) {
+    const read = (view.starting ??= startUp($, view, signal, onMark))
+    if (await read) {
+      return
+    }
+    if (view.starting === read) {
+      view.starting = undefined
+    }
+  }
+}
+
 // MAWS draws this channel itself when it advertises native support; the
 // terminal keeps this view. Every hook awaits the same read for this worker.
 let maws: Promise<boolean> | undefined
@@ -775,8 +908,9 @@ const native = async ($: EngineInterface, e: object) =>
   (!('surface' in e) || e.surface !== 'terminal')
 
 /**
- * Registers the view. Nothing changes until the first marked assistant
- * message of the session, so a session without the output style draws as
+ * Registers the view. Nothing changes until the session's first marked
+ * assistant message, whether the module finds it in the conversation when it
+ * starts or draws it later, so a session without the output style draws as
  * the engine does; from then on, assistant messages fold to their marks and
  * the working record (unmarked messages, tool calls and their results) folds
  * behind buttons, until a row is unfolded by its button or the whole
@@ -791,12 +925,13 @@ export function registerToHuman(on: On) {
   const view = newView(() => hasSeenMark && !isFullTranscript)
   const { unfolded, isFolding } = view
 
-  // Where each row stands in the transcript (see `View`). A resumed or forked
-  // session's rows are read from its file, which can be far past what one read
-  // takes whole, so a search lists them; one that fails, or is cut, leaves the
-  // rows it could not place to draw in the order they come. A cleared or
-  // resumed session's rows are another transcript's: what the view knew of the
-  // one before is dropped, and the rows still drawn are asked for again.
+  const markSeen = () => {
+    hasSeenMark = true
+  }
+
+  // A cleared or resumed session's rows are another transcript's: what the
+  // view knew of the one before is dropped, the new file's order is read, and
+  // the rows still drawn are asked for again.
   on('classic.SessionStart', { source: /^/ }, async ($, e, next) => {
     if (e.source === 'clear' || e.source === 'resume' || e.source === 'fork') {
       view.order.length = 0
@@ -809,24 +944,9 @@ export function registerToHuman(on: On) {
     if (e.source !== 'resume' && e.source !== 'fork') {
       return next(e)
     }
-    const place = async () => {
-      try {
-        const search = await $.process.run(placeArgs(e.transcript_path))
-        // grep: 0 found, 1 none, anything else a failure.
-        if (search.exitCode > 1) {
-          throw new Error(`grep exited ${search.exitCode}`)
-        }
-        placeAll(view, placesIn(search.stdout))
-        if (reorder(view) && isFolding()) {
-          $.ui.invalidate('ui.render')
-        }
-      } catch (error) {
-        $.ui.log(`to-human: the transcript's order could not be read (${String(error)}); its runs follow the order rows draw in`, { to: 'debug' })
-      }
-    }
     // The hooks beneath run while this searches: sminos' ask mod reads
     // the same transcript for the questions it draws.
-    const [result] = await Promise.all([next(e), place()])
+    const [result] = await Promise.all([next(e), place($, view, placeArgs(e.transcript_path), next.signal)])
     return result
   })
 
@@ -886,7 +1006,9 @@ export function registerToHuman(on: On) {
   // deliveries are working record, and stand in the run they fall in.
   on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
     if (await native($, e)) return next(e)
+    await started($, view, next.signal, markSeen)
     const kind = promptRow(e.props, spawns)
+    note(view, e.requestId, e.props)
     see($, view, e.requestId, kind)
     return isFolding() && kind === 'record' ? recordRow($, e, next, view) : next(e)
   })
@@ -902,6 +1024,7 @@ export function registerToHuman(on: On) {
   const before = new Map<string, string | undefined>()
   on('ui.render', { component: 'TurnDuration' }, async ($, e, next) => {
     if (await native($, e)) return next(e)
+    await started($, view, next.signal, markSeen)
     if (!before.has(e.requestId)) {
       before.set(e.requestId, view.order[view.order.length - 1])
     }
@@ -920,8 +1043,10 @@ export function registerToHuman(on: On) {
 
   on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
     if (await native($, e)) return next(e)
+    await started($, view, next.signal, markSeen)
     const parsed = parse(e.props.text)
     const isError = parsed.spans.length === 0 && errors.has(e.props.text.trim())
+    note(view, e.requestId, e.props)
     see($, view, e.requestId, parsed.spans.length === 0 && !isError ? 'record' : parsed.hasRecord ? 'mixed' : 'marked')
 
     if (parsed.spans.length > 0 && !hasSeenMark) {
@@ -943,7 +1068,7 @@ export function registerToHuman(on: On) {
 
     const { Box, Text, Button, Markdown } = $.ui.resolve(e)
     const requestId = e.requestId
-    const toggleThis = () => toggle(unfolded, requestId)
+    const toggleThis = () => toggle(view, requestId)
 
     // Unfolded, a mixed message is the first row of its run: the run's end
     // draws the fold, under itself, unless the run is this row alone.
@@ -1021,12 +1146,14 @@ export function registerToHuman(on: On) {
   // call draws the run's end where the group would.
   on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
     if (await native($, e)) return next(e)
+    await started($, view, next.signal, markSeen)
     const read = isRead(e.props.tool)
     if (isSpawn(e.props.tool)) {
       spawns.add(e.props.tool_use_id)
     }
     const group = groupOf.get(e.requestId)
     if (group === undefined) {
+      note(view, e.requestId, e.props)
       see($, view, e.requestId, read ? 'marked' : 'record')
     }
     if (!isFolding() || read) {
@@ -1051,7 +1178,10 @@ export function registerToHuman(on: On) {
   // group the row that drew it is asked for again.
   on('ui.render', { component: 'ToolGroup' }, async ($, e, next) => {
     if (await native($, e)) return next(e)
+    await started($, view, next.signal, markSeen)
     const id = `${GROUP}${e.props.calls[0]?.tool_use_id ?? e.requestId}`
+    view.requestIds.set(id, e.requestId)
+    note(view, id, e.props)
     see($, view, id, 'record')
     let last: string | undefined
     for (const call of e.props.calls) {
@@ -1078,6 +1208,7 @@ export function registerToHuman(on: On) {
   // of the two, and carries the run's end.
   on('ui.render', { component: 'ToolResult' }, async ($, e, next) => {
     if (await native($, e)) return next(e)
+    await started($, view, next.signal, markSeen)
     const read = isRead(e.props.tool)
     see($, view, e.requestId, read ? 'marked' : 'record')
     return isFolding() && !read ? recordRow($, e, next, view, { opens: false }) : next(e)
@@ -1089,6 +1220,7 @@ export function registerToHuman(on: On) {
   // plugin's hooks sit outside of.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (await native($, e)) return next(e)
+    await started($, view, next.signal, markSeen)
     if (!hasSeenMark || e.props.hasSurvey) {
       return next(e)
     }
@@ -1115,11 +1247,29 @@ export function registerToHuman(on: On) {
   })
 
   // A press runs the button's own closure beneath this hook; the redraw
-  // follows it so the transcript reflects the state the closure left.
+  // follows it so the transcript reflects the state the closure left. A fold
+  // of a run whose first row has its top out of the window then brings that
+  // row into view. The person presses `[ fold to report ]` at the run's end,
+  // so the run's rows above the window fold while off it, where the
+  // fullscreen transcript holds each at the height it had and lets go of it as
+  // it scrolls back in at the window's top edge, the transcript jumping down
+  // by as much each time; with the run's first row in the window, every row
+  // that folds stands in it or below it. A run whose first row's top is in the
+  // window is left where it is: any reveal, even one that moves nothing, stops
+  // the transcript following new output at its bottom.
   on('ui.press', { element: TOGGLE }, async ($, e, next) => {
     if (await native($, e)) return next(e)
+    view.folded = undefined
     const result = await next(e)
     $.ui.invalidate('ui.render')
+    const folded = view.folded
+    view.folded = undefined
+    if (folded !== undefined && e.surface === 'terminal' && isTopOut(view.shown.get(folded))) {
+      const shown = await $.ui.scroll({ to: { requestId: view.requestIds.get(folded) ?? folded }, block: 'nearest' })
+      if (shown.deny !== undefined) {
+        $.ui.log(`to-human: the folded run's button could not be brought into view (${shown.deny})`, { to: 'debug' })
+      }
+    }
     return result
   })
 
@@ -1139,14 +1289,11 @@ export function registerToHuman(on: On) {
   // anything past the first line (load errors, an unreachable marketplace),
   // stays in both. A reload keeps the modules of the plugins it did not
   // change; one that updated this plugin starts the module over, and its line
-  // comes before any row draws again, so the conversation tells whether the
-  // session has sent a mark.
+  // can come before any row draws again, so the module's start-up read tells
+  // whether the session has sent a mark.
   on('ui.log', { to: 'transcript', text: /^\/reload-plugins: Reloaded: [^\n]*$/ }, async ($, e, next) => {
     if (await native($, e)) return next(e)
-    if (!hasSeenMark && (await $.session.messages()).some((m) => m.role === 'assistant' && parse(m.text).spans.length > 0)) {
-      hasSeenMark = true
-      $.ui.invalidate('ui.render')
-    }
+    await started($, view, next.signal, markSeen)
     return next(isFolding() ? { ...e, to: 'debug' } : e)
   })
 
