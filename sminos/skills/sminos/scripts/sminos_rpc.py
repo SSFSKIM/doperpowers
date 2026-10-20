@@ -348,6 +348,7 @@ class Rpcs:
         self.resume_locks = {}    # session → the lock a Resume of it runs under
         self.locks_lock = threading.Lock()
         self.compact_out = []     # DX4 compact messages owed, as frames
+        self.flying = {}          # id → a compact_out frame on a lane whose POST is not answered yet
         self.unwritten = {}       # nonce → its outcome, whose ledger write failed: never sent until it is kept
         self.copies_asked = set()  # claimed Resumes whose kept job the harness was asked about (check_copy)
         self.next_reconcile = 0.0
@@ -746,7 +747,7 @@ class Rpcs:
         self.take()
         if self.clock() >= self.next_reconcile:
             self.reconcile()
-        compacts = [f for f in self.compact_out if f["message"]["project"] in opened]
+        compacts = [f for f in self.compact_out if f["message"]["project"] in opened and id(f) not in self.flying]
         return self.results(set(opened), False) + compacts
 
     def opening(self, pid):
@@ -755,15 +756,32 @@ class Rpcs:
         self.take()
         return self.results({pid}, True)
 
-    def sent(self, frames):
-        """`frames` reached the hub (a POST answered 200)."""
-        ids = {id(f) for f in frames}
-        self.compact_out = [f for f in self.compact_out if id(f) not in ids]
+    def sending(self, frames):
+        """`frames` were queued on a lane. A result is taken as sent on this
+        stream now (every connect sends it again until `rpc-ack`); a compact
+        message, which no connect rebuilds, is in flight until `delivered`,
+        or the next stream's `reset`."""
         self.sent_here.update(f["nonce"] for f in frames if f.get("t") == "rpc-result")
+        self.flying.update((id(f), f) for f in frames if f.get("t") != "rpc-result")
+
+    def delivered(self, frames):
+        """The POST carrying `frames` was answered 200: its compact messages
+        are owed no more."""
+        ids = {id(f) for f in frames}
+        for i in ids:
+            self.flying.pop(i, None)
+        self.compact_out = [f for f in self.compact_out if id(f) not in ids]
+
+    def sent(self, frames):
+        """`frames` reached the hub (queued and answered at once)."""
+        self.sending(frames)
+        self.delivered(frames)
 
     def reset(self):
-        """A new stream: nothing is taken as sent on it yet."""
+        """A new stream: nothing is taken as sent on it yet, and what was in
+        flight on the last one is owed again."""
         self.sent_here.clear()
+        self.flying.clear()
 
 
 # ------------------------------------------------------------- checks

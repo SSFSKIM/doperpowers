@@ -48,8 +48,14 @@ they reported it:
 The state outlives the stream (the uplink keeps one Requests): a settlement
 made while the hub is out of reach goes up after the next connect, ahead of
 the complete set, and is never dropped; a raise made then is in that set. A
-reader whose stream ends while the bridge still answers subscribes again,
-and its snapshot is reconciled against what was held.
+message queued on a lane (`sending`) is in flight, neither due nor opened
+again, until the POST carrying it is answered 200 (`delivered`): only then
+does a settlement leave the outbox and enter `daemon/requests.json`, since no
+handshake rebuilds one. A POST lost, a stream cut or an uplink restarted
+first leaves it owed (`reset`, or a fresh Requests from that file, which the
+bridge's snapshot fills again). A reader whose stream ends while the bridge
+still answers subscribes again, and its snapshot is reconciled against what
+was held.
 
 Readers only read the bridge's socket and queue what they read; everything
 else runs on the uplink's main thread.
@@ -208,6 +214,7 @@ class Requests:
         self.stale = set()    # project ids whose complete pending set is owed
         self.holding = {}     # project id → since when its owed set waits for its sessions' snapshots
         self.queued = {}      # (session, request, t) → the outbox's frame carrying that settlement
+        self.flying = {}      # id → an outbox frame on a lane whose POST is not answered yet (`sending`)
         self.relayed = load_relayed()  # session → [(request, t)]: the settlements done with (sent or superseded)
         self.compacts = []    # [(session, project id, event)]: the bridges' `compact` events, for the RPCs
         self.said = set()
@@ -426,36 +433,58 @@ class Requests:
 
     def due(self, opened):
         """The frames owed to the hub for the projects open on the stream, in
-        order: raised and settled messages, then each complete set owed and
-        due. Not taken until `sent`."""
-        out = [f for pid, f in self.outbox if pid in opened]
+        order: raised and settled messages not in flight, then each complete
+        set owed and due. Not taken until `sending`."""
+        out = [f for pid, f in self.outbox if pid in opened and id(f) not in self.flying]
         return out + [self.pending_frame(pid) for pid in sorted(self.stale & set(opened)) if self.set_due(pid)]
 
     def opening(self, pid):
         """What follows `hello` for a project on a new stream: the
         settlements the hub has not had, then the complete pending set — at
         once when its sessions' bridges are read, else from `due` once they
-        are (within HOLD_MAX). The raises it carries are not sent apart."""
+        are (within HOLD_MAX). The raises it carries are not sent apart; a
+        settlement already in flight on this stream is not taken twice."""
         self.outbox = [(p, f) for p, f in self.outbox if p != pid or f["message"]["kind"] != "raised"]
         self.stale.add(pid)
-        backlog = [f for p, f in self.outbox if p == pid]
+        backlog = [f for p, f in self.outbox if p == pid and id(f) not in self.flying]
         return backlog + ([self.pending_frame(pid)] if self.set_due(pid) else [])
 
-    def sent(self, frames):
-        """`frames` reached the hub (a POST answered 200). A settlement among
-        them that a raise superseded meanwhile is done with already."""
-        ids = {id(f) for f in frames}
-        self.outbox = [(p, f) for p, f in self.outbox if id(f) not in ids]
+    def sending(self, frames):
+        """`frames` were queued on a lane. A complete set is taken now (the
+        next connect's handshake sends one again if this POST is lost); the
+        messages are in flight — not due, not opened again — until
+        `delivered`, or the next stream's `reset`."""
         for f in frames:
             if f.get("t") == "pending":
                 self.stale.discard(f["project"])
                 self.holding.pop(f["project"], None)
+            else:
+                self.flying[id(f)] = f
+
+    def delivered(self, frames):
+        """The POST carrying `frames` was answered 200: its messages leave
+        the outbox, and its settlements are kept as relayed. One that a raise
+        superseded meanwhile is done with already."""
+        ids = {id(f) for f in frames}
+        for i in ids:
+            self.flying.pop(i, None)
+        self.outbox = [(p, f) for p, f in self.outbox if id(f) not in ids]
         took = [k for k, f in self.queued.items() if id(f) in ids]
         for k in took:
             del self.queued[k]
             self.done(k)
         if took:
             save_relayed(self.relayed)
+
+    def sent(self, frames):
+        """`frames` reached the hub (queued and answered at once)."""
+        self.sending(frames)
+        self.delivered(frames)
+
+    def reset(self):
+        """A new stream: the lanes that held what was in flight are gone, so
+        it is owed again."""
+        self.flying.clear()
 
 
 def settlement(sid, e):

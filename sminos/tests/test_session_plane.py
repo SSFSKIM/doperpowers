@@ -3444,6 +3444,58 @@ class Lifecycle(unittest.TestCase):
         self.assertFalse(box.waiting(), "dropped on the next pass")
         self.assertEqual(len(calls), 2)
 
+    def test_a_paced_backlog_is_sealed_once_across_its_upload_passes(self):
+        """A backlog of this machine's writer larger than UPLOAD_AHEAD goes
+        over several upload passes, each queueing while the log lane has
+        room: every event is read off and sealed once, not once a pass for
+        what the earlier passes left behind, and all of it reaches the hub
+        in order."""
+        import sminos
+        import sminos_hublog as hublog
+        import sminos_uplink as uplink
+        root = os.path.join(T, "paced-backlog")
+        subprocess.run(["git", "-c", "init.defaultBranch=main", "init", "-q", root], check=True)
+        subprocess.run([os.path.join(SCRIPTS, "sminos"), "project", "init", "--name", "paced-backlog"], cwd=root,
+                       check=True, capture_output=True)
+        sminos.forget_caches()
+        project = sminos.resolve_project(root)
+        writer = "testhost/5a000003-0000-4000-8000-0000000000c3"
+        n = 12
+        for i in range(n):
+            sminos.log_append(project, writer, "say", **{"from": "k", "to": "*", "text": "%02d " % i + "x" * 4000})
+        hub = ScriptedHub()
+        self.addCleanup(hub.close)
+        link, _items, hl = self.on_lanes(project, hub)
+        hl.on_have({"t": "have", "project": project.id, "have": {}})
+        sealed, real = [], hublog.seal
+
+        def counting(key, pid, event):
+            sealed.append(event["seq"])
+            return real(key, pid, event)
+
+        hub.script = ["hold"]   # the first upload's POST: the lane fills behind it
+        with mock.patch.object(hublog, "BATCH_BYTES", 1), mock.patch.object(uplink, "UPLOAD_AHEAD", 9000), \
+                mock.patch.object(hublog, "seal", counting):
+            link.upload(hl)
+            self.assertTrue(wait_for(lambda: len(hub.posts) == 1), "the first upload is held at the hub")
+            link.upload(hl)
+            first = len(sealed)
+            hub.release.set()
+            passes = 1
+
+            def uploaded():
+                nonlocal passes
+                if link.log_lane.queued() == 0 and not link.log_lane.posting():
+                    passes += 1
+                    link.upload(hl)
+                return [e["seq"] for body in hub.bodies() for f in body for e in f["events"]]
+
+            self.assertTrue(wait_for(lambda: len(uploaded()) == n), "the whole backlog reached the hub")
+        self.assertEqual(uploaded(), list(range(1, n + 1)), "in order, each once")
+        self.assertGreater(passes, 2, "over several passes")
+        self.assertEqual(sorted(sealed), list(range(1, n + 1)), "each event sealed once: %s" % sealed)
+        self.assertLess(first, n, "the lane's bound stopped the first passes short of the backlog")
+
     def test_the_daemon_sweeps_what_the_bridge_left_for_ended_sessions(self):
         """A session no process runs leaves its kept file once it has been
         quiet a day (neither its transcript nor the file touched), so a Resume soon after

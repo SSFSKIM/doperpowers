@@ -26,6 +26,7 @@ reaches beyond 127.0.0.1 and this directory.
 
 import json
 import os
+import queue
 import shutil
 import signal
 import socket
@@ -33,6 +34,7 @@ import subprocess
 import sys
 import threading
 import time
+import types
 import unittest
 import uuid as uuidlib
 from unittest import mock
@@ -44,6 +46,7 @@ import sminos_codes as codes  # noqa: E402
 import sminos_outcomes as outcomes  # noqa: E402
 import sminos_policy as policy  # noqa: E402
 import sminos_requests as requests  # noqa: E402
+import sminos_rpc as rpc  # noqa: E402
 
 T = tsp.T
 KEY_B64 = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
@@ -1237,6 +1240,190 @@ class Requests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------- the uplink
+
+
+class RelayedOnLanes(unittest.TestCase):
+    """What the relay of requests and of RPC results marks, against the
+    uplink's sender lanes (sminos_uplink.Link on a scripted hub, the real
+    bridge child): a settlement and a compaction's message are the hub's only
+    once a POST carrying them was answered 200 — the handshake rebuilds the
+    pending set, never a settlement — so one lost on the way (the POST
+    failed, the stream cut, the uplink restarted) reaches the hub on a later
+    stream. An RPC result is re-sent after every connect until `rpc-ack`."""
+
+    @classmethod
+    def setUpClass(cls):
+        # An org no other class's uplink follows: nothing here reaches it.
+        root, cls.pid = make_project("relayed-on-lanes", org="org-relayed")
+        cls.project = project_of(root)
+
+    def setUp(self):
+        import sminos_hublog as hublog
+        import sminos_uplink as uplink
+        self.uplink, self.hublog = uplink, hublog
+        self.hub = tsp.ScriptedHub()
+        self.addCleanup(self.hub.close)
+        self.cred = {"machine": "testhost", "org": "org-relayed", "key": KEY, "hub": self.hub.url,
+                     "client_id": "c", "client_secret": "s"}
+        self.sid = str(uuidlib.uuid4())
+        self.bridge = Bridge(self.sid)
+        self.addCleanup(self.bridge.stop)
+
+    def requests(self):
+        r = requests.Requests(KEY, "testhost")
+        self.addCleanup(r.close)
+        return r
+
+    def stream(self, generation, reqs, rpcs=None):
+        """A stream's Link on the lanes, the session's bridge followed and
+        the project opened, its hello answered: (link, items, the hello's
+        body)."""
+        link = self.uplink.Link(self.cred, {self.pid: self.hublog.HubLog(self.project, self.cred)}, reqs=reqs,
+                                rpcs=rpcs)
+        link.bridged = lambda pids: {self.sid: self.pid} if self.pid in pids else {}
+        items = queue.Queue()
+        link.on_welcome({"t": "welcome", "generation": generation, "machine": "testhost"},
+                        types.SimpleNamespace(items=items))
+        self.addCleanup(link.close)
+        n = len(self.hub.posts)
+        link.open(link.logs[self.pid])
+        self.answered(link, items)
+        return link, items, self.hub.bodies()[n]
+
+    def answered(self, link, items):
+        kind, thens = items.get(timeout=10)
+        self.assertEqual(kind, "sent", thens)
+        link.ran(thens)
+
+    def drain(self, link, items):
+        """The lanes' answers so far, run as the main loop runs them."""
+        while not items.empty():
+            self.answered(link, items)
+
+    def lose(self, link, items, relay, how):
+        """The next POST, the relay's, lost `how`: answered 503, or cut (the
+        hub holds it and the stream ends from this end)."""
+        n = len(self.hub.posts)
+        self.hub.script = [503 if how == "503" else "hold"]
+        relay()
+        self.assertTrue(wait_for(lambda: len(self.hub.posts) > n), "the relay's POST reached the hub")
+        if how == "503":
+            kind, err = items.get(timeout=10)
+            self.assertEqual(kind, "closed")
+            self.assertIsInstance(err, self.uplink.NotDelivered)
+        link.close()
+        return self.hub.bodies()[n]
+
+    def settled_in(self, body, rid):
+        return [f for f in messages(body, "settled") if f["body"]["request"] == rid]
+
+    def settle(self, link, rid):
+        """`rid` raised and settled at the bridge, the settlement held for the hub."""
+        self.bridge.raise_(rid)
+        self.bridge.settle(rid)
+        self.assertTrue(wait_for(lambda: link.requests.take() or any(k[:2] == (self.sid, rid)
+                                                                      for k in link.requests.queued)))
+
+    def relayed(self, rid):
+        return [k for k in requests.load_relayed().get(self.sid, []) if k[0] == rid]
+
+    def test_a_settlement_whose_post_is_lost_reaches_the_hub_on_the_next_stream(self):
+        for how in ("503", "cut"):
+            with self.subTest(how=how):
+                rid = "toolu_lost_" + how
+                r = self.requests()
+                link, items, _ = self.stream(1, r)
+                self.settle(link, rid)
+                lost = self.lose(link, items, link.relay_requests, how)
+                self.assertTrue(self.settled_in(lost, rid), "the settlement was in the POST lost")
+                self.assertEqual(self.relayed(rid), [], "not kept as relayed: the hub never answered it")
+                link, items, hello = self.stream(2, r)
+                self.assertTrue(self.settled_in(hello, rid), "the next stream's hello carries it: %s" % hello)
+                self.assertTrue(self.relayed(rid), "answered: kept as relayed")
+                link.relay_requests()
+                self.assertEqual(messages(r.due({self.pid}), "settled"), [], "and owed no more")
+
+    def test_a_settlement_queued_before_a_restart_reaches_the_hub_from_the_next_uplink(self):
+        rid = "toolu_restart"
+        r = self.requests()
+        link, items, _ = self.stream(1, r)
+        self.settle(link, rid)
+        lost = self.lose(link, items, link.relay_requests, "cut")
+        self.assertTrue(self.settled_in(lost, rid))
+        r.close()
+        # A fresh uplink over the same SMINOS_HOME: its Requests read from
+        # disk, its outbox empty; the bridge's snapshot lists the settlement.
+        r = self.requests()
+        link, items, _ = self.stream(2, r)
+        n = len(self.hub.posts)
+
+        def relayed():
+            link.relay_requests()
+            self.drain(link, items)
+            return any(self.settled_in(b, rid) for b in self.hub.bodies()[n:])
+
+        self.assertTrue(wait_for(relayed), "the settlement reaches the hub from the new uplink")
+        self.assertTrue(wait_for(lambda: self.drain(link, items) or self.relayed(rid)), "and, answered, is kept as relayed")
+
+    def test_a_settlement_in_flight_is_queued_once_by_the_relay_and_by_a_reopen(self):
+        """While the POST carrying a settlement is held, neither the next
+        relay passes nor the project opened again (a `not-open` mid-stream)
+        queue it again; answered, it went once and is kept as relayed."""
+        rid = "toolu_in_flight"
+        r = self.requests()
+        link, items, _ = self.stream(1, r)
+        self.settle(link, rid)
+        n = len(self.hub.posts)
+        self.hub.script = ["hold"]
+        link.relay_requests()
+        self.assertTrue(wait_for(lambda: len(self.hub.posts) > n), "the relay's POST is held at the hub")
+        for _ in range(3):
+            link.relay_requests()
+        link.on_refused({"t": "refused", "project": self.pid, "refusal": {"reason": "not-open"}}, None)
+        self.assertTrue(wait_for(lambda: len(self.hub.posts) > n + 1), "the hello opening it again went")
+        self.assertEqual(self.hub.bodies()[n + 1][0]["t"], "hello")
+        self.answered(link, items)                       # the second hello's
+        self.hub.release.set()
+        self.assertTrue(wait_for(lambda: self.drain(link, items) or self.relayed(rid)), "answered: kept as relayed")
+        link.relay_requests()
+        time.sleep(0.3)
+        self.assertEqual(sum(len(self.settled_in(b, rid)) for b in self.hub.bodies()), 1,
+                         "the settlement went once: %s" % self.hub.bodies()[n:])
+
+    def test_an_rpc_result_and_a_compaction_message_lost_go_again_on_the_next_stream(self):
+        rp = rpc.Rpcs(KEY, "testhost")
+        r = self.requests()
+        link, items, _ = self.stream(1, r, rp)
+        nonce = codes.b64url(os.urandom(codes.NONCE_BYTES))
+        now = time.time()
+        rp.ledger.put(nonce, {"project": self.pid, "rpc": "interrupt", "session": self.sid, "at": now,
+                              "outcome": rpc.done({}), "done_at": now, "acked": False})
+        self.addCleanup(rp.ack, {"t": "rpc-ack", "nonce": nonce})
+        compact = {"t": "session", "message": {"project": self.pid, "machine": "testhost", "session": self.sid,
+                                               "kind": "compact", "sub": None, "n": None,
+                                               "body": {"rpc": nonce, "phase": "end"}}}
+        rp.compact_out.append(compact)
+
+        def result_in(body):
+            return [f for f in body if f.get("t") == "rpc-result" and f["nonce"] == nonce]
+
+        def compact_in(body):
+            return [m for m in messages(body, "compact") if m["body"]["rpc"] == nonce]
+
+        lost = self.lose(link, items, link.relay_rpcs, "503")
+        self.assertTrue(result_in(lost) and compact_in(lost), "both were in the POST lost: %s" % lost)
+        link, items, hello = self.stream(2, r, rp)
+        self.assertTrue(result_in(hello), "the result follows the next hello (until rpc-ack)")
+        n = len(self.hub.posts)
+
+        def relayed():
+            link.relay_rpcs()
+            self.drain(link, items)
+            return any(compact_in(b) for b in self.hub.bodies()[n:])
+
+        self.assertTrue(wait_for(relayed), "the compaction's message goes again")
+        self.assertTrue(wait_for(lambda: self.drain(link, items) or rp.compact_out == []), "answered: owed no more")
+        self.assertEqual(rp.due({self.pid}), [], "neither is due again on this stream")
 
 
 class Uplink(unittest.TestCase):
