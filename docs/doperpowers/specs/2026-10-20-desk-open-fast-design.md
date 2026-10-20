@@ -2,9 +2,10 @@
 
 Branch `desk-open-fast` off `main` at `219b150a`. sminos plugin at 1.1.2.
 Design approved by the owner's brief of 2026-10-20 (the fix list of the
-bridge bench, scoped to what stays inside today's machine↔hub protocol);
-written by execspec steps 1–2 only, the independent review and the
-execution being the owner's.
+bridge bench, scoped to what stays inside today's machine↔hub wire
+protocol); revised the same day after two independent reviews (Decision
+Log). Written by execspec steps 1–2; the independent review and the
+execution are the owner's.
 
 ## Purpose
 
@@ -21,45 +22,70 @@ machine can run at all: while a message is streaming, right after the
 sminos daemon restarted, when the browser leaves and comes back, and for the
 second open of the same session as for the first. The way to see it: open
 any live session in the desk and the page is there under a second; the
-plane's `open` line in `~/.claude/sminos/daemon.log` says where the time
-went, phase by phase; `sminos/tests/bench_open.py` reproduces the same opens
-against an isolated session and prints the figures.
+plane's `open` line in `~/.claude/sminos/daemon.log` says where the machine's
+share went, phase by phase; `sminos/tests/bench_open.py` reproduces the same
+opens end to end — an isolated session, the real uplink, the real hub code
+on a local runtime, a browser client — and prints the figures.
 
-The work is the machine side alone — the plane, the uplink, the bridge
-child and the bridge mod — and changes nothing on the wire between machine
-and hub. No hub deploy is needed (§1 says why, correcting the bench on one
-point); one hub-side bug this investigation found is flagged for the owner
-(Surprises & Discoveries) and left alone.
+Most of the work is the machine side — the plane, the uplink, the bridge
+child and the bridge mod. Two pieces are MAWS's, each its own milestone: the
+hub stops coupling a session's frames to the log's reply chain (§8), and the
+web keeps a streaming block the fresh snapshot carries across a reconnect
+(§9). Nothing on the wire between machine and hub changes; no Durable
+Object storage changes. One hub-side bug this investigation found — the
+stream the hub ends every fifteen minutes — is being diagnosed by another
+agent; §8 is designed from the code and is checked against that diagnosis
+before it is built (Decision Log).
 
 ## Progress
 
-- [ ] M1 — The open line stamped at arrival, and the instruments
-- [ ] M2 — The snapshot goes at once
-- [ ] M3 — The uplink's sender lanes
-- [ ] M4 — The build saved, warmed, and off the open path
-- [ ] M5 — The child respawns at once; a resync fits the engine's limit
-- [ ] M6 — Acceptance, documents, the branch review
+- [ ] M1 — The open line stamped at arrival; the reference consumer and the inventory; the fixtures
+- [ ] M2 — The instruments: `bench_open.py` (micro and full path), `bench_scale.py opens`
+- [ ] M3 — The web keeps a carried block across a reconnect (MAWS)
+- [ ] M4 — The hub's reply chain decoupled (MAWS)
+- [ ] M5 — The snapshot goes at once; a notice's row is due at its step's end
+- [ ] M6 — The uplink's sender lanes, with connection reuse proven
+- [ ] M7 — The build saved and warmed, bounded; the look off the open path
+- [ ] M8 — The child respawns at once; a resync fits the engine's limit
+- [ ] M9 — Acceptance, documents, the branch review
 
 ## Terms
 
 - **The desk**: the web (`apps/desk-web`) and the hub (`apps/desk-hub`, a
-  Cloudflare Worker with Durable Objects) in MAWS. The web subscribes to a
-  session through the hub; the hub forwards the subscription to the machine
-  and relays what comes back.
+  Cloudflare Worker with Durable Objects: a `Machine` object per enrolled
+  machine holding its stream, a `Project` object per project) in MAWS. The
+  web subscribes to a session through the hub; the hub forwards the
+  subscription to the machine and relays what comes back.
+- **The local hub**: the same Worker code on a local runtime —
+  `pnpm --filter desk-hub local` (`apps/desk-hub/local/run.ts`, wrangler dev
+  behind a stand-in for Access) as the desk's e2e gate and
+  `test_session_plane.py`'s `LocalHub` use it, and the hub's own vitest
+  suites' Miniflare (`apps/desk-hub/test/support/local.ts`) with the suites'
+  Worker seam (`test/support/worker-under-test.ts`: `/__test/…` paths that
+  hold a `Machine`'s next send, list a `Project`'s queues, and more). No
+  test and no agent calls the deployed hub with credentials.
 - **The uplink**: `sminos daemon uplink` (`sminos/skills/sminos/scripts/sminos_uplink.py`),
   the process holding the machine's connection to the hub: a Server-Sent
   Events **stream** down (`GET /machine/stream`) and **POSTs** up
   (`POST /machine/frames`, NDJSON frames under the stream's generation).
   Its **main thread** does every sminos call and, today, every POST; a
   **reader** thread reads the stream; an **acker** thread answers heartbeats.
+- **The reply chain**: in the hub's `Project`, one ordered queue of writes
+  per machine stream (`toMachineAll`, `this.queues`), through which every
+  frame the project sends down that stream goes — the `have`, backlog,
+  `resend` and `refused` a `hello` or an upload owes, and the `subscribe`,
+  `rows`, `rpc` and the rest the browsers' side sends. `fromMachine` awaits
+  its tail after every frame of a POST.
 - **The plane**: `sminos_plane.py`, the session plane on the machine: the
   sessions' presence and the hub's **subscriptions**, each a `Subscription`
   joining a transcript on disk with the bridge's live stream. The **pump**
   is `Subscription.pump`, run from the main thread's **tick** on every wake
   or every 0.25 s (`POLL`), which produces the DX4 messages now due.
-- **An open**: from the hub's `subscribe` frame to the subscription's
-  `snapshot` message. **N** is that time; **M** is when the bridge's
-  snapshot line was taken off the reader's queue.
+- **An open**: from the browser's `subscribe` to the `snapshot` drawn. **E**
+  is the end-to-end time a client measures; **N** is the machine's share
+  (the subscribe frame's arrival at the uplink's reader to the snapshot's
+  emission), a diagnostic phase the open line reports; **M** is when the
+  bridge's snapshot line was taken off the reader's queue.
 - **The bridge**: the mod in the session (`sminos/hooks/mods/bridge*.tsx`)
   and its **child** (`sminos bridge`, `sminos_bridge.py`), a per-session
   Python process serving the session's endpoint `$SMINOS_HOME/bridge/<id>.sock`
@@ -70,7 +96,10 @@ point); one hub-side bug this investigation found is flagged for the owner
   appends it — `block-row` for a response row (it also settles the block
   whose text streamed), `row-seen` for any other. **The cut**: per loop, the
   last notice applied, carried in the child's snapshot; rows at or before it
-  are **history**, rows past it are **live**.
+  are **history**, rows past it are **live**. **A step**: one model request
+  of a turn, `(turnId, agentId, step)`; its blocks stream, its rows are
+  named, and its end (`step` phase `end`, or the turn's completion cutting
+  it off) is when the engine has the whole message and flushes its rows.
 - **The build**: what an open reads on the transcript's **worker** thread
   (`Transcript`, one per file, jobs one at a time): the **index** (each
   row's uuid, byte offset and length), the loop's jobs **ledger**
@@ -86,6 +115,10 @@ point); one hub-side bug this investigation found is flagged for the owner
 - **The saved build**, **the warmer**: new here (§4): the build written to
   disk and read back, and the plane extending live sessions' builds in the
   background.
+- **The reference consumer** and **the inventory**: new here (M1): a
+  Python module applying DX4 as the web's streaming layer does, and an
+  independent list of what should have been drawn, so a test can say a
+  block or a row went missing.
 - **The GIL**: Python's global interpreter lock; one thread of the uplink
   runs Python at a time, in slices, so a worker's parse and the main thread's
   pump share the process's one core of Python.
@@ -100,8 +133,9 @@ point); one hub-side bug this investigation found is flagged for the owner
 The bench settled where the time goes. The bridge hop (engine → mod → child
 → subscriber) is 1.8 / 5.7 ms p50 / p95 at load 14–17 and 4–14 / 19–62 ms at
 load 110–456 **[M]**; a hub POST on a fresh TLS connection is 140–230 ms
-**[M]**. The open path is what is slow, in four mechanisms, with this
-investigation's corrections against the code at `219b150a`:
+**[M]**. The open path is what is slow, in four mechanisms, read against
+the sminos code at `219b150a` and the hub's at MAWS `dc3f9d87e`
+(origin/master):
 
 1. **The snapshot waits for a row that is not on disk.** The child's `cut`
    names the last row noticed; the plane's `build` answers `"waiting"` until
@@ -127,134 +161,201 @@ investigation's corrections against the code at `219b150a`:
    The two abandoned opens sat in the last minutes of a stream the hub ended
    with a 503 **[I]**.
 
-Two corrections to the bench, from the hub's code at the same commit:
+And the same mechanism's other half, in the hub: **a POST is held behind
+the project's reply chain, and so is a subscribe.** `Project.fromMachine`
+awaits `this.queues.get(queueKey(machine, generation))` — the tail of the
+project's one send chain to that machine's stream — after *every* frame,
+session frames included ("settled at once for a frame that owes no reply"
+is true only while nothing is queued). The chain is per machine stream, not
+per connection: a `hello` whose `have` or backlog page is still being
+written holds every POST of that machine to that project, whichever
+connection carries it. `Project.carry` queues the browser's `subscribe` on
+the same chain, so an open waits behind the backlog before it reaches the
+uplink at all. And `Machine.write` has no bound: a stream whose client
+stops reading blocks every write to it until the stream ends
+(`test/machine-end.test.ts` pins that ending it releases them). So two
+sender lanes on the machine (§3) isolate nothing on their own; §8 removes
+the coupling at the hub, and the lanes remove it at the machine. The bench's
+reading that the hub "holds the answer until its replies are written to the
+browser's stream" is wrong in detail — the replies are the machine's own,
+and a subscription's message to a browser is written unawaited — but its
+conclusion stands.
 
-- **The hub does not hold a POST until the browser has its reply.**
-  `Machine.frames` (`apps/desk-hub/src/objects/machine.ts`) answers once
-  each project's `fromMachine` (`objects/project.ts`) returns, and
-  `fromMachine` awaits only the project's send queue to the *machine's own
-  stream* — the `have`, backlog, `resend` and `refused` frames a `hello` or
-  an `events` upload owes; a subscription's `session` message goes to the
-  browser's socket with `toSocket`, unawaited, and owes nothing. A POST of
-  plane messages is held for one Durable Object round trip. So no hub
-  change is needed for any fix here, and the owner's example ("the hub
-  holding a machine's POST until the browser has its reply") is not a
-  mechanism in the code.
-- **The long holds have one cause, and it is periodic.** Every stream of the
-  owner's uplink ends with the same 503 `delivery-failed` 15:01–16:14 after
-  it connected (seven streams on 2026-10-20, 03:42Z–06:52Z, daemon.log),
-  which is `ARCHIVE_EVERY` (900 s) after the welcome: the POST that fails is
-  the archive-period re-`hello` batch (`Link.tick`, `next_confirm`), held by
-  the hub for up to a minute (the 503 came 1–74 s after the re-`hello` was
-  due; the uplink's own bounds are a 30 s socket timeout and 60 s in all),
-  then answered 503 with `frames`
-  (what the hub applied before the frame that failed: 7 on most streams).
-  Every subscription dies with the stream
-  (`Link.on_welcome` → `Plane.close`; the hub ends the browsers'
-  subscriptions `machine-offline`), and the browser subscribes again. That
-  is a hub-side defect in `Project.hello` or the machine stream's write
-  path, for the owner (Surprises & Discoveries); this spec makes the hold
-  harmless to opens (§3) and the re-open after the stream's end fast (§2,
-  §4), and does not touch its cause.
+**The long holds have one cause, and it is periodic.** Every stream of the
+owner's uplink ends with the same 503 `delivery-failed` 15:01–16:14 after
+it connected (seven streams on 2026-10-20, 03:42Z–06:52Z, daemon.log),
+which is `ARCHIVE_EVERY` (900 s) after the welcome: the POST that fails is
+the archive-period re-`hello` batch (`Link.tick`, `next_confirm`), held by
+the hub for up to a minute (the 503 came 1–74 s after the re-`hello` was
+due; the uplink's own bounds are a 30 s socket timeout and 60 s in all),
+then answered 503 with `frames` (what the hub applied before the frame that
+failed: 7 on most streams). Every subscription dies with the stream
+(`Link.on_welcome` → `Plane.close`; the hub ends the browsers' subscriptions
+`machine-offline`), and the browser subscribes again. Another agent is
+diagnosing it on the hub's side; §8 is the same queue and hello path, and
+its milestone is checked against the diagnosis before it is built.
 
 The bench's fix list, in its impact order, and what this spec does with each:
 
 | # | the bench's fix | here |
 |---|---|---|
-| 1 | a sender thread; one persistent connection; the hub not holding a POST | §3: two sender lanes with persistent connections. The hold is not the hub's to drop (above) |
-| 2 | no gate on the cut's row | §2 |
+| 1 | a sender thread; one persistent connection; the hub not holding a POST | §3 the lanes, §8 the hub's chain decoupled: both are needed |
+| 2 | no gate on the cut's row | §2; and the 5 s notice expiry re-based on the step's end, which the gate had hidden |
 | — | a "waiting" open re-checked by the event, not the poll | subsumed by §2: no build answers "waiting" any more; every other wake is already event-driven |
-| 3 | tail-first snapshot; index that survives a restart; builds cancelled | §4: the build saved and warmed; the look off the open path. The tail-first snapshot and the cancellation are dropped, §4 says why |
+| 3 | tail-first snapshot; index that survives a restart; builds cancelled | §4: the build saved and warmed under a bound; the look off the open path. The tail-first snapshot and the cancellation are dropped, §4 says why |
 | 4 | the open line stamped at the reader's arrival | §5 |
 | 5 | one connection from the mod to the child; or the child's role into the daemon | out of scope (the next phase, MAWS #52) |
-| 6 | serialize once per event in the child | dropped, §8 says why |
+| 6 | serialize once per event in the child | dropped, §10 says why |
 | 7 | the first respawn without delay | §6 |
 | 8 | resyncs under the engine's 4 MB | §7 |
+| — | the web keeps a block the fresh snapshot carries | §9, found in review: without it §2's snapshot loses a block on a reconnect |
 
 ## Acceptance
 
-Each item names its instrument. Load is the 1-minute load average
-(`uptime`) during the run, and a figure holds at the load named. **N** is
-the plane's share: from the subscribe frame's arrival at the uplink's
-reader to the snapshot message's emission, as the open line reports it
-(§5) and `bench_open.py` prints it. The browser's end-to-end timings
-(`window.deskLatency()`) are the owner's to take and are the point of the
-whole: with N as below and the hub's hops (one SSE write down, one POST up on
-a warm connection, one WebSocket write to the browser) at 50–150 ms each,
-an open reads about a second in the browser.
+Success is an arrival, measured end to end through the real uplink and the
+real hub code: **E** runs from a browser client's `subscribe` to its
+receipt of the `snapshot`, and the reference consumer then says the drawing
+is whole. **N**, the machine's share from the open line (§5), is reported
+beside E as a diagnostic, never as the result. Each check names its
+instrument and its figure.
 
-The instruments:
+**Load.** Load is the 1-minute load average (`uptime`) during a run; a
+figure holds at the load band it names. The owner's Macs are never loaded
+artificially: a target-band figure (100–300) comes from the MacBook's own
+frequent high-load windows (the bench ran at 14–475), or from an isolated
+host loaded synthetically (a devcloud host under `stress-ng`, never a Mac
+the owner works on). A check with no result in its target band is recorded
+as **incomplete at that band**, never as a pass at another load.
 
-- **`sminos/tests/bench_open.py`** (M1; a port of the bench's `plane_open.py`
-  with `live_plane.py`'s scenarios): drives one `Subscription` exactly as
-  `Plane.subscribe` builds it, against the bridge socket of a session under
-  `$SMINOS_HOME`, pumped as the uplink pumps (on a wake, else every 0.25 s),
-  and prints one JSON line per open with the phases of §5 and N. With
-  `--live` it starts an isolated headless session the way
-  `sminos/tests/mods/live-bridge-check.py` isolates one (temporary HOME,
-  SMINOS_HOME and config dir, a staged copy of the plugin, the gateway keys
-  through a 0600 env file; it spends haiku calls and is run by hand), sends
-  prompts, and runs the scenarios named below, each N times, printing the
-  per-open lines and a summary (min / p50 / max per scenario). It holds a
-  reference consumer (the bench's `Browser`: DX4 applied as the web applies
-  it) that counts holes, duplicates and `n` gaps.
-- **`sminos/tests/bench_index.py`** (M4; a port of the bench's
-  `real_index.py`): times the build of one transcript path, read-only, three
-  ways — cold (a fresh `Transcript`), loaded (from a saved build it writes
-  under a temporary SMINOS_HOME), warm (a second `extended()`) — printing CPU
-  and wall for each, rows and bytes.
-- **The open line** in `daemon.log` (§5), on the owner's Mac after the roll.
-- **The hub stand-in** `sminos/tests/hub_standin.py`: `POST /control/post-fault`
-  with fault `hold` holds the next matching POST until `POST /control/release`.
+**The instruments.**
+
+- **`sminos/tests/bench_open.py`** (M2), two modes with one output shape (one
+  JSON line per open, a summary per scenario: min / p50 / max).
+  - *The full path* (`--uplink --hub local|standin`): the branch's
+    `sminos daemon uplink` under a temporary HOME and SMINOS_HOME, enrolled
+    at a local hub the instrument starts (`--maws <MAWS worktree>`:
+    `pnpm --filter desk-hub local --state <tmp> --port <n>`, the enrollment
+    as `test_session_plane.py`'s `LocalHub.enroll` does it) or at the HTTP/1.1
+    hub stand-in (M1); a browser client (`sminos/tests/ws_client.py` on the
+    local hub's project socket; the stand-in's `/control/send` and its
+    stamped `sessions` list) that subscribes and stamps the snapshot's
+    receipt: **E**. With `--live` the session is an isolated headless one
+    the way `sminos/tests/mods/live-bridge-check.py` isolates one (temporary
+    config dir, a staged copy of the plugin, the gateway keys through a 0600
+    env file; it spends haiku calls and is run by hand); otherwise the
+    session is `fake_session.py`'s scripted one, or a synthetic transcript
+    (`--synthetic-rows N`, shaped as the build measurement in Surprises &
+    Discoveries shaped one) with no bridge. The reference consumer applies
+    what the client received and the inventory says what is missing.
+  - *The micro-benchmark* (`--micro --session <id> --sminos-home <dir>`):
+    one `Subscription` driven in-process as `Plane.subscribe` builds it,
+    pumped as the uplink pumps, the phases of §5 stamped — the bench's
+    `plane_open.py`, ported. It leaves out the reader queue, the record
+    scan, the ticks, the refreshes, the warmer and the uplink's thread, and
+    says so in its output (`"mode": "micro"`); its figure is **N_micro**,
+    not N and not E, for diagnosing one open's phases.
+- **`sminos/tests/bench_scale.py opens`** (M2): the synthetic machine
+  `bench_scale.py` already builds (DIRS × PER_DIR transcripts, LIVE running
+  sessions under engine records, the hub stand-in), with `--large N`
+  transcripts of 15,000 rows among the live sessions; starts the uplink
+  fresh and sends subscribes through the stand-in at stated moments
+  (before warming completes, after it, after a second restart), for a large
+  session and a small one, printing each E.
+- **`sminos/tests/bench_index.py <transcript>`** (M7): the build of one
+  transcript path, read-only, three ways — cold, loaded from a saved build
+  it writes under a temporary SMINOS_HOME, warm — CPU and wall each, rows
+  and bytes.
+- **The open line** in `daemon.log` (§5) and the sender's connection lines
+  (§3), on the owner's Mac after the roll.
+- **The hub stand-in** `sminos/tests/hub_standin.py` (M1): HTTP/1.1 with
+  keep-alive, each request recorded with its connection's id, each session
+  message with its arrival stamp; `POST /control/post-fault` with fault
+  `hold` holds the next matching POST until `/control/release`.
+- **The pause proxy** `sminos/tests/pause_proxy.py` (M1): a TCP proxy the
+  uplink is pointed at as its hub, with a control to stop forwarding the
+  stream connection's bytes to the uplink and to resume them; the other
+  connections pass. With the stream paused and a backlog larger than the
+  socket buffers queued for it, the hub's writes to that stream block: the
+  reply chain is blocked for real, through the real hub code.
+- **The hub's vitest suites** (`apps/desk-hub/test/`, the seam's
+  `SEND_HOLD_PATH` on `have`) and **the web's** (`apps/desk-web/src/depth/stream/layer.test.ts`),
+  for the MAWS milestones; MAWS gates `scripts/ci-gate.sh <worktree> --gates static,unit`
+  (the hub) and `--gates static,unit,e2e:desk-web` (the web).
 - **`tests/mods/bridge.test.ts`**'s harness (a fake engine with a clock, children
   and posts the test reads), for the mod.
+- **Owner-visible, after rollout**: `window.deskLatency()` in the owner's
+  browser against the deployed hub — `view.snapshot` (subscribe to snapshot)
+  and `resume.gap` — the whole path with the WAN and the drawing. Named here
+  so the figures below have their counterpart; not a check an agent runs.
 
-The checks:
+**The checks.** E on the local hub at load < 50 unless said otherwise; the
+same opens at load 100–300 are the second figure of each line.
 
-- **A1 — a warm idle open.** `bench_open.py --live --scenario idle` (ten
-  opens, between turns, the build warm): N ≤ 0.10 s at load < 50, and
-  N ≤ 0.5 s at load 100–300 (today 0.00–0.03 s at load 18–38 **[M]**;
-  untested at 300).
-- **A2 — an open mid-message.** `--scenario mid-message` (five opens in a
-  session started with thinking on, the prompt asking for a 400-word story
-  after reasoning, each open made on the text block's first chunk, after the
-  thinking block's `block-row` and before the message ends — the window the
-  bench's P1 hit, 2.3–2.4 s wide **[M]**): N ≤
-  0.10 s at load < 50 (today 1.96–2.22 s **[M]**), the line's `waits` is 0,
-  the snapshot's `streaming` carries the named block's text with its
-  `uuid`, a `block-row` naming it is the subscription's message n=1, the
-  row goes out as `row` once flushed, and the reference consumer reports 0
-  holes, 0 duplicates, 0 gaps. Also: `--scenario after-prompt` (subscribed
-  within 100 ms of a prompt): N ≤ 0.15 s (today 0.40–0.51 s **[M]**).
+- **A1 — a warm idle open.** `bench_open.py --uplink --hub local --live
+  --scenario idle --opens 10` (between turns, the build warm): E ≤ 0.3 s;
+  at load 100–300, E ≤ 0.6 s. N ≤ 0.10 s / ≤ 0.5 s reported beside it (today
+  N 0.00–0.03 s at load 18–38 **[M]**; E unmeasured).
+- **A2 — an open mid-message, and right after a prompt.** `--scenario
+  mid-message --opens 5` (a session with thinking on, the prompt asking for
+  a 400-word story after reasoning; each open made on the text block's
+  first chunk, after the thinking block's `block-row` and before the message
+  ends — the window the bench's P1 hit, 2.3–2.4 s wide **[M]**): E ≤ 0.3 s
+  (today N alone 1.96–2.22 s **[M]**); the open line's `waits` is 0; the
+  snapshot's `streaming` carries the thinking block's text with its `uuid`;
+  the row goes out as `row` once the message ends; the consumer and the
+  inventory report 0 holes, 0 duplicates, 0 gaps across the whole message.
+  `--scenario long-answer --opens 3`: a message whose thinking block's row
+  stays unflushed 12 s or more (a 900-word story after reasoning), opened at
+  +1 s and reconnected at +7 s: no `end` before the message's, the block
+  drawn throughout, its row once. `--scenario after-prompt --opens 5`: E ≤
+  0.3 s (today N alone 0.40–0.51 s **[M]**).
 - **A3 — after a daemon restart, and a live session's first open.**
-  `bench_index.py <transcript ≥ 100 MB>`: loaded ≤ 0.35 CPU-s where cold ≥
-  0.7 CPU-s (CI-opt's 317 MB is the owner's reference transcript; the
-  check reads it, prints none of it). `bench_open.py --scenario restart
-  --synthetic-rows 15000` (a synthetic transcript of 15,000 rows written
-  under the instrument's temporary HOME as a session's main transcript,
-  opened transcript-only cold, which saves its build; then the instrument's
-  process started anew and the same open made): the loaded open's N ≤ 1.0 s
-  at load < 50, the cold one's recorded beside it (today 1.65 s wall at
-  load 63 for CI-opt **[M]**, tens of seconds under load **[I]**). A live
-  session's first open warm: pinned by M4's unit test ("a live member's
-  transcript is held and extended before any subscription"), and on the
-  owner's Mac the first open line of any session live for 2 × `WARM_EVERY`
-  or longer reads `build: warm`.
-- **A4 — an open while the hub holds a POST.** Deterministic, in
-  `test_session_plane.py`'s `Uplink` class: with `SMINOS_ARCHIVE_EVERY=1`
-  the stand-in is armed to `hold` the next POST carrying `hello`; after it
-  is held, a `subscribe` is sent down the stream; the snapshot message
-  reaches the stand-in within 1 s while the held POST is still held; then
-  `release`, the stream ends as today (a POST not answered 200), a new
-  stream opens and the subscription is served again. On the owner's Mac:
-  the open lines in the minute before each `a POST was not delivered (…503…)`
-  line show `taken − arrived` ≤ 0.05 s (today: M of 16.15 s and 35.97 s
-  **[M]**).
-- **A5 — the open line.** Every open line carries the fields of §5; pinned
-  by the unit test of M1; visible in the owner's daemon.log after the roll.
-- **A6 — a child crash.** `--scenario kill` (the child SIGKILLed
-  mid-stream): the successor's snapshot reaches the subscriber ≤ 0.35 s
-  after the kill at load < 50 (today 1.18 s **[M]**, of which 1.0 s the
+  `bench_scale.py opens --live 40 --large 6` (forty live sessions, six of
+  15,000 rows): with the uplink started fresh, an open of a small session at
+  +0.5 s has E ≤ 0.5 s while the large ones' builds run; an open of a large
+  session at +0.5 s has E ≤ 1.5 s (a saved build loads) and, with no saved
+  build, E equals its cold build plus 0.3 s, reported; opens after warming
+  (+30 s) have E ≤ 0.3 s for every session; a second restart repeats the
+  loaded figures. `bench_index.py <transcript ≥ 100 MB>`: loaded ≤ 0.35
+  CPU-s where cold ≥ 0.7 CPU-s (CI-opt's 317 MB is the owner's reference
+  transcript; the check reads it, prints none of it). On the owner's Mac:
+  the first open line of any session live for 2 × `WARM_EVERY` or longer
+  reads `build: warm`.
+- **A4 — opens while the reply chain is blocked.** Three proofs, each where
+  the coupling lives:
+  - the hub (M4, vitest): with the seam holding the `Machine`'s next `have`
+    send, a session POST on a second connection is answered 200 within
+    200 ms, a browser `subscribe` carried on the control chain reaches the
+    machine client while the hold stands, and a `hello` POST is answered
+    503 `write-stalled` within `WRITE_TIMEOUT_MS` + 1 s;
+  - the uplink (M6, `test_session_plane.py`'s `Uplink`): with the stand-in
+    holding the re-`hello` POST (`SMINOS_ARCHIVE_EVERY=1`, fault `hold` on
+    `hello`), a `subscribe` sent during the hold has its snapshot at the
+    stand-in within 1 s, and three more opens over the next 20 s each within
+    1 s; `release` ends the stream as today and the next stream serves them
+    again;
+  - the pair (M9, `bench_open.py --uplink --hub local --scenario held
+    --pause-stream 5 --backlog 4m`): a subscription is open and streaming
+    (the fake session's scripted chunks) when the pause proxy stops the
+    stream's bytes for 5 s — under the local hub's silence bound (three
+    2 s heartbeats), so the uplink keeps the stream — right after the first
+    backlog page of the 4 MB another client uploaded reaches the proxy, so
+    the hub's remaining page writes block: every session POST the uplink
+    sends in those 5 s is answered 200 (the local hub's request log), each
+    chunk reaches the browser client within 1 s of its stamp, the hub's
+    stream survives the pause, and an open made 1 s after the resume has
+    E ≤ 1 s. The write bound is the hub proof's (a stalled write, not a
+    held send).
+  On the owner's Mac: open lines in the minute before each `a POST was not
+  delivered (…503…)` line show `taken − arrived` ≤ 0.05 s (today M of
+  16.15 s and 35.97 s **[M]**).
+- **A5 — the open line and the connection lines.** Every open line carries
+  the fields of §5 (pinned by M1's unit test); the sender's lines (§3) show
+  dials and closes with their counts; both visible in the owner's
+  daemon.log after the roll.
+- **A6 — a child crash.** `--scenario kill --opens 3` (the child SIGKILLed
+  mid-stream): the successor's snapshot at the browser client ≤ 0.5 s after
+  the kill (today 1.18 s to the subscriber **[M]**, of which 1.0 s the
   fixed delay).
 - **A7 — a 5 MB streaming block.** `bridge.test.ts`: a tool call whose
   `input` streams 5,000,000 characters, then a reload (a new child's hello):
@@ -262,10 +363,24 @@ The checks:
   resync's block carries `truncated: true` and the last 65,536 characters;
   no `gap` and no second resync follow. `bridge_order.py` (the real child):
   its snapshot after that resync carries the block so marked.
-- **A8 — no regression.** The gates `sminos`, `sminos-suites`, `sminos-mods`
-  and `mods-types` green on the branch's head (`ci-gate`); by hand,
-  `sminos/tests/mods/live-bridge-check.py` and `live-resume-check.py` pass
-  against the branch.
+- **A8 — a carried block survives a reconnect (the web).** `layer.test.ts`
+  and the shared fixture `dx4-stream.json` (M1, M3): an empty-history
+  reconnect whose fresh snapshot carries a block the old subscription had
+  named keeps the block drawn with the snapshot's text until its row lands,
+  then drops it once; the reference consumer gives the same drawn state on
+  the same fixture.
+- **A9 — connection reuse.** `test_session_plane.py`'s `Uplink` against the
+  HTTP/1.1 stand-in: five POSTs on a lane share one connection id; with
+  `SMINOS_IDLE_CLOSE=1` the next POST after a 2 s pause comes on a new one;
+  the sender's connection lines say the same. By hand on the owner's Mac
+  (M6): over an hour of normal use the connection lines show a handful of
+  dials per lane, each serving many POSTs, and idle closes, never a dial per
+  POST.
+- **A10 — no regression.** The gates `sminos`, `sminos-suites`,
+  `sminos-mods` and `mods-types` green on the branch's head (`ci-gate`);
+  MAWS's `static,unit` for the hub change and `static,unit,e2e:desk-web` for
+  the web change; by hand, `sminos/tests/mods/live-bridge-check.py` and
+  `live-resume-check.py` pass against the branch.
 
 ## 2. The snapshot goes at once
 
@@ -301,39 +416,45 @@ request, the named ones marked.
   the entry — its row is in the page or pageable, and the guard "a
   `block-row` for a history row whose block the subscriber still holds"
   stays as a guard; a block with `uuid` whose row is not on disk is kept in
-  the entry, its key added to `held`, and its uuid entered in `noticed` at
-  `now − age`, `age` read from `namedAt` against the wall clock — so
-  `NOTICE_WAIT` runs from the real notice, not from the snapshot; a named
-  block older than `NOTICE_WAIT` already (a response the engine dropped) is
-  dropped from the entry and not noticed; if its row lands later it goes out
-  unnamed after `UNNAMED_WAIT`, as any unnoticed row, and no `block-row` can
-  follow (it came before the snapshot). For an entry of another loop the
-  subscription carries (the main subscription carries every agent's), a
+  the entry, its key added to `held`, and its uuid entered in `noticed` as a
+  notice of its step (the expiry rule below). For an entry of another loop
+  the subscription carries (the main subscription carries every agent's), a
   named block is kept in its entry and its `block-row` relayed after the
   snapshot, as a live one is relayed today; it enters `noticed` of no
   subscription but its own loop's.
 - Right after the snapshot (n=0), one `block-row` message per kept named
   block, entry order then block index, before anything else of the
-  subscription: the web (`apps/desk-web/src/depth/stream/layer.ts`,
-  `blockRow`, idempotent) marks the block settled-by that uuid and keeps
-  drawing its text until the row lands.
-- `release` is unchanged: a row whose uuid is in `noticed` goes out at
-  once when the Tail reads it, and releases the rows before it in disk order.
-- The residual hole: a snapshot taken between a step's end (the message's
-  entry leaves `streaming`) and the flush of its rows (within the engine's
-  100 ms flush timer, since the step end waits for the rows to be named)
-  carries neither; the rows land within that time. Accepted.
+  subscription: the web marks the block settled-by that uuid (§9: it reads
+  the snapshot's `uuid` too) and keeps drawing its text until the row lands.
+- `release` is unchanged in what it releases: a row whose uuid is in
+  `noticed` goes out at once when the Tail reads it, and releases the rows
+  before it in disk order.
 
-Nothing on the wire to the hub changes: DX4's snapshot already carries
-`streaming` entries and `block-row` messages; the web's `load` draws the
-blocks a snapshot carries and `resume` keeps its own drawn copy when the
-old subscription had named it. One DX4 document line in MAWS is stale
-after this ("the producer removes a block from its snapshot state when it
-applies the block's `block-row`", `apps/desk-hub/src/protocol/session.ts`'s
-`Streaming.blocks` comment): for the owner, a doc edit, no deploy.
+**When a named row is due: at its step's end, not at its notice.** Today
+`release` ends the subscription when a notice's row is not on disk
+`NOTICE_WAIT` (5 s) after the notice. The engine flushes a message's rows
+when the message ends, so a thinking block named at its end and followed by
+a long answer has its row unflushed for the answer's whole length: today
+that kills a live subscription 5 s in, and under this spec's first draft it
+would have killed an open the same way and dropped the carried text on the
+re-subscribe (review finding P1-2). From here, **a notice's row is due
+`NOTICE_WAIT` after the end of its loop's step that was open when the
+notice came** — the `step` phase `end` event for that key, or the turn's
+`complete` cutting it off — **and, when no step of its loop was open, after
+the notice itself** (a prompt row, a tool result between requests, a
+compaction's rows: the engine's 100 ms flush timer covers them). The plane
+keeps `noticed[uuid] = (step key or None, at)`, sets each uuid's deadline
+when its step ends (`steps.discard` and the turn's cut-off both do), and
+`release` ends the subscription only past a deadline. A notice of a loop
+whose step is open (a `block-row`, or a `row-seen` for an assistant row that
+did not stream) therefore waits as long as the answer runs; a `row-seen`
+between requests keeps today's 5 s. This is the DX5 consumer rule's one
+amendment, written into the DX5 plan with the date.
 
-**`sminos watch`** draws a snapshot's named blocks as streamed text — a
-finished block's text in the catch-up, where today it was missing. Fine.
+**The residual hole**: a snapshot taken between a step's end (the message's
+entry leaves `streaming`) and the flush of its rows (within the engine's
+100 ms flush timer, since the step end waits for the rows to be named)
+carries neither; the rows land within that time. Accepted.
 
 **Why not read the row's text elsewhere.** The engine holds the unflushed
 rows in memory only; the child's `/rows` route reads the disk. The text the
@@ -346,14 +467,20 @@ then"): a message that streams more than 5 s after its first block's row
 is announced still fails the open, and long answers after a thinking block
 on a slower model do that routinely.
 
+**`sminos watch`** draws a snapshot's named blocks as streamed text — a
+finished block's text in the catch-up, where today it was missing. Fine.
+
 ## 3. The uplink's sender lanes
 
 **Today** `Link.post` runs the whole HTTP exchange on a helper thread and
 the main thread waits on it, so the pump — every subscription's chunks,
 rows and snapshots — stops for each POST (140–230 ms on a fresh TLS
-connection; up to a minute when the hub holds one). The reader and the acker already
-run apart so the stream drains and the lease renews whatever the main
-thread does.
+connection; up to a minute when the hub holds one). The reader and the
+acker already run apart so the stream drains and the lease renews whatever
+the main thread does. The lanes below make the machine side independent of
+the network; §8 makes the hub side independent of the reply chain. Both are
+needed: without §8 a held `hello` holds the session lane's POST at the hub
+too (§1).
 
 **The design.** Two **sender lanes**, each a thread (`Sender` in
 `sminos_uplink.py`, Interfaces) with one persistent connection to the hub,
@@ -415,36 +542,39 @@ release set is the sender's, reset with the stream. The acker is unchanged
 and keeps its own exchange: a held log-lane POST must not delay a heartbeat's
 answer.
 
-**Head-of-line.** The 15-minute re-`hello` hold (§1) now stalls the log lane
-alone for its duration; opens, chunks, requests and RPC results flow on the
+**Head-of-line.** A re-`hello` the hub holds now stalls the log lane alone
+for its duration; opens, chunks, requests and RPC results flow on the
 session lane. Uploads and imports wait, which is today's behavior and not
 latency-sensitive.
 
-**The persistent connection.** One `http.client` connection per sender
-(`connection(cred, POST_TIMEOUT)`, dialled as today by `dial`), kept across
-POSTs: each answer is read whole (`resp.read()`), a `Connection: close`
-answer or any failure drops it, and the next POST dials afresh. A failure
-raised while *sending* the request on a reused connection (`BrokenPipeError`,
-`ConnectionResetError` from `request`/`send`: the hub closed an idle
-connection, nothing of the body was processed) is retried once on a fresh
-connection; a failure after the request was sent (`RemoteDisconnected`,
-`BadStatusLine`, a timeout) is a loss as today — the hub may have applied the
-POST, and the handshake is what heals it. A connection idle for `IDLE_CLOSE`
-(60 s) is closed by the sender, so a stale keep-alive the edge dropped is
-rarely met. **Warming**: `on_subscribe` calls `session_lane.warm()`, which
-makes the sender dial now if it holds no connection, so the TLS handshake
-overlaps the reader's connect and the build rather than following the
-snapshot. The executor verifies against the real hub, from an enrolled
-machine by hand, that a second POST on the same connection is served (the
-daemon.log counts `a POST was not delivered` lines before and after a
-quiet hour; a spurious reset per idle period would show there) and records
-the edge's observed idle bound in Surprises & Discoveries; `IDLE_CLOSE`
-moves below it if it is shorter.
+**The persistent connection, and proving it.** One `http.client`
+connection per sender (`connection(cred, POST_TIMEOUT)`, dialled as today by
+`dial`), kept across POSTs: each answer is read whole (`resp.read()`), a
+`Connection: close` answer or any failure drops it, and the next POST dials
+afresh. A failure raised while *sending* the request on a reused connection
+(`BrokenPipeError`, `ConnectionResetError` from `request`/`send`: the hub
+closed an idle connection, nothing of the body was processed) is retried
+once on a fresh connection; a failure after the request was sent
+(`RemoteDisconnected`, `BadStatusLine`, a timeout) is a loss as today — the
+hub may have applied the POST, and the handshake is what heals it. A
+connection idle for `IDLE_CLOSE` (60 s) is closed by the sender, so a stale
+keep-alive the edge dropped is rarely met. **Warming**: `on_subscribe` calls
+`session_lane.warm()`, which makes the sender dial now if it holds no
+connection, so the TLS handshake overlaps the reader's connect and the
+build rather than following the snapshot. **The connection lines**: a
+sender writes one daemon.log line per dial — `uplink: <lane> lane dialled
+the hub (connection #n)` — and one per close — `uplink: <lane> lane closed
+connection #n after <k> POSTs (<idle|the hub closed it|failed: why>)` — and
+one for any POST slower than `SLOW_POST_SECONDS` (5) with its lane and
+duration. The hub stand-in speaks HTTP/1.1 from M1 (today HTTP/1.0, which
+closes every connection, so reuse could not be seen there) and records each
+request's connection id; the owner's daemon.log shows reuse and the idle
+close on the real edge, and the executor reads an hour of it by hand in M6
+and records the edge's observed idle bound in Surprises & Discoveries;
+`IDLE_CLOSE` moves below it if it is shorter.
 
 **Bounds.** A lane whose queued bytes pass `SEND_QUEUE_MAX` (16 MiB: the hub
-is not taking frames) ends the stream as a lost POST does. The sender logs
-nothing per POST; a POST slower than 5 s is said once in daemon.log with its
-lane and duration, so a held hub shows there.
+is not taking frames) ends the stream as a lost POST does.
 
 **The state table** (per sender; the linearization point is the item queue,
 read by the main loop in arrival order):
@@ -474,10 +604,11 @@ acknowledgement per batch on which the continuations run, and a failure that
 ends the stream. On a socket the lane's connection is the socket, a batch is
 one message, the acknowledgement is the hub's per-batch ack frame (the
 `frames` count of today's 200), and the continuations and the release gate
-fire on it. The two lanes collapse into one socket, since a hub that no
-longer answers a POST with the replies it owes holds nothing: `have` and the
-backlog are just frames down. `Sender.send(frames, then)`, the marks' two
-classes, and the gate stay; only the transport under the sender changes.
+fire on it. The two lanes collapse into one socket once the hub answers a
+batch without waiting for the replies it owes (§8 is the first step of
+that): `have` and the backlog are just frames down. `Sender.send(frames,
+then)`, the marks' two classes, and the gate stay; only the transport under
+the sender changes.
 
 ## 4. The build saved, warmed, and off the open path
 
@@ -510,17 +641,40 @@ so a daemon restart or an eviction costs a load, not a parse:
 - Sweep: at the uplink's start, saved builds whose mtime is older than
   `BUILD_KEEP_DAYS` (14) are removed.
 
-**The warmer.** Live sessions' builds are kept current in the background,
-so a live session's first open is warm:
+**The warmer, bounded.** Live sessions' builds are kept current in the
+background, so a live session's first open is warm — without starving the
+opens (review finding P1-3: an unbounded warm pass after a restart is
+dozens of cold builds at once, every open queued behind its own transcript's
+warm job, and the `Disk` cache churned):
 
-- In `Plane.tick`, every `WARM_EVERY` (2 s): for each session that is live
-  (`self.live`) and a member of an open project (`self.members`), whose main
-  transcript is located (`sminos.transcript_now`, asked on the main thread
-  as `Subscription.path` asks it, cached once found), the plane holds its
-  Transcript (`acquire` once; `release` when the session is no longer live or
-  no longer a member) and submits one job: `extended()`, then
-  `look(disk, main, None, {}, ())` so the `Disk` cache is warm too, then the
-  save rule above. The job's cost is the bytes flushed since the last one.
+- **Two queues per worker.** `Transcript.submit(job)` is the foreground
+  queue — an open's build, a page, a look for a subscription, an `output` —
+  and `Transcript.submit_background(job)` the background one; `work` takes
+  a foreground job whenever one is queued, a background job only when none
+  is. A running job is never interrupted: an open on a transcript whose
+  warm build is running waits for it, which is the open's own build.
+- **Coalesced.** At most one warm job is queued or running per transcript
+  (`Transcript.warming`); the warmer skips a transcript that has one.
+- **Bounded across the process.** At most `WARM_PARALLEL` (2) warm jobs run
+  at once in the process (a counter under a lock, released in the job's
+  `finally`); the warmer submits none while the count is full, and visits
+  the live sessions round-robin from a rotating list, so after a restart
+  every live session gets its turn, two at a time, the large ones taking
+  theirs without blocking the small ones' opens. The GIL's share between a
+  cold build and a warm open was measured small (0.01–0.03 s **[M]**); two
+  builds beside the pump is the budget.
+- **What a warm job does.** `extended()`, then the save rule. **It does not
+  look**: the look is off the open path (below) and is asked by the
+  subscription when one exists; warming looks for every live session would
+  churn `DISK_KEEP` (4,096) for sessions nobody opens.
+- **Who is warmed.** In `Plane.tick`, every `WARM_EVERY` (2 s): each session
+  that is live (`self.live`) and a member of an open project
+  (`self.members`), whose main transcript is located
+  (`sminos.transcript_now`, asked on the main thread as `Subscription.path`
+  asks it, cached per session for its life). The plane holds its Transcript
+  (`acquire` once; `release` when the session is no longer live or no longer
+  a member). Agent transcripts are not warmed: they are opened less and are
+  smaller; a cold one builds on its worker as today, saved after.
 - `INDEX_KEEP` rises from 4 to 32: a build is 8.9 MB in memory for 15,000
   rows (Surprises & Discoveries), and the machine's live sessions are tens,
   few of them large. Eviction stays least-recently-used among transcripts
@@ -530,19 +684,17 @@ so a live session's first open is warm:
   the hold can be capped by bytes with the least recently grown saved and
   released first — not done now, and the figure to watch is the uplink's
   resident size in `sminos daemon status`.
-- Agent transcripts are not warmed: they are opened less and are smaller;
-  a cold one builds on its worker as today, saved after.
 
 **The look off the open path.** `opening(t)` runs the build alone; the
 snapshot goes with the subscription's `facts` as they stand (`Facts()` on a
 first open) and `next_look = now`, so the look is asked on the pump right
-after the snapshot and the first `subagents` message follows it (the plane
-already sends one whenever the derived body changes). A cold look is
-0.53 CPU-s for CI-opt's 136 metas **[M]**, which with the build off the path
-would have been the open's largest remaining cost after a restart. The
-desk's tree therefore refines within the look's time rather than delaying
-the page; `test_a_cold_open_and_a_live_one_reach_the_same_statuses` reads
-"reach" as after that first `subagents`.
+after the snapshot (a foreground job) and the first `subagents` message
+follows it (the plane already sends one whenever the derived body changes).
+A cold look is 0.53 CPU-s for CI-opt's 136 metas **[M]**, which with the
+build off the path would have been the open's largest remaining cost after
+a restart. The desk's tree therefore refines within the look's time rather
+than delaying the page; `test_a_cold_open_and_a_live_one_reach_the_same_statuses`
+reads "reach" as after that first `subagents`.
 
 **Dropped, and why.** *The tail-first snapshot* (the bench's "read backward
 from EOF for the newest rows"): the snapshot's `offChain` and its
@@ -556,10 +708,7 @@ transcript (the first open of a session that ended before the warmer held
 it), on its own worker, delaying no other open. *Cancelling builds when the
 subscriber leaves*: the build's product is kept and saved; cancelling it
 discards work the next open needs, and a retry no longer queues behind it
-but finds it done. *Giving opens priority over background work*: the
-warmer's jobs are small (the bytes since its last run) and each transcript
-has its own worker; the GIL's share between a cold build and a warm open was
-measured small (0.01–0.03 s **[M]**).
+but finds it done.
 
 ## 5. The open line stamped at arrival
 
@@ -614,7 +763,7 @@ enough. Two bounds, and a rule:
   events still carry every chunk whole: a subscriber that streamed from the
   start holds the whole text; only the catch-up copy a snapshot or a resync
   gives is the tail. The flag reaches DX4's `StreamingBlock` as an extra key
-  the web ignores today.
+  the web passes over.
 - **A resync is posted alone.** The poster ends a batch before a resync and
   after it, so a body holding one holds nothing else. `resyncEvent` measures
   its JSON and, over `RESYNC_MAX` (4,000,000 characters — the bounded blocks
@@ -624,7 +773,103 @@ enough. Two bounds, and a rule:
 - Pending requests' inputs are already cut at 65,536 characters with
   `truncated: true` (DX5); unchanged.
 
-## 8. Dropped and out of scope
+## 8. The hub: the reply chain decoupled
+
+The wire stays as it is (DX2's `POST /machine/frames` with its 200 / 409 /
+413 / 503 answers, the SSE stream down); what changes is what a POST's
+answer waits for and what shares a queue, in `apps/desk-hub/src/objects/project.ts`
+and `objects/machine.ts`. No Durable Object storage changes: `queues` is an
+in-memory map, and nothing stored gains a table, column or key.
+
+1. **A POST waits for its own replies, never the chain's tail.**
+   `fromMachineFrame` returns the `sent` promises of the writes the frame
+   itself queued — a `hello`'s `have` (not its backlog pages: they stream
+   behind, and a page that cannot be written ends the stream through
+   `Machine.write`'s own failure path as before), an upload's `resend` and
+   `refused` — and `fromMachine` awaits those; a `session`, `pending`,
+   `rpc-result` or `rejected` frame awaits nothing. The POST's answer still
+   means "applied, and the replies it owes are on the stream", and `failed`
+   (503 `delivery-failed`) still means one of those replies could not be
+   written. A session POST is then held for one object round trip whatever
+   the log lane is doing.
+2. **Two chains per machine stream.** `toMachineAll` takes a lane:
+   `replies` for what a machine's frames owe it (`have`, backlog pages,
+   `resend`, `refused` to a machine frame) and `control` for what the
+   browsers' side sends (`carry`'s `subscribe`, `unsubscribe`, `rows`,
+   `diff`, `output`, forwarded `rpc` and `rpc-ack`, a `refused` of a
+   session-plane frame), keyed `${name}#${generation}#${lane}`; both end at
+   `Machine.send` → `write`, whose writer serializes them. A browser's
+   subscribe no longer waits behind a backlog being paged to the machine; a
+   stuck stream still stops both (3).
+3. **A write is bounded.** `Machine.write` races `writer.write` against
+   `WRITE_TIMEOUT_MS` (10,000): past it the stream ends `write-stalled` (a
+   new `EndCause`, logged as the others) and the write answers false, so a
+   chain blocked by a client that stopped reading fails within the bound
+   and the POSTs on it answer 503 `delivery-failed` then rather than at the
+   machine's 60 s; the machine reconnects as it does after any 503. A frame
+   of 1 MiB taking 10 s is 100 KB/s — a dead link, not a slow one.
+
+**Against the diagnosis.** The periodic 503 (§1) is the same hello path
+and queue; its diagnosis is pending from another agent. Before M4 starts,
+its executor reads the diagnosis the owner forwards and records in the
+Decision Log whether 1–3 cover the cause; a cause they do not cover is
+added to M4 as a fourth change, and the rest of this section stands.
+
+**The test seams** the suites' Worker already has reach this: `SEND_HOLD_PATH`
+(a `Machine` armed to hold its next send of one frame kind until released)
+is the blocked reply chain; `PROJECT_QUEUES_PATH` lists a project's queue
+keys, which now show both lanes; `PROJECT_BACKLOG_PATH` the pages read.
+
+**Alternatives.** *Answer every POST on receipt*: changes DX2's meaning of a
+200 (the uplink's `NotDelivered` semantics rely on it) — the WebSocket
+phase's change, not this one. *One chain, session frames exempt from the
+await*: leaves the subscribe behind the backlog. *No write bound*: a stuck
+stream holds everything for a minute, which is what the owner saw.
+
+## 9. The web: a carried block kept across a reconnect
+
+`apps/desk-web/src/depth/stream/layer.ts` draws a snapshot's `streaming`
+blocks (`load`) and reconciles a fresh snapshot after a disruption with what
+it drew (`resume`). Today `resume` deletes the fresh snapshot's copy of
+every block the old subscription had named (`request.blocks.delete(index)`
+for `old.named`) and keeps the old drawn block only if its row will land
+(`lands(uuid)`) or a `landing` row exists; on an empty-history reconnect
+neither holds and the block vanishes — and `blockRow` cannot bring it back,
+since it only marks a block that is drawn (review finding P2-4). With §2 the
+fresh snapshot carries exactly such blocks, so the web must keep them.
+
+**The rule.** A block the fresh snapshot carries is drawn from the snapshot,
+named or not:
+
+- `snapshotEntry` reads a block's `uuid` (a string, else null); `load` sets
+  `settledBy: uuid` and adds a named block's index to `request.named`, so a
+  block named before the subscription takes no later chunk and settles when
+  its row lands, whether or not a `block-row` reaches it (the plane sends
+  one anyway, idempotent).
+- `resume`: for each old request and index, if the fresh snapshot carries
+  the block, the fresh copy is kept — its text the snapshot's, `settledBy`
+  the fresh `uuid` if named else the old `settledBy` (a block the old
+  subscription had named and the snapshot still carries unnamed is named by
+  the `block-row` that follows), the block's identity (its live label's
+  clock) the old one's as today; only a block the fresh snapshot does not
+  carry goes through today's `lands` / `landing` reasoning. The watermark
+  rule (a snapshot older than what was drawn changes nothing) and the ended
+  request rule stay.
+- `settle(uuid)` drops it once its row lands, as today.
+
+The parity fixture `dx4-stream.json` (M1; a copy under
+`apps/desk-web/src/depth/stream/`, as `dx4-jobs.json` is shared with the
+hub's fake machine) scripts the sequences — a first snapshot with named and
+unnamed blocks of thinking, text and tool kinds; chunks; `block-row`;
+`step-end`; `row` landing; a fresh snapshot after a disruption with empty
+history carrying the named block; one carrying it no longer; one older than
+what was drawn — and the drawn blocks expected after each message, so
+`layer.test.ts` and the reference consumer prove the same rule. The DX4 type
+comment in `apps/desk-hub/src/protocol/session.ts` (`Streaming.blocks`:
+"only blocks without a block-row yet") is amended with the three keys and
+the new rule; the hub relays the body uninterpreted and needs no code.
+
+## 10. Dropped and out of scope
 
 - **Serialize once per event in the child** (`_fan_out` dumping JSON per
   subscriber, one write per line): production has one subscriber, the
@@ -635,11 +880,12 @@ enough. Two bounds, and a rule:
 - **One connection from the mod to the child, or the child's role in the
   daemon**: the next phase's design (MAWS #52), out of scope.
 - **The machine↔hub WebSocket**: out of scope; §3 says how the sender
-  carries over.
-- **The hub's 15-minute 503**: hub-side, the owner's (§1, Surprises &
-  Discoveries).
-- **The web** (`apps/desk-web`): untouched; one stale DX4 comment in the hub's
-  protocol types is for the owner's doc edit (§2).
+  carries over, and §8 is its first step on the hub.
+- **The periodic 503's cause**: another agent's diagnosis; §8's milestone
+  is checked against it.
+- **A browser's `subscribe` while the stream is stuck**: no chain can carry
+  it; §8's write bound ends the stream fast and the browser subscribes on the
+  next one. Accepted.
 
 ## Execution
 
@@ -647,12 +893,24 @@ enough. Two bounds, and a rule:
 
 - The Python the sminos scripts already require, standard library only (no
   new dependency); TypeScript under the engine's function-hook runtime as
-  the mods are built today.
+  the mods are built today; the hub and the web as MAWS builds them (pnpm,
+  vitest, Playwright for e2e).
 - Nothing on the wire between machine and hub changes (DX2, DX4). DX5 (the
   machine-local bridge protocol) changes only as Interfaces says, and the
   DX5 plan document gets a dated amendment line per change
   (`docs/doperpowers/plans/2026-10-15-arkho-desk-c2-bridge.md`, the DX5
-  table, as earlier waves amended it).
+  table and the consumer rule, as earlier waves amended them). No Durable
+  Object storage change: a milestone that finds it needs one stops and says
+  so (the owner decides).
+- The sminos milestones are on this branch; the MAWS milestones on a MAWS
+  branch `desk-open-fast` in a worktree of `/Users/new/Developer/GitHub/MAWS`
+  off `origin/master`, each its own commit set, gated with
+  `scripts/ci-gate.sh <worktree> --gates …` as each milestone names; the
+  owner deploys the hub and the web. **Deploy order**: M3 (the web) is
+  deployed before M5 rolls to any machine, and M4 (the hub) before M6 rolls;
+  each MAWS change tolerates today's machine side, and the machine changes
+  tolerate today's MAWS, so either order degrades to today, never worse —
+  but the order above is the one that shows the gain.
 - Every milestone that changes a file under `sminos/` ends with
   `scripts/bump-version.sh --plugin sminos <next patch>` in its own commit,
   in the same commit as the change or the one right after it on the branch.
@@ -660,16 +918,19 @@ enough. Two bounds, and a rule:
   temporary HOME and SMINOS_HOME, as every test here does. Never the real
   `~/.claude/sminos`, `~/.claude/settings.json` or `~/.claude.json`; never
   `~/.config/claude-secrets`; never `~/.claude/sminos/daemon/hub.json`; the
-  deployed hub is called with credentials only by hand, as §3's keep-alive
-  verification says, from an enrolled machine's uplink.
+  deployed hub is never called with credentials by an agent or a test —
+  "real hub" means the local hub (Terms). The by-hand reads of the owner's
+  daemon.log are reads.
 - Reading the owner's transcripts and `daemon.log` is read-only, for sizes,
   stamps and the open lines; nothing of their content is printed into a
   report or a test.
+- The owner's Macs are never loaded artificially (Acceptance, Load).
 - Tests live beside the suites they extend: `sminos/tests/test_session_plane.py`
-  (the plane; its `Uplink` class for the uplink against the stand-in),
-  `sminos/tests/test-uplink.sh`, `sminos/tests/bridge_order.py` (the real
-  child's order rules), `sminos/tests/mods/bridge.test.ts` (the mod). Live
-  checks spend model calls and are run by hand.
+  (the plane; its `Uplink` class for the uplink against the stand-in or the
+  local hub), `sminos/tests/test-uplink.sh`, `sminos/tests/bridge_order.py`
+  (the real child's order rules), `sminos/tests/mods/bridge.test.ts` (the
+  mod), `apps/desk-hub/test/` and `apps/desk-web/src/depth/stream/layer.test.ts`
+  (MAWS). Live checks spend model calls and are run by hand.
 - Commit by explicit paths; never rewrite history; commit messages end with
   the session's `Sminos-Session` line; no attribution trailers.
 - The module docstrings of `sminos_plane.py`, `sminos_uplink.py` and
@@ -678,152 +939,300 @@ enough. Two bounds, and a rule:
 
 ### Plan of Work
 
-The milestones run in order; M1 lands the instruments the others' proofs
-read. M5 depends on nothing but M2's edits in the same files and follows it.
-M6 executes the acceptance.
+M1 and M2 land the instruments every later proof reads. M3 and M4 are the
+MAWS milestones and may run beside M5–M8 (different repositories), but M6's
+pair proof (A4) and M9 need M4 deployed to the local hub the instrument
+starts, which is just the MAWS worktree at M4's commit. M5–M8 run in order
+on this branch. M9 executes the acceptance.
 
-### M1 — The open line stamped at arrival, and the instruments
+### M1 — The open line stamped at arrival; the reference consumer and the inventory; the fixtures
 
-What exists after: every open line reads as §5; `bench_open.py` and its
-scenarios run against a session, and `--live` against an isolated one.
+What exists after: every open line reads as §5; a reference DX4 consumer
+with thinking, text and tool blocks, the web's reconciliation rule (§9) and
+a sequence reset per subscription, with an inventory that names every block
+and row that should have been drawn; the hub stand-in on HTTP/1.1 recording
+connection ids and arrival stamps; the pause proxy.
 
 Touches: `sminos/skills/sminos/scripts/sminos_plane.py` (`BridgeReader.put`
 stamps, `Subscription.opened` from the frame's receipt, `noted`'s fields,
-the build's kind and CPU answered with the build), `sminos_uplink.py`
-(`Plane.subscribe(project, frame_, received)` passing `Link.received`),
-`sminos/tests/test_session_plane.py`, new `sminos/tests/bench_open.py`.
+`Built.how` and `cpu_ms`), `sminos_uplink.py` (`Plane.subscribe(project,
+frame_, received)` passing `Link.received`), new `sminos/tests/dx4_consumer.py`
+and `sminos/tests/dx4-stream.json`, `sminos/tests/test_session_plane.py`
+(its `Browser` replaced by the consumer; a test of the consumer against the
+fixture), `sminos/tests/hub_standin.py` (HTTP/1.1, `conn` on each `posted`
+record, `at` on each session message), new `sminos/tests/pause_proxy.py`.
 
-Decisions: `Built` gains `how` (how the index came: `warm` or `cold` in M1,
-`loaded` with M4) and `cpu_ms` (`time.thread_time` around `extended()`),
-which `noted` reads. The instrument's `--live` isolation imports `Live`
-from `sminos/tests/mods/live-bridge-check.py` as the bench's `benchlib.py`
-did, rather than copying it; its scenarios are A1, A2 and A6's (`idle`,
-`after-prompt`, `mid-message`, `kill`) with `--live`, and A3's `restart`
-with `--synthetic-rows` (no session: a synthetic transcript, as the build
-measurement in Surprises & Discoveries shaped one, opened transcript-only;
-its loaded half takes effect with M4 and reads `cold` twice before).
-Mid-message: a probe subscription watches the stream; the open is made on
-the first text chunk after a `block-row` of the same step, and the open's
-line records whether that block's row was on disk (the case the scenario is
-for is `cut not on disk`). The reference consumer is the bench's `Browser`,
-ported.
+Decisions: `Built` gains `how` (`warm` or `cold` in M1, `loaded` with M7)
+and `cpu_ms` (`time.thread_time` around `extended()`). The consumer
+(`dx4_consumer.Consumer`): one instance per subscription (`n` starts over;
+a re-subscribe is a new instance handed the old one's drawn state for
+`resume`), applies `snapshot` (`load` or `resume` as §9), `chunk`,
+`block-row`, `step-end`, `row` (`settle`), `rows`, `subagents`, `end`,
+keeps every drawn block's text by kind and every row, and records errors:
+an `n` gap, a duplicate row, a chunk at or below the watermark, a block
+whose drawn text differs from its row's, a block that vanished before its
+row landed, a message after `end`. The inventory (`dx4_consumer.Inventory`)
+is built from the sources of truth — the transcript file's rows (every row
+on disk, whether delivered or not) and the DX5 events the fake session or a
+probe subscription emitted (every block that streamed, its final text) —
+and `Inventory.check(consumer)` names each row never drawn (a hole), each
+block drawn with partial text after its row landed, and each block drawn
+twice. The fixture `dx4-stream.json` is the sequences §9 names with the
+expected drawn state after each message; the consumer's test replays it,
+and M3 copies it to the web. The stand-in: `protocol_version = "HTTP/1.1"`
+(every answer carries `Content-Length` already; the stream and the `hold`
+faults set `close_connection`), a connection sequence number assigned in
+`setup()` and written as `conn` on each `posted` record, `at` (epoch s) on
+each session message, `/control/state` exposing both. The pause proxy:
+`pause_proxy.py <hub-url> <port-file>` listens on 127.0.0.1, forwards every
+connection to the hub, recognizes the one whose first line is
+`GET /machine/stream`, and takes `pause`/`resume` on a control socket beside
+the port file (or `POST /control/pause {"seconds"}` on its own port): paused,
+it stops reading from the hub side of that connection, so the hub's writes
+back up once the socket buffers fill.
 
 Does not touch: any behavior of the open; the figures the line reports
 change in later milestones, the line's shape does not.
 
-Proves: A5 (the line's fields, pinned in the unit test; `waits` counts the
-"waiting" builds and reads 1 or more mid-message in M1, 0 after M2); the
-instrument reproduces the bench's figures within its spread on the branch's
-head before M2 (an `idle` open 0.00–0.05 s; a `mid-message` open ≥ 1 s),
-recorded in Surprises & Discoveries as the baseline.
+Proves: A5's fields (the unit test pins the line); the consumer finds, on
+the fixture, every planted hole, duplicate and vanished block the fixture
+marks as expected errors; the stand-in's `conn` is the same across requests
+on one keep-alive connection (a test with `http.client` reusing one).
 
-### M2 — The snapshot goes at once
+### M2 — The instruments: `bench_open.py` (micro and full path), `bench_scale.py opens`
+
+What exists after: `bench_open.py --uplink --hub local|standin [--live |
+--synthetic-rows N] --scenario … --opens N [--pause-stream S --backlog B]`
+measures E through the real uplink and real hub code and runs the consumer
+and the inventory on what the client received; `--micro` measures N_micro;
+`bench_scale.py opens` measures E at scale across a restart.
+
+Touches: new `sminos/tests/bench_open.py`, `sminos/tests/bench_scale.py`
+(the `opens` mode, `--large`), `sminos/tests/ws_client.py` only if a stamp
+it lacks is needed.
+
+Decisions: the local hub is started from `--maws <worktree>` with its own
+`--state` directory under the instrument's temporary root and a free port;
+the uplink is enrolled as `LocalHub.enroll` does, the project created as
+`Uplink.setUpClass` does; the `--live` session is `live-bridge-check.py`'s
+`Live` imported, not copied, with `--thinking` passed to the session for the
+thinking scenarios (the engine's flag for extended thinking as the live
+check's `start_session` can carry it). Scenarios: `idle`, `after-prompt`,
+`mid-message` (a probe subscription watches the stream; the open is made on
+the first text chunk after a `block-row` of the same step; the open's line
+records `cut not on disk` or not, and the run reports how many opens hit the
+case), `long-answer` (open at +1 s, reconnect at +7 s, assert no `end`
+before the step's), `kill` (SIGKILL the child by the pid its `/status`
+answers; measure from the kill to the successor's snapshot at the client),
+`restart` (with `--synthetic-rows`: a cold open, then the uplink restarted
+and the same open), `held` (`--pause-stream S --backlog B`: the pause proxy
+between the uplink and the hub; B bytes of events uploaded to the project
+by a second client before the uplink's hello, so they are owed as backlog
+and paged down the stream after the `have`; a subscription opened and
+streaming before the pause; the proxy pauses when it has forwarded the
+first backlog page, so the `have` is written, the hello acknowledged and
+the session lane released, and the later pages are what block; S under
+the local hub's silence bound; the pre-pause subscription's chunks stamped
+at the client through the pause, one open at +1 s after the resume; every
+POST's answer and timing read from the stand-in's `posted` or the local
+hub's request log; B is raised if the executor finds the proxy's and
+wrangler's buffers absorb 4 MB without blocking). Each open prints `{"mode", "scenario", "load1", "E",
+"N", "arrived", "taken", "build", "cpu_ms", "rows", "cut", "waits",
+"holes", "dups", "gaps", "vanished"}`; the summary gives min / p50 / max of
+E and N per scenario and the load's range. `bench_scale.py opens`: the
+synthetic machine with `--live L --large G`, the uplink started fresh,
+subscribes sent through the stand-in's `/control/send` at +0.5 s (one small,
+one large), at +30 s (every live session, in sequence), then the uplink
+restarted and the +0.5 s pair again; E from the stand-in's `at` stamps; the
+saved-build directory kept across the restart (same SMINOS_HOME).
+
+Does not touch: any behavior; `bench_scale.py`'s other modes.
+
+Proves: on the branch's head before M5, the full path reproduces the bench
+within its spread — an `idle` open's N 0.00–0.05 s, a `mid-message` open's
+N ≥ 1 s, E a hub hop larger — and `bench_scale.py opens` records the
+restart baseline (a large session's first open cold); both recorded in
+Surprises & Discoveries as the baseline.
+
+### M3 — The web keeps a carried block across a reconnect (MAWS)
+
+What exists after: the web draws a block the fresh snapshot carries, named
+or not, through a reconnect; the DX4 type comment says so.
+
+Touches (MAWS): `apps/desk-web/src/depth/stream/layer.ts` (`snapshotEntry`,
+`load`, `resume`), `apps/desk-web/src/depth/stream/layer.test.ts`, new
+`apps/desk-web/src/depth/stream/dx4-stream.json` (M1's fixture, copied),
+`apps/desk-hub/src/protocol/session.ts` (the `Streaming.blocks` and
+`StreamingBlock` comments and the three optional keys), `apps/desk-web/src/depth/source/desk-transcript.ts`
+only if `resume`'s signature changes.
+
+Decisions: §9 whole. The fixture test replays `dx4-stream.json` through
+`StreamingLayer` and compares `blocks(agentId)` after each message to the
+expected drawn state; the existing `resume` tests stay and still pass (the
+rule only adds the carried-block case).
+
+Does not touch: the hub's code; the web's rows store; the transcript's
+reducer.
+
+Proves: A8 (the web half); gates `scripts/ci-gate.sh <worktree> --gates static,unit,e2e:desk-web`.
+
+### M4 — The hub's reply chain decoupled (MAWS)
+
+What exists after: a session POST is answered without waiting for the
+project's reply chain; a browser's subscribe is carried on a chain of its
+own; a stuck stream ends within `WRITE_TIMEOUT_MS`.
+
+Touches (MAWS): `apps/desk-hub/src/objects/project.ts` (`fromMachine`,
+`fromMachineFrame`, `hello`, `upload`, `toMachine`/`toMachineAll` with a
+lane, `carry`, `unsubscribe`, `rows`, `diff`, `output`, the RPC forwards),
+`apps/desk-hub/src/objects/machine.ts` (`write`'s bound, the `EndCause`),
+`apps/desk-hub/test/support/worker-under-test.ts` (the seams' queue listing
+shows both lanes), new `apps/desk-hub/test/reply-chain.test.ts`, the DX2
+comments in `objects/machine.ts` and `project.ts` that describe the wait.
+
+Decisions: §8 whole. First task: read the periodic-503 diagnosis the owner
+forwards and write the Decision Log line §8 asks for. The test, two parts: (a) a
+`MachineClient` (`test/support/clients.ts`) opens a stream and hellos with
+a `have` behind the project's log so a backlog is owed; the seam holds the
+`Machine`'s next `have` send; a second `MachineClient` connection posts a
+`session` frame for the project and is answered 200 within 200 ms; a
+`BrowserClient` subscribes and the `subscribe` frame reaches the first
+client's stream while the hold stands (the control chain); the seam
+released, the hello's POST is answered 200, and the backlog pages arrive in
+order. (b) As `machine-end.test.ts` builds a `Machine` on Node's streams
+with a client that stopped reading: a write past `WRITE_TIMEOUT_MS` ends
+the stream `write-stalled`, the chain's pending sends answer offline, and a
+`hello` POST held on it is answered 503 within `WRITE_TIMEOUT_MS` + 1 s.
+
+Does not touch: the wire; storage; the Registry; the web.
+
+Proves: A4 (the hub proof); the existing suites (`latency.test.ts`,
+`reconnect.test.ts`, `machine-end.test.ts`, `stream-close.test.ts`,
+`session-plane.test.ts`) pass; gates `scripts/ci-gate.sh <worktree> --gates static,unit`.
+
+### M5 — The snapshot goes at once; a notice's row is due at its step's end
 
 What exists after: an open mid-message, right after a prompt, or with a
 transcript not yet on disk gets its snapshot on the first pump after the
 bridge's; the named block's text is in the snapshot and its row follows
-when flushed; no build answers "waiting".
+when flushed; a subscription survives a long answer; no build answers
+"waiting".
 
 Touches: `sminos/hooks/mods/bridge-stream.tsx` (`track` on `block-row`,
 `shownMessage`, `resyncEvent`), `sminos/hooks/mods/bridge-state.tsx` (the
 block type), `sminos_bridge.py` (`_apply` on notices, `_message`, `_shown`),
 `sminos_plane.py` (`build`, `Subscription.open`, `unlocated`, `snapshot`,
-the kept blocks' `block-row` messages), tests in `bridge.test.ts`,
-`bridge_order.py` and `test_session_plane.py`, the DX5 plan's amendment
-line, the docstrings' continuity paragraph.
+the kept blocks' `block-row` messages, `notice`, `event` on `step`/`turn`,
+`release`'s deadlines), tests in `bridge.test.ts`, `bridge_order.py` and
+`test_session_plane.py`, the DX5 plan's amendment lines (the block shape;
+the consumer rule), the docstrings' continuity paragraph.
 
 Decisions: §2 whole. The `namedAt` stamp is the notice event's `t` (every
 emitted event is stamped in `emit`). In the child, `_message` keeps a block
 whose index is in `settled` when the block carries `uuid` (today it drops
 every settled block), and `_fold` still ignores chunks for settled indices;
 in the mod, `track` on `block-row` keeps the block in `blocks` and marks it,
-`settled` unchanged. The tests rewritten to the new rule:
-`test_cut_row_not_yet_on_disk_while_chunks_arrive` (the snapshot goes at
-once with the block, chunks past the watermark follow, the row lands
-named), `test_cut_row_that_never_reaches_disk` (the block stays drawn until
-`NOTICE_WAIT` from its notice, the subscription ends with the discontinuity
-naming the row; a subscription made after that gets the snapshot without the
-block and waits for nothing), `test_each_open_is_said_once…` (`waits 0`),
+`settled` unchanged. The deadline bookkeeping: `noticed` maps a uuid to
+`(step_key, at)`, `due` maps a uuid to its deadline once set; `event` on a
+`step` end or a `turn` complete sets `due` for every noticed uuid of that
+step; `release` ends on `now > due[u]`; a carried named block's uuid enters
+`noticed` with its entry's step key and no deadline. The tests rewritten to
+the new rules: `test_cut_row_not_yet_on_disk_while_chunks_arrive` (the
+snapshot goes at once with the block, chunks past the watermark follow, the
+row lands named), `test_cut_row_that_never_reaches_disk` (the block stays
+drawn through the step; `NOTICE_WAIT` after the step's end the subscription
+ends naming the row; a subscription made after that gets the snapshot
+without the block and waits for nothing), `test_notice_whose_row_never_flushes`
+(a `row-seen` between requests keeps the 5 s from the notice; one during an
+open step waits for the step), `test_each_open_is_said_once…` (`waits 0`),
 `test_a_null_cut_row_flushed_beside_its_streaming_block` and
-`test_a_module_reload_with_the_seeded_cut` as the rule now reads; new:
-"a history row's named block is dropped from the snapshot's streaming", "the
-kept blocks' block-rows are the messages after the snapshot, in order", "an
-open with no transcript file yet and a cut gets an empty snapshot". In
-`bridge_order.py`, the `Consumer` (DX5's reference reader) takes the same
-rule. The web's `resume` path (an old subscription that named the block,
-the new snapshot carrying it) is exercised by the reference consumer in
-`bench_open.py`'s `mid-message` scenario with a re-subscribe.
+`test_a_module_reload_with_the_seeded_cut` as the rules now read; new, with
+the consumer and the inventory: "a long answer after a thinking block: opens
+at +1 s and +7 s and a live subscription from the start all draw the block
+throughout a 12 s message and its row once" (A2's `long-answer`, on the
+fake session with the clock), "a history row's named block is dropped from
+the snapshot's streaming", "the kept blocks' block-rows are the messages
+after the snapshot, in order", "an open with no transcript file yet and a
+cut gets an empty snapshot", "a main subscription carries an agent loop's
+named block and relays its block-row". In `bridge_order.py`, the `Consumer`
+(DX5's reference reader) takes the same rules.
 
-Does not touch: the uplink; the build's persistence; `release`'s rules.
+Does not touch: the uplink; the build's persistence.
 
-Proves: A2 (by the unit tests for the mechanism; by `bench_open.py
---scenario mid-message` and `after-prompt` for the figures, recorded in
-Surprises & Discoveries).
+Proves: A2 (by the unit tests for the mechanism; by `bench_open.py --uplink
+--hub local --live --scenario mid-message`, `long-answer` and
+`after-prompt` for the figures, recorded in Surprises & Discoveries).
 
-### M3 — The uplink's sender lanes
+### M6 — The uplink's sender lanes, with connection reuse proven
 
 What exists after: the main thread never blocks on a POST; a held POST on
-the log lane delays no open; POSTs reuse connections; the stream still ends
-on any POST not answered 200.
+the log lane delays no open at the machine; POSTs reuse connections, and
+the log shows it; the stream still ends on any POST not answered 200.
 
 Touches: `sminos_uplink.py` (`Sender`; `Link.post`, `post_session`, `open`,
 `upload`, `deliveries`, `on_events`, `machine_presence`, `relay_requests`,
 `relay_rpcs`, `tick`, `close`; `serve_link`'s handling of `("sent", …)` and
-`("closed", …)` items; `on_subscribe`'s warm), `sminos_hublog.py` and
-`sminos_outcomes.py` only if an in-flight flag is best kept there,
-`sminos/tests/test_session_plane.py` (`Uplink`), `sminos/tests/test-uplink.sh`,
-`sminos/tests/hub_standin.py` only if a control it lacks is needed (it has
-`hold`, `release`, `post-delay`), the uplink's docstring.
+`("closed", …)` items; `on_subscribe`'s warm; the connection lines),
+`sminos_hublog.py` and `sminos_outcomes.py` only if an in-flight flag is
+best kept there, `sminos/tests/test_session_plane.py` (`Uplink`),
+`sminos/tests/test-uplink.sh`, the uplink's docstring.
 
 Decisions: §3 whole; the state table is the implementation's shape. `post()`
 and `exchange()` stay as the acker's path; the sender's exchange reuses
 `exchange`'s deadline and shutdown-on-end logic over a kept connection
 rather than a per-POST one. The in-flight flags live on `Link` keyed by
-project unless the producer's own object is the natural home. The keep-alive
-verification against the real hub is a by-hand step of this milestone
-(Concrete Steps), its finding recorded; the executor must not call the hub
-with credentials from a test.
+project unless the producer's own object is the natural home.
+`SMINOS_IDLE_CLOSE` overrides `IDLE_CLOSE` for a test. The by-hand read of
+the owner's daemon.log (A9) is this milestone's last step, with the owner,
+on a machine running the branch's plugin; its finding goes to Surprises &
+Discoveries.
 
 Does not touch: the plane's internals beyond `subscribe`'s warm call; the
-acker; the hub stand-in's DX2 behavior (a control endpoint may be added).
+acker; the hub stand-in's DX2 behavior.
 
-Proves: A4 (the deterministic half, in `Uplink`); the existing `Uplink`
-and `test-uplink.sh` cases pass unchanged in meaning (a reconnect
+Proves: A4 (the uplink proof); A9 (the stand-in half); the existing
+`Uplink` and `test-uplink.sh` cases pass unchanged in meaning (a reconnect
 mid-response, a dropped stream, a 503, a stalled POST, uploads and
 `have`); new: "marks in a POST's continuation run after its 200 and never
 when it fails", "a project's session messages wait for its hello's
 acknowledgement and other projects' do not", "a lane past
 `SEND_QUEUE_MAX` ends the stream", "a stale keep-alive on send is retried
-once on a fresh connection; a failure after the send is a loss".
+once on a fresh connection; a failure after the send is a loss", "the
+connection lines name each dial and close with its count".
 
-### M4 — The build saved, warmed, and off the open path
+### M7 — The build saved and warmed, bounded; the look off the open path
 
 What exists after: a daemon restart costs an open a load, not a parse; a
-live session's first open is warm; the snapshot does not wait for the look.
+live session's first open is warm; the warmer never queues ahead of an open
+and runs at most two builds at once; the snapshot does not wait for the look.
 
-Touches: `sminos_plane.py` (`Transcript.load`/`save`, `Transcripts`
-eviction and `INDEX_KEEP`, the warmer in `Plane.tick`, `opening` without the
-look, `noted`'s `loaded`), `sminos_uplink.py` (the save at stop, the sweep
-at start), `sminos/tests/test_session_plane.py` (`TranscriptIndex`, `Session`),
-new `sminos/tests/bench_index.py`, the plane's docstring.
+Touches: `sminos_plane.py` (`Transcript.load`/`save`, `submit_background`
+and the two-queue `work`, `Transcripts` eviction and `INDEX_KEEP`, the
+warmer in `Plane.tick` with its bound and round-robin, `opening` without
+the look, `noted`'s `loaded`), `sminos_uplink.py` (the save at stop, the
+sweep at start), `sminos/tests/test_session_plane.py` (`TranscriptIndex`,
+`Session`, a `Warmer` class), new `sminos/tests/bench_index.py`, the plane's
+docstring.
 
-Decisions: §4 whole. Format and constants as Interfaces. The warmer's
-`transcript_now` lookups are cached per session in the plane for the
-session's life. Saving runs on the worker; the uplink's stop save is a job
-submitted to each worker and joined with the bound.
+Decisions: §4 whole. Format and constants as Interfaces. Saving runs on
+the worker; the uplink's stop save is a background job submitted to each
+worker and joined with the bound.
 
 Does not touch: agent transcripts' warming; the Disk cache's persistence
-(its look is warmed by the warmer and is off the open path).
+(the look is off the open path and is not warmed).
 
-Proves: A3 (by `bench_index.py` on a large transcript and `bench_open.py
---scenario restart --synthetic-rows 15000`); unit tests: "a saved build loads and
-extends from its end", "a saved build of another format, inode, or a
-shorter file is removed and the build starts cold", "a live member's
-transcript is held and extended before any subscription", "eviction saves
-first and a later open loads", "the snapshot goes before the look and the
-first `subagents` follows", "the stop saves every held build".
+Proves: A3 (by `bench_index.py` on a large transcript and `bench_scale.py
+opens --live 40 --large 6`, before and after this milestone, both figures
+recorded); unit tests: "a saved build loads and extends from its end", "a
+saved build of another format, inode, or a shorter file is removed and the
+build starts cold", "a live member's transcript is held and extended before
+any subscription", "an open's build runs ahead of a queued warm job and a
+warm job never queues twice", "at most two warm jobs run at once across
+forty live transcripts, visited round-robin", "eviction saves first and a
+later open loads", "the snapshot goes before the look and the first
+`subagents` follows", "the stop saves every held build".
 
-### M5 — The child respawns at once; a resync fits the engine's limit
+### M8 — The child respawns at once; a resync fits the engine's limit
 
 What exists after: a crashed child's successor serves within ~0.3 s; a 5 MB
 streaming block never stalls the bridge.
@@ -838,75 +1247,88 @@ the DX5 amendment lines.
 Decisions: §6 and §7 whole.
 
 Does not touch: chunk events (whole, as today); the child's subscriber
-fan-out (§8).
+fan-out (§10).
 
 Proves: A6 (by `bench_open.py --scenario kill`; the unit test pins the
 timers), A7 (by the unit tests named there).
 
-### M6 — Acceptance, documents, the branch review
+### M9 — Acceptance, documents, the branch review
 
-What exists after: the acceptance section executed as written and its
-figures recorded; the documents current; the branch ready for its review.
+What exists after: the acceptance section executed as written, each check's
+figure recorded with its load band or marked incomplete at the band it
+missed; the documents current; the branch ready for its review.
 
 Touches: `docs/doperpowers/specs/2026-10-20-desk-open-fast-design.md`
 (Progress, Surprises & Discoveries, the figures), `CLAUDE.md` (the sminos
-row of the repo map: the plane's saved builds and warmer, the uplink's
-sender lanes, in a clause each), `sminos/skills/sminos/references/setup.md`
-only if a knob the owner sets is named (none is planned), the three
-docstrings read once more as a whole.
+row of the repo map: the plane's saved builds and bounded warmer, the
+uplink's sender lanes and connection lines, in a clause each),
+`sminos/skills/sminos/references/setup.md` only if a knob the owner sets is
+named (none is planned), the three docstrings read once more as a whole.
 
-Decisions: the acceptance runs on the owner's MacBook under whatever load it
-has, the load recorded with each figure; a check that misses its figure at
-the load it ran at is reported with the figure, not retried for a quieter
-moment. The by-hand live checks (A8) run last. The version bump of this
-milestone is the branch's last.
+Decisions: the target-band runs (100–300) are taken from the MacBook's own
+high-load windows (`uptime` read before each run; the band's runs made when
+it is there) or on an isolated devcloud host under synthetic load; a check
+with no result in its band is written as incomplete at that band. The
+by-hand live checks (A10) run last. The owner's `window.deskLatency()`
+figures are written in when the owner supplies them. The version bump of
+this milestone is the branch's last.
 
-Proves: A1–A8 as written.
+Proves: A1–A10 as written.
 
 ### Concrete Steps
 
-Working directory: the branch's worktree root. The suites, per area:
+Working directory: the branch's worktree root (sminos); the MAWS worktree
+for M3 and M4. The suites, per area:
 
 ```
 bash sminos/tests/run-sminos-tests.sh                     # all; SMINOS_PART=core|suites for one part
 python3 sminos/tests/test_session_plane.py                # the plane and the uplink against the stand-in
+DESK_HUB=http://127.0.0.1:8747 python3 sminos/tests/test_session_plane.py Uplink   # the same against the local hub
 python3 sminos/tests/test_session_plane.py Session.test_cut_row_not_yet_on_disk_while_chunks_arrive
 bash sminos/tests/test-uplink.sh
 bash sminos/tests/mods/run.sh                             # the mods (claude plugin test), then the shell checks
 ci-gate --gates sminos,sminos-suites,sminos-mods,mods-types   # the committed HEAD, on Actions
+pnpm --filter desk-hub local --state /tmp/desk-local --port 8747     # MAWS worktree: the local hub
+pnpm --filter desk-hub test                               # MAWS worktree: the hub's vitest suites
+scripts/ci-gate.sh <MAWS worktree> --gates static,unit    # M4
+scripts/ci-gate.sh <MAWS worktree> --gates static,unit,e2e:desk-web   # M3
 ```
 
 A passing suite prints `ok` lines and a summary with 0 failures; `ci-gate`
 prints one line per gate then `GREEN <run-url>`.
 
-The instruments, by hand (they spend haiku calls; the gateway keys in the
-environment as `live-bridge-check.py` takes them):
+The instruments, by hand (the `--live` runs spend haiku calls; the gateway
+keys in the environment as `live-bridge-check.py` takes them; `uptime`
+before each run, and the band it falls in written with the result):
 
 ```
-python3 sminos/tests/bench_open.py --live --scenario idle --opens 10
-python3 sminos/tests/bench_open.py --live --scenario mid-message --opens 5
-python3 sminos/tests/bench_open.py --live --scenario after-prompt --opens 5
-python3 sminos/tests/bench_open.py --live --scenario kill --opens 3
-python3 sminos/tests/bench_open.py --scenario restart --synthetic-rows 15000   # no session: a cold open, then a loaded one in a new process
-python3 sminos/tests/bench_open.py --session <id> --sminos-home <dir>      # one open of an existing session
+python3 sminos/tests/bench_open.py --uplink --hub local --maws <MAWS worktree> --live --scenario idle --opens 10
+python3 sminos/tests/bench_open.py --uplink --hub local --maws <MAWS worktree> --live --thinking --scenario mid-message --opens 5
+python3 sminos/tests/bench_open.py --uplink --hub local --maws <MAWS worktree> --live --thinking --scenario long-answer --opens 3
+python3 sminos/tests/bench_open.py --uplink --hub local --maws <MAWS worktree> --live --scenario after-prompt --opens 5
+python3 sminos/tests/bench_open.py --uplink --hub local --maws <MAWS worktree> --live --scenario kill --opens 3
+python3 sminos/tests/bench_open.py --uplink --hub standin --scenario restart --synthetic-rows 15000
+python3 sminos/tests/bench_open.py --uplink --hub local --maws <MAWS worktree> --scenario held --pause-stream 15 --backlog 4m
+python3 sminos/tests/bench_open.py --micro --session <id> --sminos-home <dir>     # one open's phases, in-process
+python3 sminos/tests/bench_scale.py opens <scripts-dir> --live 40 --large 6
 python3 sminos/tests/bench_index.py <transcript.jsonl>
 ```
 
 Each `bench_open.py` open prints one JSON line, e.g.
-`{"scenario": "mid-message", "load1": 42.1, "N": 0.07, "arrived": 0.02, "taken": 0.02, "build": "warm", "cpu_ms": 3, "rows": 1512, "cut": "not on disk", "waits": 0, "holes": 0, "dups": 0, "gaps": 0}`,
-then a summary per scenario; `bench_index.py` prints three lines,
-`cold cpu 0.78 s wall 1.02 s`, `loaded cpu 0.27 s …`, `warm cpu 0.00 s …`,
-with the rows and bytes.
+`{"mode": "uplink", "scenario": "mid-message", "load1": 42.1, "E": 0.21, "N": 0.07, "arrived": 0.02, "taken": 0.02, "build": "warm", "cpu_ms": 3, "rows": 1512, "cut": "not on disk", "waits": 0, "holes": 0, "dups": 0, "gaps": 0, "vanished": 0}`,
+then a summary per scenario; `bench_scale.py opens` prints one line per
+open with its moment (`+0.5 s`, `+30 s`, `restart +0.5 s`), size and E;
+`bench_index.py` prints three lines, `cold cpu 0.78 s wall 1.02 s`,
+`loaded cpu 0.27 s …`, `warm cpu 0.00 s …`, with the rows and bytes.
 
-M3's keep-alive verification, by hand on an enrolled machine running the
-branch's uplink under its real SMINOS_HOME (the owner's machine, with the
-owner): read `daemon.log` for `a POST was not delivered` lines over an
-hour of normal use before and after; the sender's slow-POST line names any
-POST over 5 s. Nothing is typed into a test from this.
+M6's read of the owner's daemon.log, by hand with the owner, on a machine
+running the branch's plugin: the connection lines over an hour of normal
+use — dials per lane, POSTs per connection, idle closes — and any
+`a POST was not delivered` line. Nothing is typed into a test from this.
 
 Version bumps: `scripts/bump-version.sh --plugin sminos 1.1.3` (M1), then
-each next patch per milestone; `scripts/bump-version.sh --check --plugin
-sminos` confirms no drift.
+each next patch per sminos milestone; `scripts/bump-version.sh --check
+--plugin sminos` confirms no drift.
 
 ### Interfaces and Dependencies
 
@@ -920,11 +1342,20 @@ sminos` confirms no drift.
   `resyncEvent` and in the child's snapshot line alike.
 - A resync travels in a post of its own; `resyncEvent` may carry
   `truncated: true` when it dropped streaming entries to fit `RESYNC_MAX`.
+- The consumer rule: a notice's row is due `NOTICE_WAIT` after the end of
+  the loop's step open when the notice came, or after the notice when none
+  was; the rest of the rule as written.
 
 **DX4 (machine ↔ hub ↔ web): unchanged on the wire.** A snapshot's
-`streaming` block may now carry `uuid`, `namedAt` and `truncated`, keys the
-web passes over; the subscription's messages after such a snapshot begin with
-one `block-row` per block carrying `uuid`.
+`streaming` block may now carry `uuid`, `namedAt` and `truncated`; the
+subscription's messages after such a snapshot begin with one `block-row` per
+block carrying `uuid`; a consumer draws a block the snapshot carries, named
+or not (§9).
+
+**DX2 (machine ↔ hub): unchanged on the wire.** A POST's 200 means the
+frames were applied and the replies *those frames* owe are on the stream;
+503 `delivery-failed` means one of those could not be written, which now
+includes a write past `WRITE_TIMEOUT_MS` (`write-stalled`).
 
 **`sminos_plane.py`:**
 
@@ -939,12 +1370,20 @@ def build(t, cut, bridged):                                     # -> ("built", B
 class Built:  how: str  # "loaded" | "warm" | "cold"; cpu_ms: int
 
 class Transcript:
+    def submit(self, job): ...             # foreground: an open's build, a page, a look, an output
+    def submit_background(self, job): ...  # the warmer's; runs only when no foreground job is queued
+    warming: bool                          # a warm job queued or running
     def load(self): ...     # the saved build into index, ledger, chain; False and the file removed when it cannot be used
     def save(self): ...     # atomic; called under the save rule
     # the Transcript records how its index came (loaded, warm, cold) and the CPU its last extend cost; build() copies them into Built
 
+class Subscription:
+    noticed: dict   # uuid -> (step key or None, at)
+    due: dict       # uuid -> the deadline, once its step ended (or at once for a notice with no open step)
+
 INDEX_KEEP = 32
 WARM_EVERY = 2.0
+WARM_PARALLEL = 2
 SAVE_GROWTH = 16 << 20
 STOP_SAVE_SECONDS = 5.0
 BUILD_FORMAT = 1
@@ -969,9 +1408,12 @@ class Sender(threading.Thread):
 #   ("sent", [then, ...])     each then() run on the main thread, in order
 #   ("closed", why)           as a NotDelivered today: the stream ends
 
-IDLE_CLOSE = 60.0
+IDLE_CLOSE = 60.0            # SMINOS_IDLE_CLOSE overrides, for a test
 SEND_QUEUE_MAX = 16 << 20
 SLOW_POST_SECONDS = 5.0
+# daemon.log lines: "uplink: <lane> lane dialled the hub (connection #n)";
+#   "uplink: <lane> lane closed connection #n after <k> POSTs (idle|the hub closed it|failed: <why>)";
+#   "uplink: a <lane> lane POST took <s> s"
 ```
 
 `Link` holds `self.log_lane` and `self.session_lane`; `Link.post(frames)`
@@ -991,26 +1433,61 @@ type Block = { index: number; kind: string; text: string; upTo: number; id?: str
 **The child (`sminos_bridge.py`):** `BLOCK_TAIL = 65536`; `_message` and
 `_fold` keep `uuid`, `namedAt`, `truncated`.
 
-**Instruments:** `sminos/tests/bench_open.py` (`--live --scenario
-{idle,after-prompt,mid-message,kill} --opens N`; `--scenario restart
---synthetic-rows N`; `--session <id> --sminos-home <dir>`),
-`sminos/tests/bench_index.py <transcript>`; both import the scripts from the
-plugin root they sit under, never from a plugin cache, and both run under a
+**The hub (`apps/desk-hub/src/objects/project.ts`, `machine.ts`):**
+
+```ts
+type Lane = 'replies' | 'control'
+protected toMachine(name: string, generation: number, frame: DownFrame, lane: Lane): Promise<'written' | 'offline'>
+private toMachineAll(name: string, generation: number, frames: Iterable<DownFrame>, lane: Lane): Promise<'written' | 'offline'>
+// queueKey(name, generation, lane) = `${name}#${generation}#${lane}`
+private async fromMachineFrame(ctx: MachineContext, frame: UpFrame): Promise<'stale' | Promise<unknown>[]>   // the writes the frame queued
+export const WRITE_TIMEOUT_MS = 10_000      // machine.ts; EndCause gains 'write-stalled'
+```
+
+**The web (`apps/desk-web/src/depth/stream/layer.ts`):** `snapshotEntry`
+reads `uuid`; `load` names a block that carries one; `resume` keeps a block
+the fresh snapshot carries (§9). `dx4-stream.json`: `[{ "name", "steps":
+[{ "message": <DX4 envelope or "resubscribe">, "drawn": { "<agentId or
+main>": [{ "turnId", "agentId", "step", "index", "kind", "text",
+"settledBy" }] } }] }]`, the consumer's and the layer's test replaying it.
+
+**The reference consumer (`sminos/tests/dx4_consumer.py`):** `Consumer(scope_agent, previous=None)`
+with `take(envelope)`, `blocks(agent)`, `rows`, `errors`;
+`Inventory.from_sources(transcript_path, dx5_events)` with
+`check(consumer) -> {"holes": [...], "vanished": [...], "partial": [...], "dups": [...]}`.
+
+**Fixtures:** `hub_standin.py` on HTTP/1.1 with `posted[].conn` and
+`sessions[].at`; `pause_proxy.py <hub-url> <port-file>` with
+`POST /control/pause {"seconds"}` and `/control/resume`.
+
+**Instruments:** `sminos/tests/bench_open.py` (`--uplink --hub local|standin
+[--maws DIR] [--live [--thinking] | --synthetic-rows N] --scenario
+{idle,after-prompt,mid-message,long-answer,kill,restart,held} --opens N
+[--pause-stream S --backlog B]`; `--micro --session <id> --sminos-home <dir>`),
+`sminos/tests/bench_scale.py opens <scripts-dir> --live L --large G`,
+`sminos/tests/bench_index.py <transcript>`; all import the scripts from the
+plugin root they sit under, never from a plugin cache, and run under a
 temporary HOME and SMINOS_HOME of their own unless `--sminos-home` names one.
 
 **Review rung for the branch:** `doperpowers:review-code` at **xhigh** (the
 panel). The branch changes the uplink's threading, the plane's continuity
-rules and the bridge's protocol in two languages; a single reviewer reads
-one of those well in a pass.
+rules and the bridge's protocol in two languages, with two MAWS changes
+beside; a single reviewer reads one of those well in a pass.
 
 ## Surprises & Discoveries
 
 - Observation: the hub holds a machine's POST for the replies it owes the
-  machine's own stream, not for the browser. A plane message owes nothing.
-  Evidence: `apps/desk-hub/src/objects/project.ts` `fromMachine` — "Settled
-  at once for a frame that owes no reply, which most of a stream's frames
-  are" — awaiting `this.queues.get(queueKey(ctx.machine, ctx.generation))`;
-  a subscription's message ends in `this.toSocket(socket, …)`, unawaited.
+  machine's own stream, not for the browser — but it waits on the whole
+  reply chain's tail, which is shared across every connection to that
+  machine, and the browser's subscribe is queued on the same chain.
+  Evidence: `apps/desk-hub/src/objects/project.ts` at `dc3f9d87e`:
+  `fromMachine` — "Settled at once for a frame that owes no reply, which
+  most of a stream's frames are" — awaiting
+  `this.queues.get(queueKey(ctx.machine, ctx.generation))` after every
+  frame; `carry` → `this.toMachine(route.machine, route.generation, { t:
+  'subscribe', … })`; `toMachineAll` chaining on `this.queues.get(key)`.
+  A subscription's message to a browser ends in `this.toSocket(socket, …)`,
+  unawaited. (Review finding P1-1, 2026-10-20.)
 - Observation: every stream of the owner's uplink ends in the same 503
   `delivery-failed`, `ARCHIVE_EVERY` after it connected; the POST is the
   re-`hello` batch, held up to a minute first.
@@ -1020,9 +1497,16 @@ one of those well in a pass.
   `{"error":"delivery-failed", …, "frames":7}` (6 or 9 on two). `ARCHIVE_EVERY
   = 900` (`sminos_archive.py`); `Link.tick` posts `[hello…]` for every opened
   project at `next_confirm`. The two abandoned opens (06:19:34, 06:22:02) sit
-  inside stream 219's last minutes. The hub's side is the owner's: which
-  project's `fromMachine` fails on a re-`hello`, and why its answer takes a
-  minute (`wrangler tail` on the hub shows the `end` line's cause).
+  inside stream 219's last minutes. Another agent diagnoses the hub's side.
+- Observation: today's 5 s notice expiry cannot survive a long answer after
+  a thinking block, since the engine flushes a message's rows at its end;
+  the open gate hid it (an open mid-message died at the gate first), and the
+  live path's discontinuities are not logged.
+  Evidence: `release`'s `if now - at > NOTICE_WAIT: end("discontinuity", …)`;
+  the bench's 2,445 ms and 2,319 ms from a thinking block's notice to its
+  flush at the message's end **[M]**; `grep -c "did not reach the
+  transcript" daemon.log` → 0, and `Subscription.end` logs only an end
+  before the snapshot. (Review finding P1-2.)
 - Observation: a build's size and cost, on a synthetic transcript shaped
   like a real one (15,000 rows, user / assistant text / tool_use / tool_result
   with `api-request` noise, 163 MB).
@@ -1030,28 +1514,30 @@ one of those well in a pass.
   8.9 MB (peak 42.1 MB)`, `pickle 2.2 MB in 0.008 cpu s`, `unpickle in 0.284
   cpu s`, `page: 124 rows in 0.003 cpu s`. A load is a third of a build, not
   free; the warmer is what makes a live session's open warm.
-- Observation: the web's `blockRow` is idempotent (`named.add`,
-  `settledBy = uuid`), and `resume` keeps a block the old subscription
-  named when the new snapshot carries it, resetting `settledBy` to null for
-  the new `block-row` to set — the shape §2 relies on.
-  Evidence: `apps/desk-web/src/depth/stream/layer.ts` at `4914cf4d`.
+- Observation: the web's `resume` drops a block the fresh snapshot carries
+  when the old subscription had named it and the reconnect's history is
+  empty; `blockRow` cannot restore it.
+  Evidence: `apps/desk-web/src/depth/stream/layer.ts` at `dc3f9d87e`,
+  `resume`: `for (const index of old.named) { request.blocks.delete(index);
+  … }` then `settledBy = … lands(block.settledBy) ? … : landing; if
+  (settledBy === null) continue;` with `lands = (uuid) => merged !== null ||
+  this.uuids.has(uuid)` from `desk-transcript.ts`. (Review finding P2-4.)
+- Observation: the hub stand-in speaks HTTP/1.0 (`protocol_version =
+  "HTTP/1.0"`, `hub_standin.py`), so connection reuse could not have been
+  observed against it. (Review finding B3.)
 
 ## Decision Log
 
 - Decision: verification. The spec gets one independent review by the
   `doperpowers:adversarial-reviewer` agent (technical-heavy) and, its
-  execution section having six milestones, that agent's buildability
+  execution section having nine milestones, that agent's buildability
   review in the same round; the branch is reviewed by
   `doperpowers:review-code` at xhigh (the panel). The independent review and
   the execution are the owner's, by their brief.
   Rationale: the design is a measured fix list, not a novel architecture;
-  the risk is in the concurrency of §3 and the continuity rules of §2, which
-  the adversarial read and the panel cover.
+  the risk is in the concurrency of §3 and §8 and the continuity rules of
+  §2 and §9, which the adversarial read and the panel cover.
   Date/Author: 2026-10-20, the authoring session (smns-erb-71).
-- Decision: no hub milestone. Rationale: §1's first correction — the hub's
-  hold is for the machine's own replies; no fix here needs the hub. A
-  Durable Object storage change is therefore not in question.
-  Date/Author: 2026-10-20, the authoring session.
 - Decision: two sender lanes with marks split by whether the handshake heals
   them (§3), over the plane on its own thread, one lane, or parallel POSTs.
   Rationale in §3. Date/Author: 2026-10-20, the authoring session.
@@ -1061,8 +1547,56 @@ one of those well in a pass.
 - Decision: the build saved and warmed; the tail-first snapshot and build
   cancellation dropped; the look off the open path (§4). Rationale in §4.
   Date/Author: 2026-10-20, the authoring session.
-- Decision: serialize-once in the child dropped (§8). Rationale there.
+- Decision: serialize-once in the child dropped (§10). Rationale there.
   Date/Author: 2026-10-20, the authoring session.
+- Decision (review round 1, P1-1): a hub milestone (M4, §8) — a POST waits
+  for its own replies, two chains per stream, a bounded write — replacing
+  the first draft's "no hub change". Rejected: answering every POST on
+  receipt (changes DX2's 200; the WebSocket phase's); a hub test control in
+  the deployed Worker for the pair proof (the pause proxy reproduces a
+  blocked chain through the real code without one).
+  Rationale: the chain is shared across connections and carries the
+  subscribe, so the lanes alone isolate nothing at the hub (§1). No Durable
+  Object storage change. Date/Author: 2026-10-20, the authoring session.
+- Decision (P1-2): a notice's row is due at its step's end, not at its
+  notice (§2), for carried and live notices alike; the first draft's
+  backdated `noticed` is withdrawn. Rejected: a longer fixed `NOTICE_WAIT`
+  (any fixed value fails some answer's length).
+  Date/Author: 2026-10-20, the authoring session.
+- Decision (P1-3): the warmer bounded — a background queue behind
+  foreground jobs, one warm job per transcript, `WARM_PARALLEL` 2, round-robin,
+  no look warming (§4); the scale proof `bench_scale.py opens`. Rejected: a
+  semaphore held inside the job (it would block the worker and the opens
+  behind it).
+  Date/Author: 2026-10-20, the authoring session.
+- Decision (P2-4): a web milestone (M3, §9): a block the fresh snapshot
+  carries is kept, named from the snapshot's `uuid`; the parity fixture
+  `dx4-stream.json` shared with the reference consumer. Rejected: having the
+  plane withhold carried blocks on a reconnect (it cannot tell a reconnect
+  from a first open, and the hole would return).
+  Date/Author: 2026-10-20, the authoring session.
+- Decision (P2-5, B1): acceptance measured end to end (E) through the real
+  uplink and the real hub code on the local hub, N kept as a diagnostic;
+  `bench_open.py` split into the full path and a labelled micro-benchmark;
+  the target load band taken from the MacBook's own windows or an isolated
+  host, a missing band result recorded as incomplete; the deployed-hub
+  timings named as the owner's.
+  Date/Author: 2026-10-20, the authoring session.
+- Decision (B2): a reference consumer with thinking, text and tool blocks,
+  per-subscription sequence, the web's reconciliation rule, and an
+  inventory from the sources of truth (M1), replacing the first draft's
+  pointer to a `Browser` the bench never had.
+  Date/Author: 2026-10-20, the authoring session.
+- Decision (B3): the stand-in on HTTP/1.1 with connection ids, the sender's
+  permanent connection lines, and a by-hand read of the owner's log for the
+  real edge (M6); the first draft's "count not-delivered lines" withdrawn.
+  Date/Author: 2026-10-20, the authoring session.
+- Decision: deploy order — the web (M3) before the sminos snapshot change
+  (M5) rolls, the hub (M4) before the lanes (M6) roll; each side tolerates
+  the other's old version.
+  Rationale: with new sminos and old web, a reconnect mid-message loses a
+  block (P2-4); with new sminos and old hub, a held re-`hello` still holds
+  the session POST (P1-1). Date/Author: 2026-10-20, the authoring session.
 
 ## Outcomes & Retrospective
 
