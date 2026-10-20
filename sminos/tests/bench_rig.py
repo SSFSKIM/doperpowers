@@ -522,9 +522,12 @@ def probe_gaps(events, connections, failed=(), prompts=()):
     whole request may have come and gone before it), a turn the probe never
     saw, or a prompt the instrument sent inside it (a turn begun and ended
     there leaves no trace in the snapshot; the headless session takes no
-    other input). `events` [(at, event)] with the probe's own snapshot lines,
-    `connections` its subscriptions, each with `first`, the index of its
-    snapshot in `events`."""
+    other input). A latest stream that closed with no successor's snapshot
+    yet is an unfinished gap (`to` None), lost until one comes. `attempts`
+    counts the tries that got no stream and the streams that ended before
+    their snapshot. `events` [(at, event)] with the probe's own snapshot
+    lines, `connections` its subscriptions, each with `first`, the index of
+    its snapshot in `events` (None: it sent none)."""
     subs = [c for c in connections if c.get("first") is not None]
     out = []
     for prev, nxt in zip(subs, subs[1:]):
@@ -561,8 +564,20 @@ def probe_gaps(events, connections, failed=(), prompts=()):
             why.append("a turn the probe never saw: %s" % sorted(unseen, key=str))
         if any(start <= at <= to for at in prompts):
             why.append("a prompt was sent inside the gap")
-        out.append({"from": start, "to": to, "attempts": sum(1 for at, _ in failed if start <= at <= to),
+        empty = sum(1 for c in connections if c.get("first") is None and start <= (c.get("opened") or 0) <= to)
+        out.append({"from": start, "to": to, "attempts": sum(1 for at, _ in failed if start <= at <= to) + empty,
                     "reconstructable": not why, "why": "; ".join(why) or None})
+    if subs and subs[-1].get("closed") is not None:
+        # The latest stream ended and no successor's snapshot has come: everything since is uncovered, and
+        # stays a lost gap until a next snapshot is there to be read against.
+        start = subs[-1]["closed"]
+        later = [c for c in connections if c.get("first") is None and (c.get("opened") or 0) >= start]
+        why = ["no successor snapshot yet: the stream closed and nothing covers the session since"]
+        if any(at >= start for at in prompts):
+            why.append("a prompt was sent inside the gap")
+        out.append({"from": start, "to": None,
+                    "attempts": sum(1 for at, _ in failed if at >= start) + len(later),
+                    "reconstructable": False, "why": "; ".join(why)})
     return out
 
 

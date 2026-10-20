@@ -259,16 +259,17 @@ def resume_now():
 
 class Heads:
     """HTTP/1.1 messages one way on a connection, fed its raw bytes as they
-    come: `on_head(first line, headers, at, body)` once each message's head
-    is whole — `at` when its first byte came, `body` the first BODY_PEEK
-    bytes of its body once they are in (or all of a shorter one) — its body
-    passed over by its Content-Length, its chunked framing, or (a response
-    with neither) the rest of the connection."""
+    come: `on_head(first line, headers, at)` the moment each message's head
+    is whole — `at` when its first byte came — and `on_body(what on_head
+    returned, the body's first bytes)` each time more of its first
+    BODY_PEEK bytes arrive; its body passed over by its Content-Length, its
+    chunked framing, or (a response with neither) the rest of the
+    connection."""
 
-    def __init__(self, on_head, response=False):
-        self.on_head, self.response = on_head, response
+    def __init__(self, on_head, on_body=None, response=False):
+        self.on_head, self.on_body, self.response = on_head, on_body, response
         self.buf, self.line, self.state, self.left, self.at = b"", b"", "head", 0, None
-        self.peek, self.held = b"", None     # the body's first bytes, and the head waiting on them
+        self.current, self.peek = None, b""    # the message whose body is coming, and its first bytes
 
     def feed(self, data, at):
         i, n = 0, len(data)
@@ -287,8 +288,8 @@ class Heads:
                 for line in lines[1:]:
                     name, _, value = line.partition(":")
                     headers[name.strip().lower()] = value.strip()
-                self.held = (lines[0], headers, self.at)
-                self.at, self.peek = None, b""
+                self.current, self.peek = self.on_head(lines[0], headers, self.at), b""
+                self.at = None
                 length = headers.get("content-length", "")
                 status = lines[0].split(" ")[1] if self.response and " " in lines[0] else ""
                 if "chunked" in headers.get("transfer-encoding", "").lower():
@@ -299,14 +300,12 @@ class Heads:
                     self.state = "rest"
                 else:
                     self.state = "head"
-                    self.said()
             elif self.state == "length":
                 take = min(self.left, n - i)
                 self.look(data[i:i + take])
                 i, self.left = i + take, self.left - take
                 if not self.left:
                     self.state = "head"
-                    self.said()
             elif self.state == "size":
                 j = data.find(b"\n", i)
                 if j < 0:
@@ -329,31 +328,22 @@ class Heads:
                 last, self.line, i = (self.line + data[i:j]).strip(), b"", j + 1
                 if not last:
                     self.state = "head"
-                    self.said()
-        if self.state == "rest" or len(self.peek) >= BODY_PEEK:
-            self.said()
 
     def look(self, piece):
-        if self.held is not None and len(self.peek) < BODY_PEEK:
+        if self.on_body is not None and self.current is not None and len(self.peek) < BODY_PEEK and piece:
             self.peek += piece[:BODY_PEEK - len(self.peek)]
-
-    def close(self):
-        """The connection ended: a head still waiting on its body's first bytes is said with what came."""
-        self.said()
-
-    def said(self):
-        if self.held is not None:
-            first, headers, at = self.held
-            self.held = None
-            self.on_head(first, headers, at, self.peek)
+            self.on_body(self.current, self.peek)
 
 
 class Census:
     """Every request on the connections that pass (all but the stream's), in
-    the order they started: its start, what it names (method, path, the
-    stream generation and the Access client id it carries — never a secret
-    — and the frame kinds its body opens with), and its answer's status and
-    arrival, or when its connection closed unanswered."""
+    the order they started, each in it from the moment its head is read —
+    before the bytes that could complete it go on to the hub, so no answer
+    can come before its request is here: its start, what it names (method,
+    path, the stream generation and the Access client id it carries — never
+    a secret — and the frame kinds its body opens with, as its first bytes
+    arrive), and its answer's status and arrival, or when its connection
+    closed unanswered."""
 
     FRAME = re.compile(rb'"t"\s*:\s*"([a-z-]+)"')
 
@@ -367,15 +357,19 @@ class Census:
             self.ids += 1
             return self.ids
 
-    def started(self, conn, first, headers, at, body):
+    def started(self, conn, first, headers, at):
         method, _, rest = first.partition(" ")
         rec = {"conn": conn, "method": method, "path": rest.rsplit(" ", 1)[0], "start": at,
                "generation": headers.get("x-desk-generation"), "client": headers.get("cf-access-client-id"),
-               "frames": [m.decode() for m in self.FRAME.findall(body)][:8],
-               "status": None, "answered": None, "closed": None}
+               "frames": [], "status": None, "answered": None, "closed": None}
         with self.lock:
             self.requests.append(rec)
         return rec
+
+    def body(self, rec, peek):
+        frames = [m.decode() for m in self.FRAME.findall(peek)][:8]
+        with self.lock:
+            rec["frames"] = frames
 
     def snapshot(self):
         with self.lock:
@@ -386,17 +380,25 @@ BODY_PEEK = 512
 CENSUS = Census()
 
 
-def tap(src, dst, heads):
+def tap(src, dst, heads, read_first=False, first=b"", at=None):
     """Bytes one way until either side ends, each read stamped as it came
-    and read for its messages' heads once it is forwarded."""
+    and read for its messages' heads: before it is forwarded (`read_first`,
+    the requests' way: a request is in the census before the hub can have
+    it whole), or after. `first` the bytes already read, stamped `at`."""
     try:
+        data = first
         while True:
-            data = src.recv(BLOCK)
             if not data:
-                break
-            at = time.time()
+                data = src.recv(BLOCK)
+                if not data:
+                    break
+                at = time.time()
+            if read_first:
+                heads.feed(data, at)
             dst.sendall(data)
-            heads.feed(data, at)
+            if not read_first:
+                heads.feed(data, at)
+            data = b""
     except OSError:
         pass
     finally:
@@ -413,28 +415,28 @@ def passing(client, hub, first, at):
     as HTTP/1.1 sends them; a 1xx answers nothing)."""
     conn, waiting = CENSUS.connection(), []
 
-    def request(first_line, headers, at_, body):
-        waiting.append(CENSUS.started(conn, first_line, headers, at_, body))
+    def request(first_line, headers, at_):
+        rec = CENSUS.started(conn, first_line, headers, at_)
+        with CENSUS.lock:
+            waiting.append(rec)
+        return rec
 
-    def answer(first_line, headers, at_, body):
+    def answer(first_line, headers, at_):
         parts = first_line.split(" ")
         status = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else None
         if status is not None and 100 <= status < 200:
-            return
+            return None
         with CENSUS.lock:
             if waiting:
                 rec = waiting.pop(0)
                 rec["status"], rec["answered"] = status, at_
+        return None
 
-    up = Heads(request)
-    up.feed(first, at)
-    t = threading.Thread(target=tap, args=(client, hub, up), daemon=True)
+    t = threading.Thread(target=tap, args=(client, hub, Heads(request, CENSUS.body)),
+                         kwargs={"read_first": True, "first": first, "at": at}, daemon=True)
     t.start()
-    down = Heads(answer, response=True)
-    tap(hub, client, down)
+    tap(hub, client, Heads(answer, response=True))
     t.join(5)
-    up.close()
-    down.close()
     with CENSUS.lock:
         for rec in waiting:
             rec["closed"] = time.time()
@@ -456,8 +458,8 @@ def serve(client, hub_addr):
         client.close()
         hub.close()
         return
-    hub.sendall(first)
     if first.startswith(b"GET /machine/stream"):
+        hub.sendall(first)
         with PAUSE.cond:
             PAUSE.streams += 1
             PAUSE.current = hub

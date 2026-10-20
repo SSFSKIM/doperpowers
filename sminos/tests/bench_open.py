@@ -53,9 +53,10 @@ proxy, between the uplink and the hub, armed; a second machine's upload of
 `--backlog` bytes answered 200, every POST; the proxy seen `paused` on its
 first `events` frame; a `hello` on the uplink's own stream generation sent
 straight to the hub 0.5 s into the pause (or once the upload is answered, if
-later), whose answer only after the resume shows a hub write blocked behind
-the paused socket; the resume — then the
-chunks' lag in the window, the uplink's every POST that started in it from
+later), which shows a hub write blocked behind the paused socket only when it
+was sent and seen still pending while the pause stood and was answered after
+the resume; the resume — then the chunks' lag in the window, the uplink's
+every POST that started in it from
 the proxy's census, each to its outcome, and an open 1 s after the resume).
 
 Each open prints one JSON line — {"mode", "scenario", "load1", "E", "N",
@@ -81,6 +82,7 @@ under the directories it reads (the plane's log lines are kept here).
 import argparse
 import base64
 import collections
+import glob
 import http.client
 import json
 import os
@@ -434,8 +436,8 @@ class Bench:
                "released": o.released is not None, "placed": how.get(o.sub),
                "source": "incomplete" if lost else "complete", "counted": counted, **extra}
         if gaps:
-            rec["source_gaps"] = [{"from": round(g["from"], 3), "to": round(g["to"], 3), "attempts": g["attempts"],
-                                   "lost": g["why"]} for g in gaps]
+            rec["source_gaps"] = [{"from": round(g["from"], 3), "to": None if g["to"] is None else round(g["to"], 3),
+                                   "attempts": g["attempts"], "lost": g["why"]} for g in gaps]
         if lost and counted:
             self.incomplete.append("%s: the inventory of %s stands on a DX5 source with %d gap(s) it cannot read "
                                    "back" % (scenario, o.sub, len(lost)))
@@ -815,9 +817,11 @@ class Watch(threading.Thread):
     def __init__(self, control):
         super().__init__(daemon=True)
         self.control, self.first, self.stop = control, {}, threading.Event()
+        self.probe = {}       # write_probe's record: stamped `pending_seen` here when a reading proves it
 
     def run(self):
         while not self.stop.is_set():
+            pending = self.pending()
             try:
                 st = call(self.control, "GET", "/control/state", timeout=5)[1]
             except OSError:
@@ -825,7 +829,13 @@ class Watch(threading.Thread):
             state = st.get("state")
             if state and state not in self.first:
                 self.first[state] = {**st, "seen": time.time()}
+            if state == "paused" and pending and self.pending() and "pending_seen" not in self.probe:
+                # Unanswered before and after a reading that found the proxy paused: pending while it stood.
+                self.probe["pending_seen"] = time.time()
             time.sleep(0.02)
+
+    def pending(self):
+        return "sent" in self.probe and "answered" not in self.probe
 
     def seen(self, state, seconds):
         try:
@@ -848,28 +858,76 @@ def stream_generation(rig):
     return generation
 
 
-def write_probe(rig, generation, have):
+def machine_vector(rig, extra):
+    """The `have` the uplink's machine would send for the project now: each
+    writer file of its project log at its last whole line's seq (read from
+    the file's tail), with `extra`'s writers advanced to theirs."""
+    out = {}
+    for path in glob.glob(os.path.join(glob.escape(os.path.join(rig.smh, "projects", rig.project, "log")),
+                                       "*.jsonl")):
+        with open(path, "rb") as f:
+            f.seek(max(0, os.path.getsize(path) - (512 << 10)))
+            lines = f.read().split(b"\n")[:-1]   # the last piece is a line still being written, or nothing
+        for line in reversed(lines):
+            try:
+                e = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(e, dict) and isinstance(e.get("writer"), str) and type(e.get("seq")) is int:
+                out[e["writer"]] = max(out.get(e["writer"], 0), e["seq"])
+                break
+    for w, s in extra.items():
+        out[w] = max(out.get(w, 0), s)
+    return out
+
+
+def write_probe(rig, generation, have, probe):
     """A `hello` for the project on the uplink's own credential and stream
-    generation, sent straight to the hub, not through the proxy. The hub
+    generation, sent straight to the hub, not through the proxy, its course
+    kept in `probe` as it goes (`sent`, then `answered`, `status`). The hub
     answers it once its `have` is written down that stream, behind every
-    write queued there before it: an answer only after the proxy resumed is a
-    hub write that blocked behind the paused socket, and one well inside the
-    pause a backlog the buffers between took whole. `have` claims the
-    backlog, so the hub streams nothing more for it, and the uplink takes the
-    `have` as the reply to a repeated hello (its periodic one). The
-    credential is the run's own, under its temporary SMINOS_HOME; nothing of
-    it is printed."""
+    write queued there before it: an answer only after the proxy resumed, to
+    a hello sent and seen pending while the pause stood (probe_blocked), is a
+    hub write that blocked behind the paused socket. `have` is the machine's
+    whole vector with the upload counted in (machine_vector), so the hub
+    streams back neither the backlog nor the machine's own events, and the
+    uplink takes the `have` as the reply to a repeated hello (its periodic
+    one). The credential is the run's own, under its temporary SMINOS_HOME;
+    nothing of it is printed."""
     with open(os.path.join(rig.smh, "daemon", "hub.json")) as f:
         cred = json.load(f)
     body = json.dumps({"t": "hello", "project": rig.project, "name": "benchproj", "have": have}).encode() + b"\n"
-    sent = time.time()
+    probe["sent"] = time.time()
     try:
         status, answer = call(rig.hub.url, "POST", "/machine/frames", body, {
             "CF-Access-Client-Id": cred["client_id"], "CF-Access-Client-Secret": cred["client_secret"],
             "X-Desk-Generation": str(generation), "Content-Type": "application/x-ndjson"}, timeout=HUB_WRITE_BOUND + 20)
     except OSError as e:
         status, answer = None, {"error": repr(e)}
-    return {"sent": sent, "answered": time.time(), "status": status, "answer": None if status == 200 else answer}
+    probe.update(status=status, answer=None if status == 200 else answer)
+    probe["answered"] = time.time()
+
+
+def probe_blocked(probe, paused_at, resumed_at):
+    """(whether the probe shows a hub write blocked behind the pause, why
+    not): sent while the pause stood, seen still unanswered while it stood
+    (`pending_seen`, Watch), and answered 200 only after the resume."""
+    sent, answered, seen = probe.get("sent"), probe.get("answered"), probe.get("pending_seen")
+    if sent is None:
+        return False, "the probe was never sent"
+    if sent >= resumed_at:
+        return False, "the probe was sent %.3f s after the resume: the upload was answered too late to probe the " \
+                      "pause" % (sent - resumed_at)
+    if sent < paused_at:
+        return False, "the probe was sent before the pause"
+    if probe.get("status") != 200:
+        return False, "the probe was answered %s" % probe.get("status")
+    if answered is not None and answered < resumed_at:
+        return False, "the probe was answered %.3f s into the pause, before the resume: the buffers between the " \
+                      "hub and the proxy took the backlog whole" % (answered - paused_at)
+    if seen is None or seen >= resumed_at:
+        return False, "the probe was never seen still pending while the pause stood"
+    return True, None
 
 
 def uplink_posts(control, since, until, generation, bound):
@@ -960,11 +1018,11 @@ def sc_held(bench, a):
         observed("paused", paused is not None, "the proxy was never seen paused (states seen: %s)"
                  % sorted(watch.first), held=None if paused is None else paused["held"])
         paused_at = paused["paused_at"]
-        probe = {}
+        probe = watch.probe
 
         def send_probe():
             time.sleep(max(0.0, paused_at + PROBE_AFTER - time.time()))
-            probe.update(write_probe(rig, generation, {writer: last}))
+            write_probe(rig, generation, machine_vector(rig, {writer: last}), probe)
         prober = threading.Thread(target=send_probe, daemon=True)
         prober.start()
         # (4) The window, to the resume (5), and the open 1 s after it.
@@ -981,21 +1039,19 @@ def sc_held(bench, a):
         bench.until(o, lambda: u in o.consumer.held, 10)
         bench.feed(o2)
         prober.join(HUB_WRITE_BOUND + 25)
-        blocked = probe.get("status") == 200 and probe["answered"] >= resumed_at
+        blocked, why_not = probe_blocked(probe, paused_at, resumed_at)
         posts = uplink_posts(control, paused_at, resumed_at, generation, HUB_WRITE_BOUND + 5)
         final = call(control, "GET", "/control/state")[1]
         lags = [round(at - t / 1000.0, 3) for at, t in o.chunks if isinstance(t, (int, float))
                 and paused_at <= t / 1000.0 <= resumed_at]
-        probe_said = {"sent": None if not probe else round(probe["sent"] - paused_at, 3),
-                      "answered": None if not probe else round(probe["answered"] - paused_at, 3),
-                      "status": probe.get("status"), "answer": probe.get("answer")}
+        into = lambda key: None if probe.get(key) is None else round(probe[key] - paused_at, 3)  # noqa: E731
+        probe_said = {"sent": into("sent"), "pending_seen": into("pending_seen"), "answered": into("answered"),
+                      "resumed": round(resumed_at - paused_at, 3), "status": probe.get("status"),
+                      "answer": probe.get("answer")}
         if not blocked:
-            bench.incomplete.append(
-                "held: no hub write to the stalled stream was seen to block — the probe's hello, sent %s s into the "
-                "pause, was answered %s at %s s (the resume at %.3f s): the %d bytes of backlog fit the buffers "
-                "between the hub and the proxy; raise --backlog" % (
-                    probe_said["sent"], probe_said["status"], probe_said["answered"], resumed_at - paused_at,
-                    a.backlog))
+            bench.incomplete.append("held: no hub write to the stalled stream was seen to block — %s (the probe, in "
+                                    "seconds from the pause: %s; the backlog %d bytes)" % (why_not, probe_said,
+                                                                                         a.backlog))
         bench.record("held", o, counted=False, role="the subscription streaming through the pause",
                      window=round(resumed_at - paused_at, 3), held_bytes=final.get("held"), backlog=a.backlog,
                      steps=steps, hub_write_blocked=blocked, probe=probe_said,

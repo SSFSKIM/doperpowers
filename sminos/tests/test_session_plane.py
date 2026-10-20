@@ -1846,8 +1846,13 @@ class Instruments(unittest.TestCase):
         c.close()
         sock = socket.create_connection((u.hostname, u.port), timeout=5)
         sock.sendall(b'POST /machine/frames HTTP/1.1\r\nHost: x\r\nContent-Length: 100\r\nX-Desk-Generation: 7\r\n'
-                     b'\r\n{"t":"hello"')
-        time.sleep(0.3)
+                     b'CF-Access-Client-Id: cid-1\r\nCF-Access-Client-Secret: secret-1\r\n\r\n{"t":"hello"')
+        deadline = time.time() + 5
+        while time.time() < deadline and len(requests()) < before + 3:
+            time.sleep(0.05)
+        stalled = requests()[before + 2:]
+        self.assertEqual([(r["generation"], r["frames"], r["status"], r["closed"]) for r in stalled],
+                         [("7", ["hello"], None, None)], "outstanding on a stalled connection, in the census already")
         sock.close()
         deadline = time.time() + 5
         while time.time() < deadline and not (len(requests()) == before + 3 and requests()[-1]["closed"]):
@@ -2128,6 +2133,53 @@ class BenchOpen(unittest.TestCase):
         self.assertEqual(bench_rig.probe_gaps([(1.0, {"type": "snapshot"})], [{"opened": 0.9, "first": 0,
                                                                                 "closed": None, "why": None}]), [],
                          "one subscription from the start: no gap")
+
+    def test_a_probe_with_no_successor_yet_has_an_unfinished_gap(self):
+        """A probe whose stream closed and has no successor's snapshot yet —
+        through failed reconnects and a prompt — is uncovered from the close
+        on: an unfinished gap, lost until a next snapshot is read."""
+        ev = [(1.0, {"type": "snapshot", "streaming": [], "turns": []}),
+              (1.1, {"type": "step", "phase": "start", "turnId": "t1", "agentId": None, "step": 0})]
+        conns = [{"opened": 0.9, "first": 0, "closed": 2.0, "why": "the bridge ended the stream"},
+                 {"opened": 2.6, "first": None, "closed": 2.7, "why": "the bridge ended the stream"}]
+        gaps = bench_rig.probe_gaps(ev, conns, failed=[(2.2, "refused 503"), (2.4, "ConnectionRefusedError()")],
+                                    prompts=(0.5, 2.3))
+        self.assertEqual([(g["from"], g["to"], g["attempts"], g["reconstructable"]) for g in gaps],
+                         [(2.0, None, 3, False)], "the stream with no snapshot is an attempt too")
+        self.assertIn("no successor snapshot", gaps[0]["why"])
+        self.assertIn("prompt", gaps[0]["why"])
+        self.assertEqual(len(bench_rig.probe_gaps(ev, conns[:1])), 1, "closed alone, no attempt yet: still a gap")
+
+    def test_the_held_probe_counts_only_if_it_waited_inside_the_pause(self):
+        """The probe's hello shows a hub write blocked only when it was sent
+        while the pause stood, was seen still unanswered while it stood, and
+        was answered 200 only after the resume."""
+        blocked = bench_open.probe_blocked
+        ok = {"sent": 10.5, "pending_seen": 11.0, "answered": 14.2, "status": 200}
+        self.assertEqual(blocked(ok, 10.0, 14.0), (True, None))
+        late = {"sent": 14.3, "pending_seen": None, "answered": 14.31, "status": 200}
+        self.assertFalse(blocked(late, 10.0, 14.0)[0], "the upload finished after the resume: sent too late")
+        self.assertIn("after the resume", blocked(late, 10.0, 14.0)[1])
+        quick = {"sent": 10.5, "pending_seen": None, "answered": 10.52, "status": 200}
+        self.assertFalse(blocked(quick, 10.0, 14.0)[0], "answered inside the pause: the buffers took it")
+        unseen = {"sent": 10.5, "pending_seen": None, "answered": 14.2, "status": 200}
+        self.assertFalse(blocked(unseen, 10.0, 14.0)[0], "never seen pending while the pause stood")
+        refused = {**ok, "status": 503}
+        self.assertFalse(blocked(refused, 10.0, 14.0)[0])
+        self.assertFalse(blocked({}, 10.0, 14.0)[0], "never sent")
+
+    def test_the_probe_claims_the_machine_s_whole_vector(self):
+        """The probe's `have`: every writer of the uplink's project log at
+        its last seq, the upload's writer advanced to its last."""
+        log = os.path.join(T, "vector-home", "projects", "p1", "log")
+        os.makedirs(log, exist_ok=True)
+        for name, seqs in (("m.a.jsonl", (1, 2, 3)), ("m.b.jsonl", (1,))):
+            with open(os.path.join(log, name), "w") as f:
+                for s in seqs:
+                    f.write(json.dumps({"writer": "m/" + name[2], "seq": s, "kind": "say"}) + "\n")
+                f.write('{"writer": "m/x", "seq": 9')          # a line still being written: not read
+        rig = types.SimpleNamespace(smh=os.path.join(T, "vector-home"), project="p1")
+        self.assertEqual(bench_open.machine_vector(rig, {"up/w": 40}), {"m/a": 3, "m/b": 1, "up/w": 40})
 
     def test_a_window_trial_counts_only_inside_and_long_enough(self):
         count = bench_open.trial_counts
