@@ -39,9 +39,10 @@ LOCAL local projects kept as history.
   --profile-uplink runs the uplink alone under cProfile instead.
 - `verbs`: the wall and CPU time of `list --org` and `projects`.
 - `opens` (the desk open-fast spec's A3): G of the live sessions in hub
-  checkouts get a transcript of N rows (15,000, shaped as bench_open.py
-  shapes one) in place of their short one; the uplink alone, started fresh
-  against the stand-in once a tick has joined the live sessions; subscribes
+  checkouts get a transcript of N rows (15,000, shaped as bench_rig.py
+  shapes one for bench_open.py) in place of their short one; the uplink
+  alone, started fresh against the stand-in once a tick has joined the live
+  sessions; subscribes
   sent through the stand-in's `/control/send` at +0.5 s (a large session and
   a small one, together: the small one opens while the large one builds),
   at +S s (every live session, in sequence), then the uplink restarted (the
@@ -209,8 +210,8 @@ class Env:
             sid, cwd = self.uid(), cwds[i % len(cwds)]
             if large and cwd in project_of:
                 large -= 1
-                import bench_open
-                bench_open.synthetic_transcript(os.path.join(self.projects, re.sub(r"[^A-Za-z0-9]", "-", cwd),
+                import bench_rig
+                bench_rig.synthetic_transcript(os.path.join(self.projects, re.sub(r"[^A-Za-z0-9]", "-", cwd),
                                                              sid + ".jsonl"), a.large_rows, cwd, sid)
                 size = "large"
             else:
@@ -467,6 +468,7 @@ def standin(env):
 
 def cmd_opens(a, env):
     import bench_open as bo
+    import bench_rig as rig
     hub, url = standin(env)
     up = [None]
     try:
@@ -478,13 +480,13 @@ def cmd_opens(a, env):
         large = next((s for s in lives if s["size"] == "large"), None)
         if large is None:
             sys.exit("bench_scale opens: no live session in a hub checkout took a large transcript (--large)")
-        browser = bo.StandinBrowser(url, None, MACHINE)
+        browser = rig.StandinBrowser(url, None, MACHINE)
         log_path = os.path.join(env.sh, "daemon.log")
         pair = [large, small]   # the large one's subscribe first: the small one opens while its build runs
 
         def ready(after, pids):
             """A stream newer than generation `after`, once it opened every project named."""
-            st = bo.call(url, "GET", "/control/state")[1]
+            st = rig.call(url, "GET", "/control/state")[1]
             gen = st["generation"]
             return gen > after and st["connected"] and all(
                 st["projects"].get(pid, {}).get("open", {}).get(MACHINE) == gen for pid in pids)
@@ -528,13 +530,13 @@ def cmd_opens(a, env):
         records, generation = [], 0
         for phase in ("start", "restart"):
             if up[0] is not None:
-                generation = bo.call(url, "GET", "/control/state")[1]["generation"]
+                generation = rig.call(url, "GET", "/control/state")[1]["generation"]
                 stop(up[0])
             up[0] = subprocess.Popen([sys.executable, os.path.join(a.scripts, "sminos.py"), "daemon", "uplink"],
                                      env=env.env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             started = time.time()
             time.sleep(0.5)
-            bo.wait_for("the uplink's projects open on its stream", 120,
+            rig.wait_for("the uplink's projects open on its stream", 120,
                         lambda: ready(generation, [s["project"] for s in pair]), 0.02)
             records += opens(pair, "+0.5 s" if phase == "start" else "restart +0.5 s", started, together=True)
             if phase == "start":
