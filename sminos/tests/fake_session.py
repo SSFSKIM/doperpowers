@@ -365,6 +365,7 @@ class FakeSession:
         self.messages = []    # every request begun: the ones still streaming are in a resync
         self.agents = []      # the mod's agent state (the $.agent.list() seed included), which its resyncs carry
         self.turns = 0
+        self.emitted = []     # every event the mod posted, lost or not: an inventory's DX5 source
 
     # -------------------------------------------------- the transcript
 
@@ -493,6 +494,7 @@ class FakeSession:
     def lose(self, events):
         """Events the mod posted: its own copy moves. Alone, a gap took them
         before the child applied them."""
+        self.emitted += events
         for e in events:
             if e.get("type") in ("block-row", "row-seen"):
                 self.cut[e.get("agentId") or "main"] = e["uuid"]

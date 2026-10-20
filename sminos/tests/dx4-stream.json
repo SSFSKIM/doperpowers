@@ -1,0 +1,3372 @@
+[
+ {
+  "name": "first-snapshot-every-kind",
+  "about": "A first snapshot (loaded) carrying a named thinking block and unnamed text and tool blocks; the plane's block-row for the named one right after it; chunks of text, a named block's late chunk ignored, a tool call's input; block-rows; a step-end dropping the one block no block-row named; each row landing settles its block.",
+  "agent": null,
+  "steps": [
+   {
+    "message": {
+     "project": "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59",
+     "machine": "testhost",
+     "session": "d0c8a000-0000-4000-8000-0000000d4c45",
+     "kind": "snapshot",
+     "sub": "sub-1-0",
+     "n": 0,
+     "body": {
+      "rows": [
+       {
+        "type": "user",
+        "uuid": "0d4c4001-0000-4000-8000-000000000001",
+        "message": {
+         "role": "user",
+         "content": "write a story"
+        }
+       }
+      ],
+      "more": false,
+      "subagents": [],
+      "presence": {
+       "record": {
+        "status": "busy"
+       },
+       "bridge": true
+      },
+      "streaming": [
+       {
+        "turnId": "turn-1",
+        "agentId": null,
+        "step": 0,
+        "model": "m",
+        "upTo": 6,
+        "blocks": [
+         {
+          "index": 0,
+          "kind": "thinking",
+          "text": "Plot first.",
+          "upTo": 2,
+          "uuid": "0d4c4001-0000-4000-8000-000000000002",
+          "namedAt": 1760000000001
+         },
+         {
+          "index": 1,
+          "kind": "text",
+          "text": "Once",
+          "upTo": 4
+         },
+         {
+          "index": 2,
+          "kind": "tool",
+          "text": "{\"command\":",
+          "upTo": 6,
+          "id": "toolu_01",
+          "name": "Bash"
+         }
+        ]
+       }
+      ],
+      "jobs": [],
+      "mcp": [],
+      "offChain": [],
+      "usage": null
+     }
+    },
+    "drawn": {
+     "main": [
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 0,
+       "kind": "thinking",
+       "text": "Plot first.",
+       "settledBy": "0d4c4001-0000-4000-8000-000000000002"
+      },
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 1,
+       "kind": "text",
+       "text": "Once",
+       "settledBy": null
+      },
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 2,
+       "kind": "tool",
+       "text": "{\"command\":",
+       "settledBy": null
+      }
+     ]
+    }
+   },
+   {
+    "message": {
+     "project": "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59",
+     "machine": "testhost",
+     "session": "d0c8a000-0000-4000-8000-0000000d4c45",
+     "kind": "block-row",
+     "sub": "sub-1-0",
+     "n": 1,
+     "body": {
+      "uuid": "0d4c4001-0000-4000-8000-000000000002",
+      "turnId": "turn-1",
+      "agentId": null,
+      "step": 0,
+      "index": 0
+     }
+    },
+    "note": "the plane's block-row for a block the snapshot carried named",
+    "drawn": {
+     "main": [
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 0,
+       "kind": "thinking",
+       "text": "Plot first.",
+       "settledBy": "0d4c4001-0000-4000-8000-000000000002"
+      },
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 1,
+       "kind": "text",
+       "text": "Once",
+       "settledBy": null
+      },
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 2,
+       "kind": "tool",
+       "text": "{\"command\":",
+       "settledBy": null
+      }
+     ]
+    }
+   },
+   {
+    "message": {
+     "project": "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59",
+     "machine": "testhost",
+     "session": "d0c8a000-0000-4000-8000-0000000d4c45",
+     "kind": "chunk",
+     "sub": "sub-1-0",
+     "n": 2,
+     "body": {
+      "turnId": "turn-1",
+      "agentId": null,
+      "step": 0,
+      "chunkIndex": 7,
+      "chunk": {
+       "kind": "text",
+       "index": 1,
+       "text": " upon"
+      },
+      "t": 1760000000007
+     }
+    },
+    "drawn": {
+     "main": [
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 0,
+       "kind": "thinking",
+       "text": "Plot first.",
+       "settledBy": "0d4c4001-0000-4000-8000-000000000002"
+      },
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 1,
+       "kind": "text",
+       "text": "Once upon",
+       "settledBy": null
+      },
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 2,
+       "kind": "tool",
+       "text": "{\"command\":",
+       "settledBy": null
+      }
+     ]
+    }
+   },
+   {
+    "message": {
+     "project": "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59",
+     "machine": "testhost",
+     "session": "d0c8a000-0000-4000-8000-0000000d4c45",
+     "kind": "chunk",
+     "sub": "sub-1-0",
+     "n": 3,
+     "body": {
+      "turnId": "turn-1",
+      "agentId": null,
+      "step": 0,
+      "chunkIndex": 8,
+      "chunk": {
+       "kind": "thinking",
+       "index": 0,
+       "text": " More."
+      },
+      "t": 1760000000008
+     }
+    },
+    "note": "a chunk for a named block: ignored, its row holds the block whole",
+    "drawn": {
+     "main": [
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 0,
+       "kind": "thinking",
+       "text": "Plot first.",
+       "settledBy": "0d4c4001-0000-4000-8000-000000000002"
+      },
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 1,
+       "kind": "text",
+       "text": "Once upon",
+       "settledBy": null
+      },
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 2,
+       "kind": "tool",
+       "text": "{\"command\":",
+       "settledBy": null
+      }
+     ]
+    }
+   },
+   {
+    "message": {
+     "project": "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59",
+     "machine": "testhost",
+     "session": "d0c8a000-0000-4000-8000-0000000d4c45",
+     "kind": "chunk",
+     "sub": "sub-1-0",
+     "n": 4,
+     "body": {
+      "turnId": "turn-1",
+      "agentId": null,
+      "step": 0,
+      "chunkIndex": 9,
+      "chunk": {
+       "kind": "input",
+       "index": 2,
+       "json": "\"ls\"}"
+      },
+      "t": 1760000000009
+     }
+    },
+    "drawn": {
+     "main": [
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 0,
+       "kind": "thinking",
+       "text": "Plot first.",
+       "settledBy": "0d4c4001-0000-4000-8000-000000000002"
+      },
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 1,
+       "kind": "text",
+       "text": "Once upon",
+       "settledBy": null
+      },
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 2,
+       "kind": "tool",
+       "text": "{\"command\":\"ls\"}",
+       "settledBy": null
+      }
+     ]
+    }
+   },
+   {
+    "message": {
+     "project": "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59",
+     "machine": "testhost",
+     "session": "d0c8a000-0000-4000-8000-0000000d4c45",
+     "kind": "chunk",
+     "sub": "sub-1-0",
+     "n": 5,
+     "body": {
+      "turnId": "turn-1",
+      "agentId": null,
+      "step": 0,
+      "chunkIndex": 10,
+      "chunk": {
+       "kind": "text",
+       "index": 1,
+       "text": " a time."
+      },
+      "t": 1760000000010
+     }
+    },
+    "drawn": {
+     "main": [
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 0,
+       "kind": "thinking",
+       "text": "Plot first.",
+       "settledBy": "0d4c4001-0000-4000-8000-000000000002"
+      },
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 1,
+       "kind": "text",
+       "text": "Once upon a time.",
+       "settledBy": null
+      },
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 2,
+       "kind": "tool",
+       "text": "{\"command\":\"ls\"}",
+       "settledBy": null
+      }
+     ]
+    }
+   },
+   {
+    "message": {
+     "project": "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59",
+     "machine": "testhost",
+     "session": "d0c8a000-0000-4000-8000-0000000d4c45",
+     "kind": "block-row",
+     "sub": "sub-1-0",
+     "n": 6,
+     "body": {
+      "uuid": "0d4c4001-0000-4000-8000-000000000003",
+      "turnId": "turn-1",
+      "agentId": null,
+      "step": 0,
+      "index": 1
+     }
+    },
+    "drawn": {
+     "main": [
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 0,
+       "kind": "thinking",
+       "text": "Plot first.",
+       "settledBy": "0d4c4001-0000-4000-8000-000000000002"
+      },
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 1,
+       "kind": "text",
+       "text": "Once upon a time.",
+       "settledBy": "0d4c4001-0000-4000-8000-000000000003"
+      },
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 2,
+       "kind": "tool",
+       "text": "{\"command\":\"ls\"}",
+       "settledBy": null
+      }
+     ]
+    }
+   },
+   {
+    "message": {
+     "project": "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59",
+     "machine": "testhost",
+     "session": "d0c8a000-0000-4000-8000-0000000d4c45",
+     "kind": "block-row",
+     "sub": "sub-1-0",
+     "n": 7,
+     "body": {
+      "uuid": "0d4c4001-0000-4000-8000-000000000004",
+      "turnId": "turn-1",
+      "agentId": null,
+      "step": 0,
+      "index": 2
+     }
+    },
+    "drawn": {
+     "main": [
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 0,
+       "kind": "thinking",
+       "text": "Plot first.",
+       "settledBy": "0d4c4001-0000-4000-8000-000000000002"
+      },
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 1,
+       "kind": "text",
+       "text": "Once upon a time.",
+       "settledBy": "0d4c4001-0000-4000-8000-000000000003"
+      },
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 2,
+       "kind": "tool",
+       "text": "{\"command\":\"ls\"}",
+       "settledBy": "0d4c4001-0000-4000-8000-000000000004"
+      }
+     ]
+    }
+   },
+   {
+    "message": {
+     "project": "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59",
+     "machine": "testhost",
+     "session": "d0c8a000-0000-4000-8000-0000000d4c45",
+     "kind": "chunk",
+     "sub": "sub-1-0",
+     "n": 8,
+     "body": {
+      "turnId": "turn-1",
+      "agentId": null,
+      "step": 0,
+      "chunkIndex": 11,
+      "chunk": {
+       "kind": "text",
+       "index": 3,
+       "text": "Unfinished"
+      },
+      "t": 1760000000011
+     }
+    },
+    "drawn": {
+     "main": [
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 0,
+       "kind": "thinking",
+       "text": "Plot first.",
+       "settledBy": "0d4c4001-0000-4000-8000-000000000002"
+      },
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 1,
+       "kind": "text",
+       "text": "Once upon a time.",
+       "settledBy": "0d4c4001-0000-4000-8000-000000000003"
+      },
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 2,
+       "kind": "tool",
+       "text": "{\"command\":\"ls\"}",
+       "settledBy": "0d4c4001-0000-4000-8000-000000000004"
+      },
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 3,
+       "kind": "text",
+       "text": "Unfinished",
+       "settledBy": null
+      }
+     ]
+    }
+   },
+   {
+    "message": {
+     "project": "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59",
+     "machine": "testhost",
+     "session": "d0c8a000-0000-4000-8000-0000000d4c45",
+     "kind": "step-end",
+     "sub": "sub-1-0",
+     "n": 9,
+     "body": {
+      "turnId": "turn-1",
+      "agentId": null,
+      "step": 0
+     }
+    },
+    "note": "the block no block-row named goes; the named ones wait for their rows",
+    "drawn": {
+     "main": [
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 0,
+       "kind": "thinking",
+       "text": "Plot first.",
+       "settledBy": "0d4c4001-0000-4000-8000-000000000002"
+      },
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 1,
+       "kind": "text",
+       "text": "Once upon a time.",
+       "settledBy": "0d4c4001-0000-4000-8000-000000000003"
+      },
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 2,
+       "kind": "tool",
+       "text": "{\"command\":\"ls\"}",
+       "settledBy": "0d4c4001-0000-4000-8000-000000000004"
+      }
+     ]
+    }
+   },
+   {
+    "message": {
+     "project": "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59",
+     "machine": "testhost",
+     "session": "d0c8a000-0000-4000-8000-0000000d4c45",
+     "kind": "row",
+     "sub": "sub-1-0",
+     "n": 10,
+     "body": {
+      "row": {
+       "type": "assistant",
+       "uuid": "0d4c4001-0000-4000-8000-000000000002",
+       "message": {
+        "role": "assistant",
+        "content": [
+         {
+          "type": "thinking",
+          "thinking": "Plot first."
+         }
+        ]
+       }
+      },
+      "agentId": null
+     }
+    },
+    "settle": [
+     "0d4c4001-0000-4000-8000-000000000002"
+    ],
+    "drawn": {
+     "main": [
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 1,
+       "kind": "text",
+       "text": "Once upon a time.",
+       "settledBy": "0d4c4001-0000-4000-8000-000000000003"
+      },
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 2,
+       "kind": "tool",
+       "text": "{\"command\":\"ls\"}",
+       "settledBy": "0d4c4001-0000-4000-8000-000000000004"
+      }
+     ]
+    }
+   },
+   {
+    "message": {
+     "project": "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59",
+     "machine": "testhost",
+     "session": "d0c8a000-0000-4000-8000-0000000d4c45",
+     "kind": "row",
+     "sub": "sub-1-0",
+     "n": 11,
+     "body": {
+      "row": {
+       "type": "assistant",
+       "uuid": "0d4c4001-0000-4000-8000-000000000003",
+       "message": {
+        "role": "assistant",
+        "content": [
+         {
+          "type": "text",
+          "text": "Once upon a time."
+         }
+        ]
+       }
+      },
+      "agentId": null
+     }
+    },
+    "settle": [
+     "0d4c4001-0000-4000-8000-000000000003"
+    ],
+    "drawn": {
+     "main": [
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 2,
+       "kind": "tool",
+       "text": "{\"command\":\"ls\"}",
+       "settledBy": "0d4c4001-0000-4000-8000-000000000004"
+      }
+     ]
+    }
+   },
+   {
+    "message": {
+     "project": "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59",
+     "machine": "testhost",
+     "session": "d0c8a000-0000-4000-8000-0000000d4c45",
+     "kind": "row",
+     "sub": "sub-1-0",
+     "n": 12,
+     "body": {
+      "row": {
+       "type": "assistant",
+       "uuid": "0d4c4001-0000-4000-8000-000000000004",
+       "message": {
+        "role": "assistant",
+        "content": [
+         {
+          "type": "tool_use",
+          "id": "toolu_01",
+          "name": "Bash",
+          "input": {
+           "command": "ls"
+          }
+         }
+        ]
+       }
+      },
+      "agentId": null
+     }
+    },
+    "settle": [
+     "0d4c4001-0000-4000-8000-000000000004"
+    ],
+    "drawn": {}
+   }
+  ],
+  "errors": [],
+  "about_fixture": "DX4's streaming layer, the desk open-fast spec's parity fixture (docs/doperpowers/specs/2026-10-20-desk-open-fast-design.md, section 9), written by sminos/tests/dx4-stream.gen.py: every expected drawing by hand. Each sequence is one session view's messages in order; a step's `message` is a DX4 envelope, or \"resubscribe\" (the subscription is over and a new one starts: `n` from 0, and its first snapshot is resumed over what is drawn, not loaded). `drawn` is the streaming layer's blocks after the message: agentId (\"main\" for null) to that agent's blocks in drawing order, an agent with none left out. The store's side, for a replay of the layer alone: `settle` lists the rows whose landing settles blocks after the message, in order (a held row a drawn block awaits; another loop's block-row on a main view); a resumed snapshot's step gives `landing` (the newest row the snapshot brought, null for none) and `lands` (the named rows `lands` answers true for). A sequence's `errors` are the reference consumer's error kinds, in order (gap, dup, watermark, differs, vanished, after-end, marks); `inventory`, where present, is the transcript on disk and the DX5 events the session emitted, and what checking the consumer against them names."
+ },
+ {
+  "name": "reconnect-empty-history-carries-the-named-block",
+  "about": "A2 and A8: a block is named, the subscription is lost, and the fresh snapshot — its history empty, the row not yet on disk — carries the block with its uuid. The block stays drawn with the snapshot's text until its row lands, then goes once. (Today's web dropped it here: no row would land, no newer row came.)",
+  "agent": null,
+  "steps": [
+   {
+    "message": {
+     "project": "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59",
+     "machine": "testhost",
+     "session": "d0c8a000-0000-4000-8000-0000000d4c45",
+     "kind": "snapshot",
+     "sub": "sub-2-0",
+     "n": 0,
+     "body": {
+      "rows": [],
+      "more": false,
+      "subagents": [],
+      "presence": {
+       "record": {
+        "status": "busy"
+       },
+       "bridge": true
+      },
+      "streaming": [
+       {
+        "turnId": "turn-1",
+        "agentId": null,
+        "step": 0,
+        "model": "m",
+        "upTo": 1,
+        "blocks": [
+         {
+          "index": 0,
+          "kind": "text",
+          "text": "Hello",
+          "upTo": 1
+         }
+        ]
+       }
+      ],
+      "jobs": [],
+      "mcp": [],
+      "offChain": [],
+      "usage": null
+     }
+    },
+    "drawn": {
+     "main": [
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 0,
+       "kind": "text",
+       "text": "Hello",
+       "settledBy": null
+      }
+     ]
+    }
+   },
+   {
+    "message": {
+     "project": "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59",
+     "machine": "testhost",
+     "session": "d0c8a000-0000-4000-8000-0000000d4c45",
+     "kind": "chunk",
+     "sub": "sub-2-0",
+     "n": 1,
+     "body": {
+      "turnId": "turn-1",
+      "agentId": null,
+      "step": 0,
+      "chunkIndex": 2,
+      "chunk": {
+       "kind": "text",
+       "index": 0,
+       "text": " world"
+      },
+      "t": 1760000000002
+     }
+    },
+    "drawn": {
+     "main": [
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 0,
+       "kind": "text",
+       "text": "Hello world",
+       "settledBy": null
+      }
+     ]
+    }
+   },
+   {
+    "message": {
+     "project": "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59",
+     "machine": "testhost",
+     "session": "d0c8a000-0000-4000-8000-0000000d4c45",
+     "kind": "block-row",
+     "sub": "sub-2-0",
+     "n": 2,
+     "body": {
+      "uuid": "0d4c4002-0000-4000-8000-000000000001",
+      "turnId": "turn-1",
+      "agentId": null,
+      "step": 0,
+      "index": 0
+     }
+    },
+    "drawn": {
+     "main": [
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 0,
+       "kind": "text",
+       "text": "Hello world",
+       "settledBy": "0d4c4002-0000-4000-8000-000000000001"
+      }
+     ]
+    }
+   },
+   {
+    "message": {
+     "project": "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59",
+     "machine": "testhost",
+     "session": "d0c8a000-0000-4000-8000-0000000d4c45",
+     "kind": "end",
+     "sub": "sub-2-0",
+     "n": 3,
+     "body": {
+      "reason": "machine-offline"
+     }
+    },
+    "drawn": {
+     "main": [
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 0,
+       "kind": "text",
+       "text": "Hello world",
+       "settledBy": "0d4c4002-0000-4000-8000-000000000001"
+      }
+     ]
+    }
+   },
+   {
+    "message": "resubscribe",
+    "note": "the subscription is over; a new one starts and resumes the drawing",
+    "drawn": {
+     "main": [
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 0,
+       "kind": "text",
+       "text": "Hello world",
+       "settledBy": "0d4c4002-0000-4000-8000-000000000001"
+      }
+     ]
+    }
+   },
+   {
+    "message": {
+     "project": "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59",
+     "machine": "testhost",
+     "session": "d0c8a000-0000-4000-8000-0000000d4c45",
+     "kind": "snapshot",
+     "sub": "sub-2-1",
+     "n": 0,
+     "body": {
+      "rows": [],
+      "more": false,
+      "subagents": [],
+      "presence": {
+       "record": {
+        "status": "busy"
+       },
+       "bridge": true
+      },
+      "streaming": [
+       {
+        "turnId": "turn-1",
+        "agentId": null,
+        "step": 0,
+        "model": "m",
+        "upTo": 2,
+        "blocks": [
+         {
+          "index": 0,
+          "kind": "text",
+          "text": "Hello world",
+          "upTo": 2,
+          "uuid": "0d4c4002-0000-4000-8000-000000000001",
+          "namedAt": 1760000000002
+         }
+        ]
+       }
+      ],
+      "jobs": [],
+      "mcp": [],
+      "offChain": [],
+      "usage": null
+     }
+    },
+    "note": "resumed: the snapshot carries the named block, so it is drawn from it",
+    "landing": null,
+    "lands": [],
+    "drawn": {
+     "main": [
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 0,
+       "kind": "text",
+       "text": "Hello world",
+       "settledBy": "0d4c4002-0000-4000-8000-000000000001"
+      }
+     ]
+    }
+   },
+   {
+    "message": {
+     "project": "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59",
+     "machine": "testhost",
+     "session": "d0c8a000-0000-4000-8000-0000000d4c45",
+     "kind": "block-row",
+     "sub": "sub-2-1",
+     "n": 1,
+     "body": {
+      "uuid": "0d4c4002-0000-4000-8000-000000000001",
+      "turnId": "turn-1",
+      "agentId": null,
+      "step": 0,
+      "index": 0
+     }
+    },
+    "note": "the plane's block-row for the carried named block: idempotent",
+    "drawn": {
+     "main": [
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 0,
+       "kind": "text",
+       "text": "Hello world",
+       "settledBy": "0d4c4002-0000-4000-8000-000000000001"
+      }
+     ]
+    }
+   },
+   {
+    "message": {
+     "project": "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59",
+     "machine": "testhost",
+     "session": "d0c8a000-0000-4000-8000-0000000d4c45",
+     "kind": "row",
+     "sub": "sub-2-1",
+     "n": 2,
+     "body": {
+      "row": {
+       "type": "assistant",
+       "uuid": "0d4c4002-0000-4000-8000-000000000001",
+       "message": {
+        "role": "assistant",
+        "content": [
+         {
+          "type": "text",
+          "text": "Hello world"
+         }
+        ]
+       }
+      },
+      "agentId": null
+     }
+    },
+    "settle": [
+     "0d4c4002-0000-4000-8000-000000000001"
+    ],
+    "drawn": {}
+   },
+   {
+    "message": {
+     "project": "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59",
+     "machine": "testhost",
+     "session": "d0c8a000-0000-4000-8000-0000000d4c45",
+     "kind": "step-end",
+     "sub": "sub-2-1",
+     "n": 3,
+     "body": {
+      "turnId": "turn-1",
+      "agentId": null,
+      "step": 0
+     }
+    },
+    "drawn": {}
+   }
+  ],
+  "errors": [],
+  "inventory": {
+   "transcript": [
+    {
+     "type": "assistant",
+     "uuid": "0d4c4002-0000-4000-8000-000000000001",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "text",
+        "text": "Hello world"
+       }
+      ]
+     }
+    }
+   ],
+   "dx5": [
+    {
+     "type": "chunk",
+     "turnId": "turn-1",
+     "agentId": null,
+     "step": 0,
+     "chunkIndex": 0,
+     "chunk": {
+      "kind": "text",
+      "index": 0,
+      "text": "Hel"
+     },
+     "t": 1760000000000
+    },
+    {
+     "type": "chunk",
+     "turnId": "turn-1",
+     "agentId": null,
+     "step": 0,
+     "chunkIndex": 1,
+     "chunk": {
+      "kind": "text",
+      "index": 0,
+      "text": "lo"
+     },
+     "t": 1760000000001
+    },
+    {
+     "type": "chunk",
+     "turnId": "turn-1",
+     "agentId": null,
+     "step": 0,
+     "chunkIndex": 2,
+     "chunk": {
+      "kind": "text",
+      "index": 0,
+      "text": " world"
+     },
+     "t": 1760000000002
+    },
+    {
+     "type": "block-row",
+     "uuid": "0d4c4002-0000-4000-8000-000000000001",
+     "turnId": "turn-1",
+     "agentId": null,
+     "step": 0,
+     "index": 0,
+     "t": 1760000000000
+    }
+   ],
+   "check": {
+    "holes": [],
+    "partial": [],
+    "vanished": [],
+    "dups": []
+   }
+  }
+ },
+ {
+  "name": "reconnect-snapshot-no-longer-carries-the-block",
+  "about": "The fresh snapshot no longer streams the blocks the old subscription drew: their rows were written in the gap and the snapshot brings them. The named block waits for its own row (it lands: the snapshot merged into the held rows), the unnamed one for the newest row the snapshot brought; both are held, so both settle at once.",
+  "agent": null,
+  "steps": [
+   {
+    "message": {
+     "project": "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59",
+     "machine": "testhost",
+     "session": "d0c8a000-0000-4000-8000-0000000d4c45",
+     "kind": "snapshot",
+     "sub": "sub-3-0",
+     "n": 0,
+     "body": {
+      "rows": [
+       {
+        "type": "user",
+        "uuid": "0d4c4003-0000-4000-8000-000000000001",
+        "message": {
+         "role": "user",
+         "content": "hi"
+        }
+       }
+      ],
+      "more": false,
+      "subagents": [],
+      "presence": {
+       "record": {
+        "status": "busy"
+       },
+       "bridge": true
+      },
+      "streaming": [
+       {
+        "turnId": "turn-1",
+        "agentId": null,
+        "step": 0,
+        "model": "m",
+        "upTo": 1,
+        "blocks": [
+         {
+          "index": 0,
+          "kind": "text",
+          "text": "Hi",
+          "upTo": 0
+         },
+         {
+          "index": 1,
+          "kind": "text",
+          "text": "By",
+          "upTo": 1
+         }
+        ]
+       }
+      ],
+      "jobs": [],
+      "mcp": [],
+      "offChain": [],
+      "usage": null
+     }
+    },
+    "drawn": {
+     "main": [
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 0,
+       "kind": "text",
+       "text": "Hi",
+       "settledBy": null
+      },
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 1,
+       "kind": "text",
+       "text": "By",
+       "settledBy": null
+      }
+     ]
+    }
+   },
+   {
+    "message": {
+     "project": "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59",
+     "machine": "testhost",
+     "session": "d0c8a000-0000-4000-8000-0000000d4c45",
+     "kind": "chunk",
+     "sub": "sub-3-0",
+     "n": 1,
+     "body": {
+      "turnId": "turn-1",
+      "agentId": null,
+      "step": 0,
+      "chunkIndex": 2,
+      "chunk": {
+       "kind": "text",
+       "index": 0,
+       "text": " there"
+      },
+      "t": 1760000000002
+     }
+    },
+    "drawn": {
+     "main": [
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 0,
+       "kind": "text",
+       "text": "Hi there",
+       "settledBy": null
+      },
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 1,
+       "kind": "text",
+       "text": "By",
+       "settledBy": null
+      }
+     ]
+    }
+   },
+   {
+    "message": {
+     "project": "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59",
+     "machine": "testhost",
+     "session": "d0c8a000-0000-4000-8000-0000000d4c45",
+     "kind": "block-row",
+     "sub": "sub-3-0",
+     "n": 2,
+     "body": {
+      "uuid": "0d4c4003-0000-4000-8000-000000000002",
+      "turnId": "turn-1",
+      "agentId": null,
+      "step": 0,
+      "index": 0
+     }
+    },
+    "drawn": {
+     "main": [
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 0,
+       "kind": "text",
+       "text": "Hi there",
+       "settledBy": "0d4c4003-0000-4000-8000-000000000002"
+      },
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 1,
+       "kind": "text",
+       "text": "By",
+       "settledBy": null
+      }
+     ]
+    }
+   },
+   {
+    "message": {
+     "project": "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59",
+     "machine": "testhost",
+     "session": "d0c8a000-0000-4000-8000-0000000d4c45",
+     "kind": "end",
+     "sub": "sub-3-0",
+     "n": 3,
+     "body": {
+      "reason": "machine-offline"
+     }
+    },
+    "drawn": {
+     "main": [
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 0,
+       "kind": "text",
+       "text": "Hi there",
+       "settledBy": "0d4c4003-0000-4000-8000-000000000002"
+      },
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 1,
+       "kind": "text",
+       "text": "By",
+       "settledBy": null
+      }
+     ]
+    }
+   },
+   {
+    "message": "resubscribe",
+    "note": "the subscription is over; a new one starts and resumes the drawing",
+    "drawn": {
+     "main": [
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 0,
+       "kind": "text",
+       "text": "Hi there",
+       "settledBy": "0d4c4003-0000-4000-8000-000000000002"
+      },
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 1,
+       "kind": "text",
+       "text": "By",
+       "settledBy": null
+      }
+     ]
+    }
+   },
+   {
+    "message": {
+     "project": "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59",
+     "machine": "testhost",
+     "session": "d0c8a000-0000-4000-8000-0000000d4c45",
+     "kind": "snapshot",
+     "sub": "sub-3-1",
+     "n": 0,
+     "body": {
+      "rows": [
+       {
+        "type": "assistant",
+        "uuid": "0d4c4003-0000-4000-8000-000000000003",
+        "message": {
+         "role": "assistant",
+         "content": [
+          {
+           "type": "text",
+           "text": "Bye"
+          }
+         ]
+        }
+       },
+       {
+        "type": "assistant",
+        "uuid": "0d4c4003-0000-4000-8000-000000000002",
+        "message": {
+         "role": "assistant",
+         "content": [
+          {
+           "type": "text",
+           "text": "Hi there"
+          }
+         ]
+        }
+       },
+       {
+        "type": "user",
+        "uuid": "0d4c4003-0000-4000-8000-000000000001",
+        "message": {
+         "role": "user",
+         "content": "hi"
+        }
+       }
+      ],
+      "more": false,
+      "subagents": [],
+      "presence": {
+       "record": {
+        "status": "busy"
+       },
+       "bridge": true
+      },
+      "streaming": [],
+      "jobs": [],
+      "mcp": [],
+      "offChain": [],
+      "usage": null
+     }
+    },
+    "note": "resumed: merged (its oldest row is held); block 0 settles by its row, block 1 by the landing",
+    "settle": [
+     "0d4c4003-0000-4000-8000-000000000002",
+     "0d4c4003-0000-4000-8000-000000000003"
+    ],
+    "landing": "0d4c4003-0000-4000-8000-000000000003",
+    "lands": [
+     "0d4c4003-0000-4000-8000-000000000002"
+    ],
+    "drawn": {}
+   },
+   {
+    "message": {
+     "project": "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59",
+     "machine": "testhost",
+     "session": "d0c8a000-0000-4000-8000-0000000d4c45",
+     "kind": "step-end",
+     "sub": "sub-3-1",
+     "n": 1,
+     "body": {
+      "turnId": "turn-1",
+      "agentId": null,
+      "step": 0
+     }
+    },
+    "drawn": {}
+   }
+  ],
+  "errors": []
+ },
+ {
+  "name": "reconnect-older-snapshot-changes-nothing",
+  "about": "A fresh snapshot older than what was drawn (its watermark below the drawn one: a producer that went back) changes nothing of that request; the live chunks the drawing holds are dropped at the drawn watermark, the later ones appended.",
+  "agent": null,
+  "steps": [
+   {
+    "message": {
+     "project": "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59",
+     "machine": "testhost",
+     "session": "d0c8a000-0000-4000-8000-0000000d4c45",
+     "kind": "snapshot",
+     "sub": "sub-4-0",
+     "n": 0,
+     "body": {
+      "rows": [],
+      "more": false,
+      "subagents": [],
+      "presence": {
+       "record": {
+        "status": "busy"
+       },
+       "bridge": true
+      },
+      "streaming": [
+       {
+        "turnId": "turn-1",
+        "agentId": null,
+        "step": 0,
+        "model": "m",
+        "upTo": 3,
+        "blocks": [
+         {
+          "index": 0,
+          "kind": "text",
+          "text": "Hello",
+          "upTo": 3
+         }
+        ]
+       }
+      ],
+      "jobs": [],
+      "mcp": [],
+      "offChain": [],
+      "usage": null
+     }
+    },
+    "drawn": {
+     "main": [
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 0,
+       "kind": "text",
+       "text": "Hello",
+       "settledBy": null
+      }
+     ]
+    }
+   },
+   {
+    "message": {
+     "project": "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59",
+     "machine": "testhost",
+     "session": "d0c8a000-0000-4000-8000-0000000d4c45",
+     "kind": "chunk",
+     "sub": "sub-4-0",
+     "n": 1,
+     "body": {
+      "turnId": "turn-1",
+      "agentId": null,
+      "step": 0,
+      "chunkIndex": 4,
+      "chunk": {
+       "kind": "text",
+       "index": 0,
+       "text": ","
+      },
+      "t": 1760000000004
+     }
+    },
+    "drawn": {
+     "main": [
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 0,
+       "kind": "text",
+       "text": "Hello,",
+       "settledBy": null
+      }
+     ]
+    }
+   },
+   {
+    "message": {
+     "project": "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59",
+     "machine": "testhost",
+     "session": "d0c8a000-0000-4000-8000-0000000d4c45",
+     "kind": "chunk",
+     "sub": "sub-4-0",
+     "n": 2,
+     "body": {
+      "turnId": "turn-1",
+      "agentId": null,
+      "step": 0,
+      "chunkIndex": 5,
+      "chunk": {
+       "kind": "text",
+       "index": 0,
+       "text": " world"
+      },
+      "t": 1760000000005
+     }
+    },
+    "drawn": {
+     "main": [
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 0,
+       "kind": "text",
+       "text": "Hello, world",
+       "settledBy": null
+      }
+     ]
+    }
+   },
+   {
+    "message": {
+     "project": "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59",
+     "machine": "testhost",
+     "session": "d0c8a000-0000-4000-8000-0000000d4c45",
+     "kind": "end",
+     "sub": "sub-4-0",
+     "n": 3,
+     "body": {
+      "reason": "machine-offline"
+     }
+    },
+    "drawn": {
+     "main": [
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 0,
+       "kind": "text",
+       "text": "Hello, world",
+       "settledBy": null
+      }
+     ]
+    }
+   },
+   {
+    "message": "resubscribe",
+    "note": "the subscription is over; a new one starts and resumes the drawing",
+    "drawn": {
+     "main": [
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 0,
+       "kind": "text",
+       "text": "Hello, world",
+       "settledBy": null
+      }
+     ]
+    }
+   },
+   {
+    "message": {
+     "project": "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59",
+     "machine": "testhost",
+     "session": "d0c8a000-0000-4000-8000-0000000d4c45",
+     "kind": "snapshot",
+     "sub": "sub-4-1",
+     "n": 0,
+     "body": {
+      "rows": [],
+      "more": false,
+      "subagents": [],
+      "presence": {
+       "record": {
+        "status": "busy"
+       },
+       "bridge": true
+      },
+      "streaming": [
+       {
+        "turnId": "turn-1",
+        "agentId": null,
+        "step": 0,
+        "model": "m",
+        "upTo": 3,
+        "blocks": [
+         {
+          "index": 0,
+          "kind": "text",
+          "text": "Hello",
+          "upTo": 3
+         }
+        ]
+       }
+      ],
+      "jobs": [],
+      "mcp": [],
+      "offChain": [],
+      "usage": null
+     }
+    },
+    "note": "resumed: its watermark 3 is below the drawn 5",
+    "landing": null,
+    "lands": [],
+    "drawn": {
+     "main": [
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 0,
+       "kind": "text",
+       "text": "Hello, world",
+       "settledBy": null
+      }
+     ]
+    }
+   },
+   {
+    "message": {
+     "project": "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59",
+     "machine": "testhost",
+     "session": "d0c8a000-0000-4000-8000-0000000d4c45",
+     "kind": "chunk",
+     "sub": "sub-4-1",
+     "n": 1,
+     "body": {
+      "turnId": "turn-1",
+      "agentId": null,
+      "step": 0,
+      "chunkIndex": 4,
+      "chunk": {
+       "kind": "text",
+       "index": 0,
+       "text": ","
+      },
+      "t": 1760000000004
+     }
+    },
+    "note": "at or below the drawn watermark: dropped",
+    "drawn": {
+     "main": [
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 0,
+       "kind": "text",
+       "text": "Hello, world",
+       "settledBy": null
+      }
+     ]
+    }
+   },
+   {
+    "message": {
+     "project": "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59",
+     "machine": "testhost",
+     "session": "d0c8a000-0000-4000-8000-0000000d4c45",
+     "kind": "chunk",
+     "sub": "sub-4-1",
+     "n": 2,
+     "body": {
+      "turnId": "turn-1",
+      "agentId": null,
+      "step": 0,
+      "chunkIndex": 5,
+      "chunk": {
+       "kind": "text",
+       "index": 0,
+       "text": " world"
+      },
+      "t": 1760000000005
+     }
+    },
+    "drawn": {
+     "main": [
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 0,
+       "kind": "text",
+       "text": "Hello, world",
+       "settledBy": null
+      }
+     ]
+    }
+   },
+   {
+    "message": {
+     "project": "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59",
+     "machine": "testhost",
+     "session": "d0c8a000-0000-4000-8000-0000000d4c45",
+     "kind": "chunk",
+     "sub": "sub-4-1",
+     "n": 3,
+     "body": {
+      "turnId": "turn-1",
+      "agentId": null,
+      "step": 0,
+      "chunkIndex": 6,
+      "chunk": {
+       "kind": "text",
+       "index": 0,
+       "text": "!"
+      },
+      "t": 1760000000006
+     }
+    },
+    "drawn": {
+     "main": [
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 0,
+       "kind": "text",
+       "text": "Hello, world!",
+       "settledBy": null
+      }
+     ]
+    }
+   },
+   {
+    "message": {
+     "project": "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59",
+     "machine": "testhost",
+     "session": "d0c8a000-0000-4000-8000-0000000d4c45",
+     "kind": "block-row",
+     "sub": "sub-4-1",
+     "n": 4,
+     "body": {
+      "uuid": "0d4c4004-0000-4000-8000-000000000001",
+      "turnId": "turn-1",
+      "agentId": null,
+      "step": 0,
+      "index": 0
+     }
+    },
+    "drawn": {
+     "main": [
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 0,
+       "kind": "text",
+       "text": "Hello, world!",
+       "settledBy": "0d4c4004-0000-4000-8000-000000000001"
+      }
+     ]
+    }
+   },
+   {
+    "message": {
+     "project": "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59",
+     "machine": "testhost",
+     "session": "d0c8a000-0000-4000-8000-0000000d4c45",
+     "kind": "row",
+     "sub": "sub-4-1",
+     "n": 5,
+     "body": {
+      "row": {
+       "type": "assistant",
+       "uuid": "0d4c4004-0000-4000-8000-000000000001",
+       "message": {
+        "role": "assistant",
+        "content": [
+         {
+          "type": "text",
+          "text": "Hello, world!"
+         }
+        ]
+       }
+      },
+      "agentId": null
+     }
+    },
+    "settle": [
+     "0d4c4004-0000-4000-8000-000000000001"
+    ],
+    "drawn": {}
+   }
+  ],
+  "errors": []
+ },
+ {
+  "name": "main-view-carries-a-subagents-named-block",
+  "about": "A main view carries every agent's streaming. A subagent's block the snapshot carries named is drawn until the plane's block-row for it, which settles it at once (its row comes on the agent's own subscription, never here); the main loop's block waits for its row.",
+  "agent": null,
+  "steps": [
+   {
+    "message": {
+     "project": "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59",
+     "machine": "testhost",
+     "session": "d0c8a000-0000-4000-8000-0000000d4c45",
+     "kind": "snapshot",
+     "sub": "sub-5-0",
+     "n": 0,
+     "body": {
+      "rows": [],
+      "more": false,
+      "subagents": [],
+      "presence": {
+       "record": {
+        "status": "busy"
+       },
+       "bridge": true
+      },
+      "streaming": [
+       {
+        "turnId": "turn-1",
+        "agentId": null,
+        "step": 0,
+        "model": "m",
+        "upTo": 0,
+        "blocks": [
+         {
+          "index": 0,
+          "kind": "text",
+          "text": "Main",
+          "upTo": 0
+         }
+        ]
+       },
+       {
+        "turnId": "t-a1",
+        "agentId": "a1",
+        "step": 0,
+        "model": "m",
+        "upTo": 1,
+        "blocks": [
+         {
+          "index": 0,
+          "kind": "text",
+          "text": "Sub done",
+          "upTo": 1,
+          "uuid": "0d4c4005-0000-4000-8000-000000000001",
+          "namedAt": 1760000000001
+         }
+        ]
+       }
+      ],
+      "jobs": [],
+      "mcp": [],
+      "offChain": [],
+      "usage": null
+     }
+    },
+    "drawn": {
+     "main": [
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 0,
+       "kind": "text",
+       "text": "Main",
+       "settledBy": null
+      }
+     ],
+     "a1": [
+      {
+       "turnId": "t-a1",
+       "agentId": "a1",
+       "step": 0,
+       "index": 0,
+       "kind": "text",
+       "text": "Sub done",
+       "settledBy": "0d4c4005-0000-4000-8000-000000000001"
+      }
+     ]
+    }
+   },
+   {
+    "message": {
+     "project": "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59",
+     "machine": "testhost",
+     "session": "d0c8a000-0000-4000-8000-0000000d4c45",
+     "kind": "block-row",
+     "sub": "sub-5-0",
+     "n": 1,
+     "body": {
+      "uuid": "0d4c4005-0000-4000-8000-000000000001",
+      "turnId": "t-a1",
+      "agentId": "a1",
+      "step": 0,
+      "index": 0
+     }
+    },
+    "note": "another loop's block-row: settled at once",
+    "settle": [
+     "0d4c4005-0000-4000-8000-000000000001"
+    ],
+    "drawn": {
+     "main": [
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 0,
+       "kind": "text",
+       "text": "Main",
+       "settledBy": null
+      }
+     ]
+    }
+   },
+   {
+    "message": {
+     "project": "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59",
+     "machine": "testhost",
+     "session": "d0c8a000-0000-4000-8000-0000000d4c45",
+     "kind": "chunk",
+     "sub": "sub-5-0",
+     "n": 2,
+     "body": {
+      "turnId": "t-a1",
+      "agentId": "a1",
+      "step": 0,
+      "chunkIndex": 2,
+      "chunk": {
+       "kind": "text",
+       "index": 1,
+       "text": "more"
+      },
+      "t": 1760000000002
+     }
+    },
+    "drawn": {
+     "main": [
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 0,
+       "kind": "text",
+       "text": "Main",
+       "settledBy": null
+      }
+     ],
+     "a1": [
+      {
+       "turnId": "t-a1",
+       "agentId": "a1",
+       "step": 0,
+       "index": 1,
+       "kind": "text",
+       "text": "more",
+       "settledBy": null
+      }
+     ]
+    }
+   },
+   {
+    "message": {
+     "project": "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59",
+     "machine": "testhost",
+     "session": "d0c8a000-0000-4000-8000-0000000d4c45",
+     "kind": "block-row",
+     "sub": "sub-5-0",
+     "n": 3,
+     "body": {
+      "uuid": "0d4c4005-0000-4000-8000-000000000002",
+      "turnId": "t-a1",
+      "agentId": "a1",
+      "step": 0,
+      "index": 1
+     }
+    },
+    "settle": [
+     "0d4c4005-0000-4000-8000-000000000002"
+    ],
+    "drawn": {
+     "main": [
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 0,
+       "kind": "text",
+       "text": "Main",
+       "settledBy": null
+      }
+     ]
+    }
+   },
+   {
+    "message": {
+     "project": "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59",
+     "machine": "testhost",
+     "session": "d0c8a000-0000-4000-8000-0000000d4c45",
+     "kind": "block-row",
+     "sub": "sub-5-0",
+     "n": 4,
+     "body": {
+      "uuid": "0d4c4005-0000-4000-8000-000000000003",
+      "turnId": "turn-1",
+      "agentId": null,
+      "step": 0,
+      "index": 0
+     }
+    },
+    "drawn": {
+     "main": [
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 0,
+       "kind": "text",
+       "text": "Main",
+       "settledBy": "0d4c4005-0000-4000-8000-000000000003"
+      }
+     ]
+    }
+   },
+   {
+    "message": {
+     "project": "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59",
+     "machine": "testhost",
+     "session": "d0c8a000-0000-4000-8000-0000000d4c45",
+     "kind": "row",
+     "sub": "sub-5-0",
+     "n": 5,
+     "body": {
+      "row": {
+       "type": "assistant",
+       "uuid": "0d4c4005-0000-4000-8000-000000000003",
+       "message": {
+        "role": "assistant",
+        "content": [
+         {
+          "type": "text",
+          "text": "Main"
+         }
+        ]
+       }
+      },
+      "agentId": null
+     }
+    },
+    "settle": [
+     "0d4c4005-0000-4000-8000-000000000003"
+    ],
+    "drawn": {}
+   }
+  ],
+  "errors": []
+ },
+ {
+  "name": "planted-gap-dup-watermark-after-end",
+  "about": "Planted errors: a chunk at the subscription's own watermark (the layer drops it), an n that skips one, a row delivered twice, and a message after end (the closed subscription applies nothing).",
+  "agent": null,
+  "steps": [
+   {
+    "message": {
+     "project": "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59",
+     "machine": "testhost",
+     "session": "d0c8a000-0000-4000-8000-0000000d4c45",
+     "kind": "snapshot",
+     "sub": "sub-6-0",
+     "n": 0,
+     "body": {
+      "rows": [
+       {
+        "type": "user",
+        "uuid": "0d4c4006-0000-4000-8000-000000000001",
+        "message": {
+         "role": "user",
+         "content": "go"
+        }
+       }
+      ],
+      "more": false,
+      "subagents": [],
+      "presence": {
+       "record": {
+        "status": "busy"
+       },
+       "bridge": true
+      },
+      "streaming": [
+       {
+        "turnId": "turn-1",
+        "agentId": null,
+        "step": 0,
+        "model": "m",
+        "upTo": 2,
+        "blocks": [
+         {
+          "index": 0,
+          "kind": "text",
+          "text": "ab",
+          "upTo": 2
+         }
+        ]
+       }
+      ],
+      "jobs": [],
+      "mcp": [],
+      "offChain": [],
+      "usage": null
+     }
+    },
+    "drawn": {
+     "main": [
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 0,
+       "kind": "text",
+       "text": "ab",
+       "settledBy": null
+      }
+     ]
+    }
+   },
+   {
+    "message": {
+     "project": "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59",
+     "machine": "testhost",
+     "session": "d0c8a000-0000-4000-8000-0000000d4c45",
+     "kind": "chunk",
+     "sub": "sub-6-0",
+     "n": 1,
+     "body": {
+      "turnId": "turn-1",
+      "agentId": null,
+      "step": 0,
+      "chunkIndex": 2,
+      "chunk": {
+       "kind": "text",
+       "index": 0,
+       "text": "c"
+      },
+      "t": 1760000000002
+     }
+    },
+    "note": "planted: at the watermark",
+    "drawn": {
+     "main": [
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 0,
+       "kind": "text",
+       "text": "ab",
+       "settledBy": null
+      }
+     ]
+    }
+   },
+   {
+    "message": {
+     "project": "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59",
+     "machine": "testhost",
+     "session": "d0c8a000-0000-4000-8000-0000000d4c45",
+     "kind": "chunk",
+     "sub": "sub-6-0",
+     "n": 3,
+     "body": {
+      "turnId": "turn-1",
+      "agentId": null,
+      "step": 0,
+      "chunkIndex": 3,
+      "chunk": {
+       "kind": "text",
+       "index": 0,
+       "text": "d"
+      },
+      "t": 1760000000003
+     }
+    },
+    "note": "planted: n skips 2",
+    "drawn": {
+     "main": [
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 0,
+       "kind": "text",
+       "text": "abd",
+       "settledBy": null
+      }
+     ]
+    }
+   },
+   {
+    "message": {
+     "project": "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59",
+     "machine": "testhost",
+     "session": "d0c8a000-0000-4000-8000-0000000d4c45",
+     "kind": "row",
+     "sub": "sub-6-0",
+     "n": 4,
+     "body": {
+      "row": {
+       "type": "user",
+       "uuid": "0d4c4006-0000-4000-8000-000000000001",
+       "message": {
+        "role": "user",
+        "content": "go"
+       }
+      },
+      "agentId": null
+     }
+    },
+    "note": "planted: the snapshot's row again",
+    "drawn": {
+     "main": [
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 0,
+       "kind": "text",
+       "text": "abd",
+       "settledBy": null
+      }
+     ]
+    }
+   },
+   {
+    "message": {
+     "project": "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59",
+     "machine": "testhost",
+     "session": "d0c8a000-0000-4000-8000-0000000d4c45",
+     "kind": "end",
+     "sub": "sub-6-0",
+     "n": 5,
+     "body": {
+      "reason": "machine-offline"
+     }
+    },
+    "drawn": {
+     "main": [
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 0,
+       "kind": "text",
+       "text": "abd",
+       "settledBy": null
+      }
+     ]
+    }
+   },
+   {
+    "message": {
+     "project": "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59",
+     "machine": "testhost",
+     "session": "d0c8a000-0000-4000-8000-0000000d4c45",
+     "kind": "chunk",
+     "sub": "sub-6-0",
+     "n": 6,
+     "body": {
+      "turnId": "turn-1",
+      "agentId": null,
+      "step": 0,
+      "chunkIndex": 4,
+      "chunk": {
+       "kind": "text",
+       "index": 0,
+       "text": "e"
+      },
+      "t": 1760000000004
+     }
+    },
+    "note": "planted: after end",
+    "drawn": {
+     "main": [
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 0,
+       "kind": "text",
+       "text": "abd",
+       "settledBy": null
+      }
+     ]
+    }
+   }
+  ],
+  "errors": [
+   "watermark",
+   "gap",
+   "dup",
+   "after-end"
+  ]
+ },
+ {
+  "name": "planted-vanished-and-a-hole",
+  "about": "Planted: the fresh snapshot after a disruption carries neither the named block nor its row (what the plane's open gate existed to prevent), and the row is never delivered. The block vanishes before its row landed; the row is a hole.",
+  "agent": null,
+  "steps": [
+   {
+    "message": {
+     "project": "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59",
+     "machine": "testhost",
+     "session": "d0c8a000-0000-4000-8000-0000000d4c45",
+     "kind": "snapshot",
+     "sub": "sub-7-0",
+     "n": 0,
+     "body": {
+      "rows": [
+       {
+        "type": "user",
+        "uuid": "0d4c4007-0000-4000-8000-000000000001",
+        "message": {
+         "role": "user",
+         "content": "go"
+        }
+       }
+      ],
+      "more": false,
+      "subagents": [],
+      "presence": {
+       "record": {
+        "status": "busy"
+       },
+       "bridge": true
+      },
+      "streaming": [
+       {
+        "turnId": "turn-1",
+        "agentId": null,
+        "step": 0,
+        "model": "m",
+        "upTo": 0,
+        "blocks": [
+         {
+          "index": 0,
+          "kind": "text",
+          "text": "Lost",
+          "upTo": 0
+         }
+        ]
+       }
+      ],
+      "jobs": [],
+      "mcp": [],
+      "offChain": [],
+      "usage": null
+     }
+    },
+    "drawn": {
+     "main": [
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 0,
+       "kind": "text",
+       "text": "Lost",
+       "settledBy": null
+      }
+     ]
+    }
+   },
+   {
+    "message": {
+     "project": "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59",
+     "machine": "testhost",
+     "session": "d0c8a000-0000-4000-8000-0000000d4c45",
+     "kind": "block-row",
+     "sub": "sub-7-0",
+     "n": 1,
+     "body": {
+      "uuid": "0d4c4007-0000-4000-8000-000000000002",
+      "turnId": "turn-1",
+      "agentId": null,
+      "step": 0,
+      "index": 0
+     }
+    },
+    "drawn": {
+     "main": [
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 0,
+       "kind": "text",
+       "text": "Lost",
+       "settledBy": "0d4c4007-0000-4000-8000-000000000002"
+      }
+     ]
+    }
+   },
+   {
+    "message": {
+     "project": "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59",
+     "machine": "testhost",
+     "session": "d0c8a000-0000-4000-8000-0000000d4c45",
+     "kind": "end",
+     "sub": "sub-7-0",
+     "n": 2,
+     "body": {
+      "reason": "machine-offline"
+     }
+    },
+    "drawn": {
+     "main": [
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 0,
+       "kind": "text",
+       "text": "Lost",
+       "settledBy": "0d4c4007-0000-4000-8000-000000000002"
+      }
+     ]
+    }
+   },
+   {
+    "message": "resubscribe",
+    "note": "the subscription is over; a new one starts and resumes the drawing",
+    "drawn": {
+     "main": [
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 0,
+       "kind": "text",
+       "text": "Lost",
+       "settledBy": "0d4c4007-0000-4000-8000-000000000002"
+      }
+     ]
+    }
+   },
+   {
+    "message": {
+     "project": "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59",
+     "machine": "testhost",
+     "session": "d0c8a000-0000-4000-8000-0000000d4c45",
+     "kind": "snapshot",
+     "sub": "sub-7-1",
+     "n": 0,
+     "body": {
+      "rows": [],
+      "more": false,
+      "subagents": [],
+      "presence": {
+       "record": {
+        "status": "busy"
+       },
+       "bridge": true
+      },
+      "streaming": [],
+      "jobs": [],
+      "mcp": [],
+      "offChain": [],
+      "usage": null
+     }
+    },
+    "note": "planted: no block, no row; the held rows are replaced",
+    "landing": null,
+    "lands": [],
+    "drawn": {}
+   },
+   {
+    "message": {
+     "project": "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59",
+     "machine": "testhost",
+     "session": "d0c8a000-0000-4000-8000-0000000d4c45",
+     "kind": "step-end",
+     "sub": "sub-7-1",
+     "n": 1,
+     "body": {
+      "turnId": "turn-1",
+      "agentId": null,
+      "step": 0
+     }
+    },
+    "drawn": {}
+   }
+  ],
+  "errors": [
+   "vanished"
+  ],
+  "inventory": {
+   "transcript": [
+    {
+     "type": "user",
+     "uuid": "0d4c4007-0000-4000-8000-000000000001",
+     "message": {
+      "role": "user",
+      "content": "go"
+     }
+    },
+    {
+     "type": "assistant",
+     "uuid": "0d4c4007-0000-4000-8000-000000000002",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "text",
+        "text": "Lost"
+       }
+      ]
+     }
+    }
+   ],
+   "dx5": [
+    {
+     "type": "chunk",
+     "turnId": "turn-1",
+     "agentId": null,
+     "step": 0,
+     "chunkIndex": 0,
+     "chunk": {
+      "kind": "text",
+      "index": 0,
+      "text": "Lost"
+     },
+     "t": 1760000000000
+    },
+    {
+     "type": "block-row",
+     "uuid": "0d4c4007-0000-4000-8000-000000000002",
+     "turnId": "turn-1",
+     "agentId": null,
+     "step": 0,
+     "index": 0,
+     "t": 1760000000000
+    }
+   ],
+   "check": {
+    "holes": [
+     "0d4c4007-0000-4000-8000-000000000002"
+    ],
+    "partial": [],
+    "vanished": [
+     {
+      "turnId": "turn-1",
+      "agentId": null,
+      "step": 0,
+      "index": 0
+     }
+    ],
+    "dups": []
+   }
+  }
+ },
+ {
+  "name": "planted-partial-and-drawn-twice",
+  "about": "Planted: a block's row lands before its block-row (the block is drawn beside its row: partial), then a fresh snapshot replaces the held rows and carries the settled block named again (drawn twice).",
+  "agent": null,
+  "steps": [
+   {
+    "message": {
+     "project": "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59",
+     "machine": "testhost",
+     "session": "d0c8a000-0000-4000-8000-0000000d4c45",
+     "kind": "snapshot",
+     "sub": "sub-8-0",
+     "n": 0,
+     "body": {
+      "rows": [
+       {
+        "type": "user",
+        "uuid": "0d4c4008-0000-4000-8000-000000000001",
+        "message": {
+         "role": "user",
+         "content": "go"
+        }
+       }
+      ],
+      "more": false,
+      "subagents": [],
+      "presence": {
+       "record": {
+        "status": "busy"
+       },
+       "bridge": true
+      },
+      "streaming": [
+       {
+        "turnId": "turn-1",
+        "agentId": null,
+        "step": 0,
+        "model": "m",
+        "upTo": 0,
+        "blocks": [
+         {
+          "index": 0,
+          "kind": "text",
+          "text": "Twice",
+          "upTo": 0
+         }
+        ]
+       }
+      ],
+      "jobs": [],
+      "mcp": [],
+      "offChain": [],
+      "usage": null
+     }
+    },
+    "drawn": {
+     "main": [
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 0,
+       "kind": "text",
+       "text": "Twice",
+       "settledBy": null
+      }
+     ]
+    }
+   },
+   {
+    "message": {
+     "project": "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59",
+     "machine": "testhost",
+     "session": "d0c8a000-0000-4000-8000-0000000d4c45",
+     "kind": "row",
+     "sub": "sub-8-0",
+     "n": 1,
+     "body": {
+      "row": {
+       "type": "assistant",
+       "uuid": "0d4c4008-0000-4000-8000-000000000002",
+       "message": {
+        "role": "assistant",
+        "content": [
+         {
+          "type": "text",
+          "text": "Twice"
+         }
+        ]
+       }
+      },
+      "agentId": null
+     }
+    },
+    "note": "planted: the row before its block-row; the unnamed block stays drawn beside it",
+    "drawn": {
+     "main": [
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 0,
+       "kind": "text",
+       "text": "Twice",
+       "settledBy": null
+      }
+     ]
+    }
+   },
+   {
+    "message": {
+     "project": "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59",
+     "machine": "testhost",
+     "session": "d0c8a000-0000-4000-8000-0000000d4c45",
+     "kind": "block-row",
+     "sub": "sub-8-0",
+     "n": 2,
+     "body": {
+      "uuid": "0d4c4008-0000-4000-8000-000000000002",
+      "turnId": "turn-1",
+      "agentId": null,
+      "step": 0,
+      "index": 0
+     }
+    },
+    "settle": [
+     "0d4c4008-0000-4000-8000-000000000002"
+    ],
+    "drawn": {}
+   },
+   {
+    "message": {
+     "project": "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59",
+     "machine": "testhost",
+     "session": "d0c8a000-0000-4000-8000-0000000d4c45",
+     "kind": "end",
+     "sub": "sub-8-0",
+     "n": 3,
+     "body": {
+      "reason": "machine-offline"
+     }
+    },
+    "drawn": {}
+   },
+   {
+    "message": "resubscribe",
+    "note": "the subscription is over; a new one starts and resumes the drawing",
+    "drawn": {}
+   },
+   {
+    "message": {
+     "project": "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59",
+     "machine": "testhost",
+     "session": "d0c8a000-0000-4000-8000-0000000d4c45",
+     "kind": "snapshot",
+     "sub": "sub-8-1",
+     "n": 0,
+     "body": {
+      "rows": [],
+      "more": false,
+      "subagents": [],
+      "presence": {
+       "record": {
+        "status": "busy"
+       },
+       "bridge": true
+      },
+      "streaming": [
+       {
+        "turnId": "turn-1",
+        "agentId": null,
+        "step": 0,
+        "model": "m",
+        "upTo": 0,
+        "blocks": [
+         {
+          "index": 0,
+          "kind": "text",
+          "text": "Twice",
+          "upTo": 0,
+          "uuid": "0d4c4008-0000-4000-8000-000000000002",
+          "namedAt": 1760000000000
+         }
+        ]
+       }
+      ],
+      "jobs": [],
+      "mcp": [],
+      "offChain": [],
+      "usage": null
+     }
+    },
+    "note": "planted: no rows, and the settled block carried again",
+    "landing": null,
+    "lands": [],
+    "drawn": {
+     "main": [
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 0,
+       "kind": "text",
+       "text": "Twice",
+       "settledBy": "0d4c4008-0000-4000-8000-000000000002"
+      }
+     ]
+    }
+   },
+   {
+    "message": {
+     "project": "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59",
+     "machine": "testhost",
+     "session": "d0c8a000-0000-4000-8000-0000000d4c45",
+     "kind": "block-row",
+     "sub": "sub-8-1",
+     "n": 1,
+     "body": {
+      "uuid": "0d4c4008-0000-4000-8000-000000000002",
+      "turnId": "turn-1",
+      "agentId": null,
+      "step": 0,
+      "index": 0
+     }
+    },
+    "drawn": {
+     "main": [
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 0,
+       "kind": "text",
+       "text": "Twice",
+       "settledBy": "0d4c4008-0000-4000-8000-000000000002"
+      }
+     ]
+    }
+   },
+   {
+    "message": {
+     "project": "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59",
+     "machine": "testhost",
+     "session": "d0c8a000-0000-4000-8000-0000000d4c45",
+     "kind": "row",
+     "sub": "sub-8-1",
+     "n": 2,
+     "body": {
+      "row": {
+       "type": "assistant",
+       "uuid": "0d4c4008-0000-4000-8000-000000000002",
+       "message": {
+        "role": "assistant",
+        "content": [
+         {
+          "type": "text",
+          "text": "Twice"
+         }
+        ]
+       }
+      },
+      "agentId": null
+     }
+    },
+    "settle": [
+     "0d4c4008-0000-4000-8000-000000000002"
+    ],
+    "drawn": {}
+   }
+  ],
+  "errors": [],
+  "inventory": {
+   "transcript": [
+    {
+     "type": "user",
+     "uuid": "0d4c4008-0000-4000-8000-000000000001",
+     "message": {
+      "role": "user",
+      "content": "go"
+     }
+    },
+    {
+     "type": "assistant",
+     "uuid": "0d4c4008-0000-4000-8000-000000000002",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "text",
+        "text": "Twice"
+       }
+      ]
+     }
+    }
+   ],
+   "dx5": [
+    {
+     "type": "chunk",
+     "turnId": "turn-1",
+     "agentId": null,
+     "step": 0,
+     "chunkIndex": 0,
+     "chunk": {
+      "kind": "text",
+      "index": 0,
+      "text": "Twice"
+     },
+     "t": 1760000000000
+    },
+    {
+     "type": "block-row",
+     "uuid": "0d4c4008-0000-4000-8000-000000000002",
+     "turnId": "turn-1",
+     "agentId": null,
+     "step": 0,
+     "index": 0,
+     "t": 1760000000000
+    }
+   ],
+   "check": {
+    "holes": [],
+    "partial": [
+     {
+      "turnId": "turn-1",
+      "agentId": null,
+      "step": 0,
+      "index": 0,
+      "text": "Twice"
+     }
+    ],
+    "vanished": [],
+    "dups": [
+     {
+      "turnId": "turn-1",
+      "agentId": null,
+      "step": 0,
+      "index": 0
+     }
+    ]
+   }
+  }
+ },
+ {
+  "name": "reconnect-fresh-text-and-the-old-name",
+  "about": "Blocks the fresh snapshot carries unnamed are drawn with its text: one still streaming takes the snapshot's newer text and goes on; one the old subscription had named keeps that name, so its row settles it.",
+  "agent": null,
+  "steps": [
+   {
+    "message": {
+     "project": "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59",
+     "machine": "testhost",
+     "session": "d0c8a000-0000-4000-8000-0000000d4c45",
+     "kind": "snapshot",
+     "sub": "sub-9-0",
+     "n": 0,
+     "body": {
+      "rows": [],
+      "more": false,
+      "subagents": [],
+      "presence": {
+       "record": {
+        "status": "busy"
+       },
+       "bridge": true
+      },
+      "streaming": [
+       {
+        "turnId": "turn-1",
+        "agentId": null,
+        "step": 0,
+        "model": "m",
+        "upTo": 1,
+        "blocks": [
+         {
+          "index": 0,
+          "kind": "text",
+          "text": "Str",
+          "upTo": 0
+         },
+         {
+          "index": 1,
+          "kind": "text",
+          "text": "Done",
+          "upTo": 1
+         }
+        ]
+       }
+      ],
+      "jobs": [],
+      "mcp": [],
+      "offChain": [],
+      "usage": null
+     }
+    },
+    "drawn": {
+     "main": [
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 0,
+       "kind": "text",
+       "text": "Str",
+       "settledBy": null
+      },
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 1,
+       "kind": "text",
+       "text": "Done",
+       "settledBy": null
+      }
+     ]
+    }
+   },
+   {
+    "message": {
+     "project": "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59",
+     "machine": "testhost",
+     "session": "d0c8a000-0000-4000-8000-0000000d4c45",
+     "kind": "block-row",
+     "sub": "sub-9-0",
+     "n": 1,
+     "body": {
+      "uuid": "0d4c4009-0000-4000-8000-000000000002",
+      "turnId": "turn-1",
+      "agentId": null,
+      "step": 0,
+      "index": 1
+     }
+    },
+    "drawn": {
+     "main": [
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 0,
+       "kind": "text",
+       "text": "Str",
+       "settledBy": null
+      },
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 1,
+       "kind": "text",
+       "text": "Done",
+       "settledBy": "0d4c4009-0000-4000-8000-000000000002"
+      }
+     ]
+    }
+   },
+   {
+    "message": {
+     "project": "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59",
+     "machine": "testhost",
+     "session": "d0c8a000-0000-4000-8000-0000000d4c45",
+     "kind": "end",
+     "sub": "sub-9-0",
+     "n": 2,
+     "body": {
+      "reason": "machine-offline"
+     }
+    },
+    "drawn": {
+     "main": [
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 0,
+       "kind": "text",
+       "text": "Str",
+       "settledBy": null
+      },
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 1,
+       "kind": "text",
+       "text": "Done",
+       "settledBy": "0d4c4009-0000-4000-8000-000000000002"
+      }
+     ]
+    }
+   },
+   {
+    "message": "resubscribe",
+    "note": "the subscription is over; a new one starts and resumes the drawing",
+    "drawn": {
+     "main": [
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 0,
+       "kind": "text",
+       "text": "Str",
+       "settledBy": null
+      },
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 1,
+       "kind": "text",
+       "text": "Done",
+       "settledBy": "0d4c4009-0000-4000-8000-000000000002"
+      }
+     ]
+    }
+   },
+   {
+    "message": {
+     "project": "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59",
+     "machine": "testhost",
+     "session": "d0c8a000-0000-4000-8000-0000000d4c45",
+     "kind": "snapshot",
+     "sub": "sub-9-1",
+     "n": 0,
+     "body": {
+      "rows": [],
+      "more": false,
+      "subagents": [],
+      "presence": {
+       "record": {
+        "status": "busy"
+       },
+       "bridge": true
+      },
+      "streaming": [
+       {
+        "turnId": "turn-1",
+        "agentId": null,
+        "step": 0,
+        "model": "m",
+        "upTo": 2,
+        "blocks": [
+         {
+          "index": 0,
+          "kind": "text",
+          "text": "Stre",
+          "upTo": 2
+         },
+         {
+          "index": 1,
+          "kind": "text",
+          "text": "Done",
+          "upTo": 1
+         }
+        ]
+       }
+      ],
+      "jobs": [],
+      "mcp": [],
+      "offChain": [],
+      "usage": null
+     }
+    },
+    "note": "resumed: block 0 the snapshot's text; block 1 carried unnamed keeps the old name",
+    "landing": null,
+    "lands": [],
+    "drawn": {
+     "main": [
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 0,
+       "kind": "text",
+       "text": "Stre",
+       "settledBy": null
+      },
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 1,
+       "kind": "text",
+       "text": "Done",
+       "settledBy": "0d4c4009-0000-4000-8000-000000000002"
+      }
+     ]
+    }
+   },
+   {
+    "message": {
+     "project": "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59",
+     "machine": "testhost",
+     "session": "d0c8a000-0000-4000-8000-0000000d4c45",
+     "kind": "block-row",
+     "sub": "sub-9-1",
+     "n": 1,
+     "body": {
+      "uuid": "0d4c4009-0000-4000-8000-000000000002",
+      "turnId": "turn-1",
+      "agentId": null,
+      "step": 0,
+      "index": 1
+     }
+    },
+    "drawn": {
+     "main": [
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 0,
+       "kind": "text",
+       "text": "Stre",
+       "settledBy": null
+      },
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 1,
+       "kind": "text",
+       "text": "Done",
+       "settledBy": "0d4c4009-0000-4000-8000-000000000002"
+      }
+     ]
+    }
+   },
+   {
+    "message": {
+     "project": "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59",
+     "machine": "testhost",
+     "session": "d0c8a000-0000-4000-8000-0000000d4c45",
+     "kind": "chunk",
+     "sub": "sub-9-1",
+     "n": 2,
+     "body": {
+      "turnId": "turn-1",
+      "agentId": null,
+      "step": 0,
+      "chunkIndex": 3,
+      "chunk": {
+       "kind": "text",
+       "index": 0,
+       "text": "am"
+      },
+      "t": 1760000000003
+     }
+    },
+    "drawn": {
+     "main": [
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 0,
+       "kind": "text",
+       "text": "Stream",
+       "settledBy": null
+      },
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 1,
+       "kind": "text",
+       "text": "Done",
+       "settledBy": "0d4c4009-0000-4000-8000-000000000002"
+      }
+     ]
+    }
+   },
+   {
+    "message": {
+     "project": "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59",
+     "machine": "testhost",
+     "session": "d0c8a000-0000-4000-8000-0000000d4c45",
+     "kind": "block-row",
+     "sub": "sub-9-1",
+     "n": 3,
+     "body": {
+      "uuid": "0d4c4009-0000-4000-8000-000000000001",
+      "turnId": "turn-1",
+      "agentId": null,
+      "step": 0,
+      "index": 0
+     }
+    },
+    "drawn": {
+     "main": [
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 0,
+       "kind": "text",
+       "text": "Stream",
+       "settledBy": "0d4c4009-0000-4000-8000-000000000001"
+      },
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 1,
+       "kind": "text",
+       "text": "Done",
+       "settledBy": "0d4c4009-0000-4000-8000-000000000002"
+      }
+     ]
+    }
+   },
+   {
+    "message": {
+     "project": "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59",
+     "machine": "testhost",
+     "session": "d0c8a000-0000-4000-8000-0000000d4c45",
+     "kind": "row",
+     "sub": "sub-9-1",
+     "n": 4,
+     "body": {
+      "row": {
+       "type": "assistant",
+       "uuid": "0d4c4009-0000-4000-8000-000000000002",
+       "message": {
+        "role": "assistant",
+        "content": [
+         {
+          "type": "text",
+          "text": "Done"
+         }
+        ]
+       }
+      },
+      "agentId": null
+     }
+    },
+    "settle": [
+     "0d4c4009-0000-4000-8000-000000000002"
+    ],
+    "drawn": {
+     "main": [
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 0,
+       "kind": "text",
+       "text": "Stream",
+       "settledBy": "0d4c4009-0000-4000-8000-000000000001"
+      }
+     ]
+    }
+   },
+   {
+    "message": {
+     "project": "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59",
+     "machine": "testhost",
+     "session": "d0c8a000-0000-4000-8000-0000000d4c45",
+     "kind": "row",
+     "sub": "sub-9-1",
+     "n": 5,
+     "body": {
+      "row": {
+       "type": "assistant",
+       "uuid": "0d4c4009-0000-4000-8000-000000000001",
+       "message": {
+        "role": "assistant",
+        "content": [
+         {
+          "type": "text",
+          "text": "Stream"
+         }
+        ]
+       }
+      },
+      "agentId": null
+     }
+    },
+    "settle": [
+     "0d4c4009-0000-4000-8000-000000000001"
+    ],
+    "drawn": {}
+   },
+   {
+    "message": {
+     "project": "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59",
+     "machine": "testhost",
+     "session": "d0c8a000-0000-4000-8000-0000000d4c45",
+     "kind": "step-end",
+     "sub": "sub-9-1",
+     "n": 6,
+     "body": {
+      "turnId": "turn-1",
+      "agentId": null,
+      "step": 0
+     }
+    },
+    "drawn": {}
+   }
+  ],
+  "errors": []
+ }
+]

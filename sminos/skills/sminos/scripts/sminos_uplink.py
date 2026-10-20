@@ -815,7 +815,7 @@ class Link:
     def on_subscribe(self, frame, _stream):
         project = self.opened_project(frame)
         if project is not None:
-            self.post_session(self.plane.subscribe(project, frame))
+            self.post_session(self.plane.subscribe(project, frame, self.received))
 
     def on_unsubscribe(self, frame, _stream):
         if self.opened_project(frame) is not None:
