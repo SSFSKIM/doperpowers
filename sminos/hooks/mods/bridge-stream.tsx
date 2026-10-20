@@ -183,6 +183,10 @@ export function resyncEvent(): BridgeEvent {
     refused: state.refusals.map((r) => ({ key: { ...r.key }, reason: r.reason })),
     // Each loop's last row notice: every row up to it has been named.
     cut: { main: null, ...Object.fromEntries(state.cut) },
+    // This module keeps a block after its block-row (named, in `streaming`)
+    // until its step ends, so the child's snapshot may say so and the plane
+    // serve it without waiting for the cut's row.
+    namedBlocks: true,
     // What the session started as: a child whose session start was lost (the
     // first post failed, and its recovery is this resync) still knows it.
     ...(state.info !== undefined && { sessionInfo: { session: state.session, ...state.info } }),

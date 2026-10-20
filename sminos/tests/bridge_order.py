@@ -79,8 +79,11 @@ class Child:
         c.request("GET", "/status")
         return json.loads(c.getresponse().read())
 
-    def resync(self, **fields):
-        self.post({"type": "resync", "turns": [], "streaming": [], "agents": [], **fields})
+    def resync(self, declare=True, **fields):
+        """The mod's resync; `declare` False is a mod from before open-fast
+        M5's, which does not keep named blocks and says nothing of them."""
+        self.post({"type": "resync", "turns": [], "streaming": [], "agents": [],
+                   **({"namedBlocks": True} if declare else {}), **fields})
 
     def stop(self):
         self.proc.kill()
@@ -170,6 +173,12 @@ class Consumer:
     uuid already released unnamed, end the subscription; a `row-seen` for an
     already released uuid is ignored.
 
+    That is for a snapshot that declares it keeps named blocks
+    (`namedBlocks` true). One that does not — a bridge from before open-fast
+    M5, which drops a block at its block-row — gets the rule before it:
+    history waits for the cut's row to be on disk, up to 5 s, then reads to
+    it, and a cut whose row is not on disk by then is a discontinuity.
+
     A loop whose cut is null, or that the cut does not name, had no rows: its
     history is empty. The stream ending is the other discontinuity: the
     consumer ends with it, and a new subscription starts over from a fresh
@@ -220,6 +229,14 @@ class Consumer:
         named = {}               # uuid → the step open when its notice came (None: none), for a row not yet emitted
         due = {}                 # uuid → when its row is due: its step's end, or its notice, plus FLUSH_WAIT
         released = {}            # loop → how many of its disk rows are emitted
+        if self.snapshot.get("namedBlocks") is not True:
+            deadline = time.time() + FLUSH_WAIT
+            for loop in self.loops:
+                at = cut.get(loop)
+                while at is not None and at not in self.disk.rows(loop):
+                    if time.time() > deadline:
+                        return self.end("the cut's row %s is not on disk" % at)
+                    time.sleep(0.02)
         now = time.time()
         for loop in self.loops:
             at = cut.get(loop)
@@ -785,6 +802,36 @@ def cut_wait():
     child.stop()
 
 
+def undeclared():
+    """A snapshot says `namedBlocks` as the mod's last resync declared it; a
+    reader of one that does not waits for the cut's row before its history,
+    as before open-fast M5 (the mod from before it drops a block at its
+    block-row, so its cut may name a row neither on disk nor carried)."""
+    child, disk = Child(), Disk("undeclared")
+    disk.write("main", "u1")
+    child.resync(cut={"main": "u1"})
+    declared = Sub(child).snapshot.get("namedBlocks")
+    child.resync(declare=False, cut={"main": "u2"})
+    plain = Sub(child).snapshot
+    check("a snapshot says namedBlocks true after a resync that declares it, false after one that does not",
+          declared is True and plain.get("namedBlocks") is False, "%s, %s" % (declared, plain.get("namedBlocks")))
+    c = Consumer(child, disk)
+    time.sleep(0.8)
+    early = list(c.out)
+    disk.write("main", "u2")
+    disk.write("main", "u3")
+    c.wait("u3", 4, lambda: len(c.out) >= 3)
+    check("undeclared, history waits for the cut's row to be on disk, then reads to it; the row past it is live",
+          early == [] and c.out == [("u1", "history"), ("u2", "history"), ("u3", "unnamed")],
+          "%s then %s" % (early, c.out))
+    child.resync(declare=False, cut={"main": "never"})
+    d = Consumer(child, disk)
+    d.wait("the end", FLUSH_WAIT + 2, lambda: d.ended)
+    check("undeclared, a cut whose row is not on disk within 5 s is a discontinuity, nothing read",
+          d.ended == "the cut's row never is not on disk" and not d.out, "%s; %s" % (d.ended, d.out))
+    child.stop()
+
+
 def seeded():
     """A loop the cut names is history to it; one it does not name had no rows
     at the snapshot, and every row of it is live."""
@@ -863,7 +910,7 @@ def subagent_loop():
 
 
 for case in (readiness, verbs_retry_not_ready, cut, step_end_drops, seed, rows_past, flush_ahead, between_chunk_and_row, named_carried, named_never_flushed, notice_past_bound, passed_over,
-             compaction_named, cut_wait, seeded, fence, subagent_loop):
+             compaction_named, cut_wait, undeclared, seeded, fence, subagent_loop):
     try:
         case()
     except Exception as e:  # noqa: BLE001 — a case that cannot go on is a failed case

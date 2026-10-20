@@ -468,6 +468,7 @@ class Engine(Session):
                 u = m.row(0, disk=False)  # announced: in the cut, not yet flushed
                 sub, b = self.subscribe(agent=agent)
                 self.assertTrue(self.pump(sub, b, lambda: b.snapshot is not None), "the snapshot waits for nothing")
+                self.assertIs(sub.snap.get("namedBlocks"), True, "from a bridge that declares it keeps named blocks")
                 self.assertEqual([r["uuid"] for r in b.snapshot["rows"]], [before], "history: every row on disk")
                 [entry] = [e for e in b.snapshot["streaming"] if e["agentId"] == agent]
                 self.assertEqual([(x["index"], x["text"], x.get("uuid")) for x in entry["blocks"]],
@@ -753,6 +754,107 @@ class Engine(Session):
                                 "waits 0)\n" % (sub.sub, sub.session[:8], sub.cpu_ms)])
         m.write(0, u)
         m.end()
+
+    # ---------------------------------------------------- a bridge from before open-fast M5
+
+    def test_a_bridge_that_does_not_keep_named_blocks_waits_for_the_cut(self):
+        """A bridge that does not declare it keeps named blocks (its mod and
+        child from before M5, which drop a block at its block-row): the open
+        waits for the cut's row as before M5, so a fresh open has no hole —
+        the named block's row in history, the rest live — and a cut whose row
+        never comes ends it NOTICE_WAIT after the bridge's snapshot."""
+        self.fake.legacy = True
+        self.fake.start_bridge()
+        before = self.fake.user_row("before")
+        m = self.fake.message()
+        m.text(0, "first block")
+        u = m.row(0, disk=False)
+        m.text(1, "second ")
+        sub, b = self.subscribe()
+        self.settle(sub, b)
+        self.assertIsNone(b.snapshot, "it waits for the cut's row")
+        self.assertIsNot(sub.snap.get("namedBlocks"), True)
+        self.assertGreaterEqual(sub.waits, 1)
+        m.text(1, "block")
+        m.write(0, u)
+        self.assertTrue(self.pump(sub, b, lambda: b.snapshot is not None))
+        self.assertEqual([r["uuid"] for r in reversed(b.snapshot["rows"])], [before, u], "history to the cut")
+        self.assertTrue(self.pump(sub, b, lambda: b.texts().get((m.turn, None, 0, 1)) == "second block"))
+        m.row(1)
+        m.end()
+        self.assertTrue(self.pump(sub, b, lambda: len(b.rows) == 3))
+        self.assertClean(b)
+        inventory = dx4_consumer.Inventory.from_sources(self.fake.path(None), self.fake.emitted)
+        self.assertEqual(inventory.check(b), self.CLEAN)
+        [line] = self.opens_said(sub)
+        self.assertRegex(line, r"; build: \w+ \d+ ms 2 rows, cut on disk; waits [1-9]\d*\)$")
+        lost = self.fake.message()
+        lost.text(0, "never flushed")
+        lost.row(0, disk=False)
+        late, b2 = self.subscribe()
+        self.settle(late, b2)
+        self.assertIsNone(b2.snapshot)
+        self.clock.advance(plane.NOTICE_WAIT + 0.1)
+        self.assertTrue(self.pump(late, b2, lambda: b2.end is not None))
+        self.assertEqual((b2.end["reason"], b2.n), ("discontinuity", 0))
+        self.assertIn("never reached the transcript", b2.end["message"])
+        lost.end()
+
+    def test_a_bridge_that_does_not_keep_named_blocks_drops_nothing_on_a_reconnect(self):
+        """The reconnect a no-wait snapshot from such a bridge would break: a
+        block drawn and named, its row not flushed, the subscription lost.
+        The fresh open waits for the cut's row, so the drawing resumed holds
+        the block until its row lands, and nothing vanishes."""
+        self.fake.legacy = True
+        self.fake.start_bridge()
+        sub, b = self.subscribe()
+        self.assertTrue(self.pump(sub, b, lambda: b.snapshot is not None))
+        m = self.fake.message()
+        m.text(0, "drawn ")
+        m.text(0, "whole")
+        u = m.row(0, disk=False)
+        self.assertTrue(self.pump(sub, b, lambda: [x.settled_by for x in b.blocks(None)] == [u]))
+        self.fake.gap()
+        self.assertTrue(self.pump(sub, b, lambda: b.end is not None))
+        again, _ = self.subscribe()
+        b2 = dx4_consumer.Consumer(None, previous=b)
+        self.settle(again, b2)
+        self.assertIsNone(b2.snapshot, "it waits for the cut's row")
+        m.write(0, u)
+        m.end()
+        self.assertTrue(self.pump(again, b2, lambda: u in b2.uuids()))
+        self.settle(again, b2)
+        self.assertEqual(b2.errors, [])
+        self.assertEqual(b2.texts(), {}, "the block settled by its row")
+        self.assertIn((m.turn, None, 0, 0), b2.settled)
+        inventory = dx4_consumer.Inventory.from_sources(self.fake.path(None), self.fake.emitted)
+        self.assertEqual(inventory.check(b2), self.CLEAN)
+
+    def test_a_bridge_that_does_not_keep_named_blocks_waits_for_a_cut_with_no_transcript_yet(self):
+        """No transcript file yet, or none found, and a cut: such a bridge's
+        open waits for the cut's row, then takes it as history."""
+        for located in (True, False):
+            with self.subTest(located=located):
+                fake = fake_session.FakeSession(os.environ["HOME"], os.environ["SMINOS_HOME"], new_session())
+                fake.legacy = True
+                fake.start_bridge()
+                m = fake.message()
+                m.text(0, "first")
+                u = m.row(0, disk=False)
+                sub, b = self.subscribe(fake=fake)
+                if not located:
+                    sub.locate = lambda: ""
+                self.settle(sub, b)
+                self.assertIsNone(b.snapshot, "it waits for the cut's row")
+                sub.locate = lambda: fake.path(None)
+                m.write(0, u)
+                m.end()
+                self.clock.advance(plane.LOCATE_EVERY)
+                self.assertTrue(self.pump(sub, b, lambda: b.snapshot is not None))
+                self.assertEqual([r["uuid"] for r in b.snapshot["rows"]], [u], "the cut's row, in history")
+                self.assertEqual(sub.cut_state, "on disk")
+                self.assertEqual(b.errors, [])
+                fake.stop_bridge()
 
     def test_the_open_line_says_where_the_time_went(self):
         """§5's line, pinned whole: N from the subscribe frame's arrival at
@@ -1340,10 +1442,10 @@ class Held:
             self.go.set()
         self.read = []
 
-    def __call__(self, t, cut, bridged):
+    def __call__(self, t, *args):
         self.entered.set()
         assert self.go.wait(10), "never let go"
-        answer = self.real(t, cut, bridged)
+        answer = self.real(t, *args)
         self.read = list(t.index.uuids)
         self.built.set()
         assert self.deliver.wait(10), "never delivered"
