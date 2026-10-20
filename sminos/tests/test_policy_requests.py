@@ -43,6 +43,7 @@ import test_session_plane as tsp  # noqa: E402 — first: it makes this run's HO
 
 import sminos  # noqa: E402
 import sminos_codes as codes  # noqa: E402
+import sminos_flights as flights  # noqa: E402
 import sminos_outcomes as outcomes  # noqa: E402
 import sminos_policy as policy  # noqa: E402
 import sminos_requests as requests  # noqa: E402
@@ -1242,6 +1243,36 @@ class Requests(unittest.TestCase):
 # ---------------------------------------------------------------- the uplink
 
 
+class Flights(unittest.TestCase):
+    """sminos_flights.Flights, the in-flight and held bookkeeping, alone."""
+
+    def test_only_a_confirmation_queued_after_the_answer_confirms(self):
+        """A confirmation queued while the frame's POST is still out says
+        nothing of it, even when the frame's 200 lands before the
+        confirmation's answer: only one queued after that 200 confirms it."""
+        fl, f = flights.Flights(), {"n": 1}
+        attempt = fl.send("p", [f])
+        early = fl.mark()                       # queued before the frame's 200
+        self.assertTrue(fl.answered(f, attempt))
+        self.assertEqual(fl.confirm("p", early), [], "queued before the answer: confirms nothing")
+        late = fl.mark()
+        self.assertEqual(fl.confirm("p", late), [f], "queued after it: confirms it")
+        self.assertIsNone(fl.held_since("p"), "nothing held")
+
+    def test_a_refusal_lets_go_of_the_voided_attempts_and_keeps_a_newer_one(self):
+        fl, f, g, h = flights.Flights(), {"n": 1}, {"n": 2}, {"n": 3}
+        voided = fl.send("p", [f, g])
+        other = fl.send("q", [h])
+        fl.refuse("p")
+        self.assertEqual([id(h)], list(fl.flying), "the voided attempt's frames are let go; the other project's kept")
+        self.assertFalse(fl.in_flight(f))
+        newer = fl.send("p", [f])
+        self.assertFalse(fl.answered(f, voided), "the voided attempt's answer takes nothing")
+        self.assertTrue(fl.in_flight(f), "and leaves the newer attempt of the same frame in flight")
+        self.assertTrue(fl.answered(f, newer))
+        self.assertTrue(fl.answered(h, other))
+
+
 class RelayedOnLanes(unittest.TestCase):
     """What the relay of requests and of RPC results marks, against the
     uplink's sender lanes (sminos_uplink.Link on a scripted hub, the real
@@ -1368,11 +1399,9 @@ class RelayedOnLanes(unittest.TestCase):
         self.assertTrue(wait_for(relayed), "the settlement reaches the hub from the new uplink")
         self.assertTrue(wait_for(lambda: self.drain(link, items) or not link.requests.outbox),
                         "answered: out of the outbox")
-        self.assertEqual(self.relayed(rid), [], "but not relayed until a later hello of the project is answered")
-        hl = link.logs[self.pid]
-        link.log_lane.send([hl.hello()], then=link.confirming(self.pid))   # as the archive period's re-hello
-        self.answered(link, items)
-        self.assertTrue(self.relayed(rid), "relayed once a hello queued after it was answered")
+        self.assertEqual(self.relayed(rid), [], "but not relayed until a confirmation queued after it is answered")
+        self.assertTrue(wait_for(lambda: link.confirm_held() or self.drain(link, items) or self.relayed(rid)),
+                        "relayed once the project's probe was answered")
 
     NOT_OPEN = {"t": "refused", "refusal": {"reason": "not-open"}}
 
@@ -1437,6 +1466,42 @@ class RelayedOnLanes(unittest.TestCase):
         self.assertTrue(self.settled_in(self.hub.bodies()[n], rid))
         after = self.refuse_not_open(link, items)
         self.goes_again(link, items, rid, after)
+
+    def test_with_no_archive_period_a_held_settlement_is_confirmed_within_the_bound(self):
+        """No re-hello comes (archive confirmations off, no follow change, no
+        reconnect): a settlement answered 200 is confirmed all the same, by
+        the project's own probe (an empty `events` frame on the log lane)
+        CONFIRM_AFTER after it was answered, and reaches requests.json; the
+        held list empties."""
+        rid = "toolu_probe"
+        r = self.requests()
+        with mock.patch.dict(os.environ, {"SMINOS_ARCHIVE_EVERY": "0"}):
+            link, items, _ = self.stream(1, r)
+            self.settle(link, rid)
+            n = len(self.hub.posts)
+            link.relay_requests()
+            self.assertTrue(wait_for(lambda: len(self.hub.posts) > n))
+            self.answered(link, items)
+            answered_at = time.monotonic()
+            self.assertIsNotNone(r.flights.held_since(self.pid), "answered, held")
+            self.assertEqual(self.relayed(rid), [])
+
+            def confirmed():
+                link.confirm_held()
+                self.drain(link, items)
+                return self.relayed(rid)
+
+            self.assertTrue(wait_for(confirmed, timeout=self.uplink.CONFIRM_AFTER + 5), "relayed within the bound")
+            took = time.monotonic() - answered_at
+        self.assertGreaterEqual(took, self.uplink.CONFIRM_AFTER - 0.05, "not before CONFIRM_AFTER")
+        self.assertLess(took, self.uplink.CONFIRM_AFTER + 2, "within CONFIRM_AFTER and one round trip")
+        self.assertIsNone(r.flights.held_since(self.pid), "the held list is empty")
+        probes = [b for b in self.hub.bodies()[n + 1:] if b == [{"t": "events", "project": self.pid, "events": []}]]
+        self.assertEqual(len(probes), 1, "one probe: %s" % self.hub.bodies()[n + 1:])
+        link.confirm_held()
+        time.sleep(0.2)
+        self.assertEqual(len([b for b in self.hub.bodies() if b and b[0].get("t") == "events"]), 1,
+                         "nothing held: no probe")
 
     def test_an_rpc_result_and_a_compaction_message_lost_go_again_on_the_next_stream(self):
         rp = rpc.Rpcs(KEY, "testhost")

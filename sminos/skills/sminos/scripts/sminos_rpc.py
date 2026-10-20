@@ -775,12 +775,12 @@ class Rpcs:
         self.compact_out = [f for f in self.compact_out if id(f) not in took]
 
     def mark(self):
-        """Taken as a project's `hello` is queued, for `confirmed`."""
+        """Taken as a confirmation of a project is queued, for `confirmed`."""
         return self.flights.mark()
 
     def confirmed(self, pid, mark):
-        """A `hello` of the project queued at `mark` was answered: the
-        compact messages answered before it are the hub's."""
+        """A confirmation of the project queued at `mark` was answered: the
+        compact messages answered before it was queued are the hub's."""
         self.flights.confirm(pid, mark)
 
     def refused(self, pid):
@@ -796,7 +796,7 @@ class Rpcs:
             by.setdefault(f.get("project") or f["message"]["project"], []).append(f)
         for pid, mine in by.items():
             self.delivered(mine, self.sending(mine))
-            self.confirmed(pid, self.mark())
+            self.confirmed(pid, self.mark())   # the answer's stamp is before this mark
 
     def reset(self):
         """A new stream: nothing is taken as sent on it yet, and what was in

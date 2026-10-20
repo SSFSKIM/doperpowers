@@ -51,8 +51,9 @@ the complete set, and is never dropped; a raise made then is in that set. A
 message queued on a lane (`sending`) is in flight, neither due nor opened
 again (sminos_flights), until the POST carrying it is answered 200
 (`delivered`), when it leaves the outbox. A settlement, which no handshake
-rebuilds, enters `daemon/requests.json` only once a `hello` of its project
-queued after it was answered too (`confirmed`): the hub answers 200 even to
+rebuilds, enters `daemon/requests.json` only once a confirmation of its
+project queued after that answer was answered too (`confirmed`; the
+uplink's probe, or the hello whose POST carried it): the hub answers 200 even to
 the session frames it refuses `not-open`, and such a refusal (`refused`)
 voids the project's attempts so far and owes its settlements again, to go
 with or after the re-open. A POST lost or a stream cut owes them again
@@ -471,22 +472,31 @@ class Requests:
         assert len(pids) <= 1, "one project per attempt"
         return self.flights.send(pids.pop(), messages) if pids else None
 
-    def delivered(self, frames, attempt):
+    def delivered(self, frames, attempt, confirmed=False):
         """The POST of `attempt` carrying `frames` was answered 200: what it
         carried leaves the outbox, unless a `not-open` voided the attempt
-        meanwhile. A settlement stays known (`queued`) until `confirmed`."""
-        took = {id(f) for f in frames if f.get("t") != "pending" and self.flights.answered(f, attempt)}
-        self.outbox = [(p, f) for p, f in self.outbox if id(f) not in took]
+        meanwhile. A settlement stays known (`queued`) until `confirmed`, or
+        is relayed at once when the answer `confirmed` it (a hello's POST:
+        the hub applied what follows the hello with the project open)."""
+        took = [f for f in frames if f.get("t") != "pending" and self.flights.answered(f, attempt, confirmed)]
+        ids = {id(f) for f in took}
+        self.outbox = [(p, f) for p, f in self.outbox if id(f) not in ids]
+        if confirmed:
+            self.relay(took)
 
     def mark(self):
-        """Taken as a project's `hello` is queued, for `confirmed`."""
+        """Taken as a confirmation of a project is queued, for `confirmed`."""
         return self.flights.mark()
 
     def confirmed(self, pid, mark):
-        """A `hello` of the project queued at `mark` was answered: the
-        settlements answered before it are the hub's, kept as relayed. One
-        that a raise superseded meanwhile is done with already."""
-        ids = {id(f) for f in self.flights.confirm(pid, mark)}
+        """A confirmation of the project queued at `mark` was answered: the
+        settlements answered before it was queued are the hub's."""
+        self.relay(self.flights.confirm(pid, mark))
+
+    def relay(self, frames):
+        """Settlements the hub has, kept as relayed. One that a raise
+        superseded meanwhile is done with already."""
+        ids = {id(f) for f in frames}
         took = [k for k, f in self.queued.items() if id(f) in ids]
         for k in took:
             del self.queued[k]
@@ -502,7 +512,7 @@ class Requests:
 
     def refused(self, pid):
         """The hub refused the project `not-open`: what it took of the
-        project since its last confirmed hello may be lost, so every message
+        project since its last confirmation may be lost, so every message
         of it in flight or answered is owed again (a duplicate the hub takes
         once), and an answer to an attempt before now takes nothing."""
         self.owe(self.flights.refuse(pid))
@@ -512,9 +522,8 @@ class Requests:
         by = {}
         for f in frames:
             by.setdefault(f.get("project") or f["message"]["project"], []).append(f)
-        for pid, mine in by.items():
-            self.delivered(mine, self.sending(mine))
-            self.confirmed(pid, self.mark())
+        for mine in by.values():
+            self.delivered(mine, self.sending(mine), confirmed=True)
 
     def reset(self):
         """A new stream: the lanes that held what was in flight are gone, so
