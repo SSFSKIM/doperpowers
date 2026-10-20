@@ -38,8 +38,8 @@ ABOUT = (
     "never drawn before its row arrived live, or whose request's end the source does not show before the "
     "view's snapshot), residual (the same where the source shows the request's step ended before the view's "
     "snapshot and the view never followed it: the snapshot between a step's end and its rows' flush, an accepted "
-    "hole). In `dx5`, a `snapshot` event is the bridge's snapshot line where a subscription read it: one per "
-    "subscription, in order. A truncated tool call's tail is checked against the input the source streamed, "
+    "hole). In `dx5`, a `snapshot` event is the bridge's snapshot line as it served a subscription, `sub` naming "
+    "that subscription (an envelope's `sub`); a subscription no `snapshot` event names has no evidence. A truncated tool call's tail is checked against the input the source streamed, "
     "named `partial` when it is not that input's end.")
 
 
@@ -386,7 +386,7 @@ def planted_undrawn():
                 {"type": "step", "phase": "end", "turnId": "turn-1", "agentId": None, "step": 0, "t": NAMED_AT},
                 chunk(R1, 0, 0, "Gone"), named(R1, 0, N), chunk(R1, 1, 1, "st"), chunk(R1, 2, 1, "il"),
                 chunk(R1, 3, 1, "l"),
-                {"type": "snapshot", "cut": {"main": N}, "t": NAMED_AT,
+                {"type": "snapshot", "sub": "sub-10-0", "cut": {"main": N}, "t": NAMED_AT,
                  "streaming": [entry(*R1, 3, sblk(0, "text", "Gone", 0, uuid=N), sblk(1, "text", "still", 3))]},
                 chunk(R1, 4, 1, " going"), named(R1, 1, S)],
         "check": {"holes": [], "partial": [], "vanished": [], "dups": [],
@@ -463,7 +463,7 @@ def planted_request_left_out():
         "transcript": [user(P, "go"), assistant(H, "text", "Hidden")],
         "dx5": [{"type": "chunk", "turnId": "turn-1", "agentId": None, "step": 1, "chunkIndex": 0,
                  "chunk": {"kind": "text", "index": 0, "text": "Hid"}, "t": NAMED_AT},
-                {"type": "snapshot", "cut": {"main": P}, "t": NAMED_AT,
+                {"type": "snapshot", "sub": "sub-12-0", "cut": {"main": P}, "t": NAMED_AT,
                  "streaming": [entry(*R1, 0, sblk(0, "text", "Hid", 0))]},
                 {"type": "chunk", "turnId": "turn-1", "agentId": None, "step": 1, "chunkIndex": 1,
                  "chunk": {"kind": "text", "index": 0, "text": "den"}, "t": NAMED_AT + 1},
@@ -475,9 +475,67 @@ def planted_request_left_out():
     return s.out
 
 
+def text_chunk(ids, index, block, text):
+    return {"type": "chunk", "turnId": ids[0], "agentId": ids[1], "step": ids[2], "chunkIndex": index,
+            "chunk": {"kind": "text", "index": block, "text": text}, "t": NAMED_AT + index}
+
+
+def text_named(ids, block, uuid):
+    return {"type": "block-row", "uuid": uuid, "turnId": ids[0], "agentId": ids[1], "step": ids[2],
+            "index": block, "t": NAMED_AT}
+
+
+def step_ended(ids):
+    return {"type": "step", "phase": "end", "turnId": ids[0], "agentId": ids[1], "step": ids[2], "t": NAMED_AT}
+
+
+def planted_loss_before_a_reconnect():
+    s = Seq(13, "planted-a-loss-before-a-reconnect",
+            "Planted: the first subscription's snapshot leaves out an open request and its row then arrives live, "
+            "the block never drawn; the source names no snapshot served to that subscription. A reconnect's "
+            "snapshot, served after the step ended, is evidence for the reconnect only: the first subscription's "
+            "loss is undrawn, not residual.")
+    P, M = s.u(1), s.u(2)
+    s.snapshot([user(P, "go")], [], {}, note="planted: the open request left out")
+    s.row(assistant(M, "text", "Lost"), {}, note="its row, live, on the subscription that never drew it")
+    s.resubscribe({})
+    s.snapshot([user(P, "go"), assistant(M, "text", "Lost")][::-1], [], {})
+    s.out["inventory"] = {
+        "transcript": [user(P, "go"), assistant(M, "text", "Lost")],
+        "dx5": [text_chunk(R, 0, 0, "Lost"), text_named(R, 0, M), step_ended(R),
+                {"type": "snapshot", "sub": "sub-13-1", "cut": {"main": M}, "t": NAMED_AT, "streaming": []}],
+        "check": {"holes": [], "partial": [], "vanished": [], "dups": [],
+                  "undrawn": [{"turnId": "turn-1", "agentId": None, "step": 0, "index": 0}], "residual": []}}
+    return s.out
+
+
+def residual_after_an_attempt_that_ended():
+    s = Seq(14, "the-residual-after-an-attempt-that-ended",
+            "The first attempt was served a snapshot at the bridge while its request still streamed, and ended "
+            "before its DX4 snapshot came. The next subscription's snapshot was served after that step ended and "
+            "before its rows' flush, so it carries neither the block nor its row, and the row arrives live: "
+            "residual, by the snapshot served to that subscription, not the attempt's.")
+    P, M = s.u(1), s.u(2)
+    s.end({}, note="the attempt ends before its snapshot")
+    s.resubscribe({})
+    s.snapshot([user(P, "go")], [], {})
+    s.row(assistant(M, "text", "Late"), {}, note="the residual: an ended step's row, after the snapshot")
+    s.out["inventory"] = {
+        "transcript": [user(P, "go"), assistant(M, "text", "Late")],
+        "dx5": [text_chunk(R, 0, 0, "Late"),
+                {"type": "snapshot", "sub": "sub-14-0", "cut": {"main": P}, "t": NAMED_AT,
+                 "streaming": [entry(*R, 0, sblk(0, "text", "Late", 0))]},
+                text_named(R, 0, M), step_ended(R),
+                {"type": "snapshot", "sub": "sub-14-1", "cut": {"main": P}, "t": NAMED_AT, "streaming": []}],
+        "check": {"holes": [], "partial": [], "vanished": [], "dups": [], "undrawn": [],
+                  "residual": [{"turnId": "turn-1", "agentId": None, "step": 0, "index": 0}]}}
+    return s.out
+
+
 SEQUENCES = [first_snapshot_every_kind, reconnect_carried_named, reconnect_no_longer_carried, older_snapshot,
              another_loop, planted_continuity, planted_vanished, planted_partial_and_twice, fresh_text_wins,
-             planted_undrawn, truncated_blocks, planted_request_left_out]
+             planted_undrawn, truncated_blocks, planted_request_left_out,
+             planted_loss_before_a_reconnect, residual_after_an_attempt_that_ended]
 
 
 def main():

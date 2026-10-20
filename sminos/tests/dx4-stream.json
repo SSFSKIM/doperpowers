@@ -698,7 +698,7 @@
    }
   ],
   "errors": [],
-  "about_fixture": "DX4's streaming layer, the desk open-fast spec's parity fixture (docs/doperpowers/specs/2026-10-20-desk-open-fast-design.md, section 9), written by sminos/tests/dx4-stream.gen.py: every expected drawing by hand. Each sequence is one session view's messages in order; a step's `message` is a DX4 envelope, or \"resubscribe\" (the subscription is over and a new one starts: `n` from 0, and its first snapshot is resumed over what is drawn, not loaded). `drawn` is the streaming layer's blocks after the message: agentId (\"main\" for null) to that agent's blocks in drawing order, an agent with none left out. The store's side, for a replay of the layer alone: `settle` lists the rows whose landing settles blocks after the message, in order (a held row a drawn block awaits; another loop's block-row on a main view); a resumed snapshot's step gives `landing` (the newest row the snapshot brought, null for none) and `lands` (the named rows `lands` answers true for). A sequence's `errors` are the reference consumer's error kinds, in order (gap, dup, watermark, differs, vanished, after-end, marks); `inventory`, where present, is the transcript on disk and the DX5 events the session emitted, and what checking the consumer against them names: holes (rows never delivered), partial (a block drawn while its row was held), vanished (a block gone before its row landed), dups (a row delivered twice, a block drawn again after it settled), undrawn (a block whose request this view followed, never drawn before its row arrived live, or whose request's end the source does not show before the view's snapshot), residual (the same where the source shows the request's step ended before the view's snapshot and the view never followed it: the snapshot between a step's end and its rows' flush, an accepted hole). In `dx5`, a `snapshot` event is the bridge's snapshot line where a subscription read it: one per subscription, in order. A truncated tool call's tail is checked against the input the source streamed, named `partial` when it is not that input's end."
+  "about_fixture": "DX4's streaming layer, the desk open-fast spec's parity fixture (docs/doperpowers/specs/2026-10-20-desk-open-fast-design.md, section 9), written by sminos/tests/dx4-stream.gen.py: every expected drawing by hand. Each sequence is one session view's messages in order; a step's `message` is a DX4 envelope, or \"resubscribe\" (the subscription is over and a new one starts: `n` from 0, and its first snapshot is resumed over what is drawn, not loaded). `drawn` is the streaming layer's blocks after the message: agentId (\"main\" for null) to that agent's blocks in drawing order, an agent with none left out. The store's side, for a replay of the layer alone: `settle` lists the rows whose landing settles blocks after the message, in order (a held row a drawn block awaits; another loop's block-row on a main view); a resumed snapshot's step gives `landing` (the newest row the snapshot brought, null for none) and `lands` (the named rows `lands` answers true for). A sequence's `errors` are the reference consumer's error kinds, in order (gap, dup, watermark, differs, vanished, after-end, marks); `inventory`, where present, is the transcript on disk and the DX5 events the session emitted, and what checking the consumer against them names: holes (rows never delivered), partial (a block drawn while its row was held), vanished (a block gone before its row landed), dups (a row delivered twice, a block drawn again after it settled), undrawn (a block whose request this view followed, never drawn before its row arrived live, or whose request's end the source does not show before the view's snapshot), residual (the same where the source shows the request's step ended before the view's snapshot and the view never followed it: the snapshot between a step's end and its rows' flush, an accepted hole). In `dx5`, a `snapshot` event is the bridge's snapshot line as it served a subscription, `sub` naming that subscription (an envelope's `sub`); a subscription no `snapshot` event names has no evidence. A truncated tool call's tail is checked against the input the source streamed, named `partial` when it is not that input's end."
  },
  {
   "name": "reconnect-empty-history-carries-the-named-block",
@@ -3812,6 +3812,7 @@
     },
     {
      "type": "snapshot",
+     "sub": "sub-10-0",
      "cut": {
       "main": "0d4c400a-0000-4000-8000-000000000003"
      },
@@ -4581,6 +4582,7 @@
     },
     {
      "type": "snapshot",
+     "sub": "sub-12-0",
      "cut": {
       "main": "0d4c400c-0000-4000-8000-000000000001"
      },
@@ -4648,6 +4650,412 @@
      }
     ],
     "residual": []
+   }
+  }
+ },
+ {
+  "name": "planted-a-loss-before-a-reconnect",
+  "about": "Planted: the first subscription's snapshot leaves out an open request and its row then arrives live, the block never drawn; the source names no snapshot served to that subscription. A reconnect's snapshot, served after the step ended, is evidence for the reconnect only: the first subscription's loss is undrawn, not residual.",
+  "agent": null,
+  "steps": [
+   {
+    "message": {
+     "project": "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59",
+     "machine": "testhost",
+     "session": "d0c8a000-0000-4000-8000-0000000d4c45",
+     "kind": "snapshot",
+     "sub": "sub-13-0",
+     "n": 0,
+     "body": {
+      "rows": [
+       {
+        "type": "user",
+        "uuid": "0d4c400d-0000-4000-8000-000000000001",
+        "message": {
+         "role": "user",
+         "content": "go"
+        }
+       }
+      ],
+      "more": false,
+      "subagents": [],
+      "presence": {
+       "record": {
+        "status": "busy"
+       },
+       "bridge": true
+      },
+      "streaming": [],
+      "jobs": [],
+      "mcp": [],
+      "offChain": [],
+      "usage": null
+     }
+    },
+    "note": "planted: the open request left out",
+    "drawn": {}
+   },
+   {
+    "message": {
+     "project": "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59",
+     "machine": "testhost",
+     "session": "d0c8a000-0000-4000-8000-0000000d4c45",
+     "kind": "row",
+     "sub": "sub-13-0",
+     "n": 1,
+     "body": {
+      "row": {
+       "type": "assistant",
+       "uuid": "0d4c400d-0000-4000-8000-000000000002",
+       "message": {
+        "role": "assistant",
+        "content": [
+         {
+          "type": "text",
+          "text": "Lost"
+         }
+        ]
+       }
+      },
+      "agentId": null
+     }
+    },
+    "note": "its row, live, on the subscription that never drew it",
+    "drawn": {}
+   },
+   {
+    "message": "resubscribe",
+    "note": "the subscription is over; a new one starts and resumes the drawing",
+    "drawn": {}
+   },
+   {
+    "message": {
+     "project": "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59",
+     "machine": "testhost",
+     "session": "d0c8a000-0000-4000-8000-0000000d4c45",
+     "kind": "snapshot",
+     "sub": "sub-13-1",
+     "n": 0,
+     "body": {
+      "rows": [
+       {
+        "type": "assistant",
+        "uuid": "0d4c400d-0000-4000-8000-000000000002",
+        "message": {
+         "role": "assistant",
+         "content": [
+          {
+           "type": "text",
+           "text": "Lost"
+          }
+         ]
+        }
+       },
+       {
+        "type": "user",
+        "uuid": "0d4c400d-0000-4000-8000-000000000001",
+        "message": {
+         "role": "user",
+         "content": "go"
+        }
+       }
+      ],
+      "more": false,
+      "subagents": [],
+      "presence": {
+       "record": {
+        "status": "busy"
+       },
+       "bridge": true
+      },
+      "streaming": [],
+      "jobs": [],
+      "mcp": [],
+      "offChain": [],
+      "usage": null
+     }
+    },
+    "drawn": {}
+   }
+  ],
+  "errors": [],
+  "inventory": {
+   "transcript": [
+    {
+     "type": "user",
+     "uuid": "0d4c400d-0000-4000-8000-000000000001",
+     "message": {
+      "role": "user",
+      "content": "go"
+     }
+    },
+    {
+     "type": "assistant",
+     "uuid": "0d4c400d-0000-4000-8000-000000000002",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "text",
+        "text": "Lost"
+       }
+      ]
+     }
+    }
+   ],
+   "dx5": [
+    {
+     "type": "chunk",
+     "turnId": "turn-1",
+     "agentId": null,
+     "step": 0,
+     "chunkIndex": 0,
+     "chunk": {
+      "kind": "text",
+      "index": 0,
+      "text": "Lost"
+     },
+     "t": 1760000000000
+    },
+    {
+     "type": "block-row",
+     "uuid": "0d4c400d-0000-4000-8000-000000000002",
+     "turnId": "turn-1",
+     "agentId": null,
+     "step": 0,
+     "index": 0,
+     "t": 1760000000000
+    },
+    {
+     "type": "step",
+     "phase": "end",
+     "turnId": "turn-1",
+     "agentId": null,
+     "step": 0,
+     "t": 1760000000000
+    },
+    {
+     "type": "snapshot",
+     "sub": "sub-13-1",
+     "cut": {
+      "main": "0d4c400d-0000-4000-8000-000000000002"
+     },
+     "t": 1760000000000,
+     "streaming": []
+    }
+   ],
+   "check": {
+    "holes": [],
+    "partial": [],
+    "vanished": [],
+    "dups": [],
+    "undrawn": [
+     {
+      "turnId": "turn-1",
+      "agentId": null,
+      "step": 0,
+      "index": 0
+     }
+    ],
+    "residual": []
+   }
+  }
+ },
+ {
+  "name": "the-residual-after-an-attempt-that-ended",
+  "about": "The first attempt was served a snapshot at the bridge while its request still streamed, and ended before its DX4 snapshot came. The next subscription's snapshot was served after that step ended and before its rows' flush, so it carries neither the block nor its row, and the row arrives live: residual, by the snapshot served to that subscription, not the attempt's.",
+  "agent": null,
+  "steps": [
+   {
+    "message": {
+     "project": "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59",
+     "machine": "testhost",
+     "session": "d0c8a000-0000-4000-8000-0000000d4c45",
+     "kind": "end",
+     "sub": "sub-14-0",
+     "n": 0,
+     "body": {
+      "reason": "machine-offline"
+     }
+    },
+    "note": "the attempt ends before its snapshot",
+    "drawn": {}
+   },
+   {
+    "message": "resubscribe",
+    "note": "the subscription is over; a new one starts and resumes the drawing",
+    "drawn": {}
+   },
+   {
+    "message": {
+     "project": "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59",
+     "machine": "testhost",
+     "session": "d0c8a000-0000-4000-8000-0000000d4c45",
+     "kind": "snapshot",
+     "sub": "sub-14-1",
+     "n": 0,
+     "body": {
+      "rows": [
+       {
+        "type": "user",
+        "uuid": "0d4c400e-0000-4000-8000-000000000001",
+        "message": {
+         "role": "user",
+         "content": "go"
+        }
+       }
+      ],
+      "more": false,
+      "subagents": [],
+      "presence": {
+       "record": {
+        "status": "busy"
+       },
+       "bridge": true
+      },
+      "streaming": [],
+      "jobs": [],
+      "mcp": [],
+      "offChain": [],
+      "usage": null
+     }
+    },
+    "drawn": {}
+   },
+   {
+    "message": {
+     "project": "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59",
+     "machine": "testhost",
+     "session": "d0c8a000-0000-4000-8000-0000000d4c45",
+     "kind": "row",
+     "sub": "sub-14-1",
+     "n": 1,
+     "body": {
+      "row": {
+       "type": "assistant",
+       "uuid": "0d4c400e-0000-4000-8000-000000000002",
+       "message": {
+        "role": "assistant",
+        "content": [
+         {
+          "type": "text",
+          "text": "Late"
+         }
+        ]
+       }
+      },
+      "agentId": null
+     }
+    },
+    "note": "the residual: an ended step's row, after the snapshot",
+    "drawn": {}
+   }
+  ],
+  "errors": [],
+  "inventory": {
+   "transcript": [
+    {
+     "type": "user",
+     "uuid": "0d4c400e-0000-4000-8000-000000000001",
+     "message": {
+      "role": "user",
+      "content": "go"
+     }
+    },
+    {
+     "type": "assistant",
+     "uuid": "0d4c400e-0000-4000-8000-000000000002",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "text",
+        "text": "Late"
+       }
+      ]
+     }
+    }
+   ],
+   "dx5": [
+    {
+     "type": "chunk",
+     "turnId": "turn-1",
+     "agentId": null,
+     "step": 0,
+     "chunkIndex": 0,
+     "chunk": {
+      "kind": "text",
+      "index": 0,
+      "text": "Late"
+     },
+     "t": 1760000000000
+    },
+    {
+     "type": "snapshot",
+     "sub": "sub-14-0",
+     "cut": {
+      "main": "0d4c400e-0000-4000-8000-000000000001"
+     },
+     "t": 1760000000000,
+     "streaming": [
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "model": "m",
+       "upTo": 0,
+       "blocks": [
+        {
+         "index": 0,
+         "kind": "text",
+         "text": "Late",
+         "upTo": 0
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "type": "block-row",
+     "uuid": "0d4c400e-0000-4000-8000-000000000002",
+     "turnId": "turn-1",
+     "agentId": null,
+     "step": 0,
+     "index": 0,
+     "t": 1760000000000
+    },
+    {
+     "type": "step",
+     "phase": "end",
+     "turnId": "turn-1",
+     "agentId": null,
+     "step": 0,
+     "t": 1760000000000
+    },
+    {
+     "type": "snapshot",
+     "sub": "sub-14-1",
+     "cut": {
+      "main": "0d4c400e-0000-4000-8000-000000000001"
+     },
+     "t": 1760000000000,
+     "streaming": []
+    }
+   ],
+   "check": {
+    "holes": [],
+    "partial": [],
+    "vanished": [],
+    "dups": [],
+    "undrawn": [],
+    "residual": [
+     {
+      "turnId": "turn-1",
+      "agentId": null,
+      "step": 0,
+      "index": 0
+     }
+    ]
    }
   }
  }

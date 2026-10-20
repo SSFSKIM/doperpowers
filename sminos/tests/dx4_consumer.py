@@ -39,9 +39,10 @@ step-end of it came) and the source shows that request's step ended before
 the snapshot of the subscription the row came on — the snapshot fell
 between the step's end and its rows' flush, the one hole the design
 accepts (the spec's section 2) — else `undrawn`: the block was lost. In
-the DX5 events a `snapshot` event is the bridge's snapshot line where a
-subscription read it, one per subscription in the order they subscribed;
-without it nothing shows the step ended first, and the block is `undrawn`.
+the DX5 events a `snapshot` event is the bridge's snapshot line as it
+served a subscription, carrying that subscription's DX4 `sub`; a
+subscription no `snapshot` event names has no evidence its request's step
+ended first, and the block is `undrawn`.
 
 The merge leaves out the web's offChain vouching (desk-transcript's
 `merged`): a fresh snapshot whose oldest row is held merges here whatever
@@ -289,7 +290,7 @@ def spans_overlap(a, b):
 # What a re-subscribe hands on: the drawing and everything the inventory reads.
 SHARED = ("layer", "rows", "held", "row_of", "off", "served", "errors", "t", "ever", "reached_first",
           "drawn_spans", "held_spans", "settled", "settled_at", "redrawn", "left", "vanished", "dup_rows",
-          "dropped", "other", "live_rows", "followed", "snapshots", "tails")
+          "dropped", "other", "live_rows", "followed", "tails")
 
 
 class Consumer:
@@ -319,7 +320,7 @@ class Consumer:
         self.last_settle = []         # rows that settled blocks
         self.last_landing = None      # a resumed snapshot's `landing`
         self.last_lands = None        # the uuids its `lands` answered true for
-        self.snap_index = None        # which snapshot of the chain this subscription's was, from 0
+        self.sub_id = None            # this subscription's DX4 `sub`, from its first envelope
         if previous is not None:
             for k in SHARED:
                 setattr(self, k, getattr(previous, k))
@@ -345,9 +346,8 @@ class Consumer:
         self.dropped = {}             # a block a step-end dropped (no block-row named it): its text
         self.other = {}               # another loop's block settled by its block-row: uuid → its text
         self.live_rows = {}           # uuid → (the message whose `row` brought it first, not held before,
-                                      #         the snap_index of the subscription it came on)
+                                      #         the `sub` of the subscription it came on)
         self.followed = set()         # (turnId, agentId, step): requests the view saw streaming, named or ended
-        self.snapshots = 0            # snapshots taken across the chain
         self.tails = {}               # a truncated tool block settled by its own row: key → the tail drawn
 
     # ---------------------------------------------------- reading
@@ -387,6 +387,8 @@ class Consumer:
         n, kind, body = env.get("n"), env.get("kind"), env.get("body") or {}
         self.t += 1
         self.kinds.append(kind)
+        if self.sub_id is None:
+            self.sub_id = env.get("sub")
         self.last_settle, self.last_landing, self.last_lands = [], None, None
         if self.end is not None:
             # The web's subscription is closed once it ended: it applies nothing more.
@@ -438,7 +440,7 @@ class Consumer:
                 self.marked[row.get("uuid")] = (body.get("offChain", []), body.get("onChain", []))
             self.deliver(row)
             if isinstance(row.get("uuid"), str) and row["uuid"] not in self.held:
-                self.live_rows.setdefault(row["uuid"], (self.t, self.snap_index))
+                self.live_rows.setdefault(row["uuid"], (self.t, self.sub_id))
                 self.rows.append(row)
                 self.hold(row)
         elif kind == "rows":
@@ -478,9 +480,6 @@ class Consumer:
 
     def take_snapshot(self, body, gone):
         self.snapshot = body
-        if self.snap_index is None:
-            self.snap_index = self.snapshots
-            self.snapshots += 1
         self.subagents = body.get("subagents")
         self.body = {k: body.get(k) for k in ("subagents", "jobs", "mcp")}
         fresh = [r for r in reversed(body.get("rows") or []) if isinstance(r, dict) and isinstance(r.get("uuid"), str)]
@@ -620,13 +619,13 @@ class Inventory:
     row of the transcript on disk in file order; `blocks` every block that
     streamed — (turnId, agentId, step, index) → {"kind", "text", "uuid"}, its
     final text and the row its block-row named (None: none did); `snapshots`
-    the position in the DX5 events of each subscription's snapshot, in order;
-    `ended` each request's (turnId, agentId, step) → the position of its
-    first step end."""
+    a subscription's `sub` → the position in the DX5 events of the snapshot
+    served to it; `ended` each request's (turnId, agentId, step) → the
+    position of its first step end."""
 
-    def __init__(self, rows, blocks, snapshots=(), ended=None):
+    def __init__(self, rows, blocks, snapshots=None, ended=None):
         self.rows, self.blocks = rows, blocks
-        self.snapshots, self.ended = list(snapshots), dict(ended or {})
+        self.snapshots, self.ended = dict(snapshots or {}), dict(ended or {})
 
     @classmethod
     def from_sources(cls, transcript_path, dx5_events):
@@ -681,25 +680,23 @@ class Inventory:
         return {"holes": holes, "partial": partial, "vanished": vanished, "dups": dups, "undrawn": undrawn,
                 "residual": residual}
 
-    def ended_before(self, key, snap_index):
+    def ended_before(self, key, sub):
         """Whether the source shows the block's request ended before the
-        snapshot of subscription `snap_index` (None: none was read)."""
-        ended = self.ended.get(key[:3])
-        if ended is None or snap_index is None or snap_index >= len(self.snapshots):
-            return False
-        return ended < self.snapshots[snap_index]
+        snapshot served to subscription `sub`; not when no snapshot names it."""
+        ended, served = self.ended.get(key[:3]), self.snapshots.get(sub)
+        return ended is not None and served is not None and ended < served
 
 
 def order_of(events):
-    """Where each subscription's snapshot and each request's first step end
-    fall in the DX5 events: (snapshot positions, (turnId, agentId, step) →
-    step end position)."""
-    snapshots, ended = [], {}
+    """Where the snapshot served to each subscription and each request's
+    first step end fall in the DX5 events: (`sub` → snapshot position,
+    (turnId, agentId, step) → step end position)."""
+    snapshots, ended = {}, {}
     for i, e in enumerate(events):
         if not isinstance(e, dict):
             continue
-        if e.get("type") == "snapshot":
-            snapshots.append(i)
+        if e.get("type") == "snapshot" and isinstance(e.get("sub"), str):
+            snapshots.setdefault(e["sub"], i)
         elif e.get("type") == "step" and e.get("phase") == "end":
             ended.setdefault((e.get("turnId"), e.get("agentId"), e.get("step")), i)
     return snapshots, ended

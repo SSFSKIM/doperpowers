@@ -2022,7 +2022,8 @@ class StreamFixture(unittest.TestCase):
         """The fixture covers what §9 lists, and names and describes each sequence."""
         kinds = {s["message"]["kind"] for q in STREAM for s in q["steps"] if isinstance(s["message"], dict)}
         self.assertLessEqual({"snapshot", "chunk", "block-row", "step-end", "row", "end"}, kinds)
-        first = [s["message"]["body"] for q in STREAM for s in q["steps"][:1]]
+        first = [next(s["message"]["body"] for s in q["steps"]
+                      if isinstance(s["message"], dict) and s["message"]["kind"] == "snapshot") for q in STREAM]
         carried = {b["kind"] for body in first for e in body["streaming"] for b in e["blocks"]}
         self.assertEqual(carried, {"thinking", "text", "tool"}, "first snapshots carry every kind")
         names = [q["name"] for q in STREAM]
