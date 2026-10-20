@@ -1795,14 +1795,15 @@ machine; MAWS `origin/master` at or after M2's merge, deployed, for A2's desk ha
   Date/Author: 2026-10-20, the spec's author's panel, fixed by the M3 fixer, folded by the plan's
   executor.
 
-- Decision (M5's acceptance re-run): A1, A2, A3 and A7 stand as checked live on both Macs in M4 (their
-  real HOMEs are where those criteria hold); M5 re-runs, in temporary HOMEs on this machine, A4 (both
-  halves, never yet run), A1 and A5 (a)/(b) at the M5 head, and A6 and A8 in full (every suite, both
-  validates, ci-gate), plus A9 after the merge; it does not repeat the M3.3 rehearsal of the roll,
-  which M4 then performed for real on both machines.
-  Rationale: M5 removes only the transition scaffolding (the shim, the shape-1 fallback, the old name
-  in the agents, the gate path); nothing it touches is on the roll's path any longer, and the real
-  roll is stronger evidence than a second rehearsal.
+- Decision (M5's acceptance re-run): M5 re-runs A1–A6 and A8 as written, in temporary HOMEs on the
+  MacBook, with §10's rehearsal rolling a HOME from origin/main's marketplace state to the M5 head (so
+  the reload mod rolls the cleanup itself), and A4 for the first time; A9's grep runs at the M5 head
+  and again after the merge. A7 and the desk clause of A2 are real-machine criteria and stand as
+  checked live on both Macs in M4: M5 changes nothing on the daemon's service path, and its removal
+  of the shim is safe only because A7 held on every machine.
+  Rationale: M5 removes the transition scaffolding (the shim, the shape-1 fallback, the old name in
+  the agents, the gate path); the rehearsal's roll from the current main is the one place that
+  removal meets a live HOME before the owner's machines.
   Date/Author: 2026-10-20, the plan's executor.
 
 ## Outcomes & Retrospective
