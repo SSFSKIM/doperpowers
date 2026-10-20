@@ -335,17 +335,22 @@ same opens at load 100–300 are the second figure of each line.
     1 s; `release` ends the stream as today and the next stream serves them
     again;
   - the pair (M9, `bench_open.py --uplink --hub local --scenario held
-    --pause-stream 5 --backlog 4m`): a subscription is open and streaming
-    (the fake session's scripted chunks) when the pause proxy stops the
-    stream's bytes for 5 s — under the local hub's silence bound (three
-    2 s heartbeats), so the uplink keeps the stream — right after the first
-    backlog page of the 4 MB another client uploaded reaches the proxy, so
-    the hub's remaining page writes block: every session POST the uplink
-    sends in those 5 s is answered 200 (the local hub's request log), each
+    --pause-stream 4 --backlog 4m`), in M2's order with each step observed
+    before the next: a subscription is open and its client has a first
+    chunk of the fake session's scripted stream; a second client's upload
+    of 4 MB of events is answered 200, so the hub fans them out down the
+    uplink's stream on the same generation; the proxy, armed, pauses on the
+    first of those frames and reports it — the window starts there — and
+    the hub's remaining fan-out writes block behind the paused socket for
+    4 s, one duration in every run, below the local hub's silence bound
+    (three 2 s heartbeats) so the uplink keeps the stream and continuity,
+    not reconnection, is what is measured: every session POST the uplink
+    sends in the window is answered 200 (the local hub's request log), each
     chunk reaches the browser client within 1 s of its stamp, the hub's
-    stream survives the pause, and an open made 1 s after the resume has
-    E ≤ 1 s. The write bound is the hub proof's (a stalled write, not a
-    held send).
+    stream survives the pause (no `end` at the client, the same generation
+    after), and an open made 1 s after the proxy reports `resumed` has E ≤
+    1 s. The write bound is the hub proof's (a stalled write, not a held
+    send).
   On the owner's Mac: open lines in the minute before each `a POST was not
   delivered (…503…)` line show `taken − arrived` ≤ 0.05 s (today M of
   16.15 s and 35.97 s **[M]**).
@@ -787,20 +792,32 @@ in-memory map, and nothing stored gains a table, column or key.
    behind, and a page that cannot be written ends the stream through
    `Machine.write`'s own failure path as before), an upload's `resend` and
    `refused` — and `fromMachine` awaits those; a `session`, `pending`,
-   `rpc-result` or `rejected` frame awaits nothing. The POST's answer still
-   means "applied, and the replies it owes are on the stream", and `failed`
-   (503 `delivery-failed`) still means one of those replies could not be
-   written. A session POST is then held for one object round trip whatever
-   the log lane is doing.
+   `rpc-result` or `rejected` frame awaits nothing. **Every owed reply must
+   resolve `'written'`.** A timed-out or failed write returns false from
+   `Machine.write`, which `Machine.send` and `toMachineAll` hand back as a
+   fulfilled `'offline'` (after `leaveFanOut`), never as a throw — and
+   `fromMachine` today counts only a throw as failure, so a timed-out
+   `hello` would count as applied, the opening bundle's frames after it
+   would be refused `not-open` yet counted, and the 200 would run the
+   uplink's `then` marks (§3: the presence tombstone, rejections reported,
+   outcomes dropped) and suppress their retry (review finding D1). So: an
+   owed reply that resolves `'offline'` stops the batch as `failed` without
+   counting that frame, exactly as a throw does; the frames after it are
+   not applied. The POST's answer then means "applied, and the replies it
+   owes are on the stream", and `failed` (503 `delivery-failed`) means one
+   of those replies was not written — by a throw, a timeout, or a stream
+   gone. A session POST is held for one object round trip whatever the log
+   lane is doing.
 2. **Two chains per machine stream.** `toMachineAll` takes a lane:
-   `replies` for what a machine's frames owe it (`have`, backlog pages,
-   `resend`, `refused` to a machine frame) and `control` for what the
-   browsers' side sends (`carry`'s `subscribe`, `unsubscribe`, `rows`,
-   `diff`, `output`, forwarded `rpc` and `rpc-ack`, a `refused` of a
-   session-plane frame), keyed `${name}#${generation}#${lane}`; both end at
-   `Machine.send` → `write`, whose writer serializes them. A browser's
-   subscribe no longer waits behind a backlog being paged to the machine; a
-   stuck stream still stops both (3).
+   `replies` for what the log plane writes down a machine's stream — what
+   its own frames owe it (`have`, backlog pages, `resend`, `refused` to a
+   machine frame) and the live `events` fan-out of other machines' uploads
+   (`fanOut`) — and `control` for what the browsers' side sends (`carry`'s
+   `subscribe`, `unsubscribe`, `rows`, `diff`, `output`, forwarded `rpc` and
+   `rpc-ack`, a `refused` of a session-plane frame), keyed
+   `${name}#${generation}#${lane}`; both end at `Machine.send` → `write`,
+   whose writer serializes them. A browser's subscribe no longer waits behind
+   a backlog being paged to the machine; a stuck stream still stops both (3).
 3. **A write is bounded.** `Machine.write` races `writer.write` against
    `WRITE_TIMEOUT_MS` (10,000): past it the stream ends `write-stalled` (a
    new `EndCause`, logged as the others) and the write answers false, so a
@@ -906,11 +923,20 @@ the new rule; the hub relays the body uninterpreted and needs no code.
   branch `desk-open-fast` in a worktree of `/Users/new/Developer/GitHub/MAWS`
   off `origin/master`, each its own commit set, gated with
   `scripts/ci-gate.sh <worktree> --gates …` as each milestone names; the
-  owner deploys the hub and the web. **Deploy order**: M3 (the web) is
-  deployed before M5 rolls to any machine, and M4 (the hub) before M6 rolls;
-  each MAWS change tolerates today's machine side, and the machine changes
-  tolerate today's MAWS, so either order degrades to today, never worse —
-  but the order above is the one that shows the gain.
+  owner deploys the hub and the web. **Rollout order and the open
+  clients**: M4 (the hub) is deployed before M6 rolls; M3 (the web) is
+  deployed before M5 rolls to any machine, **and before M5 rolls the owner
+  refreshes or relaunches every open desk client — browser tabs and
+  installed PWA windows — onto M3's build**: the desk's service worker
+  claims its clients but does not reload their code
+  (`apps/desk-web/src/pwa/service-worker.ts`,
+  `apps/desk-web/src/sw/service-worker.ts`), so an open client keeps the
+  streaming layer it loaded, and against M5's snapshots that layer drops a
+  carried block on a reconnect (§9). M5's hand-off to the owner says this
+  in plain words, as a step to do, and names the clients it means. Rolling
+  the web back while M5 is live brings that block loss back; rolling M5
+  back while M3 is live loses nothing (M3 draws today's snapshots as
+  today). The hub change and the lanes are independent of client code.
 - Every milestone that changes a file under `sminos/` ends with
   `scripts/bump-version.sh --plugin sminos <next patch>` in its own commit,
   in the same commit as the change or the one right after it on the branch.
@@ -986,10 +1012,11 @@ faults set `close_connection`), a connection sequence number assigned in
 each session message, `/control/state` exposing both. The pause proxy:
 `pause_proxy.py <hub-url> <port-file>` listens on 127.0.0.1, forwards every
 connection to the hub, recognizes the one whose first line is
-`GET /machine/stream`, and takes `pause`/`resume` on a control socket beside
-the port file (or `POST /control/pause {"seconds"}` on its own port): paused,
-it stops reading from the hub side of that connection, so the hub's writes
-back up once the socket buffers fill.
+`GET /machine/stream`, and takes its controls on its own port (Interfaces): armed to pause now or on the
+next `"t":"events"` frame it forwards on that connection, for a stated
+number of seconds, it stops reading from the hub side of that connection
+and reports `paused` with the bytes held back, so the hub's writes back up
+once the socket buffers fill; it reports `resumed` when it reads again.
 
 Does not touch: any behavior of the open; the figures the line reports
 change in later milestones, the line's shape does not.
@@ -1015,28 +1042,59 @@ Decisions: the local hub is started from `--maws <worktree>` with its own
 `--state` directory under the instrument's temporary root and a free port;
 the uplink is enrolled as `LocalHub.enroll` does, the project created as
 `Uplink.setUpClass` does; the `--live` session is `live-bridge-check.py`'s
-`Live` imported, not copied, with `--thinking` passed to the session for the
-thinking scenarios (the engine's flag for extended thinking as the live
-check's `start_session` can carry it). Scenarios: `idle`, `after-prompt`,
-`mid-message` (a probe subscription watches the stream; the open is made on
-the first text chunk after a `block-row` of the same step; the open's line
-records `cut not on disk` or not, and the run reports how many opens hit the
-case), `long-answer` (open at +1 s, reconnect at +7 s, assert no `end`
-before the step's), `kill` (SIGKILL the child by the pid its `/status`
-answers; measure from the kill to the successor's snapshot at the client),
-`restart` (with `--synthetic-rows`: a cold open, then the uplink restarted
-and the same open), `held` (`--pause-stream S --backlog B`: the pause proxy
-between the uplink and the hub; B bytes of events uploaded to the project
-by a second client before the uplink's hello, so they are owed as backlog
-and paged down the stream after the `have`; a subscription opened and
-streaming before the pause; the proxy pauses when it has forwarded the
-first backlog page, so the `have` is written, the hello acknowledged and
-the session lane released, and the later pages are what block; S under
-the local hub's silence bound; the pre-pause subscription's chunks stamped
-at the client through the pause, one open at +1 s after the resume; every
-POST's answer and timing read from the stand-in's `posted` or the local
-hub's request log; B is raised if the executor finds the proxy's and
-wrangler's buffers absorb 4 MB without blocking). Each open prints `{"mode", "scenario", "load1", "E",
+`Live` imported, not copied, and **extended in this milestone**: today
+`Live.start_session()` takes no options and runs one interactive tmux
+command fixed at haiku (`sminos/tests/mods/live-bridge-check.py`). It
+gains `start_session(headless=False, thinking=False, model="haiku")`
+under the same isolation contract as `setup()` — the temporary HOME whose
+`.claude` is the config dir, the temporary SMINOS_HOME, the staged copy of
+the plugin loaded with `--plugin-dir`, the gateway keys and
+`CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` through the 0600 env file, nothing
+else of the caller's environment, every process it starts ended by
+`cleanup()`. `headless=True` runs `claude -p --input-format stream-json
+--output-format stream-json --include-partial-messages` as a subprocess
+with piped stdin and stdout under that env (the bench's `live_headless.py`
+shape), prompts written as stream-json user messages, no tmux;
+`thinking=True` sets the engine's thinking budget in the env file
+(`MAX_THINKING_TOKENS`, the engine's override for extended thinking) and
+`model` the `--model`; the existing live checks keep their call unchanged.
+`bench_open.py --live` uses headless; `--thinking` passes `thinking=True`,
+and the first scenario run proves the knob: the probe must see a
+`thinking` block's `block-row` followed by a text chunk of the same step
+in a trial message before any open counts, else the run stops and says the
+model or the budget gave no thinking (then `--model sonnet`, which the
+gateway keys also map). Scenarios: `idle`, `after-prompt`, `mid-message`
+(a probe subscription watches the stream and, per message, records the
+thinking block's `block-row` time and the step's end; the open is made on
+the first text chunk after that `block-row`; **an open counts only when
+the probe shows it fell inside that window** — after the thinking
+`block-row`, before the step's end — and the run reports each window's
+length, the opens that counted and the opens that missed, needing
+`--opens N` counted ones; the open's line also records `cut not on disk`),
+`long-answer` (the same window proof; open at +1 s, reconnect at +7 s,
+assert no `end` before the step's), `kill` (SIGKILL the child by the pid
+its `/status` answers; measure from the kill to the successor's snapshot
+at the client), `restart` (with `--synthetic-rows`: a cold open, then the
+uplink restarted and the same open), `held` (`--pause-stream S --backlog
+B`, the pause proxy between the uplink and the hub, **in this order, each
+step observed before the next**: (1) the uplink connects through the proxy
+and hellos; a subscription is opened and the client has received its
+snapshot and a first chunk of the fake session's scripted stream — the
+chain is live on this generation; (2) the instrument arms the proxy with
+`pause-on-next-events` and the proxy acknowledges; a second client uploads
+B bytes of events to the project and its POST is answered 200 — the hub
+fans them out down the uplink's stream on the same generation as `events`
+frames; (3) the proxy pauses when it has forwarded the first of those
+frames and reports `paused` with the byte count, which starts the window;
+the remaining fan-out writes block behind the paused socket; (4) through
+the window of S seconds — **one duration, 4 s, below the local hub's 6 s
+silence bound (three 2 s heartbeats), in every run and every command** —
+the pre-pause subscription's chunks are stamped at the client and every
+POST of the uplink is read from the hub's request log; (5) the proxy
+resumes at S and reports `resumed`; one open at +1 s after it. B is raised
+if the executor finds the proxy's and wrangler's buffers absorb 4 MB
+without blocking; the proxy's `paused` report carries how many bytes it
+held back, so a run whose hub never blocked shows as such). Each open prints `{"mode", "scenario", "load1", "E",
 "N", "arrived", "taken", "build", "cpu_ms", "rows", "cut", "waits",
 "holes", "dups", "gaps", "vanished"}`; the summary gives min / p50 / max of
 E and N per scenario and the load's range. `bench_scale.py opens`: the
@@ -1103,6 +1161,15 @@ order. (b) As `machine-end.test.ts` builds a `Machine` on Node's streams
 with a client that stopped reading: a write past `WRITE_TIMEOUT_MS` ends
 the stream `write-stalled`, the chain's pending sends answer offline, and a
 `hello` POST held on it is answered 503 within `WRITE_TIMEOUT_MS` + 1 s.
+(c) The timed-out hello inside an opening bundle (D1): one POST carrying
+`hello`, then the machine presence, the sessions' presence, a `rejected`
+and a `pending` frame, on a stream whose client stopped reading; the
+answer is 503 `delivery-failed` with `frames` 0 (nothing before the hello
+was applied, the hello is not counted, nothing after it is applied); the
+project's `machines` row for that generation is gone (`leaveFanOut`) and
+no `refused` was queued for the trailing frames; and, in
+`test_session_plane.py`'s `Uplink` (M6), the uplink that received that 503
+kept its marks (M6's proof names them).
 
 Does not touch: the wire; storage; the Registry; the web.
 
@@ -1132,7 +1199,20 @@ emitted event is stamped in `emit`). In the child, `_message` keeps a block
 whose index is in `settled` when the block carries `uuid` (today it drops
 every settled block), and `_fold` still ignores chunks for settled indices;
 in the mod, `track` on `block-row` keeps the block in `blocks` and marks it,
-`settled` unchanged. The deadline bookkeeping: `noticed` maps a uuid to
+`settled` unchanged. **The child's resync merge** (`_apply` on `resync`:
+"a block this child saw settled stays settled, whatever the copy says")
+today adds the old message's `settled` to the new one and pops every block
+at those indices — which would drop a carried named block on a resync to
+the same child (a lost post's recovery, a `lose`), leaving the next
+snapshot with neither block nor row (review finding D2). From here the
+merge keeps a block that carries `uuid` (the mod's copy is at least as new
+as the child's: `track` names a block before `emit` queues its notice),
+still adds the old `settled` so late chunks stay ignored, and still pops a
+block at a settled index that carries no `uuid` (a stale unnamed copy).
+`bridge_order.py` gains the scenario: a block streams and is named, the mod
+resyncs the same child, a new subscription opens before the step ends —
+its snapshot carries the block with its `uuid` and its text, and the row
+settles it once when it lands. The deadline bookkeeping: `noticed` maps a uuid to
 `(step_key, at)`, `due` maps a uuid to its deadline once set; `event` on a
 `step` end or a `turn` complete sets `due` for every noticed uuid of that
 step; `release` ends on `now > due[u]`; a carried named block's uuid enters
@@ -1158,6 +1238,12 @@ named block and relays its block-row". In `bridge_order.py`, the `Consumer`
 (DX5's reference reader) takes the same rules.
 
 Does not touch: the uplink; the build's persistence.
+
+Hand-off: this milestone's report to the owner states, as a step to do
+before the plugin rolls, that the M3 web must be deployed and every open
+desk client — each browser tab and each installed PWA window — refreshed
+or relaunched onto it, and that rolling the web back while this is live
+brings back the block loss on reconnect (the constraints' rollout order).
 
 Proves: A2 (by the unit tests for the mechanism; by `bench_open.py --uplink
 --hub local --live --scenario mid-message`, `long-answer` and
@@ -1198,7 +1284,11 @@ when it fails", "a project's session messages wait for its hello's
 acknowledgement and other projects' do not", "a lane past
 `SEND_QUEUE_MAX` ends the stream", "a stale keep-alive on send is retried
 once on a fresh connection; a failure after the send is a loss", "the
-connection lines name each dial and close with its count".
+connection lines name each dial and close with its count", "a hello POST
+answered 503 leaves the presence tombstone mark, the unreported rejections
+and the delivery outbox exactly as they were, and the next stream's hello
+says the leavers, reports the rejections and posts the outcomes again"
+(the uplink's side of D1).
 
 ### M7 — The build saved and warmed, bounded; the look off the open path
 
@@ -1308,7 +1398,7 @@ python3 sminos/tests/bench_open.py --uplink --hub local --maws <MAWS worktree> -
 python3 sminos/tests/bench_open.py --uplink --hub local --maws <MAWS worktree> --live --scenario after-prompt --opens 5
 python3 sminos/tests/bench_open.py --uplink --hub local --maws <MAWS worktree> --live --scenario kill --opens 3
 python3 sminos/tests/bench_open.py --uplink --hub standin --scenario restart --synthetic-rows 15000
-python3 sminos/tests/bench_open.py --uplink --hub local --maws <MAWS worktree> --scenario held --pause-stream 15 --backlog 4m
+python3 sminos/tests/bench_open.py --uplink --hub local --maws <MAWS worktree> --scenario held --pause-stream 4 --backlog 4m   # 4 s: under the local hub's 6 s silence bound, continuity not reconnection
 python3 sminos/tests/bench_open.py --micro --session <id> --sminos-home <dir>     # one open's phases, in-process
 python3 sminos/tests/bench_scale.py opens <scripts-dir> --live 40 --large 6
 python3 sminos/tests/bench_index.py <transcript.jsonl>
@@ -1458,7 +1548,12 @@ with `take(envelope)`, `blocks(agent)`, `rows`, `errors`;
 
 **Fixtures:** `hub_standin.py` on HTTP/1.1 with `posted[].conn` and
 `sessions[].at`; `pause_proxy.py <hub-url> <port-file>` with
-`POST /control/pause {"seconds"}` and `/control/resume`.
+`POST /control/arm {"on": "next-events" | "now", "seconds"}` (answered once
+armed), `GET /control/state` (`armed` | `paused` with the bytes held back and
+when | `resumed`), and `POST /control/resume`; the instrument waits on
+`state` for each step. `Live.start_session(headless=False, thinking=False,
+model="haiku")` in `sminos/tests/mods/live-bridge-check.py` (M2), the
+existing call unchanged in meaning.
 
 **Instruments:** `sminos/tests/bench_open.py` (`--uplink --hub local|standin
 [--maws DIR] [--live [--thinking] | --synthetic-rows N] --scenario
@@ -1591,12 +1686,35 @@ beside; a single reviewer reads one of those well in a pass.
   permanent connection lines, and a by-hand read of the owner's log for the
   real edge (M6); the first draft's "count not-delivered lines" withdrawn.
   Date/Author: 2026-10-20, the authoring session.
-- Decision: deploy order — the web (M3) before the sminos snapshot change
-  (M5) rolls, the hub (M4) before the lanes (M6) roll; each side tolerates
-  the other's old version.
-  Rationale: with new sminos and old web, a reconnect mid-message loses a
-  block (P2-4); with new sminos and old hub, a held re-`hello` still holds
-  the session POST (P1-1). Date/Author: 2026-10-20, the authoring session.
+- Decision: rollout order — the hub (M4) before the lanes (M6) roll; the
+  web (M3) before the sminos snapshot change (M5) rolls, and every open
+  desk client refreshed or relaunched onto M3 before M5 rolls (review
+  finding D3; the first draft's "either order degrades to today, never
+  worse" withdrawn: an open client keeps its loaded streaming layer, and a
+  web rollback under a live M5 brings the block loss back).
+  Rationale: with new sminos and an old or unrefreshed web, a reconnect
+  mid-message loses a block (P2-4); with new sminos and old hub, a held
+  re-`hello` still holds the session POST (P1-1).
+  Date/Author: 2026-10-20, the authoring session.
+- Decision (review round 2, D1): in the hub, every owed reply must resolve
+  `'written'`; an `'offline'` stops the POST as failed without counting
+  the frame (§8), tested with a timed-out hello inside an opening bundle
+  (M4) and the uplink's marks preserved on the 503 (M6).
+  Date/Author: 2026-10-20, the authoring session.
+- Decision (D2): the child's resync merge keeps a uuid-bearing block while
+  still adding the old `settled` and dropping stale unnamed copies (M5), with
+  a real-child scenario in `bridge_order.py`.
+  Date/Author: 2026-10-20, the authoring session.
+- Decision (X1): the pair proof's steps ordered and each observable
+  (subscription streaming → upload on the same generation → the proxy armed
+  and reporting `paused` → a 4 s window, one duration everywhere, under the
+  local hub's silence bound → `resumed` → the open); the 15 s run withdrawn
+  (it measured reconnection, not continuity).
+  Date/Author: 2026-10-20, the authoring session.
+- Decision (X2): extending `Live.start_session` (headless, thinking, model)
+  under its isolation contract is part of M2; a thinking scenario counts an
+  open only when the probe shows it fell inside the thinking-to-text window.
+  Date/Author: 2026-10-20, the authoring session.
 
 ## Outcomes & Retrospective
 
