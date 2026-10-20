@@ -192,7 +192,7 @@ plugin's name, `mcp__doperpowers__compact`: the model compacting its own
 context at a checkpoint of its choosing. And its offer: at the end of each
 main-conversation turn from 300k tokens on, once the context has grown 70k
 since the last offer, the model is told its size and offered the
-compaction, through the Stop hook. Below 300k, which only a launch that
+compaction, in a prompt the plugin submits. Below 300k, which only a launch that
 lowers the floor reaches, the offer adds that compacting is not
 necessarily recommended unless this is a clean checkpoint, with no
 execution, decision or design pending that needs the prior context whole.
@@ -219,48 +219,63 @@ arrive in the turn after. The tool's description carries the guidance
 do, why a checkpoint is worth compacting at, the token bands, when the
 size is told, call it last and alone, end the turn).
 
-The offer is a `classic.Stop` hook (matched on `hook_event_name: "Stop"`;
-the settings hooks beneath, `smns-record.sh`, run first and their answer
-stands beside it). It reads the figures — `$.session.usage` with the
+The offer is a prompt the plugin submits (`$.prompt.submit`) at the
+`turn.complete` of a main-conversation turn the model answered and asked no
+compaction in. It reads the figures there — `$.session.usage` with the
 `summary` breakdown: the last response's input tokens over the window the
 engine compacts against (the compaction window where client data, a
 setting or an experiment set one, as `/context` shows it under
 "Auto-compact window", else the model's; estimated locally, no request
 sent), and where the engine compacts on its own (that window less the 20k
 output reserve and 13k headroom: 867k on the 900k window a 1M model gets
-here, 167k on a 200k one) — and, where an offer is due, answers them and
-the offer as the Stop's `additionalContext`. The engine's Stop runner
-folds every output into a continuation (a block's reason, and an
-additional context too, so nothing a Stop hook tells the model is free):
-the offer reaches the model as a `<system-reminder>` opening `Stop hook
-additional context:` (an attachment row in the transcript,
-`hook_additional_context` on `Stop`), and one more step of the same turn
-runs. A context rather than a block because of what the person sees under
-"Ran 1 stop hook": a context draws as `Stop hook feedback: …` in gold, a
-block as `Stop hook error: …` in red (live, 2.1.302; both reach the model
-and continue alike). The model calls `compact` (the request pends, and the
-turn's end compacts as above) or replies "Not compacting." (a line, asked
-for because an answer with no text costs the engine's "no visible output"
-nudge, a step more); the Stop after that step carries `stop_hook_active`
-and passes, so an offer is one step and no loop (the engine caps
-consecutive continuations at 8 regardless). The gate is `OFFER_GATE`: floor 300k, where
+here, 167k on a 200k one) — and, where an offer is due, submits them and
+the offer. The engine runs a plugin's prompt as a turn of its own once
+the session is idle, behind any prompt the person queued (theirs is
+`next` priority, a plugin's `later`), and the model reads it as "The
+doperpowers plugin sent a message: …". It was the Stop hook's
+`additionalContext` until 7.192.0, one more step of the same turn; the
+engine draws that as a gold "Ran 1 stop hook ⎿ Stop hook feedback" row,
+which no render hook reaches and the to-human report view cannot fold,
+while the view folds a plugin's prompt, and the model's reply to it, into
+the working record. The model calls `compact` (the request pends, and the
+end of the offer's turn compacts as above) or replies "Not compacting." (a
+line, asked for because an answer with no text costs the engine's "no
+visible output" nudge, a step more).
+
+The offer's own turn ends with no offer: the module's `prompt.submit` hook,
+matched on the plugin's own origin, knows an offer by its text (it opens
+on the figures and asks for the decline line, so a module reloaded while
+its offer waits still knows it) and marks the turn it starts as the
+offer's; the resume prompt passes it untouched. While an offer waits to
+enter, no other turn end offers, so a prompt the person queued during the
+turn runs first and ends with no second offer; the same hook then reads
+the figures again and rewrites the offer's text, so it carries the context
+as it stands when the model reads it, and that figure becomes the last
+offer's. An offer a hook drops, or one that settles without passing the
+hook, stops waiting (logged to the debug log). The `classic.Stop` hook
+(matched on `hook_event_name: "Stop"`) only reads what the settings hooks
+beneath answered (`smns-record.sh` keeps its say): one that set
+`preventContinuation` withholds the offer at that turn's end without
+spending it. A Stop answered with nothing added draws no row.
+
+The gate is `OFFER_GATE`: floor 300k, where
 the tool's guidance turns to "any reasonable checkpoint" (`EARLY_BELOW`,
 under which an offer carries that caveat), so below it the model compacts
-unasked once the work at hand is done and no step is spent on an offer,
+unasked once the work at hand is done and no turn is spent on an offer,
 and step 70k, so a
 conversation adding a few k a turn is not asked every turn while a working
 turn, tens of k, is asked each time. The offer's baseline resets when a
 main-conversation `session.compact` stands (not a skip or a `precompute`,
 which replaces no conversation), and when this mod's own compaction stands.
 As a backstop for an engine path that compacts without the event, a figure
-below the last offer's at any Stop resets it too, even below the floor.
+below the last offer's at any turn's end resets it too, even below the floor.
 `DOPERPOWERS_COMPACT_OFFER_FLOOR` and `_STEP` (whole tokens) override a
-launch's; 0 and 0 is an offer at every turn's end. No
-offer when a hook beneath sets `preventContinuation` (its answer passes
-through unchanged, without spending an offer), while a request pends, on a
-subagent's Stop (`SubagentStop` is another event, and a subagent cannot
-compact), in a session without the
-tool (headless), or when the figures cannot be read (logged). The free
+launch's; 0 and 0 is an offer at every turn's end but the offer's own. No
+offer at a turn that ended interrupted or on an error (the matcher's
+`reason: "answer"`), when a Stop hook beneath set `preventContinuation`,
+while a request pends, at a subagent's turn end (`SubagentStop` is another
+event, and a subagent cannot compact), in a session without the tool
+(headless), or when the figures cannot be read (logged). The free
 `context_usage` tool the model used to ask the figures with was retired
 with the offer (7.184.0): the offer carries them, and the tool's
 description says when they come — until the first offer the model is under
@@ -270,7 +285,8 @@ A subagent's call to `compact` is refused (its turn ends are not the main
 conversation's). A headless (`-p` / SDK) session gets no tool: the engine
 has no compactor a plugin can call there yet. The shared session and turn
 events are taken with matchers (`isInteractive: true`, `trigger: /^/`,
-`reason: "answer"`) because kairos and agents register them too,
+`reason: "answer"`, the plugin's own origin on `prompt.submit`) because
+kairos, agents, appeal and interim register them too,
 and the engine admits one
 unmatched registration of an event per module.
 
@@ -287,11 +303,18 @@ Known limits: the threshold is read once, at session start, so a window
 changed by `/autocompact` mid-session is not followed; a model that keeps
 working after the tool answered is compacted at whatever answered turn end
 comes; the `resume` prompt enters under the plugin's name, as any
-plugin-submitted prompt does; an offer's step is a model call over the
-whole context (a prompt-cache read, mostly), the price of a decision at the
-turn's end, and in a session the person watches the decline line shows
-under the answer. Live check: `tests/mods/live-compact-offer-check.py`
-(spends model calls; run by hand).
+plugin-submitted prompt does; an offer is a turn of its own, a model call
+over the whole context (a prompt-cache read, mostly), the price of a
+decision at the turn's end, and a turn's settings hooks (its `Stop`
+among them) run for it as for any turn; in
+a session the person watches in the terminal, the offer and the decline
+line show under the answer. A compaction that stands between an offer's
+submission and its turn (the model compacted in a turn the person queued
+ahead of it) still lets the offer enter, with the small figure, which the
+model declines: dropping it would draw the engine's "Prompt dropped by a
+hook" notice, the kind of row the prompt channel exists to avoid. Live
+check: `tests/mods/live-compact-offer-check.py` (spends model calls; run
+by hand).
 
 ## appeal (`appeal.tsx`, `appeal-judge.tsx`)
 
