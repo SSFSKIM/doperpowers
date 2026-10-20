@@ -718,8 +718,14 @@ def sc_kill(bench, a):
             bench.incomplete.append("kill: no bridged snapshot within 30 s of the kill")
         else:
             bench.until(successor, lambda: k.turn_done(t0), 180)
+            # The turn's last rows (its response, the Stop hooks' summary) land on disk
+            # about when its result does, and reach the client a tick later: the
+            # inventory waits for them, as the other scenarios do, and says how many
+            # were still on their way at the result.
+            late = len(dx4_consumer.Inventory.from_sources(k.transcript(), []).check(successor.consumer)["holes"])
+            bench.until(successor, lambda: last_row_held(bench, successor), 5)
             bench.record("kill", successor, E_kill=round(successor.snap_at - killed, 3), resubscribes=len(chain),
-                         child_age=child_age, chain=chain)
+                         child_age=child_age, rows_after_result=late, chain=chain)
             bench.close(successor)
         wait_for("the turn's end", 180, lambda: k.turn_done(t0), 0.2)
         time.sleep(1.0)
