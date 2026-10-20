@@ -140,12 +140,26 @@ Where this supersedes #93: #93's machine view `sminos list --here` is a filter s
 - `@alias` searches the sender's project only. When no member answers there, the refusal lists the org's candidates — every member of every project known here whose alias matches — as `@<project>/<alias>#<short>` and, for a stray, `@<machine>/<alias>#<short>`, with the line `a bare name reaches only your project; @short reaches anyone`. Today's refusal says only "no member".
 - `@short` and `@alias#short` resolve org-wide: an eight-hex prefix of a session uuid is unique enough across the org that the message goes where it points. A short matching two sessions is refused naming both with their projects. A bare tag of exactly eight hex characters is read as an alias when a member of the sender's project has that alias, else as a short (today `match_members` matches a bare name against alias and short in one scope; with the two scopes apart, the alias in the project wins).
 - `@<project>/<alias>` resolves the project among every project known here by §4's name rule, so a stray is `@mini/<name>`. **When an ordinary project and a machine share a name**, the ordinary project is read first, and the machine project only when the ordinary project has no member of that alias — the rule `find_target` already applies to a qualifier that is both a project and a seat group. A team names its project deliberately and a machine is named after a host, so the team is the likelier meaning; `@short` reaches the stray regardless. The hub refuses no such collision: a committed `.smns` must never fail to sync because a host shares its name, and a refusal at enrollment cannot be complete since projects register later. The alternative, refusing the tag as ambiguous, lost because it makes a whole project unaddressable by name for the sake of a case `@short` already covers.
-- `@all` reaches the sender's project only, and is refused in a machine project (§1).
+- `@all` reaches the sender's project only, and is refused in a machine project (§1). A wider or narrower scope is a selector on `say` (§5a).
 - There is no silent org fallback for a bare name: the board spawns the same seat names (architect, executor, reviewer) in every repository, so `@executor` from a repository without one would wake another repository's executor.
 
 Where this supersedes #93: `send --session <name|short>` (#93 item 5) is not built; `@short`, `@alias#short` and `@<machine>/<alias>` reach a stray through the tag rules, recorded in both logs (§6). `sminos send`'s unrecorded raw-harness-name route (from no project, to a session in no project) is left for unenrolled machines, where it is still the only route to such a session; on an enrolled machine no session is in no project, so the route is never taken there.
 
 Where this supersedes the log design: §2's "from a directory that is no project a name resolves across every project known locally" is dead letter on an enrolled machine (no such directory exists) and stands on an unenrolled one; `@project/name` crosses to any project known here, the followed ones included.
+
+### 5a. Scoped broadcast (amendment, owner-approved 2026-10-20)
+
+`@all` reaches the live members of the sender's own project, on every machine. Sessions kept needing other scopes. One session rebooted the mini and had to warn every session on it, whatever its project. An owner instruction ("GPT models are back; reviews go to their own pins again") applied to every session in the org, and was sent to them one by one. The owner's examples: every session on a machine; given projects on a machine; every session of a project; a project on a given machine. A selector on `say` reaches any of them, using the filters §4 already gives `list`.
+
+- **The selector** is exactly `list`'s filters: `--org`, `--project P,…`, `--machine M,…` (by prefix), `--here` (this machine, exactly) and `--state W,…`. They combine as in `list`: any one widens to every project known here, then each narrows, so projects × machines intersect and a dimension left unset is all of it. `sminos list` with the same flags shows the scope. Its live rows (busy, idle, waiting) other than the sender are the recipients, one row per session (`one_per_session`, as for a tag). A bare `@all` is unchanged: shorthand for the sender's own project.
+- **Edges of the scope.** `--state` naming no live word is refused (exit 2), since a broadcast wakes only the live. A scope with no live session other than the sender records nothing and exits 4. A project `org.json` retires is passed over, and one that `--project` names is refused (exit 4): a message written there never leaves this machine (§5, M5). `--here`'s `(no project)` rows are no recipients: they are sessions in no project on an unenrolled machine, with no log to record them in.
+- **Delivery** is `@all`'s, unchanged. Every recipient is woken: an idle one starts a turn, and a busy one reads it at its next tool round. No stopped seat is resumed. A session's message rides the inbox socket, as the harness's SendMessage does; the operator's goes by the bridge as the owner's words, as any `human` event does. A recipient on another machine is delivered by that machine's daemon, and the sender's daemon is nudged to push the event at once. The owner chose waking. No quieter delivery mode is built.
+- **Who may send.** Any session or the operator (no session), at any scope. `say` prints the scope's label, how many sessions and in which projects, then each recipient's outcome as `alias#short: <outcome>`.
+- **Recording.** One event goes in each project that has recipients: kind `say` (`human` for the operator), `to` that project's recipients, `wake: true`, `scope` the selector (Interfaces), and `from_project` the sender's project where that is another. A reader of any of those logs sees the message. When the sender's own project has none of the recipients, a copy goes there as in §6. Its `to` holds every recipient with its project, and its `copy` names the delivering event; when several projects' events deliver it, `copy` is the list of them. The operator writes no copy, as for a cross-project tag (M5): it has no project of its own.
+- **Labels.** `chat`, the frame's target and the TUI name the scope. With no project or machine named, the label is `@org`. Otherwise it is `@all` followed by ` in <projects>`, then ` on <machines>`: `@all in MAWS`, `@all on mini`, `@all in MAWS on mini`. A `--state` appends ` (waiting)`. A bare `@all` stays `@all`.
+- **Replies.** A recipient's frame closes with the reply line every frame carries, which names the sender alone (`@<from_project>/<short>`); a reply never goes to the scope.
+- **Mixing.** A selector with opening `@` tags, `@all` included, is refused with exit 2, because tags name sessions and a selector names a scope.
+- **Scope of the change.** The CLI only. The desk draws the label afterwards, from the event shape in Interfaces.
 
 ## 6. Recorded in both logs
 
@@ -405,7 +419,7 @@ Sent after `welcome` on every stream, on every project registration, on every ch
 | --- | --- |
 | `joined` | `cwd` is the session's launch directory (§1c); `relocated: true` marks a repeated `joined` that only refreshes `cwd`/`repo`/`branch` after the engine relocated the session within the same project (M4); `session_kind` `interactive`/`bg`/`seat` (never `kind`, the event's own discriminator); `repo` the owning repository's basename (`""` outside one); `branch` (`""` when detached or none); `by` may be `join` or `move` |
 | `retired` | `reason` `moved` with `project` the new project's id |
-| `say`, `human` | `to[]` entries may carry `project` (the recipient's project id); `copy` `"<project id>:<writer>:<seq>"` marks the sender's copy of a cross-project message; `from_project` as today |
+| `say`, `human` | `to[]` entries may carry `project` (the recipient's project id); `copy` `"<project id>:<writer>:<seq>"` marks the sender's copy of a cross-project message; `from_project` as today. §5a: `scope`, an object present only on a broadcast with a selector (with `wake: true`), each key only when its flag was given — `projects` (project ids), `machines` (the `--machine` prefixes as typed), `here` (the sending machine's name), `states` (`--state` words); `{}` is the whole org; `copy` may be a list of `"<project id>:<writer>:<seq>"` when several projects' events deliver one broadcast |
 
 **`sminos list --json`** rows gain: `kind`, `cwd` (from `joined`), `repo`, `branch`, `charge_age` (seconds, or null), `active_age` (seconds, or null), `project`, `project_id`, `project_kind`.
 
@@ -415,6 +429,7 @@ Sent after `welcome` on every stream, on every project registration, on every ch
 
     sminos list [project] [--project P,…] [--machine M,…] [--state W,…] [--org] [--here] [--all] [--json] [words…]
     sminos find <words…>                   # list --org <words>
+    sminos say [--org] [--project P,…] [--machine M,…] [--here] [--state W,…] <text>   # §5a: list's filters, every live session they show but the sender
     sminos projects [--all]
     sminos machines
     sminos join <project> | --cwd | (none)
@@ -693,6 +708,12 @@ Sent after `welcome` on every stream, on every project registration, on every ch
   Date/Author: 2026-10-19, the #99 spike's follow-on.
 - Decision: §1's resolution order is revised by `docs/doperpowers/specs/2026-10-19-smns-remote-identity-design.md`: on an enrolled machine a repository no `.smns` claims is the hub project its remote derives, between step 2 and step 3, so the machine project holds only directories no `.smns` and no usable remote claim.
   Date/Author: 2026-10-19, the remote identity build (its M1).
+- Decision (§5a, scoped broadcast; the owner's, 2026-10-20): `say` takes `list`'s filters as a selector and reaches every live session they show but the sender, delivered as `@all` is (waking, no stopped seat resumed), recorded once in each project with a recipient (`scope` on the event) and copied into the sender's own project when no recipient is there; `chat`, frames and the TUI label it (`@org`, `@all on mini`, `@all in MAWS on mini`); a selector with opening `@` tags is refused; any session or the operator may send at any scope. The alternatives the owner turned down:
+  - a read-at-next-turn delivery as the default for wide scopes: the owner chose waking, so no quieter mode is built, and the skill states the cost instead (every recipient spends a turn).
+  - wide scopes for humans only: any session may send at any scope, as the operator may.
+  - the desk in the same pass: this change is the CLI's; the owner draws the desk's label afterwards from the event shape in Interfaces.
+  Built choices: the copy's `copy` is a list only when several projects deliver (one keeps M5's string), so a one-project broadcast's copy reads as any cross-project copy does; the operator writes no copy (M5's rule); a retired project is passed over, or refused when named; `--state` naming no live word is refused.
+  Date/Author: 2026-10-20, owner design; built by the scoped-broadcast session.
 
 ## Outcomes & Retrospective
 

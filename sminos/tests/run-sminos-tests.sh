@@ -359,6 +359,8 @@ run_suites() {
     fail "a session's project: its launch directory, join, moves (test-join.sh)"; fi
   if "$SCRIPT_DIR/test-address.sh"; then pass "addressing across the org and the sender's copy (test-address.sh)"; else
     fail "addressing across the org and the sender's copy (test-address.sh)"; fi
+  if "$SCRIPT_DIR/test-broadcast.sh"; then pass "a say to a scope: list's selector, recorded per project (test-broadcast.sh)"; else
+    fail "a say to a scope: list's selector, recorded per project (test-broadcast.sh)"; fi
   if "$SCRIPT_DIR/test-guide.sh"; then pass "the SessionStart guidance (test-guide.sh)"; else
     fail "the SessionStart guidance (test-guide.sh)"; fi
   if "$SCRIPT_DIR/test-smns-guide-hook.sh"; then pass "the guidance's SessionStart hook (test-smns-guide-hook.sh)"; else
