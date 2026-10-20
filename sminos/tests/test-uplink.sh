@@ -669,10 +669,11 @@ if [ "$(grep -c "the uplink is ending during a POST" "$DLOG")" -ge 6 ]; then pas
 
 # ---- the lease while the main thread is held
 # The hub renews the machine's lease only with an hb-ack of the stream's
-# generation, and lapses it three heartbeats (here 6 s) after the last. The
-# main thread can be held far longer than that: in a POST the hub holds, in a
-# delivery to a session slow to take its frames, in a slow tick. The stream
-# is answered meanwhile; a stream that is really dead still goes offline.
+# generation, and lapses it three heartbeats (here 6 s) after the last. A
+# lane can be held far longer than that in a POST the hub holds, and the main
+# thread in a delivery to a session slow to take its frames, or a slow tick.
+# The stream is answered meanwhile; a stream that is really dead still goes
+# offline.
 echo "the lease while the main thread is held:"
 lease_is() { [ "$(ctl lease)" = "$1" ]; }
 acks_since() { echo $(( $(ctl acks "$1") - $2 )); }
@@ -686,7 +687,7 @@ ctl fault events hold
 backlog "held while the heartbeats go on"
 HELD=$((HELD + 1))
 until_true 200 held_count "$HELD" || true
-if held_count "$HELD"; then pass "the hub holds the answer to an upload: the main thread waits in that POST"; else
+if held_count "$HELD"; then pass "the hub holds the answer to an upload: the log lane waits in that POST"; else
   fail "the hub holds the answer to an upload"; fi
 sleep 10
 assert_equals "$(ctl lapses "$GEN") $(ctl lease)" "0 $GEN online" "10 s into the held POST, the stream's lease never lapsed"

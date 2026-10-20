@@ -27,8 +27,11 @@ import http.client
 import io
 import json
 import os
+import queue
+import re
 import shutil
 import socket
+import struct
 import subprocess
 import sys
 import tempfile
@@ -38,6 +41,7 @@ import types
 import unittest
 import urllib.parse
 import uuid as uuidlib
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest import mock
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -3123,57 +3127,78 @@ class Lifecycle(unittest.TestCase):
         _, got = self.connect(project, wall=lambda: time.time() + 8 * 86400)
         self.assertEqual(got.get(ended), {"record": None, "bridge": False}, "said, eight days on: %s" % got)
 
-    def test_a_connect_the_hub_never_took_keeps_the_old_mark(self):
-        """A reconnect whose POST fails before the hub takes its presence
-        (Link.open, the hub answering 503) leaves the mark where it was, so
-        the leavers it carried are said on the next connect."""
+    def test_a_hello_answered_503_leaves_every_mark_and_the_next_stream_says_it_all_again(self):
+        """A connect whose hello POST the hub answers 503 (Link.open; the
+        hub's D1: a reply it owed was not written) leaves the presence
+        tombstone mark, the unreported rejections and the delivery outbox
+        exactly as they were — their marks run only after a 200, and the
+        outcomes queued behind the hello on the log lane are never posted —
+        and the next stream's hello says the leaver, reports the rejection,
+        and posts the outcomes again; taken, each mark moves."""
+        import sminos_hublog as hublog
+        import sminos_outcomes as outcomes
         import sminos_uplink as uplink
-        project, _, ended = self.ended_presence_project("ended-unaccepted")
+        project, runs, ended = self.ended_presence_project("ended-unaccepted")
         old, _ = self.connect(project, wall=lambda: time.time() - 3600)
         old.accepted(project.id)
         mark = self.marks()[project.id]
+        hub = ScriptedHub()
+        self.addCleanup(hub.close)
+        cred = {"machine": "testhost", "org": "org-1", "key": b"k" * 32, "hub": hub.url, "client_id": "c",
+                "client_secret": "s"}
+        hl = hublog.HubLog(project, cred)
+        rejection = {"t": "rejected", "project": project.id, "event": {"writer": "hub/x", "seq": 3},
+                     "reason": "bad-code", "message": "a forgery"}
+        state = hl.state()
+        state["unreported"] = [rejection]
+        hl.save(state)
+        box = outcomes.Outbox(project)
+        box.record({"writer": "hub/x", "seq": 1}, runs, "delivered", None)
+        outbox = read(box.path)
 
-        class Log:
-            def __init__(self):
-                self.project = project
-
-            def rejoin_former(self):
-                pass
-
-            def unreported(self):
-                return []
-
-            def presence(self):
-                return {"t": "session", "message": {"kind": "machine", "body": {"checkouts": []}}}
-
-            def hello(self, follow=False):
-                return {"t": "hello", "project": project.id, **({"follow": True} if follow else {})}
-
-            def reported(self, _):
-                pass
-
-        posted = []
-
-        def refused(frames):
-            posted.append(frames)
-            raise uplink.NotDelivered("the hub answered 503")
-
-        def link_of(post):
-            link = uplink.Link({"machine": "testhost", "org": "org-1", "key": b"k" * 32, "hub": "http://127.0.0.1:9"}, {})
+        def stream(generation):
+            link = uplink.Link(cred, {})
             link.plane.wall = lambda: time.time() + 3600
-            link.post = post
-            return link
+            items = queue.Queue()
+            link.on_welcome({"t": "welcome", "generation": generation, "machine": "testhost"},
+                            types.SimpleNamespace(items=items))
+            self.addCleanup(link.close)
+            link.open(hl)
+            return link, items
 
-        with self.assertRaises(uplink.NotDelivered):
-            link_of(refused).open(Log())
-        self.assertTrue(any(f.get("t") == "session" and f["message"].get("session") == ended
-                            and f["message"]["body"] == {"record": None, "bridge": False}
-                            for f in posted[0]), "the leaver was in the POST that failed")
+        def leaver_in(body):
+            return any(f.get("t") == "session" and f["message"].get("session") == ended
+                       and f["message"]["body"] == {"record": None, "bridge": False} for f in body)
+
+        hub.script = [503]
+        link, items = stream(1)
+        kind, err = items.get(timeout=10)
+        self.assertEqual(kind, "closed")
+        self.assertIsInstance(err, uplink.NotDelivered)
+        link.close()
+        self.assertEqual(len(hub.posts), 1, "the outcomes behind the hello were never posted")
+        hello = hub.bodies()[0]
+        self.assertEqual(hello[0]["t"], "hello")
+        self.assertTrue(leaver_in(hello), "the leaver was in the POST that failed")
+        self.assertIn(rejection, hello, "and the rejection")
         self.assertEqual(self.marks()[project.id], mark, "the mark stays where it was")
-        _, got = self.connect(project, wall=lambda: time.time() + 7200)
-        self.assertEqual(got.get(ended), {"record": None, "bridge": False}, "and the next connect says it again")
-        link_of(posted.append).open(Log())
+        self.assertEqual(hl.unreported(), [rejection], "the rejection stays unreported")
+        self.assertEqual(read(box.path), outbox, "the outbox stays whole")
+
+        link, items = stream(2)
+        for _ in range(2):  # the hello's continuation, then the outcomes'
+            kind, thens = items.get(timeout=10)
+            self.assertEqual(kind, "sent")
+            link.ran(thens)
+        hello, delivery = hub.bodies()[1:]
+        self.assertTrue(leaver_in(hello), "the next stream's hello says the leaver again")
+        self.assertIn(rejection, hello, "and reports the rejection again")
+        self.assertEqual([(f["message"]["kind"], f["message"]["body"]["outcome"]) for f in delivery],
+                         [("delivery", "delivered")], "and the outcomes follow it")
+        self.assertEqual({p["conn"] for p in hub.posts[1:]}, {2}, "one connection carries the log lane's POSTs")
         self.assertGreater(self.marks()[project.id], mark, "taken: the mark moves")
+        self.assertEqual(hl.unreported(), [], "the rejection reported")
+        self.assertFalse(box.waiting(), "the outcomes dropped")
 
     def test_the_daemon_sweeps_what_the_bridge_left_for_ended_sessions(self):
         """A session no process runs leaves its kept file once it has been
@@ -3242,6 +3267,344 @@ class TickCost(unittest.TestCase):
             holder.wait()
         with mock.patch.object(sminos.subprocess, "run", side_effect=AssertionError("a process was run")):
             self.assertEqual(sminos.read_proc_start(holder.pid), "", "no process holds the pid now")
+
+
+def wait_for(test, timeout=10.0):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        got = test()
+        if got:
+            return got
+        time.sleep(0.02)
+    return test()
+
+
+class ScriptedHub:
+    """A hub's `POST /machine/frames` as a lane's tests script it: HTTP/1.1,
+    connections kept, each POST recorded with the number of the connection it
+    came on (in accept order) and its body, and answered by the next action
+    of `script` (200 once it is empty): a status; `hold` (answered 200 once
+    `release` is set); `hold-503`; `drop` (the request read, the connection
+    closed with no answer); `rst` (answered 200, then the connection reset);
+    `fin` (answered 200, then the connection closed with no `Connection:
+    close`); `close` (answered 200 with `Connection: close`); ("slow", s)."""
+
+    def __init__(self):
+        self.posts, self.script, self.conns = [], [], 0
+        self.lock = threading.Lock()
+        self.release = threading.Event()
+        hub = self
+
+        class Handler(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def setup(self):
+                super().setup()
+                with hub.lock:
+                    hub.conns += 1
+                    self.conn = hub.conns
+
+            def log_message(self, *_):
+                pass
+
+            def answer(self, status, close=False):
+                data = b'{"ok":true}' if status == 200 else b'{"error":"scripted"}'
+                self.send_response(status)
+                self.send_header("Content-Length", str(len(data)))
+                if close:
+                    self.send_header("Connection", "close")
+                    self.close_connection = True
+                self.end_headers()
+                self.wfile.write(data)
+                self.wfile.flush()
+
+            def do_POST(self):
+                body = self.rfile.read(int(self.headers.get("Content-Length") or 0)).decode()
+                with hub.lock:
+                    hub.posts.append({"conn": self.conn, "body": body, "path": self.path,
+                                      "generation": self.headers.get("X-Desk-Generation")})
+                    action = hub.script.pop(0) if hub.script else 200
+                if isinstance(action, tuple):
+                    time.sleep(action[1])
+                    action = 200
+                if action in ("hold", "hold-503"):
+                    hub.release.wait(30)
+                    return self.answer(200 if action == "hold" else 503)
+                if action == "drop":
+                    self.close_connection = True
+                    return None
+                if action == "close":
+                    return self.answer(200, close=True)
+                if isinstance(action, int):
+                    return self.answer(action)
+                self.answer(200)
+                self.close_connection = True
+                if action == "rst":  # linger 0: the close resets the connection
+                    self.connection.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+                return None
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.server.daemon_threads = True
+        self.url = "http://127.0.0.1:%d" % self.server.server_address[1]
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def bodies(self):
+        return [[json.loads(line) for line in p["body"].splitlines() if line] for p in self.posts]
+
+    def close(self):
+        self.release.set()
+        self.server.shutdown()
+        self.server.server_close()
+
+
+class Lanes(unittest.TestCase):
+    """The uplink's sender lanes (sminos_uplink.Sender): one kept connection
+    each, posting in order what the main thread queues, a continuation per
+    entry run on the main thread after its 200, and a failure that ends the
+    stream; against a scripted hub."""
+
+    def setUp(self):
+        import sminos_uplink as uplink
+        self.uplink = uplink
+        self.hub = ScriptedHub()
+        self.addCleanup(self.hub.close)
+        self.items = queue.Queue()
+        self.said = []
+        patch = mock.patch.object(uplink, "log", self.said.append)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def lane(self, name="log", ended=lambda: False, released=("p1",)):
+        """A lane on the scripted hub; on the session lane, the projects
+        `released` as if their hellos were answered."""
+        s = self.uplink.Sender(name, {"hub": self.hub.url, "client_id": "c", "client_secret": "s"}, 7,
+                               self.items.put, ended)
+        for pid in released:
+            s.release(pid)
+        s.start()
+        self.addCleanup(s.close)
+        return s
+
+    @staticmethod
+    def frames(n, project="p1"):
+        return [{"t": "session", "message": {"project": project, "n": n}}]
+
+    def ns(self, i):
+        return [(f["message"]["project"], f["message"]["n"]) for f in self.hub.bodies()[i]]
+
+    def posted(self, n):
+        self.assertTrue(wait_for(lambda: len(self.hub.posts) >= n), "%d POSTs reached the hub" % n)
+
+    def ran(self, item):
+        """A `sent` item's continuations run, as the main loop runs them."""
+        kind, thens = item
+        self.assertEqual(kind, "sent")
+        for then in thens:
+            then()
+
+    def numbers(self, what):
+        """The connection numbers the lane's lines say it `what`ed, in order."""
+        pattern = {"dialled": r"lane dialled the hub \(connection #(\d+)\)",
+                   "closed": r"lane closed connection #(\d+) after"}[what]
+        return [int(m.group(1)) for line in self.said for m in [re.search(pattern, line)] if m]
+
+    def test_a_lane_keeps_one_connection_across_posts_and_closes_it_idle(self):
+        with mock.patch.dict(os.environ, {"SMINOS_IDLE_CLOSE": "1"}):
+            s = self.lane("session")
+        for i in range(5):
+            s.send(self.frames(i))
+            self.posted(i + 1)
+        self.assertEqual({p["conn"] for p in self.hub.posts}, {1}, "five POSTs, one connection")
+        self.assertEqual({(p["path"], p["generation"]) for p in self.hub.posts}, {("/machine/frames", "7")})
+        self.assertTrue(wait_for(lambda: self.numbers("closed"), 3), "idle for a second: closed")
+        first = self.numbers("dialled")[0]
+        self.assertIn("session lane closed connection #%d after 5 POSTs (idle)" % first, self.said)
+        s.send(self.frames(5))
+        self.posted(6)
+        self.assertEqual(self.hub.posts[5]["conn"], 2, "the next POST after the idle close dials afresh")
+        dialled = self.numbers("dialled")
+        self.assertEqual(len(dialled), 2)
+        self.assertGreater(dialled[1], first, "each dial its own number")
+        self.assertEqual(self.said[0], "session lane dialled the hub (connection #%d)" % first)
+
+    def test_continuations_run_after_the_200_and_never_after_a_failure(self):
+        s = self.lane("log")
+        ran = []
+        s.send(self.frames(1), then=lambda: ran.append(1))
+        self.ran(self.items.get(timeout=5))
+        self.assertEqual(ran, [1])
+        self.hub.script = ["hold-503"]
+        s.send(self.frames(2), then=lambda: ran.append(2))
+        s.send(self.frames(3), then=lambda: ran.append(3))
+        self.posted(2)
+        self.assertTrue(s.posting())
+        self.hub.release.set()
+        kind, err = self.items.get(timeout=5)
+        self.assertEqual(kind, "closed")
+        self.assertIsInstance(err, self.uplink.NotDelivered)
+        self.assertTrue(str(err).startswith("the hub answered 503"), str(err))
+        self.assertTrue(any(re.fullmatch(r"log lane closed connection #\d+ after 2 POSTs \(failed: the hub answered "
+                                         r"503 .*\)", line) for line in self.said), "the lane's close names it")
+        s.join(3)
+        self.assertFalse(s.is_alive(), "a lane that lost a POST exits")
+        s.send(self.frames(4), then=lambda: ran.append(4))
+        time.sleep(0.3)
+        self.assertEqual(ran, [1], "no continuation after the failure")
+        self.assertEqual(len(self.hub.posts), 2, "nothing queued behind it is posted")
+        self.assertTrue(self.items.empty(), "the failure is put once")
+
+    def test_the_log_lane_posts_each_entry_alone_and_the_session_lane_merges(self):
+        for name in ("log", "session"):
+            self.hub.posts.clear()
+            self.hub.release.clear()
+            self.hub.script = ["hold"]
+            s = self.lane(name)
+            s.send(self.frames(1))
+            self.posted(1)
+            s.send(self.frames(2))
+            s.send(self.frames(3))
+            time.sleep(0.2)
+            self.hub.release.set()
+            want = [[("p1", 1)], [("p1", 2)], [("p1", 3)]] if name == "log" else [[("p1", 1)], [("p1", 2), ("p1", 3)]]
+            self.posted(len(want))
+            time.sleep(0.2)
+            self.assertEqual([self.ns(i) for i in range(len(self.hub.posts))], want, name)
+            s.close()
+
+    def test_a_projects_session_messages_wait_for_its_release_and_others_do_not(self):
+        s = self.lane("session", released=())
+        s.release("p2")
+        ran = []
+        s.send(self.frames(1, "p1") + self.frames(2, "p2"))
+        self.posted(1)
+        self.assertEqual(self.ns(0), [("p2", 2)], "a released project's message goes; the other's waits")
+        s.send(self.frames(3, "p1"))
+        s.send(self.frames(4, "p3") + self.frames(5, "p2"), then=lambda: ran.append("p3 p2"))
+        self.posted(2)
+        self.assertEqual(self.ns(1), [("p2", 5)])
+        s.release("p1")
+        self.posted(3)
+        self.assertEqual(self.ns(2), [("p1", 1), ("p1", 3)], "released: its messages go, in order")
+        time.sleep(0.2)
+        self.assertTrue(self.items.empty(), "a continuation waits for every project its entry carries")
+        s.release("p3")
+        self.ran(self.items.get(timeout=5))
+        self.assertEqual(ran, ["p3 p2"])
+        self.assertEqual(self.ns(3), [("p3", 4)])
+
+    def test_a_lane_past_its_bound_ends_the_stream(self):
+        self.hub.script = ["hold"]
+        with mock.patch.object(self.uplink, "SEND_QUEUE_MAX", 8000):
+            s = self.lane("log")
+            s.send(self.frames(0))
+            self.posted(1)
+            big = [{"t": "events", "project": "p1", "pad": "x" * 3000}]
+            s.send(big)
+            s.send(big)
+            with self.assertRaises(self.uplink.NotDelivered) as e:
+                s.send(big)
+            self.assertIn("is not taking frames", str(e.exception))
+        s.join(3)
+        self.assertFalse(s.is_alive(), "its held POST given up")
+        self.assertEqual(len(self.hub.posts), 1)
+
+    def test_a_stale_connection_is_dialled_afresh_before_the_send_and_retried_once_after_it(self):
+        """The hub closed the kept connection while it was idle: seen before
+        the send (the socket reads its end), it is dialled afresh; reset and
+        not seen, the send fails, and the POST goes once more on a fresh
+        connection."""
+        s = self.lane("log")
+        self.hub.script = ["fin"]
+        for i in (1, 2):
+            s.send(self.frames(i), then=lambda: None)
+            self.ran(self.items.get(timeout=5))
+        self.assertEqual([p["conn"] for p in self.hub.posts], [1, 2])
+        self.assertTrue(any(line.endswith("after 1 POSTs (the hub closed it)") for line in self.said), self.said)
+        self.hub.script = ["rst"]
+        s.send(self.frames(3), then=lambda: None)
+        self.ran(self.items.get(timeout=5))
+        time.sleep(0.2)
+        with mock.patch.object(self.uplink, "readable", lambda _sock: False):
+            s.send(self.frames(4), then=lambda: None)
+            self.ran(self.items.get(timeout=5))
+        self.assertEqual([p["conn"] for p in self.hub.posts], [1, 2, 2, 3],
+                         "the reset connection carried nothing; its POST went once, on a fresh one")
+        self.assertTrue(any(re.search(r"after 2 POSTs \(failed: .*(reset|pipe)", line, re.I) for line in self.said),
+                        self.said)
+        self.assertEqual(len(self.numbers("dialled")), 3)
+
+    def test_a_failure_after_the_send_is_a_loss(self):
+        s = self.lane("log")
+        s.send(self.frames(1), then=lambda: None)
+        self.ran(self.items.get(timeout=5))
+        self.hub.script = ["drop"]
+        s.send(self.frames(2), then=lambda: None)
+        kind, err = self.items.get(timeout=5)
+        self.assertEqual(kind, "closed")
+        self.assertIsInstance(err, self.uplink.NotDelivered)
+        time.sleep(0.3)
+        self.assertEqual(len(self.hub.posts), 2, "not retried: the hub may have applied it")
+
+    def test_a_connection_close_answer_drops_the_connection(self):
+        s = self.lane("log")
+        self.hub.script = ["close"]
+        for i in (1, 2):
+            s.send(self.frames(i), then=lambda: None)
+            self.ran(self.items.get(timeout=5))
+        self.assertEqual([p["conn"] for p in self.hub.posts], [1, 2])
+        self.assertIn("log lane closed connection #%d after 1 POSTs (the hub closed it)" % self.numbers("dialled")[0],
+                      self.said)
+
+    def test_close_and_the_uplinks_end_stop_a_held_lane_silently(self):
+        ended = threading.Event()
+        for stop in ("ended", "close"):
+            self.hub.release.clear()
+            self.hub.script = ["hold"]
+            s = self.lane("log", ended=ended.is_set)
+            before = len(self.hub.posts)
+            s.send(self.frames(1), then=lambda: None)
+            s.send(self.frames(2), then=lambda: None)
+            self.posted(before + 1)
+            t0 = time.time()
+            ended.set() if stop == "ended" else s.close()
+            s.join(3)
+            self.assertFalse(s.is_alive(), stop)
+            self.assertLess(time.time() - t0, 1.5, "within POLL of the end, whatever the exchange is blocked in")
+            self.hub.release.set()
+            time.sleep(0.3)
+            self.assertTrue(self.items.empty(), "%s: nothing put" % stop)
+            ended.clear()
+        self.assertEqual(len(self.hub.posts), 2, "what was queued behind the held POST is dropped")
+
+    def test_a_post_past_its_bound_is_a_loss(self):
+        self.hub.script = ["hold"]
+        with mock.patch.object(self.uplink, "POST_TIMEOUT", 0.3):
+            s = self.lane("log")
+            t0 = time.time()
+            s.send(self.frames(1), then=lambda: None)
+            kind, err = self.items.get(timeout=5)
+        self.assertEqual(kind, "closed")
+        self.assertIsInstance(err, self.uplink.NotDelivered)
+        self.assertLess(time.time() - t0, 2.0)
+
+    def test_warm_dials_before_the_first_post(self):
+        s = self.lane("session")
+        s.warm()
+        self.assertTrue(wait_for(lambda: self.numbers("dialled"), 3), "dialled with nothing to post")
+        self.assertTrue(wait_for(lambda: self.hub.conns == 1, 3))
+        s.warm()
+        s.send(self.frames(1))
+        self.posted(1)
+        self.assertEqual(self.hub.posts[0]["conn"], 1, "the POST takes the warmed connection")
+        self.assertEqual(len(self.numbers("dialled")), 1)
+
+    def test_a_slow_post_is_said(self):
+        self.hub.script = [("slow", 0.4)]
+        with mock.patch.object(self.uplink, "SLOW_POST_SECONDS", 0.2):
+            s = self.lane("log")
+            s.send(self.frames(1), then=lambda: None)
+            self.ran(self.items.get(timeout=5))
+        self.assertTrue(any(re.fullmatch(r"a log lane POST took 0\.\d s", line) for line in self.said), self.said)
 
 
 def call(url, method, path, body=None, headers=None):
@@ -3887,6 +4250,99 @@ class Uplink(unittest.TestCase):
         self.assertIsNone(b.end)
         self.assertEqual(b.errors, [])
         self.hub.send({"t": "unsubscribe", "project": self.project, "sub": b.sub})
+
+    # ---------------------------------------------------- the sender lanes, against the stand-in
+
+    def restart_uplink(self, **env):
+        """The uplink started again, with `env` over the test's; returns once
+        it said its sessions' presence on its new stream."""
+        count = len(self.hub.messages())
+        Uplink.uplink.terminate()
+        Uplink.uplink.wait(10)
+        Uplink.uplink = subprocess.Popen([os.path.join(SCRIPTS, "sminos"), "daemon", "uplink"],
+                                         env={**os.environ, **env}, stdout=subprocess.DEVNULL,
+                                         stderr=subprocess.DEVNULL)
+        Uplink.procs.append(Uplink.uplink)
+        ok = self.hub.wait(lambda ms: any(m["kind"] == "presence" and m["session"] == self.sid for m in ms[count:]),
+                           timeout=15)
+        self.assertIsNotNone(ok, "the uplink is back with its sessions' presence")
+
+    def opened_within(self, bound):
+        """One open, subscribe to snapshot at the stand-in, then unsubscribed:
+        its time."""
+        t0 = time.time()
+        b = self.subscribe()
+        self.assertTrue(self.feed(b, lambda: b.snapshot is not None, timeout=10), "the open got its snapshot")
+        at = next(x["at"] for x in self.hub.state()["sessions"]
+                  if x["message"].get("sub") == b.sub and x["message"]["kind"] == "snapshot")
+        self.hub.send({"t": "unsubscribe", "project": self.project, "sub": b.sub})
+        self.assertLessEqual(at - t0, bound, "the snapshot at the stand-in within %g s of the subscribe" % bound)
+        return b
+
+    def test_h_a_held_hello_on_the_log_lane_delays_no_open(self):
+        """The hub holds the archive period's re-hello (A4, the uplink's
+        proof): the log lane waits in that POST, and the opens go on the
+        session lane meanwhile, each within a second; released (and refused,
+        as the stand-in answers a held POST), the stream ends as any lost
+        POST ends it, and the next one serves opens again."""
+        if not isinstance(self.hub, StandinHub):
+            self.skipTest("the stand-in's hold")
+        self.restart_uplink(SMINOS_ARCHIVE_EVERY="1")
+        self.addCleanup(self.restart_uplink)
+        state = self.hub.state()
+        held_before = len([p for p in state["posted"] if p["status"] == "held"])
+        generation = state["generation"]
+        call(self.hub.url, "POST", "/control/post-fault", {"faults": [{"fault": "hold", "has": "hello"}]})
+        held = wait_for(lambda: [p for p in self.hub.state()["posted"] if p["status"] == "held"][held_before:], 10)
+        self.assertTrue(held, "the next re-hello is held")
+        self.assertEqual(held[0]["generation"], str(generation))
+        self.opened_within(1.0)
+        for _ in range(3):
+            time.sleep(6)
+            self.opened_within(1.0)
+        state = self.hub.state()
+        self.assertEqual(state["generation"], generation, "the stream stood through the hold")
+        self.assertEqual(len([p for p in state["posted"] if p["status"] == "held"]), held_before + 1,
+                         "the log lane posted nothing more behind the held POST")
+        call(self.hub.url, "POST", "/control/release", {})
+        self.assertTrue(wait_for(lambda: self.hub.state()["generation"] > generation, 15), "the stream ends")
+        def said():
+            text = read(os.path.join(os.environ["SMINOS_HOME"], "daemon.log"))
+            return ("a POST was not delivered (the hub answered 503" in text
+                    and re.search(r"uplink: log lane closed connection #\d+ after \d+ POSTs \(failed: the hub "
+                                  r"answered 503", text))
+
+        self.assertTrue(wait_for(said, 5), "the stream's end and the log lane's close, both said")
+        self.assertIsNotNone(self.hub.wait(lambda ms: self.hub.state()["projects"][self.project]["open"].get(
+            self.hub.machine) == self.hub.state()["generation"], timeout=15), "and the next one hellos")
+        self.opened_within(1.0)
+
+    def test_i_a_lanes_posts_share_a_connection_until_it_idles(self):
+        """A9 against the stand-in: the session lane's POSTs come on one
+        connection; after a pause past SMINOS_IDLE_CLOSE the next comes on a
+        new one, and daemon.log's connection lines say the same."""
+        if not isinstance(self.hub, StandinHub):
+            self.skipTest("the stand-in's connection numbers")
+        self.restart_uplink(SMINOS_IDLE_CLOSE="1")
+        self.addCleanup(self.restart_uplink)
+        logged = len(read(os.path.join(os.environ["SMINOS_HOME"], "daemon.log")).splitlines())
+
+        def conn_of(b):
+            return next(p["conn"] for p in self.hub.state()["posted"] if b.sub in p["body"])
+
+        conns = [conn_of(self.opened_within(5.0)) for _ in range(5)]
+        self.assertEqual(len(set(conns)), 1, "five POSTs on the session lane, one connection: %s" % conns)
+        time.sleep(2.0)
+        later = conn_of(self.opened_within(5.0))
+        self.assertNotEqual(later, conns[0], "after a 2 s pause, a new connection")
+        said = read(os.path.join(os.environ["SMINOS_HOME"], "daemon.log")).splitlines()[logged:]
+        closed = [re.search(r"uplink: session lane closed connection #(\d+) after (\d+) POSTs \(idle\)", line)
+                  for line in said]
+        closed = [(int(m.group(1)), int(m.group(2))) for m in closed if m]
+        dialled = [int(m.group(1)) for m in (re.search(r"uplink: session lane dialled the hub \(connection #(\d+)\)",
+                                                       line) for line in said) if m]
+        self.assertTrue(closed and closed[-1][1] >= 5, "the idle close says its POSTs: %s" % closed)
+        self.assertGreater(dialled[-1], closed[-1][0], "and the next POST's connection is a new dial")
 
 
 if __name__ == "__main__":
