@@ -450,6 +450,15 @@ PIDS+=("$RUNC")
 GEN=4
 until_true 200 gen_is "$GEN" || true
 UP="$(uplink_pid)"
+# A marketplace update re-clones the marketplace: every script a new file with
+# a new mtime, the same bytes where sminos did not change. Nothing restarts,
+# and the uplink keeps its stream.
+for f in "$CODE"/*.py; do cp "$f" "$f.new" && mv "$f.new" "$f"; done
+sleep 4  # a tick (1 s) and the settle (1 s) would have restarted it by now
+if alive "$RUNC" && [ "$(started_in "$RUNC")" = 1 ] && [ "$(uplink_pid)" = "$UP" ] && gen_is "$GEN"; then
+  pass "scripts re-made with the same bytes restart nothing: the uplink ($UP) keeps its stream"; else
+  fail "scripts re-made with the same bytes restart nothing"
+  echo "    starts: $(started_in "$RUNC"), uplink $UP -> '$(uplink_pid)', generation $(ctl generation)"; fi
 # sminos_jobs.py: imported by the uplink alone (through the plane and the
 # RPCs), and once missing from the daemon's list of its own code.
 change sminos_jobs.py
@@ -468,7 +477,7 @@ assert_within "$(gap "$RUNC")" 5 "the uplink is back on a new stream within seco
 UP="$NEW_UP"
 change sminos_daemon.py
 for f in sminos_codes.py sminos_hublog.py sminos_plane.py sminos_rpc.py sminos_bridge.py sminos_policy.py; do
-  sleep 0.25; touch "$CODE/$f"
+  sleep 0.25; printf '\n' >> "$CODE/$f"
 done
 sleep 0.25; change sminos_uplink.py
 PULLED="$(python3 -c 'import time; print("%.3f" % time.time())')"

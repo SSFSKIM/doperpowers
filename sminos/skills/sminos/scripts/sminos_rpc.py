@@ -683,10 +683,12 @@ class Rpcs:
                 continue
             del self.unwritten[nonce]
             log("the outcome of %s is kept now: it is sent" % nonce)
-        for nonce, e in self.ledger.items():
+        claims = self.ledger.items()
+        taken = {kept_job(e) for _, e in claims} - {None}   # the jobs Resumes' claims keep
+        for nonce, e in claims:
             if "outcome" in e or nonce in self.flight or nonce in self.unwritten:
                 continue
-            outcome, window = trace(nonce, e)
+            outcome, window = trace(nonce, e, taken)
             if outcome is None and kept_job(e) and nonce not in self.copies_asked:
                 self.copies_asked.add(nonce)
                 self.flight.add(nonce)
@@ -1146,13 +1148,16 @@ def started_at(rec):
     return time.mktime(parsed) if parsed else None   # ps prints the local zone
 
 
-def launched_by(rec, launched, job):
+def launched_by(rec, launched, job, taken=()):
     """Whether a holder of the session is the --bg process of the launch made
     at `launched`, whose job is `job`: started no earlier than the launch's
-    second, its job the one that launch started."""
+    second, its job the one that launch started. With no `job` (a launch
+    stopped before its banner was read), any --bg job started since then
+    whose job no other claim keeps (`taken`)."""
     started = started_at(rec)
-    return (rec.get("kind") == "bg" and started is not None and started >= int(launched)
-            and rec.get("jobId") == job)
+    if rec.get("kind") != "bg" or started is None or started < int(launched):
+        return False
+    return rec.get("jobId") == job if job is not None else rec.get("jobId") not in taken
 
 
 def resume(sid, cwd, lock, note):
@@ -1161,7 +1166,7 @@ def resume(sid, cwd, lock, note):
     The engine's own check is the last word on a reopen racing the launch:
     it starts a copy, which is stopped, and the RPC fails `copy-started`.
     The launch is kept in the claim before it runs (`note`), and its job
-    once known, so a restart reconciles from this launch alone; done only
+    once known, so a restart reconciles from this launch (trace); done only
     once that job's process holds the session."""
     with lock:
         live = holders(sid)
@@ -1223,9 +1228,10 @@ def kept_job(e):
     return job if isinstance(job, str) and job and e.get("session") else None
 
 
-def trace(nonce, e):
+def trace(nonce, e, taken=()):
     """(the outcome a claim's trace shows, or None; how long after its claim
-    a trace may still appear)."""
+    a trace may still appear). `taken`: the jobs other claims keep, none of
+    which is this claim's launch."""
     if e.get("rpc") == "spawn":
         return spawned(nonce), SPAWN_TRACE_S
     if e.get("rpc") == "steer" and e.get("session"):
@@ -1233,10 +1239,12 @@ def trace(nonce, e):
         return (steered(answered) if isinstance(answered, dict) else None), STEER_TRACE_S
     if e.get("rpc") == "resume" and e.get("session"):
         launched, job = e.get("launched_at"), kept_job(e)
-        if not isinstance(launched, (int, float)) or isinstance(launched, bool) or job is None:
-            # Stopped before its launch, or before its job was known: no
-            # process can be told for this launch's, so none says it ran.
-            return None, 0
-        ran = any(launched_by(r, launched, job) for r in holders(e["session"]))
+        if not isinstance(launched, (int, float)) or isinstance(launched, bool):
+            return None, 0   # stopped before its launch: nothing ran
+        # Stopped after the launch began: `claude --bg` outlives the uplink
+        # that ran it, so its job may hold the session now or within the
+        # window. Before its job was known, a --bg process started since the
+        # launch is taken for it unless another claim keeps that job.
+        ran = any(launched_by(r, launched, job, taken) for r in holders(e["session"]))
         return (done({"session": e["session"]}) if ran else None), RESUME_TRACE_S
     return None, 0
