@@ -545,7 +545,9 @@ class Resume(LC.Control):
         later = self.daemon("restart-past-window", "60", same_job, jobless)[0]
         self.check("a process that started before a claim's launch is no evidence for it, its job id the same or none: "
                    "not done, then interrupted once the window passes",
-                   [code_of(e) for e in first] == [None, None]
+                   older and older[0].get("kind") == "bg" and process_started(older[0]) is not None
+                   and process_started(older[0]) < launched
+                   and [code_of(e) for e in first] == [None, None]
                    and [code_of(e) for e in later] == [("failed", "interrupted")] * 2,
                    "first pass %s, past the window %s; holder (kind, job, startedAt, started - launch) %s" % (
                        [code_of(e) for e in first], [code_of(e) for e in later], self.holding(sid, launched)))
