@@ -447,7 +447,8 @@ class Engine(Session):
         self.assertClean(b)
         inventory = dx4_consumer.Inventory.from_sources(self.fake.path(None), self.fake.emitted)
         self.assertEqual(set(inventory.blocks), {(m.turn, None, 0, 0), (m.turn, None, 0, 1)}, "both blocks streamed")
-        self.assertEqual(inventory.check(b), {"holes": [], "partial": [], "vanished": [], "dups": []})
+        self.assertEqual(inventory.check(b), {"holes": [], "partial": [], "vanished": [], "dups": [], "undrawn": [],
+                                              "residual": []})
         self.assertLess(b.kinds.index("block-row"), b.kinds.index("row"), "a block-row before its row")
         # Each live chunk carries the bridge's stamp through, for the web's chunk-to-drawn latency.
         self.assertEqual(b.stamps, [1760000000000 + i for i in (1, 2, 3)], "the bridge's stamps, passed through")
@@ -683,6 +684,28 @@ class Engine(Session):
         self.assertIn("timeout: the bridge sent no snapshot in %g s after %.2f s from the subscribe's arrival "
                       "(bridge: no snapshot; build: none, cut null; waits 0)" % (plane.OPEN_WAIT, plane.OPEN_WAIT + 1),
                       said[0])
+
+    def test_an_open_that_ends_waiting_for_its_cut_says_its_builds(self):
+        """The line of an open that ended before its snapshot, its cut's row
+        never on disk: the builds that answered "waiting" are said whole —
+        how the first came, their CPU together, the rows the last indexed."""
+        self.fake.user_row("before", post=False)
+        self.fake.start_bridge()
+        m = self.fake.message()
+        m.text(0, "never flushed")
+        u = m.row(0, disk=False)
+        sub, b = self.subscribe(received=self.clock() - 0.5)
+        self.assertTrue(self.pump(sub, b, lambda: sub.waits >= 2), "builds asked, and asked again")
+        self.clock.advance(plane.NOTICE_WAIT + 0.1)
+        self.assertTrue(self.pump(sub, b, lambda: b.end is not None))
+        self.assertEqual(sub.build_how, "cold")
+        said = [line.split(" ", 1)[1] for line in self.opens_said(sub)]
+        self.assertEqual(said, ["plane: open %s of %s: discontinuity before its snapshot: the snapshot's cut, row %s, "
+                                "never reached the transcript after %.2f s from the subscribe's arrival (bridge: "
+                                "snapshot arrived 0.50 s, taken 0.50 s; build: cold %d ms 1 rows, cut not on disk; "
+                                "waits %d)\n" % (sub.sub, sub.session[:8], u, 0.5 + plane.NOTICE_WAIT + 0.1, sub.cpu_ms,
+                                                   sub.waits)])
+        m.end()
 
     def test_the_open_line_says_where_the_time_went(self):
         """§5's line, pinned whole: N from the subscribe frame's arrival at
@@ -1971,6 +1994,30 @@ class StreamFixture(unittest.TestCase):
                     inventory = dx4_consumer.Inventory.from_sources(path, seq["inventory"]["dx5"])
                     self.assertEqual(inventory.check(c), seq["inventory"]["check"])
 
+    def env(self, kind, n, body):
+        return {"project": PROJECT, "machine": "testhost", "session": "s", "kind": kind, "sub": "x", "n": n,
+                "body": body}
+
+    def test_a_page_holding_a_row_twice_is_held_once_and_said(self):
+        c = dx4_consumer.Consumer(None)
+        newest = {"type": "user", "uuid": "b", "message": {"role": "user", "content": "b"}}
+        older = {"type": "user", "uuid": "a", "message": {"role": "user", "content": "a"}}
+        c.take(self.env("snapshot", 0, {"rows": [newest], "more": True, "subagents": [], "presence": {},
+                                        "streaming": [], "offChain": []}))
+        c.take(self.env("rows", 1, {"rows": [older, older], "before": "b", "more": False, "offChain": []}))
+        self.assertEqual(c.uuids(), ["a", "b"], "held once")
+        self.assertEqual(c.error_kinds(), ["dup"])
+        c.take(self.env("rows", 2, {"rows": [older], "before": "b", "more": False, "offChain": []}))
+        self.assertEqual((c.uuids(), c.error_kinds()), (["a", "b"], ["dup"]), "a held row paged again is no dup")
+
+    def test_the_inventory_reads_a_missing_transcript_as_empty_and_fails_on_any_other_error(self):
+        missing = dx4_consumer.Inventory.from_sources(os.path.join(T, "no-such-transcript.jsonl"), [])
+        self.assertEqual(missing.rows, [], "a transcript not written yet holds no rows")
+        unreadable = os.path.join(T, "unreadable-transcript")
+        os.makedirs(unreadable, exist_ok=True)
+        with self.assertRaises(OSError):
+            dx4_consumer.Inventory.from_sources(unreadable, [])
+
     def test_every_sequence_section_9_names_is_there(self):
         """The fixture covers what §9 lists, and names and describes each sequence."""
         kinds = {s["message"]["kind"] for q in STREAM for s in q["steps"] if isinstance(s["message"], dict)}
@@ -1988,7 +2035,12 @@ class StreamFixture(unittest.TestCase):
             self.assertIn(name, names)
         planted = {k for q in STREAM for k in q["errors"]} | {
             k for q in STREAM for k, v in q.get("inventory", {}).get("check", {}).items() if v}
-        self.assertLessEqual({"gap", "dup", "watermark", "after-end", "vanished", "holes", "partial", "dups"}, planted)
+        self.assertLessEqual({"gap", "dup", "watermark", "after-end", "vanished", "holes", "partial", "dups", "undrawn",
+                              "residual"}, planted)
+        truncated = {b["kind"] for q in STREAM for s in q["steps"] if isinstance(s["message"], dict)
+                     and s["message"]["kind"] == "snapshot" for e in s["message"]["body"]["streaming"]
+                     for b in e["blocks"] if b.get("truncated")}
+        self.assertEqual(truncated, {"text", "tool"}, "truncated blocks of text and of a tool call settle")
 
 
 class ChainRules(unittest.TestCase):

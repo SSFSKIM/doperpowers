@@ -614,8 +614,9 @@ def build(t, cut, bridged):
     """An open's build on the worker: the index brought up to the file's end
     (a file replaced since an earlier subscription read it starts over: this
     one holds nothing of the old), the history to the cut, the newest of it
-    that fits read back, and the rows past the cut. ("waiting", None) while
-    the cut's row is not on disk."""
+    that fits read back, and the rows past the cut. ("waiting", (how,
+    cpu_ms, rows)) while the cut's row is not on disk: what the build that
+    waited cost, for the open's line."""
     try:
         index = t.extended()
     except Reset:
@@ -624,7 +625,7 @@ def build(t, cut, bridged):
     if cut is not None:
         at = index.at.get(cut)
         if at is None:
-            return "waiting", None
+            return "waiting", (t.how, t.cpu_ms, n)
         split = at + 1
     else:
         # No cut: a bridged loop had no rows when the module loaded (all are
@@ -1094,9 +1095,10 @@ class Subscription:
         self.snap = None              # the bridge's snapshot line
         self.snapped_at = None        # when the open took it (clock)
         self.snap_arrived = None      # when it reached the reader (wall)
-        # What the open line says of the build: how the index came, its CPU and
-        # rows, whether the cut's row was on disk, how many builds answered
-        # "waiting".
+        # What the open line says of its builds — one, or one per ask while
+        # the cut's row was not on disk: how the first's index came, their CPU
+        # together, the rows the last held; whether the cut's row was on disk;
+        # how many answered "waiting".
         self.build_how = None
         self.cpu_ms = 0
         self.build_rows = 0
@@ -1163,6 +1165,12 @@ class Subscription:
         if not self.main:
             return ""
         return self.main if self.agent is None else agent_path(self.main, self.agent)
+
+    def counted(self, how, cpu_ms, rows):
+        """One build's figures into the open line's."""
+        self.build_how = self.build_how or how
+        self.cpu_ms += cpu_ms
+        self.build_rows = rows
 
     def noted(self, how):
         """The open's one daemon.log line, once: how long from the subscribe
@@ -1301,6 +1309,7 @@ class Subscription:
             return False
         self.building = False
         if kind == "waiting":
+            self.counted(*built)
             self.waits += 1
             self.cut_state = "not on disk"
             if now - self.snapped_at > NOTICE_WAIT:
@@ -1309,7 +1318,7 @@ class Subscription:
         if kind != "built":
             out += self.end("discontinuity" if kind == "reset" else "error", built)
             return False
-        self.build_how, self.cpu_ms, self.build_rows = built.how, built.cpu_ms, built.rows
+        self.counted(built.how, built.cpu_ms, built.rows)
         self.cut_state = "null" if cut is None else "on disk" if cut in built.emitted else "not on disk"
         if built.ino is None and not self.alive():
             out += self.end("session-ended", "no transcript of the session on this machine")

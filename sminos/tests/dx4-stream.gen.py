@@ -32,7 +32,11 @@ ABOUT = (
     "gives `landing` (the newest row the snapshot brought, null for none) and `lands` (the named rows `lands` "
     "answers true for). A sequence's `errors` are the reference consumer's error kinds, in order (gap, dup, "
     "watermark, differs, vanished, after-end, marks); `inventory`, where present, is the transcript on disk and "
-    "the DX5 events the session emitted, and what checking the consumer against them names.")
+    "the DX5 events the session emitted, and what checking the consumer against them names: holes (rows never "
+    "delivered), partial (a block drawn while its row was held), vanished (a block gone before its row landed), dups "
+    "(a row delivered twice, a block drawn again after it settled), undrawn (a block whose request this view followed, "
+    "never drawn before its row arrived live), residual (the same for a request that had ended before the view "
+    "followed it: the snapshot between a step's end and its rows' flush, an accepted hole).")
 
 
 def assistant(uuid, kind, value):
@@ -185,7 +189,7 @@ def reconnect_carried_named():
                  "chunk": {"kind": "text", "index": 0, "text": t}, "t": NAMED_AT + i}
                 for i, t in enumerate(("Hel", "lo", " world"))]
         + [{"type": "block-row", "uuid": A, "turnId": "turn-1", "agentId": None, "step": 0, "index": 0, "t": NAMED_AT}],
-        "check": {"holes": [], "partial": [], "vanished": [], "dups": []}}
+        "check": {"holes": [], "partial": [], "vanished": [], "dups": [], "undrawn": [], "residual": []}}
     return s.out
 
 
@@ -286,7 +290,8 @@ def planted_vanished():
                  "chunk": {"kind": "text", "index": 0, "text": "Lost"}, "t": NAMED_AT},
                 {"type": "block-row", "uuid": L, "turnId": "turn-1", "agentId": None, "step": 0, "index": 0, "t": NAMED_AT}],
         "check": {"holes": [L], "partial": [],
-                  "vanished": [{"turnId": "turn-1", "agentId": None, "step": 0, "index": 0}], "dups": []}}
+                  "vanished": [{"turnId": "turn-1", "agentId": None, "step": 0, "index": 0}], "dups": [],
+                  "undrawn": [], "residual": []}}
     return s.out
 
 
@@ -312,7 +317,8 @@ def planted_partial_and_twice():
                  "chunk": {"kind": "text", "index": 0, "text": "Twice"}, "t": NAMED_AT},
                 {"type": "block-row", "uuid": W, "turnId": "turn-1", "agentId": None, "step": 0, "index": 0, "t": NAMED_AT}],
         "check": {"holes": [], "partial": [{"turnId": "turn-1", "agentId": None, "step": 0, "index": 0, "text": "Twice"}],
-                  "vanished": [], "dups": [{"turnId": "turn-1", "agentId": None, "step": 0, "index": 0}]}}
+                  "vanished": [], "dups": [{"turnId": "turn-1", "agentId": None, "step": 0, "index": 0}],
+                  "undrawn": [], "residual": []}}
     return s.out
 
 
@@ -340,8 +346,75 @@ def fresh_text_wins():
     return s.out
 
 
+def planted_undrawn():
+    s = Seq(10, "planted-undrawn-and-the-residual-hole",
+            "Planted: the first snapshot follows a request still streaming (block 1) but carries neither its named "
+            "block 0 nor that block's row, which arrives live after its block-row: the block was never drawn (the "
+            "first open's twin of the carried-block loss). Beside it, the row of a request whose step had ended "
+            "before the snapshot arrives live too, its block never drawn and its request never followed: the "
+            "snapshot fell between that step's end and its rows' flush, the hole the design accepts (residual).")
+    R0, R1 = ("turn-1", None, 0), ("turn-1", None, 1)
+    P, M, N, S = s.u(1), s.u(2), s.u(3), s.u(4)
+    s.snapshot([user(P, "go")], [entry(*R1, 3, sblk(1, "text", "still", 3))], {"main": [blk(*R1, 1, "text", "still")]},
+               note="planted: block 0 of the request, named, is missing; so is its row")
+    s.row(assistant(M, "text", "flushed late"), {"main": [blk(*R1, 1, "text", "still")]},
+          note="the residual: an ended step's row, after a snapshot that could carry neither")
+    s.block_row(N, *R1, 0, {"main": [blk(*R1, 1, "text", "still")]}, note="names a block that is not drawn")
+    s.chunk(*R1, 4, 1, "text", {"main": [blk(*R1, 1, "text", "still going")]}, text=" going")
+    s.row(assistant(N, "text", "Gone"), {"main": [blk(*R1, 1, "text", "still going")]})
+    s.block_row(S, *R1, 1, {"main": [blk(*R1, 1, "text", "still going", S)]})
+    s.row(assistant(S, "text", "still going"), {}, settle=[S])
+    s.step_end(*R1, {})
+
+    def chunk(ids, index, block, text):
+        return {"type": "chunk", "turnId": ids[0], "agentId": ids[1], "step": ids[2], "chunkIndex": index,
+                "chunk": {"kind": "text", "index": block, "text": text}, "t": NAMED_AT + index}
+
+    def named(ids, block, uuid):
+        return {"type": "block-row", "uuid": uuid, "turnId": ids[0], "agentId": ids[1], "step": ids[2],
+                "index": block, "t": NAMED_AT}
+
+    s.out["inventory"] = {
+        "transcript": [user(P, "go"), assistant(M, "text", "flushed late"), assistant(N, "text", "Gone"),
+                       assistant(S, "text", "still going")],
+        "dx5": [chunk(R0, 0, 0, "flushed late"), named(R0, 0, M),
+                {"type": "step", "phase": "end", "turnId": "turn-1", "agentId": None, "step": 0, "t": NAMED_AT},
+                chunk(R1, 0, 0, "Gone"), named(R1, 0, N), chunk(R1, 1, 1, "st"), chunk(R1, 2, 1, "il"),
+                chunk(R1, 3, 1, "l"), chunk(R1, 4, 1, "l going"), named(R1, 1, S)],
+        "check": {"holes": [], "partial": [], "vanished": [], "dups": [],
+                  "undrawn": [{"turnId": "turn-1", "agentId": None, "step": 1, "index": 0}],
+                  "residual": [{"turnId": "turn-1", "agentId": None, "step": 0, "index": 0}]}}
+    return s.out
+
+
+TOOL_INPUT = {"command": "echo " + "x" * 100 + " done", "description": "a long one"}
+TOOL_TAIL = json.dumps(TOOL_INPUT)[-40:]
+TEXT = "a long answer " * 20 + "that ends here."
+TEXT_TAIL = TEXT[-30:]
+
+
+def truncated_blocks():
+    s = Seq(11, "truncated-blocks-settle",
+            "Blocks whose catch-up copy the producer cut to its last characters (`truncated`, the spec's section 7): a "
+            "text block and a tool call whose kept input is the tail of its JSON, not JSON whole. Each is drawn with "
+            "the tail it carries and settles cleanly by its row, whose text, or whose input as serialized, ends with "
+            "that tail.")
+    T, U = s.u(1), s.u(2)
+    s.snapshot([], [entry(*R, 9, sblk(0, "text", TEXT_TAIL, 4, truncated=True),
+                          sblk(1, "tool", TOOL_TAIL, 9, id="toolu_01", name="Bash", truncated=True))],
+               {"main": [blk(*R, 0, "text", TEXT_TAIL), blk(*R, 1, "tool", TOOL_TAIL)]})
+    drawn = {"main": [blk(*R, 0, "text", TEXT_TAIL, T), blk(*R, 1, "tool", TOOL_TAIL, U)]}
+    s.block_row(T, *R, 0, {"main": [blk(*R, 0, "text", TEXT_TAIL, T), blk(*R, 1, "tool", TOOL_TAIL)]})
+    s.block_row(U, *R, 1, drawn)
+    s.row(assistant(T, "text", TEXT), {"main": drawn["main"][1:]}, settle=[T])
+    s.row(assistant(U, "tool", TOOL_INPUT), {}, settle=[U])
+    s.step_end(*R, {})
+    return s.out
+
+
 SEQUENCES = [first_snapshot_every_kind, reconnect_carried_named, reconnect_no_longer_carried, older_snapshot,
-             another_loop, planted_continuity, planted_vanished, planted_partial_and_twice, fresh_text_wins]
+             another_loop, planted_continuity, planted_vanished, planted_partial_and_twice, fresh_text_wins,
+             planted_undrawn, truncated_blocks]
 
 
 def main():

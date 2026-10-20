@@ -25,13 +25,21 @@ the message does not carry, or a row's marks present and empty).
 transcript on disk, delivered or not, and the DX5 events the session
 emitted (every block that streamed, its final text, the row its block-row
 named) — and `check(consumer)` names each row never drawn (`holes`), each
-block drawn while its row was held or settled with other text (`partial`),
-each block that left the drawing before its row landed (`vanished`), and
-each row delivered twice or block drawn again after it settled (`dups`).
+block drawn while its row was held (`partial`), each block that left the
+drawing before its row landed (`vanished`), each row delivered twice or
+block drawn again after it settled (`dups`), and each block that streamed
+whose row arrived live (a `row`, not history or a page) without the block
+ever drawn before it: `undrawn` when the view followed the block's request
+(its snapshot streamed it, or a chunk, block-row or step-end of it came) —
+the block was lost — and `residual` when it never did, so the request had
+ended before the snapshot: the snapshot fell between the step's end and its
+rows' flush, the one hole the design accepts (the spec's section 2).
 
 The merge leaves out the web's offChain vouching (desk-transcript's
 `merged`): a fresh snapshot whose oldest row is held merges here whatever
 its marks say. The chain is the plane's tests' to prove, not this module's.
+A page holding a row twice is held once and said (`dup`); the web's `older`
+would draw it twice.
 """
 
 import json
@@ -248,6 +256,27 @@ def row_text(row, kind):
     return None
 
 
+def serializations(value):
+    """The ways a tool call's input may have streamed as JSON: the API's
+    spacing or none, non-ASCII as is or escaped."""
+    return {json.dumps(value, ensure_ascii=a, separators=sep) for a in (False, True) for sep in (None, (",", ":"))}
+
+
+def same_text(block, said):
+    """Whether a block's drawn text is what its row says: whole, or, for a
+    block the producer cut to its tail (`truncated`), the end of it; a tool
+    call's input whole is compared as JSON, its tail against the input's
+    serializations."""
+    if block.kind != "tool":
+        return said.endswith(block.text) if block.truncated else said == block.text
+    if block.truncated:
+        return any(form.endswith(block.text) for form in serializations(said))
+    try:
+        return json.loads(block.text) == said
+    except ValueError:
+        return False
+
+
 def spans_overlap(a, b):
     """Whether two lists of closed message spans [first, last] share a message
     (an open span's last is None: up to now)."""
@@ -261,7 +290,7 @@ def spans_overlap(a, b):
 # What a re-subscribe hands on: the drawing and everything the inventory reads.
 SHARED = ("layer", "rows", "held", "row_of", "off", "served", "errors", "t", "ever", "reached_first",
           "drawn_spans", "held_spans", "settled", "settled_at", "redrawn", "left", "vanished", "dup_rows",
-          "dropped", "other")
+          "dropped", "other", "live_rows", "followed")
 
 
 class Consumer:
@@ -315,6 +344,8 @@ class Consumer:
         self.dup_rows = []
         self.dropped = {}             # a block a step-end dropped (no block-row named it): its text
         self.other = {}               # another loop's block settled by its block-row: uuid → its text
+        self.live_rows = {}           # uuid → the message whose `row` brought it first, not held before
+        self.followed = set()         # (turnId, agentId, step): requests the view saw streaming, named or ended
 
     # ---------------------------------------------------- reading
 
@@ -365,7 +396,9 @@ class Consumer:
         gone = {}                     # block key → why it may leave the drawing this message
         if kind == "snapshot":
             self.take_snapshot(body, gone)
-        elif kind == "chunk":
+        if kind in ("chunk", "block-row", "step-end"):
+            self.followed.add((body.get("turnId"), body.get("agentId"), body.get("step")))
+        if kind == "chunk":
             self.stamps.append(body.get("t"))
             key = (body.get("turnId"), body.get("agentId"), body.get("step"))
             index = body.get("chunkIndex")
@@ -402,18 +435,27 @@ class Consumer:
                 self.marked[row.get("uuid")] = (body.get("offChain", []), body.get("onChain", []))
             self.deliver(row)
             if isinstance(row.get("uuid"), str) and row["uuid"] not in self.held:
+                self.live_rows.setdefault(row["uuid"], self.t)
                 self.rows.append(row)
                 self.hold(row)
         elif kind == "rows":
             self.pages.append(body)
             rows = [r for r in reversed(body.get("rows") or []) if isinstance(r, dict) and isinstance(r.get("uuid"), str)]
-            self.mark(rows, body.get("offChain") or [])
+            once = {}
             for r in rows:
+                if r["uuid"] in once:
+                    self.error("dup", "row %s twice in one page" % r["uuid"])
+                    self.dup_rows.append(r["uuid"])
+                once.setdefault(r["uuid"], r)
                 self.ever.add(r["uuid"])
-            older = [r for r in rows if r["uuid"] not in self.held]
-            self.rows[:0] = older
-            for r in older:
-                self.hold(r)
+            older = [r for u, r in once.items() if u not in self.held]
+            self.check_marks(rows, body.get("offChain") or [])
+            if older:
+                # desk-transcript's `older`: the marks are applied to the rows it newly holds.
+                self.apply_marks(older, body.get("offChain") or [])
+                self.rows[:0] = older
+                for r in older:
+                    self.hold(r)
             if not body.get("more"):
                 self.reached_first = True
         elif kind == "end":
@@ -439,7 +481,10 @@ class Consumer:
         for r in fresh:
             self.deliver(r)
         for e in body.get("streaming") or []:
-            if isinstance(e, dict) and type(e.get("upTo")) is int:
+            if not isinstance(e, dict):
+                continue
+            self.followed.add((e.get("turnId"), e.get("agentId"), e.get("step")))
+            if type(e.get("upTo")) is int:
                 self.upto[(e.get("turnId"), e.get("agentId"), e.get("step"))] = e["upTo"]
         if not body.get("more"):
             self.reached_first = True
@@ -481,10 +526,17 @@ class Consumer:
         return self.rows[:at] + fresh + [r for r in self.rows[at:] if r["uuid"] not in inside]
 
     def mark(self, rows, off):
-        held = {r["uuid"] for r in rows}
-        if not set(off) <= held:
-            self.error("marks", "offChain names rows the message does not carry: %s" % sorted(set(off) - held))
-        self.off = (self.off - held) | set(off)
+        self.check_marks(rows, off)
+        self.apply_marks(rows, off)
+
+    def check_marks(self, rows, off):
+        carried = {r["uuid"] for r in rows}
+        if not set(off) <= carried:
+            self.error("marks", "offChain names rows the message does not carry: %s" % sorted(set(off) - carried))
+
+    def apply_marks(self, rows, off):
+        """Each of `rows` on the chain unless `off` names it (desk-transcript's `mark`)."""
+        self.off = (self.off - {r["uuid"] for r in rows}) | set(off)
 
     def deliver(self, row):
         """A row this subscription was sent: twice is a `dup`."""
@@ -531,14 +583,7 @@ class Consumer:
                 said = row_text(self.row_of[u], b.kind)
                 if said is None:
                     continue
-                if b.kind == "tool":
-                    try:
-                        ok = json.loads(b.text) == said
-                    except ValueError:
-                        ok = False
-                else:
-                    ok = said.endswith(b.text) if b.truncated else said == b.text
-                if not ok:
+                if not same_text(b, said):
                     self.error("differs", "block %s drew %r, its row says %r" % (b.key, b.text, said))
 
     def account(self, before, gone):
@@ -572,24 +617,28 @@ class Inventory:
 
     @classmethod
     def from_sources(cls, transcript_path, dx5_events):
+        """A transcript not written yet holds no rows; any other failure to
+        read it raises: an inventory that read nothing must not pass a run."""
         rows = []
         try:
-            with open(transcript_path, "rb") as f:
-                for line in f:
-                    if not line.endswith(b"\n"):
-                        break
-                    try:
-                        row = json.loads(line)
-                    except ValueError:
-                        continue
-                    if isinstance(row, dict) and isinstance(row.get("uuid"), str) and row["uuid"]:
-                        rows.append(row)
-        except OSError:
-            pass
+            f = open(transcript_path, "rb")
+        except FileNotFoundError:
+            return cls(rows, blocks_of(dx5_events))
+        with f:
+            for line in f:
+                if not line.endswith(b"\n"):
+                    break
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue   # a line that is no row: the engine's bookkeeping, as the plane passes it over
+                if isinstance(row, dict) and isinstance(row.get("uuid"), str) and row["uuid"]:
+                    rows.append(row)
         return cls(rows, blocks_of(dx5_events))
 
     def check(self, consumer):
-        """{"holes", "partial", "vanished", "dups"} for the consumer's own loop."""
+        """{"holes", "partial", "vanished", "dups", "undrawn", "residual"} for
+        the consumer's own loop (module doc)."""
         order = [r["uuid"] for r in self.rows]
         if consumer.reached_first:
             start = 0
@@ -597,10 +646,13 @@ class Inventory:
             start = next((i for i, u in enumerate(order) if u in consumer.ever), len(order))
         holes = [u for u in order[start:] if u not in consumer.ever]
         mine = {k: v for k, v in self.blocks.items() if k[1] == consumer.agent}
-        partial, vanished = [], []
+        partial, vanished, undrawn, residual = [], [], [], []
         for key, b in mine.items():
             spans = consumer.drawn_spans.get(key)
             held = consumer.held_spans.get(b["uuid"], []) if b["uuid"] else []
+            landed = consumer.live_rows.get(b["uuid"]) if b["uuid"] else None
+            if landed is not None and not any(lo < landed for lo, _ in spans or ()):
+                (undrawn if key[:3] in consumer.followed else residual).append(ref(key))
             if spans and held and spans_overlap(spans, held):
                 partial.append({**ref(key), "text": b["text"]})
             if key in consumer.vanished:
@@ -610,7 +662,8 @@ class Inventory:
                 if not spans_overlap([[at, at]], held):
                     vanished.append(ref(key))
         dups = list(consumer.dup_rows) + [ref(k) for k in consumer.redrawn if k[1] == consumer.agent]
-        return {"holes": holes, "partial": partial, "vanished": vanished, "dups": dups}
+        return {"holes": holes, "partial": partial, "vanished": vanished, "dups": dups, "undrawn": undrawn,
+                "residual": residual}
 
 
 def blocks_of(events):
