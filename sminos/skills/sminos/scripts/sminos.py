@@ -8500,6 +8500,8 @@ def guide_text(session, launch, source="", title=""):
         "  %s who <commit|PR> the session a commit or PR names in its Sminos-Session line, and how to reach it" % cli,
         '  %s say "@<short> ..."   reaches that session wherever it runs, as does "@<project>/<alias> ...";'
         " a bare @alias reaches only your project" % cli,
+        '  %s say --org|--project P|--machine M|--here "..."   wakes every live session list shows with the'
+        " same flags (they combine) but you" % cli,
     ] + join + [
         '  %s charge "<line>" what you are in charge of, shown beside you in every list' % cli,
     ])
