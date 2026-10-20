@@ -42,7 +42,7 @@ before it is built (Decision Log).
 - [ ] M1 — The open line stamped at arrival; the reference consumer and the inventory; the fixtures
 - [ ] M2 — The instruments: `bench_open.py` (micro and full path), `bench_scale.py opens`
 - [ ] M3 — The web keeps a carried block across a reconnect (MAWS)
-- [ ] M4 — The hub's reply chain decoupled (MAWS)
+- [x] M4 — The hub's reply chain decoupled (MAWS) (2026-10-20, reviewed clean; MAWS `desk-open-fast-hub` fba324cc4..beb065470, master merged at ef190e5e2)
 - [ ] M5 — The snapshot goes at once; a notice's row is due at its step's end
 - [ ] M6 — The uplink's sender lanes, with connection reuse proven
 - [ ] M7 — The build saved and warmed, bounded; the look off the open path
@@ -1783,9 +1783,16 @@ beside; a single reviewer reads one of those well in a pass.
   an `events` frame, and a bad `hello` or `events` list's refusal, go on
   `replies` and are owed; a `not-open` refusal of a session-plane frame and
   `relay`'s `unsubscribe` for a sub with no route go on `control`, unowed.
-  The write bound's clock starts when `write` is called, so it covers the
-  wait behind writes queued on the stream's writer (each lane pages about
-  1 MiB at a time; 10 s is a 200 KB/s floor); heartbeats are bounded too.
+  The write bound is the head frame's wait for the reader, not its wait in
+  the queue: `Machine.write` queues every write to a stream behind the one
+  before it, whichever project or lane sent it, and `Machine.take` starts
+  `WRITE_TIMEOUT_MS` when the frame reaches the head (reversed on review the
+  same day: the first build started the clock at `write`, and since the
+  queues are per project, thirteen projects' backlog pages queued together
+  ended a healthy, draining stream `write-stalled`; a paced-reader test with
+  twelve projects pins it). Bounding the aggregate in-flight writes across
+  projects was rejected (a count shared between Project objects, and still a
+  bound tied to queue depth). Heartbeats are bounded too.
   Part (b) of the test lives in `machine-end.test.ts` (the Node suites are
   typed apart from the Worker's); part (c) stalls the `have` write through a
   seam (`WRITE_STALL_PATH` over a new protected `Machine.put`, `Timing`
