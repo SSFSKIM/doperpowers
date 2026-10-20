@@ -186,7 +186,8 @@ SMINOS_HOME unless it names another machine or the real HOME.
   output style asks through the native AskUserQuestion (the style's own fallback sentence) rather
   than failing on the tool the style names.
 - **A5 — The bridge knows its place among the guards, per module instance.** In the rehearsal's HOME
-  with `devcloud` and `sminos` enabled, if M3a promoted the probe: (a) no `prependPlugins`: after the
+  with `devcloud` and `sminos` enabled, if M3a promoted the probe: (a) no `prependPlugins`, with sminos registered inside devcloud (devcloud ahead of it in
+  `enabledPlugins`): after the
   session's first tool call the debug log carries a line opening `sminos: the bridge is off` naming
   `prependPlugins` (an interactive session shows it as a toast too), no `tool` event was posted
   before it (the hold is a barrier, §4), and `$SMINOS_HOME/bridge/<session>.sock` serves nothing after it;
@@ -1485,6 +1486,16 @@ machine; MAWS `origin/master` at or after M2's merge, deployed, for A2's desk ha
   forward line is written to `daemon.out` (stderr), not `daemon.log`.
   Evidence: the author's M4 account, 2026-10-20.
 
+- Observation (M5): without `prependPlugins`, where sminos lands relative to devcloud follows the
+  order of `enabledPlugins` (install order), not the absence of the setting alone. With sminos
+  installed first, the engine registered doperpowers, to-human, sminos, devcloud, which puts sminos
+  outside devcloud; the bridge rightly stayed on and posted payloads. With devcloud first, sminos
+  registered innermost and went off as A5 (a) says. The probe judges the real order either way; M3.3's
+  unplaced HOME happened to have sminos installed last, by the roll. A5 (a) now names the condition.
+  The roll to the M5 head reloaded only sminos and doperpowers (to-human and devcloud were at their
+  clones' versions), and the open ask, the socket and the fold carried across.
+  Evidence: M5's report, Discoveries 1–2 (`/tmp/m5-rehearsal/logs/a5u1.*`, `a5u3.*`).
+
 ## Decision Log
 
 - Decision: verification — one independent spec review by the `doperpowers:adversarial-reviewer`
@@ -1806,6 +1817,55 @@ machine; MAWS `origin/master` at or after M2's merge, deployed, for A2's desk ha
   removal meets a live HOME before the owner's machines.
   Date/Author: 2026-10-20, the plan's executor.
 
+- Decision (M5): `keptBefore` stays, reading only sminos's own shape-2 value at
+  `{ plugin: 'sminos', key: 'ask' }`; M5 removed its shape-1 branch and `KEPT_BEFORE`.
+  Rationale: the own-key read is the reload takeover (a `/reload-plugins` or the autoreload keeps the
+  asks), which is the hook's other behavior and must stay; only the takeover from `doperpowers.ask`
+  was transition scaffolding.
+  Date/Author: 2026-10-20, M5's executor.
+- Decision (M5): A3 ran against a transcript recorded at M1 (`359c71a6`), the last state that
+  registered the old name; the repository's live check records its own transcript, so a subclass in
+  the rehearsal's tree ran its checks against the recording, keyless.
+  Rationale: origin/main registers the new name, so no session there can record an old-name call, and
+  no M3.3 transcript held an old-name ask answered under the old framing.
+  Date/Author: 2026-10-20, M5's executor.
+- Decision (M5): A5 (a)'s wording names its real condition, sminos registered inside devcloud
+  (devcloud ahead of it in `enabledPlugins`), rather than the absence of `prependPlugins` alone.
+  Rationale: the M5 observation above; the probe was right in both orders, the criterion's premise
+  was not.
+  Date/Author: 2026-10-20, the plan's executor.
+
 ## Outcomes & Retrospective
 
-Pending — written at finish.
+**What was achieved.** The purpose holds as written. `sminos@doperpowers` is a plugin of its own
+(1.1.1 at M5), carrying the CLI, the daemon and uplink, the bridge, the async ask and the record and
+guide hooks; doperpowers no longer carries any of them, and the ask tool is
+`mcp__sminos__AskUserQuestion`. Both Macs rolled to it without `--force` (M4), their daemons run from
+the plugin's own path, and asks opened under the old name before the roll were answered after it.
+M5's rehearsal re-proved the rest at the cleanup head: A1's order, A2's round trip and blocking
+dialog, A3's resume and `/branch` copy of an old-name transcript, A4 (sminos alone and doperpowers
+alone, run for the first time), A5 (a)–(f), A6, A8's unattended roll and A9's grep. MAWS's desk reads
+both names (M2). What stays for good: the readers of both names (§3), which a transcript from before
+the rename needs.
+
+**What went differently from the plan.**
+- M3 was split into three steps (carve-out, probe, rehearsal) once its size was clear; each was
+  task-reviewed on its own, and the xhigh panel then reviewed the whole.
+- The `next.trace` probe was promoted with its verdict evaluated on every dispatch, and `off` became
+  recoverable on positive evidence (the author's ruling) rather than terminal; it took three fix waves
+  to settle what "positive evidence" and a stale dispatch are.
+- The reload mod grew past "act on a version difference": it installs a missing dependency whoever
+  applied the update, holds back a failed dependency's closure, and judges the hold on the tick that
+  would fire. M1's reviews found each of those as a way an unattended roll could strand a machine.
+- A5's criteria were worded to the paths observed (f, and in M5 a) rather than the ones first
+  imagined; in both cases the code was right and the criterion's premise was not.
+
+**Lessons.**
+- An unattended roll is only as safe as its worst intermediate state: a reload that lands between the
+  marketplace's update and a dependency's install loads a plugin with a hole in it. Judging readiness
+  on what the reload would load, at the moment it fires, was the fix that made the roll trustworthy.
+- Hook placement is decided by the engine from settings, tiers and install order together; a probe
+  that reads the live order (`next.trace`) beat any reasoning about what the order should be, and the
+  acceptance had to be written against the order observed.
+- Keeping the readers of both names permanently, and removing only the writers' scaffolding at the
+  end, let every step ship alone and every machine roll at its own time.
