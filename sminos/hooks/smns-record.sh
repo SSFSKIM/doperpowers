@@ -22,9 +22,11 @@ IFS= read -r -d '' input
 # is where the shell is now, and a session's project is its launch
 # directory's, so the engine's project directory ($CLAUDE_PROJECT_DIR) is
 # looked at too: either admits. On a machine enrolled at a desk hub every
-# directory is a project (a directory nothing claims is in the machine's
-# own), so the enrollment's file admits them all; it is only looked for,
-# never read. So does the session's join override (`sminos join`), which
+# directory is a project (a repository no .smns claims is its remote's
+# project, and a directory neither claims is in the machine's own), so the
+# enrollment's file admits them all; it is only looked for, never read,
+# and which project is `record`'s to decide. So does the session's join
+# override (`sminos join`), which
 # puts a session launched in no repository into a project.
 home=${SMINOS_HOME:-${DAEMON_HOME:-$HOME/.claude/sminos}}
 enrolled=$home/daemon/hub.json

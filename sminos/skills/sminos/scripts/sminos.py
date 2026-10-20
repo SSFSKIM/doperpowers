@@ -2,7 +2,8 @@
 """sminos — one fleet registry for Claude Code sessions.
 
 The unit is the PROJECT (a committed .smns; else, on a machine enrolled at a
-desk hub, the machine's own project; else the owning repository) and
+desk hub, the project the repository's remote derives, else the machine's own
+project; else the owning repository) and
 its family: every session working under it is a MEMBER, with no join step and
 no host — the human is the host. A SEAT is a named position, with a role and a
 brief, that a session sminos spawned fills; it outlives the process that fills
@@ -63,7 +64,8 @@ member too, seat-less, from the first call that reads its project.
                    endpoint at $SMINOS_HOME/bridge/<id>.sock (not for a person to run)
     sminos project  init [--name N] [--remote URL] [--hub] | show [DIR] | attach [DIR]
                    # --hub: the project syncs through the desk hub of this machine's org, never git;
-                   .smns names the org alone, each machine's enrollment the hub's URL
+                   .smns names the org alone, each machine's enrollment the hub's URL; in a repository
+                   that resolves by its remote it pins that project's id. show: its source, or why none
     sminos daemon   run [--interval 5] | tick | install | status   # mirror sync and delivery, per machine
     sminos daemon   policy [--read-only on|off] [--ceiling MODE|settings]   # the owner's setting: what this
                    machine admits from outside. Read-only records what is written elsewhere and delivers
@@ -133,9 +135,9 @@ State lives under $SMINOS_HOME (default ~/.claude/sminos; $DAEMON_HOME is the
 older name of the same root and is honored). Records are <seat-id>.json at the
 root — seat id = the first session's uuid — and the board pipeline reads and
 writes them directly under the shared flock file .metalock. A project (a
-committed .smns; else, on an enrolled machine, the machine's own project; else
-the owning git repository) keeps its append-only event
-log, one file per writer, at projects/<id>/log/, with each reader's cursor and
+committed .smns; else, on an enrolled machine, the repository's remote's
+project, else the machine's own; else the owning git repository) keeps its
+append-only event log, one file per writer, at projects/<id>/log/, with each reader's cursor and
 each recipient's delivery record beside it. Names are [A-Za-z0-9._-]{1,64};
 `human` is the reserved operator identity.
 
@@ -542,9 +544,9 @@ def find_seat(q, scope=None):
 
 
 class Project(NamedTuple):
-    id: str          # uuid from .smns, or "local-<name>"
+    id: str          # uuid from .smns, one derived from a remote or a machine, or "local-<name>"
     name: str
-    remote: str      # "" for a local project
+    remote: str      # the log's git archive, "" for none (never the repository's remote)
     root: str        # directory holding .smns, or the owning repository
     home: str        # $SMINOS_HOME/projects/<id>
     hub: Optional[dict] = None  # .smns's {url, org}: synced through the desk hub, never through git
@@ -586,6 +588,8 @@ _PROJECTS = {}
 _SEAT_PROJECTS = {}  # (session, recorded cwd) → a seat's project, per cache generation (seat_project)
 _RECORD_PROJECTS = {}  # (session, record's cwd) → its project, per cache generation (record_project)
 _REPO_BRANCH = {}    # cwd → (repository, branch), per cache generation (repo_branch)
+_REPO_REMOTE = {}    # common git dir → its Derivation, per cache generation (derivation)
+_DERIVED = {}        # remote-derived project id → its remote key, as derived in this process (repo_project)
 _HOMES = set()
 _VIEWS = {}  # project id → View, per invocation; a lifecycle append drops it
 
@@ -599,15 +603,15 @@ def safe_name(name):
     return name if valid_name(name) else ""
 
 
-def _owning_repo_fs(d):
-    """owning_repo read off the filesystem, no process: the nearest `.git`
-    upward — a directory names its checkout; a file (a linked worktree)
-    points at its gitdir, whose `commondir` leads to the main checkout's.
+def _common_git_dir_fs(d):
+    """common_git_dir read off the filesystem, no process: the nearest `.git`
+    upward — a directory is it; a file (a linked worktree) points at its
+    gitdir, whose `commondir` leads to the main checkout's. "" outside git;
     None when the layout is not one of those, for the caller to ask git."""
     while True:
         dot = os.path.join(d, ".git")
         if os.path.isdir(dot):
-            return d
+            return dot
         if os.path.isfile(dot):
             try:
                 with open(dot) as f:
@@ -624,28 +628,28 @@ def _owning_repo_fs(d):
                 common = gitdir
             except OSError:
                 return None
-            return os.path.dirname(os.path.abspath(common))
+            return os.path.abspath(common)
         parent = os.path.dirname(d)
         if parent == d:
             return ""
         d = parent
 
 
-def owning_repo(cwd):
-    """The owning repository of a directory — for a linked worktree, the main
-    checkout, through the common git dir — asked of its nearest existing
-    ancestor, so a removed worktree still resolves. "" outside git. Read off
-    the filesystem when it can be: every reading verb resolves the cwd of
-    every seat and live session, and a process per directory adds up."""
+def common_git_dir(cwd):
+    """The common git dir of a directory's checkout — for a linked worktree,
+    the main checkout's — asked of its nearest existing ancestor, so a
+    removed worktree still resolves. "" outside git. Read off the filesystem
+    when it can be: every reading verb resolves the cwd of every seat and
+    live session, and a process per directory adds up."""
     d = os.path.abspath(cwd)
     while not os.path.isdir(d):
         parent = os.path.dirname(d)
         if parent == d:
             return ""
         d = parent
-    repo = _owning_repo_fs(d)
-    if repo is not None:
-        return repo
+    common = _common_git_dir_fs(d)
+    if common is not None:
+        return common
     try:
         p = subprocess.run(["git", "-C", d, "rev-parse", "--git-common-dir"],
                            capture_output=True, text=True, timeout=10)
@@ -654,9 +658,14 @@ def owning_repo(cwd):
     common = p.stdout.strip() if p.returncode == 0 else ""
     if not common:
         return ""
-    if not os.path.isabs(common):
-        common = os.path.join(d, common)
-    return os.path.dirname(os.path.abspath(common))
+    return os.path.abspath(common if os.path.isabs(common) else os.path.join(d, common))
+
+
+def owning_repo(cwd):
+    """The owning repository of a directory — for a linked worktree, the main
+    checkout — the directory holding its common git dir. "" outside git."""
+    common = common_git_dir(cwd)
+    return os.path.dirname(common) if common else ""
 
 
 def make_project(pid, name, remote, root_dir, hub=None):
@@ -903,10 +912,304 @@ def smns_at(cwd):
     return (repo, smns) if smns else None
 
 
+# ------------------------------------------- a repository's project, by its remote
+#
+# On an enrolled machine a repository no .smns claims is a hub project by its
+# remote: its id a function of the org and the remote's normalized form (its
+# remote key), so the same repository on any machine, in any clone or
+# worktree, is one project with nothing committed. The remote is `origin`,
+# else the only one; several and none named origin, none at all, or a local
+# path derive nothing, and the session is a stray in the machine project. Read
+# from the common git dir's config, no process. A .smns still wins: it is how
+# a project is declared rather than inferred.
+# Design: docs/doperpowers/specs/2026-10-19-smns-remote-identity-design.md §1–§4.
+
+REMOTE_SCHEMES = {"ssh": 22, "git+ssh": 22, "ssh+git": 22, "git": 9418, "http": 80, "https": 443}  # their default ports
+WARNED_REMOTE = "warned-remote"   # in a project's home: its root's remote changed under it, was said
+REMOTE_FILE = "remote.json"       # in a remote-derived project's home: {"key"}, the remote key its id derives from
+_URL_RE = re.compile(r"([A-Za-z][A-Za-z0-9+.-]*)://([^/]*)(/.*)?", re.S)
+_HELPER_RE = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*::")   # git's `<transport>::<address>`
+_AUTHORITY_RE = re.compile(r"(\[[^\]/]+\]|[^\[\]:/]*)(?::([0-9]*))?")
+_SCP_RE = re.compile(r"(?:[^@/]*@)?(\[[^\]/]+\]|[^\[\]:/@]+):(.*)", re.S)
+_GIT_SECTION_RE = re.compile(r'\[([A-Za-z0-9.-]+)(?:\s+"((?:[^"\\\n]|\\[^\n])*)")?\]')
+_GIT_KEY_RE = re.compile(r"[A-Za-z][A-Za-z0-9-]*")
+_GIT_ESCAPES = {"t": "\t", "b": "\b", "n": "\n", "\\": "\\", '"': '"'}
+
+
+def _git_value(s, i):
+    """A git config value from s[i] to its line's end, read as git's
+    parse_value reads it — blanks around it dropped and each blank inside one
+    space, quotes, escapes, `#`/`;` comments, a trailing `\\` continuing it
+    on the next line — and where the next line starts; None for one git
+    refuses."""
+    out, quote, comment, space, n = "", False, False, 0, len(s)
+    while i < n:
+        c = s[i]
+        i += 1
+        if c == "\n":
+            return (None if quote else out), i
+        if comment:
+            continue
+        if c in " \t\r\v\f" and not quote:
+            space += 1 if out else 0
+            continue
+        if c in ";#" and not quote:
+            comment = True
+            continue
+        out, space = out + " " * space, 0
+        if c == "\\":
+            c = _GIT_ESCAPES.get(s[i]) if i < n and s[i] != "\n" else ("" if i < n else None)
+            i += 1
+            if c is None:
+                return None, i
+        elif c == '"':
+            quote = not quote
+            continue
+        out += c
+    return (None if quote else out), i
+
+
+def git_config_remotes(text):
+    """{remote name: its first `url`, "" for none} of a git config file's
+    text, in the order it names them, read as git's config parser reads it:
+    section names case-blind, subsections not, the deprecated
+    `[remote.name]` form, quoted and escaped values, comments, continued
+    lines. `include` and `includeIf` are not followed. None for a text git
+    itself would refuse."""
+    s = text.replace("\r\n", "\n")
+    out, section, sub, i, n = {}, "", None, 0, len(s)
+    while i < n:
+        c = s[i]
+        if c.isspace():
+            i += 1
+        elif c in "#;":
+            j = s.find("\n", i)
+            i = n if j < 0 else j + 1
+        elif c == "[":
+            m = _GIT_SECTION_RE.match(s, i)
+            if not m:
+                return None
+            section, sub = m.group(1).lower(), m.group(2)
+            if sub is not None:
+                sub = re.sub(r"\\(.)", r"\1", sub)
+            elif "." in section:
+                section, _, sub = section.partition(".")
+            i = m.end()
+        else:
+            m = _GIT_KEY_RE.match(s, i)
+            if not m:
+                return None
+            key, i = m.group(0).lower(), m.end()
+            while i < n and s[i] in " \t":
+                i += 1
+            value = None
+            if i < n and s[i] == "=":
+                value, i = _git_value(s, i + 1)
+                if value is None:
+                    return None
+            elif i < n and s[i] != "\n":
+                return None
+            if section == "remote" and sub:
+                out.setdefault(sub, None)
+                if key == "url" and out[sub] is None:
+                    out[sub] = value or ""
+    return {k: v or "" for k, v in out.items()}
+
+
+def parse_remote(url):
+    """(host[:port], path, "") of a remote URL in one of git's two network
+    forms — `scheme://[user[:pass]@]host[:port]/path` for ssh, git and
+    http(s), and the scp-like `[user@]host:path` — the userinfo dropped, the
+    host lower-cased, a port kept only when it is not the scheme's default,
+    the path with repeated `/` collapsed and its leading and trailing `/` and
+    one trailing `.git` dropped, its case as written. Else ("", "", why): a
+    local path (git's own rule: no colon, or a `/` before the first),
+    `file://`, a transport helper's address, any other scheme, an empty host
+    or path. The why never quotes the URL, which may carry a credential."""
+    url = (url or "").strip()
+    if not url:
+        return "", "", "names no url"
+    m = _URL_RE.fullmatch(url)
+    if m:
+        scheme = m.group(1).lower()
+        if scheme == "file":
+            return "", "", "is a local path, which names nothing another machine can agree on"
+        hp = _AUTHORITY_RE.fullmatch(m.group(2).rpartition("@")[2]) if scheme in REMOTE_SCHEMES else None
+        if not hp or not hp.group(1):
+            return "", "", "has a url that is neither scheme://host/path (ssh, git, http, https) nor host:path"
+        host, port = hp.group(1).lower(), hp.group(2)
+        if port and int(port) != REMOTE_SCHEMES[scheme]:
+            host += ":%d" % int(port)
+        path = m.group(3) or ""
+    elif _HELPER_RE.match(url):
+        return "", "", "has a url that is neither scheme://host/path (ssh, git, http, https) nor host:path"
+    else:
+        colon, slash = url.find(":"), url.find("/")
+        if colon < 0 or 0 <= slash < colon:
+            return "", "", "is a local path, which names nothing another machine can agree on"
+        s = _SCP_RE.fullmatch(url)
+        if not s:
+            return "", "", "has a url that is neither scheme://host/path (ssh, git, http, https) nor host:path"
+        host, path = s.group(1).lower(), s.group(2)
+    path = re.sub(r"/{2,}", "/", path).strip("/")
+    if path[-4:].lower() == ".git":
+        path = path[:-4].rstrip("/")
+    return (host, path, "") if path else ("", "", "has a url that names no repository path")
+
+
+def remote_key(url):
+    """The remote key of a remote URL — `host[:port]/path`, the path
+    lower-cased as GitHub, GitLab, Bitbucket and Gitea compare it, so
+    `git@github.com:SSFSKIM/MAWS.git` and `https://github.com/ssfskim/maws`
+    are one key — or "" for a URL that derives no project (parse_remote)."""
+    host, path, _ = parse_remote(url)
+    return "%s/%s" % (host, path.lower()) if host else ""
+
+
+def remote_name(url):
+    """The name a remote gives its project: the last segment of its path as
+    written (`MAWS`, `ci-kit`), through safe_name; "" for a URL that
+    derives no project."""
+    host, path, _ = parse_remote(url)
+    return (safe_name(path.rsplit("/", 1)[-1]) or "repo") if host else ""
+
+
+def repo_project_id(org, key):
+    """The id of the project a remote key derives in an org: a UUID v5 of
+    both, the machine project's construction under another prefix
+    (tests/remote-key.json pins it). The org is in it, so a repository is a
+    project per org, as a machine is."""
+    return str(uuidlib.uuid5(uuidlib.NAMESPACE_URL, "smns-repo:%s:%s" % (org, key)))
+
+
+class Derivation(NamedTuple):
+    repo: str     # the owning repository's main checkout, "" outside git
+    remote: str   # the remote the project derives from, "" when none does
+    key: str      # its remote key, "" when the repository derives no project
+    name: str     # the project's name, as the remote writes it
+    why: str      # why the repository derives no project, as `project show` says it
+
+
+def derivation(cwd, fresh=False):
+    """How a directory's repository derives a project from its remote: the
+    remote `origin`, else the only one, its first `url` (`pushurl` and
+    `insteadOf` aside), read from the common git dir's config, so a linked
+    worktree reads its main checkout's. Kept per repository for the cache
+    generation; `fresh` reads the config as it is now."""
+    common = common_git_dir(os.path.abspath(os.path.expanduser(cwd or ".")))
+    if not common:
+        return Derivation("", "", "", "", "no git repository")
+    if fresh or common not in _REPO_REMOTE:
+        _REPO_REMOTE[common] = _derive(os.path.dirname(common), common)
+    return _REPO_REMOTE[common]
+
+
+def _derive(repo, common):
+    try:
+        with open(os.path.join(common, "config"), encoding="utf-8-sig", errors="replace") as f:
+            remotes = git_config_remotes(f.read())
+    except FileNotFoundError:
+        remotes = {}
+    except OSError:
+        remotes = None
+    if remotes is None:
+        return Derivation(repo, "", "", "", "its git config is not one git reads")
+    if not remotes:
+        return Derivation(repo, "", "", "", "the repository has no remote — add one, or `sminos project init --hub`")
+    if "origin" not in remotes and len(remotes) > 1:
+        return Derivation(repo, "", "", "", "remotes %s, none named origin — name one origin, or `sminos project init --hub`"
+                          % ", ".join("`%s`" % r for r in remotes))
+    remote = "origin" if "origin" in remotes else next(iter(remotes))
+    host, path, why = parse_remote(remotes[remote])
+    if not host:
+        return Derivation(repo, remote, "", "", "remote `%s` %s — `sminos project init --hub` declares a project"
+                          % (remote, why))
+    return Derivation(repo, remote, "%s/%s" % (host, path.lower()), safe_name(path.rsplit("/", 1)[-1]) or "repo", "")
+
+
+def repo_project(cwd, fresh=False):
+    """On an enrolled machine, the hub project a directory's repository
+    derives from its remote (derivation), rooted at the main checkout and
+    synced through the enrollment's hub. Its name is the one its id already
+    has — the org directory's (the hub keeps the name of the first hello
+    that registered it), else this machine's registration — and only for a
+    project new to both the remote's own spelling: two clones that spell one
+    remote differently (`SSFSKIM/MAWS`, `ssfskim/maws`) are one project
+    under one name. None on a machine not enrolled, or for a repository that
+    derives none."""
+    e = enrollment()
+    if e is None:
+        return None
+    d = derivation(cwd, fresh)
+    if not d.key:
+        return None
+    pid = repo_project_id(e["org"], d.key)
+    _DERIVED[pid] = d.key
+    held = registration(pid)
+    name = str((org_entry(pid) or {}).get("name") or held.get("name") or d.name)
+    project = make_project(pid, name, "", d.repo, {"url": e["url"], "org": e["org"]})
+    if not held.get("root"):
+        remote_moved(project, d.key)
+    return project
+
+
+def derived_key(pid):
+    """The remote key a project registered here was derived from (its
+    REMOTE_FILE), or ""."""
+    try:
+        with open(os.path.join(projects_root(), pid, REMOTE_FILE)) as f:
+            key = json.load(f).get("key")
+    except (OSError, ValueError, AttributeError):
+        return ""
+    return key if isinstance(key, str) else ""
+
+
+def remote_moved(project, key):
+    """Say once per project (stderr from the verb that sees it, a daemon.log
+    line; WARNED_REMOTE in its home) that a remote-derived project registered
+    at `project`'s root is that repository's project no more: the remote's
+    key changed under it (`git remote set-url`, a clone renamed), so its
+    sessions there move to `project`. Looked for by repo_project only while
+    `project` has no checkout registered here, the first sight of the new
+    key: once it has one, the old project was said already, or never stood
+    at a root here."""
+    for path in sorted(glob.glob(os.path.join(projects_root(), "*", "project.json"))):
+        pid = os.path.basename(os.path.dirname(path))
+        held = registration(pid) if pid != project.id else {}
+        if str(held.get("root") or "") != project.root:
+            continue
+        old = derived_key(pid)
+        if not old or old == key or said_once(pid, WARNED_REMOTE):
+            continue
+        line = ("project %s (%s): the remote of %s is now %s, not %s, so its sessions there move to project %s (%s); "
+                "a .smns pins a project against its remote: `sminos project init --hub`, run before a remote changes"
+                % (held.get("name") or pid, pid, project.root, key, old, project.name, project.id))
+        warn(line)
+        try:
+            daemon_log(line)
+        except OSError:
+            pass
+
+
+def project_source(cwd):
+    """Where resolve_project finds a directory's project, as `project show`
+    says it: `.smns at <dir>`, `remote <name> → <key>`, the machine project
+    and why no remote derives one, or a machine not enrolled's local project."""
+    cwd = os.path.abspath(os.path.expanduser(cwd or "."))
+    found = smns_at(cwd)
+    if found:
+        return ".smns at %s" % found[0]
+    d = derivation(cwd)
+    if enrollment() is None:
+        return "the repository at %s, a local project: this machine is not enrolled" % d.repo if d.repo else "-"
+    return "remote %s → %s" % (d.remote, d.key) if d.key else "machine project: %s" % d.why
+
+
 def resolve_project(cwd, fresh=False):
     """The project of a directory: the first .smns walking up (a linked
     worktree without one, its main checkout's); else, on an enrolled
-    machine, the machine's own project; else the local project of the owning
+    machine, the project its repository's remote derives (repo_project),
+    else the machine's own project; else the local project of the owning
     git repository; else None (no project). Kept for the cache generation;
     `fresh` reads the directory as it is now."""
     cwd = os.path.abspath(os.path.expanduser(cwd or "."))
@@ -918,7 +1221,7 @@ def resolve_project(cwd, fresh=False):
         d, (pid, name, remote, hub) = found
         project = make_project(pid, name, remote, d, hub_here(pid, name, hub))
     else:
-        project = own_machine_project()
+        project = repo_project(cwd, fresh) or own_machine_project()
         if project is None:
             repo = owning_repo(cwd)
             if repo:
@@ -984,6 +1287,19 @@ def write_json(path, data, mode=0o600):
             os.unlink(tmp)
 
 
+def kept_root(project, held):
+    """The root project_path registers a rooted project at, given the
+    registration `held`: its registered root when that differs from the
+    project's own and, as the directories are now, still resolves to this
+    very project (another clone of the repository, another checkout of the
+    .smns, its name and hub the same); else the project's own."""
+    root = str(held.get("root") or "") if isinstance(held, dict) else ""
+    if not project.root or not root or root == project.root or not os.path.isdir(root):
+        return project.root
+    there = resolve_project(root)
+    return root if there is not None and there._replace(root=project.root) == project else project.root
+
+
 def project_path(project, *parts):
     """A path under the project's home; the first use creates the home and
     records project.json (the .smns as last resolved, plus its root) — the
@@ -993,12 +1309,13 @@ def project_path(project, *parts):
     checkout whose .smns names none (a worktree from before the conversion)
     does not take it back to git. A registration to change is read, checked
     and written under project.json.lock (a leaf: nothing is taken while it is
-    held), so a conversion registering meanwhile is never written over."""
+    held), so a conversion registering meanwhile is never written over. A
+    second checkout of a project here (another clone of its repository)
+    leaves the registered root standing while that root is still the
+    project's (kept_root). A remote-derived project's home records the key
+    its id derives from (REMOTE_FILE), for remote_moved."""
     if project.id not in _HOMES:
         os.makedirs(os.path.join(project.home, "log"), mode=0o700, exist_ok=True)
-        info = {"project": project.id, "name": project.name, "remote": project.remote, "root": project.root}
-        if project.hub is not None:
-            info["hub"] = project.hub
         path = os.path.join(project.home, "project.json")
 
         def held_now():
@@ -1008,9 +1325,18 @@ def project_path(project, *parts):
             except (OSError, ValueError):
                 return None
 
-        if held_now() != info:
+        def info_for(held):
+            info = {"project": project.id, "name": project.name, "remote": project.remote,
+                    "root": kept_root(project, held)}
+            if project.hub is not None:
+                info["hub"] = project.hub
+            return info
+
+        held = held_now()
+        if held != info_for(held):
             with flocked(path + ".lock"):
                 held = held_now()
+                info = info_for(held)
                 hub_elsewhere = project.hub is None and isinstance(held, dict) and held.get("hub") is not None \
                     and str(held.get("root") or "") != project.root \
                     and names_hub(str(held.get("root") or ""), project.id)
@@ -1020,6 +1346,9 @@ def project_path(project, *parts):
                 root_kept = not project.root and isinstance(held, dict) and bool(held.get("root"))
                 if held != info and not hub_elsewhere and not root_kept:
                     write_json(path, info)
+        key = _DERIVED.get(project.id)
+        if key and derived_key(project.id) != key:
+            write_json(os.path.join(project.home, REMOTE_FILE), {"key": key})
         _HOMES.add(project.id)
     path = os.path.join(project.home, *parts)
     os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
@@ -4487,15 +4816,18 @@ def cmd_project(a):
             kind, hub = "hub (not enrolled)", "org %s — not synced here: this machine is not enrolled in it" % p.hub["org"]
         else:
             hub = "%s (org %s)" % (p.hub["url"], p.hub["org"]) if p.hub is not None else "-"
-        print("project  %s\nid       %s\nkind     %s\nremote   %s\nhub      %s\nroot     %s\nhome     %s" % (
-            p.name, p.id, kind, p.remote or "-", hub, p.root or "-", p.home))
+        print("project  %s\nid       %s\nkind     %s\nsource   %s\nremote   %s\nhub      %s\nroot     %s\nhome     %s" % (
+            p.name, p.id, kind, project_source(d), p.remote or "-", hub, p.root or "-", p.home))
     else:
         project_attach(a)
 
 
 def project_init(a):
     """Write .smns at the repository's root; with --hub, name this machine's
-    hub in it — added to a .smns that exists, which changes nothing else."""
+    hub in it — added to a .smns that exists, which changes nothing else. A
+    hub .smns for a repository that resolves by its remote pins the project
+    it is now (its derived id, and its name unless --name gives one), so
+    committing the file moves no session and splits no history."""
     top = git_toplevel(os.getcwd())
     if not top:
         die("project init needs a git repository: .smns is committed at its root")
@@ -4510,10 +4842,11 @@ def project_init(a):
             return
         die("%s is already project %s (%s)" % (top, smns[1], smns[0]) if smns else
             "%s exists but is unreadable — fix or remove it first" % path)
-    name = a.name or safe_name(os.path.basename(owning_repo(top) or top)) or "project"
+    pinned = repo_project(top, fresh=True) if hub and smns_at(top) is None else None
+    name = a.name or (pinned.name if pinned else safe_name(os.path.basename(owning_repo(top) or top)) or "project")
     if "/" in name or "\n" in name or not name.strip():
         die("a project name is one line without '/': %r" % name)
-    data = {"project": str(uuidlib.uuid4()), "name": name, "remote": a.remote or ""}
+    data = {"project": pinned.id if pinned else str(uuidlib.uuid4()), "name": name, "remote": a.remote or ""}
     if hub:
         data["hub"] = {"org": hub["org"]}  # the URL is each machine's enrollment's (hub_here)
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
@@ -4521,10 +4854,11 @@ def project_init(a):
         json.dump(data, f, indent=2)
         f.write("\n")
     os.chmod(path, 0o644)  # committed: every clone reads it
-    _PROJECTS.clear()
+    forget_caches()
     project_path(resolve_project(top), "log")
-    print("project %s (%s) at %s%s — commit it, so every clone is the same project" % (
-        name, data["project"], path, ", a hub project of org %s (through %s here)" % (hub["org"], hub["url"]) if hub else ""))
+    print("project %s (%s) at %s%s%s — commit it, so every clone is the same project" % (
+        name, data["project"], path, ", a hub project of org %s (through %s here)" % (hub["org"], hub["url"]) if hub else "",
+        ", pinning the id its remote %s gave it" % derivation(top).key if pinned else ""))
 
 
 def project_attach(a):
@@ -4802,6 +5136,7 @@ def forget_caches():
     _SEAT_PROJECTS.clear()
     _RECORD_PROJECTS.clear()
     _REPO_BRANCH.clear()
+    _REPO_REMOTE.clear()
     _HOMES.clear()
     _VIEWS.clear()
     _ENROLLED.clear()
@@ -8012,7 +8347,11 @@ def guide_text(session, launch, source="", title=""):
         where = ("by your own `sminos join` (your launch directory, %s, is in %s; `%s join --cwd` returns you there)"
                  % (launch, home.name, cli))
     elif project_kind(project) == "machine":
-        where = "this machine's own project, since no .smns claims your launch directory, %s" % launch
+        where = "this machine's own project, since no .smns or repository remote claims your launch directory, %s" \
+            % launch
+    elif smns_at(launch) is None and derivation(launch).key:
+        where = "the project of your repository's remote, %s (your launch directory, %s)" % (
+            derivation(launch).key, launch)
     else:
         where = "the project of your launch directory, %s" % launch
     join = [] if seat else ["  %s join <project>  when your directory files you in the wrong project (a scratch copy)"

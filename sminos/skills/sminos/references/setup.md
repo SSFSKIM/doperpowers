@@ -20,11 +20,33 @@ Commit `.smns`: a collaborator's clone, and every worktree, then lands in
 the same project, and several repositories carrying one id are one
 project; a linked worktree checked out at a head without the file reads
 its main checkout's. Live sessions whose directory the new file claims
-move into the project within one daemon tick. On a machine enrolled at
-the desk hub, a directory no `.smns` claims is in the machine's own
-project (named after the machine); elsewhere a repository without one is
-a local project named after itself, and `spawn --cwd` into a directory
-that is no project registers a local project named after the directory.
+move into the project within one daemon tick.
+
+On a machine enrolled at the desk hub a repository needs no step at all:
+one no `.smns` claims is a project by its remote — `origin`, else its
+only remote, normalized (scheme, user and default port dropped, path
+lower-cased), so every clone and worktree of one remote on every
+enrolled machine is one project, named after the remote's last path
+segment as the hub first saw it. A repository with no remote, a
+local-path remote, or several remotes none named `origin` derives
+nothing; it and every directory outside git are in the machine's own
+project (named after the machine). `project show` names the source
+(`.smns at …`, `remote origin → …`, or why the machine project). On a
+machine not enrolled a repository without `.smns` is a local project
+named after itself, and `spawn --cwd` into a directory that is no
+project registers a local project named after the directory.
+
+A `.smns` is how a project is declared rather than inferred, and it wins
+over the remote. It gives what a remote cannot: a name you choose (the
+answer when two remotes share a basename), one project across several
+repositories, an identity that outlives a renamed remote or a swapped
+`origin`, a project for a repository that derives none, and identity on
+a machine not enrolled. `project init --hub` in a repository that
+resolves by its remote writes that project's id and name into the new
+file (`--name` changes the name only), so committing it moves no session
+and splits no history. Pin before changing a remote: without a `.smns`,
+a changed remote is a new project, its live sessions move there within a
+tick, and sminos says so once, naming both projects.
 
 The log lives at `$SMINOS_HOME/projects/<id>/log/`, one append-only file
 per writer, so two machines never write one file. With a `remote` in

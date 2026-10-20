@@ -688,11 +688,15 @@ assert_equals "$(python3 -c 'import json, os, sys; print(os.path.realpath(json.l
   "$(log_of twoproj)/../project.json" "$TWO_B")" True "the project stays registered from the checkout that names the hub"
 # A checkout registering without a hub, held just before it writes, while
 # another checkout of the project converts: the conversion registers after it.
+# The other checkout is at an older head that named the project otherwise, so
+# its registration is not this checkout's project as it is now, and this one
+# writes over it (an identical one it would keep: project_path's kept_root).
 mirrored_project regproj
 REG_B="$T/a/regproj-b"
 mkdir -p "$REG_B"
 gitq init -q "$REG_B"
-cp "$T/a/regproj/.smns" "$REG_B/.smns"
+python3 -c 'import json, sys; d = json.load(open(sys.argv[1])); d["name"] = "regproj-then"; json.dump(d, open(sys.argv[2], "w"))' \
+  "$T/a/regproj/.smns" "$REG_B/.smns"
 run python3 "$T/race.py" "$SCRIPTS" "$T/a/regproj" registering "$REG_B"
 reg_report() { printf '%s' "$OUT" | python3 -c 'import json, sys
 out = sys.stdin.read()

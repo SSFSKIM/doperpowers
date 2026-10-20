@@ -359,6 +359,8 @@ run_suites() {
   if "$SCRIPT_DIR/test-archive.sh"; then pass "the archive of a hub project (test-archive.sh)"; else fail "the archive of a hub project (test-archive.sh)"; fi
   if "$SCRIPT_DIR/test-org.sh"; then pass "the org's directory: machine projects, follow-only hellos (test-org.sh)"; else
     fail "the org's directory: machine projects, follow-only hellos (test-org.sh)"; fi
+  if "$SCRIPT_DIR/test-remote.sh"; then pass "a repository is a project by its remote (test-remote.sh)"; else
+    fail "a repository is a project by its remote (test-remote.sh)"; fi
   if "$SCRIPT_DIR/test-join.sh"; then pass "a session's project: its launch directory, join, moves (test-join.sh)"; else
     fail "a session's project: its launch directory, join, moves (test-join.sh)"; fi
   if "$SCRIPT_DIR/test-address.sh"; then pass "addressing across the org and the sender's copy (test-address.sh)"; else
@@ -4512,6 +4514,10 @@ done < <(python3 "$SCRIPT_DIR/codes_parity.py" "$PLUGIN_ROOT/skills/sminos/scrip
 while IFS= read -r line; do
   case "$line" in "ok "*) pass "machine project id parity: ${line#ok }" ;; *) fail "machine project id parity: ${line#FAIL }" ;; esac
 done < <(python3 "$SCRIPT_DIR/machine_project_parity.py" "$PLUGIN_ROOT/skills/sminos/scripts" "$SCRIPT_DIR/machine-project-id.json" 2>&1)
+# A repository's remote key and the id it derives: the vectors pin both (remote_key_parity.py).
+while IFS= read -r line; do
+  case "$line" in "ok "*) pass "remote key parity: ${line#ok }" ;; *) fail "remote key parity: ${line#FAIL }" ;; esac
+done < <(python3 "$SCRIPT_DIR/remote_key_parity.py" "$PLUGIN_ROOT/skills/sminos/scripts" "$SCRIPT_DIR/remote-key.json" 2>&1)
 # The installed engine still stamps and reads `relocated` as launch_cwd reads
 # it (engine_relocated_shape.py); where no engine is installed (CI) it says SKIP.
 while IFS= read -r line; do
