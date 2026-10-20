@@ -15,7 +15,7 @@ export function previewOf(content: readonly { type: string; [field: string]: unk
     if (block.type !== 'text' || typeof block.text !== 'string') continue
     for (const span of parse(block.text).spans) {
       const line = span.text
-        .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+        .replace(/\[([^\]]*)\]\((?:[^()]|\([^()]*\))*\)/g, '$1')
         .replace(/`|\*\*|─+/g, ' ')
         .replace(/\s+/g, ' ')
         .trim()
@@ -32,12 +32,15 @@ export function previewOf(content: readonly { type: string; [field: string]: unk
  * hooks read as `plugin_notification`. It is raised as the row is kept, so a
  * message sent mid-turn reaches them then, not when the turn stops, and a
  * turn that sends none raises nothing. Not awaited: the hooks it runs (a
- * settings hook calling out to a terminal app) would hold the row's append.
+ * settings hook calling out to a terminal app) would hold the row's append,
+ * and the engine waits for each row's append before it passes the block on.
+ * A sminos internal fork (`SMNS_INTERNAL`, a headless session under the
+ * person's settings that nobody reads) raises none.
  */
 export function registerNotify(on: On) {
   on('session.append', { door: 'response' }, async ($, e, next) => {
     const stored = await next(e)
-    if (e.agentId === undefined && stored.deny === undefined) {
+    if (e.agentId === undefined && stored.deny === undefined && (await $.env.get('SMNS_INTERNAL')) === undefined) {
       const preview = previewOf(stored.message.content)
       if (preview !== undefined) {
         $.ui.notify(preview).catch((error) => $.ui.log(`to-human: a message's notification failed (${String(error)})`, { to: 'debug' }))

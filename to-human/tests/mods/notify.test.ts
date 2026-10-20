@@ -51,18 +51,47 @@ describe('a message notifies the person', () => {
     expect(notified).toEqual([])
   })
 
-  test('a notification that fails leaves the row stored', async ($, on) => {
+  test('an internal fork of sminos raises none', async ($, on) => {
+    mock.env(on, { SMNS_INTERNAL: '1' })
+    mock.store(on)
+    const clock = mock.clock(on)
+    const notified: unknown[] = []
+    on('ui.notify', (_, e) => (notified.push(e), { value: { isSent: true, channel: 'terminal_bell' } }))
+
+    await $.session.append(response('<message>Done.</message>'))
+    await clock.settle()
+
+    expect(notified).toEqual([])
+  })
+
+  test('a notification that never settles does not hold the row', async ($, on) => {
     mock.env(on, {})
     mock.store(on)
     const session = mock.session(on)
     const clock = mock.clock(on)
+    on('ui.notify', () => new Promise<never>(() => {}))
+
+    const appended = $.session.append(response('<message>Done.</message>')).then(() => 'stored' as const)
+    const held = clock.sleep(1000).then(() => 'held' as const)
+    void clock.advance(1000)
+
+    expect(await Promise.race([appended, held])).toBe('stored')
+    expect(session.appended().length).toBe(1)
+  })
+
+  test('a notification that is refused ends in a debug line', async ($, on) => {
+    mock.env(on, {})
+    mock.store(on)
+    const clock = mock.clock(on)
+    const logged: { text: string; to: string }[] = []
+    on('ui.log', (_, e) => (logged.push(e), { value: undefined }))
     on('ui.notify', () => ({ deny: 'no channel here' }))
 
-    const stored = await $.session.append(response('<message>Done.</message>'))
+    await $.session.append(response('<message>Done.</message>'))
     await clock.settle()
 
-    expect(stored.deny).toBeUndefined()
-    expect(session.appended().length).toBe(1)
+    expect(logged.map((e) => e.to)).toEqual(['debug'])
+    expect(logged[0]!.text).toContain('notification failed')
   })
 })
 
@@ -74,6 +103,10 @@ describe('previewOf', () => {
     expect(previewOf(text(critical))).toBe('⚠ Critical The build broke in the runner.')
     expect(previewOf([{ type: 'tool_use' }, ...text('<message> </message><message>Next.</message>')])).toBe('Next.')
     expect(previewOf(text('No marks.'))).toBeUndefined()
+  })
+
+  test('takes a link target with parentheses whole', () => {
+    expect(previewOf(text('<message>See [page](/abs/app/(auth)/page.tsx#L4) now.</message>'))).toBe('See page now.')
   })
 
   test('cuts a long message to the banner\'s length', () => {
