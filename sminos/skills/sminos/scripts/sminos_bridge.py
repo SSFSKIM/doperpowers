@@ -38,7 +38,9 @@ A block's kept text is its last BLOCK_TAIL characters once it passes that,
 marked `truncated: true`, as the mod keeps it: the chunk events carry every
 chunk whole, so only the catch-up copy a snapshot gives is the tail, and a
 resync (which the mod posts alone, bounded under the engine's limit on a
-body) is taken as it comes, cut the same way.
+body) is taken as it comes, cut the same way. A resync that bound shortened
+(`truncated`) cuts pending permissions' inputs too: a request this child
+already holds keeps the input its own raise carried.
 The rows no hook of the mod's sees (a manual compaction's) it reads here too:
 
     GET  /rows?loop=&after=<uuid>      a loop's whole rows on disk past <uuid> (404 while it is not)
@@ -720,8 +722,18 @@ class Bridge:
                 for r in e["pending"]:
                     rid = r.get("request") if isinstance(r, dict) else None
                     if isinstance(rid, str):
-                        pending[rid] = {**self._fresh_request(), **(self.pending.get(rid) or {}),
-                                        "raised": {k: v for k, v in r.items() if k not in ("type", "n")}}
+                        old = self.pending.get(rid) or {}
+                        raised = {k: v for k, v in r.items() if k not in ("type", "n")}
+                        held = old.get("raised")
+                        if e.get("truncated") is True and r.get("truncated") is True and isinstance(held, dict) \
+                                and held.get("tool") == r.get("tool"):
+                            # A resync shortened past the engine's limit cuts
+                            # pending inputs: a request this child holds keeps
+                            # what its raise carried — the input the session
+                            # holds and the hub drew — so a decision's digest
+                            # made from that draw still finds it pending.
+                            raised = held
+                        pending[rid] = {**self._fresh_request(), **old, "raised": raised}
                 self.pending = pending
             for s in e.get("settled") or []:
                 if isinstance(s, dict) and isinstance(s.get("request"), str) and s["request"] not in self.settled:

@@ -392,12 +392,19 @@ export const parsed = (text: string): Record<string, unknown> | undefined => {
 }
 
 /**
- * A value with every string in it, at any depth, held to `cap` (TEXT_CAP);
- * `cut` says whether any was.
+ * A value with every string in it, at any depth, held to `cap` (TEXT_CAP)
+ * UTF-16 units; `cut` says whether any was. A cut never ends inside a
+ * surrogate pair (one that would keep a pair's high half alone is a unit
+ * shorter): a lone surrogate has no canonical form, so the input could be
+ * neither sealed nor matched against a decision's digest.
  */
 export function capped(value: unknown, cap = TEXT_CAP): Capped {
   if (typeof value === 'string') {
-    return value.length > cap ? { value: value.slice(0, cap), cut: true } : { value, cut: false }
+    if (value.length <= cap) {
+      return { value, cut: false }
+    }
+    const last = value.charCodeAt(cap - 1)
+    return { value: value.slice(0, last >= 0xd800 && last <= 0xdbff ? cap - 1 : cap), cut: true }
   }
   if (Array.isArray(value)) {
     const items = value.map((v) => capped(v, cap))

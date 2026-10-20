@@ -4465,6 +4465,122 @@ class Lanes(unittest.TestCase):
         self.posted(3)
         self.assertEqual(self.ns(2), [("p1", 1), ("p1", 2)])
 
+    def test_a_project_opened_again_drops_what_its_hello_sends_anew_and_keeps_its_subscriptions_messages(self):
+        """`hold` for a project opened again: of its entries not yet taken,
+        what the re-open's hello sends as it is now — the complete pending
+        set, a request's raise or settlement, an RPC's result, a compaction's
+        message, a session's presence — is dropped, never to go after that
+        hello and contradict it; a subscription's messages wait for the
+        `release` and go, in order. A dropped entry's continuation never
+        runs."""
+        s = self.lane("session", released=("p1", "p2"))
+        self.hub.script = ["hold"]
+        s.send(self.frames(0, "p1"))
+        self.posted(1)
+
+        def message(kind, n=None, project="p1"):
+            return {"t": "session", "message": {"project": project, "kind": kind, "sub": "s1" if n is not None
+                                                else None, "n": n, "body": {}}}
+        ran = []
+        s.send([message("presence")])
+        s.send([message("chunk", 1)])
+        s.send([{"t": "pending", "project": "p1", "raised": []}, message("raised"), message("settled")],
+               then=lambda: ran.append("requests"))
+        s.send([{"t": "rpc-result", "project": "p1", "nonce": "n1", "outcome": {}}, message("compact")],
+               then=lambda: ran.append("rpcs"))
+        s.send([message("presence", project="p2")])
+        s.send([message("presence"), message("chunk", 2)])
+        queued = s.queued()
+        s.hold("p1")
+        self.assertLess(s.queued(), queued, "what was dropped is no longer counted as unsent")
+        s.send([message("presence")])   # after the hold: the re-open's own, kept
+        self.hub.release.set()
+        self.posted(2)
+        time.sleep(0.2)
+        self.assertEqual(self.hub.bodies()[1], [message("presence", project="p2")], "another project's goes on")
+        s.release("p1")
+        self.posted(3)
+        time.sleep(0.2)
+        self.assertEqual([[(f["t"], f.get("message", {}).get("kind"), f.get("message", {}).get("n")) for f in b]
+                          for b in self.hub.bodies()[2:]],
+                         [[("session", "chunk", 1), ("session", "chunk", 2), ("session", "presence", None)]])
+        self.assertTrue(self.items.empty(), "no continuation of a dropped entry: %s" % ran)
+        self.assertEqual(s.queued(), 0)
+
+    def stalled_dials(self, gate):
+        """`connection` as the lanes dial it, each dial stalled until `gate`
+        is set, before any socket exists (a DNS lookup that hangs): nothing a
+        watcher can shut. The connections made, in order."""
+        real, made = self.uplink.connection, []
+
+        def connection(cred, timeout):
+            conn = real(cred, timeout)
+            dial = conn.connect
+
+            def stalled():
+                gate.wait(10)
+                dial()
+            conn.connect = stalled
+            made.append(conn)
+            return conn
+        return connection, made
+
+    @staticmethod
+    def workers():
+        """The exchange workers alive (`watched`'s threads)."""
+        return {t for t in threading.enumerate() if t.name == "uplink-post" and t.is_alive()}
+
+    def test_a_warm_dial_past_its_deadline_stays_the_lanes_one_dial_and_never_replaces_its_connection(self):
+        """A warm dial that outlasts its watcher (stalled before its socket
+        exists): the lane dials nothing more meanwhile, however often it is
+        warmed — a POST waits, within its own deadline, for that dial — and
+        the connection that dial makes, once it lands, is the one every POST
+        goes on: one connection at the hub, one dial line, no worker beyond
+        the dial's own."""
+        gate = threading.Event()
+        connection, made = self.stalled_dials(gate)
+        before = self.workers()
+        with mock.patch.object(self.uplink, "connection", connection), \
+                mock.patch.object(self.uplink, "POST_TIMEOUT", 0.4):
+            s = self.lane("session")
+            s.warm()
+            self.assertTrue(wait_for(lambda: any("could not dial the hub ahead" in line for line in self.said), 3),
+                            self.said)
+            for _ in range(3):
+                s.warm()
+                time.sleep(0.3)
+            self.assertEqual(len(self.workers() - before), 1, "warmed again while its dial is out: no second dial")
+            s.send(self.frames(1))
+            time.sleep(0.2)
+            gate.set()
+            self.posted(1)
+            s.send(self.frames(2))
+            self.posted(2)
+        self.assertEqual(len(made), 1, "one dial")
+        self.assertEqual([p["conn"] for p in self.hub.posts], [1, 1], "both POSTs on the one connection")
+        self.assertEqual(self.hub.conns, 1)
+        self.assertEqual(len(self.numbers("dialled")), 1, self.said)
+        self.assertTrue(self.items.empty(), "nothing failed")
+
+    def test_a_dial_that_lands_after_its_lane_closed_closes_its_own_connection(self):
+        """The lane's dial stalls, its POST past its deadline ends the lane;
+        the dial landing after that installs nothing and closes the
+        connection it made."""
+        gate = threading.Event()
+        connection, made = self.stalled_dials(gate)
+        before = self.workers()
+        with mock.patch.object(self.uplink, "connection", connection), \
+                mock.patch.object(self.uplink, "POST_TIMEOUT", 0.2):
+            s = self.lane("session")
+            s.send(self.frames(1))
+            kind, _ = self.items.get(timeout=5)
+            self.assertEqual(kind, "closed")
+            gate.set()
+            self.assertTrue(wait_for(lambda: made[0].sock is None and not self.workers() - before, 3),
+                            "the late dial closed what it made, and its worker ended")
+        self.assertIsNone(s.conn)
+        self.assertEqual(self.numbers("dialled"), [], "nothing installed")
+
     def test_a_slow_post_is_said(self):
         self.hub.script = [("slow", 0.4)]
         with mock.patch.object(self.uplink, "SLOW_POST_SECONDS", 0.2):

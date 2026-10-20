@@ -655,14 +655,31 @@ def by_project(frames):
     return list(runs.values())
 
 
-class Entry:
-    """Wire lines queued on a lane — on the session lane, of one project —
-    and the `send` they came from: `join` is [its entries not yet taken into
-    a body, its continuation], which is due with the body that takes the
-    last."""
+RENEWED_KINDS = ("presence", "raised", "settled", "compact")
 
-    def __init__(self, project, join):
-        self.project, self.join = project, join
+
+def renewed(frame):
+    """Whether a re-open of the frame's project sends anew what the frame
+    says, so a copy queued before that re-open is obsolete and, posted after
+    its hello, would contradict it: the complete pending set, a session's
+    presence and an RPC's result (the hello carries them as they are now),
+    and a request's raise or settlement and a compaction's message (the
+    `not-open` that re-opens it owes them again from their outboxes). A
+    subscription's messages are not: nothing sends them again."""
+    if frame.get("t") in ("pending", "rpc-result"):
+        return True
+    message = frame.get("message")
+    return frame.get("t") == "session" and isinstance(message, dict) and message.get("kind") in RENEWED_KINDS
+
+
+class Entry:
+    """Wire lines queued on a lane — on the session lane, of one project,
+    and either all `renewed` or none — and the `send` they came from: `join`
+    is [its entries not yet taken into a body, its continuation], which is
+    due with the body that takes the last."""
+
+    def __init__(self, project, join, renewed=False):
+        self.project, self.join, self.renewed = project, join, renewed
         self.lines = collections.deque()
         self.size = 0
 
@@ -670,6 +687,16 @@ class Entry:
         for line in lines:
             self.lines.append(line)
             self.size += len(line) + 1
+
+
+class Dial:
+    """A lane's connection being dialled: `done` once it landed as the
+    lane's connection or failed (`error`, said)."""
+
+    def __init__(self, conn):
+        self.conn = conn
+        self.done = threading.Event()
+        self.error = None
 
 
 class Sender(threading.Thread):
@@ -685,7 +712,8 @@ class Sender(threading.Thread):
     everything queued as bodies of at most POST_LIMIT, and holds a project's
     entries aside, in order, until `release` says that project's `hello` was
     answered (the hub refuses a frame of a project it has not opened
-    `not-open`), the other projects' going meanwhile. After a body's 200 the
+    `not-open`), the other projects' going meanwhile; a project opened again
+    (`hold`) drops what its new hello sends anew. After a body's 200 the
     lane puts ("sent", [then, ...]) on the stream's items, for the main loop
     to run in order. A non-200 answer, a failure, a POST that outlasts
     2 × POST_TIMEOUT, or more than SEND_QUEUE_MAX unsent ends the lane:
@@ -697,8 +725,10 @@ class Sender(threading.Thread):
     answered `Connection: close` on, one whose socket reads its end before a
     request (the hub closed it idle), and one idle IDLE_CLOSE are closed, and
     the next POST dials afresh; `warm` dials ahead of a POST about to come.
-    A send that fails on a reused connection is retried once on a fresh one
-    (nothing of it reached the hub); a failure once the request went out is
+    One dial is out at a time, and one its watcher gave up on stays the
+    lane's until it lands or fails (`connect`). A send that fails on a
+    reused connection is retried once on a fresh one (nothing of it reached
+    the hub); a failure once the request went out is
     a loss — the hub may have applied it, and the next stream's handshake
     heals it. Each dial and each close is a daemon.log line with the
     connection's number, a close with how many POSTs it carried and why, and
@@ -720,6 +750,7 @@ class Sender(threading.Thread):
         self.warming = False
         self.conn_lock = threading.Lock()
         self.conn = None
+        self.dialling = None                # the Dial out, at most one (`connect`)
         self.number = 0                     # the connection's, of CONNECTIONS
         self.posts = 0                      # POSTs answered on it
         self.used = 0.0                     # when it was dialled or last answered (monotonic)
@@ -733,9 +764,9 @@ class Sender(threading.Thread):
         once the lane is closed. NotDelivered past SEND_QUEUE_MAX."""
         join, entries = [0, then], []
         for frame in frames:
-            pid = project_of(frame) if self.lane == "session" else None
-            if not entries or entries[-1].project != pid:
-                entries.append(Entry(pid, join))
+            pid, again = (project_of(frame), renewed(frame)) if self.lane == "session" else (None, False)
+            if not entries or (entries[-1].project, entries[-1].renewed) != (pid, again):
+                entries.append(Entry(pid, join, again))
             entries[-1].add(line.encode("utf-8") for line in to_wire(frame))
         join[0] = len(entries)
         with self.cv:
@@ -757,10 +788,10 @@ class Sender(threading.Thread):
                 self.lane, SEND_QUEUE_MAX >> 20))
 
     def warm(self):
-        """Dial now, when no connection is held, so the handshake is done by
-        the time what is about to be posted is."""
+        """Dial now, when no connection is held and no dial is out, so the
+        handshake is done by the time what is about to be posted is."""
         with self.cv:
-            if self.conn is None and self.state == "idle":
+            if self.conn is None and self.dialling is None and self.state == "idle":
                 self.warming = True
                 self.cv.notify()
 
@@ -774,13 +805,21 @@ class Sender(threading.Thread):
     def hold(self, project):
         """The session lane: the project is being opened again (its `hello`
         sent anew); its entries not yet taken into a body go back aside,
-        ahead of those that follow, until the next `release`."""
+        ahead of those that follow, until the next `release` — except what
+        that hello's re-open sends anew (`renewed`), which is dropped, so
+        nothing posted after the hello contradicts it. A dropped entry's
+        continuation never runs: the `not-open` that re-opens the project
+        voided the attempt it would have answered."""
         with self.cv:
             self.released.discard(project)
-            mine = [e for e in self.entries if e.project == project]
-            if mine:
-                self.entries = collections.deque(e for e in self.entries if e.project != project)
-                self.aside[project] = mine + self.aside.get(project, [])
+            mine = [e for e in itertools.chain(self.entries, self.aside.pop(project, ())) if e.project == project]
+            self.entries = collections.deque(e for e in self.entries if e.project != project)
+            for e in mine:
+                if e.renewed:
+                    self.unsent -= sum(len(line) + 1 for line in e.lines)
+            kept = [e for e in mine if not e.renewed]
+            if kept:
+                self.aside[project] = kept
 
     def posting(self):
         return self.state == "posting"
@@ -832,7 +871,7 @@ class Sender(threading.Thread):
                     return self.take()
                 if self.warming:
                     self.warming = False
-                    if self.conn is None:
+                    if self.conn is None and self.dialling is None:
                         return "warm"
                     continue
                 wait = None
@@ -896,7 +935,8 @@ class Sender(threading.Thread):
 
     def lost(self, why):
         """A POST of the lane was not delivered: said once on the items,
-        unless the lane was closed from this end meanwhile."""
+        unless the lane was closed from this end meanwhile. The lane is
+        ended from here, so a dial landing later closes what it made."""
         with self.cv:
             if self.state == "closed" or self.ended():
                 return
@@ -904,10 +944,16 @@ class Sender(threading.Thread):
             self.entries.clear()
             self.aside.clear()
             self.unsent = 0
+        self.closing.set()
         self.put(("closed", NotDelivered(why)))
 
     def sock(self):
+        """The socket a watcher shuts: the connection's, else the dial's
+        out, once it has one (a TLS handshake that hangs)."""
         conn = self.conn
+        if conn is None:
+            dial = self.dialling
+            conn = dial.conn if dial is not None else None
         return conn.sock if conn is not None else None
 
     def exchange(self, body):
@@ -916,43 +962,71 @@ class Sender(threading.Thread):
         (`watched`). The caller drops a closing connection once it read the
         status, so a failed POST's close says it failed."""
         for retry in (False, True):
-            reused = self.connect()
+            conn, reused = self.connect()
             try:
-                self.conn.request("POST", self.path, body=body, headers=frame_headers(self.cred, self.generation))
+                conn.request("POST", self.path, body=body, headers=frame_headers(self.cred, self.generation))
                 break
             except STALE as e:
                 if not reused or retry:
                     raise
                 self.drop("failed: %s" % (" ".join(str(e).split()) or type(e).__name__))
-        resp = self.conn.getresponse()
+        resp = conn.getresponse()
         answer = resp.read()
         self.posts += 1
         self.used = time.monotonic()
         return resp.status, answer, resp.will_close
 
     def connect(self):
-        """The connection a request goes on: the one held, unless it reads
-        its end (the hub closed it idle), else one dialled now. Whether it
-        was reused."""
-        if self.conn is not None and readable(self.conn.sock):
+        """The connection a request goes on, and whether it was reused: the
+        one held, unless it reads its end (the hub closed it idle), else the
+        lane's dial. The lane has one dial out at a time: one an earlier
+        exchange began and its watcher gave up on (a warm dial stalled past
+        its deadline) is still the lane's, and this exchange waits for it,
+        within its own deadline, rather than dialling a second — so a late
+        dial never replaces the connection another exchange is using, and a
+        lane warmed again and again leaves one worker behind, not one each."""
+        conn = self.conn
+        if conn is not None and readable(conn.sock):
             self.drop("the hub closed it")
-        if self.conn is not None:
-            return True
-        conn = connection(self.cred, POST_TIMEOUT)
-        conn.connect()
-        if self.ended():
-            # The lane closed while the dial was out: nothing holds it now.
-            conn.close()
-            raise OSError("the lane closed during its dial")
+        elif conn is not None:
+            return conn, True
         with self.conn_lock:
-            self.conn, self.number, self.posts, self.used = conn, next(CONNECTIONS), 0, time.monotonic()
+            dial, mine = self.dialling, self.dialling is None
+            if mine:
+                dial = self.dialling = Dial(connection(self.cred, POST_TIMEOUT))
+        if mine:
+            self.land(dial)
+        while not dial.done.wait(POLL):
+            if self.ended():
+                raise OSError("the lane closed during its dial")
+        if dial.error is not None:
+            raise OSError(dial.error)
+        return dial.conn, False
+
+    def land(self, dial):
+        """The dial run on this thread: its connection is the lane's, unless
+        the lane ended while it was out — then nothing holds it, and it is
+        closed here, as one that failed is."""
+        try:
+            dial.conn.connect()
+            with self.conn_lock:
+                if self.ended():
+                    raise OSError("the lane closed during its dial")
+                self.conn, self.number, self.posts, self.used = dial.conn, next(CONNECTIONS), 0, time.monotonic()
+        except BaseException as e:
+            dial.conn.close()
+            dial.error = " ".join(str(e).split()) or type(e).__name__
+            raise
+        finally:
+            with self.conn_lock:
+                self.dialling = None
+            dial.done.set()
         log("%s lane dialled the hub (connection #%d)" % (self.lane, self.number))
-        return False
 
     def dial_ahead(self):
         """`warm`'s dial, on the lane's thread; a failure is the next POST's to meet."""
         try:
-            watched(lambda: self.connect() and None, self.sock, self.ended)
+            watched(self.connect, self.sock, self.ended)
         except (Stopping, NotDelivered) as e:
             if not self.ended():
                 log("the %s lane could not dial the hub ahead of its POST (%s)" % (self.lane, e))
@@ -1365,7 +1439,10 @@ class Link:
 
         The bundle goes as one entry of the log lane, and the project's
         session messages wait (the session lane's gate, closed again on a
-        project opened anew) until the hub answered it. Then the gate opens,
+        project opened anew) until the hub answered it; what the session lane
+        still held of a project opened anew that this hello sends as it is
+        now (`renewed`: its pending set, presence, requests and RPCs) is
+        dropped, so no older copy follows it. Then the gate opens,
         before any local bookkeeping, and the bookkeeping follows: the
         settlements answered before it (and those it carried) kept as
         relayed, the read its presence's leavers were drawn from marked taken

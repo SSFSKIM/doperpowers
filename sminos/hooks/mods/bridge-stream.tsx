@@ -201,7 +201,10 @@ export const raisedFields = (r: Request) => ({
  * RESYNC_INPUT_CAP and the request marked `truncated`, as `raised` marks an
  * input cut to TEXT_CAP. Every request keeps its id, tool, agent and window,
  * which deciding it needs; a question's input stays whole, since its answers
- * are matched against its questions. The child takes what it carries.
+ * are matched against its questions. The child takes what it carries, but a
+ * request it already holds keeps the input its raise carried, so a decision
+ * made from that draw still matches it. A string is never cut inside a
+ * surrogate pair (`capped`).
  */
 export function resyncEvent(): BridgeEvent {
   const resync = wholeResync()

@@ -1239,6 +1239,35 @@ class Requests(unittest.TestCase):
         self.r.sent(frames)
         self.assertEqual(self.r.due({self.PID}), [])
 
+    def test_a_shortened_resync_leaves_a_request_the_child_holds_as_its_raise_carried_it(self):
+        """The mod's resync past the engine's limit shortens pending
+        permissions' inputs (RESYNC_INPUT_CAP, each marked `truncated`). A
+        request this child already holds keeps the input its raise carried —
+        the input the session holds and the hub drew — so a decision whose
+        digest was made from that draw still finds the request pending (check
+        7), and nothing is raised again. A request this child learns from
+        that resync alone takes the shortened copy."""
+        whole = {"file_path": "/w/f", "content": "x" + "\U0001F600" * 32767}
+        short = {"file_path": "/w/f", "content": "x" + "\U0001F600" * 511}
+        self.bridge.raise_("toolu_held", tool="Write", input_=whole)
+        self.r.sent(self.due(lambda fs: messages(fs, "raised")))
+        entry = {"tool": "Write", "input": short, "agentId": None, "truncated": True}
+        self.bridge.post({"type": "resync", "turns": [], "streaming": [], "agents": [], "cut": {}, "truncated": True,
+                          "pending": [{"request": "toolu_held", **entry, "t": 1},
+                                      {"request": "toolu_new", **entry, "t": 2}], "t": 3})
+        allow = {"behavior": "allow", "by": MEMBER}
+
+        def digest(rid, tool_input):
+            return {"session": self.sid, "request": rid, "tool": "Write", "input_sha256": codes.input_sha256(tool_input)}
+        rpc.check_digest(self.bridge.sock, self.sid, digest("toolu_held", whole), allow)
+        with self.assertRaises(rpc.Refused) as e:
+            rpc.check_digest(self.bridge.sock, self.sid, digest("toolu_held", short), allow)
+        self.assertEqual(e.exception.outcome["error"]["code"], "digest-mismatch")
+        rpc.check_digest(self.bridge.sock, self.sid, digest("toolu_new", short), allow)
+        frames = self.due(lambda fs: messages(fs, "raised"))
+        self.assertEqual([(m["body"]["request"], m["body"].get("truncated")) for m in messages(frames, "raised")],
+                         [("toolu_new", True)], "only the request the child had not held is raised")
+
 
 # ---------------------------------------------------------------- the uplink
 
@@ -1466,6 +1495,60 @@ class RelayedOnLanes(unittest.TestCase):
         self.assertTrue(self.settled_in(self.hub.bodies()[n], rid))
         after = self.refuse_not_open(link, items)
         self.goes_again(link, items, rid, after)
+
+    @staticmethod
+    def pending_at_hub(bodies):
+        """The requests the hub holds pending once it applied `bodies` in
+        order: a complete set replaces what it held, a raise adds, a
+        settlement takes away."""
+        held = set()
+        for body in bodies:
+            for f in body:
+                if f.get("t") == "pending":
+                    held = {b["request"] for b in f["raised"]}
+                elif f.get("t") == "session" and f["message"]["kind"] == "raised":
+                    held.add(f["message"]["body"]["request"])
+                elif f.get("t") == "session" and f["message"]["kind"] == "settled":
+                    held.discard(f["message"]["body"]["request"])
+        return held
+
+    def test_a_reopen_sends_no_pending_set_older_than_its_hellos(self):
+        """The session lane's POST is held at the hub, a complete pending set
+        queued behind it (empty: nothing is pending yet) and a subscription's
+        message too; a permission is raised and read, not yet relayed; then
+        the hub refuses the project `not-open` and it is opened again, its
+        hello carrying the set as it is now. The older set never goes after
+        that hello — the hub would take it for the whole and drop the
+        permission still pending here — and the subscription's message
+        does, after it."""
+        r = self.requests()
+        link, items, _ = self.stream(1, r)
+        self.assertTrue(wait_for(lambda: r.take() or r.ready(self.pid)), "the session's bridge is read")
+
+        def chunk(n):
+            return {"t": "session", "message": {"project": self.pid, "machine": "testhost", "session": self.sid,
+                                                "kind": "chunk", "sub": "s1", "n": n, "body": {}}}
+        n = len(self.hub.posts)
+        self.hub.script = ["hold"]
+        link.session_lane.send([chunk(1)])
+        self.assertTrue(wait_for(lambda: len(self.hub.posts) > n), "the session lane's POST is held at the hub")
+        link.session_lane.send([chunk(2)])
+        r.stale.add(self.pid)
+        link.relay_requests()
+        self.assertGreater(link.session_lane.queued(), 0, "the set waits behind the held POST")
+        self.bridge.raise_("toolu_new")
+        self.assertTrue(wait_for(lambda: r.take() or "toolu_new" in r.pending.get(self.sid, {})), "read")
+        after = self.refuse_not_open(link, items)
+        sets = [[b["request"] for b in f["raised"]] for f in self.hub.bodies()[after] if f.get("t") == "pending"]
+        self.assertEqual(sets, [["toolu_new"]], "the re-open's hello carries the set as it is now")
+        self.hub.release.set()
+        self.assertTrue(wait_for(lambda: self.drain(link, items) or any(
+            f.get("message", {}).get("n") == 2 for b in self.hub.bodies()[after:] for f in b)),
+            "the subscription's message goes after the hello")
+        time.sleep(0.3)
+        self.drain(link, items)
+        self.assertEqual(self.pending_at_hub(self.hub.bodies()), {"toolu_new"},
+                         "the permission still pending here is pending at the hub: %s" % self.hub.bodies()[after:])
 
     def test_with_no_archive_period_a_held_settlement_is_confirmed_within_the_bound(self):
         """No re-hello comes (archive confirmations off, no follow change, no

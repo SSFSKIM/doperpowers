@@ -3093,6 +3093,40 @@ describe("a post fits the engine's limit", () => {
     expect(h.ofType('gap')).toEqual([])
   })
 
+  test('a shortened input never ends inside a surrogate pair, in a resync as in a raise past TEXT_CAP: each string stays well-formed, so it has a canonical form to seal', async () => {
+    // A lone surrogate: a high one with no low after it, or a low one with no high before it.
+    const lone = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/
+    const h = harness()
+    await h.ready()
+    await h.turn('t1')
+    // 65 Write permissions, each a well-formed 65,535-unit string: inside TEXT_CAP, so raised whole.
+    const content = 'x' + '😀'.repeat((TEXT_CAP - 2) / 2)
+    for (let i = 0; i < 65; i++) {
+      const input = { file_path: `/w/f${i}`, content }
+      await h.called(`toolu_w${i}`, 'Write', input)
+      void h.permission('Write', input)
+      await h.settle()
+    }
+    // And one past TEXT_CAP, cut as it is raised: its 65,536th unit is a high surrogate.
+    const long = { file_path: '/w/long', content: 'x' + '😀'.repeat(TEXT_CAP / 2) }
+    await h.called('toolu_long', 'Write', long)
+    void h.permission('Write', long)
+    await h.settle()
+    const raisedLong = h.ofType('raised').find((e) => e.request === 'toolu_long')!
+    const cut = (raisedLong.input as { content: string }).content
+    expect([raisedLong.truncated, cut.length, lone.test(cut)]).toEqual([true, TEXT_CAP - 1, false])
+    h.children[0]!.write(hello())
+    await h.settle()
+    const resync = h.ofType('resync').at(-1)!
+    expect(resync.truncated).toBe(true)
+    const pending = resync.pending as { request: string; input: { content: string }; truncated?: boolean }[]
+    const shortened = pending.filter((p) => p.input.content.length < TEXT_CAP - 1)
+    expect(shortened.length).toBeGreaterThan(0)
+    expect(shortened.map((p) => [p.truncated, p.input.content.length, lone.test(p.input.content)])).toEqual(
+      shortened.map(() => [true, RESYNC_INPUT_CAP - 1, false]),
+    )
+  })
+
   test("a question's input is kept whole when a resync is shortened: its answers are matched against it", async () => {
     const h = harness()
     await h.ready()
