@@ -4110,7 +4110,9 @@ class ScriptedHub:
     `release` is set); `hold-503`; `drop` (the request read, the connection
     closed with no answer); `rst` (answered 200, then the connection reset);
     `fin` (answered 200, then the connection closed with no `Connection:
-    close`); `close` (answered 200 with `Connection: close`); ("slow", s)."""
+    close`); `close` (answered 200 with `Connection: close`); `503-close`
+    (answered 503 with `Connection: close`, as the stand-in answers a
+    released hold); ("slow", s)."""
 
     def __init__(self):
         self.posts, self.script, self.conns = [], [], 0
@@ -4159,6 +4161,8 @@ class ScriptedHub:
                 if action in ("hold", "hold-503"):
                     hub.release.wait(30)
                     return self.answer(200 if action == "hold" else 503)
+                if action == "503-close":
+                    return self.answer(503, close=True)
                 if action == "drop":
                     self.close_connection = True
                     return None
@@ -4383,6 +4387,20 @@ class Lanes(unittest.TestCase):
         self.assertEqual([p["conn"] for p in self.hub.posts], [1, 2])
         self.assertIn("log lane closed connection #%d after 1 POSTs (the hub closed it)" % self.numbers("dialled")[0],
                       self.said)
+
+    def test_a_failed_answer_that_closes_the_connection_says_the_post_failed(self):
+        """A non-200 answer that also closes the connection: the close line
+        names the failure, not the close (the owner reads daemon.log's
+        closes to tell a failed POST from an edge's close)."""
+        s = self.lane("log")
+        self.hub.script = ["503-close"]
+        s.send(self.frames(1), then=lambda: None)
+        kind, err = self.items.get(timeout=5)
+        self.assertEqual(kind, "closed")
+        self.assertTrue(str(err).startswith("the hub answered 503"), str(err))
+        closes = [line for line in self.said if "lane closed connection" in line]
+        self.assertEqual(len(closes), 1, closes)
+        self.assertRegex(closes[0], r"log lane closed connection #\d+ after 1 POSTs \(failed: the hub answered 503 .*\)")
 
     def test_close_and_the_uplinks_end_stop_a_held_lane_silently(self):
         ended = threading.Event()
@@ -5160,10 +5178,12 @@ class Uplink(unittest.TestCase):
         self.assertEqual(state["generation"], generation, "the stream stood through the hold")
         self.assertEqual(len([p for p in state["posted"] if p["status"] == "held"]), held_before + 1,
                          "the log lane posted nothing more behind the held POST")
+        daemon_log = os.path.join(os.environ["SMINOS_HOME"], "daemon.log")
+        before = len(read(daemon_log))   # what this test's release says, not an earlier test's lines
         call(self.hub.url, "POST", "/control/release", {})
         self.assertTrue(wait_for(lambda: self.hub.state()["generation"] > generation, 15), "the stream ends")
         def said():
-            text = read(os.path.join(os.environ["SMINOS_HOME"], "daemon.log"))
+            text = read(daemon_log)[before:]
             return ("a POST was not delivered (the hub answered 503" in text
                     and re.search(r"uplink: log lane closed connection #\d+ after \d+ POSTs \(failed: the hub "
                                   r"answered 503", text))

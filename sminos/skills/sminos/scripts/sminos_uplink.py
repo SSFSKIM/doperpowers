@@ -869,7 +869,7 @@ class Sender(threading.Thread):
         """One body posted and answered; whether the lane goes on."""
         started = time.monotonic()
         try:
-            status, answer = watched(lambda: self.exchange(body), self.sock, self.ended)
+            status, answer, closes = watched(lambda: self.exchange(body), self.sock, self.ended)
         except Stopping:
             return False
         except NotDelivered as e:
@@ -884,6 +884,8 @@ class Sender(threading.Thread):
             self.drop("failed: %s" % why)
             self.lost(why)
             return False
+        if closes:
+            self.drop("the hub closed it")
         with self.cv:
             if self.state == "closed":
                 return False
@@ -909,8 +911,10 @@ class Sender(threading.Thread):
         return conn.sock if conn is not None else None
 
     def exchange(self, body):
-        """One POST on the lane's connection, (status, the answer whole); on
-        the exchange's thread (`watched`)."""
+        """One POST on the lane's connection, (status, the answer whole,
+        whether the answer closes the connection); on the exchange's thread
+        (`watched`). The caller drops a closing connection once it read the
+        status, so a failed POST's close says it failed."""
         for retry in (False, True):
             reused = self.connect()
             try:
@@ -924,9 +928,7 @@ class Sender(threading.Thread):
         answer = resp.read()
         self.posts += 1
         self.used = time.monotonic()
-        if resp.will_close:
-            self.drop("the hub closed it")
-        return resp.status, answer
+        return resp.status, answer, resp.will_close
 
     def connect(self):
         """The connection a request goes on: the one held, unless it reads

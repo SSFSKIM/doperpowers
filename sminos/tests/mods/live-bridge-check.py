@@ -4,7 +4,7 @@
 What only a running engine shows, pinned so a release that breaks it fails
 loudly: a command line reaches the mod idle, mid-model, with a permission
 dialog open and mid-Bash; a subagent's chunks carry its agentId; a child
-killed outright leaves a stale socket that the respawned child replaces; a
+killed outright is replaced at its endpoint by a successor that answers; a
 module reload kills the child and spawns the next; a /clear moves the bridge
 to the new session id at once; `sminos watch` prints the
 stream, by session id and by name, and says so for a session with no bridge.
@@ -393,13 +393,17 @@ class Live:
         self.check("sminos watch on a session with no bridge says so and exits non-zero",
                    none.returncode == 4 and "no bridge" in none.stderr, "rc %d: %s" % (none.returncode, none.stderr.strip()))
 
+        # The mod starts a dead child's successor at once (open-fast §6), so
+        # the socket the killed child leaves is stale for a fraction of a
+        # second at most: what is checked is that the successor takes the
+        # same endpoint over and answers there.
         old = self.status()["pid"]
+        killed = time.time()
         os.kill(old, signal.SIGKILL)
-        time.sleep(0.2)
-        stale = os.path.exists(self.endpoint()) and self.status() is None
-        new = wait_for("a respawned child", 30, lambda: (self.status() or {}).get("pid") not in (None, old) and self.status())
-        self.check("a child killed outright leaves a stale socket, which the respawned child replaces",
-                   stale and new["pid"] != old, "killed %s, stale %s, now %s" % (old, stale, new["pid"]))
+        new = wait_for("a respawned child", 30, lambda: (self.status() or {}).get("pid") not in (None, old) and self.status(),
+                       every=0.02)
+        self.check("a child killed outright is replaced at its endpoint by a successor that answers",
+                   new["pid"] != old, "killed %s, now %s answering after %.2f s" % (old, new["pid"], time.time() - killed))
 
         old = new["pid"]
         subs = self.subscriptions
