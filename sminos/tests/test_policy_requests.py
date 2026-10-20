@@ -1550,6 +1550,42 @@ class RelayedOnLanes(unittest.TestCase):
         self.assertEqual(self.pending_at_hub(self.hub.bodies()), {"toolu_new"},
                          "the permission still pending here is pending at the hub: %s" % self.hub.bodies()[after:])
 
+    def test_a_set_in_flight_at_a_reopen_applied_after_its_hello_is_healed_by_a_fresh_one(self):
+        """A complete set (empty: nothing is pending yet) is in a session-lane
+        POST the hub has not finished taking when it refuses the project
+        `not-open`; a permission is raised and read meanwhile, and the
+        project is opened again, its hello carrying the set with it. The hub
+        applies the hello first and the body in flight after it (a large
+        body still uploading while the small hello lands): the older set
+        would drop the permission. The hello's continuation owes the set
+        again, so a fresh one follows the body on the same lane, and the hub
+        ends holding the permission still pending here."""
+        r = self.requests()
+        link, items, _ = self.stream(1, r)
+        self.assertTrue(wait_for(lambda: r.take() or r.ready(self.pid)), "the session's bridge is read")
+        n = len(self.hub.posts)
+        self.hub.script = ["hold"]
+        r.stale.add(self.pid)
+        link.relay_requests()
+        self.assertTrue(wait_for(lambda: len(self.hub.posts) > n), "the set's POST is in flight, held at the hub")
+        held = n
+        self.assertEqual([f["raised"] for f in self.hub.bodies()[held] if f.get("t") == "pending"], [[]])
+        self.bridge.raise_("toolu_new")
+        self.assertTrue(wait_for(lambda: r.take() or "toolu_new" in r.pending.get(self.sid, {})), "read")
+        self.refuse_not_open(link, items)   # the hello answered: the hub has applied it
+        applied_at = len(self.hub.posts)
+        self.hub.release.set()              # the body in flight is applied now, after the hello
+
+        def healed():
+            link.relay_requests()
+            self.drain(link, items)
+            return any(f.get("t") == "pending" for b in self.hub.bodies()[applied_at:] for f in b)
+        wait_for(healed, timeout=3)
+        bodies = self.hub.bodies()
+        order = bodies[:held] + bodies[held + 1:applied_at] + [bodies[held]] + bodies[applied_at:]
+        self.assertEqual(self.pending_at_hub(order), {"toolu_new"},
+                         "the permission still pending here is pending at the hub: %s" % bodies[held:])
+
     def test_with_no_archive_period_a_held_settlement_is_confirmed_within_the_bound(self):
         """No re-hello comes (archive confirmations off, no follow change, no
         reconnect): a settlement answered 200 is confirmed all the same, by

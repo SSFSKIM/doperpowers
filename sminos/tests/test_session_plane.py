@@ -3890,6 +3890,37 @@ class Lifecycle(unittest.TestCase):
         self.assertEqual(hub.bodies()[heads.index("session")][0]["message"]["body"], {"after": True})
         self.assertEqual(hl.have, {}, "the vector the new hello brought stands: its uploads go on")
 
+    def test_presence_in_flight_at_a_reopen_is_said_again_after_the_hello(self):
+        """A session-lane body carrying a member's presence is out (held at
+        the hub) when the hub refuses the project `not-open`; the re-open's
+        hello carries its presence as it is now, and the hub may apply the
+        older body after it. Once the hello is answered, the members'
+        presence is said again at the next look, changed or not, behind that
+        body on its lane."""
+        project, runs, _ = self.ended_presence_project("reopen-in-flight")
+        hub = ScriptedHub()
+        self.addCleanup(hub.close)
+        link, items, hl = self.on_lanes(project, hub)
+        link.open(hl)
+        self.answered(link, items)
+        hub.script = ["hold"]
+        held = len(hub.posts)
+        link.post_session([plane.envelope(project.id, "testhost", runs, "presence", None, None, {"older": True})])
+        self.assertTrue(wait_for(lambda: len(hub.posts) > held), "the body is out, held at the hub")
+        link.on_refused({"t": "refused", "project": project.id, "refusal": {"reason": "not-open"}}, None)
+        self.assertTrue(wait_for(lambda: len(hub.posts) > held + 1), "the re-open's hello went")
+        self.answered(link, items)
+        hub.release.set()
+        link.post_session(link.plane.presence(project.id))   # the next look, as a tick takes it
+        self.assertTrue(wait_for(lambda: any(
+            f.get("t") == "session" and f["message"]["kind"] == "presence" and f["message"]["session"] == runs
+            for b in hub.bodies()[held + 2:] for f in b), 3),
+            "the member's presence is said again after the body: %s" % self.kinds(hub))
+        link.post_session(link.plane.presence(project.id))
+        time.sleep(0.3)
+        again = [f for b in hub.bodies()[held + 2:] for f in b if f.get("t") == "session"]
+        self.assertEqual(len(again), 1, "said again once, not at every look")
+
     def test_each_hellos_answer_takes_the_presence_read_it_carried(self):
         """Two presence-bearing hellos of one project in flight, answered 200
         then 503: the mark is the first one's read, never the second's."""
@@ -4454,7 +4485,7 @@ class Lanes(unittest.TestCase):
         s.send(self.frames(0, "p2"))
         self.posted(1)
         s.send(self.frames(1, "p1"))
-        s.hold("p1")
+        self.assertFalse(s.hold("p1"), "the body out carries p2 alone")
         s.send(self.frames(2, "p1"))
         s.send(self.frames(3, "p2"))
         self.hub.release.set()
@@ -4491,7 +4522,7 @@ class Lanes(unittest.TestCase):
         s.send([message("presence", project="p2")])
         s.send([message("presence"), message("chunk", 2)])
         queued = s.queued()
-        s.hold("p1")
+        self.assertTrue(s.hold("p1"), "the body out carries p1: the hub may apply it after the hello")
         self.assertLess(s.queued(), queued, "what was dropped is no longer counted as unsent")
         s.send([message("presence")])   # after the hold: the re-open's own, kept
         self.hub.release.set()

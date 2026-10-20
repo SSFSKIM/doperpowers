@@ -2308,6 +2308,7 @@ class Plane:
         self.tombstoned = {}      # project id → the read whose leavers a connect said, until the hub takes them
         self.wall = time.time
         self.sent = {}            # (project id, session) → presence body last sent
+        self.again = set()        # project ids whose members' presence is said again at the next look (say_again)
         self.subs = {}            # sub → Subscription
         self.diffs = queue.Queue()
         self.read_for = None      # the running sessions the members were last read for
@@ -2371,9 +2372,11 @@ class Plane:
             if pid in self.read_at:
                 self.tombstoned[pid] = self.read_at[pid]
         socks = bridge_socks() if socks is None else socks
+        again = pid in self.again
+        self.again.discard(pid)
         for sid in sorted(self.members.get(pid, ())):
             body = self.presence_of(sid, now, socks)
-            if force or self.sent.get((pid, sid)) != body:
+            if force or again or self.sent.get((pid, sid)) != body:
                 self.sent[(pid, sid)] = body
                 out.append(envelope(pid, self.machine, sid, "presence", None, None, body))
         for key in [k for k in self.sent if k[0] == pid and k[1] not in self.members.get(pid, ())]:
@@ -2382,6 +2385,13 @@ class Plane:
                 out.append(envelope(pid, self.machine, key[1], "presence", None, None,
                                     {"record": None, "bridge": False}))
         return out
+
+    def say_again(self, pid):
+        """The project's members' presence is said again at its next look,
+        changed or not: a copy older than the one last sent may have reached
+        the hub after it (a body in flight at a re-open, applied after the
+        hello)."""
+        self.again.add(pid)
 
     def take_read(self, pid):
         """The read the forced presence just drawn for the project said its

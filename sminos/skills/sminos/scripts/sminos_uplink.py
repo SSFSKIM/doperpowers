@@ -747,6 +747,7 @@ class Sender(threading.Thread):
         self.released = set()
         self.unsent = 0                     # bytes queued or aside, not yet taken into a body
         self.state = "idle"                 # idle | posting | closed
+        self.flying = set()                 # the projects whose lines the body out carries
         self.warming = False
         self.conn_lock = threading.Lock()
         self.conn = None
@@ -809,8 +810,11 @@ class Sender(threading.Thread):
         that hello's re-open sends anew (`renewed`), which is dropped, so
         nothing posted after the hello contradicts it. A dropped entry's
         continuation never runs: the `not-open` that re-opens the project
-        voided the attempt it would have answered."""
+        voided the attempt it would have answered. Whether a body carrying
+        the project is out now, which the hub may apply after the hello
+        (`Link.open` heals that)."""
         with self.cv:
+            flying = project in self.flying
             self.released.discard(project)
             mine = [e for e in itertools.chain(self.entries, self.aside.pop(project, ())) if e.project == project]
             self.entries = collections.deque(e for e in self.entries if e.project != project)
@@ -820,6 +824,7 @@ class Sender(threading.Thread):
             kept = [e for e in mine if not e.renewed]
             if kept:
                 self.aside[project] = kept
+        return flying
 
     def posting(self):
         return self.state == "posting"
@@ -887,12 +892,14 @@ class Sender(threading.Thread):
         several bodies, its continuation with the last), on the session lane
         every queued entry's up to POST_LIMIT. Under the lock."""
         lines, size, thens = [], 0, []
+        self.flying = set()
         while self.entries:
             e = self.entries[0]
             while e.lines:
                 n = len(e.lines[0]) + 1
                 if lines and size + n > POST_LIMIT:
                     return b"\n".join(lines) + b"\n", thens
+                self.flying.add(e.project)
                 lines.append(e.lines.popleft())
                 size += n
                 self.unsent -= n
@@ -915,6 +922,9 @@ class Sender(threading.Thread):
             self.drop("failed: %s" % e)
             self.lost(str(e))
             return False
+        finally:
+            with self.cv:
+                self.flying = set()   # answered, or given up with the lane
         took = time.monotonic() - started
         if took > SLOW_POST_SECONDS:
             log("a %s lane POST took %.1f s" % (self.lane, took))
@@ -1453,7 +1463,7 @@ class Link:
         (`opening`), a refusal does not open it again."""
         pid = hl.project.id
         self.opening.add(pid)
-        self.session_lane.hold(pid)
+        flying = self.session_lane.hold(pid)
         hl.rejoin_former()
         unreported = [] if self.reporting[pid] else [f for f in hl.unreported()
                                                        if f not in self.unrecorded.get(pid, ())]
@@ -1478,6 +1488,12 @@ class Link:
         def answered():
             self.opening.discard(pid)
             self.session_lane.release(pid)   # the hub has it open: what the network waited for comes first
+            if flying:
+                # A session-lane body of the project was out at the re-open:
+                # the hub may apply it after this hello, its older set and
+                # presence over the new. Both go again, behind it on its lane.
+                self.requests.stale.add(pid)
+                self.plane.say_again(pid)
             # Applied behind the hello, the project open: the hub's (a write that fails is said, and costs a resend).
             self.requests.delivered(owed, attempt, confirmed=True)
             confirm()
