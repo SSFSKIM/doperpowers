@@ -16,10 +16,14 @@ message is the hub's:
   refuses `not-open` before answering when the project is still not open)
   or a hello whose own POST carried it. A frame answered before the
   confirmation was queued was taken by the hub before it, so a `not-open` of
-  it was written down the stream before the hub read the confirmation; one
-  that came after the confirmation's answer anyway (the hub writes a session
-  frame's refusal on its control lane, unawaited, and a POST's answer waits
-  on its replies lane alone) is the one loss left.
+  it was written down the stream before the hub read the confirmation. Two
+  losses are left, both from the stream and the answers being apart: the
+  frame's own refusal (on the hub's control lane, unawaited) still undelivered
+  when the confirmation is answered on a project re-opened meanwhile; and the
+  probe's refusal (on the replies lane, awaited before its answer) not yet
+  dispatched by the stream's reader when the answer's continuation runs on
+  the main thread. Both go once the hub reports a refusal in the POST's
+  answer (residue).
 - A `not-open` (`refuse`) makes every attempt of the project before it void:
   its project's epoch moves, so a POST of an older epoch answered 200 later
   takes nothing, and every message of the project in flight or held is owed

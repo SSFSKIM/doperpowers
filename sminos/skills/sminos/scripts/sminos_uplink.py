@@ -1428,10 +1428,14 @@ class Link:
         """Each open project holding settlements or compaction messages the
         hub answered 200 for CONFIRM_AFTER, and no probe out: its probe on
         the log lane, an empty `events` frame. The hub refuses it `not-open`
-        before answering when it does not hold the project open — so the
-        refusal, which owes them again, comes ahead of the answer — and does
-        nothing else with it. What is held is confirmed within CONFIRM_AFTER
-        and a log-lane round trip, archive period or not."""
+        before answering when it does not hold the project open (the refusal
+        owes them again), and does nothing else with it. What is held is
+        confirmed within CONFIRM_AFTER, plus the probe's wait in the log
+        lane's queue (it goes behind the uploads and any log POST the hub
+        holds; UPLOAD_AHEAD gives it no priority), plus its exchange —
+        archive period or not. Not proof: the probe's refusal, written before
+        its answer, can still be unread by the stream's reader when the
+        answer's continuation runs (sminos_flights)."""
         now = time.monotonic()
         for pid in sorted(self.opened - self.opening - self.probing):
             since = [t for t in (self.requests.flights.held_since(pid), self.rpcs.flights.held_since(pid))
