@@ -47,7 +47,7 @@ before it is built (Decision Log).
 - [x] M6 — The uplink's sender lanes, with connection reuse proven (2026-10-20, reviewed clean after two fix rounds; d5fa1d6a..aa57759b; the fix 2f64aa96..4400ced7 passed by the coordinator's reviewer and merged at eeb71406, sminos 1.2.13; the A9 by-hand hour of the owner's daemon.log pending the roll)
 - [x] M7 — The build saved and warmed, bounded; the look off the open path (2026-10-20, reviewed clean after two fix rounds; 63683909..7a9fdccb, sminos 1.2.10, gate GREEN 39469065139; the by-hand A3 line on the owner's Mac pending the roll)
 - [x] M8 — The child respawns at once; a resync fits the engine's limit (2026-10-20, reviewed clean after one fix round; 1aa1a002..227187e8, sminos 1.2.12, gate GREEN 39482745539; one A6 trial of ten over the bound, 0.525 s, recorded)
-- [ ] M9 — Acceptance, documents, the branch review (2026-10-20, machine side done: A1–A9 run as written at load < 50, every figure passing, the 100–300 band pending: devcloud (the owner chose a devcloud host; a separate agent runs task-9-report.md's band runs); A10 gates GREEN (39493005844) on 996e1052 (sminos 1.2.14), MAWS gates cited, live-resume 14/14, live-bridge 15/15 after the M9 fix; documents current; the xhigh panel's three P2s fixed (218aa515) and the coordinator's review's tombstone P2 (ee66cc3e, 1.2.17, 8/8 GREEN 39513262138), the coordinator's check of the delta pending; by-hand checks on the owner's Mac and `deskLatency()` pending the second roll, #302)
+- [ ] M9 — Acceptance, documents, the branch review (2026-10-20, machine side done: A1–A9 run as written at load < 50, every figure passing, the 100–300 band pending: devcloud (the owner chose a devcloud host; a separate agent runs task-9-report.md's band runs); A10 gates GREEN (39493005844) on 996e1052 (sminos 1.2.14), MAWS gates cited, live-resume 14/14, live-bridge 15/15 after the M9 fix; documents current; the xhigh panel's three P2s fixed (218aa515) and the coordinator's reviews' tombstone P2s (4072c8b8, 1.2.18), the coordinator's check of the delta pending; by-hand checks on the owner's Mac and `deskLatency()` pending the second roll, #302)
 
 ## Terms
 
@@ -587,11 +587,15 @@ its next look (`Plane.say_again`): every member's, and every session the
 plane said not running and has not seen back since (`gone`), since a
 tombstone `hold` dropped is gone and the in-flight body may carry the
 leaver's last live presence. Both go behind that body on its FIFO lane and
-supersede what it carried; a tombstone said twice is harmless. A leaver is
-kept to be said again for `GONE_KEEP` (300 s) from when it was first said
-gone: the in-flight body's lane deadline (2 × `POST_TIMEOUT`), the hello's,
-and the leaver's live presence's wait in the queue. [panel fix, 2026-10-20;
-tombstones, the coordinator's review]
+supersede what it carried; a tombstone said twice is harmless. Which
+leavers the heal says again is decided by the body it heals: `hold` returns
+when the oldest line of the project in the body out was queued, and the
+plane says not running again every leaver it first said gone at or after
+that time. A session's live presence is queued before its tombstone, so any
+leaver whose live presence that body carries is among them, however long
+either waited in the queue; one said gone before carries none. `GONE_KEEP`
+(an hour) bounds the plane's memory of leavers, nothing more. [panel fix,
+2026-10-20; tombstones and their bound, the coordinator's reviews]
 
 **Head-of-line.** A re-`hello` the hub holds now stalls the log lane alone
 for its duration; opens, chunks, requests and RPC results flow on the
@@ -2421,11 +2425,21 @@ beside; a single reviewer reads one of those well in a pass.
   in-flight body, stayed live at the hub for good. The plane keeps the
   sessions it said not running (`gone[pid]`, each with the time it was first
   said gone, which a re-send does not extend) and `say_again`'s pass says
-  them not running again; entries older than `GONE_KEEP` (300 s) are dropped
-  every pass, so a heal re-sends only the last five minutes' leavers. Chosen
-  over keeping the dropped frames in the Sender: it holds wire lines, and
-  the plane already knows who left. sminos 1.2.16 (above main after the
-  merge), then 1.2.17; 3ac6660b..ee66cc3e, 8/8 GREEN (39513262138). A full
+  them not running again. Chosen over keeping the dropped frames in the
+  Sender: it holds wire lines, and the plane already knows who left. Its
+  first bound, `GONE_KEEP` 300 s from the leave (ee66cc3e), was tied to the
+  leave rather than to the stale presence: a live presence can wait in the
+  session lane's queue past it, so a heal at 301 s missed a leaver whose
+  body was still to land (the coordinator's reviewer-high on
+  218aa515..ee66cc3e). The heal now takes the body's own clock: `hold`
+  returns when its oldest line of the project was queued, and `say_again(pid,
+  since)` says again every leaver first said gone since — exact, because a
+  session's live presence precedes its tombstone on the lane; `GONE_KEEP`
+  became an hour's memory cap. Tracking each session's live presences
+  through the lane until confirmed was rejected: the Sender carries wire
+  lines, the plane does not see bodies, and the body's timestamp gives the
+  same answer with one number. sminos 1.2.16 (above main after the merge),
+  1.2.17, then 1.2.18; 3ac6660b..4072c8b8. A full
   gate on 2aeaa663 failed once in test-join.sh's two-machine "joined there"
   (code the branch does not touch; the same tree passed at 218aa515, and
   sminos-suites re-run alone passed, 39508461065): a flake.
