@@ -2308,7 +2308,8 @@ class Plane:
         self.tombstoned = {}      # project id → the read whose leavers a connect said, until the hub takes them
         self.wall = time.time
         self.sent = {}            # (project id, session) → presence body last sent
-        self.again = set()        # project ids whose members' presence is said again at the next look (say_again)
+        self.again = set()        # project ids whose presence is said again at the next look (say_again)
+        self.gone = {}            # project id → {session}: said not running here, not seen back since
         self.subs = {}            # sub → Subscription
         self.diffs = queue.Queue()
         self.read_for = None      # the running sessions the members were last read for
@@ -2361,36 +2362,45 @@ class Plane:
         One whose leaving has no time is said every time."""
         now = time.monotonic() if now is None else now
         out = []
+        members = self.members.get(pid, ())
+        gone = self.gone.setdefault(pid, set())
+
+        def not_running(sid):
+            gone.add(sid)
+            out.append(envelope(pid, self.machine, sid, "presence", None, None, {"record": None, "bridge": False}))
         if force:
             self.live = self.records.scan()
             mark = tombstone_marks().get(pid)
             since = None if mark is None else mark - TOMBSTONE_MARGIN
             for sid, at in sorted(self.left.get(pid, {}).items()):
                 if since is None or at is None or at >= since:
-                    out.append(envelope(pid, self.machine, sid, "presence", None, None,
-                                        {"record": None, "bridge": False}))
+                    not_running(sid)
             if pid in self.read_at:
                 self.tombstoned[pid] = self.read_at[pid]
         socks = bridge_socks() if socks is None else socks
         again = pid in self.again
         self.again.discard(pid)
-        for sid in sorted(self.members.get(pid, ())):
+        if again:
+            for sid in sorted(gone - set(members) - {m["session"] for m in out}):
+                not_running(sid)
+        for sid in sorted(members):
             body = self.presence_of(sid, now, socks)
             if force or again or self.sent.get((pid, sid)) != body:
                 self.sent[(pid, sid)] = body
+                gone.discard(sid)
                 out.append(envelope(pid, self.machine, sid, "presence", None, None, body))
-        for key in [k for k in self.sent if k[0] == pid and k[1] not in self.members.get(pid, ())]:
+        for key in [k for k in self.sent if k[0] == pid and k[1] not in members]:
             body = self.sent.pop(key)
             if body["record"] is not None or body["bridge"]:
-                out.append(envelope(pid, self.machine, key[1], "presence", None, None,
-                                    {"record": None, "bridge": False}))
+                not_running(key[1])
         return out
 
     def say_again(self, pid):
-        """The project's members' presence is said again at its next look,
-        changed or not: a copy older than the one last sent may have reached
-        the hub after it (a body in flight at a re-open, applied after the
-        hello)."""
+        """The project's presence is said again at its next look, changed or
+        not — every member's, and every leaver this plane said not running
+        and has not seen back — since a copy older than the one last sent
+        may have reached the hub after it (a body in flight at a re-open,
+        applied after the hello). A leaver said twice is harmless."""
         self.again.add(pid)
 
     def take_read(self, pid):

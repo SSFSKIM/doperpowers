@@ -31,6 +31,7 @@ import pickle
 import queue
 import re
 import shutil
+import signal
 import socket
 import struct
 import subprocess
@@ -3918,8 +3919,57 @@ class Lifecycle(unittest.TestCase):
             "the member's presence is said again after the body: %s" % self.kinds(hub))
         link.post_session(link.plane.presence(project.id))
         time.sleep(0.3)
-        again = [f for b in hub.bodies()[held + 2:] for f in b if f.get("t") == "session"]
+        again = [f for b in hub.bodies()[held + 2:] for f in b
+                 if f.get("t") == "session" and f["message"]["session"] == runs]
         self.assertEqual(len(again), 1, "said again once, not at every look")
+
+    def test_a_session_that_left_while_its_live_presence_was_in_flight_at_a_reopen_is_not_left_live(self):
+        """A member's live presence is out (held at the hub); the member
+        ends, and its tombstone queues behind that body; the hub refuses the
+        project `not-open` and it is opened again, the tombstone queued
+        dropped as the hello renews presence. The hub may apply the held
+        live presence after the hello: the presence said again behind it
+        says the leaver not running too, so the hub does not keep it live."""
+        import sminos
+        project, runs, _ = self.ended_presence_project("reopen-ghost")
+        hub = ScriptedHub()
+        self.addCleanup(hub.close)
+        link, items, hl = self.on_lanes(project, hub)
+        link.open(hl)
+        self.answered(link, items)
+        hub.script = ["hold"]
+        held = len(hub.posts)
+        live = {"record": {"status": "busy"}, "bridge": False}
+        link.post_session([plane.envelope(project.id, "testhost", runs, "presence", None, None, live)])
+        self.assertTrue(wait_for(lambda: len(hub.posts) > held), "the live presence is out, held at the hub")
+        sessions = os.path.join(os.environ["HOME"], ".claude", "sessions")
+        for name in os.listdir(sessions):
+            with open(os.path.join(sessions, name)) as f:
+                rec = json.load(f)
+            if rec.get("sessionId") == runs:
+                os.kill(rec["pid"], signal.SIGTERM)
+                os.unlink(os.path.join(sessions, name))
+        def ended():
+            sminos.forget_caches()
+            sminos.view_of(project, titles=False)
+            link.plane.refresh(project)
+            return runs not in link.plane.members.get(project.id, ())
+        self.assertTrue(wait_for(ended), "the member ended")
+        tombstone = link.plane.presence(project.id)
+        self.assertEqual([(m["session"], m["body"]) for m in tombstone], [(runs, {"record": None, "bridge": False})])
+        link.post_session(tombstone)       # queued behind the held body
+        link.on_refused({"t": "refused", "project": project.id, "refusal": {"reason": "not-open"}}, None)
+        self.assertTrue(wait_for(lambda: len(hub.posts) > held + 1), "the re-open's hello went")
+        self.answered(link, items)
+        hub.release.set()
+        link.post_session(link.plane.presence(project.id))   # the next look, as a tick takes it
+        time.sleep(0.5)
+        bodies = hub.bodies()
+        order = bodies[:held] + [bodies[held + 1], bodies[held]] + bodies[held + 2:]   # the hello, then the held body
+        said = [f["message"]["body"] for b in order for f in b
+                if f.get("t") == "session" and f["message"]["kind"] == "presence" and f["message"]["session"] == runs]
+        self.assertEqual(said[-1:], [{"record": None, "bridge": False}],
+                         "the hub's last word on the leaver is that it is not running: %s" % said)
 
     def test_each_hellos_answer_takes_the_presence_read_it_carried(self):
         """Two presence-bearing hellos of one project in flight, answered 200
