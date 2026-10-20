@@ -43,8 +43,8 @@ before it is built (Decision Log).
 - [x] M2 — The instruments: `bench_open.py` (micro and full path), `bench_scale.py opens` (2026-10-20, reviewed clean after two fix rounds; 0482d416..acde4b3a, sminos 1.2.5)
 - [x] M3 — The web keeps a carried block across a reconnect (MAWS) (2026-10-20, reviewed clean; MAWS `desk-open-fast-web` bda992c29, PR #86)
 - [x] M4 — The hub's reply chain decoupled (MAWS) (2026-10-20, reviewed clean; MAWS `desk-open-fast-hub` fba324cc4..beb065470, master merged at ef190e5e2)
-- [x] M5 — The snapshot goes at once; a notice's row is due at its step's end (2026-10-20, reviewed clean; 8d7fae3f, sminos 1.2.6; built, not rolled)
-- [ ] M6 — The uplink's sender lanes, with connection reuse proven
+- [x] M5 — The snapshot goes at once; a notice's row is due at its step's end (2026-10-20, reviewed clean; 8d7fae3f, sminos 1.2.6; the legacy-bridge fix ba3816df reviewed clean and merged at 417210c8, sminos 1.2.9)
+- [x] M6 — The uplink's sender lanes, with connection reuse proven (2026-10-20, reviewed clean after two fix rounds; d5fa1d6a..aa57759b; the A9 by-hand hour of the owner's daemon.log pending the roll)
 - [ ] M7 — The build saved and warmed, bounded; the look off the open path
 - [ ] M8 — The child respawns at once; a resync fits the engine's limit
 - [ ] M9 — Acceptance, documents, the branch review
@@ -2054,6 +2054,37 @@ beside; a single reviewer reads one of those well in a pass.
   `desk-open-fast-m5fix` ba3816df.
   Date/Author: 2026-10-20, the M5 fix executor, reviewed clean, folded by
   the controller.
+
+- Decision (M6, beyond §3, accepted on review): a kept connection is checked
+  before each request (a zero-timeout select: a socket that reads its end
+  is dropped as "the hub closed it" and the POST dials afresh), since an edge
+  idle close lets the write succeed and fails at `getresponse`, which §3
+  rightly makes a loss; §3's retry-once on a failed send stays. Uploads pace
+  themselves: `Link.upload` queues nothing while the log lane holds
+  `UPLOAD_AHEAD` (`POST_LIMIT`, 4 MiB) unsent, checked before the producer
+  runs, so a long-offline machine's backlog never trips `SEND_QUEUE_MAX`.
+  Session-lane entries split per project, a `then` shared by the pieces and
+  due with the body that takes the last. The close reasons gain "the stream
+  ended"; connection numbers are process-wide; a `("sent", …)` item goes
+  only when continuations are due; the stream-end line is today's word for
+  word (the lane is named by the close line just before it).
+  Date/Author: 2026-10-20, the M6 executor, folded by the controller.
+- Decision (M6 review, two rounds): recovery and acknowledgement under the
+  lanes. A re-opened project is gated again (`Sender.hold` takes it out of
+  `released` and moves its queued, not-yet-taken entries back aside in
+  order) before its hello is queued, and recovery hellos coalesce
+  (`Link.opening`); while a project is opening, a `not-open` refusal is
+  logged and changes nothing, its vector included (the refused frame went
+  before the hello now opening it; a later loss is refused again after the
+  hello's continuation clears `opening`, the item queue ordering it). Each
+  hello's continuation marks the presence read it carried
+  (`Plane.take_read`, `accepted(pid, read)`). The continuation releases the
+  HTTP state first (`opening`, the gate, the in-flight counts) and does the
+  local bookkeeping after it; a failed rejection record or outbox drop is
+  kept and retried on every `deliveries` pass (`settle_marks`), never
+  latching a gate or a flag, never posting again.
+  Date/Author: 2026-10-20, the M6 executor and its reviewer, folded by the
+  controller.
 
 ## Outcomes & Retrospective
 
