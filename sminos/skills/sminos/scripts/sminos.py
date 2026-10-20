@@ -32,6 +32,9 @@ member too, seat-less, from the first call that reads its project.
                    # or codex:<id|exact name>, through codex's queue); --wait needs a seat.
     sminos say      [--in <project>] <text>                # untagged: recorded; @alias / @"a b" / @alias#short /
                    @short / @project/alias: delivered; @all: every live member
+    sminos say      [--org] [--project P,..] [--machine M,..] [--here] [--state W,..] <text>   # list's filters:
+                   every live session of that scope but you (`list` with the same flags shows them), each woken
+                   as @all wakes; recorded in each project it reaches, copied into yours; no @tags beside it
     sminos chat     [<project>] [-n N] [--since TS] [--kind K] [--json]   # no flags: unread, advancing the cursor
     sminos chat     [<project>] --host [-n N] [--since TS] [--json]       # what the members sent their human
     sminos charge   [<member>] "<one line>"               # what the member is in charge of (a session: its own)
@@ -3141,15 +3144,16 @@ def deliver_next(project, member):
 def frame_of(project, e, events, session, cursor):
     """The frame an event is pushed as. A `send` keeps its own frame (its id
     is what `send --wait` looks for), its sender shown as the `--from`
-    override when it had one; anything else is a chat frame. Its unread
-    count leaves out copies: each is a record of a message another log
-    carries, not one spoken here."""
+    override when it had one; anything else is a chat frame, whose target is
+    `@you`, or a broadcast's scope (target_label: `@all`, `@all on mini`).
+    Its unread count leaves out copies: each is a record of a message
+    another log carries, not one spoken here."""
     if e.get("msg_id"):
         return compose_frame(str(e.get("via") or e.get("from") or ""), e["msg_id"], str(e.get("text") or ""))
     unread = sum(1 for x in events if x is not e and x["kind"] in CHAT_KINDS and "copy" not in x and
                  writer_session(x["writer"]) != session and x["seq"] > cursor.get(x["writer"], 0))
     return compose_chat_frame(project.name, event_ref(e), str(e.get("from") or ""),
-                              "@all" if e.get("wake") else "@you", unread, str(e.get("text") or ""))
+                              target_label(e) if e.get("wake") else "@you", unread, str(e.get("text") or ""))
 
 
 def push_event(project, member, session, e, events, cursor):
@@ -3483,19 +3487,24 @@ def push_member(member, text, tagged, session=None, event=None, project=None):
 # ------------------------------------------------------------------ say / chat
 
 
-def record_copy(home, dest, e):
-    """A message a session spoke into another project (`e`, in `dest`'s log,
-    which delivers it), copied into the session's own project's log `home`
-    (§6 of the org directory design): the same event under the same writer,
-    its ts, `from` and text, `to` each recipient with its project, and
-    `copy` naming the delivering event as `<project id>:<writer>:<seq>` — no
-    one is owed it (addressed_to). Written after the delivering event; one
-    that cannot be written is a warning, since the message was delivered."""
-    fields = {k: v for k, v in e.items() if k not in ("writer", "seq", "kind", "from_project")}
-    fields["to"] = [dict(r, project=dest.id) for r in e["to"] if isinstance(r, dict)]
-    fields["copy"] = "%s:%s:%d" % (dest.id, e["writer"], e["seq"])
+def record_copy(home, delivered):
+    """A message a session spoke into other projects, copied into the
+    session's own project's log `home` (§6 of the org directory design;
+    §5a for a broadcast). `delivered`: (project, the event its log delivers
+    it by) for each project it went to. The copy is the first event under
+    the same writer, with its ts, `from`, text and the rest but
+    `from_project`; `to` every recipient with its project; and `copy`
+    naming the delivering event as `<project id>:<writer>:<seq>`, a list of
+    those when several projects' events deliver it — no one is owed it
+    (addressed_to). Written after the delivering events; one that cannot be
+    written is a warning, since the message was delivered."""
+    first = delivered[0][1]
+    fields = {k: v for k, v in first.items() if k not in ("writer", "seq", "kind", "from_project")}
+    fields["to"] = [dict(r, project=dest.id) for dest, e in delivered for r in e["to"] if isinstance(r, dict)]
+    refs = ["%s:%s:%d" % (dest.id, e["writer"], e["seq"]) for dest, e in delivered]
+    fields["copy"] = refs[0] if len(refs) == 1 else refs
     try:
-        c = log_append(home, e["writer"], e["kind"], **fields)
+        c = log_append(home, first["writer"], first["kind"], **fields)
     except OSError as err:
         warn("delivered, but its copy could not be recorded in %s: %s" % (home.name, err))
         return None
@@ -3503,9 +3512,141 @@ def record_copy(home, dest, e):
     return c
 
 
+def deliver_say(dest, e, writer, recipients, name=lambda r: r["alias"]):
+    """Deliver a recorded say (`e`, in `dest`'s log) to its recipients, a
+    line each, the recipient as `name` gives it: one of this machine's now
+    (deliver_next); another machine's by that machine's daemon, which this
+    machine's is asked to push it to at once."""
+    by_session = {m.session: m for m in members(dest)}
+    for r in recipients:
+        member = by_session.get(r["session"])
+        if member is not None and not member.local:
+            # Owed to it in the log; its own machine's daemon delivers it,
+            # once this machine's daemon has pushed it: ask for that now.
+            print("%s: recorded (on %s)" % (name(r), member.machine))
+            nudge_daemon()
+            continue
+        result = deliver_next(dest, member) if member else {"outcomes": []}
+        mine = [o for ev, o in result["outcomes"] if ev["writer"] == writer and ev["seq"] == e["seq"]]
+        if mine:
+            print("%s: %s" % (name(r), mine[0]))
+            continue
+        held = next((o for ev, o in result["outcomes"] if ev["writer"] == writer), "")
+        print("%s: pending%s" % (name(r), " behind an earlier undelivered message (%s)" % held if held else ""))
+
+
+# A broadcast's scope (§5a of the org directory design): list's filters, put
+# to sending. `sminos list` with the same flags shows the sessions it reaches.
+
+
+def selector_given(a):
+    return bool(a.org or a.projects or a.machine or a.state or a.here)
+
+
+def say_scope(a):
+    """The `scope` a broadcast's events carry, from say's selector: each key
+    only when its flag is given — `projects` the ids --project names,
+    `machines` --machine's prefixes as given, `here` this machine's name,
+    `states` --state's words. {} is the whole org (--org alone). A named
+    project the org's directory retires is refused: a message into it would
+    never leave this machine."""
+    scope = {}
+    if a.projects:
+        named = [find_project(q) for q in a.projects]
+        for p in named:
+            if org_retired(p.id):
+                die("project '%s' is retired in the org's directory" % p.name, EXIT_UNKNOWN)
+        scope["projects"] = list(dict.fromkeys(p.id for p in named))
+    if a.machine:
+        scope["machines"] = list(a.machine)
+    if a.here:
+        scope["here"] = host_name()
+    if a.state:
+        scope["states"] = list(a.state)
+    return scope
+
+
+def scope_label(scope):
+    """How chat, a frame and the TUI name a broadcast's scope: `@org` for the
+    whole org, else `@all` narrowed by ` in <projects>` and ` on <machines>`;
+    then ` (<states>)` when it reached only those."""
+    def words(key):
+        v = scope.get(key)
+        return [x for x in v if isinstance(x, str)] if isinstance(v, list) else []
+
+    projects = [project_label(p) for p in words("projects")]
+    here = scope.get("here")
+    machines = words("machines") + ([here] if isinstance(here, str) and here else [])
+    label = "@all" if projects or machines else "@org"
+    if projects:
+        label += " in " + ",".join(projects)
+    if machines:
+        label += " on " + ",".join(machines)
+    if words("states"):
+        label += " (%s)" % ",".join(words("states"))
+    return label
+
+
+def scope_members(a, sender):
+    """[(project, [member])]: the rows `list` shows with say's selector
+    (list_scope, row_matches) that are live members, `sender` left out, each
+    session once (where it joined last), grouped by project. A project the
+    org's directory retires is passed over."""
+    projects, _, _ = list_scope(a)
+    found = one_per_session([(p, m) for p in projects if not org_retired(p.id) for m in members(p)
+                             if m.session and m.session != sender and m.state in FILLED and row_matches(m, p, a, [])])
+    groups = {}
+    for p, m in found:
+        groups.setdefault(p.id, (p, []))[1].append(m)
+    return list(groups.values())
+
+
+def say_scoped(a, home, sender, writer, kind, sid):
+    """A say with a selector: delivered to every live session of its scope
+    (scope_members) as @all is, waking each, no stopped one resumed. One
+    event in each project with a recipient — `to` those recipients, `scope`
+    the selector (say_scope), `wake` — and, from a session whose own project
+    `home` has none of them, a copy there (record_copy). The operator (no
+    session) writes no copy, as for a cross-project tag."""
+    if a.state and not set(a.state) & set(FILLED):
+        die("a broadcast reaches live sessions only (%s): --state %s names none" % (", ".join(FILLED), ",".join(a.state)))
+    scope = say_scope(a)
+    label = scope_label(scope)
+    groups = scope_members(a, sid)
+    count = sum(len(ms) for _, ms in groups)
+    if not count:
+        die("no live session in %s but you: nothing sent (sminos list with the same flags shows who is there)"
+            % label, EXIT_UNKNOWN)
+    print("%s: %d session%s in %s" % (label, count, "" if count == 1 else "s", ", ".join(p.name for p, _ in groups)))
+    delivered, lost = [], False
+    for dest, ms in groups:
+        fields = {"from": sender, "to": [{"session": m.session, "alias": m.alias} for m in ms], "text": a.text,
+                  "wake": True, "scope": scope}
+        if home is not None and home.id != dest.id:
+            fields["from_project"] = home.id  # the sender's own project, where a reply finds it
+        try:
+            delivered.append((dest, log_append(dest, writer, kind, **fields)))
+        except OSError as err:
+            warn("not recorded in %s, so not sent to its %d: %s" % (dest.name, len(ms), err))
+            lost = True
+            continue
+        print("recorded %s in %s" % (event_ref(delivered[-1][1]), dest.name))
+    if home is not None and delivered and all(p.id != home.id for p, _ in groups):
+        record_copy(home, delivered)
+    for dest, e in delivered:
+        deliver_say(dest, e, writer, e["to"], lambda r: "%s#%s" % (r["alias"], r["session"][:8]))
+    if lost:
+        sys.exit(1)
+
+
 def cmd_say(a):
-    """Record a message in a project's log, and deliver it to whom it tags."""
+    """Record a message in a project's log, and deliver it to whom it tags;
+    with a selector, to every live session of its scope (say_scoped)."""
     sid = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+    scoped = selector_given(a)
+    if scoped and leading_tags(a.text):
+        die("a selector picks the recipients itself: drop the opening @tags, or the selector — tags name "
+            "sessions, a selector names a scope, and one message takes one")
     if sid:
         if a.in_:
             die("--in is for an operator, not a session — tag @<project>/<name> to speak into another project")
@@ -3514,8 +3655,13 @@ def cmd_say(a):
         sender = caller["alias"] if caller else default_from("")
         writer, kind = writer_id(sid), "say"
     else:
-        home = find_project(a.in_) if a.in_ else caller_project()
+        if scoped and a.in_:
+            die("--in names the project a say is spoken in; a selector names its own (--project)")
+        home = find_project(a.in_) if a.in_ else None if scoped else caller_project()
         sender, writer, kind = "human", writer_id(), "human"
+    if scoped:
+        say_scoped(a, home if sid else None, sender, writer, kind, sid)
+        return
     dest, recipients, _text, wake = resolve_tags(home, a.text)
     if dest is None:
         die("say outside a project: run it in a project's directory, or name one with --in <project>")
@@ -3535,23 +3681,8 @@ def cmd_say(a):
         die("say could not be recorded: %s" % err, 1)
     print("recorded %s in %s" % (event_ref(e), dest.name))
     if "from_project" in fields:
-        record_copy(home, dest, e)
-    by_session = {m.session: m for m in members(dest)}
-    for r in recipients:
-        member = by_session.get(r["session"])
-        if member is not None and not member.local:
-            # Owed to it in the log; its own machine's daemon delivers it,
-            # once this machine's daemon has pushed it: ask for that now.
-            print("%s: recorded (on %s)" % (r["alias"], member.machine))
-            nudge_daemon()
-            continue
-        result = deliver_next(dest, member) if member else {"outcomes": []}
-        mine = [o for ev, o in result["outcomes"] if ev["writer"] == writer and ev["seq"] == e["seq"]]
-        if mine:
-            print("%s: %s" % (r["alias"], mine[0]))
-            continue
-        held = next((o for ev, o in result["outcomes"] if ev["writer"] == writer), "")
-        print("%s: pending%s" % (r["alias"], " behind an earlier undelivered message (%s)" % held if held else ""))
+        record_copy(home, [(dest, e)])
+    deliver_say(dest, e, writer, recipients)
 
 
 def target_label(e):
@@ -3559,7 +3690,7 @@ def target_label(e):
     if to == "*":
         return "*"
     if e.get("wake"):
-        return "@all"
+        return scope_label(e["scope"]) if isinstance(e.get("scope"), dict) else "@all"
     if isinstance(to, list):
         return " ".join("@" + str(r.get("alias") or "?") for r in to if isinstance(r, dict)) or "-"
     return str(to or "-")
@@ -3583,11 +3714,13 @@ def is_moved(e):
 
 def chat_line(e):
     """`<ts> <ref> <from> → <target>  <text>`; a copy (record_copy) marked
-    `→ <project>` after its target, the project whose log delivered it."""
+    `→ <project>, …` after its target, the projects whose logs delivered it."""
     lines = str(e.get("text") or "").split("\n")
     target = target_label(e)
-    if isinstance(e.get("copy"), str):
-        target += " → %s" % project_label(e["copy"].partition(":")[0])
+    copy = e.get("copy")
+    refs = [copy] if isinstance(copy, str) else [r for r in copy if isinstance(r, str)] if isinstance(copy, list) else []
+    if refs:
+        target += " → %s" % ", ".join(project_label(r.partition(":")[0]) for r in refs)
     out = ["%s %s %s → %s  %s" % (e["ts"][11:19], event_ref(e), e.get("from", ""), target, lines[0])]
     out += ["    " + line for line in lines[1:]]
     return "\n".join(out)
@@ -7446,7 +7579,7 @@ def record_message(project, session, alias, sender, via, text, msg_id, deliver=T
     try:
         event = log_append(project, writer, "say" if sid else "human", **fields)
         if "from_project" in fields:
-            record_copy(home, project, event)
+            record_copy(home, [(project, event)])
         return SendDelivery(project, session, writer, event) if deliver else event
     except OSError as e:
         die("send not delivered: it could not be recorded in %s's log (%s)" % (project.name, e), 1)
@@ -9016,10 +9149,18 @@ def build_parser():
     s.add_argument("--from", dest="frm", default="")
     s.set_defaults(fn=cmd_send)
 
+    def scope_flags(sp):
+        sp.add_argument("--project", dest="projects", type=comma_list, default=[])
+        sp.add_argument("--machine", type=comma_list, default=[])
+        sp.add_argument("--state", type=state_words, default=[])
+        sp.add_argument("--org", action="store_true")
+        sp.add_argument("--here", action="store_true")
+
     say = sub.add_parser("say", add_help=False)
     say.add_argument("text")
     say.add_argument("--in", dest="in_", default="")
-    say.set_defaults(fn=cmd_say)
+    scope_flags(say)
+    say.set_defaults(fn=cmd_say, args=[])
 
     chat = sub.add_parser("chat", add_help=False)
     chat.add_argument("project", nargs="?", default="")
@@ -9152,11 +9293,7 @@ def build_parser():
     rm.set_defaults(fn=cmd_remove)
 
     def list_flags(sp):
-        sp.add_argument("--project", dest="projects", type=comma_list, default=[])
-        sp.add_argument("--machine", type=comma_list, default=[])
-        sp.add_argument("--state", type=state_words, default=[])
-        sp.add_argument("--org", action="store_true")
-        sp.add_argument("--here", action="store_true")
+        scope_flags(sp)
         sp.add_argument("--json", action="store_true")
         sp.add_argument("--all", action="store_true")
 

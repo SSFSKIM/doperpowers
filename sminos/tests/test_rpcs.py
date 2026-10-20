@@ -1344,24 +1344,74 @@ class Checks(unittest.TestCase):
             os.kill(h["pid"], signal.SIGKILL)
 
     def test_j_the_live_checks_call_path_runs_against_the_stand_in(self):
-        """tests/mods/live-resume-check.py's own Resume call, run here
-        against the `claude` stand-in: a change to Resume's call breaks this,
-        not only a by-hand engine run."""
+        """tests/mods/live-resume-check.py's own calls, run here against the
+        `claude` stand-in: its daemon's side of a Resume (RESUME) in each of
+        its modes, and its reads and writes of sminos (SMINOS). A change to
+        any of their call paths breaks this, not only a by-hand engine run."""
         import importlib.util
         path = os.path.join(tsp.HERE, "mods", "live-resume-check.py")
         spec = importlib.util.spec_from_file_location("live_resume_check", path)
         live = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(live)
+
+        def run(script, op, *args):
+            r = subprocess.run([sys.executable, "-c", script, tsp.SCRIPTS, op, self.root, *args],
+                               capture_output=True, text=True, timeout=120)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            return [json.loads(line) for line in r.stdout.splitlines() if line.strip()]
+
+        def stop(sid):
+            for h in holders_of(sid):
+                os.kill(h["pid"], signal.SIGKILL)
+
+        rows = os.path.join(self.claude, "agents")
+        os.makedirs(rows, exist_ok=True)
+        before = set(os.listdir(rows))
         sid = ended_session(self.root)
-        r = subprocess.run([sys.executable, "-c", live.RESUME, tsp.SCRIPTS, sid, "--check", self.root],
-                           capture_output=True, text=True, timeout=120)
+        try:
+            _, got = run(live.RESUME, "resume", sid, sid)
+            self.assertEqual(sorted(map(str, map(live.code_of, got))),
+                             [str(("done", None)), str(("failed", "session-live"))], "two at once: one session")
+            self.assertEqual([e["job"] for e in got if "launched_at" in e], [sid[:8]], "one launch, its job kept")
+            stop(sid)
+            [[nonce]] = run(live.RESUME, "die-before-job", sid)
+            self.assertEqual(sorted(k for k in ("launched_at", "job", "outcome") if k in self.ledger()[nonce]),
+                             ["launched_at"], "stopped once its launch returned, before its job was kept")
+            [got] = run(live.RESUME, "restart", "20", nonce)
+            self.assertEqual(got[0]["outcome"], {"state": "done", "result": {"session": sid}})
+            stop(sid)
+            [[nonce]] = run(live.RESUME, "die-after-job", sid)
+            self.assertEqual(self.ledger()[nonce]["job"], sid[:8], "stopped once its job was kept")
+            self.assertNotIn("outcome", self.ledger()[nonce])
+            [got] = run(live.RESUME, "restart-past-window", "20", nonce)
+            self.assertEqual(got[0]["outcome"], {"state": "done", "result": {"session": sid}})
+            stop(sid)
+            open(os.path.join(self.claude, "reopen-first"), "w").close()
+            _, got = run(live.RESUME, "skip-check", sid)
+            self.assertEqual(live.code_of(got[0]), ("failed", "copy-started"))
+        finally:
+            stop(sid)
+            # A copy's stopped row would read as another test's stopped copy.
+            for name in set(os.listdir(rows)) - before:
+                os.unlink(os.path.join(rows, name))
+
+        gone = ended_session(self.root)
+        [keys] = run(live.SMINOS, "send", gone, "from far away", "from the desk")
+        self.assertEqual(len(keys), 2)
+        r = cli("daemon", "tick")
         self.assertEqual(r.returncode, 0, r.stderr)
-        got = json.loads(r.stdout.strip().splitlines()[-1])
-        self.assertEqual(got["outcome"], {"state": "done", "result": {"session": sid}})
-        self.assertIsInstance(got["notes"]["launched_at"], float)
-        self.assertEqual(got["notes"]["job"], sid[:8], "the launch's evidence, as the ledger would keep it")
-        for h in holders_of(sid):
-            os.kill(h["pid"], signal.SIGKILL)
+        [got] = run(live.SMINOS, "outcomes", gone)
+        self.assertEqual(sorted((o["event"]["writer"], o["event"]["seq"], o["outcome"]) for o in got),
+                         sorted((w, s, "recorded") for w, s in keys))
+        self.assertEqual(run(live.SMINOS, "latest", gone), [{"kind": "retired", "reason": "ended"}])
+        self.assertEqual(run(live.SMINOS, "seat", gone), [None])
+        sminos.meta_set(gone, {"uuid": gone, "current": gone, "alias": "pinned", "group": "rpcproj", "cwd": self.root,
+                               "status": "retired"})
+        try:
+            self.assertEqual(run(live.SMINOS, "seat", gone), [{"alias": "pinned", "status": "retired",
+                                                               "state": "retired"}])
+        finally:
+            sminos.unlink_seat_files(gone)
 
     def test_j_a_job_whose_process_never_holds_the_session_is_a_failure(self):
         sid = ended_session(self.root)
