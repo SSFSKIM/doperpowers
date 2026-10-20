@@ -44,7 +44,7 @@ before it is built (Decision Log).
 - [x] M3 — The web keeps a carried block across a reconnect (MAWS) (2026-10-20, reviewed clean; MAWS `desk-open-fast-web` bda992c29, PR #86)
 - [x] M4 — The hub's reply chain decoupled (MAWS) (2026-10-20, reviewed clean; MAWS `desk-open-fast-hub` fba324cc4..beb065470, master merged at ef190e5e2)
 - [x] M5 — The snapshot goes at once; a notice's row is due at its step's end (2026-10-20, reviewed clean; 8d7fae3f, sminos 1.2.6; the legacy-bridge fix ba3816df reviewed clean and merged at 417210c8, sminos 1.2.9)
-- [x] M6 — The uplink's sender lanes, with connection reuse proven (2026-10-20, reviewed clean after two fix rounds; d5fa1d6a..aa57759b; the A9 by-hand hour of the owner's daemon.log pending the roll)
+- [x] M6 — The uplink's sender lanes, with connection reuse proven (2026-10-20, reviewed clean after two fix rounds; d5fa1d6a..aa57759b; the fix 2f64aa96..4400ced7 passed by the coordinator's reviewer and merged at eeb71406, sminos 1.2.13; the A9 by-hand hour of the owner's daemon.log pending the roll)
 - [x] M7 — The build saved and warmed, bounded; the look off the open path (2026-10-20, reviewed clean after two fix rounds; 63683909..7a9fdccb, sminos 1.2.10, gate GREEN 39469065139; the by-hand A3 line on the owner's Mac pending the roll)
 - [x] M8 — The child respawns at once; a resync fits the engine's limit (2026-10-20, reviewed clean after one fix round; 1aa1a002..227187e8, sminos 1.2.12, gate GREEN 39482745539; one A6 trial of ten over the bound, 0.525 s, recorded)
 - [ ] M9 — Acceptance, documents, the branch review
@@ -524,14 +524,37 @@ heals it:
 - **At enqueue** (healed by the handshake if the POST is lost, or re-sent
   until acknowledged on its own): `opened.add`, `follows`, `machine_sent`,
   `hl.took(reach)` (the hub's `have` on the next hello resets it),
-  `requests.sent` (the complete pending set goes after every connect),
-  `rpcs.sent` (results are re-sent until `rpc-ack`).
+  `requests.sending` for the pending set (the complete set goes after every
+  connect), `rpcs.sending` for results (re-sent after every connect until
+  `rpc-ack`).
 - **In the POST's `then`** (not healed: a loss would be silent):
   `plane.accepted(pid)` (the presence tombstone mark), `hl.reported(frames)`
   (rejections reported), `box.drop(lines)` (delivery outcomes dropped from
   the outbox). Their producers hold an **in-flight flag** per project until
   the `then` ran, and `deliveries(hl)` and `unreported()` are not taken again
   while it is held, so nothing is posted twice.
+- **Settlements and DX4 compact messages: in flight, then held until
+  confirmed** [M6 fix, 2026-10-20]. The first draft put `requests.sent` at
+  enqueue for every request frame, on the premise that the handshake heals
+  it; that holds for the pending set, not for a settlement, which no
+  handshake rebuilds (its winner and decision record live only in the
+  outbox), so a lost POST, a cut stream or a restart lost it for good. Such
+  a message is `flying` from enqueue (neither due nor in `opening`'s backlog
+  again), leaves the outbox in its POST's `then` under the project's epoch
+  (a `not-open` bumps it, voiding the attempts in flight), and stays held,
+  still owed, until a confirmation of its project queued after that answer
+  is answered — the hello carrying it in its own POST, or the project's
+  probe (an empty `events` frame on the log lane, `CONFIRM_AFTER` 2 s after
+  the first held answer, one at a time, `Link.confirm_held`) — and only then
+  is a settlement written to `daemon/requests.json`. A `not-open` owes again
+  everything of that project in flight or held, ahead of the re-open; a new
+  stream owes again everything held; a settlement a later raise superseded
+  is never owed again. Relays send one entry per project, each with its own
+  `then`. What this cannot close is the hub's: it answers 200 to a session
+  frame it refuses `not-open` (unawaited, on its control lane, naming no
+  frame), and a probe's own refusal can still be unread by the stream's
+  reader when its 200's `then` runs (residue: the POST's answer should report
+  refusals).
 - What `open(hl)` posts after the hello (`deliveries(hl)`) stays where it
   is: a lane is one connection, FIFO, so the hub applies it after the hello,
   and a hello that fails ends the stream before any `then` behind it runs.
@@ -2236,6 +2259,38 @@ beside; a single reviewer reads one of those well in a pass.
   question, or dropping a pending request from the catch-up) would break
   answer matching or lose a request.
   Date/Author: 2026-10-20, the controller, on the M8 reviewer's finding.
+
+- Decision (M6 fix, from the coordinator's whole-branch reviewer-high on
+  ba3816df..f5a814f4, four rounds): §3 amended — settlements and DX4
+  compact messages are held in flight and then until confirmed (§3's new
+  bullet), `Requests` and `Rpcs` sharing `sminos_flights.Flights`: a
+  per-project epoch recorded by `sending` and checked by `delivered(frames,
+  attempt)`; held entries stamped when answered and released by
+  `confirm(pid, mark)` for a mark taken when the confirmation is queued;
+  frames in a hello's own POST confirmed at once (the hub applies them
+  behind the hello, the project open); `refuse(pid)` owes the project's held
+  and in-flight messages again and lets go of the voided attempts' entries.
+  The confirmation is a probe, not a hello: a hello is the open handshake (a
+  Registry round trip, the machines upsert, the lease, `have`, the backlog
+  read) and re-opens the project, so it cannot surface a refusal; an empty
+  `events` frame on an open project stores, fans out and renews nothing,
+  and on one not open is refused on the replies lane before the hub answers
+  (MAWS 992faf00b, identical to the deployed c26b74cc). The hub takes a
+  duplicate settlement once (`markSettled`), so a resend is the side erred
+  on. Bound: `CONFIRM_AFTER` plus the probe's wait in the log lane's queue
+  plus its exchange, whatever `SMINOS_ARCHIVE_EVERY`. Ruled residue, not
+  fixed here (the coordinator agreed): both remaining windows need the hub
+  to report a refusal in the POST's answer; a machine-only hello/`have`
+  barrier matched in per-project FIFO order was rejected as too much for a
+  stop-gap. Also from the review: `HubLog.uploads` is a generator and
+  `next_upload` keeps one draw across the paced passes (dropped on a
+  `have`, a followed `resend`, a refusal, a new stream), `Link.upload`
+  drawing only once the log lane has room, so each event is sealed once (a
+  budget rejected: it would still re-parse each writer's file per pass).
+  sminos 1.2.11, `desk-open-fast-m6fix` 2f64aa96..4400ced7, passed by the
+  coordinator's reviewer; merged at eeb71406 (1.2.13).
+  Date/Author: 2026-10-20, the M6 fix executor and its reviewers, folded by
+  the controller.
 
 ## Outcomes & Retrospective
 
