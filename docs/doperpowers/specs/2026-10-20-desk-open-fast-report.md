@@ -20,10 +20,12 @@ gitignored and lives in this worktree.
   and PWA window is pending; the coordinator confirms it.
 - main merged into the branch at 56b51fb8: main is at sminos 1.2.3, this
   branch at 1.2.4.
-- M2 (bench_open.py, bench_scale.py opens): executing. Its executor is
-  `a4d9bac73dcd13283`, base 56b51fb8, report
-  `.doperpowers/sde/2026-10-20-desk-open-fast-design/task-2-report.md`. It
-  will bump sminos to 1.2.5.
+- M2 (bench_open.py, bench_scale.py opens, bench_rig.py): built at
+  0482d416..3acd80fd (sminos 1.2.5); ci-gate GREEN (run 39415013980). Its
+  baseline is folded into Surprises & Discoveries. The first review found 8
+  Important trust defects (the 12 s window, the reconnect, source gaps, the
+  held precondition, the POST census, cleanup, the tee's timing, the +0.5 s
+  moment); the fix round is with executor `a4d9bac73dcd13283`.
 - M5–M9: not started. M5 needs the owner's client refresh before it rolls,
   not before it is built. M5 also carries the reference consumer's amendment
   to match amended §9, plus a fixture case where the drawn text differs from
