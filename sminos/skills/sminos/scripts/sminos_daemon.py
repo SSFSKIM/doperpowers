@@ -85,8 +85,10 @@ DERIVE_EVERY = 3600
 # The uplink is restarted after this many seconds, doubling from 1 while it
 # keeps exiting within the bound; one that ran longer starts the count again.
 UPLINK_BACKOFF_MAX = 60
-# A stopped uplink has this long to end after SIGTERM before it is killed.
-UPLINK_STOP_GRACE = 3
+# A stopped uplink has this long to end after SIGTERM before it is killed:
+# its stream's close, then up to the plane's STOP_SAVE_SECONDS (5) saving the
+# builds it holds, so the next uplink loads them rather than parsing.
+UPLINK_STOP_GRACE = 8
 # The pid of the `daemon run` that spawned an uplink, in the uplink's
 # environment: it ends whenever its parent is another process.
 UPLINK_PARENT_ENV = "SMINOS_UPLINK_PARENT"

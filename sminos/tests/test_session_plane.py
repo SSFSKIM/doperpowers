@@ -289,7 +289,9 @@ class Engine(Session):
         self.assertEqual(s["streaming"], [])
         self.assertIsNone(s["usage"], "no bridge: usage null")
         self.assertEqual(s["presence"], {"record": {"status": "busy"}, "bridge": False})
-        self.assertEqual(s["subagents"], [{"agentId": "a1", "meta": {"agentType": "x"}, "status": "unknown",
+        self.assertEqual(s["subagents"], [], "the look is off the open's path: none of the disk's facts yet")
+        self.assertTrue(self.pump(sub, b, lambda: b.changes), "the first `subagents` follows the snapshot's look")
+        self.assertEqual(b.body["subagents"], [{"agentId": "a1", "meta": {"agentType": "x"}, "status": "unknown",
                                            "evidence": "none"}],
                          "a meta with no toolUseId and no spawn record: unknown, one of §9.3's named cases")
         self.assertEqual((s["jobs"], s["mcp"]), ([], []))
@@ -1133,7 +1135,8 @@ class Engine(Session):
         sa = self.fake.message(agent="a1", turn="t-a1")
         self.assertTrue(self.pump(sub, b, lambda: b.snapshot is not None))
         self.assertNotIn("usage", b.snapshot)
-        [entry] = b.snapshot["subagents"]
+        self.assertTrue(self.pump(sub, b, lambda: b.changes), "the first `subagents`, once the look is in")
+        [entry] = b.body["subagents"]
         self.assertEqual({k: entry[k] for k in ("agentId", "meta", "status", "evidence")},
                          {"agentId": "a1", "meta": {"agentType": "worker"}, "status": "unknown", "evidence": "none"},
                          "that agent's own entry alone")
@@ -1538,12 +1541,43 @@ class Jobs(Session):
         self.assertTrue(self.pump(sub, b, lambda: not sub.looking))
 
     def opened(self, sub, b):
-        self.assertTrue(self.pump(sub, b, lambda: b.snapshot is not None or b.end is not None))
+        """The open, through the first look at the disk the snapshot asks
+        (off the open's path, open-fast M7): the body as it then stands."""
+        self.assertTrue(self.pump(sub, b, lambda: b.end is not None or (
+            b.snapshot is not None and sub.looks >= 1 and not sub.looking)))
         self.assertIsNone(b.end)
-        return b.snapshot
+        return b.body
 
     def entry(self, body, agent):
         return next(e for e in body["subagents"] if e["agentId"] == agent)
+
+    def test_the_snapshot_goes_before_the_look_and_the_first_subagents_follows(self):
+        """The open's build alone is on its path: the snapshot goes with the
+        facts as they stand (none, on a first open), the look is asked on the
+        pump right after it, and the first `subagents` carries what it found."""
+        r = Rows()
+        self.write(r.call("Agent", "toolu_A", description="a"))
+        self.write(r.row(type="user", message={"role": "user", "content": "the brief"}), agent="aA")
+        self.fake.meta("aA", {"toolUseId": "toolu_A"})
+        self.fake.agents = [{"agentId": "aA", "parentAgentId": None, "running": True}]
+        self.fake.start_bridge()
+        sub, b = self.subscribe()
+        asked = []
+        real = sub.ask
+
+        def ask(path, read):
+            asked.append(sub.n is None)
+            return real(path, read)
+        sub.ask = ask
+        self.assertTrue(self.pump(sub, b, lambda: b.snapshot is not None))
+        self.assertEqual(asked[:1], [True], "the open asks its build alone")
+        self.assertEqual(sub.looks, 0, "no look was answered before the snapshot")
+        self.assertEqual([e for e in b.snapshot["subagents"] if "file" in e or "meta" in e], [],
+                         "the snapshot's tree holds nothing read off the disk")
+        self.assertTrue(self.pump(sub, b, lambda: len(b.changes) >= 1))
+        self.assertEqual(asked[1:2], [False], "the look, asked once the snapshot is out")
+        self.assertIn("file", self.entry(b.body, "aA"), "the first `subagents` carries the look's facts")
+        self.assertEqual(b.errors, [])
 
     # ---------------------------------------------------- the shared fixture
 
@@ -3084,6 +3118,294 @@ class TranscriptIndex(unittest.TestCase):
         self.assertIs(transcripts.acquire("/t/3"), held[3])
         self.assertIsNot(transcripts.acquire("/t/0"), held[0], "one evicted builds again")
 
+    # ---------------------------------------------------- the saved build (open-fast M7)
+
+    def thread_rows(self, n, r=None):
+        """`n` turns of a chained conversation, each with a background shell
+        the jobs ledger keeps: the rows, and the Thread that wrote them."""
+        r = r or Thread()
+        rows = []
+        for i in range(n):
+            call = r.tool_call("toolu_%d_%d" % (r.i, i), "msg_%d_%d" % (r.i, i))
+            call["message"]["content"][0].update(name="Bash", input={"command": "c%d" % i, "run_in_background": True})
+            rows += [r.prompt("p%d" % i), call]
+            result = r.tool_result(call["message"]["content"][0]["id"], call)
+            result["toolUseResult"] = {"backgroundTaskId": "bg%d_%d" % (r.i, i)}
+            rows += [result, r.answer("a%d" % i, "msg_a_%d_%d" % (r.i, i))]
+        self.append("".join(json.dumps(row) + "\n" for row in rows))
+        return rows, r
+
+    @staticmethod
+    def state(t):
+        """What a build holds, comparable across two Transcripts of one file."""
+        i = t.index
+        return (i.uuids, i.offsets, i.lengths, i.at, i.end, vars(t.ledger), list(t.chain.line), sorted(t.chain.offs))
+
+    def cold(self):
+        t = plane.Transcript(self.path)
+        t.tried = True   # never looks for a saved build: the reference parse
+        t.extended()
+        return t
+
+    def run_job(self, t, job, background=False):
+        done = threading.Event()
+
+        def wrapped(tr):
+            try:
+                job(tr)
+            finally:
+                done.set()
+        (t.submit_background if background else t.submit)(wrapped)
+        self.assertTrue(done.wait(10), "the job ran")
+        self.assertTrue(wait_for(lambda: not t.working), "the worker is idle again: its save, if due, is done")
+
+    def test_a_saved_build_loads_and_extends_from_its_end(self):
+        rows, r = self.thread_rows(30)
+        first = plane.Transcript(self.path)
+        self.run_job(first, lambda t: t.extended())
+        self.assertEqual(first.how, "cold")
+        saved = plane.build_file(self.path)
+        self.assertTrue(os.path.exists(saved), "the first build in the process is saved on its worker")
+        self.assertEqual(os.stat(saved).st_mode & 0o777, 0o600)
+        self.assertEqual(os.stat(os.path.dirname(saved)).st_mode & 0o777, 0o700)
+        self.assertEqual(os.path.dirname(saved), os.path.join(os.environ["SMINOS_HOME"], "daemon", "plane"))
+        self.assertEqual([n for n in os.listdir(os.path.dirname(saved)) if n.endswith(".tmp")], [], "moved into place")
+        more, _ = self.thread_rows(5, r)
+        t = plane.Transcript(self.path)
+        t.extended()
+        self.assertEqual(t.how, "loaded", "a Transcript new to the process starts from the saved build")
+        self.assertEqual(t.index.uuids, [x["uuid"] for x in rows + more])
+        self.assertLess(t.index.parsed - first.index.parsed, sum(len(json.dumps(x)) + 1 for x in more) + 1,
+                        "only what was flushed past the saved end was parsed")
+        self.assertEqual(self.state(t), self.state(self.cold()), "the index, the ledger and the chain as a cold build's")
+        self.assertEqual(sorted(t.ledger.jobs), sorted(self.cold().ledger.jobs))
+        self.assertEqual(len(t.ledger.jobs), 35)
+        t.extended()
+        self.assertEqual(t.how, "warm")
+
+    def test_a_saved_build_that_cannot_be_used_is_removed_and_the_build_starts_cold(self):
+        for how in ("format", "inode", "shorter", "garbage", "another file", "an older shape"):
+            with self.subTest(how=how):
+                self.path = os.path.join(tempfile.mkdtemp(dir=T), "t.jsonl")
+                rows, _ = self.thread_rows(10)
+                first = plane.Transcript(self.path)
+                first.extended()
+                self.assertTrue(first.save())
+                saved = plane.build_file(self.path)
+                fmt = plane.BUILD_FORMAT
+                if how == "format":
+                    fmt += 1
+                elif how == "inode":
+                    with open(self.path, "rb") as f:
+                        data = f.read()
+                    with open(self.path + ".new", "wb") as f:
+                        f.write(data)
+                    os.replace(self.path + ".new", self.path)
+                elif how == "shorter":
+                    with open(self.path, "r+") as f:
+                        f.truncate(first.index.end - 10)
+                elif how == "garbage":
+                    with open(saved, "wb") as f:
+                        f.write(b"not a build")
+                elif how == "another file":
+                    other = os.path.join(os.path.dirname(self.path), "o.jsonl")
+                    shutil.copy(self.path, other)
+                    shutil.copy(saved, plane.build_file(other))
+                    self.path, saved = other, plane.build_file(other)
+                else:
+                    first.index.__dict__.pop("parsed")   # a build of an Index that held other fields
+                    self.assertTrue(first.save())
+                with mock.patch.object(plane, "BUILD_FORMAT", fmt):
+                    t = plane.Transcript(self.path)
+                    try:
+                        t.extended()
+                    except plane.Reset:
+                        t.extended()
+                self.assertFalse(os.path.exists(saved), "removed")
+                self.assertEqual(t.how, "cold")
+                with open(self.path, "rb") as f:
+                    whole = f.read()
+                self.assertEqual(t.index.end, whole.rfind(b"\n") + 1)
+                self.assertEqual(self.state(t), self.state(self.cold()))
+
+    def test_eviction_saves_first_and_a_later_open_loads(self):
+        rows, r = self.thread_rows(10)
+        transcripts = plane.Transcripts(keep=1)
+        a = transcripts.acquire(self.path)
+        self.run_job(a, lambda t: t.extended())
+        saved = plane.build_file(self.path)
+        at_first = os.path.getsize(saved)
+        self.thread_rows(10, r)
+        self.run_job(a, lambda t: t.extended())
+        self.assertEqual(os.path.getsize(saved), at_first, "a small growth is not saved at once")
+        transcripts.release(a)
+        other = os.path.join(os.path.dirname(self.path), "other.jsonl")
+        with open(other, "w") as f:
+            f.write(json.dumps({"uuid": "o"}) + "\n")
+        transcripts.release(transcripts.acquire(other))
+        self.assertNotIn(self.path, transcripts.held, "evicted")
+        self.assertTrue(wait_for(lambda: not a.working and os.path.getsize(saved) > at_first), "saved as it left")
+        b = transcripts.acquire(self.path)
+        self.assertIsNot(b, a)
+        self.run_job(b, lambda t: t.extended())
+        self.assertEqual((b.how, b.index.parsed - a.index.parsed), ("loaded", 0), "loaded whole: nothing parsed")
+        self.assertEqual(self.state(b), self.state(a))
+
+    def test_the_stop_saves_every_held_build_within_its_bound(self):
+        transcripts = plane.Transcripts()
+        held, threads = [], {}
+        for i in range(3):
+            self.path = os.path.join(tempfile.mkdtemp(dir=T), "t%d.jsonl" % i)
+            _, threads[i] = self.thread_rows(5)
+            t = transcripts.acquire(self.path)
+            self.run_job(t, lambda tr: tr.extended())
+            self.thread_rows(5, threads[i])
+            self.run_job(t, lambda tr: tr.extended())
+            held.append(t)
+        stuck, go = held[2], threading.Event()
+        stuck.submit(lambda _t: go.wait(10))   # a job the stop cannot pass
+        started = time.monotonic()
+        saved, total = transcripts.save_all(seconds=0.5)
+        self.assertLess(time.monotonic() - started, 2.0, "bounded")
+        go.set()
+        self.assertEqual((saved, total), (2, 3))
+        for t in held[:2]:
+            fresh = plane.Transcript(t.path)
+            fresh.extended()
+            self.assertEqual((fresh.how, fresh.index.parsed - t.index.parsed), ("loaded", 0), "saved at its end")
+
+    def test_saved_builds_past_their_keep_are_swept(self):
+        d = os.path.join(os.environ["SMINOS_HOME"], "daemon", "plane")
+        os.makedirs(d, mode=0o700, exist_ok=True)
+        old, new, half = (os.path.join(d, n) for n in ("old.build", "new.build", "x.build.1.2.tmp"))
+        for p in (old, new, half):
+            with open(p, "wb") as f:
+                f.write(b"x")
+        long_ago = time.time() - (plane.BUILD_KEEP_DAYS + 1) * 86400
+        os.utime(old, (long_ago, long_ago))
+        plane.sweep_builds()
+        self.assertEqual((os.path.exists(old), os.path.exists(new), os.path.exists(half)), (False, True, False),
+                         "the old one and a write a crash left half done go; a recent one stays")
+        os.unlink(new)
+
+
+class Warmer(unittest.TestCase):
+    """The warmer (open-fast M7, §4): live members' main transcripts held and
+    extended in the background, behind every foreground job, one warm job
+    per transcript, WARM_PARALLEL across the process, round-robin."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(dir=T)
+        self.transcripts = plane.Transcripts()
+
+    def transcript(self, name, rows=3):
+        path = os.path.join(self.dir, name + ".jsonl")
+        with open(path, "a") as f:
+            for i in range(rows):
+                f.write(json.dumps({"uuid": "%s-%d" % (name, i), "type": "user"}) + "\n")
+        return path
+
+    def warm_all(self, warmer, sessions, until, clock, wait=10.0):
+        deadline = time.time() + wait
+        while time.time() < deadline:
+            warmer.tick(sessions, clock())
+            if until():
+                return True
+            clock.advance(0.25)
+            time.sleep(0.01)
+        return False
+
+    def test_a_live_members_transcript_is_held_and_extended_before_any_subscription(self):
+        paths = {"s1": self.transcript("s1"), "s2": self.transcript("s2")}
+        clock = Clock()
+        warmer = plane.Warmer(self.transcripts, locate=paths.get)
+        self.assertTrue(self.warm_all(warmer, {"s1", "s2"}, lambda: all(
+            t.index.uuids and not t.warming for t in warmer.held.values()), clock))
+        t = self.transcripts.held[paths["s1"]]
+        self.assertEqual((t.users, t.how, len(t.index.uuids)), (1, "cold", 3), "held, built cold in the background")
+        self.assertTrue(wait_for(lambda: os.path.exists(plane.build_file(paths["s1"]))), "and saved")
+        kind, built = self.build_on(t)
+        self.assertEqual((kind, built.how), ("built", "warm"), "the first open is warm")
+        warmer.tick({"s2"}, clock() + plane.WARM_EVERY)
+        self.assertNotIn("s1", warmer.held)
+        self.assertEqual(t.users, 0, "released once the session is no longer a live member")
+
+    @staticmethod
+    def build_on(t):
+        got = queue.Queue()
+        t.submit(lambda tr: got.put(plane.build(tr, None, False)))
+        return got.get(timeout=10)
+
+    def test_an_opens_build_runs_ahead_of_a_queued_warm_job_and_a_warm_job_never_queues_twice(self):
+        path = self.transcript("s1")
+        t = self.transcripts.acquire(path)
+        order, go = [], threading.Event()
+        t.submit(lambda _t: (order.append("running"), go.wait(10)))
+        self.assertTrue(wait_for(lambda: order))
+        warmer = plane.Warmer(self.transcripts, locate={"s1": path}.get)
+        clock = Clock()
+        warmer.tick({"s1"}, clock())
+        self.assertTrue(t.warming)
+        clock.advance(plane.WARM_EVERY * 3)
+        warmer.tick({"s1"}, clock())
+        clock.advance(plane.WARM_EVERY * 3)
+        warmer.tick({"s1"}, clock())
+        self.assertEqual(len(t.background), 1, "one warm job queued, however many ticks pass")
+        t.submit(lambda _t: order.append("open"))
+        real = plane.Transcript.extended
+
+        def extended(tr):
+            order.append("warm")
+            return real(tr)
+        with mock.patch.object(plane.Transcript, "extended", extended):
+            go.set()
+            self.assertTrue(wait_for(lambda: not t.working and not t.warming))
+        self.assertEqual(order, ["running", "open", "warm"], "the open's job first, the warm job when none is queued")
+        self.assertEqual(warmer.running, 0, "its slot given back")
+
+    def test_at_most_two_warm_jobs_run_at_once_across_forty_live_transcripts_visited_round_robin(self):
+        sessions = ["s%02d" % i for i in range(40)]
+        paths = {s: self.transcript(s) for s in sessions}
+        by_path = {p: s for s, p in paths.items()}
+        lock, now, peak, visits = threading.Lock(), [0], [0], []
+        real = plane.Transcript.extended
+
+        def extended(tr):
+            with lock:
+                now[0] += 1
+                peak[0] = max(peak[0], now[0])
+                visits.append(by_path[tr.path])
+            try:
+                time.sleep(0.01)
+                return real(tr)
+            finally:
+                with lock:
+                    now[0] -= 1
+        warmer = plane.Warmer(self.transcripts, locate=paths.get)
+        clock = Clock()
+        with mock.patch.object(plane.Transcript, "extended", extended):
+            self.assertTrue(self.warm_all(warmer, set(sessions), lambda: len(visits) >= 80, clock, wait=30))
+        self.assertLessEqual(peak[0], plane.WARM_PARALLEL, "at most WARM_PARALLEL at once")
+        self.assertEqual(peak[0], 2)
+        self.assertEqual(sorted(visits[:40]), sessions, "every live session warmed once before any twice")
+        self.assertEqual(sorted(visits[40:80]), sessions, "and the next round each once again")
+
+    def test_the_plane_warms_the_live_members_of_its_open_projects(self):
+        """Plane.tick hands the warmer each live member of an open project; a
+        member that is not live is not warmed."""
+        project, runs, ended = Lifecycle.ended_presence_project(self, "warm-plane")
+        path = os.path.join(os.environ["HOME"], ".claude", "projects", "-warm-plane", runs + ".jsonl")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.write(json.dumps({"uuid": "w1", "type": "user"}) + "\n")
+        warmer = plane.Warmer(self.transcripts)
+        pl = plane.Plane("testhost", lambda: None, transcripts=self.transcripts, disk=plane.Disk(), warmer=warmer)
+        self.assertTrue(wait_for(lambda: pl.tick({project.id: project}) is not None and
+                                 path in self.transcripts.held and self.transcripts.held[path].index.uuids))
+        self.assertEqual(list(warmer.held), [runs], "the running member only")
+        pl.close()
+        self.assertIn(runs, warmer.held, "a warmer the uplink keeps across streams holds on past the plane")
+
 
 class Lifecycle(unittest.TestCase):
     """The engine's records as presence reads them, and the machine's policy."""
@@ -4108,6 +4430,13 @@ class Uplink(unittest.TestCase):
 
     def tearDown(self):
         self.fake.stop_bridge()
+
+    def test_a0_a_live_members_build_is_warmed_and_saved_before_any_subscription(self):
+        """The warmer in the uplink (open-fast M7): the live member's main
+        transcript is built in the background and saved, no open asked."""
+        self.assertFalse([m for m in self.hub.messages() if m.get("sub")], "no subscription yet")
+        saved = plane.build_file(self.fake.path(None))
+        self.assertTrue(wait_for(lambda: os.path.exists(saved), timeout=15), "warmed and saved by the uplink")
 
     # ---------------------------------------------------- helpers
 

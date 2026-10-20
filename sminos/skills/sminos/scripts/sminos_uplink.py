@@ -53,7 +53,11 @@ even on a stream that never drops. The session plane
 (sminos_plane.py) rides the same stream: each session's presence after the
 `hello` and whenever it changes, and the hub's subscriptions served as DX4
 messages; a bridge's reader wakes the main thread, so what it read goes up
-at once. The machine's policy (sminos_policy) goes up in `machine` on every
+at once. The plane's transcripts and its warmer are the process's, kept
+across streams: the builds the warmer keeps current for the live members
+are saved under daemon/plane/ as they grow and once more at the uplink's
+stop (STOP_SAVE_SECONDS at most), and loaded by the next process, which
+sweeps the ones past their keep as it starts. The machine's policy (sminos_policy) goes up in `machine` on every
 connect and again whenever it changes; the requests the bridges raise and
 settle go up as DX4 `raised` and `settled` with their codes, and the
 complete pending set after every connect (sminos_requests); what
@@ -1058,7 +1062,8 @@ class Link:
     never holds the network back. `wake` asks the main thread for a tick
     now."""
 
-    def __init__(self, cred, logs, ended=lambda: False, wake=lambda: None, bridges=None, reqs=None, rpcs=None):
+    def __init__(self, cred, logs, ended=lambda: False, wake=lambda: None, bridges=None, reqs=None, rpcs=None,
+                 warmer=None):
         self.cred = cred
         self.ended = ended
         self.logs = logs          # project id → HubLog, kept across streams
@@ -1071,7 +1076,7 @@ class Link:
         self.passed = set()
         self.received = None      # when the reader took the frame being dispatched (epoch s), when known
         self.failing = self.plane_failing = ""
-        self.plane = plane.Plane(cred["machine"], wake, bridges)
+        self.plane = plane.Plane(cred["machine"], wake, bridges, warmer=warmer)   # the warmer kept across streams
         self.requests = reqs or requests.Requests(cred["key"], cred["machine"])  # kept across streams by the uplink
         self.requests.wake = wake
         self.rpcs = rpcs or rpc.Rpcs(cred["key"], cred["machine"])  # kept across streams by the uplink
@@ -1595,7 +1600,7 @@ class Link:
                 log("the session plane failed: %r" % e)
 
 
-def serve(stream, cred, ended, logs, bridges=None, reqs=None, rpcs=None):
+def serve(stream, cred, ended, logs, bridges=None, reqs=None, rpcs=None, warmer=None):
     """Handle one stream's frames until it closes, a POST is not delivered,
     or the uplink ends; whether the hub welcomed it. A wake (the session
     plane's readers) is a tick after the batch in hand; at most one waits."""
@@ -1606,7 +1611,7 @@ def serve(stream, cred, ended, logs, bridges=None, reqs=None, rpcs=None):
             woken.set()
             stream.items.put(("wake",))
 
-    link = Link(cred, logs, ended, wake, bridges, reqs, rpcs)
+    link = Link(cred, logs, ended, wake, bridges, reqs, rpcs, warmer)
     try:
         return serve_link(link, stream, ended, woken)
     finally:
@@ -1740,17 +1745,22 @@ def cmd_uplink(_a):
         return halt.is_set() or os.getppid() != parent
 
     log("started (pid %d) for %s as %s" % (os.getpid(), cred["hub"], cred["machine"]))
-    backoff, logs, bridges = 1, {}, plane.Bridges()
+    plane.sweep_builds()
+    backoff, logs, bridges, warmer = 1, {}, plane.Bridges(), plane.Warmer()
     reqs = requests.Requests(cred["key"], cred["machine"])
     rpcs = rpc.Rpcs(cred["key"], cred["machine"])
     while not ended():
         stream = Stream(cred, ended)
         stream.start()
-        welcomed = serve(stream, cred, ended, logs, bridges, reqs, rpcs)
+        welcomed = serve(stream, cred, ended, logs, bridges, reqs, rpcs, warmer)
         stream.close()
         backoff = 1 if welcomed else min(backoff * 2, BACKOFF_MAX)
         deadline = time.time() + backoff
         while not ended() and time.time() < deadline:
             halt.wait(POLL)
     reqs.close()
+    at = time.monotonic()
+    saved, held = plane.TRANSCRIPTS.save_all()
+    if held:
+        log("the builds held: %d of %d saved or already current in %.2f s" % (saved, held, time.monotonic() - at))
     log("stopped (pid %d)%s" % (os.getpid(), "" if halt.is_set() else ": its daemon is gone"))
