@@ -58,7 +58,7 @@
     {
       "name": "sminos",
       "description": "The orchestration interface: the machine side of the MAWS desk, and how sessions and humans reach each other. The sminos CLI (the project log, messages between sessions, spawned seats, the daemon and its uplink to the desk hub), the bridge that makes a session watchable and steerable from outside it, the async AskUserQuestion, and the hooks that record what a session sent its human",
-      "version": "1.1.2",
+      "version": "1.2.0",
       "source": "./sminos",
       "author": {
         "name": "SSFSKIM",

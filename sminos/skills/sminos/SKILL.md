@@ -52,7 +52,9 @@ with no session), `retired`.
     sminos say "merged #12"                                  # recorded; wakes no one
     sminos say "@parser your change renames a column I read"  # delivered to parser
     sminos say "@7a11ce01 the runner image moved"            # a session anywhere in the org, by its short
-    sminos say "@all main is being rebased, stop pushing"
+    sminos say "@all main is being rebased, stop pushing"    # your project's live members
+    sminos say --machine mini "the mini reboots in 10 min"   # every live session on the mini, any project
+    sminos say --org "reviews go to their own pins again"    # every live session in the org
 
 Only the tags that open a message address anyone; an `@` later in the
 text is text.
@@ -62,6 +64,12 @@ text is text.
 | untagged | for everyone | to no one: read at a member's next `chat` |
 | `@alias …` | addressed | an idle member starts a turn, a busy one reads it at its next tool round, a stopped seat is resumed |
 | `@all …` | addressed to the members live now | every one of them starts a turn or reads it; no stopped one is resumed |
+| a selector: `--org`, `--project P,..`, `--machine M,..`, `--here`, `--state W,..` | in each project it reaches, with a copy in yours | as `@all`, to every live session `list` shows with the same flags, you left out |
+
+The selector is `list`'s filters, combined (`--project MAWS --machine
+mini`: MAWS's sessions on the mini); it takes no `@` tags beside it.
+`@all` and a selector cost a turn in every session they reach: they are
+for what those sessions must act on now, and status stays untagged.
 
 A bare `@alias` resolves only in your project — the same seat names
 recur in every repository — and its refusal lists the matching
@@ -69,10 +77,9 @@ members elsewhere. `@short` (a session's first eight hex digits) and
 `@alias#short` reach a session anywhere in the org; another project's
 member is also `@<project>/<alias>`, and a session no `.smns` claims is
 `@<machine>/<alias>`. A message into another project lands in its log,
-with a copy in yours marked `→ <project>`. `@all` costs a turn in every
-live member: for what each must act on now; status is untagged, and
-`@all` is refused in a machine's own project. A closed interactive
-session cannot be tagged: say it untagged, and it reads it when resumed.
+with a copy in yours marked `→ <project>`. `@all` is refused in a
+machine's own project. A closed interactive session cannot be tagged:
+say it untagged, and it reads it when resumed.
 
 Messages reach you on their own as a `[sminos chat …]` frame with a
 reply line to run; the same id twice is one message (delivery is at
