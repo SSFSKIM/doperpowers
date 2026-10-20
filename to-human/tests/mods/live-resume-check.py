@@ -41,6 +41,7 @@ import json
 import os
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -53,7 +54,8 @@ GATEWAY_KEYS = ("ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_DEFAULT
                 "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY")
 BASE_KEYS = ("PATH", "TERM", "LANG", "USER", "LOGNAME", "SHELL", "TMPDIR")
 PLUGINS = {"to-human": (".claude-plugin", "hooks"), "sminos": (".claude-plugin", "hooks", "skills", "types")}
-RAW = "⏺ <message>"
+# The engine's bullet is ⏺ on macOS and ● elsewhere; the view's label is ● everywhere.
+RAW = ("⏺" if sys.platform == "darwin" else "●") + " <message>"
 LABEL = "● message"
 # The long message runs past a 30-row screen, the short one ends the history.
 LONG = ("Reply with one <message> block whose body is the numbers 1 to 60, one per line, then the word "
@@ -126,7 +128,10 @@ class Live:
                                     "env -i /bin/bash --noprofile --norc -c %s" % shlex.quote(inner)], check=True)
 
     def stop(self):
-        subprocess.run(self.tmux + ["kill-server"], capture_output=True)
+        try:
+            subprocess.run(self.tmux + ["kill-server"], capture_output=True)
+        except FileNotFoundError:
+            return
         time.sleep(1)
 
     def pane(self):
@@ -214,10 +219,12 @@ class Live:
         self.check("main: the rows on the screen fold", "⏺ <message>got it short" not in frame and LABEL in tail,
                    "the short message draws under its label")
         head = frame[:frame.find("got it short")]  # the short prompt follows the long reply
+        changed = first_raw is not None and RAW not in head
         self.check("main: the scrollback keeps the first frame (the engine's, board #105)", RAW in head,
                    "raw head in scrollback" if RAW in head else
-                   "CHANGED: the scrollback came out folded; the engine now repaints it or loads the modules first,"
-                   " so #105 can close and this check change")
+                   "CHANGED: the scrollback came out folded; the engine now repaints it, so #105 can close and this"
+                   " check change" if changed else
+                   "no raw frame was seen at all: the engine may now load the modules first; read the frames")
         self.stop()
 
         # Fullscreen: the alternate screen is repainted whole; page to the top.
@@ -227,15 +234,17 @@ class Live:
             time.sleep(0.5)
         frame = self.pane()
         self.save("frame-fullscreen-top.txt", frame)
-        self.check("fullscreen: the long message's head draws folded", LABEL in frame and RAW not in frame,
-                   "top of the history")
+        at_top = "Reply with one" in frame and "got it short" not in frame
+        self.check("fullscreen: the long message's head draws folded", at_top and LABEL in frame and RAW not in frame,
+                   "top of the history" if at_top else "the pages did not reach the history's top")
         self.stop()
         return all(ok for _, ok in self.results)
 
     def cleanup(self):
-        self.stop()
+        # The keys first: nothing after this may keep them on disk.
         if os.path.exists(self.envfile):
             os.unlink(self.envfile)
+        self.stop()
         if self.keep:
             print("kept: %s" % self.root)
         else:
@@ -243,6 +252,9 @@ class Live:
 
 
 def main():
+    # A closed terminal or a kill runs the cleanup too.
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sig, lambda *_: sys.exit(1))
     live = Live("--keep" in sys.argv[1:])
     try:
         ok = live.run()
