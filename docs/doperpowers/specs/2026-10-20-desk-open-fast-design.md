@@ -1642,6 +1642,50 @@ beside; a single reviewer reads one of those well in a pass.
   `relay_rpcs` still batches reply-owing `rpc-result` frames across projects
   (`docs/doperpowers/TECH-DEBT.md`). M4 owns the hub side (its first task).
 
+- Observation: the baseline before M5 (M2's instruments, the MacBook, sminos
+  1.2.5, the local hub at MAWS 0f9c18d65 with M4; load 5.5–12 throughout,
+  so **every figure below is outside the 100–300 band**, which stays
+  incomplete). Live haiku session through the local hub: `idle` E 14–17 ms
+  (N 0.00 s, build warm, inventory clean); `mid-message --thinking` 3 of 3
+  trials counted inside the thinking-to-end window (1.78–2.42 s wide), E
+  1.99 / 2.09 / 2.63 s with N 1.97 / 2.08 / 2.61 s and `waits` 46–61 — N is
+  E's whole, the hub and browser add 10–20 ms; `after-prompt` E 0.28 / 0.29
+  / 0.53 s (`waits` 1); `long-answer --thinking` 2 of 4 trials counted
+  (windows 8.07 and 8.30 s): each +1 s open ended `discontinuity` at about
+  5 s (`NOTICE_WAIT`) before the step's end, each +7 s open got its snapshot
+  only at the step's end (E 1.29 / 1.51 s); `kill` E 6.55 / 2.41 / 1.26 s
+  from the kill to the successor's bridged snapshot, after 7, 12 and 17
+  re-subscribes, one `vanished` in the first. Fake session: `idle` 2–4 ms
+  (stand-in), 8–10 ms (local hub); scripted mid-message 2.33 s; scripted
+  12.5 s long-answer ends `discontinuity` at 5.15 s. `restart` with a
+  synthetic 15,000-row, 174 MB transcript: E 0.42 s cold at the first start
+  and after each of two restarts (builds 407–409 ms). `held` (local hub, fake
+  session, 4 s pause, 4 MiB backlog): 8 uploads answered 200 in 0.32 s, the
+  proxy paused holding 0.39–1.35 MB, 49–50 POSTs all 200 (slowest 16–18
+  ms), 37–38 chunks with lag ≤ 34 ms, the stream survived, an open 1 s after
+  resume E 10–14 ms. `bench_scale.py opens --live 40 --large 6` (stand-in):
+  large at +0.5 s E 0.43 s cold, small 0.021 s; at +30 s one large warm
+  (0.011 s), five cold again (0.42–0.49 s), 34 small at 2–7 ms; after a
+  restart large 0.42 s cold, small 0.022 s — a large build is not held 30 s
+  later (`INDEX_KEEP` 4).
+  Evidence: `.doperpowers/sde/2026-10-20-desk-open-fast-design/task-2-report.md`
+  (the M2 executor's runs, 2026-10-20).
+- Observation: haiku writes a 900-word answer after reasoning in about 8 s,
+  so A2's `long-answer` window of 12 s or more is not reached live with
+  haiku; it needs a longer prompt or `--model sonnet`.
+  Evidence: the M2 `long-answer` trials' windows 3.4–8.3 s.
+- Observation: on the local hub most of a held backlog is absorbed upstream
+  of the pause proxy (the node proxy, workerd and kernel buffers): the proxy
+  holds 0.4–1.35 MB whether 4 or 16 MiB is queued, so `held` does not show
+  whether the hub's writes block behind a stalled stream. workerd also splits
+  SSE frames across HTTP chunks, so the proxy dechunks before it matches.
+  A `claude -p` session (entrypoint sdk-cli) is not its project's member
+  without `SMNS_MEMBER`. While a killed session's socket is stale, each
+  re-subscribe answers `transcript-only` in about 10 ms and ends about 6 ms
+  later; a client re-subscribing with no backoff spins 7–17 times before the
+  successor answers.
+  Evidence: the M2 executor's `held` and `kill` runs.
+
 ## Decision Log
 
 - Decision: verification. The spec gets one independent review by the
@@ -1905,6 +1949,24 @@ beside; a single reviewer reads one of those well in a pass.
   rare (a huge tool input), and the loss is cosmetic and self-healing; a web
   rule splicing a truncated tail onto overlapping drawn text is residue.
   Date/Author: 2026-10-20, the controller.
+
+- Decision (M2): the instruments' shared rig (hubs, browser clients, the
+  session kinds, the machine, the uplink bootstrap) is
+  `sminos/tests/bench_rig.py`, beside `bench_open.py` and used by
+  `bench_scale.py opens`. The full path's uplink runs under a bootstrap that
+  wraps `BridgeReader` and `Subscription` and tees each subscription's first
+  bridge lines with its `sub` (the plane's code untouched), which is the
+  keyed DX5 snapshot `residual` needs. E on the stand-in is the snapshot's
+  arrival stamp minus the subscribe's write; on the local hub the websocket
+  arrival minus the moment before the send. `idle` takes one uncounted
+  warm-up open; `mid-message` counts an open by when its subscribe was sent
+  inside the thinking-to-end window; `long-answer` counts a trial only when
+  both its opens fall in the window, and reports `window_12s`; `kill` needs
+  `--live` and re-subscribes on every end with no backoff, as the web does;
+  `held` needs `--hub local` and the fake session. `pause_proxy.py` decodes
+  chunked bodies (M1's fixture, fixed here). The live headless session sets
+  `SMNS_MEMBER`; `MAX_THINKING_TOKENS=2048` gives haiku a thinking block.
+  Date/Author: 2026-10-20, the M2 executor, folded by the controller.
 
 ## Outcomes & Retrospective
 
