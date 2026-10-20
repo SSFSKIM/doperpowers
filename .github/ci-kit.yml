@@ -113,6 +113,18 @@ gates:
     timeout: 15
     paths: ["to-human/**", ".github/**"]
 
+  # Every plugin's mods and their tests typechecked (tsc) against the
+  # declarations the installed engine lays as it loads each plugin.
+  - name: mods-types
+    run: |
+      for i in 1 2 3; do
+        timeout 300 npm i -g @anthropic-ai/claude-code && break
+        [ "$i" = 3 ] && exit 1; sleep 10
+      done
+      bash tests/mods/typecheck.sh --lay
+    timeout: 10
+    paths: [".claude-plugin/**", "hooks/**", "tests/mods/**", "sminos/.claude-plugin/**", "sminos/hooks/**", "sminos/types/**", "sminos/tests/mods/**", "to-human/.claude-plugin/**", "to-human/hooks/**", "to-human/tests/mods/**", "devcloud/.claude-plugin/**", "devcloud/hooks/**", "devcloud/types/**", "devcloud/tests/mods/**", ".github/**"]
+
   # The devcloud host: unit tests, then the image built and booted in containers
   # against stand-ins (hosted runner's Docker). bun runs the guard's detector
   # over the image's filesystem.

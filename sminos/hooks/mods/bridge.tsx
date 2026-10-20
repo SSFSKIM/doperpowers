@@ -4,7 +4,7 @@ import type {} from '../../../devcloud/types/devcloud'
 
 import { ASK_TOOL, PLUGIN, asyncAsks, observeAsks } from './ask'
 import { OFF_LINE, ON_LINE, isCuaEnabled, isLiveMarker, verdictOf } from './bridge-place'
-import type { Guard, Verdict } from './bridge-place'
+import type { Guard, Place, Verdict } from './bridge-place'
 import { EFFORTS, RESPAWN_FIRST_MS, capped, isEffort, loopKey, message, parsed, state } from './bridge-state'
 import type { Answer, Command, Decision, DeliveryKey, Override, Request, Steer, Stops, Wake } from './bridge-state'
 import { adoptKept, adoptSeed, emit, endStep, forgetLive, poster, pump, releaseStepEnd, requeue, resyncEvent, stopChild } from './bridge-stream'
@@ -1693,7 +1693,9 @@ export function registerBridge(on: On) {
       return beneath
     }
     if (state.transitions !== transitionsAt) {
-      state.log?.(`bridge: a ${e.tool_name} ${isQuestion ? 'question' : 'permission'} is left to the terminal: the bridge turned ${state.place === 'off' ? 'off' : 'off and on'} while the hooks beneath it ran`)
+      // Read anew: the place may have moved during the awaits, which the narrowing above cannot see.
+      const place = state.place as Place | undefined
+      state.log?.(`bridge: a ${e.tool_name} ${isQuestion ? 'question' : 'permission'} is left to the terminal: the bridge turned ${place === 'off' ? 'off' : 'off and on'} while the hooks beneath it ran`)
       return beneath
     }
     const r: Request = {

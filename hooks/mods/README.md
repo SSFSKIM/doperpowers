@@ -665,10 +665,16 @@ claude --plugin-dir . --debug                        # the repo as the plugin, h
 claude plugin validate .claude-plugin/plugin.json    # what the module hooks and calls
 tests/mods/run-mods-tests.sh                         # the mods' tests
 tests/claude-code/test-to-human-stream-hook.sh       # the streaming hook's tests
-npx -p typescript@5 tsc -p hooks/mods/tsconfig.json
+tests/mods/typecheck.sh                              # every plugin's mods and tests, typechecked
 ```
 
-Typechecking reads `.claude/types/claude-code.d.ts` at the repo root, which
-`/plugin-types` writes (gitignored); regenerate it after a Claude Code update.
+Typechecking reads the declarations the engine lays in the plugin's
+`.claude-plugin/types/` (gitignored) as a session loads it from a folder it
+watches, `claude --plugin-dir`; `tests/mods/typecheck.sh --lay` has the
+installed engine lay every plugin's headless in a throwaway HOME, as the
+`mods-types` gate does.
+Their MCP tools are those connected at that load, so a mod's own registered
+tool is known once a session has loaded the plugin.
+
 A tree the engine refuses draws the engine's own component instead and the
 reason is in the debug log under `ui.render (<Component>)`.

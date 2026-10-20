@@ -396,8 +396,13 @@ claude --plugin-dir sminos --debug                      # the plugin from this c
 claude plugin validate sminos/.claude-plugin/plugin.json
 sminos/tests/mods/run.sh                                # the mods' tests, then the ask's search run for real
 bash sminos/tests/run-sminos-tests.sh                   # the CLI's suite, the shell hooks' among it
-npx -p typescript@5 tsc -p sminos/hooks/mods/tsconfig.json
+tests/mods/typecheck.sh                                 # every plugin's mods and tests, typechecked (from the repository root)
 ```
 
-Typechecking reads `.claude/types/claude-code.d.ts` at the repository root,
-which `/plugin-types` writes (gitignored).
+Typechecking reads the declarations the engine lays in the plugin's
+`.claude-plugin/types/` (gitignored) as a session loads it from a folder it
+watches, `claude --plugin-dir`; `tests/mods/typecheck.sh --lay` has the
+installed engine lay every plugin's headless in a throwaway HOME, as the
+`mods-types` gate does.
+Their MCP tools are those connected at that load, so a mod's own registered
+tool is known once a session has loaded the plugin.

@@ -28,6 +28,11 @@ __pycache__/
 /learning-records/
 /assets/
 
-# Written by the engine when the repo is loaded with --plugin-dir: the mods' type contract and a tsconfig extending it
+# Written by the engine when a plugin of this repository is loaded with --plugin-dir:
+# the mods' type contract (each types/ folder also ignores itself) and a tsconfig
+# extending it
 .claude-plugin/types/
 /tsconfig.json
+/sminos/tsconfig.json
+/to-human/tsconfig.json
+/devcloud/tsconfig.json

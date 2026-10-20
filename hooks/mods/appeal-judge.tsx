@@ -549,7 +549,7 @@ export function judgePrompt(parts: EvidenceParts): string {
       : [
           '',
           "# The subagent's conversation (where the call was made; its first user row is the task the parent agent wrote, not the user's words)",
-          ...(Array.isArray(parts.agent) ? [] : [`(the engine would not read it: ${parts.agent.deny})`]),
+          ...('deny' in parts.agent ? [`(the engine would not read it: ${parts.agent.deny})`] : []),
         ]
   const fixed = head.length + '# The main conversation\n'.length + agentHead.join('\n').length + 2
   const room = Math.max(0, PROMPT_BUDGET - fixed)

@@ -363,7 +363,7 @@ function harness(
   const on = ((event: string, ...rest: unknown[]) => {
     const handler = rest[rest.length - 1] as Handler
     const matcher = rest.length > 1 ? (rest[0] as Matcher) : undefined
-    const entry = { event, matcher, handler }
+    const entry: (typeof hooks)[number] = { event, matcher, handler }
     hooks.push(entry)
     return { catch: (fallback: Handler) => void (entry.fallback = fallback) }
   }) as unknown as On

@@ -4,6 +4,9 @@ import { describe, expect, mock, test, tier } from 'claude-code/testing'
 import type { RowKind } from '../../hooks/mods/to-human'
 import { editorUrl, fileLinks, isRead, markdownBlocks, newView, parse, placeAll, placeArgs, placesIn, promptRow, reorder, runEnd, runStart } from '../../hooks/mods/to-human'
 
+// The kit runs tests with the timer the hooks' declarations leave out.
+declare const setTimeout: (callback: (value?: unknown) => void, ms: number) => unknown
+
 tier('user')
 
 describe('register', () => {

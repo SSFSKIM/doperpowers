@@ -425,11 +425,12 @@ what keeps a value out of a log.
     devcloud/tests/run.sh                                      # the host: unit tests, the image, containers
     devcloud/tests/mods/run.sh                                 # the mod's tests
     claude plugin validate devcloud/.claude-plugin/plugin.json
-    npx -p typescript@5 tsc -p devcloud/hooks/mods/tsconfig.json
+    tests/mods/typecheck.sh                                    # every plugin's mods, typechecked
     claude --plugin-dir devcloud                               # the working tree as the plugin
 
-Typechecking reads `.claude/types/claude-code.d.ts` at the repository root,
-as doperpowers' own mods do. The host's integration tests
+Typechecking reads the declarations the engine lays in
+`devcloud/.claude-plugin/types/` as a session loads the plugin, as
+doperpowers' own mods do (`hooks/mods/README.md`). The host's integration tests
 (`tests/integration.py`) build the image and boot it in containers against
 stand-ins (`tests/fixtures/fakes.py`) for Secret Manager, the metadata
 server, the configuration repository, GitHub's project repositories (a

@@ -6,6 +6,6 @@
     "noEmit": true, "skipLibCheck": true,
     "jsx": "react", "jsxFactory": "h", "jsxFragmentFactory": "Fragment"
   },
-  "include": ["../../../.claude/types", ".", "../../types", "../../tests/mods"],
+  "include": ["../../.claude-plugin/types", ".", "../../types", "../../tests/mods"],
   "exclude": ["../../tests/mods/shell-exec.ts"]
 }

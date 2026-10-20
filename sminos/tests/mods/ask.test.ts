@@ -1387,7 +1387,7 @@ describe('a resumed session', () => {
   })
 
   test("a copy's asks are read from the conversation it copied, its transcript not written yet", async () => {
-    const ask = (id: string, input: unknown, text?: string, isError?: boolean) => ({ tool_use_id: id, tool: ASK_TOOL, input, ...(text !== undefined && { text }), ...(isError && { isError }) })
+    const ask = (id: string, input: Record<string, unknown>, text?: string, isError?: boolean) => ({ tool_use_id: id, tool: ASK_TOOL, input, ...(text !== undefined && { text }), ...(isError && { isError }) })
     const answer = (id: string) => deliveryText(id, `Your questions have been answered: "Which backend?"="${id}". You can now continue with these answers in mind.`)
     const context = (text: string) => `<system-reminder>\ntool.call hook additional context: ${text}\n</system-reminder>`
     const rows: SessionMessage[] = [
