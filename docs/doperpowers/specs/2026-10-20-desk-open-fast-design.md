@@ -1697,6 +1697,20 @@ beside; a single reviewer reads one of those well in a pass.
   long-answer (13.2 s windows) E 2–4 ms with no early end.
   Evidence: `.doperpowers/sde/2026-10-20-desk-open-fast-design/task-5-report.md`.
 
+- Observation: mixed-version producers during a roll. A plugin upgrade
+  reaches the uplink before it reaches the sessions' bridges: the
+  autoreload holds while a main turn runs, and `--bg` sessions never
+  reload. So the plane serves both bridge generations for as long as an old
+  session lives, and a pre-M5 bridge (which deletes a block at its
+  `block-row`) can name an unflushed cut without carrying that block.
+  Evidence: the whole-branch reviewer-high on main...df5f6a14 (P2,
+  `sminos_plane.py` ~643–644), reproduced with the legacy bridge and the new
+  reference consumer; the fix's RED run against M5's plane gave a snapshot
+  at once with history `[before]` and only the unnamed block in
+  `streaming`, the named unflushed block nowhere. The mod spawns the child
+  from its own `$.plugin.root`, so a new child under an old mod arises only
+  if a plugin root is replaced under a running mod.
+
 ## Decision Log
 
 - Decision: verification. The spec gets one independent review by the
@@ -2020,6 +2034,25 @@ beside; a single reviewer reads one of those well in a pass.
   `namedAt` is the `block-row` event's `t`. `fake_session.py`'s scripted
   endpoint, a second implementation of the child, takes the same rules.
   Date/Author: 2026-10-20, the M5 executor, accepted on review, folded by
+  the controller.
+
+- Decision (M5 fix, from the whole-branch reviewer-high, ruled in scope by
+  the coordinator): the plane serves the no-wait snapshot only from a bridge
+  whose snapshot line declares `namedBlocks: true`. The mod's `resyncEvent`
+  carries `namedBlocks: true`; the child starts false and sets it from every
+  resync (`namedBlocks is True`, replaced, not latched), and its snapshot
+  line carries it — true only when the child and the mod that last resynced
+  it are both new. Every other bridge gets the pre-M5 cut wait: "waiting"
+  builds, asked again each pump with no wake, until `NOTICE_WAIT` after the
+  bridge's snapshot, then `discontinuity`; an unlocated transcript with a
+  cut waits likewise. The step-end deadline (§2) applies to both. Declared,
+  never inferred: an empty `streaming` cannot tell an old bridge from a
+  quiet one. Rejected: a hello field (the plane never sees the child's
+  hello; the snapshot line is what the open reads); a child-only declaration
+  (a new child under an old mod is resynced with copies lacking the named
+  blocks). DX5 amended (`[open-fast M5 fix, 2026-10-20]`). sminos 1.2.7,
+  `desk-open-fast-m5fix` ba3816df.
+  Date/Author: 2026-10-20, the M5 fix executor, reviewed clean, folded by
   the controller.
 
 ## Outcomes & Retrospective
