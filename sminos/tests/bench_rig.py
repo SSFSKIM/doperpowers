@@ -5,20 +5,23 @@ bench_open.py's runs and bench_scale.py's opens.
 
 - The hubs: hub_standin.py (`Standin`), or the hub's own Worker on a local
   runtime from a MAWS worktree (`Local`: `pnpm --filter desk-hub local` with
-  a state directory of its own and a free port, its stdout read and stamped
-  as its request log), each with its browser client: the stand-in's
-  `/control/send` and stamped `sessions` (`StandinBrowser`), or the
-  project's socket on the local hub (`LocalBrowser`, ws_client).
+  a state directory of its own and a free port), each with its browser
+  client: the stand-in's `/control/send` and stamped `sessions`
+  (`StandinBrowser`), or the project's socket on the local hub
+  (`LocalBrowser`, ws_client).
 - The sessions: fake_session.py's scripted one or a synthetic transcript
   (`FakeKind`, `synthetic_transcript`), or an isolated headless live one
   (`LiveKind`, mods/live-bridge-check.py's Live) with a probe subscription
-  on its bridge from the start.
+  on its bridge from the start, each of its reconnects a gap in the DX5
+  source said whole or lost (`probe_gaps`).
 - The machine (`Rig`): a temporary HOME and SMINOS_HOME (a live session's
   own), the enrollment, the project, and this checkout's uplink, run under
   a bootstrap (`python3 bench_rig.py _uplink <scripts> <tee>`) that tees
-  each subscription's first bridge lines, its sub beside them, from the
-  plane's reader thread (`install_tee`, read back by `read_tees`): the
-  plane's code wrapped, not changed.
+  each subscription's first bridge lines' keys, its sub beside them, from
+  the plane's reader thread after the plane's own put, written by a thread
+  of its own (`install_tee`, read back by `read_tees`): the plane's code
+  wrapped, not changed. Everything the rig starts is its own from the
+  moment it exists, so a construction that fails part way leaves nothing.
 """
 
 import base64
@@ -26,10 +29,11 @@ import collections
 import glob
 import http.client
 import importlib.util
+import itertools
 import json
 import os
+import queue
 import random
-import re
 import shutil
 import signal
 import socket
@@ -55,43 +59,76 @@ TEE_LINES = 3          # bridge lines teed per subscription: its snapshot, and w
 # ------------------------------------------------------------- the uplink's bootstrap
 
 
-def install_tee(P, path):
-    """Each subscription's first TEE_LINES bridge lines, with its sub and
-    their arrival, appended to `path` from the reader's thread: a snapshot
-    line's place among the session's events is found from the event that
-    follows it (place_snapshots). The plane's code is wrapped, not changed."""
-    lock = threading.Lock()
-    f = open(path, "a", buffering=1)
-    reader_init, reader_put, sub_init = P.BridgeReader.__init__, P.BridgeReader.put, P.Subscription.__init__
+KEY_FIELDS = ("type", "turnId", "agentId", "step", "phase", "chunkIndex", "index", "uuid", "t")
 
-    def flush(r):
-        b = r._bench
-        if b["sub"] is None:
-            return
-        while b["written"] < len(b["lines"]):
-            at, obj = b["lines"][b["written"]]
-            f.write(json.dumps({"sub": b["sub"], "k": b["written"], "at": at, "line": obj}) + "\n")
-            b["written"] += 1
+
+def line_key(e):
+    """A DX5 line's identity among the session's events, its subscriber's
+    own `n` left out: the fields that tell one event from another (a chunk
+    by its request and chunkIndex, a block-row by its uuid, a step or turn
+    by its phase, each with the bridge's stamp `t`) — cheap enough to take
+    on the reader's thread, and JSON as it is."""
+    if not isinstance(e, dict):
+        return None
+    return [e.get(k) for k in KEY_FIELDS]
+
+
+def install_tee(P, path):
+    """Each subscription's first TEE_LINES bridge lines, with its sub and the
+    stamp the reader itself gave each, appended to `path`: a snapshot line's
+    place among the session's events is found from the event that follows it
+    (place_snapshots). The plane's put runs first and whole (its stamp, its
+    queue, its wake); then the reader's thread enqueues the line's key and
+    that stamp, and a thread of the tee's own writes them once the line's
+    subscription is known — no serializing, no file and no lock on the
+    reader's path or the main thread's. The plane's code is wrapped, not
+    changed."""
+    q = queue.SimpleQueue()
+
+    def writer():
+        subs, pending = {}, {}
+        with open(path, "a", buffering=1) as f:
+            while True:
+                m = q.get()
+                if m[0] == "sub":
+                    _, token, sub = m
+                    subs[token] = sub
+                    lines = pending.pop(token, [])
+                else:
+                    _, token, k, at, key = m
+                    if token not in subs:
+                        pending.setdefault(token, []).append((k, at, key))
+                        continue
+                    lines = [(k, at, key)]
+                for k, at, key in lines:
+                    f.write(json.dumps({"sub": subs[token], "k": k, "at": at, "key": key}) + "\n")
+
+    threading.Thread(target=writer, name="bench-tee", daemon=True).start()
+    reader_init, reader_put, sub_init = P.BridgeReader.__init__, P.BridgeReader.put, P.Subscription.__init__
+    tokens = itertools.count()
 
     def init(self, *args, **kwargs):
         reader_init(self, *args, **kwargs)
-        self._bench = {"sub": None, "lines": [], "written": 0}
+        stamp, last = self.stamp, [None]
+
+        def stamped():
+            last[0] = stamp()
+            return last[0]
+        self.stamp = stamped
+        self._bench = {"token": next(tokens), "seen": 0, "last": last}
 
     def put(self, item):
-        b = getattr(self, "_bench", None)
-        if b is not None and item[0] == "line" and len(b["lines"]) < TEE_LINES:
-            with lock:
-                b["lines"].append((time.time(), item[1]))
-                flush(self)
         reader_put(self, item)
+        b = getattr(self, "_bench", None)
+        if b is not None and item[0] == "line" and b["seen"] < TEE_LINES:
+            q.put(("line", b["token"], b["seen"], b["last"][0], line_key(item[1])))
+            b["seen"] += 1
 
     def subscription(self, *args, **kwargs):
         sub_init(self, *args, **kwargs)
-        r = self.reader
-        if r is not None and getattr(r, "_bench", None) is not None:
-            with lock:
-                r._bench["sub"] = self.sub
-                flush(r)
+        b = getattr(self.reader, "_bench", None)
+        if b is not None:
+            q.put(("sub", b["token"], self.sub))
 
     P.BridgeReader.__init__, P.BridgeReader.put, P.Subscription.__init__ = init, put, subscription
 
@@ -105,7 +142,7 @@ def uplink_main(scripts, tee):
 
 
 def read_tees(path):
-    """The uplink's teed bridge lines, per sub: [{"sub", "lines"}]."""
+    """The uplink's teed bridge lines, per sub: [{"sub", "lines": [(at, key), ...]}]."""
     by = collections.OrderedDict()
     try:
         with open(path) as f:
@@ -114,7 +151,7 @@ def read_tees(path):
                     rec = json.loads(line)
                 except ValueError:
                     continue
-                by.setdefault(rec["sub"], []).append((rec["k"], rec["at"], rec["line"]))
+                by.setdefault(rec["sub"], []).append((rec["k"], rec["at"], rec["key"]))
     except FileNotFoundError:
         pass
     return [{"sub": s, "lines": [(at, obj) for _, at, obj in sorted(v, key=lambda x: x[0])]} for s, v in by.items()]
@@ -258,6 +295,7 @@ class Standin:
         port_file = os.path.join(rig.root, "hub.port")
         self.proc = rig.spawn([sys.executable, os.path.join(HERE, "hub_standin.py"), port_file, "cid-1", "secret-1",
                                "2000"], log="standin.out")
+        rig.hub = self
         self.url = "http://127.0.0.1:%s" % wait_for("the stand-in's port", 10, lambda: _read(port_file))
         self.key = KEY
 
@@ -268,10 +306,6 @@ class Standin:
     def browser(self, rig):
         return StandinBrowser(self.url, rig.project, self.machine)
 
-    def requests(self, since, until):
-        status, st = call(self.url, "GET", "/control/state")
-        return [{"status": p.get("status"), "conn": p.get("conn")} for p in st.get("posted") or []]
-
     def close(self):
         pass
 
@@ -279,8 +313,10 @@ class Standin:
 class Local:
     """The hub's own Worker on a local runtime behind its stand-in for Access
     (`pnpm --filter desk-hub local`), from the MAWS worktree named, with a
-    state directory of its own and a free port; its stdout, read here line by
-    line and stamped, is its request log."""
+    state directory of its own and a free port; its stdout is read here line
+    by line, stamped, for its readiness and for what it said if it never came
+    up. (What the uplink posted is the pause proxy's census, by start: this
+    log stamps a request when it is answered and names no machine.)"""
 
     name, org = "local", "local"
 
@@ -295,12 +331,12 @@ class Local:
                                       os.path.join(rig.root, "hubstate"), "--port", str(port)],
                                      cwd=maws, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                      stderr=subprocess.STDOUT, start_new_session=True)
+        rig.hub = self
         self.log, self.lock = [], threading.Lock()
         self.ready = threading.Event()
         threading.Thread(target=self.read, daemon=True).start()
         if not self.ready.wait(180):
             tail = "\n".join(l for _, l in self.log[-15:])
-            self.close()
             sys.exit("bench_open: the local hub did not come up in 180 s:\n" + tail)
         self.key = None
 
@@ -337,18 +373,6 @@ class Local:
 
     def browser(self, rig):
         return LocalBrowser(self.url, rig.project, self.machine)
-
-    def requests(self, since, until):
-        """The request log's machine POSTs between the stamps: {status, ms}."""
-        pat = re.compile(r"POST /machine/frames (\d+) .*\((\d+)ms\)")
-        with self.lock:
-            lines = [(at, l) for at, l in self.log if since <= at <= until]
-        out = []
-        for at, l in lines:
-            m = pat.search(l)
-            if m:
-                out.append({"at": at, "status": int(m[1]), "ms": int(m[2])})
-        return out
 
     def close(self):
         try:
@@ -474,8 +498,72 @@ class FakeKind:
     def dx5(self):
         return list(zip(self.stamps, self.fake.emitted))
 
+    def coverage(self):
+        """Every event the scripted session emitted is in `emitted`: no gap."""
+        return []
+
     def close(self):
         self.fake.stop_bridge()
+
+
+def request_of(e):
+    return (e.get("turnId"), e.get("agentId"), e.get("step"))
+
+
+def probe_gaps(events, connections, failed=(), prompts=()):
+    """Each reconnect of a live probe as a gap in its DX5 coverage, from the
+    previous stream's end to the next one's snapshot: [{"from", "to",
+    "attempts" (failed between), "reconstructable", "why"}]. The next
+    snapshot carries what a gap lost of a request it still streams (its
+    blocks' text and the rows that named them), so a gap is whole when every
+    request open before it is still streaming there and the snapshot shows
+    nothing the probe had not seen. Else it is lost: a request that ended
+    inside it (its end and last blocks gone), one that began inside it (a
+    whole request may have come and gone before it), a turn the probe never
+    saw, or a prompt the instrument sent inside it (a turn begun and ended
+    there leaves no trace in the snapshot; the headless session takes no
+    other input). `events` [(at, event)] with the probe's own snapshot lines,
+    `connections` its subscriptions, each with `first`, the index of its
+    snapshot in `events`."""
+    subs = [c for c in connections if c.get("first") is not None]
+    out = []
+    for prev, nxt in zip(subs, subs[1:]):
+        first = nxt["first"]
+        to, snap = events[first]
+        start = prev.get("closed") if prev.get("closed") is not None else events[first - 1][0]
+        seen, done, turns, done_turns = set(), set(), set(), set()
+        for _, e in events[:first]:
+            if not isinstance(e, dict):
+                continue
+            kind = e.get("type")
+            if kind == "snapshot":
+                seen |= {request_of(s) for s in e.get("streaming") or []}
+                turns |= {t.get("turnId") for t in e.get("turns") or []}
+                continue
+            if e.get("turnId") is not None:
+                turns.add(e["turnId"])
+            if kind == "turn" and e.get("phase") == "complete":
+                done_turns.add(e.get("turnId"))
+            elif kind in ("chunk", "block-row", "step"):
+                seen.add(request_of(e))
+                if kind == "step" and e.get("phase") == "end":
+                    done.add(request_of(e))
+        still = {request_of(s) for s in snap.get("streaming") or []}
+        open_ = {r for r in seen if r not in done and r[0] not in done_turns}
+        why = []
+        if open_ - still:
+            why.append("a request open before it ended inside the gap: %s" % sorted(open_ - still, key=str))
+        if still - seen:
+            why.append("a request began inside the gap (a whole one may have come and gone before it): %s"
+                       % sorted(still - seen, key=str))
+        unseen = {t.get("turnId") for t in snap.get("turns") or []} - turns
+        if unseen:
+            why.append("a turn the probe never saw: %s" % sorted(unseen, key=str))
+        if any(start <= at <= to for at in prompts):
+            why.append("a prompt was sent inside the gap")
+        out.append({"from": start, "to": to, "attempts": sum(1 for at, _ in failed if start <= at <= to),
+                    "reconstructable": not why, "why": "; ".join(why) or None})
+    return out
 
 
 class LiveKind:
@@ -489,6 +577,7 @@ class LiveKind:
     def __init__(self, rig, a):
         self.rig, self.live = rig, rig.live
         self.thinking, self.model = a.thinking, a.model
+        self.prompts = []     # when the instrument sent each prompt: the session's only input
 
     def start(self):
         live = self.live
@@ -504,6 +593,7 @@ class LiveKind:
 
     def prompt(self, text):
         t0 = time.time()
+        self.prompts.append(t0)
         self.live.send(text)
         return t0
 
@@ -521,6 +611,13 @@ class LiveKind:
     def dx5(self):
         return self.events()
 
+    def coverage(self):
+        """The probe's gaps, each said whole or lost (probe_gaps)."""
+        live = self.live
+        with live.lock:
+            events, conns, failed = list(live.events), [dict(c) for c in live.connections], list(live.failed)
+        return probe_gaps(events, conns, failed, self.prompts)
+
     def close(self):
         pass
 
@@ -533,7 +630,18 @@ class Rig:
     session's own, under --live), the hub, the project, the uplink."""
 
     def __init__(self, a):
+        """Everything it starts is its own from the moment it exists: a
+        construction that fails part way closes what it made, then raises."""
         self.a, self.procs, self.live = a, [], None
+        self.hub = self.browser = self.uplink = None
+        self.root = None
+        try:
+            self.build(a)
+        except BaseException:
+            self.close()
+            raise
+
+    def build(self, a):
         if a.live:
             lbc = _load_live_check()
             missing = [k for k in lbc.GATEWAY_KEYS if k not in os.environ]
@@ -558,8 +666,10 @@ class Rig:
                         PATH=stub + os.pathsep + os.environ.get("PATH", ""), SMINOS_DERIVE_EVERY="0",
                         PYTHONDONTWRITEBYTECODE="1")
         self.tee = os.path.join(self.root, "tee.jsonl")
-        self.uplink = None
-        self.hub = Local(self, a.maws) if a.hub == "local" else Standin(self)
+        if a.hub == "local":
+            Local(self, a.maws)     # each hub is the rig's (`rig.hub`) once its process exists
+        else:
+            Standin(self)
         self.hub.enroll(self)
         if not a.live:
             git = ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "init.defaultBranch=main"]
@@ -572,7 +682,6 @@ class Rig:
         with open(smns, "w") as f:
             json.dump(d, f, indent=2)
         self.project = d["project"]
-        self.browser = None
 
     def spawn(self, argv, log=None, env=None):
         out = open(os.path.join(self.root, log), "ab") if log else subprocess.DEVNULL
@@ -631,9 +740,12 @@ class Rig:
                 p.wait(10)
             except subprocess.TimeoutExpired:
                 p.kill()
-        self.hub.close()
+        if self.hub is not None:
+            self.hub.close()
         if self.live is not None:
             self.live.cleanup()
+        elif self.root is None:
+            pass
         elif not self.a.keep:
             shutil.rmtree(self.root, ignore_errors=True)
         else:

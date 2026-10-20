@@ -98,6 +98,8 @@ class Live:
         self.lock = threading.Lock()
         self.stop = threading.Event()
         self.subscriptions = 0
+        self.connections = []     # each subscription of the probe (subscribe_forever)
+        self.failed = []          # (time, why) of each attempt that got no stream
         self.session = None
         self.results = []
         self.procs = []
@@ -236,21 +238,48 @@ class Live:
         return s, body
 
     def subscribe_forever(self):
+        """The probe: one subscription after another for as long as the
+        check runs, each in `connections` ({"opened", "first": the index of
+        its snapshot in `events`, "closed", "why"}) and each attempt that got
+        no stream in `failed` — so every gap between two of them is on
+        record for whoever reads `events` as the session's DX5 source."""
         while not self.stop.is_set():
+            conn = None
             try:
                 c = Conn(self.endpoint(), timeout=None)
                 c.request("GET", "/events")
                 r = c.getresponse()
+                if r.status != 200:
+                    r.read()
+                    c.close()
+                    with self.lock:
+                        self.failed.append((time.time(), "refused %d" % r.status))
+                    time.sleep(0.2)
+                    continue
+                conn = {"opened": time.time(), "first": None, "closed": None, "why": None}
+                with self.lock:
+                    self.connections.append(conn)
                 self.subscriptions += 1
                 while not self.stop.is_set():
                     line = r.readline()
                     if not line:
+                        conn["why"] = "the bridge ended the stream"
                         break
                     with self.lock:
+                        if conn["first"] is None:
+                            conn["first"] = len(self.events)
                         self.events.append((time.time(), json.loads(line)))
                 c.close()
-            except (OSError, ValueError, http.client.HTTPException):
-                pass
+            except (OSError, ValueError, http.client.HTTPException) as e:
+                with self.lock:
+                    if conn is None:
+                        self.failed.append((time.time(), repr(e)))
+                    else:
+                        conn["why"] = repr(e)
+            if conn is not None:
+                with self.lock:
+                    conn["closed"] = time.time()
+                    conn["why"] = conn["why"] or "the check stopped"
             time.sleep(0.2)
 
     def seen(self, pred, since=0.0):

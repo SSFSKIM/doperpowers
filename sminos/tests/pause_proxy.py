@@ -28,6 +28,13 @@ Its controls, on their own port:
   what waits unread in the socket), or when it resumed, the most it held;
   `paused_at` and `resumed_at` epoch seconds; `streams` the stream
   connections seen; `forwarded` the bytes of the stream sent to the client.
+- `GET /control/requests`: `{"requests": [...]}`, the census of every
+  request on the connections that pass, in the order they started (`Census`):
+  `{"conn", "method", "path", "start", "generation", "client", "frames",
+  "status", "answered", "closed"}` — a request still unanswered has `status`
+  and `answered` null, and `closed` once its connection ended without an
+  answer. So the POSTs of the one client behind the proxy are told from any
+  other's by construction, each by when it started, outstanding ones too.
 """
 
 import fcntl
@@ -250,6 +257,190 @@ def resume_now():
     PAUSE.cond.notify_all()
 
 
+class Heads:
+    """HTTP/1.1 messages one way on a connection, fed its raw bytes as they
+    come: `on_head(first line, headers, at, body)` once each message's head
+    is whole — `at` when its first byte came, `body` the first BODY_PEEK
+    bytes of its body once they are in (or all of a shorter one) — its body
+    passed over by its Content-Length, its chunked framing, or (a response
+    with neither) the rest of the connection."""
+
+    def __init__(self, on_head, response=False):
+        self.on_head, self.response = on_head, response
+        self.buf, self.line, self.state, self.left, self.at = b"", b"", "head", 0, None
+        self.peek, self.held = b"", None     # the body's first bytes, and the head waiting on them
+
+    def feed(self, data, at):
+        i, n = 0, len(data)
+        while i < n and self.state != "rest":
+            if self.state == "head":
+                if self.at is None:
+                    self.at = at
+                self.buf += data[i:]
+                k = self.buf.find(b"\r\n\r\n")
+                if k < 0:
+                    return
+                head, data = self.buf[:k].decode("latin-1"), self.buf[k + 4:]
+                self.buf, i, n = b"", 0, len(self.buf) - k - 4
+                lines = head.split("\r\n")
+                headers = {}
+                for line in lines[1:]:
+                    name, _, value = line.partition(":")
+                    headers[name.strip().lower()] = value.strip()
+                self.held = (lines[0], headers, self.at)
+                self.at, self.peek = None, b""
+                length = headers.get("content-length", "")
+                status = lines[0].split(" ")[1] if self.response and " " in lines[0] else ""
+                if "chunked" in headers.get("transfer-encoding", "").lower():
+                    self.state = "size"
+                elif length.isdigit() and int(length) > 0:
+                    self.state, self.left = "length", int(length)
+                elif self.response and not length and not (status[:1] == "1" or status in ("204", "304")):
+                    self.state = "rest"
+                else:
+                    self.state = "head"
+                    self.said()
+            elif self.state == "length":
+                take = min(self.left, n - i)
+                self.look(data[i:i + take])
+                i, self.left = i + take, self.left - take
+                if not self.left:
+                    self.state = "head"
+                    self.said()
+            elif self.state == "size":
+                j = data.find(b"\n", i)
+                if j < 0:
+                    self.line += data[i:]
+                    return
+                size = int((self.line + data[i:j]).split(b";")[0].strip() or b"0", 16)
+                self.line, i = b"", j + 1
+                self.state, self.left = ("data", size + 2) if size else ("trailer", 0)
+            elif self.state == "data":
+                take = min(self.left, n - i)
+                self.look(data[i:i + take])
+                i, self.left = i + take, self.left - take
+                if not self.left:
+                    self.state = "size"
+            else:   # the chunked body's trailer, to its empty line
+                j = data.find(b"\n", i)
+                if j < 0:
+                    self.line += data[i:]
+                    return
+                last, self.line, i = (self.line + data[i:j]).strip(), b"", j + 1
+                if not last:
+                    self.state = "head"
+                    self.said()
+        if self.state == "rest" or len(self.peek) >= BODY_PEEK:
+            self.said()
+
+    def look(self, piece):
+        if self.held is not None and len(self.peek) < BODY_PEEK:
+            self.peek += piece[:BODY_PEEK - len(self.peek)]
+
+    def close(self):
+        """The connection ended: a head still waiting on its body's first bytes is said with what came."""
+        self.said()
+
+    def said(self):
+        if self.held is not None:
+            first, headers, at = self.held
+            self.held = None
+            self.on_head(first, headers, at, self.peek)
+
+
+class Census:
+    """Every request on the connections that pass (all but the stream's), in
+    the order they started: its start, what it names (method, path, the
+    stream generation and the Access client id it carries — never a secret
+    — and the frame kinds its body opens with), and its answer's status and
+    arrival, or when its connection closed unanswered."""
+
+    FRAME = re.compile(rb'"t"\s*:\s*"([a-z-]+)"')
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.requests = []
+        self.ids = 0
+
+    def connection(self):
+        with self.lock:
+            self.ids += 1
+            return self.ids
+
+    def started(self, conn, first, headers, at, body):
+        method, _, rest = first.partition(" ")
+        rec = {"conn": conn, "method": method, "path": rest.rsplit(" ", 1)[0], "start": at,
+               "generation": headers.get("x-desk-generation"), "client": headers.get("cf-access-client-id"),
+               "frames": [m.decode() for m in self.FRAME.findall(body)][:8],
+               "status": None, "answered": None, "closed": None}
+        with self.lock:
+            self.requests.append(rec)
+        return rec
+
+    def snapshot(self):
+        with self.lock:
+            return [dict(r) for r in self.requests]
+
+
+BODY_PEEK = 512
+CENSUS = Census()
+
+
+def tap(src, dst, heads):
+    """Bytes one way until either side ends, each read stamped as it came
+    and read for its messages' heads once it is forwarded."""
+    try:
+        while True:
+            data = src.recv(BLOCK)
+            if not data:
+                break
+            at = time.time()
+            dst.sendall(data)
+            heads.feed(data, at)
+    except OSError:
+        pass
+    finally:
+        for s in (src, dst):
+            try:
+                s.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+
+
+def passing(client, hub, first, at):
+    """A connection that is not the stream: forwarded as it is, its requests
+    and their answers in the census (answers matched to requests in order,
+    as HTTP/1.1 sends them; a 1xx answers nothing)."""
+    conn, waiting = CENSUS.connection(), []
+
+    def request(first_line, headers, at_, body):
+        waiting.append(CENSUS.started(conn, first_line, headers, at_, body))
+
+    def answer(first_line, headers, at_, body):
+        parts = first_line.split(" ")
+        status = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else None
+        if status is not None and 100 <= status < 200:
+            return
+        with CENSUS.lock:
+            if waiting:
+                rec = waiting.pop(0)
+                rec["status"], rec["answered"] = status, at_
+
+    up = Heads(request)
+    up.feed(first, at)
+    t = threading.Thread(target=tap, args=(client, hub, up), daemon=True)
+    t.start()
+    down = Heads(answer, response=True)
+    tap(hub, client, down)
+    t.join(5)
+    up.close()
+    down.close()
+    with CENSUS.lock:
+        for rec in waiting:
+            rec["closed"] = time.time()
+        waiting.clear()
+
+
 def serve(client, hub_addr):
     try:
         hub = socket.create_connection(hub_addr)
@@ -260,6 +451,7 @@ def serve(client, hub_addr):
         first = client.recv(BLOCK)
     except OSError:
         first = b""
+    at = time.time()
     if not first:
         client.close()
         hub.close()
@@ -272,8 +464,7 @@ def serve(client, hub_addr):
         threading.Thread(target=pipe, args=(client, hub), daemon=True).start()
         stream_down(hub, client)
     else:
-        threading.Thread(target=pipe, args=(client, hub), daemon=True).start()
-        pipe(hub, client)
+        passing(client, hub, first, at)
 
 
 class Control(BaseHTTPRequestHandler):
@@ -297,6 +488,8 @@ class Control(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/control/state":
             return self.reply(200, PAUSE.snapshot())
+        if self.path == "/control/requests":
+            return self.reply(200, {"requests": CENSUS.snapshot()})
         return self.reply(404, {"error": "not-found"})
 
     def do_POST(self):

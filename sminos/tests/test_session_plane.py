@@ -24,6 +24,7 @@ Hermetic: HOME and SMINOS_HOME are temporary; nothing reaches beyond
 
 import base64
 import http.client
+import io
 import json
 import os
 import shutil
@@ -53,6 +54,7 @@ sys.path.insert(0, SCRIPTS)
 sys.path.insert(0, HERE)
 
 import bench_open  # noqa: E402
+import bench_rig  # noqa: E402
 import dx4_consumer  # noqa: E402
 import fake_session  # noqa: E402
 import sminos_plane as plane  # noqa: E402
@@ -1736,6 +1738,17 @@ def wait_file(path, timeout=10):
     return read(path)
 
 
+def ended(p):
+    """A fixture process stopped and reaped, whatever state it is in."""
+    if p.poll() is None:
+        p.terminate()
+        try:
+            p.wait(10)
+        except subprocess.TimeoutExpired:
+            p.kill()
+            p.wait()
+
+
 def dechunked(raw):
     """An HTTP/1.1 response's chunked body as far as it came, its framing taken off."""
     body = raw.split(b"\r\n\r\n", 1)[1] if b"\r\n\r\n" in raw else b""
@@ -1761,23 +1774,23 @@ class Instruments(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.procs = []
         port_file = os.path.join(T, "instruments-hub.port")
-        cls.procs.append(subprocess.Popen([sys.executable, os.path.join(HERE, "hub_standin.py"), port_file, "cid-1",
-                                           "secret-1", "2000"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
+        cls.spawn([sys.executable, os.path.join(HERE, "hub_standin.py"), port_file, "cid-1", "secret-1", "2000"])
         cls.hub = "http://127.0.0.1:%s" % wait_file(port_file)
         proxy_file = os.path.join(T, "instruments-proxy.json")
-        cls.procs.append(subprocess.Popen([sys.executable, os.path.join(HERE, "pause_proxy.py"), cls.hub, proxy_file],
-                                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
+        cls.spawn([sys.executable, os.path.join(HERE, "pause_proxy.py"), cls.hub, proxy_file])
         ports = json.loads(wait_file(proxy_file))
         cls.proxy = "http://127.0.0.1:%d" % ports["proxy"]
         cls.control = "http://127.0.0.1:%d" % ports["control"]
 
     @classmethod
-    def tearDownClass(cls):
-        for p in cls.procs:
-            p.terminate()
-            p.wait(10)
+    def spawn(cls, argv):
+        """A fixture process, its end owned from the moment it exists: a
+        class cleanup runs even when setUpClass fails after it, where
+        tearDownClass would not."""
+        p = subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        cls.addClassCleanup(ended, p)
+        return p
 
     def open_stream(self, base):
         """GET /machine/stream at `base` on a socket of its own; (socket, the
@@ -1813,6 +1826,65 @@ class Instruments(unittest.TestCase):
         self.assertEqual(len(posted), 3)
         self.assertEqual(posted[0]["conn"], posted[1]["conn"], "one keep-alive connection, one id")
         self.assertNotEqual(posted[1]["conn"], posted[2]["conn"], "a new connection, a new id")
+
+    def test_the_proxy_counts_each_request_that_passes(self):
+        """Every request on a passing connection is in the proxy's census
+        from its start, with the generation and Access client it names (never
+        the secret) and the frame kinds its body opens with; answers are
+        matched in order on a keep-alive connection; a request whose
+        connection closes unanswered stays in it, said so."""
+        requests = lambda: call(self.control, "GET", "/control/requests")[1]["requests"]  # noqa: E731
+        before = len(requests())
+        u = urllib.parse.urlsplit(self.proxy)
+        t0 = time.time()
+        c = http.client.HTTPConnection(u.hostname, u.port, timeout=10)
+        for kind in ("hb-ack", "session"):
+            c.request("POST", "/machine/frames", body=('{"t":"%s"}\n' % kind).encode(),
+                      headers={**self.CRED, "X-Desk-Generation": "999"})
+            r = c.getresponse()
+            r.read()
+        c.close()
+        sock = socket.create_connection((u.hostname, u.port), timeout=5)
+        sock.sendall(b'POST /machine/frames HTTP/1.1\r\nHost: x\r\nContent-Length: 100\r\nX-Desk-Generation: 7\r\n'
+                     b'\r\n{"t":"hello"')
+        time.sleep(0.3)
+        sock.close()
+        deadline = time.time() + 5
+        while time.time() < deadline and not (len(requests()) == before + 3 and requests()[-1]["closed"]):
+            time.sleep(0.05)
+        got = requests()[before:]
+        self.assertEqual([(r["method"], r["path"], r["generation"], r["frames"]) for r in got],
+                         [("POST", "/machine/frames", "999", ["hb-ack"]), ("POST", "/machine/frames", "999", ["session"]),
+                          ("POST", "/machine/frames", "7", ["hello"])])
+        a, b, held = got
+        self.assertEqual(a["conn"], b["conn"], "one keep-alive connection")
+        self.assertNotEqual(b["conn"], held["conn"])
+        self.assertEqual((a["status"], b["status"], a["client"]), (409, 409, "cid-1"))
+        self.assertTrue(t0 <= a["start"] <= a["answered"] <= b["start"] <= b["answered"], got)
+        self.assertEqual((held["status"], held["answered"]), (None, None))
+        self.assertIsNotNone(held["closed"], "its connection closed with no answer")
+        self.assertNotIn("secret-1", json.dumps(got))
+
+    def test_a_fixture_that_fails_to_start_leaves_no_process(self):
+        """setUpClass failing after it started processes: each is ended by
+        the class cleanup registered when it was spawned."""
+        spawned = []
+
+        class Failing(Instruments):
+            @classmethod
+            def spawn(cls, argv):
+                p = super(Failing, cls).spawn(argv)
+                spawned.append(p)
+                return p
+
+        module = sys.modules[__name__]
+        with mock.patch.object(module, "wait_file", side_effect=["1", TimeoutError("injected")]):
+            result = unittest.TextTestRunner(stream=io.StringIO(), verbosity=0).run(
+                unittest.TestSuite([Failing("test_a_keep_alive_connection_keeps_its_id")]))
+        self.assertEqual(len(result.errors), 1, "the setUpClass failure is said")
+        self.assertIn("injected", result.errors[0][1])
+        self.assertEqual(len(spawned), 2)
+        self.assertEqual([p.poll() is not None for p in spawned], [True, True], "no fixture process outlives it")
 
     def test_a_session_message_carries_its_arrival(self):
         sock, _, generation = self.open_stream(self.hub)
@@ -1991,20 +2063,107 @@ class BenchOpen(unittest.TestCase):
         self.assertIsNone(read("plane: something else"))
 
     def test_a_snapshot_stands_before_the_first_event_its_subscriber_was_sent(self):
-        e = [{"type": "chunk", "chunkIndex": i, "t": 100 + i} for i in range(4)]
+        key = bench_rig.line_key
+        e = [{"type": "chunk", "turnId": "t", "agentId": None, "step": 0, "chunkIndex": i, "t": 100 + i}
+             for i in range(4)]
         backbone = [(10.0 + i, x) for i, x in enumerate(e)]
-        snap = {"type": "snapshot", "cut": {}}
-        tees = [{"sub": "a", "lines": [(11.5, snap), (12.2, {"n": 1, **e[2]})]},     # placed by its next event
-                {"sub": "b", "lines": [(10.5, snap)]},                              # nothing after it: by its stamp
-                {"sub": "c", "lines": [(11.9, snap), (12.0, {"n": 1, "type": "gone"}), (13.1, {"n": 2, **e[3]})]}]
+        snap = key({"type": "snapshot", "cut": {}})
+        tees = [{"sub": "a", "lines": [(11.5, snap), (12.2, key({"n": 1, **e[2]}))]},   # placed by its next event
+                {"sub": "b", "lines": [(10.5, snap)]},                                # nothing after it: unplaced
+                {"sub": "c", "lines": [(11.9, snap), (12.0, key({"n": 1, "type": "gone"})),
+                                       (13.1, key({"n": 2, **e[3]}))]}]
         events, how = bench_open.place_snapshots(backbone, tees)
-        self.assertEqual([x.get("sub") or x["chunkIndex"] for x in events], [0, "b", 1, "a", 2, "c", 3])
-        self.assertEqual(how, {"a": "event", "b": "time", "c": "event"})
-        self.assertEqual(events[3], {"type": "snapshot", "cut": {}, "sub": "a"})
-        # The inventory reads the placed snapshot: a request whose step ended before it is the accepted hole.
+        self.assertEqual([x.get("sub") or x["chunkIndex"] for x in events], [0, 1, "a", 2, "c", 3])
+        self.assertEqual(how, {"a": "event", "b": "unplaced", "c": "event"})
+        self.assertEqual(events[2], {"type": "snapshot", "sub": "a"})
+        # The inventory reads the placed snapshots: a request whose step ended before one is the accepted hole.
+        # A stamp alone is no evidence of order, so `b` names no snapshot and its blocks cannot be `residual`.
         order = dx4_consumer.order_of([{"type": "step", "phase": "end", "turnId": "t", "agentId": None, "step": 0}]
                                       + events)
-        self.assertEqual(order[0], {"b": 2, "a": 4, "c": 6})
+        self.assertEqual(order[0], {"a": 3, "c": 5})
+
+    def test_a_line_is_known_by_its_fields_not_its_n(self):
+        chunk = {"type": "chunk", "turnId": "t", "agentId": None, "step": 2, "chunkIndex": 7, "t": 5,
+                 "chunk": {"kind": "text", "index": 0, "text": "x"}}
+        self.assertEqual(bench_rig.line_key({"n": 3, **chunk}), bench_rig.line_key(chunk))
+        self.assertNotEqual(bench_rig.line_key({**chunk, "chunkIndex": 8}), bench_rig.line_key(chunk))
+        self.assertEqual(json.loads(json.dumps(bench_rig.line_key(chunk))), bench_rig.line_key(chunk))
+
+    def test_a_probe_gap_is_read_back_from_the_next_snapshot_or_said_lost(self):
+        """A live probe's reconnect leaves a gap in the DX5 source: whole
+        when the next snapshot still streams every request that was open
+        before it and shows nothing new; lost when a request ended inside it,
+        or one the probe never saw (it may have had a whole request before
+        it), or a turn it never saw."""
+        step = lambda turn, n, phase: {"type": "step", "phase": phase, "turnId": turn, "agentId": None,  # noqa: E731
+                                       "step": n}
+        chunk = lambda turn, n, i: {"type": "chunk", "turnId": turn, "agentId": None, "step": n,  # noqa: E731
+                                    "chunkIndex": i, "chunk": {"kind": "text", "index": 0, "text": "w"}}
+        streaming = lambda *reqs: [{"turnId": t, "agentId": None, "step": n, "blocks": []} for t, n in reqs]  # noqa: E731
+
+        def run(after_snapshot, turns=({"turnId": "t1"},), prompts=(0.5,)):
+            ev = [(1.0, {"type": "snapshot", "streaming": [], "turns": []}), (1.1, step("t1", 0, "start")),
+                  (1.2, chunk("t1", 0, 0)), (3.0, {"type": "snapshot", "streaming": after_snapshot,
+                                                    "turns": list(turns)}), (3.1, chunk("t1", 0, 5))]
+            conns = [{"opened": 0.9, "first": 0, "closed": 2.0, "why": "the bridge ended the stream"},
+                     {"opened": 2.9, "first": 3, "closed": None, "why": None}]
+            return bench_rig.probe_gaps(ev, conns, failed=[(2.5, "refused 503")], prompts=prompts)
+
+        whole = run(streaming(("t1", 0)))
+        self.assertEqual([(g["from"], g["to"], g["attempts"], g["reconstructable"]) for g in whole],
+                         [(2.0, 3.0, 1, True)])
+        ended = run([])
+        self.assertFalse(ended[0]["reconstructable"])
+        self.assertIn("ended inside the gap", ended[0]["why"])
+        new = run(streaming(("t1", 0), ("t1", 2)))
+        self.assertFalse(new[0]["reconstructable"])
+        self.assertIn("began inside the gap", new[0]["why"])
+        turn = run(streaming(("t1", 0)), turns=({"turnId": "t1"}, {"turnId": "t0"}))
+        self.assertFalse(turn[0]["reconstructable"])
+        self.assertIn("turn", turn[0]["why"])
+        prompted = run(streaming(("t1", 0)), prompts=(0.5, 2.4))
+        self.assertFalse(prompted[0]["reconstructable"], "a turn begun and ended inside the gap leaves no trace in "
+                         "the next snapshot: a prompt sent in it is what says it may have")
+        self.assertIn("prompt", prompted[0]["why"])
+        self.assertEqual(bench_rig.probe_gaps([(1.0, {"type": "snapshot"})], [{"opened": 0.9, "first": 0,
+                                                                                "closed": None, "why": None}]), [],
+                         "one subscription from the start: no gap")
+
+    def test_a_window_trial_counts_only_inside_and_long_enough(self):
+        count = bench_open.trial_counts
+        self.assertEqual(count("mid-message", 1.0, 3.5, [1.2]), (True, 2.5))
+        self.assertEqual(count("mid-message", 1.0, 3.5, [0.9])[0], False, "before the block-row")
+        self.assertEqual(count("long-answer", 1.0, 14.0, [2.0, 8.0]), (True, 13.0))
+        self.assertEqual(count("long-answer", 1.0, 9.3, [2.0, 8.0]), (False, 8.3),
+                         "A2's window is 12 s: a shorter one does not count")
+        self.assertEqual(count("long-answer", 1.0, None, [2.0, 8.0]), (False, None))
+
+    def test_only_an_unsolicited_end_is_an_end_before_the_step(self):
+        early = bench_open.ended_early
+        self.assertTrue(early({"reason": "discontinuity"}, 5.0, 9.0))
+        self.assertFalse(early({"reason": "discontinuity"}, 9.5, 9.0), "after the step's end")
+        self.assertFalse(early(None, None, 9.0), "the instrument's own unsubscribe, its end never relayed")
+        self.assertFalse(early({"reason": "unsubscribed"}, 7.0, 9.0), "the instrument's own unsubscribe")
+
+    def test_a_rig_that_fails_to_enroll_leaves_nothing_behind(self):
+        """The hub is the rig's from the moment it starts: an enrollment that
+        fails ends it and takes the run's directory with it."""
+        made = []
+        enroll = bench_rig.Standin.enroll
+
+        def failing(hub, rig):
+            made.append((hub.proc, rig.root))
+            raise RuntimeError("injected")
+        a = types.SimpleNamespace(live=False, hub="standin", maws=None, keep=False)
+        with mock.patch.object(bench_rig.Standin, "enroll", failing), mock.patch.dict(os.environ, {
+                "HOME": os.path.join(T, "rig-home")}):
+            with self.assertRaisesRegex(RuntimeError, "injected"):
+                bench_rig.Rig(a)
+        self.assertIsNot(bench_rig.Standin.enroll, failing)
+        self.assertIs(bench_rig.Standin.enroll, enroll)
+        (proc, root), = made
+        self.assertIsNotNone(proc.poll(), "the stand-in ended")
+        self.assertFalse(os.path.exists(root), "the run's directory removed")
 
     def test_an_open_counts_inside_the_thinking_to_end_window(self):
         key = ("turn-1", None, 0)
@@ -2050,7 +2209,22 @@ class BenchOpen(unittest.TestCase):
             self.assertIsNotNone(o["N"])
         self.assertEqual(opens[1]["build"], "warm")
         summary = out[-1]
-        self.assertEqual((summary["summary"], summary["opens"], summary["E"]["n"]), ("idle", 2, 2))
+        self.assertEqual((summary["summary"], summary["opens"], summary["E"]["n"], summary["complete"]),
+                         ("idle", 2, 2, True))
+
+    def test_a_mid_message_open_is_placed_among_the_events(self):
+        """The scripted message's mid-message open: inside its window, and its
+        snapshot placed by the event the uplink's tee saw follow it."""
+        r = subprocess.run([sys.executable, os.path.join(HERE, "bench_open.py"), "--uplink", "--hub", "standin",
+                            "--scenario", "mid-message", "--opens", "1"], capture_output=True, text=True, timeout=120,
+                           env={k: v for k, v in os.environ.items() if k not in ("HOME", "SMINOS_HOME")}
+                           | {"HOME": os.path.join(T, "bench-home-mid")})
+        self.assertEqual(r.returncode, 0, r.stdout[-2000:] + r.stderr[-2000:])
+        out = [json.loads(line) for line in r.stdout.splitlines()]
+        opens = [o for o in out if o.get("mode") == "uplink" and "summary" not in o]
+        self.assertEqual([(o["counted"], o["placed"], o["source"]) for o in opens], [(True, "event", "complete")])
+        self.assertEqual((opens[0]["holes"], opens[0]["undrawn"], opens[0]["vanished"]), (0, 0, 0))
+        self.assertTrue(out[-1]["complete"])
 
 
 class BenchOpenMicro(Session):

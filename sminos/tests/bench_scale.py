@@ -50,9 +50,11 @@ LOCAL local projects kept as history.
   again. One JSON line per open — its moment,
   size, rows and E (the snapshot's arrival at the stand-in less the
   subscribe's write, both the stand-in's stamps), with N and the build from
-  the plane's open line — and a summary per moment and size. A moment is
-  taken once the uplink has opened the sessions' projects on its stream, if
-  that is later; each line says when, after the uplink's start, it went.
+  the plane's open line — and a summary per moment and size; each line says
+  when, after the uplink's start, it went (`sent`). A +0.5 s pair goes only
+  if the uplink's stream has opened the sessions' projects by then: else the
+  moment is said missing, with when the stream was ready, never sampled
+  late under its name, and the run ends with status 3.
 """
 
 import argparse
@@ -446,23 +448,37 @@ def cmd_run(a, env):
 
 
 def standin(env):
-    """hub_standin.py for the machine, its URL in the credential, the other machine's project registered."""
+    """hub_standin.py for the machine, its URL in the credential, the other
+    machine's project registered. The process is ended if anything after its
+    start fails, so a setup that raises leaves none behind."""
     import urllib.request
     port_file = os.path.join(env.root, "hub.port")
     hub = subprocess.Popen([sys.executable, os.path.join(HERE, "hub_standin.py"), port_file, "cid-1", "secret-1",
                             "15000"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    while not (os.path.exists(port_file) and open(port_file).read().strip()):
-        time.sleep(0.05)
-    url = "http://127.0.0.1:%s" % open(port_file).read().strip()
-    cred = os.path.join(env.sh, "daemon", "hub.json")
-    d = json.load(open(cred))
-    d["hub"] = url
-    write(cred, d)
-    os.chmod(cred, 0o600)
-    req = urllib.request.Request(url + "/control/register", method="POST", data=json.dumps(
-        {"project": machine_project_id(ORG, OTHER), "name": OTHER, "kind": "machine"}).encode(),
-        headers={"Content-Type": "application/json"})
-    urllib.request.urlopen(req, timeout=10).read()
+    try:
+        deadline, port = time.time() + 10, ""
+        while not port:
+            if os.path.exists(port_file):
+                with open(port_file) as f:
+                    port = f.read().strip()
+            if not port and (time.time() > deadline or hub.poll() is not None):
+                raise RuntimeError("the stand-in wrote no port in 10 s")
+            if not port:
+                time.sleep(0.05)
+        url = "http://127.0.0.1:%s" % port
+        cred = os.path.join(env.sh, "daemon", "hub.json")
+        with open(cred) as f:
+            d = json.load(f)
+        d["hub"] = url
+        write(cred, d)
+        os.chmod(cred, 0o600)
+        req = urllib.request.Request(url + "/control/register", method="POST", data=json.dumps(
+            {"project": machine_project_id(ORG, OTHER), "name": OTHER, "kind": "machine"}).encode(),
+            headers={"Content-Type": "application/json"})
+        urllib.request.urlopen(req, timeout=10).read()
+    except BaseException:
+        stop(hub)
+        raise
     return hub, url
 
 
@@ -511,7 +527,7 @@ def cmd_opens(a, env):
             rec = {"moment": moment, "session": s["sid"][:8], "size": s["size"], "rows": line.get("rows"),
                    "E": None if snap is None or snap[1]["kind"] != "snapshot" else round(snap[0] - at, 3),
                    "N": line.get("N"), "build": line.get("build"), "cpu_ms": line.get("cpu_ms"),
-                   "outcome": line.get("outcome"), "sent": round(at - started, 2), "load1": bo.load1()}
+                   "outcome": line.get("outcome"), "sent": round(at - started, 3), "load1": bo.load1()}
             print(json.dumps(rec), flush=True)
             return rec
 
@@ -527,7 +543,7 @@ def cmd_opens(a, env):
             out += [finish(s, sub, at, moment, started) for s, sub, at in pending]
             return out
 
-        records, generation = [], 0
+        records, generation, missed = [], 0, []
         for phase in ("start", "restart"):
             if up[0] is not None:
                 generation = rig.call(url, "GET", "/control/state")[1]["generation"]
@@ -535,10 +551,23 @@ def cmd_opens(a, env):
             up[0] = subprocess.Popen([sys.executable, os.path.join(a.scripts, "sminos.py"), "daemon", "uplink"],
                                      env=env.env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             started = time.time()
-            time.sleep(0.5)
-            rig.wait_for("the uplink's projects open on its stream", 120,
-                        lambda: ready(generation, [s["project"] for s in pair]), 0.02)
-            records += opens(pair, "+0.5 s" if phase == "start" else "restart +0.5 s", started, together=True)
+            moment = "+0.5 s" if phase == "start" else "restart +0.5 s"
+            projects = [s["project"] for s in pair]
+            time.sleep(max(0.0, started + 0.5 - time.time()))
+            if ready(generation, projects):
+                records += opens(pair, moment, started, together=True)
+            else:
+                # The cold start's sample is the open at its moment: a stream not ready then makes it
+                # missing, not a later open filed under the moment's name.
+                try:
+                    rig.wait_for("the uplink's projects open on its stream", 120,
+                                 lambda: ready(generation, projects), 0.02)
+                    at = round(time.time() - started, 3)
+                except TimeoutError:
+                    at = None
+                print(json.dumps({"moment": moment, "incomplete": "the uplink's stream had not opened the "
+                                  "projects at the moment", "ready": at, "load1": bo.load1()}), flush=True)
+                missed.append(moment)
             if phase == "start":
                 time.sleep(max(0.0, started + a.warm_after - time.time()))
                 records += opens(lives, "+%g s" % a.warm_after, started, together=False)
@@ -551,6 +580,9 @@ def cmd_opens(a, env):
                                       "load1": {"min": min(r["load1"] for r in of),
                                                 "max": max(r["load1"] for r in of)},
                                       "uptime": bo.uptime()}), flush=True)
+        if missed:
+            print(json.dumps({"summary": "opens", "complete": False, "incomplete": missed}), flush=True)
+            return 3
     finally:
         if up[0] is not None:
             stop(up[0])
@@ -634,12 +666,14 @@ def main():
             subprocess.run([sys.executable, os.path.join(a.joined_by, "sminos.py"), "daemon", "tick"], env=env.env,
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             print("joined by %s's first tick in %.1f s" % (a.joined_by, time.perf_counter() - t), flush=True)
-        {"tick": cmd_tick, "profile": cmd_profile, "run": cmd_run, "verbs": cmd_verbs,
-         "opens": cmd_opens}[a.mode](a, env)
+        status = {"tick": cmd_tick, "profile": cmd_profile, "run": cmd_run, "verbs": cmd_verbs,
+                  "opens": cmd_opens}[a.mode](a, env)
     finally:
         env.close()
         if not a.keep:
             shutil.rmtree(root, ignore_errors=True)
+    if status:
+        sys.exit(status)   # opens: a moment it could not sample (its summary says which)
 
 
 if __name__ == "__main__":
