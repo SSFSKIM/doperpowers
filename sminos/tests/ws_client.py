@@ -2,7 +2,9 @@
 browser's side of DX3 against DC3's local hub, which only a browser socket can
 ask for a subscription. Text frames only, client frames masked, pings
 answered; every JSON frame received is kept in order, DX2/DX3 `part` sets
-joined. For tests: no TLS, no extensions."""
+joined, each with when it arrived whole (`stamped`, epoch s: the open's
+instruments time a snapshot's receipt by it). For tests: no TLS, no
+extensions."""
 
 import base64
 import json
@@ -10,6 +12,7 @@ import os
 import socket
 import struct
 import threading
+import time
 import urllib.parse
 
 
@@ -38,6 +41,7 @@ class WebSocket:
             raise
         self.sock.settimeout(None)
         self.frames = []
+        self.at = []          # each frame's arrival, beside it
         self.lock = threading.Lock()
         self.parts = {}
         self.closed = False
@@ -108,10 +112,16 @@ class WebSocket:
             frame = json.loads("".join(held[i] for i in range(frame["count"])))
         with self.lock:
             self.frames.append(frame)
+            self.at.append(time.time())
 
     def received(self):
         with self.lock:
             return list(self.frames)
+
+    def stamped(self, since=0):
+        """(arrival, frame) for every frame from index `since` on."""
+        with self.lock:
+            return list(zip(self.at[since:], self.frames[since:]))
 
     def close(self):
         try:

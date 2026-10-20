@@ -26,8 +26,15 @@ it streams, subagents labelled; `--json`, the lines as they come.
 
 Row order (DC2 M4): the hello's `seed` is each loop's last row in the
 session's transcripts as the child read them, which the mod's first resync
-carries as each loop's cut; the mod's row notices move it from there. The
-rows no hook of the mod's sees (a manual compaction's) it reads here too:
+carries as each loop's cut; the mod's row notices move it from there. A
+block a `block-row` named stays in the snapshot's `streaming`, its text kept
+and marked with its row's `uuid` and `namedAt`, until its step ends: the
+engine flushes a message's rows only at its end, and until then the text the
+mod streamed is the only copy outside the engine. The snapshot says so
+(`namedBlocks: true`) only when the mod's last resync declared it keeps them
+too: a mod from before that resyncs copies without the blocks it named, and
+a reader of a snapshot that does not say so waits for the cut's row on disk.
+The rows no hook of the mod's sees (a manual compaction's) it reads here too:
 
     GET  /rows?loop=&after=<uuid>      a loop's whole rows on disk past <uuid> (404 while it is not)
 
@@ -433,13 +440,15 @@ _BLOCK_KIND = {"text": "text", "thinking": "thinking", "tool": "tool", "input": 
 
 def _message(e):
     """A streaming message as the snapshot carries it, from a step's start or
-    a resync's entry: its blocks by index, the ones a block-row settled (a
-    resync names them, so their late chunks stay ignored), and `upTo`, the
-    last chunk applied to it."""
+    a resync's entry: its blocks by index — a settled one only while it is
+    named (it carries its row's `uuid`: the text the engine has not flushed
+    yet) — the ones a block-row settled (a resync names them, so their late
+    chunks stay ignored), and `upTo`, the last chunk applied to it."""
     settled = {i for i in e.get("settled") or [] if type(i) is int}
     blocks = {}
     for b in e.get("blocks") or []:
-        if isinstance(b, dict) and isinstance(b.get("index"), int) and b["index"] not in settled:
+        if isinstance(b, dict) and isinstance(b.get("index"), int) and (
+                b["index"] not in settled or isinstance(b.get("uuid"), str)):
             blocks[b["index"]] = dict(b)
     m = {"turnId": e.get("turnId"), "agentId": e.get("agentId"), "step": e.get("step"), "model": e.get("model"),
          "upTo": e.get("upTo") if isinstance(e.get("upTo"), int) else -1, "blocks": blocks, "settled": settled}
@@ -447,8 +456,8 @@ def _message(e):
 
 
 def _shown(m):
-    """A streaming message as a snapshot shows it: its blocks without a
-    block-row, in index order."""
+    """A streaming message as a snapshot shows it: its blocks in index order,
+    a named one with its row's `uuid` and `namedAt`."""
     return {"turnId": m["turnId"], "agentId": m["agentId"], "step": m["step"], "model": m.get("model"),
             "upTo": m["upTo"], "blocks": [dict(m["blocks"][i]) for i in sorted(m["blocks"])]}
 
@@ -552,6 +561,11 @@ class Bridge:
         # Per loop, the uuid of the last row whose notice was applied (null:
         # none since the module loaded), under the lock that guards streaming.
         self.cut = {"main": None}
+        # Whether the mod's last resync declared that it keeps a block after
+        # its block-row, as this child does (open-fast M5): a mod from before
+        # it sends copies without them, so a block this child named is gone
+        # after such a resync. The snapshot says it (`namedBlocks`).
+        self.named_blocks = False
         self.failing = False     # the last write failed (said once, and again when one succeeds)
 
     # -- the mod's events
@@ -627,14 +641,21 @@ class Bridge:
             _fold(m, index, e)
         elif kind in NOTICES:
             # A row is about to be written: its loop's cut moves to it. A
-            # response row's notice (block-row) also settles its block, which
-            # leaves the snapshot under this same lock (DX4): no block is
-            # still streaming whose row is at or before the cut.
+            # response row's notice (block-row) also settles its block under
+            # this same lock: the block takes no chunk more, and stays in the
+            # snapshot named by its row (`uuid`, `namedAt` the notice's
+            # stamp) until its step ends, since the engine flushes a
+            # message's rows only at its end. Every block still streaming
+            # unnamed has its row past the cut.
             if isinstance(e.get("uuid"), str) and e["uuid"]:
                 self.cut[_loop(e.get("agentId"))] = e["uuid"]
             m = self.streaming.get(_key(e)) if kind == "block-row" else None
             if m is not None and isinstance(e.get("index"), int):
-                m["blocks"].pop(e["index"], None)
+                b = m["blocks"].get(e["index"])
+                if b is not None and isinstance(e.get("uuid"), str) and e["uuid"]:
+                    b["uuid"], b["namedAt"] = e["uuid"], e.get("t")
+                else:
+                    m["blocks"].pop(e["index"], None)
                 m["settled"].add(e["index"])
         elif kind == "raised":
             rid = e.get("request")
@@ -661,15 +682,20 @@ class Bridge:
             streaming = {}
             for entry in e.get("streaming") or []:
                 m = _message(entry)
-                # A block this child saw settled stays settled, whatever the copy says.
+                # A block this child saw settled stays settled, whatever the
+                # copy says: its late chunks stay ignored, and an unnamed copy
+                # of it is stale. A named copy is kept: the mod names a block
+                # before it queues the notice, so its copy is at least as new.
                 old = self.streaming.get(_key(entry))
                 if old is not None:
                     m["settled"] |= old["settled"]
                     for i in old["settled"]:
-                        m["blocks"].pop(i, None)
+                        if not isinstance((m["blocks"].get(i) or {}).get("uuid"), str):
+                            m["blocks"].pop(i, None)
                 streaming[_key(entry)] = m
             self.streaming = streaming
             self.agents = {a.get("agentId"): dict(a) for a in e.get("agents") or []}
+            self.named_blocks = e.get("namedBlocks") is True
             self.broken = set()
             cut = e.get("cut") if isinstance(e.get("cut"), dict) else {}
             self.cut = {"main": None, **{str(k): v for k, v in cut.items() if v is None or isinstance(v, str)}}
@@ -871,8 +897,15 @@ class Bridge:
                 "agents": list(self.agents.values()), "usage": self.usage,
                 "override": self.kept["override"],
                 # Per loop, the last row whose notice is applied: every row up
-                # to it is the transcript's, none of them still streaming.
+                # to it is the transcript's (on disk, or due at its step's
+                # end), none of them still streaming unnamed.
                 "cut": dict(self.cut),
+                # True when a block stays here after its block-row, carrying
+                # its uuid, until its step ends: this child keeps them, and
+                # the mod's last resync declared that it does too. A
+                # subscriber that reads no true here (a bridge from before
+                # open-fast M5) waits for the cut's row before its history.
+                "namedBlocks": self.named_blocks,
                 # The requests pending in the session, and the ones settled
                 # recently, so a subscriber that arrives after a request
                 # settled sees it settled rather than still raised.

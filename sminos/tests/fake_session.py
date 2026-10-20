@@ -16,13 +16,17 @@ extension in DC2's plan, reviewed clean at f0242560):
   disk when the module loaded (the hello's `seed`); `null`, or a loop it does
   not name, means the loop had no rows then; a request begun before the
   module loaded never streams, and its rows are named by `row-seen`;
+- a block-row names its block, which stays in `streaming` with its text,
+  its row's `uuid` and `namedAt`, and takes no chunk more (the desk
+  open-fast spec's section 2);
 - a step's end follows its block-rows; once it is out the step's pairing is
   closed (a later row of it is named by `row-seen`), and its whole message
   leaves `streaming`, as a turn's end takes the turn's messages;
 - the snapshot carries `cut`, the last notice applied per loop (`"main"` or
   the agent id), under the lock that applies chunks and block-rows;
 - a `resync` replaces what streams with the mod's own copy (a block the
-  mod settled is gone, the text so far of one still streaming kept);
+  mod named kept with its uuid, an unnamed copy of a settled one gone, the
+  text so far of one still streaming kept);
 - `GET /status` says `ready` once the mod's first `resync` is applied, and
   `GET /events` holds until then (at most 5 s, else 503);
 - a later `resync`, or a subscriber BACKLOG events behind, ends a
@@ -62,12 +66,16 @@ SMINOS = os.path.join(PLUGIN_ROOT, "skills", "sminos", "scripts", "sminos")
 class Endpoint:
     """The child's state as DX5 has it, with M4's cut and readiness: one
     lock applies each event and fans it out, and takes a snapshot and adds a
-    subscriber."""
+    subscriber. `legacy`: a child from before the open-fast spec's M5, which
+    drops a block at its block-row and declares nothing; otherwise its
+    snapshot says `namedBlocks` as the mod's last resync declared it."""
 
-    def __init__(self, session):
+    def __init__(self, session, legacy=False):
         self.session = session
+        self.legacy = legacy
+        self.named_blocks = False   # the mod's last resync declared it keeps named blocks
         self.lock = threading.Condition()
-        self.streaming = {}   # (turnId, agentId, step) → {turnId, agentId, step, model, upTo, blocks: {index: block}}
+        self.streaming = {}   # (turnId, agentId, step) → {turnId, agentId, step, model, upTo, blocks: {index: block}, settled}
         self.cut = {}         # loop → uuid of the last notice applied
         self.usage = None
         self.agents = {}
@@ -83,7 +91,8 @@ class Endpoint:
                                "upTo": m["upTo"], "blocks": [dict(m["blocks"][i]) for i in sorted(m["blocks"])]}
                               for m in self.streaming.values()],
                 "agents": list(self.agents.values()), "usage": self.usage, "override": None,
-                "pending": [], "settled": [], "cut": dict(self.cut)}
+                "pending": [], "settled": [], "cut": dict(self.cut),
+                **({} if self.legacy else {"namedBlocks": self.named_blocks})}
 
     def post(self, events):
         with self.lock:
@@ -98,16 +107,20 @@ class Endpoint:
             self.ready = True
             self.cut = {k: v for k, v in (e.get("cut") or {}).items() if v}
             self.agents = {a.get("agentId"): dict(a) for a in e.get("agents") or []}
+            self.named_blocks = e.get("namedBlocks") is True
             # The mod's own copy of what streams replaces this one, as the
-            # child's resync does: a block the mod settled is gone, whatever
-            # this copy still held of it.
-            self.streaming = {}
+            # child's resync does: a block the mod named is kept with its
+            # uuid; an unnamed copy of a block either side settled is gone.
+            streaming = {}
             for m in e.get("streaming") or []:
-                settled = set(m.get("settled") or [])
-                self.streaming[(m["turnId"], m["agentId"], m["step"])] = {
+                key = (m["turnId"], m["agentId"], m["step"])
+                settled = set(m.get("settled") or []) | (self.streaming.get(key) or {}).get("settled", set())
+                streaming[key] = {
                     "turnId": m["turnId"], "agentId": m["agentId"], "step": m["step"], "model": m.get("model"),
-                    "upTo": m.get("upTo", -1),
-                    "blocks": {b["index"]: dict(b) for b in m.get("blocks") or [] if b["index"] not in settled}}
+                    "upTo": m.get("upTo", -1), "settled": settled,
+                    "blocks": {b["index"]: dict(b) for b in m.get("blocks") or []
+                               if b["index"] not in settled or (isinstance(b.get("uuid"), str) and not self.legacy)}}
+            self.streaming = streaming
             if self.resyncs > 1:
                 for q in self.subscribers:
                     q.put(None)
@@ -118,7 +131,7 @@ class Endpoint:
         if kind == "step":
             if e["phase"] == "start":
                 self.streaming[key] = {"turnId": key[0], "agentId": key[1], "step": key[2], "model": "m",
-                                       "upTo": -1, "blocks": {}}
+                                       "upTo": -1, "blocks": {}, "settled": set()}
             else:
                 self.streaming.pop(key, None)
         elif kind == "turn" and e.get("phase") == "complete":
@@ -128,13 +141,18 @@ class Endpoint:
             m = self.streaming[key]
             c = e["chunk"]
             m["upTo"] = e["chunkIndex"]
-            b = m["blocks"].setdefault(c["index"], {"index": c["index"], "kind": c["kind"], "text": "", "upTo": -1})
-            b["text"] += c.get("text", "")
-            b["upTo"] = e["chunkIndex"]
+            if c["index"] not in m["settled"]:
+                b = m["blocks"].setdefault(c["index"], {"index": c["index"], "kind": c["kind"], "text": "", "upTo": -1})
+                b["text"] += c.get("text", "")
+                b["upTo"] = e["chunkIndex"]
         elif kind == "block-row":
             m = self.streaming.get(key)
             if m is not None:
-                m["blocks"].pop(e["index"], None)
+                m["settled"].add(e["index"])
+                if self.legacy:
+                    m["blocks"].pop(e["index"], None)
+                elif e["index"] in m["blocks"]:
+                    m["blocks"][e["index"]].update(uuid=e["uuid"], namedAt=e.get("t"))
             self.cut[loop] = e["uuid"]
         elif kind == "row-seen":
             self.cut[loop] = e["uuid"]
@@ -278,6 +296,7 @@ class Message:
         self.texts = {}
         self.up_to = {}       # block index → its last chunk
         self.settled = set()  # blocks whose block-row the mod posted
+        self.named = {}       # block index → (the row's uuid, the notice's stamp), as the mod marks the block
         fake.messages.append(self)
         self.post([{"type": "step", "phase": "start", "turnId": turn, "agentId": agent, "step": step,
                     "model": "m", "t": 0}])
@@ -305,7 +324,10 @@ class Message:
         child applied it (the mod's own copy moves, the child's does not)."""
         if self.streams() and not self.ended:
             self.settled.add(index)
-            e = {"type": "block-row", "uuid": uuid, **self.ids(), "index": index, "t": 0}
+            at = int(time.time() * 1000)
+            if index in self.texts:
+                self.named[index] = (uuid, at)
+            e = {"type": "block-row", "uuid": uuid, **self.ids(), "index": index, "t": at}
         else:
             e = {"type": "row-seen", "uuid": uuid, "agentId": self.agent, "door": "append", "t": 0}
         (self.fake.lose if lost else self.fake.post)([e])
@@ -326,11 +348,19 @@ class Message:
         return self.streams() and not self.ended
 
     def entry(self):
-        """The request as the mod's resync carries it: its unsettled blocks'
-        text so far, and the blocks it settled."""
+        """The request as the mod's resync carries it: its blocks' text so
+        far, a named one with its row's uuid (none for a mod from before the
+        open-fast spec's M5, `legacy`: it dropped them), and the blocks it
+        settled."""
+        named = {} if self.fake.legacy else self.named
+
+        def block(i, t):
+            b = {"index": i, "kind": "text", "text": t, "upTo": self.up_to[i]}
+            if i in named:
+                b.update(uuid=named[i][0], namedAt=named[i][1])
+            return b
         return {**self.ids(), "model": "m", "upTo": self.next_chunk - 1,
-                "blocks": [{"index": i, "kind": "text", "text": t, "upTo": self.up_to[i]}
-                           for i, t in sorted(self.texts.items()) if i not in self.settled],
+                "blocks": [block(i, t) for i, t in sorted(self.texts.items()) if i not in self.settled or i in named],
                 "settled": sorted(self.settled)}
 
     def write(self, index, uuid):
@@ -365,6 +395,7 @@ class FakeSession:
         self.messages = []    # every request begun: the ones still streaming are in a resync
         self.agents = []      # the mod's agent state (the $.agent.list() seed included), which its resyncs carry
         self.turns = 0
+        self.emitted = []     # every event the mod posted, lost or not: an inventory's DX5 source
 
     # -------------------------------------------------- the transcript
 
@@ -432,6 +463,7 @@ class FakeSession:
     # -------------------------------------------------- the endpoint
 
     real = False          # start_bridge spawns the real child, not the script
+    legacy = False        # the mod (and the scripted child) from before the open-fast spec's M5: named blocks dropped, nothing declared
     child_env = None
 
     def start_bridge(self, ready=True, real=None, env=None):
@@ -451,7 +483,7 @@ class FakeSession:
                 os.unlink(path)
             except OSError:
                 pass
-            self.endpoint = self.module = Endpoint(self.session)
+            self.endpoint = self.module = Endpoint(self.session, legacy=self.legacy)
             self.server = _Server(path, _Handler)
             self.server.endpoint = self.endpoint
             threading.Thread(target=self.server.serve_forever, daemon=True).start()
@@ -493,6 +525,7 @@ class FakeSession:
     def lose(self, events):
         """Events the mod posted: its own copy moves. Alone, a gap took them
         before the child applied them."""
+        self.emitted += events
         for e in events:
             if e.get("type") in ("block-row", "row-seen"):
                 self.cut[e.get("agentId") or "main"] = e["uuid"]
@@ -502,7 +535,7 @@ class FakeSession:
         post): what still streams under this module, and its cut."""
         streaming = [m.entry() for m in self.messages if m.live()]
         self.post([{"type": "resync", "turns": [], "streaming": streaming, "agents": [dict(a) for a in self.agents],
-                    "cut": dict(self.cut), "t": 0}])
+                    "cut": dict(self.cut), **({} if self.legacy else {"namedBlocks": True}), "t": 0}])
 
     def agent(self, phase, agent_id, **fields):
         """An `agent` spawn or stop event (DX5), as the mod posts it."""

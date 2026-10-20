@@ -14,17 +14,21 @@ message and sends whatever frame the test asks): presence within a second,
 subscriptions through DX2, and a reconnect in the middle of a response while
 rows keep flushing, in the main transcript and in a subagent's.
 
-A reference consumer (Browser) applies DX4 as the web does and records every
-gap in `n`, duplicated row, chunk at or below its watermark, and block whose
-streamed text differs from its row. Hermetic: HOME and SMINOS_HOME are
-temporary; nothing reaches beyond 127.0.0.1 and this directory.
+The reference consumer (dx4_consumer.Consumer) applies DX4 as the web does
+and records every gap in `n`, duplicated row, chunk at or below its
+watermark, block whose streamed text differs from its row, and block that
+vanished before its row landed; StreamFixture holds it to dx4-stream.json.
+Hermetic: HOME and SMINOS_HOME are temporary; nothing reaches beyond
+127.0.0.1 and this directory.
 """
 
 import base64
 import http.client
+import io
 import json
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -49,6 +53,9 @@ os.makedirs(os.environ["SMINOS_HOME"])
 sys.path.insert(0, SCRIPTS)
 sys.path.insert(0, HERE)
 
+import bench_open  # noqa: E402
+import bench_rig  # noqa: E402
+import dx4_consumer  # noqa: E402
 import fake_session  # noqa: E402
 import sminos_plane as plane  # noqa: E402
 import ws_client  # noqa: E402
@@ -66,131 +73,6 @@ class Clock:
 
     def advance(self, s):
         self.now += s
-
-
-class Browser:
-    """DX4 as the web applies it, recording what would be wrong on screen."""
-
-    def __init__(self):
-        self.n = -1
-        self.rows = []
-        self.errors = []
-        self.blocks = {}      # (turnId, agentId, step, index) → partial text
-        self.upto = {}        # (turnId, agentId, step) → the last chunk applied
-        self.named = {}       # uuid → the block its block-row settles
-        self.settled = set()
-        self.other = {}       # another loop's block settled on its block-row (main scope): uuid → text
-        self.end = None
-        self.snapshot = None
-        self.subagents = None
-        self.body = None      # the last widened `subagents` body: {subagents, jobs, mcp}
-        self.changes = []     # (when it came, body) per `subagents` message
-        self.outputs = []
-        self.usage = []
-        self.pages = []
-        self.diff = None
-        self.step_ends = []   # (turnId, agentId, step), in order
-        self.dropped = {}     # a block a step-end dropped (no block-row came): its partial text
-        self.kinds = []
-        self.stamps = []      # each `chunk`'s `t`, the bridge's stamp, in order
-        self.off = set()      # the rows marked off the live chain, as the marks stand in message order
-        self.marked = {}      # a `row` that carried marks: its uuid → (offChain, onChain)
-
-    def take(self, env):
-        n, kind, body = env["n"], env["kind"], env["body"]
-        self.kinds.append(kind)
-        if self.end is not None:
-            self.errors.append("a %s after end" % kind)
-        if n != self.n + 1 and not (kind == "end" and n == 0 and self.n == -1):
-            self.errors.append("n went %d → %d (%s)" % (self.n, n, kind))
-        self.n = n
-        if kind == "snapshot":
-            self.snapshot = body
-            for row in reversed(body["rows"]):
-                self.add_row(row)
-            self.mark(body["rows"], body["offChain"])
-            for e in body["streaming"]:
-                key = (e["turnId"], e["agentId"], e["step"])
-                self.upto[key] = e["upTo"]
-                for b in e["blocks"]:
-                    self.blocks[key + (b["index"],)] = b["text"]
-            self.subagents = body["subagents"]
-            self.body = {k: body[k] for k in ("subagents", "jobs", "mcp")}
-        elif kind == "chunk":
-            self.stamps.append(body.get("t"))
-            key = (body["turnId"], body["agentId"], body["step"])
-            if body["chunkIndex"] <= self.upto.get(key, -1):
-                self.errors.append("chunk %s %d at or below its watermark" % (key, body["chunkIndex"]))
-            self.upto[key] = body["chunkIndex"]
-            bk = key + (body["chunk"]["index"],)
-            if bk not in self.settled:
-                self.blocks[bk] = self.blocks.get(bk, "") + body["chunk"].get("text", "")
-        elif kind == "block-row":
-            bk = (body["turnId"], body["agentId"], body["step"], body["index"])
-            self.named[body["uuid"]] = bk
-            if self.snapshot is not None and body["agentId"] != self.scope_agent():
-                self.settled.add(bk)
-                self.other[body["uuid"]] = self.blocks.pop(bk, None)
-        elif kind == "row":
-            self.add_row(body["row"])
-            for key in ("offChain", "onChain"):
-                if key in body and not body[key]:
-                    self.errors.append("a row's %s present and empty" % key)
-            self.off |= set(body.get("offChain", ()))
-            self.off -= set(body.get("onChain", ()))
-            if "offChain" in body or "onChain" in body:
-                self.marked[body["row"]["uuid"]] = (body.get("offChain", []), body.get("onChain", []))
-        elif kind == "step-end":
-            key = (body["turnId"], body["agentId"], body["step"])
-            self.step_ends.append(key)
-            # A block its block-row named waits for its row; one with none was cut off.
-            for bk in [bk for bk in self.blocks if bk[:3] == key and bk not in self.named.values()]:
-                self.dropped[bk] = self.blocks.pop(bk)  # no block-row came: an aborted block's text goes
-        elif kind == "end":
-            self.end = body
-        elif kind == "subagents":
-            self.subagents = body["subagents"]
-            self.body = body
-            self.changes.append((time.monotonic(), body))
-        elif kind == "output":
-            self.outputs.append(body)
-        elif kind == "usage":
-            self.usage.append(body)
-        elif kind == "rows":
-            self.pages.append(body)
-            self.mark(body["rows"], body["offChain"])
-        elif kind == "diff":
-            self.diff = body
-
-    def mark(self, rows, off):
-        """A snapshot's or a page's marks: each of its rows on or off."""
-        held = {r["uuid"] for r in rows}
-        if not set(off) <= held:
-            self.errors.append("offChain names rows the message does not carry: %s" % sorted(set(off) - held))
-        self.off = (self.off - held) | set(off)
-
-    def drawn(self):
-        """The rows held on the chain, in order: what the desk draws as read."""
-        return [u for u in self.uuids() if u not in self.off]
-
-    def scope_agent(self):
-        return self.agent
-
-    def add_row(self, row):
-        u = row["uuid"]
-        if u in [r["uuid"] for r in self.rows]:
-            self.errors.append("row %s twice" % u)
-        self.rows.append(row)
-        bk = self.named.pop(u, None)
-        if bk is not None:
-            self.settled.add(bk)
-            text = self.blocks.pop(bk, None)
-            shown = row["message"]["content"][0]["text"] if isinstance(row["message"]["content"], list) else None
-            if text is not None and text != shown:
-                self.errors.append("block %s streamed %r, its row says %r" % (bk, text, shown))
-
-    def uuids(self):
-        return [r["uuid"] for r in self.rows]
 
 
 def read(path):
@@ -322,21 +204,23 @@ class Session(unittest.TestCase):
             s.close()
         self.fake.stop_bridge()
 
-    def subscribe(self, agent=None, bridge=True, fake=None, clock=None):
+    def subscribe(self, agent=None, bridge=True, fake=None, clock=None, received=None):
+        """A subscription on the test's clock, which stands for the wall
+        clock too: the subscribe's arrival (`received`, by default now) and
+        the reader's stamps read it."""
         fake = fake or self.fake
+        clock = clock or self.clock
         reader = plane.BridgeReader(os.path.join(os.environ["SMINOS_HOME"], "bridge", fake.session + ".sock"),
-                                    lambda: None) if bridge else None
+                                    lambda: None, stamp=clock) if bridge else None
         if reader is not None:
             reader.start()
         sub = plane.Subscription(project=PROJECT, machine="testhost", session=fake.session, agent=agent,
                                  sub="sub-%d" % len(self.subs), locate=lambda: fake.path(None), reader=reader,
                                  presence=lambda: {"record": {"status": "busy"}, "bridge": bridge},
-                                 alive=lambda: self.alive, clock=clock or self.clock, transcripts=self.transcripts,
-                                 disk=self.disk)
+                                 alive=lambda: self.alive, clock=clock, transcripts=self.transcripts,
+                                 disk=self.disk, received=received, wall=clock)
         self.subs.append(sub)
-        b = Browser()
-        b.agent = agent
-        return sub, b
+        return sub, dx4_consumer.Consumer(agent)
 
     def pump(self, sub, b, until=lambda: False, wait=3.0):
         """Pumps until `until()` holds or nothing changes for a while."""
@@ -377,7 +261,7 @@ class Session(unittest.TestCase):
     def assertClean(self, b, agent=None):
         self.assertEqual(b.errors, [])
         self.assertEqual(b.uuids(), [r["uuid"] for r in self.fake.rows(agent)], "every row once, in order")
-        mine = {k: v for k, v in b.blocks.items() if k[1] == agent}
+        mine = {k: v for k, v in b.texts().items() if k[1] == agent}
         self.assertEqual(mine, {}, "no partial text left beside its row")
 
 
@@ -521,7 +405,8 @@ class Engine(Session):
         self.settle(sub, b)
         self.assertIsNone(b.end, "no end: the subscription stays, idle")
         older = self.page_to_first(sub, b)
-        self.assertEqual([r["uuid"] for r in reversed(older)] + b.uuids(), ids)
+        self.assertEqual(b.uuids(), ids, "the pages held before the snapshot's rows")
+        self.assertEqual([r["uuid"] for r in reversed(older)], ids[:len(older)])
         b.take(sub.end("unsubscribed")[0])
         self.assertEqual(b.end["reason"], "unsubscribed")
         self.assertEqual(b.errors, [])
@@ -553,7 +438,7 @@ class Engine(Session):
         m.text(0, "Hel")
         sub, b = self.subscribe()
         self.assertTrue(self.pump(sub, b, lambda: b.snapshot is not None))
-        self.assertEqual(b.blocks, {("turn-1", None, 0, 0): "Hel"}, "the partial text from the snapshot")
+        self.assertEqual(b.texts(), {("turn-1", None, 0, 0): "Hel"}, "the partial text from the snapshot")
         m.text(0, "lo, ")
         m.text(0, "world")
         m.row(0)
@@ -563,6 +448,10 @@ class Engine(Session):
         self.fake.usage(1234)
         self.assertTrue(self.pump(sub, b, lambda: len(b.rows) == 4 and b.usage))
         self.assertClean(b)
+        inventory = dx4_consumer.Inventory.from_sources(self.fake.path(None), self.fake.emitted)
+        self.assertEqual(set(inventory.blocks), {(m.turn, None, 0, 0), (m.turn, None, 0, 1)}, "both blocks streamed")
+        self.assertEqual(inventory.check(b), {"holes": [], "partial": [], "vanished": [], "dups": [], "undrawn": [],
+                                              "residual": []})
         self.assertLess(b.kinds.index("block-row"), b.kinds.index("row"), "a block-row before its row")
         # Each live chunk carries the bridge's stamp through, for the web's chunk-to-drawn latency.
         self.assertEqual(b.stamps, [1760000000000 + i for i in (1, 2, 3)], "the bridge's stamps, passed through")
@@ -573,33 +462,64 @@ class Engine(Session):
         self.fake.start_bridge()
         for agent in (None, "a1"):
             with self.subTest(agent=agent):
+                before = self.fake.user_row("before", agent=agent)
                 m = self.fake.message(agent=agent)
                 m.text(0, "first block")
                 u = m.row(0, disk=False)  # announced: in the cut, not yet flushed
                 sub, b = self.subscribe(agent=agent)
-                self.settle(sub, b)
-                self.assertIsNone(b.snapshot, "the snapshot waits for its cut row on disk")
-                m.text(1, "second ")  # while the snapshot is built
+                self.assertTrue(self.pump(sub, b, lambda: b.snapshot is not None), "the snapshot waits for nothing")
+                self.assertIs(sub.snap.get("namedBlocks"), True, "from a bridge that declares it keeps named blocks")
+                self.assertEqual([r["uuid"] for r in b.snapshot["rows"]], [before], "history: every row on disk")
+                [entry] = [e for e in b.snapshot["streaming"] if e["agentId"] == agent]
+                self.assertEqual([(x["index"], x["text"], x.get("uuid")) for x in entry["blocks"]],
+                                 [(0, "first block", u)], "the named block rides along with its row's uuid")
+                self.assertEqual(b.kinds[:2], ["snapshot", "block-row"], "its block-row right after the snapshot")
+                self.assertEqual([(x.text, x.settled_by) for x in b.blocks(agent)], [("first block", u)])
+                self.assertEqual(sub.cut_state, "not on disk")
+                m.text(1, "second ")  # past the snapshot's watermark
                 m.text(1, "block")
-                self.settle(sub, b)
+                self.assertTrue(self.pump(sub, b, lambda: b.texts().get((m.turn, agent, 0, 1)) == "second block"))
                 m.write(0, u)
-                self.assertTrue(self.pump(sub, b, lambda: b.snapshot is not None))
-                self.assertEqual([r["uuid"] for r in b.snapshot["rows"]], [u], "history up to the cut")
-                self.assertTrue(self.pump(sub, b, lambda: b.blocks.get((m.turn, agent, 0, 1)) == "second block"))
+                self.assertTrue(self.pump(sub, b, lambda: u in b.uuids()))
+                self.assertEqual(sub.emitted[u], "named", "the row lands named")
                 m.row(1)
-                self.assertTrue(self.pump(sub, b, lambda: len(b.rows) == 2))
+                self.assertTrue(self.pump(sub, b, lambda: len(b.rows) == 3))
                 self.assertClean(b, agent)
+                self.assertEqual(sub.waits, 0)
+                m.end()
 
     def test_cut_row_that_never_reaches_disk(self):
+        """The named block stays drawn through its step, however long; its
+        row is due NOTICE_WAIT after the step's end, and then the
+        subscription ends naming it. One made after that gets the snapshot
+        without the block and waits for nothing."""
         self.fake.start_bridge()
         m = self.fake.message()
         m.text(0, "lost")
-        m.row(0, disk=False)
+        u = m.row(0, disk=False)
         sub, b = self.subscribe()
+        self.assertTrue(self.pump(sub, b, lambda: b.snapshot is not None))
+        self.clock.advance(plane.NOTICE_WAIT + 3)
         self.settle(sub, b)
-        self.clock.advance(plane.NOTICE_WAIT + 0.1)
+        self.assertIsNone(b.end, "not due while its step is open")
+        self.assertEqual([x.text for x in b.blocks(None)], ["lost"], "drawn throughout")
+        m.end()
+        self.settle(sub, b)
+        self.clock.advance(plane.NOTICE_WAIT - 0.5)
+        self.settle(sub, b)
+        self.assertIsNone(b.end)
+        self.assertEqual([x.text for x in b.blocks(None)], ["lost"], "a named block outlives its step-end, awaiting its row")
+        self.clock.advance(0.6)
         self.assertTrue(self.pump(sub, b, lambda: b.end is not None))
-        self.assertEqual((b.end["reason"], b.n), ("discontinuity", 0))
+        self.assertEqual(b.end["reason"], "discontinuity")
+        self.assertIn(u, b.end["message"])
+        later, b2 = self.subscribe()
+        self.assertTrue(self.pump(later, b2, lambda: b2.snapshot is not None))
+        self.assertEqual(b2.snapshot["streaming"], [])
+        self.clock.advance(plane.NOTICE_WAIT * 3)
+        self.settle(later, b2)
+        self.assertIsNone(b2.end, "a cut whose row never came holds no later subscription")
+        self.assertEqual(b2.errors, [])
 
     def test_row_on_disk_ahead_of_its_notice_across_establishment(self):
         self.fake.start_bridge()
@@ -614,7 +534,7 @@ class Engine(Session):
                 sub, b = self.subscribe(agent=agent)
                 self.assertTrue(self.pump(sub, b, lambda: b.snapshot is not None))
                 self.assertEqual(len(b.snapshot["rows"]), 1, "the row past the cut is not history")
-                self.assertEqual({k: v for k, v in b.blocks.items() if k[1] == agent},
+                self.assertEqual({k: v for k, v in b.texts().items() if k[1] == agent},
                                  {(m.turn, agent, 0, 0): "flushed early"}, "its block still streams")
                 self.settle(sub, b)
                 self.assertEqual(len(b.rows), 1, "held: a notice may still name it")
@@ -640,12 +560,13 @@ class Engine(Session):
         self.assertEqual(b.end["reason"], "discontinuity", "the block would stay beside its row")
 
     def test_notice_whose_row_never_flushes(self):
+        """A `row-seen` between requests is due NOTICE_WAIT after it; one
+        while a request of its loop is open (an assistant row that did not
+        stream), NOTICE_WAIT after that request ends."""
         self.fake.start_bridge()
         sub, b = self.subscribe()
         self.assertTrue(self.pump(sub, b, lambda: b.snapshot is not None))
-        m = self.fake.message()
-        m.text(0, "x")
-        m.row(0, disk=False)
+        self.fake.user_row("between requests", disk=False)
         self.settle(sub, b)
         self.clock.advance(plane.NOTICE_WAIT - 0.5)
         self.settle(sub, b)
@@ -653,6 +574,24 @@ class Engine(Session):
         self.clock.advance(0.6)
         self.assertTrue(self.pump(sub, b, lambda: b.end is not None))
         self.assertEqual(b.end["reason"], "discontinuity")
+        during, b2 = self.subscribe()
+        self.assertTrue(self.pump(during, b2, lambda: b2.snapshot is not None))
+        m = self.fake.message()
+        m.text(0, "x")
+        u = self.fake.user_row("while a request is open", disk=False)
+        self.settle(during, b2)
+        self.clock.advance(plane.NOTICE_WAIT + 3)
+        self.settle(during, b2)
+        self.assertIsNone(b2.end, "due once the request ends")
+        m.end()
+        self.settle(during, b2)
+        self.clock.advance(plane.NOTICE_WAIT - 0.5)
+        self.settle(during, b2)
+        self.assertIsNone(b2.end)
+        self.clock.advance(0.6)
+        self.assertTrue(self.pump(during, b2, lambda: b2.end is not None))
+        self.assertEqual(b2.end["reason"], "discontinuity")
+        self.assertIn(u, b2.end["message"])
 
     def test_an_unnamed_row_is_released_by_a_later_rows_notice(self):
         """Disk order: a row no notice names (a compaction's) goes out as soon
@@ -728,7 +667,7 @@ class Engine(Session):
         m.text(1, "draft")
         sub, b = self.subscribe()
         self.assertTrue(self.pump(sub, b, lambda: b.snapshot is not None))
-        self.assertEqual(b.blocks, {("turn-1", None, 0, 0): "Hel", ("turn-1", None, 0, 1): "draft"})
+        self.assertEqual(b.texts(), {("turn-1", None, 0, 0): "Hel", ("turn-1", None, 0, 1): "draft"})
         self.fake.gap()
         self.assertTrue(self.pump(sub, b, lambda: b.end is not None))
         self.assertEqual(b.end["reason"], "discontinuity")
@@ -737,7 +676,7 @@ class Engine(Session):
         self.fake.resync()
         again, b2 = self.subscribe()
         self.assertTrue(self.pump(again, b2, lambda: b2.snapshot is not None))
-        self.assertEqual(b2.blocks, {("turn-1", None, 0, 0): "Hello"}, "the mod's copy: block 1 settled")
+        self.assertEqual(b2.texts(), {("turn-1", None, 0, 0): "Hello"}, "the mod's copy: block 1 settled")
         self.assertIn(u, b2.uuids(), "its row in history, to the mod's cut")
         m.text(0, ", world")
         m.row(0)
@@ -763,7 +702,8 @@ class Engine(Session):
         self.settle(plain, b)
         said = self.opens_said(plain)
         self.assertEqual(len(said), 1, said)
-        self.assertIn("transcript-only (no bridge socket) after 0.25 s", said[0])
+        self.assertIn("transcript-only (no bridge socket) after 0.25 s from the subscribe's arrival "
+                      "(no bridge; build: cold %d ms 1 rows, cut null; waits 0)" % plain.cpu_ms, said[0])
         self.fake.start_bridge()
         bridged, b2 = self.subscribe()
         self.assertTrue(self.pump(bridged, b2, lambda: b2.snapshot is not None))
@@ -771,7 +711,19 @@ class Engine(Session):
         said = self.opens_said(bridged)
         self.assertEqual(len(said), 1, said)
         self.assertIn(": bridge snapshot after", said[0])
-        self.assertIn("(the bridge's snapshot at", said[0])
+        self.assertRegex(said[0], r"\(bridge: snapshot arrived \d+\.\d\d s, taken \d+\.\d\d s; "
+                                  r"build: warm \d+ ms 1 rows, cut on disk; waits 0\)$")
+        # The cut's row not on disk yet: the snapshot goes at once, and says so.
+        m = self.fake.message()
+        m.text(0, "late")
+        u = m.row(0, disk=False)
+        late, b4 = self.subscribe()
+        self.assertTrue(self.pump(late, b4, lambda: b4.snapshot is not None))
+        said = self.opens_said(late)
+        self.assertEqual(len(said), 1, said)
+        self.assertRegex(said[0], r"; build: warm \d+ ms 1 rows, cut not on disk; waits 0\)$")
+        m.write(0, u)
+        m.end()
         self.fake.stop_bridge()
         self.fake.start_bridge(ready=False)
         waiting, b3 = self.subscribe()
@@ -781,8 +733,148 @@ class Engine(Session):
         self.assertEqual(b3.end["reason"], "discontinuity")
         said = self.opens_said(waiting)
         self.assertEqual(len(said), 1, said)
-        self.assertIn("timeout: the bridge sent no snapshot in %g s after %.2f s" % (plane.OPEN_WAIT, plane.OPEN_WAIT + 1),
+        self.assertIn("timeout: the bridge sent no snapshot in %g s after %.2f s from the subscribe's arrival "
+                      "(bridge: no snapshot; build: none, cut null; waits 0)" % (plane.OPEN_WAIT, plane.OPEN_WAIT + 1),
                       said[0])
+
+    def test_an_open_whose_cut_is_not_on_disk_goes_at_once_and_says_so(self):
+        """The line of an open whose cut's row the engine has not flushed:
+        one build, no wait, the cut said not on disk."""
+        self.fake.user_row("before", post=False)
+        self.fake.start_bridge()
+        m = self.fake.message()
+        m.text(0, "not flushed yet")
+        u = m.row(0, disk=False)
+        sub, b = self.subscribe(received=self.clock() - 0.5)
+        self.assertTrue(self.pump(sub, b, lambda: b.snapshot is not None))
+        self.assertEqual((sub.build_how, sub.waits), ("cold", 0))
+        said = [line.split(" ", 1)[1] for line in self.opens_said(sub)]
+        self.assertEqual(said, ["plane: open %s of %s: bridge snapshot after 0.50 s from the subscribe's arrival (bridge: "
+                                "snapshot arrived 0.50 s, taken 0.50 s; build: cold %d ms 1 rows, cut not on disk; "
+                                "waits 0)\n" % (sub.sub, sub.session[:8], sub.cpu_ms)])
+        m.write(0, u)
+        m.end()
+
+    # ---------------------------------------------------- a bridge from before open-fast M5
+
+    def test_a_bridge_that_does_not_keep_named_blocks_waits_for_the_cut(self):
+        """A bridge that does not declare it keeps named blocks (its mod and
+        child from before M5, which drop a block at its block-row): the open
+        waits for the cut's row as before M5, so a fresh open has no hole —
+        the named block's row in history, the rest live — and a cut whose row
+        never comes ends it NOTICE_WAIT after the bridge's snapshot."""
+        self.fake.legacy = True
+        self.fake.start_bridge()
+        before = self.fake.user_row("before")
+        m = self.fake.message()
+        m.text(0, "first block")
+        u = m.row(0, disk=False)
+        m.text(1, "second ")
+        sub, b = self.subscribe()
+        self.settle(sub, b)
+        self.assertIsNone(b.snapshot, "it waits for the cut's row")
+        self.assertIsNot(sub.snap.get("namedBlocks"), True)
+        self.assertGreaterEqual(sub.waits, 1)
+        m.text(1, "block")
+        m.write(0, u)
+        self.assertTrue(self.pump(sub, b, lambda: b.snapshot is not None))
+        self.assertEqual([r["uuid"] for r in reversed(b.snapshot["rows"])], [before, u], "history to the cut")
+        self.assertTrue(self.pump(sub, b, lambda: b.texts().get((m.turn, None, 0, 1)) == "second block"))
+        m.row(1)
+        m.end()
+        self.assertTrue(self.pump(sub, b, lambda: len(b.rows) == 3))
+        self.assertClean(b)
+        inventory = dx4_consumer.Inventory.from_sources(self.fake.path(None), self.fake.emitted)
+        self.assertEqual(inventory.check(b), self.CLEAN)
+        [line] = self.opens_said(sub)
+        self.assertRegex(line, r"; build: \w+ \d+ ms 2 rows, cut on disk; waits [1-9]\d*\)$")
+        lost = self.fake.message()
+        lost.text(0, "never flushed")
+        lost.row(0, disk=False)
+        late, b2 = self.subscribe()
+        self.settle(late, b2)
+        self.assertIsNone(b2.snapshot)
+        self.clock.advance(plane.NOTICE_WAIT + 0.1)
+        self.assertTrue(self.pump(late, b2, lambda: b2.end is not None))
+        self.assertEqual((b2.end["reason"], b2.n), ("discontinuity", 0))
+        self.assertIn("never reached the transcript", b2.end["message"])
+        lost.end()
+
+    def test_a_bridge_that_does_not_keep_named_blocks_drops_nothing_on_a_reconnect(self):
+        """The reconnect a no-wait snapshot from such a bridge would break: a
+        block drawn and named, its row not flushed, the subscription lost.
+        The fresh open waits for the cut's row, so the drawing resumed holds
+        the block until its row lands, and nothing vanishes."""
+        self.fake.legacy = True
+        self.fake.start_bridge()
+        sub, b = self.subscribe()
+        self.assertTrue(self.pump(sub, b, lambda: b.snapshot is not None))
+        m = self.fake.message()
+        m.text(0, "drawn ")
+        m.text(0, "whole")
+        u = m.row(0, disk=False)
+        self.assertTrue(self.pump(sub, b, lambda: [x.settled_by for x in b.blocks(None)] == [u]))
+        self.fake.gap()
+        self.assertTrue(self.pump(sub, b, lambda: b.end is not None))
+        again, _ = self.subscribe()
+        b2 = dx4_consumer.Consumer(None, previous=b)
+        self.settle(again, b2)
+        self.assertIsNone(b2.snapshot, "it waits for the cut's row")
+        m.write(0, u)
+        m.end()
+        self.assertTrue(self.pump(again, b2, lambda: u in b2.uuids()))
+        self.settle(again, b2)
+        self.assertEqual(b2.errors, [])
+        self.assertEqual(b2.texts(), {}, "the block settled by its row")
+        self.assertIn((m.turn, None, 0, 0), b2.settled)
+        inventory = dx4_consumer.Inventory.from_sources(self.fake.path(None), self.fake.emitted)
+        self.assertEqual(inventory.check(b2), self.CLEAN)
+
+    def test_a_bridge_that_does_not_keep_named_blocks_waits_for_a_cut_with_no_transcript_yet(self):
+        """No transcript file yet, or none found, and a cut: such a bridge's
+        open waits for the cut's row, then takes it as history."""
+        for located in (True, False):
+            with self.subTest(located=located):
+                fake = fake_session.FakeSession(os.environ["HOME"], os.environ["SMINOS_HOME"], new_session())
+                fake.legacy = True
+                fake.start_bridge()
+                m = fake.message()
+                m.text(0, "first")
+                u = m.row(0, disk=False)
+                sub, b = self.subscribe(fake=fake)
+                if not located:
+                    sub.locate = lambda: ""
+                self.settle(sub, b)
+                self.assertIsNone(b.snapshot, "it waits for the cut's row")
+                sub.locate = lambda: fake.path(None)
+                m.write(0, u)
+                m.end()
+                self.clock.advance(plane.LOCATE_EVERY)
+                self.assertTrue(self.pump(sub, b, lambda: b.snapshot is not None))
+                self.assertEqual([r["uuid"] for r in b.snapshot["rows"]], [u], "the cut's row, in history")
+                self.assertEqual(sub.cut_state, "on disk")
+                self.assertEqual(b.errors, [])
+                fake.stop_bridge()
+
+    def test_the_open_line_says_where_the_time_went(self):
+        """§5's line, pinned whole: N from the subscribe frame's arrival at
+        the reader (`received`), the bridge's snapshot's arrival (A) and when
+        the open took it (M), how the build came, its CPU and rows, whether
+        the cut's row was on disk, the waits."""
+        for i in range(3):
+            self.fake.user_row("before %d" % i, post=False)
+        self.fake.start_bridge()
+        sub, b = self.subscribe(received=self.clock() - 0.5)
+        deadline = time.time() + 5
+        while sub.reader.items.empty() and time.time() < deadline:
+            time.sleep(0.01)
+        self.assertFalse(sub.reader.items.empty(), "the bridge's snapshot is in the reader's queue")
+        self.clock.advance(0.25)
+        self.assertTrue(self.pump(sub, b, lambda: b.snapshot is not None))
+        said = [line.split(" ", 1)[1] for line in self.opens_said(sub)]   # past daemon.log's stamp
+        self.assertEqual(said, ["plane: open %s of %s: bridge snapshot after 0.75 s from the subscribe's arrival "
+                                "(bridge: snapshot arrived 0.50 s, taken 0.75 s; build: cold %d ms 3 rows, cut on disk; "
+                                "waits 0)\n" % (sub.sub, sub.session[:8], sub.cpu_ms)])
 
     def test_bridge_not_ready_past_the_window_is_a_discontinuity(self):
         self.fake.start_bridge(ready=False)
@@ -816,7 +908,8 @@ class Engine(Session):
         self.assertIsNone(b.end, "no end: the subscription stays, idle")
         self.assertFalse(sub.bridged, "transcript-only once the session is over")
         older = self.page_to_first(sub, b)
-        self.assertEqual([r["uuid"] for r in reversed(older)] + b.uuids(), early + [last])
+        self.assertEqual(b.uuids(), early + [last], "the pages held before the snapshot's rows")
+        self.assertEqual([r["uuid"] for r in reversed(older)], early[:len(older)])
         self.assertEqual(b.errors, [])
 
     def test_a_null_cut_has_empty_history(self):
@@ -843,10 +936,184 @@ class Engine(Session):
         m.write(0, u)
         sub, b = self.subscribe()
         self.assertTrue(self.pump(sub, b, lambda: b.snapshot is not None))
-        self.assertEqual((b.snapshot["rows"], b.blocks), ([], {(m.turn, None, 0, 0): "raced"}))
+        self.assertEqual((b.snapshot["rows"], b.texts()), ([], {(m.turn, None, 0, 0): "raced"}))
         m.notice(0, u)
         self.assertTrue(self.pump(sub, b, lambda: len(b.rows) == 1))
         self.assertIsNone(b.end)
+        self.assertClean(b)
+
+    # ---------------------------------------------------- the snapshot at once (open-fast §2)
+
+    CLEAN = {"holes": [], "partial": [], "vanished": [], "dups": [], "undrawn": [], "residual": []}
+
+    def test_a_long_answer_after_a_named_block(self):
+        """A2's long-answer on the scripted session: a block named at its end
+        (a thinking block's), its row unflushed for the 12 s answer after it;
+        opens at +1 s and +7 s and a live subscription from the start each
+        draw the block throughout and its row once, none ending before the
+        step does."""
+        self.fake.start_bridge()
+        self.fake.user_row("write a story")
+        live, bl = self.subscribe()
+        self.assertTrue(self.pump(live, bl, lambda: bl.snapshot is not None))
+        m = self.fake.message()
+        m.text(0, "Plot first.")
+        u0 = m.row(0, disk=False)
+        key = (m.turn, None, 0, 0)
+        views = [(live, bl)]
+        for second in range(12):
+            if second in (1, 7):
+                sub, b = self.subscribe()
+                self.assertTrue(self.pump(sub, b, lambda b=b: b.snapshot is not None))
+                views.append((sub, b))
+            m.text(1, "word %d " % second)
+            self.clock.advance(1)
+            for sub, b in views:
+                self.settle(sub, b, 0.05)
+                self.assertIsNone(b.end, "second %d" % second)
+                self.assertEqual(b.texts().get(key), "Plot first.", "drawn throughout, second %d" % second)
+        u1 = m.row(1, disk=False)
+        m.write(0, u0)
+        m.write(1, u1)
+        m.end()
+        for sub, b in views:
+            self.assertTrue(self.pump(sub, b, lambda b=b: len(b.rows) == 3))
+            self.settle(sub, b, 0.1)
+            self.assertIsNone(b.end)
+            self.assertClean(b)
+            self.assertEqual(sub.waits, 0)
+            inventory = dx4_consumer.Inventory.from_sources(self.fake.path(None), self.fake.emitted)
+            self.assertEqual(inventory.check(b), self.CLEAN)
+        self.assertEqual([b.kinds[:2] for _, b in views[1:]], [["snapshot", "block-row"]] * 2,
+                         "each later open: the carried block's block-row first")
+
+    def test_a_history_rows_named_block_is_dropped_from_the_snapshot(self):
+        """A named block whose row is in the history: the row is drawn from
+        the page, so the block leaves the snapshot's streaming and no
+        block-row follows for it."""
+        self.fake.start_bridge()
+        m = self.fake.message()
+        m.text(0, "flushed")
+        u = m.row(0)
+        m.text(1, "still going")
+        sub, b = self.subscribe()
+        self.assertTrue(self.pump(sub, b, lambda: b.snapshot is not None))
+        self.assertEqual([r["uuid"] for r in b.snapshot["rows"]], [u])
+        [entry] = b.snapshot["streaming"]
+        self.assertEqual([x["index"] for x in entry["blocks"]], [1])
+        self.assertEqual(b.texts(), {(m.turn, None, 0, 1): "still going"})
+        self.settle(sub, b)
+        self.assertNotIn("block-row", b.kinds)
+        self.assertEqual(sub.held, {(m.turn, None, 0, 1)})
+        m.row(1)
+        m.end()
+        self.assertTrue(self.pump(sub, b, lambda: len(b.rows) == 2))
+        self.assertClean(b)
+
+    def test_the_kept_blocks_block_rows_follow_the_snapshot_in_order(self):
+        """One block-row per kept named block right after the snapshot, before
+        anything else of the subscription: in the snapshot's entry order, then
+        by block index."""
+        self.fake.start_bridge()
+        sa = self.fake.message(agent="a1", turn="t-a1")
+        m = self.fake.message()
+        sa.text(0, "sub")
+        m.text(0, "zero")
+        m.text(1, "one")
+        m.text(2, "two")
+        s0 = sa.row(0, disk=False)
+        u1 = m.row(1, disk=False)
+        u0 = m.row(0, disk=False)
+        sub, b = self.subscribe()
+        got = []
+        take = b.take
+        b.take = lambda env: (got.append(env), take(env))
+        self.assertTrue(self.pump(sub, b, lambda: b.snapshot is not None))
+        self.settle(sub, b)
+        self.assertEqual([e["agentId"] for e in b.snapshot["streaming"]], ["a1", None])
+        self.assertEqual([(env["kind"], env["n"], env["body"].get("uuid")) for env in got],
+                         [("snapshot", 0, None), ("block-row", 1, s0), ("block-row", 2, u0), ("block-row", 3, u1)],
+                         "entry order, then block index; nothing else before them")
+        self.assertEqual(set(sub.noticed), {u0, u1}, "its own loop's alone wait for their rows")
+        m.text(2, " more")
+        self.assertTrue(self.pump(sub, b, lambda: "chunk" in b.kinds))
+        self.assertEqual(b.kinds[4], "chunk")
+        m.write(1, u1)
+        m.write(0, u0)
+        self.assertTrue(self.pump(sub, b, lambda: {u0, u1} <= set(b.uuids())))
+        sa.end()
+        m.row(2)
+        m.end()
+        self.assertTrue(self.pump(sub, b, lambda: len(b.rows) == 3))
+        self.assertEqual(b.errors, [])
+
+    def test_a_main_subscription_carries_an_agent_loops_named_block_and_relays_its_block_row(self):
+        """A main subscription carries every loop's entries: an agent's named
+        block stays in it, and its block-row is relayed after the snapshot
+        (the web settles another loop's block by it); it waits on no row of
+        this transcript. The agent's own subscription waits for that row."""
+        self.fake.start_bridge()
+        sa = self.fake.message(agent="a1", turn="t-a1")
+        sa.text(0, "sub text")
+        s0 = sa.row(0, disk=False)
+        main, bm = self.subscribe()
+        own, ba = self.subscribe(agent="a1")
+        for sub, b in ((main, bm), (own, ba)):
+            self.assertTrue(self.pump(sub, b, lambda b=b: b.snapshot is not None))
+            self.settle(sub, b)
+            [entry] = b.snapshot["streaming"]
+            self.assertEqual([(x["text"], x.get("uuid")) for x in entry["blocks"]], [("sub text", s0)])
+            self.assertEqual(b.kinds[:2], ["snapshot", "block-row"])
+        self.assertEqual(main.noticed, {}, "another loop's row: nothing to wait for here")
+        self.assertEqual(set(own.noticed), {s0})
+        self.assertEqual(bm.other.get(s0), "sub text", "the main view settles it by its block-row")
+        self.assertEqual([(x.text, x.settled_by) for x in ba.blocks("a1")], [("sub text", s0)])
+        sa.write(0, s0)
+        sa.end()
+        self.assertTrue(self.pump(own, ba, lambda: s0 in ba.uuids()))
+        self.assertClean(ba, agent="a1")
+        self.assertEqual(bm.errors, [])
+
+    def test_an_open_with_no_transcript_yet_and_a_cut_gets_an_empty_snapshot(self):
+        for located in (True, False):
+            with self.subTest(located=located):
+                fake = fake_session.FakeSession(os.environ["HOME"], os.environ["SMINOS_HOME"], new_session())
+                fake.start_bridge()
+                m = fake.message()
+                m.text(0, "first")
+                u = m.row(0, disk=False)
+                self.assertFalse(os.path.exists(fake.path(None)))
+                sub, b = self.subscribe(fake=fake)
+                if not located:
+                    sub.locate = lambda: ""   # the session's transcript not found yet (unlocated)
+                self.assertTrue(self.pump(sub, b, lambda: b.snapshot is not None))
+                self.assertEqual(b.snapshot["rows"], [])
+                self.assertEqual([(x.text, x.settled_by) for x in b.blocks(None)], [("first", u)])
+                self.assertEqual(sub.cut_state, "not on disk")
+                sub.locate = lambda: fake.path(None)
+                m.write(0, u)
+                m.end()
+                self.clock.advance(plane.LOCATE_EVERY)
+                self.assertTrue(self.pump(sub, b, lambda: u in b.uuids()))
+                self.assertIsNone(b.end)
+                self.assertEqual(b.errors, [])
+                self.assertEqual(b.uuids(), [u])
+                fake.stop_bridge()
+
+    def test_a_prompt_noticed_before_its_flush_comes_on_its_flush(self):
+        """Right after a prompt (A2's after-prompt): the cut is the prompt's
+        row, noticed ahead of the engine's flush. The snapshot goes at once
+        without it, and the row goes out as it lands, named by the cut's
+        notice, not UNNAMED_WAIT later."""
+        self.fake.start_bridge()
+        earlier = self.fake.user_row("earlier")
+        u = self.fake.user_row("the prompt", disk=False)
+        sub, b = self.subscribe()
+        self.assertTrue(self.pump(sub, b, lambda: b.snapshot is not None))
+        self.assertEqual([r["uuid"] for r in b.snapshot["rows"]], [earlier])
+        self.fake.user_row("the prompt", post=False, uuid=u)
+        self.assertTrue(self.pump(sub, b, lambda: u in b.uuids()), "on its flush; the clock never moved")
+        self.assertEqual(sub.emitted[u], "named")
         self.assertClean(b)
 
     # ---------------------------------------------------- scopes
@@ -878,7 +1145,7 @@ class Engine(Session):
         self.assertClean(b, agent="a1")
         self.assertTrue(all(r.get("agentId") == "a1" for r in b.rows))
         self.assertEqual(b.usage, [])
-        self.assertNotIn(("turn-1", None, 0, 0), b.blocks)
+        self.assertNotIn(("turn-1", None, 0, 0), b.texts())
 
     def test_step_end_follows_the_steps_block_rows(self):
         self.fake.start_bridge()
@@ -910,7 +1177,7 @@ class Engine(Session):
         self.assertEqual(b.step_ends, [(m.turn, None, 0)])
         self.assertEqual(b.dropped, {(m.turn, None, 0, 0): "begun before the subscription, then Esc"},
                          "the partial text of a block no row will settle goes")
-        self.assertEqual(b.blocks, {})
+        self.assertEqual(b.texts(), {})
         self.assertEqual(b.errors, [])
 
     def test_step_end_by_scope(self):
@@ -1084,7 +1351,8 @@ class OffChain(Session):
         off = [u for p in b.pages for u in p["offChain"]]
         self.assertEqual(sorted(off), sorted(r["uuid"] for r in turn), "the undone turn, steer and all, marked off")
         self.assertTrue(steer["uuid"] in b.off)
-        self.assertEqual(len(older) + len(b.rows), len(before + turn + [again] + later), "every row still sent")
+        self.assertTrue(older)
+        self.assertEqual(b.uuids(), [r["uuid"] for r in before + turn + [again] + later], "every row still sent")
         self.assertEqual(b.errors, [])
 
     def test_a_snapshot_marks_a_rewound_prompt_and_keeps_parallel_results_on(self):
@@ -1174,10 +1442,10 @@ class Held:
             self.go.set()
         self.read = []
 
-    def __call__(self, t, cut, bridged):
+    def __call__(self, t, *args):
         self.entered.set()
         assert self.go.wait(10), "never let go"
-        answer = self.real(t, cut, bridged)
+        answer = self.real(t, *args)
         self.read = list(t.index.uuids)
         self.built.set()
         assert self.deliver.wait(10), "never delivered"
@@ -1222,7 +1490,7 @@ class RealChild(Engine):
                 u = old.row(0)  # named by row-seen: nothing of it streamed here
                 new = self.fake.message(agent=agent, turn="t-new-%s" % agent)
                 new.text(0, "fresh")
-                self.assertTrue(self.pump(again, b2, lambda: b2.blocks.get((new.turn, agent, 0, 0)) == "fresh"))
+                self.assertTrue(self.pump(again, b2, lambda: b2.texts().get((new.turn, agent, 0, 0)) == "fresh"))
                 new.row(0)
                 self.assertTrue(self.pump(again, b2, lambda: len(b2.rows) == len(self.fake.rows(agent))))
                 self.assertIn(u, b2.uuids())
@@ -1783,6 +2051,578 @@ class ParentLoop(unittest.TestCase):
         self.assertEqual(loop.ledger.jobs, {}, "nor are the loop's jobs kept")
 
 
+def wait_file(path, timeout=10):
+    deadline = time.time() + timeout
+    while not (os.path.exists(path) and read(path)) and time.time() < deadline:
+        time.sleep(0.05)
+    return read(path)
+
+
+def ended(p):
+    """A fixture process stopped and reaped, whatever state it is in."""
+    if p.poll() is None:
+        p.terminate()
+        try:
+            p.wait(10)
+        except subprocess.TimeoutExpired:
+            p.kill()
+            p.wait()
+
+
+def dechunked(raw):
+    """An HTTP/1.1 response's chunked body as far as it came, its framing taken off."""
+    body = raw.split(b"\r\n\r\n", 1)[1] if b"\r\n\r\n" in raw else b""
+    out = b""
+    while b"\r\n" in body:
+        size, rest = body.split(b"\r\n", 1)
+        n = int(size, 16)
+        out += rest[:n]
+        if n == 0 or len(rest) < n + 2:
+            break
+        body = rest[n + 2:]
+    return out
+
+
+class Instruments(unittest.TestCase):
+    """The fixtures the open's instruments stand on: the hub stand-in on
+    HTTP/1.1, each POST recorded with its connection and each session
+    message with its arrival; and the pause proxy, which stops the hub's
+    stream to the uplink on its first `events` frame while every other
+    connection passes."""
+
+    CRED = {"CF-Access-Client-Id": "cid-1", "CF-Access-Client-Secret": "secret-1"}
+
+    @classmethod
+    def setUpClass(cls):
+        port_file = os.path.join(T, "instruments-hub.port")
+        cls.spawn([sys.executable, os.path.join(HERE, "hub_standin.py"), port_file, "cid-1", "secret-1", "2000"])
+        cls.hub = "http://127.0.0.1:%s" % wait_file(port_file)
+        proxy_file = os.path.join(T, "instruments-proxy.json")
+        cls.spawn([sys.executable, os.path.join(HERE, "pause_proxy.py"), cls.hub, proxy_file])
+        ports = json.loads(wait_file(proxy_file))
+        cls.proxy = "http://127.0.0.1:%d" % ports["proxy"]
+        cls.control = "http://127.0.0.1:%d" % ports["control"]
+
+    @classmethod
+    def spawn(cls, argv):
+        """A fixture process, its end owned from the moment it exists: a
+        class cleanup runs even when setUpClass fails after it, where
+        tearDownClass would not."""
+        p = subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        cls.addClassCleanup(ended, p)
+        return p
+
+    def open_stream(self, base):
+        """GET /machine/stream at `base` on a socket of its own; (socket, the
+        bytes read up to the welcome, its generation)."""
+        u = urllib.parse.urlsplit(base)
+        sock = socket.create_connection((u.hostname, u.port), timeout=5)
+        sock.sendall(("GET /machine/stream HTTP/1.1\r\nHost: %s\r\nCF-Access-Client-Id: cid-1\r\n"
+                      "CF-Access-Client-Secret: secret-1\r\nAccept: text/event-stream\r\n\r\n" % u.netloc).encode())
+        got = b""
+        while True:
+            got += sock.recv(65536)
+            for line in got.split(b"\n"):
+                if line.startswith(b"data: ") and b'"t": "welcome"' in line:
+                    return sock, got, json.loads(line[len(b"data: "):])["generation"]
+
+    def test_a_keep_alive_connection_keeps_its_id(self):
+        """Two POSTs on one http.client connection carry one `conn`; a third
+        on a fresh connection another."""
+        state = lambda: call(self.hub, "GET", "/control/state")[1]  # noqa: E731
+        count = len(state()["posted"])
+        u = urllib.parse.urlsplit(self.hub)
+        c = http.client.HTTPConnection(u.hostname, u.port, timeout=10)
+        for _ in range(2):
+            c.request("POST", "/machine/frames", body=b'{"t":"hb-ack"}\n',
+                      headers={**self.CRED, "X-Desk-Generation": "999"})
+            r = c.getresponse()
+            r.read()
+            self.assertEqual(r.status, 409, "no stream of that generation")
+            self.assertFalse(r.will_close, "HTTP/1.1: the connection stays open")
+        c.close()
+        call(self.hub, "POST", "/machine/frames", None, {**self.CRED, "X-Desk-Generation": "999"})
+        posted = state()["posted"][count:]
+        self.assertEqual(len(posted), 3)
+        self.assertEqual(posted[0]["conn"], posted[1]["conn"], "one keep-alive connection, one id")
+        self.assertNotEqual(posted[1]["conn"], posted[2]["conn"], "a new connection, a new id")
+
+    def test_the_proxy_counts_each_request_that_passes(self):
+        """Every request on a passing connection is in the proxy's census
+        from its start, with the generation and Access client it names (never
+        the secret) and the frame kinds its body opens with; answers are
+        matched in order on a keep-alive connection; a request whose
+        connection closes unanswered stays in it, said so."""
+        requests = lambda: call(self.control, "GET", "/control/requests")[1]["requests"]  # noqa: E731
+        before = len(requests())
+        u = urllib.parse.urlsplit(self.proxy)
+        t0 = time.time()
+        c = http.client.HTTPConnection(u.hostname, u.port, timeout=10)
+        for kind in ("hb-ack", "session"):
+            c.request("POST", "/machine/frames", body=('{"t":"%s"}\n' % kind).encode(),
+                      headers={**self.CRED, "X-Desk-Generation": "999"})
+            r = c.getresponse()
+            r.read()
+        c.close()
+        sock = socket.create_connection((u.hostname, u.port), timeout=5)
+        sock.sendall(b'POST /machine/frames HTTP/1.1\r\nHost: x\r\nContent-Length: 100\r\nX-Desk-Generation: 7\r\n'
+                     b'CF-Access-Client-Id: cid-1\r\nCF-Access-Client-Secret: secret-1\r\n\r\n{"t":"hello"')
+        deadline = time.time() + 5
+        while time.time() < deadline and len(requests()) < before + 3:
+            time.sleep(0.05)
+        stalled = requests()[before + 2:]
+        self.assertEqual([(r["generation"], r["frames"], r["status"], r["closed"]) for r in stalled],
+                         [("7", ["hello"], None, None)], "outstanding on a stalled connection, in the census already")
+        sock.close()
+        deadline = time.time() + 5
+        while time.time() < deadline and not (len(requests()) == before + 3 and requests()[-1]["closed"]):
+            time.sleep(0.05)
+        got = requests()[before:]
+        self.assertEqual([(r["method"], r["path"], r["generation"], r["frames"]) for r in got],
+                         [("POST", "/machine/frames", "999", ["hb-ack"]), ("POST", "/machine/frames", "999", ["session"]),
+                          ("POST", "/machine/frames", "7", ["hello"])])
+        a, b, held = got
+        self.assertEqual(a["conn"], b["conn"], "one keep-alive connection")
+        self.assertNotEqual(b["conn"], held["conn"])
+        self.assertEqual((a["status"], b["status"], a["client"]), (409, 409, "cid-1"))
+        self.assertTrue(t0 <= a["start"] <= a["answered"] <= b["start"] <= b["answered"], got)
+        self.assertEqual((held["status"], held["answered"]), (None, None))
+        self.assertIsNotNone(held["closed"], "its connection closed with no answer")
+        self.assertNotIn("secret-1", json.dumps(got))
+
+    def test_a_fixture_that_fails_to_start_leaves_no_process(self):
+        """setUpClass failing after it started processes: each is ended by
+        the class cleanup registered when it was spawned."""
+        spawned = []
+
+        class Failing(Instruments):
+            @classmethod
+            def spawn(cls, argv):
+                p = super(Failing, cls).spawn(argv)
+                spawned.append(p)
+                return p
+
+        module = sys.modules[__name__]
+        with mock.patch.object(module, "wait_file", side_effect=["1", TimeoutError("injected")]):
+            result = unittest.TextTestRunner(stream=io.StringIO(), verbosity=0).run(
+                unittest.TestSuite([Failing("test_a_keep_alive_connection_keeps_its_id")]))
+        self.assertEqual(len(result.errors), 1, "the setUpClass failure is said")
+        self.assertIn("injected", result.errors[0][1])
+        self.assertEqual(len(spawned), 2)
+        self.assertEqual([p.poll() is not None for p in spawned], [True, True], "no fixture process outlives it")
+
+    def test_a_session_message_carries_its_arrival(self):
+        sock, _, generation = self.open_stream(self.hub)
+        try:
+            t0 = time.time()
+            message = {"project": PROJECT, "machine": "testhost", "session": new_session(), "kind": "presence",
+                       "sub": None, "n": None, "body": {"record": None, "bridge": False}}
+            u = urllib.parse.urlsplit(self.hub)
+            c = http.client.HTTPConnection(u.hostname, u.port, timeout=10)
+            c.request("POST", "/machine/frames", body=json.dumps({"t": "session", "message": message}).encode(),
+                      headers={**self.CRED, "X-Desk-Generation": str(generation)})
+            r = c.getresponse()
+            r.read()
+            c.close()
+            self.assertEqual(r.status, 200)
+            got = [m for m in call(self.hub, "GET", "/control/state")[1]["sessions"] if m["message"] == message]
+            self.assertEqual(len(got), 1)
+            self.assertLessEqual(t0, got[0]["at"])
+            self.assertLessEqual(got[0]["at"], time.time())
+        finally:
+            sock.close()
+
+    def test_the_proxy_pauses_the_stream_on_its_first_events_frame(self):
+        """Armed, the proxy forwards the stream's first `events` frame, then
+        reads nothing more of that connection for the seconds asked and says
+        `paused` with what it held back; another connection passes meanwhile;
+        then `resumed`, and what was held arrives."""
+        sock, _, _ = self.open_stream(self.proxy)
+        try:
+            status, armed = call(self.control, "POST", "/control/arm", {"on": "next-events", "seconds": 1.5})
+            self.assertEqual((status, armed["state"]), (200, "armed"))
+            frames = [{"t": "events", "project": PROJECT, "writer": "w", "events": [], "mark": "first"},
+                      {"t": "events", "project": PROJECT, "writer": "w", "events": [], "mark": "held " + "x" * 2000}]
+            status, sent = call(self.hub, "POST", "/control/send", {"frames": frames})
+            self.assertEqual(status, 200, sent)
+            got = b""
+            sock.settimeout(5)
+            while b'"mark": "first"' not in got:
+                got += sock.recv(65536)
+            sock.settimeout(0.5)
+            try:
+                more = sock.recv(65536)
+            except OSError:   # socket.timeout
+                more = b""
+            self.assertNotIn(b'"mark": "held', got + more, "nothing past the first events frame while paused")
+            status, st = call(self.control, "GET", "/control/state")
+            self.assertEqual(st["state"], "paused", st)
+            self.assertGreater(st["held"], 2000, "what the proxy holds back of the hub's writes")
+            status, _ = call(self.proxy, "GET", "/control/state")
+            self.assertEqual(status, 200, "another connection passes while the stream is paused")
+            sock.settimeout(5)
+            rest = got + more
+            while b'"mark": "held' not in rest:
+                rest += sock.recv(65536)
+            status, st = call(self.control, "GET", "/control/state")
+            self.assertEqual(st["state"], "resumed", st)
+            self.assertGreaterEqual(st["resumed_at"] - st["paused_at"], 1.4, "paused for the seconds asked")
+        finally:
+            sock.close()
+
+    def test_the_proxy_pauses_now_and_resumes_on_ask(self):
+        sock, _, _ = self.open_stream(self.proxy)
+        try:
+            status, armed = call(self.control, "POST", "/control/arm", {"on": "now", "seconds": 30})
+            self.assertEqual(status, 200)
+            deadline = time.time() + 5
+            while call(self.control, "GET", "/control/state")[1]["state"] != "paused" and time.time() < deadline:
+                time.sleep(0.05)
+            self.assertEqual(call(self.control, "GET", "/control/state")[1]["state"], "paused")
+            call(self.hub, "POST", "/control/send", {"frames": [{"t": "ping", "mark": "after now"}]})
+            status, _ = call(self.control, "POST", "/control/resume", {})
+            self.assertEqual(status, 200)
+            got = b""
+            sock.settimeout(5)
+            while b'"mark": "after now"' not in got:
+                got += sock.recv(65536)
+            self.assertEqual(call(self.control, "GET", "/control/state")[1]["state"], "resumed")
+        finally:
+            sock.close()
+
+    def test_the_proxy_finds_an_events_frame_in_a_chunked_stream(self):
+        """The local hub's stream is chunked, and its runtime splits a
+        frame's JSON across chunks (`{"t":` in one, `"events",…` in the
+        next): the proxy reads the body through the chunked framing, so it
+        still pauses right after the first events frame, which it forwards
+        whole."""
+        frames = [b'event: hb\ndata: {"t":"hb"}\n\n',
+                  b'event: events\ndata: {"t":"events","project":"p","events":[],"mark":"first"}\n\n',
+                  b'event: events\ndata: {"t":"events","project":"p","events":[],"mark":"held"}\n\n']
+        pieces = []
+        for f in frames:
+            k = f.index(b'"t":') + 4      # where the runtime cut it
+            pieces += [f[:k], f[k:-1], f[-1:]]
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(4)
+        go = threading.Event()
+
+        def hub():
+            conn, _ = listener.accept()
+            conn.recv(65536)
+            conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n")
+            conn.sendall(b"%x\r\n%s\r\n" % (len(pieces[0]), pieces[0]))
+            go.wait(10)
+            for p in pieces[1:]:
+                conn.sendall(b"%x\r\n%s\r\n" % (len(p), p))
+                time.sleep(0.02)
+            time.sleep(5)
+            conn.close()
+
+        threading.Thread(target=hub, daemon=True).start()
+        proxy_file = os.path.join(T, "instruments-chunked-proxy.json")
+        proxy = subprocess.Popen([sys.executable, os.path.join(HERE, "pause_proxy.py"),
+                                  "http://127.0.0.1:%d" % listener.getsockname()[1], proxy_file],
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            ports = json.loads(wait_file(proxy_file))
+            control = "http://127.0.0.1:%d" % ports["control"]
+            sock = socket.create_connection(("127.0.0.1", ports["proxy"]), timeout=5)
+            sock.sendall(b"GET /machine/stream HTTP/1.1\r\nHost: x\r\n\r\n")
+            got = b""
+            while pieces[0] not in dechunked(got):
+                got += sock.recv(65536)
+            status, armed = call(control, "POST", "/control/arm", {"on": "next-events", "seconds": 1.0})
+            self.assertEqual((status, armed["state"]), (200, "armed"))
+            go.set()
+            deadline = time.time() + 5
+            while call(control, "GET", "/control/state")[1]["state"] != "paused" and time.time() < deadline:
+                time.sleep(0.02)
+            st = call(control, "GET", "/control/state")[1]
+            self.assertEqual(st["state"], "paused", st)
+            sock.settimeout(0.3)
+            try:
+                while True:
+                    more = sock.recv(65536)
+                    if not more:
+                        break
+                    got += more
+            except OSError:   # socket.timeout: nothing more while paused
+                pass
+            self.assertTrue(dechunked(got).endswith(frames[0] + frames[1]), "the first events frame forwarded whole, "
+                            "and nothing of the next one while paused: %r" % dechunked(got)[-120:])
+            sock.settimeout(5)
+            while b'"mark":"held"' not in dechunked(got):
+                got += sock.recv(65536)
+            self.assertEqual(call(control, "GET", "/control/state")[1]["state"], "resumed")
+            sock.close()
+        finally:
+            proxy.terminate()
+            proxy.wait(10)
+            listener.close()
+
+
+class BenchOpen(unittest.TestCase):
+    """What bench_open.py reads and decides: the open line's figures, where
+    a subscription's snapshot stands among the session's events, which opens
+    fell inside a thinking-to-end window; and one run of it end to end."""
+
+    def test_the_open_line_read_as_figures(self):
+        read = bench_open.parse_open_line
+        self.assertEqual(read("2026-10-20T10:00:00.000Z plane: open s-1 of 0123abcd: bridge snapshot after 0.75 s from "
+                              "the subscribe's arrival (bridge: snapshot arrived 0.50 s, taken 0.75 s; build: cold 12 ms "
+                              "3 rows, cut on disk; waits 2)\n"),
+                         {"sub": "s-1", "outcome": "bridge snapshot", "N": 0.75, "arrived": 0.5, "taken": 0.75,
+                          "bridge": "bridge: snapshot arrived 0.50 s, taken 0.75 s", "build": "cold", "cpu_ms": 12,
+                          "rows": 3, "cut": "on disk", "waits": 2})
+        line = read("plane: open Ab_-9 of 0123abcd/a1b2: transcript-only (no bridge socket) after 0.02 s from the "
+                    "subscribe's arrival (no bridge; build: warm 0 ms 15000 rows, cut null; waits 0)")
+        self.assertEqual((line["sub"], line["outcome"], line["arrived"], line["build"], line["rows"], line["cut"]),
+                         ("Ab_-9", "transcript-only (no bridge socket)", None, "warm", 15000, "null"))
+        line = read("plane: open s-2 of 0123abcd: discontinuity before its snapshot: the snapshot's cut, row r, never "
+                    "reached the transcript after 5.15 s from the subscribe's arrival (bridge: no snapshot; build: "
+                    "none, cut not on disk; waits 25)")
+        self.assertEqual((line["outcome"][:13], line["N"], line["build"], line["cpu_ms"], line["cut"], line["waits"]),
+                         ("discontinuity", 5.15, "none", None, "not on disk", 25))
+        self.assertIsNone(read("plane: something else"))
+
+    def test_a_snapshot_stands_before_the_first_event_its_subscriber_was_sent(self):
+        key = bench_rig.line_key
+        e = [{"type": "chunk", "turnId": "t", "agentId": None, "step": 0, "chunkIndex": i, "t": 100 + i}
+             for i in range(4)]
+        backbone = [(10.0 + i, x) for i, x in enumerate(e)]
+        snap = key({"type": "snapshot", "cut": {}})
+        tees = [{"sub": "a", "lines": [(11.5, snap), (12.2, key({"n": 1, **e[2]}))]},   # placed by its next event
+                {"sub": "b", "lines": [(10.5, snap)]},                                # nothing after it: unplaced
+                {"sub": "c", "lines": [(11.9, snap), (12.0, key({"n": 1, "type": "gone"})),
+                                       (13.1, key({"n": 2, **e[3]}))]}]
+        events, how = bench_open.place_snapshots(backbone, tees)
+        self.assertEqual([x.get("sub") or x["chunkIndex"] for x in events], [0, 1, "a", 2, "c", 3])
+        self.assertEqual(how, {"a": "event", "b": "unplaced", "c": "event"})
+        self.assertEqual(events[2], {"type": "snapshot", "sub": "a"})
+        # The inventory reads the placed snapshots: a request whose step ended before one is the accepted hole.
+        # A stamp alone is no evidence of order, so `b` names no snapshot and its blocks cannot be `residual`.
+        order = dx4_consumer.order_of([{"type": "step", "phase": "end", "turnId": "t", "agentId": None, "step": 0}]
+                                      + events)
+        self.assertEqual(order[0], {"a": 3, "c": 5})
+
+    def test_a_line_is_known_by_its_fields_not_its_n(self):
+        chunk = {"type": "chunk", "turnId": "t", "agentId": None, "step": 2, "chunkIndex": 7, "t": 5,
+                 "chunk": {"kind": "text", "index": 0, "text": "x"}}
+        self.assertEqual(bench_rig.line_key({"n": 3, **chunk}), bench_rig.line_key(chunk))
+        self.assertNotEqual(bench_rig.line_key({**chunk, "chunkIndex": 8}), bench_rig.line_key(chunk))
+        self.assertEqual(json.loads(json.dumps(bench_rig.line_key(chunk))), bench_rig.line_key(chunk))
+
+    def test_a_probe_gap_is_read_back_from_the_next_snapshot_or_said_lost(self):
+        """A live probe's reconnect leaves a gap in the DX5 source: whole
+        when the next snapshot still streams every request that was open
+        before it and shows nothing new; lost when a request ended inside it,
+        or one the probe never saw (it may have had a whole request before
+        it), or a turn it never saw."""
+        step = lambda turn, n, phase: {"type": "step", "phase": phase, "turnId": turn, "agentId": None,  # noqa: E731
+                                       "step": n}
+        chunk = lambda turn, n, i: {"type": "chunk", "turnId": turn, "agentId": None, "step": n,  # noqa: E731
+                                    "chunkIndex": i, "chunk": {"kind": "text", "index": 0, "text": "w"}}
+        streaming = lambda *reqs: [{"turnId": t, "agentId": None, "step": n, "blocks": []} for t, n in reqs]  # noqa: E731
+
+        def run(after_snapshot, turns=({"turnId": "t1"},), prompts=(0.5,)):
+            ev = [(1.0, {"type": "snapshot", "streaming": [], "turns": []}), (1.1, step("t1", 0, "start")),
+                  (1.2, chunk("t1", 0, 0)), (3.0, {"type": "snapshot", "streaming": after_snapshot,
+                                                    "turns": list(turns)}), (3.1, chunk("t1", 0, 5))]
+            conns = [{"opened": 0.9, "first": 0, "closed": 2.0, "why": "the bridge ended the stream"},
+                     {"opened": 2.9, "first": 3, "closed": None, "why": None}]
+            return bench_rig.probe_gaps(ev, conns, failed=[(2.5, "refused 503")], prompts=prompts)
+
+        whole = run(streaming(("t1", 0)))
+        self.assertEqual([(g["from"], g["to"], g["attempts"], g["reconstructable"]) for g in whole],
+                         [(2.0, 3.0, 1, True)])
+        ended = run([])
+        self.assertFalse(ended[0]["reconstructable"])
+        self.assertIn("ended inside the gap", ended[0]["why"])
+        new = run(streaming(("t1", 0), ("t1", 2)))
+        self.assertFalse(new[0]["reconstructable"])
+        self.assertIn("began inside the gap", new[0]["why"])
+        turn = run(streaming(("t1", 0)), turns=({"turnId": "t1"}, {"turnId": "t0"}))
+        self.assertFalse(turn[0]["reconstructable"])
+        self.assertIn("turn", turn[0]["why"])
+        prompted = run(streaming(("t1", 0)), prompts=(0.5, 2.4))
+        self.assertFalse(prompted[0]["reconstructable"], "a turn begun and ended inside the gap leaves no trace in "
+                         "the next snapshot: a prompt sent in it is what says it may have")
+        self.assertIn("prompt", prompted[0]["why"])
+        self.assertEqual(bench_rig.probe_gaps([(1.0, {"type": "snapshot"})], [{"opened": 0.9, "first": 0,
+                                                                                "closed": None, "why": None}]), [],
+                         "one subscription from the start: no gap")
+
+    def test_a_probe_with_no_successor_yet_has_an_unfinished_gap(self):
+        """A probe whose stream closed and has no successor's snapshot yet —
+        through failed reconnects and a prompt — is uncovered from the close
+        on: an unfinished gap, lost until a next snapshot is read."""
+        ev = [(1.0, {"type": "snapshot", "streaming": [], "turns": []}),
+              (1.1, {"type": "step", "phase": "start", "turnId": "t1", "agentId": None, "step": 0})]
+        conns = [{"opened": 0.9, "first": 0, "closed": 2.0, "why": "the bridge ended the stream"},
+                 {"opened": 2.6, "first": None, "closed": 2.7, "why": "the bridge ended the stream"}]
+        gaps = bench_rig.probe_gaps(ev, conns, failed=[(2.2, "refused 503"), (2.4, "ConnectionRefusedError()")],
+                                    prompts=(0.5, 2.3))
+        self.assertEqual([(g["from"], g["to"], g["attempts"], g["reconstructable"]) for g in gaps],
+                         [(2.0, None, 3, False)], "the stream with no snapshot is an attempt too")
+        self.assertIn("no successor snapshot", gaps[0]["why"])
+        self.assertIn("prompt", gaps[0]["why"])
+        self.assertEqual(len(bench_rig.probe_gaps(ev, conns[:1])), 1, "closed alone, no attempt yet: still a gap")
+
+    def test_the_held_probe_counts_only_if_it_waited_inside_the_pause(self):
+        """The probe's hello shows a hub write blocked only when it was sent
+        while the pause stood, was seen still unanswered while it stood, and
+        was answered 200 only after the resume."""
+        blocked = bench_open.probe_blocked
+        ok = {"sent": 10.5, "pending_seen": 11.0, "answered": 14.2, "status": 200}
+        self.assertEqual(blocked(ok, 10.0, 14.0), (True, None))
+        late = {"sent": 14.3, "pending_seen": None, "answered": 14.31, "status": 200}
+        self.assertFalse(blocked(late, 10.0, 14.0)[0], "the upload finished after the resume: sent too late")
+        self.assertIn("after the resume", blocked(late, 10.0, 14.0)[1])
+        quick = {"sent": 10.5, "pending_seen": None, "answered": 10.52, "status": 200}
+        self.assertFalse(blocked(quick, 10.0, 14.0)[0], "answered inside the pause: the buffers took it")
+        unseen = {"sent": 10.5, "pending_seen": None, "answered": 14.2, "status": 200}
+        self.assertFalse(blocked(unseen, 10.0, 14.0)[0], "never seen pending while the pause stood")
+        refused = {**ok, "status": 503}
+        self.assertFalse(blocked(refused, 10.0, 14.0)[0])
+        self.assertFalse(blocked({}, 10.0, 14.0)[0], "never sent")
+
+    def test_the_probe_claims_the_machine_s_whole_vector(self):
+        """The probe's `have`: every writer of the uplink's project log at
+        its last seq, the upload's writer advanced to its last."""
+        log = os.path.join(T, "vector-home", "projects", "p1", "log")
+        os.makedirs(log, exist_ok=True)
+        for name, seqs in (("m.a.jsonl", (1, 2, 3)), ("m.b.jsonl", (1,))):
+            with open(os.path.join(log, name), "w") as f:
+                for s in seqs:
+                    f.write(json.dumps({"writer": "m/" + name[2], "seq": s, "kind": "say"}) + "\n")
+                f.write('{"writer": "m/x", "seq": 9')          # a line still being written: not read
+        rig = types.SimpleNamespace(smh=os.path.join(T, "vector-home"), project="p1")
+        self.assertEqual(bench_open.machine_vector(rig, {"up/w": 40}), {"m/a": 3, "m/b": 1, "up/w": 40})
+
+    def test_a_window_trial_counts_only_inside_and_long_enough(self):
+        count = bench_open.trial_counts
+        self.assertEqual(count("mid-message", 1.0, 3.5, [1.2]), (True, 2.5))
+        self.assertEqual(count("mid-message", 1.0, 3.5, [0.9])[0], False, "before the block-row")
+        self.assertEqual(count("long-answer", 1.0, 14.0, [2.0, 8.0]), (True, 13.0))
+        self.assertEqual(count("long-answer", 1.0, 9.3, [2.0, 8.0]), (False, 8.3),
+                         "A2's window is 12 s: a shorter one does not count")
+        self.assertEqual(count("long-answer", 1.0, None, [2.0, 8.0]), (False, None))
+
+    def test_only_an_unsolicited_end_is_an_end_before_the_step(self):
+        early = bench_open.ended_early
+        self.assertTrue(early({"reason": "discontinuity"}, 5.0, 9.0))
+        self.assertFalse(early({"reason": "discontinuity"}, 9.5, 9.0), "after the step's end")
+        self.assertFalse(early(None, None, 9.0), "the instrument's own unsubscribe, its end never relayed")
+        self.assertFalse(early({"reason": "unsubscribed"}, 7.0, 9.0), "the instrument's own unsubscribe")
+
+    def test_a_rig_that_fails_to_enroll_leaves_nothing_behind(self):
+        """The hub is the rig's from the moment it starts: an enrollment that
+        fails ends it and takes the run's directory with it."""
+        made = []
+        enroll = bench_rig.Standin.enroll
+
+        def failing(hub, rig):
+            made.append((hub.proc, rig.root))
+            raise RuntimeError("injected")
+        a = types.SimpleNamespace(live=False, hub="standin", maws=None, keep=False)
+        with mock.patch.object(bench_rig.Standin, "enroll", failing), mock.patch.dict(os.environ, {
+                "HOME": os.path.join(T, "rig-home")}):
+            with self.assertRaisesRegex(RuntimeError, "injected"):
+                bench_rig.Rig(a)
+        self.assertIsNot(bench_rig.Standin.enroll, failing)
+        self.assertIs(bench_rig.Standin.enroll, enroll)
+        (proc, root), = made
+        self.assertIsNotNone(proc.poll(), "the stand-in ended")
+        self.assertFalse(os.path.exists(root), "the run's directory removed")
+
+    def test_an_open_counts_inside_the_thinking_to_end_window(self):
+        key = ("turn-1", None, 0)
+        ev = [(1.0, {"type": "step", "phase": "start", "turnId": "turn-1", "agentId": None, "step": 0}),
+              (1.1, {"type": "chunk", "turnId": "turn-1", "agentId": None, "step": 0,
+                     "chunk": {"kind": "thinking", "index": 0, "text": "hm"}}),
+              (1.5, {"type": "block-row", "turnId": "turn-1", "agentId": None, "step": 0, "index": 0, "uuid": "u"}),
+              (1.6, {"type": "chunk", "turnId": "turn-1", "agentId": "a1", "step": 0,
+                     "chunk": {"kind": "text", "index": 0, "text": "another loop's"}}),
+              (1.7, {"type": "chunk", "turnId": "turn-1", "agentId": None, "step": 0,
+                     "chunk": {"kind": "text", "index": 1, "text": "Once"}}),
+              (4.0, {"type": "step", "phase": "end", "turnId": "turn-1", "agentId": None, "step": 0})]
+        s = bench_open.steps_seen(ev)[key]
+        self.assertEqual((s["thinking_named"], s["text_after"], s["end"]), (1.5, 1.7, 4.0))
+        self.assertTrue(bench_open.in_window(s["thinking_named"], s["end"], 1.71))
+        self.assertFalse(bench_open.in_window(s["thinking_named"], s["end"], 1.4), "before the block-row")
+        self.assertFalse(bench_open.in_window(s["thinking_named"], s["end"], 4.2), "after the step's end")
+        cut_off = ev[:5] + [(3.0, {"type": "turn", "phase": "complete", "turnId": "turn-1", "agentId": None})]
+        self.assertEqual(bench_open.steps_seen(cut_off)[key]["end"], 3.0, "a turn's completion cuts its step off")
+        plain = [x for x in ev if x[1].get("type") != "block-row"]
+        self.assertIsNone(bench_open.steps_seen(plain)[key]["text_after"], "no thinking named: no window")
+
+    def test_figures_and_sizes(self):
+        self.assertEqual(bench_open.stats([0.3, None, 0.1, 0.2]), {"n": 3, "min": 0.1, "p50": 0.2, "max": 0.3})
+        self.assertEqual(bench_open.stats([]), {"n": 0, "min": None, "p50": None, "max": None})
+        self.assertEqual([bench_open.size_arg(x) for x in ("4m", "512k", "100")], [4 << 20, 512 << 10, 100])
+
+    def test_a_run_against_the_stand_in(self):
+        """bench_open.py itself, end to end: the real uplink against the
+        stand-in, the fake session, two idle opens after the warm-up."""
+        r = subprocess.run([sys.executable, os.path.join(HERE, "bench_open.py"), "--uplink", "--hub", "standin",
+                            "--scenario", "idle", "--opens", "2"], capture_output=True, text=True, timeout=120,
+                           env={k: v for k, v in os.environ.items() if k not in ("HOME", "SMINOS_HOME")}
+                           | {"HOME": os.path.join(T, "bench-home")})
+        self.assertEqual(r.returncode, 0, r.stderr[-2000:])
+        out = [json.loads(line) for line in r.stdout.splitlines()]
+        opens = [o for o in out if o.get("mode") == "uplink" and "summary" not in o]
+        self.assertEqual([o["counted"] for o in opens], [False, True, True])
+        for o in opens:
+            self.assertEqual((o["outcome"], o["holes"], o["dups"], o["gaps"], o["vanished"], o["errors"]),
+                             ("bridge snapshot", 0, 0, 0, 0, []))
+            self.assertGreater(o["E"], 0)
+            self.assertIsNotNone(o["N"])
+        self.assertEqual(opens[1]["build"], "warm")
+        summary = out[-1]
+        self.assertEqual((summary["summary"], summary["opens"], summary["E"]["n"], summary["complete"]),
+                         ("idle", 2, 2, True))
+
+    def test_a_mid_message_open_is_placed_among_the_events(self):
+        """The scripted message's mid-message open: inside its window, and its
+        snapshot placed by the event the uplink's tee saw follow it."""
+        r = subprocess.run([sys.executable, os.path.join(HERE, "bench_open.py"), "--uplink", "--hub", "standin",
+                            "--scenario", "mid-message", "--opens", "1"], capture_output=True, text=True, timeout=120,
+                           env={k: v for k, v in os.environ.items() if k not in ("HOME", "SMINOS_HOME")}
+                           | {"HOME": os.path.join(T, "bench-home-mid")})
+        self.assertEqual(r.returncode, 0, r.stdout[-2000:] + r.stderr[-2000:])
+        out = [json.loads(line) for line in r.stdout.splitlines()]
+        opens = [o for o in out if o.get("mode") == "uplink" and "summary" not in o]
+        self.assertEqual([(o["counted"], o["placed"], o["source"]) for o in opens], [(True, "event", "complete")])
+        self.assertEqual((opens[0]["holes"], opens[0]["undrawn"], opens[0]["vanished"]), (0, 0, 0))
+        self.assertTrue(out[-1]["complete"])
+
+
+class BenchOpenMicro(Session):
+    """bench_open.py --micro against a scripted session's bridge and
+    transcript: one line per open with N_micro and its phases, labelled."""
+
+    def test_two_opens_in_process(self):
+        for i in range(3):
+            self.fake.user_row("row %d" % i, post=False)
+        self.fake.start_bridge()
+        r = subprocess.run([sys.executable, os.path.join(HERE, "bench_open.py"), "--micro", "--session", self.sid,
+                            "--sminos-home", os.environ["SMINOS_HOME"], "--home", os.environ["HOME"], "--opens", "2"],
+                           capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stderr[-2000:])
+        out = [json.loads(line) for line in r.stdout.splitlines()]
+        opens = [o for o in out if o.get("mode") == "micro" and "summary" not in o]
+        self.assertEqual(len(opens), 2)
+        for o in opens:
+            self.assertEqual((o["outcome"], o["rows"], o["cut"]), ("snapshot", 3, "on disk"))
+            self.assertLess(o["N_micro"], 5)
+            self.assertIn("build:end", [p[1] for p in o["phases"]])
+            self.assertIn("the warmer", o["leaves_out"])
+        self.assertEqual([o["build"] for o in opens], ["cold", "warm"])
+        self.assertEqual(out[-1]["summary"], "micro")
+
+
 class FixtureOutput(unittest.TestCase):
     """Every `output` case of dx4-jobs.json through the plane's own path. The
     case's roots are never handed to anything: the plane derives them from
@@ -1861,6 +2701,91 @@ class FixtureOutput(unittest.TestCase):
                 if want["result"] == "refused":
                     self.assertTrue(str(got.pop("reason", "")).strip(), "a refusal gives its reason")
                 self.assertEqual(got, want)
+
+
+STREAM = json.load(open(os.path.join(HERE, "dx4-stream.json"), encoding="utf-8"))
+
+
+class StreamFixture(unittest.TestCase):
+    """dx4-stream.json (written by dx4-stream.gen.py, shared with the web's
+    layer test): the reference consumer draws, after every message, what the
+    fixture says by hand; the store-side keys a replay of the web's layer
+    alone reads (`settle`, `landing`, `lands`) are what the consumer derived;
+    and every planted error is found, the consumer's own and the
+    inventory's."""
+
+    def test_every_sequence_draws_as_the_fixture_says(self):
+        self.assertTrue(STREAM)
+        for seq in STREAM:
+            with self.subTest(seq=seq["name"]):
+                c = dx4_consumer.Consumer(seq["agent"])
+                for i, step in enumerate(seq["steps"]):
+                    where = "%s, step %d (%s)" % (seq["name"], i, step.get("note") or (
+                        step["message"] if isinstance(step["message"], str) else step["message"]["kind"]))
+                    if step["message"] == "resubscribe":
+                        c = dx4_consumer.Consumer(seq["agent"], previous=c)
+                    else:
+                        c.take(step["message"])
+                        self.assertEqual(c.last_settle, step.get("settle", []), where)
+                        if "landing" in step:
+                            self.assertEqual((c.last_landing, c.last_lands), (step["landing"], step["lands"]), where)
+                    self.assertEqual(c.drawn_by_agent(), step["drawn"], where)
+                self.assertEqual(c.error_kinds(), seq["errors"], c.errors)
+                if "inventory" in seq:
+                    path = os.path.join(T, "stream-%s.jsonl" % seq["name"])
+                    with open(path, "w") as f:
+                        f.writelines(json.dumps(r) + "\n" for r in seq["inventory"]["transcript"])
+                    inventory = dx4_consumer.Inventory.from_sources(path, seq["inventory"]["dx5"])
+                    self.assertEqual(inventory.check(c), seq["inventory"]["check"])
+
+    def env(self, kind, n, body):
+        return {"project": PROJECT, "machine": "testhost", "session": "s", "kind": kind, "sub": "x", "n": n,
+                "body": body}
+
+    def test_a_page_holding_a_row_twice_is_held_once_and_said(self):
+        c = dx4_consumer.Consumer(None)
+        newest = {"type": "user", "uuid": "b", "message": {"role": "user", "content": "b"}}
+        older = {"type": "user", "uuid": "a", "message": {"role": "user", "content": "a"}}
+        c.take(self.env("snapshot", 0, {"rows": [newest], "more": True, "subagents": [], "presence": {},
+                                        "streaming": [], "offChain": []}))
+        c.take(self.env("rows", 1, {"rows": [older, older], "before": "b", "more": False, "offChain": []}))
+        self.assertEqual(c.uuids(), ["a", "b"], "held once")
+        self.assertEqual(c.error_kinds(), ["dup"])
+        c.take(self.env("rows", 2, {"rows": [older], "before": "b", "more": False, "offChain": []}))
+        self.assertEqual((c.uuids(), c.error_kinds()), (["a", "b"], ["dup"]), "a held row paged again is no dup")
+
+    def test_the_inventory_reads_a_missing_transcript_as_empty_and_fails_on_any_other_error(self):
+        missing = dx4_consumer.Inventory.from_sources(os.path.join(T, "no-such-transcript.jsonl"), [])
+        self.assertEqual(missing.rows, [], "a transcript not written yet holds no rows")
+        unreadable = os.path.join(T, "unreadable-transcript")
+        os.makedirs(unreadable, exist_ok=True)
+        with self.assertRaises(OSError):
+            dx4_consumer.Inventory.from_sources(unreadable, [])
+
+    def test_every_sequence_section_9_names_is_there(self):
+        """The fixture covers what §9 lists, and names and describes each sequence."""
+        kinds = {s["message"]["kind"] for q in STREAM for s in q["steps"] if isinstance(s["message"], dict)}
+        self.assertLessEqual({"snapshot", "chunk", "block-row", "step-end", "row", "end"}, kinds)
+        first = [next(s["message"]["body"] for s in q["steps"]
+                      if isinstance(s["message"], dict) and s["message"]["kind"] == "snapshot") for q in STREAM]
+        carried = {b["kind"] for body in first for e in body["streaming"] for b in e["blocks"]}
+        self.assertEqual(carried, {"thinking", "text", "tool"}, "first snapshots carry every kind")
+        names = [q["name"] for q in STREAM]
+        self.assertEqual(len(names), len(set(names)))
+        for q in STREAM:
+            self.assertTrue(q["about"].strip(), q["name"])
+            self.assertTrue(all("drawn" in s for s in q["steps"]), q["name"])
+        for name in ("reconnect-empty-history-carries-the-named-block", "reconnect-snapshot-no-longer-carries-the-block",
+                     "reconnect-older-snapshot-changes-nothing"):
+            self.assertIn(name, names)
+        planted = {k for q in STREAM for k in q["errors"]} | {
+            k for q in STREAM for k, v in q.get("inventory", {}).get("check", {}).items() if v}
+        self.assertLessEqual({"gap", "dup", "watermark", "after-end", "vanished", "holes", "partial", "dups", "undrawn",
+                              "residual"}, planted)
+        truncated = {b["kind"] for q in STREAM for s in q["steps"] if isinstance(s["message"], dict)
+                     and s["message"]["kind"] == "snapshot" for e in s["message"]["body"]["streaming"]
+                     for b in e["blocks"] if b.get("truncated")}
+        self.assertEqual(truncated, {"text", "tool"}, "truncated blocks of text and of a tool call settle")
 
 
 class ChainRules(unittest.TestCase):
@@ -2670,8 +3595,7 @@ class Uplink(unittest.TestCase):
         sub = base64.urlsafe_b64encode(os.urandom(16)).rstrip(b"=").decode()  # DX3: 128 bits, base64url
         session = session or self.sid
         self.hub.send({"t": "subscribe", "project": self.project, "session": session, "agentId": agent, "sub": sub})
-        b = Browser()
-        b.agent = agent
+        b = dx4_consumer.Consumer(agent)
         b.sub = sub
         b.session = session
         b.seen = 0
@@ -2695,7 +3619,7 @@ class Uplink(unittest.TestCase):
     def assertClean(self, b, agent=None):
         self.assertEqual(b.errors, [])
         self.assertEqual(b.uuids(), [r["uuid"] for r in self.fake.rows(agent)], "every row once, in order")
-        self.assertEqual({k: v for k, v in b.blocks.items() if k[1] == agent}, {}, "no text left beside its row")
+        self.assertEqual({k: v for k, v in b.texts().items() if k[1] == agent}, {}, "no text left beside its row")
 
     # ---------------------------------------------------- the cases
 
@@ -2795,6 +3719,12 @@ class Uplink(unittest.TestCase):
         self.assertEqual(b.end["reason"], "discontinuity")
         b = self.subscribe()
         self.assertTrue(self.feed(b, lambda: b.snapshot is not None))
+        said = [line for line in read(os.path.join(os.environ["SMINOS_HOME"], "daemon.log")).splitlines()
+                if "plane: open %s of %s:" % (b.sub, self.sid[:8]) in line]
+        self.assertEqual(len(said), 1, said)
+        self.assertRegex(said[0], r": bridge snapshot after \d+\.\d\d s from the subscribe's arrival \(bridge: "
+                                  r"snapshot arrived \d+\.\d\d s, taken \d+\.\d\d s; build: (cold|warm) \d+ ms \d+ rows, "
+                                  r"cut (on disk|null); waits \d+\)$", "the uplink's open line, timed from the frame's arrival")
         m = self.fake.message()
         m.text(0, "streamed ")
         m.text(0, "through the hub")
@@ -2904,7 +3834,8 @@ class Uplink(unittest.TestCase):
             if not b.pages[-1]["more"]:
                 break
             before = older[-1]["uuid"]
-        self.assertEqual([r["uuid"] for r in reversed(older)] + b.uuids(), ids + [last], "back to the first line")
+        self.assertEqual(b.uuids(), ids + [last], "back to the first line, the pages held before")
+        self.assertEqual([r["uuid"] for r in reversed(older)], ids[:len(older)])
         resumed = run("idle")
         try:
             fake.start_bridge()
@@ -2977,7 +3908,7 @@ class Uplink(unittest.TestCase):
         after = [self.subscribe(), self.subscribe("a7")]
         for b in after:
             self.assertTrue(self.feed(b, lambda b=b: b.snapshot is not None))
-        self.assertIn((main.turn, None, 0, 3), after[0].blocks, "the late-noticed block still streams")
+        self.assertIn((main.turn, None, 0, 3), after[0].texts(), "the late-noticed block still streams")
         sa.text(3, "tail")
         main.notice(3, early)
         self.fake.post([{"type": "row-seen", "uuid": flushing, "agentId": None, "door": "append", "t": 0}])

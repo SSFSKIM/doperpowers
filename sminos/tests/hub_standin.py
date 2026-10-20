@@ -25,7 +25,8 @@ is <client-id> / <client-secret>.
   writer not the machine's `refused` (`writer-not-yours`), an event past
   1 MiB `refused` (`too-large`), a gap answered by `resend` — and fans what it stored out to every other machine that opened
   the project; `rejected` goes to the project's audit record; `session`
-  messages and `hb-ack` are kept (each with when it was received); `part`
+  messages and `hb-ack` are kept (each with when it was received: a session
+  message's `received` and `at` alike, epoch seconds); `part`
   frames are joined. A machine's lease (DX2) starts at the first `hello` of
   a stream, is renewed by each `hb-ack` of that stream's generation, and
   lapses three heartbeats after the last renewal while its stream is open:
@@ -83,7 +84,8 @@ The test's own hands (the stand-in plays a hub that may lie):
   after half a status head, or after a whole head announcing ten bytes and
   one of them, then the connection closed); with `machine`, only that machine's POSTs meet it, with
   `has`, only a POST carrying a frame of that `t`. `posted` records each
-  POST's machine, generation, status, and body.
+  POST's machine, generation, status, body, and `conn`: the connection it
+  came on, numbered as they were accepted.
 - `POST /control/post-delay` `{"seconds"}`: every frame POST from then on
   waits this long before it is looked at (a slow link, a fresh TLS
   connection each); 0 ends it.
@@ -116,6 +118,12 @@ The test's own hands (the stand-in plays a hub that may lie):
 
 The heartbeat goes on a timer, as the hub's alarm writes it, whether or not
 frames are flowing down, its `at` to the millisecond.
+
+It speaks HTTP/1.1, so a client may keep a connection across requests, as
+the deployed hub's edge lets it: every answer carries its length, and a
+connection closes only after the stream, a held POST (`hold` and the
+stalls), a lost or truncated redemption, or a request whose body was left
+unread.
 """
 
 import json
@@ -146,7 +154,7 @@ TOO_LARGE = "an event is at most 1 MiB"
 lock = threading.Condition()
 state = {"generations": {}, "last": None, "streams": {}, "posted": [], "faults": [], "post_faults": [],
          "release": threading.Event(), "post_delay": 0.0,
-         "redemptions": [], "projects": {}, "hb_acks": [], "sessions": [], "leases": {}, "lapses": [],
+         "redemptions": [], "projects": {}, "hb_acks": [], "sessions": [], "leases": {}, "lapses": [], "conns": 0,
          # name_key → {name, client_id, client_secret, state, enrollment}
          "machines": {"testhost": {"name": "testhost", "client_id": CLIENT_ID, "client_secret": CLIENT_SECRET,
                                    "state": "active", "enrollment": ""}},
@@ -348,8 +356,9 @@ def apply(machine, s, frame, replies):
             refresh_online()
         return
     if t == "session":
+        now = time.time()
         state["sessions"].append({"machine": machine, "generation": s.generation, "message": frame.get("message"),
-                                  "received": time.time()})
+                                  "received": now, "at": now})
         return
     pid = frame.get("project")
     if not (isinstance(pid, str) and PROJECT_ID.fullmatch(pid)):
@@ -454,16 +463,32 @@ def join_part(s, frame):
 
 
 class Handler(BaseHTTPRequestHandler):
-    protocol_version = "HTTP/1.0"
+    protocol_version = "HTTP/1.1"
+
+    def setup(self):
+        super().setup()
+        with lock:
+            state["conns"] += 1
+            self.conn = state["conns"]   # this connection's number, on every POST it carries
 
     def log_message(self, *_args):
         pass
 
-    def reply(self, status, body):
+    def parse_request(self):
+        self.consumed = False   # whether this request's body was read
+        return super().parse_request()
+
+    def reply(self, status, body, close=False):
+        """A JSON answer; the connection closes after it when asked, or when
+        the request's body was not read (the next request would start in it)."""
+        close = close or (not self.consumed and int(self.headers.get("Content-Length") or 0) > 0)
         data = json.dumps(body).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(data)))
+        if close:
+            self.send_header("Connection", "close")
+            self.close_connection = True
         self.end_headers()
         self.wfile.write(data)
 
@@ -471,6 +496,7 @@ class Handler(BaseHTTPRequestHandler):
         self.reply(status, {"error": code, "message": message})
 
     def body(self):
+        self.consumed = True
         return self.rfile.read(int(self.headers.get("Content-Length") or 0))
 
     def admitted(self):
@@ -613,7 +639,8 @@ class Handler(BaseHTTPRequestHandler):
         done = threading.Event()
         with lock:
             s = state["streams"].get(machine)
-            record = {"machine": machine, "generation": self.headers.get("X-Desk-Generation"), "body": text}
+            record = {"machine": machine, "generation": self.headers.get("X-Desk-Generation"), "body": text,
+                      "conn": self.conn}
             if s is None or s.ended.is_set() or self.headers.get("X-Desk-Generation") != str(s.generation):
                 state["posted"].append({**record, "status": 409})
                 return self.reply(409, {"error": "stale-generation", "message": "the POST names no current stream"})
@@ -641,7 +668,7 @@ class Handler(BaseHTTPRequestHandler):
                     self.wfile.flush()
                 release.wait(60)
                 if fault == "hold":
-                    self.reply(503, {"error": "held, then released unapplied"})
+                    self.reply(503, {"error": "held, then released unapplied"}, close=True)
             except OSError:
                 pass  # the poster gave up on it
             self.close_connection = True
@@ -750,6 +777,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "close")   # no length: the stream ends with its connection
+        self.close_connection = True
         self.end_headers()
         period = HEARTBEAT_MS / 1000
         beat = time.monotonic() + period

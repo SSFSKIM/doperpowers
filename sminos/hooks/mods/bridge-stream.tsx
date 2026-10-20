@@ -93,9 +93,15 @@ function track(e: BridgeEvent) {
   if (e.type === 'chunk') {
     trackChunk(e)
   } else if (e.type === 'block-row') {
+    // The block stays, its text the only copy outside the engine until the
+    // step's end flushes its row; marked with that row, it takes no chunk more.
     const m = state.messages.get(messageKey(e.turnId, e.agentId, e.step))
     if (m !== undefined && typeof e.index === 'number') {
-      m.blocks.delete(e.index)
+      const b = m.blocks.get(e.index)
+      if (b !== undefined && typeof e.uuid === 'string') {
+        b.uuid = e.uuid
+        b.namedAt = Number(e.t)
+      }
       m.settled.add(e.index)
     }
   } else if (e.type === 'step' && e.phase === 'start') {
@@ -138,7 +144,7 @@ function acknowledge(batch: BridgeEvent[]) {
   state.refusals = state.refusals.filter((r) => !carried.has(name(r.key)))
 }
 
-/** A streaming message as the snapshot shows it: the blocks without a row yet, by index. */
+/** A streaming message as the snapshot shows it: its blocks by index, a named one with its row's uuid. */
 const shownMessage = (m: Streaming) => ({
   turnId: m.turnId,
   agentId: m.agentId,
@@ -177,6 +183,10 @@ export function resyncEvent(): BridgeEvent {
     refused: state.refusals.map((r) => ({ key: { ...r.key }, reason: r.reason })),
     // Each loop's last row notice: every row up to it has been named.
     cut: { main: null, ...Object.fromEntries(state.cut) },
+    // This module keeps a block after its block-row (named, in `streaming`)
+    // until its step ends, so the child's snapshot may say so and the plane
+    // serve it without waiting for the cut's row.
+    namedBlocks: true,
     // What the session started as: a child whose session start was lost (the
     // first post failed, and its recovery is this resync) still knows it.
     ...(state.info !== undefined && { sessionInfo: { session: state.session, ...state.info } }),

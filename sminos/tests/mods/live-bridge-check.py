@@ -41,6 +41,7 @@ GATEWAY_KEYS = ("ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_DEFAULT
 BASE_KEYS = ("PATH", "TERM", "LANG", "USER", "LOGNAME", "SHELL", "TMPDIR")
 PLUGIN_PARTS = (".claude-plugin", "hooks", "skills", "types")
 NAME = "brlive"
+THINKING_BUDGET = 2048    # MAX_THINKING_TOKENS for a session started with thinking on
 
 
 class Conn(http.client.HTTPConnection):
@@ -97,9 +98,13 @@ class Live:
         self.lock = threading.Lock()
         self.stop = threading.Event()
         self.subscriptions = 0
+        self.connections = []     # each subscription of the probe (subscribe_forever)
+        self.failed = []          # (time, why) of each attempt that got no stream
         self.session = None
         self.results = []
         self.procs = []
+        self.headless = None      # the headless session's process, once started so
+        self.out = []             # (time, stream-json object) it wrote
 
     # -- isolation
 
@@ -140,12 +145,57 @@ class Live:
         """The plugins the session loads with --plugin-dir: sminos's copy; a check of another plugin's mods adds it."""
         return [self.plugin]
 
-    def start_session(self):
+    def start_session(self, headless=False, thinking=False, model="haiku"):
+        """The session, under setup()'s isolation: interactive in this
+        check's tmux server, or `headless` — `claude -p` reading stream-json
+        prompts on a pipe (`send`) and writing stream-json with partial
+        messages, which a thread reads into `out` — with extended thinking
+        on when `thinking` (the engine's budget, MAX_THINKING_TOKENS, through
+        the env file) and `model` its --model."""
+        if thinking:
+            with open(self.envfile, "a") as f:
+                f.write("export MAX_THINKING_TOKENS=%d\n" % THINKING_BUDGET)
         dirs = " ".join("--plugin-dir %s" % shlex.quote(d) for d in self.plugin_dirs())
-        inner = "set -e; . %s; cd %s; exec claude %s --model haiku --permission-mode default -n %s" % (
-            shlex.quote(self.envfile), shlex.quote(self.work), dirs, NAME)
+        if headless:
+            # A `claude -p` run is no member of its project unless the host
+            # that spawned it marks it (SMNS_MEMBER, the spawner's pid, as
+            # MAWS marks its sessions): this process is its parent, the
+            # shells before it exec'd away.
+            with open(self.envfile, "a") as f:
+                f.write("export SMNS_MEMBER=%d\n" % os.getpid())
+            inner =("set -e; . %s; cd %s; exec claude -p --input-format stream-json --output-format stream-json "
+                     "--include-partial-messages --verbose %s --model %s --permission-mode default -n %s") % (
+                shlex.quote(self.envfile), shlex.quote(self.work), dirs, shlex.quote(model), NAME)
+            self.headless = subprocess.Popen(["env", "-i", "/bin/bash", "--noprofile", "--norc", "-c", inner],
+                                             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                             stderr=subprocess.DEVNULL, bufsize=0)
+            self.procs.append(self.headless)
+            threading.Thread(target=self.read_headless, daemon=True).start()
+            return
+        inner = "set -e; . %s; cd %s; exec claude %s --model %s --permission-mode default -n %s" % (
+            shlex.quote(self.envfile), shlex.quote(self.work), dirs, shlex.quote(model), NAME)
         cmd = "env -i /bin/bash --noprofile --norc -c %s" % shlex.quote(inner)
         subprocess.run(self.tmux + ["new-session", "-d", "-s", "brl", "-x", "200", "-y", "50", cmd], check=True)
+
+    def read_headless(self):
+        for line in iter(self.headless.stdout.readline, b""):
+            try:
+                obj = json.loads(line)
+            except ValueError:
+                continue
+            with self.lock:
+                self.out.append((time.time(), obj))
+
+    def send(self, text):
+        """A prompt to the headless session, as a stream-json user message."""
+        self.headless.stdin.write((json.dumps({"type": "user", "message": {"role": "user", "content": text}})
+                                   + "\n").encode())
+        self.headless.stdin.flush()
+
+    def turns_done(self, since=0.0):
+        """The headless session's `result` lines since `since`: one per turn it finished."""
+        with self.lock:
+            return [o for t, o in self.out if t >= since and o.get("type") == "result"]
 
     def pane(self):
         r = subprocess.run(self.tmux + ["capture-pane", "-p", "-t", "brl"], capture_output=True, text=True)
@@ -188,21 +238,48 @@ class Live:
         return s, body
 
     def subscribe_forever(self):
+        """The probe: one subscription after another for as long as the
+        check runs, each in `connections` ({"opened", "first": the index of
+        its snapshot in `events`, "closed", "why"}) and each attempt that got
+        no stream in `failed` — so every gap between two of them is on
+        record for whoever reads `events` as the session's DX5 source."""
         while not self.stop.is_set():
+            conn = None
             try:
                 c = Conn(self.endpoint(), timeout=None)
                 c.request("GET", "/events")
                 r = c.getresponse()
+                if r.status != 200:
+                    r.read()
+                    c.close()
+                    with self.lock:
+                        self.failed.append((time.time(), "refused %d" % r.status))
+                    time.sleep(0.2)
+                    continue
+                conn = {"opened": time.time(), "first": None, "closed": None, "why": None}
+                with self.lock:
+                    self.connections.append(conn)
                 self.subscriptions += 1
                 while not self.stop.is_set():
                     line = r.readline()
                     if not line:
+                        conn["why"] = "the bridge ended the stream"
                         break
                     with self.lock:
+                        if conn["first"] is None:
+                            conn["first"] = len(self.events)
                         self.events.append((time.time(), json.loads(line)))
                 c.close()
-            except (OSError, ValueError, http.client.HTTPException):
-                pass
+            except (OSError, ValueError, http.client.HTTPException) as e:
+                with self.lock:
+                    if conn is None:
+                        self.failed.append((time.time(), repr(e)))
+                    else:
+                        conn["why"] = repr(e)
+            if conn is not None:
+                with self.lock:
+                    conn["closed"] = time.time()
+                    conn["why"] = conn["why"] or "the check stopped"
             time.sleep(0.2)
 
     def seen(self, pred, since=0.0):

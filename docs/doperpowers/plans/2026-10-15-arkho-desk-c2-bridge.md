@@ -597,9 +597,9 @@ and M2 left them. Changed rows are marked **[M3]**; rows fix wave 1 changed are 
 | --- | --- | --- |
 | `raised` | M3 **[M3]** (was reserved) | `request` (the call's tool-use id; `toolu_plugin_…` for the ask mod's dialog; `request-<base36>-<n>` for a question no check named, and a permission whose call the mod did not see is not raised), `tool`, `input` (strings capped, fw1; a permission's is its call as the mod's `tool.call` hook was handed it, handles kept: a secrets guard beneath restores them only in what the engine's check and dialog hold, which stays on the machine; a question's is as the engine gave it), `agentId`, `deadline?` (epoch ms, only for a background subagent: raise + 3000), `async?: true` (an ask mod async question, tool `mcp__doperpowers__AskUserQuestion`), `truncated?`, **`toolUseId?`** (added after DC2's close, by DC7, composite 43a27604: the outer `mcp__doperpowers__AskUserQuestion` call's tool-use id when `request` is the ask mod's blocking dialog, present only where it differs from `request`, and omitted when two running ask calls share the dialog's first question (the pairing would be a guess); the dialog's own `tool/call` and `tool/result` are not posted, since no transcript row holds them, and a dialog opened from an async ask's button names no call). DX4's pending request. Raised only when the settings hooks beneath did not decide. A person-only prompt raises nothing |
 | `settled` | M3 **[M3]** (was reserved), **[fw1]** | `request, winner, outcome, by`. `outcome` ∈ `allow \| deny \| answered \| withdrawn`. `winner` ∈ `terminal \| other \| web`. `by` is `terminal` when the terminal's answer was used, `cli` when the CLI's was (winner `other`), the member id when the web's was (winner `web`), and `bridge` for `withdrawn` (winner `other`). A passed deadline settles nothing: the request stays pending, answerable only in the terminal, until the terminal's answer settles it as `terminal` with its real outcome. Exactly one per `raised`. **[fw1] Evidence, all tied to the call's own id:** (1) the engine's `tool_decision` record for the call, which arrives at decision time: source `hook` with the bridge's handed-out decision of the same behavior means the decider; `user_temporary`, `user_permanent` or `user_reject` means the terminal, with the record's real outcome (accept is `allow`/`answered`, reject is `deny`); anything else (`user_abort`, `config`, a hook's decision the bridge did not hand out) means `withdrawn` by `bridge`. A request the bridge's interrupt aborted is `withdrawn` whatever the record says. (2) With no record within 1 s of a real call's result row, the call's transcript (its subagent's own for a subagent) once the result row is in it: a `hook_permission_decision` mark carrying the call's `toolUseID` means the hook's answer was used (then as (1) with source `hook`); none means the terminal's, with the outcome the result shows. (3) Neither available (the ask mod's dialog keeps no rows; the transcript unreadable or the result never written within about 2 s): `withdrawn` by `bridge`. A turn's end and the session's end withdraw as before. An async question answered through a dialog a press opened settles with that dialog's request: `answered` by its `by` (or `withdrawn` when the dialog's was) |
-| `block-row` | M3 **[M3]** | `uuid, turnId, agentId, step, index`: the transcript row `uuid` holds block `index` of that message. Posted from `session.append` for each response row, paired by the row's block type and the order of the step's block starts (a tool row by its call id), never by position. The child removes the block from `streaming` under the lock; later chunks of that block are ignored. A row whose block never streamed (a server tool) names none |
+| `block-row` | M3 **[M3]** | `uuid, turnId, agentId, step, index`: the transcript row `uuid` holds block `index` of that message. Posted from `session.append` for each response row, paired by the row's block type and the order of the step's block starts (a tool row by its call id), never by position. The child removes the block from `streaming` under the lock; later chunks of that block are ignored. A row whose block never streamed (a server tool) names none. **[open-fast M5, 2026-10-20]** The block is no longer removed: it stays in its message's `blocks`, marked `uuid` (this row) and `namedAt` (the notice's `t`, ms), until its step ends or its turn completes (the engine flushes a message's rows only at its end, and the text the mod streamed is the only copy outside the engine until then), in the mod's state and its `resync` as in the child's snapshot; later chunks of it are still ignored (`settled` unchanged) |
 | `chunk` | M1, **[M3]** | Unchanged on the wire. The child now folds each chunk into its **block** (`chunk.index`) |
-| `resync` | M1 fw1, M2, **[M3]**, **[fw1]** | `turns, streaming` (per block, as the snapshot's, **[fw1]** each entry also carrying `settled: [<index>…]`, the blocks a `block-row` settled), `agents, override, delivered`, **`pending`** (each `raised`'s fields with `t`), **`settled`** (recent settlements). The child replaces its pending set with `pending` (keeping a request's decided/closed state) and merges `settled` with its own. **[fw1]** The child keeps an entry's `settled` blocks out of the message and ignores their late chunks, and a block it saw settled itself stays settled across the resync, even when the copy does not name it (the snapshot's `streaming` entry shape is unchanged: `settled` is never shown) |
+| `resync` | M1 fw1, M2, **[M3]**, **[fw1]** | `turns, streaming` (per block, as the snapshot's, **[fw1]** each entry also carrying `settled: [<index>…]`, the blocks a `block-row` settled), `agents, override, delivered`, **`pending`** (each `raised`'s fields with `t`), **`settled`** (recent settlements). The child replaces its pending set with `pending` (keeping a request's decided/closed state) and merges `settled` with its own. **[fw1]** The child keeps an entry's `settled` blocks out of the message and ignores their late chunks, and a block it saw settled itself stays settled across the resync, even when the copy does not name it (the snapshot's `streaming` entry shape is unchanged: `settled` is never shown). **[open-fast M5, 2026-10-20]** A block that carries `uuid` is kept whatever either side's `settled` says: the mod names a block before it queues the notice, so its copy is at least as new as the child's. Both sides' `settled` still merge, so late chunks stay ignored, and an unnamed copy of a settled block is still dropped. **[open-fast M5 fix, 2026-10-20]** `namedBlocks: true`: the mod keeps named blocks, so its copy carries them. The child takes the field from each resync: a mod from before M5 sends none, and its copies lack the blocks it named |
 
 **The mod's evidence [fw1].** The mod hooks `telemetry.log` (`{to: "collector"}`) and
 reads the engine's `tool_decision` records: `attributes.tool_use_id`, `source`, `decision`.
@@ -620,7 +620,10 @@ Order, batching (≤ 500) and one post in flight are unchanged.
 - **Line 1, the snapshot** **[M3]**:
   - `"streaming": [{turnId, agentId, step, model?, upTo, blocks: [{index, kind, text, upTo, id?, name?}]}]`.
     One entry per message still streaming. `blocks` are its blocks with no
-    `block-row` yet, in index order.
+    `block-row` yet, in index order. **[open-fast M5, 2026-10-20]** and its
+    named ones: a block whose `block-row` was applied stays, with
+    `uuid?: string` (its row) and `namedAt?: number` (the notice's `t`, ms),
+    until its step ends or its turn completes.
     - `kind` is `text`, `thinking` or `tool`.
     - `text` is the block's partial text (for a tool, its streamed argument JSON;
       `id` and `name` are the call's).
@@ -628,6 +631,10 @@ Order, batching (≤ 500) and one post in flight are unchanged.
     - The message's `upTo` is the last chunk of the message applied, and is the fw1
       continuity check: a chunk that does not follow it takes the message out until
       the next `resync`.
+  - **[open-fast M5 fix, 2026-10-20]** `"namedBlocks": boolean`: true when this child
+    keeps named blocks and the mod's last `resync` declared it (`namedBlocks: true`), false
+    otherwise. A child from before M5 carries no such field. Only a snapshot that says true
+    can be trusted to carry every named block whose row is not on disk.
   - `"pending": [<raised fields>…]`: the requests pending now.
   - `"settled": [{request, winner, outcome, by, t}…]`: the last 100 settlements, so a
     subscriber that arrives after a request settled sees it settled (G3's fourth case),
@@ -738,7 +745,9 @@ module loaded":
   `session.start`), and a subagent whose `agent.spawn` the mod saw. Its cut is its notices
   alone, so a fresh `--bg` job or seat streams its first reply.
 - Invariant: no block of a loop enters `streaming` before that loop's cut is seeded, and
-  no block in `streaming` has its row at or before the cut.
+  no block in `streaming` has its row at or before the cut. **[open-fast M5, 2026-10-20]**
+  no *unnamed* block: a named block's row is at or before the cut, and on disk or due at
+  its step's end.
 
 ##### The consumer rule [M4] (DX5's, for DC7)
 
@@ -753,6 +762,26 @@ written together come out together, not 2 s apart):
 > with neither — and every later row waits behind it. A notice whose row is not on disk within 5 s, and a `block-row` for
 > a uuid already released unnamed, end the subscription; a `row-seen` for an already
 > released uuid is ignored.
+
+**[open-fast M5, 2026-10-20]** The rule's one amendment, and what the snapshot's carried
+blocks change around it (the desk open-fast spec, §2): a notice's row is due 5 s after
+the end of the loop's step that was open when the notice came (its `step` end, or its
+turn's `complete` cutting it off), or 5 s after the notice when none was (a prompt, a
+tool result between requests, a compaction's rows); a row not on disk by its due ends
+the subscription. History no longer waits for the cut's row: when it is not on disk,
+history is every row that is (rows reach disk in notice order within a loop), and the
+cut's row and what follows come live. A block the snapshot carries named whose row is
+not in history is awaited as a notice of its step. DC7's plane awaits the cut's own row
+the same way, so it goes out as it lands, and forgets it past its due, since nothing
+drawn waits on it.
+
+**[open-fast M5 fix, 2026-10-20]** History goes without waiting only for a snapshot that
+says `namedBlocks: true`. For any other snapshot, history waits for the cut's row as the
+rule above first stated: up to 5 s, then a discontinuity. Such a snapshot comes from a
+bridge whose mod or child predates M5, still running after the uplink was upgraded: the
+plugin's autoreload waits for the main turn to end, and a `--bg` session never reloads.
+That bridge drops a block at its `block-row`, so its cut can name a row that is neither on
+disk nor carried. The step-end deadline applies to every bridge.
 
 **Notice order is the engine's append order, not strictly disk order.** The engine's disk
 writer can put a row ahead of its own parentUuid chain within one batch (2.1.300, observed

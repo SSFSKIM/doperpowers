@@ -9,6 +9,7 @@ with `git archive`), so a change is measured before and after.
     python3 bench_scale.py run     <scripts-dir> [--seconds S] [--warmup W] [--import-events N]
                                                  [--profile-uplink OUT]
     python3 bench_scale.py verbs   <scripts-dir>
+    python3 bench_scale.py opens   <scripts-dir> [--large G] [--large-rows N] [--warm-after S]
 
 Every mode takes the scale's flags (--dirs, --seats, ...; --help lists them)
 and --joined-by <scripts-dir>, which makes the first tick, the one that joins
@@ -37,6 +38,23 @@ LOCAL local projects kept as history.
   from the hub, one `events` frame each, into the log here.
   --profile-uplink runs the uplink alone under cProfile instead.
 - `verbs`: the wall and CPU time of `list --org` and `projects`.
+- `opens` (the desk open-fast spec's A3): G of the live sessions in hub
+  checkouts get a transcript of N rows (15,000, shaped as bench_rig.py
+  shapes one for bench_open.py) in place of their short one; the uplink
+  alone, started fresh against the stand-in once a tick has joined the live
+  sessions; subscribes
+  sent through the stand-in's `/control/send` at +0.5 s (a large session and
+  a small one, together: the small one opens while the large one builds),
+  at +S s (every live session, in sequence), then the uplink restarted (the
+  same SMINOS_HOME: whatever it keeps on disk stays) and the +0.5 s pair
+  again. One JSON line per open — its moment,
+  size, rows and E (the snapshot's arrival at the stand-in less the
+  subscribe's write, both the stand-in's stamps), with N and the build from
+  the plane's open line — and a summary per moment and size; each line says
+  when, after the uplink's start, it went (`sent`). A +0.5 s pair goes only
+  if the uplink's stream has opened the sessions' projects by then: else the
+  moment is said missing, with when the stream was ready, never sampled
+  late under its name, and the run ends with status 3.
 """
 
 import argparse
@@ -175,6 +193,7 @@ class Env:
                                    "machine": MACHINE, "cwd": d, "session_kind": "interactive"},
                                   {"kind": "retired", "session": sid, "by": "", "reason": "ended"}])
         cwds = [d for _, d in hubs.values()] * 3 + locals_
+        project_of = {d: p for p, d in hubs.values()}
         # Seats: most retired or long idle, and most of those without a transcript here.
         for i in range(a.seats):
             sid, cwd = self.uid(), cwds[i % len(cwds)]
@@ -185,10 +204,22 @@ class Env:
                 "alias": "seat%d" % i, "group": "fleet", "current": sid, "cwd": cwd, "status":
                     ("retired", "idle", "done")[i % 3], "host": "" if missing else MACHINE, "created": self.ts(),
                 "updated": self.ts(), "role": "", "worktree": ""})
-        # Live sessions: interactive ones in the checkouts, each a `sleep` under an engine record.
+        # Live sessions: interactive ones in the checkouts, each a `sleep` under an engine record;
+        # with `opens`'s --large, the first G of those in hub checkouts hold a large transcript.
+        self.live_sessions = []
+        large = getattr(a, "large", 0)
         for i in range(a.live):
             sid, cwd = self.uid(), cwds[i % len(cwds)]
-            self.transcript(cwd, sid, "live work %d" % i)
+            if large and cwd in project_of:
+                large -= 1
+                import bench_rig
+                bench_rig.synthetic_transcript(os.path.join(self.projects, re.sub(r"[^A-Za-z0-9]", "-", cwd),
+                                                             sid + ".jsonl"), a.large_rows, cwd, sid)
+                size = "large"
+            else:
+                self.transcript(cwd, sid, "live work %d" % i)
+                size = "small"
+            self.live_sessions.append({"sid": sid, "cwd": cwd, "size": size, "project": project_of.get(cwd, own)})
             p = subprocess.Popen(["sleep", "86399"], start_new_session=True)
             self.sleepers.append(p)
             write(os.path.join(self.home, ".claude", "sessions", "%d.json" % p.pid), {
@@ -416,6 +447,158 @@ def cmd_run(a, env):
         hub.wait()
 
 
+def standin(env):
+    """hub_standin.py for the machine, its URL in the credential, the other
+    machine's project registered. The process is ended if anything after its
+    start fails, so a setup that raises leaves none behind."""
+    import urllib.request
+    port_file = os.path.join(env.root, "hub.port")
+    hub = subprocess.Popen([sys.executable, os.path.join(HERE, "hub_standin.py"), port_file, "cid-1", "secret-1",
+                            "15000"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        deadline, port = time.time() + 10, ""
+        while not port:
+            if os.path.exists(port_file):
+                with open(port_file) as f:
+                    port = f.read().strip()
+            if not port and (time.time() > deadline or hub.poll() is not None):
+                raise RuntimeError("the stand-in wrote no port in 10 s")
+            if not port:
+                time.sleep(0.05)
+        url = "http://127.0.0.1:%s" % port
+        cred = os.path.join(env.sh, "daemon", "hub.json")
+        with open(cred) as f:
+            d = json.load(f)
+        d["hub"] = url
+        write(cred, d)
+        os.chmod(cred, 0o600)
+        req = urllib.request.Request(url + "/control/register", method="POST", data=json.dumps(
+            {"project": machine_project_id(ORG, OTHER), "name": OTHER, "kind": "machine"}).encode(),
+            headers={"Content-Type": "application/json"})
+        urllib.request.urlopen(req, timeout=10).read()
+    except BaseException:
+        stop(hub)
+        raise
+    return hub, url
+
+
+def cmd_opens(a, env):
+    import bench_open as bo
+    import bench_rig as rig
+    hub, url = standin(env)
+    up = [None]
+    try:
+        subprocess.run([sys.executable, os.path.join(a.scripts, "sminos.py"), "daemon", "tick"], env=env.env,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        lives = env.live_sessions
+        own = machine_project_id(ORG, MACHINE)
+        small = next(s for s in lives if s["size"] == "small" and s["project"] != own)
+        large = next((s for s in lives if s["size"] == "large"), None)
+        if large is None:
+            sys.exit("bench_scale opens: no live session in a hub checkout took a large transcript (--large)")
+        browser = rig.StandinBrowser(url, None, MACHINE)
+        log_path = os.path.join(env.sh, "daemon.log")
+        pair = [large, small]   # the large one's subscribe first: the small one opens while its build runs
+
+        def ready(after, pids):
+            """A stream newer than generation `after`, once it opened every project named."""
+            st = rig.call(url, "GET", "/control/state")[1]
+            gen = st["generation"]
+            return gen > after and st["connected"] and all(
+                st["projects"].get(pid, {}).get("open", {}).get(MACHINE) == gen for pid in pids)
+
+        def finish(s, sub, at, moment, started):
+            snap = None
+            deadline = time.time() + 120
+            while time.time() < deadline and snap is None:
+                browser.poll()
+                snap = next(((t, m) for t, m in browser.msgs if m.get("sub") == sub
+                             and m.get("kind") in ("snapshot", "end")), None)
+                if snap is None:
+                    time.sleep(0.02)
+            line = {}
+            deadline = time.time() + 5
+            while not line and time.time() < deadline:
+                line = bo.open_lines(log_path).get(sub) or {}
+                if not line:
+                    time.sleep(0.05)
+            browser.project = s["project"]
+            browser.unsubscribe(sub)
+            rec = {"moment": moment, "session": s["sid"][:8], "size": s["size"], "rows": line.get("rows"),
+                   "E": None if snap is None or snap[1]["kind"] != "snapshot" else round(snap[0] - at, 3),
+                   "N": line.get("N"), "build": line.get("build"), "cpu_ms": line.get("cpu_ms"),
+                   "outcome": line.get("outcome"), "sent": round(at - started, 3), "load1": bo.load1()}
+            print(json.dumps(rec), flush=True)
+            return rec
+
+        def opens(sessions, moment, started, together):
+            """Subscribes for the sessions: all sent before any is waited on (`together`), or one by one."""
+            out, pending = [], []
+            for s in sessions:
+                browser.project = s["project"]
+                sub, at = browser.subscribe(s["sid"])
+                pending.append((s, sub, at))
+                if not together:
+                    out.append(finish(*pending.pop(), moment, started))
+            out += [finish(s, sub, at, moment, started) for s, sub, at in pending]
+            return out
+
+        records, generation, missed = [], 0, []
+        for phase in ("start", "restart"):
+            if up[0] is not None:
+                generation = rig.call(url, "GET", "/control/state")[1]["generation"]
+                stop(up[0])
+            up[0] = subprocess.Popen([sys.executable, os.path.join(a.scripts, "sminos.py"), "daemon", "uplink"],
+                                     env=env.env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            started = time.time()
+            moment = "+0.5 s" if phase == "start" else "restart +0.5 s"
+            projects = [s["project"] for s in pair]
+            time.sleep(max(0.0, started + 0.5 - time.time()))
+            if ready(generation, projects):
+                records += opens(pair, moment, started, together=True)
+            else:
+                # The cold start's sample is the open at its moment: a stream not ready then makes it
+                # missing, not a later open filed under the moment's name.
+                try:
+                    rig.wait_for("the uplink's projects open on its stream", 120,
+                                 lambda: ready(generation, projects), 0.02)
+                    at = round(time.time() - started, 3)
+                except TimeoutError:
+                    at = None
+                print(json.dumps({"moment": moment, "incomplete": "the uplink's stream had not opened the "
+                                  "projects at the moment", "ready": at, "load1": bo.load1()}), flush=True)
+                missed.append(moment)
+            if phase == "start":
+                time.sleep(max(0.0, started + a.warm_after - time.time()))
+                records += opens(lives, "+%g s" % a.warm_after, started, together=False)
+        for moment in dict.fromkeys(r["moment"] for r in records):
+            for size in ("small", "large"):
+                of = [r for r in records if r["moment"] == moment and r["size"] == size]
+                if of:
+                    print(json.dumps({"summary": moment, "size": size, "opens": len(of),
+                                      "E": bo.stats(r["E"] for r in of), "N": bo.stats(r["N"] for r in of),
+                                      "load1": {"min": min(r["load1"] for r in of),
+                                                "max": max(r["load1"] for r in of)},
+                                      "uptime": bo.uptime()}), flush=True)
+        if missed:
+            print(json.dumps({"summary": "opens", "complete": False, "incomplete": missed}), flush=True)
+            return 3
+    finally:
+        if up[0] is not None:
+            stop(up[0])
+        hub.kill()
+        hub.wait()
+
+
+def stop(p):
+    p.send_signal(signal.SIGTERM)
+    try:
+        p.wait(30)
+    except subprocess.TimeoutExpired:
+        p.kill()
+        p.wait()
+
+
 def cmd_verbs(a, env):
     for verb in (["list", "--org"], ["projects"]):
         t = time.perf_counter()
@@ -449,7 +632,7 @@ def main():
         return profiled(sys.argv[2], sys.argv[3], sys.argv[4:])
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = p.add_subparsers(dest="mode", required=True)
-    for mode in ("tick", "profile", "run", "verbs"):
+    for mode in ("tick", "profile", "run", "verbs", "opens"):
         s = sub.add_parser(mode)
         s.add_argument("scripts")
         if mode == "profile":
@@ -462,6 +645,11 @@ def main():
                                     help="after the window, time N events from the hub, one frame each, into the log")
     sub.choices["run"].add_argument("--profile-uplink", metavar="OUT",
                                     help="run the uplink alone under cProfile for warmup + seconds, its profile to OUT")
+    sub.choices["opens"].add_argument("--large", type=int, default=6, metavar="G",
+                                      help="live sessions in hub checkouts given a large transcript")
+    sub.choices["opens"].add_argument("--large-rows", type=int, default=15000, metavar="N")
+    sub.choices["opens"].add_argument("--warm-after", type=float, default=30.0, metavar="S",
+                                      help="when, after the uplink's start, every live session is opened in sequence")
     a = p.parse_args()
     root = tempfile.mkdtemp(prefix="smb-", dir="/tmp")
     t = time.perf_counter()
@@ -478,11 +666,14 @@ def main():
             subprocess.run([sys.executable, os.path.join(a.joined_by, "sminos.py"), "daemon", "tick"], env=env.env,
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             print("joined by %s's first tick in %.1f s" % (a.joined_by, time.perf_counter() - t), flush=True)
-        {"tick": cmd_tick, "profile": cmd_profile, "run": cmd_run, "verbs": cmd_verbs}[a.mode](a, env)
+        status = {"tick": cmd_tick, "profile": cmd_profile, "run": cmd_run, "verbs": cmd_verbs,
+                  "opens": cmd_opens}[a.mode](a, env)
     finally:
         env.close()
         if not a.keep:
             shutil.rmtree(root, ignore_errors=True)
+    if status:
+        sys.exit(status)   # opens: a moment it could not sample (its summary says which)
 
 
 if __name__ == "__main__":

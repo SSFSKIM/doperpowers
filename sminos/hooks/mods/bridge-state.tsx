@@ -59,11 +59,16 @@ export type Wake = { isRead: boolean; turnAt?: string }
 export type Stops = { stopped: string[]; running: string[] }
 /** An interrupt of a main turn: `recorded` settles once its record is in (or it failed); the turn's Bash calls wait for it. */
 export type Interrupt = { recorded: Promise<void> }
-/** A content block still streaming: its text (a tool call's arguments as JSON), and its last chunk's index. */
-export type Block = { index: number; kind: string; text: string; upTo: number; id?: string; name?: string }
+/**
+ * A content block of a request still open: its text (a tool call's arguments
+ * as JSON) and its last chunk's index; once its `block-row` named it, `uuid`
+ * the row and `namedAt` the notice's stamp (ms). A named block is kept until
+ * its step ends, since the engine flushes its row only then.
+ */
+export type Block = { index: number; kind: string; text: string; upTo: number; id?: string; name?: string; uuid?: string; namedAt?: number }
 /**
  * A message still streaming, as the child's snapshot carries it (DX4): its
- * blocks without a row yet, the ones a row settled, and `upTo`, its last chunk.
+ * blocks, named or not, the ones a row settled, and `upTo`, its last chunk.
  */
 export type Streaming = { turnId: string; agentId: string | null; step: number; model: string; upTo: number; blocks: Map<number, Block>; settled: Set<number> }
 /** A loop's latest model request: where its blocks started, in order, and which a row has named. */

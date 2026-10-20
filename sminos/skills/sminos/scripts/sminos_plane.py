@@ -38,21 +38,43 @@ row order, composite cd2667d8):
   any other;
 - the bridge's snapshot carries `cut`, per loop the last notice it applied,
   seeded at the module's load with the loop's last row then: history is the
-  loop's rows up to and including it, once that row is on disk (NOTICE_WAIT,
-  else the subscription ends), so no block still streaming has its row in
-  history; a null cut (or a loop it does not name) means the loop had no
-  rows at load, so its history is empty and every row of it is live;
+  loop's rows up to and including it when that row is on disk, and every row
+  on disk when it is not — rows reach disk in notice order within a loop, so
+  nothing past a row not yet flushed is flushed either — and the snapshot
+  waits for nothing; a null cut (or a loop it does not name) means the loop
+  had no rows at load, so its history is empty and every row of it is live;
+- a block stays in the bridge's `streaming` after its `block-row`, carrying
+  `uuid` (its row) and `namedAt`, until its step ends, since the engine
+  flushes a message's rows at its end: the snapshot carries such a block
+  while its row is not on disk (its block-row the first messages after the
+  snapshot, its row awaited as a notice of its step), and drops it from
+  this loop's entries once its row is in history; a block of another loop
+  the subscription carries is kept and its block-row relayed. The cut's own
+  row, not on disk at the snapshot, is awaited as a notice too, so it goes
+  out as it lands; nothing drawn waits on it, so past its due it is
+  forgotten rather than ending anything;
+- that is for a bridge whose snapshot says `namedBlocks: true` (its child
+  keeps named blocks and its mod's last resync declared it). Any other — a
+  mod and child from before it, still running after the uplink was
+  upgraded, which drop a block at its block-row, so its cut may name a row
+  neither on disk nor carried — gets the wait from before: history waits for
+  the cut's row to be on disk, a build asked again on each pump, and the
+  subscription ends NOTICE_WAIT after the bridge's snapshot without it;
 - live, each loop's rows go out strictly in disk order: a row past the cut
   is released by its own notice, by a notice for any later row of the loop,
   or UNNAMED_WAIT after it was first seen on disk with neither (rows written
-  together go out together), and every later row waits behind it; a notice
-  whose row is not on disk within NOTICE_WAIT ends the subscription;
+  together go out together), and every later row waits behind it;
+- a notice's row is due NOTICE_WAIT after the end of its loop's step that
+  was open when the notice came (the `step` end, or its turn's `complete`
+  cutting it off), or NOTICE_WAIT after the notice when none was (a prompt,
+  a tool result between requests, a compaction's rows); a row not on disk
+  by its due ends the subscription;
 - a `row-seen` for a row already emitted is passed over; a `block-row` for a
   row already emitted as unnamed ends the subscription, whose fresh snapshot
   heals what would otherwise be drawn twice (the real child closes a step's
   pairing at its end, so this comes only from a notice later than the 2 s);
   so does one for a history row whose block the subscriber still holds,
-  which the seeded cut rules out and is kept as a guard.
+  which the dropped history blocks rule out and is kept as a guard.
 
 The live chain. The engine reads only the chain from a transcript's leaf; the
 rows a branch left behind (an Esc's or a /rewind's, a response the engine
@@ -64,6 +86,15 @@ their rows off the chain; a `row` carries `offChain` when it took rows off
 (a branch's start: the rows it left behind; itself, when it is off), and
 `onChain` when it put rows back on. Each is read off the subscription's own
 chain as its message goes, so in message order the latest says.
+
+Each open writes one daemon.log line (Subscription.noted): its outcome
+after N s from the subscribe frame's arrival at the uplink's reader, then
+where the time went — when the bridge's snapshot reached its reader and
+when the open took it (the main thread's absence between), how the build
+came (cold or warm), its CPU on the worker and the rows it holds, whether
+the cut's row was on disk, and `waits` (how many builds answered
+"waiting": 0 from a bridge that keeps named blocks, whose snapshot waits
+for nothing).
 
 A gap in the bridge's stream, and its end while the session runs (the child
 ends every subscription on a module reload), end the subscription with
@@ -114,7 +145,7 @@ import sminos_bridge as bridge  # noqa: E402
 import sminos_jobs as jobs  # noqa: E402
 
 UNNAMED_WAIT = 2.0        # s: a row past the cut that no notice named is drawn after this
-NOTICE_WAIT = 5.0         # s: a row a notice named that is not on disk by then ends the subscription
+NOTICE_WAIT = 5.0         # s: a noticed row not on disk this long after its step's end (or its notice, with none open) ends the subscription
 OPEN_WAIT = 20.0          # s: a bridge that sends no snapshot by then ends the subscription (the reader's 503 retries take up to 15)
 END_GRACE = 1.0           # s: once the session is not running, what it still flushes is drawn this long
 ROWS_BUDGET = 512 * 1024  # bytes of row JSON in a snapshot or a page: "as many as fit"
@@ -506,6 +537,9 @@ class Transcript:
         self.ledger = jobs.Ledger()
         self.chain = Chain(main=not is_agent_path(path))
         self.users = 0         # the subscriptions holding it (under Transcripts' lock)
+        self.indexed = False   # an extend has read the file since the index began: the next is warm
+        self.how = None        # how the index last came: "cold" (parsed from the first byte) or "warm"
+        self.cpu_ms = 0        # the CPU the last extend cost on this worker
         self.lock = threading.Lock()
         self.jobs = collections.deque()
         self.working = False
@@ -537,11 +571,15 @@ class Transcript:
             ledger.add(row)
             chain.add(row)
 
+        how, cpu = "warm" if self.indexed else "cold", time.thread_time()
         try:
             self.index.extend(on_row)
         except Reset:
             self.index, self.ledger, self.chain = Index(self.path), jobs.Ledger(), Chain(self.chain.main)
+            self.indexed = False
             raise
+        self.indexed = True
+        self.how, self.cpu_ms = how, int(round((time.thread_time() - cpu) * 1000))
         return self.index
 
 
@@ -585,21 +623,26 @@ class Built:
     the rows past the cut, (uuid, row) oldest first, which go out live;
     `ledger` the loop's jobs ledger and `chain` its chain as of `offset`, the
     subscription's own to feed from there; `facts` the disk facts, once
-    looked at."""
+    looked at; `how` the index came ("cold" or "warm"), `cpu_ms` what its
+    extend cost on the worker, `rows` the rows it holds — the open line's."""
 
-    def __init__(self, ino, offset, emitted, shown, more, past, ledger, chain):
+    def __init__(self, ino, offset, emitted, shown, more, past, ledger, chain, how="cold", cpu_ms=0, rows=0):
         self.ino, self.offset = ino, offset
         self.emitted, self.shown, self.more, self.past = emitted, shown, more, past
         self.ledger, self.chain = ledger, chain
+        self.how, self.cpu_ms, self.rows = how, cpu_ms, rows
         self.facts = None
 
 
-def build(t, cut, bridged):
+def build(t, cut, bridged, wait=False):
     """An open's build on the worker: the index brought up to the file's end
     (a file replaced since an earlier subscription read it starts over: this
-    one holds nothing of the old), the history to the cut, the newest of it
-    that fits read back, and the rows past the cut. ("waiting", None) while
-    the cut's row is not on disk."""
+    one holds nothing of the old), the history to the cut — every row on
+    disk while the cut's row is not, since nothing past it is flushed either
+    — the newest of it that fits read back, and the rows past the cut.
+    `wait`, for a bridge that does not keep named blocks: ("waiting", (how,
+    cpu_ms, rows)) while the cut's row is not on disk instead, what the build
+    that waited cost, for the open's line."""
     try:
         index = t.extended()
     except Reset:
@@ -607,9 +650,9 @@ def build(t, cut, bridged):
     n = len(index.uuids)
     if cut is not None:
         at = index.at.get(cut)
-        if at is None:
-            return "waiting", None
-        split = at + 1
+        if at is None and wait:
+            return "waiting", (t.how, t.cpu_ms, n)
+        split = n if at is None else at + 1
     else:
         # No cut: a bridged loop had no rows when the module loaded (all are
         # live); without a bridge every row is history.
@@ -617,7 +660,7 @@ def build(t, cut, bridged):
     lo = index.older(split, None)
     return "built", Built(index.ino, index.end, dict.fromkeys(index.uuids[:split], "history"),
                           index.rows(lo, split)[::-1], lo > 0, [(r["uuid"], r) for r in index.rows(split, n)],
-                          t.ledger.copy(), t.chain.copy())
+                          t.ledger.copy(), t.chain.copy(), t.how, t.cpu_ms, n)
 
 
 def page_of(t, ino, before, limit):
@@ -965,21 +1008,23 @@ def output_roots(session, main, cwds):
 
 class BridgeReader(threading.Thread):
     """One subscription to a bridge's endpoint (`GET /events`): every line
-    goes to `items` as ("line", obj), and the stream's fate as ("unavailable",
-    why) when nothing answers there, ("refused", status) when the bridge
-    turned the subscription down (503: not ready), or ("closed", why) when it
-    ended. It calls nothing of sminos."""
+    goes to `items` as ("line", obj, at), and the stream's fate as
+    ("unavailable", why, at) when nothing answers there, ("refused", status,
+    at) when the bridge turned the subscription down (503: not ready), or
+    ("closed", why, at) when it ended; `at` is when it arrived (`stamp`, the
+    wall clock). It calls nothing of sminos."""
 
-    def __init__(self, path, wake):
+    def __init__(self, path, wake, stamp=time.time):
         super().__init__(name="plane-bridge", daemon=True)
         self.path = path
         self.wake = wake
+        self.stamp = stamp
         self.items = queue.Queue()
         self.closing = threading.Event()
         self.sock = None
 
     def put(self, item):
-        self.items.put(item)
+        self.items.put(item + (self.stamp(),))
         self.wake()
 
     def run(self):
@@ -1053,7 +1098,7 @@ class Subscription:
     without a bridge). `pump` returns the DX4 messages now due, in order."""
 
     def __init__(self, project, machine, session, agent, sub, locate, reader, presence, alive,
-                 clock=time.monotonic, transcripts=None, wake=lambda: None, disk=None):
+                 clock=time.monotonic, transcripts=None, wake=lambda: None, disk=None, received=None, wall=time.time):
         self.project, self.machine, self.session, self.agent, self.sub = project, machine, session, agent, sub
         self.locate = locate          # () → the session's main transcript path, "" while there is none
         self.reader = reader
@@ -1065,11 +1110,27 @@ class Subscription:
         self.loop = agent or "main"   # the cut's key for this transcript's loop
         self.n = None                 # the next message's n, once the snapshot is out
         self.ended = False
-        self.opened = clock()
+        # The open is timed from the subscribe frame's arrival at the uplink's
+        # reader (`received`, the wall clock), on this subscription's clock;
+        # its waits (OPEN_WAIT) count from now, when it was asked.
+        self.arrived = received if received is not None else wall()
+        self.started = clock()
+        self.opened = self.started - max(0.0, wall() - self.arrived)
         self.open_noted = False       # its open's one daemon.log line is written (noted)
         self.no_bridge = "no bridge socket" if reader is None else ""   # why it went transcript-only
         self.snap = None              # the bridge's snapshot line
-        self.snapped_at = None
+        self.snapped_at = None        # when the open took it (clock)
+        self.snap_arrived = None      # when it reached the reader (wall)
+        # What the open line says of its builds — one, or, from a bridge that
+        # does not keep named blocks, one per ask while the cut's row was not
+        # on disk: how the first's index came, their CPU together, the rows
+        # the last held; whether the cut's row was on disk; how many answered
+        # "waiting".
+        self.build_how = None
+        self.cpu_ms = 0
+        self.build_rows = 0
+        self.cut_state = "null"
+        self.waits = 0
         self.main = ""
         self.next_locate = 0.0
         self.tail = Tail()
@@ -1079,7 +1140,9 @@ class Subscription:
         self.over = False             # the session ended and what it flushed is drawn: transcript-only, idle
         self.emitted = {}             # uuid → "history" | "named" | "unnamed"
         self.pool = collections.OrderedDict()  # uuid → [row, first seen]: past the cut, not yet emitted, disk order
-        self.noticed = {}             # uuid → when: notices whose row is not emitted yet
+        self.noticed = {}             # uuid → (its loop's step open at the notice, or None; when): row not emitted yet
+        self.due = {}                 # uuid → when its row is due: NOTICE_WAIT after that step's end, or the notice
+        self.loose = set()            # noticed rows nothing drawn awaits (the cut's own): past due, forgotten
         self.upto = {}                # (turnId, agentId, step) → the snapshot's watermark
         self.held = set()             # (turnId, agentId, step, index): blocks whose text the subscriber holds
         self.steps = set()            # (turnId, agentId, step): model requests open, whose step-end is still due
@@ -1132,17 +1195,30 @@ class Subscription:
             return ""
         return self.main if self.agent is None else agent_path(self.main, self.agent)
 
+    def counted(self, how, cpu_ms, rows):
+        """One build's figures into the open line's."""
+        self.build_how = self.build_how or how
+        self.cpu_ms += cpu_ms
+        self.build_rows = rows
+
     def noted(self, how):
         """The open's one daemon.log line, once: how long from the subscribe
-        to its snapshot or its end before one, and which wait ended it."""
+        frame's arrival to its snapshot or its end before one, which wait
+        ended it, and where the time went — the bridge's snapshot's arrival
+        and when the open took it, how the build came, what it cost, whether
+        the cut's row was on disk, how many builds waited for it."""
         if self.open_noted:
             return
         self.open_noted = True
-        bridge_at = " (the bridge's snapshot at %.2f s)" % (self.snapped_at - self.opened) \
-            if self.snapped_at is not None else ""
-        log("open %s of %s%s: %s after %.2f s%s" % (
+        if self.snapped_at is not None:
+            arrived = (self.snap_arrived - self.arrived) if self.snap_arrived is not None else 0.0
+            bridge_clause = "bridge: snapshot arrived %.2f s, taken %.2f s" % (arrived, self.snapped_at - self.opened)
+        else:
+            bridge_clause = "bridge: no snapshot" if self.bridged else "no bridge"
+        built = "%s %d ms %d rows" % (self.build_how, self.cpu_ms, self.build_rows) if self.build_how else "none"
+        log("open %s of %s%s: %s after %.2f s from the subscribe's arrival (%s; build: %s, cut %s; waits %d)" % (
             self.sub, self.session[:8], "/" + self.agent if self.agent else "", how, self.clock() - self.opened,
-            bridge_at))
+            bridge_clause, built, self.cut_state, self.waits))
 
     def close(self):
         if self.n is None:
@@ -1155,9 +1231,10 @@ class Subscription:
 
     def ask(self, path, read):
         """`read(transcript)` on the transcript's worker; its answer, (kind,
-        value), comes back through `answers`. Any answer but "waiting" wakes
-        the uplink; a Reset is ("reset", why), any other failure ("failed",
-        why)."""
+        value), comes back through `answers`; any answer but "waiting" wakes
+        the uplink (a waiting build is asked again on the next pump, not at
+        once, which would spin); a Reset is ("reset", why), any other failure
+        ("failed", why)."""
         if self.source is None:
             self.source = self.transcripts.acquire(path)
         answers, wake = self.answers, self.wake
@@ -1207,9 +1284,18 @@ class Subscription:
             out += self.end("discontinuity", str(e))
         return out
 
+    def keeps_named(self):
+        """The bridge's snapshot declares that it keeps a block after its
+        block-row (open-fast M5): only then does the open go without waiting
+        for the cut's row. A bridge from before it — its mod and child, still
+        running after the uplink was upgraded — drops the block at its
+        block-row, so its cut may name a row neither on disk nor carried."""
+        return self.snap.get("namedBlocks") is True
+
     def open(self, now, out):
-        """The snapshot, once the bridge's (if any) is in and its cut's row
-        is on disk; False while it waits."""
+        """The snapshot, once the bridge's (if any) is in and the build has
+        answered — and, from a bridge that does not keep named blocks, once
+        the cut's row is on disk; False while it waits."""
         if self.bridged and self.snap is None:
             while self.snap is None:
                 try:
@@ -1218,6 +1304,7 @@ class Subscription:
                     break
                 if item[0] == "line" and isinstance(item[1], dict) and item[1].get("type") == "snapshot":
                     self.snap, self.snapped_at = item[1], now
+                    self.snap_arrived = item[2] if len(item) > 2 else None
                     self.agents = {a["agentId"]: dict(a) for a in self.snap.get("agents") or ()
                                    if isinstance(a, dict) and isinstance(a.get("agentId"), str)}
                 elif item[0] == "unavailable":
@@ -1230,25 +1317,27 @@ class Subscription:
                     out += self.end("discontinuity", why)
                     return False
             if self.bridged and self.snap is None:
-                if now - self.opened > OPEN_WAIT:
+                if now - self.started > OPEN_WAIT:
                     out += self.end("discontinuity", "the bridge sent no snapshot",
                                     how="timeout: the bridge sent no snapshot in %g s" % OPEN_WAIT)
                 return False
-        # The history is read on the transcript's worker (build): asked once,
-        # and again while the cut's row is not on disk. A null cut (or one
-        # that does not name this loop) with a bridge: the loop had no rows
-        # when the module loaded, and none was noticed since — the seed
-        # covers every older row. Empty history; all rows live.
+        # The history is read on the transcript's worker (build): once, or,
+        # from a bridge that does not keep named blocks, again while the
+        # cut's row is not on disk. A null cut (or one that does not name
+        # this loop) with a bridge: the loop had no rows when the module
+        # loaded, and none was noticed since — the seed covers every older
+        # row. Empty history; all rows live.
         cut = self.cut()
         path = self.path(now)
+        wait = self.bridged and not self.keeps_named()
         if not self.building:
             if not path:
-                return self.unlocated(now, cut, out)
+                return self.unlocated(now, cut, wait, out)
             self.building = True
             bridged, looked = self.bridged, self.looker()
 
             def opening(t):
-                kind, built = build(t, cut, bridged)
+                kind, built = build(t, cut, bridged, wait)
                 if kind == "built":
                     built.facts = looked()
                 return kind, built
@@ -1261,12 +1350,17 @@ class Subscription:
             return False
         self.building = False
         if kind == "waiting":
+            self.counted(*built)
+            self.waits += 1
+            self.cut_state = "not on disk"
             if now - self.snapped_at > NOTICE_WAIT:
                 out += self.end("discontinuity", "the snapshot's cut, row %s, never reached the transcript" % cut)
             return False
         if kind != "built":
             out += self.end("discontinuity" if kind == "reset" else "error", built)
             return False
+        self.counted(built.how, built.cpu_ms, built.rows)
+        self.cut_state = "null" if cut is None else "on disk" if cut in built.emitted else "not on disk"
         if built.ino is None and not self.alive():
             out += self.end("session-ended", "no transcript of the session on this machine")
             return False
@@ -1278,24 +1372,32 @@ class Subscription:
                 self.pool[u] = [row, now]
         return self.snapshot(now, built.shown, built.more, out)
 
-    def unlocated(self, now, cut, out):
+    def unlocated(self, now, cut, wait, out):
         """The open while the session's transcript is not found: with no
-        process, `session-ended` (the machine does not hold it); a cut to
-        wait for, as long as a cut row may take; else an empty snapshot,
-        and its rows as they come."""
+        process, `session-ended` (the machine does not hold it); else an
+        empty snapshot at once, cut or no cut, and its rows as they come —
+        but with a cut and `wait` (a bridge that does not keep named
+        blocks), as long as a cut row may take."""
         if not self.alive():
             out += self.end("session-ended", "no transcript of the session on this machine")
             return False
         if cut is not None:
-            if now - self.snapped_at > NOTICE_WAIT:
-                out += self.end("discontinuity", "the snapshot's cut, row %s, never reached the transcript" % cut)
-            return False
+            self.cut_state = "not on disk"
+            if wait:
+                if now - self.snapped_at > NOTICE_WAIT:
+                    out += self.end("discontinuity", "the snapshot's cut, row %s, never reached the transcript" % cut)
+                return False
         return self.snapshot(now, [], False, out)
 
     def snapshot(self, now, shown, more, out):
         """The snapshot message, history's newest rows `shown` (newest
-        first); True: the subscription is open."""
-        streaming = []
+        first), then a block-row for each named block it carries; True: the
+        subscription is open. A named block of this loop whose row is in the
+        history is left out (its row is drawn instead); one whose row is not
+        on disk is kept and its row awaited as a notice of its step, as is
+        the cut's own row (loose: nothing drawn waits on it); another loop's
+        named block is kept, its block-row relayed."""
+        streaming, kept = [], []
         if self.bridged:
             for e in self.snap.get("streaming") or []:
                 if not isinstance(e, dict) or not self.carried(e.get("agentId")):
@@ -1303,10 +1405,26 @@ class Subscription:
                 key = (e.get("turnId"), e.get("agentId"), e.get("step"))
                 self.upto[key] = e.get("upTo") if isinstance(e.get("upTo"), int) else -1
                 self.steps.add(key)
+                blocks = []
                 for b in e.get("blocks") or []:
-                    if isinstance(b, dict):
-                        self.held.add(key + (b.get("index"),))
-                streaming.append(e)
+                    if not isinstance(b, dict):
+                        continue
+                    u = b.get("uuid")
+                    if isinstance(u, str) and u:
+                        if self.mine(e.get("agentId")):
+                            if u in self.emitted:
+                                continue
+                            self.noticed[u] = (key, now)
+                        kept.append({"uuid": u, "turnId": key[0], "agentId": key[1], "step": key[2],
+                                     "index": b.get("index")})
+                    self.held.add(key + (b.get("index"),))
+                    blocks.append(b)
+                streaming.append({**e, "blocks": blocks})
+            cut = self.cut()
+            if cut is not None and cut not in self.emitted and cut not in self.noticed:
+                self.noticed[cut] = (None, now)
+                self.due[cut] = now + NOTICE_WAIT
+                self.loose.add(cut)
         self.next_look = now + METAS_EVERY
         self.was_alive = self.alive()
         self.body = self.derive(self.was_alive)
@@ -1317,6 +1435,7 @@ class Subscription:
         out.append(self.message("snapshot", body))
         self.noted("bridge snapshot" if self.bridged else "transcript-only (%s)" % self.no_bridge)
         self.n = 1
+        out.extend(self.message("block-row", k) for k in kept)
         return True
 
     def cut(self):
@@ -1374,6 +1493,7 @@ class Subscription:
                 self.steps.add(key)
             elif e.get("phase") == "end":
                 self.steps.discard(key)
+                self.falls_due(now, lambda k: k == key)
                 out.append(self.message("step-end", {"turnId": key[0], "agentId": agent, "step": key[2]}))
         elif kind == "turn" and e.get("phase") == "complete":
             # A turn that ends cuts off its steps whose end never came (an abort).
@@ -1381,6 +1501,7 @@ class Subscription:
             for key in sorted(cut_off, key=lambda k: (str(k[1]), k[2] if isinstance(k[2], int) else -1)):
                 self.steps.discard(key)
                 out.append(self.message("step-end", {"turnId": key[0], "agentId": key[1], "step": key[2]}))
+            self.falls_due(now, lambda k: k[0] == e.get("turnId"))
         elif kind == "usage":
             if self.agent is None:
                 out.append(self.message("usage", usage_of(e)))
@@ -1413,7 +1534,22 @@ class Subscription:
             return
         if kind == "block-row":
             out.append(self.message("block-row", block_row(e)))
-        self.noticed[u] = now
+        own = (e.get("turnId"), e.get("agentId"), e.get("step"))
+        step = own if kind == "block-row" and own in self.steps else self.open_step(e.get("agentId"))
+        self.noticed[u] = (step, now)
+        if step is None:
+            self.due[u] = now + NOTICE_WAIT
+
+    def open_step(self, agent):
+        """The loop's model request open now, if any (the latest)."""
+        open_ = [k for k in self.steps if (k[1] or None) == (agent or None)]
+        return max(open_, key=lambda k: (str(k[0]), k[2] if isinstance(k[2], int) else -1)) if open_ else None
+
+    def falls_due(self, now, ended):
+        """Rows noticed during the steps `ended` names are due from now."""
+        for u, (step, _at) in self.noticed.items():
+            if step is not None and u not in self.due and ended(step):
+                self.due[u] = now + NOTICE_WAIT
 
     def read(self, now):
         for u, row in self.tail.read(self.path(now)):
@@ -1427,8 +1563,9 @@ class Subscription:
         its own notice came, or a notice for any later row of the loop (one
         whose row is not on disk yet is later than every row that is), or
         after UNNAMED_WAIT with neither; every later row waits behind it. A
-        notice whose row is not on disk within NOTICE_WAIT ends the
-        subscription."""
+        noticed row not on disk past its due (NOTICE_WAIT after its step's
+        end, or after the notice with no step open) ends the subscription;
+        a loose one is forgotten."""
         wait = UNNAMED_WAIT if self.bridged else 0.0
         order = list(self.pool)
         upto = len(order) - 1 if any(u not in self.pool for u in self.noticed) else \
@@ -1437,18 +1574,28 @@ class Subscription:
             if i > upto and now - self.pool[u][1] < wait:
                 break
             out.append(self.release_row(u))
-        for u, at in self.noticed.items():
-            if now - at > NOTICE_WAIT:
-                out += self.end("discontinuity", "row %s, named by the bridge, did not reach the transcript "
-                                                 "within %g s" % (u, NOTICE_WAIT))
-                return
+        for u, at in list(self.due.items()):
+            if now <= at:
+                continue
+            if u in self.loose:
+                self.forget(u)
+                continue
+            out += self.end("discontinuity", "row %s, named by the bridge, did not reach the transcript "
+                                             "within %g s of its step's end or its notice" % (u, NOTICE_WAIT))
+            return
+
+    def forget(self, u):
+        """`u`'s notice, done with: its row went out, or nothing waits on it."""
+        self.loose.discard(u)
+        self.due.pop(u, None)
+        return self.noticed.pop(u, None)
 
     def release_row(self, u):
         """The row message for a row past the cut; it counts as named when its
         own notice came. It carries what the row did to the chain: the rows
         it took off (itself, when it is off it) and those it put back on."""
         row = self.pool.pop(u)[0]
-        self.emitted[u] = "named" if self.noticed.pop(u, None) is not None else "unnamed"
+        self.emitted[u] = "named" if self.forget(u) is not None else "unnamed"
         off, on = self.chain.add(row)
         if not off and not on and self.chain.off(u):   # placed by the build, which read past the cut
             off = [u]
@@ -1526,6 +1673,8 @@ class Subscription:
             out.append(self.release_row(u))
         self.over = True
         self.noticed.clear()
+        self.due.clear()
+        self.loose.clear()
         if self.reader is not None:
             self.reader.close()
             self.reader = None
@@ -1900,7 +2049,9 @@ class Plane:
 
     # ---------------------------------------------------- the hub's frames
 
-    def subscribe(self, project, frame_):
+    def subscribe(self, project, frame_, received=None):
+        """A `subscribe` frame; `received`, its arrival at the uplink's reader
+        (epoch s), is where the open's time starts."""
         sid, agent, sub = frame_.get("session"), frame_.get("agentId"), frame_.get("sub")
         if not isinstance(sub, str) or not sub:
             log("a subscribe without a sub: passed by")
@@ -1932,7 +2083,7 @@ class Plane:
             project.id, self.machine, sid, agent, sub, reader=reader,
             locate=lambda: sminos.transcript_now(sid),   # asked until found, every LOCATE_EVERY
             presence=lambda: self.presence_of(sid, time.monotonic()), alive=lambda: self.running(sid),
-            transcripts=self.transcripts, wake=self.wake, disk=self.disk)
+            transcripts=self.transcripts, wake=self.wake, disk=self.disk, received=received)
         return out + self.pump_one(sub)
 
     def running(self, sid):

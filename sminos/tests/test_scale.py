@@ -18,8 +18,10 @@ import sys
 import tempfile
 import threading
 import time
+import types
 import unittest
 import uuid
+from unittest import mock
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 PLUGIN_ROOT = os.path.dirname(HERE)
@@ -319,6 +321,65 @@ class OrgAhead(unittest.TestCase):
         self.assertEqual(seen[0], "org")
         self.assertEqual(seen.count("org"), 1)
         self.assertEqual(seen[1:], ["events"] * 5)
+
+
+class BenchOpens(unittest.TestCase):
+    """bench_scale.py opens on a small synthetic machine: an open of a
+    large and of a small live session at +0.5 s, every live session in
+    sequence after the warm-up, then the pair again after a restart; each
+    line with its moment, size and E."""
+
+    def test_the_opens_at_their_moments(self):
+        r = subprocess.run([sys.executable, os.path.join(HERE, "bench_scale.py"), "opens", SCRIPTS, "--dirs", "3",
+                            "--per-dir", "1", "--seats", "4", "--local", "2", "--remote", "1", "--mini", "1",
+                            "--says", "2", "--live", "5", "--large", "1", "--large-rows", "600", "--warm-after", "1"],
+                           capture_output=True, text=True, timeout=300,
+                           env={k: v for k, v in os.environ.items() if k not in ("HOME", "SMINOS_HOME")})
+        lines = [json.loads(line) for line in r.stdout.splitlines() if line.startswith("{")]
+        missed = [o for o in lines if "incomplete" in o and "moment" in o]
+        # A cold-start moment the stream was not ready for is said, not sampled late under its name.
+        self.assertEqual(r.returncode, 3 if missed else 0, r.stdout[-2000:] + r.stderr[-2000:])
+        for o in missed:
+            self.assertIn(o["moment"], ("+0.5 s", "restart +0.5 s"))
+            self.assertGreater(o["ready"] or 99, 0.5, "the stream was ready only after the moment, or never")
+        opens = [o for o in lines if "moment" in o and "summary" not in o and "incomplete" not in o]
+        for moment in ("+0.5 s", "restart +0.5 s"):
+            if moment in [o["moment"] for o in missed]:
+                continue
+            pair = [o for o in opens if o["moment"] == moment]
+            self.assertEqual([o["size"] for o in pair], ["large", "small"])
+            for o in pair:
+                self.assertGreaterEqual(o["sent"], 0.5, "sent at its moment, its offset with it")
+                self.assertLess(o["sent"], 0.6, o)
+        warm = [o for o in opens if o["moment"] == "+1 s"]
+        self.assertEqual(len(warm), 5, "every live session after the warm-up")
+        for o in opens:
+            self.assertEqual(o["outcome"], "transcript-only (no bridge socket)", o)
+            self.assertGreater(o["E"], 0)
+        large = [o for o in opens if o["size"] == "large"]
+        self.assertTrue(all(o["rows"] == 600 for o in large), large)
+        self.assertEqual(large[0]["build"], "cold", "a fresh uplink's first open of it")
+        self.assertIn(large[-1]["build"], ("cold", "loaded"), "after the restart: parsed or loaded, never warm")
+
+    def test_a_stand_in_that_fails_to_start_is_ended(self):
+        """bench_scale's stand-in is ended when its setup fails after it
+        started (here: the machine has no credential to point at it)."""
+        sys.path.insert(0, HERE)
+        import bench_scale
+        started = []
+        real = subprocess.Popen
+
+        def popen(*args, **kwargs):
+            p = real(*args, **kwargs)
+            started.append(p)
+            return p
+        root = tempfile.mkdtemp(dir=T)
+        env = types.SimpleNamespace(root=root, sh=os.path.join(root, "s"))
+        with mock.patch.object(bench_scale.subprocess, "Popen", popen):
+            with self.assertRaises(OSError):
+                bench_scale.standin(env)
+        self.assertEqual(len(started), 1)
+        self.assertIsNotNone(started[0].poll(), "the stand-in did not outlive its failed setup")
 
 
 if __name__ == "__main__":
