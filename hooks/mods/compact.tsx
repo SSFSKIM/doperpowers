@@ -93,7 +93,7 @@ export function describeCompact(threshold: number | undefined, gate: OfferGate =
     'When. Let the work decide rather than the context size: compact at a',
     'checkpoint in the work where none of its state is lost; the larger the',
     'context, the smaller a checkpoint that will do. You are told the size',
-    `${gateText(gate)} (a Stop hook's additional context, carrying the offer).${before}`,
+    `${gateText(gate)} (a message from the doperpowers plugin, carrying the offer).${before}`,
     'You can compact unasked at any checkpoint, mid-turn included. Size is',
     'never a reason to hurry the work or cut it short. A checkpoint is worth',
     'compacting at because stale content degrades your reading of the rest,',
@@ -144,13 +144,13 @@ export function usageText(context: ContextFigures, threshold: number): string {
 }
 
 /**
- * The offer, as the Stop hook's additional context (the engine hands it to
- * the model and runs one more step of the turn, and draws it under "Ran 1
- * stop hook" as Stop hook feedback; a block's reason would run the same
- * step but draw as a Stop hook error). The decline is a line, not silence:
- * an answer with no text costs the engine's "no visible output" nudge, one
- * more step. Below `EARLY_BELOW` it says compacting is not necessarily
- * recommended.
+ * The offer, as a prompt of the plugin's that starts a turn of its own once
+ * the turn it follows has ended (the model reads it under "The doperpowers
+ * plugin sent a message:", and the report view folds it into the working
+ * record, which a Stop hook's row could not be). The decline is a line, not
+ * silence: an answer with no text costs the engine's "no visible output"
+ * nudge, one more step. Below `EARLY_BELOW` it says compacting is not
+ * necessarily recommended.
  */
 export function offerText(context: ContextFigures, threshold: number): string {
   const early =
@@ -169,6 +169,29 @@ export function offerText(context: ContextFigures, threshold: number): string {
     "checkpoint is worth it). Otherwise reply \"Not compacting.\" (one line, a reason",
     'optional) and end your turn.',
   ].join('\n')
+}
+
+/**
+ * What an offer says instead when a compaction stood between its submission
+ * and its turn (a `/compact` the person queued, the model compacting in a
+ * turn the person queued ahead of it): its figures are gone, and it cannot
+ * be withdrawn without the engine's "Prompt dropped by a hook" notice.
+ */
+export function compactedOfferText(): string {
+  return [
+    'Context: compacted since this offer was made, so there is nothing to decide now.',
+    'Reply "Not compacting." (one line) and end your turn.',
+  ].join('\n')
+}
+
+/**
+ * Whether a prompt is an offer: what `offerText` writes opens with the
+ * figures and asks for the decline line. Read from the text rather than
+ * remembered, so a module reloaded while its offer waits in the queue still
+ * knows the offer's turn when it starts.
+ */
+export function isOfferText(text: string): boolean {
+  return text.startsWith('Context: ') && text.includes('reply "Not compacting."')
 }
 
 /**
@@ -191,13 +214,21 @@ const inline = (described: ToolDescribeResult): ToolDescribeResult => ({ ...desc
  * The request the compact tool took this turn, spent at the turn's end;
  * where the engine compacts on its own, read at session start; whether the
  * tool is registered (a session the offer may name it in); the offer's gate
- * and the figure its last offer carried.
+ * and the figure its last offer carried; whether a Stop hook beneath set
+ * `preventContinuation` in this main turn; the offer in flight, `queued`
+ * once submitted and `entering` once it passed `prompt.submit`, until its
+ * turn starts, and whether a compaction has stood since it was submitted;
+ * and whether the running main turn is an offer's own.
  */
 let pending: CompactRequest | undefined
 let threshold: number | undefined
 let registered = false
 let gate: OfferGate = OFFER_GATE
 let lastOffered = 0
+let prevented = false
+let offer: 'queued' | 'entering' | undefined
+let compactedSinceOffer = false
+let offerTurn = false
 
 /** Forgets all of it; for tests, which share this module. */
 export function resetCompact() {
@@ -206,6 +237,18 @@ export function resetCompact() {
   registered = false
   gate = OFFER_GATE
   lastOffered = 0
+  prevented = false
+  offer = undefined
+  compactedSinceOffer = false
+  offerTurn = false
+}
+
+/** A main-conversation compaction stood: the baseline starts over, and an offer in flight lost its figures. */
+function compacted() {
+  lastOffered = 0
+  if (offer !== undefined) {
+    compactedSinceOffer = true
+  }
 }
 
 /**
@@ -260,33 +303,53 @@ export async function compactStart($: EngineInterface, _: SessionStartInput) {
 /**
  * Turn start: a request still pending is stale (its turn ended by an
  * interruption or an error, not by the model's answer) and is dropped, so a
- * turn the person starts is not compacted behind them. A subagent's turn
- * start (it carries the agentId) is not the main conversation's and passes.
+ * turn the person starts is not compacted behind them. The turn an entering
+ * offer starts is the offer's own. A subagent's turn start (it carries the
+ * agentId) is not the main conversation's and passes.
  */
 export function compactTurnStart(e: { agentId?: string }) {
-  if (e.agentId === undefined) {
-    pending = undefined
+  if (e.agentId !== undefined) {
+    return
+  }
+  pending = undefined
+  prevented = false
+  offerTurn = offer === 'entering'
+  if (offerTurn) {
+    offer = undefined
   }
 }
 
 /**
- * The main conversation's Stop, before the turn ends: the offer, where it is
- * due. `stop_hook_active` is the Stop after the offered step (the model
- * compacted or declined), which passes, so the offer is one step and no
- * loop; a request already pending needs no offer; and a session without the
- * tool (headless) is offered nothing it could call. A figure that cannot be
- * read passes too. Answers the offer, or undefined to pass.
+ * The main conversation's Stop, as the hooks beneath answered it: whether
+ * one set `preventContinuation`, which withholds the offer at this turn's
+ * end. The last Stop of the turn decides.
  */
-export async function compactStop($: EngineInterface, e: { stop_hook_active: boolean; agent_id?: string }): Promise<string | undefined> {
-  if (!registered || e.stop_hook_active || e.agent_id !== undefined || pending !== undefined) {
-    return undefined
+export function compactStop(e: { agent_id?: string }, answered: { preventContinuation?: true }) {
+  if (e.agent_id === undefined) {
+    prevented = answered.preventContinuation === true
+  }
+}
+
+/**
+ * The offer, where one is due at the end of a main turn the model answered
+ * and asked no compaction in: submitted as the plugin's prompt, which the
+ * engine runs as a turn of its own once the session is idle, behind any
+ * prompt the person queued. None at the end of an offer's own turn, while
+ * one waits to enter, when a Stop hook beneath prevented continuation, in a
+ * session without the tool (headless), or when the figures cannot be read.
+ * The submission is not awaited: it resolves once the offer's turn starts,
+ * after this hook has returned.
+ */
+async function offerAtTurnEnd($: EngineInterface) {
+  if (!registered || offerTurn || offer !== undefined || prevented) {
+    return
   }
   let context: ContextFigures
   try {
     context = await compactionWindow($)
   } catch (error) {
     $.ui.log(`compact: the figures could not be read at the turn's end: ${message(error)}`)
-    return undefined
+    return
   }
   // A compaction on a path that raised no session.compact event is still
   // observed here, even below the offer's floor.
@@ -294,9 +357,56 @@ export async function compactStop($: EngineInterface, e: { stop_hook_active: boo
     lastOffered = 0
   }
   if (!offerDue(context.tokens, lastOffered, gate)) {
-    return undefined
+    return
   }
+  const baseline = lastOffered
   lastOffered = context.tokens ?? 0
+  compactedSinceOffer = false
+  offer = 'queued'
+  const settled = (why: string | undefined) => {
+    if (offer === 'queued') {
+      // It never passed this module's prompt.submit: the engine removed it
+      // from the queue before it ran, or a hook above answered it. It never
+      // ran, so the baseline it replaced comes back, unless a compaction
+      // has started the baseline over since.
+      offer = undefined
+      if (!compactedSinceOffer) {
+        lastOffered = baseline
+      }
+    }
+    if (why !== undefined) {
+      $.ui.log(`compact: the offer did not enter · ${why}`, { to: 'debug' })
+    }
+  }
+  void $.prompt
+    .submit({ text: offerText(context, threshold ?? thresholdOf(context.window)) })
+    .then((entered) => settled(entered.drop))
+    .catch((error: unknown) => settled(message(error)))
+}
+
+/**
+ * The offer as it enters, its figures read again: a prompt the person
+ * queued, or a notification, runs ahead of it and grows the context in its
+ * turn. The figure it carries becomes the last offer's. After a compaction
+ * that stood since it was submitted, or with no figure to read (the engine
+ * has none until the first response after a compaction), it says there is
+ * nothing to decide. Figures that cannot be read leave the text as written.
+ */
+async function enteringOffer($: EngineInterface, text: string): Promise<string> {
+  if (compactedSinceOffer) {
+    return compactedOfferText()
+  }
+  let context: ContextFigures
+  try {
+    context = await compactionWindow($)
+  } catch (error) {
+    $.ui.log(`compact: the offer's figures could not be read again: ${message(error)}`, { to: 'debug' })
+    return text
+  }
+  if (context.tokens === undefined) {
+    return compactedOfferText()
+  }
+  lastOffered = context.tokens
   return offerText(context, threshold ?? thresholdOf(context.window))
 }
 
@@ -305,11 +415,15 @@ export async function compactStop($: EngineInterface, e: { stop_hook_active: boo
  * first moment after the turn is released (the engine compacts only between
  * turns), then the `resume` prompt, submitted whatever the compaction's
  * outcome, so a session nobody watches never stalls on a turn the model
- * ended to be compacted. A subagent's turn ends are not the main
- * conversation's and pass.
+ * ended to be compacted; else the offer, where it is due. A subagent's turn
+ * ends are not the main conversation's and pass.
  */
 export async function compactTurnComplete($: EngineInterface, e: TurnCompleteInput) {
-  if (e.agentId !== undefined || pending === undefined) {
+  if (e.agentId !== undefined) {
+    return
+  }
+  if (pending === undefined) {
+    await offerAtTurnEnd($)
     return
   }
   const request = pending
@@ -322,7 +436,7 @@ export async function compactTurnComplete($: EngineInterface, e: TurnCompleteInp
       // Its rows reach the bridge (the sminos plugin's) through its own
       // session.compact hook, as the person's /compact does: the re-entry
       // rule skips only this plugin's hooks.
-      lastOffered = 0
+      compacted()
     }
   } catch (error) {
     $.ui.toast(`compact: ${message(error)}`)
@@ -341,9 +455,9 @@ export async function compactTurnComplete($: EngineInterface, e: TurnCompleteInp
 /**
  * Registers the tool and serves it. `compact` takes the request and answers
  * at once that the compaction runs when the turn ends, so the model ends its
- * turn. The session and turn events are taken with a matcher, since the
- * other mods register them too and an event is registered without one once
- * per module.
+ * turn. The session, turn and prompt events are taken with a matcher, since
+ * the other mods register them too and an event is registered without one
+ * once per module.
  */
 export function registerCompact(on: On) {
   on('session.start', { isInteractive: true }, async ($, e, next) => {
@@ -355,7 +469,7 @@ export function registerCompact(on: On) {
   on('session.compact', { trigger: /^/ }, async (_, e, next) => {
     const result = await next(e)
     if (e.agentId === undefined && e.trigger !== 'precompute' && result.skip === undefined) {
-      lastOffered = 0
+      compacted()
     }
     return result
   })
@@ -365,18 +479,12 @@ export function registerCompact(on: On) {
     return next(e)
   })
 
-  // The offer rides as the Stop's additional context: the engine hands it
-  // to the model and runs one more step of the turn (its Stop runner
-  // continues on any output, a block or a context), after which the Stop
-  // fires again with stop_hook_active. The settings hooks beneath
-  // (smns-record.sh) run first and keep their say.
-  on('classic.Stop', { hook_event_name: 'Stop' }, async ($, e, next) => {
+  // Read, never answered: the settings hooks beneath (smns-record.sh) keep
+  // their say, and a Stop that adds nothing draws no row.
+  on('classic.Stop', { hook_event_name: 'Stop' }, async (_, e, next) => {
     const result = await next(e)
-    if (result.preventContinuation) {
-      return result
-    }
-    const offer = await compactStop($, e)
-    return offer === undefined ? result : { ...result, additionalContext: [...(result.additionalContext ?? []), offer] }
+    compactStop(e, result)
+    return result
   })
 
   // After core closed the turn; the matcher keeps interrupted and errored
@@ -386,6 +494,26 @@ export function registerCompact(on: On) {
     await compactTurnComplete($, e)
     return result
   })
+
+  // The offer on its way into the session (a prompt of this plugin's goes
+  // through every hook of it but the one that submitted it): its figures
+  // read again, and the turn it starts marked as its own. Another prompt of
+  // the plugin's (the resume prompt) passes untouched, as does any prompt
+  // when this hook fails.
+  on('prompt.submit', { origin: { kind: 'plugin', name: 'doperpowers' } }, async ($, e, next) => {
+    if (!isOfferText(e.text)) {
+      return next(e)
+    }
+    const text = await enteringOffer($, e.text)
+    offer = 'entering'
+    const result = await next(text === e.text ? e : { ...e, text })
+    // Refused beneath (a hook, a settings hook's block): the offer stays
+    // spent, so a hook that always refuses costs no submission every turn.
+    if (result.drop !== undefined) {
+      offer = undefined
+    }
+    return result
+  }).catch((_, e, next) => next(e))
 
   // Tool search defers every MCP tool, and this is an MCP tool to the
   // engine: the model would see its name alone and read the guidance only
