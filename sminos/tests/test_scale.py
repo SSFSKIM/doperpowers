@@ -358,8 +358,11 @@ class BenchOpens(unittest.TestCase):
             self.assertGreater(o["E"], 0)
         large = [o for o in opens if o["size"] == "large"]
         self.assertTrue(all(o["rows"] == 600 for o in large), large)
-        self.assertEqual(large[0]["build"], "cold", "a fresh uplink's first open of it")
-        self.assertIn(large[-1]["build"], ("cold", "loaded"), "after the restart: parsed or loaded, never warm")
+        self.assertIn(large[0]["build"], ("cold", "warm"),
+                      "a fresh machine holds no saved build: parsed by its first open, or by the warmer before it")
+        restarted = [o for o in large if o["moment"] == "restart +0.5 s"]
+        for o in restarted:
+            self.assertEqual(o["build"], "loaded", "after the restart, the build the first uplink saved")
 
     def test_a_stand_in_that_fails_to_start_is_ended(self):
         """bench_scale's stand-in is ended when its setup fails after it

@@ -3319,7 +3319,7 @@ class Warmer(unittest.TestCase):
         paths = {"s1": self.transcript("s1"), "s2": self.transcript("s2")}
         clock = Clock()
         warmer = plane.Warmer(self.transcripts, locate=paths.get)
-        self.assertTrue(self.warm_all(warmer, {"s1", "s2"}, lambda: all(
+        self.assertTrue(self.warm_all(warmer, {"s1", "s2"}, lambda: len(warmer.held) == 2 and all(
             t.index.uuids and not t.warming for t in warmer.held.values()), clock))
         t = self.transcripts.held[paths["s1"]]
         self.assertEqual((t.users, t.how, len(t.index.uuids)), (1, "cold", 3), "held, built cold in the background")
@@ -3345,6 +3345,8 @@ class Warmer(unittest.TestCase):
         warmer = plane.Warmer(self.transcripts, locate={"s1": path}.get)
         clock = Clock()
         warmer.tick({"s1"}, clock())
+        clock.advance(plane.WARM_EVERY)
+        warmer.tick({"s1"}, clock())
         self.assertTrue(t.warming)
         clock.advance(plane.WARM_EVERY * 3)
         warmer.tick({"s1"}, clock())
@@ -3362,6 +3364,23 @@ class Warmer(unittest.TestCase):
             self.assertTrue(wait_for(lambda: not t.working and not t.warming))
         self.assertEqual(order, ["running", "open", "warm"], "the open's job first, the warm job when none is queued")
         self.assertEqual(warmer.running, 0, "its slot given back")
+
+    def test_the_first_round_waits_a_period_and_none_goes_while_an_open_builds(self):
+        """The process's first round begins WARM_EVERY after the warmer's
+        first tick, so the stream's handshake runs before any build competes
+        with it; and no warm job is submitted while an open awaits its
+        snapshot (a warm job already running runs on)."""
+        paths = {"s1": self.transcript("s1"), "s2": self.transcript("s2")}
+        warmer = plane.Warmer(self.transcripts, locate=paths.get)
+        clock = Clock()
+        warmer.tick({"s1", "s2"}, clock())
+        self.assertEqual((warmer.held, warmer.running), ({}, 0), "nothing at the first tick")
+        clock.advance(plane.WARM_EVERY)
+        warmer.tick({"s1", "s2"}, clock(), opening=True)
+        self.assertEqual(sorted(warmer.held), ["s1", "s2"], "held once the period is up")
+        self.assertEqual(warmer.running, 0, "but nothing submitted while an open builds")
+        warmer.tick({"s1", "s2"}, clock())
+        self.assertTrue(wait_for(lambda: all(t.index.uuids for t in warmer.held.values())), "then warmed")
 
     def test_at_most_two_warm_jobs_run_at_once_across_forty_live_transcripts_visited_round_robin(self):
         sessions = ["s%02d" % i for i in range(40)]

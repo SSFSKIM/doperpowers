@@ -826,7 +826,14 @@ class Warmer:
     background job, taken only while its worker has no foreground job
     queued: it extends the index, and the Transcript's save rule follows. It
     does not look at the disk: a look is a subscription's. One per uplink
-    process, kept across its streams as the Transcripts are."""
+    process, kept across its streams as the Transcripts are.
+
+    A worker's queue orders the jobs of one transcript; the GIL is shared by
+    all of them and the uplink's main thread. So the first round begins
+    WARM_EVERY after the first tick — a fresh process's cold builds would
+    otherwise stretch its stream's handshake threefold, and the opens that
+    arrive during it — and no warm job is submitted while an open awaits its
+    snapshot (`opening`); one already running runs on."""
 
     def __init__(self, transcripts=None, locate=None, every=WARM_EVERY, parallel=WARM_PARALLEL):
         self.transcripts = transcripts or TRANSCRIPTS
@@ -839,13 +846,15 @@ class Warmer:
         self.running = 0                    # warm jobs queued or running (under the lock)
         self.failing = {}                   # path → the failure last said (under the lock)
 
-    def tick(self, sessions, now=None):
+    def tick(self, sessions, now=None, opening=False):
         now = time.monotonic() if now is None else now
-        if not self.round and (self.next_round is None or now >= self.next_round):
+        if self.next_round is None:
+            self.next_round = now + self.every
+        if not self.round and now >= self.next_round:
             self.next_round = now + self.every
             self.hold(sessions)
             self.round.extend(self.held)
-        while self.round:
+        while self.round and not opening:
             with self.lock:
                 if self.running >= self.parallel:
                     return
@@ -2445,7 +2454,8 @@ class Plane:
         read again — a reconciling read of each log, which reads the start
         time of every live session — when a session came or went, and every
         MEMBERS_EVERY for what only the log changes (a seat retired). The
-        warmer is handed the live members of those projects."""
+        warmer is handed the live members of those projects, and whether an
+        open awaits its snapshot."""
         now = time.monotonic()
         out = []
         if now >= self.next_scan:
@@ -2469,7 +2479,8 @@ class Plane:
                 out += s.pump()
             if s.ended:
                 self.subs.pop(sub, None)
-        self.warmer.tick({sid for pid in projects for sid in self.members.get(pid, ()) if sid in self.live}, now)
+        self.warmer.tick({sid for pid in projects for sid in self.members.get(pid, ()) if sid in self.live}, now,
+                         opening=any(s.n is None for s in self.subs.values()))
         while True:
             try:
                 sub, body = self.diffs.get_nowait()
