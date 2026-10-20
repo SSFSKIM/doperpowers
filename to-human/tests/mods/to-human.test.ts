@@ -382,6 +382,31 @@ describe('transcript order', () => {
     expect(await r1.find({ type: 'Button', text: 'fold to report' })).toBeUndefined()
   })
 
+  // On a --resume start the engine draws the history before the module
+  // loads, then asks it about every row; its first answer must already fold
+  // (board #105: what stays raw is the terminal's scrollback, which
+  // live-resume-check.py pins).
+  test("a resumed history's marked row folds from the module's first answer", async ($, on) => {
+    mock.env(on, {})
+    mock.store(on)
+    // A folded marked row never draws the engine's own: any next(e) for it
+    // means an answer, the first included, came out raw (the kit redraws a
+    // mount the view invalidates before a find reads it).
+    let rawAnswers = 0
+    on('ui.render', (_, e) => {
+      if (e.component === 'AssistantMessage') rawAnswers += 1
+      return { type: 'Text', children: [String((e.props as { text?: string }).text ?? e.component)] }
+    })
+    const row = await $.ui.mount({
+      plugin: PLUGIN, surface: 'terminal', component: 'AssistantMessage', requestId: 'm1',
+      props: { text: '<message>Done.</message>', isFirstOfReply: true },
+    })
+    const texts = (await row.findAll({ type: 'Text' })).map((text) => text.text)
+    expect(texts.some((text) => text.includes('<message>'))).toBe(false)
+    expect(texts.some((text) => text.includes('● message'))).toBe(true)
+    expect(rawAnswers).toBe(0)
+  })
+
   test('rows drawn before the transcript is read move to their places once it is', async ($, on) => {
     mock.env(on, {})
     mock.store(on)
