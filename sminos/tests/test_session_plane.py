@@ -3971,6 +3971,24 @@ class Lifecycle(unittest.TestCase):
         self.assertEqual(said[-1:], [{"record": None, "bridge": False}],
                          "the hub's last word on the leaver is that it is not running: %s" % said)
 
+    def test_a_heal_says_again_only_the_leavers_a_body_still_in_flight_could_contradict(self):
+        """The leavers `say_again` says not running again are those said gone
+        within GONE_KEEP: only a session live when a body still in flight was
+        formed can be contradicted by it, and such a body is answered or
+        given up within the lane's deadline. One said gone longer ago is not
+        said again, and is no longer kept."""
+        project, _, ended = self.ended_presence_project("gone-bound")
+        pl, got = self.connect(project)
+        self.assertEqual(got.get(ended), {"record": None, "bridge": False}, "said gone at the connect")
+        now = time.monotonic()
+
+        def said_again(at):
+            pl.say_again(project.id)
+            return [m["session"] for m in pl.presence(project.id, now=at) if m["body"]["record"] is None]
+        self.assertEqual(said_again(now + 1), [ended], "a recent leaver is said again at a heal")
+        self.assertEqual(said_again(now + plane.GONE_KEEP + 1), [], "an old one is not")
+        self.assertEqual(pl.gone.get(project.id), {}, "and is no longer kept")
+
     def test_each_hellos_answer_takes_the_presence_read_it_carried(self):
         """Two presence-bearing hellos of one project in flight, answered 200
         then 503: the mark is the first one's read, never the second's."""

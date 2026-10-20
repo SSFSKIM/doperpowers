@@ -192,6 +192,11 @@ MEMBERS_EVERY = 10.0      # s: how often the members are read again when no sess
 IDENTITY_EVERY = 10.0     # s: how stale a running pid's identity may be (its start time read this often)
 TOMBSTONE_FILE = "presence.json"  # under daemon/: project id → the time its sessions' leaving was last said and taken
 TOMBSTONE_MARGIN = 60.0   # s: a session that left this long before that time is said again (clock steps, a write in flight)
+# s: how long a leaver is kept to be said again at a re-open's heal (say_again). Only a session live when a
+# body still in flight was formed can be contradicted by it: that body is answered or given up within the
+# lane's deadline (2 × the uplink's POST_TIMEOUT, 60 s), the heal runs once the hello is answered (up to as
+# long again), and the live presence waited in the lane's queue before its body was formed — the rest.
+GONE_KEEP = 300.0
 DIFF_MAX = 4 << 20        # bytes of diff text; the rest is cut and said so
 GIT_TIMEOUT = 30
 PROBE_TIMEOUT = 1.0
@@ -2309,7 +2314,7 @@ class Plane:
         self.wall = time.time
         self.sent = {}            # (project id, session) → presence body last sent
         self.again = set()        # project ids whose presence is said again at the next look (say_again)
-        self.gone = {}            # project id → {session}: said not running here, not seen back since
+        self.gone = {}            # project id → {session: when first said not running}, within GONE_KEEP, not seen back
         self.subs = {}            # sub → Subscription
         self.diffs = queue.Queue()
         self.read_for = None      # the running sessions the members were last read for
@@ -2363,10 +2368,10 @@ class Plane:
         now = time.monotonic() if now is None else now
         out = []
         members = self.members.get(pid, ())
-        gone = self.gone.setdefault(pid, set())
+        gone = self.gone[pid] = {sid: at for sid, at in self.gone.get(pid, {}).items() if now - at <= GONE_KEEP}
 
         def not_running(sid):
-            gone.add(sid)
+            gone.setdefault(sid, now)   # when it was first said gone: a later say does not keep it longer
             out.append(envelope(pid, self.machine, sid, "presence", None, None, {"record": None, "bridge": False}))
         if force:
             self.live = self.records.scan()
@@ -2381,13 +2386,13 @@ class Plane:
         again = pid in self.again
         self.again.discard(pid)
         if again:
-            for sid in sorted(gone - set(members) - {m["session"] for m in out}):
+            for sid in sorted(set(gone) - set(members) - {m["session"] for m in out}):
                 not_running(sid)
         for sid in sorted(members):
             body = self.presence_of(sid, now, socks)
             if force or again or self.sent.get((pid, sid)) != body:
                 self.sent[(pid, sid)] = body
-                gone.discard(sid)
+                gone.pop(sid, None)
                 out.append(envelope(pid, self.machine, sid, "presence", None, None, body))
         for key in [k for k in self.sent if k[0] == pid and k[1] not in members]:
             body = self.sent.pop(key)
@@ -2398,9 +2403,11 @@ class Plane:
     def say_again(self, pid):
         """The project's presence is said again at its next look, changed or
         not — every member's, and every leaver this plane said not running
-        and has not seen back — since a copy older than the one last sent
-        may have reached the hub after it (a body in flight at a re-open,
-        applied after the hello). A leaver said twice is harmless."""
+        within GONE_KEEP and has not seen back — since a copy older than the
+        one last sent may have reached the hub after it (a body in flight at
+        a re-open, applied after the hello). Only a leaver that was live when
+        such a body was formed is at risk, hence the bound. A leaver said
+        twice is harmless."""
         self.again.add(pid)
 
     def take_read(self, pid):
