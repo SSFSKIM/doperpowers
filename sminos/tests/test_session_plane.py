@@ -3355,8 +3355,12 @@ class Lifecycle(unittest.TestCase):
         time.sleep(0.3)
         heads = [body[0] for body in self.kinds(hub)]
         self.assertEqual(heads.count("hello"), 2, "opened again once: %s" % heads)
-        self.assertEqual(heads.index("session"), len(heads) - 1, "the message after the hello it waited for")
-        self.assertEqual(hub.bodies()[-1][0]["message"]["body"], {"after": True})
+        # The lanes are independent once the hello's continuation released
+        # the session lane: an upload on the log lane may come after the
+        # message. What the gate promises is the message after its hello.
+        replacement = [i for i, head in enumerate(heads) if head == "hello"][1]
+        self.assertGreater(heads.index("session"), replacement, "the message after the hello it waited for: %s" % heads)
+        self.assertEqual(hub.bodies()[heads.index("session")][0]["message"]["body"], {"after": True})
         self.assertEqual(hl.have, {}, "the vector the new hello brought stands: its uploads go on")
 
     def test_each_hellos_answer_takes_the_presence_read_it_carried(self):
