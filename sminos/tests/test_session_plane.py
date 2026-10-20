@@ -3330,6 +3330,94 @@ class TranscriptIndex(unittest.TestCase):
             end = pickle.load(f)[3]
         self.assertEqual(end, os.path.getsize(self.path), "the saved build is the newer one")
 
+    def saved_then_rewritten(self, edit):
+        """A build saved, then the file rewritten in place by `edit(lines)`
+        (the lines as bytes, without their ends, edited in place), its size
+        and inode kept: the Transcript that loads it next."""
+        first = plane.Transcript(self.path)
+        first.extended()
+        self.assertTrue(first.save())
+        size, ino = os.path.getsize(self.path), os.stat(self.path).st_ino
+        with open(self.path, "rb") as f:
+            lines = f.read().split(b"\n")
+        edit(lines)
+        with open(self.path, "r+b") as f:
+            f.write(b"\n".join(lines))
+        self.assertEqual((os.path.getsize(self.path), os.stat(self.path).st_ino), (size, ino), "in place")
+        t = plane.Transcript(self.path)
+        t.extended()
+        return t
+
+    def test_two_rows_that_trade_a_byte_in_place_are_not_loaded(self):
+        """The reviewer's case: two adjacent rows no sample reads, one a byte
+        longer and the next a byte shorter; the size, every uuid and every
+        sampled row as they were."""
+        self.append("".join(json.dumps({"uuid": "u%03d" % i, "type": "user", "pad": "xx"}) + "\n"
+                            for i in range(100)))
+
+        def trade(lines):
+            lines[1] = lines[1].replace(b'"xx"', b'"xxx"')
+            lines[2] = lines[2].replace(b'"xx"', b'"x"')
+        t = self.saved_then_rewritten(trade)
+        self.assertEqual(t.how, "cold", "the saved build is refused")
+        self.assertEqual(len(t.index.uuids), 100, "every row, none lost")
+        self.assertEqual(self.state(t), self.state(self.cold()))
+
+    def test_a_row_that_keeps_its_uuid_and_length_but_not_its_place_in_the_chain_is_not_loaded(self):
+        """A row the old sample read (an answer), its uuid and length kept,
+        its parent another row's uuid: the chain the saved build holds is no
+        longer the file's."""
+        rows, _ = self.thread_rows(30)
+
+        def reparent(lines):
+            row = json.loads(lines[55])
+            self.assertEqual(row["type"], "assistant")
+            lines[55] = lines[55].replace(row["parentUuid"].encode(), rows[52]["uuid"].encode())
+        t = self.saved_then_rewritten(reparent)
+        self.assertEqual(t.how, "cold", "the saved build is refused")
+        self.assertEqual(self.state(t), self.state(self.cold()), "the chain as the file says it now")
+
+    def test_a_build_retired_again_during_its_running_save_stays_retiring(self):
+        """Evicted, its save running; acquired again and evicted again in
+        that window: the first save's end lets go of nothing but its own
+        retirement, so the second is still the one Transcript of the file —
+        a stop counts it, and a third acquire gets it back."""
+        _, r = self.thread_rows(10)
+        transcripts = plane.Transcripts(keep=0)
+        a = transcripts.acquire(self.path)
+        self.run_job(a, lambda t: t.extended())
+        self.thread_rows(5, r)
+        self.run_job(a, lambda t: t.extended())         # read past its save: dirty
+        real, calls = a.save_changed, []
+
+        def save_changed():   # the first two saves wait to be let through
+            if len(calls) >= 2:
+                return real()
+            entered, go = threading.Event(), threading.Event()
+            calls.append((entered, go))
+            entered.set()
+            go.wait(10)
+            return real()
+        a.save_changed = save_changed
+        transcripts.release(a)                         # the first retirement: its save starts
+        self.assertTrue(wait_for(lambda: calls and calls[0][0].is_set()), "the first save runs")
+        self.assertIs(transcripts.acquire(self.path), a, "taken back during its save")
+        transcripts.release(a)                         # the second retirement, queued behind
+        calls[0][1].set()                              # the first save ends; its callback runs
+        self.assertTrue(wait_for(lambda: len(calls) == 2 and calls[1][0].is_set()), "the second save runs")
+        self.assertIs((transcripts.retiring.get(self.path) or (None,))[0], a, "the second retirement stands")
+        self.assertEqual(transcripts.save_all(seconds=0.2)[1], 1, "a stop counts it")
+        c = transcripts.acquire(self.path)
+        self.assertIs(c, a, "one Transcript per file")
+        self.thread_rows(5, r)
+        c.submit(lambda t: t.extended())
+        calls[1][1].set()
+        transcripts.release(c)
+        self.assertTrue(wait_for(lambda: not a.working and self.path not in transcripts.retiring))
+        with open(plane.build_file(self.path), "rb") as f:
+            end = pickle.load(f)[3]
+        self.assertEqual(end, os.path.getsize(self.path), "the newest build is the one saved")
+
     def test_a_failed_save_is_not_counted_and_the_stop_and_eviction_retry_it(self):
         self.thread_rows(5)
         transcripts = plane.Transcripts(keep=0)

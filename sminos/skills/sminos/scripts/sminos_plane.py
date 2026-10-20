@@ -144,6 +144,7 @@ import collections
 import glob
 import hashlib
 import http.client
+import itertools
 import json
 import os
 import pickle
@@ -154,6 +155,7 @@ import subprocess
 import sys
 import threading
 import time
+import zlib
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import sminos  # noqa: E402
@@ -172,10 +174,9 @@ WARM_EVERY = 2.0          # s: how often the live members are looked over and a 
 WARM_PARALLEL = 2         # warm jobs queued or running at once, in the process
 SAVE_GROWTH = 16 << 20    # bytes of transcript an index grows by before its build is saved again
 STOP_SAVE_SECONDS = 5.0   # s: the uplink's stop waits this long for the held builds to be saved
-BUILD_FORMAT = 1          # what a saved build holds: bumped whenever Index, jobs.Ledger or Chain change it
+BUILD_FORMAT = 2          # what a saved build holds: bumped whenever Index, jobs.Ledger or Chain change it
 BUILD_KEEP_DAYS = 14      # a saved build not written or loaded this long is swept at the uplink's start
 BUILD_DIR = "plane"       # under daemon/: the saved builds
-LOAD_SAMPLE = 16          # rows a load reads back at their saved offsets: the first, the last, the rest evenly between
 PRESENCE_EVERY = 0.2      # s: how often the engine's records are looked at
 BRIDGE_RECHECK = 2.0      # s: how often a bridge that answered is asked again
 METAS_EVERY = 0.5         # s: how often a main subscription's subagent tree is looked at
@@ -289,7 +290,9 @@ class Index:
     offset of its line and the line's length — read forward from where it
     stopped, so a page reads its own rows' bytes and nothing else. Used on
     its transcript's worker alone. Once it has read the file, `extend` and
-    `rows` raise Reset when the file was replaced, shrank, or is gone."""
+    `rows` raise Reset when the file was replaced, shrank, or is gone.
+    `crc` is the CRC-32 of the bytes before `end`, kept as they are read:
+    what a saved build is checked against when it is loaded."""
 
     def __init__(self, path):
         self.path = path
@@ -298,6 +301,7 @@ class Index:
         self.uuids, self.offsets, self.lengths = [], [], []
         self.at = {}           # uuid → its first position
         self.parsed = 0        # bytes handed to the parser, all told: what building it cost
+        self.crc = 0           # zlib.crc32 of the file's bytes before `end`
 
     def check(self, st, through):
         if self.ino is not None and (st.st_ino != self.ino or st.st_size < through):
@@ -321,8 +325,10 @@ class Index:
                 block = f.read(READ_BLOCK)
                 if not block:
                     break
-                lines = (carry + block).split(b"\n")
+                data = carry + block
+                lines = data.split(b"\n")
                 carry = lines.pop()
+                self.crc = zlib.crc32(memoryview(data)[:len(data) - len(carry)], self.crc)
                 for line in lines:
                     if ROW_KEY in line:
                         self.parsed += len(line)
@@ -584,29 +590,24 @@ def _remove(path):
         pass
 
 
-def _sample_holds(index, k=LOAD_SAMPLE):
-    """Whether a saved index still reads the file as it is: the first row,
-    the last, and the rest of `k` spaced evenly between, each read at its
-    saved offset — a whole line there, of its saved length, holding its
-    uuid. A parse of the whole file is what a load saves, so this is a
-    sample: a rewrite in place that keeps every row's length and touches
-    only rows between two of it passes. The engine only appends."""
-    n = len(index.uuids)
-    if not n:
-        return True
-    picks = sorted({(n - 1) * i // (k - 1) for i in range(k)}) if n > 1 else [0]
+def _prefix_holds(index):
+    """Whether the file still holds, before the saved index's `end`, the
+    very bytes the index read: their CRC-32 against the one it kept. A
+    checksum, not a digest: it catches a rewrite in place, not an adversary
+    (the saved build is the daemon's own file). The file is read once, in
+    blocks, without being parsed: 0.04 CPU-s for 317 MB, where a parse is
+    0.75 (open-fast M7's Decision Log)."""
+    crc, left = 0, index.end
+    buf = bytearray(min(READ_BLOCK, max(left, 1)))
+    view = memoryview(buf)
     with open(index.path, "rb") as f:
-        for i in picks:
-            at, length = index.offsets[i], index.lengths[i]
-            f.seek(at - 1 if at else 0)
-            data = f.read(length + (2 if at else 1))
-            line = data[1:-1] if at else data[:-1]
-            if (at and data[:1] != b"\n") or data[-1:] != b"\n" or len(line) != length:
+        while left:
+            n = f.readinto(view[:min(len(buf), left)])
+            if not n:
                 return False
-            row = parse_row(line)
-            if row is None or row["uuid"] != index.uuids[i]:
-                return False
-    return True
+            crc = zlib.crc32(view[:n], crc)
+            left -= n
+    return crc == index.crc
 
 
 def _shaped(obj, kind, fresh):
@@ -712,8 +713,8 @@ class Transcript:
         """The saved build into the index, the ledger and the chain: True.
         False when there is none, or the one there cannot be used — of
         another format or shape, of another file (its realpath or inode), of
-        a file now shorter than what it read or whose rows, as sampled
-        (_sample_holds), are not where it read them, or unreadable — and
+        a file now shorter than what it read or whose bytes before the saved
+        end are not the ones it read (_prefix_holds), or unreadable — and
         then it is removed. A saved build is the daemon's own file under a
         0700 directory: loading it is trusted."""
         file = build_file(self.path)
@@ -734,7 +735,7 @@ class Transcript:
                 and _shaped(chain, Chain, Chain(chain.main)) and chain.main == self.chain.main
             if ok:
                 index.path = self.path
-                ok = _sample_holds(index)
+                ok = _prefix_holds(index)
         except Exception:  # noqa: BLE001 — any build that cannot be read is no build
             ok = False
         if not ok:
@@ -796,17 +797,20 @@ class Transcripts:
     An evicted Transcript is `retiring` until its save has run: acquired
     again meanwhile, it is that same Transcript that comes back, so one
     worker per file orders every save of it and an older build never lands
-    over a newer one."""
+    over a newer one. Each retirement has its own number, which an acquire
+    voids: a save that ends lets go of its own retirement only, never of
+    one that began after it."""
 
     def __init__(self, keep=INDEX_KEEP):
         self.keep = keep
         self.lock = threading.Lock()
         self.held = collections.OrderedDict()   # path → Transcript, the least recently used first
-        self.retiring = {}                      # path → an evicted Transcript whose save has not run yet
+        self.retiring = {}                      # path → (an evicted Transcript whose save has not run yet, its retirement)
+        self.retirements = itertools.count(1)
 
     def acquire(self, path):
         with self.lock:
-            t = self.held.pop(path, None) or self.retiring.pop(path, None) or Transcript(path)
+            t = self.held.pop(path, None) or (self.retiring.pop(path, None) or (Transcript(path),))[0]
             t.users += 1
             self.held[path] = t
             return t
@@ -818,19 +822,20 @@ class Transcripts:
                 self.held.move_to_end(t.path)
             idle = [p for p, held in self.held.items() if held.users <= 0]
             gone = [self.held.pop(p) for p in idle[:max(0, len(idle) - self.keep)]]
-            for g in gone:
-                self.retiring[g.path] = g
-        for g in gone:
-            g.submit_background(self.retire)
+            retired = [(g, next(self.retirements)) for g in gone]
+            for g, n in retired:
+                self.retiring[g.path] = (g, n)
+        for g, n in retired:
+            g.submit_background(lambda t, n=n: self.retire(t, n))
 
-    def retire(self, t):
-        """An evicted Transcript's last job: its build saved, then let go,
-        unless it was acquired again meanwhile."""
+    def retire(self, t, n):
+        """Retirement `n`'s job: the build saved, then let go, unless the
+        Transcript was acquired again meanwhile (and maybe retired anew)."""
         try:
             t.save_changed()
         finally:
             with self.lock:
-                if self.retiring.get(t.path) is t:
+                if self.retiring.get(t.path) == (t, n):
                     del self.retiring[t.path]
 
     def save_all(self, seconds=STOP_SAVE_SECONDS):
@@ -839,7 +844,7 @@ class Transcripts:
         worker, all of them waited for `seconds` at most: (how many builds
         are now current on disk, how many were held)."""
         with self.lock:
-            held = list(self.held.values()) + list(self.retiring.values())
+            held = list(self.held.values()) + [t for t, _ in self.retiring.values()]
         done = []
         for t in held:
             ev, ok = threading.Event(), []
