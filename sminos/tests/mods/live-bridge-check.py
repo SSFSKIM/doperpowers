@@ -155,7 +155,13 @@ class Live:
                 f.write("export MAX_THINKING_TOKENS=%d\n" % THINKING_BUDGET)
         dirs = " ".join("--plugin-dir %s" % shlex.quote(d) for d in self.plugin_dirs())
         if headless:
-            inner = ("set -e; . %s; cd %s; exec claude -p --input-format stream-json --output-format stream-json "
+            # A `claude -p` run is no member of its project unless the host
+            # that spawned it marks it (SMNS_MEMBER, the spawner's pid, as
+            # MAWS marks its sessions): this process is its parent, the
+            # shells before it exec'd away.
+            with open(self.envfile, "a") as f:
+                f.write("export SMNS_MEMBER=%d\n" % os.getpid())
+            inner =("set -e; . %s; cd %s; exec claude -p --input-format stream-json --output-format stream-json "
                      "--include-partial-messages --verbose %s --model %s --permission-mode default -n %s") % (
                 shlex.quote(self.envfile), shlex.quote(self.work), dirs, shlex.quote(model), NAME)
             self.headless = subprocess.Popen(["env", "-i", "/bin/bash", "--noprofile", "--norc", "-c", inner],

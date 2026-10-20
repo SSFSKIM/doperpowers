@@ -1222,24 +1222,30 @@ def sc_kill(bench, a):
         pid = k.live.status()["pid"]
         killed = time.time()
         os.kill(pid, signal.SIGKILL)
-        successor, tries = None, 0
+        successor, chain = None, []
         current = o
         deadline = time.time() + 30
         while time.time() < deadline and successor is None:
             bench.until(current, lambda: current.end_at is not None, max(0.1, deadline - time.time()))
             if current.end_at is None:
                 break
-            tries += 1
+            if chain:
+                chain[-1]["ended"] = round(current.end_at - killed, 3)
             nxt = bench.opened(bench.open(previous=current.consumer))
             line = bench.rig.open_line(nxt.sub, 5) or {}
+            # Each re-subscribe the kill took: when it went and its snapshot came, after the kill, and how.
+            chain.append({"sent": round(nxt.sent - killed, 3),
+                          "snapshot": None if nxt.snap_at is None else round(nxt.snap_at - killed, 3),
+                          "outcome": line.get("outcome"), "N": line.get("N")})
             if nxt.snap_at is not None and line.get("outcome") == "bridge snapshot":
                 successor = nxt
             current = nxt
         if successor is None:
-            print(json.dumps({"kill": "no bridged snapshot within 30 s of the kill", "tries": tries}), flush=True)
+            print(json.dumps({"kill": "no bridged snapshot within 30 s of the kill", "chain": chain}), flush=True)
         else:
             bench.until(successor, lambda: k.turn_done(t0), 180)
-            bench.record("kill", successor, E_kill=round(successor.snap_at - killed, 3), resubscribes=tries)
+            bench.record("kill", successor, E_kill=round(successor.snap_at - killed, 3), resubscribes=len(chain),
+                         chain=chain)
             bench.close(successor)
         wait_for("the turn's end", 180, lambda: k.turn_done(t0), 0.2)
         time.sleep(1.0)
