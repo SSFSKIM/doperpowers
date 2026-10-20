@@ -96,7 +96,7 @@ reload still run.
       run it, the uplinks connected (MacBook stream 196 at 02:24:59Z, mini stream 165 at 02:25:35Z),
       and no forward line since the 23:57Z one of the roll. No devcloud host is enrolled, so M5's
       image condition holds vacuously.
-- [x] (2026-10-20 04:00Z) M5 — Cleanup and acceptance, on `sminos-m5-cleanup` off origin/main
+- [x] (2026-10-20 03:31Z) M5 — Cleanup and acceptance, on `sminos-m5-cleanup` off origin/main
       2ddab4c5: the shim, the ask's shape-1 takeover and the agents' old name removed, the gate path
       dropped (7974a3e5; doperpowers 7.190.1, sminos 1.1.1). A1–A6, A8's rehearsal half and A9's grep
       held in temporary HOMEs at that head, A4 for the first time, the rehearsal rolling a HOME from
