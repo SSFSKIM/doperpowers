@@ -35,10 +35,10 @@ that changes — and, for a project it holds, its machine's presence (DX4
 from then on what they append; it follows `resend`, says each `refused` in
 daemon.log, and imports what the hub sends (sminos_hublog.py: each event's
 code verified before it enters the log, a refused one reported up as
-`rejected`). Every archive period it says
-`hello` again for each project it opened, so the hub's answer — whether this
-machine writes the project's git archive (sminos_archive.py) — is never
-older than a period, even on a stream that never drops. The session plane
+`rejected`). Every archive period it says `hello` again for each project it
+opened, one POST each, so the hub's answer — whether this machine writes the
+project's git archive (sminos_archive.py) — is never older than a period,
+even on a stream that never drops. The session plane
 (sminos_plane.py) rides the same stream: each session's presence after the
 `hello` and whenever it changes, and the hub's subscriptions served as DX4
 messages; a bridge's reader wakes the main thread, so what it read goes up
@@ -1026,10 +1026,14 @@ class Link:
             every = archive.archive_every()
             if every > 0 and now >= self.next_confirm:
                 # The hub reads the archive designation at each hello: asked
-                # again, it answers with the designation as it is now.
+                # again, it answers with the designation as it is now. One
+                # project per POST, as `open` sends them: the deployed hub
+                # answers 503 to a POST carrying the hellos of more than about
+                # six projects, which dropped every machine's stream at its
+                # first confirmation once its org held seven (2026-10-19).
                 self.next_confirm = now + every
-                if self.opened:
-                    self.post([self.logs[pid].hello(self.follows.get(pid, False)) for pid in sorted(self.opened)])
+                for pid in sorted(self.opened):
+                    self.post([self.logs[pid].hello(self.follows.get(pid, False))])
             if now >= self.next_upload or nudged:
                 self.next_upload = now + UPLOAD_EVERY
                 for pid in sorted(self.opened):
