@@ -8498,6 +8498,8 @@ def guide_text(session, launch, source="", title=""):
         "To find one or tell it something, use sminos (not on PATH):",
         "  %s list            your project's sessions; --here this machine's, --org every session" % cli,
         "  %s who <commit|PR> the session a commit or PR names in its Sminos-Session line, and how to reach it" % cli,
+        '  %s say "..."       recorded in your project\'s log, read at its sessions\' next chat; wakes no one:'
+        " status nobody must act on goes here" % cli,
         '  %s say "@<short> ..."   reaches that session wherever it runs, as does "@<project>/<alias> ...";'
         " a bare @alias reaches only your project" % cli,
         '  %s say --org|--project P|--machine M|--here "..."   wakes every live session list shows with the'
