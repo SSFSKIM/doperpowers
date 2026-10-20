@@ -864,7 +864,10 @@ named or not:
   its row lands, whether or not a `block-row` reaches it (the plane sends
   one anyway, idempotent).
 - `resume`: for each old request and index, if the fresh snapshot carries
-  the block, the fresh copy is kept — its text the snapshot's, `settledBy`
+  the block, the fresh copy is kept — its text the snapshot's, except for a
+  block the old subscription had named, which keeps the text already drawn
+  (a `block-row` follows a block's last chunk, so that text is whole, and it
+  stays whole when §7 cuts the carried copy to its tail; Decision Log, M3), `settledBy`
   the fresh `uuid` if named else the old `settledBy` (a block the old
   subscription had named and the snapshot still carries unnamed is named by
   the `block-row` that follows), the block's identity (its live label's
@@ -1874,6 +1877,33 @@ beside; a single reviewer reads one of those well in a pass.
   bridge does not; how the instrument learns it (a probe of its own, or a
   log line in the plane) is M2's to choose, within M2's "does not touch any
   behavior".
+  Date/Author: 2026-10-20, the controller.
+
+- Decision (M3, amending §9): on `resume`, a carried block the old
+  subscription had named keeps the text already drawn, not the snapshot's.
+  The `block-row` follows a block's last chunk, so that drawn text is whole,
+  and keeping it also keeps it whole when §7 cuts the carried copy to its
+  last `BLOCK_TAIL` characters. The web's existing `resume` test, which M3
+  must keep passing, expects exactly this (`Named` over the copy's `Nam`).
+  The fixture cannot tell the two readings apart; the reference consumer
+  (which took the snapshot's text) is amended to match in M5. A block the old
+  subscription already settled: an unnamed copy in the snapshot is dropped,
+  a named one drawn (consumer and web alike). The fixture is replayed whole
+  by `layer.test.ts` (all 14 sequences, rows landing through each step's
+  `settle`); its `errors` and `inventory` keys judge the whole view and are
+  not replayed there. Two differences between the consumer and the web,
+  left as they are: after an `n` gap the web's project client resubscribes
+  and never delivers that message, where the consumer applies it (a line in
+  the consumer's docstring, M5); and the rows store's `older()` holds a row
+  a page carries twice (confirmed by M3; out of its scope, residue).
+  Date/Author: 2026-10-20, the M3 executor, folded by the controller.
+- Decision (M3, consequence for M8): a block still streaming (unnamed) takes
+  the snapshot's text on a reconnect, so once §7 cuts catch-up copies to
+  their tail, a reconnect during a block larger than `BLOCK_TAIL` draws only
+  its tail until the block's row lands and draws it whole. Accepted for this
+  branch: blocks past 65,536 characters streaming across a reconnect are
+  rare (a huge tool input), and the loss is cosmetic and self-healing; a web
+  rule splicing a truncated tail onto overlapping drawn text is residue.
   Date/Author: 2026-10-20, the controller.
 
 ## Outcomes & Retrospective
