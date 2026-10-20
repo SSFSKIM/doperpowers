@@ -45,7 +45,7 @@ before it is built (Decision Log).
 - [x] M4 — The hub's reply chain decoupled (MAWS) (2026-10-20, reviewed clean; MAWS `desk-open-fast-hub` fba324cc4..beb065470, master merged at ef190e5e2)
 - [x] M5 — The snapshot goes at once; a notice's row is due at its step's end (2026-10-20, reviewed clean; 8d7fae3f, sminos 1.2.6; the legacy-bridge fix ba3816df reviewed clean and merged at 417210c8, sminos 1.2.9)
 - [x] M6 — The uplink's sender lanes, with connection reuse proven (2026-10-20, reviewed clean after two fix rounds; d5fa1d6a..aa57759b; the A9 by-hand hour of the owner's daemon.log pending the roll)
-- [ ] M7 — The build saved and warmed, bounded; the look off the open path
+- [x] M7 — The build saved and warmed, bounded; the look off the open path (2026-10-20, reviewed clean after two fix rounds; 63683909..7a9fdccb, sminos 1.2.10, gate GREEN 39469065139; the by-hand A3 line on the owner's Mac pending the roll)
 - [ ] M8 — The child respawns at once; a resync fits the engine's limit
 - [ ] M9 — Acceptance, documents, the branch review
 
@@ -1711,6 +1711,24 @@ beside; a single reviewer reads one of those well in a pass.
   from its own `$.plugin.root`, so a new child under an old mod arises only
   if a plugin root is replaced under a running mod.
 
+- Observation (M7): a real build loads about 30 times faster than this
+  section's earlier "unpickle in 0.284 cpu s": CI-opt's build pickles to
+  2.5 MB and loads in 9 ms (0.05 CPU-s with the prefix checksum), the
+  synthetic 15k-row build in 8 ms, so the `marshal` alternative is moot.
+  Warming slows whatever else needs Python by sharing the GIL, not by
+  queueing ahead of it (the M7 fix's first-round wait). An open queued behind
+  a running warm build reads `build: warm 0 ms`, its wait visible only in
+  N, so A3's "E equals its cold build plus 0.3 s" holds only where the open
+  does the build itself. A3 figures (`bench_scale.py opens --live 40
+  --large 6`, load 13.6–14.3, outside the band): +30 s all six large opens
+  warm at 0.010–0.013 s (before: five cold at 0.42–0.49); restart +0.5 s
+  large 0.020 / 0.022 s `loaded` (before: 0.42–0.43 cold); small opens
+  unchanged (0.02 s). `bench_index.py` on CI-opt (332 MB, 16,228 rows):
+  cold 0.75 CPU-s, loaded 0.05, warm 0.00. Not done: a second restart (the
+  bench restarts once) and the by-hand A3 line on the owner's Mac, which
+  needs the roll (M9).
+  Evidence: `.doperpowers/sde/2026-10-20-desk-open-fast-design/task-7-report.md`.
+
 ## Decision Log
 
 - Decision: verification. The spec gets one independent review by the
@@ -2084,6 +2102,58 @@ beside; a single reviewer reads one of those well in a pass.
   kept and retried on every `deliveries` pass (`settle_marks`), never
   latching a gate or a flag, never posting again.
   Date/Author: 2026-10-20, the M6 executor and its reviewer, folded by the
+  controller.
+
+- Decision (M7, beyond §4, accepted on review): the daemon's
+  `UPLINK_STOP_GRACE` goes from 3 s to 8 s (`sminos_daemon.py`, outside the
+  milestone's list): `daemon run` SIGKILLed its uplink 3 s after SIGTERM,
+  which would cut the stop save §4 bounds at `STOP_SAVE_SECONDS` (5 s); 8 s
+  is that bound plus the stream's close. A save is a background-priority step
+  run after the job that made it due (ahead of other background jobs,
+  behind any queued foreground job), never inside `extended()`, so a save
+  never delays an open's answer. A load touches the build's mtime, so a
+  build in daily use that never grows `SAVE_GROWTH` is not swept at
+  `BUILD_KEEP_DAYS`; the sweep also removes a crash's `.tmp`. A load
+  refuses a build whose objects' fields differ from fresh instances' (a
+  forgotten `BUILD_FORMAT` bump). One process-wide `Warmer` survives stream
+  changes (passed down as `Bridges` is; a Plane made without one owns and
+  releases its own), else every reconnect would push about 8 of 40 live
+  sessions past `INDEX_KEEP`. A transcript the warmer cannot locate is looked
+  for again at the next round. The `opening` hand-off counts every
+  subscription still awaiting its snapshot, so a legacy bridge's cut wait
+  (up to `NOTICE_WAIT`) pauses new warm jobs that long; accepted.
+  Date/Author: 2026-10-20, the M7 executor, folded by the controller.
+- Decision (M7 fix, from the after-run): the first warm round starts
+  `WARM_EVERY` after the warmer's first tick, and no warm job is submitted
+  while any subscription awaits its snapshot (a running one carries on).
+  §4's bounds (one queue position, `WARM_PARALLEL`) do not cover the GIL:
+  two cold builds during a fresh process's handshake stretched it from 0.05
+  to 0.46 s and pushed a +0.5 s small open from 0.02 s to 0.5–0.7 s
+  (`setswitchinterval(0.0005)` did not help). After a restart warm jobs are
+  ~9 ms loads, so the wait costs only a first-ever start.
+  Date/Author: 2026-10-20, the M7 executor, folded by the controller.
+- Decision (M7 review, two rounds): a saved build is trusted only when it
+  is provably the file's prefix. `Index` keeps `crc`, the `zlib.crc32` of
+  the bytes before `end`, folded in block by block as `extend` reads (a
+  partial last line excluded until its newline); a load reads the file to
+  the saved end unparsed and compares, and on a mismatch removes the build
+  and starts cold. `BUILD_FORMAT` is 2 (a format-1 build is refused).
+  Rejected: a sample of rows at their saved offsets (round 1's fix) — two
+  unsampled neighbours trading a byte, or a row keeping its uuid and length
+  while changing its parent, both loaded stale. The checksum detects
+  rewrites, not adversaries (the daemon's own file, 0700 directory).
+  Measured on CI-opt's 317 MB from the page cache: crc32 0.04 CPU-s,
+  adler32 0.05, sha1 0.17, blake2b 0.38, md5 0.67; the load is 0.05 CPU-s
+  in all against 0.75 cold. Eviction keeps the evicted Transcript in
+  `Transcripts.retiring` until its save has run, `acquire` handing the same
+  object back, so one worker orders every save of a file and the main
+  thread never blocks; each retirement draws a number that an acquire
+  voids, and a save lets go of its own `(t, n)` only. `saved` is what is on
+  disk (a save or a load); the growth throttle keeps its own mark
+  (`tried_end`), so a failed save is retried by eviction and the stop and
+  not counted by `save_all`. The warmer reconciles departures every period,
+  pruning a pending round.
+  Date/Author: 2026-10-20, the M7 executor and its reviewer, folded by the
   controller.
 
 ## Outcomes & Retrospective
