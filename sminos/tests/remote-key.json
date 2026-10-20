@@ -1,0 +1,238 @@
+{
+  "about": "A repository's remote key and the id of the project it derives (the sminos remote identity design, §1), written by remote-key.gen.py beside this file; see its docstring.",
+  "namespace": "6ba7b811-9dad-11d1-80b4-00c04fd430c8",
+  "vectors": [
+    {
+      "org": "ssfskim",
+      "url": "git@github.com:SSFSKIM/MAWS.git",
+      "key": "github.com/ssfskim/maws",
+      "name": "MAWS",
+      "why": "scp-like, the owner's MacBook's spelling",
+      "hashed": "smns-repo:ssfskim:github.com/ssfskim/maws",
+      "id": "f5c49acd-50a8-59e5-81d7-a5dd4c5e40bd"
+    },
+    {
+      "org": "ssfskim",
+      "url": "https://github.com/ssfskim/maws",
+      "key": "github.com/ssfskim/maws",
+      "name": "maws",
+      "why": "https, the mini's spelling: the same key",
+      "hashed": "smns-repo:ssfskim:github.com/ssfskim/maws",
+      "id": "f5c49acd-50a8-59e5-81d7-a5dd4c5e40bd"
+    },
+    {
+      "org": "ssfskim",
+      "url": "ssh://git@github.com/ssfskim/maws.git/",
+      "key": "github.com/ssfskim/maws",
+      "name": "maws",
+      "why": "ssh://, a trailing / then .git",
+      "hashed": "smns-repo:ssfskim:github.com/ssfskim/maws",
+      "id": "f5c49acd-50a8-59e5-81d7-a5dd4c5e40bd"
+    },
+    {
+      "org": "ssfskim",
+      "url": "https://user:token@git.example.org:8443/a/b.git",
+      "key": "git.example.org:8443/a/b",
+      "name": "b",
+      "why": "https with userinfo dropped and a non-default port kept",
+      "hashed": "smns-repo:ssfskim:git.example.org:8443/a/b",
+      "id": "931b9d8a-2f0e-5b75-9615-f755a1b01c6b"
+    },
+    {
+      "org": "ssfskim",
+      "url": "https://github.com:443/SSFSKIM/ci-kit",
+      "key": "github.com/ssfskim/ci-kit",
+      "name": "ci-kit",
+      "why": "https's default port dropped",
+      "hashed": "smns-repo:ssfskim:github.com/ssfskim/ci-kit",
+      "id": "5a3bc284-0c99-5148-94fa-0d2ed575af06"
+    },
+    {
+      "org": "ssfskim",
+      "url": "http://git.example.org:80/team/tool.git",
+      "key": "git.example.org/team/tool",
+      "name": "tool",
+      "why": "http's default port dropped",
+      "hashed": "smns-repo:ssfskim:git.example.org/team/tool",
+      "id": "6a96fa49-52a0-59ec-88a1-e5437b78c8b3"
+    },
+    {
+      "org": "ssfskim",
+      "url": "ssh://git@git.example.org:22/team/tool.git",
+      "key": "git.example.org/team/tool",
+      "name": "tool",
+      "why": "ssh's default port dropped",
+      "hashed": "smns-repo:ssfskim:git.example.org/team/tool",
+      "id": "6a96fa49-52a0-59ec-88a1-e5437b78c8b3"
+    },
+    {
+      "org": "ssfskim",
+      "url": "ssh://git@git.example.org:2222/team/tool.git",
+      "key": "git.example.org:2222/team/tool",
+      "name": "tool",
+      "why": "a non-default ssh port kept",
+      "hashed": "smns-repo:ssfskim:git.example.org:2222/team/tool",
+      "id": "8caa50c8-9a8f-501f-a7a6-80ec5e96e744"
+    },
+    {
+      "org": "ssfskim",
+      "url": "git://git.example.org/team/tool.git",
+      "key": "git.example.org/team/tool",
+      "name": "tool",
+      "why": "git://",
+      "hashed": "smns-repo:ssfskim:git.example.org/team/tool",
+      "id": "6a96fa49-52a0-59ec-88a1-e5437b78c8b3"
+    },
+    {
+      "org": "ssfskim",
+      "url": "git://git.example.org:9418/team/tool",
+      "key": "git.example.org/team/tool",
+      "name": "tool",
+      "why": "git's default port dropped",
+      "hashed": "smns-repo:ssfskim:git.example.org/team/tool",
+      "id": "6a96fa49-52a0-59ec-88a1-e5437b78c8b3"
+    },
+    {
+      "org": "ssfskim",
+      "url": "git+ssh://git@git.example.org/team/tool",
+      "key": "git.example.org/team/tool",
+      "name": "tool",
+      "why": "git+ssh://, ssh by another name",
+      "hashed": "smns-repo:ssfskim:git.example.org/team/tool",
+      "id": "6a96fa49-52a0-59ec-88a1-e5437b78c8b3"
+    },
+    {
+      "org": "ssfskim",
+      "url": "HTTPS://GitHub.COM//SSFSKIM//Doperpowers.GIT",
+      "key": "github.com/ssfskim/doperpowers",
+      "name": "Doperpowers",
+      "why": "mixed case, repeated / and an upper-case .git",
+      "hashed": "smns-repo:ssfskim:github.com/ssfskim/doperpowers",
+      "id": "cedf4d43-b449-5e0d-9e51-92221acd5c66"
+    },
+    {
+      "org": "ssfskim",
+      "url": "https://gitlab.com/group/sub/repo.git",
+      "key": "gitlab.com/group/sub/repo",
+      "name": "repo",
+      "why": "a GitLab subgroup kept",
+      "hashed": "smns-repo:ssfskim:gitlab.com/group/sub/repo",
+      "id": "e425db9a-3b58-591a-9eac-3d63ca7d6af5"
+    },
+    {
+      "org": "ssfskim",
+      "url": "git@gitlab.com:Group/Sub/Repo",
+      "key": "gitlab.com/group/sub/repo",
+      "name": "Repo",
+      "why": "the same subgroup, scp-like",
+      "hashed": "smns-repo:ssfskim:gitlab.com/group/sub/repo",
+      "id": "e425db9a-3b58-591a-9eac-3d63ca7d6af5"
+    },
+    {
+      "org": "ssfskim",
+      "url": "github.com:ssfskim/cua",
+      "key": "github.com/ssfskim/cua",
+      "name": "cua",
+      "why": "scp-like without a user",
+      "hashed": "smns-repo:ssfskim:github.com/ssfskim/cua",
+      "id": "1d376c7b-5244-56ff-b68c-2c9ad9c4bb3b"
+    },
+    {
+      "org": "ssfskim",
+      "url": "https://github.com/ssfskim/x.git.git",
+      "key": "github.com/ssfskim/x.git",
+      "name": "x.git",
+      "why": "one trailing .git removed, not two",
+      "hashed": "smns-repo:ssfskim:github.com/ssfskim/x.git",
+      "id": "aa6c099c-a1e0-502c-b0bb-fb8e428a9cb8"
+    },
+    {
+      "org": "ssfskim",
+      "url": "ssh://git@[2001:db8::1]:2200/team/tool",
+      "key": "[2001:db8::1]:2200/team/tool",
+      "name": "tool",
+      "why": "an IPv6 host and a port",
+      "hashed": "smns-repo:ssfskim:[2001:db8::1]:2200/team/tool",
+      "id": "31d2e833-1bf0-5fb5-a174-1f263db59252"
+    },
+    {
+      "org": "ssfskim",
+      "url": "/srv/x.git",
+      "key": "",
+      "name": "",
+      "why": "an absolute path: a local remote"
+    },
+    {
+      "org": "ssfskim",
+      "url": "../y",
+      "key": "",
+      "name": "",
+      "why": "a relative path: a local remote"
+    },
+    {
+      "org": "ssfskim",
+      "url": "./sub:dir",
+      "key": "",
+      "name": "",
+      "why": "a / before the first colon: git reads a path"
+    },
+    {
+      "org": "ssfskim",
+      "url": "file:///srv/x.git",
+      "key": "",
+      "name": "",
+      "why": "file://: a local remote"
+    },
+    {
+      "org": "ssfskim",
+      "url": "ssh://git@github.com:SSFSKIM/MAWS.git",
+      "key": "",
+      "name": "",
+      "why": "scp-like path behind ssh://: no port, unparsable"
+    },
+    {
+      "org": "ssfskim",
+      "url": "persistent-https::https://github.com/ssfskim/maws",
+      "key": "",
+      "name": "",
+      "why": "a transport helper's address"
+    },
+    {
+      "org": "ssfskim",
+      "url": "s3://bucket/repo",
+      "key": "",
+      "name": "",
+      "why": "a scheme git's network transports do not speak"
+    },
+    {
+      "org": "ssfskim",
+      "url": "https://github.com/",
+      "key": "",
+      "name": "",
+      "why": "no repository path"
+    },
+    {
+      "org": "ssfskim",
+      "url": "github.com:",
+      "key": "",
+      "name": "",
+      "why": "scp-like with no path"
+    },
+    {
+      "org": "ssfskim",
+      "url": "",
+      "key": "",
+      "name": "",
+      "why": "no url at all"
+    },
+    {
+      "org": "org-1",
+      "url": "git@github.com:SSFSKIM/MAWS.git",
+      "key": "github.com/ssfskim/maws",
+      "name": "MAWS",
+      "why": "the same remote in another org: another project",
+      "hashed": "smns-repo:org-1:github.com/ssfskim/maws",
+      "id": "b2d997ed-b076-5f0b-94b2-2b5af9ef5d70"
+    }
+  ]
+}

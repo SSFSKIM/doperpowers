@@ -691,6 +691,8 @@ Sent after `welcome` on every stream, on every project registration, on every ch
   - It only reads, within a 3 s budget; a roster that fails leaves the guidance whole. Against copies of this machine's largest logs (1,156 events) it took under 0.1 s.
   - The evidence that it moves behavior: headless haiku runs of a compacted context. The summary kept a stale engine socket for a peer the session had exchanged sminos messages with, and the task was to tell that peer the gate was green. Without the roster, 2 of 4 runs chose SendMessage to the stale socket, and the 2 that chose `sminos say "@peer-a …"` were unsure of the tag. With the roster, 4 of 4 used the roster's tag, each naming the socket as possibly stale.
   Date/Author: 2026-10-19, the #99 spike's follow-on.
+- Decision: §1's resolution order is revised by `docs/doperpowers/specs/2026-10-19-smns-remote-identity-design.md`: on an enrolled machine a repository no `.smns` claims is the hub project its remote derives, between step 2 and step 3, so the machine project holds only directories no `.smns` and no usable remote claim.
+  Date/Author: 2026-10-19, the remote identity build (its M1).
 
 ## Outcomes & Retrospective
 

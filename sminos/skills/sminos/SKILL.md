@@ -12,8 +12,10 @@ Sminos is one CLI, the sminos plugin's `skills/sminos/scripts/sminos`
 on PATH; on a machine enrolled at the desk hub a session's start prints its
 absolute path with who you are. `sminos help` describes every verb.
 
-Its unit is the **project**: a repository carrying a committed `.smns`;
-else, on an enrolled machine, the machine's own project (named after the
+Its unit is the **project**: a repository, by a committed `.smns` or, on
+an enrolled machine, by its remote (`origin`, or its only one), so every
+clone and worktree of one remote on every machine is one project; else,
+on an enrolled machine, the machine's own project (named after the
 machine); else the git repository a directory belongs to. A session's
 project is that of the directory it was **launched** in — a `cd` never
 moves it — unless it declares another with `join`. Every session in a
