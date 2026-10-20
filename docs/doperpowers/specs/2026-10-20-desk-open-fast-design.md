@@ -47,7 +47,7 @@ before it is built (Decision Log).
 - [x] M6 — The uplink's sender lanes, with connection reuse proven (2026-10-20, reviewed clean after two fix rounds; d5fa1d6a..aa57759b; the fix 2f64aa96..4400ced7 passed by the coordinator's reviewer and merged at eeb71406, sminos 1.2.13; the A9 by-hand hour of the owner's daemon.log pending the roll)
 - [x] M7 — The build saved and warmed, bounded; the look off the open path (2026-10-20, reviewed clean after two fix rounds; 63683909..7a9fdccb, sminos 1.2.10, gate GREEN 39469065139; the by-hand A3 line on the owner's Mac pending the roll)
 - [x] M8 — The child respawns at once; a resync fits the engine's limit (2026-10-20, reviewed clean after one fix round; 1aa1a002..227187e8, sminos 1.2.12, gate GREEN 39482745539; one A6 trial of ten over the bound, 0.525 s, recorded)
-- [ ] M9 — Acceptance, documents, the branch review
+- [ ] M9 — Acceptance, documents, the branch review (2026-10-20, machine side done: A1–A9 run as written at load < 50, every figure passing, the 100–300 band incomplete pending the owner's choice of a devcloud host; A10 gates GREEN (39493005844) on 996e1052 (sminos 1.2.14), MAWS gates cited, live-resume 14/14, live-bridge 15/15 after the M9 fix; documents current; by-hand checks on the owner's Mac and `deskLatency()` pending the M7+M8 roll; the branch review pending)
 
 ## Terms
 
@@ -592,8 +592,11 @@ connection, so the TLS handshake overlaps the reader's connect and the
 build rather than following the snapshot. **The connection lines**: a
 sender writes one daemon.log line per dial — `uplink: <lane> lane dialled
 the hub (connection #n)` — and one per close — `uplink: <lane> lane closed
-connection #n after <k> POSTs (<idle|the hub closed it|failed: why>)` — and
-one for any POST slower than `SLOW_POST_SECONDS` (5) with its lane and
+connection #n after <k> POSTs (<idle|the hub closed it|failed: why>)` — a
+POST answered non-200 closes its connection as `failed: the hub answered
+<status> …` whether or not the answer also closes it, `the hub closed it`
+being a 200 whose answer closes the connection or a kept connection found
+closed before a send [M9 fix, 2026-10-20] — and one for any POST slower than `SLOW_POST_SECONDS` (5) with its lane and
 duration. The hub stand-in speaks HTTP/1.1 from M1 (today HTTP/1.0, which
 closes every connection, so reuse could not be seen there) and records each
 request's connection id; the owner's daemon.log shows reuse and the idle
@@ -1553,6 +1556,7 @@ SEND_QUEUE_MAX = 16 << 20
 SLOW_POST_SECONDS = 5.0
 # daemon.log lines: "uplink: <lane> lane dialled the hub (connection #n)";
 #   "uplink: <lane> lane closed connection #n after <k> POSTs (idle|the hub closed it|failed: <why>)";
+#     a non-200 answer is "failed: …" even when it also closes the connection [M9 fix]
 #   "uplink: a <lane> lane POST took <s> s"
 ```
 
@@ -1805,6 +1809,42 @@ beside; a single reviewer reads one of those well in a pass.
   carries megabytes ends the file's run with no report ("the file did not
   load"); `Date.now` is frozen in the mods' test runtime.
   Evidence: `.doperpowers/sde/2026-10-20-desk-open-fast-design/task-8-report.md`.
+
+- Observation (M9): the acceptance run on the finished branch (sminos
+  1.2.14, 5edd1a4e; the MacBook, local hub MAWS 0f9c18d65 with M4, live
+  haiku; load1 4.9–9.7, so every figure is outside the 100–300 band, which
+  stays incomplete). A1 idle E 15–20 ms (N ≤ 0.01 s). A2 mid-message 5 of 5
+  counted, E 18–21 ms, `waits` 0, inventory clean; long-answer 3 of 5 trials
+  counted (windows 12.8–14.0 s), E 14–21 ms at +1 s and +7 s, no end before
+  the step's; after-prompt E 14–26 ms. A3 (`bench_scale opens --live 40
+  --large 6`): +0.5 s large 0.485 s cold (build 429 ms), small 0.118 s; +30 s
+  all warm, 2–39 ms; restart +0.5 s large 0.042 s loaded, small 0.012 s;
+  the second-restart clause unmeasured (the bench restarts once).
+  `bench_index` on CI-opt (333 MB, 16,302 rows): cold 0.74, loaded 0.05,
+  warm 0.00 CPU-s. A4's pair (`--pause-stream 4 --backlog 16m`):
+  `hub_write_blocked` true, 37 POSTs in the window all 200 (max 22 ms),
+  chunk lag ≤ 31 ms, the stream survived, the open after the resume E 9 ms.
+  A6 E_kill 0.438 / 0.190 / 0.191 s; the 0.438 s trial is M8's resync wait
+  again (the plane held the successor's subscription 0.255 s): the same
+  mechanism twice in 13 spaced trials across M8 and M9, once over the bound,
+  and the instrument does not yet split hello → resync applied. A8's layer
+  test re-run 35/35 on MAWS 30db4165c, its fixture byte-identical to
+  sminos's. live-resume-check 14/14. A2's "`streaming` carries the thinking
+  block with its `uuid`" is shown by consequence in the live run (cut not on
+  disk, block drawn, 0 undrawn) and pinned directly by unit tests, not a
+  field of the open's line.
+- Observation (M9): two checks written before M6 and M8 no longer proved
+  what they said, and one hid a logging fault. `Uplink.test_h` passed in the
+  suite only because an earlier test wrote the close line it grepped for;
+  alone it failed, because a lane dropped a connection whose answer closed
+  it before reading the status, so a 503 with `Connection: close` was logged
+  `(the hub closed it)`, not `failed: the hub answered 503`. Fixed in
+  996e1052: the status is read first, and the test reads only what its
+  release wrote. live-bridge-check sampled the killed child's socket 0.2 s
+  after the kill, by when §6's at-once successor already answers; it now
+  checks that the successor takes the endpoint over (0.21 s, 15/15).
+  Evidence: `.doperpowers/sde/2026-10-20-desk-open-fast-design/task-9-report.md`,
+  `m9-runs/`.
 
 ## Decision Log
 
@@ -2291,6 +2331,20 @@ beside; a single reviewer reads one of those well in a pass.
   coordinator's reviewer; merged at eeb71406 (1.2.13).
   Date/Author: 2026-10-20, the M6 fix executor and its reviewers, folded by
   the controller.
+
+- Decision (M9): the target-band figures are written "incomplete at
+  100–300 (no run in band)" until the owner chooses whether a devcloud host
+  under `stress-ng --cpu 150 --cpu-method matrixprod` runs them (the
+  commands are in task-9-report.md, "If the owner chooses a devcloud host");
+  either answer slots in without another milestone. setup.md is unchanged:
+  no knob of this branch is the owner's (`SMINOS_IDLE_CLOSE` is read for a
+  test only, `CONFIRM_AFTER` has no override). A lane's close line names a
+  non-200 POST `failed: …` even when its answer also closes the connection
+  (§3); live-bridge-check's stale-socket clause is replaced by "the successor
+  takes the endpoint over and answers", the stale-socket rule staying pinned
+  by `test-bridge.sh`. A10's two live checks ran in M9, against the branch
+  in their own isolation, rather than after the roll.
+  Date/Author: 2026-10-20, the M9 executor and the controller.
 
 ## Outcomes & Retrospective
 
