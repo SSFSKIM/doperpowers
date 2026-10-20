@@ -25,6 +25,9 @@ describe('MAWS native to-human', () => {
     const envReads: string[] = []
     const engine = {
       env: { get: async (name: string) => { envReads.push(name); return '1' } },
+      // The module's start-up read: a session with no mark sent and no transcript yet.
+      session: { messages: async () => [], id: async () => 's1' },
+      process: { run: async () => ({ exitCode: 1, stdout: '', stderr: '' }) },
       ui: {
         resolve: () => ({ Box: 'Box', Text: 'Text', Button: 'Button', Markdown: 'Markdown' }),
         invalidate: () => { calls.push('invalidate') },
@@ -38,10 +41,11 @@ describe('MAWS native to-human', () => {
       props: { text, isFirstOfReply: true },
     }
     const bodies: unknown[] = []
-    const report = await assistant.handler(engine, terminal, async (e) => {
+    // A next as the engine hands it: the chain beneath, and the dispatch's signal.
+    const report = await assistant.handler(engine, terminal, Object.assign(async (e: Event) => {
       bodies.push((e.props as { text: string }).text)
       return { type: 'Text', children: [(e.props as { text: string }).text] }
-    })
+    }, { signal: { aborted: false } }))
     expect(report).toMatchObject({ type: 'Box' })
     // The terminal draws each body as its own Markdown; nothing is handed back.
     expect(JSON.stringify(report)).toContain('"One."')
