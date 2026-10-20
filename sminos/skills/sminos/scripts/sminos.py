@@ -1103,7 +1103,7 @@ def derivation(cwd, fresh=False):
 
 def _derive(repo, common):
     try:
-        with open(os.path.join(common, "config"), encoding="utf-8", errors="replace") as f:
+        with open(os.path.join(common, "config"), encoding="utf-8-sig", errors="replace") as f:
             remotes = git_config_remotes(f.read())
     except FileNotFoundError:
         remotes = {}

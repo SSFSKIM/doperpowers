@@ -211,6 +211,11 @@ U="$T/a/solo"
 repo "$U" upstream https://github.com/acme/solo.git
 run_in "$U" "$SMINOS" project show
 assert_equals "$(show_field source)" "remote upstream → github.com/acme/solo" "a sole remote not named origin is the one"
+BM="$T/a/bommed"
+repo "$BM" origin https://github.com/acme/bommed.git
+printf '\xef\xbb\xbf' | cat - "$BM/.git/config" > "$T/bommed.config" && mv "$T/bommed.config" "$BM/.git/config"
+run_in "$BM" "$SMINOS" project show
+assert_equals "$(show_field id)" "$(rp_of github.com/acme/bommed)" "a git config that opens with a UTF-8 BOM derives its remote, as git reads it"
 
 echo "alpha: what derives nothing, and what wins:"
 N="$T/a/noremote"
