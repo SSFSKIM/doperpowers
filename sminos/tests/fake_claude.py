@@ -8,12 +8,15 @@ a row of `agents`.
 unless a process of this machine holds it, or a flag rides along, when it
 starts a copy under a new id and says so in the engine's words. A session it
 runs is a process of its own (fake_holder.py) that the engine's record
-names, kind `bg`, with an inbox socket whose frames it keeps; `stop` ends
-it. `reopen-first` in the state directory makes the owner reopen the session
-(a terminal process holding it) just before the engine looks, as a reopen
-racing the launch does; `no-hold` makes a resumed job whose process never
-holds the session (a start that failed); `bg-sleep` holds every launch that
-many seconds."""
+names, kind `bg`, carrying `startedAt` (ms) as the engine's does, with an
+inbox socket whose frames it keeps; `stop` ends it. Every `--bg` job is
+named by its session id's first 8 characters, a fresh launch's as a resumed
+one's (2.1.304, live-resume-check.py: one job per session, its every Resume
+under the same id). `reopen-first` in the state directory makes the owner
+reopen the session (a terminal process holding it) just before the engine
+looks, as a reopen racing the launch does; `no-hold` makes a resumed job
+whose process never holds the session (a start that failed); `bg-sleep`
+holds every launch that many seconds."""
 import glob
 import json
 import os
@@ -41,16 +44,18 @@ def alive(pid):
 
 def hold(sid, kind, short=""):
     """A process holding the session, as the engine records it."""
-    inbox = os.path.join(state, "in-%s-%s.sock" % (kind[:2], sid[:8]))
+    # Its own socket: a process the session held before, killed, leaves its socket file behind.
+    inbox = os.path.join(state, "in-%s-%s-%s.sock" % (kind[:2], sid[:8], os.urandom(3).hex()))
     p = subprocess.Popen([sys.executable, HOLDER, inbox, os.path.join(state, "inbox-%s.log" % sid)],
                          start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                          stderr=subprocess.DEVNULL)
+    started = int(time.time() * 1000)
     for _ in range(500):
         if os.path.exists(inbox):
             break
         time.sleep(0.02)
     rec = {"pid": p.pid, "sessionId": sid, "cwd": os.getcwd(), "kind": kind, "status": "idle",
-           "name": "held-" + sid[:4], "messagingSocketPath": inbox}
+           "name": "held-" + sid[:4], "messagingSocketPath": inbox, "startedAt": started}
     if short:
         rec["jobId"] = short
     with open(os.path.join(sessions, "%d.json" % p.pid), "w") as f:
@@ -139,9 +144,10 @@ if "--bg" in args:
         if note:
             print(note % (sid[:8], short))
         sys.exit(0)
-    short = os.urandom(4).hex()
+    new = str(uuid.uuid4())
+    short = new[:8]
     name = args[args.index("-n") + 1]
-    row(short, str(uuid.uuid4()), name)
+    row(short, new, name)
     print("backgrounded · %s · %s" % (short, name))
     sys.exit(0)
 sys.exit(0)
