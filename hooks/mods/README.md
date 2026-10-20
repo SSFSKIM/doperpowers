@@ -671,7 +671,8 @@ tests/mods/typecheck.sh                              # every plugin's mods and t
 Typechecking reads the declarations the engine lays in the plugin's
 `.claude-plugin/types/` (gitignored) as a session loads it from a folder it
 watches, `claude --plugin-dir`; `tests/mods/typecheck.sh --lay` has the
-installed engine lay every plugin's headless, as the `mods-types` gate does.
+installed engine lay every plugin's headless in a throwaway HOME, as the
+`mods-types` gate does.
 Their MCP tools are those connected at that load, so a mod's own registered
 tool is known once a session has loaded the plugin.
 
