@@ -66,20 +66,43 @@ reload still run.
 - [x] (2026-10-19 17:50Z) M2 — MAWS PR https://github.com/SSFSKIM/MAWS/pull/74, merge 9fd93735e
       (gate run 39295926848 green; task review approved), deployed by the author 17:53Z
       (hub@9fd93735, web@master.9fd93735). Residue: MAWS #75 (the live spec's to-human path).
-- [x] (2026-10-19 21:40Z) M1 — doperpowers' readers accept both names; the reload mod installs a
+- [x] (2026-10-19 19:10Z) M1 — doperpowers' readers accept both names; the reload mod installs a
       plugin's new dependencies and updates whenever an installed version differs from the clone's,
       holding back a failed dependency's closure and every reload that would load a plugin over a
       missing dependency (doperpowers 7.189.7, to-human 0.1.2). Reviewed clean: task review (opus)
       and branch review (reviewer-high on fable), two fix waves (Decision Log, M1 review and fix
       waves). PR https://github.com/SSFSKIM/doperpowers/pull/281, merge 359c71a6 (ci-gate GREEN,
       run 39303896510).
-- [ ] M3 — The carve-out and the rename, opened by the `next.trace` spike (M3a), rehearsed on a local
-      git remote. Built and task-reviewed clean on `sminos-m3-carveout`: M3.1 (2026-10-19 21:10Z,
-      the carve-out and the rename), M3.2 (2026-10-20 00:40Z, the probe, three fix waves), M3.3
-      (2026-10-20 06:00Z, the rehearsal: the roll applied on its own, no `--force`; A1, A2's blocking
-      clause, A5 (a)–(f), A8's rehearsal half all held). Awaiting the xhigh panel and the merge.
-- [ ] M4 — The roll and each machine's migration (owner steps).
-- [ ] M5 — Cleanup and acceptance.
+- [x] (2026-10-19 23:56Z) M3 — The carve-out and the rename, opened by the `next.trace` spike
+      (M3a), rehearsed on a local git remote. Built in three steps on `sminos-m3-carveout`, each
+      task-reviewed clean: M3.1 (20:51Z, the carve-out and the rename), M3.2 (22:20Z, the probe, three
+      fix waves), M3.3 (23:00Z, the rehearsal: the roll applied on its own, no `--force`; A1, A2's
+      blocking clause, A5 (a)–(f), A8's rehearsal half all held). The xhigh panel (the author's, opus
+      finders and a fable verifier) returned incorrect with five confirmed findings, fixed or logged
+      and re-reviewed clean. PR https://github.com/SSFSKIM/doperpowers/pull/282, merge 7c809e84
+      (ci-gate GREEN, run 39343694214): sminos 1.0.0, doperpowers 7.190.0, to-human 0.2.0, devcloud
+      0.6.0.
+- [x] (2026-10-20 02:25Z, the author and the owner) M4 — The roll and each machine's migration, on
+      the MacBook and the Mac mini. Rolled by the CLI at about 23:56Z, no `--force` (`claude plugin
+      marketplace update doperpowers`, `plugin install sminos@doperpowers --scope user`, `plugin
+      update` of the four), both at sminos 1.0.0 / doperpowers 7.190.0 / to-human 0.2.0 / devcloud
+      0.6.0, then rolled on to #283 (sminos 1.0.1, 00:40Z) and #284 (sminos 1.1.0, 00:52Z). A1: the
+      order to-human, sminos, doperpowers (prepend), then prompt-autosave, cua, devcloud on both.
+      A2/A3: two async asks opened under `mcp__doperpowers__AskUserQuestion` before the roll were
+      answered after it and delivered as `The sminos plugin sent a message: …`, both answers whole.
+      The owner's `astra.md` and `sol-xhigh.md` name the new tool beside the old. A7: `sminos daemon
+      install` rerun at about 02:24–02:25Z on both; the plist's `ProgramArguments[1]` is
+      `~/.claude/plugins/marketplaces/doperpowers/sminos/skills/sminos/scripts/sminos.py`, the daemons
+      run it, the uplinks connected (MacBook stream 196 at 02:24:59Z, mini stream 165 at 02:25:35Z),
+      and no forward line since the 23:57Z one of the roll. No devcloud host is enrolled, so M5's
+      image condition holds vacuously.
+- [x] (2026-10-20 03:31Z) M5 — Cleanup and acceptance, on `sminos-m5-cleanup` off origin/main
+      2ddab4c5: the shim, the ask's shape-1 takeover and the agents' old name removed, the gate path
+      dropped (7974a3e5; doperpowers 7.190.1, sminos 1.1.1). A1–A6, A8's rehearsal half and A9's grep
+      held in temporary HOMEs at that head, A4 for the first time, the rehearsal rolling a HOME from
+      origin/main to it unattended; every suite green; the branch review (`reviewer-high` on fable)
+      found nothing material; ci-gate GREEN on the PR head's tree. The author merges, rolls and checks
+      A7 and A9 on both Macs.
 - Not a milestone here: the devcloud hosts' placement (§8, I8), the devcloud setup session's; a
   precondition for enrolling a host, blocked today.
 
@@ -169,7 +192,8 @@ SMINOS_HOME unless it names another machine or the real HOME.
   output style asks through the native AskUserQuestion (the style's own fallback sentence) rather
   than failing on the tool the style names.
 - **A5 — The bridge knows its place among the guards, per module instance.** In the rehearsal's HOME
-  with `devcloud` and `sminos` enabled, if M3a promoted the probe: (a) no `prependPlugins`: after the
+  with `devcloud` and `sminos` enabled, if M3a promoted the probe: (a) no `prependPlugins`, with sminos registered inside devcloud (devcloud ahead of it in
+  `enabledPlugins`): after the
   session's first tool call the debug log carries a line opening `sminos: the bridge is off` naming
   `prependPlugins` (an interactive session shows it as a toast too), no `tool` event was posted
   before it (the hold is a barrier, §4), and `$SMINOS_HOME/bridge/<session>.sock` serves nothing after it;
@@ -193,8 +217,8 @@ SMINOS_HOME unless it names another machine or the real HOME.
   `session.start`.
 - **A7 — The daemon survives the roll and reinstalls at the new path.** On each machine (the MacBook
   `SK`, the Mac mini, each enrolled devcloud host once one exists): after the roll, `sminos daemon
-  status` reports the daemon running and the hub shows the machine, the daemon's log naming the
-  shim's forward once; after `sminos daemon install` and the service reload, the service file names
+  status` reports the daemon running and the hub shows the machine, the daemon's stderr
+  (`$SMINOS_HOME/daemon.out`, not `daemon.log`) naming the shim's forward once; after `sminos daemon install` and the service reload, the service file names
   `<marketplace clone>/sminos/skills/sminos/scripts/sminos.py` (`plutil -p ~/Library/LaunchAgents/com.doperpowers.sminos-daemon.plist`
   on macOS, `systemctl --user cat sminos-daemon.service` on Linux).
 - **A8 — Every suite is green in the new layout.** `ci-gate` on the M3 commit is GREEN with the gates
@@ -648,7 +672,11 @@ each devcloud host once one is enrolled.
    then `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.doperpowers.sminos-daemon.plist`;
    on Linux `systemctl --user daemon-reload && systemctl --user restart sminos-daemon.service`. Until
    this step the daemon runs through the shim (§7).
-6. Verify A1 and A7 on the machine.
+6. Verify A1 and A7 on the machine. The shim's forward line goes to the daemon's stderr,
+   `$SMINOS_HOME/daemon.out`, not `daemon.log`. On macOS a `launchctl bootstrap` right after the
+   `bootout` can fail with error 5 ("Try re-running the command as root"); a retry a few seconds
+   later loads the agent, and the cold start takes about half a minute to the uplink (the MacBook,
+   2026-10-20).
 
 **devcloud hosts — the devcloud setup session's, and a precondition for enrolling one at the desk.**
 A host receives the owner's `~/.claude` as a receive-only clone (reset to its remote every 30 minutes,
@@ -1458,6 +1486,22 @@ machine; MAWS `origin/master` at or after M2's merge, deployed, for A2's desk ha
   neither is affected. The engine here is 2.1.304; nothing in §4, §5 or §10 behaved differently on it.
   Evidence: M3.3's report, Discoveries 2–7.
 
+- Observation (M4): on macOS, `launchctl bootstrap` immediately after `launchctl bootout` of the
+  sminos daemon can fail with error 5; a retry 3 s later succeeded, and the cold start took about 20 s
+  to `daemon run started` and 16 s more to the uplink (the MacBook; the mini was fine). The shim's
+  forward line is written to `daemon.out` (stderr), not `daemon.log`.
+  Evidence: the author's M4 account, 2026-10-20.
+
+- Observation (M5): without `prependPlugins`, where sminos lands relative to devcloud follows the
+  order of `enabledPlugins` (install order), not the absence of the setting alone. With sminos
+  installed first, the engine registered doperpowers, to-human, sminos, devcloud, which puts sminos
+  outside devcloud; the bridge rightly stayed on and posted payloads. With devcloud first, sminos
+  registered innermost and went off as A5 (a) says. The probe judges the real order either way; M3.3's
+  unplaced HOME happened to have sminos installed last, by the roll. A5 (a) now names the condition.
+  The roll to the M5 head reloaded only sminos and doperpowers (to-human and devcloud were at their
+  clones' versions), and the open ask, the socket and the fold carried across.
+  Evidence: M5's report, Discoveries 1–2 (`/tmp/m5-rehearsal/logs/a5u1.*`, `a5u3.*`).
+
 ## Decision Log
 
 - Decision: verification — one independent spec review by the `doperpowers:adversarial-reviewer`
@@ -1768,6 +1812,66 @@ machine; MAWS `origin/master` at or after M2's merge, deployed, for A2's desk ha
   Date/Author: 2026-10-20, the spec's author's panel, fixed by the M3 fixer, folded by the plan's
   executor.
 
+- Decision (M5's acceptance re-run): M5 re-runs A1–A6 and A8 as written, in temporary HOMEs on the
+  MacBook, with §10's rehearsal rolling a HOME from origin/main's marketplace state to the M5 head (so
+  the reload mod rolls the cleanup itself), and A4 for the first time; A9's grep runs at the M5 head
+  and again after the merge. A7 and the desk clause of A2 are real-machine criteria and stand as
+  checked live on both Macs in M4: M5 changes nothing on the daemon's service path, and its removal
+  of the shim is safe only because A7 held on every machine.
+  Rationale: M5 removes the transition scaffolding (the shim, the shape-1 fallback, the old name in
+  the agents, the gate path); the rehearsal's roll from the current main is the one place that
+  removal meets a live HOME before the owner's machines.
+  Date/Author: 2026-10-20, the plan's executor.
+
+- Decision (M5): `keptBefore` stays, reading only sminos's own shape-2 value at
+  `{ plugin: 'sminos', key: 'ask' }`; M5 removed its shape-1 branch and `KEPT_BEFORE`.
+  Rationale: the own-key read is the reload takeover (a `/reload-plugins` or the autoreload keeps the
+  asks), which is the hook's other behavior and must stay; only the takeover from `doperpowers.ask`
+  was transition scaffolding.
+  Date/Author: 2026-10-20, M5's executor.
+- Decision (M5): A3 ran against a transcript recorded at M1 (`359c71a6`), the last state that
+  registered the old name; the repository's live check records its own transcript, so a subclass in
+  the rehearsal's tree ran its checks against the recording, keyless.
+  Rationale: origin/main registers the new name, so no session there can record an old-name call, and
+  no M3.3 transcript held an old-name ask answered under the old framing.
+  Date/Author: 2026-10-20, M5's executor.
+- Decision (M5): A5 (a)'s wording names its real condition, sminos registered inside devcloud
+  (devcloud ahead of it in `enabledPlugins`), rather than the absence of `prependPlugins` alone.
+  Rationale: the M5 observation above; the probe was right in both orders, the criterion's premise
+  was not.
+  Date/Author: 2026-10-20, the plan's executor.
+
 ## Outcomes & Retrospective
 
-Pending — written at finish.
+**What was achieved.** The purpose holds as written. `sminos@doperpowers` is a plugin of its own
+(1.1.1 at M5), carrying the CLI, the daemon and uplink, the bridge, the async ask and the record and
+guide hooks; doperpowers no longer carries any of them, and the ask tool is
+`mcp__sminos__AskUserQuestion`. Both Macs rolled to it without `--force` (M4), their daemons run from
+the plugin's own path, and asks opened under the old name before the roll were answered after it.
+M5's rehearsal re-proved the rest at the cleanup head: A1's order, A2's round trip and blocking
+dialog, A3's resume and `/branch` copy of an old-name transcript, A4 (sminos alone and doperpowers
+alone, run for the first time), A5 (a)–(f), A6, A8's unattended roll and A9's grep. MAWS's desk reads
+both names (M2). What stays for good: the readers of both names (§3), which a transcript from before
+the rename needs.
+
+**What went differently from the plan.**
+- M3 was split into three steps (carve-out, probe, rehearsal) once its size was clear; each was
+  task-reviewed on its own, and the xhigh panel then reviewed the whole.
+- The `next.trace` probe was promoted with its verdict evaluated on every dispatch, and `off` became
+  recoverable on positive evidence (the author's ruling) rather than terminal; it took three fix waves
+  to settle what "positive evidence" and a stale dispatch are.
+- The reload mod grew past "act on a version difference": it installs a missing dependency whoever
+  applied the update, holds back a failed dependency's closure, and judges the hold on the tick that
+  would fire. M1's reviews found each of those as a way an unattended roll could strand a machine.
+- A5's criteria were worded to the paths observed (f, and in M5 a) rather than the ones first
+  imagined; in both cases the code was right and the criterion's premise was not.
+
+**Lessons.**
+- An unattended roll is only as safe as its worst intermediate state: a reload that lands between the
+  marketplace's update and a dependency's install loads a plugin with a hole in it. Judging readiness
+  on what the reload would load, at the moment it fires, was the fix that made the roll trustworthy.
+- Hook placement is decided by the engine from settings, tiers and install order together; a probe
+  that reads the live order (`next.trace`) beat any reasoning about what the order should be, and the
+  acceptance had to be written against the order observed.
+- Keeping the readers of both names permanently, and removing only the writers' scaffolding at the
+  end, let every step ship alone and every machine roll at its own time.

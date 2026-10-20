@@ -36,12 +36,6 @@ cleanup() {
   rm -rf "$TEST_ROOT"
 }
 trap cleanup EXIT
-# Every run reaches the plugin's own CLI. One that reached the CLI's retired
-# path in doperpowers (the shim, which forwards to it and says so on stderr)
-# was pointed at the wrong root: the suite fails on that line wherever it
-# reaches the suite's own stderr (summary). The shim's own cases capture it.
-STDERR_LOG="$TEST_ROOT/stderr.log"
-exec 2> >(tee -a "$STDERR_LOG" >&2)
 
 pass() { PASSES=$((PASSES + 1)); echo "  ok   $1"; }
 fail() { FAILURES=$((FAILURES + 1)); echo "  FAIL $1"; }
@@ -391,9 +385,6 @@ run_suites() {
 }
 summary() {
   echo
-  if grep -Fq "forwarded from the retired path" "$STDERR_LOG" 2>/dev/null; then
-    fail "no run reached the CLI's retired path (doperpowers' shim): $(grep -F "forwarded from the retired path" "$STDERR_LOG" | head -1)"
-  fi
   if [ "$FAILURES" -eq 0 ]; then
     echo "all $PASSES assertions passed"
   else
@@ -6086,49 +6077,6 @@ assert_contains "$(unit_fields "$MD/inst/.config/systemd/user/sminos-daemon.serv
   "[Service] ExecStart=$(real "$INSTALL_PY") $(real "$MKT/sminos/skills/sminos/scripts/sminos.py") | daemon run" \
   "and runs the marketplace clone's CLI, not the versioned cache's"
 assert_file_absent "$MD/service.calls" "still loading nothing"
-# The CLI's retired path, doperpowers' skills/sminos/scripts/ (a shim, through
-# the move's roll): a service installed before the move, or an older devcloud
-# image's boot, still runs it, and it goes on under the real CLI with the same
-# arguments — the sibling sminos/ folder first (the doperpowers cache copies the
-# whole repository), then the installed sminos plugin's — saying so on stderr;
-# with neither, it refuses. A stand-in CLI that prints how it was run says
-# which one ran.
-SHIM_SCRIPTS="$PLUGIN_ROOT/../skills/sminos/scripts"
-DPC="$MD/shim/.claude/plugins/cache/doperpowers/doperpowers/9.9.9"
-SMC="$MD/shim/.claude/plugins/cache/doperpowers/sminos/9.9.9"
-mkdir -p "$DPC/skills/sminos" "$DPC/sminos/skills/sminos/scripts" "$SMC/skills/sminos/scripts"
-cp -R "$SHIM_SCRIPTS" "$DPC/skills/sminos/scripts"
-stand_in() { printf 'import sys\nprint("ran %s", sys.argv[1:])\n' "$1" > "$2/sminos.py"; }
-stand_in sibling "$DPC/sminos/skills/sminos/scripts"
-stand_in installed "$SMC/skills/sminos/scripts"
-printf '{"version": 2, "plugins": {"sminos@doperpowers": [{"scope": "project", "installPath": "%s", "projectPath": "/elsewhere"}, {"scope": "user", "installPath": "%s", "version": "9.9.9"}]}}\n' \
-  "$MD/nowhere" "$SMC" > "$MD/shim/.claude/plugins/installed_plugins.json"
-shim() { # args... → SHIM_OUT, SHIM_ERR, SHIM_RC, as a service runs it: python3 <old path>/sminos.py
-  set +e; SHIM_OUT="$(env HOME="$MD/shim" python3 "$DPC/skills/sminos/scripts/sminos.py" "$@" 2>"$MD/shim.err")"; SHIM_RC=$?; set -e
-  SHIM_ERR="$(cat "$MD/shim.err")"
-}
-shim daemon run --interval 1
-assert_rc 0 "$SHIM_RC" "the retired path's shim runs a CLI"
-assert_equals "$SHIM_OUT" "ran sibling ['daemon', 'run', '--interval', '1']" "the sibling sminos/ folder's, with the same arguments"
-assert_equals "$SHIM_ERR" "sminos: forwarded from the retired path $(real "$DPC/skills/sminos/scripts/sminos.py"); rerun sminos daemon install" \
-  "saying so on stderr, once"
-mv "$DPC/sminos" "$MD/sibling.away"
-shim daemon status
-assert_equals "$SHIM_OUT" "ran installed ['daemon', 'status']" "with no sibling, the installed sminos plugin's (its user install, not another project's)"
-assert_contains "$SHIM_ERR" "forwarded from the retired path" "saying so too"
-set +e; SHIM_LAUNCHER_OUT="$(env HOME="$MD/shim" "$DPC/skills/sminos/scripts/sminos" daemon status 2>/dev/null)"; set -e
-assert_equals "$SHIM_LAUNCHER_OUT" "ran installed ['daemon', 'status']" "and so does the launcher beside it"
-rm "$MD/shim/.claude/plugins/installed_plugins.json"
-shim daemon run
-assert_rc 1 "$SHIM_RC" "with neither, it refuses"
-assert_contains "$SHIM_ERR" "rerun sminos daemon install" "naming sminos daemon install"
-assert_equals "$SHIM_OUT" "" "running nothing"
-mv "$MD/sibling.away" "$DPC/sminos"
-# And the real CLI behind it: a checkout's own sibling.
-set +e; SHIM_HELP="$(env HOME="$MD/shim" python3 "$SHIM_SCRIPTS/sminos.py" help 2>"$MD/shim.err")"; SHIM_RC=$?; set -e
-assert_rc 0 "$SHIM_RC" "in a checkout the shim runs the plugin's own CLI"
-assert_contains "$SHIM_HELP" "sminos spawn" "which answers as itself"
-assert_contains "$(cat "$MD/shim.err")" "forwarded from the retired path $(real "$SHIM_SCRIPTS/sminos.py")" "the forward said there too"
 # The platform chooses: launchd on macOS, systemd on Linux, a refusal elsewhere.
 run env HOME="$MD/pc" SMINOS_HOME="$MD/pc/sminos" XDG_CONFIG_HOME= PATH="$MD/lc:$PATH" "$SMINOS" daemon install
 assert_rc 0 "$RC" "with nothing forcing it, install follows the platform"
