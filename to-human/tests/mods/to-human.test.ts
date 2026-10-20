@@ -625,9 +625,11 @@ describe('the reload line', () => {
   // The engine's test kit carries no `$.ui.log` and refuses one from a test's
   // hook, so the hooks are called as the engine would call them, as
   // to-human-native.test.ts does.
-  test('stays out of the report and in the full transcript; a failed reload\'s stays in both', async () => {
-    type Event = Record<string, unknown>
-    type Handler = (engine: EngineInterface, e: Event, next: (e: Event) => Promise<unknown>) => unknown
+  type Event = Record<string, unknown>
+  type Handler = (engine: EngineInterface, e: Event, next: (e: Event) => Promise<unknown>) => unknown
+  const reloaded = '/reload-plugins: Reloaded: 11 plugins · 24 skills · 17 agents'
+  /** A module of the view, registered fresh, over a conversation of the given assistant texts. */
+  const loaded = (conversation: string[] = []) => {
     const hooks: { event: string; matcher: Event; handler: Handler }[] = []
     const on = ((event: string, ...rest: unknown[]) => {
       hooks.push({ event, matcher: rest.length > 1 ? rest[0] as Event : {}, handler: rest[rest.length - 1] as Handler })
@@ -635,18 +637,22 @@ describe('the reload line', () => {
     registerToHuman(on)
     const engine = {
       env: { get: async () => undefined },
+      session: { messages: async () => conversation.map((text) => ({ role: 'assistant', text, toolUses: [] })) },
       ui: { resolve: () => ({ Box: 'Box', Text: 'Text', Button: 'Button', Markdown: 'Markdown' }), invalidate: () => {} },
     } as unknown as EngineInterface
     const hook = (event: string, component?: string) => hooks.find((h) => h.event === event && h.matcher.component === component)!
     const draw = (component: string, props: Event) => hook('ui.render', component).handler(engine, { surface: 'terminal', component, requestId: 'r1', props }, async () => null)
-
     const line = hook('ui.log')
-    const reloaded = '/reload-plugins: Reloaded: 11 plugins · 24 skills · 17 agents'
     const to = async () => {
       let sent: unknown
       await line.handler(engine, { text: reloaded, to: 'transcript' }, async (e) => { sent = e.to })
       return sent
     }
+    return { draw, line, to }
+  }
+
+  test('stays out of the report and in the full transcript; a failed reload\'s stays in both', async () => {
+    const { draw, line, to } = loaded()
     expect(line.matcher.to).toBe('transcript')
     expect(reloaded).toMatch(line.matcher.text as RegExp)
     expect('/reload-plugins: Failed to reload plugins: ENOENT').not.toMatch(line.matcher.text as RegExp)
@@ -666,6 +672,14 @@ describe('the reload line', () => {
     expect(JSON.stringify(band)).toContain('full transcript')
     findPress(band)!()
     expect(await to()).toBe('transcript')
+  })
+
+  test('a reload that updated this plugin finds the marks the session sent in its conversation', async () => {
+    // The module starts over and nothing has drawn: a mark sent before it folds the report.
+    expect(await loaded(['Working.', '<message>Done.</message>']).to()).toBe('debug')
+    // A mark the model only quoted is no message; a session that sent none does not fold.
+    expect(await loaded(['Working.', '`<message>` marks a message.']).to()).toBe('transcript')
+    expect(await loaded([]).to()).toBe('transcript')
   })
 })
 

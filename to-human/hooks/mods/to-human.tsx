@@ -1137,9 +1137,16 @@ export function registerToHuman(on: On) {
   // to the debug log as it is logged. The full transcript keeps it, and a
   // reload that failed, whose line says no `Reloaded:`, or that loaded with
   // anything past the first line (load errors, an unreachable marketplace),
-  // stays in both.
+  // stays in both. A reload keeps the modules of the plugins it did not
+  // change; one that updated this plugin starts the module over, and its line
+  // comes before any row draws again, so the conversation tells whether the
+  // session has sent a mark.
   on('ui.log', { to: 'transcript', text: /^\/reload-plugins: Reloaded: [^\n]*$/ }, async ($, e, next) => {
     if (await native($, e)) return next(e)
+    if (!hasSeenMark && (await $.session.messages()).some((m) => m.role === 'assistant' && parse(m.text).spans.length > 0)) {
+      hasSeenMark = true
+      $.ui.invalidate('ui.render')
+    }
     return next(isFolding() ? { ...e, to: 'debug' } : e)
   })
 
