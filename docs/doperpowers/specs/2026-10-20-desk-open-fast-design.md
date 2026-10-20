@@ -335,10 +335,10 @@ same opens at load 100–300 are the second figure of each line.
     1 s; `release` ends the stream as today and the next stream serves them
     again;
   - the pair (M9, `bench_open.py --uplink --hub local --scenario held
-    --pause-stream 4 --backlog 4m`), in M2's order with each step observed
+    --pause-stream 4 --backlog 16m`), in M2's order with each step observed
     before the next: a subscription is open and its client has a first
     chunk of the fake session's scripted stream; a second client's upload
-    of 4 MB of events is answered 200, so the hub fans them out down the
+    of 16 MiB of events is answered 200, so the hub fans them out down the
     uplink's stream on the same generation; the proxy, armed, pauses on the
     first of those frames and reports it — the window starts there — and
     the hub's remaining fan-out writes block behind the paused socket for
@@ -1401,7 +1401,7 @@ python3 sminos/tests/bench_open.py --uplink --hub local --maws <MAWS worktree> -
 python3 sminos/tests/bench_open.py --uplink --hub local --maws <MAWS worktree> --live --scenario after-prompt --opens 5
 python3 sminos/tests/bench_open.py --uplink --hub local --maws <MAWS worktree> --live --scenario kill --opens 3
 python3 sminos/tests/bench_open.py --uplink --hub standin --scenario restart --synthetic-rows 15000
-python3 sminos/tests/bench_open.py --uplink --hub local --maws <MAWS worktree> --scenario held --pause-stream 4 --backlog 4m   # 4 s: under the local hub's 6 s silence bound, continuity not reconnection
+python3 sminos/tests/bench_open.py --uplink --hub local --maws <MAWS worktree> --scenario held --pause-stream 4 --backlog 16m   # 4 s: under the local hub's 6 s silence bound, continuity not reconnection
 python3 sminos/tests/bench_open.py --micro --session <id> --sminos-home <dir>     # one open's phases, in-process
 python3 sminos/tests/bench_scale.py opens <scripts-dir> --live 40 --large 6
 python3 sminos/tests/bench_index.py <transcript.jsonl>
@@ -1967,6 +1967,27 @@ beside; a single reviewer reads one of those well in a pass.
   chunked bodies (M1's fixture, fixed here). The live headless session sets
   `SMNS_MEMBER`; `MAX_THINKING_TOKENS=2048` gives haiku a thinking block.
   Date/Author: 2026-10-20, the M2 executor, folded by the controller.
+
+- Decision (M2 review, amending A4's pair and M9's command): the pair
+  proof's backlog is 16 MiB, not 4 MB. On the local hub the node Access
+  stand-in, workerd and the kernel absorb 4 MiB, so no hub write blocked;
+  with 16 and 32 MiB they did (M2 raised B as its milestone allows). A held
+  run counts for A4 only with positive evidence that a hub write blocked: a
+  probe `hello` sent straight to the hub on the uplink's credential and
+  generation while the pause stands, observed pending while it stands and
+  answered after the resume (the hub answers it only once its `have` is
+  written behind every queued write). A run without that evidence is
+  incomplete, not passed. Every instrument reports `"complete": false` with
+  its reasons and exits 3 when a figure lacks its evidence: a long-answer
+  trial counts only with a window of 12 s or more (`--long-words`, default
+  1600, or `--model sonnet`); a live probe's coverage gap that cannot be
+  reconstructed marks the inventory `source: incomplete`; a subscription
+  whose snapshot cannot be placed by key gets no `snapshot` event; a +0.5 s
+  scale sample taken when the stream was not ready is not filed under +0.5 s.
+  The held census reads every uplink request at the pause proxy by its
+  start, outstanding ones included.
+  Date/Author: 2026-10-20, the M2 executor and its reviewer, folded by the
+  controller.
 
 ## Outcomes & Retrospective
 
