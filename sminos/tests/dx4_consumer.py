@@ -4,14 +4,17 @@ M1), for tests and the instruments only.
 
 `Consumer` applies one subscription's DX4 messages as the desk's web does:
 its streaming layer (MAWS `apps/desk-web/src/depth/stream/layer.ts`, with
-the spec's §9 rule: a block the fresh snapshot carries is drawn from it,
-named or not) and the rows it holds (`depth/source/desk-transcript.ts`:
+the spec's §9 rule: a block the fresh snapshot carries is drawn, named or
+not, with the snapshot's text unless the old subscription had named it,
+which keeps the text drawn) and the rows it holds (`depth/source/desk-transcript.ts`:
 the snapshot's rows, live rows once each by uuid, older pages before them,
 a fresh snapshot after a disruption merged into the held rows where its
 oldest row is held, else replacing them). A row lands when it is held: the
 blocks it settles are dropped then, as `settleLanded` does once the store
 has the row. `n` starts over with every subscription; a re-subscribe is a
 new Consumer handed the old one (`previous`), whose drawing it resumes.
+After an `n` gap the consumer records it and applies the message; the web's
+project client resubscribes instead and never delivers that message.
 
 It records what would be wrong on screen, each error a string whose first
 word is its kind: `gap` (an `n` out of sequence), `dup` (a row twice on one
@@ -138,8 +141,9 @@ class Layer:
     def resume(self, streaming, landing, lands):
         """A fresh snapshot over what was drawn (layer.ts `resume`, §9): a
         block the snapshot carries is drawn from it — its text the
-        snapshot's, named by the snapshot's uuid else by what named it
-        before, its identity the old one's; a block it does not carry stays
+        snapshot's, except a block the old subscription had named, which
+        keeps the text drawn; named by the snapshot's uuid else by what
+        named it before, its identity the old one's; a block it does not carry stays
         until the row that named it lands where that row will land, else
         until `landing`, else goes. A request the snapshot holds less of is
         kept as drawn; an ended one stays ended. Returns the blocks dropped."""
@@ -167,7 +171,12 @@ class Layer:
             for index, block in old.blocks.items():
                 fresh = request.blocks.get(index) if request is not None else None
                 if fresh is not None:
-                    block.kind, block.text, block.tool, block.truncated = fresh.kind, fresh.text, fresh.tool, fresh.truncated
+                    block.kind, block.tool = fresh.kind, fresh.tool
+                    # A block the old subscription named keeps the text drawn: its block-row
+                    # followed its last chunk, so that text is whole, and stays whole where the
+                    # carried copy is cut to its tail.
+                    if index not in old.named:
+                        block.text, block.truncated = fresh.text, fresh.truncated
                     if fresh.settled_by is not None:
                         block.settled_by, block.own = fresh.settled_by, True
                     request.blocks[index] = block

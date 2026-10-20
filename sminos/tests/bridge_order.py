@@ -139,18 +139,36 @@ def seen(uuid, loop="main"):
     return {"type": "row-seen", "uuid": uuid, "agentId": None if loop == "main" else loop, "door": "tool-result"}
 
 
+def key(e):
+    """A request's (turnId, agentId, step), from an event or a streaming entry."""
+    return (e.get("turnId"), e.get("agentId"), e.get("step"))
+
+
+def open_step(steps, loop):
+    """The loop's request open now, if any (the latest of them)."""
+    mine = sorted((k for k in steps if (k[1] or "main") == loop), key=lambda k: (str(k[0]), k[2] if type(k[2]) is int else -1))
+    return mine[-1] if mine else None
+
+
 class Consumer:
     """The reference reader of one subscription (DX5's consumer rule, which
     DC7 ports), as the plan's Decision Log states it:
 
-    History waits until each loop's cut row is on disk (5 s, else a
-    discontinuity) and reads up to and including it; live, disk rows are
-    emitted strictly in disk order, a row past the cut released on whichever
-    comes first — its own notice, a notice for any later row of the same loop
-    (a row passed over is unnamed), or 2 s after it was first seen on disk with
-    neither — and every later row waits behind it. A notice whose row is not on disk within 5 s, and a
-    `block-row` for a uuid already released unnamed, end the subscription; a
-    `row-seen` for an already released uuid is ignored.
+    History reads each loop's rows up to and including its cut row when that
+    row is on disk, and every row on disk when it is not (rows reach disk in
+    notice order, so nothing past a row not yet flushed is flushed): the
+    snapshot waits for nothing. The cut's row not on disk then counts as a
+    notice, as does each block the snapshot's `streaming` carries named (its
+    `uuid`) whose row is not in history. Live, disk rows are emitted strictly
+    in disk order, a row past the cut released on whichever comes first — its
+    own notice, a notice for any later row of the same loop (a row passed
+    over is unnamed), or 2 s after it was first seen on disk with neither —
+    and every later row waits behind it. A notice's row is due 5 s after the
+    end of its loop's step that was open when the notice came (its `step`
+    end, or its turn's `complete`), or 5 s after the notice when none was
+    (open-fast M5, 2026-10-20); a row past its due, and a `block-row` for a
+    uuid already released unnamed, end the subscription; a `row-seen` for an
+    already released uuid is ignored.
 
     A loop whose cut is null, or that the cut does not name, had no rows: its
     history is empty. The stream ending is the other discontinuity: the
@@ -198,22 +216,30 @@ class Consumer:
             events.put(None)
         threading.Thread(target=read, daemon=True).start()
         cut = self.snapshot.get("cut") or {}
+        steps = {key(m) for m in self.snapshot.get("streaming") or []}   # requests open
+        named = {}               # uuid → the step open when its notice came (None: none), for a row not yet emitted
+        due = {}                 # uuid → when its row is due: its step's end, or its notice, plus FLUSH_WAIT
         released = {}            # loop → how many of its disk rows are emitted
+        now = time.time()
         for loop in self.loops:
             at = cut.get(loop)
-            rows = []
-            if at is not None:
-                deadline = time.time() + FLUSH_WAIT
-                while at not in self.disk.rows(loop):
-                    if time.time() > deadline:
-                        return self.end("the cut's row %s is not on disk" % at)
-                    time.sleep(0.02)
-                rows = self.disk.rows(loop)
+            rows = self.disk.rows(loop) if at is not None else []
+            if at in rows:
                 rows = rows[:rows.index(at) + 1]
+            elif at is not None:
+                # The cut's row not on disk yet: every row that is goes, and the cut's row is a notice.
+                named[at] = open_step(steps, loop)
+                if named[at] is None:
+                    due[at] = now + FLUSH_WAIT
             for uuid in rows:
                 self.emit(uuid, "history")
             released[loop] = len(rows)
-        named = {}               # uuid → when its notice came, for a row not yet emitted
+        for m in self.snapshot.get("streaming") or []:
+            for b in m.get("blocks") or []:
+                if (m.get("agentId") or "main") in self.loops and isinstance(b.get("uuid"), str) \
+                        and b["uuid"] not in self.how:
+                    named[b["uuid"]] = key(m)   # a carried named block: due once its step ends
+                    due.pop(b["uuid"], None)
         first_seen = {}          # a disk row past the cut → when it was first seen on disk
         stream_over = False
         while not self.stop.is_set():
@@ -222,15 +248,33 @@ class Consumer:
                     e = events.get_nowait()
                 except queue.Empty:
                     break
+                now = time.time()
+                kind = e.get("type") if e is not None else None
                 if e is None:
                     stream_over = True
-                elif e.get("type") in ("block-row", "row-seen") and (e.get("agentId") or "main") in self.loops:
+                elif kind == "chunk" or (kind == "step" and e.get("phase") == "start"):
+                    steps.add(key(e))
+                elif kind == "step" and e.get("phase") == "end":
+                    steps.discard(key(e))
+                    for u, k in named.items():
+                        if k == key(e):
+                            due.setdefault(u, now + FLUSH_WAIT)
+                elif kind == "turn" and e.get("phase") == "complete":
+                    steps = {k for k in steps if k[0] != e.get("turnId")}
+                    for u, k in named.items():
+                        if k is not None and k[0] == e.get("turnId"):
+                            due.setdefault(u, now + FLUSH_WAIT)
+                elif kind in ("block-row", "row-seen") and (e.get("agentId") or "main") in self.loops:
                     uuid = e["uuid"]
                     if uuid in self.how:
-                        if e["type"] == "block-row" and self.how[uuid] == "unnamed":
+                        if kind == "block-row" and self.how[uuid] == "unnamed":
                             return self.end("a block-row for %s, emitted unnamed" % uuid)
                         continue
-                    named[uuid] = time.time()
+                    if uuid not in named:
+                        named[uuid] = key(e) if kind == "block-row" and key(e) in steps else \
+                            open_step(steps, e.get("agentId") or "main")
+                        if named[uuid] is None:
+                            due[uuid] = now + FLUSH_WAIT
             now = time.time()
             for loop in self.loops:
                 rows = self.disk.rows(loop)
@@ -241,6 +285,7 @@ class Consumer:
                     if head in named:
                         self.emit(head, "notice")
                         del named[head]
+                        due.pop(head, None)
                     elif any(u in named for u in rows[released[loop] + 1:]):
                         self.emit(head, "unnamed")
                     elif now - first_seen[head] >= UNNAMED_AFTER:
@@ -248,10 +293,12 @@ class Consumer:
                     else:
                         break
                     released[loop] += 1
-            late = [u for u, t in named.items() if now - t > FLUSH_WAIT]
+            late = [u for u, t in due.items() if now > t]
             if late:
-                return self.end("%s is not on disk %ss after its notice" % (late[0], FLUSH_WAIT))
-            if stream_over and not named:
+                return self.end("%s is not on disk %ss after its step's end or its notice" % (late[0], FLUSH_WAIT))
+            # Once the stream is over, rows whose due has begun still drain;
+            # a row whose step is still open has no end coming.
+            if stream_over and not [u for u in named if u in due]:
                 return self.end("the stream ended")
             time.sleep(0.02)
 
@@ -330,8 +377,11 @@ def cut():
     s = after.snapshot
     check("each loop's cut is its last notice applied, a block-row's included",
           s["cut"] == {"main": "m2", "a7": "s1"}, s["cut"])
-    check("and the block its row settled has left streaming with it",
-          [m for m in s["streaming"] if m["turnId"] == "t1"][0]["blocks"] == [], s["streaming"])
+    check("and the block its row settled stays in streaming with its text, named by that row, until its step ends",
+          [{k: v for k, v in b.items() if k != "namedAt"} for b in
+           [m for m in s["streaming"] if m["turnId"] == "t1"][0]["blocks"]]
+          == [{"index": 0, "kind": "text", "text": "Hi", "upTo": 0, "uuid": "m2"}]
+          and all(type(b.get("namedAt")) is int for m in s["streaming"] for b in m["blocks"]), s["streaming"])
     child.resync(cut={"main": "m2"})
     ok = until(3, lambda: snap.ended and after.ended)
     check("a later resync ends every open subscription; none sees a resync line",
@@ -414,9 +464,96 @@ def between_chunk_and_row():
           "%s; %s" % (blocks, c.out))
     late = Consumer(child, disk)
     late.wait("history", 3, lambda: len(late.out) >= 2)
-    check("one opened after the block-row: no block streaming, the row in history",
-          not [b for m in late.snapshot["streaming"] for b in m["blocks"]] and late.out == [("p1", "history"), ("a1", "history")],
+    check("one opened after the block-row: the block carried named by its row, the row in history",
+          [b.get("uuid") for m in late.snapshot["streaming"] for b in m["blocks"]] == ["a1"]
+          and late.out == [("p1", "history"), ("a1", "history")],
           "%s; %s" % (late.snapshot["streaming"], late.out))
+    child.stop()
+
+
+def named_carried():
+    """A block named before its row flushed (the engine flushes a message's
+    rows at its end) stays in the snapshot with its text and its row's uuid:
+    a subscription opened then waits for nothing, and takes the row once on
+    its flush; a late chunk of the block changes nothing; the step's end
+    drops it."""
+    child, disk = Child(), Disk("carried")
+    child.resync()
+    child.post(seen("p1"))
+    disk.write("main", "p1")
+    child.post({"type": "turn", "phase": "start", "turnId": "t1", "agentId": None},
+               {"type": "step", "phase": "start", "turnId": "t1", "agentId": None, "step": 0, "model": "m"},
+               {"type": "chunk", "turnId": "t1", "agentId": None, "step": 0, "chunkIndex": 0,
+                "chunk": {"kind": "thinking", "index": 0, "text": "Plot "}},
+               {"type": "chunk", "turnId": "t1", "agentId": None, "step": 0, "chunkIndex": 1,
+                "chunk": {"kind": "thinking", "index": 0, "text": "first."}},
+               {"type": "block-row", "uuid": "a1", "turnId": "t1", "agentId": None, "step": 0, "index": 0, "t": 1234},
+               {"type": "chunk", "turnId": "t1", "agentId": None, "step": 0, "chunkIndex": 2,
+                "chunk": {"kind": "thinking", "index": 0, "text": " late"}},
+               {"type": "chunk", "turnId": "t1", "agentId": None, "step": 0, "chunkIndex": 3,
+                "chunk": {"kind": "text", "index": 1, "text": "Once"}})
+    t0 = time.time()
+    c = Consumer(child, disk)
+    c.wait("the snapshot", 3, lambda: c.snapshot and c.out)
+    took = time.time() - t0
+    blocks = [b for m in c.snapshot["streaming"] for b in m["blocks"]]
+    check("a block named before its row is on disk: the snapshot at once, the block carried with its text, its row's "
+          "uuid and the notice's stamp; a late chunk of it ignored; history every row on disk",
+          took < 1 and blocks == [{"index": 0, "kind": "thinking", "text": "Plot first.", "upTo": 1, "uuid": "a1",
+                                   "namedAt": 1234}, {"index": 1, "kind": "text", "text": "Once", "upTo": 3}]
+          and c.out == [("p1", "history")], "%.2f s; %s; %s" % (took, blocks, c.out))
+    time.sleep(FLUSH_WAIT + 0.5)
+    check("its row is not due while its step is open, however long the answer runs",
+          c.ended is None and c.out == [("p1", "history")], "%s; %s" % (c.ended, c.out))
+    # The mod resyncs this same child (a lost post's recovery): its copy carries
+    # the named block, and a stale unnamed copy of another block the child saw
+    # settled. The resync ends every subscription; the next opens before the step ends.
+    child.post({"type": "block-row", "uuid": "a2", "turnId": "t1", "agentId": None, "step": 0, "index": 1, "t": 1300})
+    child.resync(cut={"main": "a2"}, streaming=[
+        {"turnId": "t1", "agentId": None, "step": 0, "model": "m", "upTo": 3, "settled": [0],
+         "blocks": [{"index": 0, "kind": "thinking", "text": "Plot first.", "upTo": 1, "uuid": "a1", "namedAt": 1234},
+                    {"index": 1, "kind": "text", "text": "On", "upTo": 3}]}])
+    c.wait("the end", 3, lambda: c.ended)
+    d = Consumer(child, disk)
+    d.wait("the snapshot", 3, lambda: d.snapshot)
+    blocks = [b for m in d.snapshot["streaming"] for b in m["blocks"]]
+    check("a resync of the same child keeps the named block it carries, and drops a stale unnamed copy of a block "
+          "the child saw settled; the next snapshot carries the block with its uuid and its text",
+          c.ended == "the stream ended" and [(b["index"], b["text"], b.get("uuid")) for b in blocks]
+          == [(0, "Plot first.", "a1")], "%s; %s" % (c.ended, blocks))
+    child.post({"type": "chunk", "turnId": "t1", "agentId": None, "step": 0, "chunkIndex": 4,
+                "chunk": {"kind": "thinking", "index": 0, "text": " later"}})
+    disk.write("main", "a1", "assistant")
+    disk.write("main", "a2", "assistant")
+    child.post({"type": "step", "phase": "end", "turnId": "t1", "agentId": None, "step": 0})
+    d.wait("a2", 3, lambda: len(d.out) >= 3)
+    after = Sub(child).snapshot
+    check("its row, flushed at the message's end, comes once on its notice; the step's end drops the block",
+          d.out == [("p1", "history"), ("a1", "notice"), ("a2", "notice")] and d.ended is None
+          and after["streaming"] == [], "%s, %s; %s" % (d.out, d.ended, after["streaming"]))
+    child.stop()
+
+
+def named_never_flushed():
+    """A named row that never reaches disk is due NOTICE_WAIT after its step's
+    end: the subscription ends then, not 5 s after the notice."""
+    child, disk = Child(), Disk("neverflushed")
+    child.resync()
+    child.post({"type": "turn", "phase": "start", "turnId": "t1", "agentId": None},
+               {"type": "step", "phase": "start", "turnId": "t1", "agentId": None, "step": 0, "model": "m"},
+               {"type": "chunk", "turnId": "t1", "agentId": None, "step": 0, "chunkIndex": 0,
+                "chunk": {"kind": "text", "index": 0, "text": "lost"}})
+    c = Consumer(child, disk)
+    c.wait("the snapshot", 3, lambda: c.snapshot)
+    child.post({"type": "block-row", "uuid": "z1", "turnId": "t1", "agentId": None, "step": 0, "index": 0})
+    time.sleep(1.0)
+    child.post({"type": "step", "phase": "end", "turnId": "t1", "agentId": None, "step": 0})
+    t0 = time.time()
+    c.wait("the end", FLUSH_WAIT + 3, lambda: c.ended)
+    took = time.time() - t0
+    check("a named row never flushed ends the subscription NOTICE_WAIT after its step's end",
+          c.ended == "z1 is not on disk %ss after its step's end or its notice" % FLUSH_WAIT
+          and FLUSH_WAIT - 0.2 <= took < FLUSH_WAIT + 1, "%s after %.2f s" % (c.ended, took))
     child.stop()
 
 
@@ -438,9 +575,10 @@ def notice_past_bound():
     c.wait("the end", 3, lambda: c.ended)
     d = Consumer(child, disk)
     d.wait("history", 3, lambda: d.out)
-    check("a response row's notice past the 2 s bound ends the subscription; the next has the row once, its block gone",
+    check("a response row's notice past the 2 s bound ends the subscription; the next has the row once in history, "
+          "its block carried named by it",
           c.out == [("a1", "unnamed")] and c.ended == "a block-row for a1, emitted unnamed"
-          and d.out == [("a1", "history")] and not [b for m in d.snapshot["streaming"] for b in m["blocks"]],
+          and d.out == [("a1", "history")] and [b.get("uuid") for m in d.snapshot["streaming"] for b in m["blocks"]] == ["a1"],
           "%s, %s; then %s" % (c.out, c.ended, d.out))
     child.stop()
 
@@ -623,7 +761,9 @@ def passed_over():
 
 
 def cut_wait():
-    """History waits for the cut's row (a seed or a notice ahead of its flush)."""
+    """History waits for nothing: a cut whose row is not on disk yet (a seed or
+    a notice ahead of its flush) reads every row on disk, and its row comes
+    live, on its notice."""
     child, disk = Child(), Disk("cutwait")
     disk.write("main", "h1")
     child.resync(cut={"main": "h2"})
@@ -633,13 +773,15 @@ def cut_wait():
     disk.write("main", "h2")
     disk.write("main", "h3")
     c.wait("h3", 4, lambda: len(c.out) >= 3)
-    check("history waits for the cut's row to be on disk, then reads up to it; the row past it is live",
-          early == [] and c.out == [("h1", "history"), ("h2", "history"), ("h3", "unnamed")], "%s then %s" % (early, c.out))
+    check("the cut's row not on disk: history every row that is, at once; the cut's row comes live as named, the row past it unnamed",
+          early == [("h1", "history")] and c.out == [("h1", "history"), ("h2", "notice"), ("h3", "unnamed")],
+          "%s then %s" % (early, c.out))
     child.resync(cut={"main": "never"})
     d = Consumer(child, disk)
     d.wait("the end", FLUSH_WAIT + 2, lambda: d.ended)
-    check("a cut whose row is not on disk within 5 s is a discontinuity", d.ended == "the cut's row never is not on disk" and not d.out,
-          "%s; %s" % (d.ended, d.out))
+    check("a cut whose row is not on disk within 5 s, no step open, is a discontinuity",
+          d.ended == "never is not on disk %ss after its step's end or its notice" % FLUSH_WAIT
+          and d.out == [("h1", "history"), ("h2", "history"), ("h3", "history")], "%s; %s" % (d.ended, d.out))
     child.stop()
 
 
@@ -720,7 +862,7 @@ def subagent_loop():
     child.stop()
 
 
-for case in (readiness, verbs_retry_not_ready, cut, step_end_drops, seed, rows_past, flush_ahead, between_chunk_and_row, notice_past_bound, passed_over,
+for case in (readiness, verbs_retry_not_ready, cut, step_end_drops, seed, rows_past, flush_ahead, between_chunk_and_row, named_carried, named_never_flushed, notice_past_bound, passed_over,
              compaction_named, cut_wait, seeded, fence, subagent_loop):
     try:
         case()

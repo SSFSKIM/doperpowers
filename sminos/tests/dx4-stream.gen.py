@@ -6,8 +6,9 @@ replay, so the two prove the same rule.
 
 Every expected drawing here is written by hand from the rules — the web's
 streaming layer with §9's amendment (a block the fresh snapshot carries is
-drawn from it, named or not) — never computed by the consumer: the file is
-the contract both are held to.
+drawn, named or not: with the snapshot's text, unless the old subscription
+had named it, which keeps the text already drawn) — never computed by the
+consumer: the file is the contract both are held to.
 
     python3 dx4-stream.gen.py > dx4-stream.json
 """
@@ -172,7 +173,7 @@ def first_snapshot_every_kind():
 def reconnect_carried_named():
     s = Seq(2, "reconnect-empty-history-carries-the-named-block",
             "A2 and A8: a block is named, the subscription is lost, and the fresh snapshot — its history empty, the "
-            "row not yet on disk — carries the block with its uuid. The block stays drawn with the snapshot's text "
+            "row not yet on disk — carries the block with its uuid. The block stays drawn, with the text drawn, "
             "until its row lands, then goes once. (Today's web dropped it here: no row would land, no newer row "
             "came.)")
     A = s.u(1)
@@ -329,8 +330,8 @@ def planted_partial_and_twice():
 def fresh_text_wins():
     s = Seq(9, "reconnect-fresh-text-and-the-old-name",
             "Blocks the fresh snapshot carries unnamed are drawn with its text: one still streaming takes the "
-            "snapshot's newer text and goes on; one the old subscription had named keeps that name, so its row "
-            "settles it.")
+            "snapshot's newer text and goes on; one the old subscription had named keeps that name and the text "
+            "drawn, so its row settles it.")
     E, E2 = s.u(1), s.u(2)
     s.snapshot([], [entry(*R, 1, sblk(0, "text", "Str", 0), sblk(1, "text", "Done", 1))],
                {"main": [blk(*R, 0, "text", "Str"), blk(*R, 1, "text", "Done")]})
@@ -532,10 +533,47 @@ def residual_after_an_attempt_that_ended():
     return s.out
 
 
+LONG = "Hello world, " + "and so on, " * 6 + "the end."
+LONG_TAIL = LONG[-24:]
+DRAFT = "Draft one, then two more."
+DRAFT_TAIL = "then two"
+
+
+def named_keeps_drawn_text():
+    s = Seq(15, "reconnect-a-named-block-keeps-its-drawn-text",
+            "The two readings of a carried block's text told apart (the spec's section 9 as M3 amended it): the "
+            "fresh snapshot carries a block the old subscription had named as a truncated tail (`truncated`, "
+            "section 7) whose text differs from what was drawn. That block keeps the text drawn — whole, since its "
+            "block-row followed its last chunk — and settles by its row with no difference; the block still "
+            "streaming, which the old subscription had not named, takes the snapshot's tail and goes on from it.")
+    A, B = s.u(1), s.u(2)
+    s.snapshot([], [entry(*R, 0, sblk(0, "text", "Hello", 0))], {"main": [blk(*R, 0, "text", "Hello")]})
+    s.chunk(*R, 1, 0, "text", {"main": [blk(*R, 0, "text", LONG)]}, text=LONG[5:])
+    named = blk(*R, 0, "text", LONG, A)
+    s.block_row(A, *R, 0, {"main": [named]})
+    s.chunk(*R, 2, 1, "text", {"main": [named, blk(*R, 1, "text", "Draft")]}, text="Draft")
+    s.end({"main": [named, blk(*R, 1, "text", "Draft")]})
+    s.resubscribe({"main": [named, blk(*R, 1, "text", "Draft")]})
+    s.snapshot([], [entry(*R, 4, sblk(0, "text", LONG_TAIL, 1, uuid=A, at=1, truncated=True),
+                          sblk(1, "text", DRAFT_TAIL, 4, truncated=True))],
+               {"main": [named, blk(*R, 1, "text", DRAFT_TAIL)]}, landing=None, lands=[],
+               note="resumed: block 0, named before, keeps the text drawn over the snapshot's tail; block 1, "
+                    "unnamed, takes the tail")
+    s.block_row(A, *R, 0, {"main": [named, blk(*R, 1, "text", DRAFT_TAIL)]},
+                note="the plane's block-row for the carried named block: idempotent")
+    s.chunk(*R, 5, 1, "text", {"main": [named, blk(*R, 1, "text", DRAFT_TAIL + " more.")]}, text=" more.")
+    s.block_row(B, *R, 1, {"main": [named, blk(*R, 1, "text", DRAFT_TAIL + " more.", B)]})
+    s.row(assistant(A, "text", LONG), {"main": [blk(*R, 1, "text", DRAFT_TAIL + " more.", B)]}, settle=[A],
+          note="the drawn text is the row's whole: no difference")
+    s.row(assistant(B, "text", DRAFT), {}, settle=[B], note="the tail is the end of the row's text")
+    s.step_end(*R, {})
+    return s.out
+
+
 SEQUENCES = [first_snapshot_every_kind, reconnect_carried_named, reconnect_no_longer_carried, older_snapshot,
              another_loop, planted_continuity, planted_vanished, planted_partial_and_twice, fresh_text_wins,
              planted_undrawn, truncated_blocks, planted_request_left_out,
-             planted_loss_before_a_reconnect, residual_after_an_attempt_that_ended]
+             planted_loss_before_a_reconnect, residual_after_an_attempt_that_ended, named_keeps_drawn_text]
 
 
 def main():

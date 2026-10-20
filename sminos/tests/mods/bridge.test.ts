@@ -2734,7 +2734,7 @@ describe('agents the module did not see spawn ($.agent.list())', () => {
 })
 
 describe('streaming per content block', () => {
-  test("each response row names its block by the row's type and the order of the step's block starts, not its own position; the resync holds only the blocks without a row", async () => {
+  test("each response row names its block by the row's type and the order of the step's block starts, not its own position; the resync carries a named block with its row's uuid until the step ends", async () => {
     const h = harness()
     await h.ready()
     await h.turn('t1')
@@ -2747,26 +2747,29 @@ describe('streaming per content block', () => {
     await h.step({ turnId: 't1', index: 0, model: 'm', messageCount: 1 }, chunks, async () => {
       await h.settle()
       await h.responseRow({ type: 'thinking', thinking: 'hm', signature: 's' }, { uuid: 'r-think' })
-      // A new child mid-step gets the blocks still without a row.
+      const named = h.ofType('block-row')[0]!
+      // A new child mid-step gets every block of the open request, the named one
+      // still carrying its text, marked with the row that named it and when.
       h.children[0]!.write(hello())
       await h.settle()
-      expect(h.posts.at(-1)!.events[1]).toMatchObject({
-        type: 'resync',
-        streaming: [
-          {
-            turnId: 't1',
-            agentId: null,
-            step: 0,
-            upTo: 3,
-            blocks: [
-              { index: 1, kind: 'text', text: 'Hi', upTo: 1 },
-              { index: 2, kind: 'tool', text: '{"c', upTo: 3, id: 'toolu_9', name: 'Bash' },
-            ],
-            // The blocks a row settled, so a child that takes this over ignores their late chunks.
-            settled: [0],
-          },
-        ],
-      })
+      const resync = h.posts.at(-1)!.events[1]!
+      expect(resync).toMatchObject({ type: 'resync' })
+      expect(resync.streaming).toEqual([
+        {
+          turnId: 't1',
+          agentId: null,
+          step: 0,
+          model: 'm',
+          upTo: 3,
+          blocks: [
+            { index: 0, kind: 'thinking', text: 'hm', upTo: 0, uuid: 'r-think', namedAt: named.t },
+            { index: 1, kind: 'text', text: 'Hi', upTo: 1 },
+            { index: 2, kind: 'tool', text: '{"c', upTo: 3, id: 'toolu_9', name: 'Bash' },
+          ],
+          // The blocks a row settled, so a child that takes this over ignores their late chunks.
+          settled: [0],
+        },
+      ])
       // The tool's row before the text's: the tool by its call id, the text by kind.
       await h.responseRow({ type: 'tool_use', id: 'toolu_9', name: 'Bash', input: {} }, { uuid: 'r-tool' })
       await h.responseRow({ type: 'text', text: 'Hi' }, { uuid: 'r-text' })
@@ -2776,6 +2779,10 @@ describe('streaming per content block', () => {
       expect.objectContaining({ uuid: 'r-tool', turnId: 't1', agentId: null, step: 0, index: 2 }),
       expect.objectContaining({ uuid: 'r-text', turnId: 't1', agentId: null, step: 0, index: 1 }),
     ])
+    // Its step over, the request and its named blocks are in no later resync.
+    h.children[0]!.write(hello())
+    await h.settle()
+    expect(h.ofType('resync').at(-1)!.streaming).toEqual([])
   })
 
   test("a subagent's rows are matched in its own loop", async () => {

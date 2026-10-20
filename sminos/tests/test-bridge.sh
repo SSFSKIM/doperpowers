@@ -301,9 +301,11 @@ assert_equals "$(field_of "$(nth_line "$T/w8" 1)" agents.0.agentId)" "a7" "and t
 
 # Streaming is per content block: a thinking block, then text, then a tool
 # call whose arguments stream. A block-row (the engine wrote the block's
-# transcript row) settles its block: the snapshot keeps only the blocks
-# without one, and a late chunk for a settled block is ignored.
+# transcript row) settles its block: it stays in the snapshot named by that
+# row (`uuid`, until its step ends: the open-fast spec's section 2), and a
+# late chunk for a settled block is ignored.
 block_indexes() { python3 -c 'import json, sys; print([b["index"] for b in json.loads(sys.argv[1])["blocks"]])' "$1"; }
+block_names() { python3 -c 'import json, sys; print([b.get("uuid") for b in json.loads(sys.argv[1])["blocks"]])' "$1"; }
 T6=66666666-aaaa-4aaa-8aaa-666666666666
 ctl post "$SOCK" '[{"type":"turn","phase":"start","turnId":"'$T6'","agentId":null,"text":"x"},
  {"type":"step","phase":"start","turnId":"'$T6'","agentId":null,"step":0,"model":"m"},
@@ -316,18 +318,21 @@ ctl post "$SOCK" '[{"type":"turn","phase":"start","turnId":"'$T6'","agentId":nul
 watch_json "$SID" "$T/w10"
 until_true 100 has_lines "$T/w10" 1 || true
 M6="$(streaming_of "$(nth_line "$T/w10" 1)" "$T6")"
-assert_equals "$(block_indexes "$M6")" "[1, 2]" "a block whose row was written leaves the snapshot; the others stay, by index"
-assert_equals "$(field_of "$M6" blocks.0.text)" "Running" "a text block holds its text"
-assert_equals "$(field_of "$M6" blocks.1.kind)/$(field_of "$M6" blocks.1.name)/$(field_of "$M6" blocks.1.id)" "tool/Bash/toolu_9" \
+assert_equals "$(block_indexes "$M6")/$(block_names "$M6")" "[0, 1, 2]/['row-think', None, None]" \
+  "a block whose row was written stays in the snapshot, named by its row; the others stay unnamed, by index"
+assert_equals "$(field_of "$M6" blocks.0.text)" "hm" "the named block keeps its text"
+assert_equals "$(field_of "$M6" blocks.1.text)" "Running" "a text block holds its text"
+assert_equals "$(field_of "$M6" blocks.2.kind)/$(field_of "$M6" blocks.2.name)/$(field_of "$M6" blocks.2.id)" "tool/Bash/toolu_9" \
   "a tool block names the tool and the call"
-assert_equals "$(field_of "$M6" blocks.1.text)" '{"comm' "and holds its arguments as they stream"
+assert_equals "$(field_of "$M6" blocks.2.text)" '{"comm' "and holds its arguments as they stream"
 assert_equals "$(field_of "$M6" upTo)" "4" "the message's upTo counts every chunk, a settled block's included"
 ctl post "$SOCK" '[{"type":"block-row","uuid":"row-text","turnId":"'$T6'","agentId":null,"step":0,"index":1},
  {"type":"chunk","turnId":"'$T6'","agentId":null,"step":0,"chunkIndex":5,"chunk":{"kind":"text","index":1,"text":"late"}}]' >/dev/null
 watch_json "$SID" "$T/w11"
 until_true 100 has_lines "$T/w11" 1 || true
 M6="$(streaming_of "$(nth_line "$T/w11" 1)" "$T6")"
-assert_equals "$(block_indexes "$M6")" "[2]" "a chunk for a settled block is ignored"
+assert_equals "$(block_indexes "$M6")/$(block_names "$M6")/$(field_of "$M6" blocks.1.text)" "[0, 1, 2]/['row-think', 'row-text', None]/Running" \
+  "a chunk for a settled block is ignored"
 assert_equals "$(field_of "$M6" upTo)" "5" "though the message's upTo moves past it"
 # A resync between the block-row and a late chunk: the block stays settled,
 # from this child's own memory when the mod's copy does not name it, and from
@@ -342,7 +347,7 @@ ctl post "$SOCK" '[{"type":"resync","turns":[{"turnId":"'$T6'","agentId":null},{
 watch_json "$SID" "$T/w11b"
 until_true 100 has_lines "$T/w11b" 1 || true
 assert_equals "$(block_indexes "$(streaming_of "$(nth_line "$T/w11b" 1)" "$T6")")" "[2]" \
-  "after a resync whose copy still holds a block this child saw settled, its late chunk is ignored"
+  "after a resync whose copy still holds a block this child saw settled, unnamed, the stale copy goes and its late chunk is ignored"
 M7="$(streaming_of "$(nth_line "$T/w11b" 1)" "$T7")"
 assert_equals "$(block_indexes "$M7")" "[1]" "a resync's settled blocks stay settled in a child that never saw their rows"
 assert_equals "$(field_of "$M7" upTo)" "2" "the late chunk still moves the message on"

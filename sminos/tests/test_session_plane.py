@@ -462,33 +462,63 @@ class Engine(Session):
         self.fake.start_bridge()
         for agent in (None, "a1"):
             with self.subTest(agent=agent):
+                before = self.fake.user_row("before", agent=agent)
                 m = self.fake.message(agent=agent)
                 m.text(0, "first block")
                 u = m.row(0, disk=False)  # announced: in the cut, not yet flushed
                 sub, b = self.subscribe(agent=agent)
-                self.settle(sub, b)
-                self.assertIsNone(b.snapshot, "the snapshot waits for its cut row on disk")
-                m.text(1, "second ")  # while the snapshot is built
+                self.assertTrue(self.pump(sub, b, lambda: b.snapshot is not None), "the snapshot waits for nothing")
+                self.assertEqual([r["uuid"] for r in b.snapshot["rows"]], [before], "history: every row on disk")
+                [entry] = [e for e in b.snapshot["streaming"] if e["agentId"] == agent]
+                self.assertEqual([(x["index"], x["text"], x.get("uuid")) for x in entry["blocks"]],
+                                 [(0, "first block", u)], "the named block rides along with its row's uuid")
+                self.assertEqual(b.kinds[:2], ["snapshot", "block-row"], "its block-row right after the snapshot")
+                self.assertEqual([(x.text, x.settled_by) for x in b.blocks(agent)], [("first block", u)])
+                self.assertEqual(sub.cut_state, "not on disk")
+                m.text(1, "second ")  # past the snapshot's watermark
                 m.text(1, "block")
-                self.settle(sub, b)
-                m.write(0, u)
-                self.assertTrue(self.pump(sub, b, lambda: b.snapshot is not None))
-                self.assertEqual([r["uuid"] for r in b.snapshot["rows"]], [u], "history up to the cut")
                 self.assertTrue(self.pump(sub, b, lambda: b.texts().get((m.turn, agent, 0, 1)) == "second block"))
+                m.write(0, u)
+                self.assertTrue(self.pump(sub, b, lambda: u in b.uuids()))
+                self.assertEqual(sub.emitted[u], "named", "the row lands named")
                 m.row(1)
-                self.assertTrue(self.pump(sub, b, lambda: len(b.rows) == 2))
+                self.assertTrue(self.pump(sub, b, lambda: len(b.rows) == 3))
                 self.assertClean(b, agent)
+                self.assertEqual(sub.waits, 0)
+                m.end()
 
     def test_cut_row_that_never_reaches_disk(self):
+        """The named block stays drawn through its step, however long; its
+        row is due NOTICE_WAIT after the step's end, and then the
+        subscription ends naming it. One made after that gets the snapshot
+        without the block and waits for nothing."""
         self.fake.start_bridge()
         m = self.fake.message()
         m.text(0, "lost")
-        m.row(0, disk=False)
+        u = m.row(0, disk=False)
         sub, b = self.subscribe()
+        self.assertTrue(self.pump(sub, b, lambda: b.snapshot is not None))
+        self.clock.advance(plane.NOTICE_WAIT + 3)
         self.settle(sub, b)
-        self.clock.advance(plane.NOTICE_WAIT + 0.1)
+        self.assertIsNone(b.end, "not due while its step is open")
+        self.assertEqual([x.text for x in b.blocks(None)], ["lost"], "drawn throughout")
+        m.end()
+        self.settle(sub, b)
+        self.clock.advance(plane.NOTICE_WAIT - 0.5)
+        self.settle(sub, b)
+        self.assertIsNone(b.end)
+        self.assertEqual([x.text for x in b.blocks(None)], ["lost"], "a named block outlives its step-end, awaiting its row")
+        self.clock.advance(0.6)
         self.assertTrue(self.pump(sub, b, lambda: b.end is not None))
-        self.assertEqual((b.end["reason"], b.n), ("discontinuity", 0))
+        self.assertEqual(b.end["reason"], "discontinuity")
+        self.assertIn(u, b.end["message"])
+        later, b2 = self.subscribe()
+        self.assertTrue(self.pump(later, b2, lambda: b2.snapshot is not None))
+        self.assertEqual(b2.snapshot["streaming"], [])
+        self.clock.advance(plane.NOTICE_WAIT * 3)
+        self.settle(later, b2)
+        self.assertIsNone(b2.end, "a cut whose row never came holds no later subscription")
+        self.assertEqual(b2.errors, [])
 
     def test_row_on_disk_ahead_of_its_notice_across_establishment(self):
         self.fake.start_bridge()
@@ -529,12 +559,13 @@ class Engine(Session):
         self.assertEqual(b.end["reason"], "discontinuity", "the block would stay beside its row")
 
     def test_notice_whose_row_never_flushes(self):
+        """A `row-seen` between requests is due NOTICE_WAIT after it; one
+        while a request of its loop is open (an assistant row that did not
+        stream), NOTICE_WAIT after that request ends."""
         self.fake.start_bridge()
         sub, b = self.subscribe()
         self.assertTrue(self.pump(sub, b, lambda: b.snapshot is not None))
-        m = self.fake.message()
-        m.text(0, "x")
-        m.row(0, disk=False)
+        self.fake.user_row("between requests", disk=False)
         self.settle(sub, b)
         self.clock.advance(plane.NOTICE_WAIT - 0.5)
         self.settle(sub, b)
@@ -542,6 +573,24 @@ class Engine(Session):
         self.clock.advance(0.6)
         self.assertTrue(self.pump(sub, b, lambda: b.end is not None))
         self.assertEqual(b.end["reason"], "discontinuity")
+        during, b2 = self.subscribe()
+        self.assertTrue(self.pump(during, b2, lambda: b2.snapshot is not None))
+        m = self.fake.message()
+        m.text(0, "x")
+        u = self.fake.user_row("while a request is open", disk=False)
+        self.settle(during, b2)
+        self.clock.advance(plane.NOTICE_WAIT + 3)
+        self.settle(during, b2)
+        self.assertIsNone(b2.end, "due once the request ends")
+        m.end()
+        self.settle(during, b2)
+        self.clock.advance(plane.NOTICE_WAIT - 0.5)
+        self.settle(during, b2)
+        self.assertIsNone(b2.end)
+        self.clock.advance(0.6)
+        self.assertTrue(self.pump(during, b2, lambda: b2.end is not None))
+        self.assertEqual(b2.end["reason"], "discontinuity")
+        self.assertIn(u, b2.end["message"])
 
     def test_an_unnamed_row_is_released_by_a_later_rows_notice(self):
         """Disk order: a row no notice names (a compaction's) goes out as soon
@@ -663,17 +712,16 @@ class Engine(Session):
         self.assertIn(": bridge snapshot after", said[0])
         self.assertRegex(said[0], r"\(bridge: snapshot arrived \d+\.\d\d s, taken \d+\.\d\d s; "
                                   r"build: warm \d+ ms 1 rows, cut on disk; waits 0\)$")
-        # The cut's row not on disk yet: each build that answered "waiting" is counted.
+        # The cut's row not on disk yet: the snapshot goes at once, and says so.
         m = self.fake.message()
         m.text(0, "late")
         u = m.row(0, disk=False)
         late, b4 = self.subscribe()
-        self.assertTrue(self.pump(late, b4, lambda: late.waits >= 1))
-        m.write(0, u)
         self.assertTrue(self.pump(late, b4, lambda: b4.snapshot is not None))
         said = self.opens_said(late)
         self.assertEqual(len(said), 1, said)
-        self.assertRegex(said[0], r"; build: warm \d+ ms 2 rows, cut on disk; waits [1-9]\d*\)$")
+        self.assertRegex(said[0], r"; build: warm \d+ ms 1 rows, cut not on disk; waits 0\)$")
+        m.write(0, u)
         m.end()
         self.fake.stop_bridge()
         self.fake.start_bridge(ready=False)
@@ -688,26 +736,22 @@ class Engine(Session):
                       "(bridge: no snapshot; build: none, cut null; waits 0)" % (plane.OPEN_WAIT, plane.OPEN_WAIT + 1),
                       said[0])
 
-    def test_an_open_that_ends_waiting_for_its_cut_says_its_builds(self):
-        """The line of an open that ended before its snapshot, its cut's row
-        never on disk: the builds that answered "waiting" are said whole —
-        how the first came, their CPU together, the rows the last indexed."""
+    def test_an_open_whose_cut_is_not_on_disk_goes_at_once_and_says_so(self):
+        """The line of an open whose cut's row the engine has not flushed:
+        one build, no wait, the cut said not on disk."""
         self.fake.user_row("before", post=False)
         self.fake.start_bridge()
         m = self.fake.message()
-        m.text(0, "never flushed")
+        m.text(0, "not flushed yet")
         u = m.row(0, disk=False)
         sub, b = self.subscribe(received=self.clock() - 0.5)
-        self.assertTrue(self.pump(sub, b, lambda: sub.waits >= 2), "builds asked, and asked again")
-        self.clock.advance(plane.NOTICE_WAIT + 0.1)
-        self.assertTrue(self.pump(sub, b, lambda: b.end is not None))
-        self.assertEqual(sub.build_how, "cold")
+        self.assertTrue(self.pump(sub, b, lambda: b.snapshot is not None))
+        self.assertEqual((sub.build_how, sub.waits), ("cold", 0))
         said = [line.split(" ", 1)[1] for line in self.opens_said(sub)]
-        self.assertEqual(said, ["plane: open %s of %s: discontinuity before its snapshot: the snapshot's cut, row %s, "
-                                "never reached the transcript after %.2f s from the subscribe's arrival (bridge: "
+        self.assertEqual(said, ["plane: open %s of %s: bridge snapshot after 0.50 s from the subscribe's arrival (bridge: "
                                 "snapshot arrived 0.50 s, taken 0.50 s; build: cold %d ms 1 rows, cut not on disk; "
-                                "waits %d)\n" % (sub.sub, sub.session[:8], u, 0.5 + plane.NOTICE_WAIT + 0.1, sub.cpu_ms,
-                                                   sub.waits)])
+                                "waits 0)\n" % (sub.sub, sub.session[:8], sub.cpu_ms)])
+        m.write(0, u)
         m.end()
 
     def test_the_open_line_says_where_the_time_went(self):
@@ -794,6 +838,180 @@ class Engine(Session):
         m.notice(0, u)
         self.assertTrue(self.pump(sub, b, lambda: len(b.rows) == 1))
         self.assertIsNone(b.end)
+        self.assertClean(b)
+
+    # ---------------------------------------------------- the snapshot at once (open-fast §2)
+
+    CLEAN = {"holes": [], "partial": [], "vanished": [], "dups": [], "undrawn": [], "residual": []}
+
+    def test_a_long_answer_after_a_named_block(self):
+        """A2's long-answer on the scripted session: a block named at its end
+        (a thinking block's), its row unflushed for the 12 s answer after it;
+        opens at +1 s and +7 s and a live subscription from the start each
+        draw the block throughout and its row once, none ending before the
+        step does."""
+        self.fake.start_bridge()
+        self.fake.user_row("write a story")
+        live, bl = self.subscribe()
+        self.assertTrue(self.pump(live, bl, lambda: bl.snapshot is not None))
+        m = self.fake.message()
+        m.text(0, "Plot first.")
+        u0 = m.row(0, disk=False)
+        key = (m.turn, None, 0, 0)
+        views = [(live, bl)]
+        for second in range(12):
+            if second in (1, 7):
+                sub, b = self.subscribe()
+                self.assertTrue(self.pump(sub, b, lambda b=b: b.snapshot is not None))
+                views.append((sub, b))
+            m.text(1, "word %d " % second)
+            self.clock.advance(1)
+            for sub, b in views:
+                self.settle(sub, b, 0.05)
+                self.assertIsNone(b.end, "second %d" % second)
+                self.assertEqual(b.texts().get(key), "Plot first.", "drawn throughout, second %d" % second)
+        u1 = m.row(1, disk=False)
+        m.write(0, u0)
+        m.write(1, u1)
+        m.end()
+        for sub, b in views:
+            self.assertTrue(self.pump(sub, b, lambda b=b: len(b.rows) == 3))
+            self.settle(sub, b, 0.1)
+            self.assertIsNone(b.end)
+            self.assertClean(b)
+            self.assertEqual(sub.waits, 0)
+            inventory = dx4_consumer.Inventory.from_sources(self.fake.path(None), self.fake.emitted)
+            self.assertEqual(inventory.check(b), self.CLEAN)
+        self.assertEqual([b.kinds[:2] for _, b in views[1:]], [["snapshot", "block-row"]] * 2,
+                         "each later open: the carried block's block-row first")
+
+    def test_a_history_rows_named_block_is_dropped_from_the_snapshot(self):
+        """A named block whose row is in the history: the row is drawn from
+        the page, so the block leaves the snapshot's streaming and no
+        block-row follows for it."""
+        self.fake.start_bridge()
+        m = self.fake.message()
+        m.text(0, "flushed")
+        u = m.row(0)
+        m.text(1, "still going")
+        sub, b = self.subscribe()
+        self.assertTrue(self.pump(sub, b, lambda: b.snapshot is not None))
+        self.assertEqual([r["uuid"] for r in b.snapshot["rows"]], [u])
+        [entry] = b.snapshot["streaming"]
+        self.assertEqual([x["index"] for x in entry["blocks"]], [1])
+        self.assertEqual(b.texts(), {(m.turn, None, 0, 1): "still going"})
+        self.settle(sub, b)
+        self.assertNotIn("block-row", b.kinds)
+        self.assertEqual(sub.held, {(m.turn, None, 0, 1)})
+        m.row(1)
+        m.end()
+        self.assertTrue(self.pump(sub, b, lambda: len(b.rows) == 2))
+        self.assertClean(b)
+
+    def test_the_kept_blocks_block_rows_follow_the_snapshot_in_order(self):
+        """One block-row per kept named block right after the snapshot, before
+        anything else of the subscription: in the snapshot's entry order, then
+        by block index."""
+        self.fake.start_bridge()
+        sa = self.fake.message(agent="a1", turn="t-a1")
+        m = self.fake.message()
+        sa.text(0, "sub")
+        m.text(0, "zero")
+        m.text(1, "one")
+        m.text(2, "two")
+        s0 = sa.row(0, disk=False)
+        u1 = m.row(1, disk=False)
+        u0 = m.row(0, disk=False)
+        sub, b = self.subscribe()
+        got = []
+        take = b.take
+        b.take = lambda env: (got.append(env), take(env))
+        self.assertTrue(self.pump(sub, b, lambda: b.snapshot is not None))
+        self.settle(sub, b)
+        self.assertEqual([e["agentId"] for e in b.snapshot["streaming"]], ["a1", None])
+        self.assertEqual([(env["kind"], env["n"], env["body"].get("uuid")) for env in got],
+                         [("snapshot", 0, None), ("block-row", 1, s0), ("block-row", 2, u0), ("block-row", 3, u1)],
+                         "entry order, then block index; nothing else before them")
+        self.assertEqual(set(sub.noticed), {u0, u1}, "its own loop's alone wait for their rows")
+        m.text(2, " more")
+        self.assertTrue(self.pump(sub, b, lambda: "chunk" in b.kinds))
+        self.assertEqual(b.kinds[4], "chunk")
+        m.write(1, u1)
+        m.write(0, u0)
+        self.assertTrue(self.pump(sub, b, lambda: {u0, u1} <= set(b.uuids())))
+        sa.end()
+        m.row(2)
+        m.end()
+        self.assertTrue(self.pump(sub, b, lambda: len(b.rows) == 3))
+        self.assertEqual(b.errors, [])
+
+    def test_a_main_subscription_carries_an_agent_loops_named_block_and_relays_its_block_row(self):
+        """A main subscription carries every loop's entries: an agent's named
+        block stays in it, and its block-row is relayed after the snapshot
+        (the web settles another loop's block by it); it waits on no row of
+        this transcript. The agent's own subscription waits for that row."""
+        self.fake.start_bridge()
+        sa = self.fake.message(agent="a1", turn="t-a1")
+        sa.text(0, "sub text")
+        s0 = sa.row(0, disk=False)
+        main, bm = self.subscribe()
+        own, ba = self.subscribe(agent="a1")
+        for sub, b in ((main, bm), (own, ba)):
+            self.assertTrue(self.pump(sub, b, lambda b=b: b.snapshot is not None))
+            self.settle(sub, b)
+            [entry] = b.snapshot["streaming"]
+            self.assertEqual([(x["text"], x.get("uuid")) for x in entry["blocks"]], [("sub text", s0)])
+            self.assertEqual(b.kinds[:2], ["snapshot", "block-row"])
+        self.assertEqual(main.noticed, {}, "another loop's row: nothing to wait for here")
+        self.assertEqual(set(own.noticed), {s0})
+        self.assertEqual(bm.other.get(s0), "sub text", "the main view settles it by its block-row")
+        self.assertEqual([(x.text, x.settled_by) for x in ba.blocks("a1")], [("sub text", s0)])
+        sa.write(0, s0)
+        sa.end()
+        self.assertTrue(self.pump(own, ba, lambda: s0 in ba.uuids()))
+        self.assertClean(ba, agent="a1")
+        self.assertEqual(bm.errors, [])
+
+    def test_an_open_with_no_transcript_yet_and_a_cut_gets_an_empty_snapshot(self):
+        for located in (True, False):
+            with self.subTest(located=located):
+                fake = fake_session.FakeSession(os.environ["HOME"], os.environ["SMINOS_HOME"], new_session())
+                fake.start_bridge()
+                m = fake.message()
+                m.text(0, "first")
+                u = m.row(0, disk=False)
+                self.assertFalse(os.path.exists(fake.path(None)))
+                sub, b = self.subscribe(fake=fake)
+                if not located:
+                    sub.locate = lambda: ""   # the session's transcript not found yet (unlocated)
+                self.assertTrue(self.pump(sub, b, lambda: b.snapshot is not None))
+                self.assertEqual(b.snapshot["rows"], [])
+                self.assertEqual([(x.text, x.settled_by) for x in b.blocks(None)], [("first", u)])
+                self.assertEqual(sub.cut_state, "not on disk")
+                sub.locate = lambda: fake.path(None)
+                m.write(0, u)
+                m.end()
+                self.clock.advance(plane.LOCATE_EVERY)
+                self.assertTrue(self.pump(sub, b, lambda: u in b.uuids()))
+                self.assertIsNone(b.end)
+                self.assertEqual(b.errors, [])
+                self.assertEqual(b.uuids(), [u])
+                fake.stop_bridge()
+
+    def test_a_prompt_noticed_before_its_flush_comes_on_its_flush(self):
+        """Right after a prompt (A2's after-prompt): the cut is the prompt's
+        row, noticed ahead of the engine's flush. The snapshot goes at once
+        without it, and the row goes out as it lands, named by the cut's
+        notice, not UNNAMED_WAIT later."""
+        self.fake.start_bridge()
+        earlier = self.fake.user_row("earlier")
+        u = self.fake.user_row("the prompt", disk=False)
+        sub, b = self.subscribe()
+        self.assertTrue(self.pump(sub, b, lambda: b.snapshot is not None))
+        self.assertEqual([r["uuid"] for r in b.snapshot["rows"]], [earlier])
+        self.fake.user_row("the prompt", post=False, uuid=u)
+        self.assertTrue(self.pump(sub, b, lambda: u in b.uuids()), "on its flush; the clock never moved")
+        self.assertEqual(sub.emitted[u], "named")
         self.assertClean(b)
 
     # ---------------------------------------------------- scopes
