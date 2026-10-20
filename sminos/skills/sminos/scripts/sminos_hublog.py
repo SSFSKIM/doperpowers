@@ -236,10 +236,11 @@ class HubLog:
     def reset(self):
         """A new stream: nothing is known of the hub's vector until `have`."""
         self.have = None     # the hub's vector, from `have`
-        self.sent = {}       # own writer → the last seq the hub holds or took in a POST answered 200
+        self.sent = {}       # own writer → the last seq the hub holds or was queued an upload of on this stream
         self.stuck = set()   # own writers the hub refused: not uploaded again on this stream
         self.refused = {}    # own writer → the lowest seq the hub refused on this stream (0: the writer itself)
         self.archive = False
+        self.drawing = None  # the uploads drawn and not yet taken (next_upload), kept between the uplink's passes
 
     # ---------------------------------------------------- what is held here
 
@@ -363,6 +364,7 @@ class HubLog:
         have = frame.get("have")
         have = {w: s for w, s in have.items() if type(s) is int} if isinstance(have, dict) else {}
         opening, self.have = self.have is None, have
+        self.drawing = None   # drawn again from what the hub holds now
         self.archive = frame.get("archive") is True
         if opening:
             # The handshake: upload from the hub's vector, every writer free.
@@ -402,6 +404,7 @@ class HubLog:
                 return
             self.sent[writer] = start - 1
             self.stuck.discard(writer)
+            self.drawing = None
             log("the hub asks %s of %s again from %d" % (writer, self.project.name, start))
 
     def on_refused(self, frame):
@@ -410,6 +413,7 @@ class HubLog:
         be refused again); `not-open` asks for `hello` first."""
         r = frame.get("refusal") if isinstance(frame.get("refusal"), dict) else {}
         reason, writer = r.get("reason"), r.get("writer")
+        self.drawing = None   # what was drawn may hold a writer stopped now
         log("the hub refused in %s: %s%s%s" % (
             self.project.name, reason, " %s:%s" % (writer, r.get("seq")) if writer else "",
             " — %s" % " ".join(str(r.get("message") or "").split())[:300] if r.get("message") else ""))
@@ -427,16 +431,15 @@ class HubLog:
 
     def uploads(self):
         """`events` frames of this machine's writers the hub lacks, each with
-        the (writer, seq) it brings the hub to: [(frame, {writer: seq})]."""
+        the (writer, seq) it brings the hub to, drawn as they are taken: each
+        writer's file is read, and its events sealed, only once the frames
+        before them were taken. Yields (frame, {writer: seq})."""
         if self.have is None:
-            return []
-        out, batch, reach, size = [], [], {}, 0
+            return
+        batch, reach, size = [], {}, 0
 
-        def flush():
-            nonlocal batch, reach, size
-            if batch:
-                out.append(({"t": "events", "project": self.project.id, "events": batch}, reach))
-            batch, reach, size = [], {}, 0
+        def frame():
+            return {"t": "events", "project": self.project.id, "events": batch}, reach
 
         for writer, (last, path) in sorted(self.writers(own=True).items()):
             if not self.own(writer) or writer in self.stuck or last <= self.sent.get(writer, 0):
@@ -452,15 +455,35 @@ class HubLog:
                     self.stuck.add(writer)
                     break
                 if batch and size + n > BATCH_BYTES:
-                    flush()
+                    yield frame()
+                    batch, reach, size = [], {}, 0
                 batch.append(sealed)
                 reach[writer] = e["seq"]
                 size += n
-        flush()
-        return out
+        if batch:
+            yield frame()
+
+    def next_upload(self):
+        """The next upload, (frame, {writer: seq}), or None when nothing is
+        owed now. A pass the uplink paces (it stops while its lane is full)
+        leaves the rest of its draw here, not yet read or sealed, and the
+        next pass goes on from there, so a long backlog is read and sealed
+        once, not once a pass. What would change the draw — a `have`, a `resend`, a refusal,
+        a new stream — drops it, and the next call draws afresh."""
+        if self.drawing is None:
+            self.drawing = self.uploads()
+        try:
+            got = next(self.drawing, None)
+        except BaseException:
+            self.drawing = None
+            raise
+        if got is None:
+            self.drawing = None
+        return got
 
     def took(self, reach):
-        """A POST of uploads was answered 200."""
+        """An upload was queued: the hub's next `have` puts `sent` right
+        should its POST be lost."""
         for writer, seq in reach.items():
             self.sent[writer] = max(self.sent.get(writer, 0), seq)
 

@@ -65,10 +65,16 @@ delivery made of each event from outside, as DX4 `delivery`
 (sminos_outcomes); and the RPCs the hub forwards, verified, executed at most
 once, and answered as `rpc-result` until `rpc-ack` (sminos_rpc). A POST the
 hub does not answer 200 ends the stream, and the next one redoes the
-handshake: what the handshake heals is marked sent when queued, and what it
-does not (the presence tombstone, rejections reported, outcomes dropped) only
-once the hub answered 200. Frames larger than a frame's bound travel as
-parts, both ways.
+handshake: what the handshake heals is marked sent when queued (the vector's
+reach, a complete pending set, an RPC result), and what it does not (the
+presence tombstone, rejections reported, outcomes dropped) only once the hub
+answered 200, in flight meanwhile. Settlements and compaction messages wait
+longer (sminos_flights): the hub answers 200 even to a session frame it
+refuses `not-open`, so they are the hub's only once a confirmation of their
+project queued after that 200 was answered too — the project's probe, an
+empty `events` frame on the log lane CONFIRM_AFTER after the first of them
+was answered — and a `not-open` owes them again.
+Frames larger than a frame's bound travel as parts, both ways.
 """
 
 import collections
@@ -123,6 +129,7 @@ IDLE_CLOSE = 60.0         # a lane's connection idle this long is closed by the 
 SEND_QUEUE_MAX = 16 << 20  # a lane holding more unsent than this: the hub is not taking frames, the stream ends
 SLOW_POST_SECONDS = 5.0   # a lane's POST slower than this is said in daemon.log
 UPLOAD_AHEAD = POST_LIMIT  # an upload pass queues no more while the log lane holds this much unsent
+CONFIRM_AFTER = 2.0       # s: a project's answered settlements are confirmed by a probe this long after the first
 CONNECTIONS = itertools.count(1)  # the lanes' connections, numbered across the process's streams
 # What a reused connection's send raises when the hub closed it while idle:
 # nothing of the request reached it, so it goes once more on a fresh one.
@@ -639,6 +646,15 @@ def project_of(frame):
     return pid if isinstance(pid, str) else None
 
 
+def by_project(frames):
+    """The frames as runs of one project each, in the order each project
+    first comes, each run in its own order."""
+    runs = {}
+    for frame in frames:
+        runs.setdefault(project_of(frame), []).append(frame)
+    return list(runs.values())
+
+
 class Entry:
     """Wire lines queued on a lane — on the session lane, of one project —
     and the `send` they came from: `join` is [its entries not yet taken into
@@ -1055,11 +1071,15 @@ class Link:
     than assume anything landed. So a mark the handshake heals is placed
     when its frames are queued; one it does not — the presence tombstone,
     rejections reported, outcomes dropped — in the continuation that runs
-    after the 200, its producer not taking the same again meanwhile
-    (`reporting`, `delivering`). A continuation clears its in-flight flags
-    and opens the session gate whatever its local writes meet; a write that
-    fails is kept and done on a later pass (settle_marks), so a disk error
-    never holds the network back. `wake` asks the main thread for a tick
+    after the 200 of the POST that carried them, its producer not taking the
+    same again meanwhile (`reporting`, `delivering`); settlements and
+    compaction messages, in flight from `sending`, leave their outbox in that
+    continuation and are the hub's once a confirmation of their project
+    queued after it is answered (`confirm_held`), a `not-open` owing them
+    again. A continuation
+    clears its in-flight flags and opens the session gate whatever its local
+    writes meet; a write that fails is kept and done on a later pass
+    (settle_marks), so a disk error never holds the network back. `wake` asks the main thread for a tick
     now."""
 
     def __init__(self, cred, logs, ended=lambda: False, wake=lambda: None, bridges=None, reqs=None, rpcs=None,
@@ -1091,6 +1111,7 @@ class Link:
         self.reporting = collections.Counter()   # project id → POSTs of its rejections not yet answered
         self.delivering = set()   # project ids whose delivery outcomes are in a POST not yet answered
         self.opening = set()      # project ids whose `hello` is out: a refusal does not open them again
+        self.probing = set()      # project ids whose confirmation probe is out (confirm_held)
         self.unrecorded = {}      # project id → rejections the hub took, their record not yet written
         self.undropped = {}       # project id → (outbox, lines) the hub took, their drop not yet done
         self.unsettled = {}       # (project id, what) → the failure last said (settle_marks)
@@ -1172,6 +1193,7 @@ class Link:
         for hl in self.logs.values():
             hl.reset()
         self.plane.close()
+        self.requests.reset()
         self.rpcs.reset()
         self.next_scan = 0.0
         self.next_confirm = time.time() + archive.archive_every()
@@ -1225,6 +1247,13 @@ class Link:
             log("the hub refused: %s" % json.dumps(frame.get("refusal"), ensure_ascii=False)[:300])
             return
         refusal = frame.get("refusal") if isinstance(frame.get("refusal"), dict) else {}
+        if refusal.get("reason") == "not-open" and hl.project.id in self.opened:
+            # The hub answers 200 to a session frame it refuses, and says so
+            # down the stream before that answer or after it: what of the
+            # project is in flight, or answered and not confirmed, is owed
+            # again, and goes with the re-open or after it.
+            self.requests.refused(hl.project.id)
+            self.rpcs.refused(hl.project.id)
         if refusal.get("reason") == "not-open" and hl.project.id in self.opening:
             # A hello of it is out, so the frame refused went before that hello
             # (the hub's chains answer apart: its `have` may be here already),
@@ -1335,12 +1364,13 @@ class Link:
         The bundle goes as one entry of the log lane, and the project's
         session messages wait (the session lane's gate, closed again on a
         project opened anew) until the hub answered it. Then the gate opens,
-        before any local bookkeeping, and the bookkeeping follows: the read
-        its presence's leavers were drawn from is marked taken (the tombstone
-        mark), its rejections recorded as reported. What `deliveries` posts
-        after it follows it on the same connection, so the hub applies it
-        after the hello, and a hello that fails ends the stream before any
-        continuation behind it runs. While a hello of the project is out
+        before any local bookkeeping, and the bookkeeping follows: the
+        settlements answered before it (and those it carried) kept as
+        relayed, the read its presence's leavers were drawn from marked taken
+        (the tombstone mark), its rejections recorded as reported. What
+        `deliveries` posts after it follows it on the same connection, so the
+        hub applies it after the hello, and a hello that fails ends the
+        stream before any continuation behind it runs. While a hello of the project is out
         (`opening`), a refusal does not open it again."""
         pid = hl.project.id
         self.opening.add(pid)
@@ -1362,10 +1392,16 @@ class Link:
         results = self.rpcs.opening(hl.project.id)
         if unreported:
             self.reporting[pid] += 1
+        attempt = self.requests.sending(owed)
+        self.rpcs.sending(results)
+        confirm = self.confirming(pid)
 
         def answered():
             self.opening.discard(pid)
             self.session_lane.release(pid)   # the hub has it open: what the network waited for comes first
+            # Applied behind the hello, the project open: the hub's (a write that fails is said, and costs a resend).
+            self.requests.delivered(owed, attempt, confirmed=True)
+            confirm()
             try:
                 if read is not None:
                     self.plane.accepted(pid, read)   # the hub took these leavers: only later ones are said again
@@ -1379,9 +1415,45 @@ class Link:
         self.follows[pid] = follow
         if not follow:
             self.machine_sent[pid] = machine["message"]["body"]
-        self.requests.sent(owed)
-        self.rpcs.sent(results)
         self.deliveries(hl)
+
+    def confirming(self, pid):
+        """The continuation of a confirmation of the project queued now (its
+        probe, or a hello that opens it): once it is answered, the
+        settlements and compaction messages answered before now are the
+        hub's (sminos_flights)."""
+        marks = self.requests.mark(), self.rpcs.mark()
+
+        def answered():
+            self.requests.confirmed(pid, marks[0])
+            self.rpcs.confirmed(pid, marks[1])
+        return answered
+
+    def confirm_held(self):
+        """Each open project holding settlements or compaction messages the
+        hub answered 200 for CONFIRM_AFTER, and no probe out: its probe on
+        the log lane, an empty `events` frame. The hub refuses it `not-open`
+        before answering when it does not hold the project open (the refusal
+        owes them again), and does nothing else with it. What is held is
+        confirmed within CONFIRM_AFTER, plus the probe's wait in the log
+        lane's queue (it goes behind the uploads and any log POST the hub
+        holds; UPLOAD_AHEAD gives it no priority), plus its exchange —
+        archive period or not. Not proof: the probe's refusal, written before
+        its answer, can still be unread by the stream's reader when the
+        answer's continuation runs (sminos_flights)."""
+        now = time.monotonic()
+        for pid in sorted(self.opened - self.opening - self.probing):
+            since = [t for t in (self.requests.flights.held_since(pid), self.rpcs.flights.held_since(pid))
+                     if t is not None]
+            if not since or now - min(since) < CONFIRM_AFTER:
+                continue
+            self.probing.add(pid)
+            confirm = self.confirming(pid)
+
+            def answered(pid=pid, confirm=confirm):
+                self.probing.discard(pid)
+                confirm()
+            self.log_lane.send([{"t": "events", "project": pid, "events": []}], then=answered)
 
     def report(self, hl, rejections):
         """Rejections up, reported once the hub answered them."""
@@ -1429,15 +1501,16 @@ class Link:
 
     def upload(self, hl):
         """The project's uploads queued, each its own entry, as far as the log
-        lane holds less than UPLOAD_AHEAD unsent: the rest go on a later pass
-        (each pass draws them from what was queued), so a long backlog paces
-        itself instead of filling the lane past its bound — and a pass while
-        the lane is full draws nothing at all."""
-        if self.log_lane.queued() >= UPLOAD_AHEAD:
-            return
-        for frame, reach in hl.uploads():
-            if self.log_lane.queued() >= UPLOAD_AHEAD:
-                break
+        lane holds less than UPLOAD_AHEAD unsent: the rest go on a later pass,
+        so a long backlog paces itself instead of filling the lane past its
+        bound. Each frame is drawn only once there is room for it, and the
+        rest stays drawn where it was (HubLog.next_upload): a pass while the
+        lane is full draws nothing, and no event is sealed twice."""
+        while self.log_lane.queued() < UPLOAD_AHEAD:
+            got = hl.next_upload()
+            if got is None:
+                return
+            frame, reach = got
             self.log_lane.send([frame])
             hl.took(reach)
 
@@ -1515,21 +1588,27 @@ class Link:
 
     def relay_requests(self):
         """The requests of the open projects' bridged sessions: readers for
-        them, and what they read, up."""
+        them, and what they read, up — one entry per project, so each
+        continuation follows the POST that carried its own frames and no
+        other project's gate. A settlement leaves the outbox once that POST
+        was answered and is relayed once a confirmation queued after that is
+        (confirm_held);
+        a complete set is taken when queued (every connect sends one
+        again)."""
         self.requests.follow(self.bridged(self.opened))
         self.requests.take()
-        frames = self.requests.due(self.opened)
-        if frames:
-            self.session_lane.send(frames)
-            self.requests.sent(frames)   # queued: the complete pending set goes after every connect
+        for frames in by_project(self.requests.due(self.opened)):
+            attempt = self.requests.sending(frames)
+            self.session_lane.send(frames, then=lambda f=frames, a=attempt: self.requests.delivered(f, a))
 
     def relay_rpcs(self):
-        """The RPCs' results and their compactions' progress, up."""
+        """The RPCs' results and their compactions' progress, up, one entry
+        per project: a result goes again on every stream until `rpc-ack`; a
+        compact message is owed as a settlement is (sminos_flights)."""
         self.rpcs.compacted(self.requests.take_compacts())
-        frames = self.rpcs.due(self.opened)
-        if frames:
-            self.session_lane.send(frames)
-            self.rpcs.sent(frames)   # queued: a result goes again on every stream until `rpc-ack`
+        for frames in by_project(self.rpcs.due(self.opened)):
+            attempt = self.rpcs.sending(frames)
+            self.session_lane.send(frames, then=lambda f=frames, a=attempt: self.rpcs.delivered(f, a))
 
     def tick(self):
         """Between frames: new hub projects opened, and what this machine's
@@ -1591,6 +1670,7 @@ class Link:
             self.post_session(self.plane.tick({pid: self.logs[pid].project for pid in self.opened}))
             self.relay_requests()
             self.relay_rpcs()
+            self.confirm_held()
             self.plane_failing = ""
         except EndStream:
             raise
