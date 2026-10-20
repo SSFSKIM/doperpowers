@@ -3923,15 +3923,16 @@ class Lifecycle(unittest.TestCase):
                  if f.get("t") == "session" and f["message"]["session"] == runs]
         self.assertEqual(len(again), 1, "said again once, not at every look")
 
-    def test_a_session_that_left_while_its_live_presence_was_in_flight_at_a_reopen_is_not_left_live(self):
+    def ghost(self, name, heal_after):
         """A member's live presence is out (held at the hub); the member
         ends, and its tombstone queues behind that body; the hub refuses the
         project `not-open` and it is opened again, the tombstone queued
-        dropped as the hello renews presence. The hub may apply the held
-        live presence after the hello: the presence said again behind it
-        says the leaver not running too, so the hub does not keep it live."""
+        dropped as the hello renews presence; the heal's look comes
+        `heal_after` s after the leave. The hub applies the held live
+        presence after the hello. What the hub was told of the leaver, in
+        the order it applied it."""
         import sminos
-        project, runs, _ = self.ended_presence_project("reopen-ghost")
+        project, runs, _ = self.ended_presence_project(name)
         hub = ScriptedHub()
         self.addCleanup(hub.close)
         link, items, hl = self.on_lanes(project, hub)
@@ -3962,32 +3963,52 @@ class Lifecycle(unittest.TestCase):
         self.assertTrue(wait_for(lambda: len(hub.posts) > held + 1), "the re-open's hello went")
         self.answered(link, items)
         hub.release.set()
-        link.post_session(link.plane.presence(project.id))   # the next look, as a tick takes it
+        # The next look, as a tick takes it, `heal_after` s on.
+        link.post_session(link.plane.presence(project.id, now=time.monotonic() + heal_after))
         time.sleep(0.5)
         bodies = hub.bodies()
         order = bodies[:held] + [bodies[held + 1], bodies[held]] + bodies[held + 2:]   # the hello, then the held body
-        said = [f["message"]["body"] for b in order for f in b
+        return [f["message"]["body"] for b in order for f in b
                 if f.get("t") == "session" and f["message"]["kind"] == "presence" and f["message"]["session"] == runs]
+
+    def test_a_session_that_left_while_its_live_presence_was_in_flight_at_a_reopen_is_not_left_live(self):
+        """The hub applies the held live presence after the hello: the
+        presence said again behind it says the leaver not running too, so the
+        hub does not keep it live."""
+        said = self.ghost("reopen-ghost", 0)
         self.assertEqual(said[-1:], [{"record": None, "bridge": False}],
                          "the hub's last word on the leaver is that it is not running: %s" % said)
 
+    def test_a_leaver_whose_live_presence_waited_long_in_the_queue_is_not_left_live_by_a_late_heal(self):
+        """The live presence a body carries may have waited long in the
+        lane's queue before that body was formed, so a leave long before the
+        heal is no reason to skip the leaver: what keeps it is that its
+        tombstone was said after the oldest frame of the body out at the
+        re-open, however long ago (within GONE_KEEP, a bound on memory)."""
+        said = self.ghost("reopen-ghost-late", 600)
+        self.assertEqual(said[-1:], [{"record": None, "bridge": False}],
+                         "a heal ten minutes after the leave still says it: %s" % said)
+
     def test_a_heal_says_again_only_the_leavers_a_body_still_in_flight_could_contradict(self):
         """The leavers `say_again` says not running again are those said gone
-        within GONE_KEEP: only a session live when a body still in flight was
-        formed can be contradicted by it, and such a body is answered or
-        given up within the lane's deadline. One said gone longer ago is not
-        said again, and is no longer kept."""
+        at or after the oldest frame of the project's body out at the re-open
+        (`since`): only a session live when such a frame was queued can be
+        contradicted by it. One said gone before carries no live presence in
+        that body. GONE_KEEP bounds what is kept, as memory alone."""
         project, _, ended = self.ended_presence_project("gone-bound")
         pl, got = self.connect(project)
         self.assertEqual(got.get(ended), {"record": None, "bridge": False}, "said gone at the connect")
-        now = time.monotonic()
+        at = pl.gone[project.id][ended]
 
-        def said_again(at):
-            pl.say_again(project.id)
-            return [m["session"] for m in pl.presence(project.id, now=at) if m["body"]["record"] is None]
-        self.assertEqual(said_again(now + 1), [ended], "a recent leaver is said again at a heal")
-        self.assertEqual(said_again(now + plane.GONE_KEEP + 1), [], "an old one is not")
-        self.assertEqual(pl.gone.get(project.id), {}, "and is no longer kept")
+        def said_again(since, now):
+            pl.say_again(project.id, since)
+            return [m["session"] for m in pl.presence(project.id, now=now) if m["body"]["record"] is None]
+        self.assertEqual(said_again(at - 1, at + 1), [ended], "the body out is older than the leave: said again")
+        self.assertEqual(said_again(at - 1, at + 1200), [ended], "however long ago the leave was")
+        self.assertEqual(said_again(at + 1, at + 2), [], "the body out began after it was said gone: not")
+        self.assertEqual(said_again(at - 1, at + plane.GONE_KEEP + 1), [], "past the memory bound: not kept")
+        self.assertEqual(pl.gone.get(project.id), {})
+
 
     def test_each_hellos_answer_takes_the_presence_read_it_carried(self):
         """Two presence-bearing hellos of one project in flight, answered 200

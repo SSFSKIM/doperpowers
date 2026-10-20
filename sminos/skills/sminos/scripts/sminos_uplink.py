@@ -676,10 +676,12 @@ class Entry:
     """Wire lines queued on a lane — on the session lane, of one project,
     and either all `renewed` or none — and the `send` they came from: `join`
     is [its entries not yet taken into a body, its continuation], which is
-    due with the body that takes the last."""
+    due with the body that takes the last. `at`: when it was queued
+    (monotonic, the plane's clock)."""
 
     def __init__(self, project, join, renewed=False):
         self.project, self.join, self.renewed = project, join, renewed
+        self.at = time.monotonic()
         self.lines = collections.deque()
         self.size = 0
 
@@ -747,7 +749,7 @@ class Sender(threading.Thread):
         self.released = set()
         self.unsent = 0                     # bytes queued or aside, not yet taken into a body
         self.state = "idle"                 # idle | posting | closed
-        self.flying = set()                 # the projects whose lines the body out carries
+        self.flying = {}                    # project → when its oldest line in the body out was queued
         self.warming = False
         self.conn_lock = threading.Lock()
         self.conn = None
@@ -810,11 +812,12 @@ class Sender(threading.Thread):
         that hello's re-open sends anew (`renewed`), which is dropped, so
         nothing posted after the hello contradicts it. A dropped entry's
         continuation never runs: the `not-open` that re-opens the project
-        voided the attempt it would have answered. Whether a body carrying
-        the project is out now, which the hub may apply after the hello
-        (`Link.open` heals that)."""
+        voided the attempt it would have answered. When a body carrying the
+        project is out now, which the hub may apply after the hello
+        (`Link.open` heals that), when the oldest of its lines of the project
+        was queued; else None."""
         with self.cv:
-            flying = project in self.flying
+            flying = self.flying.get(project)
             self.released.discard(project)
             mine = [e for e in itertools.chain(self.entries, self.aside.pop(project, ())) if e.project == project]
             self.entries = collections.deque(e for e in self.entries if e.project != project)
@@ -892,14 +895,14 @@ class Sender(threading.Thread):
         several bodies, its continuation with the last), on the session lane
         every queued entry's up to POST_LIMIT. Under the lock."""
         lines, size, thens = [], 0, []
-        self.flying = set()
+        self.flying = {}
         while self.entries:
             e = self.entries[0]
             while e.lines:
                 n = len(e.lines[0]) + 1
                 if lines and size + n > POST_LIMIT:
                     return b"\n".join(lines) + b"\n", thens
-                self.flying.add(e.project)
+                self.flying[e.project] = min(self.flying.get(e.project, e.at), e.at)
                 lines.append(e.lines.popleft())
                 size += n
                 self.unsent -= n
@@ -924,7 +927,7 @@ class Sender(threading.Thread):
             return False
         finally:
             with self.cv:
-                self.flying = set()   # answered, or given up with the lane
+                self.flying = {}   # answered, or given up with the lane
         took = time.monotonic() - started
         if took > SLOW_POST_SECONDS:
             log("a %s lane POST took %.1f s" % (self.lane, took))
@@ -1488,12 +1491,14 @@ class Link:
         def answered():
             self.opening.discard(pid)
             self.session_lane.release(pid)   # the hub has it open: what the network waited for comes first
-            if flying:
+            if flying is not None:
                 # A session-lane body of the project was out at the re-open:
                 # the hub may apply it after this hello, its older set and
-                # presence over the new. Both go again, behind it on its lane.
+                # presence over the new. Both go again, behind it on its lane:
+                # the presence of the members, and of every leaver said gone
+                # since that body's oldest line was queued.
                 self.requests.stale.add(pid)
-                self.plane.say_again(pid)
+                self.plane.say_again(pid, flying)
             # Applied behind the hello, the project open: the hub's (a write that fails is said, and costs a resend).
             self.requests.delivered(owed, attempt, confirmed=True)
             confirm()
