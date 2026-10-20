@@ -105,6 +105,13 @@ elif cmd == "archive":  # project machine|null
     call("POST", "/control/archive", {"project": args[0], "machine": None if args[1] == "null" else args[1]})
 elif cmd == "vector":  # project writer
     print(call("GET", "/control/state")[1]["projects"].get(args[0], {}).get("vector", {}).get(args[1], 0))
+elif cmd == "hellos":  # machine — the most projects one POST of its said hello to, and how many it said hello to
+    sets = []
+    for p in call("GET", "/control/state")[1]["posted"]:
+        if p["machine"] == args[0]:
+            pids = {f.get("project") for f in (json.loads(l) for l in p["body"].split("\n") if l.strip()) if f.get("t") == "hello"}
+            sets += [pids] if pids else []
+    print(max(map(len, sets), default=0), len(set().union(*sets)))
 PY
 ctl() { python3 "$T/ctl.py" "$T/hub.port" "$@"; }
 
@@ -208,6 +215,9 @@ assert_equals "$(designation a | cut -d' ' -f1) $(designation b | cut -d' ' -f1)
   "each uplink records the hub's answer: not this machine's archive"
 assert_equals "$(on_remote && echo pushed || echo empty)" empty "with no machine designated, two confirmations later nothing is pushed"
 assert_equals "$(ls -d "$T"/[ab]/s/projects/"$PID"/archive 2>/dev/null | wc -l | tr -d ' ')" 0 "and no archive clone is made"
+read -r most opened <<<"$(ctl hellos alpha)"
+assert_equals "$most" 1 "each confirmation posts one project's hello per POST, as the handshake does (the hub fails a POST of many)"
+if [ "$opened" -ge 2 ]; then pass "alpha confirms $opened projects"; else fail "alpha confirms more than one project (it confirmed $opened)"; fi
 
 # ---- alpha designated
 echo "alpha designated:"
