@@ -2348,4 +2348,65 @@ beside; a single reviewer reads one of those well in a pass.
 
 ## Outcomes & Retrospective
 
-Pending — written at finish.
+Written 2026-10-21, at the branch's PR (head 62e57510, sminos 1.2.14), before
+the xhigh panel and before the roll; the review loop refreshes it after its
+fix waves, and the by-hand lines are filled in after the roll.
+
+**What the purpose asked, and where it stands.** A session view opens in
+about a second whenever the machine can run. Measured end to end, through
+the real uplink and the real hub code on a local runtime with a browser
+client, at load < 50: every open scenario is now tens of milliseconds. Idle
+E 15–20 ms. Mid-message 18–21 ms, against 2–2.6 s before M5, with the
+long-answer open no longer dying at 5 s. After a prompt 14–26 ms. After a
+daemon restart, a large session opens loaded in 0.04 s, against a 0.42 s
+cold build, and every live session is warm 30 s after start. A child crash
+is redrawn in 0.17–0.22 s, against 1.2–6.6 s. A blocked hub write no longer
+stops the uplink: 37 POSTs answered 200 inside a 4 s block, and an open 9 ms
+after it. Not established yet:
+- the 100–300 band, which the owner's choice of a devcloud host would supply
+  or leave recorded as incomplete;
+- the deployed path, the owner's `window.deskLatency()` after the roll;
+- the by-hand daemon.log reads on the owner's Mac.
+
+**What held from the design.** The diagnosis in §1 was right about where
+the seconds went: the snapshot gated on a cut no bridge could deliver (§2),
+the uplink serializing every POST behind one connection and one thread (§3),
+a build parsed from scratch after every restart (§4), and a fixed respawn
+delay (§6). Each fix landed as designed and moved the figure it was meant
+to move. The reference consumer and the inventory (M1) earned their cost
+twice: they caught a measurement race in M8's kill run that time alone
+would have passed, and they made "the drawing is whole" a checked claim
+rather than an impression.
+
+**What the design got wrong, and the branch corrected.**
+- §3 marked settlements sent at enqueue on the premise that the handshake
+  heals a loss. That holds for the pending set but not for a settlement,
+  and the coordinator's whole-branch reviewer found it. Following it through
+  showed that the hub answers 200 to a frame it refuses `not-open`, which no
+  machine-side scheme can fully close. The branch holds what was answered
+  until a probe confirms it, and leaves the remaining windows to a hub
+  change (Residue).
+- M5's no-wait snapshot assumed every bridge keeps its named blocks. A
+  mixed-generation roll breaks that, hence the `namedBlocks` declaration.
+- M7's first row-sample check on saved builds gave way to a whole-prefix
+  CRC: a sample is not a correctness guarantee.
+
+The pattern across all three: a premise true of the common case and false
+of one class of object or one moment of a roll. A focused reviewer looking
+for exactly that found each one.
+
+**What cost more than it should have.** The M6 fix took four rounds, three
+of them chasing successively narrower windows of the same hub-side cause,
+before the loop was stopped by naming the cause. Stopping one round earlier
+would have lost nothing. The lesson: when each round's finding is a smaller
+instance of one external behaviour, rule on the behaviour.
+
+**Left behind.** The PR's Residue lists the follow-ups, each with its
+context:
+- the hub reporting refusals in the POST's answer;
+- the memory-only outbox, held list and compact messages;
+- the held list's missing hard cap;
+- oversized pending questions in a resync;
+- the vanished block on transcript-only snapshots during an outage;
+- the resync-wait outlier in the kill run;
+- bridge_order's unported release rule.
