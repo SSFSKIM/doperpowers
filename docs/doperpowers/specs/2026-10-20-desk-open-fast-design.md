@@ -1801,6 +1801,43 @@ beside; a single reviewer reads one of those well in a pass.
   lane's frames owe no reply under §8 and may share a body.
   Date/Author: 2026-10-20, the controller.
 
+- Decision (M1): the open line's `N` counts from the subscribe frame's
+  arrival (`opened`, backdated through the wall clock's `Link.received`),
+  while `OPEN_WAIT` still counts from the subscribe call (`started`), since
+  M1 changes no behavior of the open. N and M are on the subscription's
+  monotonic clock, A on the wall clock. §5's two-line block is one
+  daemon.log line; missing pieces read `no bridge`, `bridge: no snapshot`,
+  `build: none`, `cut null`. `Built` also carries `rows`; the cut's
+  on-disk state is computed in the Subscription (`cut in built.emitted`),
+  so M5 needs no change to `Built`. `warm` / `cold` is a Transcript flag:
+  the first extend of an index, or the one after a Reset, is cold.
+  Date/Author: 2026-10-20, the M1 executor, folded by the controller.
+- Decision (M1): the reference consumer's errors are strings led by their
+  kind; it records and does not apply messages after `end`; its watermark
+  error is per subscription (an inherited drawn watermark is dropped
+  silently, as the web does); it holds paged rows before the snapshot's, as
+  `desk-transcript.ts` does; its merge leaves out the web's offChain
+  vouching (the plane's own tests prove chains). On resume, a fresh copy of
+  a block the old subscription named and no longer draws (its row landed) is
+  drawn when named, dropped when unnamed. The inventory: holes from the
+  first row seen (or the first on disk once `more: false`); `partial` a
+  block drawn while its row was held; `vanished` the consumer's named-block
+  vanishes plus unnamed leaves whose row was not held; `dups` rows delivered
+  twice plus own-loop blocks drawn after they settled; block checks cover
+  the consumer's own loop. `fake_session.py` records the events it emitted
+  (the inventory's DX5 source).
+  Date/Author: 2026-10-20, the M1 executor, folded by the controller.
+- Decision (M1): `dx4-stream.json` keeps Interfaces' top-level array and
+  adds per sequence `about`, `agent`, `errors` and an optional `inventory`,
+  per step an optional `note` and the store-side replay keys `settle`,
+  `landing`, `lands`, so M3's layer test replays it without a store. The
+  stand-in keeps its existing `received` beside the new `at` (the same
+  stamp; `measure_pages.py` reads `received`), and closes a connection whose
+  request body went unread. The pause proxy's port file is JSON
+  `{"proxy", "control"}`; its `held` counts bytes read and not forwarded
+  plus `FIONREAD` on the hub socket, keeping the maximum after resume.
+  Date/Author: 2026-10-20, the M1 executor, folded by the controller.
+
 ## Outcomes & Retrospective
 
 Pending — written at finish.
