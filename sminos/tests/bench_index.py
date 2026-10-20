@@ -6,9 +6,10 @@ read back, then extended past its end), and warm (extended again in memory).
 
     bench_index.py <transcript.jsonl> [--keep]
 
-The transcript is only read. The saved build is written under a temporary
-SMINOS_HOME of this run's own (removed after, unless --keep), never the
-machine's. The plane is imported from the plugin root this file sits under.
+The transcript is only read, its path resolved before anything else. The
+scripts run under a temporary HOME and SMINOS_HOME of this run's own
+(removed after, unless --keep), never the machine's: the saved build is
+written there. The plane is imported from the plugin root this file sits under.
 Prints one line per way — CPU and wall seconds, the rows and bytes indexed,
 the 1-minute load — then the saved build's size and what saving it cost,
 and a JSON summary; nothing of the transcript's content."""
@@ -40,7 +41,8 @@ def main():
     if not os.path.isfile(path):
         sys.exit("bench_index: no file %s" % a.transcript)
     root = tempfile.mkdtemp(prefix="bi.", dir="/tmp")
-    os.environ["SMINOS_HOME"] = os.path.join(root, "s")
+    os.environ["HOME"], os.environ["SMINOS_HOME"] = os.path.join(root, "h"), os.path.join(root, "s")
+    os.makedirs(os.environ["HOME"], mode=0o700)
     os.makedirs(os.environ["SMINOS_HOME"], mode=0o700)
     sys.path.insert(0, SCRIPTS)
     import sminos_plane as plane

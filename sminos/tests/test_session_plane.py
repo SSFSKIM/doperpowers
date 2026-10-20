@@ -27,6 +27,7 @@ import http.client
 import io
 import json
 import os
+import pickle
 import queue
 import re
 import shutil
@@ -3274,6 +3275,84 @@ class TranscriptIndex(unittest.TestCase):
             fresh.extended()
             self.assertEqual((fresh.how, fresh.index.parsed - t.index.parsed), ("loaded", 0), "saved at its end")
 
+    def test_a_same_inode_rewrite_that_keeps_the_tail_is_not_loaded(self):
+        """The file rewritten in place, its length and its last rows kept:
+        rows in the middle — a call that started a background job, its
+        result, the rows the chain links — under other uuids and another
+        task id. The load reads a sample of rows at their saved offsets and
+        refuses the build."""
+        rows, _ = self.thread_rows(30)
+        first = plane.Transcript(self.path)
+        first.extended()
+        self.assertTrue(first.save())
+        size, ino = os.path.getsize(self.path), os.stat(self.path).st_ino
+        lo, hi = 50, 62
+        old = [rows[i]["uuid"] for i in range(lo, hi)]
+        swap = {u: str(uuidlib.uuid4()) for u in old}
+        with open(self.path, "r+b") as f:
+            f.seek(first.index.offsets[lo])
+            span = f.read(first.index.offsets[hi] - first.index.offsets[lo])
+            text = span.decode()
+            for u, v in swap.items():
+                text = text.replace(u, v)
+            text = text.replace('"bg', '"BG')
+            self.assertEqual(len(text.encode()), len(span), "the same length")
+            self.assertIn('"BG', text, "a background job's task id among the rows rewritten")
+            f.seek(first.index.offsets[lo])
+            f.write(text.encode())
+        self.assertEqual((os.path.getsize(self.path), os.stat(self.path).st_ino), (size, ino), "in place")
+        t = plane.Transcript(self.path)
+        t.extended()
+        self.assertEqual(t.how, "cold", "the saved build is refused")
+        self.assertEqual(self.state(t), self.state(self.cold()), "the rows as they are now")
+        self.assertIn(swap[old[0]], t.index.uuids)
+
+    def test_an_evicted_build_reacquired_before_its_save_never_publishes_over_a_newer_one(self):
+        """Evicted while its worker is busy, so its save is still queued;
+        acquired again and built further meanwhile: the saved build, once
+        every save is done, is the newer one."""
+        _, r = self.thread_rows(10)
+        transcripts = plane.Transcripts(keep=0)
+        a = transcripts.acquire(self.path)
+        go, entered = threading.Event(), threading.Event()
+        a.submit(lambda t: t.extended())                      # its first build: a save is due after it
+        a.submit(lambda _t: (entered.set(), go.wait(10)))     # a job the worker sits in before that save
+        self.assertTrue(entered.wait(10))
+        self.thread_rows(10, r)
+        transcripts.release(a)                                # evicted, its save queued behind
+        b = transcripts.acquire(self.path)
+        b.submit(lambda t: t.extended())                      # the newer build
+        if b is not a:
+            self.assertTrue(wait_for(lambda: not b.working), "the newer build and its save are done")
+        go.set()
+        self.assertTrue(wait_for(lambda: not a.working and not b.working))
+        with open(plane.build_file(self.path), "rb") as f:
+            end = pickle.load(f)[3]
+        self.assertEqual(end, os.path.getsize(self.path), "the saved build is the newer one")
+
+    def test_a_failed_save_is_not_counted_and_the_stop_and_eviction_retry_it(self):
+        self.thread_rows(5)
+        transcripts = plane.Transcripts(keep=0)
+        t = transcripts.acquire(self.path)
+        saved = plane.build_file(self.path)
+        real, fails = os.replace, [True]
+
+        def replace(src, dst):
+            if fails[0] and dst == saved:
+                raise OSError(28, "No space left on device")
+            return real(src, dst)
+        with mock.patch.object(plane.os, "replace", replace):
+            self.run_job(t, lambda tr: tr.extended())   # the first build's save fails
+            self.assertFalse(os.path.exists(saved))
+            self.assertEqual(transcripts.save_all(seconds=5), (0, 1), "the stop counts the save it could not make")
+            self.assertFalse(os.path.exists(saved))
+            fails[0] = False
+            transcripts.release(t)                       # evicted: its dirty build saved as it leaves
+            self.assertTrue(wait_for(lambda: os.path.exists(saved) and not t.working), "the eviction retried it")
+        fresh = plane.Transcript(self.path)
+        fresh.extended()
+        self.assertEqual((fresh.how, fresh.index.end), ("loaded", os.path.getsize(self.path)))
+
     def test_saved_builds_past_their_keep_are_swept(self):
         d = os.path.join(os.environ["SMINOS_HOME"], "daemon", "plane")
         os.makedirs(d, mode=0o700, exist_ok=True)
@@ -3381,6 +3460,25 @@ class Warmer(unittest.TestCase):
         self.assertEqual(warmer.running, 0, "but nothing submitted while an open builds")
         warmer.tick({"s1", "s2"}, clock())
         self.assertTrue(wait_for(lambda: all(t.index.uuids for t in warmer.held.values())), "then warmed")
+
+    def test_a_session_that_leaves_is_let_go_while_its_round_is_pending(self):
+        """A round held up by opens does not hold its sessions: each period
+        lets go of those no longer handed in and takes them off the round."""
+        paths = {"s1": self.transcript("s1"), "s2": self.transcript("s2")}
+        warmer = plane.Warmer(self.transcripts, locate=paths.get)
+        clock = Clock()
+        warmer.tick({"s1", "s2"}, clock())
+        clock.advance(plane.WARM_EVERY)
+        warmer.tick({"s1", "s2"}, clock(), opening=True)
+        self.assertEqual(sorted(warmer.round), ["s1", "s2"], "a round pending behind an open")
+        t1 = warmer.held["s1"]
+        clock.advance(plane.WARM_EVERY)
+        warmer.tick({"s2"}, clock(), opening=True)
+        self.assertNotIn("s1", warmer.held, "let go, the round still pending")
+        self.assertEqual(t1.users, 0)
+        self.assertEqual(list(warmer.round), ["s2"], "and off the round")
+        warmer.tick({"s2"}, clock())
+        self.assertTrue(wait_for(lambda: warmer.held["s2"].index.uuids and warmer.running == 0))
 
     def test_at_most_two_warm_jobs_run_at_once_across_forty_live_transcripts_visited_round_robin(self):
         sessions = ["s%02d" % i for i in range(40)]

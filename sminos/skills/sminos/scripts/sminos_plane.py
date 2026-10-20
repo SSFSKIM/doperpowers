@@ -175,6 +175,7 @@ STOP_SAVE_SECONDS = 5.0   # s: the uplink's stop waits this long for the held bu
 BUILD_FORMAT = 1          # what a saved build holds: bumped whenever Index, jobs.Ledger or Chain change it
 BUILD_KEEP_DAYS = 14      # a saved build not written or loaded this long is swept at the uplink's start
 BUILD_DIR = "plane"       # under daemon/: the saved builds
+LOAD_SAMPLE = 16          # rows a load reads back at their saved offsets: the first, the last, the rest evenly between
 PRESENCE_EVERY = 0.2      # s: how often the engine's records are looked at
 BRIDGE_RECHECK = 2.0      # s: how often a bridge that answered is asked again
 METAS_EVERY = 0.5         # s: how often a main subscription's subagent tree is looked at
@@ -583,6 +584,31 @@ def _remove(path):
         pass
 
 
+def _sample_holds(index, k=LOAD_SAMPLE):
+    """Whether a saved index still reads the file as it is: the first row,
+    the last, and the rest of `k` spaced evenly between, each read at its
+    saved offset — a whole line there, of its saved length, holding its
+    uuid. A parse of the whole file is what a load saves, so this is a
+    sample: a rewrite in place that keeps every row's length and touches
+    only rows between two of it passes. The engine only appends."""
+    n = len(index.uuids)
+    if not n:
+        return True
+    picks = sorted({(n - 1) * i // (k - 1) for i in range(k)}) if n > 1 else [0]
+    with open(index.path, "rb") as f:
+        for i in picks:
+            at, length = index.offsets[i], index.lengths[i]
+            f.seek(at - 1 if at else 0)
+            data = f.read(length + (2 if at else 1))
+            line = data[1:-1] if at else data[:-1]
+            if (at and data[:1] != b"\n") or data[-1:] != b"\n" or len(line) != length:
+                return False
+            row = parse_row(line)
+            if row is None or row["uuid"] != index.uuids[i]:
+                return False
+    return True
+
+
 def _shaped(obj, kind, fresh):
     """Whether a loaded object is a `kind` holding what a fresh one holds: a
     build saved by code whose classes held other fields is not used, even if
@@ -617,7 +643,8 @@ class Transcript:
         self.tried = False     # the saved build was looked for (by the first extend)
         self.how = None        # how the index last came: "loaded" (a saved build), "cold" (parsed from the first byte) or "warm"
         self.cpu_ms = 0        # the CPU the last extend cost on this worker, a load included
-        self.saved = None      # index.end as last saved or loaded: None, neither yet in this process
+        self.saved = None      # index.end as last saved or loaded (on disk): None, neither yet in this process
+        self.tried_end = None  # index.end as last saved, loaded, or tried and failed: the growth rule's mark
         self.save_due = False  # the last extend calls for a save, taken when no foreground job is queued
         self.warming = False   # a warm job is queued or running (Warmer)
         self.lock = threading.Lock()
@@ -673,11 +700,11 @@ class Transcript:
             self.index.extend(on_row)
         except Reset:
             self.index, self.ledger, self.chain = Index(self.path), jobs.Ledger(), Chain(self.chain.main)
-            self.indexed, self.saved = False, None
+            self.indexed, self.saved, self.tried_end = False, None, None
             raise
         self.indexed = True
         self.how, self.cpu_ms = how, int(round((time.thread_time() - cpu) * 1000))
-        if self.index.ino is not None and (self.saved is None or self.index.end - self.saved >= SAVE_GROWTH):
+        if self.index.ino is not None and (self.tried_end is None or self.index.end - self.tried_end >= SAVE_GROWTH):
             self.save_due = True
         return self.index
 
@@ -685,10 +712,10 @@ class Transcript:
         """The saved build into the index, the ledger and the chain: True.
         False when there is none, or the one there cannot be used — of
         another format or shape, of another file (its realpath or inode), of
-        a file now shorter than what it read or whose last row it read is
-        not where it was, or unreadable — and then it is removed. A saved
-        build is the daemon's own file under a 0700 directory: loading it is
-        trusted."""
+        a file now shorter than what it read or whose rows, as sampled
+        (_sample_holds), are not where it read them, or unreadable — and
+        then it is removed. A saved build is the daemon's own file under a
+        0700 directory: loading it is trusted."""
         file = build_file(self.path)
         try:
             with open(file, "rb") as f:
@@ -705,10 +732,9 @@ class Transcript:
                 and st.st_size >= end and _shaped(index, Index, Index(self.path)) and index.end == end \
                 and index.ino == ino and _shaped(ledger, jobs.Ledger, jobs.Ledger()) \
                 and _shaped(chain, Chain, Chain(chain.main)) and chain.main == self.chain.main
-            if ok and index.uuids:
+            if ok:
                 index.path = self.path
-                n = len(index.uuids)
-                ok = [r.get("uuid") for r in index.rows(n - 1, n)] == index.uuids[-1:]
+                ok = _sample_holds(index)
         except Exception:  # noqa: BLE001 — any build that cannot be read is no build
             ok = False
         if not ok:
@@ -716,7 +742,7 @@ class Transcript:
             return False
         index.path = self.path
         self.index, self.ledger, self.chain = index, ledger, chain
-        self.indexed, self.saved = True, end
+        self.indexed, self.saved, self.tried_end = True, end, end
         try:
             os.utime(file)   # used: the sweep keeps it
         except OSError:
@@ -726,8 +752,9 @@ class Transcript:
     def save(self):
         """The build as of index.end written whole beside the saved builds
         (0600, under a 0700 directory) and moved into place: True once
-        saved. One that fails is said in the log and not tried again until
-        the index grows SAVE_GROWTH more."""
+        saved. One that fails is said in the log; the growth rule tries it
+        again once the index grows SAVE_GROWTH more, an eviction or the stop
+        at once (save_changed: `saved` still says what is on disk)."""
         self.save_due = False
         if self.index.ino is None:
             return False
@@ -745,16 +772,17 @@ class Transcript:
         except Exception as e:  # noqa: BLE001 — a build not saved costs a parse after a restart, nothing else
             _remove(tmp)
             log("the build of %s could not be saved (%r): it is parsed again after a restart" % (self.path, e))
-            self.saved = end
+            self.tried_end = end
             return False
-        self.saved = end
+        self.saved = self.tried_end = end
         return True
 
     def save_changed(self):
-        """save, when the index read past what was last saved or loaded."""
+        """save, when the index read past what is on disk: whether the build
+        on disk is now current (nothing to save, or saved)."""
         if self.index.ino is not None and self.saved != self.index.end:
             return self.save()
-        return False
+        return True
 
 
 class Transcripts:
@@ -763,16 +791,22 @@ class Transcripts:
     lets go — the `keep` released last, each saved on its worker as it
     leaves — so a second subscription, or the same browser subscribing
     again, builds nothing, and one evicted loads. One per process
-    (TRANSCRIPTS), kept across the uplink's streams."""
+    (TRANSCRIPTS), kept across the uplink's streams.
+
+    An evicted Transcript is `retiring` until its save has run: acquired
+    again meanwhile, it is that same Transcript that comes back, so one
+    worker per file orders every save of it and an older build never lands
+    over a newer one."""
 
     def __init__(self, keep=INDEX_KEEP):
         self.keep = keep
         self.lock = threading.Lock()
         self.held = collections.OrderedDict()   # path → Transcript, the least recently used first
+        self.retiring = {}                      # path → an evicted Transcript whose save has not run yet
 
     def acquire(self, path):
         with self.lock:
-            t = self.held.pop(path, None) or Transcript(path)
+            t = self.held.pop(path, None) or self.retiring.pop(path, None) or Transcript(path)
             t.users += 1
             self.held[path] = t
             return t
@@ -784,31 +818,44 @@ class Transcripts:
                 self.held.move_to_end(t.path)
             idle = [p for p, held in self.held.items() if held.users <= 0]
             gone = [self.held.pop(p) for p in idle[:max(0, len(idle) - self.keep)]]
+            for g in gone:
+                self.retiring[g.path] = g
         for g in gone:
-            g.submit_background(Transcript.save_changed)
+            g.submit_background(self.retire)
+
+    def retire(self, t):
+        """An evicted Transcript's last job: its build saved, then let go,
+        unless it was acquired again meanwhile."""
+        try:
+            t.save_changed()
+        finally:
+            with self.lock:
+                if self.retiring.get(t.path) is t:
+                    del self.retiring[t.path]
 
     def save_all(self, seconds=STOP_SAVE_SECONDS):
         """The uplink's stop: each held build saved where it read past its
-        last save, a background job on its own worker, all of them waited
-        for `seconds` at most: (how many were done, how many were held)."""
+        last save — the retiring ones too — a background job on its own
+        worker, all of them waited for `seconds` at most: (how many builds
+        are now current on disk, how many were held)."""
         with self.lock:
-            held = list(self.held.values())
+            held = list(self.held.values()) + list(self.retiring.values())
         done = []
         for t in held:
-            ev = threading.Event()
-            done.append(ev)
+            ev, ok = threading.Event(), []
+            done.append((ev, ok))
 
-            def job(tr, ev=ev):
+            def job(tr, ev=ev, ok=ok):
                 try:
-                    tr.save_changed()
+                    ok.append(tr.save_changed())
                 finally:
                     ev.set()
             t.submit_background(job)
         deadline = time.monotonic() + seconds
-        for ev in done:
+        for ev, _ in done:
             if not ev.wait(max(0.0, deadline - time.monotonic())):
                 break
-        return sum(ev.is_set() for ev in done), len(done)
+        return sum(1 for ev, ok in done if ev.is_set() and ok == [True]), len(done)
 
 
 TRANSCRIPTS = Transcripts()
@@ -817,10 +864,10 @@ TRANSCRIPTS = Transcripts()
 class Warmer:
     """The live sessions' builds kept current in the background (open-fast
     §4), so a live session's first open is warm, without starving the opens.
-    Every WARM_EVERY, once its last round is done, `tick` holds the main
-    transcript of each session it is handed — the live members of the
-    stream's open projects, each located once — lets go of the rest, and
-    begins a round over those it holds; each tick submits the round's next
+    Every WARM_EVERY `tick` holds the main transcript of each session it is
+    handed — the live members of the stream's open projects, each located
+    once — and lets go of the rest, taking them off the round in hand; once
+    that round is done it begins another over those it holds. Each tick submits the round's next
     warm jobs while fewer than WARM_PARALLEL are queued or running in the
     process, passing over a transcript that has one. A warm job is a
     background job, taken only while its worker has no foreground job
@@ -850,10 +897,13 @@ class Warmer:
         now = time.monotonic() if now is None else now
         if self.next_round is None:
             self.next_round = now + self.every
-        if not self.round and now >= self.next_round:
+        if now >= self.next_round:
             self.next_round = now + self.every
             self.hold(sessions)
-            self.round.extend(self.held)
+            if self.round:
+                self.round = collections.deque(sid for sid in self.round if sid in self.held)
+            else:
+                self.round.extend(self.held)
         while self.round and not opening:
             with self.lock:
                 if self.running >= self.parallel:
