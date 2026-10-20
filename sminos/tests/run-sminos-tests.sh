@@ -3444,15 +3444,15 @@ mkdir -p "$TEST_ROOT/pf-other-cwd"
 start_inbox pc2
 printf '{"pid":%s,"sessionId":"%s","name":"pc","nameSource":"user","kind":"interactive","status":"idle","cwd":"%s","messagingSocketPath":"%s"}\n' \
   "$SOCK_PID" "$IC" "$R" "$TEST_ROOT/in-pc2.sock" > "$HOME/.claude/sessions/pf-pc2.json"
+# A seat-less session whose harness name is a live seat's alias (a --bg
+# copy inherits its source's name, `nameSource: user` as for a /rename)
+# does not take it: the alias stands for the seat alone.
 run "$SMINOS" list
-assert_contains "$OUT" "pc [${PC:0:8}]" "two members sharing an alias list apart by their shorts"
-assert_contains "$OUT" "pc [${IC:0:8}]" "both of them"
-run "$SMINOS" say "@pc hi"
-assert_rc 4 "$RC" "a tag both answer to is refused"
-assert_contains "$OUT" "pc#${PC:0:8}" "naming the seat"
-assert_contains "$OUT" "pc#${IC:0:8}" "and the session"
-run "$SMINOS" say "@pc#${IC:0:4} only you"
-assert_rc 0 "$RC" "#short picks one"
+assert_contains "$OUT" "pc [${PC:0:8}]" "the seat keeps its alias"
+assert_contains "$OUT" "${IC:0:8} [${IC:0:8}]" "a session named as a live seat goes by its short"
+assert_equals "$(events_of "$IC")" "joined " "and is never renamed onto the seat's alias"
+run "$SMINOS" say "@${IC:0:8} only you"
+assert_rc 0 "$RC" "its short reaches it"
 assert_contains "$(inbox pc2)" "only you" "and delivers to a seat-less member over its socket"
 rm -f "$HOME/.claude/sessions/pf-pc2.json"
 
@@ -3927,10 +3927,15 @@ run "$SMINOS" list
 
 # A seat and a seat-less session that share an alias: every member verb
 # refuses the name as ambiguous, as a tag is refused, and #short picks one.
+# The seat is named after the session already went by the name — an alias a
+# human gives may collide, while a harness name a seat already holds is not
+# taken (test_rpcs.py, CopyNames).
 DS=2f00000f-0000-4000-8000-00000000002f
 DL=3a000010-0000-4000-8000-00000000003a
-run "$SMINOS" seat add pf-repo dupe --session "$DS"
 pf_peer dupe "$DL" idle user
+run "$SMINOS" list
+assert_equals "$(json_row dupe session)" "$DL" "the seat-less session goes by its harness name"
+run "$SMINOS" seat add pf-repo dupe --session "$DS"
 # A project qualifier, by name or by id, resolves the same way: only a full id
 # or a group qualifier that is no project names a seat directly.
 for name in dupe pfdemo/dupe "$PF/dupe"; do
@@ -3942,6 +3947,13 @@ for name in dupe pfdemo/dupe "$PF/dupe"; do
   done
 done
 assert_not_contains "$(field "$DS" status)" "retired" "the refused retires touched nothing"
+run "$SMINOS" say "@dupe hi"
+assert_rc 4 "$RC" "a tag both answer to is refused"
+assert_contains "$OUT" "dupe#${DS:0:8}" "naming the seat"
+assert_contains "$OUT" "dupe#${DL:0:8}" "and the session"
+run "$SMINOS" say "@dupe#${DL:0:4} only you"
+assert_rc 0 "$RC" "#short picks one"
+assert_contains "$(inbox dupe)" "only you" "and delivers to it"
 run "$SMINOS" status pf-repo/dupe "the seat's"
 assert_rc 0 "$RC" "a group qualifier that is no project names the seat directly"
 run "$SMINOS" status "$DS" "the seat's, by id"
@@ -4148,12 +4160,15 @@ C5="$TEST_ROOT/c5"
 C5E=(HOME="$C5/home" SMINOS_HOME="$C5/sminos" STUB_STATE="$C5/stub")
 mkdir -p "$C5/home/.claude/sessions" "$C5/stub/agents" "$C5/stub/log" "$C5/work"
 gitq init -q "$C5/work"
-for who in seat free; do
+# The free one goes by parser before the seat is named so (a list joins it):
+# an alias a human gives may collide; a harness name a seat holds is not taken.
+for who in free seat; do
   S="$( [ "$who" = seat ] && echo 5c000001 || echo 5c000002 )-0000-4000-8000-00000000005c"
   start_inbox "c5-$who"
   { echo "short=${S:0:8}"; echo "uuid=$S"; echo "name=parser"; echo "kind=background"; echo "state=working"; echo "status=idle"; echo "cwd=$C5/work"; } > "$C5/stub/agents/${S:0:8}"
   printf '{"pid":%s,"sessionId":"%s","name":"parser","kind":"bg","status":"idle","cwd":"%s","messagingSocketPath":"%s"}\n' \
     "$SOCK_PID" "$S" "$C5/work" "$TEST_ROOT/in-c5-$who.sock" > "$C5/home/.claude/sessions/c5-$who.json"
+  [ "$who" = free ] && run_in "$C5/work" env "${C5E[@]}" "$SMINOS" list
 done
 run_in "$C5/work" env "${C5E[@]}" "$SMINOS" seat add work parser --session 5c000001-0000-4000-8000-00000000005c
 run_in "$C5/work" env "${C5E[@]}" "$SMINOS" tui --headless --width 120 --height 40 --keys "!focus:work/parser#5c000001,s,text:to the seat,enter"
