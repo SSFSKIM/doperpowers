@@ -1221,9 +1221,10 @@ class Checks(unittest.TestCase):
         the one the claim keeps. No launch recorded: nothing ran, said at
         once. A launch whose job was never kept (the daemon stopped while
         `claude --bg` ran, which outlives it: 2026-10-20's desk Resume) ran
-        if a --bg process started since holds the session, its job kept by
-        no other claim; until one does, or the window ends, it may still
-        come."""
+        if a --bg process started since holds the session that no other
+        Resume of it, still running then, may have started (a job id cannot
+        say: every --bg job of a session shares one); until one does, or
+        the window ends, it may still come."""
         sid, late, unlaunched, jobless, never, other = (ended_session(self.root) for _ in range(6))
         launched = time.time()
         self.claim("JJJJJJJJJJJJJJJJJJJJJA", "resume", sid, self.clock[0], launched_at=launched, job=sid[:8])
@@ -1231,13 +1232,20 @@ class Checks(unittest.TestCase):
                    launched_at=launched - rpcs.RESUME_TRACE_S - 1, job=late[:8])
         self.claim("LLLLLLLLLLLLLLLLLLLLLA", "resume", unlaunched, self.clock[0])
         self.claim("OOOOOOOOOOOOOOOOOOOOOA", "resume", jobless, self.clock[0], launched_at=launched)
+        # An earlier Resume of the same session, answered before this launch: its job id is the same
+        # (the engine names a session's every --bg job by its id's first 8), its process long gone.
+        self.claim("TTTTTTTTTTTTTTTTTTTTTA", "resume", jobless, self.clock[0] - 3600, launched_at=launched - 3600,
+                   job=jobless[:8], outcome={"state": "done", "result": {"session": jobless}},
+                   done_at=launched - 3590, acked=True)
         self.claim("QQQQQQQQQQQQQQQQQQQQQA", "resume", never, self.clock[0], launched_at=launched)
-        # Another claim keeps the job holding `other`: that job is its launch, not this one's.
+        # Another Resume of `other` launched at the same time and still runs: the process holding it
+        # may be that one's.
         self.claim("RRRRRRRRRRRRRRRRRRRRRA", "resume", other, self.clock[0], launched_at=launched)
         self.claim("SSSSSSSSSSSSSSSSSSSSSA", "resume", other, self.clock[0], launched_at=launched, job=other[:8])
         time.sleep(1.1)  # whole seconds, as ps reads a start: the launches below are after the claims'
         for s in (jobless, other):
             subprocess.run(["claude", "--bg", "--resume", s], cwd=self.root, capture_output=True, check=True)
+        self.clock[0] = time.time()  # an outcome's done_at, on this clock, is compared with a real launch time
         try:
             with mock.patch.dict(os.environ, {"SMINOS_UUID_POLL": "3", "SMINOS_POLL_INTERVAL": "0.05"}):
                 r = rpcs.Rpcs(KEY, "testhost", clock=lambda: self.clock[0])
@@ -1247,11 +1255,13 @@ class Checks(unittest.TestCase):
                                  ["interrupted"], "stopped before its launch: nothing ran, said at once")
                 self.assertEqual(results(first, "OOOOOOOOOOOOOOOOOOOOOA"),
                                  [{"state": "done", "result": {"session": jobless}}],
-                                 "its job never kept, but a --bg process started since holds the session: it ran")
+                                 "its job never kept, but a --bg process started since holds the session, and the "
+                                 "only other Resume of it was answered before this launch: it ran")
                 self.assertEqual(results(first, "QQQQQQQQQQQQQQQQQQQQQA"), [],
                                  "its job never kept, nothing holds the session yet: its launch may still land")
                 self.assertEqual(results(first, "RRRRRRRRRRRRRRRRRRRRRA"), [],
-                                 "the --bg process holding it is another claim's job: no evidence for this one")
+                                 "another Resume running then may have started the process holding it: "
+                                 "no evidence for this one")
                 self.assertEqual([x["error"]["code"] for x in self.reconciled(r, "KKKKKKKKKKKKKKKKKKKKKA")],
                                  ["interrupted"], "past the window with no job holding it")
                 subprocess.run(["claude", "--bg", "--resume", sid], cwd=self.root, capture_output=True, check=True)

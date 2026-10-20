@@ -66,9 +66,12 @@ session (`session-live`: its transcript is here, so here is everywhere it
 can run; checked before the claim, and again under the lock). The launch
 is kept in the claim before it runs, and its job once known: a claim left
 by a stop is `done` only when a --bg process of that job holds the session;
-one whose job was never kept is `interrupted` (nothing can tell its launch
-from another), and a kept job the harness reports under another session is
-a copy, stopped, the RPC failed `copy-started`. The engine continues it
+one whose job was never kept (`claude --bg` outlives the daemon that ran
+it) is `done` when a --bg process started since its launch holds it and no
+other Resume of the session, still running then, could have started it,
+and `interrupted` once its window passes without one; a kept job the
+harness reports under another session is a copy, stopped, the RPC failed
+`copy-started`. The engine continues it
 under its own id unless it finds the session open meanwhile, when it starts
 a copy and says so: the copy is stopped and the RPC fails `copy-started`. The session rejoins as any session
 that runs again does (sminos's reconciliation, at the daemon's next tick,
@@ -684,11 +687,10 @@ class Rpcs:
             del self.unwritten[nonce]
             log("the outcome of %s is kept now: it is sent" % nonce)
         claims = self.ledger.items()
-        taken = {kept_job(e) for _, e in claims} - {None}   # the jobs Resumes' claims keep
         for nonce, e in claims:
             if "outcome" in e or nonce in self.flight or nonce in self.unwritten:
                 continue
-            outcome, window = trace(nonce, e, taken)
+            outcome, window = trace(nonce, e, [x for n, x in claims if n != nonce])
             if outcome is None and kept_job(e) and nonce not in self.copies_asked:
                 self.copies_asked.add(nonce)
                 self.flight.add(nonce)
@@ -1148,16 +1150,22 @@ def started_at(rec):
     return time.mktime(parsed) if parsed else None   # ps prints the local zone
 
 
-def launched_by(rec, launched, job, taken=()):
+def launched_by(rec, launched, job, rivals=()):
     """Whether a holder of the session is the --bg process of the launch made
     at `launched`, whose job is `job`: started no earlier than the launch's
     second, its job the one that launch started. With no `job` (a launch
-    stopped before its banner was read), any --bg job started since then
-    whose job no other claim keeps (`taken`)."""
+    stopped before its banner was read), any --bg process started since
+    then that none of `rivals` — the launch times of other Resumes of the
+    session still running when this one launched — can own: one launched
+    no later than the process's start could be its launch. (A job id does
+    not tell launches apart: the engine names a session's every --bg job
+    by the session id's first 8 characters.)"""
     started = started_at(rec)
     if rec.get("kind") != "bg" or started is None or started < int(launched):
         return False
-    return rec.get("jobId") == job if job is not None else rec.get("jobId") not in taken
+    if job is not None:
+        return rec.get("jobId") == job
+    return not any(int(r) <= started for r in rivals)
 
 
 def resume(sid, cwd, lock, note):
@@ -1228,10 +1236,27 @@ def kept_job(e):
     return job if isinstance(job, str) and job and e.get("session") else None
 
 
-def trace(nonce, e, taken=()):
+def resume_rivals(e, others):
+    """The launch times of other Resume claims of `e`'s session not finished
+    before `e`'s launch: a process started since could be theirs. One
+    answered before it is not: its process, if any, had ended by the time
+    this launch found no process holding the session."""
+    launched = e.get("launched_at")
+    out = []
+    for x in others:
+        at, ended = x.get("launched_at"), x.get("done_at")
+        if x.get("rpc") != "resume" or x.get("session") != e.get("session") \
+                or not isinstance(at, (int, float)) or isinstance(at, bool):
+            continue
+        if isinstance(ended, (int, float)) and not isinstance(ended, bool) and ended < launched:
+            continue
+        out.append(at)
+    return out
+
+
+def trace(nonce, e, others=()):
     """(the outcome a claim's trace shows, or None; how long after its claim
-    a trace may still appear). `taken`: the jobs other claims keep, none of
-    which is this claim's launch."""
+    a trace may still appear). `others`: the ledger's other entries."""
     if e.get("rpc") == "spawn":
         return spawned(nonce), SPAWN_TRACE_S
     if e.get("rpc") == "steer" and e.get("session"):
@@ -1244,7 +1269,8 @@ def trace(nonce, e, taken=()):
         # Stopped after the launch began: `claude --bg` outlives the uplink
         # that ran it, so its job may hold the session now or within the
         # window. Before its job was known, a --bg process started since the
-        # launch is taken for it unless another claim keeps that job.
-        ran = any(launched_by(r, launched, job, taken) for r in holders(e["session"]))
+        # launch is taken for it unless another Resume could have started it.
+        rivals = resume_rivals(e, others) if job is None else ()
+        ran = any(launched_by(r, launched, job, rivals) for r in holders(e["session"]))
         return (done({"session": e["session"]}) if ran else None), RESUME_TRACE_S
     return None, 0
