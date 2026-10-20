@@ -3200,6 +3200,138 @@ class Lifecycle(unittest.TestCase):
         self.assertEqual(hl.unreported(), [], "the rejection reported")
         self.assertFalse(box.waiting(), "the outcomes dropped")
 
+    def on_lanes(self, project, hub, wall=None):
+        """A Link on a stream of generation 1 whose lanes post to `hub`, with
+        the project's HubLog among its logs: (link, the stream's items, hl)."""
+        import sminos_hublog as hublog
+        import sminos_uplink as uplink
+        cred = {"machine": "testhost", "org": "org-1", "key": b"k" * 32, "hub": hub.url, "client_id": "c",
+                "client_secret": "s"}
+        hl = hublog.HubLog(project, cred)
+        link = uplink.Link(cred, {project.id: hl})
+        link.plane.wall = wall or (lambda: time.time() + 3600)
+        items = queue.Queue()
+        link.on_welcome({"t": "welcome", "generation": 1, "machine": "testhost"}, types.SimpleNamespace(items=items))
+        self.addCleanup(link.close)
+        return link, items, hl
+
+    def answered(self, link, items):
+        """The next lane answer, a 200's: its continuations run as the main loop runs them."""
+        kind, thens = items.get(timeout=10)
+        self.assertEqual(kind, "sent", thens)
+        link.ran(thens)
+
+    @staticmethod
+    def kinds(hub):
+        return [[f["t"] for f in body] for body in hub.bodies()]
+
+    def test_a_project_opened_again_is_gated_until_its_new_hello_is_answered_and_opened_once(self):
+        """The hub refuses `not-open` mid-stream (it lost the project's open
+        state): the project is opened again, once however many refusals come,
+        and its session messages wait for that hello's answer."""
+        project, runs, _ = self.ended_presence_project("reopen-gate")
+        hub = ScriptedHub()
+        self.addCleanup(hub.close)
+        link, items, hl = self.on_lanes(project, hub)
+        link.open(hl)
+        self.answered(link, items)
+        hub.script = ["hold"]
+        refused = {"t": "refused", "project": project.id, "refusal": {"reason": "not-open"}}
+        link.on_refused(refused, None)
+        link.on_refused(refused, None)
+        self.assertTrue(wait_for(lambda: len(hub.posts) == 2), "the second hello reached the hub, which holds it")
+        link.post_session([plane.envelope(project.id, "testhost", runs, "presence", None, None, {"after": True})])
+        time.sleep(0.4)
+        self.assertEqual(len(hub.posts), 2, "nothing of the project passes its held hello")
+        hub.release.set()
+        self.answered(link, items)
+        self.assertTrue(wait_for(lambda: len(hub.posts) == 3))
+        time.sleep(0.3)
+        self.assertEqual([body[0] for body in self.kinds(hub)], ["hello", "hello", "session"],
+                         "one hello again, then the message it held")
+        self.assertEqual(hub.bodies()[2][0]["message"]["body"], {"after": True})
+
+    def test_each_hellos_answer_takes_the_presence_read_it_carried(self):
+        """Two presence-bearing hellos of one project in flight, answered 200
+        then 503: the mark is the first one's read, never the second's."""
+        project, _, _ = self.ended_presence_project("two-reads")
+        hub = ScriptedHub()
+        self.addCleanup(hub.close)
+        now = [time.time() + 100]
+        link, items, hl = self.on_lanes(project, hub, wall=lambda: now[0])
+        hub.script = ["hold", 503]
+        link.open(hl)
+        first = now[0]
+        now[0] += 100
+        link.open(hl)
+        self.assertTrue(wait_for(lambda: len(hub.posts) == 1))
+        hub.release.set()
+        self.answered(link, items)
+        kind, _ = items.get(timeout=10)
+        self.assertEqual(kind, "closed", "the second hello answered 503")
+        self.assertEqual(self.marks()[project.id], first, "the mark is the read the answered hello carried")
+
+    def test_a_failed_rejection_write_releases_the_gate_and_is_written_later(self):
+        """The hello was answered and the rejections it carried reached the
+        hub, but recording that fails (a write error): the project's session
+        messages go all the same, nothing is held as in flight, and the
+        record is written on a later pass."""
+        project, runs, _ = self.ended_presence_project("reported-fails")
+        hub = ScriptedHub()
+        self.addCleanup(hub.close)
+        link, items, hl = self.on_lanes(project, hub)
+        rejection = {"t": "rejected", "project": project.id, "event": {"writer": "hub/x", "seq": 4},
+                     "reason": "bad-code", "message": "a forgery"}
+        state = hl.state()
+        state["unreported"] = [rejection]
+        hl.save(state)
+        real, calls = hl.reported, []
+
+        def flaky(frames):
+            calls.append(frames)
+            if len(calls) == 1:
+                raise OSError("No space left on device")
+            real(frames)
+
+        hl.reported = flaky
+        link.open(hl)
+        self.answered(link, items)
+        link.post_session([plane.envelope(project.id, "testhost", runs, "presence", None, None, {"after": True})])
+        self.assertTrue(wait_for(lambda: len(hub.posts) == 2), "the gate is released: the message goes")
+        self.assertEqual(link.reporting[project.id], 0, "nothing held as in flight")
+        self.assertEqual(hl.unreported(), [rejection], "the write failed")
+        link.settle_marks(hl)
+        self.assertEqual(hl.unreported(), [], "written on the next pass")
+        self.assertEqual(len(calls), 2)
+
+    def test_a_failed_outbox_drop_is_retried_and_its_outcomes_not_posted_again(self):
+        import sminos_outcomes as outcomes
+        project, runs, _ = self.ended_presence_project("drop-fails")
+        hub = ScriptedHub()
+        self.addCleanup(hub.close)
+        link, items, hl = self.on_lanes(project, hub)
+        box = outcomes.Outbox(project)
+        box.record({"writer": "hub/x", "seq": 1}, runs, "delivered", None)
+        real, calls = outcomes.Outbox.drop, []
+
+        def flaky(self_, n):
+            calls.append(n)
+            if len(calls) == 1:
+                raise OSError("No space left on device")
+            real(self_, n)
+
+        with mock.patch.object(outcomes.Outbox, "drop", flaky):
+            link.open(hl)
+            self.answered(link, items)   # the hello's
+            self.answered(link, items)   # the outcomes'
+            self.assertNotIn(project.id, link.delivering, "nothing held as in flight")
+            self.assertTrue(box.waiting(), "the drop failed")
+            link.deliveries(hl)
+            time.sleep(0.3)
+        self.assertEqual(self.kinds(hub), [self.kinds(hub)[0], ["session"]], "the outcomes posted once")
+        self.assertFalse(box.waiting(), "dropped on the next pass")
+        self.assertEqual(len(calls), 2)
+
     def test_the_daemon_sweeps_what_the_bridge_left_for_ended_sessions(self):
         """A session no process runs leaves its kept file once it has been
         quiet a day (neither its transcript nor the file touched), so a Resume soon after
@@ -3317,6 +3449,12 @@ class ScriptedHub:
                 self.end_headers()
                 self.wfile.write(data)
                 self.wfile.flush()
+
+            def handle(self):
+                try:
+                    super().handle()
+                except (BrokenPipeError, ConnectionResetError):
+                    pass   # the lane gave its POST up and shut its socket: nothing to answer
 
             def do_POST(self):
                 body = self.rfile.read(int(self.headers.get("Content-Length") or 0)).decode()
@@ -3597,6 +3735,26 @@ class Lanes(unittest.TestCase):
         self.posted(1)
         self.assertEqual(self.hub.posts[0]["conn"], 1, "the POST takes the warmed connection")
         self.assertEqual(len(self.numbers("dialled")), 1)
+
+    def test_a_released_project_gated_again_keeps_its_queued_messages_back_in_order(self):
+        """`hold` (a project opened again): its entries queued and not yet
+        posted go back aside, ahead of the ones that follow, until the next
+        `release`; another project's go on."""
+        s = self.lane("session", released=("p1", "p2"))
+        self.hub.script = ["hold"]
+        s.send(self.frames(0, "p2"))
+        self.posted(1)
+        s.send(self.frames(1, "p1"))
+        s.hold("p1")
+        s.send(self.frames(2, "p1"))
+        s.send(self.frames(3, "p2"))
+        self.hub.release.set()
+        self.posted(2)
+        time.sleep(0.3)
+        self.assertEqual([self.ns(i) for i in range(len(self.hub.posts))], [[("p2", 0)], [("p2", 3)]])
+        s.release("p1")
+        self.posted(3)
+        self.assertEqual(self.ns(2), [("p1", 1), ("p1", 2)])
 
     def test_a_slow_post_is_said(self):
         self.hub.script = [("slow", 0.4)]

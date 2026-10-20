@@ -751,6 +751,17 @@ class Sender(threading.Thread):
             self.entries.extend(self.aside.pop(project, ()))
             self.cv.notify()
 
+    def hold(self, project):
+        """The session lane: the project is being opened again (its `hello`
+        sent anew); its entries not yet taken into a body go back aside,
+        ahead of those that follow, until the next `release`."""
+        with self.cv:
+            self.released.discard(project)
+            mine = [e for e in self.entries if e.project == project]
+            if mine:
+                self.entries = collections.deque(e for e in self.entries if e.project != project)
+                self.aside[project] = mine + self.aside.get(project, [])
+
     def posting(self):
         return self.state == "posting"
 
@@ -1041,7 +1052,11 @@ class Link:
     when its frames are queued; one it does not — the presence tombstone,
     rejections reported, outcomes dropped — in the continuation that runs
     after the 200, its producer not taking the same again meanwhile
-    (`reporting`, `delivering`). `wake` asks the main thread for a tick now."""
+    (`reporting`, `delivering`). A continuation clears its in-flight flags
+    and opens the session gate whatever its local writes meet; a write that
+    fails is kept and done on a later pass (settle_marks), so a disk error
+    never holds the network back. `wake` asks the main thread for a tick
+    now."""
 
     def __init__(self, cred, logs, ended=lambda: False, wake=lambda: None, bridges=None, reqs=None, rpcs=None):
         self.cred = cred
@@ -1070,6 +1085,10 @@ class Link:
         self.log_lane = self.session_lane = None  # the stream's senders, from its welcome on
         self.reporting = collections.Counter()   # project id → POSTs of its rejections not yet answered
         self.delivering = set()   # project ids whose delivery outcomes are in a POST not yet answered
+        self.opening = set()      # project ids whose `hello` is out: a refusal does not open them again
+        self.unrecorded = {}      # project id → rejections the hub took, their record not yet written
+        self.undropped = {}       # project id → (outbox, lines) the hub took, their drop not yet done
+        self.unsettled = {}       # (project id, what) → the failure last said (settle_marks)
         self.handlers = {"welcome": self.on_welcome, "hb": self.on_hb, "have": self.on_have,
                          "events": self.on_events, "resend": self.on_resend, "refused": self.on_refused,
                          "part": self.on_part, "subscribe": self.on_subscribe, "unsubscribe": self.on_unsubscribe,
@@ -1154,6 +1173,7 @@ class Link:
         self.close_lanes()
         self.reporting.clear()
         self.delivering.clear()
+        self.opening.clear()
         if self.generation is not None:
             # The generation every POST names is known from here on: nothing is posted before it.
             self.log_lane, self.session_lane = (Sender(lane, self.cred, self.generation, stream.items.put, self.ended)
@@ -1200,7 +1220,9 @@ class Link:
             log("the hub refused: %s" % json.dumps(frame.get("refusal"), ensure_ascii=False)[:300])
             return
         hl.on_refused(frame)
-        if hl.have is None and hl.project.id in self.opened:
+        if hl.have is None and hl.project.id in self.opened and hl.project.id not in self.opening:
+            # The hub no longer has it open (`not-open`): opened anew, once
+            # while a hello of it is out, its session messages held meanwhile.
             self.opened.discard(hl.project.id)
             self.open(hl)
 
@@ -1296,20 +1318,28 @@ class Link:
         the leavers'. A live member that joined under a former name of this
         machine joins again first, so the vector and the upload carry it.
 
-        The bundle goes as one entry of the log lane; once the hub answered
-        it, the leavers its presence said are taken (the tombstone mark), its
-        rejections reported, and the project's session messages released to
-        the session lane. What `deliveries` posts after it follows it on the
-        same connection, so the hub applies it after the hello, and a hello
-        that fails ends the stream before any continuation behind it runs."""
+        The bundle goes as one entry of the log lane, and the project's
+        session messages wait (the session lane's gate, closed again on a
+        project opened anew) until the hub answered it. Then the gate opens,
+        before any local bookkeeping, and the bookkeeping follows: the read
+        its presence's leavers were drawn from is marked taken (the tombstone
+        mark), its rejections recorded as reported. What `deliveries` posts
+        after it follows it on the same connection, so the hub applies it
+        after the hello, and a hello that fails ends the stream before any
+        continuation behind it runs. While a hello of the project is out
+        (`opening`), a refusal does not open it again."""
         pid = hl.project.id
+        self.opening.add(pid)
+        self.session_lane.hold(pid)
         hl.rejoin_former()
-        unreported = [] if self.reporting[pid] else hl.unreported()
+        unreported = [] if self.reporting[pid] else [f for f in hl.unreported()
+                                                       if f not in self.unrecorded.get(pid, ())]
         self.plane.refresh(hl.project)
         machine = hl.presence()
         self.checkouts[hl.project.id] = bool(machine["message"]["body"]["checkouts"])
         follow = not self.holds(hl.project.id)
         sessions = [plane.frame(m) for m in self.plane.presence(hl.project.id, force=True)]
+        read = self.plane.take_read(pid)
         # The project's bridges are followed before its set is drawn up: the
         # set goes now if they are read, else once they are (Requests.due).
         self.requests.follow(self.bridged(self.opened | {hl.project.id}))
@@ -1320,10 +1350,14 @@ class Link:
             self.reporting[pid] += 1
 
         def answered():
-            self.plane.accepted(pid)   # the hub took the leavers' presence: only later ones are said again
-            if unreported:
-                self.reported(hl, unreported)
-            self.session_lane.release(pid)
+            self.opening.discard(pid)
+            self.session_lane.release(pid)   # the hub has it open: what the network waited for comes first
+            try:
+                if read is not None:
+                    self.plane.accepted(pid, read)   # the hub took these leavers: only later ones are said again
+            finally:
+                if unreported:
+                    self.reported(hl, unreported)
 
         self.log_lane.send([hl.hello(follow)] + ([] if follow else [machine]) + sessions + unreported + owed + results,
                            then=answered)
@@ -1341,14 +1375,52 @@ class Link:
         self.log_lane.send(rejections, then=lambda: self.reported(hl, rejections))
 
     def reported(self, hl, rejections):
-        hl.reported(rejections)
-        self.reporting[hl.project.id] -= 1
+        """The hub answered the rejections: no longer in flight, and recorded
+        as reported (settle_marks)."""
+        pid = hl.project.id
+        self.reporting[pid] -= 1
+        owed = self.unrecorded.setdefault(pid, [])
+        owed.extend(f for f in rejections if f not in owed)
+        self.settle_marks(hl)
+
+    def settle_marks(self, hl):
+        """What the hub took and this machine has yet to record, recorded:
+        the rejections reported (uplink.json), the outcomes dropped (the
+        outbox). A write that fails is said once and kept, and tried again on
+        the next pass (`deliveries`, every upload pass); what it keeps is
+        never posted again meanwhile."""
+        pid = hl.project.id
+        if self.unrecorded.get(pid):
+            try:
+                hl.reported(self.unrecorded[pid])
+                del self.unrecorded[pid]
+                self.unsettled.pop((pid, "reported"), None)
+            except (Exception, SystemExit) as e:  # noqa: BLE001 — kept, and tried again
+                self.unsettled_once((pid, "reported"), "recording the rejections of %s reported failed (%r): "
+                                    "tried again" % (hl.project.name, e))
+        if pid in self.undropped:
+            box, lines = self.undropped[pid]
+            try:
+                box.drop(lines)
+                del self.undropped[pid]
+                self.unsettled.pop((pid, "dropped"), None)
+            except (Exception, SystemExit) as e:  # noqa: BLE001 — kept, and tried again
+                self.unsettled_once((pid, "dropped"), "dropping the outcomes of %s posted failed (%r): tried again"
+                                    % (hl.project.name, e))
+
+    def unsettled_once(self, key, line):
+        if self.unsettled.get(key) != line:
+            self.unsettled[key] = line
+            log(line)
 
     def upload(self, hl):
         """The project's uploads queued, each its own entry, as far as the log
         lane holds less than UPLOAD_AHEAD unsent: the rest go on a later pass
         (each pass draws them from what was queued), so a long backlog paces
-        itself instead of filling the lane past its bound."""
+        itself instead of filling the lane past its bound — and a pass while
+        the lane is full draws nothing at all."""
+        if self.log_lane.queued() >= UPLOAD_AHEAD:
+            return
         for frame, reach in hl.uploads():
             if self.log_lane.queued() >= UPLOAD_AHEAD:
                 break
@@ -1358,9 +1430,11 @@ class Link:
     def deliveries(self, hl):
         """What delivery made of the events from outside, as DX4 `delivery`
         messages sealed as they go; dropped from the outbox once the hub
-        answered the POST that carried them, and not taken again meanwhile."""
+        answered the POST that carried them, and not taken again meanwhile —
+        nor while a drop that failed is still owed (settle_marks)."""
         pid = hl.project.id
-        if pid in self.delivering:
+        self.settle_marks(hl)
+        if pid in self.delivering or pid in self.undropped:
             return
         box = outcomes.Outbox(hl.project)
         if not box.waiting():
@@ -1369,13 +1443,15 @@ class Link:
         frames = [f for f in (outcomes.message(self.cred["key"], self.cred["machine"], pid, r)
                               for r in records) if f is not None]
         if not frames:
-            box.drop(lines)
+            self.undropped[pid] = (box, lines)
+            self.settle_marks(hl)
             return
         self.delivering.add(pid)
 
         def answered():
-            box.drop(lines)
             self.delivering.discard(pid)
+            self.undropped[pid] = (box, lines)
+            self.settle_marks(hl)
 
         self.log_lane.send(frames, then=answered)
 

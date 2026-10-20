@@ -1989,12 +1989,20 @@ class Plane:
                                     {"record": None, "bridge": False}))
         return out
 
-    def accepted(self, pid):
+    def take_read(self, pid):
+        """The read the forced presence just drawn for the project said its
+        leavers from, taken by the POST that carries it (`accepted`'s
+        `read`); None when there was none."""
+        return self.tombstoned.pop(pid, None)
+
+    def accepted(self, pid, read=None):
         """The hub answered 200 to the POST that carried a connect's presence
         for the project: its leavers are said, so the next connect says only
-        those that left since that read. Kept across restarts; a mark that
-        cannot be written leaves the old one, which says more, never less."""
-        at = self.tombstoned.pop(pid, None)
+        those that left since that read — `read`, the one that POST's
+        presence was drawn from (take_read), else the latest forced one's.
+        Kept across restarts; a mark that cannot be written leaves the old
+        one, which says more, never less."""
+        at = self.tombstoned.pop(pid, None) if read is None else read
         if at is None:
             return
         path = tombstone_path()
