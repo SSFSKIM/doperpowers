@@ -7,8 +7,11 @@ pair proof): the reply chain blocked for real, through the real hub code.
 Listens on 127.0.0.1 at a free port and forwards every connection to the hub
 (plain http: the local hub or the stand-in). A connection whose first line is
 `GET /machine/stream` is the stream; every other connection passes as it is,
-paused or not. Writes `{"proxy": <port>, "control": <port>}` to <port-file>
-once both listen.
+paused or not. The stream's frames are found in its body as the client
+reads it: through the chunked framing when the hub sends it chunked (the
+local hub's runtime does, and cuts a frame's JSON across chunks), the bytes
+forwarded as they came. Writes `{"proxy": <port>, "control": <port>}` to
+<port-file> once both listen.
 
 Its controls, on their own port:
 
@@ -74,6 +77,60 @@ class Pause:
 PAUSE = Pause()
 
 
+class Body:
+    """The stream response's body as the client reads it, fed the raw bytes
+    as they come: `feed(data)` answers [(offset in data, body bytes)], the
+    head and any chunked framing left out."""
+
+    def __init__(self):
+        self.head, self.in_head, self.chunked = b"", True, False
+        self.state, self.line, self.left = "size", b"", 0
+
+    def feed(self, data):
+        segs, i, n = [], 0, len(data)
+        if self.in_head:
+            self.head += data
+            k = self.head.find(b"\r\n\r\n")
+            if k < 0:
+                return segs
+            self.chunked = b"transfer-encoding: chunked" in self.head[:k].lower()
+            i = n - (len(self.head) - (k + 4))
+            self.in_head, self.head = False, b""
+        if not self.chunked:
+            return segs + ([(i, data[i:])] if i < n else [])
+        while i < n and self.state != "done":
+            if self.state == "size":
+                j = data.find(b"\n", i)
+                if j < 0:
+                    self.line += data[i:]
+                    break
+                size = int((self.line + data[i:j]).split(b";")[0].strip() or b"0", 16)
+                self.line, i = b"", j + 1
+                self.left, self.state = size, "data" if size else "done"
+            elif self.state == "data":
+                take = min(self.left, n - i)
+                segs.append((i, data[i:i + take]))
+                i, self.left = i + take, self.left - take
+                if self.left == 0:
+                    self.state, self.left = "crlf", 2
+            else:   # the CRLF after a chunk's data
+                take = min(self.left, n - i)
+                i, self.left = i + take, self.left - take
+                if self.left == 0:
+                    self.state = "size"
+        return segs
+
+
+def raw_offset(segs, at):
+    """The offset in the raw read of body byte `at` of that read's segments."""
+    seen = 0
+    for off, b in segs:
+        if at <= seen + len(b):
+            return off + (at - seen)
+        seen += len(b)
+    return None
+
+
 def pending(sock):
     """The bytes waiting unread in a socket's receive buffer."""
     if sock is None:
@@ -106,8 +163,9 @@ def stream_down(hub, client):
     """The hub's side of the stream to the client, paused as armed. While
     paused nothing more is forwarded: a read already under way when the pause
     began is held with the rest."""
-    tail = b""             # the last bytes forwarded: a frame cut across two reads is still found
+    tail = b""             # the body's last bytes read: a frame cut across two reads is still found
     awaiting_end = False   # the events frame that triggers the pause is not whole yet
+    body = Body()
     try:
         while True:
             with PAUSE.cond:
@@ -122,33 +180,38 @@ def stream_down(hub, client):
                 held, PAUSE.buffer = PAUSE.buffer, b""
             if held:
                 client.sendall(held)
-                tail = (tail + held)[-TAIL:]
                 with PAUSE.cond:
                     PAUSE.forwarded += len(held)
             data = hub.recv(BLOCK)
             if not data:
                 break
+            segs = body.feed(data)
+            text = b"".join(b for _, b in segs)
             with PAUSE.cond:
                 if PAUSE.state == "paused":
                     PAUSE.buffer += data
+                    tail = (tail + text)[-TAIL:]
                     continue
                 armed = PAUSE.state == "armed" and PAUSE.on == "next-events"
             cut = None
             if armed or awaiting_end:
-                window = tail + data
+                window = tail + text
                 if awaiting_end:
                     end = window.find(b"\n\n", max(0, len(tail) - 1))
                 else:
-                    # A match that ends in what was forwarded before is a frame sent before the arming.
+                    # A match that ends in what was read before is a frame sent before the arming.
                     m = next((m for m in EVENTS.finditer(window) if m.end() > len(tail)), None)
                     end = window.find(b"\n\n", m.end()) if m else -1
                     awaiting_end = m is not None and end < 0
                 if end >= 0:
-                    cut = end + 2 - len(tail)
+                    cut = raw_offset(segs, end + 2 - len(tail))
+                    if body.chunked and cut is not None:
+                        # The rest of the chunk's framing up to its next data goes with the frame.
+                        cut = next((off for off, _ in segs if off >= cut), cut)
                     awaiting_end = False
+            tail = (tail + text)[-TAIL:]
             out, rest = (data, b"") if cut is None else (data[:cut], data[cut:])
             client.sendall(out)
-            tail = (tail + out)[-TAIL:]
             with PAUSE.cond:
                 PAUSE.forwarded += len(out)
                 if cut is not None and PAUSE.state == "armed":

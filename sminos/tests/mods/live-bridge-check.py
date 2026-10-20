@@ -41,6 +41,7 @@ GATEWAY_KEYS = ("ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_DEFAULT
 BASE_KEYS = ("PATH", "TERM", "LANG", "USER", "LOGNAME", "SHELL", "TMPDIR")
 PLUGIN_PARTS = (".claude-plugin", "hooks", "skills", "types")
 NAME = "brlive"
+THINKING_BUDGET = 2048    # MAX_THINKING_TOKENS for a session started with thinking on
 
 
 class Conn(http.client.HTTPConnection):
@@ -100,6 +101,8 @@ class Live:
         self.session = None
         self.results = []
         self.procs = []
+        self.headless = None      # the headless session's process, once started so
+        self.out = []             # (time, stream-json object) it wrote
 
     # -- isolation
 
@@ -140,12 +143,51 @@ class Live:
         """The plugins the session loads with --plugin-dir: sminos's copy; a check of another plugin's mods adds it."""
         return [self.plugin]
 
-    def start_session(self):
+    def start_session(self, headless=False, thinking=False, model="haiku"):
+        """The session, under setup()'s isolation: interactive in this
+        check's tmux server, or `headless` — `claude -p` reading stream-json
+        prompts on a pipe (`send`) and writing stream-json with partial
+        messages, which a thread reads into `out` — with extended thinking
+        on when `thinking` (the engine's budget, MAX_THINKING_TOKENS, through
+        the env file) and `model` its --model."""
+        if thinking:
+            with open(self.envfile, "a") as f:
+                f.write("export MAX_THINKING_TOKENS=%d\n" % THINKING_BUDGET)
         dirs = " ".join("--plugin-dir %s" % shlex.quote(d) for d in self.plugin_dirs())
-        inner = "set -e; . %s; cd %s; exec claude %s --model haiku --permission-mode default -n %s" % (
-            shlex.quote(self.envfile), shlex.quote(self.work), dirs, NAME)
+        if headless:
+            inner = ("set -e; . %s; cd %s; exec claude -p --input-format stream-json --output-format stream-json "
+                     "--include-partial-messages --verbose %s --model %s --permission-mode default -n %s") % (
+                shlex.quote(self.envfile), shlex.quote(self.work), dirs, shlex.quote(model), NAME)
+            self.headless = subprocess.Popen(["env", "-i", "/bin/bash", "--noprofile", "--norc", "-c", inner],
+                                             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                             stderr=subprocess.DEVNULL, bufsize=0)
+            self.procs.append(self.headless)
+            threading.Thread(target=self.read_headless, daemon=True).start()
+            return
+        inner = "set -e; . %s; cd %s; exec claude %s --model %s --permission-mode default -n %s" % (
+            shlex.quote(self.envfile), shlex.quote(self.work), dirs, shlex.quote(model), NAME)
         cmd = "env -i /bin/bash --noprofile --norc -c %s" % shlex.quote(inner)
         subprocess.run(self.tmux + ["new-session", "-d", "-s", "brl", "-x", "200", "-y", "50", cmd], check=True)
+
+    def read_headless(self):
+        for line in iter(self.headless.stdout.readline, b""):
+            try:
+                obj = json.loads(line)
+            except ValueError:
+                continue
+            with self.lock:
+                self.out.append((time.time(), obj))
+
+    def send(self, text):
+        """A prompt to the headless session, as a stream-json user message."""
+        self.headless.stdin.write((json.dumps({"type": "user", "message": {"role": "user", "content": text}})
+                                   + "\n").encode())
+        self.headless.stdin.flush()
+
+    def turns_done(self, since=0.0):
+        """The headless session's `result` lines since `since`: one per turn it finished."""
+        with self.lock:
+            return [o for t, o in self.out if t >= since and o.get("type") == "result"]
 
     def pane(self):
         r = subprocess.run(self.tmux + ["capture-pane", "-p", "-t", "brl"], capture_output=True, text=True)

@@ -52,6 +52,7 @@ os.makedirs(os.environ["SMINOS_HOME"])
 sys.path.insert(0, SCRIPTS)
 sys.path.insert(0, HERE)
 
+import bench_open  # noqa: E402
 import dx4_consumer  # noqa: E402
 import fake_session  # noqa: E402
 import sminos_plane as plane  # noqa: E402
@@ -1735,6 +1736,20 @@ def wait_file(path, timeout=10):
     return read(path)
 
 
+def dechunked(raw):
+    """An HTTP/1.1 response's chunked body as far as it came, its framing taken off."""
+    body = raw.split(b"\r\n\r\n", 1)[1] if b"\r\n\r\n" in raw else b""
+    out = b""
+    while b"\r\n" in body:
+        size, rest = body.split(b"\r\n", 1)
+        n = int(size, 16)
+        out += rest[:n]
+        if n == 0 or len(rest) < n + 2:
+            break
+        body = rest[n + 2:]
+    return out
+
+
 class Instruments(unittest.TestCase):
     """The fixtures the open's instruments stand on: the hub stand-in on
     HTTP/1.1, each POST recorded with its connection and each session
@@ -1877,6 +1892,189 @@ class Instruments(unittest.TestCase):
             self.assertEqual(call(self.control, "GET", "/control/state")[1]["state"], "resumed")
         finally:
             sock.close()
+
+    def test_the_proxy_finds_an_events_frame_in_a_chunked_stream(self):
+        """The local hub's stream is chunked, and its runtime splits a
+        frame's JSON across chunks (`{"t":` in one, `"events",…` in the
+        next): the proxy reads the body through the chunked framing, so it
+        still pauses right after the first events frame, which it forwards
+        whole."""
+        frames = [b'event: hb\ndata: {"t":"hb"}\n\n',
+                  b'event: events\ndata: {"t":"events","project":"p","events":[],"mark":"first"}\n\n',
+                  b'event: events\ndata: {"t":"events","project":"p","events":[],"mark":"held"}\n\n']
+        pieces = []
+        for f in frames:
+            k = f.index(b'"t":') + 4      # where the runtime cut it
+            pieces += [f[:k], f[k:-1], f[-1:]]
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(4)
+        go = threading.Event()
+
+        def hub():
+            conn, _ = listener.accept()
+            conn.recv(65536)
+            conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n")
+            conn.sendall(b"%x\r\n%s\r\n" % (len(pieces[0]), pieces[0]))
+            go.wait(10)
+            for p in pieces[1:]:
+                conn.sendall(b"%x\r\n%s\r\n" % (len(p), p))
+                time.sleep(0.02)
+            time.sleep(5)
+            conn.close()
+
+        threading.Thread(target=hub, daemon=True).start()
+        proxy_file = os.path.join(T, "instruments-chunked-proxy.json")
+        proxy = subprocess.Popen([sys.executable, os.path.join(HERE, "pause_proxy.py"),
+                                  "http://127.0.0.1:%d" % listener.getsockname()[1], proxy_file],
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            ports = json.loads(wait_file(proxy_file))
+            control = "http://127.0.0.1:%d" % ports["control"]
+            sock = socket.create_connection(("127.0.0.1", ports["proxy"]), timeout=5)
+            sock.sendall(b"GET /machine/stream HTTP/1.1\r\nHost: x\r\n\r\n")
+            got = b""
+            while pieces[0] not in dechunked(got):
+                got += sock.recv(65536)
+            status, armed = call(control, "POST", "/control/arm", {"on": "next-events", "seconds": 1.0})
+            self.assertEqual((status, armed["state"]), (200, "armed"))
+            go.set()
+            deadline = time.time() + 5
+            while call(control, "GET", "/control/state")[1]["state"] != "paused" and time.time() < deadline:
+                time.sleep(0.02)
+            st = call(control, "GET", "/control/state")[1]
+            self.assertEqual(st["state"], "paused", st)
+            sock.settimeout(0.3)
+            try:
+                while True:
+                    more = sock.recv(65536)
+                    if not more:
+                        break
+                    got += more
+            except OSError:   # socket.timeout: nothing more while paused
+                pass
+            self.assertTrue(dechunked(got).endswith(frames[0] + frames[1]), "the first events frame forwarded whole, "
+                            "and nothing of the next one while paused: %r" % dechunked(got)[-120:])
+            sock.settimeout(5)
+            while b'"mark":"held"' not in dechunked(got):
+                got += sock.recv(65536)
+            self.assertEqual(call(control, "GET", "/control/state")[1]["state"], "resumed")
+            sock.close()
+        finally:
+            proxy.terminate()
+            proxy.wait(10)
+            listener.close()
+
+
+class BenchOpen(unittest.TestCase):
+    """What bench_open.py reads and decides: the open line's figures, where
+    a subscription's snapshot stands among the session's events, which opens
+    fell inside a thinking-to-end window; and one run of it end to end."""
+
+    def test_the_open_line_read_as_figures(self):
+        read = bench_open.parse_open_line
+        self.assertEqual(read("2026-10-20T10:00:00.000Z plane: open s-1 of 0123abcd: bridge snapshot after 0.75 s from "
+                              "the subscribe's arrival (bridge: snapshot arrived 0.50 s, taken 0.75 s; build: cold 12 ms "
+                              "3 rows, cut on disk; waits 2)\n"),
+                         {"sub": "s-1", "outcome": "bridge snapshot", "N": 0.75, "arrived": 0.5, "taken": 0.75,
+                          "bridge": "bridge: snapshot arrived 0.50 s, taken 0.75 s", "build": "cold", "cpu_ms": 12,
+                          "rows": 3, "cut": "on disk", "waits": 2})
+        line = read("plane: open Ab_-9 of 0123abcd/a1b2: transcript-only (no bridge socket) after 0.02 s from the "
+                    "subscribe's arrival (no bridge; build: warm 0 ms 15000 rows, cut null; waits 0)")
+        self.assertEqual((line["sub"], line["outcome"], line["arrived"], line["build"], line["rows"], line["cut"]),
+                         ("Ab_-9", "transcript-only (no bridge socket)", None, "warm", 15000, "null"))
+        line = read("plane: open s-2 of 0123abcd: discontinuity before its snapshot: the snapshot's cut, row r, never "
+                    "reached the transcript after 5.15 s from the subscribe's arrival (bridge: no snapshot; build: "
+                    "none, cut not on disk; waits 25)")
+        self.assertEqual((line["outcome"][:13], line["N"], line["build"], line["cpu_ms"], line["cut"], line["waits"]),
+                         ("discontinuity", 5.15, "none", None, "not on disk", 25))
+        self.assertIsNone(read("plane: something else"))
+
+    def test_a_snapshot_stands_before_the_first_event_its_subscriber_was_sent(self):
+        e = [{"type": "chunk", "chunkIndex": i, "t": 100 + i} for i in range(4)]
+        backbone = [(10.0 + i, x) for i, x in enumerate(e)]
+        snap = {"type": "snapshot", "cut": {}}
+        tees = [{"sub": "a", "lines": [(11.5, snap), (12.2, {"n": 1, **e[2]})]},     # placed by its next event
+                {"sub": "b", "lines": [(10.5, snap)]},                              # nothing after it: by its stamp
+                {"sub": "c", "lines": [(11.9, snap), (12.0, {"n": 1, "type": "gone"}), (13.1, {"n": 2, **e[3]})]}]
+        events, how = bench_open.place_snapshots(backbone, tees)
+        self.assertEqual([x.get("sub") or x["chunkIndex"] for x in events], [0, "b", 1, "a", 2, "c", 3])
+        self.assertEqual(how, {"a": "event", "b": "time", "c": "event"})
+        self.assertEqual(events[3], {"type": "snapshot", "cut": {}, "sub": "a"})
+        # The inventory reads the placed snapshot: a request whose step ended before it is the accepted hole.
+        order = dx4_consumer.order_of([{"type": "step", "phase": "end", "turnId": "t", "agentId": None, "step": 0}]
+                                      + events)
+        self.assertEqual(order[0], {"b": 2, "a": 4, "c": 6})
+
+    def test_an_open_counts_inside_the_thinking_to_end_window(self):
+        key = ("turn-1", None, 0)
+        ev = [(1.0, {"type": "step", "phase": "start", "turnId": "turn-1", "agentId": None, "step": 0}),
+              (1.1, {"type": "chunk", "turnId": "turn-1", "agentId": None, "step": 0,
+                     "chunk": {"kind": "thinking", "index": 0, "text": "hm"}}),
+              (1.5, {"type": "block-row", "turnId": "turn-1", "agentId": None, "step": 0, "index": 0, "uuid": "u"}),
+              (1.6, {"type": "chunk", "turnId": "turn-1", "agentId": "a1", "step": 0,
+                     "chunk": {"kind": "text", "index": 0, "text": "another loop's"}}),
+              (1.7, {"type": "chunk", "turnId": "turn-1", "agentId": None, "step": 0,
+                     "chunk": {"kind": "text", "index": 1, "text": "Once"}}),
+              (4.0, {"type": "step", "phase": "end", "turnId": "turn-1", "agentId": None, "step": 0})]
+        s = bench_open.steps_seen(ev)[key]
+        self.assertEqual((s["thinking_named"], s["text_after"], s["end"]), (1.5, 1.7, 4.0))
+        self.assertTrue(bench_open.in_window(s["thinking_named"], s["end"], 1.71))
+        self.assertFalse(bench_open.in_window(s["thinking_named"], s["end"], 1.4), "before the block-row")
+        self.assertFalse(bench_open.in_window(s["thinking_named"], s["end"], 4.2), "after the step's end")
+        cut_off = ev[:5] + [(3.0, {"type": "turn", "phase": "complete", "turnId": "turn-1", "agentId": None})]
+        self.assertEqual(bench_open.steps_seen(cut_off)[key]["end"], 3.0, "a turn's completion cuts its step off")
+        plain = [x for x in ev if x[1].get("type") != "block-row"]
+        self.assertIsNone(bench_open.steps_seen(plain)[key]["text_after"], "no thinking named: no window")
+
+    def test_figures_and_sizes(self):
+        self.assertEqual(bench_open.stats([0.3, None, 0.1, 0.2]), {"n": 3, "min": 0.1, "p50": 0.2, "max": 0.3})
+        self.assertEqual(bench_open.stats([]), {"n": 0, "min": None, "p50": None, "max": None})
+        self.assertEqual([bench_open.size_arg(x) for x in ("4m", "512k", "100")], [4 << 20, 512 << 10, 100])
+
+    def test_a_run_against_the_stand_in(self):
+        """bench_open.py itself, end to end: the real uplink against the
+        stand-in, the fake session, two idle opens after the warm-up."""
+        r = subprocess.run([sys.executable, os.path.join(HERE, "bench_open.py"), "--uplink", "--hub", "standin",
+                            "--scenario", "idle", "--opens", "2"], capture_output=True, text=True, timeout=120,
+                           env={k: v for k, v in os.environ.items() if k not in ("HOME", "SMINOS_HOME")}
+                           | {"HOME": os.path.join(T, "bench-home")})
+        self.assertEqual(r.returncode, 0, r.stderr[-2000:])
+        out = [json.loads(line) for line in r.stdout.splitlines()]
+        opens = [o for o in out if o.get("mode") == "uplink" and "summary" not in o]
+        self.assertEqual([o["counted"] for o in opens], [False, True, True])
+        for o in opens:
+            self.assertEqual((o["outcome"], o["holes"], o["dups"], o["gaps"], o["vanished"], o["errors"]),
+                             ("bridge snapshot", 0, 0, 0, 0, []))
+            self.assertGreater(o["E"], 0)
+            self.assertIsNotNone(o["N"])
+        self.assertEqual(opens[1]["build"], "warm")
+        summary = out[-1]
+        self.assertEqual((summary["summary"], summary["opens"], summary["E"]["n"]), ("idle", 2, 2))
+
+
+class BenchOpenMicro(Session):
+    """bench_open.py --micro against a scripted session's bridge and
+    transcript: one line per open with N_micro and its phases, labelled."""
+
+    def test_two_opens_in_process(self):
+        for i in range(3):
+            self.fake.user_row("row %d" % i, post=False)
+        self.fake.start_bridge()
+        r = subprocess.run([sys.executable, os.path.join(HERE, "bench_open.py"), "--micro", "--session", self.sid,
+                            "--sminos-home", os.environ["SMINOS_HOME"], "--home", os.environ["HOME"], "--opens", "2"],
+                           capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stderr[-2000:])
+        out = [json.loads(line) for line in r.stdout.splitlines()]
+        opens = [o for o in out if o.get("mode") == "micro" and "summary" not in o]
+        self.assertEqual(len(opens), 2)
+        for o in opens:
+            self.assertEqual((o["outcome"], o["rows"], o["cut"]), ("snapshot", 3, "on disk"))
+            self.assertLess(o["N_micro"], 5)
+            self.assertIn("build:end", [p[1] for p in o["phases"]])
+            self.assertIn("the warmer", o["leaves_out"])
+        self.assertEqual([o["build"] for o in opens], ["cold", "warm"])
+        self.assertEqual(out[-1]["summary"], "micro")
 
 
 class FixtureOutput(unittest.TestCase):

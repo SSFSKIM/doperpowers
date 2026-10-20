@@ -321,6 +321,35 @@ class OrgAhead(unittest.TestCase):
         self.assertEqual(seen[1:], ["events"] * 5)
 
 
+class BenchOpens(unittest.TestCase):
+    """bench_scale.py opens on a small synthetic machine: an open of a
+    large and of a small live session at +0.5 s, every live session in
+    sequence after the warm-up, then the pair again after a restart; each
+    line with its moment, size and E."""
+
+    def test_the_opens_at_their_moments(self):
+        r = subprocess.run([sys.executable, os.path.join(HERE, "bench_scale.py"), "opens", SCRIPTS, "--dirs", "3",
+                            "--per-dir", "1", "--seats", "4", "--local", "2", "--remote", "1", "--mini", "1",
+                            "--says", "2", "--live", "5", "--large", "1", "--large-rows", "600", "--warm-after", "1"],
+                           capture_output=True, text=True, timeout=300,
+                           env={k: v for k, v in os.environ.items() if k not in ("HOME", "SMINOS_HOME")})
+        self.assertEqual(r.returncode, 0, r.stdout[-2000:] + r.stderr[-2000:])
+        lines = [json.loads(line) for line in r.stdout.splitlines() if line.startswith("{")]
+        opens = [o for o in lines if "moment" in o and "summary" not in o]
+        self.assertEqual([(o["moment"], o["size"]) for o in opens[:2]], [("+0.5 s", "large"), ("+0.5 s", "small")])
+        warm = [o for o in opens if o["moment"] == "+1 s"]
+        self.assertEqual(len(warm), 5, "every live session after the warm-up")
+        self.assertEqual([(o["moment"], o["size"]) for o in opens[-2:]],
+                         [("restart +0.5 s", "large"), ("restart +0.5 s", "small")])
+        for o in opens:
+            self.assertEqual(o["outcome"], "transcript-only (no bridge socket)", o)
+            self.assertGreater(o["E"], 0)
+        large = [o for o in opens if o["size"] == "large"]
+        self.assertTrue(all(o["rows"] == 600 for o in large), large)
+        self.assertEqual(large[0]["build"], "cold", "a fresh uplink's first open of it")
+        self.assertIn(large[-1]["build"], ("cold", "loaded"), "after the restart: parsed or loaded, never warm")
+
+
 if __name__ == "__main__":
     try:
         unittest.main(verbosity=2)
