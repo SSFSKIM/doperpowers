@@ -44,7 +44,9 @@ export { AGENTS_REFRESH_MS } from './bridge-agents'
  * answers with a `result` event. Events go to the socket as `POST /events`,
  * one request in flight at a time, so they arrive in the order they happened
  * and batch themselves under load. A module reload kills the child and runs
- * `session.start` again, which spawns the next. Each post carries the nonce
+ * `session.start` again, which spawns the next; a child that ends on its own
+ * is started again at once, with a backoff only while successors keep ending
+ * at once (`startChild`). Each post carries the nonce
  * its child's hello named, so the child turns away (409) what an older module
  * instance still has in flight after a reload, and a module whose post is
  * turned away stops for good.

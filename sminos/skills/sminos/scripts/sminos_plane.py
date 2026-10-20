@@ -16,13 +16,17 @@ thread parses only the bytes flushed since its subscription's Tail last read.
 
 The build — the index, the loop's jobs ledger and its chain — is saved under
 daemon/plane/ as it is first made and as it grows, as it leaves memory, and
-at the uplink's stop, and a process that has not built a file loads it, so a
-restart costs an open a load, not a parse. The live members of the stream's
-open projects have their main transcripts held and extended in the
-background (Warmer): a warm job runs only while its worker has no
-foreground job — an open's build, a page, a look, an `output` — queued, at
-most one per transcript and WARM_PARALLEL across the process, round-robin;
-so a live session's first open is warm and never waits behind another's.
+at the uplink's stop, and a process that has not built a file loads it
+while the file still holds, before the saved end, the very bytes it read (a
+CRC-32 of that prefix), so a restart costs an open a load, not a parse. The
+live members of the stream's open projects have their main transcripts held
+and extended in the background (Warmer): a warm job runs only while its
+worker has no foreground job — an open's build, a page, a look, an
+`output` — queued, at most one per transcript and WARM_PARALLEL across the
+process, round-robin; so a live session's first open is warm and never
+waits behind another's. Every job shares the process's GIL with the main
+thread, so the first round begins WARM_EVERY after the warmer's first tick
+and no warm job starts while an open awaits its snapshot.
 The look at the disk facts is off the open's path: the snapshot goes with
 the facts as they stand, the look is asked right after it, and the first
 `subagents` carries what it found.

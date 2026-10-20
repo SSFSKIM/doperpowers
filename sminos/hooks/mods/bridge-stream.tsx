@@ -23,9 +23,10 @@ import type { Block, BridgeEvent, Override, Refusal, Request, Streaming } from '
  * past POST_MAX characters, and a refused resync would be queued again for
  * ever): a block's kept text is its last BLOCK_TAIL characters, marked
  * `truncated` (chunk events still carry every chunk whole, so only the
- * catch-up copy a resync gives is the tail); a resync is posted alone and
- * drops streaming messages, oldest first, past RESYNC_MAX; and a batch too
- * long for one post is split.
+ * catch-up copy a resync gives is the tail); a resync is posted alone and,
+ * past RESYNC_MAX, drops streaming messages, oldest first, then shortens
+ * pending permissions' inputs to RESYNC_INPUT_CAP characters a string, saying
+ * so (`truncated`); and a batch too long for one post is split.
  */
 
 export type Hold = BridgeEvent & {
