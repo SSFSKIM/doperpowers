@@ -1066,6 +1066,8 @@ class Subscription:
         self.n = None                 # the next message's n, once the snapshot is out
         self.ended = False
         self.opened = clock()
+        self.open_noted = False       # its open's one daemon.log line is written (noted)
+        self.no_bridge = "no bridge socket" if reader is None else ""   # why it went transcript-only
         self.snap = None              # the bridge's snapshot line
         self.snapped_at = None
         self.main = ""
@@ -1130,7 +1132,21 @@ class Subscription:
             return ""
         return self.main if self.agent is None else agent_path(self.main, self.agent)
 
+    def noted(self, how):
+        """The open's one daemon.log line, once: how long from the subscribe
+        to its snapshot or its end before one, and which wait ended it."""
+        if self.open_noted:
+            return
+        self.open_noted = True
+        bridge_at = " (the bridge's snapshot at %.2f s)" % (self.snapped_at - self.opened) \
+            if self.snapped_at is not None else ""
+        log("open %s of %s%s: %s after %.2f s%s" % (
+            self.sub, self.session[:8], "/" + self.agent if self.agent else "", how, self.clock() - self.opened,
+            bridge_at))
+
     def close(self):
+        if self.n is None:
+            self.noted("closed before its snapshot")
         if self.reader is not None:
             self.reader.close()
         if self.source is not None:
@@ -1159,9 +1175,11 @@ class Subscription:
 
         self.source.submit(job)
 
-    def end(self, reason, message=None):
+    def end(self, reason, message=None, how=None):
         if self.ended:
             return []
+        if self.n is None:
+            self.noted(how or "%s before its snapshot%s" % (reason, ": " + message if message else ""))
         self.ended = True
         self.close()
         return [self.message("end", {"reason": reason, **({"message": message} if message else {})})]
@@ -1204,6 +1222,7 @@ class Subscription:
                                    if isinstance(a, dict) and isinstance(a.get("agentId"), str)}
                 elif item[0] == "unavailable":
                     self.reader = None   # no bridge after all: the transcript alone
+                    self.no_bridge = "the bridge did not answer"
                     break
                 else:
                     why = {"refused": "the bridge refused the subscription (%s)" % (item[1],),
@@ -1212,7 +1231,8 @@ class Subscription:
                     return False
             if self.bridged and self.snap is None:
                 if now - self.opened > OPEN_WAIT:
-                    out += self.end("discontinuity", "the bridge sent no snapshot")
+                    out += self.end("discontinuity", "the bridge sent no snapshot",
+                                    how="timeout: the bridge sent no snapshot in %g s" % OPEN_WAIT)
                 return False
         # The history is read on the transcript's worker (build): asked once,
         # and again while the cut's row is not on disk. A null cut (or one
@@ -1295,6 +1315,7 @@ class Subscription:
         if self.agent is None:
             body["usage"] = usage_of(self.snap.get("usage")) if self.bridged else None
         out.append(self.message("snapshot", body))
+        self.noted("bridge snapshot" if self.bridged else "transcript-only (%s)" % self.no_bridge)
         self.n = 1
         return True
 

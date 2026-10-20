@@ -506,18 +506,23 @@ def publish_state(project, view, record):
 
 def publish_renames(project, view):
     """Duty 3, for every project: a `renamed` when a seat-less local member's
-    harness name (or its source) moved from the last one the log holds. Rare,
-    and the only record of a name change — a line derived from a name the
-    human set leaves no `in-charge` of its own. Returns how many it appended."""
+    alias (or its source) moved from the last one the log holds. Rare, and
+    the only record of a name change — a line derived from a name the human
+    set leaves no `in-charge` of its own. The alias is the one the member goes
+    by (sminos.held_alias), so a harness name that would shadow a seat or
+    another current member is never published as its alias; a member that
+    goes by its short id has the source it joined with (`derived`). Returns
+    how many it appended."""
     n = 0
     for m in view.members:
         if not (m.local and m.session) or m.seat is not None:
             continue
         r = view.info.get(m.session) or {}
         known = r.get("renamed") or r.get("joined") or {}
-        if known and (m.alias, m.name_source) != (str(known.get("alias") or ""), str(known.get("name_source") or "")):
+        source = m.name_source or ("derived" if m.alias == m.short else "")
+        if known and (m.alias, source) != (str(known.get("alias") or ""), str(known.get("name_source") or "")):
             n += len(sminos.lifecycle(project, m.session, "renamed", required=False,
-                                      alias=m.alias, name_source=m.name_source))
+                                      alias=m.alias, name_source=source))
     return n
 
 

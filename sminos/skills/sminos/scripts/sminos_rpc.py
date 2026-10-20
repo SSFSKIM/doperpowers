@@ -16,6 +16,8 @@ the first that fails is its answer, as DX6's error code:
 3. the ledger: a nonce it knows is answered from it and never run again;
 4. freshness: `created` within 60 s of this machine's clock, either way
    (`stale`), so the ledger's day covers every nonce that could still pass;
+   daemon.log says when it was created, when the stream's reader took it,
+   and its age, so a hold on the way can be told from a late send;
 5. the machine's policy (sminos_policy): read-only refuses every RPC
    (`read-only`); a spawn runs only in a known checkout of the project
    (`unknown-checkout`), under a permission mode no looser than the ceiling
@@ -26,7 +28,9 @@ the first that fails is its answer, as DX6's error code:
    input_sha256}`) against the request still pending in the session, as its
    bridge reports it (`digest-mismatch`, `not-pending`), and the decision
    fitting that request by the bridge's own rule (`bad-shape`);
-8. the session's kind against §5's table (`unsupported`);
+8. the session's kind against §5's table (`unsupported`); a Resume, against
+   the transcript this machine holds of the session (`unsupported` when it
+   holds none: `claude --resume` would start an empty session under its id);
 9. for a stop, the task: a background shell or monitor the session's jobs
    index holds as running, the main loop's or a subagent's, read from the
    rows as the plane reads them (sminos_jobs.running_task; `unknown-task`).
@@ -37,7 +41,9 @@ is only said in daemon.log). From 3 on, a nonce has one answer, kept.
 
 At most once (DX6): `daemon/rpcs.json` claims the nonce before the RPC has
 any effect and records the outcome before the result goes up; entries are
-kept a day. An outcome whose write fails is held here, never sent, and
+kept a day. Each keeps the RPC's `created` and the time its outcome was kept
+(`done_at`) beside its claim's `at` (and a Resume's `launched_at`), so one
+RPC's click, claim, launch and end read off its entry. An outcome whose write fails is held here, never sent, and
 written again until it is kept. A nonce left claimed (the uplink stopped
 between the two writes) is reconciled from the action's own trace — a
 spawned seat carries its nonce on its record (`rpc_nonce`); a steer carries
@@ -183,6 +189,18 @@ def created_at(text):
     return whole + float(m.group(7) or 0)
 
 
+def created_of(rpc):
+    """{"created": epoch s} of the RPC's own `created`, for its ledger
+    entry; {} when it does not parse."""
+    at = created_at(rpc.get("created"))
+    return {} if at is None else {"created": at}
+
+
+def stamp(epoch):
+    """An epoch time as the hub writes `created` (UTC, milliseconds)."""
+    return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(epoch)) + ".%03dZ" % int(epoch % 1 * 1000)
+
+
 def sha256(text):
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
@@ -197,9 +215,10 @@ def alias_for(nonce):
 
 
 class Ledger:
-    """`daemon/rpcs.json`: nonce → {project, rpc, session, at, launched_at?,
-    job?, compact_id?, outcome?, acked?}. An entry without `outcome` is a
-    claim. Written whole at every change, under a lock (the main thread and
+    """`daemon/rpcs.json`: nonce → {project, rpc, session, created?, at,
+    launched_at?, job?, compact_id?, outcome?, done_at?, acked?}: `created`
+    is the RPC's own (epoch s, when it parses), `at` its claim, `done_at`
+    when its outcome was kept. An entry without `outcome` is a claim. Written whole at every change, under a lock (the main thread and
     the workers write); entries older than KEPT_S go at every write. A
     change whose write fails is not kept in memory either: what is here is
     what the file holds.
@@ -282,7 +301,9 @@ class Ledger:
         caller holds to write again (a restart reconciles the claim)."""
         with self.lock:
             e = self.entries.get(nonce)
-            self.change(nonce, {**(e if e is not None else {"at": self.clock()}), "outcome": outcome, "acked": False})
+            now = self.clock()
+            self.change(nonce, {**(e if e is not None else {"at": now}), "outcome": outcome, "done_at": now,
+                                "acked": False})
 
     def acked(self, nonce, value=True):
         with self.lock:
@@ -332,10 +353,11 @@ class Rpcs:
 
     # ---------------------------------------------------- frames down
 
-    def receive(self, rpc, here):
+    def receive(self, rpc, here, received=None):
         """An `rpc` frame's RPC, on the main thread: checks 1-6, then a
         worker for the rest. `here` is what the uplink knows of this machine
-        (project, has_session, record, checkouts)."""
+        (project, has_session, record, checkouts); `received`, when the
+        stream's reader took the frame (epoch s; now when not given)."""
         if not isinstance(rpc, dict):
             log("an rpc frame without an RPC: passed by")
             return
@@ -368,14 +390,14 @@ class Rpcs:
                 self.ledger.acked(nonce, False)
             return                                  # in flight, or a claim being reconciled: its result follows
         try:
-            self.admit(rpc, project, args, here)
+            self.admit(rpc, project, args, here, self.clock() if received is None else received)
         except Refused as r:
             self.keep(rpc, r.outcome)
             return
         record = here.record(sid) if sid else None
         facts = {"running": record is not None, "bg": control.bg_job(record or {}), "root": project.root,
                  "checkout": args.get("checkout"), "status": (record or {}).get("status")}
-        if name == "stop":
+        if name in ("stop", "resume"):
             facts["transcript"] = sminos.transcript_now(sid)
         if name == "resume":
             seat = next((s for s in sminos.seats() if s["current"] == sid), None)
@@ -386,13 +408,15 @@ class Rpcs:
             self.compact_flight[nonce] = sid
         threading.Thread(target=self.run, args=(rpc, facts), name="rpc-" + name, daemon=True).start()
 
-    def admit(self, rpc, project, args, here):
+    def admit(self, rpc, project, args, here, received):
         """Checks 4-6: freshness, the policy, the args' shape. Refused, or
         nothing; a spawn's `permission_mode` is set to what it runs under."""
-        at = created_at(rpc.get("created"))
-        if at is None or abs(self.clock() - at) > FRESH_S:
-            raise Refused("stale", "created %s, more than %d s from this machine's clock" % (
-                rpc.get("created"), FRESH_S))
+        at, now = created_at(rpc.get("created")), self.clock()
+        if at is None or abs(now - at) > FRESH_S:
+            raise Refused("stale", "created %s, received %s, %s old when checked: more than %d s from this "
+                          "machine's clock" % (rpc.get("created"), stamp(received),
+                                               "%.3f s" % (now - at) if at is not None else "of no known age",
+                                               FRESH_S))
         p = policy.load()
         if p["read_only"]:
             raise Refused("read-only", "this machine is read-only: it runs no RPC")
@@ -414,8 +438,9 @@ class Rpcs:
         """A refusal from the ledger on: the nonce's one answer (from a
         worker too: what it cannot keep reaches `loose` through the main
         thread)."""
+        now = self.clock()
         e = {"project": rpc["project"], "rpc": rpc["rpc"], "session": rpc["args"].get("session"),
-             "at": self.clock(), "outcome": outcome, "acked": False}
+             **created_of(rpc), "at": now, "outcome": outcome, "done_at": now, "acked": False}
         try:
             self.ledger.put(rpc["nonce"], e)
         except OSError as err:
@@ -446,7 +471,7 @@ class Rpcs:
                 self.keep(rpc, failed("failed", "%s: %s (nothing ran)" % (type(e).__name__, e)))
                 return
             claim = {"project": rpc["project"], "rpc": rpc["rpc"], "session": rpc["args"].get("session"),
-                     "at": self.clock()}
+                     **created_of(rpc), "at": self.clock()}
             try:
                 self.ledger.put(nonce, claim)
             except OSError as e:
@@ -493,6 +518,10 @@ class Rpcs:
             if live:
                 raise Refused("session-live", "the session is running here (%s): only an ended session is resumed"
                               % held_by(live))
+            if not facts["transcript"]:
+                # A --bg copy that ended before it wrote a row leaves none;
+                # `claude --resume` would start an empty session under its id.
+                raise Refused("unsupported", "this machine holds no transcript of it, so there is nothing to resume")
             return lambda: resume(sid, facts["cwd"], self.lock_of(self.resume_locks, sid),
                                   lambda **fields: self.note(nonce, fields))
         path = bridge.endpoint(sid)

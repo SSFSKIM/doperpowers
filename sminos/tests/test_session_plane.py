@@ -744,6 +744,46 @@ class Engine(Session):
         self.assertTrue(self.pump(again, b2, lambda: len(b2.rows) == len(self.fake.rows())))
         self.assertClean(b2)
 
+    def opens_said(self, sub):
+        """daemon.log's lines for this subscription's open."""
+        try:
+            with open(os.path.join(os.environ["SMINOS_HOME"], "daemon.log")) as f:
+                return [line for line in f if "plane: open %s of %s:" % (sub.sub, sub.session[:8]) in line]
+        except OSError:
+            return []
+
+    def test_each_open_is_said_once_with_the_wait_that_ended_it(self):
+        """One daemon.log line an open: subscribe to snapshot (or to its end
+        before one), and which wait ended it, so a slow Resume's open can be
+        read off the machine."""
+        self.fake.user_row("hello", post=False)
+        plain, b = self.subscribe(bridge=False)
+        self.clock.advance(0.25)
+        self.assertTrue(self.pump(plain, b, lambda: b.snapshot is not None))
+        self.settle(plain, b)
+        said = self.opens_said(plain)
+        self.assertEqual(len(said), 1, said)
+        self.assertIn("transcript-only (no bridge socket) after 0.25 s", said[0])
+        self.fake.start_bridge()
+        bridged, b2 = self.subscribe()
+        self.assertTrue(self.pump(bridged, b2, lambda: b2.snapshot is not None))
+        self.settle(bridged, b2)
+        said = self.opens_said(bridged)
+        self.assertEqual(len(said), 1, said)
+        self.assertIn(": bridge snapshot after", said[0])
+        self.assertIn("(the bridge's snapshot at", said[0])
+        self.fake.stop_bridge()
+        self.fake.start_bridge(ready=False)
+        waiting, b3 = self.subscribe()
+        self.settle(waiting, b3)
+        self.clock.advance(plane.OPEN_WAIT + 1)
+        self.assertTrue(self.pump(waiting, b3, lambda: b3.end is not None))
+        self.assertEqual(b3.end["reason"], "discontinuity")
+        said = self.opens_said(waiting)
+        self.assertEqual(len(said), 1, said)
+        self.assertIn("timeout: the bridge sent no snapshot in %g s after %.2f s" % (plane.OPEN_WAIT, plane.OPEN_WAIT + 1),
+                      said[0])
+
     def test_bridge_not_ready_past_the_window_is_a_discontinuity(self):
         self.fake.start_bridge(ready=False)
         sub, b = self.subscribe()
