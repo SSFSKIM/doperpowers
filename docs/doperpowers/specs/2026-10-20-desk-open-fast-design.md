@@ -41,7 +41,7 @@ before it is built (Decision Log).
 
 - [x] M1 — The open line stamped at arrival; the reference consumer and the inventory; the fixtures (2026-10-20, reviewed clean after three fix rounds; 9bd55c49..c762b8d7, sminos 1.2.2)
 - [ ] M2 — The instruments: `bench_open.py` (micro and full path), `bench_scale.py opens`
-- [ ] M3 — The web keeps a carried block across a reconnect (MAWS)
+- [x] M3 — The web keeps a carried block across a reconnect (MAWS) (2026-10-20, reviewed clean; MAWS `desk-open-fast-web` bda992c29, PR #86)
 - [x] M4 — The hub's reply chain decoupled (MAWS) (2026-10-20, reviewed clean; MAWS `desk-open-fast-hub` fba324cc4..beb065470, master merged at ef190e5e2)
 - [ ] M5 — The snapshot goes at once; a notice's row is due at its step's end
 - [ ] M6 — The uplink's sender lanes, with connection reuse proven
