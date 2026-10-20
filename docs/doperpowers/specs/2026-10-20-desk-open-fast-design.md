@@ -47,7 +47,7 @@ before it is built (Decision Log).
 - [x] M6 — The uplink's sender lanes, with connection reuse proven (2026-10-20, reviewed clean after two fix rounds; d5fa1d6a..aa57759b; the fix 2f64aa96..4400ced7 passed by the coordinator's reviewer and merged at eeb71406, sminos 1.2.13; the A9 by-hand hour of the owner's daemon.log pending the roll)
 - [x] M7 — The build saved and warmed, bounded; the look off the open path (2026-10-20, reviewed clean after two fix rounds; 63683909..7a9fdccb, sminos 1.2.10, gate GREEN 39469065139; the by-hand A3 line on the owner's Mac pending the roll)
 - [x] M8 — The child respawns at once; a resync fits the engine's limit (2026-10-20, reviewed clean after one fix round; 1aa1a002..227187e8, sminos 1.2.12, gate GREEN 39482745539; one A6 trial of ten over the bound, 0.525 s, recorded)
-- [ ] M9 — Acceptance, documents, the branch review (2026-10-20, machine side done: A1–A9 run as written at load < 50, every figure passing, the 100–300 band incomplete pending the owner's choice of a devcloud host; A10 gates GREEN (39493005844) on 996e1052 (sminos 1.2.14), MAWS gates cited, live-resume 14/14, live-bridge 15/15 after the M9 fix; documents current; by-hand checks on the owner's Mac and `deskLatency()` pending the M7+M8 roll; the branch review pending)
+- [ ] M9 — Acceptance, documents, the branch review (2026-10-20, machine side done: A1–A9 run as written at load < 50, every figure passing, the 100–300 band pending: devcloud (the owner chose a devcloud host; a separate agent runs task-9-report.md's band runs); A10 gates GREEN (39493005844) on 996e1052 (sminos 1.2.14), MAWS gates cited, live-resume 14/14, live-bridge 15/15 after the M9 fix; documents current; the xhigh panel's three P2s fixed (218aa515, 1.2.15, 8/8 GREEN 39505085148), its finders' check of the delta pending; by-hand checks on the owner's Mac and `deskLatency()` pending the second roll, #302)
 
 ## Terms
 
@@ -570,6 +570,22 @@ release set is the sender's, reset with the stream. The acker is unchanged
 and keeps its own exchange: a held log-lane POST must not delay a heartbeat's
 answer.
 
+A project opened again (`Sender.hold`) is gated before its hello is queued.
+Of its entries not yet taken into a body, those the re-open sends anew
+(`renewed`) are dropped: the complete pending set, a session's presence, an
+RPC's result (the hello carries each as it is now), a request's raise or
+settlement, and a compaction's message (the `not-open` re-owes them from
+their outboxes). A subscription's messages go back aside in order, because
+nothing sends them again. So nothing posted after that hello contradicts
+it; a dropped entry's continuation never runs, the refusal having voided its
+attempt. A session-lane body of the project already out at the refusal
+(`hold` reports it) can be applied by the hub after the re-open's hello,
+which arrives later on the other connection (a large body still uploading
+is enough), so the hello's continuation then owes the project's complete
+set again (`requests.stale`) and has the plane say its members' presence
+again at its next look (`Plane.say_again`): both go behind that body on its
+FIFO lane and supersede what it carried. [panel fix, 2026-10-20]
+
 **Head-of-line.** A re-`hello` the hub holds now stalls the log lane alone
 for its duration; opens, chunks, requests and RPC results flow on the
 session lane. Uploads and imports wait, which is today's behavior and not
@@ -589,7 +605,15 @@ connection idle for `IDLE_CLOSE` (60 s) is closed by the sender, so a stale
 keep-alive the edge dropped is rarely met. **Warming**: `on_subscribe` calls
 `session_lane.warm()`, which makes the sender dial now if it holds no
 connection, so the TLS handshake overlaps the reader's connect and the
-build rather than following the snapshot. **The connection lines**: a
+build rather than following the snapshot. A lane has one dial out at a
+time: a dial whose watcher gave up (a warm dial stalled past its deadline,
+before any socket exists) stays the lane's, the next exchange waits for it
+within its own deadline rather than dialling a second, and `warm` does
+nothing while it is out; a dial lands as the lane's connection only while
+the lane has not ended, and otherwise closes what it made (a lost POST ends
+the lane). So a late dial never replaces the connection an exchange is
+using, and a lane leaves at most one dial worker behind. [panel fix,
+2026-10-20] **The connection lines**: a
 sender writes one daemon.log line per dial — `uplink: <lane> lane dialled
 the hub (connection #n)` — and one per close — `uplink: <lane> lane closed
 connection #n after <k> POSTs (<idle|the hub closed it|failed: why>)` — a
@@ -612,7 +636,7 @@ read by the main loop in arrival order):
 
 | state | `send(frames, then)` | `warm()` | body answered 200 | body not 200 / error / deadline | `close()` / `ended()` |
 |---|---|---|---|---|---|
-| idle (no conn) | queue; wake → posting (dials first) | dial → idle (conn) | — | — | closed |
+| idle (no conn) | queue; wake → posting (dials first) | dial → idle (conn), unless a dial is out | — | — | closed |
 | idle (conn) | queue; wake → posting | — | — | — | conn shut; closed |
 | posting | queue (posted after the bodies in flight) | — | `("sent", thens)` on the items; more queued → posting, else idle | `("closed", why)` on the items; queue dropped → closed | conn shut; the exchange raises → closed, nothing put |
 | closed | dropped | — | — | — | — |
@@ -813,7 +837,17 @@ enough. Two bounds, and a rule:
   `TEXT_CAP`. Every pending entry keeps its identity (`request`, `tool`,
   `agentId`, `deadline`, `async`, `toolUseId`, `t`); a question's input
   stays whole, since the child matches a decision's answers against its
-  questions. The child takes what it carries. Not covered, by choice:
+  questions. A string is never cut inside a surrogate pair: a cut whose
+  last kept unit is a high surrogate is one unit shorter, as `capped` does
+  for every cap, `TEXT_CAP`'s included (a lone surrogate has no canonical
+  form, so the raise could not be sealed and no decision's digest could
+  match it). The child takes what it carries, except that a pending request
+  it already holds keeps its own raised copy when the resync and its entry
+  are `truncated`: that copy is the input the session holds and the hub
+  drew, so a decision's digest made from that draw still finds the request
+  pending, and nothing is raised again; a request the child first learns
+  from a shortened resync takes the shortened copy, which the uplink relays
+  and the hub redraws. [panel fix, 2026-10-20] Not covered, by choice:
   pending questions whose whole inputs alone pass the budget (about 64
   pending asks each near 64 KiB) still give an oversized resync, lost and
   retried as before; questions are human-rate and short, and shortening one
@@ -1543,7 +1577,9 @@ the figures substituted.
 class Sender(threading.Thread):
     def __init__(self, lane, cred, generation, put, ended): ...   # lane: "log" | "session"; put: the stream's items.put
     def send(self, frames, then=None): ...     # main thread; frames -> wire lines queued as one entry
-    def warm(self): ...                        # main thread; dial now if no connection is held
+    def warm(self): ...                        # main thread; dial now if no connection is held and no dial is out
+    def hold(self, project): ...               # session lane: a project opened again; its renewed entries dropped, the rest aside;
+                                               #   returns whether a body carrying the project is out (Link.open heals it) [panel fix]
     def release(self, project): ...            # session lane: this project's entries may go
     def close(self): ...                       # shut the socket, drop the queue, exit
 
@@ -1813,7 +1849,7 @@ beside; a single reviewer reads one of those well in a pass.
 - Observation (M9): the acceptance run on the finished branch (sminos
   1.2.14, 5edd1a4e; the MacBook, local hub MAWS 0f9c18d65 with M4, live
   haiku; load1 4.9–9.7, so every figure is outside the 100–300 band, which
-  stays incomplete). A1 idle E 15–20 ms (N ≤ 0.01 s). A2 mid-message 5 of 5
+  stays pending: devcloud). A1 idle E 15–20 ms (N ≤ 0.01 s). A2 mid-message 5 of 5
   counted, E 18–21 ms, `waits` 0, inventory clean; long-answer 3 of 5 trials
   counted (windows 12.8–14.0 s), E 14–21 ms at +1 s and +7 s, no end before
   the step's; after-prompt E 14–26 ms. A3 (`bench_scale opens --live 40
@@ -2346,6 +2382,33 @@ beside; a single reviewer reads one of those well in a pass.
   in their own isolation, rather than after the roll.
   Date/Author: 2026-10-20, the M9 executor and the controller.
 
+- Decision (panel fix, the xhigh whole-branch review of d7fd164f..62e57510;
+  three P2s confirmed, each reproduced): (1) `Sender.hold` drops a re-opened
+  project's queued entries the re-open sends anew (`renewed`: the pending
+  set, presence, raises and settlements, RPC results, compaction messages)
+  rather than releasing them after its hello — the panel reproduced an empty
+  set queued before a `not-open` going after the re-open's set, dropping a
+  pending permission at the hub; presence, RPC results and compaction
+  messages had the same shape. A subscription's messages are kept. A
+  session-lane body already out at the refusal is healed by a fresh set and
+  presence behind it (`hold`'s answer, `requests.stale`, `Plane.say_again`,
+  a flag rather than forgetting `plane.sent`, which would lose an owed
+  tombstone); built on the controller's call, since a large body still
+  uploading can land after the small hello. Left: a member that left
+  between the in-flight presence and the hello, whose older "running"
+  presence can stand until the session changes again. (2) A lane has one
+  dial out at a time; one its watcher gave up on stays the lane's, lands
+  only while the lane has not ended and closes itself otherwise; `lost()`
+  ends the lane. A dial token was rejected: it needs a bound of its own.
+  (3) `capped` never ends a cut on a high surrogate (the resync's
+  `RESYNC_INPUT_CAP`, and `TEXT_CAP`'s raise cut, which predates the
+  branch); on a truncated resync the child keeps a held request's raised
+  copy, so a remote decision's digest and the input the session holds stay
+  one set of bytes (amends M8's "the child takes what it carries"). sminos
+  1.2.15, bdc1c21b..218aa515, 8/8 gates GREEN (39505085148); main (#301,
+  ff012ef9) merged at adb55df4, its content already held.
+  Date/Author: 2026-10-21, the panel fix executor, folded by the controller.
+
 ## Outcomes & Retrospective
 
 Written 2026-10-21, at the branch's PR (head 62e57510, sminos 1.2.14), before
@@ -2363,8 +2426,7 @@ cold build, and every live session is warm 30 s after start. A child crash
 is redrawn in 0.17–0.22 s, against 1.2–6.6 s. A blocked hub write no longer
 stops the uplink: 37 POSTs answered 200 inside a 4 s block, and an open 9 ms
 after it. Not established yet:
-- the 100–300 band, which the owner's choice of a devcloud host would supply
-  or leave recorded as incomplete;
+- the 100–300 band, which a devcloud host is running (the owner's choice);
 - the deployed path, the owner's `window.deskLatency()` after the roll;
 - the by-hand daemon.log reads on the owner's Mac.
 
@@ -2390,6 +2452,11 @@ rather than an impression.
   mixed-generation roll breaks that, hence the `namedBlocks` declaration.
 - M7's first row-sample check on saved builds gave way to a whole-prefix
   CRC: a sample is not a correctness guarantee.
+- The xhigh panel on the whole branch found three more of the same kind,
+  each reproduced: a re-open's gate released frames older than its own
+  hello; a warm dial that outlived its deadline could replace the lane's
+  connection; a 1,024-character cut could split a surrogate pair, after
+  which no decision's digest could match. All three are fixed (218aa515).
 
 The pattern across all three: a premise true of the common case and false
 of one class of object or one moment of a roll. A focused reviewer looking
