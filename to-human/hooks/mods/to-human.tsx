@@ -1135,8 +1135,10 @@ export function registerToHuman(on: On) {
   // of the report. The engine draws such a line through no render hook, so
   // the view cannot fold it once drawn: while the report folds, the line goes
   // to the debug log as it is logged. The full transcript keeps it, and a
-  // reload that failed, whose line says no `Reloaded:`, stays in both.
-  on('ui.log', { to: 'transcript', text: /^\/reload-plugins: Reloaded: / }, async ($, e, next) => {
+  // reload that failed, whose line says no `Reloaded:`, or that loaded with
+  // anything past the first line (load errors, an unreachable marketplace),
+  // stays in both.
+  on('ui.log', { to: 'transcript', text: /^\/reload-plugins: Reloaded: [^\n]*$/ }, async ($, e, next) => {
     if (await native($, e)) return next(e)
     return next(isFolding() ? { ...e, to: 'debug' } : e)
   })

@@ -650,6 +650,7 @@ describe('the reload line', () => {
     expect(line.matcher.to).toBe('transcript')
     expect(reloaded).toMatch(line.matcher.text as RegExp)
     expect('/reload-plugins: Failed to reload plugins: ENOENT').not.toMatch(line.matcher.text as RegExp)
+    expect(`${reloaded}\n1 error during load. Run /plugin for details.`).not.toMatch(line.matcher.text as RegExp)
 
     // Before the first mark nothing folds; after it the report does, until
     // the band switches to the full transcript.
