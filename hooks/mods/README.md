@@ -535,7 +535,9 @@ place of the run. The output's text reaches the person as this plugin's
 transcript line (`$.ui.log`: `doperpowers: /reload-plugins: Reloaded: N
 plugins · …`), a notice no request carries; a system row through
 `$.session.append` would be drawn only in the transcript view, its level
-being `info`. This holds when the reload replaces doperpowers itself: the
+being `info`. The to-human view keeps a successful reload's line out of its
+report (its `ui.log` hook sends the line to the debug log while the report
+folds); its full transcript draws it. This holds when the reload replaces doperpowers itself: the
 engine writes the rows once the new module is loaded, and its hook knows
 them by origin. A `/reload-plugins` the person types passes whole.
 `tests/mods/live-reload-rows-check.py` pins all of it against a real
