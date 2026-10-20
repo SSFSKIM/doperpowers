@@ -1621,6 +1621,24 @@ beside; a single reviewer reads one of those well in a pass.
   "HTTP/1.0"`, `hub_standin.py`), so connection reuse could not have been
   observed against it. (Review finding B3.)
 
+- Observation: the every-15-minutes 503 is a count of projects in one POST,
+  not a timer: the archive confirmation posts one `hello` per opened project
+  in a single POST, and the deployed hub answers 503 `delivery-failed` once
+  a POST carries more than about six projects' hellos.
+  Evidence (the owner's forwarded diagnosis, `/tmp/dsk-scripts/503-diagnosis.md`,
+  2026-10-20, read from both Macs' daemon.log): `"frames":N` was 6 or 7 in 56
+  cases (5, 9 or 10 in three); the failing project varies; the failures began
+  when the machines reached a seventh project and every confirmation fails at
+  13; the connect handshake's 13 one-project POSTs all succeed. The hub's
+  `Machine.frames` and `Project.fromMachine` discard the exception (logs show
+  only `machine-stream` `end`, cause `undeliverable`); the likeliest
+  mechanism, unconfirmed, is the Workers call-chain limit ("Subrequest depth
+  limit exceeded", about 16), each project's `have` callback into the same
+  `Machine` deepening the chain within one POST. The machine-side fix is
+  doperpowers PR #296 (sminos 1.2.1: one POST per project's confirmation);
+  `relay_rpcs` still batches reply-owing `rpc-result` frames across projects
+  (`docs/doperpowers/TECH-DEBT.md`). M4 owns the hub side (its first task).
+
 ## Decision Log
 
 - Decision: verification. The spec gets one independent review by the
@@ -1715,6 +1733,27 @@ beside; a single reviewer reads one of those well in a pass.
   under its isolation contract is part of M2; a thinking scenario counts an
   open only when the probe shows it fell inside the thinking-to-text window.
   Date/Author: 2026-10-20, the authoring session.
+
+- Decision (pre-flight): version numbers. main moved to sminos 1.2.0 (PR
+  #297) and 1.2.1 follows (PR #296), so the Concrete Steps' `1.1.3` for M1 is
+  stale. Each sminos milestone bumps to the next patch above both main's
+  sminos version and the branch's last; when main moves the controller merges
+  it into the branch (never a rebase), takes main's side of a version
+  conflict, and bumps above it in the same commit as the next change.
+  Date/Author: 2026-10-20, the plan-executor (controller).
+- Decision (pre-flight): M3 and M4 go on two MAWS branches,
+  `desk-open-fast-hub` (M4) and `desk-open-fast-web` (M3), each in its own
+  worktree off `origin/master` and its own PR, rather than one branch
+  `desk-open-fast`. Rationale: M4 needs nothing from M1 and starts beside it,
+  M3 needs M1's fixture and starts later; one shared worktree would put two
+  executors in one tree; and the rollout deploys the web and the hub at
+  different moments (the web before M5 rolls, the hub before M6 rolls), which
+  two PRs merge independently.
+  Date/Author: 2026-10-20, the plan-executor (controller).
+- Decision (pre-flight): M6 starts only once PR #296 (the per-project
+  confirmation, `Link.tick`) is merged into this branch, since M6 rewrites
+  every post site `Link.tick` uses.
+  Date/Author: 2026-10-20, the plan-executor (controller).
 
 ## Outcomes & Retrospective
 
