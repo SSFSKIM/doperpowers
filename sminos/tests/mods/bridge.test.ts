@@ -2150,7 +2150,7 @@ describe('deliver', () => {
           h.compactions[0]!.finish({ messages: [], tokensBefore: 9, tokensAfter: 1 })
         },
       ],
-      ['session.compact', (h) => h.hook('session.compact', { trigger: 'auto' })(h.engine, { messages: [], trigger: 'auto' }, async () => ({ messages: [] }))],
+      ['session.compact', async (h) => h.hook('session.compact', { trigger: 'auto' })(h.engine, { messages: [], trigger: 'auto' }, async () => ({ messages: [] }))],
     ]
     for (const [way, compactNow] of compactions) {
       const h = harness()

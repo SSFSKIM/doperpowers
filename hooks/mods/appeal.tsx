@@ -1,4 +1,4 @@
-import type { EngineInterface, On, SessionMessage, ToolDescribeResult } from 'claude-code'
+import type { EngineInterface, On, SessionMessage, ToolCallArgs, ToolDescribeResult } from 'claude-code'
 
 import {
   APPEAL_DESCRIPTION,
@@ -295,7 +295,8 @@ export async function appeal($: EngineInterface, e: { agentId?: string; block?: 
     relay = { kind: 'stale' }
   } else {
     try {
-      const ran = await $.tool.call({ tool: block.tool, ...(block.input as Record<string, unknown>) })
+      // block.tool is whichever tool the classifier blocked: a name known only at run time.
+      const ran = await $.tool.call({ tool: block.tool, ...(block.input as Record<string, unknown>) } as ToolCallArgs)
       relay = ran.deny !== undefined ? { kind: 'refused', deny: ran.deny } : { kind: 'ran', text: ran.text ?? '', isError: ran.isError === true, result: ran.result }
     } catch (error) {
       relay = { kind: 'refused', deny: message(error) }

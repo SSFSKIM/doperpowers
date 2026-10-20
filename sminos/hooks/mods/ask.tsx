@@ -1676,7 +1676,8 @@ export function registerAsk(on: On) {
     return result
   }).catch((_, e, next) =>
     // Failed before passing the call on, the withdrawal still holds for the model.
-    !next.called && next.error.kind !== 're-entry' && isServing && next.origin.plugin === 'engine' ? { deny: WITHDRAWN } : next(e),
+    // 're-entry': engines up to 2.1.300 could hand a plugin's own raise here; from 2.1.302 they leave the hook out.
+    !next.called && (next.error.kind as string) !== 're-entry' && isServing && next.origin.plugin === 'engine' ? { deny: WITHDRAWN } : next(e),
   )
 
   on('tool.call', { tool: 'mcp__sminos__AskUserQuestion' }, async ($, e) => {
@@ -1718,7 +1719,8 @@ export function registerAsk(on: On) {
     const blocks = await imageBlocks($, outcome.images)
     return { result: blocks.length === 0 ? outcome.text : [{ type: 'text', text: outcome.text }, ...blocks] }
   }).catch((_, e, next) =>
-    // Asked in place of this hook for its own dialog's call (re-entry): pass it on.
-    next.error.kind === 're-entry' ? next(e) : { deny: `The question could not be asked: the hook ${next.error.kind === 'timeout' ? 'ran out of time' : 'failed'}.` },
+    // Asked in place of this hook for its own dialog's call (re-entry): pass it on. Engines up to
+    // 2.1.300 could hand that here; from 2.1.302 they leave the hook out, and the kind left the declarations.
+    (next.error.kind as string) === 're-entry' ? next(e) : { deny: `The question could not be asked: the hook ${next.error.kind === 'timeout' ? 'ran out of time' : 'failed'}.` },
   )
 }
