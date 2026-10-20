@@ -475,7 +475,7 @@ describe('rows off the window', () => {
 
   // The kit's mounted rows do not say where the transcript scrolls, so the
   // hooks are called as the engine would call them, as the reload line's are.
-  test("a fold brings the run's first row into view on the terminal, by the requestId it draws under", async () => {
+  test("a fold brings the run's first row into view only when its top is out of the window, by the requestId it draws under", async () => {
     type Event = Record<string, unknown>
     type Handler = (engine: EngineInterface, e: Event, next: (e: Event) => Promise<unknown>) => unknown
     const hooks: { event: string; matcher: Event; handler: Handler }[] = []
@@ -511,23 +511,42 @@ describe('rows off the window', () => {
       toggle.handler(engine, { surface, element: 'to-human-toggle' }, beneath(async () => (pressOf(tree, label)!(), { element: 'to-human-toggle' })))
 
     await draw('AssistantMessage', 'm1', { text: '<message>One.</message>', isFirstOfReply: true })
-    const group = { calls: [{ tool_use_id: 't1', tool: 'Read', input: {} }], isExpanded: false }
-    const start = await draw('ToolGroup', 'collapsed-1', group)
-    await draw('AssistantMessage', 'r2', { text: 'Reading.', isFirstOfReply: false })
+    const calls = [{ tool_use_id: 't1', tool: 'Read', input: {} }]
+    // The run's first row, a group, as the window last showed it.
+    const start = (onScreen?: unknown) => draw('ToolGroup', 'collapsed-1', { calls, isExpanded: false, ...(onScreen !== undefined && { onScreen }) })
+    const end = () => draw('AssistantMessage', 'r2', { text: 'Reading.', isFirstOfReply: false })
+    await start()
+    await end()
     await draw('AssistantMessage', 'm2', { text: '<message>Two.</message>', isFirstOfReply: true })
+    // Unfolded from the group, the run read down to its end, the group shown
+    // as given, then folded at the end.
+    const unfoldAndFold = async (shown: unknown, surface = 'terminal') => {
+      await press(await start(), 'working record', surface)
+      await start(shown)
+      await press(await end(), 'fold to report', surface)
+    }
 
-    // Unfolding moves nothing; the fold, pressed at the run's end, brings the
-    // group that starts it into view, by the id its row draws under.
-    await press(start, 'working record')
+    // Unfolding moves nothing, nor does folding a run whose first row stands
+    // whole in the window, or at least its top does: a reveal would stop the
+    // transcript following its bottom. Nor where no window says (the main
+    // screen holds no row).
+    await press(await start(), 'working record')
+    await press(await end(), 'fold to report')
     expect(scrolls).toEqual([])
-    const end = await draw('AssistantMessage', 'r2', { text: 'Reading.', isFirstOfReply: false })
-    await press(end, 'fold to report')
+    await unfoldAndFold({ first: 0, last: 3, of: 4 })
+    await unfoldAndFold({ first: 0, last: 1, of: 4 })
+    expect(scrolls).toEqual([])
+
+    // Out of the window, or its top cut off, the group is brought into view
+    // by the id its row draws under.
+    await unfoldAndFold(null)
     expect(scrolls).toEqual([{ to: { requestId: 'collapsed-1' }, block: 'nearest' }])
+    await unfoldAndFold({ first: 2, last: 3, of: 4 })
+    expect(scrolls.length).toBe(2)
 
     // Another surface keeps where it is: the hold is the fullscreen terminal's.
-    await press(await draw('ToolGroup', 'collapsed-1', group), 'working record', 'desktop')
-    await press(await draw('AssistantMessage', 'r2', { text: 'Reading.', isFirstOfReply: false }), 'fold to report', 'desktop')
-    expect(scrolls.length).toBe(1)
+    await unfoldAndFold(null, 'desktop')
+    expect(scrolls.length).toBe(2)
   })
 
   test('a start-up read cut short by its dispatch is made again by the hooks still waiting', async () => {

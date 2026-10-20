@@ -560,6 +560,24 @@ const isSpawn = (tool: string) => tool === 'Agent' || tool === 'Workflow'
 /** Questions (the built-in's and the ask mod's) and agent spawns stay in the report; messaging is working record. */
 export const isRead = (tool: string) => tool === 'AskUserQuestion' || ASK_TOOLS.includes(tool) || isSpawn(tool)
 
+/** A row's `onScreen`: the units of it the window shows, `null` while it is out of the window. */
+type Shown = { first: number; last: number; of: number } | null
+
+/**
+ * Whether a fold of the run that starts at a row can pull the view down: the
+ * row is out of the window, or its top is (it shows from a unit past its
+ * first). Where no `onScreen` was said (a surface that holds no row, the main
+ * screen), nothing is held, so nothing can.
+ */
+export const isTopOut = (shown: Shown | undefined) => shown === null || (shown !== undefined && shown.first > 0)
+
+/** Notes where a row stood in the window as it drew (`View.shown`). */
+function note(view: View, id: string, props: { onScreen?: Shown }) {
+  if (props.onScreen !== undefined) {
+    view.shown.set(id, props.onScreen)
+  }
+}
+
 /**
  * What the view keeps between draws: the rows unfolded by a button (a marked
  * message by its own, a run of working record by the one button that stands
@@ -586,8 +604,10 @@ export type View = {
   appended: number
   /** The `requestId` the engine draws a row under, where the view knows it by another id (a group, by its first call's). */
   requestIds: Map<string, string>
-  /** The run a press just folded, by its first row, which the press then brings into view. */
+  /** The run a press just folded, by its first row, which the press then brings into view if its top is out of the window. */
   folded?: string
+  /** Where each row stood in the window when it last drew, as its `onScreen` said; only the fullscreen transcript says. */
+  shown: Map<string, Shown>
   /** The module's start-up read (`started`), once begun: true once it finished under a dispatch that ran on. */
   starting?: Promise<boolean>
   /** Whether the view folds now: a mark has been seen and the whole transcript is not asked for. */
@@ -602,6 +622,7 @@ export const newView = (isFolding: () => boolean): View => ({
   guess: new Map(),
   appended: 0,
   requestIds: new Map(),
+  shown: new Map(),
   isFolding,
 })
 
@@ -987,6 +1008,7 @@ export function registerToHuman(on: On) {
     if (await native($, e)) return next(e)
     await started($, view, next.signal, markSeen)
     const kind = promptRow(e.props, spawns)
+    note(view, e.requestId, e.props)
     see($, view, e.requestId, kind)
     return isFolding() && kind === 'record' ? recordRow($, e, next, view) : next(e)
   })
@@ -1024,6 +1046,7 @@ export function registerToHuman(on: On) {
     await started($, view, next.signal, markSeen)
     const parsed = parse(e.props.text)
     const isError = parsed.spans.length === 0 && errors.has(e.props.text.trim())
+    note(view, e.requestId, e.props)
     see($, view, e.requestId, parsed.spans.length === 0 && !isError ? 'record' : parsed.hasRecord ? 'mixed' : 'marked')
 
     if (parsed.spans.length > 0 && !hasSeenMark) {
@@ -1130,6 +1153,7 @@ export function registerToHuman(on: On) {
     }
     const group = groupOf.get(e.requestId)
     if (group === undefined) {
+      note(view, e.requestId, e.props)
       see($, view, e.requestId, read ? 'marked' : 'record')
     }
     if (!isFolding() || read) {
@@ -1157,6 +1181,7 @@ export function registerToHuman(on: On) {
     await started($, view, next.signal, markSeen)
     const id = `${GROUP}${e.props.calls[0]?.tool_use_id ?? e.requestId}`
     view.requestIds.set(id, e.requestId)
+    note(view, id, e.props)
     see($, view, id, 'record')
     let last: string | undefined
     for (const call of e.props.calls) {
@@ -1223,12 +1248,15 @@ export function registerToHuman(on: On) {
 
   // A press runs the button's own closure beneath this hook; the redraw
   // follows it so the transcript reflects the state the closure left. A fold
-  // then brings the run's button into view. The person presses
-  // `[ fold to report ]` at the run's end, so its rows above the window fold
-  // while off it, where the fullscreen transcript holds each at the height it
-  // had and lets go of it as it scrolls back in at the window's top edge, the
-  // transcript jumping down by as much each time. With the run's first row in
-  // the window, every row that folds stands in it or below it.
+  // of a run whose first row has its top out of the window then brings that
+  // row into view. The person presses `[ fold to report ]` at the run's end,
+  // so the run's rows above the window fold while off it, where the
+  // fullscreen transcript holds each at the height it had and lets go of it as
+  // it scrolls back in at the window's top edge, the transcript jumping down
+  // by as much each time; with the run's first row in the window, every row
+  // that folds stands in it or below it. A run whose first row's top is in the
+  // window is left where it is: any reveal, even one that moves nothing, stops
+  // the transcript following new output at its bottom.
   on('ui.press', { element: TOGGLE }, async ($, e, next) => {
     if (await native($, e)) return next(e)
     view.folded = undefined
@@ -1236,7 +1264,7 @@ export function registerToHuman(on: On) {
     $.ui.invalidate('ui.render')
     const folded = view.folded
     view.folded = undefined
-    if (folded !== undefined && e.surface === 'terminal') {
+    if (folded !== undefined && e.surface === 'terminal' && isTopOut(view.shown.get(folded))) {
       const shown = await $.ui.scroll({ to: { requestId: view.requestIds.get(folded) ?? folded }, block: 'nearest' })
       if (shown.deny !== undefined) {
         $.ui.log(`to-human: the folded run's button could not be brought into view (${shown.deny})`, { to: 'debug' })
