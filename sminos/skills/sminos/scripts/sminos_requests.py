@@ -49,13 +49,17 @@ The state outlives the stream (the uplink keeps one Requests): a settlement
 made while the hub is out of reach goes up after the next connect, ahead of
 the complete set, and is never dropped; a raise made then is in that set. A
 message queued on a lane (`sending`) is in flight, neither due nor opened
-again, until the POST carrying it is answered 200 (`delivered`): only then
-does a settlement leave the outbox and enter `daemon/requests.json`, since no
-handshake rebuilds one. A POST lost, a stream cut or an uplink restarted
-first leaves it owed (`reset`, or a fresh Requests from that file, which the
-bridge's snapshot fills again). A reader whose stream ends while the bridge
-still answers subscribes again, and its snapshot is reconciled against what
-was held.
+again (sminos_flights), until the POST carrying it is answered 200
+(`delivered`), when it leaves the outbox. A settlement, which no handshake
+rebuilds, enters `daemon/requests.json` only once a `hello` of its project
+queued after it was answered too (`confirmed`): the hub answers 200 even to
+the session frames it refuses `not-open`, and such a refusal (`refused`)
+voids the project's attempts so far and owes its settlements again, to go
+with or after the re-open. A POST lost or a stream cut owes them again
+(`reset`); a restarted uplink starts from that file, and the bridge's
+snapshot brings the rest back while the bridge runs. A reader whose stream
+ends while the bridge still answers subscribes again, and its snapshot is
+reconciled against what was held.
 
 Readers only read the bridge's socket and queue what they read; everything
 else runs on the uplink's main thread.
@@ -74,6 +78,7 @@ sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import sminos  # noqa: E402
 import sminos_bridge as bridge  # noqa: E402
 import sminos_codes as codes  # noqa: E402
+import sminos_flights as flights  # noqa: E402
 
 RETRY = 1.0                # s: a reader whose stream ended subscribes again after this,
 RETRY_MAX = 30.0           # doubling up to this while its bridge gives no snapshot
@@ -214,7 +219,7 @@ class Requests:
         self.stale = set()    # project ids whose complete pending set is owed
         self.holding = {}     # project id → since when its owed set waits for its sessions' snapshots
         self.queued = {}      # (session, request, t) → the outbox's frame carrying that settlement
-        self.flying = {}      # id → an outbox frame on a lane whose POST is not answered yet (`sending`)
+        self.flights = flights.Flights()  # outbox messages in flight, and settlements answered, not confirmed
         self.relayed = load_relayed()  # session → [(request, t)]: the settlements done with (sent or superseded)
         self.compacts = []    # [(session, project id, event)]: the bridges' `compact` events, for the RPCs
         self.said = set()
@@ -435,7 +440,7 @@ class Requests:
         """The frames owed to the hub for the projects open on the stream, in
         order: raised and settled messages not in flight, then each complete
         set owed and due. Not taken until `sending`."""
-        out = [f for pid, f in self.outbox if pid in opened and id(f) not in self.flying]
+        out = [f for pid, f in self.outbox if pid in opened and not self.flights.in_flight(f)]
         return out + [self.pending_frame(pid) for pid in sorted(self.stale & set(opened)) if self.set_due(pid)]
 
     def opening(self, pid):
@@ -446,29 +451,42 @@ class Requests:
         settlement already in flight on this stream is not taken twice."""
         self.outbox = [(p, f) for p, f in self.outbox if p != pid or f["message"]["kind"] != "raised"]
         self.stale.add(pid)
-        backlog = [f for p, f in self.outbox if p == pid and id(f) not in self.flying]
+        backlog = [f for p, f in self.outbox if p == pid and not self.flights.in_flight(f)]
         return backlog + ([self.pending_frame(pid)] if self.set_due(pid) else [])
 
     def sending(self, frames):
-        """`frames` were queued on a lane. A complete set is taken now (the
-        next connect's handshake sends one again if this POST is lost); the
-        messages are in flight — not due, not opened again — until
-        `delivered`, or the next stream's `reset`."""
+        """`frames`, of one project, were queued on a lane: the attempt, for
+        `delivered`. A complete set is taken now (every connect, and every
+        re-open, sends one again); the messages are in flight — not due, not
+        opened again — until `delivered`, a `refused`, or the next stream's
+        `reset`."""
+        messages = []
         for f in frames:
             if f.get("t") == "pending":
                 self.stale.discard(f["project"])
                 self.holding.pop(f["project"], None)
             else:
-                self.flying[id(f)] = f
+                messages.append(f)
+        pids = {f["message"]["project"] for f in messages}
+        assert len(pids) <= 1, "one project per attempt"
+        return self.flights.send(pids.pop(), messages) if pids else None
 
-    def delivered(self, frames):
-        """The POST carrying `frames` was answered 200: its messages leave
-        the outbox, and its settlements are kept as relayed. One that a raise
-        superseded meanwhile is done with already."""
-        ids = {id(f) for f in frames}
-        for i in ids:
-            self.flying.pop(i, None)
-        self.outbox = [(p, f) for p, f in self.outbox if id(f) not in ids]
+    def delivered(self, frames, attempt):
+        """The POST of `attempt` carrying `frames` was answered 200: what it
+        carried leaves the outbox, unless a `not-open` voided the attempt
+        meanwhile. A settlement stays known (`queued`) until `confirmed`."""
+        took = {id(f) for f in frames if f.get("t") != "pending" and self.flights.answered(f, attempt)}
+        self.outbox = [(p, f) for p, f in self.outbox if id(f) not in took]
+
+    def mark(self):
+        """Taken as a project's `hello` is queued, for `confirmed`."""
+        return self.flights.mark()
+
+    def confirmed(self, pid, mark):
+        """A `hello` of the project queued at `mark` was answered: the
+        settlements answered before it are the hub's, kept as relayed. One
+        that a raise superseded meanwhile is done with already."""
+        ids = {id(f) for f in self.flights.confirm(pid, mark)}
         took = [k for k, f in self.queued.items() if id(f) in ids]
         for k in took:
             del self.queued[k]
@@ -476,15 +494,32 @@ class Requests:
         if took:
             save_relayed(self.relayed)
 
+    def owe(self, frames):
+        """Settlements answered and not confirmed, owed again, ahead of the
+        rest; one a raise superseded meanwhile is not."""
+        mine = {id(f) for f in self.queued.values()}
+        self.outbox = [(f["message"]["project"], f) for f in frames if id(f) in mine] + self.outbox
+
+    def refused(self, pid):
+        """The hub refused the project `not-open`: what it took of the
+        project since its last confirmed hello may be lost, so every message
+        of it in flight or answered is owed again (a duplicate the hub takes
+        once), and an answer to an attempt before now takes nothing."""
+        self.owe(self.flights.refuse(pid))
+
     def sent(self, frames):
-        """`frames` reached the hub (queued and answered at once)."""
-        self.sending(frames)
-        self.delivered(frames)
+        """`frames` reached the hub (queued, answered and confirmed at once)."""
+        by = {}
+        for f in frames:
+            by.setdefault(f.get("project") or f["message"]["project"], []).append(f)
+        for pid, mine in by.items():
+            self.delivered(mine, self.sending(mine))
+            self.confirmed(pid, self.mark())
 
     def reset(self):
         """A new stream: the lanes that held what was in flight are gone, so
-        it is owed again."""
-        self.flying.clear()
+        it is owed again, and what was answered and not confirmed too."""
+        self.owe([f for _, f in self.flights.reset()])
 
 
 def settlement(sid, e):
