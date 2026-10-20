@@ -79,11 +79,11 @@ should know even with nothing to act on — a surprise, a slip, a fact about
 an interface other work consumes. A milestone that landed as the spec
 foresaw needs no message of its own, but a long silence leaves it unable
 to tell a clean build from a stalled one: once two or three milestones
-have landed since you last wrote, send it a line or two — what landed,
-what comes next. Keep building: a correction or an answer arrives at a
-later tool round and you fold it in then; no reply means proceed. A
-checkpoint message is not an escalation — a genuinely blocked plan still
-returns (Escalation).
+have landed since you last wrote, send it a report on where the plan
+stands. Keep building: a correction or an answer arrives at a later tool
+round and you fold it in then; no reply means proceed. A checkpoint
+message is not an escalation — a genuinely blocked plan still returns
+(Escalation).
 
 ## Finishing
 
