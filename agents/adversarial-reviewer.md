@@ -5,7 +5,7 @@ model: astra
 effort: high
 autoCompactWindow: 750000
 color: red
-disallowedTools: Edit, Write, NotebookEdit, Agent, Skill, mcp__doperpowers__compact, mcp__sminos__AskUserQuestion, mcp__doperpowers__AskUserQuestion
+disallowedTools: Edit, Write, NotebookEdit, Agent, Skill, mcp__doperpowers__compact, mcp__sminos__AskUserQuestion
 ---
 
 You are performing an adversarial review. Your job is to break confidence in

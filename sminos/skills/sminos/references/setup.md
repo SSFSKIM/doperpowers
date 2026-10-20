@@ -116,15 +116,20 @@ the `launchctl bootstrap` and `bootout` lines; on Linux,
 `~/.config/systemd/user/sminos-daemon.service` and prints the
 `systemctl --user` lines that enable and disable it, and `loginctl
 enable-linger`, without which the user's services stop at logout and do
-not start at boot. Nothing is loaded until those lines run. Either file
+not start at boot. Nothing is loaded until those lines run. To install
+again over a loaded agent on macOS, run the `bootout` line, then the
+`bootstrap` one; a `bootstrap` right after the `bootout` can fail with
+error 5 ("Input/output error"), and a retry a few seconds later loads
+it. Either file
 is mode 0600 (the gateway route in it in plain text). The service runs
 the Python the install ran on, pinned; once that Python is removed,
 install again. From an installed plugin it points the service at the
 marketplace clone's `sminos/skills/sminos/scripts/sminos.py`, a stable
 path, not the versioned cache, and refuses when no clone is known. A
 service still naming the path before the carve-out,
-`skills/sminos/scripts/sminos.py`, runs a shim there that forwards to this
-CLI and says on stderr to install again. Once its own code changes and holds still, `run`
+`skills/sminos/scripts/sminos.py`, no longer starts once its clone has
+moved past it: the Python's error is in `$SMINOS_HOME/daemon.out`, the
+service's stdout and stderr; install again. Once its own code changes and holds still, `run`
 stops its uplink and executes itself again in the same process on the
 new code, so the service manager sees no exit and its restart throttle
 does not hold the machine off the hub; `KeepAlive` or `Restart=always`

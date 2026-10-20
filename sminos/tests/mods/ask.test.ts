@@ -197,8 +197,6 @@ function harness(
     kept?: Map<string, unknown>
     /** The conversation the engine holds, as `$.session.messages()` answers it in each form; one that throws rejects. */
     history?: { rows: SessionMessage[]; api: { role: string; content: unknown }[] } | (() => never)
-    /** What `$.session.id()` answers; `s` by default. */
-    sessionId?: string
   } = {},
 ) {
   const hooks: { event: string; matcher: Matcher; handler: Handler; onFailure?: Handler }[] = []
@@ -282,7 +280,7 @@ function harness(
     },
     turn: { abort: async (args: unknown) => void calls.push({ op: 'turn.abort', args }) },
     session: {
-      id: async () => options.sessionId ?? 's',
+      id: async () => 's',
       messages: async (opts?: { as?: string }) => {
         const history = typeof options.history === 'function' ? options.history() : options.history
         return (opts?.as === 'api' ? history?.api : history?.rows) ?? []
@@ -1747,39 +1745,17 @@ describe('a reload of the module', () => {
     expect(asyncAsks()).toEqual([])
   })
 
-  test("the release that moved the ask takes up doperpowers' shape-1 value once, when its own key is empty", async () => {
-    const kept = new Map<string, unknown>()
+  test("a value doperpowers' ask kept before the move is not taken up: only this plugin's own key is read", async () => {
     const open = { id: 't-moved', questions: [BACKEND], status: 'open' }
-    kept.set('doperpowers.ask', { shape: 1, asks: [open], undelivered: [], isTurnRunning: false, store: { slug: '-repo', sessionId: 's' } })
+    const kept = new Map<string, unknown>([['doperpowers.ask', { shape: 1, asks: [open], undelivered: [], isTurnRunning: false, store: { slug: '-repo', sessionId: 's' } }]])
     const r = harness({ kept })
     await r.start()
-    expect(asyncAsks()).toEqual([open])
-    expect(kept.get('sminos.ask')).toEqual({ shape: 2, asks: [open], undelivered: [], isTurnRunning: false, isDialogUp: false, answered: 0, store: { slug: '-repo', sessionId: 's' } })
-    // Its own key written, the next module reads it, not the old one's.
-    await r.call(ASK_TOOL, { questions: [FEATURES], async: true })
-    await reload(r)
-    expect(asyncAsks().map((a) => a.id)).toEqual(['t-moved', asyncAsks()[1]?.id])
-    expect(asyncAsks().length).toBe(2)
+    expect(asyncAsks()).toEqual([])
+    expect(r.calls.some((c) => c.op === 'ui.invalidate' && c.args === 'ui.render')).toBe(false)
   })
 
-  test("doperpowers' shape-1 value is taken up only for the session it was kept for: a /clear before the move leaves it behind", async () => {
-    const open = { id: 't-before-clear', questions: [BACKEND], status: 'open' }
-    const before = { shape: 1, asks: [open], undelivered: [], isTurnRunning: false, store: { slug: '-repo', sessionId: 's-old' } }
-    const cleared = harness({ kept: new Map<string, unknown>([['doperpowers.ask', before]]), sessionId: 's-new' })
-    await cleared.start()
-    expect(asyncAsks()).toEqual([])
-    const same = harness({ kept: new Map<string, unknown>([['doperpowers.ask', before]]), sessionId: 's-old' })
-    await same.start()
-    expect(asyncAsks()).toEqual([open])
-    // Kept with no session named, it cannot be told apart: left behind too.
-    const { store: _, ...unnamed } = before
-    const anonymous = harness({ kept: new Map<string, unknown>([['doperpowers.ask', unnamed]]), sessionId: 's-old' })
-    await anonymous.start()
-    expect(asyncAsks()).toEqual([])
-  })
-
-  test('a value of another shape under either key is not taken up', async () => {
-    const kept = new Map<string, unknown>([['sminos.ask', { shape: 3, asks: [{ id: 'x' }] }], ['doperpowers.ask', { shape: 2, asks: [{ id: 'y' }] }]])
+  test('a value of another shape is not taken up', async () => {
+    const kept = new Map<string, unknown>([['sminos.ask', { shape: 3, asks: [{ id: 'x' }] }]])
     const r = harness({ kept })
     await r.start()
     expect(asyncAsks()).toEqual([])

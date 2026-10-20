@@ -210,8 +210,8 @@ SMINOS_HOME unless it names another machine or the real HOME.
   `session.start`.
 - **A7 — The daemon survives the roll and reinstalls at the new path.** On each machine (the MacBook
   `SK`, the Mac mini, each enrolled devcloud host once one exists): after the roll, `sminos daemon
-  status` reports the daemon running and the hub shows the machine, the daemon's log naming the
-  shim's forward once; after `sminos daemon install` and the service reload, the service file names
+  status` reports the daemon running and the hub shows the machine, the daemon's stderr
+  (`$SMINOS_HOME/daemon.out`, not `daemon.log`) naming the shim's forward once; after `sminos daemon install` and the service reload, the service file names
   `<marketplace clone>/sminos/skills/sminos/scripts/sminos.py` (`plutil -p ~/Library/LaunchAgents/com.doperpowers.sminos-daemon.plist`
   on macOS, `systemctl --user cat sminos-daemon.service` on Linux).
 - **A8 — Every suite is green in the new layout.** `ci-gate` on the M3 commit is GREEN with the gates

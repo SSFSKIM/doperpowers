@@ -107,8 +107,8 @@ assert_eq "…and its lib.sh" "$(dirname "$REAL_CLI")/lib.sh" "$(sed -n 2p <<<"$
 [ -f "$(sed -n 2p <<<"$out")" ] && pass "lib.sh exists beside the checkout's CLI" || fail "lib.sh exists beside the checkout's CLI"
 
 echo "6. every board file routes through the one resolver:"
-# The CLI's old home (skills/sminos/scripts) holds a transition shim with no
-# lib.sh; no board script or template may spell a path to it.
+# The CLI's old home (skills/sminos/scripts) is gone; no board script or
+# template may spell a path to it.
 stale="$(cd "$REPO_ROOT" && grep -rn 'sminos/scripts' skills/issue-tracker/scripts skills/issue-tracker/references \
     | grep -v 'sminos/skills/sminos/scripts' || true)"
 assert_eq "no board script or template spells the CLI's old path" "" "$stale"

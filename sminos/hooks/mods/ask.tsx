@@ -961,12 +961,6 @@ let answeredCount = 0
  * written on every change of any field it carries.
  */
 const KEPT = { plugin: 'sminos', key: 'ask' } as const
-/**
- * Where the ask kept its asks before it moved to this plugin: read, for the
- * release that moved it, only when this plugin's own key is empty, so a
- * reload across the move keeps the open asks.
- */
-const KEPT_BEFORE = { plugin: 'doperpowers', key: 'ask' } as const
 /** Writes the snapshot; set as the session starts. */
 let keep: ((snapshot: AskSnapshot) => void) | undefined
 
@@ -989,32 +983,19 @@ function save() {
  * not this one's (its press settles in the module that raised it), so none
  * reads up; the count goes on from where it stood, so a reader sees it only grow.
  */
-function restore(snapshot: { asks: OpenAsk[]; undelivered: Delivery[]; isTurnRunning: boolean; answered?: number; store?: AskSnapshot['store'] }) {
+function restore(snapshot: AskSnapshot) {
   asks = snapshot.asks
   undelivered = new Map(snapshot.undelivered.map((item) => [item.id, item]))
   held = [...snapshot.undelivered]
   isTurnRunning = snapshot.isTurnRunning
-  answeredCount = snapshot.answered ?? 0
+  answeredCount = snapshot.answered
   store = snapshot.store
 }
 
-/**
- * The snapshot a module before this one kept: this plugin's own (shape 2),
- * else, for the release that moved the ask, doperpowers' (shape 1), if it was
- * kept for this session. Once doperpowers' ask is gone nothing forgets that
- * value at a /clear, so one kept before a /clear names the conversation the
- * /clear ended.
- */
-async function keptBefore($: EngineInterface): Promise<Parameters<typeof restore>[0] | undefined> {
+/** The snapshot a module before this one kept, if it is one this module reads (shape 2). */
+async function keptBefore($: EngineInterface): Promise<AskSnapshot | undefined> {
   const { value } = await $.state.get(KEPT)
-  if (value !== undefined) {
-    return isRecord(value) && value.shape === 2 ? (value as AskSnapshot) : undefined
-  }
-  const before = (await $.state.get(KEPT_BEFORE)).value as unknown
-  if (!isRecord(before) || before.shape !== 1 || !isRecord(before.store) || before.store.sessionId !== (await $.session.id())) {
-    return undefined
-  }
-  return before as unknown as Parameters<typeof restore>[0]
+  return isRecord(value) && value.shape === 2 ? (value as AskSnapshot) : undefined
 }
 
 function forgetAsyncAsks() {
