@@ -17,7 +17,9 @@ It records what would be wrong on screen, each error a string whose first
 word is its kind: `gap` (an `n` out of sequence), `dup` (a row twice on one
 subscription), `watermark` (a chunk at or below the subscription's own
 watermark), `differs` (a block whose drawn text is not its row's, when its
-own row settles it), `vanished` (a named block dropped before its row
+own row settles it; a tool call cut to its tail is not checked here, since
+its row holds the input parsed and the tail is of the JSON as it streamed:
+the inventory checks it), `vanished` (a named block dropped before its row
 landed), `after-end` (a message after `end`), `marks` (offChain naming rows
 the message does not carry, or a row's marks present and empty).
 
@@ -25,15 +27,21 @@ the message does not carry, or a row's marks present and empty).
 transcript on disk, delivered or not, and the DX5 events the session
 emitted (every block that streamed, its final text, the row its block-row
 named) — and `check(consumer)` names each row never drawn (`holes`), each
-block drawn while its row was held (`partial`), each block that left the
-drawing before its row landed (`vanished`), each row delivered twice or
+block drawn while its row was held, or a tool call drawn with a tail that
+is not the end of the input the source streamed (`partial`), each block
+that left the drawing before its row landed (`vanished`), each row
+delivered twice or
 block drawn again after it settled (`dups`), and each block that streamed
 whose row arrived live (a `row`, not history or a page) without the block
-ever drawn before it: `undrawn` when the view followed the block's request
-(its snapshot streamed it, or a chunk, block-row or step-end of it came) —
-the block was lost — and `residual` when it never did, so the request had
-ended before the snapshot: the snapshot fell between the step's end and its
-rows' flush, the one hole the design accepts (the spec's section 2).
+ever drawn before it: `residual` when the view never followed the block's
+request (its snapshot streamed none of it, and no chunk, block-row or
+step-end of it came) and the source shows that request's step ended before
+the snapshot of the subscription the row came on — the snapshot fell
+between the step's end and its rows' flush, the one hole the design
+accepts (the spec's section 2) — else `undrawn`: the block was lost. In
+the DX5 events a `snapshot` event is the bridge's snapshot line where a
+subscription read it, one per subscription in the order they subscribed;
+without it nothing shows the step ended first, and the block is `undrawn`.
 
 The merge leaves out the web's offChain vouching (desk-transcript's
 `merged`): a fresh snapshot whose oldest row is held merges here whatever
@@ -256,21 +264,12 @@ def row_text(row, kind):
     return None
 
 
-def serializations(value):
-    """The ways a tool call's input may have streamed as JSON: the API's
-    spacing or none, non-ASCII as is or escaped."""
-    return {json.dumps(value, ensure_ascii=a, separators=sep) for a in (False, True) for sep in (None, (",", ":"))}
-
-
 def same_text(block, said):
     """Whether a block's drawn text is what its row says: whole, or, for a
-    block the producer cut to its tail (`truncated`), the end of it; a tool
-    call's input whole is compared as JSON, its tail against the input's
-    serializations."""
+    text or thinking block the producer cut to its tail (`truncated`), the
+    end of it; a tool call's input whole is compared as JSON."""
     if block.kind != "tool":
         return said.endswith(block.text) if block.truncated else said == block.text
-    if block.truncated:
-        return any(form.endswith(block.text) for form in serializations(said))
     try:
         return json.loads(block.text) == said
     except ValueError:
@@ -290,7 +289,7 @@ def spans_overlap(a, b):
 # What a re-subscribe hands on: the drawing and everything the inventory reads.
 SHARED = ("layer", "rows", "held", "row_of", "off", "served", "errors", "t", "ever", "reached_first",
           "drawn_spans", "held_spans", "settled", "settled_at", "redrawn", "left", "vanished", "dup_rows",
-          "dropped", "other", "live_rows", "followed")
+          "dropped", "other", "live_rows", "followed", "snapshots", "tails")
 
 
 class Consumer:
@@ -320,6 +319,7 @@ class Consumer:
         self.last_settle = []         # rows that settled blocks
         self.last_landing = None      # a resumed snapshot's `landing`
         self.last_lands = None        # the uuids its `lands` answered true for
+        self.snap_index = None        # which snapshot of the chain this subscription's was, from 0
         if previous is not None:
             for k in SHARED:
                 setattr(self, k, getattr(previous, k))
@@ -344,8 +344,11 @@ class Consumer:
         self.dup_rows = []
         self.dropped = {}             # a block a step-end dropped (no block-row named it): its text
         self.other = {}               # another loop's block settled by its block-row: uuid → its text
-        self.live_rows = {}           # uuid → the message whose `row` brought it first, not held before
+        self.live_rows = {}           # uuid → (the message whose `row` brought it first, not held before,
+                                      #         the snap_index of the subscription it came on)
         self.followed = set()         # (turnId, agentId, step): requests the view saw streaming, named or ended
+        self.snapshots = 0            # snapshots taken across the chain
+        self.tails = {}               # a truncated tool block settled by its own row: key → the tail drawn
 
     # ---------------------------------------------------- reading
 
@@ -435,7 +438,7 @@ class Consumer:
                 self.marked[row.get("uuid")] = (body.get("offChain", []), body.get("onChain", []))
             self.deliver(row)
             if isinstance(row.get("uuid"), str) and row["uuid"] not in self.held:
-                self.live_rows.setdefault(row["uuid"], self.t)
+                self.live_rows.setdefault(row["uuid"], (self.t, self.snap_index))
                 self.rows.append(row)
                 self.hold(row)
         elif kind == "rows":
@@ -475,6 +478,9 @@ class Consumer:
 
     def take_snapshot(self, body, gone):
         self.snapshot = body
+        if self.snap_index is None:
+            self.snap_index = self.snapshots
+            self.snapshots += 1
         self.subagents = body.get("subagents")
         self.body = {k: body.get(k) for k in ("subagents", "jobs", "mcp")}
         fresh = [r for r in reversed(body.get("rows") or []) if isinstance(r, dict) and isinstance(r.get("uuid"), str)]
@@ -580,6 +586,9 @@ class Consumer:
                     continue   # settled by the newest row a resume brought, not its own
                 self.settled.add(b.key)
                 self.settled_at[b.key] = self.t
+                if b.kind == "tool" and b.truncated:
+                    self.tails[b.key] = b.text   # the inventory checks it against what streamed
+                    continue
                 said = row_text(self.row_of[u], b.kind)
                 if said is None:
                     continue
@@ -610,20 +619,25 @@ class Inventory:
     """What should have been drawn, from the sources of truth: `rows` every
     row of the transcript on disk in file order; `blocks` every block that
     streamed — (turnId, agentId, step, index) → {"kind", "text", "uuid"}, its
-    final text and the row its block-row named (None: none did)."""
+    final text and the row its block-row named (None: none did); `snapshots`
+    the position in the DX5 events of each subscription's snapshot, in order;
+    `ended` each request's (turnId, agentId, step) → the position of its
+    first step end."""
 
-    def __init__(self, rows, blocks):
+    def __init__(self, rows, blocks, snapshots=(), ended=None):
         self.rows, self.blocks = rows, blocks
+        self.snapshots, self.ended = list(snapshots), dict(ended or {})
 
     @classmethod
     def from_sources(cls, transcript_path, dx5_events):
         """A transcript not written yet holds no rows; any other failure to
         read it raises: an inventory that read nothing must not pass a run."""
         rows = []
+        order = order_of(dx5_events)
         try:
             f = open(transcript_path, "rb")
         except FileNotFoundError:
-            return cls(rows, blocks_of(dx5_events))
+            return cls(rows, blocks_of(dx5_events), *order)
         with f:
             for line in f:
                 if not line.endswith(b"\n"):
@@ -634,7 +648,7 @@ class Inventory:
                     continue   # a line that is no row: the engine's bookkeeping, as the plane passes it over
                 if isinstance(row, dict) and isinstance(row.get("uuid"), str) and row["uuid"]:
                     rows.append(row)
-        return cls(rows, blocks_of(dx5_events))
+        return cls(rows, blocks_of(dx5_events), *order)
 
     def check(self, consumer):
         """{"holes", "partial", "vanished", "dups", "undrawn", "residual"} for
@@ -650,10 +664,12 @@ class Inventory:
         for key, b in mine.items():
             spans = consumer.drawn_spans.get(key)
             held = consumer.held_spans.get(b["uuid"], []) if b["uuid"] else []
-            landed = consumer.live_rows.get(b["uuid"]) if b["uuid"] else None
+            landed, on = consumer.live_rows.get(b["uuid"], (None, None)) if b["uuid"] else (None, None)
             if landed is not None and not any(lo < landed for lo, _ in spans or ()):
-                (undrawn if key[:3] in consumer.followed else residual).append(ref(key))
-            if spans and held and spans_overlap(spans, held):
+                (residual if self.ended_before(key, on) and key[:3] not in consumer.followed
+                 else undrawn).append(ref(key))
+            tail = consumer.tails.get(key)
+            if (spans and held and spans_overlap(spans, held)) or (tail is not None and not b["text"].endswith(tail)):
                 partial.append({**ref(key), "text": b["text"]})
             if key in consumer.vanished:
                 vanished.append(ref(key))
@@ -664,6 +680,29 @@ class Inventory:
         dups = list(consumer.dup_rows) + [ref(k) for k in consumer.redrawn if k[1] == consumer.agent]
         return {"holes": holes, "partial": partial, "vanished": vanished, "dups": dups, "undrawn": undrawn,
                 "residual": residual}
+
+    def ended_before(self, key, snap_index):
+        """Whether the source shows the block's request ended before the
+        snapshot of subscription `snap_index` (None: none was read)."""
+        ended = self.ended.get(key[:3])
+        if ended is None or snap_index is None or snap_index >= len(self.snapshots):
+            return False
+        return ended < self.snapshots[snap_index]
+
+
+def order_of(events):
+    """Where each subscription's snapshot and each request's first step end
+    fall in the DX5 events: (snapshot positions, (turnId, agentId, step) →
+    step end position)."""
+    snapshots, ended = [], {}
+    for i, e in enumerate(events):
+        if not isinstance(e, dict):
+            continue
+        if e.get("type") == "snapshot":
+            snapshots.append(i)
+        elif e.get("type") == "step" and e.get("phase") == "end":
+            ended.setdefault((e.get("turnId"), e.get("agentId"), e.get("step")), i)
+    return snapshots, ended
 
 
 def blocks_of(events):

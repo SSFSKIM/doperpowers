@@ -698,7 +698,7 @@
    }
   ],
   "errors": [],
-  "about_fixture": "DX4's streaming layer, the desk open-fast spec's parity fixture (docs/doperpowers/specs/2026-10-20-desk-open-fast-design.md, section 9), written by sminos/tests/dx4-stream.gen.py: every expected drawing by hand. Each sequence is one session view's messages in order; a step's `message` is a DX4 envelope, or \"resubscribe\" (the subscription is over and a new one starts: `n` from 0, and its first snapshot is resumed over what is drawn, not loaded). `drawn` is the streaming layer's blocks after the message: agentId (\"main\" for null) to that agent's blocks in drawing order, an agent with none left out. The store's side, for a replay of the layer alone: `settle` lists the rows whose landing settles blocks after the message, in order (a held row a drawn block awaits; another loop's block-row on a main view); a resumed snapshot's step gives `landing` (the newest row the snapshot brought, null for none) and `lands` (the named rows `lands` answers true for). A sequence's `errors` are the reference consumer's error kinds, in order (gap, dup, watermark, differs, vanished, after-end, marks); `inventory`, where present, is the transcript on disk and the DX5 events the session emitted, and what checking the consumer against them names: holes (rows never delivered), partial (a block drawn while its row was held), vanished (a block gone before its row landed), dups (a row delivered twice, a block drawn again after it settled), undrawn (a block whose request this view followed, never drawn before its row arrived live), residual (the same for a request that had ended before the view followed it: the snapshot between a step's end and its rows' flush, an accepted hole)."
+  "about_fixture": "DX4's streaming layer, the desk open-fast spec's parity fixture (docs/doperpowers/specs/2026-10-20-desk-open-fast-design.md, section 9), written by sminos/tests/dx4-stream.gen.py: every expected drawing by hand. Each sequence is one session view's messages in order; a step's `message` is a DX4 envelope, or \"resubscribe\" (the subscription is over and a new one starts: `n` from 0, and its first snapshot is resumed over what is drawn, not loaded). `drawn` is the streaming layer's blocks after the message: agentId (\"main\" for null) to that agent's blocks in drawing order, an agent with none left out. The store's side, for a replay of the layer alone: `settle` lists the rows whose landing settles blocks after the message, in order (a held row a drawn block awaits; another loop's block-row on a main view); a resumed snapshot's step gives `landing` (the newest row the snapshot brought, null for none) and `lands` (the named rows `lands` answers true for). A sequence's `errors` are the reference consumer's error kinds, in order (gap, dup, watermark, differs, vanished, after-end, marks); `inventory`, where present, is the transcript on disk and the DX5 events the session emitted, and what checking the consumer against them names: holes (rows never delivered), partial (a block drawn while its row was held), vanished (a block gone before its row landed), dups (a row delivered twice, a block drawn again after it settled), undrawn (a block whose request this view followed, never drawn before its row arrived live, or whose request's end the source does not show before the view's snapshot), residual (the same where the source shows the request's step ended before the view's snapshot and the view never followed it: the snapshot between a step's end and its rows' flush, an accepted hole). In `dx5`, a `snapshot` event is the bridge's snapshot line where a subscription read it: one per subscription, in order. A truncated tool call's tail is checked against the input the source streamed, named `partial` when it is not that input's end."
  },
  {
   "name": "reconnect-empty-history-carries-the-named-block",
@@ -3377,7 +3377,7 @@
  },
  {
   "name": "planted-undrawn-and-the-residual-hole",
-  "about": "Planted: the first snapshot follows a request still streaming (block 1) but carries neither its named block 0 nor that block's row, which arrives live after its block-row: the block was never drawn (the first open's twin of the carried-block loss). Beside it, the row of a request whose step had ended before the snapshot arrives live too, its block never drawn and its request never followed: the snapshot fell between that step's end and its rows' flush, the hole the design accepts (residual).",
+  "about": "Planted: the first snapshot follows a request still streaming (block 1) but carries neither its named block 0 nor that block's row, which arrives live after its block-row: the block was never drawn (the first open's twin of the carried-block loss). Beside it, the row of a request whose step had ended before the snapshot arrives live too, its block never drawn and its request never followed, the source showing that step's end before the subscription's snapshot (its `snapshot` event): the snapshot fell between that step's end and its rows' flush, the hole the design accepts (residual).",
   "agent": null,
   "steps": [
    {
@@ -3811,6 +3811,38 @@
      "t": 1760000000003
     },
     {
+     "type": "snapshot",
+     "cut": {
+      "main": "0d4c400a-0000-4000-8000-000000000003"
+     },
+     "t": 1760000000000,
+     "streaming": [
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 1,
+       "model": "m",
+       "upTo": 3,
+       "blocks": [
+        {
+         "index": 0,
+         "kind": "text",
+         "text": "Gone",
+         "upTo": 0,
+         "uuid": "0d4c400a-0000-4000-8000-000000000003",
+         "namedAt": 1760000000000
+        },
+        {
+         "index": 1,
+         "kind": "text",
+         "text": "still",
+         "upTo": 3
+        }
+       ]
+      }
+     ]
+    },
+    {
      "type": "chunk",
      "turnId": "turn-1",
      "agentId": null,
@@ -3819,7 +3851,7 @@
      "chunk": {
       "kind": "text",
       "index": 1,
-      "text": "l going"
+      "text": " going"
      },
      "t": 1760000000004
     },
@@ -3859,7 +3891,7 @@
  },
  {
   "name": "truncated-blocks-settle",
-  "about": "Blocks whose catch-up copy the producer cut to its last characters (`truncated`, the spec's section 7): a text block and a tool call whose kept input is the tail of its JSON, not JSON whole. Each is drawn with the tail it carries and settles cleanly by its row, whose text, or whose input as serialized, ends with that tail.",
+  "about": "Blocks whose catch-up copy the producer cut to its last characters (`truncated`, the spec's section 7): a text block, and tool calls whose kept input is the tail of the JSON as it streamed, formatted over several lines, not JSON whole. Each is drawn with the tail it carries and settles by its row. The text's tail is checked against the row's text; a tool call's against what the source streamed, since its row holds the input parsed: the inventory names a tail that is not the end of it (planted: block 2).",
   "agent": null,
   "steps": [
    {
@@ -3892,15 +3924,24 @@
           "index": 0,
           "kind": "text",
           "text": " a long answer that ends here.",
-          "upTo": 4,
+          "upTo": 2,
           "truncated": true
          },
          {
           "index": 1,
           "kind": "tool",
-          "text": "xxxx done\", \"description\": \"a long one\"}",
-          "upTo": 9,
+          "text": "x done\",\n  \"description\": \"a long one\"\n}",
+          "upTo": 6,
           "id": "toolu_01",
+          "name": "Bash",
+          "truncated": true
+         },
+         {
+          "index": 2,
+          "kind": "tool",
+          "text": "\"y\": 2\n}",
+          "upTo": 9,
+          "id": "toolu_02",
           "name": "Bash",
           "truncated": true
          }
@@ -3930,7 +3971,16 @@
        "step": 0,
        "index": 1,
        "kind": "tool",
-       "text": "xxxx done\", \"description\": \"a long one\"}",
+       "text": "x done\",\n  \"description\": \"a long one\"\n}",
+       "settledBy": null
+      },
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 2,
+       "kind": "tool",
+       "text": "\"y\": 2\n}",
        "settledBy": null
       }
      ]
@@ -3969,7 +4019,16 @@
        "step": 0,
        "index": 1,
        "kind": "tool",
-       "text": "xxxx done\", \"description\": \"a long one\"}",
+       "text": "x done\",\n  \"description\": \"a long one\"\n}",
+       "settledBy": null
+      },
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 2,
+       "kind": "tool",
+       "text": "\"y\": 2\n}",
        "settledBy": null
       }
      ]
@@ -4008,8 +4067,65 @@
        "step": 0,
        "index": 1,
        "kind": "tool",
-       "text": "xxxx done\", \"description\": \"a long one\"}",
+       "text": "x done\",\n  \"description\": \"a long one\"\n}",
        "settledBy": "0d4c400b-0000-4000-8000-000000000002"
+      },
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 2,
+       "kind": "tool",
+       "text": "\"y\": 2\n}",
+       "settledBy": null
+      }
+     ]
+    }
+   },
+   {
+    "message": {
+     "project": "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59",
+     "machine": "testhost",
+     "session": "d0c8a000-0000-4000-8000-0000000d4c45",
+     "kind": "block-row",
+     "sub": "sub-11-0",
+     "n": 3,
+     "body": {
+      "uuid": "0d4c400b-0000-4000-8000-000000000003",
+      "turnId": "turn-1",
+      "agentId": null,
+      "step": 0,
+      "index": 2
+     }
+    },
+    "drawn": {
+     "main": [
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 0,
+       "kind": "text",
+       "text": " a long answer that ends here.",
+       "settledBy": "0d4c400b-0000-4000-8000-000000000001"
+      },
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 1,
+       "kind": "tool",
+       "text": "x done\",\n  \"description\": \"a long one\"\n}",
+       "settledBy": "0d4c400b-0000-4000-8000-000000000002"
+      },
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 2,
+       "kind": "tool",
+       "text": "\"y\": 2\n}",
+       "settledBy": "0d4c400b-0000-4000-8000-000000000003"
       }
      ]
     }
@@ -4021,7 +4137,7 @@
      "session": "d0c8a000-0000-4000-8000-0000000d4c45",
      "kind": "row",
      "sub": "sub-11-0",
-     "n": 3,
+     "n": 4,
      "body": {
       "row": {
        "type": "assistant",
@@ -4050,8 +4166,17 @@
        "step": 0,
        "index": 1,
        "kind": "tool",
-       "text": "xxxx done\", \"description\": \"a long one\"}",
+       "text": "x done\",\n  \"description\": \"a long one\"\n}",
        "settledBy": "0d4c400b-0000-4000-8000-000000000002"
+      },
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 2,
+       "kind": "tool",
+       "text": "\"y\": 2\n}",
+       "settledBy": "0d4c400b-0000-4000-8000-000000000003"
       }
      ]
     }
@@ -4063,7 +4188,7 @@
      "session": "d0c8a000-0000-4000-8000-0000000d4c45",
      "kind": "row",
      "sub": "sub-11-0",
-     "n": 4,
+     "n": 5,
      "body": {
       "row": {
        "type": "assistant",
@@ -4086,8 +4211,55 @@
       "agentId": null
      }
     },
+    "note": "a tool tail: the consumer checks nothing against the parsed input",
     "settle": [
      "0d4c400b-0000-4000-8000-000000000002"
+    ],
+    "drawn": {
+     "main": [
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 0,
+       "index": 2,
+       "kind": "tool",
+       "text": "\"y\": 2\n}",
+       "settledBy": "0d4c400b-0000-4000-8000-000000000003"
+      }
+     ]
+    }
+   },
+   {
+    "message": {
+     "project": "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59",
+     "machine": "testhost",
+     "session": "d0c8a000-0000-4000-8000-0000000d4c45",
+     "kind": "row",
+     "sub": "sub-11-0",
+     "n": 6,
+     "body": {
+      "row": {
+       "type": "assistant",
+       "uuid": "0d4c400b-0000-4000-8000-000000000003",
+       "message": {
+        "role": "assistant",
+        "content": [
+         {
+          "type": "tool_use",
+          "id": "toolu_01",
+          "name": "Bash",
+          "input": {
+           "x": 1
+          }
+         }
+        ]
+       }
+      },
+      "agentId": null
+     }
+    },
+    "settle": [
+     "0d4c400b-0000-4000-8000-000000000003"
     ],
     "drawn": {}
    },
@@ -4098,7 +4270,7 @@
      "session": "d0c8a000-0000-4000-8000-0000000d4c45",
      "kind": "step-end",
      "sub": "sub-11-0",
-     "n": 5,
+     "n": 7,
      "body": {
       "turnId": "turn-1",
       "agentId": null,
@@ -4108,6 +4280,375 @@
     "drawn": {}
    }
   ],
-  "errors": []
+  "errors": [],
+  "inventory": {
+   "transcript": [
+    {
+     "type": "assistant",
+     "uuid": "0d4c400b-0000-4000-8000-000000000001",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "text",
+        "text": "a long answer a long answer a long answer a long answer a long answer a long answer a long answer a long answer a long answer a long answer a long answer a long answer a long answer a long answer a long answer a long answer a long answer a long answer a long answer a long answer that ends here."
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "uuid": "0d4c400b-0000-4000-8000-000000000002",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "toolu_01",
+        "name": "Bash",
+        "input": {
+         "command": "echo xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx done",
+         "description": "a long one"
+        }
+       }
+      ]
+     }
+    },
+    {
+     "type": "assistant",
+     "uuid": "0d4c400b-0000-4000-8000-000000000003",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "tool_use",
+        "id": "toolu_01",
+        "name": "Bash",
+        "input": {
+         "x": 1
+        }
+       }
+      ]
+     }
+    }
+   ],
+   "dx5": [
+    {
+     "type": "chunk",
+     "turnId": "turn-1",
+     "agentId": null,
+     "step": 0,
+     "chunkIndex": 0,
+     "chunk": {
+      "kind": "text",
+      "index": 0,
+      "text": "a long answer a long"
+     },
+     "t": 1760000000000
+    },
+    {
+     "type": "chunk",
+     "turnId": "turn-1",
+     "agentId": null,
+     "step": 0,
+     "chunkIndex": 1,
+     "chunk": {
+      "kind": "text",
+      "index": 0,
+      "text": " answer a long answer a long answer a long answer a long answer a long answer a long answer a long answer a long answer a long answer a long answer a long answer a long answer a long answer a long answer a long answer a long answer a long answer a long answer that ends here."
+     },
+     "t": 1760000000001
+    },
+    {
+     "type": "block-row",
+     "uuid": "0d4c400b-0000-4000-8000-000000000001",
+     "turnId": "turn-1",
+     "agentId": null,
+     "step": 0,
+     "index": 0,
+     "t": 1760000000000
+    },
+    {
+     "type": "chunk",
+     "turnId": "turn-1",
+     "agentId": null,
+     "step": 0,
+     "chunkIndex": 2,
+     "chunk": {
+      "kind": "tool",
+      "index": 1,
+      "name": "Bash"
+     },
+     "t": 1760000000002
+    },
+    {
+     "type": "chunk",
+     "turnId": "turn-1",
+     "agentId": null,
+     "step": 0,
+     "chunkIndex": 3,
+     "chunk": {
+      "kind": "input",
+      "index": 1,
+      "json": "{\n  \"command\": \"echo xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+     },
+     "t": 1760000000003
+    },
+    {
+     "type": "chunk",
+     "turnId": "turn-1",
+     "agentId": null,
+     "step": 0,
+     "chunkIndex": 4,
+     "chunk": {
+      "kind": "input",
+      "index": 1,
+      "json": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx done\",\n  \"description\": \"a long one\"\n}"
+     },
+     "t": 1760000000004
+    },
+    {
+     "type": "block-row",
+     "uuid": "0d4c400b-0000-4000-8000-000000000002",
+     "turnId": "turn-1",
+     "agentId": null,
+     "step": 0,
+     "index": 1,
+     "t": 1760000000000
+    },
+    {
+     "type": "chunk",
+     "turnId": "turn-1",
+     "agentId": null,
+     "step": 0,
+     "chunkIndex": 5,
+     "chunk": {
+      "kind": "tool",
+      "index": 2,
+      "name": "Bash"
+     },
+     "t": 1760000000005
+    },
+    {
+     "type": "chunk",
+     "turnId": "turn-1",
+     "agentId": null,
+     "step": 0,
+     "chunkIndex": 6,
+     "chunk": {
+      "kind": "input",
+      "index": 2,
+      "json": "{\n  \"x\": 1\n}"
+     },
+     "t": 1760000000006
+    },
+    {
+     "type": "block-row",
+     "uuid": "0d4c400b-0000-4000-8000-000000000003",
+     "turnId": "turn-1",
+     "agentId": null,
+     "step": 0,
+     "index": 2,
+     "t": 1760000000000
+    }
+   ],
+   "check": {
+    "holes": [],
+    "partial": [
+     {
+      "turnId": "turn-1",
+      "agentId": null,
+      "step": 0,
+      "index": 2,
+      "text": "{\n  \"x\": 1\n}"
+     }
+    ],
+    "vanished": [],
+    "dups": [],
+    "undrawn": [],
+    "residual": []
+   }
+  }
+ },
+ {
+  "name": "planted-a-whole-request-left-out",
+  "about": "Planted: the source's snapshot still carries an open request, and the view's snapshot leaves it out whole, nor does anything of it come after; then its row arrives live. Its block was never drawn and the view never followed its request, but nothing shows its step ended before the snapshot: undrawn, not residual.",
+  "agent": null,
+  "steps": [
+   {
+    "message": {
+     "project": "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59",
+     "machine": "testhost",
+     "session": "d0c8a000-0000-4000-8000-0000000d4c45",
+     "kind": "snapshot",
+     "sub": "sub-12-0",
+     "n": 0,
+     "body": {
+      "rows": [
+       {
+        "type": "user",
+        "uuid": "0d4c400c-0000-4000-8000-000000000001",
+        "message": {
+         "role": "user",
+         "content": "go"
+        }
+       }
+      ],
+      "more": false,
+      "subagents": [],
+      "presence": {
+       "record": {
+        "status": "busy"
+       },
+       "bridge": true
+      },
+      "streaming": [],
+      "jobs": [],
+      "mcp": [],
+      "offChain": [],
+      "usage": null
+     }
+    },
+    "note": "planted: the open request left out whole",
+    "drawn": {}
+   },
+   {
+    "message": {
+     "project": "0d9e8f7a-6b5c-4d3e-a2f1-0e9d8c7b6a59",
+     "machine": "testhost",
+     "session": "d0c8a000-0000-4000-8000-0000000d4c45",
+     "kind": "row",
+     "sub": "sub-12-0",
+     "n": 1,
+     "body": {
+      "row": {
+       "type": "assistant",
+       "uuid": "0d4c400c-0000-4000-8000-000000000002",
+       "message": {
+        "role": "assistant",
+        "content": [
+         {
+          "type": "text",
+          "text": "Hidden"
+         }
+        ]
+       }
+      },
+      "agentId": null
+     }
+    },
+    "drawn": {}
+   }
+  ],
+  "errors": [],
+  "inventory": {
+   "transcript": [
+    {
+     "type": "user",
+     "uuid": "0d4c400c-0000-4000-8000-000000000001",
+     "message": {
+      "role": "user",
+      "content": "go"
+     }
+    },
+    {
+     "type": "assistant",
+     "uuid": "0d4c400c-0000-4000-8000-000000000002",
+     "message": {
+      "role": "assistant",
+      "content": [
+       {
+        "type": "text",
+        "text": "Hidden"
+       }
+      ]
+     }
+    }
+   ],
+   "dx5": [
+    {
+     "type": "chunk",
+     "turnId": "turn-1",
+     "agentId": null,
+     "step": 1,
+     "chunkIndex": 0,
+     "chunk": {
+      "kind": "text",
+      "index": 0,
+      "text": "Hid"
+     },
+     "t": 1760000000000
+    },
+    {
+     "type": "snapshot",
+     "cut": {
+      "main": "0d4c400c-0000-4000-8000-000000000001"
+     },
+     "t": 1760000000000,
+     "streaming": [
+      {
+       "turnId": "turn-1",
+       "agentId": null,
+       "step": 1,
+       "model": "m",
+       "upTo": 0,
+       "blocks": [
+        {
+         "index": 0,
+         "kind": "text",
+         "text": "Hid",
+         "upTo": 0
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "type": "chunk",
+     "turnId": "turn-1",
+     "agentId": null,
+     "step": 1,
+     "chunkIndex": 1,
+     "chunk": {
+      "kind": "text",
+      "index": 0,
+      "text": "den"
+     },
+     "t": 1760000000001
+    },
+    {
+     "type": "block-row",
+     "uuid": "0d4c400c-0000-4000-8000-000000000002",
+     "turnId": "turn-1",
+     "agentId": null,
+     "step": 1,
+     "index": 0,
+     "t": 1760000000000
+    },
+    {
+     "type": "step",
+     "phase": "end",
+     "turnId": "turn-1",
+     "agentId": null,
+     "step": 1,
+     "t": 1760000000000
+    }
+   ],
+   "check": {
+    "holes": [],
+    "partial": [],
+    "vanished": [],
+    "dups": [],
+    "undrawn": [
+     {
+      "turnId": "turn-1",
+      "agentId": null,
+      "step": 1,
+      "index": 0
+     }
+    ],
+    "residual": []
+   }
+  }
  }
 ]
