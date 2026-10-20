@@ -1755,6 +1755,52 @@ beside; a single reviewer reads one of those well in a pass.
   every post site `Link.tick` uses.
   Date/Author: 2026-10-20, the plan-executor (controller).
 
+- Decision (M4, against the 503 diagnosis): §8's changes 1–3 do not cover
+  the periodic 503's likeliest cause, so M4 adds a fourth. Under change 1 a
+  `hello` still owes its `have`, which the `Project` writes by calling back
+  into the same `Machine` while the POST is open, and `Machine.frames`
+  handed a POST's projects their runs one after another. The counts fit a
+  call-depth limit of about 16 (one hop Worker→Machine, two per project:
+  Machine→Project, Project→Machine.send, so about 7 projects; the logged
+  `"frames":6|7` in 56 of 59 cases). The local runtime has no such check, so
+  one POST of 13 or 30 hellos answers 200 there before and after. **The
+  fourth change**: `Machine.frames` hands every project's first run to its
+  project in one synchronous pass; each project's later runs wait behind its
+  earlier ones and none follows a failed or stale run; the answer is read in
+  POST order, so a 503's `frames` counts the frames before the failed run in
+  POST order, and other projects' runs after it may have applied uncounted —
+  the handshake heals that as for any 503 (uploads idempotent, re-`hello`s
+  harmless). Rejected: the `Machine` writing owed replies itself (reorders
+  `have` against the backlog), a self-call per run (does not reset the depth
+  under the same hypothesis), an explicit bound (every non-200 ends the
+  uplink's stream). The failing run is now logged (`machine-stream`
+  `run-failed` with its position and error; the `Project`'s `frame-failed`,
+  `reply-unwritten`, `send-failed`), so production names the mechanism the
+  next time it happens. Unverified in production: with uplinks at sminos
+  1.2.1 the batched re-`hello` no longer occurs.
+  Date/Author: 2026-10-20, the M4 executor, folded by the controller.
+- Decision (M4): lanes for frames §8 does not list — a `not-open` refusal of
+  an `events` frame, and a bad `hello` or `events` list's refusal, go on
+  `replies` and are owed; a `not-open` refusal of a session-plane frame and
+  `relay`'s `unsubscribe` for a sub with no route go on `control`, unowed.
+  The write bound's clock starts when `write` is called, so it covers the
+  wait behind writes queued on the stream's writer (each lane pages about
+  1 MiB at a time; 10 s is a 200 KB/s floor); heartbeats are bounded too.
+  Part (b) of the test lives in `machine-end.test.ts` (the Node suites are
+  typed apart from the Worker's); part (c) stalls the `have` write through a
+  seam (`WRITE_STALL_PATH` over a new protected `Machine.put`, `Timing`
+  gaining `writeTimeoutMs` so the suite bounds it at 1 s), since local
+  socket buffers absorb a small frame.
+  Date/Author: 2026-10-20, the M4 executor, folded by the controller.
+- Decision (for M6, from M4): the log lane never merges two `send()` entries
+  into one body: each entry is posted as its own body or bodies, and each
+  call site sends one project's reply-owing frames per entry (the connect's
+  bundle is one project's, as today; uploads one project per entry). The
+  machine-side half of the bound, as sminos 1.2.1 does for the
+  confirmation, whatever the hub's mechanism turns out to be. The session
+  lane's frames owe no reply under §8 and may share a body.
+  Date/Author: 2026-10-20, the controller.
+
 ## Outcomes & Retrospective
 
 Pending — written at finish.
