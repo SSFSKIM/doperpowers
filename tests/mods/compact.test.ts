@@ -8,6 +8,7 @@ import {
   compactStart,
   compactTurnComplete,
   compactTurnStart,
+  compactedOfferText,
   describeCompact,
   isOfferText,
   offerDue,
@@ -118,6 +119,13 @@ describe('texts', () => {
     expect(isOfferText('Context: what we were doing. Pick up milestone 3.')).toBe(false)
   })
 
+  test('the offer after a compaction says there is nothing to decide and asks for the decline line', async () => {
+    const text = compactedOfferText()
+    expect(text).toContain('compacted since this offer was made, so there is nothing to decide now')
+    expect(text).toContain('Reply "Not compacting." (one line) and end your turn.')
+    expect(text).not.toMatch(/\d/)
+  })
+
   test('the scheduled text tells the model to end its turn and what comes next', async () => {
     const text = scheduledText({ resume: 'Pick up milestone 3.' })
     expect(text).toContain('End your turn now')
@@ -170,7 +178,8 @@ function harness(
     calls.push({ op, args: args.length > 1 ? args : args[0] })
   }
   // The figure the next usage read answers; a test moves it between turns.
-  const state = { tokens: options.tokens ?? 312_400 }
+  // Undefined is the engine's answer until a response follows a compaction.
+  const state: { tokens: number | undefined } = { tokens: options.tokens ?? 312_400 }
   // Prompts submitted and not yet settled, in the order they were queued.
   const queue: { text: string; settle: (entered: Entered) => void }[] = []
   const $ = {
@@ -247,9 +256,10 @@ function harness(
    * The oldest prompt waiting enters, as the engine runs it once the session
    * is idle: through the mod's prompt.submit hook (a prompt of the plugin's;
    * the hook that submitted it is another), its turn starting before the
-   * submission resolves. Answers the text the session received.
+   * submission resolves. Answers the text the session received. `refused`
+   * is a hook beneath (or a settings hook's block) dropping it: no turn.
    */
-  const enter = async () => {
+  const enter = async (refused?: string) => {
     const waiting = queue.shift()
     if (waiting === undefined) {
       throw new Error('no prompt waits to enter')
@@ -258,6 +268,9 @@ function harness(
     let received = waiting.text
     const entered = (await find('prompt.submit', e).handler($, e, async (down: { text: string }) => {
       received = down.text
+      if (refused !== undefined) {
+        return { drop: refused }
+      }
       await begin()
       return { text: down.text, origin: e.origin }
     })) as Entered
@@ -265,7 +278,7 @@ function harness(
     await settle()
     return received
   }
-  /** The oldest prompt waiting settles without entering: a hook dropped it, or answered it above this module. */
+  /** The oldest prompt waiting settles without passing the mod's hook: the engine removed it from the queue, or a hook above answered it. */
   const settleWaiting = async (entered: Entered) => {
     queue.shift()?.settle(entered)
     await settle()
@@ -390,18 +403,90 @@ describe('registerCompact', () => {
     expect(h.offers()).toHaveLength(1)
   })
 
-  test('an offer that does not enter stops waiting, so a later turn end can offer', async () => {
-    const h = harness({ tokens: 12_000, env: { DOPERPOWERS_COMPACT_OFFER_FLOOR: '0', DOPERPOWERS_COMPACT_OFFER_STEP: '0' } })
+  test('an offer the engine removes from the queue gives its step back', async () => {
+    const h = harness({ tokens: 400_000 })
     await h.mod.start(h.engine, start(true))
     await h.turn()
-    await h.settleWaiting({ drop: 'refused beneath' })
-    expect(h.calls.some((c) => c.op === 'ui.log' && JSON.stringify(c.args).includes('refused beneath'))).toBe(true)
-    await h.turn()
+    await h.settleWaiting({ drop: 'the prompt was removed from the queue before it ran' })
+    expect(h.calls.some((c) => c.op === 'ui.log' && JSON.stringify(c.args).includes('removed from the queue'))).toBe(true)
+    // Within a step of the offer that never ran: offered again.
+    await h.turn(410_000)
     expect(h.offers()).toHaveLength(2)
-    // Settled by a hook above this module's prompt.submit, never passing it.
+    expect(h.offers()[1]).toContain('Context: 410,000 tokens')
+    // Settled by a hook above this module's prompt.submit, never passing it: the same.
     await h.settleWaiting({ text: 'answered above' })
-    await h.turn()
+    await h.turn(420_000)
     expect(h.offers()).toHaveLength(3)
+  })
+
+  test('an offer a hook beneath refuses stays spent, so a hook that always refuses costs no submission every turn', async () => {
+    const h = harness({ tokens: 400_000 })
+    await h.mod.start(h.engine, start(true))
+    await h.turn()
+    await h.enter('blocked by a settings hook')
+    await h.turn(410_000)
+    expect(h.offers()).toHaveLength(1)
+    await h.turn(470_000)
+    expect(h.offers()).toHaveLength(2)
+  })
+
+  test('an offer removed after a compaction stood leaves the baseline the compaction started', async () => {
+    const h = harness({ tokens: 400_000 })
+    await h.mod.start(h.engine, start(true))
+    await h.turn()
+    await h.decline()
+    await h.turn(480_000)
+    await h.sessionCompact(compactAt())
+    await h.settleWaiting({ drop: 'the prompt was removed from the queue before it ran' })
+    // Not the 400,000 the removed offer replaced: 0, as the compaction left it.
+    await h.turn(420_000)
+    expect(h.offers()).toHaveLength(3)
+  })
+
+  test('an offer that enters after a compaction the person queued ahead of it says there is nothing to decide', async () => {
+    const h = harness({ tokens: 480_000 })
+    await h.mod.start(h.engine, start(true))
+    await h.turn()
+    expect(h.offers()[0]).toContain('Context: 480,000 tokens')
+    // A /compact queued during the turn runs first; no response follows it
+    // before the offer enters, so the engine has no figure.
+    await h.sessionCompact(compactAt('manual'))
+    h.state.tokens = undefined
+    expect(await h.enter()).toBe(compactedOfferText())
+    await h.stop()
+    await h.end()
+    expect(h.offers()).toHaveLength(1)
+    // The baseline is the compaction's, not the stale figure's.
+    h.state.tokens = 30_000
+    await h.turn()
+    await h.turn(OFFER_GATE.floor)
+    expect(h.offers()).toHaveLength(2)
+  })
+
+  test('an offer that enters after the model compacted in a turn queued ahead of it says there is nothing to decide', async () => {
+    const h = harness({ tokens: 480_000 })
+    await h.mod.start(h.engine, start(true))
+    await h.turn()
+    // The person's queued turn, in which the model compacts.
+    await h.begin()
+    await h.call({ tool: COMPACT, tool_use_id: 't1', resume: 'Resume M3.' })
+    await h.stop()
+    await h.end()
+    expect(h.calls.filter((c) => c.op === 'session.compact')).toHaveLength(1)
+    // Even with a figure to read, the compaction since the submission decides.
+    h.state.tokens = 25_000
+    expect(await h.enter()).toBe(compactedOfferText())
+    await h.stop()
+    await h.end()
+    expect(await h.enter()).toBe('Resume M3.')
+  })
+
+  test('an offer that enters with no figure to read says there is nothing to decide', async () => {
+    const h = harness({ tokens: 480_000 })
+    await h.mod.start(h.engine, start(true))
+    await h.turn()
+    h.state.tokens = undefined
+    expect(await h.enter()).toBe(compactedOfferText())
   })
 
   test("an offer's turn that ends interrupted leaves the next turn the person's", async () => {

@@ -251,8 +251,20 @@ enter, no other turn end offers, so a prompt the person queued during the
 turn runs first and ends with no second offer; the same hook then reads
 the figures again and rewrites the offer's text, so it carries the context
 as it stands when the model reads it, and that figure becomes the last
-offer's. An offer a hook drops, or one that settles without passing the
-hook, stops waiting (logged to the debug log). The `classic.Stop` hook
+offer's. When a compaction stood between the offer's submission and its
+entry (a `/compact` the person queued, the model compacting in a turn the
+person queued ahead of it), or there is no figure to read (the engine has
+none until the first response after a compaction), the offer enters
+saying the context was compacted since and there is nothing to decide, and
+the model replies "Not compacting.": it is not dropped, which would draw
+the engine's "Prompt dropped by a hook" notice. An offer that never ran
+because it never passed the hook (the engine removed it from the queue,
+settling it as "removed from the queue before it ran", or a hook above
+answered it) gives its step back: the baseline returns to what it was,
+unless a compaction has started it over since. One a hook beneath refuses
+(a hook's drop, a settings hook's block) stays spent, so a hook that
+always refuses costs no submission every turn. Either way it stops
+waiting, logged to the debug log. The `classic.Stop` hook
 (matched on `hook_event_name: "Stop"`) only reads what the settings hooks
 beneath answered (`smns-record.sh` keeps its say): one that set
 `preventContinuation` withholds the offer at that turn's end without
@@ -308,11 +320,8 @@ over the whole context (a prompt-cache read, mostly), the price of a
 decision at the turn's end, and a turn's settings hooks (its `Stop`
 among them) run for it as for any turn; in
 a session the person watches in the terminal, the offer and the decline
-line show under the answer. A compaction that stands between an offer's
-submission and its turn (the model compacted in a turn the person queued
-ahead of it) still lets the offer enter, with the small figure, which the
-model declines: dropping it would draw the engine's "Prompt dropped by a
-hook" notice, the kind of row the prompt channel exists to avoid. Live
+line show under the answer. An offer overtaken by a compaction still
+costs its turn, a short one the model ends with "Not compacting.". Live
 check: `tests/mods/live-compact-offer-check.py` (spends model calls; run
 by hand).
 

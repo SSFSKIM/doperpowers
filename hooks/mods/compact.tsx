@@ -172,6 +172,19 @@ export function offerText(context: ContextFigures, threshold: number): string {
 }
 
 /**
+ * What an offer says instead when a compaction stood between its submission
+ * and its turn (a `/compact` the person queued, the model compacting in a
+ * turn the person queued ahead of it): its figures are gone, and it cannot
+ * be withdrawn without the engine's "Prompt dropped by a hook" notice.
+ */
+export function compactedOfferText(): string {
+  return [
+    'Context: compacted since this offer was made, so there is nothing to decide now.',
+    'Reply "Not compacting." (one line) and end your turn.',
+  ].join('\n')
+}
+
+/**
  * Whether a prompt is an offer: what `offerText` writes opens with the
  * figures and asks for the decline line. Read from the text rather than
  * remembered, so a module reloaded while its offer waits in the queue still
@@ -204,7 +217,8 @@ const inline = (described: ToolDescribeResult): ToolDescribeResult => ({ ...desc
  * and the figure its last offer carried; whether a Stop hook beneath set
  * `preventContinuation` in this main turn; the offer in flight, `queued`
  * once submitted and `entering` once it passed `prompt.submit`, until its
- * turn starts; and whether the running main turn is an offer's own.
+ * turn starts, and whether a compaction has stood since it was submitted;
+ * and whether the running main turn is an offer's own.
  */
 let pending: CompactRequest | undefined
 let threshold: number | undefined
@@ -213,6 +227,7 @@ let gate: OfferGate = OFFER_GATE
 let lastOffered = 0
 let prevented = false
 let offer: 'queued' | 'entering' | undefined
+let compactedSinceOffer = false
 let offerTurn = false
 
 /** Forgets all of it; for tests, which share this module. */
@@ -224,7 +239,16 @@ export function resetCompact() {
   lastOffered = 0
   prevented = false
   offer = undefined
+  compactedSinceOffer = false
   offerTurn = false
+}
+
+/** A main-conversation compaction stood: the baseline starts over, and an offer in flight lost its figures. */
+function compacted() {
+  lastOffered = 0
+  if (offer !== undefined) {
+    compactedSinceOffer = true
+  }
 }
 
 /**
@@ -335,44 +359,55 @@ async function offerAtTurnEnd($: EngineInterface) {
   if (!offerDue(context.tokens, lastOffered, gate)) {
     return
   }
+  const baseline = lastOffered
   lastOffered = context.tokens ?? 0
+  compactedSinceOffer = false
   offer = 'queued'
-  const withdrawn = (why: string) => {
-    offer = undefined
-    $.ui.log(`compact: the offer did not enter · ${why}`, { to: 'debug' })
+  const settled = (why: string | undefined) => {
+    if (offer === 'queued') {
+      // It never passed this module's prompt.submit: the engine removed it
+      // from the queue before it ran, or a hook above answered it. It never
+      // ran, so the baseline it replaced comes back, unless a compaction
+      // has started the baseline over since.
+      offer = undefined
+      if (!compactedSinceOffer) {
+        lastOffered = baseline
+      }
+    }
+    if (why !== undefined) {
+      $.ui.log(`compact: the offer did not enter · ${why}`, { to: 'debug' })
+    }
   }
   void $.prompt
     .submit({ text: offerText(context, threshold ?? thresholdOf(context.window)) })
-    .then((entered) => {
-      if (entered.drop !== undefined) {
-        withdrawn(entered.drop)
-      } else if (offer === 'queued') {
-        // Settled without passing this module's prompt.submit (a hook above
-        // answered it): nothing waits to enter.
-        offer = undefined
-      }
-    })
-    .catch((error: unknown) => withdrawn(message(error)))
+    .then((entered) => settled(entered.drop))
+    .catch((error: unknown) => settled(message(error)))
 }
 
 /**
  * The offer as it enters, its figures read again: a prompt the person
  * queued, or a notification, runs ahead of it and grows the context in its
- * turn. The figure it carries becomes the last offer's. Any figure that
- * cannot be read leaves the text as it was written.
+ * turn. The figure it carries becomes the last offer's. After a compaction
+ * that stood since it was submitted, or with no figure to read (the engine
+ * has none until the first response after a compaction), it says there is
+ * nothing to decide. Figures that cannot be read leave the text as written.
  */
 async function enteringOffer($: EngineInterface, text: string): Promise<string> {
+  if (compactedSinceOffer) {
+    return compactedOfferText()
+  }
+  let context: ContextFigures
   try {
-    const context = await compactionWindow($)
-    if (context.tokens === undefined) {
-      return text
-    }
-    lastOffered = context.tokens
-    return offerText(context, threshold ?? thresholdOf(context.window))
+    context = await compactionWindow($)
   } catch (error) {
     $.ui.log(`compact: the offer's figures could not be read again: ${message(error)}`, { to: 'debug' })
     return text
   }
+  if (context.tokens === undefined) {
+    return compactedOfferText()
+  }
+  lastOffered = context.tokens
+  return offerText(context, threshold ?? thresholdOf(context.window))
 }
 
 /**
@@ -401,7 +436,7 @@ export async function compactTurnComplete($: EngineInterface, e: TurnCompleteInp
       // Its rows reach the bridge (the sminos plugin's) through its own
       // session.compact hook, as the person's /compact does: the re-entry
       // rule skips only this plugin's hooks.
-      lastOffered = 0
+      compacted()
     }
   } catch (error) {
     $.ui.toast(`compact: ${message(error)}`)
@@ -434,7 +469,7 @@ export function registerCompact(on: On) {
   on('session.compact', { trigger: /^/ }, async (_, e, next) => {
     const result = await next(e)
     if (e.agentId === undefined && e.trigger !== 'precompute' && result.skip === undefined) {
-      lastOffered = 0
+      compacted()
     }
     return result
   })
@@ -472,6 +507,8 @@ export function registerCompact(on: On) {
     const text = await enteringOffer($, e.text)
     offer = 'entering'
     const result = await next(text === e.text ? e : { ...e, text })
+    // Refused beneath (a hook, a settings hook's block): the offer stays
+    // spent, so a hook that always refuses costs no submission every turn.
     if (result.drop !== undefined) {
       offer = undefined
     }
