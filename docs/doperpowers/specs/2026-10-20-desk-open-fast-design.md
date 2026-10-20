@@ -43,7 +43,7 @@ before it is built (Decision Log).
 - [x] M2 — The instruments: `bench_open.py` (micro and full path), `bench_scale.py opens` (2026-10-20, reviewed clean after two fix rounds; 0482d416..acde4b3a, sminos 1.2.5)
 - [x] M3 — The web keeps a carried block across a reconnect (MAWS) (2026-10-20, reviewed clean; MAWS `desk-open-fast-web` bda992c29, PR #86)
 - [x] M4 — The hub's reply chain decoupled (MAWS) (2026-10-20, reviewed clean; MAWS `desk-open-fast-hub` fba324cc4..beb065470, master merged at ef190e5e2)
-- [ ] M5 — The snapshot goes at once; a notice's row is due at its step's end
+- [x] M5 — The snapshot goes at once; a notice's row is due at its step's end (2026-10-20, reviewed clean; 8d7fae3f, sminos 1.2.6; built, not rolled)
 - [ ] M6 — The uplink's sender lanes, with connection reuse proven
 - [ ] M7 — The build saved and warmed, bounded; the look off the open path
 - [ ] M8 — The child respawns at once; a resync fits the engine's limit
@@ -1686,6 +1686,17 @@ beside; a single reviewer reads one of those well in a pass.
   successor answers.
   Evidence: the M2 executor's `held` and `kill` runs.
 
+- Observation: M5's figures (live haiku through the local hub with M4, load
+  5.7–7.8, outside the 100–300 band; every counted open's inventory clean,
+  `waits 0`, `complete: true`): `mid-message --thinking` 3 of 3 counted, E
+  16 / 17 / 23 ms (before: 1.99–2.63 s); `after-prompt` E 21 / 23 / 24 ms
+  (before: 0.28–0.53 s); `long-answer --thinking --long-words 1600` 2 of 3
+  trials counted (windows 17.0 and 13.6 s), E 13–21 ms on the +1 s and +7 s
+  opens, no `end` before the step's end (before: `discontinuity` at about
+  5 s). The fake session through the stand-in: mid-message E 2 ms,
+  long-answer (13.2 s windows) E 2–4 ms with no early end.
+  Evidence: `.doperpowers/sde/2026-10-20-desk-open-fast-design/task-5-report.md`.
+
 ## Decision Log
 
 - Decision: verification. The spec gets one independent review by the
@@ -1988,6 +1999,28 @@ beside; a single reviewer reads one of those well in a pass.
   start, outstanding ones included.
   Date/Author: 2026-10-20, the M2 executor and its reviewer, folded by the
   controller.
+
+- Decision (M5, a gap in §2): the cut's own row, when it is not on disk at
+  the snapshot and is not a carried named block, is a **loose** notice: it
+  enters `noticed` with a deadline of the snapshot plus `NOTICE_WAIT`, goes
+  out the moment it lands (released as named), and past its deadline is
+  forgotten, not an end. Read literally, §2 would release a prompt noticed
+  before its flush only at the next notice or after `UNNAMED_WAIT` (a
+  visible regression from today's ~0.4 s), and ending on it would end every
+  later subscription every 5 s when a cut's row never comes, against §2's "a
+  subscription made after that … waits for nothing". Nothing drawn waits on a
+  loose row. A carried named block's cut takes the strict, step-bound path.
+  Attribution: a `block-row` takes its own `(turnId, agentId, step)` when
+  that step is open; a `row-seen`, or a `block-row` whose step is not held
+  open, takes its loop's latest open step; with none open the deadline is
+  the notice plus `NOTICE_WAIT`; a turn's `complete` sets the deadline of
+  every notice of that turn's steps (cut-off ones included) without moving a
+  deadline a step end already set. A `block-row` for an index with no block
+  names nothing and keeps nothing (the index still joins `settled`).
+  `namedAt` is the `block-row` event's `t`. `fake_session.py`'s scripted
+  endpoint, a second implementation of the child, takes the same rules.
+  Date/Author: 2026-10-20, the M5 executor, accepted on review, folded by
+  the controller.
 
 ## Outcomes & Retrospective
 
