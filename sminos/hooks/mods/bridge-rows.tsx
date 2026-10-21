@@ -2,7 +2,7 @@ import type { SessionMessage } from 'claude-code'
 
 import { ASK_TOOL, DELIVERY_HEAD, PLUGIN } from './ask'
 import { TEXT_CAP, isRecord, loopKey, state } from './bridge-state'
-import type { BridgeEvent, TranscriptRecord } from './bridge-state'
+import type { BridgeEvent, HeldRow, TranscriptRecord } from './bridge-state'
 import { emit, hold, isHold, releaseStepEnd } from './bridge-stream'
 import type { Hold } from './bridge-stream'
 import { callEnded } from './bridge-requests'
@@ -34,11 +34,11 @@ import { callEnded } from './bridge-requests'
  * transcript, and their `row-seen`s (door `compaction`) take its place.
  *
  * Messages to the host (DC2 M4): the main loop's rows that may carry one, a
- * text row with a mark, an async ask with its result, and a row that may
- * answer an ask, go to the child as they are kept (`export`), and the child
- * appends them to the project's log through the Stop hook's own writer and
- * keys, so they reach the log as they complete and the Stop hook's export
- * finds them already there.
+ * text row with a mark, an async ask with its result, a message tool's call
+ * with its result, and a row that may answer an ask, go to the child as they
+ * are kept (`export`), and the child appends them to the project's log
+ * through the Stop hook's own writer and keys, so they reach the log as they
+ * complete and the Stop hook's export finds them already there.
  *
  * A delivery's row (DC8.G6): the prompt row a delivery submitted becomes is
  * named once it is kept (`delivered` `entered`, enteredRow).
@@ -52,13 +52,33 @@ const ROW_KIND: Record<string, string> = { text: 'text', thinking: 'thinking', r
  * A superset of what sminos_marks.py reads as a span; the child's parser decides.
  */
 const MAY_MARK = /<(?:message|to-human|essential|need-input|insight)>|\x1b\[1;/
-/** Async asks whose other row (the call, or its result) has not been kept yet. */
-const ASKS_KEPT = 50
+/** Calls paired for the export (async asks, message calls) whose other row (the call, or its result) has not been kept yet. */
+const PAIRS_KEPT = 50
 /** MAWS's ask tool, which a session under MAWS asks through instead of the plugin's (sminos.MAWS_ASK_TOOL). */
 const MAWS_ASK_TOOL = 'mcp__maws__ask'
-/** A call of an ask tool that does not wait for its answer: the plugin's with `async` true, MAWS's with `blocking` false. */
+/**
+ * A call of an ask tool that may not wait for its answer: the plugin's unless
+ * `async` is false (a call written before the default was true has no key,
+ * blocking or not; the child reads which from its result), MAWS's with
+ * `blocking` false.
+ */
 const isAsyncAsk = (name: unknown, input: Record<string, unknown>) =>
-  (name === ASK_TOOL && input.async === true) || (name === MAWS_ASK_TOOL && input.blocking === false)
+  (name === ASK_TOOL && input.async !== false) || (name === MAWS_ASK_TOOL && input.blocking === false)
+/**
+ * The message tools a transcript may hold (sminos.MESSAGE_TOOLS): the to-human
+ * plugin's, and MAWS's own, which a MAWS launch registers in its place. sminos
+ * declares no dependency on either, so it knows them by name.
+ */
+const MESSAGE_TOOLS: readonly string[] = ['mcp__to-human__message', 'mcp__maws__message']
+/** A call of a message tool. */
+const isMessageCall = (b: Record<string, unknown>) => b.type === 'tool_use' && typeof b.id === 'string' && MESSAGE_TOOLS.includes(String(b.name))
+/** A record holding a text past TEXT_CAP, a message call's or a text block's: the Stop hook's to export. */
+const isLong = (record: TranscriptRecord) =>
+  'message' in record &&
+  record.message.content.some((b) => {
+    const text = b.type === 'text' ? b.text : isMessageCall(b) && isRecord(b.input) ? b.input.text : undefined
+    return typeof text === 'string' && text.length > TEXT_CAP
+  })
 /** The tag a MAWS steer opens with (sminos.MAWS_STEER_RE). */
 const MAWS_STEER = '[MAWS ask '
 /** A text that may answer an async ask: the ask mod's delivery, or a MAWS steer. The child's parser decides. */
@@ -275,28 +295,45 @@ export function observeRow(door: string, message: { name?: string; content?: unk
  * The main loop's rows that may hold a message to the host, or an answer to
  * its question, handed to the child in the shape the transcript keeps them,
  * so `sminos record`'s own reading of them (sminos.host_events) decides what
- * is logged: a text row that may hold a mark; an async ask once both its call
- * and its result are kept, in whichever order; a row that may answer one
- * (answerRecord). A text past TEXT_CAP is left to the Stop hook's export,
- * which reads the transcript whole and appends it under the same keys.
+ * is logged: a text row that may hold a mark; an async ask or a message
+ * tool's call once both its call and its result are kept, in whichever order
+ * (the child logs the call only if its result is no error); a row that may
+ * answer an ask (answerRecord). A text past TEXT_CAP, a message call's
+ * included, is left to the Stop hook's export, which reads the transcript
+ * whole and appends it under the same keys.
+ *
+ * The log keeps events in the order they are appended, so the exports keep
+ * the transcript's (exportInOrder): a row holding a message call is held
+ * until every message call in it has its result, then goes once, its texts
+ * and calls with all their results, so the child reads its blocks in order
+ * (a span's src counts the row's spans); what the main loop keeps after it
+ * waits behind it.
  */
 export function exportRow(door: string, message: { name?: string; content?: unknown }, uuid: string, origin: unknown) {
   const content = Array.isArray(message.content) ? message.content.filter(isRecord) : []
   if (door === 'response') {
     const texts = textBlocks(content)
-    if (texts.some((b) => MAY_MARK.test(b.text))) {
+    const sent = content.filter((b) => b.type === 'text' || isMessageCall(b))
+    const row: TranscriptRecord = { type: 'assistant', uuid, message: { content: sent } }
+    const calls = content.filter(isMessageCall)
+    if (calls.length > 0 && !isLong(row)) {
+      state.exportHold.push({ row, calls: new Set(calls.map((b) => String(b.id))), results: [] })
+      calls.forEach((b) => keepPair(String(b.id), { use: row }))
+      boundHold()
+    } else if (texts.some((b) => MAY_MARK.test(b.text))) {
       exportRecord(uuid, texts, { type: 'assistant', uuid, message: { content: texts } })
     }
     for (const b of content) {
-      if (b.type === 'tool_use' && typeof b.id === 'string' && isRecord(b.input) && isAsyncAsk(b.name, b.input)) {
-        keepAsk(b.id, { use: { type: 'assistant', uuid, message: { content: [b] } } })
+      if (b.type === 'tool_use' && typeof b.id === 'string' && isRecord(b.input) && (isAsyncAsk(b.name, b.input) || (isMessageCall(b) && isLong(row)))) {
+        keepPair(b.id, { use: { type: 'assistant', uuid, message: { content: [b] } } })
       }
     }
   } else if (door === 'tool-result') {
-    const isAsk = isRecord(origin) && origin.kind === 'tool' && (origin.tool === ASK_TOOL || origin.tool === MAWS_ASK_TOOL)
+    const tool = isRecord(origin) && origin.kind === 'tool' ? String(origin.tool) : undefined
+    const isPaired = tool !== undefined && (tool === ASK_TOOL || tool === MAWS_ASK_TOOL || MESSAGE_TOOLS.includes(tool))
     for (const b of content) {
-      if (b.type === 'tool_result' && typeof b.tool_use_id === 'string' && (isAsk || state.asks.has(b.tool_use_id))) {
-        keepAsk(b.tool_use_id, { result: { type: 'user', uuid, message: { content: [b] } } })
+      if (b.type === 'tool_result' && typeof b.tool_use_id === 'string' && (isPaired || state.pairs.has(b.tool_use_id))) {
+        keepPair(b.tool_use_id, { result: { type: 'user', uuid, message: { content: [b] } } })
       }
     }
   } else {
@@ -313,7 +350,59 @@ function exportRecord(uuid: string, texts: { text: string }[], record: Transcrip
     state.log?.(`bridge: row ${uuid}: a text past ${TEXT_CAP} characters; the Stop hook exports it`)
     return
   }
-  emit({ type: 'export', records: [record] })
+  exportInOrder([record])
+}
+
+/**
+ * An export, in the transcript's order: while a row holding a message call
+ * waits for its calls' results (a HeldRow in `state.exportHold`), it waits
+ * behind it.
+ */
+function exportInOrder(records: TranscriptRecord[]) {
+  if (state.exportHold.length === 0) {
+    emit({ type: 'export', records })
+    return
+  }
+  state.exportHold.push(records)
+  boundHold()
+}
+
+/**
+ * A result the bridge never sees (kept while it was down, or refused beneath)
+ * holds at most PAIRS_KEPT exports, held rows of later message calls among
+ * them: past that the waiting row at the head is given up, exported with the
+ * results it has, and the Stop hook exports the calls it lacks.
+ */
+function boundHold() {
+  for (let head = state.exportHold[0]; state.exportHold.length > PAIRS_KEPT && head !== undefined && !Array.isArray(head); head = state.exportHold[0]) {
+    state.log?.(`bridge: row ${head.row.uuid}: no result for ${[...head.calls].join(', ')} after ${PAIRS_KEPT} exports; the Stop hook exports them`)
+    head.calls.forEach((id) => state.pairs.delete(id))
+    head.calls.clear()
+    releaseHeld()
+  }
+}
+
+/** The held row waiting for this message call's result, if any. */
+const heldFor = (id: string) => state.exportHold.find((e): e is HeldRow => !Array.isArray(e) && e.calls.has(id))
+
+/** A held row's call settled (with its result) or given up (without): once none waits, the row goes, and what waited behind it. */
+function settleCall(held: HeldRow, id: string, result?: TranscriptRecord) {
+  held.calls.delete(id)
+  if (result !== undefined) {
+    held.results.push(result)
+  }
+  releaseHeld()
+}
+
+/** The exports at the head of the hold, in order, up to the first row still waiting for a call. */
+function releaseHeld() {
+  for (let head = state.exportHold[0]; head !== undefined; head = state.exportHold[0]) {
+    if (!Array.isArray(head) && head.calls.size > 0) {
+      return
+    }
+    state.exportHold.shift()
+    emit({ type: 'export', records: Array.isArray(head) ? head : [head.row, ...head.results] })
+  }
 }
 
 /**
@@ -391,17 +480,39 @@ export function enteredRow(door: string, message: { content?: unknown }, uuid: s
   emit({ type: 'delivered', key: submission!.key, outcome: 'entered', uuid })
 }
 
-/** One row of an ask call; once its call and its result are both kept, the pair is exported. */
-function keepAsk(id: string, row: { use?: TranscriptRecord; result?: TranscriptRecord }) {
-  const ask = { ...state.asks.get(id), ...row }
-  if (ask.use !== undefined && ask.result !== undefined) {
-    state.asks.delete(id)
-    emit({ type: 'export', records: [ask.use, ask.result] })
+/**
+ * One row of a paired call (an async ask, a message tool's); once its call and
+ * its result are both kept, the pair is exported, unless the call is a message
+ * past TEXT_CAP: that pair is the Stop hook's, said in the debug log, and
+ * holds nothing after it (the one exception to the order, the design's). A
+ * message call's result goes to the row that holds it (exportRow), which
+ * goes once all of its calls have theirs.
+ */
+function keepPair(id: string, row: { use?: TranscriptRecord; result?: TranscriptRecord }) {
+  const pair = { ...state.pairs.get(id), ...row }
+  if (pair.use !== undefined && pair.result !== undefined) {
+    state.pairs.delete(id)
+    if (isLong(pair.use)) {
+      state.log?.(`bridge: row ${pair.use.uuid}: a message past ${TEXT_CAP} characters; the Stop hook exports it`)
+      return
+    }
+    const held = heldFor(id)
+    if (held !== undefined) {
+      settleCall(held, id, pair.result)
+    } else {
+      exportInOrder([pair.use, pair.result])
+    }
     return
   }
-  state.asks.set(id, ask)
-  if (state.asks.size > ASKS_KEPT) {
-    state.asks.delete(state.asks.keys().next().value as string)
+  state.pairs.set(id, pair)
+  if (state.pairs.size > PAIRS_KEPT) {
+    // A call whose other row never came: what waits behind it goes on (the Stop hook exports the call).
+    const oldest = state.pairs.keys().next().value as string
+    state.pairs.delete(oldest)
+    const held = heldFor(oldest)
+    if (held !== undefined) {
+      settleCall(held, oldest)
+    }
   }
 }
 

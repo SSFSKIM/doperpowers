@@ -862,7 +862,11 @@ enough. Two bounds, and a rule:
   pending questions whose whole inputs alone pass the budget (about 64
   pending asks each near 64 KiB) still give an oversized resync, lost and
   retried as before; questions are human-rate and short, and shortening one
-  would break answer matching (residue). [M8 review, 2026-10-20]
+  would break answer matching (residue). [M8 review, 2026-10-20] Covered
+  since: questions that still do not fit go ahead of the resync whole, each
+  as its own `raised`, largest first, and the resync names them
+  (`pendingAhead`); the child keeps each as that raise left it. [board #107,
+  2026-10-21]
 - **A failed post's retry belongs to its child.** The 500 ms wait after a
   failed post (`RETRY_MS`) is scoped to the generation of the child it was
   posted to: a post in flight when its child died sets none, and a wait set
@@ -2506,6 +2510,25 @@ beside; a single reviewer reads one of those well in a pass.
   sminos-suites re-run alone passed, 39508461065): a flake.
   Date/Author: 2026-10-21, the panel fix executor, folded by the controller.
 
+- Decision (after the branch, doperpowers board #106): M6's held list and
+  its probe are gone, replaced by the hub's answer. The hub now names in a
+  POST's 200 the frames it refused whole (`refused: [{index, reason}]`,
+  MAWS #88, deployed by MAWS #91 on 2026-10-21), so each continuation is told
+  which of its own frames were refused: a settlement or a compaction message
+  the answer does not name is the hub's at once, and one refused `not-open`
+  stays owed, its project is opened again from the answer
+  (`Link.refused_whole`, once while a hello is out), and it goes behind that
+  hello. The stream's own `not-open` copy only is said. The epochs, the
+  held list, `CONFIRM_AFTER`, `confirm_held` and `sminos_flights.py` went
+  with them, which closes both windows the M6 fix left as residue, and the
+  held list's missing cap with it. The same change makes what the uplink
+  owes survive a restart: the settlements in `daemon/requests-owed.json`,
+  the compaction messages in `daemon/rpcs-owed.json`, each `{"version": 1,
+  "owed": [...]}`, written at every change and read back at start (a file of
+  another version is ignored and replaced at the next change)
+  (`sminos_owed.py`).
+  Date/Author: 2026-10-21, the #106 executor.
+
 ## Outcomes & Retrospective
 
 Written 2026-10-21, at the branch's PR (head 62e57510, sminos 1.2.14), before
@@ -2582,7 +2605,10 @@ context:
 - the hub reporting refusals in the POST's answer;
 - the memory-only outbox, held list and compact messages;
 - the held list's missing hard cap;
-- oversized pending questions in a resync;
-- the vanished block on transcript-only snapshots during an outage;
+- oversized pending questions in a resync (done: board #107, the questions
+  sent ahead of the resync, §7);
+- the vanished block on transcript-only snapshots during an outage (done:
+  board #107, a running session's stale socket dialled again for
+  `STALE_WAIT`, 3 s, so the successor's snapshot serves the open);
 - the resync-wait outlier in the kill run;
 - bridge_order's unported release rule.

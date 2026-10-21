@@ -337,6 +337,7 @@ class Checks(unittest.TestCase):
             os.unlink(os.path.join(os.environ["SMINOS_HOME"], "daemon", rpcs.LEDGER_FILE))
         except OSError:
             pass
+        tpr.forget_owed()   # no compaction message an earlier test left owed
         self.mod.turn = None
         self.mod.hold = 0.0
         self.mod.answer_steer = True

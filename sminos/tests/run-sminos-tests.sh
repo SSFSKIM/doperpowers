@@ -4549,15 +4549,20 @@ elif kind == "asst":
 elif kind == "peer":
     rec = {"type": "user", "origin": {"kind": "peer", "name": "other"}, "message": {"role": "user", "content":
            '<cross-session-message from="uds:/tmp/x.sock" from-name="other">\n%s\n</cross-session-message>' % args[1]}}
-elif kind == "ask":   # uuid call async|blocking|native questions-json [tool name]
+elif kind == "ask":   # uuid call async|blocking|keyless|native questions-json [tool name]
     inp = {"questions": json.loads(args[3])}
-    if args[2] != "native":
+    if args[2] not in ("native", "keyless"):
         inp["async"] = args[2] == "async"
     rec = {"type": "assistant", "message": {"role": "assistant", "content": [
         {"type": "tool_use", "id": args[1], "name": "AskUserQuestion" if args[2] == "native" else (args[4] if len(args) > 4 else ASK), "input": inp}]}}
-elif kind == "result":   # uuid call text|ASYNC
+elif kind == "result":   # uuid call text|ASYNC [error]
     rec = {"type": "user", "message": {"role": "user", "content": [
-        {"type": "tool_result", "tool_use_id": args[1], "content": ASYNC_RESULT if args[2] == "ASYNC" else args[2]}]}}
+        {"type": "tool_result", "tool_use_id": args[1], "content": ASYNC_RESULT if args[2] == "ASYNC" else args[2],
+         **({"is_error": True} if args[3:] == ["error"] else {})}]}}
+elif kind == "msg":   # uuid call text [tool name] [lead text]: a message tool's call, after a text block when given
+    lead = [{"type": "text", "text": args[4]}] if len(args) > 4 else []
+    rec = {"type": "assistant", "message": {"role": "assistant", "content": lead + [
+        {"type": "tool_use", "id": args[1], "name": args[3] if len(args) > 3 else "mcp__to-human__message", "input": {"text": args[2]}}]}}
 elif kind == "deliver-att":
     rec = {"type": "attachment", "attachment": {"type": "hook_additional_context", "content": [HEAD % (args[1], args[2])],
                                                 "hookName": "tool.call", "hookEvent": "PostToolUse"}}
@@ -4668,6 +4673,8 @@ assert_not_contains "$OUT" "done with the parser" "the chat itself carries no ho
 
 # Asks: an async ask records a question with its labels; its delivery records
 # the answer under the same src; a blocking ask, plugin or native, records nothing.
+# A call with no async key is async by its result (the default), or blocking
+# (one written before async defaulted to true).
 Q1='[{"question":"Which backend?","header":"Backend","multiSelect":false,"options":[{"label":"Postgres","description":"running"},{"label":"SQLite","description":"a file"}]}]'
 tx "$TA" prompt a2000001 "ask me"
 tx "$TA" ask a2000002 toolu_async1 async "$Q1"
@@ -4678,12 +4685,18 @@ tx "$TA" ask a2000006 toolu_native native "$Q1"
 tx "$TA" result a2000007 toolu_native 'User has answered your questions: "Which backend?"="Postgres".'
 tx "$TA" ask a2000008 toolu_refused async '[{"question":"Pick?","header":"P","multiSelect":false,"options":[{"label":"Only","description":""}]}]'
 tx "$TA" result a2000009 toolu_refused '<tool_use_error>a question with fewer than 2 options</tool_use_error>'
+tx "$TA" ask a200000b toolu_keyless_async keyless '[{"question":"Which shelf?","header":"Shelf","multiSelect":false,"options":[{"label":"Top","description":""},{"label":"Low","description":""}]}]'
+tx "$TA" result a200000c toolu_keyless_async ASYNC
+tx "$TA" ask a200000d toolu_keyless_block keyless "$Q1"
+tx "$TA" result a200000e toolu_keyless_block 'Your questions have been answered: "Which backend?"="SQLite". You can now continue with these answers in mind.'
 tx "$TA" asst a200000a "Asked; going on."
 hook_run Stop "$HA" "$R3" "$TA"
 assert_contains "$(hp_events "$HA")" "question:toolu_async1 " "an async ask the tool accepted records a question, src its call id"
 assert_not_contains "$(hp_events "$HA")" "toolu_block1" "a blocking ask records nothing"
 assert_not_contains "$(hp_events "$HA")" "toolu_native" "nor the native AskUserQuestion"
 assert_not_contains "$(hp_events "$HA")" "toolu_refused" "nor an async call the tool refused"
+assert_contains "$(hp_events "$HA")" "question:toolu_keyless_async " "a call with no async key the tool accepted as async records a question"
+assert_not_contains "$(hp_events "$HA")" "toolu_keyless_block" "a call with no async key that blocked (before the default) records nothing"
 assert_contains "$(grep toolu_async1 "$HPLOG/testhost.$HA.jsonl")" '"text": ["Which backend?"], "choices": ["Postgres", "SQLite"]' \
   "the question carries its text and its option labels"
 run "$SMINOS" chat hostdemo --host
@@ -4867,6 +4880,43 @@ assert_equals "$(hp_events "$HW")" "joined " "a MAWS ask whose acceptance is not
 sed -n 4,5p "$SCRIPT_DIR/maws-ask-async.jsonl" >> "$TW"
 hook_run Stop "$HW" "$R3" "$TW"
 assert_equals "$(hp_events "$HW")" "joined question:$MAWS_CALL " "the next Stop, its acceptance on disk, records the question under the call id"
+
+# A message sent through a message tool (the to-human plugin's, and MAWS's
+# own in a MAWS launch): an accepted call is a message at the call's place
+# among the spans, src its call id; a refused call is none; a call whose
+# result is not on disk yet holds the export position, so the next Stop
+# still exports it, and never twice.
+for MT in mcp__to-human__message mcp__maws__message; do
+  case "$MT" in
+    mcp__to-human__*) HT=61000001-0000-4000-8000-000000000061 MTA=mtplugin ;;
+    *) HT=62000001-0000-4000-8000-000000000062 MTA=mtmaws ;;
+  esac
+  TT="$TXD/$HT.jsonl"
+  hp_peer "$MTA" "$HT" user interactive
+  hook_run SessionStart "$HT" "$R3" "$TT" startup
+  tx "$TT" prompt m1000001 "tell me, then work"
+  tx "$TT" asst m1000002 '<message>before the call</message>'
+  tx "$TT" msg m1000003 toolu_msg1 'Approve the dialog on the mini at 07:15.' "$MT" '<message>in the same row, ahead of it</message>'
+  tx "$TT" result m1000004 toolu_msg1 sent
+  tx "$TT" msg m1000005 toolu_msg_refused 'from a subagent' "$MT"
+  tx "$TT" result m1000006 toolu_msg_refused 'message is for the main conversation' error
+  tx "$TT" asst m1000007 '<message>after the call</message>'
+  tx "$TT" msg m1000008 toolu_msg2 'Its result is not on disk yet.' "$MT"
+  hook_run Stop "$HT" "$R3" "$TT"
+  assert_equals "$(hp_events "$HT")" "joined message:m1000002#0 message:m1000003#0 message:toolu_msg1 message:m1000007#0 " \
+    "$MT: an accepted call records a message at its place among the spans, src its call id; a refused one and one with no result yet record nothing"
+  assert_contains "$(grep toolu_msg1 "$HPLOG/testhost.$HT.jsonl")" '"kind": "message", "from": "'"$MTA"'", "to": "host", "text": "Approve the dialog on the mini at 07:15.", "src": "toolu_msg1"' \
+    "$MT: the message carries from, to host, the call's text word for word, and src the call id"
+  tx "$TT" result m1000009 toolu_msg2 sent
+  tx "$TT" asst m100000a 'Done.'
+  hook_run Stop "$HT" "$R3" "$TT"
+  assert_equals "$(hp_events "$HT")" "joined message:m1000002#0 message:m1000003#0 message:toolu_msg1 message:m1000007#0 message:toolu_msg2 " \
+    "$MT: the call that waited for its result held the export position: the next Stop records it"
+  hook_run Stop "$HT" "$R3" "$TT"
+  assert_equals "$(grep -c '"src": "toolu_msg' "$HPLOG/testhost.$HT.jsonl")" "2" "$MT: a Stop replayed records neither again"
+  run "$SMINOS" chat hostdemo --host
+  assert_contains "$OUT" "$MTA: Approve the dialog on the mini at 07:15." "$MT: chat --host prints the message as it prints a span"
+done
 
 # An export that died after the first of two spans in one record: the retry
 # appends only the second.
@@ -5131,6 +5181,86 @@ assert_not_contains "$(cat "$HPLOG/testhost.$HB.jsonl")" "still in the queue" "n
 tx "$TB" asst b2000009 '<message>still in the queue</message>'
 hook_run Stop "$HB" "$R3" "$TB"
 assert_equals "$(grep -c 'still in the queue' "$HPLOG/testhost.$HB.jsonl" || true)" "1" "the next Stop exports it once it is on disk"
+# A turn that ends on a message tool's result, with no response after it (an
+# Esc, a hook that stops the continuation, a turn end the engine asked for):
+# the payload's last message is empty, and the result can still be queued.
+# The Stop waits for it under the same bound, so the message is exported now
+# rather than at the next Stop.
+for MT in mcp__to-human__message mcp__maws__message; do
+  tag="${MT#mcp__}"; tag="${tag%%__*}"
+  tx "$TB" prompt "b3-$tag-1" "tell me and stop"
+  tx "$TB" msg "b3-$tag-2" "toolu_flush_$tag" "sent as the turn ended ($tag)" "$MT"
+  hook_stop_last "$HB" "$R3" "$TB" "" & LATE=$!
+  sleep 0.4
+  tx "$TB" result "b3-$tag-3" "toolu_flush_$tag" sent
+  wait "$LATE"
+  assert_equals "$(grep -c '"src": "toolu_flush_'"$tag"'"' "$HPLOG/testhost.$HB.jsonl" || true)" "1" \
+    "$MT: a Stop whose transcript ends on the call, its result landing after the hook started, exports the message"
+done
+# The wait itself, driven step by step (the hook above may start after the
+# result is down on a slow runner): await_flush is seen holding on the open
+# call before its result is written, and ends once it is. (Written to a file
+# first: bash 3.2 misparses a heredoc inside a process substitution.)
+cat > "$TEST_ROOT/flush-wait.py" <<'PY_WAIT'
+import importlib.util, json, sys, threading, time
+spec = importlib.util.spec_from_file_location("sminos", sys.argv[1]); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+path = sys.argv[2]
+
+def row(f, r):
+    f.write(json.dumps({"isSidechain": False, **r}) + "\n")
+
+def call(name, call_id, uuid):
+    return {"type": "assistant", "uuid": uuid, "message": {"id": "msg_" + uuid, "role": "assistant", "content": [
+        {"type": "tool_use", "id": call_id, "name": name, "input": {"text": "waiting on " + call_id}}]}}
+
+def result(call_id, uuid):
+    return {"type": "user", "uuid": uuid, "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": call_id, "content": "sent"}]}}
+
+def check(ok, what):
+    print(("ok " if ok else "FAIL ") + what)
+
+real, seen = mod._message_call_open, threading.Event()
+def spy(t):
+    is_open = real(t)
+    if is_open:
+        seen.set()
+    return is_open
+mod._message_call_open = spy
+for name in mod.MESSAGE_TOOLS:
+    seen.clear()
+    with open(path, "w") as f:
+        row(f, {"type": "user", "uuid": "p", "message": {"role": "user", "content": "go"}})
+        row(f, call(name, "toolu_w", "w1"))
+    out = {}
+    waiter = threading.Thread(target=lambda: out.setdefault("done", mod.await_flush(path, "", time.time() + 10)))
+    waiter.start()
+    entered = seen.wait(5)
+    time.sleep(0.3)
+    held = waiter.is_alive()
+    with open(path, "a") as f:
+        row(f, result("toolu_w", "w2"))
+    waiter.join(5)
+    check(entered and held, "%s: with an empty last message, the wait holds on an open call at the tail" % name)
+    check(not waiter.is_alive() and out.get("done") is True, "%s: and ends, True, once its result is written" % name)
+    # A result that never comes: at the deadline the export takes what is there.
+    with open(path, "w") as f:
+        row(f, call(name, "toolu_never", "n1"))
+    t0 = time.time()
+    done = mod.await_flush(path, "", t0 + 0.4)
+    check(done is False and 0.3 <= time.time() - t0 < 2, "%s: a result that never lands ends the wait at the deadline, False" % name)
+# What holds no wait: a call answered, then a response after it; a call of another tool.
+with open(path, "w") as f:
+    row(f, call(mod.MESSAGE_TOOLS[0], "toolu_a", "a1"))
+    row(f, result("toolu_a", "a2"))
+    row(f, {"type": "assistant", "uuid": "a3", "message": {"id": "msg_a3", "role": "assistant", "content": [{"type": "text", "text": "Done."}]}})
+check(real(path) is False, "an answered call with a response after it holds no wait")
+with open(path, "w") as f:
+    row(f, call("Bash", "toolu_b", "b1"))
+check(real(path) is False, "another tool's open call holds no wait")
+PY_WAIT
+while IFS= read -r line; do
+  case "$line" in "ok "*) pass "flush wait: ${line#ok }" ;; *) fail "flush wait: ${line#FAIL }" ;; esac
+done < <(python3 "$TEST_ROOT/flush-wait.py" "$SMINOS_PY" "$TEST_ROOT/flush-wait.jsonl" 2>&1)
 # The window is chosen before grouping: an answer given now to a question
 # asked long ago shows, its question beneath it, by default and since today.
 HQ=6f00000a-0000-4000-8000-00000000006f

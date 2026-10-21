@@ -526,6 +526,8 @@ describe('registerAppeal', () => {
     expect(h.calls.filter((c) => c.op === 'tool.register').map((c) => (c.args as { name: string }).name)).toEqual(['appeal'])
     expect(h.calls.filter((c) => c.op === 'command.register').map((c) => (c.args as { name: string }).name)).toEqual(['appeals'])
     expect(h.hooks.find((x) => x.event === 'session.start')?.matcher).toEqual({ cwd: /^/ })
+    // Its placement is the engine's: behind tool search where that is on.
+    expect(h.hooks.some((x) => x.event === 'tool.describe')).toBe(false)
   })
 
   test('/appeals reads the last 30 days of logs and asks for suggestions only when there are grants', async () => {
@@ -549,7 +551,7 @@ describe('registerAppeal', () => {
     await h.start()
     const result = (await h.call({ tool: 'Bash', tool_use_id: 't1', command: 'git push --force', description: 'Push' }, blocked('[Git Destructive]'))) as { context?: string[] }
     expect(result.context).toEqual([
-      'Auto mode block b1. The classifier lacks context and can misjudge; if you think this call was legitimate, appeal once before you stop or work around it: mcp__doperpowers__appeal with block "b1".',
+      'Auto mode block b1. The classifier lacks context and can misjudge; if you think this call was legitimate, appeal once before you stop or work around it: mcp__doperpowers__appeal with block "b1". Its description says when an appeal fits; if the tool is not loaded, ToolSearch with "select:mcp__doperpowers__appeal" loads it.',
     ])
     expect(h.logged()).toEqual([expect.objectContaining({ event: 'block', block: 'b1', tool: 'Bash', reason: '[Git Destructive]', agentId: null })])
 

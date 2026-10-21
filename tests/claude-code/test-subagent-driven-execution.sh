@@ -33,6 +33,33 @@ PAT_SELF_REVIEW_REPLACES_NO='Self-review replaces external review:[^a-zA-Z<]*no'
 PAT_REQUIREMENTS_AS_SPEC='Requirements reach the executor as:[^a-zA-Z<]*[a-z]* *spec'
 PAT_EXECUTOR_READS_SPEC_YES='Executor must read the whole spec:[^a-zA-Z<]*yes'
 
+# Free-prose assertion: the reviewer engages with the artifact rather than the
+# executor's report. One engagement verb plus one artifact noun, in that order,
+# replaces an alternation that enumerated verb/noun pairs and so turned the
+# verdict on vocabulary: it accepted "reads the code" but rejected "verify
+# against the actual diff" and "judge the implementation" — the wording
+# agents/task-reviewer.md itself uses.
+#
+# Two things keep it from swinging too far the other way. "review" is NOT an
+# engagement verb here: the prompt asks about the "reviewer's" attitude, so the
+# string is present in every answer regardless of correctness, and pairing a
+# guaranteed token with a near-certain artifact noun makes the assertion
+# always-true. And the verb must come BEFORE the noun — that ordering is what
+# rejects "signs off on the implementation report without checking".
+# "implementation" is the one artifact noun that is also the executor's report
+# ("implementation report/claims/summary"), so it counts only where nothing
+# follows it, punctuation does, or one of a closed set of continuations that
+# leaves the thing itself as the object ("against the brief", "itself", ...).
+# Naming the report-like words to reject would turn the verdict on vocabulary
+# again; an unlisted continuation fails closed, which is the safe direction.
+IMPL_ARTIFACT='implementation\($\|[.,;:)!?"]\| \(against\|itself\|directly\|on\|and\|to\|matches\|rather\|not\|for\|with\|in\|is\|as\|before\|files\)\)'
+PAT_REVIEWER_READS_ARTIFACT='\(read\|inspect\|examin\|verify\|check\|judge\|look at\|against\|evaluate\).*\(code\|diff\|'"$IMPL_ARTIFACT"'\)\|actual \(code\|diff\|'"$IMPL_ARTIFACT"'\)\|code itself'
+
+# The isolation prerequisite has two names: the mechanism is a worktree, and the
+# skill's own pointer to it reads "an isolated checkout (isolated-workspace.md)".
+# A correct answer that quotes the pointer never says "worktree".
+PAT_ISOLATION_PREREQ='worktree\|isolated[ -]\(checkout\|workspace\)'
+
 # These patterns are the test, so pin their verdicts on the near-miss phrasings
 # before spending live model time. Fields: want|pattern variable|answer line.
 check_answer_patterns() {
@@ -41,7 +68,7 @@ check_answer_patterns() {
         [ -n "$want" ] || continue
         if printf '%s\n' "$line" | grep -qi "${!var}"; then got=match; else got=nomatch; fi
         if [ "$got" != "$want" ]; then
-            printf '  [FAIL] answer-line pattern: wanted %s, got %s\n    pattern: %s\n    line:    %s\n' \
+            printf '  [FAIL] assertion pattern: wanted %s, got %s\n    pattern: %s\n    line:    %s\n' \
                 "$want" "$got" "${!var}" "$line"
             failures=$((failures + 1))
         fi
@@ -49,7 +76,7 @@ check_answer_patterns() {
     [ "$failures" -eq 0 ]
 }
 
-echo "Pre-flight: answer-line assertion patterns..."
+echo "Pre-flight: assertion patterns..."
 
 check_answer_patterns <<'FIXTURES' || exit 1
 nomatch|PAT_SELF_REVIEW_REPLACES_NO|Self-review replaces external review: yes, notionally
@@ -69,9 +96,29 @@ nomatch|PAT_EXECUTOR_READS_SPEC_YES|Executor must read the whole spec: no
 nomatch|PAT_EXECUTOR_READS_SPEC_YES|Executor must read the whole spec: <yes or no>
 match|PAT_EXECUTOR_READS_SPEC_YES|Executor must read the whole spec: yes
 match|PAT_EXECUTOR_READS_SPEC_YES|**Executor must read the whole spec:** Yes, and owns one milestone of it
+match|PAT_REVIEWER_READS_ARTIFACT|Verify every implementation claim against the actual diff.
+match|PAT_REVIEWER_READS_ARTIFACT|Judge the code against the task brief and global constraints.
+match|PAT_REVIEWER_READS_ARTIFACT|trust the diff and judge the implementation on its merits
+match|PAT_REVIEWER_READS_ARTIFACT|Read the code, do not trust the report.
+match|PAT_REVIEWER_READS_ARTIFACT|Inspect the actual implementation.
+nomatch|PAT_REVIEWER_READS_ARTIFACT|Accept the executor's report and approve if it claims success.
+nomatch|PAT_REVIEWER_READS_ARTIFACT|The reviewer trusts the executor's report of the code changes.
+nomatch|PAT_REVIEWER_READS_ARTIFACT|The reviewer signs off on the implementation report without checking.
+nomatch|PAT_REVIEWER_READS_ARTIFACT|The reviewer is skeptical and reads the implementation report, then approves based on that report alone.
+nomatch|PAT_REVIEWER_READS_ARTIFACT|The reviewer checks the implementation summary and approves.
+nomatch|PAT_REVIEWER_READS_ARTIFACT|Verify the implementation claims, then sign off.
+nomatch|PAT_REVIEWER_READS_ARTIFACT|It reads the actual implementation report from the executor.
+match|PAT_REVIEWER_READS_ARTIFACT|Read the implementation.
+match|PAT_REVIEWER_READS_ARTIFACT|Judge the implementation against the task brief.
+match|PAT_REVIEWER_READS_ARTIFACT|The reviewer examines the implementation itself, not the report.
+match|PAT_ISOLATION_PREREQ|An isolated checkout, described in `skills/subagent-driven-execution/isolated-workspace.md`.
+match|PAT_ISOLATION_PREREQ|- Set up an isolated git worktree on its own branch
+match|PAT_ISOLATION_PREREQ|Create an isolated workspace before the first task.
+nomatch|PAT_ISOLATION_PREREQ|No prerequisites: start on the current branch.
+nomatch|PAT_ISOLATION_PREREQ|A spec written with execspec, with a Plan of Work.
 FIXTURES
 
-echo "  [PASS] Answer-line patterns read the chosen option, not stray letters"
+echo "  [PASS] Assertion patterns read the chosen option and the artifact, not stray letters"
 echo ""
 
 # Test 1: Verify skill can be loaded
@@ -159,7 +206,7 @@ else
     exit 1
 fi
 
-if assert_contains "$output" "read.*code\|inspect.*code\|verify.*code\|examin.*code\|look.*at.*code\|read.*diff\|inspect.*diff\|examin.*diff\|review.*diff\|check.*code\|against.*code\|code itself\|actual code\|actual implementation" "Reviewer reads code"; then
+if assert_contains "$output" "$PAT_REVIEWER_READS_ARTIFACT" "Reviewer reads the code or diff"; then
     : # pass
 else
     exit 1
@@ -216,7 +263,7 @@ echo "Test 8: Worktree requirement..."
 
 output=$(run_claude "What workflow skills are required before using subagent-driven-execution? List any prerequisites or required skills." "$CLAUDE_PROMPT_TIMEOUT")
 
-if assert_contains "$output" "worktree" "Mentions worktree requirement"; then
+if assert_contains "$output" "$PAT_ISOLATION_PREREQ" "Mentions the isolated worktree requirement"; then
     : # pass
 else
     exit 1

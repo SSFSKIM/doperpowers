@@ -9,7 +9,7 @@
     {
       "name": "doperpowers",
       "description": "Emerges by humans, Converges by Agent",
-      "version": "7.199.0",
+      "version": "7.203.0",
       "source": "./",
       "author": {
         "name": "SSFSKIM",
@@ -34,7 +34,7 @@
     {
       "name": "devcloud",
       "description": "The secrets guard: stored values, credential files and token-shaped strings become handles in what the model reads and the transcript keeps, restored to their bytes on write. And the host image and boot program that make any Linux userland work like your Mac. And the devenv skill, which writes a repository's devenv/ (its setup, services and checks) from its CI, manifests and README",
-      "version": "0.6.0",
+      "version": "0.6.1",
       "source": "./devcloud",
       "author": {
         "name": "SSFSKIM",
@@ -45,8 +45,8 @@
     },
     {
       "name": "to-human",
-      "description": "The report view under the to-human output style: messages fold to their <message> spans, the working record (tool calls, agent and other sessions' messages) behind [ working record ] buttons; each message the model sends raises a notification (`$.ui.notify`)",
-      "version": "0.4.0",
+      "description": "The report view under the to-human output style: messages fold to their <message> spans, the working record (tool calls, agent and other sessions' messages) behind [ working record ] buttons; the message tool (`mcp__to-human__message`) sends a message before another tool call word for word; each message the model sends raises a notification (`$.ui.notify`)",
+      "version": "0.5.1",
       "source": "./to-human",
       "author": {
         "name": "SSFSKIM",

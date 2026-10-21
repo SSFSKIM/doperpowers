@@ -3,15 +3,20 @@
 # Enrollment and hub projects (DC4 M2 of the desk), against hub_standin.py's
 # DX7 redemption. Pins DC4.G1: `sminos hub enroll` reads the code from stdin
 # (or a hidden prompt; never argv, which it refuses unread), decodes it as
-# the hub's decoder does (enroll_parity.py, over codes the hub's own encoder
-# built), redeems it, and stores the credential at mode 0600 — the org key and
+# the hub's decoder does (enroll_parity.py, over codes the hub's own encoders
+# built: one-time codes and provisioning codes, whose name must start with the
+# key's prefix), redeems it, and stores the credential at mode 0600 — the org key and
 # the service token's secret never in any output or in daemon.log; every DX7
 # error said with what to do; a second installation claiming an enrolled name
 # is refused and told to pick another with --name; the enrolled name is the
 # writer host, and a rename leaves this machine's seats and members its own
 # while another machine enrolled under the old name stays another;
 # `project init --hub` writes the org; a hub project, a malformed hub
-# included, runs no git phase and `project attach` refuses it.
+# included, runs no git phase and `project attach` refuses it. `hub check`
+# and `hub leave` read the hub's answer to the stored credential as accepted,
+# rejected (the Worker's not-enrolled at once; Access's 401 page past the
+# propagation grace and again on its recheck) or undecided, and only leave,
+# on acceptance or rejection, removes hub.json.
 # Hermetic: HOME and SMINOS_HOME are temporary, one pair per installation;
 # `claude` is a stub; nothing reaches a network beyond 127.0.0.1.
 # run-sminos-tests.sh runs this file beside its own cases.
@@ -116,6 +121,32 @@ elif cmd == "fault":
     call("POST", "/control/fault", {"redeem": sys.argv[3:]})
 elif cmd == "state":  # a python expression over the state, d
     print(json.dumps(eval(sys.argv[3], {"d": call("GET", "/control/state")[1]})))
+elif cmd == "pkey":  # prefix [max_uses] — a provisioning key, as an admin makes it: "<secret> <id>"
+    r = call("POST", "/control/provisioning-key",
+             {"prefix": sys.argv[3], **({"max_uses": int(sys.argv[4])} if len(sys.argv) > 4 else {})})[1]
+    print(r["token"], r["id"])
+elif cmd == "pkeyset":  # id revoked|expired — the key revoked, or past its expiry
+    call("POST", "/control/provisioning-key", {"id": sys.argv[3], sys.argv[4]: True})
+elif cmd == "pcode":  # hub secret prefix key — a provisioning code, as the browser builds it
+    body = json.dumps(dict(zip(("hub", "org", "token", "prefix", "key"), [sys.argv[3], "org-1", *sys.argv[4:7]])),
+                      separators=(",", ":"), ensure_ascii=False).encode()
+    print("smns-provision-v1." + base64.urlsafe_b64encode(body).rstrip(b"=").decode())
+elif cmd == "revoke":  # machine [orphan] — an admin's revocation (orphan: the token's deletion still owed)
+    call("POST", "/control/revoke", {"machine": sys.argv[3], "orphan": sys.argv[4:] == ["orphan"]})
+elif cmd == "edge":  # machine n — Access answers its token 401 for n requests, then admits it
+    call("POST", "/control/edge", {"machine": sys.argv[3], "requests": int(sys.argv[4])})
+elif cmd == "answer":  # JSON list — the next /machine/enrollment requests answered these
+    call("POST", "/control/answer", {"answers": json.loads(sys.argv[3])})
+elif cmd == "cut":  # status content-type text n — the next n answered chunked, `text` padded to 65 536 bytes in
+    # one chunk, and the connection closed before the last (zero) chunk: an answer cut short of its end
+    body = sys.argv[5].ljust(65536)
+    raw = ("HTTP/1.1 %s Cut\r\nContent-Type: %s\r\nTransfer-Encoding: chunked\r\n\r\n%x\r\n%s\r\n"
+           % (sys.argv[3], sys.argv[4], len(body), body))
+    call("POST", "/control/answer", {"answers": [{"raw": raw}] * int(sys.argv[6])})
+elif cmd == "release":  # a held answer goes
+    call("POST", "/control/release")
+elif cmd == "outage":  # path — no listener until the file exists
+    call("POST", "/control/outage", {"until": sys.argv[3]})
 elif cmd == "connect":  # hub.json — open the stream with its credential, read the welcome, close
     cred = json.load(open(sys.argv[3]))
     c = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
@@ -138,6 +169,8 @@ enroll() { # code [args...]
   local code="$1"; shift
   printf '%s\n' "$code" >> "$T/codes"
   run "$SMINOS" hub enroll "$@" <<<"$code"
+  # Each secret stored is kept, to be searched for, though `leave` removes it.
+  if [ "$RC" = 0 ]; then json_get "$(cred)" 'd["client_secret"]' | tr -d '"' >> "$T/secrets"; fi
 }
 mode_of() { python3 -c 'import os, stat, sys; print(oct(stat.S_IMODE(os.stat(sys.argv[1]).st_mode)))' "$1"; }
 
@@ -150,6 +183,7 @@ done < <(python3 "$SCRIPT_DIR/enroll_parity.py" "$SCRIPTS" "$SCRIPT_DIR/dx7-enro
 as a alpha
 run "$SMINOS" hub show
 assert_contains "$OUT" "not enrolled" "an installation that never enrolled says so"
+assert_rc 1 "$RC" "and hub show exits 1: no credential is held"
 CODE_P="$(code_for alpha)"
 printf '%s\n' "$CODE_P" >> "$T/codes"
 run "$SMINOS" hub enroll "$CODE_P"
@@ -212,6 +246,7 @@ assert_equals "$(ctl state '[e["state"] for e in d["enrollments"] if e["machine"
   "and that first connection confirms the enrollment"
 assert_contains "$(cat "$SMINOS_HOME/daemon.log")" "hub: enrolled as alpha at $HUB (org org-1)" "daemon.log records the enrollment"
 run "$SMINOS" hub show
+assert_rc 0 "$RC" "hub show exits 0 once a credential is held"
 assert_contains "$OUT" "machine  alpha" "hub show names the machine"
 assert_contains "$OUT" "hub      $HUB (org org-1)" "and its hub"
 BEFORE="$(redemptions)"
@@ -227,7 +262,7 @@ echo "a second installation named alpha:"
 as b alpha
 CODE_B="$(code_for alpha)"
 enroll "$CODE_B"
-assert_rc 1 "$RC" "claiming a name another machine holds is refused"
+assert_rc 3 "$RC" "claiming a name another machine holds is refused, with name-taken's own exit code"
 assert_contains "$OUT" "another machine of this org is enrolled as alpha" "saying the name is taken"
 assert_contains "$OUT" "run sminos hub enroll --name <another name> and paste the same code at the prompt" \
   "and how to pick another with the same code"
@@ -235,7 +270,7 @@ assert_equals "$(test -e "$(cred)" && echo there || echo none)" none "nothing is
 # Under another host name for once: from alpha, ALPHA differs only in case
 # and is refused here before the hub is asked (below).
 DAEMON_HOST=b-host enroll "$CODE_B" --name ALPHA
-assert_rc 1 "$RC" "the name is taken whatever its case"
+assert_rc 3 "$RC" "the name is taken whatever its case"
 assert_contains "$OUT" "another machine of this org is enrolled as ALPHA" "the hub says so"
 
 # ---- this installation's state under alpha, before it is renamed
@@ -723,12 +758,313 @@ assert_contains "$OUT" "sminos hub enroll" "saying to enroll first"
 assert_equals "$(test -e "$P0/.smns" && echo there || echo none)" none "and writes no .smns"
 cd "$T"
 
+# ---- enrollment through a provisioning key
+# A provisioning code (smns-provision-v1.{hub, org, token, prefix, key}) is
+# piped as a VM's boot pipes it: the name is --name, else the host's, and one
+# not under the key's prefix is refused before anything is sent.
+echo "provisioning keys:"
+pcode_for() { # prefix [max_uses] — a fresh key's code; the key's id in $T/key.id
+  local out; out="$(ctl pkey "$@")"
+  echo "${out#* }" > "$T/key.id"
+  echo "${out%% *}" >> "$T/secrets"
+  ctl pcode "$HUB" "${out%% *}" "$1" "$KEY"
+}
+machine_requests() { ctl state 'len(d["requests"])'; }
+enrollment_requests() { ctl state '[r["at"] for r in d["requests"] if r["path"] == "/machine/enrollment"]'; }
+nothing_stored() { test -e "$(cred)" && echo there || echo none; }
+key_uses() { ctl state "[k[\"uses\"] for k in d[\"keys\"] if k[\"id\"] == \"${1:-$(cat "$T/key.id")}\"][0]"; }
+CODE_K="$(pcode_for dc-)"
+KEY_K="$(cat "$T/key.id")"
+as p1 p1host
+enroll "$CODE_K" --name dc-x
+assert_rc 0 "$RC" "a provisioning code piped with --name dc-x enrolls"
+assert_contains "$OUT" "enrolled this machine as dc-x at $HUB (org org-1)" "as dc-x"
+assert_not_contains "$OUT" "code proposed" "a provisioning code proposes no name"
+assert_equals "$(mode_of "$(cred)")" "0o600" "the credential is stored at mode 0600"
+assert_equals "$(json_get "$(cred)" '[d[k] for k in ("hub", "org", "machine", "key")]')" \
+  "[\"$HUB\", \"org-1\", \"dc-x\", \"$KEY\"]" "with the hub, the org, the name and the org key, as a one-time code leaves it"
+assert_equals "$(key_uses)" 1 "one use of the key is counted"
+as p2 dc-host2
+enroll "$CODE_K"
+assert_rc 0 "$RC" "without --name, a host name under the prefix is the name"
+assert_contains "$OUT" "enrolled this machine as dc-host2" "as the host's name"
+as p3 build-3
+BEFORE="$(machine_requests)"
+enroll "$CODE_K"
+assert_rc 2 "$RC" "without --name, a host name not under the prefix is refused"
+assert_contains "$OUT" "the name build-3 does not start with this key's prefix dc-: pass --name dc-" "saying which prefix, and how to name one"
+enroll "$CODE_K" --name build-3
+assert_rc 2 "$RC" "so is --name build-3"
+assert_contains "$OUT" "does not start with this key's prefix dc-" "in the same words"
+assert_equals "$(machine_requests)" "$BEFORE" "neither sends a request"
+assert_equals "$(nothing_stored)" none "nor stores anything"
+enroll "$CODE_K" --name DC-p3
+assert_rc 0 "$RC" "the prefix is compared without case"
+as p4 dc-p4
+ctl fault lose
+enroll "$CODE_K"
+assert_rc 0 "$RC" "a lost answer through a key is redeemed again, and enrolls"
+assert_equals "$(json_get "$(cred)" 'd["client_id"]')" "$(ctl state '[m["client_id"] for m in d["machines"] if m["name"] == "dc-p4"][0]')" \
+  "with the rotated credential the hub holds"
+assert_equals "$(key_uses)" 4 "the rotation counts no use"
+# The hub's refusals of a key, each said with what to do.
+as p5 dc-p5
+REVOKED="$(pcode_for dc-)"
+ctl pkeyset "$(cat "$T/key.id")" revoked
+enroll "$REVOKED"
+assert_rc 1 "$RC" "a revoked key is refused"
+assert_contains "$OUT" "this key was revoked at the hub: ask an admin for a new key" "saying so"
+EXPIRED="$(pcode_for dc-)"
+ctl pkeyset "$(cat "$T/key.id")" expired
+enroll "$EXPIRED"
+assert_rc 1 "$RC" "an expired key is refused"
+assert_contains "$OUT" "this key has expired: ask an admin for a new key" "saying so"
+CAPPED="$(pcode_for dc- 1)"
+enroll "$CAPPED"
+assert_rc 0 "$RC" "a key with max_uses 1 enrolls one machine"
+as p6 dc-p6
+enroll "$CAPPED"
+assert_rc 1 "$RC" "and refuses the next"
+assert_contains "$OUT" "this key has enrolled all the machines it may: ask an admin for a new key or a higher cap" "saying so"
+read -r K_SECRET _ <<<"$(ctl pkey dc-)"
+echo "$K_SECRET" >> "$T/secrets"
+enroll "$(ctl pcode "$HUB" "$K_SECRET" build- "$KEY")" --name build-7
+assert_rc 1 "$RC" "a hand-built code whose prefix is not the key's is refused at the hub"
+assert_contains "$OUT" "this key does not enroll the name build-7" "saying the key does not cover the name"
+assert_contains "$OUT" "dc-" "naming the prefix the hub holds"
+as p1 p1host
+run "$SMINOS" hub check
+assert_rc 0 "$RC" "dc-x's credential is accepted (and its machine confirmed)"
+as p7 p7host
+enroll "$CODE_K" --name dc-x
+assert_rc 3 "$RC" "a name another machine holds exits 3, for the boot to pick another"
+assert_contains "$OUT" "another machine of this org is enrolled as dc-x" "saying the name is taken"
+assert_equals "$(nothing_stored)" none "and nothing is stored"
+
+# ---- hub check and hub leave: the hub's answer to a stored credential
+# Accepted, rejected (the Worker's not-enrolled at once; Access's marked 401
+# past the 600 s grace and held on a recheck), or anything else: undecided.
+echo "hub check and hub leave:"
+export SMINOS_ACCESS_RECHECK_S=1
+fresh() { # name — a new installation enrolled through the key under its host name
+  as "$1" "$1"
+  enroll "$CODE_K"
+  [ "$RC" = 0 ] || fail "enrolling $1 through the key"
+}
+past_grace() { # the credential's `enrolled` 700 s back, as a credential enrolled before the grace
+  python3 - "$(cred)" <<'PY'
+import datetime, json, os, sys
+d = json.load(open(sys.argv[1]))
+d["enrolled"] = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=700)).strftime("%Y-%m-%dT%H:%M:%SZ")
+open(sys.argv[1], "w").write(json.dumps(d))
+os.chmod(sys.argv[1], 0o600)
+PY
+}
+digest() { python3 -c 'import hashlib, sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' "$(cred)"; }
+asked() { # since — how many /machine/enrollment requests came after the `since`-th one
+  ctl state "len([r for r in d[\"requests\"] if r[\"path\"] == \"/machine/enrollment\"]) - $1"
+}
+asked_now() { ctl state 'len([r for r in d["requests"] if r["path"] == "/machine/enrollment"])'; }
+check_is() { # rc words label — hub check's exit and words, its credential file byte-identical, then
+  local sum; sum="$(digest)"
+  run "$SMINOS" hub check
+  assert_rc "$1" "$RC" "check: $3"
+  assert_contains "$OUT" "$2" "check: $3, saying so"
+  assert_equals "$(digest)" "$sum" "check: $3, the credential untouched"
+}
+
+fresh dc-c1
+N="$(asked_now)"
+check_is 0 "enrolled as dc-c1 at $HUB (org org-1): accepted" "a 200 naming the stored org and machine"
+assert_equals "$(asked "$N")" 1 "one request"
+assert_equals "$(ctl state '[m["state"] for m in d["machines"] if m["name"] == "dc-c1"][0]')" '"active"' "which confirmed the machine"
+ctl revoke dc-c1 orphan
+check_is 3 "sminos: the hub no longer accepts this machine's credential: the hub answered not-enrolled" \
+  "the Worker's 403 not-enrolled is a rejection at once, inside the grace"
+fresh dc-c2
+ctl revoke dc-c2
+past_grace
+N="$(asked_now)"
+check_is 3 "sminos: the hub no longer accepts this machine's credential: Access answered 401" \
+  "Access's 401 past the grace, held on its recheck"
+assert_equals "$(asked "$N")" 2 "two requests: the first and its recheck"
+assert_equals "$(ctl state '(lambda a: a[-1] - a[-2] >= 1)([r["at"] for r in d["requests"] if r["path"] == "/machine/enrollment"])')" \
+  true "the recheck sent SMINOS_ACCESS_RECHECK_S after the first"
+fresh dc-c3
+past_grace
+ctl answer '[{"access": true}]'
+N="$(asked_now)"
+check_is 0 "accepted" "Access's 401 past the grace whose recheck is admitted"
+assert_equals "$(asked "$N")" 2 "after its recheck"
+fresh dc-c4
+ctl revoke dc-c4
+N="$(asked_now)"
+check_is 4 "sminos: Access answered 401 to a credential enrolled" "Access's 401 inside the grace decides nothing"
+assert_contains "$OUT" "s ago, which may not have reached Access's edge yet" "saying it may still be propagating"
+assert_equals "$(asked "$N")" 1 "one request, no recheck"
+fresh dc-c5
+ctl answer '[{"status": 503, "body": "{\"error\": \"unavailable\"}"}]'
+check_is 4 "sminos: the hub answered 503" "a 5xx is undecided"
+ctl answer '[{"status": 401, "body": "{\"error\": \"unauthorized\"}"}]'
+check_is 4 "401 without Access's page" "a 401 without Access's mark is undecided"
+ctl answer '[{"status": 403, "body": "{\"error\": \"not-admin\"}"}]'
+check_is 4 "sminos: the hub answered 403" "a 403 of another error is undecided"
+ctl answer '[{"status": 200, "body": "{\"org\": \"org-1\", \"machine\": \"other\", \"state\": \"active\", \"confirmed\": null}"}]'
+check_is 4 "sminos: the hub answered" "a 200 naming another machine is undecided"
+past_grace
+ctl answer '[{"status": 302, "body": "", "type": "text/html"}]'
+check_is 4 "sminos: the hub answered 302" "a redirect is undecided, past the grace too"
+cp "$(cred)" "$T/dc-c5.json"
+python3 -c 'import json, socket, sys
+s = socket.socket(); s.bind(("127.0.0.1", 0)); port = s.getsockname()[1]; s.close()
+d = json.load(open(sys.argv[1])); d["hub"] = "http://127.0.0.1:%d" % port; open(sys.argv[1], "w").write(json.dumps(d))' "$(cred)"
+check_is 4 "sminos: the hub did not answer" "a hub that does not answer is undecided"
+SUM_DEAD="$(digest)"
+run "$SMINOS" hub leave
+assert_rc 1 "$RC" "leave: a hub that does not answer keeps the credential, exit 1"
+assert_equals "$(digest)" "$SUM_DEAD" "leave: the credential untouched"
+cp -p "$T/dc-c5.json" "$(cred)"
+ctl answer '[{"status": 502, "body": "{\"error\": \"bad-gateway\"}"}]'
+run "$SMINOS" hub leave
+assert_rc 1 "$RC" "leave: a 5xx keeps the credential, exit 1"
+assert_contains "$OUT" "the hub answered 502" "saying what came"
+assert_equals "$(nothing_stored)" there "the credential kept"
+as nobody nobody
+run "$SMINOS" hub check
+assert_rc 1 "$RC" "check with no hub.json exits 1"
+assert_contains "$OUT" "this machine is not enrolled at a hub" "saying so"
+run "$SMINOS" hub leave
+assert_rc 0 "$RC" "leave with no hub.json exits 0"
+assert_contains "$OUT" "this machine is not enrolled at a hub: nothing to leave" "saying so"
+run "$SMINOS" hub check extra
+assert_rc 2 "$RC" "check takes no words"
+
+fresh dc-l1
+run "$SMINOS" hub leave
+assert_rc 0 "$RC" "leave: a 200 leaves"
+assert_contains "$OUT" "left the hub as dc-l1" "saying so"
+assert_equals "$(nothing_stored)" none "hub.json is removed"
+assert_equals "$(ctl state '[m["name"] for m in d["machines"] if m["name"] == "dc-l1"]')" "[]" "the hub no longer holds the machine"
+run "$SMINOS" hub show
+assert_rc 1 "$RC" "hub show then exits 1"
+run "$SMINOS" hub leave
+assert_rc 0 "$RC" "a second leave exits 0"
+assert_contains "$OUT" "not enrolled" "saying there is nothing to leave"
+fresh dc-l2
+ctl revoke dc-l2
+past_grace
+run "$SMINOS" hub leave
+assert_rc 0 "$RC" "leave: Access's 401 past the grace, held on its recheck"
+assert_contains "$OUT" "the hub had already revoked dc-l2; the stale credential is removed" "says the hub had already revoked it"
+assert_equals "$(nothing_stored)" none "and removes hub.json"
+fresh dc-l3
+ctl revoke dc-l3 orphan
+run "$SMINOS" hub leave
+assert_rc 0 "$RC" "leave: the Worker's not-enrolled"
+assert_contains "$OUT" "had already revoked dc-l3" "says the hub had already revoked it"
+assert_equals "$(nothing_stored)" none "and removes hub.json"
+fresh dc-l4
+ctl revoke dc-l4
+SUM="$(digest)"
+run "$SMINOS" hub leave
+assert_rc 1 "$RC" "leave: Access's 401 inside the grace keeps the credential"
+assert_contains "$OUT" "which may not have reached Access's edge yet" "saying why"
+assert_equals "$(digest)" "$SUM" "the credential untouched"
+
+# A token not yet at Access's edge: Access answers it 401 at first, then admits it.
+fresh dc-e1
+ctl edge dc-e1 2
+SUM="$(digest)"
+run "$SMINOS" hub check
+assert_rc 4 "$RC" "a fresh token Access does not admit yet: check is undecided"
+run "$SMINOS" hub leave
+assert_rc 1 "$RC" "and leave keeps it"
+assert_equals "$(digest)" "$SUM" "the credential untouched"
+run "$SMINOS" hub check
+assert_rc 0 "$RC" "once at the edge, check accepts it"
+run "$SMINOS" hub leave
+assert_rc 0 "$RC" "and leave leaves"
+assert_contains "$OUT" "left the hub as dc-e1" "saying so"
+
+# The boot's rule through an outage: revoked while down, the hub unreachable
+# at the check, then back — all in one home, no reboot.
+fresh dc-o1
+OLD_CID="$(json_get "$(cred)" 'd["client_id"]')"
+ctl revoke dc-o1
+past_grace
+ctl outage "$T/hub.up"
+SUM="$(digest)"
+run "$SMINOS" hub check
+assert_rc 4 "$RC" "the hub unreachable: check is undecided"
+assert_contains "$OUT" "sminos: the hub did not answer" "saying so"
+assert_equals "$(digest)" "$SUM" "the credential kept"
+run "$SMINOS" hub show
+assert_rc 0 "$RC" "and show still exits 0"
+touch "$T/hub.up"
+until_true 100 ctl state 1 >/dev/null 2>&1
+check_is 3 "Access answered 401" "the hub back on the same port and state, the revocation is learned"
+USES="$(key_uses "$KEY_K")"
+enroll "$CODE_K" --name dc-o1 --replace
+assert_rc 0 "$RC" "enroll --replace with the same piped code enrolls anew under the same name"
+assert_equals "$(key_uses "$KEY_K")" "$((USES + 1))" "a new enrollment: one more use of the key"
+assert_not_contains "$(json_get "$(cred)" 'd["client_id"]')" "$OLD_CID" "with a new credential"
+check_is 0 "accepted" "whose check is accepted"
+
+# A leave whose answer is slow, and an enrollment that replaces hub.json
+# meanwhile (the revocation freed the name): the replacement is another, live
+# credential, which the leave neither removes nor revokes.
+fresh dc-r1
+ctl answer '[{"hold": true}]'
+"$SMINOS" hub leave > "$T/leave.out" 2>&1 & LEAVE=$!
+PIDS+=("$LEAVE")
+revoked_r1() { [ "$(ctl state '[m["name"] for m in d["machines"] if m["name"] == "dc-r1"]')" = "[]" ]; }
+until_true 100 revoked_r1
+enroll "$CODE_K" --name dc-r1 --replace
+assert_rc 0 "$RC" "while leave waits for its answer, enroll --replace enrolls dc-r1 anew"
+SUM="$(digest)"
+ctl release
+set +e; wait "$LEAVE"; RC=$?; set -e
+OUT="$(cat "$T/leave.out")"
+printf '%s\n' "$OUT" >> "$T/all.out"
+assert_rc 1 "$RC" "the leave, answered at last, exits 1"
+assert_contains "$OUT" "left the hub as dc-r1, but another enrollment replaced this machine's credential while leave ran" \
+  "saying its own enrollment ended and another replaced it"
+assert_contains "$OUT" "run sminos hub leave again to end that one" "and how to end that one"
+assert_equals "$(digest)" "$SUM" "the replacement's hub.json survives byte-identical"
+check_is 0 "accepted" "and the hub still accepts it"
+
+# An answer cut short of its end decides nothing, whatever its first bytes
+# say: a chunked 403 not-enrolled whose last chunk never came, and Access's
+# 401 page cut the same way, past the grace (the first and its recheck).
+fresh dc-t1
+leave_keeps() { # label — leave exits 1 and leaves the credential byte-identical
+  local sum; sum="$(digest)"
+  run "$SMINOS" hub leave
+  assert_rc 1 "$RC" "leave: $1"
+  assert_contains "$OUT" "cut short" "leave: $1, saying the answer was cut short"
+  assert_equals "$(digest)" "$sum" "leave: $1, the credential untouched"
+}
+ctl cut 403 application/json '{"error":"not-enrolled","message":"cut"}' 2
+check_is 4 "was cut short of its end" "a chunked 403 not-enrolled cut short of its end is undecided"
+ctl cut 403 application/json '{"error":"not-enrolled","message":"cut"}' 2
+leave_keeps "a chunked 403 not-enrolled cut short of its end"
+past_grace
+ctl cut 401 text/html '<html><title>Cloudflare Access</title></html>' 2
+check_is 4 "was cut short of its end" "Access's 401 page cut short, past the grace, is undecided"
+ctl cut 401 text/html '<html><title>Cloudflare Access</title></html>' 2
+leave_keeps "Access's 401 page cut short, past the grace"
+ctl answer '[]'
+check_is 0 "accepted" "the credential, kept, is still accepted"
+cd "$T"
+
 # ---- no secret anywhere
 echo "secrets:"
 SECRETS="$(python3 - "$T" <<'PY'
-import glob, json, sys
+import glob, json, os, sys
 for p in glob.glob(sys.argv[1] + "/*/s/daemon/hub.json"):
     print(json.load(open(p))["client_secret"])
+if os.path.exists(sys.argv[1] + "/secrets"):
+    print(open(sys.argv[1] + "/secrets").read())
 PY
 )"
 for f in "$T"/*/s/daemon.log "$T/all.out"; do

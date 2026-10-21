@@ -515,6 +515,39 @@ class FakeSession:
         self.server = None
         self.endpoint = None
 
+    def kill_child(self):
+        """The child dies on its own (killed): its socket stays at the path,
+        nobody listening on it, and the module stays loaded, so what it
+        posts meanwhile reaches no child."""
+        if self.child is not None:
+            self.child.stop()   # SIGKILL: the real child removes nothing
+            self.child = None
+            return
+        self.server.closing = True
+        self.endpoint.end_all()
+        self.server.shutdown()
+        self.server.server_close()   # the socket file stays
+        self.server = None
+        self.endpoint = None
+
+    def respawn_child(self):
+        """The module spawns the dead child's successor, as the mod does at
+        once: it moves its own socket into place over the stale one, then the
+        same module's start and resync (whatever it still streams) make it
+        ready."""
+        if self.real:
+            self.child = RealChild(self.session, self.child_env)
+            self.post([{"type": "session", "phase": "start", "session": self.session, "cwd": self.dir, "t": 0}])
+        else:
+            d = os.path.join(self.sminos_home, "bridge")
+            tmp = os.path.join(d, ".%s.next.sock" % self.session[:8])
+            self.endpoint = Endpoint(self.session, legacy=self.legacy)
+            self.server = _Server(tmp, _Handler)
+            self.server.endpoint = self.endpoint
+            os.replace(tmp, os.path.join(d, self.session + ".sock"))
+            threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.resync()
+
     def post(self, events):
         self.lose(events)
         if self.child is not None:

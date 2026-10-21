@@ -134,9 +134,13 @@ export function recordBlock(ledger: Ledger, call: { agentId?: string; tool: stri
   return block
 }
 
-/** The note the model reads after a denial it may appeal. */
+/**
+ * The note the model reads after a denial it may appeal. The tool waits
+ * behind tool search, so the note says how to load it, and that its
+ * description says when an appeal fits.
+ */
 export function blockNotice(id: string): string {
-  return `Auto mode block ${id}. The classifier lacks context and can misjudge; if you think this call was legitimate, appeal once before you stop or work around it: mcp__doperpowers__appeal with block "${id}".`
+  return `Auto mode block ${id}. The classifier lacks context and can misjudge; if you think this call was legitimate, appeal once before you stop or work around it: mcp__doperpowers__appeal with block "${id}". Its description says when an appeal fits; if the tool is not loaded, ToolSearch with "select:mcp__doperpowers__appeal" loads it.`
 }
 
 /**
@@ -326,7 +330,7 @@ export function nonTextBlocks(result: unknown): unknown[] {
 
 /** The tool as the model reads it. */
 export const APPEAL_DESCRIPTION = [
-  "Appeal a block by auto mode's classifier. The classifier lacks context and can misjudge a legitimate call; read its block critically, and appeal when you think the call was legitimate: it misread what the call does or touches, or the user's own words authorize it (for a subagent, in the main conversation too). An independent judge rules. Not for an action the user has not authorized: that is a question for the user.",
+  "Appeal a block by auto mode's classifier when the call was legitimate: it misread what the call does or touches, or the user's own words authorize it (for a subagent, in the main conversation too). An independent judge rules. Not for an action the user has not authorized: that is a question for the user.",
   "- block: the id from the block's notice (b1, b2, …).",
   '- argument: the facts and where they are (a user message, an answer to your question, an earlier call or result, CLAUDE.md); the judge checks each, and a claim it cannot find counts against you.',
   'One appeal per block, before you stop or work around it. Granted: in the main conversation the call is run for you and its result returned; in a subagent, run the identical call again (only its description may differ). Upheld: the response says what would change the verdict; ask the user that if the action is still needed.',

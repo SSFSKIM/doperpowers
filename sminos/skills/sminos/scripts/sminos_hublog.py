@@ -407,10 +407,18 @@ class HubLog:
             self.drawing = None
             log("the hub asks %s of %s again from %d" % (writer, self.project.name, start))
 
+    def closed(self):
+        """The hub no longer holds the project open on this stream (it
+        refused a frame of it `not-open`): nothing is uploaded until the
+        `have` of the hello that opens it again, which the upload goes on
+        from."""
+        self.have = None
+        self.drawing = None
+
     def on_refused(self, frame):
         """The hub refused what this machine sent; said in daemon.log. A
         writer refused stops uploading on this stream (sending it again would
-        be refused again); `not-open` asks for `hello` first."""
+        be refused again)."""
         r = frame.get("refusal") if isinstance(frame.get("refusal"), dict) else {}
         reason, writer = r.get("reason"), r.get("writer")
         self.drawing = None   # what was drawn may hold a writer stopped now
@@ -423,8 +431,6 @@ class HubLog:
             seq = r.get("seq")
             at = seq if type(seq) is int and seq >= 1 else 0
             self.refused[writer] = min(at, self.refused.get(writer, at))
-        if reason == "not-open":
-            self.have = None
 
     def own(self, writer):
         return writer.startswith(self.machine + "/") or (self.archive and writer.startswith(LEGACY))

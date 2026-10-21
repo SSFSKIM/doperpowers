@@ -76,10 +76,16 @@ describe('validateQuestions', () => {
     )
   })
 
-  test('a valid set passes, previews and metadata included, and the header length is never checked', async () => {
+  test('a valid set passes, previews included, and the header length is never checked', async () => {
     const preview = { ...option('Postgres'), preview: '+--+' }
-    expect(validateQuestions({ questions: [{ ...question('Which backend?', 'A header far past twelve characters', ['SQLite']), options: [preview, option('SQLite')] }], metadata: { source: 'x' } })).toBeUndefined()
+    expect(validateQuestions({ questions: [{ ...question('Which backend?', 'A header far past twelve characters', ['SQLite']), options: [preview, option('SQLite')] }] })).toBeUndefined()
     expect(validateQuestions({ questions: [question('Which?', 'H', ['a', 'b', 'c', 'd'], true)], async: true })).toBeUndefined()
+  })
+
+  test("the built-in's metadata is no parameter of this tool: an unexpected one, as any other unknown key", async () => {
+    expect(validateQuestions({ questions: [BACKEND], metadata: { source: 'x' } })).toBe(
+      'InputValidationError: AskUserQuestion failed due to the following issue:\nAn unexpected parameter `metadata` was provided',
+    )
   })
 
   test('multiSelect may be left out: the built-in defaults it', async () => {
@@ -135,17 +141,29 @@ describe('validateQuestions', () => {
 })
 
 describe('the tool as the model reads it', () => {
-  test('the description is the built-in one, then the async paragraph', async () => {
-    expect(describeAsk('Use this tool only when blocked.')).toBe(`Use this tool only when blocked.\n\n${ASYNC_PARAGRAPH}`)
-    expect(ASYNC_PARAGRAPH).toBe(
-      '`async`: set it to true when you can go on with other work while the human decides. The call then returns at once; the questions wait in the human\'s view until they answer, and their answer reaches you in a later message that quotes each question. Leave it false when the work is blocked by the answer, nothing useful can proceed without the answer, or the answer is the last thing left in your turn.',
-    )
+  test('the description is the built-in one, untouched when it has no plan-mode paragraph', async () => {
+    expect(describeAsk('Use this tool only when blocked.')).toBe('Use this tool only when blocked.')
+    expect(describeAsk('Plan mode is not named here.\n\nNor here: Plan mode note: inline.')).toBe('Plan mode is not named here.\n\nNor here: Plan mode note: inline.')
   })
 
-  test('the schema is the built-in input without answers or annotations, plus async', async () => {
+  test("the built-in's plan-mode paragraph is dropped, through the next blank line, wherever it stands", async () => {
+    const note = 'Plan mode note: To switch into plan mode, use EnterPlanMode (not this tool).\nOnce in plan mode, ask before finalizing.'
+    expect(describeAsk(`Use this tool.\n\n${note}\n\nPreview feature:\nUse previews.`)).toBe('Use this tool.\n\nPreview feature:\nUse previews.')
+    expect(describeAsk(`${note}\n\nUse this tool.`)).toBe('Use this tool.')
+    expect(describeAsk(`Use this tool.\n\n${note}`)).toBe('Use this tool.')
+  })
+
+  test("the async paragraph is the parameter's description alone", async () => {
+    expect(ASYNC_PARAGRAPH).toBe(
+      "By default the call returns at once: the questions wait in the human's view until they answer, and their answer reaches you in a later message that quotes each question. Set it to false to wait for the answer when the work is blocked by it, nothing useful can proceed without it, or it is the last thing left in your turn.",
+    )
+    expect(describeAsk('Use this tool.')).not.toContain(ASYNC_PARAGRAPH)
+  })
+
+  test('the schema is the built-in input without answers, annotations or metadata, plus async, true by default', async () => {
     const properties = INPUT_SCHEMA.properties as Record<string, Record<string, unknown>>
-    expect(Object.keys(properties)).toEqual(['questions', 'metadata', 'async'])
-    expect(properties.async).toEqual({ type: 'boolean', default: false, description: ASYNC_PARAGRAPH })
+    expect(Object.keys(properties)).toEqual(['questions', 'async'])
+    expect(properties.async).toEqual({ type: 'boolean', default: true, description: ASYNC_PARAGRAPH })
     expect(INPUT_SCHEMA.additionalProperties).toBe(false)
     expect(INPUT_SCHEMA.required).toEqual(['questions'])
   })
@@ -468,7 +486,7 @@ describe('registerAsk: the tool and the built-in', () => {
     expect(ASK_TOOL).toBe('mcp__sminos__AskUserQuestion')
     expect(ASK_TOOL).toBe(`mcp__${PLUGIN}__AskUserQuestion`)
     expect(ASK_TOOLS[0]).toBe(ASK_TOOL)
-    expect(WITHDRAWN).toBe("Withdrawn in this session: ask through mcp__sminos__AskUserQuestion, which takes this tool's input plus async.")
+    expect(WITHDRAWN).toBe("Withdrawn in this session: ask through mcp__sminos__AskUserQuestion, which takes this tool's questions plus async.")
   })
 
   test('the built-in described while the session starts: withdrawn, its whole text registered', async () => {
@@ -558,7 +576,7 @@ describe('registerAsk: the tool and the built-in', () => {
   test("a subagent's call is refused before any dialog", async () => {
     const h = harness()
     await h.start()
-    const { result } = await h.call(ASK_TOOL, { questions: [BACKEND] }, MODEL, 'agent-1')
+    const { result } = await h.call(ASK_TOOL, { questions: [BACKEND], async: false }, MODEL, 'agent-1')
     expect(result).toEqual({ deny: SUBAGENT_REFUSAL })
     expect(h.raises).toEqual([])
   })
@@ -577,7 +595,7 @@ describe('registerAsk: a blocking ask', () => {
   test('raises the first question under a token header, widens to the whole set, and returns the engine text', async () => {
     const h = harness()
     await h.start()
-    const pending = h.call(ASK_TOOL, { questions: [BACKEND, FEATURES] })
+    const pending = h.call(ASK_TOOL, { questions: [BACKEND, FEATURES], async: false })
     await h.settle()
     expect(h.calls.find((c) => c.op === 'ui.ask')?.args).toEqual({ question: 'Which backend?', options: ['Postgres', 'SQLite'], header: 'ask-1' })
     const { shown } = await h.raise(0, answered('The user answered: "Which backend?"="SQLite".'))
@@ -589,8 +607,8 @@ describe('registerAsk: a blocking ask', () => {
   test('two asks with the same first question each claim their own entry, the second raised first', async () => {
     const h = harness()
     await h.start()
-    const first = h.call(ASK_TOOL, { questions: [BACKEND] })
-    const second = h.call(ASK_TOOL, { questions: [BACKEND, FEATURES] })
+    const first = h.call(ASK_TOOL, { questions: [BACKEND], async: false })
+    const second = h.call(ASK_TOOL, { questions: [BACKEND, FEATURES], async: false })
     await h.settle()
     expect(h.raises.map((r) => r.options.header)).toEqual(['ask-1', 'ask-2'])
     const late = await h.raise(1, answered('second answer'))
@@ -605,7 +623,7 @@ describe('registerAsk: a blocking ask', () => {
     expect(PLUGIN).toBe('sminos')
     const h = harness()
     await h.start()
-    const pending = h.call(ASK_TOOL, { questions: [BACKEND, FEATURES] })
+    const pending = h.call(ASK_TOOL, { questions: [BACKEND, FEATURES], async: false })
     await h.settle()
     const old = await h.raise(0, answered('answer'), { plugin: 'doperpowers', tier: 'user' })
     expect(old.shown[0]?.questions).toEqual([{ ...BACKEND, header: 'ask-1', options: BACKEND.options.map((o) => ({ label: o.label, description: '' })) }])
@@ -615,7 +633,7 @@ describe('registerAsk: a blocking ask', () => {
   test("a model's call carrying a pending token claims nothing; the ask's own raise still does", async () => {
     const h = harness()
     await h.start()
-    const pending = h.call(ASK_TOOL, { questions: [BACKEND, FEATURES] })
+    const pending = h.call(ASK_TOOL, { questions: [BACKEND, FEATURES], async: false })
     await h.settle()
     const forged = await h.call('AskUserQuestion', { questions: [{ ...BACKEND, header: 'ask-1' }] })
     expect(forged.result).toEqual({ deny: WITHDRAWN })
@@ -628,7 +646,7 @@ describe('registerAsk: a blocking ask', () => {
   test('a raise from this plugin with no pending token is refused, and a token claims once', async () => {
     const h = harness()
     await h.start()
-    const pending = h.call(ASK_TOOL, { questions: [BACKEND] })
+    const pending = h.call(ASK_TOOL, { questions: [BACKEND], async: false })
     await h.settle()
     const stray = await h.call('AskUserQuestion', { questions: [{ ...BACKEND, header: 'ask-9' }] }, MOD)
     expect(stray.result).toEqual({ deny: WITHDRAWN })
@@ -641,7 +659,7 @@ describe('registerAsk: a blocking ask', () => {
   test('"Chat about this" returns its text as the error result and the turn goes on', async () => {
     const h = harness()
     await h.start()
-    const pending = h.call(ASK_TOOL, { questions: [BACKEND] })
+    const pending = h.call(ASK_TOOL, { questions: [BACKEND], async: false })
     await h.settle()
     await h.raise(0, refused(CHAT))
     expect((await pending).result).toEqual({ deny: CHAT })
@@ -652,7 +670,7 @@ describe('registerAsk: a blocking ask', () => {
   test('Esc returns its text as the error result and latches the turn: later model calls are refused before they run', async () => {
     const h = harness()
     await h.start()
-    const pending = h.call(ASK_TOOL, { questions: [BACKEND] })
+    const pending = h.call(ASK_TOOL, { questions: [BACKEND], async: false })
     await h.settle()
     await h.raise(0, refused(ESC))
     expect((await pending).result).toEqual({ deny: ESC })
@@ -660,7 +678,7 @@ describe('registerAsk: a blocking ask', () => {
     const write = await h.call('Write', { file_path: 'x.txt', content: 'hi' })
     expect(write.result).toEqual({ deny: LATCHED })
     expect(write.ran).toEqual([])
-    const again = await h.call(ASK_TOOL, { questions: [FEATURES] })
+    const again = await h.call(ASK_TOOL, { questions: [FEATURES], async: false })
     expect(again.result).toEqual({ deny: LATCHED })
     expect(h.raises.length).toBe(1)
 
@@ -674,7 +692,7 @@ describe('the turn a declined ask ends', () => {
   const declined = async (text: string) => {
     const h = harness()
     await h.start()
-    const pending = h.call(ASK_TOOL, { questions: [BACKEND] })
+    const pending = h.call(ASK_TOOL, { questions: [BACKEND], async: false })
     await h.settle()
     await h.raise(0, refused(text))
     await pending
@@ -737,7 +755,7 @@ describe('pictures pasted into the dialog', () => {
     await h.start()
     await h.classicStart('/Users/me/.claude/projects/-work-repo/sess-1.jsonl', 'sess-1')
     h.paste(FOLDER, '1.png') // a prompt's paste, before the ask
-    const pending = h.call(ASK_TOOL, { questions: [BACKEND, FEATURES] })
+    const pending = h.call(ASK_TOOL, { questions: [BACKEND, FEATURES], async: false })
     await h.settle()
     h.paste(FOLDER, '3.jpg', '2.png')
     const text = 'The user answered: "Which backend?"="(Image attached)", "Which features?"="Auth, mine (Image attached)".'
@@ -755,7 +773,7 @@ describe('pictures pasted into the dialog', () => {
     const h = harness()
     await h.start()
     await h.classicStart('/Users/me/.claude/projects/-work-repo/sess-1.jsonl', 'sess-1')
-    const pending = h.call(ASK_TOOL, { questions: [BACKEND] })
+    const pending = h.call(ASK_TOOL, { questions: [BACKEND], async: false })
     await h.settle()
     await h.raise(0, answered('answer'))
     expect((await pending).result).toEqual({ result: 'answer' })
@@ -765,8 +783,8 @@ describe('pictures pasted into the dialog', () => {
     const h = harness()
     await h.start()
     await h.classicStart('/Users/me/.claude/projects/-work-repo/sess-1.jsonl', 'sess-1')
-    const first = h.call(ASK_TOOL, { questions: [BACKEND] })
-    const second = h.call(ASK_TOOL, { questions: [FEATURES] })
+    const first = h.call(ASK_TOOL, { questions: [BACKEND], async: false })
+    const second = h.call(ASK_TOOL, { questions: [FEATURES], async: false })
     await h.settle()
     h.paste(FOLDER, '1.png')
     await h.raise(0, answered('first', { 'Which backend?': 'x (Image attached)' }))
@@ -781,7 +799,7 @@ describe('pictures pasted into the dialog', () => {
     const h = harness({ tmpdir: '/scratch/', dirs: { '/scratch': ['claude-77'], '/scratch/claude-77': [] }, unreadable: [] })
     await h.start()
     await h.classicStart('/p/-repo/s.jsonl', 's')
-    const pending = h.call(ASK_TOOL, { questions: [BACKEND] })
+    const pending = h.call(ASK_TOOL, { questions: [BACKEND], async: false })
     await h.settle()
     h.paste('/scratch/claude-77/-repo/s/images', '1.png')
     await h.raise(0, answered('answer', { 'Which backend?': '(Image attached)' }))
@@ -792,7 +810,7 @@ describe('pictures pasted into the dialog', () => {
     const h = harness({ dirs: { '/tmp': ['other'] }, unreadable: [] })
     await h.start()
     await h.classicStart('/p/-repo/s.jsonl', 's')
-    const pending = h.call(ASK_TOOL, { questions: [BACKEND] })
+    const pending = h.call(ASK_TOOL, { questions: [BACKEND], async: false })
     await h.settle()
     await h.raise(0, answered('answer'))
     expect((await pending).result).toEqual({ result: 'answer' })
@@ -820,7 +838,7 @@ describe('pictures the human kept', () => {
 
   test('a picture pasted and then removed is not sent', async () => {
     const h = await ready()
-    const pending = h.call(ASK_TOOL, { questions: [BACKEND] })
+    const pending = h.call(ASK_TOOL, { questions: [BACKEND], async: false })
     await h.settle()
     h.paste(FOLDER, '1.png') // the store keeps it; the dialog dropped it
     await h.raise(0, answered('The user answered: "Which backend?"="like this".', { 'Which backend?': 'like this' }))
@@ -830,7 +848,7 @@ describe('pictures the human kept', () => {
 
   test('more pastes than marked answers: which were kept is unknown, so none is sent and the debug log says so', async () => {
     const h = await ready()
-    const pending = h.call(ASK_TOOL, { questions: [BACKEND] })
+    const pending = h.call(ASK_TOOL, { questions: [BACKEND], async: false })
     await h.settle()
     h.paste(FOLDER, '1.png', '2.png') // one removed, or both kept in one answer: the mod cannot tell
     await h.raise(0, answered('The user answered: "Which backend?"="x (Image attached)".', { 'Which backend?': 'x (Image attached)' }))
@@ -840,7 +858,7 @@ describe('pictures the human kept', () => {
 
   test('"Chat about this" keeps the refusal and names each kept picture by its real path, one line each', async () => {
     const h = await ready()
-    const pending = h.call(ASK_TOOL, { questions: [BACKEND] })
+    const pending = h.call(ASK_TOOL, { questions: [BACKEND], async: false })
     await h.settle()
     h.paste(FOLDER, '1.png')
     const chat = `${CHAT}\n    Questions asked:\n- "Which backend?"\n  Answer: like this (Image attached)`
@@ -850,7 +868,7 @@ describe('pictures the human kept', () => {
 
   test('"Chat about this" reads a whole answer, over several lines, for its mark', async () => {
     const h = await ready()
-    const pending = h.call(ASK_TOOL, { questions: [BACKEND, FEATURES] })
+    const pending = h.call(ASK_TOOL, { questions: [BACKEND, FEATURES], async: false })
     await h.settle()
     h.paste(FOLDER, '1.png')
     const chat = `${CHAT}\n    Questions asked:\n- "Which backend?"\n  Answer: first line\nsecond line (Image attached)\n- "Which features?"\n  (No answer provided)`
@@ -860,7 +878,7 @@ describe('pictures the human kept', () => {
 
   test('"Chat about this" with notes after an answer: the answer ends where the notes begin', async () => {
     const h = await ready()
-    const pending = h.call(ASK_TOOL, { questions: [BACKEND] })
+    const pending = h.call(ASK_TOOL, { questions: [BACKEND], async: false })
     await h.settle()
     h.paste(FOLDER, '1.png')
     const chat = `${CHAT}\n    Questions asked:\n- "Which backend?"\n  Answer: this (Image attached)\n  User notes: later (Image attached)`
@@ -870,7 +888,7 @@ describe('pictures the human kept', () => {
 
   test('"Chat about this" with a removed picture is the plain refusal', async () => {
     const h = await ready()
-    const pending = h.call(ASK_TOOL, { questions: [BACKEND] })
+    const pending = h.call(ASK_TOOL, { questions: [BACKEND], async: false })
     await h.settle()
     h.paste(FOLDER, '1.png')
     const chat = `${CHAT}\n    Questions asked:\n- "Which backend?"\n  Answer: like this`
@@ -880,7 +898,7 @@ describe('pictures the human kept', () => {
 
   test('Esc sends no pictures', async () => {
     const h = await ready()
-    const pending = h.call(ASK_TOOL, { questions: [BACKEND] })
+    const pending = h.call(ASK_TOOL, { questions: [BACKEND], async: false })
     await h.settle()
     h.paste(FOLDER, '1.png')
     await h.raise(0, refused(ESC))
@@ -937,6 +955,13 @@ describe('isAccepted', () => {
     expect(isAccepted(input, { content: ASYNC_RESULT })).toBe(true)
     expect(isAccepted(input, { content: [{ type: 'text', text: ASYNC_RESULT }] })).toBe(true)
   })
+  test('a call with no async key, by its result: async now, blocking before the default was true', async () => {
+    expect(isAccepted({ questions: [BACKEND] }, { content: ASYNC_RESULT })).toBe(true)
+    expect(isAccepted({ questions: [BACKEND] }, { content: 'Your questions have been answered: "Which backend?"="SQLite". You can now continue with these answers in mind.' })).toBe(false)
+  })
+  test('a stored call with the metadata the tool took before is still accepted', async () => {
+    expect(isAccepted({ ...input, metadata: { source: 'x' } }, { content: ASYNC_RESULT })).toBe(true)
+  })
   test('not a validation refusal, a subagent refusal, a permission denial, or a call with no result', async () => {
     const single = { questions: [question('Pick one?', 'One', ['Only'])], async: true }
     expect(isAccepted(single, { content: `<tool_use_error>${validateQuestions(single)}</tool_use_error>`, is_error: true })).toBe(false)
@@ -969,6 +994,10 @@ describe('an async ask', () => {
     expect(result).toEqual({ result: ASYNC_RESULT })
     expect(h.raises).toEqual([])
     expect(asyncAsks().map((a) => ({ status: a.status, questions: a.questions }))).toEqual([{ status: 'open', questions: [BACKEND, FEATURES] }])
+    // Asking without the key is asking async.
+    expect((await h.call(ASK_TOOL, { questions: [FEATURES] })).result).toEqual({ result: ASYNC_RESULT })
+    expect(h.raises).toEqual([])
+    expect(asyncAsks().map((a) => a.questions)).toEqual([[BACKEND, FEATURES], [FEATURES]])
     expect(ASYNC_RESULT).toBe(
       'Your questions are waiting for the human; this call does not wait for them. Their answer will reach you in a later message that quotes each question. Go on with work that does not depend on it.',
     )
@@ -1073,7 +1102,7 @@ describe('the person told of an ask', () => {
 
   test('a blocking ask notifies as its dialog is raised, once', async () => {
     const h = await ready()
-    const pending = h.call(ASK_TOOL, { questions: [BACKEND] })
+    const pending = h.call(ASK_TOOL, { questions: [BACKEND], async: false })
     await h.settle()
     expect(h.notified()).toEqual(['Which backend?'])
     await h.raise(0, answered(ANSWER))
@@ -1104,7 +1133,7 @@ describe('the person told of an ask', () => {
   test("the engine's reminder that a dialog waits is withheld from the hooks beneath while the ask's dialog stands, and only then", async () => {
     const h = await ready()
     expect(await h.notification('permission_prompt')).toBe(true)
-    const pending = h.call(ASK_TOOL, { questions: [BACKEND] })
+    const pending = h.call(ASK_TOOL, { questions: [BACKEND], async: false })
     await h.settle()
     // Raised, not yet claimed by the engine's call: a reminder now is another dialog's.
     expect(await h.notification('permission_prompt')).toBe(true)
@@ -1211,7 +1240,7 @@ describe('delivery while the model works', () => {
     const id = asyncAsks()[0]?.id ?? ''
     const pressed = h.press(`ask-answer:${id}`)
     await h.settle()
-    const blocking = h.call(ASK_TOOL, { questions: [BACKEND] })
+    const blocking = h.call(ASK_TOOL, { questions: [BACKEND], async: false })
     await h.settle()
     await h.raise(0, answered('answer A'))
     await pressed
@@ -1263,7 +1292,7 @@ describe('delivery while the model works', () => {
 
   test('a turn latched by a declined blocking ask keeps what is held, whatever its reason', async () => {
     const { h, id } = await held()
-    const blocking = h.call(ASK_TOOL, { questions: [FEATURES] })
+    const blocking = h.call(ASK_TOOL, { questions: [FEATURES], async: false })
     await h.settle()
     await h.raise(h.raises.length - 1, refused(ESC))
     expect((await blocking).result).toEqual({ deny: ESC })
@@ -1396,8 +1425,13 @@ describe('a resumed session', () => {
     result('t-done', [{ type: 'text', text: ASYNC_RESULT }]),
     use('t-bad', single),
     result('t-bad', `<tool_use_error>${validateQuestions(single)}</tool_use_error>`, true),
+    // Blocking asks: one written before async defaulted to true carries no key, its result the answer or the refusal.
     use('t-blocking', { questions: [BACKEND] }),
     result('t-blocking', ANSWER),
+    use('t-declined', { questions: [FEATURES] }),
+    result('t-declined', "The user doesn't want to proceed with this tool use.", true),
+    use('t-false', { questions: [BACKEND], async: false }),
+    result('t-false', ANSWER),
     use('t-cut', { questions: [BACKEND], async: true }),
     row({ type: 'attachment', attachment: { type: 'hook_additional_context', content: [deliveryText('t-done', 'Your questions have been answered: "Which features?"="Auth". You can now continue with these answers in mind.')] } }),
     // The model quoting a delivery is not one, nor the queue's record of a prompt that may never have entered.
@@ -1909,12 +1943,12 @@ describe("the snapshot under { plugin: 'sminos', key: 'ask' }: the channel doper
   test("a blocking ask's outcome counts, answered or declined", async () => {
     const h = harness()
     await h.start()
-    const first = h.call(ASK_TOOL, { questions: [BACKEND] })
+    const first = h.call(ASK_TOOL, { questions: [BACKEND], async: false })
     await h.settle()
     await h.raise(0, answered(ANSWER))
     await first
     expect(snapshot(h)).toMatchObject({ answered: 1, isDialogUp: false })
-    const second = h.call(ASK_TOOL, { questions: [FEATURES] })
+    const second = h.call(ASK_TOOL, { questions: [FEATURES], async: false })
     await h.settle()
     await h.raise(1, refused(ESC))
     await second
@@ -2056,12 +2090,12 @@ describe('answered from outside the terminal (the bridge)', () => {
 
   test('a dialog the mod raised is told to the observer as it settles, by its call id, with what the engine returned', async () => {
     const { h, notes } = await opened()
-    const blocking = h.call(ASK_TOOL, { questions: [BACKEND] })
+    const blocking = h.call(ASK_TOOL, { questions: [BACKEND], async: false })
     await h.settle()
     await h.raise(0, answered(ANSWER))
     await blocking
     expect(notes.filter((n) => n.kind === 'dialog')).toEqual([{ kind: 'dialog', toolUseId: 'nested_0', isError: false, text: ANSWER }])
-    const second = h.call(ASK_TOOL, { questions: [BACKEND] })
+    const second = h.call(ASK_TOOL, { questions: [BACKEND], async: false })
     await h.settle()
     await h.raise(1, refused(ESC))
     await second

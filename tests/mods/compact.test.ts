@@ -73,8 +73,9 @@ describe('texts', () => {
     expect(describeCompact(967_000)).toContain('Prefer not to pass 600k')
     expect(describeCompact(967_000)).toContain('a backstop, not the plan')
     expect(describeCompact(967_000)).toContain('never as a percentage of the window')
-    expect(describeCompact(967_000)).toContain('Not during a design discussion, at any size')
-    expect(describeCompact(967_000)).toContain('Prefer not to compact while a decision or work is pending')
+    expect(describeCompact(967_000)).toContain('Not during a design discussion: its state is the conversation itself,')
+    expect(describeCompact(967_000)).toContain('Nor while something is pending: an unanswered question to\nthe human')
+    expect(describeCompact(967_000).endsWith('How: the last tool call of the turn, alone, after pending results have\narrived; then end your turn.')).toBe(true)
   })
 
   test('the compact description tells the model when it is told its size, by the gate', async () => {
@@ -101,7 +102,8 @@ describe('texts', () => {
   test('the offer carries the figures, names the tool, and asks for a line on a decline', async () => {
     const text = offerText({ tokens: 412_300, window: 1_000_000 }, 967_000)
     expect(text).toContain('Context: 412,300 tokens; window 1,000,000.')
-    expect(text).toContain('If you truly think this is the right time to compact, you can compact now with\nmcp__doperpowers__compact (alone, then end your turn')
+    expect(text).toContain('If you truly think this is the right time to compact, you can compact now with\nmcp__doperpowers__compact (alone, then end your turn; its description says when a\ncheckpoint is worth it).')
+    expect(text).not.toContain('ToolSearch')
     expect(text).toContain('reply "Not compacting."')
   })
 
@@ -296,7 +298,7 @@ function harness(
   const registered = () => calls.filter((c) => c.op === 'tool.register').map((c) => (c.args as { name: string }).name)
   const sessionCompact = (e: Record<string, unknown>, beneath: Record<string, unknown> = { messages: [], tokensBefore: 312_400, tokensAfter: 20_000 }) =>
     find('session.compact', e).handler($, e, async () => beneath) as Promise<Record<string, unknown>>
-  return { calls, call, stop, begin, end, turn, enter, settleWaiting, decline, submitted, offers, sessionCompact, mod, engine, settle, registered, state, queue }
+  return { calls, call, stop, begin, end, turn, enter, settleWaiting, decline, submitted, offers, sessionCompact, mod, engine, settle, registered, state, queue, hooks }
 }
 
 describe('registerCompact', () => {
@@ -304,6 +306,10 @@ describe('registerCompact', () => {
     const h = harness()
     await h.mod.start(h.engine, start(true))
     expect(h.registered()).toEqual(['compact'])
+    // Kept inline, out of tool-search deferral: its guidance is in view before any offer.
+    const describe = h.hooks.filter((x) => x.event === 'tool.describe')
+    expect(describe.map((x) => x.matcher)).toEqual([{ tool: 'mcp__doperpowers__compact' }])
+    expect(await describe[0]!.handler(h.engine, { isDeferred: true }, async (e: unknown) => e)).toMatchObject({ isDeferred: false })
     const spec = h.calls.find((c) => c.op === 'tool.register' && (c.args as { name: string }).name === 'compact')?.args as { description: string }
     expect(spec.description).toContain('at about 967,000')
     expect(spec.description).toContain('from 300,000 tokens on')

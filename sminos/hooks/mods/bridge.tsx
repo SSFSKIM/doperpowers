@@ -7,7 +7,7 @@ import { OFF_LINE, ON_LINE, isCuaEnabled, isLiveMarker, verdictOf } from './brid
 import type { Guard, Place, Verdict } from './bridge-place'
 import { EFFORTS, RESPAWN_FIRST_MS, RESPAWN_STEP_MS, capped, isEffort, loopKey, message, parsed, state } from './bridge-state'
 import type { Answer, Command, Decision, DeliveryKey, Override, Request, Steer, Stops, Wake } from './bridge-state'
-import { adoptKept, adoptSeed, emit, endStep, forgetLive, poster, pump, releaseStepEnd, requeue, resyncEvent, stopChild } from './bridge-stream'
+import { adoptKept, adoptSeed, emit, endStep, forgetLive, poster, pump, releaseStepEnd, requeue, resyncEvents, stopChild } from './bridge-stream'
 import {
   CHECKS_KEPT,
   askCallFor,
@@ -1062,7 +1062,7 @@ function onLine($: EngineInterface, generation: number, line: string) {
     }
     // A new child knows nothing of the session: what it started as, then
     // where it stands. What was queued for no child is in that state.
-    requeue([{ type: 'session', phase: 'start', session: state.session, ...state.info, t: Date.now() }, resyncEvent()])
+    requeue([{ type: 'session', phase: 'start', session: state.session, ...state.info, t: Date.now() }, ...resyncEvents()])
     pump()
     return
   }
@@ -1177,7 +1177,7 @@ function awaitNextSession(tries = 0) {
         state.after?.(CLEAR_POLL_MS, () => awaitNextSession(tries + 1))
       } else {
         state.isEnding = false
-        state.queue.push(resyncEvent())
+        state.queue.push(...resyncEvents())
         pump()
       }
     },

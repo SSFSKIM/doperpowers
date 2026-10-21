@@ -186,13 +186,18 @@ and passes, which costs at most one appeal the agent can no longer file.
 ### The appeal tool
 
 Registered at `session.start` as `appeal` (`mcp__doperpowers__appeal`), kept
-inline by a `tool.describe` hook (`isDeferred: false`) as the compact mod does,
+inline by a `tool.describe` hook (`isDeferred: false`) as the compact mod does
+(reversed 2026-10-20: the tool is deferred, and the block's notice names the
+ToolSearch query that loads it; Decision Log),
 in every loop — subagents included, which is where fact 3's blocks live. Input
 schema: `block` (string, required), `argument` (string, required). Its
-description, verbatim:
+description, verbatim (2026-10-21: the sentence "The classifier lacks
+context and can misjudge a legitimate call; read its block critically, and
+appeal when you think the call was legitimate" moved to the owner's global
+CLAUDE.md, and the first line was shortened to match):
 
 ```
-Appeal a block by auto mode's classifier. The classifier lacks context and can misjudge a legitimate call; read its block critically, and appeal when you think the call was legitimate: it misread what the call does or touches, or the user's own words authorize it (for a subagent, in the main conversation too). An independent judge rules. Not for an action the user has not authorized: that is a question for the user.
+Appeal a block by auto mode's classifier when the call was legitimate: it misread what the call does or touches, or the user's own words authorize it (for a subagent, in the main conversation too). An independent judge rules. Not for an action the user has not authorized: that is a question for the user.
 - block: the id from the block's notice (b1, b2, …).
 - argument: the facts and where they are (a user message, an answer to your question, an earlier call or result, CLAUDE.md); the judge checks each, and a claim it cannot find counts against you.
 One appeal per block, before you stop or work around it. Granted: run the identical call again (only its description may differ). Upheld: the response says what would change the verdict; ask the user that if the action is still needed.
@@ -803,6 +808,15 @@ Dependencies: the engine's `$.model.complete`, `$.session.messages`,
   write and escalate. The plan-executor route stays the default for other
   specs.
   Date/Author: 2026-10-17, the authoring session.
+- Decision: the owner reversed the inline placement: the appeal tool, like
+  compact, is deferred behind tool search wherever it is on (the
+  `tool.describe` hook is gone, 7.202.0). The block's notice, the moment
+  the model needs the tool, names it, says its description says when an
+  appeal fits, and gives the `select:mcp__doperpowers__appeal` query that
+  loads it; a tool loaded before a compaction stays loaded.
+  Rationale: the description sat in every request of every loop, subagents
+  included, for a tool the model reaches only after the plugin's own notice.
+  Date/Author: 2026-10-20, the owner's decision.
 
 ## Outcomes & Retrospective
 
