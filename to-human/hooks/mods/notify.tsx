@@ -6,20 +6,33 @@ import { parse } from './to-human'
 const PREVIEW = 200
 
 /**
- * What a row's notification says: the first message it sends, as one line,
- * the markup a banner would show raw (backticks, emphasis, a link's target,
- * the critical block's rules) dropped. Undefined for a row that sends none.
+ * What a message's notification says, whether it was sent as a span or
+ * through the message tool: the message as one line, the markup a banner
+ * would show raw (backticks, emphasis, a link's target, the critical block's
+ * rules) dropped, cut to a banner's length. Undefined when nothing is left.
+ */
+export function previewLine(text: string): string | undefined {
+  const line = text
+    .replace(/\[([^\]]*)\]\((?:[^()]|\([^()]*\))*\)/g, '$1')
+    .replace(/`|\*\*|─+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (line === '') return undefined
+  return line.length > PREVIEW ? `${line.slice(0, PREVIEW - 1)}…` : line
+}
+
+/**
+ * What a row's notification says: its first message that says something
+ * (`previewLine`). Undefined for a row that sends none. A `tool_use` block
+ * raises nothing here: the message tool notifies from its call, once the call
+ * is accepted.
  */
 export function previewOf(content: readonly { type: string; [field: string]: unknown }[]): string | undefined {
   for (const block of content) {
     if (block.type !== 'text' || typeof block.text !== 'string') continue
     for (const span of parse(block.text).spans) {
-      const line = span.text
-        .replace(/\[([^\]]*)\]\((?:[^()]|\([^()]*\))*\)/g, '$1')
-        .replace(/`|\*\*|─+/g, ' ')
-        .replace(/\s+/g, ' ')
-        .trim()
-      if (line !== '') return line.length > PREVIEW ? `${line.slice(0, PREVIEW - 1)}…` : line
+      const line = previewLine(span.text)
+      if (line !== undefined) return line
     }
   }
   return undefined
