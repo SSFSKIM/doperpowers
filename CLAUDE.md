@@ -1,4 +1,4 @@
-# Doperpowers — Contributor Guidelines
+# Doperpowers
 
 `doperpowers` is a personal fork of `obra/superpowers` — a multi-harness plugin
 (mostly *skills*) that gives coding agents a full software-development
@@ -8,14 +8,6 @@ finish). Skills load from `skills/` and are invoked via the `Skill` tool.
 The fork is for personal use. Staying in sync with upstream is **not** a goal,
 so tracked upstream files may be edited directly — do not contort a design into
 fork-only indirection for merge-safety.
-
-## "Compliance" changes to skills
-
-Our internal skill philosophy differs from Anthropic's published guidance on writing skills. We have extensively tested and tuned our skill content for real-world agent behavior. Changes that restructure, reword, or reformat skills to "comply" with Anthropic's skills documentation will not be accepted without extensive eval evidence showing the change improves outcomes. The bar for modifying behavior-shaping content is very high.
-
-## Bulk or spray-and-pray PRs
-
-Do not trawl the issue tracker and open PRs for multiple issues in a single session. Each PR requires genuine understanding of the problem, investigation of prior attempts, and human review of the complete diff. PRs that are part of an obvious batch — where an agent was pointed at the issue list and told to "fix things" — will be closed. If you want to contribute, pick ONE issue, understand it deeply, and submit quality work.
 
 ## Golden Rule: Simplicity-First Protocols
 
@@ -35,17 +27,12 @@ Skills are not prose — they are code that shapes agent behavior. If you modify
 
 - Use `doperpowers:writing-skills` to develop and test changes
 - Run pressure testing appropriate to the skill's consumers and failure modes
-- Show before/after eval results in your PR
 - Follow the essentialist principle: a skill carries only what the reading model cannot derive itself — validated knowledge, interfaces, defaults with their reasons — and leaves room for situational judgment. Adding constraint or enforcement machinery needs eval evidence of the failure it prevents.
 - "Your human partner" language is deliberate — don't rewrite the project's voice.
 
 ## Eval harness
 
 Skill-behavior evals live in [superpowers-evals](https://github.com/prime-radiant-inc/superpowers-evals/), cloned into `evals/` — see `evals/README.md` for setup. The harness drives real tmux sessions of Claude Code / Codex and judges skill compliance with an LLM verifier. Plugin-infrastructure tests still live at `tests/`.
-
-## Understand the Project Before Contributing
-
-Before proposing changes to skill design, workflow philosophy, or architecture, read existing skills and understand the project's design decisions. Doperpowers has its own tested philosophy about skill design, agent behavior shaping, and terminology (e.g., "your human partner" is deliberate, not interchangeable with "the user"). Changes that rewrite the project's voice or restructure its approach without understanding why it exists will be rejected.
 
 ## Upstream: cherry-pick, never merge
 
@@ -110,7 +97,7 @@ attached the first time a session reads a file beneath it.
 | `archive/` | Retired skills kept for reference, not loaded by any harness; what each was, and where its surviving rules live, is in `archive/CLAUDE.md`. |
 | `docs/` | Harness porting/install docs + `docs/doperpowers/{plans,specs}` design history. |
 | `evals/` | Skill-behavior eval harness (`superpowers-evals`), **gitignored** — cloned in separately, not part of the plugin. |
-| `.github/` | `PULL_REQUEST_TEMPLATE.md` (strict — see upstream `CLAUDE.md`), issue templates. |
+| `.github/` | `PULL_REQUEST_TEMPLATE.md`, issue templates. |
 
 ## Testing & validation
 
