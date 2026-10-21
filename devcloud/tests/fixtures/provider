@@ -1,0 +1,189 @@
+#!/usr/bin/env python3
+"""A stand-in provider (the driver's I13) for the driver's tests.
+
+Its servers, images and labels live in the JSON file `$FAKE_PROVIDER_STATE`,
+with a `behavior` object a test sets to make it misbehave:
+
+  capabilities   info's list (default user_data, images)
+  refuse         {op: kind}: exit 3 with {"error", "kind"}
+  fail           {op: exit code}: that exit, `stderr` (below) on stderr
+  hang           [op]: sleep far past any timeout
+  garbage        [op]: stdout that is not JSON
+  stderr         a line printed on stderr by every call; `{env:NAME}` is
+                 replaced by that variable's value (the scrub's test)
+  alter_label    create stores this label changed: {key: value}
+  list_unlabeled list also returns a server without the devcloud label
+  keep_deleted   list still returns deleted servers
+  state_word     the state every server reports (default running)
+  now            created time for new servers (default the clock)
+  drop_on_set    set-labels drops this label key
+
+Every call is appended to `calls` ({op, argv, input, env}); `record_env`
+names the variables whose values a call records."""
+import fcntl
+import json
+import os
+import sys
+import time
+
+
+def main():
+    path = os.environ["FAKE_PROVIDER_STATE"]
+    op = sys.argv[1] if len(sys.argv) > 1 else None
+    raw = sys.stdin.read()
+    with open(path, "r+") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        state = json.load(f)
+        code, out, err = handle(state, op, raw)
+        f.seek(0)
+        f.truncate()
+        json.dump(state, f, indent=1)
+    if err:
+        print(err, file=sys.stderr)
+    if out is not None:
+        sys.stdout.write(out if isinstance(out, str) else json.dumps(out))
+    sys.exit(code)
+
+
+def stderr_line(behavior):
+    line = behavior.get("stderr")
+    if not line:
+        return None
+    for name, value in os.environ.items():
+        line = line.replace("{env:%s}" % name, value)
+    return line
+
+
+def handle(state, op, raw):
+    behavior = state.setdefault("behavior", {})
+    for key in ("servers", "images", "deleted", "calls"):
+        state.setdefault(key, [])
+    try:
+        request = json.loads(raw) if raw.strip() else None
+    except ValueError:
+        request = "<not json>"
+    state["calls"].append({"op": op, "argv": sys.argv[1:], "input": request,
+                           "env": {k: os.environ.get(k) for k in behavior.get("record_env", [])}})
+    err = stderr_line(behavior)
+    if op in behavior.get("hang", []):
+        # Save the call before sleeping: the test reads it after the kill.
+        return_after_save(state)
+        time.sleep(3600)
+    if op in behavior.get("garbage", []):
+        return 0, "this is not json", err
+    if op in behavior.get("refuse", {}):
+        return 3, {"error": f"{op} refused by the stand-in", "kind": behavior["refuse"][op]}, err
+    if op in behavior.get("fail", {}):
+        return int(behavior["fail"][op]), None, err
+    if not isinstance(request, dict):
+        return 2, None, "usage: provider <op> < one JSON object"
+    fn = OPS.get(op)
+    if fn is None:
+        return 2, None, f"unknown op {op!r}"
+    return 0, fn(state, request, behavior), err
+
+
+def return_after_save(state):
+    path = os.environ["FAKE_PROVIDER_STATE"]
+    tmp = path + ".hang"
+    with open(tmp, "w") as f:
+        json.dump(state, f)
+    os.replace(tmp, path)
+
+
+def public(server, behavior):
+    vm = {k: v for k, v in server.items() if not k.startswith("_")}
+    vm["state"] = behavior.get("state_word", server.get("state", "running"))
+    return vm
+
+
+def info(state, request, behavior):
+    return {"protocol": 1, "capabilities": behavior.get("capabilities", ["user_data", "images"])}
+
+
+DEFAULT_TYPES = [
+    {"type": "small", "vcpus": 2, "memory_gb": 4, "disk_gb": 40, "available": True, "hourly_price": 0.01},
+    {"type": "medium", "vcpus": 4, "memory_gb": 8, "disk_gb": 160, "available": True, "hourly_price": 0.1178,
+     "currency": "EUR"},
+    {"type": "big", "vcpus": 16, "memory_gb": 32, "disk_gb": 360, "available": True, "hourly_price": 0.5},
+    {"type": "bigdisk", "vcpus": 8, "memory_gb": 16, "disk_gb": 600, "available": True, "hourly_price": 0.3},
+    {"type": "gone", "vcpus": 1, "memory_gb": 1, "disk_gb": 20, "available": False, "hourly_price": 0.005},
+]
+
+
+def types(state, request, behavior):
+    return state.get("types", {}).get(request.get("location"), DEFAULT_TYPES)
+
+
+def create(state, request, behavior):
+    state["next_id"] = state.get("next_id", 100) + 1
+    labels = dict(request["labels"])
+    labels.update(behavior.get("alter_label", {}))
+    server = {"id": str(state["next_id"]), "name": request["name"], "location": request["location"],
+              "type": request["type"], "labels": labels, "public_ipv4": f"203.0.113.{state['next_id'] % 250}",
+              "state": "running", "created": int(behavior.get("now", time.time())),
+              "_user_data": request.get("user_data"), "_ssh_keys": request.get("ssh_public_keys"),
+              "_image": request.get("image"), "_disk_gb": request.get("disk_gb"), "_spot": request.get("spot")}
+    state["servers"].append(server)
+    return public(server, behavior)
+
+
+def list_(state, request, behavior):
+    servers = [s for s in state["servers"] if "devcloud" in s["labels"]]
+    if behavior.get("list_unlabeled"):
+        servers.append({"id": "9999", "name": "someone-elses", "location": "x", "type": "small", "labels": {},
+                        "public_ipv4": None, "state": "running", "created": 0})
+    if behavior.get("keep_deleted"):
+        servers += state["deleted"]
+    return [public(s, behavior) for s in servers]
+
+
+def find(state, server_id):
+    return next((s for s in state["servers"] if s["id"] == str(server_id)), None)
+
+
+def get(state, request, behavior):
+    server = find(state, request["id"])
+    return public(server, behavior) if server else None
+
+
+def set_labels(state, request, behavior):
+    server = find(state, request["id"])
+    if server is None:
+        raise SystemExit(1)
+    labels = dict(request["labels"])
+    labels.pop(behavior.get("drop_on_set", ""), None)
+    server["labels"] = labels
+    return public(server, behavior)
+
+
+def delete(state, request, behavior):
+    server = find(state, request["id"])
+    if server is not None:
+        state["servers"].remove(server)
+        state["deleted"].append(server)
+    return {}
+
+
+def image_create(state, request, behavior):
+    state["next_id"] = state.get("next_id", 100) + 1
+    image = {"id": f"img-{state['next_id']}", "name": request["name"], "labels": dict(request["labels"]),
+             "created": int(behavior.get("now", time.time())), "_from": request["id"]}
+    state["images"].append(image)
+    return {k: v for k, v in image.items() if not k.startswith("_")}
+
+
+def images(state, request, behavior):
+    return [{k: v for k, v in i.items() if not k.startswith("_")} for i in state["images"] if "devcloud" in i["labels"]]
+
+
+def image_delete(state, request, behavior):
+    state["images"] = [i for i in state["images"] if i["id"] != request["id"]]
+    return {}
+
+
+OPS = {"info": info, "types": types, "create": create, "list": list_, "get": get, "set-labels": set_labels,
+       "delete": delete, "image-create": image_create, "images": images, "image-delete": image_delete}
+
+if __name__ == "__main__":
+    main()

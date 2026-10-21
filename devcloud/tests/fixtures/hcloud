@@ -1,0 +1,187 @@
+#!/usr/bin/env python3
+"""The stand-in `hcloud`: state in the JSON file $FAKE_HCLOUD_STATE (servers, images, ssh_keys,
+server_types, next_id, calls, fail). Every invocation's argv is appended to `calls`. It exits 99
+when HCLOUD_TOKEN is unset, HCLOUD_CONTEXT is set, or `--config` is missing, so a provider that
+would read the person's own contexts fails loudly. `fail["<cmd> <sub>"] = {"code", "stderr"}`
+makes that command fail. Output is shaped like hcloud v1.69's, reduced to the fields devcloud reads."""
+import json
+import os
+import sys
+
+ARGV = sys.argv[1:]
+STATE_PATH = os.environ["FAKE_HCLOUD_STATE"]
+with open(STATE_PATH) as f:
+    state = json.load(f)
+state.setdefault("calls", []).append(ARGV)
+
+
+def save():
+    with open(STATE_PATH, "w") as f:
+        json.dump(state, f, indent=1)
+
+
+def die(code, message):
+    save()
+    sys.stderr.write(message.rstrip("\n") + "\n")
+    sys.exit(code)
+
+
+def out(value):
+    save()
+    print(json.dumps(value, indent=2))
+    sys.exit(0)
+
+
+if not os.environ.get("HCLOUD_TOKEN"):
+    die(99, "fake hcloud: HCLOUD_TOKEN is not set")
+if "HCLOUD_CONTEXT" in os.environ:
+    die(99, "fake hcloud: HCLOUD_CONTEXT is set")
+if ARGV[:1] != ["--config"] or len(ARGV) < 2:
+    die(99, "fake hcloud: --config <path> must come first")
+
+# Parse: positionals, single-valued flags, repeatable flags, booleans.
+REPEATED = {"--label", "--ssh-key", "--user-data-from-file"}
+BOOLEAN = {"--overwrite"}
+SHORT = {"-o": "--output", "-l": "--selector", "-t": "--type"}
+words, flags = [], {}
+args = ARGV[2:]
+i = 0
+while i < len(args):
+    a = args[i]
+    if a.startswith("-"):
+        if a == "-o" and words[:2] == ["server", "create-image"]:
+            die(1, "hcloud: unknown shorthand flag: 'o' in -o")
+        name = SHORT.get(a, a)
+        if name in BOOLEAN:
+            flags[name] = True
+            i += 1
+            continue
+        value = args[i + 1]
+        if name in REPEATED:
+            flags.setdefault(name, []).append(value)
+        else:
+            flags[name] = value
+        i += 2
+    else:
+        words.append(a)
+        i += 1
+
+command = " ".join(words[:2])
+rest = words[2:]
+if command in state.get("fail", {}):
+    failure = state["fail"][command]
+    die(failure.get("code", 1), failure["stderr"])
+
+
+def matches(labels, selector):
+    if not selector:
+        return True
+    for req in selector.split(","):
+        key, eq, value = req.partition("=")
+        if key not in labels or (eq and labels[key] != value):
+            return False
+    return True
+
+
+def labels_from(pairs):
+    return dict(p.split("=", 1) for p in pairs or [])
+
+
+def find(kind, ref, noun):
+    for item in state[kind]:
+        if str(item["id"]) == ref or item.get("name") == ref:
+            return item
+    die(1, f"hcloud: {noun} not found: {ref}")
+
+
+def new_id():
+    n = state.get("next_id", 1000)
+    state["next_id"] = n + 1
+    return n
+
+
+NOW = "2026-10-21T05:00:00+00:00"
+json_out = flags.get("--output") == "json"
+
+if command == "server list":
+    out([s for s in state["servers"] if matches(s.get("labels", {}), flags.get("--selector"))])
+elif command == "server describe":
+    out(find("servers", rest[0], "Server"))
+elif command == "server create":
+    stype = find("server_types", flags["--type"], "Server Type")
+    keys = [find("ssh_keys", ref, "SSH Key")["id"] for ref in flags.get("--ssh-key", [])]
+    sid = new_id()
+    server = {
+        "id": sid, "name": flags["--name"], "status": "running", "created": NOW,
+        "labels": labels_from(flags.get("--label")),
+        "server_type": {"id": stype["id"], "name": stype["name"]},
+        "datacenter": {"name": flags["--location"] + "-dc1", "location": {"name": flags["--location"]}},
+        "public_net": {"ipv4": {"ip": f"203.0.113.{sid % 256}"}, "ipv6": None},
+        "image": {"name": flags["--image"]},
+        "_ssh_keys": keys,
+    }
+    for path in flags.get("--user-data-from-file", []):
+        with open(path) as f:
+            server["_user_data"] = f.read()
+    state["servers"].append(server)
+    if json_out:
+        out({"server": server, "root_password": "fake-root-password", "action": {"id": new_id()}})
+    save()
+    print(f"Server {sid} created")
+elif command == "server delete":
+    server = find("servers", rest[0], "Server")
+    state["servers"].remove(server)
+    save()
+    print(f"Server {server['id']} deleted")
+elif command == "server add-label":
+    server = find("servers", rest[0], "Server")
+    new = labels_from(rest[1:])
+    clash = [k for k in new if k in server["labels"]]
+    if clash and not flags.get("--overwrite"):
+        die(1, f"hcloud: label {clash[0]} on Server {server['id']} already exists")
+    server["labels"].update(new)
+    save()
+elif command == "server remove-label":
+    server = find("servers", rest[0], "Server")
+    for key in rest[1:]:
+        if key not in server["labels"]:
+            die(1, f"hcloud: label {key} on Server {server['id']} does not exist")
+        del server["labels"][key]
+    save()
+elif command == "server create-image":
+    server = find("servers", rest[0], "Server")
+    iid = new_id()
+    state["images"].append({
+        "id": iid, "type": flags["--type"], "status": "available", "name": None,
+        "description": flags.get("--description"), "created": NOW,
+        "labels": labels_from(flags.get("--label")), "created_from": {"id": server["id"], "name": server["name"]},
+    })
+    save()
+    print(f"Image {iid} created from Server {server['id']}")
+elif command == "server-type list":
+    out(state["server_types"])
+elif command == "server-type describe":
+    out(find("server_types", rest[0], "Server Type"))
+elif command == "image list":
+    kinds = flags.get("--type")
+    out([i for i in state["images"]
+         if (not kinds or i["type"] in kinds.split(",")) and matches(i.get("labels", {}), flags.get("--selector"))])
+elif command == "image describe":
+    out(find("images", rest[0], "Image"))
+elif command == "image delete":
+    image = find("images", rest[0], "Image")
+    state["images"].remove(image)
+    save()
+    print(f"Image {image['id']} deleted")
+elif command == "ssh-key list":
+    out(state["ssh_keys"])
+elif command == "ssh-key create":
+    key = {"id": new_id(), "name": flags["--name"], "public_key": flags["--public-key"],
+           "fingerprint": "fake", "labels": labels_from(flags.get("--label")), "created": NOW}
+    state["ssh_keys"].append(key)
+    if json_out:
+        out({"ssh_key": key})
+    save()
+    print(f"SSH key {key['id']} created")
+else:
+    die(1, f"fake hcloud: unsupported command: {' '.join(words)}")
