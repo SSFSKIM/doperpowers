@@ -481,10 +481,12 @@ beside its state. Sources, in order; the first present wins:
 1. The latest `in-charge` event with `source` `set`: `sminos charge
    [<alias>] "one line"` from the session or the operator, or `spawn
    --brief`. Explicit, and more specific than a name.
-2. The harness name, when the human set it (`name_source` `user`):
+2. The latest `in-charge` event with `source` `derived` (below).
+3. The harness name, when the human set it (`name_source` `user`):
    "현우진", "interactive learning". A name is a responsibility more often
-   than not, and the human chose it.
-3. The latest `in-charge` event with `source` `derived` (below).
+   than not, and the human chose it, so it stands as the line until the
+   session's first derive; a derived line says more than a few words can
+   (the charge names design, 2026-10-21).
 4. The session's title, as the harness names it ("Session name" in
    `/status`): the latest `custom-title` record of its transcript (set by
    `/rename`; an empty one clears it), else the latest `ai-title`, which
@@ -517,9 +519,12 @@ derivation would join a phantom member and, since the fork runs under the
 output style, record its answer as a host message. The answer is the
 `result` field of the last JSON object on stdout, stripped of marks, first
 line, at most 120 characters. `derive` runs only for a local member with no
-source 1–2 line, at least 10 human prompts in its transcript, and no
-`derived` event in the last six hours; `--all` applies that to every local
-member. The daemon runs `derive --all` hourly (§8). The cost is one model
+`set` line, at least 10 tool calls by its model (the `tool_use` blocks of
+its main conversation's assistant records), and no `derived` event in the
+last six hours; `--all` applies that to every local member but one whose
+fork failed within the hour. The daemon runs `derive --all` every five
+minutes (§8), so a member's first line comes within about five minutes of
+its tenth tool call; a run that refuses everyone costs about a second. The cost is one model
 call that reads the parent's prompt cache when the session was active
 within the cache's hour, and rebuilds it otherwise.
 
@@ -666,7 +671,7 @@ per tick):
    a local `say` would, and settle per §4.
 5. **Push.** Commit what this tick appended and push, so a state published
    in this tick reaches the remote in this tick.
-6. **Derive.** Once an hour, start `derive --all` as a child process and
+6. **Derive.** Every five minutes, start `derive --all` as a child process and
    do not wait for it — a fork's model call can take minutes, and the
    delivery interval must not; one derivation in flight at a time.
 
@@ -1532,7 +1537,8 @@ Dispatch scripts: one `--brief` each.
     `--json`) and never moves the chat cursor. A shared cursor would
     mark host messages read when a member's `chat` advanced past them.
     `--host --kind` is refused.
-  - `charge_source` values: `set`, `name` (§5 source 2), `derived`,
+  - `charge_source` values: `set`, `derived`, `name` (§5 source 3, since
+    the charge names design of 2026-10-21 put it behind `derived`),
     `title` (source 4), or `""`. An empty `set` or `derived` line counts
     as absent, so `charge <m> ""` clears it. `list` and the chart do not
     repeat a user-set name as the line; `--json` and the TUI carry it.
@@ -1545,7 +1551,10 @@ Dispatch scripts: one `--brief` each.
     the pid marker is written before `claude` can register. It runs in
     the session's cwd so that `--resume` finds the transcript. A human
     prompt is a `user` record whose `origin` is absent or `human`, and
-    which is not meta, not a sidechain, and not a tool result.
+    which is not meta, not a sidechain, and not a tool result. (Since the
+    charge names design of 2026-10-21 the threshold counts the model's
+    tool calls instead, and an owner-named member is no longer refused:
+    its line is derived and its name left alone.)
     `SMINOS_DERIVE_TIMEOUT` exists for tests. The `ai-title` lookup
     reads only the transcript's last 8 MiB.
   - The mark grammar is its own module, `sminos_marks.py`, checked

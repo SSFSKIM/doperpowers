@@ -41,9 +41,11 @@ member too, seat-less, from the first call that reads its project.
     sminos join     <project> | --cwd                     # this session's project, declared: a session is in
                    its launch directory's project (a `cd` moves nothing) until it joins another; --cwd goes
                    back; alone: which project it is in, and why. Not for a seat
-    sminos derive   <member> | --all                      # ask a session its line, by a headless internal fork;
-                   a session under a name the engine made up (or one sminos gave it) is also asked for a
-                   charge name, handed to it as $SMINOS_HOME/names/<session>.json for its next prompt
+    sminos derive   <member> | --all                      # ask a session its line, by a headless internal fork,
+                   once its model made ten tool calls; a session under a name the engine made up (or one sminos
+                   gave it) is also asked for a charge name, handed to its name mod as
+                   $SMINOS_HOME/names/<session>.json. --all (the daemon's, every five minutes) holds a member
+                   whose fork failed out for an hour
     sminos name-due --session <id>                        # the name mod's check: the session's pending
                    name when it is due, else nothing (not for a person to run)
     sminos record                                         # the Stop / SessionStart hook's verb (payload on stdin);
@@ -2019,7 +2021,7 @@ class Member(NamedTuple):
     session: str
     short: str
     alias: str
-    name_source: str      # seat | charge | the engine's (user, derived, auto, hook, peer, collision)
+    name_source: str      # seat | the engine's (user, derived, auto, hook, peer, collision)
     machine: str
     local: bool
     state: str            # one of STATES; for a remote member its last published word, or ""
@@ -2497,11 +2499,6 @@ def join_on_sight(project, sid, seat, peer, running, by=None, recheck=None, mark
             if old:
                 held = own_alias(_own_events(project, old), old)
         alias, source = held_alias(*held, peer, sid, shadowing(project, sid))
-        if running and alias:
-            # A resumed session's engine says `user` for the charge name it
-            # restored: joined under sminos's own label, as _member reads it.
-            events = log_read(project, kinds=MEMBERSHIP + ("in-charge",))
-            source = own_name_source(alias, source, peer, events, (sid,) + tuple(lineage(sid, _projection(events))))
         fields = joined_fields(alias or sid[:8], source or "derived",
                                launch_cwd(sid, fallback=str(peer.get("cwd") or ""), fresh=True), by=by,
                                session_kind=str(peer.get("kind") or ""))
@@ -2849,8 +2846,8 @@ def logged_alias(sid, info):
 
 def charge_of(member, events, title=True, published=""):
     """(line, source, ts): what a member is in charge of, the first present of
-    (§5) the latest `set` in-charge line, the name the human gave it, the
-    latest `derived` line, and its title — read from its transcript on this
+    (§5) the latest `set` in-charge line, the latest `derived` line, the name
+    the human gave it, and its title — read from its transcript on this
     machine, else the one its machine `published` (`titled`); ("", "", "")
     when none is. `ts` is the line's event's, "" for a line no event wrote (a
     name, a title). A set or derived line written empty is no line. `events`
@@ -2860,7 +2857,7 @@ def charge_of(member, events, title=True, published=""):
     member continues (`former`) is the member's."""
     sessions = (member.session,) + tuple(member.former)
     mine = [e for e in events if e["kind"] == "in-charge" and e.get("session") in sessions]
-    for source in ("set", "name", "derived", "title"):
+    for source in ("set", "derived", "name", "title"):
         ts = ""
         if source == "name":
             line = member.alias if member.name_source == "user" else ""
@@ -2901,29 +2898,6 @@ def proposed_names(events, sessions):
     return {e["name"] for e in named}, (latest["name"] if latest else "")
 
 
-def own_name_source(alias, source, rec, in_charge, sessions):
-    """A seat-less session's name source, read on its own machine from its
-    running engine record `rec`: `charge` when its alias is one of the names
-    sminos proposed for it (proposed_names over its `in_charge` events, of
-    `sessions`) and the record's name too; else `source`, the one held_alias
-    gave. The engine cannot say which names are sminos's: it registers a
-    hook's name `hook` and restores it as `user` on a resume, so its label
-    would turn sminos's name into the owner's after one resume. The proviso
-    keeps an owner's rename that held_alias hides (a collision, a shadowed
-    name) from reading as sminos's: an alias the log calls `charge` that the
-    running engine no longer holds takes the record's source. With no
-    record (another machine's member, a stopped one) the source is the one
-    its machine last published, so every reader reads one label."""
-    if not rec:
-        return source
-    names, _ = proposed_names(in_charge, sessions)
-    if alias in names and str(rec.get("name") or "") == alias:
-        return "charge"
-    if source == "charge":
-        return str(rec.get("nameSource") or "derived")
-    return source
-
-
 def _member(sid, r, seat, peer, local, title=True, info=None, shadowed=None):
     """One row of the projection: what the log says of the session, and, on
     this machine, its seat record and its process. A session that continues
@@ -2949,8 +2923,6 @@ def _member(sid, r, seat, peer, local, title=True, info=None, shadowed=None):
     # charge_of reads each writer's events in seq order, and one writer (a
     # remote operator) may have set a line for each session of the chain.
     in_charge = sorted((e for x in chain for e in x["in_charge"]), key=lambda e: (e["writer"], e["seq"]))
-    if not seat:
-        name_source = own_name_source(alias, name_source, rec, in_charge, (sid,) + former)
     if not local:
         published = (r or {}).get("state") or {}
         state_word, age = str(published.get("state") or ""), (ts_age(published["ts"]) if published else None)
@@ -4796,9 +4768,13 @@ def chat_host(project, a):
 DERIVE_QUESTION = ("In one line: what is this session in charge of in this project — its standing responsibility, "
                    "not its latest step?")
 DERIVE_PROMPT = DERIVE_QUESTION + " Answer with the line only."
-DERIVE_MIN_PROMPTS = 10
+DERIVE_MIN_TOOL_CALLS = 10
 DERIVE_EVERY = 6 * 3600
 DERIVE_LINE_MAX = 120
+# A member whose fork failed is held out of `derive --all` this long (the
+# daemon runs it every five minutes, and a fork that timed out tends to time
+# out again); a derive that names the member does not wait.
+DERIVE_RETRY = 3600
 
 # A member sminos may name (charge_naming) is asked for a charge name with its
 # line: the prompt is naming_prompt's, and the answer's name is kept only in
@@ -4806,7 +4782,8 @@ DERIVE_LINE_MAX = 120
 NAMING_ASK = ("On a second line, name the session after that responsibility: `name: ` followed by 2 to 4 lowercase "
               "English words joined by hyphens, specific enough that another session reading only the name knows "
               "what this one owns. Leave out the project's name, which is shown beside it.")
-NAMING_KEEP = " Its current name is `%s`: keep it unless the responsibility has changed so that it no longer fits."
+NAMING_KEEP = (" Its current name is `%s`: keep it unless it no longer describes the standing responsibility well, "
+               "because the responsibility changed or became clearer than when the name was chosen.")
 NAMING_TAKEN = " Taken by other sessions: %s."
 CHARGE_NAME_RE = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+){1,3}")
 CHARGE_NAME_MAX = 48
@@ -4863,43 +4840,37 @@ class DeriveFailed(Exception):
         self.reason, self.stderr = reason, stderr
 
 
-def human_prompts(path, enough):
-    """How many prompts the human typed into a transcript, counted up to
-    `enough`: user records that are neither a tool's result, nor a delivery
-    (a peer's frame, a plugin's or a notification's prompt), nor meta."""
-    n = 0
+def model_tool_calls(path, enough):
+    """How many tool calls the session's own model made in a transcript,
+    counted up to `enough`: the tool_use blocks of its main conversation's
+    assistant records (a subagent's sidechain is not its own), each block
+    once. Stops at `enough`, so a long transcript is read only that far."""
+    seen = set()
     with open(path, "rb") as f:
         for line in f:
-            if b'"user"' not in line:
+            if b'"tool_use"' not in line:
                 continue
             r = _record(line)
-            if not r or r.get("type") != "user" or r.get("isMeta") or r.get("isSidechain"):
+            if not r or r.get("type") != "assistant" or r.get("isSidechain"):
                 continue
-            origin = r.get("origin")
-            if isinstance(origin, dict) and origin.get("kind") not in (None, "human"):
-                continue
-            message = r.get("message")
-            content = message.get("content") if isinstance(message, dict) else None
-            if not content or _blocks(r, "tool_result"):
-                continue
-            n += 1
-            if n >= enough:
+            for i, b in enumerate(_blocks(r, "tool_use")):
+                seen.add(b.get("id") or (r.get("uuid"), i))
+            if len(seen) >= enough:
                 break
-    return n
+    return len(seen)
 
 
 def derive_refusal(project, m):
     """Why a member is not derived, or "": only a local member with no set
-    line and no name its human gave, at least ten prompts from its human, and
-    no derived line in the last six hours (§5)."""
+    line, at least ten tool calls by its model, and no derived line in the
+    last six hours (§5; whatever its name, which only decides whether derive
+    may also name it: charge_naming)."""
     if not m.session:
         return "it holds no session"
     if not m.local:
         return "it runs on %s" % m.machine
     if m.charge_source == "set":
         return "its line is set"
-    if m.charge_source == "name":
-        return "its human named it"
     path = transcript_path(m.session)
     if not path:
         return "no transcript of it on this machine"
@@ -4909,11 +4880,11 @@ def derive_refusal(project, m):
     if age is not None and age < DERIVE_EVERY:
         return "derived %s ago" % short_age(age)
     try:
-        n = human_prompts(path, DERIVE_MIN_PROMPTS)
+        n = model_tool_calls(path, DERIVE_MIN_TOOL_CALLS)
     except OSError as e:
         return "its transcript is unreadable: %s" % e
-    if n < DERIVE_MIN_PROMPTS:
-        return "%d prompt(s) from its human, fewer than %d" % (n, DERIVE_MIN_PROMPTS)
+    if n < DERIVE_MIN_TOOL_CALLS:
+        return "%d tool call%s, needs %d" % (n, "" if n == 1 else "s", DERIVE_MIN_TOOL_CALLS)
     return ""
 
 
@@ -5038,28 +5009,52 @@ def hand_name(session, name, before, line):
         warn("the name %s for %s was recorded, but not handed to its session: %s" % (name, session[:8], e))
 
 
-def sweep_pending_names():
-    """Pending names older than a week: their sessions took no prompt since."""
-    d = os.path.join(root(), "names")
+def sweep_older(subdir, seconds):
+    """Remove the files of $SMINOS_HOME/<subdir> older than `seconds`."""
+    d = os.path.join(root(), subdir)
     for name in (os.listdir(d) if os.path.isdir(d) else ()):
         path = os.path.join(d, name)
         try:
-            if name.endswith(".json") and time.time() - os.path.getmtime(path) > PENDING_NAME_STALE:
+            if time.time() - os.path.getmtime(path) > seconds:
                 os.unlink(path)
         except OSError:
             pass
+
+
+def sweep_pending_names():
+    """Pending names older than a week: their sessions were never renamed since."""
+    sweep_older("names", PENDING_NAME_STALE)
 
 
 def sweep_internal():
     """Markers of internal forks older than a day: their forks are long gone."""
-    d = os.path.join(root(), "internal")
-    for name in (os.listdir(d) if os.path.isdir(d) else ()):
-        path = os.path.join(d, name)
-        try:
-            if time.time() - os.path.getmtime(path) > 86400:
-                os.unlink(path)
-        except OSError:
-            pass
+    sweep_older("internal", 86400)
+
+
+def derive_failed_path(session):
+    return os.path.join(root(), "derive-failed", session)
+
+
+def derive_failed_age(session):
+    """Seconds since the member's last fork failed, or None when its last
+    derive did not fail (no stamp)."""
+    try:
+        return max(0.0, time.time() - os.path.getmtime(derive_failed_path(session)))
+    except OSError:
+        return None
+
+
+def derive_failed_mark(session, failed):
+    """Stamp a member's failed fork, or clear the stamp once a derive succeeds."""
+    path = derive_failed_path(session)
+    try:
+        if failed:
+            os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+            open(path, "w").close()
+        elif os.path.exists(path):
+            os.unlink(path)
+    except OSError as e:
+        warn("the failed derive of %s could not be %s: %s" % (session[:8], "stamped" if failed else "cleared", e))
 
 
 def derive_line(project, m, prompt=DERIVE_PROMPT):
@@ -5139,7 +5134,8 @@ def cmd_derive(a):
     """`derive <member> | --all`: ask a local member what it is in charge of,
     by a headless internal fork, and record the answer as a derived line —
     only where §5 allows (derive_refusal). --all: every local member of every
-    project known here, as the daemon runs it hourly."""
+    project known here, as the daemon runs it every five minutes, but a
+    member whose fork failed within the hour (DERIVE_RETRY)."""
     if bool(a.member) == bool(a.all):
         die("usage: sminos derive <member> | --all")
     sweep_internal()
@@ -5160,20 +5156,27 @@ def cmd_derive(a):
             targets = [target[1:]]
     if a.all:
         sweep_pending_names()
-    failed = sum(not derive_member(project, m) for project, m in targets)
+        sweep_older("derive-failed", DERIVE_RETRY)
+    failed = sum(not derive_member(project, m, held_off=a.all) for project, m in targets)
     if failed:
         sys.exit(1)
 
 
-def derive_member(project, m):
+def derive_member(project, m, held_off=False):
     """Derive one member's line where §5 allows (derive_refusal), and, where
     it may be named (charge_naming), its charge name with it: kept only when
     the answer gives one in the charge-name form and free, and when the
     engine name it would replace, read before the fork, is still the
     session's after it (an owner's /rename meanwhile wins). A kept name rides
-    on the in-charge event and is handed to the session (hand_name). False
-    when the fork failed, nothing recorded."""
+    on the in-charge event and is handed to the session (hand_name). A
+    failed fork is stamped, and with `held_off` (--all) the member is not
+    forked again until DERIVE_RETRY has passed; a derive that succeeds clears
+    the stamp. False when the fork failed, nothing recorded."""
     why = derive_refusal(project, m)
+    if not why and held_off:
+        age = derive_failed_age(m.session)
+        if age is not None and age < DERIVE_RETRY:
+            why = "its last fork failed %s ago" % short_age(age)
     if why:
         print("%s: not derived — %s" % (m.alias, why))
         return True
@@ -5184,7 +5187,9 @@ def derive_member(project, m):
         tail = [x for x in (e.stderr or "").splitlines() if x.strip()][-5:]
         sys.stderr.write("sminos: derive %s failed: %s; nothing recorded\n%s" % (
             m.alias, e.reason, "".join("    %s\n" % x for x in tail)))
+        derive_failed_mark(m.session, True)
         return False
+    derive_failed_mark(m.session, False)
     name = why_not = ""
     if naming:
         rec = running_now(m.session)
