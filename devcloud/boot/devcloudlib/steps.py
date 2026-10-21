@@ -504,7 +504,8 @@ def _marketplace(r):
 
 
 def services_step(r):
-    """The devcloud services, then sminos's part — the desk's enrollment
+    """`sminos` linked onto every shell's PATH, the devcloud services, then
+    sminos's part — the desk's enrollment
     (§10), then the daemon — each tried even when another failed, so a
     failure in one never costs another a restart it owes (each records its
     own, to be made by a later run). Under the lifecycle lock, shared: once a
@@ -515,6 +516,10 @@ def services_step(r):
     env = _read_env(ENV_PATH)
     sminos_host.check_role(r.user, r.desc.role, env)
     parts, failures, state = [], [], "ok"
+    try:
+        sminos_host.link_cli(r.user)
+    except OSError as error:
+        failures.append(f"linking {sminos_host.LINK}: {error}")
     with lease.locked(shared=True):
         record = status.lifecycle()
         try:

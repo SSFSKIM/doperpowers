@@ -374,7 +374,10 @@ restarted for a new environment — gets SIGTERM and, 8 s later, SIGKILL. On
 its own SIGTERM it forwards the signal to every child and waits up to 8 s
 (the shipper's final pass) before it exits.
 
-**sminos.** A persistent host is a sminos machine once the person enrolls it
+**sminos.** Step 11 first links `/usr/local/bin/sminos` to the launcher in
+the doperpowers marketplace clone, at every boot and reconcile, so any shell
+on the host finds it (the profile's `sminos` is an interactive zsh alias,
+which a command over SSH never loads). A persistent host is a sminos machine once the person enrolls it
 (`sminos hub enroll`, a human step: its code carries the organization's key),
 which leaves `$SMINOS_HOME/daemon/hub.json`. On the host, as the image's user
 in that user's own login shell:

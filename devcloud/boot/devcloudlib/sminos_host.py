@@ -23,6 +23,7 @@ rather than delete it, since the directory may be a mount of the original's."""
 
 import dataclasses
 import json
+import os
 import pathlib
 import time
 
@@ -89,6 +90,30 @@ def cli(user):
         if path.is_file():
             return path
     return None
+
+
+#: `sminos` on every shell's PATH: the profile defines it as an alias in an
+#: interactive zsh only, so a command run over SSH (`devcloud vm ssh <n> --
+#: sminos …`), a login shell's included, would not find it otherwise.
+LINK = pathlib.Path("/usr/local/bin/sminos")
+
+
+def link_cli(user, link=LINK):
+    """Points `link` at the clone's sminos launcher (beside sminos.py, which
+    follows its own symlinks) and returns the launcher; when none resolves,
+    links nothing and returns None. Idempotent; a moved clone moves it."""
+    program = cli(user)
+    launcher = program.parent / "sminos" if program is not None else None
+    if launcher is None or not launcher.is_file():
+        return None
+    link = pathlib.Path(link)
+    if link.is_symlink() and os.readlink(link) == str(launcher):
+        return launcher
+    temporary = link.with_name(f".{link.name}.devcloud")
+    temporary.unlink(missing_ok=True)
+    os.symlink(launcher, temporary)
+    os.replace(temporary, link)
+    return launcher
 
 
 # A one-time enrollment code a driver writes (root, 0600) when the desk has no
