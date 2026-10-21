@@ -68,6 +68,86 @@ A6 across M8 and M9: 12 of 13 spaced trials are within 0.5 s, and one was
 0.525 s. Both slow trials come from the successor waiting for the mod's
 first resync.
 
+## The 100–300 band (board #108)
+
+The band was re-run on main on the same GCE host shape as the first band
+run, at load 150 and 280. Main was aec6f74c, sminos 1.5.1, which carries the
+Linux `read_proc_start` fix. The method did not change: stress-ng in the
+benches' own cgroup, autogroup off, and a per-thread CPU-share probe before
+each run.
+
+One thing was added: a control at each load point that runs the same
+stress-ng at nice 19. That keeps load1 where it was but gives the benches
+their CPU back. The spec's Surprises & Discoveries (board #108) has every
+figure; the runbook is
+[2026-10-20-desk-open-fast-band-runbook.md](2026-10-20-desk-open-fast-band-runbook.md).
+
+A2 and A6 name no band bound, so they are read against their load < 50
+bounds.
+
+| check (bound) | first run, 150 / 280 | this run, 150 / 280 | now |
+|---|---|---|---|
+| A1 idle (≤ 0.6 s) | 0.12–0.26 s / 2 of 10 over, up to 1.67 s | 0.19–0.25 s / 0.15–0.51 s | passes at both |
+| A2 mid-message (0.3 s) | ≤ 0.24 s / 0.30–1.02 s | ≤ 0.29 s / 0.30–0.63 s | passes at 150; misses at 280 |
+| A2 after-prompt (0.3 s) | 4 of 5 over / 4 of 5 over | 2 of 5 over / 3 of 5 over (all ≤ 0.61 s) | misses |
+| A2 long-answer (no early end) | holds / holds | holds / holds | passes |
+| A3 +30 s (0.3 s) | 46–56 s / 64–120 s, 15 of 40 never | small 2 of 34 over, large 4 of 6 (≤ 13 s) / small 1 of 34, large 5 of 6 (≤ 30 s) | misses on large opens |
+| A3 +0.5 s | incomplete / incomplete | incomplete / incomplete | incomplete |
+| A3 index (≤ 0.35 CPU-s loaded) | 0.13 / 0.13 | 0.13 / 0.13 | passes |
+| A4 pair (as written) | incomplete / incomplete | incomplete / incomplete | cannot block a write at load (see below) |
+| A4 pair, sized to the host | — | the hub side holds / the hub side holds | misses the open after the resume (4.36 / 7.24 s), and chunk lag at 280 (1.43 s) |
+| A6 kill (0.5 s) | 1.01–3.39 s / 4.64–5.46 s | 0.96–2.95 s / 2.07–5.79 s | misses |
+
+What caused what:
+
+- **The ps fork, most likely.** A3's stream was ready at 27.6 s and 79 s
+  before, and at 5.3 s and 10.0 s now. The +30 s small opens' p50 dropped
+  from 52 s and 113 s to 0.06 s and 0.08 s. A1's N at 280 is now ≤ 0.09 s,
+  against 1.35 s before.
+
+  In the first run the fork took 47% of the uplink main thread's samples.
+  The code also differs otherwise between the runs (sminos 1.2.15 →
+  1.5.1, MAWS master). It was not behind A6, which reads the same.
+- **CPU starvation.** This is what every remaining miss but A4's comes
+  from: each passes in the control at the same load1.
+  - **A6, 0.35–0.49 s in the control.** The bridge child's successor is a
+    fresh Python process. Its imports alone took 1.04–1.10 s wall at 150
+    and 2.21–2.37 s at 280, against 0.06 CPU-s unloaded.
+  - **A3's large +30 s opens, ≤ 0.12 s in the control.** Six 15,000-row
+    builds need about 7 CPU-s of warming. At these shares that takes 60 s
+    or more.
+  - **A2 at 280, ≤ 0.10 s in the control.** E is the unloaded figure
+    divided by the share.
+- **A4's open after the resume: a machine-side cost the design does not
+  cover. Not fixed here.**
+  - The uplink's main thread takes frames in arrival order. So an open
+    queued behind an inbound backlog waits while the main thread verifies
+    every event's code.
+  - That check's canonical encoder walks each string one character at a
+    time in Python. It costs 0.047 CPU-s per MiB on the MacBook, against
+    0.003 for `json.dumps`.
+  - py-spy at 150 found the main thread in that check in 10 of the 14
+    dumps of the open's wait.
+  - Unloaded, the open after a 16 MiB backlog took 0.28 s, and after the
+    sized 6 MiB one 0.035 s. At a share of 0.1 it costs seconds per MiB.
+    The pair was not run in the control.
+
+  Two further points about A4's pair:
+  - **Why the pair as written cannot block a write at load.** The host's
+    loopback buffers absorbed a 12 MiB backlog whole, and the local hub's
+    2 s heartbeat caps the pause below 6 s. At load the 16 MiB upload took
+    17–32 s, so it outlasts any pause the instrument's flags allow.
+  - **What the sized pair needed.** It capped the buffers at 1 MiB and
+    lengthened the heartbeat, which are host settings. Sized that way, it
+    saw the blocked write at both loads. Every session POST in the window
+    was answered 200 (85 and 71 of them), and the stream survived the 9 s
+    and 15 s pauses.
+
+The run used one c2d-standard-16 Spot host in us-east4-c. It was created at
+08:47:25Z and deleted at 10:25:01Z (98 minutes), and the teardown was
+confirmed through the API. At the first band run's rate (about 0.85 USD for
+4.4 hours) this one cost about 0.30 USD.
+
 ## Escalations and rulings
 
 - **M6 fix, the hub's 200.** The hub answers 200 to a session frame it
