@@ -17,7 +17,7 @@ Terms are those of the project log design (`docs/doperpowers/specs/2026-10-13-sm
 - [x] (2026-10-21) Branch review (reviewer-medium): three P2 findings. name-due's eligibility recheck and the former-alias session binding are fixed (b1169e2d, d9dbbdb0). The cross-project `charge` provenance is dropped along with the `charge` source (Decision Log).
 - [x] (2026-10-21) M4 — derive for every member, from 10 tool calls, soon; no `charge` source (412f4690, 89aa7a11; fixes 35121486, b6378732; task review clean)
 - [x] (2026-10-21) M5 — the mod renames through the engine's `/rename` between turns (0524dcc0; fixes b308a87c, fda1210d; task review clean; full ci-gate GREEN on 0524dcc0, live check 6/6)
-- [ ] (2026-10-21) Branch review again at medium.
+- [x] (2026-10-21) Branch review again at medium (reviewer-medium): three P2s fixed (b25a53fa), one more found on re-review and fixed (9283421c), verified by the controller: the final gate reads only synchronous state after its last await. Outcomes written.
 
 ## 1. Where the name comes from
 
@@ -386,6 +386,24 @@ A manual end-to-end check, after installing the branch's sminos: in a member ses
   Rationale: the owner's usage concern, 2026-10-21. Without the check, a stopped member that is never retired is re-forked every 6 hours forever. A fork of an idle session rebuilds its prompt cache, the most expensive kind of call, and its answer cannot change, since the conversation is the same.
   Date/Author: 2026-10-21, the owner, through the dispatching session.
 
+- Decision: the mod's tick binds each attempt to the turn and the session it checked. Before its first await, it records the turn generation and a count of `session.end` events (the engine raises one on `/clear` and on resume, with no `session.start`). It reads the session id once and passes it to the file read and to `name-due`. Right before `/rename`, after its last await (the id read again), one synchronous check judges five things: the dialog, a running turn, a turn started since, a session ended since, and whether the id changed. The dialog is read from `ask.tsx`'s exported `isAskDialogUp()`, the ask's own in-module state, not from an awaited `$.state` snapshot. The re-review found that an awaited dialog read left one more window (9283421c). Any of them restores the memo and leaves the file for a later idle tick. Restoring the memo when the session changed is safe: the old session's text is never read again under the new id, and the new session's own file must not be marked handled. `derive_refusal`'s idle comparison uses the line's full timestamp, milliseconds included.
+
+  Rationale: the second branch review (reviewer-medium, 2026-10-21) found two more stale-rename windows: a turn starting during the first dialog read, and a `/clear` while `name-due` ran. Earlier task reviews had found one window each. Capturing the preconditions before any await and judging them once before the command closes the class. It also found the idle check truncating timestamps to the second, M4's deferred Minor, now raised to P2.
+  Date/Author: 2026-10-21, M5 executor and doperpowers-c4 (controller).
+
 ## Outcomes & Retrospective
 
-Pending — written at finish.
+**What shipped (branch `worktree-sminos-charge-names`, unmerged).**
+- **Naming.** Derive's fork proposes a 2–4 word charge name with the in-charge line, for members whose running engine record holds a generated or title-promoted name, or one of their own proposals. A pending file hands the name to the sminos name mod. Between turns, the mod checks `name-due`, which rechecks eligibility, `from` and freeness, and then applies the name with the engine's own `/rename`. That works in interactive, `--bg` and SDK sessions alike (measured).
+- **Derive.** Derive runs for every member, owner-named ones included, which get the line only. It starts from 10 main-conversation tool calls. The daemon runs it every 5 minutes, first-timers first, with at most 2 refreshes per run, an hour's hold after a failed fork, and no re-derive of an unchanged transcript.
+- **Former aliases.** An alias a member formerly held still reaches it, with a stderr note. A retired member answers to none, and a seat lifecycle verb that reaches its occupant this way is bound to that session.
+- **Version.** sminos is at 1.6.0.
+
+**What changed on the way, and why.**
+- The first build applied names through `sessionTitle` at the next prompt, and kept a `charge` source so sminos could tell its own names from the owner's after a resume relabelled them `user`. The owner replaced both on 2026-10-21. Once derive runs for owner-named members too and a derived line outranks a name, nothing else needs that distinction, and the engine's `/rename` needs no prompt.
+- The owner also lowered the threshold to tool calls and asked for a first name within minutes. That made derive's cost a design concern. Two guards answer it: the idle refusal and the per-run refresh cap.
+
+**Lessons.**
+- The bugs the reviews kept finding were races. The mod's tick is asynchronous, and every await was a window: a turn starting, a dialog opening, `/clear` changing the session. They were found one per review round until the last fixes captured the attempt's preconditions at the tick's start and judged them all at one gate that reads only synchronous state after its last await, the dialog included. An asynchronous check-then-act should be designed that way from the start.
+- A label the engine does not keep (the `hook` source, lost on resume) was a poor foundation for ownership. The proposed-names set in sminos's own log was the reliable one, and it is the only one left.
+- Executor messages addressed to "the caller" reached the dispatching session, not this controller. The dispatching session logged it in the friction tracker (#304).
