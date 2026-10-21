@@ -196,11 +196,26 @@ def host_expires(ctx, host):
         return None
 
 
-def unpushed(ctx, host, target=None):
+def as_root(user, command):
+    """`command` run as root by the login `user`: sudo, without a password,
+    for a user other than root."""
+    return command if user == "root" else f"sudo -n sh -c {shlex.quote(command)}"
+
+
+def _through(login):
+    """The connection's keyword arguments: the driver's key as root, or with
+    `login` the person's own key as that user (an adopted machine whose
+    release gave its keys back, §6.5)."""
+    return {} if login is None else {"user": login, "person": True}
+
+
+def unpushed(ctx, host, target=None, login=None):
     """The checkouts with unpushed or uncommitted work (`devcloud unpushed`,
     exit 5 when there is any), as (repository, what) pairs; over the tailnet
-    unless `target` names another way to the host."""
-    result = ctx.remote.run(target or host.name, host.alias, "devcloud unpushed", timeout=120)
+    unless `target` names another way to the host, as root unless `login`
+    names the person's own login there."""
+    result = ctx.remote.run(target or host.name, host.alias, as_root(login or "root", "devcloud unpushed"),
+                            timeout=120, **_through(login))
     if result.code == 0:
         return []
     if result.code != 5:
@@ -225,12 +240,14 @@ def depart(ctx, host, force=False, no_hold=False, timeout=8 * 60):
                                       marker=READY))
 
 
-def release(ctx, host, target, no_hold=False, timeout=8 * 60):
+def release(ctx, host, target, no_hold=False, timeout=8 * 60, login=None):
     """`devcloud release --force` on an adopted machine (§6.5) at `target`
-    (its tailnet name, or its public address when the tailnet is down), read
-    as a departure is: it prints the same ready line before its logout."""
-    command = "devcloud release --force" + (" --no-hold" if no_hold else "")
-    return _outcome(ctx.remote.stream(target, host.alias, command, timeout=timeout, marker=READY))
+    (its tailnet name, or its public address when the tailnet is down), as
+    root unless `login` names the person's own login there; read as a
+    departure is: it prints the same ready line before its logout."""
+    command = as_root(login or "root", "devcloud release --force" + (" --no-hold" if no_hold else ""))
+    return _outcome(ctx.remote.stream(target, host.alias, command, timeout=timeout, marker=READY,
+                                      **_through(login)))
 
 
 def _outcome(result):

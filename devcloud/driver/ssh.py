@@ -67,11 +67,11 @@ class Ssh:
             return Result(LOST, _text(expired.stdout), _text(expired.stderr) + "\n(timed out)")
         return Result(done.returncode, _text(done.stdout), _text(done.stderr))
 
-    def stream(self, target, alias, command, *, user="root", timeout=600, marker=None):
+    def stream(self, target, alias, command, *, user="root", timeout=600, marker=None, person=False):
         """`command`'s stdout read as it comes, so a line `marker` is seen
         even when the connection drops right after it (the departure's
         `ready-to-logout`, §4.2)."""
-        argv = self.argv(target, alias, user) + [command]
+        argv = self.argv(target, alias, user, person=person) + [command]
         proc = self._popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                            start_new_session=True)
         out, err, seen = [], [], False

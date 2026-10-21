@@ -34,7 +34,10 @@ class Target(FakeRemote):
         self.login = login
         self.m = {"os": ("ubuntu", "24.04"), "descriptor": None, "keys_saved": False, "authorized": False,
                   "setup": 0, "seeded": 0, "booted": 0, "tailnet": False, "public": True, "released": False,
-                  "boot_ok": True, "release_code": None, "unpushed": False, "lease": None}
+                  "boot_ok": True, "release_code": None, "unpushed": False, "lease": None,
+                  # A release that stopped after it gave the keys back and logged out: the driver's
+                  # key no longer works, the person's login does again, the descriptor stays.
+                  "restored": False, "fail_after_restore": False}
         self.phases = {}       # step → the record's phase when it ran
 
     def _phase(self, step):
@@ -49,9 +52,10 @@ class Target(FakeRemote):
             if not m["public"]:
                 return Result(255, "", "connection timed out")
             if person:
-                if user != self.login or (self.login == "root" and m["booted"] and not m["released"]):
+                replaced = self.login == "root" and m["booted"] and not (m["released"] or m["restored"])
+                if user != self.login or replaced:
                     return Result(255, "", "Permission denied (publickey)")
-            elif not m["authorized"] or m["released"]:
+            elif not m["authorized"] or m["released"] or m["restored"]:
                 return Result(255, "", "Permission denied (publickey)")
         elif target == NAME:
             if not m["tailnet"]:
@@ -109,14 +113,18 @@ class Target(FakeRemote):
             return Result(0 if m["released"] else 1, "", "")
         return Result(0, "", "")
 
-    def stream(self, target, alias, command, *, user="root", timeout=60, marker=None):
+    def stream(self, target, alias, command, *, user="root", timeout=60, marker=None, person=False):
         self.calls.append({"kind": "stream", "target": target, "alias": alias, "command": command, "user": user,
-                           "input": None, "person": False})
-        reach = self.run(target, alias, "true")
+                           "input": None, "person": person})
+        reach = self.run(target, alias, "true", user=user, person=person)
         self.calls.pop()
         if reach.code != 0:
             return Result(255, "", "unreachable", False)
         self._phase("release")
+        if self.m["fail_after_restore"]:
+            # remove-units failed after restore-keys and logout: off the tailnet, the keys given back.
+            self.m.update(fail_after_restore=False, restored=True, tailnet=False, public=True)
+            return Result(1, hostctl_ready(), "", True)
         if self.m["release_code"] is not None:
             return Result(self.m["release_code"], "", "", False)
         self.m.update(released=True, tailnet=False, public=True, descriptor=None)
@@ -177,6 +185,18 @@ class RefusalTest(AdoptBase):
         self.assertEqual(self.remote.calls, [])
         self.assertIsNone(self.record())
         self.assertIn(f"root@{ADDRESS}", self.out.getvalue())
+
+    def test_a_driver_key_not_yet_in_the_configuration_repository_is_refused_before_any_contact(self):
+        """The boot's home step makes root's keys the configuration
+        repository's: without this Mac's key there, the driver would lose the
+        machine once its public port closed."""
+        self.ctx = self.make_ctx(token_hex=lambda: next(self.hexes), key_pushed=lambda: False)
+        code, message = self.refused()
+        self.assertEqual(code, 1)
+        self.assertIn("configuration repository", message)
+        self.assertEqual(self.remote.calls, [])
+        self.assertIsNone(self.record())
+        self.assertEqual(self.adopt(dry_run=True), 0, "a dry run changes nothing, so it is not refused")
 
     def test_a_target_that_is_not_user_at_address_is_usage(self):
         for target in (ADDRESS, "@" + ADDRESS, "root@", "Root;x@" + ADDRESS):
@@ -422,6 +442,32 @@ class DownTest(AdoptBase):
         self.assertEqual(ops.down(self.ctx, NAME, force=False), 0)
         self.assertEqual([c for c in self.remote.calls if c["kind"] == "stream"], [])
         self.assertIsNone(self.record())
+
+    def test_a_release_that_failed_after_giving_the_keys_back_resumes_through_the_login(self):
+        """The host restored the keys and logged out, then a later step failed:
+        the driver's key is gone and the tailnet too, and down again finishes
+        the release as the original login user (sudo for one not root)."""
+        for login in ("root", "ubuntu"):
+            with self.subTest(login=login):
+                self.remote = Target(self, login=login)
+                self.ctx = self.make_ctx(token_hex=lambda: "7f3a")
+                self.write_record("booted", ready=NOW - 60, user=login)
+                self.remote.m.update(keys_saved=True, authorized=True, booted=1, tailnet=True, public=False,
+                                     descriptor={"name": NAME, "adopted": True}, fail_after_restore=True)
+                with self.assertRaises(DriverError) as caught:
+                    ops.down(self.ctx, NAME, force=False)
+                self.assertIn("again", str(caught.exception))
+                self.assertEqual(self.record()["phase"], "released")
+                self.remote.calls.clear()
+                self.assertEqual(ops.down(self.ctx, NAME, force=False), 0)
+                guard = [c for c in self.remote.calls if "devcloud unpushed" in c["command"]]
+                [release] = [c for c in self.remote.calls if c["kind"] == "stream"]
+                for call in guard + [release]:
+                    self.assertEqual((call["target"], call["user"], call["person"]), (ADDRESS, login, True))
+                    self.assertEqual(call["command"].startswith("sudo -n "), login != "root")
+                self.assertTrue(guard, "the unpushed guard was skipped")
+                self.assertIn("devcloud release --force", release["command"])
+                self.assertIsNone(self.record())
 
     def test_unreachable_and_not_released_keeps_the_record(self):
         self.adopted()

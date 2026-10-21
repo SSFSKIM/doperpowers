@@ -22,7 +22,6 @@ import dataclasses
 import json
 import pathlib
 import re
-import shlex
 
 from . import compose, hostctl, names
 from .errors import CAP, FAILED, USAGE, DriverError
@@ -110,10 +109,6 @@ def parse_target(text):
     return user, address.strip("[]")
 
 
-def _sudo(user, command):
-    return command if user == "root" else f"sudo -n sh -c {shlex.quote(command)}"
-
-
 def _script(ctx, chan, args, what):
     source = pathlib.Path(__file__).with_name("adopt_host.py").read_bytes()
     result = chan(f"python3 - {args}", input=source, timeout=120)
@@ -133,12 +128,18 @@ def _channel(ctx, record):
         return ctx.remote.run(record.address, host.alias, command, **kw)
 
     def as_login(command, **kw):
-        return ctx.remote.run(record.address, host.alias, _sudo(record.user, command), user=record.user,
-                              person=True, **kw)
+        return _as_login(ctx, record, command, **kw)
     for chan in (as_root, as_login):
         if chan("true", timeout=CONTACT_TIMEOUT, connect_timeout=15).code == 0:
             return chan
     return None
+
+
+def _as_login(ctx, record, command, **kw):
+    """`command` as root through the original login user with the person's
+    own key, at the public address."""
+    return ctx.remote.run(record.address, record.name, hostctl.as_root(record.user, command), user=record.user,
+                          person=True, **kw)
 
 
 def run(ctx, opts):
@@ -162,6 +163,8 @@ def run(ctx, opts):
         ctx.say(f"adopt     {user}@{address} {what}  lifetime {life}  projects {' '.join(opts.project) or '-'}")
         ctx.say("caps      adopt always needs the person's yes: confirmed")
         return 0
+    from .up import require_key_pushed
+    require_key_pushed(ctx, "adopt")
     fresh = record is None
     if fresh:
         servers = [e.vm for e in ctx.fleet(quiet=True)]
@@ -289,29 +292,34 @@ def lease(ctx, record, wanted, confirmed):
 
 
 def down(ctx, record, force):
-    """The release over the tailnet, else over the recorded public address;
-    the record removed once the release is verified there, as the original
-    login user with the person's own key."""
+    """The release over the tailnet, else as root over the recorded public
+    address, else as the original login user there (a release that stopped
+    after it gave the keys back: the driver's key is gone, the descriptor
+    stays for the retry); the record removed once the release is verified
+    there, as the original login user with the person's own key."""
     host = record.host
+    login = None
     if hostctl.reachable(ctx, host):
         target = record.name
     elif _answers(ctx, record.address, host):
         target = record.address
+    elif _released(ctx, record, wait=0):
+        remove(ctx, record)
+        ctx.say(f"{record.name}: already released (it keeps running at {record.address}); its record is removed")
+        return 0
+    elif _as_login(ctx, record, "true", timeout=CONTACT_TIMEOUT, connect_timeout=15).code == 0:
+        target, login = record.address, record.user
     else:
-        if _released(ctx, record, wait=0):
-            remove(ctx, record)
-            ctx.say(f"{record.name}: already released (it keeps running at {record.address}); its record is removed")
-            return 0
-        raise DriverError(FAILED, f"{record.name} answers neither over the tailnet nor as root at {record.address}, "
-                                  "and its release cannot be seen: the adoption record stays")
+        raise DriverError(FAILED, f"{record.name} answers neither over the tailnet nor at {record.address} (as root, "
+                                  f"or as {record.user} with your own key): the adoption record stays")
     if not force:
-        dirty = hostctl.unpushed(ctx, host, target=target)
+        dirty = hostctl.unpushed(ctx, host, target=target, login=login)
         if dirty:
             raise DriverError(5, f"{record.name} has unpushed work in {', '.join(r for r, _ in dirty)}: push it, or "
                                  "pass --force")
     record.phase = "released"
     save(ctx, record)
-    outcome = hostctl.release(ctx, host, target, no_hold=force)
+    outcome = hostctl.release(ctx, host, target, no_hold=force, login=login)
     if outcome == hostctl.HELD:
         raise DriverError(FAILED, f"{record.name}'s release is held (its ship failed, or sessions keep starting): fix "
                                   "it, or pass --force; the adoption record stays")
@@ -335,8 +343,7 @@ def _released(ctx, record, wait):
     key, to the public address finds nothing of devcloud left."""
     deadline = ctx.clock() + wait
     while True:
-        result = ctx.remote.run(record.address, record.name, _sudo(record.user, RELEASED), user=record.user,
-                                person=True, timeout=CONTACT_TIMEOUT, connect_timeout=15)
+        result = _as_login(ctx, record, RELEASED, timeout=CONTACT_TIMEOUT, connect_timeout=15)
         if result.code == 0:
             return True
         if ctx.clock() >= deadline:
