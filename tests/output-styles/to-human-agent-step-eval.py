@@ -28,6 +28,8 @@ span or any ask tool call appears in it.
                  the merged M2) fails in two tests that touch the new writer
   milestone3     the executor's checkpoint: M3 of 4 merged, M4 starting, no
                  decision needed (with --history silent2)
+  complete       the executor finishes: M4 merged, the plan done as planned
+                 (with --history reported3)
 
 The transcript audit behind it (2026-10-20, 58 interactive sessions after
 7.185.0): about half the steps an agent report, a peer message or a
@@ -35,11 +37,12 @@ notification started ended on prose the human never received, against one in
 ten of the steps the human started; that share did not move with 7.185.0.
 
   python3 tests/output-styles/to-human-agent-step-eval.py ARM=STYLE.md [ARM=STYLE.md ...] \
-      [--reps 5] [--scenarios routine_peer,routine_relay,milestone,surprise,ruling,small_ruling,late_failure,milestone3]
-      [--history short,long,after_report,silent2] [--out results.json]
+      [--reps 5] [--scenarios routine_peer,routine_relay,milestone,surprise,ruling,small_ruling,late_failure,milestone3,complete]
+      [--history short,long,after_report,silent2,reported3] [--out results.json]
 
 --history after_report: M1 was reported to the human before M2 lands; silent2:
-M1 and M2 landed without a message, and milestone3 is the next checkpoint.
+M1 and M2 landed without a message, and milestone3 is the next checkpoint. reported3: M3's checkpoint
+brought a status, and complete is the executor's end.
 
 It calls api.anthropic.com directly with ANTHROPIC_API_KEY.
 
@@ -108,6 +111,19 @@ where the work stands."), runs that reached the human:
   late_failure, surprise     both every run (6 of 6, 4 of 4); every failure
   (long)                     report opened the Critical block with Handled
   routine_peer, routine_relay (long)  7.198.0 0 of 16
+
+Fourth round, 2026-10-21, on 7.198.0's second sentence, M2 landing as
+planned after a reported M1 (after_report), runs that reached the human:
+  7.198.0 ("A milestone that lands as planned needs no message ...") 0 of 12
+  "Progress and results of the work that land as planned need no message
+  of their own ..." (shipped, 7.199.0)                                 1 of 12
+  the same, with "unable to tell a clean run from a stalled one" as "unsure
+  whether the work is running or has stalled, and sends them to open the
+  full transcript to find out"                                         4 of 12
+  7.198.0's subject with that reason                                    5 of 12
+The reason that names the transcript's cost pushes on-plan progress back
+into messages. complete (reported3): every wording 12 of 12; milestone3
+(silent2): every wording 12 of 12; routine notices: every wording 0 of 16.
 
 The first round's routine_peer had no machine line, so the model probed
 `hostname`/`date`, got the canned empty output, and the variants reported that
@@ -237,6 +253,19 @@ HISTORIES["silent2"] = OPENING + [
 INCOMING["milestone3"] = agent_msg(
     "Checkpoint: M3 of 4 (the export endpoint and its cache) landed. PR #49 merged on green CI; review clean. "
     "M4 (the UI button) is starting now. No decision needed.")
+
+# --history reported3 (with complete): M1 and M2 went unreported, M3's checkpoint brought a status, and now the
+# executor finishes as planned: one milestone since the last message, but the work's end.
+HISTORIES["reported3"] = HISTORIES["silent2"] + [
+    {"role": "user", "content": INCOMING["milestone3"]},
+    {"role": "assistant", "content": [{"type": "text", "text":
+        "<message>\nCSV export status: M1, M2 and M3 are merged (PR #47, #48, #49), each on green CI; M2's review logged two minor "
+        "findings in TECH-DEBT.md. M4, the UI button, is in progress. Nothing needs you so far.\n</message>"}]},
+]
+INCOMING["complete"] = (f"<task-notification>\n<task-id>{AGENT}</task-id>\n<status>completed</status>\n"
+    "<summary>Agent \"Execute the CSV export spec\" completed</summary>\n<result>All four milestones landed as the spec planned. "
+    "M4 (the UI button): PR #50 merged on green CI, review clean. The export works end to end on staging: a 2M-row report "
+    "downloads in 41 s. No open findings beyond the two minor ones in TECH-DEBT.md.</result>\n</task-notification>")
 
 def canned(block):
     name, inp = block["name"], block["input"]
