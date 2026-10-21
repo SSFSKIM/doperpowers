@@ -415,26 +415,32 @@ A session with a generated name is renamed after what it is in charge of
 (`docs/doperpowers/specs/2026-10-20-sminos-charge-names-design.md`).
 `sminos derive` proposes the name with the session's in-charge line and,
 when the engine name it replaces is still the session's, hands it over as a
-pending file, `<sminos home>/names/<session>.json`. The mod applies it at
-the session's next prompt, whoever submits it: on `classic.UserPromptSubmit`
-it returns the name as `sessionTitle`, which the engine takes as a rename
-with source `hook` (the engine name, the transcript's `custom-title` and
-`agent-name`, never overwritten by its title promotion), and adds one line of
-context telling the model. `SessionStart`'s `sessionTitle` sets the title
-alone, and `/rename` would register the owner's `user`, so neither serves.
+pending file, `<sminos home>/names/<session>.json`. The mod applies it with
+the engine's own `/rename`, `$.command.run({ command: 'rename', args })`,
+between turns: every 15 s a timer reads the file, and at the first tick
+that finds no main turn running and no ask's dialog up (the ask's snapshot
+in `$.state`, `isDialogUp`) it runs the check and then the command. The
+engine registers the name as any `/rename` (`user`), writes the transcript's
+`custom-title` and `agent-name`, and tells the model itself (a meta row, or
+in an SDK session the command's own rows), so the mod adds nothing. The
+command starts no model turn. Interactive sessions, `--bg` jobs and SDK
+sessions all take it while idle (measured on 2.1.306), so the timer runs in
+every session but an internal fork (`SMNS_INTERNAL`), which reads nothing.
+The session id is read at each tick, so after a `/clear` the new session's
+file is the one read.
 
 The CLI owns the check, `sminos name-due --session <id>`: the name is due
 when the session's running engine record still holds the name the file
-replaces (no owner's `/rename`, no resume under a new name since), does not
-hold the name already, and the name is still free in the project and on the
-machine. The mod runs it once per pending file, whatever comes of it (a
-CLI that hangs or fails is not tried again: the next derive rewrites the
-file, and that is the retry), so a prompt with nothing new pays one failed
-read. A title a
-hook beneath set passes unchanged, an internal fork (`SMNS_INTERNAL`) reads
-nothing, and the poll-event channel's enqueue-time pass is left to the
-prompt's own submit. `sminos/tests/mods/live-name-check.py` pins the engine
-facts it rests on.
+replaces (no owner's `/rename`, no resume under a new name since), the
+session is still one sminos may name, its record does not hold the name
+already, and the name is still free in the project and on the machine. The
+mod runs it once per pending file's text, whatever comes of it (a CLI that
+hangs or fails is not tried again: the next derive rewrites the file, and
+that is the retry), so a tick with nothing new pays one failed read. The
+one exception: a main turn that starts while the check runs makes its
+answer stale, so it is dropped and the next idle tick checks again. A
+command the engine refuses goes to the debug log.
+`sminos/tests/mods/live-name-check.py` pins the engine facts it rests on.
 
 ## Developing
 

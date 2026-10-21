@@ -530,7 +530,8 @@ within the cache's hour, and rebuilds it otherwise.
 
 For a session whose name the engine made up, the same fork also proposes a
 name after the line (the event's `name`), which the sminos plugin's name mod
-applies at the session's next prompt; an alias a member held before keeps
+applies with the engine's own `/rename` once the session is between turns;
+an alias a member held before keeps
 reaching it behind every current alias, with a note naming it now
 (`docs/doperpowers/specs/2026-10-20-sminos-charge-names-design.md`).
 

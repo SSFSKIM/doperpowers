@@ -1,4 +1,4 @@
-import type { ClassicEventOf, ClassicResultOf, EngineInterface, On } from 'claude-code'
+import type { EngineInterface, On } from 'claude-code'
 
 /**
  * A session is renamed after what it is in charge of: `sminos derive` asks
@@ -7,42 +7,129 @@ import type { ClassicEventOf, ClassicResultOf, EngineInterface, On } from 'claud
  * name over as a pending file, `<sminos home>/names/<session>.json`
  * (docs/doperpowers/specs/2026-10-20-sminos-charge-names-design.md §3).
  *
- * The engine renames a session the way sminos needs only for a
- * `UserPromptSubmit` hook's `sessionTitle`: the engine name is registered
- * with source `hook`, the transcript keeps `custom-title` and `agent-name`,
- * and the engine's title promotion leaves it alone. `SessionStart`'s sets
- * the title alone, and `/rename` would register the owner's `user`. So a
- * pending name applies at the session's next prompt, whoever submits it.
+ * The mod applies it with the engine's own `/rename`, between turns: a timer
+ * reads the file, and at the first tick that finds the session idle the CLI
+ * checks the name is still due (`sminos name-due`: the engine name is still
+ * the one the file replaces, the session is still one sminos may name, the
+ * name is still free), then `$.command.run` renames. The engine registers it
+ * as any `/rename` (`user`), writes the transcript's `custom-title` and
+ * `agent-name`, and tells the model itself, so the mod adds nothing of its
+ * own. Measured on 2.1.306: interactive sessions, `--bg` jobs and SDK
+ * sessions (`sdk-ts`, streaming input) alike take the command while idle,
+ * and it starts no model turn; so the timer runs in every session.
  *
- * Before it applies, the CLI checks the name is still due (`sminos
- * name-due`): the engine name is still the one the file replaces (no
- * owner's /rename, no resume under a new name since) and the name is still
- * free. That check runs once per pending file, not once per prompt; a
- * prompt with no new file pays one failed read.
+ * The check runs once per pending file's text, not once per tick; a tick
+ * with nothing new pays one failed read.
  */
 
-type Event = ClassicEventOf['classic.UserPromptSubmit']
-type Result = ClassicResultOf['classic.UserPromptSubmit']
+/** How often the pending file is looked at. */
+export const POLL_MS = 15_000
 
 /**
  * How long the check may take, as the address bounds `who`: `name-due`
  * reconciles the session's project before it answers, a read comparable to
- * `who`'s. A `$` call costs the hook's own budget nothing, and the prompt
- * waits on it only when a name is pending and new.
+ * `who`'s.
  */
 export const NAME_DUE_TIMEOUT_MS = 10_000
 
-/** The one line the model reads when its session was renamed. */
-export function renamedContext(name: string): string {
-  return `sminos renamed this session to "${name}" after its standing responsibility; other sessions now see and address it by that name.`
+/** The sminos ask's snapshot (types/sminos.d.ts), whose `isDialogUp` holds the rename. */
+const ASK = { plugin: 'sminos', key: 'ask' } as const
+
+/** What the namer reaches the engine and the CLI through; the session start makes it from `$`. */
+export type NameIo = {
+  /** The session's pending file; rejects when there is none. */
+  read: () => Promise<string>
+  /** `sminos name-due` for the session, bounded. */
+  due: () => Promise<{ exitCode: number; stdout: string }>
+  /** The engine's `/rename`. */
+  rename: (name: string) => Promise<unknown>
+  /** An ask's dialog is up: the module that raised it takes its answer, not a command run meanwhile. */
+  isAskDialogUp: () => Promise<boolean>
+  log: (text: string) => void
 }
 
-/** The text of the pending file last checked: checked once. */
-const state: { handled?: string } = {}
+/** The main turn, as the turn hooks below see it: whether one runs, and how many have started. */
+const turn = { isRunning: false, started: 0 }
 
-/** Forgets the handled file (tests). */
+/** A turn starts; a subagent's run raises its own, with its agentId, and is not the main turn. */
+export function turnStarted(e: { agentId?: string }) {
+  if (e.agentId === undefined) {
+    turn.isRunning = true
+    turn.started += 1
+  }
+}
+
+export function turnEnded(e: { agentId?: string }) {
+  if (e.agentId === undefined) {
+    turn.isRunning = false
+  }
+}
+
+/** Forgets the turn (tests, which share this module). */
 export function resetName() {
-  state.handled = undefined
+  turn.isRunning = false
+  turn.started = 0
+}
+
+const message = (error: unknown) => (error instanceof Error ? error.message : String(error))
+
+export function createNamer(io: NameIo) {
+  /** The text of the pending file last checked: checked once. */
+  let handled: string | undefined
+  let isBusy = false
+
+  async function step() {
+    const pending = await io.read().catch(() => undefined)
+    if (pending === undefined || pending === handled) {
+      return
+    }
+    // A slash command run during a turn waits for its end, by which time the
+    // check's answer may be stale; and a dialog's answer is its own.
+    if (turn.isRunning || (await io.isAskDialogUp())) {
+      return
+    }
+    // One attempt per pending file, whatever comes of it: a CLI that keeps
+    // hanging would otherwise cost a check on every tick. A missed rename is
+    // retried when the next derive rewrites the file.
+    const before = { handled, started: turn.started }
+    handled = pending
+    let answer
+    try {
+      answer = await io.due()
+    } catch (error) {
+      io.log(`name: sminos name-due did not answer (${message(error)}); this pending name is not tried again`)
+      return
+    }
+    // A turn started meanwhile: the answer may be stale, and the session is
+    // not idle. The next idle tick asks again.
+    if (turn.started !== before.started || turn.isRunning) {
+      handled = before.handled
+      return
+    }
+    const name = answer.exitCode === 0 ? (answer.stdout.trim().split('\n')[0] ?? '').trim() : ''
+    if (name === '') {
+      return
+    }
+    try {
+      await io.rename(name)
+    } catch (error) {
+      io.log(`name: /rename ${name} was refused (${message(error)})`)
+    }
+  }
+
+  return {
+    async tick() {
+      if (isBusy) {
+        return
+      }
+      isBusy = true
+      try {
+        await step()
+      } finally {
+        isBusy = false
+      }
+    },
+  }
 }
 
 /** The sminos home as the CLI's root() resolves it: SMINOS_HOME, else DAEMON_HOME, else ~/.claude/sminos. */
@@ -51,37 +138,48 @@ async function sminosHome($: EngineInterface): Promise<string> {
   return own || `${(await $.env.get('HOME')) ?? ''}/.claude/sminos`
 }
 
-/** The hook: what the hooks beneath answered, with the pending name applied when it is due. */
-export async function applyPendingName($: EngineInterface, e: Event, next: (e: Event) => Promise<Result>): Promise<Result> {
-  const result = await next(e)
-  // The poll-event channel's pass runs as an event is enqueued, before it is
-  // delivered; the prompt's own submit follows and applies the name there.
-  if (result.sessionTitle !== undefined || e.source === 'poll_event' || (await $.env.get('SMNS_INTERNAL')) !== undefined) {
-    return result
+/** Starts the timer, in every session but an internal fork. The session id is read at each tick, so a /clear's new session is the one checked. */
+export async function startNaming($: EngineInterface) {
+  if ((await $.env.get('SMNS_INTERNAL')) !== undefined) {
+    return
   }
-  const pending = await $.fs.read(`${await sminosHome($)}/names/${e.session_id}.json`).catch(() => undefined)
-  if (pending === undefined || pending === state.handled) {
-    return result
-  }
-  // One attempt per pending file, whatever comes of it: a CLI that keeps
-  // hanging would otherwise stall every prompt. A missed rename is retried
-  // when the next derive rewrites the file.
-  state.handled = pending
-  let answer
-  try {
-    answer = await $.process.run([`${$.plugin.root}/skills/sminos/scripts/sminos`, 'name-due', '--session', e.session_id], {
-      timeoutMs: NAME_DUE_TIMEOUT_MS,
-    })
-  } catch {
-    return result
-  }
-  const name = answer.exitCode === 0 ? (answer.stdout.trim().split('\n')[0] ?? '').trim() : ''
-  if (name === '') {
-    return result
-  }
-  return { ...result, sessionTitle: name, additionalContext: [...(result.additionalContext ?? []), renamedContext(name)] }
+  const home = await sminosHome($)
+  let session = ''
+  const namer = createNamer({
+    read: async () => {
+      session = await $.session.id()
+      return $.fs.read(`${home}/names/${session}.json`)
+    },
+    due: () => $.process.run([`${$.plugin.root}/skills/sminos/scripts/sminos`, 'name-due', '--session', session], { timeoutMs: NAME_DUE_TIMEOUT_MS }),
+    rename: (name) => $.command.run({ command: 'rename', args: name }),
+    isAskDialogUp: async () => {
+      const { value } = await $.state.get(ASK)
+      return typeof value === 'object' && value !== null && (value as { isDialogUp?: unknown }).isDialogUp === true
+    },
+    log: (line) => $.ui.log(line, { to: 'debug' }),
+  })
+  $.clock.every(POLL_MS, () => void namer.tick())
 }
 
 export function registerName(on: On) {
-  on('classic.UserPromptSubmit', { hook_event_name: 'UserPromptSubmit' }, ($, e, next) => applyPendingName($, e, next))
+  on('session.start', async ($, e, next) => {
+    const result = await next(e)
+    try {
+      await startNaming($)
+    } catch (error) {
+      $.ui.log(`name: not watching for a pending name: ${message(error)}`, { to: 'debug' })
+    }
+    return result
+  })
+  on('turn.start', (_, e, next) => {
+    turnStarted(e)
+    return next(e)
+  })
+  on('turn.complete', async (_, e, next) => {
+    try {
+      return await next(e)
+    } finally {
+      turnEnded(e)
+    }
+  })
 }

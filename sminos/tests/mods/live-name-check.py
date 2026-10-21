@@ -1,26 +1,31 @@
 #!/usr/bin/env python3
-"""Live check of the name mod (charge names, M2) in a real session.
+"""Live check of the name mod (charge names, M5) in real sessions.
 
 What only a running engine shows, pinned so a release that changes it fails
-loudly (docs/doperpowers/specs/2026-10-20-sminos-charge-names-design.md §2,
-§3; if an engine fact below fails, those sections are revisited, not patched
+loudly (docs/doperpowers/specs/2026-10-20-sminos-charge-names-design.md §3;
+if an engine fact below fails, that section is revisited, not patched
 around):
-- engine fact: `sessionTitle` from a `SessionStart` hook leaves the engine
-  name as it was (a probe plugin of this check's own returns one);
-- the mod: a pending name whose `from` is the session's engine name is
-  applied at its next prompt — the engine record shows it with `nameSource:
-  "hook"`, the transcript a `custom-title` and an `agent-name` record of it,
-  and the model's context the one line saying so;
-- engine fact: after a resume, the hook-set name is registered `user`;
-- the mod: a session its owner /renamed before that prompt keeps its own name.
+- an idle interactive session with a pending name whose `from` is its engine
+  name is renamed by the mod's timer through the engine's `/rename`, with no
+  prompt: the engine record shows the name with `nameSource: "user"`, the
+  transcript a `custom-title` record and the engine's meta row naming it, and
+  no model turn starts;
+- a session its owner /renamed after the pending file's `from` was read
+  keeps its own name;
+- a `--bg` job, renamed the same way between turns;
+- an SDK session as MAWS launches one (`claude -p`, stream-json in and out,
+  `CLAUDE_CODE_ENTRYPOINT=sdk-ts`), renamed the same way between prompts.
 
-It spends model calls (haiku, a few one-word turns), so no suite runs it:
-run it by hand with the model gateway's keys in the environment. Isolation
-is live-bridge-check.py's (whose class it extends): a temporary HOME whose
-.claude is the session's config dir, a temporary SMINOS_HOME, a copy of the
-worktree's sminos plugin and the probe plugin loaded with --plugin-dir, a
-tmux server of its own, the gateway keys in a 0600 env file removed at the
-end. The session is started without a name, so the engine generates one.
+Every pending file is written as `sminos derive` hands it (the spec's
+Interfaces), and the real `sminos name-due` decides, so the CLI's checks run
+too. It spends model calls (haiku, a few one-word turns), so no suite runs
+it: run it by hand with the model gateway's keys in the environment.
+Isolation is live-bridge-check.py's (whose class it extends): a temporary
+HOME whose .claude is the sessions' config dir (so a `--bg` job's
+supervisor is the check's own), a temporary SMINOS_HOME, a copy of the
+worktree's sminos plugin loaded with --plugin-dir, a tmux server of its own,
+the gateway keys in a 0600 env file removed at the end. Each session is
+started without a name, so the engine generates one.
 
     python3 sminos/tests/mods/live-name-check.py [--keep]
 """
@@ -33,6 +38,7 @@ import os
 import shlex
 import subprocess
 import sys
+import threading
 import time
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -41,59 +47,46 @@ LB = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(LB)
 wait_for = LB.wait_for
 
-PROBE_TITLE = "probe-start-title"
 CHARGE = "live-charge-name"
 SECOND = "live-second-name"
 OWNER = "owner-chosen-name"
-CONTEXT = 'sminos renamed this session to "%s" after its standing responsibility' % CHARGE
+BG = "live-bg-name"
+SDK = "live-sdk-name"
+# The mod's timer (POLL_MS, 15 s), `name-due`'s bound (10 s) and a margin.
+APPLY_S = 45
 
-PROBE_MANIFEST = {"name": "nameprobe", "version": "0.0.1", "description": "live-name-check: SessionStart sessionTitle"}
-PROBE_HOOKS = {"modules": ["./mods/register.tsx"], "hooks": {}}
-# Its SessionStart answers a title, and each run is logged, so the check
-# knows the hook ran when it reads what the engine did with the title.
-PROBE_MOD = """import type { On } from 'claude-code'
 
-const LOG = %s
-const lines: string[] = []
+def named_meta(rows, name):
+    """The engine's meta row telling the model the session was named `name`."""
+    needle = 'named this session "%s"' % name
 
-export function register(on: On) {
-  on('classic.SessionStart', async ($, e, next) => {
-    const r = await next(e)
-    lines.push(JSON.stringify({ source: e.source }))
-    await $.fs.write(LOG, lines.join('\\n') + '\\n')
-    return { ...r, sessionTitle: %s }
-  })
-}
-"""
+    def text(row):
+        content = (row.get("message") or {}).get("content")
+        if isinstance(content, str):
+            return content
+        return "".join(b.get("text", "") for b in content or [] if isinstance(b, dict))
+
+    return any(r.get("type") == "user" and r.get("isMeta") and needle in text(r) for r in rows)
 
 
 class NameCheck(LB.Live):
     def __init__(self, keep):
         super().__init__(keep)
-        self.probe = os.path.join(self.root, "probe")
-        self.probe_log = os.path.join(self.root, "probe.log")
         self.pid = None
+        self.short = None
 
-    def setup(self):
-        super().setup()
-        os.makedirs(os.path.join(self.probe, ".claude-plugin"))
-        os.makedirs(os.path.join(self.probe, "hooks", "mods"))
-        with open(os.path.join(self.probe, ".claude-plugin", "plugin.json"), "w") as f:
-            json.dump(PROBE_MANIFEST, f)
-        with open(os.path.join(self.probe, "hooks", "hooks.json"), "w") as f:
-            json.dump(PROBE_HOOKS, f)
-        with open(os.path.join(self.probe, "hooks", "mods", "register.tsx"), "w") as f:
-            f.write(PROBE_MOD % (json.dumps(self.probe_log), json.dumps(PROBE_TITLE)))
+    def bash(self, inner, **kw):
+        """`inner` under the check's env file, nothing else of the caller's environment."""
+        return ["env", "-i", "/bin/bash", "--noprofile", "--norc", "-c",
+                "set -e; . %s; cd %s; %s" % (shlex.quote(self.envfile), shlex.quote(self.work), inner)]
 
-    def plugin_dirs(self):
-        return [self.plugin, self.probe]
+    def dirs(self):
+        return " ".join("--plugin-dir %s" % shlex.quote(d) for d in self.plugin_dirs())
 
-    def launch(self, *args, probe=True):
+    def launch(self):
         """The interactive session, no name given (the engine generates one), in this check's tmux server."""
-        dirs = " ".join("--plugin-dir %s" % shlex.quote(d) for d in (self.plugin_dirs() if probe else [self.plugin]))
-        inner = "set -e; . %s; cd %s; exec claude %s --model haiku --permission-mode default %s" % (
-            shlex.quote(self.envfile), shlex.quote(self.work), dirs, " ".join(shlex.quote(a) for a in args))
-        cmd = "env -i /bin/bash --noprofile --norc -c %s" % shlex.quote(inner)
+        cmd = " ".join(shlex.quote(a) for a in self.bash(
+            "exec claude %s --model haiku --permission-mode default" % self.dirs()))
         subprocess.run(self.tmux + ["new-session", "-d", "-s", "brl", "-x", "200", "-y", "50", cmd], check=True)
 
     def records(self):
@@ -106,29 +99,13 @@ class NameCheck(LB.Live):
                 pass
         return out
 
-    def record(self):
-        """The engine's record of the session in the process this check started last."""
-        return next((r for r in self.records() if r.get("sessionId") == self.session
-                     and (self.pid is None or r.get("pid") == self.pid)), None)
+    def record(self, session=None):
+        session = session or self.session
+        return next((r for r in self.records() if r.get("sessionId") == session and LB._alive(r.get("pid"))), None)
 
-    def ready(self, resumed=False):
-        """Waits for the session's process: its engine record, then its bridge (the mods are loaded)."""
-        if resumed:
-            rec = wait_for("the resumed session's record", 90, lambda: next(
-                (r for r in self.records() if r.get("sessionId") == self.session and r.get("pid") != self.pid
-                 and LB._alive(r.get("pid"))), None))
-        else:
-            rec = wait_for("the session's record", 90, lambda: next(iter(self.records()), None))
-            self.session = rec["sessionId"]
-        self.pid = rec.get("pid")
-        wait_for("the bridge's endpoint", 90, self.status)
-        time.sleep(2)
-        # Read afresh: the record found first was written before the session's hooks ran.
-        return self.record() or {}
-
-    def rows(self):
+    def rows(self, session=None):
         rows = []
-        for p in glob.glob(os.path.join(self.cfg, "projects", "*", self.session + ".jsonl")):
+        for p in glob.glob(os.path.join(self.cfg, "projects", "*", (session or self.session) + ".jsonl")):
             with open(p) as f:
                 for line in f:
                     try:
@@ -138,7 +115,6 @@ class NameCheck(LB.Live):
         return rows
 
     def answered(self, word):
-        """The model's reply carrying `word` is in the transcript."""
         return any(r.get("type") == "assistant" and word in json.dumps(r.get("message")) for r in self.rows())
 
     def turn(self, word):
@@ -146,89 +122,123 @@ class NameCheck(LB.Live):
         wait_for("the reply %s" % word, 120, lambda: self.answered(word))
         time.sleep(1)
 
-    def pend(self, name, before):
-        """A pending name as `sminos derive` hands it (the spec's Interfaces)."""
+    def pend(self, session, name, before):
+        """A pending name as `sminos derive` hands it."""
         d = os.path.join(self.smh, "names")
         os.makedirs(d, mode=0o700, exist_ok=True)
         ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        with open(os.path.join(d, self.session + ".json"), "w") as f:
-            json.dump({"session": self.session, "name": name, "from": before,
+        with open(os.path.join(d, session + ".json"), "w") as f:
+            json.dump({"session": session, "name": name, "from": before,
                        "line": "Checks that the name mod applies a pending name.", "ts": ts}, f)
 
-    def contexts(self):
-        """How many times the model was handed the mod's line (a hook's additional context in the transcript)."""
-        return sum(1 for r in self.rows() if r.get("type") == "attachment"
-                   and (r.get("attachment") or {}).get("type") == "hook_additional_context"
-                   for c in (r["attachment"].get("content") or []) if c.startswith(CONTEXT))
+    def titles(self, session=None):
+        return [r.get("customTitle") for r in self.rows(session) if r.get("type") == "custom-title"]
 
-    def titles(self, kind, key):
-        return [r.get(key) for r in self.rows() if r.get("type") == kind]
+    def settled(self, session, what):
+        """The record once the engine's title promotion had its turn: an `auto` name, or the generated one after a while."""
+        try:
+            return wait_for(what, 30, lambda: (lambda r: r if r and r.get("nameSource") == "auto" else None)(
+                self.record(session)))
+        except TimeoutError:
+            return self.record(session) or {}
+
+    def applied(self, session, name):
+        try:
+            return wait_for("the rename to %s" % name, APPLY_S, lambda: (lambda r: r if r and r.get("name") == name else None)(
+                self.record(session)))
+        except TimeoutError:
+            return self.record(session) or {}
+
+    # -- the checks
+
+    def interactive(self):
+        self.launch()
+        rec = wait_for("the session's record", 90, lambda: next(iter(self.records()), None))
+        self.session = rec["sessionId"]
+        wait_for("the bridge's endpoint (the mods are loaded)", 90, self.status)
+        self.turn("ALPHA")
+        rec = self.record() or {}
+        generated = rec.get("name")
+        assistants = sum(1 for r in self.rows() if r.get("type") == "assistant")
+
+        self.pend(self.session, CHARGE, generated)
+        rec = self.applied(self.session, CHARGE)
+        self.check("an idle session's pending name is applied by the timer, registered user",
+                   rec.get("name") == CHARGE and rec.get("nameSource") == "user",
+                   "record %s -> %s (%s)" % (generated, rec.get("name"), rec.get("nameSource")))
+        time.sleep(5)
+        rows = self.rows()
+        self.check("and the transcript keeps a custom-title record and the engine's meta row naming it",
+                   CHARGE in self.titles() and named_meta(rows, CHARGE),
+                   "custom-title %s; meta row %s" % (self.titles(), "found" if named_meta(rows, CHARGE) else "MISSING"))
+        after = sum(1 for r in rows if r.get("type") == "assistant")
+        self.check("engine fact: the rename starts no model turn", after == assistants,
+                   "assistant rows %d before, %d after" % (assistants, after))
+
+        # The owner renames after derive read CHARGE as the name to replace.
+        self.prompt("/rename %s" % OWNER)
+        wait_for("the owner's rename", 60, lambda: (self.record() or {}).get("name") == OWNER)
+        self.pend(self.session, SECOND, CHARGE)
+        time.sleep(APPLY_S)
+        rec = self.record() or {}
+        self.check("a session its owner renamed after the file's `from` was read keeps its own name",
+                   rec.get("name") == OWNER and rec.get("nameSource") == "user" and SECOND not in self.titles(),
+                   "record %s (%s); custom-title %s" % (rec.get("name"), rec.get("nameSource"), self.titles()))
+        subprocess.run(self.tmux + ["kill-server"], capture_output=True)
+
+    def bg(self):
+        r = subprocess.run(self.bash("exec claude --bg %s --model haiku --permission-mode default %s" % (
+            self.dirs(), shlex.quote("Reply with exactly the word ALPHA and nothing else."))),
+            capture_output=True, text=True, timeout=90)
+        self.short = next((t for t in r.stdout.split() if len(t) == 8 and all(c in "0123456789abcdef" for c in t)), None)
+        rec = wait_for("the --bg job's record", 90, lambda: next(
+            (x for x in self.records() if x.get("kind") == "bg" and LB._alive(x.get("pid"))), None))
+        session = rec["sessionId"]
+        wait_for("its first reply", 120, lambda: any(
+            x.get("type") == "assistant" and "ALPHA" in json.dumps(x.get("message")) for x in self.rows(session)))
+        rec = self.settled(session, "its title promotion")
+        before = rec.get("name")
+        self.pend(session, BG, before)
+        rec = self.applied(session, BG)
+        self.check("a --bg job's pending name is applied between turns, registered user",
+                   rec.get("name") == BG and rec.get("nameSource") == "user" and BG in self.titles(session),
+                   "record %s (%s) -> %s (%s); custom-title %s" % (before, "kind bg", rec.get("name"),
+                                                                    rec.get("nameSource"), self.titles(session)))
+
+    def sdk(self):
+        with open(self.envfile, "a") as f:
+            f.write("export CLAUDE_CODE_ENTRYPOINT=sdk-ts\nexport SMNS_MEMBER=%d\n" % os.getpid())
+        self.headless = subprocess.Popen(self.bash(
+            "exec claude -p --input-format stream-json --output-format stream-json --verbose "
+            "--include-partial-messages --replay-user-messages --permission-prompt-tool stdio %s "
+            "--model haiku --permission-mode default" % self.dirs()),
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0)
+        self.procs.append(self.headless)
+        threading.Thread(target=self.read_headless, daemon=True).start()
+        self.send("Reply with exactly the word ALPHA and nothing else.")
+        wait_for("its first result", 120, lambda: self.turns_done())
+        rec = wait_for("the SDK session's record", 30, lambda: next(
+            (x for x in self.records() if x.get("entrypoint") == "sdk-ts" and LB._alive(x.get("pid"))), None))
+        session = rec["sessionId"]
+        rec = self.settled(session, "its title promotion")
+        before = rec.get("name")
+        self.pend(session, SDK, before)
+        rec = self.applied(session, SDK)
+        self.check("an SDK session's pending name is applied between prompts, registered user",
+                   rec.get("name") == SDK and rec.get("nameSource") == "user" and SDK in self.titles(session),
+                   "record %s (%s) -> %s (%s); custom-title %s" % (before, "sdk-ts", rec.get("name"),
+                                                                    rec.get("nameSource"), self.titles(session)))
 
     def run(self):
         self.setup()
-        self.launch()
-        self.ready()
-        ran = wait_for("the probe's SessionStart", 30, lambda: os.path.exists(self.probe_log)
-                       and '"startup"' in open(self.probe_log).read() and open(self.probe_log).read())
-        time.sleep(1)
-        # The record as it stands after the probe's title was answered.
-        rec = self.record() or {}
-        generated = rec.get("name")
-        self.check("engine fact: SessionStart's sessionTitle leaves the engine name as it was",
-                   '"startup"' in ran and rec.get("nameSource") == "derived" and generated != PROBE_TITLE,
-                   "probe ran %r; record %s (%s)" % (ran.strip(), generated, rec.get("nameSource")))
+        self.interactive()
+        self.bg()
+        self.sdk()
 
-        self.pend(CHARGE, generated)
-        self.turn("ALPHA")
-        rec = self.record() or {}
-        context = self.contexts() == 1
-        self.check("a pending name is applied at the next prompt, registered hook",
-                   rec.get("name") == CHARGE and rec.get("nameSource") == "hook",
-                   "record %s (%s)" % (rec.get("name"), rec.get("nameSource")))
-        self.check("and the transcript keeps it as custom-title and agent-name",
-                   CHARGE in self.titles("custom-title", "customTitle") and CHARGE in self.titles("agent-name", "agentName"),
-                   "custom-title %s; agent-name %s" % (self.titles("custom-title", "customTitle"),
-                                                       self.titles("agent-name", "agentName")))
-        self.check("and the model's context carries the line saying so", context, "context line %s" % (
-            "found" if context else "MISSING"))
-
-        self.turn("BRAVO")
-        rec = self.record() or {}
-        contexts = self.contexts()
-        self.check("a second prompt leaves the applied name as it is, told once",
-                   rec.get("name") == CHARGE and rec.get("nameSource") == "hook" and contexts == 1,
-                   "record %s (%s); context lines %d" % (rec.get("name"), rec.get("nameSource"), contexts))
-
-        old = self.pid
-        self.prompt("/exit")
-        wait_for("the session's exit", 60, lambda: not LB._alive(old))
-        time.sleep(1)
-        self.launch("--resume", self.session, probe=False)
-        rec = self.ready(resumed=True)
-        seen = [(rec.get("name"), rec.get("nameSource"))]
-        deadline = time.time() + 20
-        while time.time() < deadline:
-            r = self.record() or {}
-            if (r.get("name"), r.get("nameSource")) != seen[-1]:
-                seen.append((r.get("name"), r.get("nameSource")))
-            time.sleep(0.5)
-        self.turn("DELTA")
-        r = self.record() or {}
-        if (r.get("name"), r.get("nameSource")) != seen[-1]:
-            seen.append((r.get("name"), r.get("nameSource")))
-        self.check("engine fact: after a resume, the hook-set name is registered user",
-                   seen[-1] == (CHARGE, "user"), "record over time %s" % seen)
-
-        self.pend(SECOND, CHARGE)
-        self.prompt("/rename %s" % OWNER)
-        wait_for("the owner's rename", 60, lambda: (self.record() or {}).get("name") in (OWNER, SECOND))
-        self.turn("CHARLIE")
-        rec = self.record() or {}
-        self.check("a session its owner renamed before the prompt keeps its own name",
-                   rec.get("name") == OWNER and rec.get("nameSource") == "user"
-                   and SECOND not in self.titles("custom-title", "customTitle"),
-                   "record %s (%s); custom-title %s" % (rec.get("name"), rec.get("nameSource"),
-                                                        self.titles("custom-title", "customTitle")))
+    def cleanup(self):
+        if self.short:
+            subprocess.run(self.bash("claude stop %s" % shlex.quote(self.short)), capture_output=True, timeout=30)
+        super().cleanup()
 
 
 def main():

@@ -1,33 +1,250 @@
 import { describe, expect, test, tier } from 'claude-code/testing'
-import type { ClassicResultOf, EngineInterface } from 'claude-code'
+import type { EngineInterface } from 'claude-code'
 
-import { NAME_DUE_TIMEOUT_MS, applyPendingName, renamedContext, resetName } from '../../hooks/mods/name'
+import { NAME_DUE_TIMEOUT_MS, POLL_MS, createNamer, resetName, startNaming, turnEnded, turnStarted } from '../../hooks/mods/name'
+import type { NameIo } from '../../hooks/mods/name'
 
 tier('user')
 
 const SESSION = '1a000001-0000-4000-8000-000000000001'
 const PENDING = `{"session": "${SESSION}", "name": "desk-uplink-owner", "from": "work-0b", "line": "Owns the desk's uplink.", "ts": "2026-10-20T10:00:00Z"}`
-const CONTEXT = 'sminos renamed this session to "desk-uplink-owner" after its standing responsibility; other sessions now see and address it by that name.'
 
-type Result = ClassicResultOf['classic.UserPromptSubmit']
 type Answer = { exitCode: number; stdout: string } | Error
 
 /**
- * An engine of plain records: files by path, the CLI's answers in turn, the
- * env as set here. Every read and every run is logged.
+ * The namer's world as plain records: the pending file, the CLI's answers in
+ * turn, the turn and dialog as set here. Every read, check and rename is
+ * logged. `during` runs while the CLI answers (a turn that starts meanwhile).
  */
-function harness(options: { files?: Record<string, string>; answers?: Answer[]; env?: Record<string, string> } = {}) {
-  const files: Record<string, string> = { ...(options.files ?? {}) }
-  const reads: string[] = []
-  const runs: Array<{ argv: string[]; timeoutMs?: number }> = []
+function world(options: { file?: string; answers?: Answer[]; during?: () => void } = {}) {
+  const w = {
+    file: options.file as string | undefined,
+    isDialogUp: false,
+    reads: 0,
+    checks: 0,
+    renames: [] as string[],
+    logs: [] as string[],
+  }
   const answers = [...(options.answers ?? [{ exitCode: 0, stdout: 'desk-uplink-owner\n' }])]
+  resetName()
+  const io: NameIo = {
+    read: async () => {
+      w.reads += 1
+      if (w.file === undefined) {
+        throw new Error('ENOENT')
+      }
+      return w.file
+    },
+    due: async () => {
+      w.checks += 1
+      options.during?.()
+      const a = answers.length > 1 ? answers.shift() : answers[0]
+      if (a instanceof Error) {
+        throw a
+      }
+      return a ?? { exitCode: 0, stdout: '' }
+    },
+    rename: async (name) => {
+      w.renames.push(name)
+    },
+    isAskDialogUp: async () => w.isDialogUp,
+    log: (line) => w.logs.push(line),
+  }
+  return { w, namer: createNamer(io) }
+}
+
+/** Lets every promise already started run to its end (none here waits on a clock). */
+async function settle() {
+  for (let i = 0; i < 50; i += 1) {
+    await Promise.resolve()
+  }
+}
+
+const MAIN = { turnId: 't1' } as never
+const SUB = { turnId: 't2', agentId: 'a1' } as never
+
+describe('createNamer', () => {
+  test('an idle tick with a due name renames the session once; the same file at a later tick runs no second check', async () => {
+    const { w, namer } = world({ file: PENDING })
+    await namer.tick()
+    expect(w.renames).toEqual(['desk-uplink-owner'])
+    await namer.tick()
+    await namer.tick()
+    expect(w.checks).toBe(1)
+    expect(w.renames).toEqual(['desk-uplink-owner'])
+  })
+
+  test('no pending file: the CLI is never run', async () => {
+    const { w, namer } = world()
+    await namer.tick()
+    await namer.tick()
+    expect(w.reads).toBe(2)
+    expect(w.checks).toBe(0)
+    expect(w.renames).toEqual([])
+  })
+
+  test('a name that is not due renames nothing, and is not asked again for the same file', async () => {
+    const { w, namer } = world({ file: PENDING, answers: [{ exitCode: 0, stdout: '' }] })
+    await namer.tick()
+    await namer.tick()
+    expect(w.checks).toBe(1)
+    expect(w.renames).toEqual([])
+  })
+
+  test('a new pending file is checked afresh', async () => {
+    const { w, namer } = world({ file: PENDING, answers: [{ exitCode: 0, stdout: '' }, { exitCode: 0, stdout: 'desk-uplink-keeper\n' }] })
+    await namer.tick()
+    w.file = PENDING.replace('desk-uplink-owner', 'desk-uplink-keeper')
+    await namer.tick()
+    expect(w.checks).toBe(2)
+    expect(w.renames).toEqual(['desk-uplink-keeper'])
+  })
+
+  test('while a main turn runs nothing is checked; the first idle tick after it renames', async () => {
+    const { w, namer } = world({ file: PENDING })
+    turnStarted(MAIN)
+    await namer.tick()
+    expect(w.checks).toBe(0)
+    turnEnded(MAIN)
+    await namer.tick()
+    expect(w.renames).toEqual(['desk-uplink-owner'])
+  })
+
+  test("a subagent's turn is not the main turn", async () => {
+    const { w, namer } = world({ file: PENDING })
+    turnStarted(SUB)
+    await namer.tick()
+    expect(w.renames).toEqual(['desk-uplink-owner'])
+  })
+
+  test("while an ask's dialog is up nothing is checked; the first tick after it closes renames", async () => {
+    const { w, namer } = world({ file: PENDING })
+    w.isDialogUp = true
+    await namer.tick()
+    expect(w.checks).toBe(0)
+    w.isDialogUp = false
+    await namer.tick()
+    expect(w.renames).toEqual(['desk-uplink-owner'])
+  })
+
+  test("a turn that starts while the check runs drops its answer and leaves the file for the next idle tick", async () => {
+    let first = true
+    const { w, namer } = world({
+      file: PENDING,
+      during: () => {
+        if (first) {
+          first = false
+          turnStarted(MAIN)
+        }
+      },
+    })
+    await namer.tick()
+    expect(w.renames).toEqual([])
+    await namer.tick()
+    expect(w.checks).toBe(1)
+    turnEnded(MAIN)
+    await namer.tick()
+    expect(w.checks).toBe(2)
+    expect(w.renames).toEqual(['desk-uplink-owner'])
+  })
+
+  test('a turn that starts and ends while the check runs still drops its answer', async () => {
+    let first = true
+    const { w, namer } = world({
+      file: PENDING,
+      during: () => {
+        if (first) {
+          first = false
+          turnStarted(MAIN)
+          turnEnded(MAIN)
+        }
+      },
+    })
+    await namer.tick()
+    expect(w.renames).toEqual([])
+    await namer.tick()
+    expect(w.checks).toBe(2)
+    expect(w.renames).toEqual(['desk-uplink-owner'])
+  })
+
+  test('a CLI that cannot run renames nothing, and is not tried again for the same file', async () => {
+    const { w, namer } = world({ file: PENDING, answers: [new Error('timed out'), { exitCode: 0, stdout: 'desk-uplink-owner\n' }] })
+    await namer.tick()
+    await namer.tick()
+    expect(w.checks).toBe(1)
+    expect(w.renames).toEqual([])
+  })
+
+  test('a CLI that answers with an error renames nothing, and is not asked again for the same file', async () => {
+    const { w, namer } = world({ file: PENDING, answers: [{ exitCode: 2, stdout: 'desk-uplink-owner\n' }] })
+    await namer.tick()
+    await namer.tick()
+    expect(w.checks).toBe(1)
+    expect(w.renames).toEqual([])
+  })
+
+  test('a rename the engine refuses goes to the debug log, and the file stays handled', async () => {
+    const { w } = world()
+    const refusing = createNamer({
+      read: async () => PENDING,
+      due: async () => ({ exitCode: 0, stdout: 'desk-uplink-owner\n' }),
+      rename: async () => {
+        w.renames.push('tried')
+        throw new Error('past a Stop')
+      },
+      isAskDialogUp: async () => false,
+      log: (line) => w.logs.push(line),
+    })
+    await refusing.tick()
+    await refusing.tick()
+    expect(w.renames).toEqual(['tried'])
+    expect(w.logs.some((line) => line.includes('past a Stop'))).toBe(true)
+  })
+
+  test('a tick that lands while one is still running does nothing', async () => {
+    let release: () => void = () => {}
+    const { w } = world()
+    const slow = createNamer({
+      read: async () => PENDING,
+      due: () =>
+        new Promise((resolve) => {
+          w.checks += 1
+          release = () => resolve({ exitCode: 0, stdout: 'desk-uplink-owner\n' })
+        }),
+      rename: async (name) => {
+        w.renames.push(name)
+      },
+      isAskDialogUp: async () => false,
+      log: () => {},
+    })
+    const first = slow.tick()
+    await settle()
+    await slow.tick()
+    release()
+    await first
+    expect(w.checks).toBe(1)
+    expect(w.renames).toEqual(['desk-uplink-owner'])
+  })
+})
+
+/** A `$` of plain records for the session start: the env, the session, files, the CLI, the command, the clock's one timer. */
+function engine(options: { env?: Record<string, string>; files?: Record<string, string>; dialog?: unknown } = {}) {
   const env = options.env ?? { HOME: '/home/u' }
+  const files = options.files ?? {}
+  const e = {
+    reads: [] as string[],
+    runs: [] as Array<{ argv: string[]; timeoutMs?: number }>,
+    commands: [] as Array<{ command: string; args?: string }>,
+    timers: [] as Array<{ ms: number; fn: () => unknown }>,
+    stateReads: [] as unknown[],
+  }
   const $ = {
     plugin: { root: '/plugin' },
     env: { get: async (name: string) => env[name] },
+    session: { id: async () => SESSION },
     fs: {
       read: async (path: string) => {
-        reads.push(path)
+        e.reads.push(path)
         const text = files[path]
         if (text === undefined) {
           throw new Error(`ENOENT: ${path}`)
@@ -37,118 +254,81 @@ function harness(options: { files?: Record<string, string>; answers?: Answer[]; 
     },
     process: {
       run: async (argv: string[], init?: { timeoutMs?: number }) => {
-        runs.push({ argv, timeoutMs: init?.timeoutMs })
-        const a = answers.length > 1 ? answers.shift() : answers[0]
-        if (a instanceof Error) {
-          throw a
-        }
-        return { exitCode: a?.exitCode ?? 0, stdout: a?.stdout ?? '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false }
+        e.runs.push({ argv, timeoutMs: init?.timeoutMs })
+        return { exitCode: 0, stdout: 'desk-uplink-owner\n', stderr: '', isStdoutTruncated: false, isStderrTruncated: false }
       },
     },
+    command: {
+      run: async (input: { command: string; args?: string }) => {
+        e.commands.push(input)
+        return { text: `Session renamed to: ${input.args}` }
+      },
+    },
+    state: {
+      get: async (key: unknown) => {
+        e.stateReads.push(key)
+        return { value: options.dialog, version: 1 }
+      },
+    },
+    clock: {
+      every: (ms: number, fn: () => unknown) => {
+        e.timers.push({ ms, fn })
+        return { cancel: () => {} }
+      },
+    },
+    ui: { log: () => {} },
   }
   resetName()
-  const engine = $ as unknown as EngineInterface
-  const prompt = (beneath: Result = {}, source?: string) =>
-    applyPendingName(
-      engine,
-      { hook_event_name: 'UserPromptSubmit', session_id: SESSION, transcript_path: '/t.jsonl', cwd: '/w', prompt: 'hi', ...(source ? { source } : {}) } as never,
-      async () => beneath,
-    )
-  return { files, reads, runs, prompt }
+  return { e, $: $ as unknown as EngineInterface }
 }
 
 const FILE = `/home/u/.claude/sminos/names/${SESSION}.json`
 
-describe('applyPendingName', () => {
-  test('a due name: the session title and one line of context, the CLI asked once', async () => {
-    const h = harness({ files: { [FILE]: PENDING } })
-    expect(await h.prompt()).toEqual({ sessionTitle: 'desk-uplink-owner', additionalContext: [CONTEXT] })
-    expect(h.runs).toEqual([{ argv: ['/plugin/skills/sminos/scripts/sminos', 'name-due', '--session', SESSION], timeoutMs: NAME_DUE_TIMEOUT_MS }])
+/** Runs the one timer's tick and lets what it started settle. */
+async function tick(e: { timers: Array<{ fn: () => unknown }> }) {
+  await e.timers[0]?.fn()
+  await settle()
+}
+
+describe('startNaming', () => {
+  test("a timer every POLL_MS checks with the CLI and renames through the engine's /rename", async () => {
+    const { e, $ } = engine({ files: { [FILE]: PENDING } })
+    await startNaming($)
+    expect(e.timers.map((t) => t.ms)).toEqual([POLL_MS])
+    await tick(e)
+    expect(e.runs).toEqual([{ argv: ['/plugin/skills/sminos/scripts/sminos', 'name-due', '--session', SESSION], timeoutMs: NAME_DUE_TIMEOUT_MS }])
+    expect(e.commands).toEqual([{ command: 'rename', args: 'desk-uplink-owner' }])
   })
 
-  test('the context beneath is kept, the line added after it', async () => {
-    const h = harness({ files: { [FILE]: PENDING } })
-    expect(await h.prompt({ additionalContext: ['from below'] })).toEqual({ sessionTitle: 'desk-uplink-owner', additionalContext: ['from below', CONTEXT] })
+  test('an internal fork starts no timer and reads nothing', async () => {
+    const { e, $ } = engine({ files: { [FILE]: PENDING }, env: { HOME: '/home/u', SMNS_INTERNAL: '1' } })
+    await startNaming($)
+    expect(e.timers).toEqual([])
+    expect(e.reads).toEqual([])
   })
 
-  test('the same pending file at a second prompt runs no second check', async () => {
-    const h = harness({ files: { [FILE]: PENDING } })
-    await h.prompt()
-    expect(await h.prompt()).toEqual({})
-    expect(h.runs.length).toBe(1)
-    expect(h.reads.length).toBe(2)
-  })
-
-  test('a name that is not due: the result unchanged, and not asked again for the same file', async () => {
-    const h = harness({ files: { [FILE]: PENDING }, answers: [{ exitCode: 0, stdout: '' }] })
-    expect(await h.prompt({ additionalContext: ['x'] })).toEqual({ additionalContext: ['x'] })
-    expect(await h.prompt()).toEqual({})
-    expect(h.runs.length).toBe(1)
-  })
-
-  test('a new pending file is checked afresh', async () => {
-    const h = harness({ files: { [FILE]: PENDING }, answers: [{ exitCode: 0, stdout: '' }, { exitCode: 0, stdout: 'desk-uplink-keeper\n' }] })
-    expect(await h.prompt()).toEqual({})
-    h.files[FILE] = PENDING.replace('desk-uplink-owner', 'desk-uplink-keeper')
-    expect((await h.prompt()).sessionTitle).toBe('desk-uplink-keeper')
-    expect(h.runs.length).toBe(2)
-  })
-
-  test('no pending file: the CLI is never run', async () => {
-    const h = harness()
-    expect(await h.prompt({ additionalContext: ['x'] })).toEqual({ additionalContext: ['x'] })
-    expect(h.reads).toEqual([FILE])
-    expect(h.runs).toEqual([])
-  })
-
-  test('a CLI that cannot run applies nothing, and is not tried again for the same file', async () => {
-    const h = harness({ files: { [FILE]: PENDING }, answers: [new Error('timed out'), { exitCode: 0, stdout: 'desk-uplink-owner\n' }] })
-    expect(await h.prompt()).toEqual({})
-    expect(await h.prompt()).toEqual({})
-    expect(h.runs.length).toBe(1)
-  })
-
-  test('a CLI that answers with an error applies nothing, and is not asked again for the same file', async () => {
-    const h = harness({ files: { [FILE]: PENDING }, answers: [{ exitCode: 2, stdout: 'desk-uplink-owner\n' }] })
-    expect(await h.prompt()).toEqual({})
-    expect(await h.prompt()).toEqual({})
-    expect(h.runs.length).toBe(1)
-  })
-
-  test('a title set beneath passes unchanged, nothing read', async () => {
-    const h = harness({ files: { [FILE]: PENDING } })
-    expect(await h.prompt({ sessionTitle: 'theirs' })).toEqual({ sessionTitle: 'theirs' })
-    expect(h.reads).toEqual([])
-    expect(h.runs).toEqual([])
-  })
-
-  test('an internal fork reads nothing', async () => {
-    const h = harness({ files: { [FILE]: PENDING }, env: { HOME: '/home/u', SMNS_INTERNAL: '1' } })
-    expect(await h.prompt()).toEqual({})
-    expect(h.reads).toEqual([])
-    expect(h.runs).toEqual([])
-  })
-
-  test("the poll-event channel's enqueue-time pass is left to the prompt's own submit", async () => {
-    const h = harness({ files: { [FILE]: PENDING } })
-    expect(await h.prompt({}, 'poll_event')).toEqual({})
-    expect(h.reads).toEqual([])
-    expect((await h.prompt({}, 'system')).sessionTitle).toBe('desk-uplink-owner')
+  test("an ask's dialog up, as the ask's snapshot says, holds the rename", async () => {
+    const { e, $ } = engine({ files: { [FILE]: PENDING }, dialog: { isDialogUp: true } })
+    await startNaming($)
+    await tick(e)
+    expect(e.stateReads).toEqual([{ plugin: 'sminos', key: 'ask' }])
+    expect(e.runs).toEqual([])
+    expect(e.commands).toEqual([])
   })
 
   test("the pending file is under the CLI's own home: SMINOS_HOME, else DAEMON_HOME, else ~/.claude/sminos", async () => {
-    const a = harness({ env: { HOME: '/home/u', SMINOS_HOME: '/s', DAEMON_HOME: '/d' } })
-    await a.prompt()
-    const b = harness({ env: { HOME: '/home/u', SMINOS_HOME: '', DAEMON_HOME: '/d' } })
-    await b.prompt()
-    const c = harness({ env: { HOME: '/home/u' } })
-    await c.prompt()
-    expect([a.reads, b.reads, c.reads]).toEqual([[`/s/names/${SESSION}.json`], [`/d/names/${SESSION}.json`], [FILE]])
-  })
-})
-
-describe('renamedContext', () => {
-  test('is the one line the model reads', async () => {
-    expect(renamedContext('desk-uplink-owner')).toBe(CONTEXT)
+    const reads: string[][] = []
+    const envs: Array<Record<string, string>> = [
+      { HOME: '/home/u', SMINOS_HOME: '/s', DAEMON_HOME: '/d' },
+      { HOME: '/home/u', SMINOS_HOME: '', DAEMON_HOME: '/d' },
+      { HOME: '/home/u' },
+    ]
+    for (const env of envs) {
+      const { e, $ } = engine({ env })
+      await startNaming($)
+      await tick(e)
+      reads.push(e.reads)
+    }
+    expect(reads).toEqual([[`/s/names/${SESSION}.json`], [`/d/names/${SESSION}.json`], [FILE]])
   })
 })
