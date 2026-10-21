@@ -61,7 +61,10 @@ export function withAddress(kind: string, text: string, line: string): string {
 
 type Kept = { session: string; line: string; until: number }
 
-const state: { kept?: Kept; asking?: Promise<void> } = {}
+/** An ask of the CLI in flight: the session it is for, and its end. */
+type Asking = { session: string; done: Promise<void> }
+
+const state: { kept?: Kept; asking?: Asking } = {}
 
 /** Forgets the kept line (tests). */
 export function resetAddress() {
@@ -76,8 +79,8 @@ export function refreshAddress() {
   }
 }
 
-/** Asks the CLI for `session`'s line and keeps its answer, or `line` when it cannot answer. */
-async function askCli($: EngineInterface, session: string, line: string, now: () => number): Promise<void> {
+/** Asks the CLI for `session`'s line: what to keep, its answer or `line` when it cannot answer. */
+async function askCli($: EngineInterface, session: string, line: string, now: () => number): Promise<Kept> {
   let answered = false
   try {
     const r = await $.process.run([`${$.plugin.root}/skills/sminos/scripts/sminos`, 'who', '--session', session], { timeoutMs: 10_000 })
@@ -88,26 +91,41 @@ async function askCli($: EngineInterface, session: string, line: string, now: ()
   } catch {
     // Kept as it was: a CLI that cannot run now is asked again a minute on.
   }
-  state.kept = { session, line, until: now() + (answered && line !== '' ? ADDRESS_TTL_MS : ADDRESS_RETRY_MS) }
+  return { session, line, until: now() + (answered && line !== '' ? ADDRESS_TTL_MS : ADDRESS_RETRY_MS) }
+}
+
+/**
+ * Starts the one ask for `session`; its answer is kept unless an ask for
+ * another session started meanwhile (the session went on under a new id,
+ * whose line it would overwrite).
+ */
+function startAsk($: EngineInterface, session: string, line: string, now: () => number): Asking {
+  const asking: Asking = { session, done: Promise.resolve() }
+  asking.done = askCli($, session, line, now).then((kept) => {
+    if (state.asking === asking) {
+      state.kept = kept
+      state.asking = undefined
+    }
+  })
+  state.asking = asking
+  return asking
 }
 
 /**
  * The address line of `session`: the kept one, the CLI asked once for every
- * caller when it is due — in the background when a line is kept, the caller
- * waiting only for a session with none.
+ * caller of the session when it is due — in the background when a line is
+ * kept, the caller waiting only for a session with none.
  */
 export async function addressLine($: EngineInterface, session: string, now: () => number = Date.now): Promise<string> {
   const kept = state.kept?.session === session ? state.kept : undefined
   if (kept !== undefined && now() < kept.until) {
     return kept.line
   }
-  const asking = (state.asking ??= askCli($, session, kept?.line ?? '', now).finally(() => {
-    state.asking = undefined
-  }))
+  const asking = state.asking?.session === session ? state.asking : startAsk($, session, kept?.line ?? '', now)
   if (kept !== undefined) {
     return kept.line
   }
-  await asking
+  await asking.done
   return state.kept?.session === session ? state.kept.line : ''
 }
 

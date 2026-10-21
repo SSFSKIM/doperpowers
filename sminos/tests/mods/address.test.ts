@@ -140,6 +140,29 @@ describe('addressText', () => {
     expect(h.runs.map((r) => r[3])).toEqual(['1a000001-0000-4000-8000-000000000001', '3c000003-0000-4000-8000-000000000003'])
   })
 
+  test("a new session id asks for itself while the old one's refresh is in flight, and the old answer does not overwrite it", async () => {
+    const renamed = 'Sminos-Session: fixer2#1a000001 (teamproj on alpha)'
+    const moved = 'Sminos-Session: fixer2#3c000003 (teamproj on alpha)'
+    const h = harness({ answers: [{ exitCode: 0, stdout: LINE }, { exitCode: 0, stdout: renamed }, { exitCode: 0, stdout: moved }], held: true })
+    const first = h.ask('commit')
+    await h.answer()
+    expect(await first).toBe(LINE)
+    h.state.clock += ADDRESS_TTL_MS
+    expect(await h.ask('commit')).toBe(LINE)
+    h.state.session = '3c000003-0000-4000-8000-000000000003'
+    const second = h.ask('commit')
+    await h.settle()
+    expect(h.runs.map((r) => r[3])).toEqual([
+      '1a000001-0000-4000-8000-000000000001',
+      '1a000001-0000-4000-8000-000000000001',
+      '3c000003-0000-4000-8000-000000000003',
+    ])
+    await h.answer()
+    expect(await second).toBe(moved)
+    expect(await h.ask('commit')).toBe(moved)
+    expect(h.runs.length).toBe(3)
+  })
+
   test('a compaction that stood asks again at the next request; a skipped one, or a precompute, does not', async () => {
     const renamed = 'Sminos-Session: fixer2#1a000001 (teamproj on alpha)'
     const h = harness({ answers: [{ exitCode: 0, stdout: LINE }, { exitCode: 0, stdout: renamed }] })
