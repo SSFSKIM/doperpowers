@@ -8,7 +8,11 @@ Proves acceptance 3 (container, stand-in profile, and step 12 with a stand-in
 (container, a reconciled profile change), 6 (a credential-free image), 7
 (sminos: a stand-in daemon under a systemd container, a sandbox's identity
 hygiene) and the host half of 8 (projects from the descriptor, the mirror cache
-on a persistent host), plus the boot's failure paths. Prints one line per case, "ok <case>" or "FAIL <case>: why";
+on a persistent host), plus the boot's failure paths; and the VM driver's
+host side (its M2): plugins seated outside the guard with the guard active from
+the first session, a departure held and a reboot during it, a release run by
+the lease service as a transient unit, and setup.sh's refusal of a user made
+otherwise. Prints one line per case, "ok <case>" or "FAIL <case>: why";
 exits 1 when a case failed. Every secret here is made up.
 
     python3 devcloud/tests/integration.py <image>
@@ -51,7 +55,7 @@ failures = []
 
 
 def cleanup():
-    for container in (HOST, FX, VM):
+    for container in (HOST, FX, VM, SEATED, ADOPTED):
         subprocess.run(["docker", "rm", "-f", container], capture_output=True)
     subprocess.run(["docker", "rmi", "-f", SYSTEMD_IMAGE, PLANTED, BROKEN_DPKG], capture_output=True)
     subprocess.run(["docker", "network", "rm", NET], capture_output=True)
@@ -99,9 +103,10 @@ def case(name):
     return run
 
 
-def descriptor(name="sbx-test", branch="main", role="sandbox", token="config-token", projects="", mirror=""):
+def descriptor(name="sbx-test", branch="main", role="sandbox", token="config-token", projects="", mirror="",
+               extra=""):
     path = TMP / f"boot-{name}-{branch}-{role}-{token}.env"
-    path.write_text(
+    path.write_text(extra + 
         f"DEVCLOUD_NAME={name}\nDEVCLOUD_KIND=container\nDEVCLOUD_ROLE={role}\nDEVCLOUD_TAILSCALE=host\n"
         "DEVCLOUD_SEED=gce-metadata\nDEVCLOUD_SM_PROJECT=devcloud-test-project\n"
         "DEVCLOUD_CONFIG_REPO=http://fixtures:8083/config.git\n"
@@ -541,7 +546,8 @@ SYSTEMD_DOCKERFILE = f"""
 FROM {IMAGE}
 RUN apt-get update && apt-get install -y --no-install-recommends systemd systemd-sysv dbus libpam-systemd \\
  && rm -rf /var/lib/apt/lists/* && systemctl enable devcloud-boot.service \\
- && for unit in devcloud-boot devcloud-pull-config devcloud-refresh-secrets devcloud-refresh-mirrors; do \\
+ && for unit in devcloud-boot devcloud-pull-config devcloud-refresh-secrets devcloud-refresh-mirrors \\
+                devcloud-lease devcloud-enroll; do \\
       mkdir -p /etc/systemd/system/$unit.service.d \\
       && printf '[Service]\\nEnvironment=GCE_METADATA_HOST=fixtures:8082 DEVCLOUD_SM_ENDPOINT=http://fixtures:8081 DEVCLOUD_ALLOW_HTTP=1\\n' \\
          > /etc/systemd/system/$unit.service.d/stand-ins.conf; done
@@ -550,6 +556,7 @@ ENTRYPOINT ["/sbin/init"]
 """
 
 
+STAND_INS = "env GCE_METADATA_HOST=fixtures:8082 DEVCLOUD_SM_ENDPOINT=http://fixtures:8081 DEVCLOUD_ALLOW_HTTP=1"
 RECONCILE_WITH_STAND_INS = ("env GCE_METADATA_HOST=fixtures:8082 DEVCLOUD_SM_ENDPOINT=http://fixtures:8081 "
                             "DEVCLOUD_ALLOW_HTTP=1 devcloud reconcile")
 SMINOS_UNIT = f"{HOME}/.config/systemd/user/sminos-daemon.service"
@@ -600,8 +607,19 @@ def under_systemd():
     check("3" in out(VM, "systemctl show -p SuccessExitStatus devcloud-boot.service"),
           "the boot unit does not count exit 3 (only projects failed) as success")
     for unit in ("devcloud-session-mirror.service", "devcloud-pull-config.timer", "devcloud-refresh-secrets.timer",
-                 "devcloud-refresh-mirrors.timer"):
+                 "devcloud-refresh-mirrors.timer", "devcloud-lease.timer", "devcloud-enroll.timer"):
         wait_active(unit)
+    check(out(VM, "systemctl is-enabled devcloud-spot.service || true").strip() == "disabled",
+          "the spot unit is enabled on a VM that is not spot")
+    check("ConditionPathExists=/etc/devcloud/boot.env" in out(VM, "systemctl cat devcloud-boot.service"),
+          "the boot unit runs without a descriptor")
+    check(sh(VM, "command -v nft", check_rc=False).returncode == 0, "nft is not installed")
+    for path in ("/etc/devcloud/boot.env", "/etc/devcloud/env", "/etc/claude-code/managed-settings.json",
+                 f"{HOME}/.config/claude-secrets/GH_TOKEN", f"{HOME}/.pgpass", f"{HOME}/.config/gcloud"):
+        check(path in out(VM, "cat /var/lib/devcloud/credentials.ledger"), f"{path} is not in the credential ledger")
+    check(out(VM, "stat -c '%a %U' /var/lib/devcloud/credentials.ledger").split() == ["600", "root"], "ledger mode")
+    lease_tick = sh(VM, "systemctl start devcloud-lease.service", check_rc=False)
+    check(lease_tick.returncode == 0, "the lease service failed on a host with no lease")
     end = time.monotonic() + 30
     while "shipping with key [secret]" not in out(VM, "journalctl -u devcloud-session-mirror -o cat --no-pager"):
         check(time.monotonic() < end, "the shipper's output never reached the journal, scrubbed: "
@@ -726,6 +744,50 @@ def boot_run_by_hand():
     wait_active("devcloud-session-mirror.service")
 
 
+@case("a held departure closes admission, and a reboot during it reopens none (the driver's §4.2)")
+def held_departure_and_reboot():
+    # The enrolled VM above: its daemon runs. The ship fails, so the departure holds.
+    sh(VM, f"touch {STATE}/ship-fail && chown {USER}:{USER} {STATE}/ship-fail")
+    held = sh(VM, f"{STAND_INS} devcloud depart --force --no-poweroff", check_rc=False, timeout=600)
+    check(held.returncode == 4, f"depart exited {held.returncode}, not 4 (held): {held.stdout[-1500:]}")
+    lifecycle = json.loads(out(VM, "cat /var/lib/devcloud/status.json"))["lifecycle"]
+    check((lifecycle["state"], lifecycle["detail"]) == ("held", "held (ship failed)"), str(lifecycle))
+    check("once" in out(VM, f"cat {STATE}/ship.log"), "the departure never shipped")
+    check(not user_unit_active("sminos-daemon.service"), "the daemon runs after the departure closed admission")
+
+    def closed():
+        for timer in ("pull-config", "refresh-secrets", "refresh-mirrors", "enroll"):
+            state = out(VM, f"systemctl is-enabled devcloud-{timer}.timer || true").strip()
+            check(state == "disabled", f"devcloud-{timer}.timer is {state} during a held departure")
+            state = out(VM, f"systemctl is-active devcloud-{timer}.timer || true").strip()
+            check(state == "inactive", f"devcloud-{timer}.timer is {state} during a held departure")
+        enabled = sh(VM, f"XDG_RUNTIME_DIR=/run/user/{UID} systemctl --user is-enabled sminos-daemon.service",
+                     user=USER, check_rc=False).stdout.strip()
+        check(enabled == "disabled", f"the daemon's unit is {enabled}")
+        wait_active("devcloud-lease.timer")
+    closed()
+    job = sh(VM, RECONCILE_WITH_STAND_INS.replace("reconcile", "refresh-secrets"), check_rc=False, timeout=300)
+    check(job.returncode == 0 and "the departure has started" in job.stdout + job.stderr,
+          f"refresh-secrets ran during a held departure: {job.stdout[-600:]}")
+    check(not user_unit_active("sminos-daemon.service"), "a job restarted the daemon during a hold")
+    docker("restart", "-t", "30", VM)
+    time.sleep(3)
+    wait_systemd_boot()
+    time.sleep(5)
+    closed()
+    check(not user_unit_active("sminos-daemon.service"), "the reboot started the daemon during a held departure")
+    check("the daemon stays stopped" in steps(VM)["services"]["detail"], steps(VM)["services"]["detail"])
+    sh(VM, f"rm {STATE}/ship-fail")
+    done = sh(VM, f"{STAND_INS} devcloud depart --force --no-poweroff", check_rc=False, timeout=600)
+    check(done.returncode == 0 and "devcloud-depart: ready-to-logout" in done.stdout,
+          f"the retried departure exited {done.returncode}: {done.stdout[-1500:]}")
+    check(json.loads(out(VM, "cat /var/lib/devcloud/status.json"))["lifecycle"]["state"] == "departed", "not departed")
+    check(sh(VM, f"test -e {HOME}/.claude/sminos/daemon/hub.json", check_rc=False).returncode != 0,
+          "the departure did not leave the desk")
+    leave = [json.loads(line)["argv"] for line in out(VM, f"cat {STATE}/calls.jsonl").splitlines()]
+    check(["hub", "leave"] in leave, f"no hub leave: {leave}")
+
+
 @case("a sandbox carrying a sminos machine identity fails services (acceptance 7)")
 def sandbox_with_identity():
     plant = (f"mkdir -p {HOME}/.claude/sminos/daemon && echo '{{}}' > {HOME}/.claude/sminos/daemon/machine.json "
@@ -733,6 +795,133 @@ def sandbox_with_identity():
     rc, got, _, _ = boot_once("sbx-clone", descriptor("sbx-clone"), before=plant)
     check(rc == 1 and got["services"]["state"] == "failed", str(got.get("services")))
     check("machine.json" in got["services"]["detail"] and "sandbox" in got["services"]["detail"], str(got["services"]))
+
+
+# --- the VM driver's host side ------------------------------------------------------------
+
+ADOPTED = f"{TAG}-adopted"
+SEATED = f"{TAG}-seated"
+MARKETPLACE_COPY = "/var/lib/devcloud/marketplaces/doperpowers"
+
+
+@case("an adopted machine's lease end releases it through the lease service's transient unit (the driver's §6.5)")
+def release_through_the_lease_service():
+    desc = descriptor("dc-adp-1a2b", projects="", extra="DEVCLOUD_ADOPTED=1\nDEVCLOUD_EXPIRES=4102444800\n")
+    desc.write_text(desc.read_text().replace("KIND=container", "KIND=vm").replace("ROLE=sandbox", "ROLE=persistent")
+                    .replace("TAILSCALE=host", "TAILSCALE=none"))
+    docker("create", "--name", ADOPTED, "--hostname", "dc-adp-1a2b", "--network", NET, "--privileged",
+           "--cgroupns=host", "-v", "/sys/fs/cgroup:/sys/fs/cgroup:rw", "--tmpfs", "/run", "--tmpfs", "/run/lock",
+           "-v", f"{HERE / 'fixtures'}:/fixtures:ro", SYSTEMD_IMAGE)
+    docker("cp", str(desc), f"{ADOPTED}:/etc/devcloud/boot.env")
+    # What adopt saved before it changed anything (M5 writes it): root had a key.
+    saved = TMP / "adopt"
+    saved.mkdir()
+    (saved / "root.authorized_keys").write_text("ssh-ed25519 AAAAoriginalKey person@laptop\n")
+    (saved / "keys.json").write_text(json.dumps({"keys": [
+        {"path": "/root/.ssh/authorized_keys", "owner": "root", "saved": "root.authorized_keys"}]}))
+    docker("cp", str(saved), f"{ADOPTED}:/var/lib/devcloud-adopt")
+    docker("start", ADOPTED)
+    end = time.monotonic() + 300
+    while sh(ADOPTED, "systemctl is-active devcloud-boot.service", check_rc=False).stdout.strip() != "active":
+        check(time.monotonic() < end, "the adopted machine never booted: " + sh(
+            ADOPTED, "cat /var/lib/devcloud/status.json; journalctl -u devcloud-boot --no-pager -n 40",
+            check_rc=False).stdout[-2500:])
+        time.sleep(2)
+    listed = out(ADOPTED, "cat /var/lib/devcloud/credentials.ledger").split()
+    check(len(listed) >= 6, f"the ledger lists {listed}")
+    sh(ADOPTED, f"echo 'my own notes' > {HOME}/notes.txt && chown {USER}:{USER} {HOME}/notes.txt")
+    sh(ADOPTED, f"runuser -l {USER} -c 'setsid /fixtures/claude </dev/null >/dev/null 2>&1 &'")
+    end = time.monotonic() + 15
+    while "start" not in sh(ADOPTED, f"cat {STATE}/claude.log", check_rc=False).stdout:
+        check(time.monotonic() < end, "the stand-in session never started")
+        time.sleep(0.5)
+    # The lease ends; the lease service's next run starts the release.
+    past = int(time.time()) - 60
+    printed = out(ADOPTED, f"{STAND_INS} devcloud lease set {past}").strip()
+    check(printed == str(past), f"lease set printed {printed!r}")
+    tick = sh(ADOPTED, "systemctl start devcloud-lease.service", check_rc=False)
+    check(tick.returncode == 0, "the lease service's run failed: " + out(
+        ADOPTED, "journalctl -u devcloud-lease --no-pager -n 30 || true"))
+    end = time.monotonic() + 180
+    while True:
+        record = json.loads(out(ADOPTED, "cat /var/lib/devcloud/status.json")).get("lifecycle") or {}
+        if record.get("state") == "departed":
+            break
+        check(time.monotonic() < end, f"the release never ended: {record}\n" + out(
+            ADOPTED, "journalctl -u devcloud-release --no-pager -n 60 || true"))
+        time.sleep(2)
+    check(record["op"] == "release", str(record))
+    journal = out(ADOPTED, "journalctl -u devcloud-release --no-pager -o cat")
+    check("remove-credentials: ok" in journal, f"the transient unit's journal: {journal[-1500:]}")
+    for path in listed:
+        check(sh(ADOPTED, f"test -e {path}", check_rc=False).returncode != 0, f"{path} survived the release")
+    check(sh(ADOPTED, "test -e /var/lib/devcloud/credentials.ledger", check_rc=False).returncode != 0, "the ledger")
+    units = out(ADOPTED, "ls /etc/systemd/system | grep '^devcloud-' || true").split()
+    check(units == [], f"devcloud units remain: {units}")
+    check(out(ADOPTED, "cat /root/.ssh/authorized_keys") == "ssh-ed25519 AAAAoriginalKey person@laptop\n",
+          "root's keys were not restored")
+    check(sh(ADOPTED, "test -e /var/lib/devcloud-adopt", check_rc=False).returncode != 0, "the saved keys remain")
+    check("term" in out(ADOPTED, f"cat {STATE}/claude.log"), "the session was not ended")
+    check("once" in out(ADOPTED, f"cat {STATE}/ship.log"), "the release never shipped")
+    check(out(ADOPTED, f"cat {HOME}/notes.txt").strip() == "my own notes", "the person's file went")
+    check(out(ADOPTED, f"id -u {USER}").strip() == UID, "the user went")
+    docker("rm", "-f", ADOPTED)
+
+
+@case("plugins seated outside the guard: the bridge runs and the guard scrubs from the first session (the driver's §10)")
+def plugins_seated():
+    docker("run", "-d", "--name", SEATED, "--hostname", "sbx-seated", "--network", NET, *ENV,
+           "-v", f"{descriptor('sbx-seated', branch='plugins')}:/etc/devcloud/boot.env:ro", IMAGE)
+    wait_healthy(SEATED, timeout=600)
+    detail = steps(SEATED)["settings-and-env"]["detail"]
+    check(f"plugins seated from {MARKETPLACE_COPY}" in detail, detail)
+    managed = json.loads(out(SEATED, "cat /etc/claude-code/managed-settings.json"))
+    check(managed["prependPlugins"] == ["to-human@doperpowers", "sminos@doperpowers", "doperpowers@doperpowers"],
+          f"managed prependPlugins {managed.get('prependPlugins')}")
+    check(managed["extraKnownMarketplaces"]["doperpowers"] == {"source": {"source": "directory",
+                                                                          "path": MARKETPLACE_COPY}}, str(managed))
+    known = json.loads(out(SEATED, f"cat {HOME}/.claude/plugins/known_marketplaces.json"))["doperpowers"]
+    check(known["installLocation"] == MARKETPLACE_COPY, f"the record {known}")
+    check(out(SEATED, f"stat -c '%U' {MARKETPLACE_COPY}").strip() == "root", "the copy is not root's")
+    # A reconcile (the apply step installs from the recorded marketplace) keeps the record where it is.
+    reconciled = sh(SEATED, "devcloud reconcile", check_rc=False, timeout=900)
+    check(reconciled.returncode == 0, f"reconcile exited {reconciled.returncode}: {reconciled.stdout[-1500:]}\n"
+          + out(SEATED, f"cat {STATE}/apply.log"))
+    known = json.loads(out(SEATED, f"cat {HOME}/.claude/plugins/known_marketplaces.json"))["doperpowers"]
+    check(known["installLocation"] == MARKETPLACE_COPY, f"a reconcile reverted the record: {known}")
+    installed = json.loads(out(SEATED, f"cat {HOME}/.claude/plugins/installed_plugins.json"))["plugins"]
+    check({"devcloud@doperpowers", "sminos@doperpowers"} <= set(installed), f"installed {sorted(installed)}\n"
+          + out(SEATED, f"cat {STATE}/apply.log"))
+    sh(FX, ": > /srv/fakes/gateway.jsonl")
+    debug = f"{STATE}/seated-debug.log"
+    session = sh(SEATED, f"cd {HOME} && claude -p 'devcloud-bridge-probe' --allowedTools Bash --debug-file {debug}",
+                 user=USER, check_rc=False, timeout=300)
+    log = out(SEATED, f"cat {debug}")
+    check(session.returncode == 0, f"the session exited {session.returncode}: {session.stdout[-500:]} "
+          f"{session.stderr[-800:]}")
+    check("the bridge is off" not in log, "the bridge turned itself off: " + "\n".join(
+        line for line in log.splitlines() if "bridge" in line)[-1500:])
+    results = [r for line in out(FX, "cat /srv/fakes/gateway.jsonl").splitlines()
+               for r in json.loads(line)["tool_results"]]
+    probe = [r for r in results if "redacted" in r or "ghp_" in r]
+    check(probe, f"the probe's result never reached the gateway: {results}")
+    sockets, _, token = probe[0].partition("\n")
+    check(sockets.strip().isdigit() and int(sockets) >= 1, f"no bridge socket during the session: {probe[0]!r}")
+    check("ghp_Zq9XwT4" not in probe[0] and "[redacted:" in token, f"the guard did not scrub: {probe[0]!r}")
+    transcripts = out(SEATED, f"cat {HOME}/.claude/projects/*/*.jsonl")
+    check("ghp_Zq9XwT4" not in transcripts, "the token is raw in the transcript")
+    docker("rm", "-f", SEATED)
+
+
+@case("setup.sh refuses an existing user whose uid or home differs, naming both (M1's GCE finding)")
+def setup_refuses_another_user():
+    result = docker("run", "--rm", "--entrypoint", "bash", "-v", f"{REPO / 'devcloud'}:/tmp/devcloud:ro", IMAGE, "-c",
+                    "useradd -u 2345 -d /home/person -m person && DEVCLOUD_USER=person DEVCLOUD_UID=1001 "
+                    "DEVCLOUD_HOME=/Users/person bash /tmp/devcloud/image/setup.sh", check_rc=False, timeout=300)
+    check(result.returncode == 1, f"setup.sh exited {result.returncode}")
+    line = result.stderr.strip().splitlines()[-1]
+    check(line == "user person exists with uid 2345 and home /home/person; this image needs uid 1001 and home "
+                  "/Users/person", line)
 
 
 # --- the boot's failure paths ------------------------------------------------------------

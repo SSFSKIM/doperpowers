@@ -22,6 +22,8 @@ STATE = pathlib.Path("/srv/fakes")
 GIT_ROOT = "/srv/git"
 PROJECT = "devcloud-test-project"
 ACCESS_TOKEN = "fake-metadata-access-token"
+# A prompt holding this asks for the bridge probe in place of the variables'.
+BRIDGE_PROBE = "devcloud-bridge-probe"
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -147,6 +149,11 @@ class Gateway(Handler):
         model = request.get("model", "claude-stand-in")
         if "Bash" in tools and not results:
             probe = 'printf "%s|%s|%s" "$DEVCLOUD_PROBE_SYNCED" "$DEVCLOUD_PROBE_MANAGED" "$ANTHROPIC_BASE_URL"'
+            if BRIDGE_PROBE in json.dumps(request.get("messages", [])):
+                # The bridge's socket while the session runs, and a token-shaped
+                # string (made up) the secrets guard turns into a handle.
+                probe = ("ls -1 ~/.claude/sminos/bridge/ 2>/dev/null | grep -c 'sock$'; "
+                         "printf 'ghp_%s%s\\n' Zq9XwT4vLp2Rk7Ny8Bm3Hc6Fd1Gs5Jx0 Ae4u")
             block = {"type": "tool_use", "id": "toolu_devcloud_probe", "name": "Bash",
                      "input": {"command": probe, "description": "Print the probe variables"}}
             stop = "tool_use"

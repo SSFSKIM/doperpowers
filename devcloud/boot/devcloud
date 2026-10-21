@@ -1,17 +1,36 @@
 #!/usr/bin/python3 -P
-"""devcloud: a host's status and its jobs.
+"""devcloud: a host's status, its jobs, and its lifecycle.
 
-  devcloud status            one line per boot step: name, state, when, detail
+  devcloud status            one line per boot step: name, state, when, detail;
+                             a deferred enrollment and a departure, when there is one
   devcloud reconcile         boot steps 5-11 against the configuration as fetched now
   devcloud pull-config       fetch and reset ~/.claude; reconcile when the commit moved
   devcloud refresh-secrets   materialize secrets.toml again (steps 7, 10, 11)
   devcloud refresh-mirrors   fetch the mirrors a persistent host keeps for its sandboxes
+  devcloud enroll            finish an enrollment step 11 deferred (the devcloud-enroll service)
+  devcloud lease set <unix>  set the lease end; prints the lease now in force
+  devcloud lease tick        the lease service's run: warn before the end, depart at it
+  devcloud depart [--force] [--no-hold] [--no-poweroff]
+                             end the sessions, ship them, leave the desk and the tailnet,
+                             power off; 3 lease not over, 4 held (a failed ship, or
+                             sessions that keep starting)
+  devcloud depart --preempted
+                             the spot reclaim's (devcloud-spot.service at shutdown): a
+                             fast departure, only when GCE says this VM is reclaimed
+  devcloud release [--force] [--no-hold]
+                             an adopted machine's departure: devcloud removed, the
+                             machine left running with the access it had
+  devcloud unpushed          the checkouts under ~/Developer/GitHub with unpushed or
+                             uncommitted work, one per line; exit 5 when there is any
+  devcloud ledger add <path>...
+                             list credential paths before writing them (a driver's)
   devcloud run-scrubbed -- <command>...
                              run a command with its output scrubbed of the host's values
                              (a systemd unit's ExecStart; runs as any user)
 
-Every command but status runs as root. Exit 1 when a step failed (status:
-when the last boot did not finish, or a step failed)."""
+Every command but status and unpushed runs as root. The jobs, lease set,
+depart and release take the lifecycle lock (/run/devcloud/lifecycle.lock);
+the jobs do nothing once a departure has started."""
 import os
 import sys
 
@@ -23,7 +42,13 @@ os.environ["PATH"] = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/b
 from devcloudlib import status, steps  # noqa: E402
 
 JOBS = {"reconcile": steps.reconcile, "pull-config": steps.pull_config, "refresh-secrets": steps.refresh_secrets,
-        "refresh-mirrors": steps.refresh_mirrors}
+        "refresh-mirrors": steps.refresh_mirrors, "enroll": steps.enroll}
+ALLOW_HTTP = os.environ.get("DEVCLOUD_ALLOW_HTTP") == "1"
+
+
+def usage():
+    print(__doc__.strip(), file=sys.stderr)
+    return 2
 
 
 def run_scrubbed(command):
@@ -35,25 +60,84 @@ def run_scrubbed(command):
                                  signature=lambda: redact.host_signature(user, env_path=services.ENV_PATH), env=env)
 
 
+def flags(args, allowed):
+    """The flags given, or None when one is not among `allowed`."""
+    given = set(args)
+    return given if given <= set(allowed) and len(given) == len(args) else None
+
+
+def lifecycle(argv):
+    from devcloudlib import departure, lease
+    from devcloudlib.proc import User
+    user = User.from_image()
+    command, args = argv[0], argv[1:]
+    if command == "lease":
+        if args[:1] == ["set"] and len(args) == 2 and args[1].isdigit():
+            return lease.set_lease(int(args[1]), allow_http=ALLOW_HTTP)
+        if args == ["tick"]:
+            return lease.tick(user, allow_http=ALLOW_HTTP)
+        return usage()
+    host = departure.Host(user=user, allow_http=ALLOW_HTTP)
+    if command == "depart":
+        given = flags(args, ("--force", "--no-hold", "--no-poweroff", "--preempted"))
+        if given is None or ("--preempted" in given and len(given) > 1):
+            return usage()
+        if "--preempted" in given:
+            return departure.depart_preempted(host)
+        return departure.depart(host, force="--force" in given, no_hold="--no-hold" in given,
+                                no_poweroff="--no-poweroff" in given)
+    given = flags(args, ("--force", "--no-hold"))
+    if given is None:
+        return usage()
+    return departure.release(host, force="--force" in given, no_hold="--no-hold" in given)
+
+
+def unpushed():
+    from devcloudlib import lease
+    from devcloudlib.proc import User
+    found = lease.unpushed(User.from_image())
+    for name, what in found:
+        print(f"{name}\t{what}")
+    return 5 if found else 0
+
+
+def ledger_add(paths):
+    from devcloudlib import ledger
+    if not paths or not all(p.startswith("/") for p in paths):
+        print("usage: devcloud ledger add <absolute path>...", file=sys.stderr)
+        return 2
+    for path in paths:
+        ledger.add(path)
+    return 0
+
+
 def main(argv):
     if argv[:1] == ["run-scrubbed"]:
         if argv[1:2] != ["--"] or len(argv) < 3:
             print("usage: devcloud run-scrubbed -- <command>...", file=sys.stderr)
             return 2
         return run_scrubbed(argv[2:])
-    if len(argv) != 1 or argv[0] not in ("status", *JOBS):
-        print(__doc__.strip(), file=sys.stderr)
-        return 2
-    if argv[0] == "status":
+    if not argv:
+        return usage()
+    if argv == ["status"]:
         data = status.load()
         if not data["steps"]:
             print("devcloud: no boot recorded", file=sys.stderr)
             return 1
         sys.stdout.write(status.render(data))
         return 0 if status.healthy(data) else 1
+    if argv == ["unpushed"]:
+        return unpushed()
+    known = argv[0] in ("lease", "depart", "release", "ledger") or (len(argv) == 1 and argv[0] in JOBS)
+    if not known:
+        return usage()
     if os.geteuid() != 0:
         print(f"devcloud {argv[0]}: run as root", file=sys.stderr)
         return 1
+    if argv[0] == "ledger":
+        return ledger_add(argv[2:]) if argv[1:2] == ["add"] else usage()
+    if argv[0] in ("lease", "depart", "release"):
+        return lifecycle(argv)
     return JOBS[argv[0]]()
 
 

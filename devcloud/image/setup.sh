@@ -17,6 +17,16 @@ set -euo pipefail
 [[ "$DEVCLOUD_UID" =~ ^[0-9]+$ && "$DEVCLOUD_UID" -gt 0 ]] || { echo "DEVCLOUD_UID is not a uid above 0" >&2; exit 1; }
 [[ "$DEVCLOUD_HOME" == /* ]] || { echo "DEVCLOUD_HOME is not an absolute path" >&2; exit 1; }
 [[ "$(id -u)" == 0 ]] || { echo "run as root" >&2; exit 1; }
+# An existing account of that name must be the one the inputs describe: one a
+# base made otherwise (GCE's guest agent makes the project's ssh-keys users
+# before cloud-init) would leave the host's paths and owners wrong.
+if existing="$(getent passwd "$DEVCLOUD_USER")"; then
+  IFS=: read -r _ _ have_uid _ _ have_home _ <<<"$existing"
+  if [[ "$have_uid" != "$DEVCLOUD_UID" || "$have_home" != "$DEVCLOUD_HOME" ]]; then
+    echo "user $DEVCLOUD_USER exists with uid $have_uid and home $have_home; this image needs uid $DEVCLOUD_UID and home $DEVCLOUD_HOME" >&2
+    exit 1
+  fi
+fi
 
 plugin="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 arch="$(dpkg --print-architecture)"
@@ -25,7 +35,7 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y --no-install-recommends \
   ca-certificates curl gnupg git git-lfs build-essential python3 python3-venv jq tmux mosh zsh \
-  unzip xz-utils tzdata locales procps iproute2 iputils-ping openssh-client less file sudo perl xxd
+  unzip xz-utils tzdata locales procps iproute2 iputils-ping openssh-client less file sudo perl xxd nftables
 sed -i 's/^# *en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen
 locale-gen
 
@@ -116,12 +126,18 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 SH
 
-# Where systemd is PID 1 (a VM or microVM), the boot program runs at every boot.
+# Where systemd is PID 1 (a VM or microVM), the boot program runs at every boot
+# that has a descriptor: an image's first boot, before the driver has installed
+# one, skips it rather than recording a failed boot. Where cloud-init runs, after
+# its config stage (users, keys, files written); not after its final stage,
+# which Ubuntu orders after multi-user.target, a cycle for a unit that target
+# wants. cloud-init's runcmd may start this unit itself (--no-block).
 cat > /etc/systemd/system/devcloud-boot.service <<'UNIT'
 [Unit]
 Description=devcloud: make this machine a devcloud host (boot steps 1-12)
 Wants=network-online.target
-After=network-online.target cloud-init.service
+After=network-online.target cloud-init.service cloud-config.service
+ConditionPathExists=/etc/devcloud/boot.env
 
 [Service]
 Type=oneshot
@@ -136,6 +152,28 @@ TimeoutStartSec=45min
 WantedBy=multi-user.target
 UNIT
 if command -v systemctl >/dev/null; then systemctl enable devcloud-boot.service; fi
+
+# A GCE spot VM's fast departure when the provider reclaims it (the driver's
+# §4.2): its stop, at shutdown, departs only when the metadata server says the
+# VM is being reclaimed. Shipped disabled; the boot enables it on a spot VM
+# (DEVCLOUD_SPOT=1). Ordered after the network, the tailnet and the user
+# manager, so it stops before they do.
+cat > /etc/systemd/system/devcloud-spot.service <<'UNIT'
+[Unit]
+Description=devcloud: depart fast when the provider reclaims this spot VM
+Wants=network-online.target
+After=network-online.target tailscaled.service user.slice systemd-user-sessions.service devcloud-boot.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/true
+ExecStop=/usr/local/bin/devcloud depart --preempted
+TimeoutStopSec=28
+
+[Install]
+WantedBy=multi-user.target
+UNIT
 
 apt-get clean
 rm -rf /var/lib/apt/lists/* /root/.cache "$DEVCLOUD_HOME/.cache"

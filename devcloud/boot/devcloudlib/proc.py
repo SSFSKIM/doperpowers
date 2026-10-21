@@ -143,6 +143,32 @@ def run(argv, *, user=None, env=None, log=None, input=None, capture=False, timeo
     return result.stdout.decode() if capture else None
 
 
+def call(argv, *, user=None, env=None, log=None, input=None, timeout=600, cwd=None):
+    """Runs `argv` as `run` does, but returns its exit status rather than
+    raising on one: (exit, stdout, stderr's last line), both scrubbed. A
+    timeout is exit 124, a missing command 127."""
+    kwargs = {}
+    if _drops(user):
+        kwargs.update(user=user.uid, group=user.gid, extra_groups=[])
+    try:
+        result = subprocess.run(
+            argv, env=env, cwd=cwd, timeout=timeout,
+            input=input.encode() if isinstance(input, str) else input,
+            stdin=None if input is not None else subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, **kwargs,
+        )
+    except FileNotFoundError:
+        return 127, "", "command not found"
+    except subprocess.TimeoutExpired as expired:
+        if log:
+            _write_log(log, argv, (expired.stdout or b"") + (expired.stderr or b""))
+        return 124, "", f"timed out after {timeout}s"
+    if log:
+        _write_log(log, argv, (result.stdout or b"") + (result.stderr or b""))
+    err = [line for line in KNOWN.scrub(result.stderr or b"").decode(errors="replace").splitlines() if line.strip()]
+    return result.returncode, KNOWN.scrub(result.stdout or b"").decode(errors="replace"), err[-1] if err else ""
+
+
 def write_file(path, data, mode=0o600, dir_mode=0o700):
     """Writes `data` to `path` through a new file renamed over it: the target
     is replaced, never written through (a symlink there is replaced, not

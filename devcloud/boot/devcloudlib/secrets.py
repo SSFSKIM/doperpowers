@@ -136,9 +136,17 @@ def _write(entry, payload, data, home):
         write_file(home / entry.file[2:], data, mode=entry.mode)
 
 
-def materialize(entries, fetch, home, as_user=None):
+def targets(entry, home):
+    """The paths an entry writes: its store file and its file."""
+    home = pathlib.Path(home)
+    return ([home / STORE / entry.store] if entry.store else []) + ([home / entry.file[2:]] if entry.file else [])
+
+
+def materialize(entries, fetch, home, as_user=None, before_write=None):
     """Fetches each entry with `fetch(name)` (bytes, or None when absent) and
-    writes its targets in `home`, through `as_user(fn)` when given."""
+    writes its targets in `home`, through `as_user(fn)` when given;
+    `before_write(path)` is called for each target first, in this process
+    (the credential ledger's entry, Design §6.5)."""
     home = pathlib.Path(home)
     run_as = as_user or (lambda fn: fn())
     written, missing, failed = 0, [], []
@@ -158,6 +166,8 @@ def materialize(entries, fetch, home, as_user=None):
         try:
             env_value, data = _targets(entry, payload)
             if entry.store or entry.file:
+                for path in targets(entry, home):
+                    (before_write or (lambda path: None))(path)
                 run_as(lambda: _write(entry, payload, data, home))
         except UnicodeDecodeError:
             failed.append(f"{entry.name} (not UTF-8 text, which a template or env target needs)")

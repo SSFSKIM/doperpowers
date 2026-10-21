@@ -1,0 +1,436 @@
+"""The departure and the release (the driver's Design §4.2, §6.5), played on a
+stand-in host: its `claude` processes, its commands, its clock. Every command
+goes through one recorder, which also takes the lines the departure prints, so
+the order of everything a run did is one list."""
+
+import json
+import os
+import pathlib
+import pwd
+import signal
+import tempfile
+import unittest
+
+import _path  # noqa: F401
+from devcloudlib import departure, ledger, status
+from devcloudlib.proc import StepError, User
+
+NOW = 1_792_000_000
+EXPIRED, LATER = NOW - 60, NOW + 3600
+PERIODIC = ("pull-config", "refresh-secrets", "refresh-mirrors", "enroll")
+
+
+class World:
+    """The host as the departure sees it."""
+
+    def __init__(self):
+        self.events = []            # ("run", argv, who) | ("call", argv, who) | ("say", line) | ("kill", pid, sig)
+        self.procs = set()          # live `claude` pids
+        self.stubborn = set()       # pids that ignore SIGTERM
+        self.ships = []             # each ship's outcome, in order: True, False, or "spawn" (ok, then a session)
+        self.calls = {}             # an argv's last word -> (exit, stderr) for `call`
+        self.failing = {}           # an argv's first words -> message: `run` raises StepError
+        self.clock = 0.0
+        self.next_pid = 4000
+
+    def spawn(self, stubborn=False):
+        self.next_pid += 1
+        self.procs.add(self.next_pid)
+        if stubborn:
+            self.stubborn.add(self.next_pid)
+        return self.next_pid
+
+    def run(self, argv, *, user=None, log=None, timeout=None, **_):
+        argv = list(argv)
+        self.events.append(("run", argv, user.name if user else "root"))
+        for prefix, message in self.failing.items():
+            if tuple(argv[:len(prefix)]) == prefix:
+                raise StepError(message)
+        if argv[-2:] == ["ship", "--once"]:
+            outcome = self.ships.pop(0) if self.ships else True
+            if outcome == "spawn":
+                self.spawn()
+            elif outcome is False:
+                raise StepError("session-mirror ship exited 1 (log /var/log/devcloud/lifecycle.log)")
+
+    def call(self, argv, *, user=None, log=None, timeout=None, **_):
+        self.events.append(("call", list(argv), user.name if user else "root"))
+        return self.calls.get(argv[-1], (0, "", ""))
+
+    def runs(self):
+        return [e[1] for e in self.events if e[0] in ("run", "call")]
+
+    def index(self, predicate):
+        for i, event in enumerate(self.events):
+            if predicate(event):
+                return i
+        raise AssertionError("no such event")
+
+
+class StandIn(departure.Host):
+    world: World = None
+
+    def claude_pids(self):
+        return sorted(self.world.procs)
+
+    def alive(self, pid):
+        return pid in self.world.procs
+
+    def kill(self, pid, sig):
+        self.world.events.append(("kill", pid, sig))
+        if sig == signal.SIGKILL or pid not in self.world.stubborn:
+            self.world.procs.discard(pid)
+
+    def say(self, line):
+        self.world.events.append(("say", line))
+
+    def user_env(self):
+        return self.user.env()
+
+    def preempted(self):
+        return self.world.preempted
+
+
+class DepartureBase(unittest.TestCase):
+    adopted = False
+
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="devcloud-depart-"))
+        me = pwd.getpwuid(os.getuid())
+        self.home = self.tmp / "home"
+        self.user = User(name=me.pw_name, uid=me.pw_uid, gid=me.pw_gid, home=self.home)
+        self.world = World()
+        self.world.preempted = False
+        self.units = self.tmp / "units"
+        self.units.mkdir()
+        for name in ("pull-config", "refresh-secrets", "refresh-mirrors", "enroll", "lease"):
+            (self.units / f"devcloud-{name}.service").write_text("")
+            (self.units / f"devcloud-{name}.timer").write_text("")
+        for name in ("devcloud-session-mirror.service", "devcloud-boot.service", "devcloud-spot.service"):
+            (self.units / name).write_text("")
+        (self.units / "devcloud-boot.service.d").mkdir()
+        (self.units / "devcloud-boot.service.d/stand-ins.conf").write_text("")
+        (self.units / "sshd.service").write_text("")
+        # Enrolled, with the sminos CLI in the marketplace clone and its daemon's user unit.
+        clone = self.home / ".claude/plugins/marketplaces/doperpowers"
+        cli = clone / "sminos/skills/sminos/scripts/sminos.py"
+        cli.parent.mkdir(parents=True)
+        cli.write_text("")
+        (self.home / ".claude/plugins/known_marketplaces.json").write_text(
+            json.dumps({"doperpowers": {"installLocation": str(clone)}}))
+        (self.home / ".claude/sminos/daemon").mkdir(parents=True)
+        (self.home / ".claude/sminos/daemon/hub.json").write_text("{}\n")
+        unit = self.home / ".config/systemd/user/sminos-daemon.service"
+        unit.parent.mkdir(parents=True)
+        unit.write_text("")
+        tools = self.home / ".claude/tools"
+        tools.mkdir()
+        (tools / "session-mirror").write_text("#!/bin/sh\n")
+        (tools / "session-mirror").chmod(0o755)
+        self.cli = cli
+        self.write_descriptor(EXPIRED)
+
+    def write_descriptor(self, expires):
+        lines = ["DEVCLOUD_NAME=dc-build-7f3a", "DEVCLOUD_KIND=vm", "DEVCLOUD_ROLE=persistent",
+                 "DEVCLOUD_TAILSCALE=join", "DEVCLOUD_TS_SECRET=tailscale-client",
+                 "DEVCLOUD_SEED=file:/etc/devcloud/seed/key.json", "DEVCLOUD_SM_PROJECT=example-project",
+                 "DEVCLOUD_CONFIG_REPO=https://github.com/example/config.git",
+                 "DEVCLOUD_CONFIG_TOKEN_SECRET=config-token"]
+        if expires is not None:
+            lines.append(f"DEVCLOUD_EXPIRES={expires}")
+        if self.adopted:
+            lines.append("DEVCLOUD_ADOPTED=1")
+        (self.tmp / "boot.env").write_text("\n".join(lines) + "\n")
+
+    def host(self):
+        world = self.world
+        host = StandIn(user=self.user, run=world.run, call=world.call, status_path=self.tmp / "status.json",
+                       ledger_path=self.tmp / "credentials.ledger", desc_path=self.tmp / "boot.env",
+                       lock_path=self.tmp / "lifecycle.lock", adopt_dir=self.tmp / "adopt", unit_dir=self.units,
+                       inbound_nft=self.tmp / "inbound.nft", now=lambda: NOW, monotonic=lambda: world.clock,
+                       sleep=lambda s: setattr(world, "clock", world.clock + s))
+        host.world = world
+        return host
+
+    def lifecycle(self):
+        return status.lifecycle(self.tmp / "status.json")
+
+    def leave_event(self):
+        return lambda e: e[0] == "call" and e[1][-2:] == ["hub", "leave"]
+
+    def assert_held(self, code, reason):
+        self.assertEqual(code, departure.HELD)
+        record = self.lifecycle()
+        self.assertEqual((record["state"], record["detail"]), ("held", f"held ({reason})"))
+        runs = self.world.runs()
+        self.assertNotIn(["tailscale", "logout"], runs)
+        self.assertFalse(any(r[-2:] == ["hub", "leave"] for r in runs), "left the desk after a hold")
+        self.assertNotIn(["systemctl", "poweroff"], runs)
+        self.assertNotIn(("say", departure.READY), self.world.events)
+
+
+class DepartTest(DepartureBase):
+    def test_refuses_while_the_lease_is_not_over_and_runs_nothing(self):
+        for expires in (LATER, None):
+            with self.subTest(expires=expires):
+                self.write_descriptor(expires)
+                self.assertEqual(departure.depart(self.host()), departure.NOT_OVER)
+                self.assertEqual(self.world.runs(), [])
+                self.assertIsNone(self.lifecycle())
+
+    def test_force_departs_whatever_the_lease(self):
+        self.write_descriptor(LATER)
+        self.assertEqual(departure.depart(self.host(), force=True, no_poweroff=True), departure.DONE)
+        self.assertEqual(self.lifecycle()["state"], "departed")
+
+    def test_the_order_closes_admission_ends_sessions_ships_leaves_and_logs_out(self):
+        first, second = self.world.spawn(), self.world.spawn()
+        self.assertEqual(departure.depart(self.host()), departure.DONE)
+        runs = self.world.runs()
+        timers = [r for r in runs if r[:3] == ["systemctl", "disable", "--now"]]
+        self.assertEqual(sorted(t[3] for t in timers), sorted(f"devcloud-{n}.timer" for n in PERIODIC),
+                         "every periodic timer but the lease's, and only those")
+        daemon = ("run", ["systemctl", "--user", "disable", "--now", "sminos-daemon.service"], self.user.name)
+        self.assertIn(daemon, self.world.events, "the daemon disabled as the user")
+        w = self.world
+        disabled = w.index(lambda e: e == daemon)
+        killed = w.index(lambda e: e[0] == "kill")
+        stop_ship = w.index(lambda e: e[0] == "run" and e[1] == ["systemctl", "stop", "devcloud-session-mirror.service"])
+        ship = w.index(lambda e: e[0] == "run" and e[1][-2:] == ["ship", "--once"])
+        leave = w.index(self.leave_event())
+        ready = w.index(lambda e: e == ("say", departure.READY))
+        logout = w.index(lambda e: e[0] == "run" and e[1] == ["tailscale", "logout"])
+        stop = w.index(lambda e: e[0] == "run" and e[1][:2] == ["systemctl", "stop"] and "devcloud-lease.timer" in e[1])
+        poweroff = w.index(lambda e: e[0] == "run" and e[1] == ["systemctl", "poweroff"])
+        last_timer = max(w.index(lambda e, t=t: e[0] == "run" and e[1] == t) for t in timers)
+        order = [last_timer, disabled, killed, stop_ship, ship, leave, ready, logout, stop, poweroff]
+        self.assertEqual(order, sorted(order))
+        self.assertEqual(ready + 1, logout, "the ready line comes just before the logout")
+        self.assertEqual(w.events[ship][2], self.user.name, "the ship runs as the user")
+        self.assertEqual(w.events[leave][2], self.user.name)
+        self.assertEqual(self.world.procs, set())
+        self.assertEqual({e[1] for e in w.events if e[0] == "kill"}, {first, second})
+        stopped = w.events[stop][1]
+        self.assertIn("devcloud-lease.service", stopped)
+        self.assertNotIn("devcloud-depart.service", stopped, "the transient unit stops itself")
+        record = self.lifecycle()
+        self.assertEqual(record["state"], "departed")
+        self.assertEqual([s["name"] for s in record["steps"]],
+                         ["close-admission", "end-sessions", "stop-shipper", "ship", "leave", "logout",
+                          "stop-services", "poweroff"])
+
+    def test_a_session_that_ignores_sigterm_is_killed_after_30_seconds(self):
+        pid = self.world.spawn(stubborn=True)
+        departure.depart(self.host(), no_poweroff=True)
+        kills = [e for e in self.world.events if e[0] == "kill"]
+        self.assertEqual(kills, [("kill", pid, signal.SIGTERM), ("kill", pid, signal.SIGKILL)])
+        self.assertGreaterEqual(self.world.clock, 30)
+
+    def test_a_hung_or_failing_step_does_not_stop_the_next(self):
+        self.world.calls["leave"] = (124, "", "timed out after 180s")
+        self.world.failing[("systemctl", "disable", "--now", "devcloud-pull-config.timer")] = "systemctl exited 1"
+        self.assertEqual(departure.depart(self.host(), no_poweroff=True), departure.DONE)
+        steps = {s["name"]: s["state"] for s in self.lifecycle()["steps"]}
+        self.assertEqual((steps["close-admission"], steps["leave"], steps["logout"]), ("failed", "failed", "ok"))
+        self.assertIn(["tailscale", "logout"], self.world.runs())
+        self.assertIn(["systemctl", "disable", "--now", "devcloud-refresh-secrets.timer"], self.world.runs(),
+                      "one timer's failure stopped the others")
+
+    def test_the_desk_not_answering_the_leave_goes_on(self):
+        self.world.calls["leave"] = (1, "", "sminos: the desk did not answer")
+        departure.depart(self.host(), no_poweroff=True)
+        steps = {s["name"]: s for s in self.lifecycle()["steps"]}
+        self.assertEqual(steps["leave"]["state"], "ok")
+        self.assertIn("offline revoke", steps["leave"]["detail"])
+
+    def test_a_session_started_during_the_departure_is_ended_and_its_lines_shipped(self):
+        self.world.ships = ["spawn", True]
+        self.assertEqual(departure.depart(self.host(), no_poweroff=True), departure.DONE)
+        ships = [r for r in self.world.runs() if r[-2:] == ["ship", "--once"]]
+        self.assertEqual(len(ships), 2)
+        kills = [e for e in self.world.events if e[0] == "kill"]
+        self.assertEqual(len(kills), 1, "the spawned session was ended")
+        last_kill = self.world.index(lambda e: e[0] == "kill")
+        second_ship = max(i for i, e in enumerate(self.world.events) if e[0] == "run" and e[1][-2:] == ["ship", "--once"])
+        self.assertLess(last_kill, second_ship, "shipped again after ending it")
+        self.assertEqual(self.lifecycle()["state"], "departed")
+
+    def test_sessions_that_keep_starting_hold_after_three_rounds(self):
+        self.world.ships = ["spawn", "spawn", "spawn"]
+        code = departure.depart(self.host())
+        self.assert_held(code, "sessions keep starting")
+        self.assertEqual(len([r for r in self.world.runs() if r[-2:] == ["ship", "--once"]]), 3)
+
+    def test_a_failed_ship_holds_and_a_later_run_starts_again_with_admission_closed_again(self):
+        self.world.ships = [False]
+        self.assert_held(departure.depart(self.host()), "ship failed")
+        first = list(self.world.events)
+        self.world.events.clear()
+        self.world.spawn()           # a session started while the departure was held
+        self.assertEqual(departure.depart(self.host(), no_poweroff=True), departure.DONE)
+        runs = self.world.runs()
+        self.assertEqual(runs[0][:3], ["systemctl", "disable", "--now"], "step 0 re-applied first")
+        self.assertIn(["systemctl", "--user", "disable", "--now", "sminos-daemon.service"], runs)
+        self.assertLess(self.world.index(lambda e: e[0] == "kill"),
+                        self.world.index(lambda e: e[0] == "run" and e[1][-2:] == ["ship", "--once"]))
+        self.assertEqual(self.lifecycle()["state"], "departed")
+        self.assertTrue(any(e[0] == "run" and e[1][-2:] == ["ship", "--once"] for e in first))
+
+    def test_no_hold_goes_past_a_failed_ship(self):
+        self.world.ships = [False]
+        self.assertEqual(departure.depart(self.host(), force=True, no_hold=True, no_poweroff=True), departure.DONE)
+        self.assertIn(["tailscale", "logout"], self.world.runs())
+
+    def test_the_hold_and_every_refusal_are_decided_before_the_ready_line(self):
+        self.world.ships = [False]
+        departure.depart(self.host())
+        self.assertNotIn(("say", departure.READY), self.world.events)
+
+    def test_no_poweroff_leaves_the_host_running(self):
+        departure.depart(self.host(), no_poweroff=True)
+        self.assertNotIn(["systemctl", "poweroff"], self.world.runs())
+
+    def test_a_completed_departure_run_again_does_nothing(self):
+        departure.depart(self.host(), no_poweroff=True)
+        self.world.events.clear()
+        self.assertEqual(departure.depart(self.host(), force=True), departure.DONE)
+        self.assertEqual(self.world.runs(), [])
+
+    def test_an_unenrolled_host_leaves_nothing_and_a_host_without_a_shipper_ships_nothing(self):
+        (self.home / ".claude/sminos/daemon/hub.json").unlink()
+        (self.home / ".claude/tools/session-mirror").unlink()
+        self.assertEqual(departure.depart(self.host(), no_poweroff=True), departure.DONE)
+        steps = {s["name"]: s for s in self.lifecycle()["steps"]}
+        self.assertEqual(steps["leave"]["detail"], "not enrolled")
+        self.assertIn("no shipper", steps["ship"]["detail"])
+
+    def test_an_adopted_machine_is_released_not_departed(self):
+        self.adopted = True
+        self.write_descriptor(EXPIRED)
+        self.assertEqual(departure.depart(self.host()), departure.FAILED)
+        self.assertEqual(self.world.runs(), [])
+
+    def test_the_spot_reclaim_departs_fast_only_when_reclaimed(self):
+        self.write_descriptor(LATER)
+        self.assertEqual(departure.depart_preempted(self.host()), departure.DONE)
+        self.assertEqual(self.world.runs(), [], "an ordinary shutdown departed")
+        self.world.preempted = True
+        self.world.spawn(stubborn=True)
+        self.world.ships = [False]
+        self.assertEqual(departure.depart_preempted(self.host()), departure.DONE)
+        runs = self.world.runs()
+        self.assertIn(["tailscale", "logout"], runs, "a failed ship held a reclaimed VM")
+        self.assertNotIn(["systemctl", "poweroff"], runs)
+        self.assertLessEqual(self.world.clock, departure.PREEMPT_BUDGET, "the session wait outlasted the window")
+        self.assertEqual(self.lifecycle()["state"], "departed")
+
+
+class ReleaseTest(DepartureBase):
+    adopted = True
+
+    def setUp(self):
+        super().setUp()
+        (self.units / "devcloud-inbound.service").write_text("")
+        self.write_descriptor(EXPIRED)
+        # Adopt saved root's keys and the login user's (who had none).
+        adopt = self.tmp / "adopt"
+        adopt.mkdir()
+        self.saved_keys = self.home / ".ssh/authorized_keys"
+        (adopt / "user.authorized_keys").write_text("ssh-ed25519 AAAAoriginal person@laptop\n")
+        self.gone_keys = self.tmp / "other/.ssh/authorized_keys"
+        self.gone_keys.parent.mkdir(parents=True)
+        self.gone_keys.write_text("ssh-ed25519 AAAAdriver devcloud\n")
+        (adopt / "keys.json").write_text(json.dumps({"keys": [
+            {"path": str(self.saved_keys), "owner": self.user.name, "saved": "user.authorized_keys"},
+            {"path": str(self.gone_keys), "owner": self.user.name, "saved": None}]}))
+        self.saved_keys.parent.mkdir(parents=True)
+        self.saved_keys.write_text("ssh-ed25519 AAAAdriver devcloud\n")
+        # What devcloud wrote, listed in the ledger as each was written.
+        self.led = self.tmp / "credentials.ledger"
+        self.written = [self.home / ".config/claude-secrets/OLD_NAME", self.home / ".pgpass",
+                        self.tmp / "root-gcloud", self.tmp / "etc-devcloud-env"]
+        for path in self.written:
+            if path.name == "root-gcloud":
+                (path / "credentials.db").parent.mkdir(parents=True)
+                (path / "credentials.db").write_text("made-up")
+            else:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("made-up")
+            ledger.add(path, path=self.led)
+        self.kept = self.home / "notes.txt"
+        self.kept.write_text("the person's own file")
+        self.world.calls["devcloud"] = (0, "table inet devcloud {}", "")
+
+    def test_refuses_while_the_lease_is_not_over_and_runs_nothing(self):
+        self.write_descriptor(LATER)
+        self.assertEqual(departure.release(self.host()), departure.NOT_OVER)
+        self.assertEqual(self.world.runs(), [])
+
+    def test_only_an_adopted_machine_is_released(self):
+        self.adopted = False
+        self.write_descriptor(EXPIRED)
+        self.assertEqual(departure.release(self.host()), departure.FAILED)
+        self.assertEqual(self.world.runs(), [])
+
+    def test_the_order_and_what_it_removes(self):
+        self.world.spawn()
+        self.assertEqual(departure.release(self.host()), departure.DONE)
+        w = self.world
+        ship = w.index(lambda e: e[0] == "run" and e[1][-2:] == ["ship", "--once"])
+        leave = w.index(self.leave_event())
+        table = w.index(lambda e: e[0] == "run" and e[1][:2] == ["nft", "delete"])
+        ready = w.index(lambda e: e == ("say", departure.READY))
+        logout = w.index(lambda e: e[0] == "run" and e[1] == ["tailscale", "logout"])
+        units = w.index(lambda e: e[0] == "run" and e[1][:3] == ["systemctl", "disable", "--now"]
+                        and "devcloud-boot.service" in e[1])
+        self.assertEqual(sorted([ship, leave, table, ready, logout, units]), [ship, leave, table, ready, logout, units])
+        self.assertEqual(w.events[table][1], ["nft", "delete", "table", "inet", "devcloud"], "only devcloud's table")
+        self.assertFalse(any(r[:2] == ["nft", "flush"] for r in w.runs()))
+        # Access back before the logout: the saved keys restored, a file adopt did not find removed.
+        self.assertEqual(self.saved_keys.read_text(), "ssh-ed25519 AAAAoriginal person@laptop\n")
+        self.assertFalse(self.gone_keys.exists())
+        self.assertFalse((self.tmp / "adopt").exists())
+        # devcloud's units gone, its drop-ins too; nothing else's.
+        self.assertEqual(sorted(p.name for p in self.units.iterdir()), ["sshd.service"])
+        self.assertNotIn("devcloud-release.service", w.events[units][1])
+        # The credentials, then the ledger; the person's files and the home stay.
+        for path in self.written:
+            self.assertFalse(path.exists(), f"{path} survived the release")
+        self.assertFalse(self.led.exists())
+        self.assertEqual(self.kept.read_text(), "the person's own file")
+        self.assertTrue(self.home.is_dir())
+        self.assertEqual(self.lifecycle()["state"], "departed")
+        self.assertEqual(self.lifecycle()["op"], "release")
+        self.assertNotIn(["systemctl", "poweroff"], w.runs(), "an adopted machine keeps running")
+
+    def test_runs_through_credential_removal_after_the_lease_services_unit_was_stopped(self):
+        departure.release(self.host())
+        names = [s["name"] for s in self.lifecycle()["steps"]]
+        self.assertLess(names.index("remove-units"), names.index("remove-credentials"))
+        self.assertEqual(self.lifecycle()["state"], "departed")
+        stopped = [e[1] for e in self.world.events if e[0] == "run" and e[1][:3] == ["systemctl", "disable", "--now"]
+                   and "devcloud-lease.service" in e[1]]
+        self.assertTrue(stopped, "the lease service's unit was not stopped")
+
+    @unittest.skipIf(os.geteuid() == 0, "root removes what a mode forbids")
+    def test_the_ledger_stays_until_every_removal_succeeded(self):
+        stuck = self.home / ".config/claude-secrets"
+        stuck.chmod(0o500)          # its file cannot be removed
+        self.addCleanup(stuck.chmod, 0o700)
+        self.assertEqual(departure.release(self.host()), departure.FAILED)
+        self.assertTrue(self.led.exists())
+        self.assertIn(str(stuck / "OLD_NAME"), ledger.entries(self.led))
+        self.assertFalse((self.home / ".pgpass").exists(), "one failure stopped the other removals")
+        self.assertEqual(self.lifecycle()["state"], "departing")
+
+    def test_a_held_release_removes_nothing(self):
+        self.world.ships = [False]
+        self.assert_held(departure.release(self.host()), "ship failed")
+        for path in self.written:
+            self.assertTrue(path.exists())
+        self.assertTrue(self.led.exists())
+        self.assertFalse(any(r[:2] == ["nft", "delete"] for r in self.world.runs()))
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -3,12 +3,11 @@ attach, which joins with the Tailscale OAuth client handed over in a
 root-only file (never in an argument list), or with the fallback key file.
 A fake `tailscale` on PATH records every call. Every value is made up."""
 
+import hashlib
 import json
 import os
 import pathlib
-import stat
 import tempfile
-import textwrap
 import unittest
 from unittest import mock
 
@@ -18,25 +17,7 @@ from devcloudlib.proc import StepError
 
 CLIENT = "tskey-client-madeupid-MadeUpClientSecret7Qx2"
 CONFIG_TOKEN = "made-up-config-token-Lk9Pz3Rw"
-FAKE_TAILSCALE = textwrap.dedent("""\
-    #!/usr/bin/env python3
-    import json, os, stat, sys
-    log = os.environ["FAKE_TS_LOG"]
-    call = {"argv": sys.argv[1:]}
-    for arg in sys.argv[1:]:
-        if arg.startswith("--auth-key=file:"):
-            path = arg[len("--auth-key=file:"):]
-            st = os.stat(path)
-            call["key_mode"] = oct(stat.S_IMODE(st.st_mode))
-            call["key_owner"] = st.st_uid
-            call["key_dir_mode"] = oct(stat.S_IMODE(os.stat(os.path.dirname(path)).st_mode))
-            call["key"] = open(path).read()
-    with open(log, "a") as f:
-        f.write(json.dumps(call) + "\\n")
-    if sys.argv[1:2] == ["status"]:
-        print(json.dumps({"BackendState": os.environ.get("FAKE_TS_STATE", "NeedsLogin")}))
-    sys.exit(int(os.environ.get("FAKE_TS_EXIT", "0")) if sys.argv[1:2] == ["up"] else 0)
-""")
+FAKE_TAILSCALE = pathlib.Path(__file__).resolve().parents[1] / "fixtures/tailscale"
 
 
 def desc(**overrides):
@@ -76,9 +57,7 @@ class TailnetTest(unittest.TestCase):
         self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="devcloud-tailnet-"))
         bin_dir = self.tmp / "bin"
         bin_dir.mkdir()
-        fake = bin_dir / "tailscale"
-        fake.write_text(FAKE_TAILSCALE)
-        fake.chmod(0o755)
+        (bin_dir / "tailscale").symlink_to(FAKE_TAILSCALE)
         self.log = self.tmp / "calls.jsonl"
         self.run_dir = self.tmp / "run"
         for patch in (mock.patch.dict(os.environ, {"PATH": f"{bin_dir}:{os.environ['PATH']}",
@@ -130,7 +109,8 @@ class TailnetTest(unittest.TestCase):
         self.assertEqual(up["argv"][0], "up")
         self.assertIn("--advertise-tags=tag:devcloud", up["argv"])
         self.assertIn("--hostname=devbox-a", up["argv"])
-        self.assertEqual(up["key"], CLIENT + "?ephemeral=false&preauthorized=true")
+        self.assertEqual(up["key_sha256"], hashlib.sha256(CLIENT.encode()).hexdigest())
+        self.assertEqual(up["key_attributes"], "ephemeral=false&preauthorized=true")
         self.assertEqual((up["key_mode"], up["key_owner"]), ("0o600", os.getuid()))
         for call in self.calls():
             self.assertFalse(any(CLIENT in arg for arg in call["argv"]), f"the client secret in argv: {call}")
@@ -152,7 +132,7 @@ class TailnetTest(unittest.TestCase):
         steps.bootstrap_secrets(r)
         steps.tailnet_attach(r)
         up = self.calls()[-1]
-        self.assertIn(f"--auth-key=file:{key}", up["argv"])
+        self.assertIn("--auth-key=file:<path>", up["argv"])
         self.assertNotIn("--advertise-tags=tag:devcloud", up["argv"])
         self.assertFalse(key.exists(), "the fallback key file was not deleted")
 
@@ -172,6 +152,57 @@ class TailnetTest(unittest.TestCase):
                 self.assertEqual(steps.tailnet_attach(r), "already joined")
                 self.assertEqual([c["argv"][0] for c in self.calls()], ["status"])
         self.assertFalse(key.exists(), "a key file left beside a joined node")
+
+    def test_a_leased_host_joins_as_an_ephemeral_node_and_an_unleased_one_does_not(self):
+        for expires, ephemeral in (("1792000000", "true"), (None, "false")):
+            with self.subTest(leased=bool(expires)):
+                self.log.unlink(missing_ok=True)
+                r = self.boot_run(desc(DEVCLOUD_EXPIRES=expires))
+                steps.bootstrap_secrets(r)
+                detail = steps.tailnet_attach(r)
+                self.assertEqual(self.calls()[-1]["key_attributes"], f"ephemeral={ephemeral}&preauthorized=true")
+                self.assertEqual("ephemeral" in detail, bool(expires))
+
+    def test_an_already_joined_node_keeps_what_it_was(self):
+        with mock.patch.dict(os.environ, {"FAKE_TS_STATE": "Running"}):
+            r = self.boot_run(desc(DEVCLOUD_EXPIRES="1792000000"))
+            steps.bootstrap_secrets(r)
+            self.assertEqual(steps.tailnet_attach(r), "already joined")
+        self.assertEqual([c["argv"][0] for c in self.calls()], ["status"])
+
+    def test_a_tailnet_only_inbound_closes_the_public_port_after_the_join(self):
+        order = []
+        with mock.patch.object(steps.inbound, "apply", lambda: order.append("inbound") or "inbound closed"):
+            for state in ("NeedsLogin", "Running"):
+                with self.subTest(state=state), mock.patch.dict(os.environ, {"FAKE_TS_STATE": state}):
+                    order.clear()
+                    self.log.unlink(missing_ok=True)
+                    r = self.boot_run(desc(DEVCLOUD_INBOUND="tailnet"))
+                    steps.bootstrap_secrets(r)
+                    detail = steps.tailnet_attach(r)
+                    order[:0] = [c["argv"][0] for c in self.calls()]
+                    self.assertEqual(order[-1], "inbound", "the policy before the join")
+                    self.assertIn("inbound closed", detail)
+
+    def test_a_failed_join_leaves_the_public_port_open(self):
+        applied = []
+        with mock.patch.object(steps.inbound, "apply", lambda: applied.append(1)), \
+                mock.patch.dict(os.environ, {"FAKE_TS_EXIT": "1"}):
+            r = self.boot_run(desc(DEVCLOUD_INBOUND="tailnet"))
+            steps.bootstrap_secrets(r)
+            with self.assertRaises(StepError):
+                steps.tailnet_attach(r)
+        self.assertEqual(applied, [])
+
+    def test_open_inbound_or_a_container_writes_no_policy(self):
+        applied = []
+        with mock.patch.object(steps.inbound, "apply", lambda: applied.append(1)):
+            for d in (desc(), desc(DEVCLOUD_INBOUND="open"), desc(DEVCLOUD_KIND="container", DEVCLOUD_INBOUND="tailnet")):
+                self.log.unlink(missing_ok=True)
+                r = self.boot_run(d)
+                steps.bootstrap_secrets(r)
+                steps.tailnet_attach(r)
+        self.assertEqual(applied, [])
 
     def test_host_and_none_do_nothing(self):
         for mode in ("host", "none"):

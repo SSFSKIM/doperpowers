@@ -16,7 +16,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from . import proc
+from . import ledger, proc
 from .proc import StepError, run
 
 GCLOUD_CONFIG = "/var/lib/devcloud/gcloud"
@@ -53,6 +53,7 @@ class Tokens:
             return
         if not os.path.isfile(self.desc.seed_path):
             raise StepError(f"no seed key at {self.desc.seed_path}")
+        ledger.add(GCLOUD_CONFIG)    # the activated key and its tokens (Design §6.5)
         os.makedirs(GCLOUD_CONFIG, mode=0o700, exist_ok=True)
         os.chmod(GCLOUD_CONFIG, 0o700)
         run(["gcloud", "auth", "activate-service-account", f"--key-file={self.desc.seed_path}", "--quiet"],

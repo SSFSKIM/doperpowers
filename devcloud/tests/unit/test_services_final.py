@@ -239,6 +239,10 @@ class OwedRestartTest(unittest.TestCase):
         r.user = self.user
         seen = []
         with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch.object(steps.lease, "LOCK", pathlib.Path(tempfile.mkdtemp()) / "lock"))
+            stack.enter_context(mock.patch.object(steps.status, "lifecycle", lambda: None))
+            stack.enter_context(mock.patch.object(steps, "_enroll", lambda r, env: steps.sminos_host.Enrollment(
+                "none", "")))
             stack.enter_context(mock.patch.object(steps, "_read_env", lambda path: {}))
             stack.enter_context(mock.patch.object(steps.sminos_host, "check_role", lambda *a: None))
             stack.enter_context(mock.patch.object(steps, "_devcloud_services", mock.Mock(

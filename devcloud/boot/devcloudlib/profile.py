@@ -16,9 +16,13 @@ home/ is nothing to do."""
 import dataclasses
 import json
 import pathlib
+import re
 
-from . import envfile, secrets
+from . import envfile, plugins, secrets
 from .secrets import ProfileError
+
+# One public key per line (`<type> <base64> [comment]`), as authorized_keys takes it.
+_PUBLIC_KEY = re.compile(r"(?:ssh-|ecdsa-|sk-)[A-Za-z0-9@.-]+ [A-Za-z0-9+/=]+(?: [^\n]*)?\Z")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -37,22 +41,44 @@ class Profile:
             return None
         return value if isinstance(value, str) and value else None
 
-    @property
-    def host_settings(self):
-        """managed-settings.json as a host gets it: with an empty
-        `prependPlugins` unless the profile sets its own. Managed settings
-        with any key seat the engine's security default
-        (cc-plugin-sec-default@builtin) outermost unless managed
-        `prependPlugins` is set and leaves it out, and the seated default
-        passes the plugins a person installs over on classic hooks, the
-        prompt's parts, compactions, and the rows the transcript keeps from
-        attachments, hook context and compactions: the secrets guard and the
-        sminos bridge among them (Design §6). An empty file is left as it is:
-        the engine counts no managed settings then and seats nothing."""
+    def host_settings(self, marketplace=None):
+        """managed-settings.json as a host gets it. With `marketplace`, the
+        root-owned copy of the doperpowers marketplace, its plugins are seated
+        as the Macs seat them (plugins.managed: the bridge outside the guard,
+        the driver's §10). Without one, an empty `prependPlugins` unless the
+        profile sets its own: managed settings with any key seat the engine's
+        security default (cc-plugin-sec-default@builtin) outermost unless
+        managed `prependPlugins` is set and leaves it out, and the seated
+        default passes the plugins a person installs over on classic hooks,
+        the prompt's parts, compactions, and the rows the transcript keeps
+        from attachments, hook context and compactions: the secrets guard and
+        the sminos bridge among them (Design §6). An empty file is left as it
+        is then: the engine counts no managed settings and seats nothing."""
         settings = json.loads(self.managed_settings)
+        if marketplace is not None:
+            return (json.dumps(plugins.managed(settings, marketplace), indent=2) + "\n").encode()
         if not settings or "prependPlugins" in settings:
             return self.managed_settings
         return (json.dumps({**settings, "prependPlugins": []}, indent=2) + "\n").encode()
+
+    def driver_keys(self):
+        """The public keys under `driver-keys/` (each driver Mac's
+        `<machine>.pub`, Design §8.3), in name order, and how many lines were
+        not keys; ([], 0) without the directory."""
+        keys, skipped = [], 0
+        directory = self.dir / "driver-keys"
+        if not directory.is_dir():
+            return keys, skipped
+        for path in sorted(directory.glob("*.pub")):
+            for line in path.read_text().splitlines():
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if _PUBLIC_KEY.match(line):
+                    keys.append(line)
+                else:
+                    skipped += 1
+        return keys, skipped
 
 
 def read(claude_dir, base_env):

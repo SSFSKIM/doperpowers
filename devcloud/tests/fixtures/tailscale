@@ -1,0 +1,29 @@
+#!/usr/bin/env python3
+"""The stand-in `tailscale`: records each call in $FAKE_TS_LOG (one JSON line),
+and for `up --auth-key=file:<path>` that file's mode, owner, its directory's
+mode, the attributes the key carries after `?`, and the digest of what comes
+before it — never the key itself.
+`status --json` reports $FAKE_TS_STATE (default NeedsLogin); `up` exits
+$FAKE_TS_EXIT (default 0); `logout` exits 0."""
+import hashlib
+import json
+import os
+import stat
+import sys
+
+call = {"argv": [a if not a.startswith("--auth-key=file:") else "--auth-key=file:<path>" for a in sys.argv[1:]]}
+for arg in sys.argv[1:]:
+    if arg.startswith("--auth-key=file:"):
+        path = arg[len("--auth-key=file:"):]
+        st = os.stat(path)
+        call["key_mode"] = oct(stat.S_IMODE(st.st_mode))
+        call["key_owner"] = st.st_uid
+        call["key_dir_mode"] = oct(stat.S_IMODE(os.stat(os.path.dirname(path)).st_mode))
+        key = open(path).read()
+        secret, _, call["key_attributes"] = key.partition("?")
+        call["key_sha256"] = hashlib.sha256(secret.encode()).hexdigest()
+with open(os.environ.get("FAKE_TS_LOG", "/tmp/fake-tailscale.jsonl"), "a") as f:
+    f.write(json.dumps(call) + "\n")
+if sys.argv[1:2] == ["status"]:
+    print(json.dumps({"BackendState": os.environ.get("FAKE_TS_STATE", "NeedsLogin")}))
+sys.exit(int(os.environ.get("FAKE_TS_EXIT", "0")) if sys.argv[1:2] == ["up"] else 0)

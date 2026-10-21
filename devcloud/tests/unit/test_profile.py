@@ -42,19 +42,19 @@ class ProfileTest(unittest.TestCase):
         # prependPlugins is set, and the seated default passes installed plugins over.
         settings = {"env": {"ANTHROPIC_BASE_URL": "http://gateway.example:8080", "EMPTY": ""}}
         self.write("managed-settings.json", json.dumps(settings))
-        host = json.loads(profile.read(self.claude, BASE).host_settings)
+        host = json.loads(profile.read(self.claude, BASE).host_settings())
         self.assertEqual(host, {**settings, "prependPlugins": []})
 
     def test_an_empty_managed_file_stays_empty(self):
         # The engine counts managed settings only when they hold a key: an empty file seats
         # nothing and leaves the synced prependPlugins in force, which a key here would override.
         self.write("managed-settings.json", "{}\n")
-        self.assertEqual(profile.read(self.claude, BASE).host_settings, b"{}\n")
+        self.assertEqual(profile.read(self.claude, BASE).host_settings(), b"{}\n")
 
     def test_a_profile_that_sets_prepend_plugins_keeps_its_own(self):
         text = '{"env": {}, "prependPlugins": ["cc-plugin-sec-default@builtin"]}\n'
         self.write("managed-settings.json", text)
-        self.assertEqual(profile.read(self.claude, BASE).host_settings, text.encode())
+        self.assertEqual(profile.read(self.claude, BASE).host_settings(), text.encode())
 
     def test_refuses_a_broken_profile(self):
         cases = {
