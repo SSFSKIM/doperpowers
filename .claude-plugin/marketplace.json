@@ -9,7 +9,7 @@
     {
       "name": "doperpowers",
       "description": "Emerges by humans, Converges by Agent",
-      "version": "7.202.0",
+      "version": "7.202.1",
       "source": "./",
       "author": {
         "name": "SSFSKIM",
@@ -46,7 +46,7 @@
     {
       "name": "to-human",
       "description": "The report view under the to-human output style: messages fold to their <message> spans, the working record (tool calls, agent and other sessions' messages) behind [ working record ] buttons; the message tool (`mcp__to-human__message`) sends a message before another tool call word for word; each message the model sends raises a notification (`$.ui.notify`)",
-      "version": "0.5.0",
+      "version": "0.5.1",
       "source": "./to-human",
       "author": {
         "name": "SSFSKIM",
