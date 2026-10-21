@@ -181,7 +181,12 @@ achieve.
 
 The project log gets the tool's message as the same event a span gives.
 desk-hub pushes on a fresh `message` event, and the desk's channel stream
-reads `message` events, so both work unchanged:
+reads `message` events, so both work unchanged. sminos reads both message
+tools, the plugin's `mcp__to-human__message` and MAWS's
+`mcp__maws__message`, as it reads both ask tools today (`ASK_TOOLS` and
+`MAWS_ASK_TOOL` in `sminos.py`, `ASK_TOOL` and `mcp__maws__ask` in
+`bridge-rows.tsx`). The export belongs to sminos, so a MAWS session's
+messages reach the log only if sminos knows MAWS's name:
 
     {"kind": "message", "from": <alias>, "to": "host", "text": <input.text>, "src": <tool_use id>}
 
@@ -197,12 +202,26 @@ reads `message` events, so both work unchanged:
   `sminos/skills/sminos/scripts/sminos.py` emits the event, in record order
   with the spans. `export_live` (the bridge's path) and `export_host` (the
   Stop hook's) both call it.
+- **Order.** Events reach the log in transcript order, with one exception,
+  the one spans already have. A message past `TEXT_CAP` waits for the Stop
+  path, so anything the live path writes before that Stop comes ahead of it.
+  `log_append_batch` drops a source it already holds rather than moving it.
+  A 64k-character message is not a case worth an ordering barrier across
+  batches. A call waiting for its result cannot be overtaken: its result is
+  written before the next response's rows.
 - **The bridge forwards the rows.** `sminos/hooks/mods/bridge-rows.tsx`
   forwards the call's row and its result row to the child, as `keepAsk`
   forwards an ask's. A message past `TEXT_CAP` (65,536 characters) is left
   to the Stop hook's export, as a long span is.
-- `await_flush` is unchanged. A tool result is always followed by an
-  assistant response, so a turn never ends on the tool's row.
+- **The Stop path's flush wait covers a message call.** A turn can end
+  right after the tool's result, with no assistant response after it: on an
+  Esc, on a hook that stops the continuation, or on an engine-requested turn
+  end (bundle 2.1.304 supports all three). Then the Stop payload's
+  `last_assistant_message` is empty and `await_flush` returns at once, while
+  the transcript writes can still be queued. If the live export is off too,
+  the message waits for the next Stop. So when the transcript's tail holds a
+  message-tool call, `await_flush` also waits, under the same deadline, until
+  that call's result is in the transcript.
 - Dedup stays `(kind, src)`.
 - Rows an Esc or a `/rewind` cut off the chain behave as spans do today:
   exported as written.
@@ -216,7 +235,7 @@ This spec's milestones change doperpowers only. MAWS's architect
 | Item | Value |
 |---|---|
 | The plugin tool | `mcp__to-human__message`, input `{"text": string}` (Markdown), result `sent` |
-| MAWS's own tool | `mcp__maws__message`, same input and result (MAWS's) |
+| MAWS's own tool | `mcp__maws__message`, same input and result (MAWS's). sminos exports it as it exports the plugin's |
 | Where the message is | the call's place in the transcript; an accepted call only (its result is not an error) |
 | Log event | `kind: "message"`, `src` = the tool-use id |
 | Style contract number | 6 (message-tool shape); 7 is MAWS's |
@@ -232,11 +251,14 @@ The child first verifies the loss on MAWS's own wire with a probe.
 
 The desk's side, as its orchestrator stated it:
 - (1) `landed-message.ts` lands a push by tool-use id.
-- (2) The session view and channel view (MAWS's renderer) draw the call as a
-  message.
-- (3) Optional: the live view draws the text as the input streams. A resync
+- (2) Optional: the live view draws the text as the input streams. A resync
   can cut the input to its last 65,536 characters, so a partial-JSON reader
   must cope with a missing start.
+
+The desk's session view and channel view are MAWS's renderer (desk-web
+imports `owner-marks` and draws MAWS's `Transcript`), so MAWS's side (1)
+draws the call there too. The desk builds its side as a MAWS PR after this
+spec merges and after MAWS's renderer change, so the two do not conflict.
 
 **What the human sees while the sides land.** Today, every mid-turn message
 is lost everywhere. Once this spec ships, the terminal report and the
@@ -277,20 +299,27 @@ Each is checked in M3 against the worktree's plugins.
 4. `sminos chat` (the project's log) lists the message once, with the text
    word for word, and its log event has `kind: "message"` and `src` equal to
    the tool-use id. That holds after the bridge's live export and again after
-   the Stop hook's (no second copy).
+   the Stop hook's (no second copy). sminos's tests show the same for a call
+   of `mcp__maws__message`, and for a turn that ends on the tool's result with
+   the live export off.
 5. A subagent in that session that calls the tool gets the refusal, and
    nothing is drawn, notified or exported.
-6. The evals show the effect:
-   - `tests/output-styles/to-human-agent-step-eval.py`, extended per
-     doperpowers-f7's three conditions (below), and
-     `tests/output-styles/to-human-fanout-eval.py`, with the tool in their
-     tool lists, at claude-opus-5-5 high.
-   - The new style sends through the tool most messages that, under the old
-     style, went into progress notes.
-   - The share of messages that reach the human (a span in a text block, or
-     a call of the tool) rises against the old style.
-   - End-of-turn messages stay spans.
-   - Tool calls per run are recorded, so the token cost is visible.
+6. The evals show the effect, counted per message rather than per run.
+   - The evals: `tests/output-styles/to-human-agent-step-eval.py` and
+     `tests/output-styles/to-human-fanout-eval.py`, at claude-opus-5-5 high,
+     both arms with `display: "updates"` and the tool in their tool lists
+     (M3's decisions say how).
+   - A **mid-turn message** is a span in a text block before a tool call
+     (delivered), a call of the message tool (delivered), or a progress note
+     the judge rules addressed to the human (lost).
+   - A **final message** is a span or a tool call in the response that ends
+     the run.
+   - Under the new style, lost mid-turn messages are under 25% of mid-turn
+     messages, and under half the old style's share.
+   - At least 90% of final messages stay spans.
+   - Message-tool calls per run are reported, so the token cost is visible.
+   - If a threshold is missed, the numbers go back to the spec's author
+     rather than the thresholds moving.
    - The numbers go in each eval's docstring and in the PR.
 7. The suites pass: `to-human/tests/mods/run.sh`,
    `sminos/tests/run-sminos-tests.sh`, `sminos/tests/mods/run.sh`,
@@ -385,14 +414,19 @@ export position, and an errored one yields nothing.
 - The sminos plugin's version.
 
 **Interfaces.** Consumes `MESSAGE_TOOL` by value. sminos imports nothing
-from to-human (it declares no dependency), so it carries the name as its own
-constant, like `ASK_TOOLS`. Produces the log event in Interfaces.
+from to-human (it declares no dependency), so it carries both message-tool
+names as its own constant, `MESSAGE_TOOLS`, like `ASK_TOOLS`. Produces the
+log event in Interfaces.
 
 **Decisions.**
 - Pair the call with its result as `_ask_events` pairs an ask.
 - Put the tool's call in the pending set as unanswered asks are.
-- A text past `TEXT_CAP` goes to the Stop path, as a long span does.
-- `await_flush` stays as it is (the design says why).
+- A text past `TEXT_CAP` goes to the Stop path, as a long span does. The
+  ordering exception that follows is the design's ("Order").
+- `await_flush` waits for an unanswered message-tool call at the
+  transcript's tail to get its result, under its existing deadline (the
+  design says why).
+- Every rule above applies to both names in `MESSAGE_TOOLS`.
 - `sminos_marks.py` is untouched: the tool branch lives in `host_events`.
 
 **Does not touch.** The to-human plugin, the style, the desk, MAWS.
@@ -403,7 +437,10 @@ constant, like `ASK_TOOLS`. Produces the log event in Interfaces.
 - no event for an errored call;
 - the position held for an unanswered call;
 - no second copy when both paths run;
-- the bridge forwarding the pair.
+- the bridge forwarding the pair;
+- each case under `mcp__maws__message` as well;
+- a turn that ends on the tool's result, with a delayed transcript flush
+  and the live export off: the Stop export waits and writes the message.
 
 ### M3 — the style, the evals, the docs, acceptance
 
@@ -431,17 +468,32 @@ constant, like `ASK_TOOLS`. Produces the log event in Interfaces.
 **Decisions.**
 - The style wording is drafted under doperpowers:writing-skills against the
   design's "When the model uses it", then tested.
-- The agent-step eval takes doperpowers-f7's three conditions:
-  - its "before" arm requests `thinking.display: "updates"` (beta
-    `thinking-display-updates-2026-08-18`) and counts messages that went
-    into progress notes;
-  - "reached" counts a call of the tool alongside `<message>` and the ask;
-  - the tool is in TOOLS from the first request.
+- Both evals measure acceptance 6's per-message counts:
+  - Both arms request `thinking: {type: "adaptive", display: "updates"}`
+    (beta `thinking-display-updates-2026-08-18`). A note the new style still
+    writes before a tool call must be as visible as the old style's.
+  - The artifacts keep each response's blocks in order: text, progress
+    notes, tool calls. The agent-step eval's `run()` today flattens
+    responses and drops thinking, and its `outcome()` scores a whole run.
+    Both change.
+  - The tool is in TOOLS from the first request, and its canned result is
+    `sent`.
+- A progress note is judged with doperpowers-f7's criterion (their audit,
+  2026-10-20), at claude-opus-5-5 low effort, on each non-empty progress
+  note before a tool call. It counts as a lost message when
+  `addressed_to_human` is true. The prompt, word for word:
+
+      A coding agent works for a human who is away from the screen; the human reads only what the agent wraps in <message> tags. The API returned the text below as a short summary of a note the agent wrote between two tool calls; the summary may have dropped any <message> tags.
+
+      <note>
+      {note}
+      </note>
+
+      Is the original most likely a message to the human (it reports to them, asks them to do or decide something, warns them, answers them, or says what they should expect: addressed to the human, in the second person or as a report written for them), or the agent's own working narration (what it is checking or doing next, for itself)? Answer JSON only: {"addressed_to_human": true|false, "needs_action_from_human": true|false, "why": "<one short clause>"}
+
 - The agent-step eval gains a scenario where the turn keeps working after
   telling the human something: asking them to approve a dialog at a set
   time, then continuing.
-- The fan-out eval adds the tool to TOOLS and counts its calls as reaching
-  the human.
 - doperpowers-f7 (`e7f55ccc`) wrote the agent-step eval. Tell them when the
   change is pushed, so they can read it.
 - The live check spends model calls, so no suite runs it. It is run by hand,
@@ -515,6 +567,23 @@ sminos carries the tool's name as its own constant beside `ASK_TOOLS` in
   on.
   Rationale: execspec's default plus the multi-milestone review. Rung high
   for a human-facing delivery path shared across repositories.
+  Date/Author: 2026-10-20, doperpowers-88.
+
+- Decision: The spec review's findings applied.
+  - sminos exports both message-tool names (`MESSAGE_TOOLS`), since a MAWS
+    session's messages reach the log only through sminos.
+  - The Stop path's flush wait covers a turn ending on the tool's result.
+    The claim that a tool result is always followed by an assistant response
+    was false: Esc, continuation-stopping hooks, engine-requested turn ends.
+  - The ordering guarantee is narrowed to the exception spans already have
+    (a message past `TEXT_CAP`), instead of a cross-batch ordering barrier.
+  - The evals count per message, with doperpowers-f7's judge criterion and
+    `display: "updates"` in both arms (buildability review, and f7).
+  - The desk's drawing is folded into MAWS's renderer change (the desk
+    orchestrator).
+  Rationale: The rejected alternative was a barrier holding every later
+  event behind a deferred long message. It is machinery for a 64k-character
+  message, which no session sends.
   Date/Author: 2026-10-20, doperpowers-88.
 
 ## Outcomes & Retrospective
