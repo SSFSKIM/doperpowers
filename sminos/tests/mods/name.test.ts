@@ -18,17 +18,18 @@ const OTHER_PENDING = PENDING.replace(SESSION, OTHER).replace('desk-uplink-owner
  * The namer's world as plain records: the session the process is in, each
  * session's pending file, the CLI's answers in turn, the turn and the dialog
  * as set here. Every read, check and rename is logged. `during` runs while
- * the CLI answers, `onDialogRead` at each read of the dialog (with its count);
+ * the CLI answers, `onRead` at each read of a pending file, `onSessionRead`
+ * at each read of the session id (with its count);
  * `gated` holds each check until `release()`.
  */
 function world(
-  options: { file?: string; answers?: Answer[]; during?: () => void; onDialogRead?: (n: number) => void; gated?: boolean; refuse?: boolean } = {},
+  options: { file?: string; answers?: Answer[]; during?: () => void; onRead?: () => void; onSessionRead?: (n: number) => void; gated?: boolean; refuse?: boolean } = {},
 ) {
   const w = {
     session: SESSION,
     files: { ...(options.file !== undefined && { [SESSION]: options.file }) } as Record<string, string | undefined>,
     isDialogUp: false,
-    dialogReads: 0,
+    sessionReads: 0,
     reads: [] as string[],
     checks: [] as string[],
     renames: [] as string[],
@@ -43,9 +44,14 @@ function world(
   }
   resetName()
   const io: NameIo = {
-    session: async () => w.session,
+    session: async () => {
+      w.sessionReads += 1
+      options.onSessionRead?.(w.sessionReads)
+      return w.session
+    },
     read: async (session) => {
       w.reads.push(session)
+      options.onRead?.()
       const text = w.files[session]
       if (text === undefined) {
         throw new Error('ENOENT')
@@ -70,11 +76,7 @@ function world(
         throw new Error('past a Stop')
       }
     },
-    isAskDialogUp: async () => {
-      w.dialogReads += 1
-      options.onDialogRead?.(w.dialogReads)
-      return w.isDialogUp
-    },
+    isAskDialogUp: () => w.isDialogUp,
     log: (line) => w.logs.push(line),
   }
   return { w, namer: createNamer(io) }
@@ -192,15 +194,13 @@ describe('createNamer', () => {
     expect(w.renames).toEqual(['desk-uplink-owner'])
   })
 
-  test('a turn that starts during the first dialog read and ends while the check runs drops its answer', async () => {
+  test('a turn that starts and ends while the pending file is read drops the attempt, though the session is idle again', async () => {
     const { w, namer } = world({
       file: PENDING,
-      onDialogRead: (n) => {
-        if (n === 1) {
-          turnStarted(MAIN)
-        }
-      },
-      during: once(() => turnEnded(MAIN)),
+      onRead: once(() => {
+        turnStarted(MAIN)
+        turnEnded(MAIN)
+      }),
     })
     await namer.tick()
     expect(w.renames).toEqual([])
@@ -242,10 +242,29 @@ describe('createNamer', () => {
     expect(w.renames).toEqual(['desk-uplink-owner'])
   })
 
-  test('a turn that starts while the dialog is read again holds the rename for the next idle tick', async () => {
+  test("an ask's dialog opened while the session id is read the last time holds the rename; the first tick after it closes renames", async () => {
     const { w, namer } = world({
       file: PENDING,
-      onDialogRead: (n) => {
+      onSessionRead: (n) => {
+        if (n === 2) {
+          w.isDialogUp = true
+        }
+      },
+    })
+    await namer.tick()
+    expect(w.renames).toEqual([])
+    await namer.tick()
+    expect(w.checks.length).toBe(1)
+    w.isDialogUp = false
+    await namer.tick()
+    expect(w.checks.length).toBe(2)
+    expect(w.renames).toEqual(['desk-uplink-owner'])
+  })
+
+  test('a turn that starts while the session id is read the last time holds the rename for the next idle tick', async () => {
+    const { w, namer } = world({
+      file: PENDING,
+      onSessionRead: (n) => {
         if (n === 2) {
           turnStarted(MAIN)
         }
@@ -325,7 +344,7 @@ describe('createNamer', () => {
 })
 
 /** A `$` of plain records for the session start: the env, the session, files, the CLI, the command, the clock's one timer. */
-function engine(options: { env?: Record<string, string>; files?: Record<string, string>; dialog?: unknown } = {}) {
+function engine(options: { env?: Record<string, string>; files?: Record<string, string> } = {}) {
   const env = options.env ?? { HOME: '/home/u' }
   const files = options.files ?? {}
   const e = {
@@ -333,7 +352,6 @@ function engine(options: { env?: Record<string, string>; files?: Record<string, 
     runs: [] as Array<{ argv: string[]; timeoutMs?: number }>,
     commands: [] as Array<{ command: string; args?: string }>,
     timers: [] as Array<{ ms: number; fn: () => unknown }>,
-    stateReads: [] as unknown[],
   }
   const $ = {
     plugin: { root: '/plugin' },
@@ -359,12 +377,6 @@ function engine(options: { env?: Record<string, string>; files?: Record<string, 
       run: async (input: { command: string; args?: string }) => {
         e.commands.push(input)
         return { text: `Session renamed to: ${input.args}` }
-      },
-    },
-    state: {
-      get: async (key: unknown) => {
-        e.stateReads.push(key)
-        return { value: options.dialog, version: 1 }
       },
     },
     clock: {
@@ -404,11 +416,10 @@ describe('startNaming', () => {
     expect(e.reads).toEqual([])
   })
 
-  test("an ask's dialog up, as the ask's snapshot says, holds the rename", async () => {
-    const { e, $ } = engine({ files: { [FILE]: PENDING }, dialog: { isDialogUp: true } })
-    await startNaming($)
+  test("an ask's dialog up, as the ask's own state says, holds the rename", async () => {
+    const { e, $ } = engine({ files: { [FILE]: PENDING } })
+    await startNaming($, () => true)
     await tick(e)
-    expect(e.stateReads).toEqual([{ plugin: 'sminos', key: 'ask' }])
     expect(e.runs).toEqual([])
     expect(e.commands).toEqual([])
   })

@@ -418,8 +418,8 @@ when the engine name it replaces is still the session's, hands it over as a
 pending file, `<sminos home>/names/<session>.json`. The mod applies it with
 the engine's own `/rename`, `$.command.run({ command: 'rename', args })`,
 between turns: every 15 s a timer reads the file, and at the first tick
-that finds no main turn running and no ask's dialog up (the ask's snapshot
-in `$.state`, `isDialogUp`) it runs the check and then the command. The
+that finds no main turn running and no ask's dialog up (the ask mod's own
+state, read synchronously) it runs the check and then the command. The
 engine registers the name as any `/rename` (`user`), writes the transcript's
 `custom-title` and `agent-name`, and tells the model itself (a meta row, or
 in an SDK session the command's own rows), so the mod adds nothing. The
@@ -437,9 +437,13 @@ already, and the name is still free in the project and on the machine. The
 mod runs it once per pending file's text, whatever comes of it (a CLI that
 hangs or fails is not tried again: the next derive rewrites the file, and
 that is the retry), so a tick with nothing new pays one failed read. The
-one exception: a main turn that starts while the check runs makes its
-answer stale, so it is dropped and the next idle tick checks again. A
-command the engine refuses goes to the debug log.
+one exception is an attempt something overtook: the tick takes the turn
+count and the count of ended sessions before its first await, and after its
+last await (the session id, read again) judges, with nothing awaited until
+the command, a dialog up, a main turn running or started, a session ended
+(a `/clear`, a resume) and the id moved; any of them drops the answer and
+leaves the file for the next idle tick. A command the engine refuses goes
+to the debug log.
 `sminos/tests/mods/live-name-check.py` pins the engine facts it rests on.
 
 ## Developing

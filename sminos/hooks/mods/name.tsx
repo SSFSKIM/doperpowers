@@ -1,5 +1,7 @@
 import type { EngineInterface, On } from 'claude-code'
 
+import { isAskDialogUp } from './ask'
+
 /**
  * A session is renamed after what it is in charge of: `sminos derive` asks
  * the session's fork for its in-charge line and a charge name with it, and,
@@ -32,9 +34,6 @@ export const POLL_MS = 15_000
  */
 export const NAME_DUE_TIMEOUT_MS = 10_000
 
-/** The sminos ask's snapshot (types/sminos.d.ts), whose `isDialogUp` holds the rename. */
-const ASK = { plugin: 'sminos', key: 'ask' } as const
-
 /** What the namer reaches the engine and the CLI through; the session start makes it from `$`. */
 export type NameIo = {
   /** The session the process is in now (a /clear or a resume moves it). */
@@ -45,8 +44,12 @@ export type NameIo = {
   due: (session: string) => Promise<{ exitCode: number; stdout: string }>
   /** The engine's `/rename`, which acts on the session the process is in when it runs. */
   rename: (name: string) => Promise<unknown>
-  /** An ask's dialog is up: the module that raised it takes its answer, not a command run meanwhile. */
-  isAskDialogUp: () => Promise<boolean>
+  /**
+   * An ask's dialog is up: the module that raised it takes its answer, not a
+   * command run meanwhile. Read synchronously (the ask's own state, kept by
+   * its writes), so the last check before the command reads it as it stands.
+   */
+  isAskDialogUp: () => boolean
   log: (text: string) => void
 }
 
@@ -103,7 +106,7 @@ export function createNamer(io: NameIo) {
     }
     // A slash command run during a turn waits for its end, by which time the
     // check's answer may be stale; and a dialog's answer is its own.
-    if (turn.isRunning || (await io.isAskDialogUp())) {
+    if (turn.isRunning || io.isAskDialogUp()) {
       return
     }
     // One attempt per pending file, whatever comes of it: a CLI that keeps
@@ -130,12 +133,13 @@ export function createNamer(io: NameIo) {
     if (name === '') {
       return
     }
-    // The person may have opened an ask's dialog while the check ran (a press
-    // starts no turn), and the session id is read again in case it moved with
-    // no session.end seen. Nothing is awaited between this judgment and the
-    // command, which acts on the session the process is in.
-    const [isDialogUp, now] = await Promise.all([io.isAskDialogUp(), io.session()])
-    if (isDialogUp || hasMoved() || now !== session) {
+    // The session id is read again, in case it moved with no session.end
+    // seen: the last await. Then everything is judged as it stands, with
+    // nothing awaited until the command, which acts on the session the
+    // process is in: an ask's dialog the person opened meanwhile (a press
+    // starts no turn), a turn, a session that ended, another id.
+    const now = await io.session()
+    if (io.isAskDialogUp() || hasMoved() || now !== session) {
       handled = before
       return
     }
@@ -167,8 +171,12 @@ async function sminosHome($: EngineInterface): Promise<string> {
   return own || `${(await $.env.get('HOME')) ?? ''}/.claude/sminos`
 }
 
-/** Starts the timer, in every session but an internal fork. The session id is read at each tick, so a /clear's new session is the one checked. */
-export async function startNaming($: EngineInterface) {
+/**
+ * Starts the timer, in every session but an internal fork. The session id is
+ * read at each tick, so a /clear's new session is the one checked. The
+ * dialog is the ask mod's own state, in this module (tests pass their own).
+ */
+export async function startNaming($: EngineInterface, isDialogUp: () => boolean = isAskDialogUp) {
   if ((await $.env.get('SMNS_INTERNAL')) !== undefined) {
     return
   }
@@ -178,10 +186,7 @@ export async function startNaming($: EngineInterface) {
     read: (session) => $.fs.read(`${home}/names/${session}.json`),
     due: (session) => $.process.run([`${$.plugin.root}/skills/sminos/scripts/sminos`, 'name-due', '--session', session], { timeoutMs: NAME_DUE_TIMEOUT_MS }),
     rename: (name) => $.command.run({ command: 'rename', args: name }),
-    isAskDialogUp: async () => {
-      const { value } = await $.state.get(ASK)
-      return typeof value === 'object' && value !== null && (value as { isDialogUp?: unknown }).isDialogUp === true
-    },
+    isAskDialogUp: isDialogUp,
     log: (line) => $.ui.log(line, { to: 'debug' }),
   })
   $.clock.every(POLL_MS, () => void namer.tick())
