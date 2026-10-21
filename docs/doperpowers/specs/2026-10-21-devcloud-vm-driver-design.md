@@ -73,7 +73,7 @@ refused or it needs a browser or their judgment.
 |---|---|---|---|
 | H1 | The Hetzner devcloud project's API token into Secret Manager | the person | escalated by M1's preflight if missing |
 | H2 | The GCE host service account and its Secret Manager grant | the executor if its account is permitted, else the person | M1's preflight |
-| H3 | The seed key file onto the always-on Mac | the person | before M6 (acceptance 5, 11) |
+| H3 | The seed key file onto the always-on Mac | the person | done 2026-10-21 (early, for M4's timing): `~/.config/devcloud/seed.json`, 0600; the Mac's own gcloud default untouched |
 | H4 | A desk provisioning key, `offline_revoke_s` 24 h, into Secret Manager | the person, once the desk ships keys | M6 verifies its policy value |
 | H5 | A tailnet ACL rule letting the Macs reach `tag:devcloud` on port 22 | the person | not needed: M1 found it open |
 | H6 | Removing the parent's leftover test machine `devcloud-m5` from the desk's Machines | the person | an M6 step; evidence: `sminos machines` no longer lists it |
