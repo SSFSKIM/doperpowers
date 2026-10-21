@@ -167,10 +167,10 @@ agree("every Unicode scalar value, in runs of 61 beside its neighbours",
       ("".join(chr(c) for c in SCALARS[i:i + 61]) for i in range(0, len(SCALARS), 61)), codes.string)
 agree("every surrogate code point, alone and amid ASCII, Latin-1, Hangul and astral text (refused)",
       (pre + chr(c) + post for c in range(0xD800, 0xE000)
-       for pre, post in (("", ""), ("x", "é"), ("한", "\U0001F600"), ("\U0001F600", "\n"))), codes.string)
+       for pre, post in (("", ""), ("x", "\u00e9"), ("\ud55c", "\U0001F600"), ("\U0001F600", "\n"))), codes.string)
 rng = random.Random(8785)
 RANGES = ((0, 0x20), (0x20, 0x7F), (0x7F, 0x100), (0x100, 0xD800), (0xE000, 0x10000), (0x10000, 0x110000))
-NAMED = '"\\\b\f\n\r\t\x00\x1f\x7f  ﻿￿\U00010000\U0001F600\U0010FFFF'
+NAMED = '"\\\b\f\n\r\t\x00\x1f\x7f\u2028\u2029\ufeff\uffff\ue000\U00010000\U0001F600\U0010FFFF'
 
 
 def any_string(most=24):
@@ -197,10 +197,20 @@ agree("random strings with a lone surrogate among them (refused)",
       (s[:i] + chr(rng.randrange(0xD800, 0xE000)) + s[i:] for s in (any_string() for _ in range(3000))
        for i in (rng.randrange(len(s) + 1),)), codes.string)
 agree("random values: objects of ASCII keys and of any keys, nested", (any_value() for _ in range(10000)))
-ORDER = ["￿", "\U0001F600", "", "\U00010000", "퟿", "a", "", "\x7f", " ", "\U0010FFFF", "ab",
-         "a\U0001F600", "a￿", "é", "Z"]
+ORDER = ["\uffff", "\U0001F600", "\ue000", "\U00010000", "\ud7ff", "a", "", "\x7f", "\u2028", "\U0010FFFF", "ab",
+         "a\U0001F600", "a\uffff", "\u00e9", "Z"]
 agree("objects whose keys' UTF-16 order is not their code point order, shuffled",
       ({k: i for i, k in enumerate(rng.sample(ORDER, len(ORDER)))} for _ in range(500)))
+
+
+class Folded(str):
+    """A key that compares without case: its place is still that of its UTF-16 code units."""
+
+    def __lt__(self, other):
+        return self.casefold() < other.casefold()
+
+
+agree("an object whose keys are a str subclass with an order of its own", [{Folded("a"): 1, Folded("Z"): 2, Folded("b"): 3}])
 agree("integers about 2^53, 10^21 and past the largest double, and of every bit length to 64",
       [s * x for s in (1, -1) for x in (2 ** 53 - 1, 2 ** 53, 2 ** 53 + 1, 2 ** 53 + 2, 10 ** 21, 10 ** 21 + 1, 2 ** 1024)]
       + [s * rng.getrandbits(b) for b in range(65) for s in (1, -1) for _ in range(40)], codes.number)

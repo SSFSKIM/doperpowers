@@ -74,7 +74,7 @@ EN = ("The uplink's main thread takes frames in arrival order, so an open queued
       "waits while it verifies every event's code. ").split()
 KO = ("업링크의 메인 스레드는 도착 순서대로 프레임을 처리하므로 백로그 뒤에 대기 중인 열기 요청은 모든 이벤트의 코드를 "
       "검증하는 동안 기다립니다").split()
-EXTRA = ["—", "→", "“quoted”", '"q"', "\\path\\to", "`code`", "\t", "é", "ü", "😀", "🚀", "U+2028: ", " ", "\x7f",
+EXTRA = ["\u2014", "\u2192", "\u201cquoted\u201d", '"q"', "\\path\\to", "`code`", "\t", "\u00e9", "\u00fc", "\U0001f600", "\U0001f680", "U+2028:\u2028", "\u2029", "\x7f",
          "\x00", "\x1b[0m", "<message>", "</message>", "**bold**", "- item\n", "\n\n", "```py\nx = 1\n```"]
 
 

@@ -187,8 +187,9 @@ def canonical(value):
     if isinstance(value, dict):
         if not all(isinstance(k, str) for k in value):
             raise NotCanonical("an object key that is not a string")
-        if all(k.isascii() for k in value):
-            # No surrogate to refuse, and the keys' own order is that of their UTF-16 code units.
+        if all(type(k) is str and k.isascii() for k in value):
+            # No surrogate to refuse, and the keys' own order is that of their UTF-16 code units (a str
+            # subclass may compare otherwise).
             return "{" + ",".join(_quoted(k) + ":" + canonical(value[k]) for k in sorted(value)) + "}"
         keyed = [(string(k), k) for k in value]  # refuses a lone surrogate before the sort encodes it
         keyed.sort(key=lambda pair: pair[1].encode("utf-16-be"))
