@@ -100,6 +100,20 @@ class ReleaseStartedTest(BootExitTest):
         self.assertNotIn("settings-and-env", [name for name, _ in recorded])
         self.assertNotIn("projects", [name for name, _ in recorded])
 
+    def test_only_an_adopted_machines_steps_wait_on_the_lifecycle_lock(self):
+        """A VM's departure must not wait for a long step (apply runs up to 30
+        minutes; the reaper's and down's departure are bounded below that)."""
+        for adopted, locks in ((False, 0), (True, len(steps.BOOT) + 1)):
+            with self.subTest(adopted=adopted):
+                taken = []
+                host = mock.Mock(desc=mock.Mock(adopted=adopted))
+                with mock.patch.object(steps.lease, "locked",
+                                       lambda **kw: taken.append(kw) or contextlib.nullcontext()), \
+                        mock.patch.object(steps, "Run", lambda kind: host):
+                    self.assertEqual(self.boot()[0], 0)
+                self.assertEqual(len(taken), locks)
+                self.assertTrue(all(kw == {"shared": True} for kw in taken))
+
     def test_a_departing_vm_still_boots_its_services_gated(self):
         """A VM's departure starts again from step 0 after a reboot (§4.2):
         its boot runs, and the services step keeps admission closed."""

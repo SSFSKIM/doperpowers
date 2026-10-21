@@ -4,8 +4,9 @@ the secrets refresh (7, 10, 11) and the mirror refresh (no step of its own).
 Each step is recorded in the status file; a failed step stops the run, and the
 next run retries from its top. Runs hold one lock, so a job never interleaves
 with a boot. Every job also takes the lifecycle lock shared and does nothing
-once a departure has started (Design §4.1); the boot takes it for each step
-and configures nothing once a release has started (§6.5). Every credential a
+once a departure has started (Design §4.1); on an adopted machine the boot
+takes it for each step and configures nothing once a release has started
+(§6.5). Every credential a
 step writes is listed in the credential ledger first (§6.5)."""
 
 import contextlib
@@ -629,10 +630,14 @@ BOOT = (("identity", identity), ("seed", seed), ("bootstrap-secrets", bootstrap_
 
 
 @contextlib.contextmanager
-def _unless_released():
-    """One boot step under the lifecycle lock, shared, and only while no
-    release has started (§6.5): a release takes the lock between two steps,
-    and the boot stops at the next."""
+def _unless_released(r):
+    """One boot step of an adopted machine under the lifecycle lock, shared,
+    and only while no release has started (§6.5): a release takes the lock
+    between two steps, and the boot stops at the next. A VM is never
+    released, and its departure must not wait on a long step (§4.2)."""
+    if r.desc is not None and not r.desc.adopted:
+        yield
+        return
     with lease.locked(shared=True):
         if status.release_started():
             raise ReleaseStarted
@@ -651,8 +656,9 @@ def boot():
         services.mark_booted(False)
         r = Run("boot")
         try:
-            code = _run(BOOT, r, done=lambda: _mark_applied(r), guard=_unless_released)
-            if code == 0 and _run((("projects", projects),), r, guard=_unless_released):
+            guard = lambda: _unless_released(r)  # noqa: E731
+            code = _run(BOOT, r, done=lambda: _mark_applied(r), guard=guard)
+            if code == 0 and _run((("projects", projects),), r, guard=guard):
                 # The host works without a project: the failure is recorded, and
                 # its own exit status lets the services start all the same.
                 code = PROJECTS_FAILED
