@@ -167,6 +167,62 @@ describe('createNamer', () => {
     expect(w.renames).toEqual(['desk-uplink-owner'])
   })
 
+  test('a check that throws while a turn starts is left for the next idle tick too', async () => {
+    let first = true
+    const { w, namer } = world({
+      file: PENDING,
+      answers: [new Error('timed out'), { exitCode: 0, stdout: 'desk-uplink-owner\n' }],
+      during: () => {
+        if (first) {
+          first = false
+          turnStarted(MAIN)
+        }
+      },
+    })
+    await namer.tick()
+    expect(w.renames).toEqual([])
+    turnEnded(MAIN)
+    await namer.tick()
+    expect(w.checks).toBe(2)
+    expect(w.renames).toEqual(['desk-uplink-owner'])
+  })
+
+  test("an ask's dialog opened while the check runs holds the rename; the first tick after it closes checks again and renames", async () => {
+    let release: () => void = () => {}
+    let isDialogUp = false
+    let checks = 0
+    const renames: string[] = []
+    resetName()
+    const namer = createNamer({
+      read: async () => PENDING,
+      due: () =>
+        new Promise((resolve) => {
+          checks += 1
+          release = () => resolve({ exitCode: 0, stdout: 'desk-uplink-owner\n' })
+        }),
+      rename: async (name) => {
+        renames.push(name)
+      },
+      isAskDialogUp: async () => isDialogUp,
+      log: () => {},
+    })
+    const first = namer.tick()
+    await settle()
+    isDialogUp = true
+    release()
+    await first
+    expect(renames).toEqual([])
+    await namer.tick()
+    expect(checks).toBe(1)
+    isDialogUp = false
+    const second = namer.tick()
+    await settle()
+    release()
+    await second
+    expect(checks).toBe(2)
+    expect(renames).toEqual(['desk-uplink-owner'])
+  })
+
   test('a CLI that cannot run renames nothing, and is not tried again for the same file', async () => {
     const { w, namer } = world({ file: PENDING, answers: [new Error('timed out'), { exitCode: 0, stdout: 'desk-uplink-owner\n' }] })
     await namer.tick()

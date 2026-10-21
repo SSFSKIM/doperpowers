@@ -122,6 +122,11 @@ class NameCheck(LB.Live):
         wait_for("the reply %s" % word, 120, lambda: self.answered(word))
         time.sleep(1)
 
+    def main_starts(self, since):
+        """The main turns the bridge's stream saw start since `since`."""
+        return self.seen(lambda e: e.get("type") == "turn" and e.get("phase") == "start"
+                         and e.get("agentId") is None, since)
+
     def pend(self, session, name, before):
         """A pending name as `sminos derive` hands it."""
         d = os.path.join(self.smh, "names")
@@ -156,24 +161,33 @@ class NameCheck(LB.Live):
         rec = wait_for("the session's record", 90, lambda: next(iter(self.records()), None))
         self.session = rec["sessionId"]
         wait_for("the bridge's endpoint (the mods are loaded)", 90, self.status)
+        # The bridge's stream reports every turn as it starts, so a turn the
+        # rename started is seen even before it writes a row.
+        threading.Thread(target=self.subscribe_forever, daemon=True).start()
+        wait_for("the subscription", 10, lambda: self.subscriptions > 0)
+        t_alpha = time.time()
         self.turn("ALPHA")
+        alpha_starts = self.main_starts(t_alpha)
         rec = self.record() or {}
         generated = rec.get("name")
-        assistants = sum(1 for r in self.rows() if r.get("type") == "assistant")
 
+        t_pend = time.time()
         self.pend(self.session, CHARGE, generated)
         rec = self.applied(self.session, CHARGE)
         self.check("an idle session's pending name is applied by the timer, registered user",
                    rec.get("name") == CHARGE and rec.get("nameSource") == "user",
                    "record %s -> %s (%s)" % (generated, rec.get("name"), rec.get("nameSource")))
-        time.sleep(5)
+        time.sleep(10)
         rows = self.rows()
         self.check("and the transcript keeps a custom-title record and the engine's meta row naming it",
                    CHARGE in self.titles() and named_meta(rows, CHARGE),
                    "custom-title %s; meta row %s" % (self.titles(), "found" if named_meta(rows, CHARGE) else "MISSING"))
-        after = sum(1 for r in rows if r.get("type") == "assistant")
-        self.check("engine fact: the rename starts no model turn", after == assistants,
-                   "assistant rows %d before, %d after" % (assistants, after))
+        starts = self.main_starts(t_pend)
+        unbroken = len(self.connections) == 1 and self.connections[0]["closed"] is None
+        self.check("engine fact: the rename starts no model turn",
+                   len(alpha_starts) == 1 and not starts and unbroken,
+                   "main turn.start on the bridge's stream: %d for the prompt, %d from the pending file to 10 s "
+                   "after the rename; one unbroken subscription: %s" % (len(alpha_starts), len(starts), unbroken))
 
         # The owner renames after derive read CHARGE as the name to replace.
         self.prompt("/rename %s" % OWNER)

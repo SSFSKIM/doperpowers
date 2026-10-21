@@ -93,21 +93,29 @@ export function createNamer(io: NameIo) {
     // retried when the next derive rewrites the file.
     const before = { handled, started: turn.started }
     handled = pending
-    let answer
-    try {
-      answer = await io.due()
-    } catch (error) {
-      io.log(`name: sminos name-due did not answer (${message(error)}); this pending name is not tried again`)
-      return
-    }
-    // A turn started meanwhile: the answer may be stale, and the session is
-    // not idle. The next idle tick asks again.
+    const answer = await io.due().then(
+      (value) => ({ value }),
+      (error: unknown) => ({ error }),
+    )
+    // A turn started meanwhile, whatever the check answered: the answer may
+    // be stale, and the session is not idle. The next idle tick asks again.
     if (turn.started !== before.started || turn.isRunning) {
       handled = before.handled
       return
     }
-    const name = answer.exitCode === 0 ? (answer.stdout.trim().split('\n')[0] ?? '').trim() : ''
+    if ('error' in answer) {
+      io.log(`name: sminos name-due did not answer (${message(answer.error)}); this pending name is not tried again`)
+      return
+    }
+    const { exitCode, stdout } = answer.value
+    const name = exitCode === 0 ? (stdout.trim().split('\n')[0] ?? '').trim() : ''
     if (name === '') {
+      return
+    }
+    // The person may have opened an ask's dialog while the check ran (a press
+    // starts no turn): its answer is its own, so the next idle tick renames.
+    if (await io.isAskDialogUp()) {
+      handled = before.handled
       return
     }
     try {
