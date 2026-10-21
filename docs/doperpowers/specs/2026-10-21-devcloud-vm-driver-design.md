@@ -1674,6 +1674,35 @@ commit 5168e433 on its branch, 2026-10-21):
 - Observation (M5): A released machine still cannot be adopted again. `setup.sh`'s final check
   refuses home paths that release deliberately keeps (`~/.claude/.git`, an empty
   `~/.config/claude-secrets`, `~/.claude/sminos/daemon`).
+- Observation (M6): On a VM that carries the person's profile, a desk permission card appears only
+  for calls the profile does not already allow.
+  - The first desk try of acceptance 3 ran a `touch` in mode `default` and raised no card. The
+    profile's PreToolUse Bash guardrail allowed it: the transcript holds "Guardrail allowlist:
+    non-destructive command".
+  - The rerun used an `rm -rf` the guardrail defers. That raised the card, and Allow from the desk
+    let the call proceed: a `PermissionRequest` hook decision `allow` relayed by the bridge.
+  - The person has since removed the guardrail from the profile.
+  Evidence: the M6 report, acceptance 3.
+- Observation (M6): Retention keeps the newest two images regardless of recipe, so it can drop a
+  current-recipe image in favour of a newer stale one. At 18:32Z it deleted the current-recipe
+  build 1 and kept a stale image the always-on Mac had built a minute later. Harmless once a newer
+  current image exists. Evidence: the M6 report, Discoveries.
+- Observation (M6): The provider's `images` listed a GCE image that build 3 had only just begun
+  (PENDING), and `up --confirmed` failed on it with "is not ready". `images` now lists only images a
+  `create` can use (GCE READY, Hetzner available), which narrows I13. A FAILED GCE image is therefore
+  unlisted, and nothing deletes it (residue).
+- Observation (M6): A VM that departed by itself before the reaper deleted it powered off was named
+  for removal from the desk by hand, a false positive. The reaper deletes without contact, so labels
+  cannot tell a departed VM from a crashed one. The note now asks the desk (d7efe1e1).
+- Observation (M6): Acceptance 1–13 passed live on the GCE default account.
+  - Acceptance 1 from an image took 3m22s, and acceptance 6's slow path 5m12s.
+  - The cap proof's confirmed fourth VM was ready in 2m24s.
+  - On acceptance 5, the warning reached the creating session at 8m22s. The always-on Mac's scheduled
+    reaper deleted the VM 15m30s after the lease end.
+  - On acceptance 11, a VM driven from the always-on Mac was ready in 2m51s.
+  - The peak E2 use was 22 of the quota's 24 vCPU.
+  - Everything was deleted by 19:40:45Z.
+  Evidence: the M6 report's acceptance table and deletion list.
 
 ## Decision Log
 
@@ -2173,6 +2202,24 @@ commit 5168e433 on its branch, 2026-10-21):
   only refuses new enrollments (410 key-expired). The key expires 2027-01-19; a new key goes into a
   new version of the same secret before then (residue).
   Date/Author: 2026-10-21, the owner, via the desk session and the design session.
+
+- Decision: The scheduled reaper ends every run with one dated line on stdout, so the line lands in
+  `reap.out` and not `reap.log`.
+  Rationale: acceptance 11 needs runs to be visible. `reap.log` stays a deletion log, which 144
+  lines a day would bury.
+  Date/Author: 2026-10-21, executor, M6.
+- Decision: The driver reads a confirmed `hub leave` from the departure's own output, the leave
+  step's `ok — left the desk` or `not enrolled`. A deletion without that confirmation names the VM
+  for removal from the desk by hand. It does so only when the desk, read through the driver's own
+  enrollment, still lists the VM or cannot be read. Both the reaper and `down` follow this.
+  Rationale: the owner's H4 ruling leaves `hub leave` as the only clean desk removal. Labels alone
+  cannot tell a VM that departed by itself from one that crashed, and the desk can.
+  Date/Author: 2026-10-21, executor, M6.
+- Decision: Until the PR merges, the always-on Mac's launchd reaper runs a scratch checkout of this
+  branch. After the merge, running `reap --install` from the marketplace clone moves the job to it,
+  and the scratch checkout is then removed. `hcloud` is installed there, because the Hetzner account
+  is usable and the reaper needs its CLI.
+  Date/Author: 2026-10-21, executor, M6.
 
 ## Outcomes & Retrospective
 
