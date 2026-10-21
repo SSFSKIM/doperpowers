@@ -862,7 +862,11 @@ enough. Two bounds, and a rule:
   pending questions whose whole inputs alone pass the budget (about 64
   pending asks each near 64 KiB) still give an oversized resync, lost and
   retried as before; questions are human-rate and short, and shortening one
-  would break answer matching (residue). [M8 review, 2026-10-20]
+  would break answer matching (residue). [M8 review, 2026-10-20] Covered
+  since: questions that still do not fit go ahead of the resync whole, each
+  as its own `raised`, largest first, and the resync names them
+  (`pendingAhead`); the child keeps each as that raise left it. [board #107,
+  2026-10-21]
 - **A failed post's retry belongs to its child.** The 500 ms wait after a
   failed post (`RETRY_MS`) is scoped to the generation of the child it was
   posted to: a post in flight when its child died sets none, and a wait set
@@ -2601,7 +2605,10 @@ context:
 - the hub reporting refusals in the POST's answer;
 - the memory-only outbox, held list and compact messages;
 - the held list's missing hard cap;
-- oversized pending questions in a resync;
-- the vanished block on transcript-only snapshots during an outage;
+- oversized pending questions in a resync (done: board #107, the questions
+  sent ahead of the resync, §7);
+- the vanished block on transcript-only snapshots during an outage (done:
+  board #107, a running session's stale socket dialled again for
+  `STALE_WAIT`, 3 s, so the successor's snapshot serves the open);
 - the resync-wait outlier in the kill run;
 - bridge_order's unported release rule.
