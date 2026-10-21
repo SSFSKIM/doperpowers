@@ -22,7 +22,7 @@ from devcloudlib.proc import StepError, User
 GIT_ENV = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@example.com", GIT_COMMITTER_NAME="t",
                GIT_COMMITTER_EMAIL="t@example.com", GIT_CONFIG_GLOBAL="/dev/null")
 KEY_A = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMadeUpKeyForTheMacBook macbook"
-KEY_B = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMadeUpKeyForTheMacMini mac-mini"
+KEY_B = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMadeUpKeyForTheOtherMac mac-studio"
 
 
 def git(*args, cwd=None):
@@ -246,7 +246,7 @@ class DriverKeysTest(Base):
         return r
 
     def test_root_and_the_user_get_every_drivers_key(self):
-        self.keys({"mac-mini.pub": KEY_B + "\n", "macbook.pub": f"# the MacBook\n{KEY_A}\nnot a key\n",
+        self.keys({"mac-studio.pub": KEY_B + "\n", "macbook.pub": f"# the MacBook\n{KEY_A}\nnot a key\n",
                    "notes.txt": KEY_A + "x\n"})
         root = self.tmp / "root"
         detail = steps.authorized_keys(self.run_(), root_home=root)

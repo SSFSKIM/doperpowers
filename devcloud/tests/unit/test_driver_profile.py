@@ -104,7 +104,7 @@ class LabelsTest(unittest.TestCase):
 
     def test_machine_names_become_label_values(self):
         self.assertEqual(labels.machine("SK"), "sk")
-        self.assertEqual(labels.machine("Mac-mini.local"), "mac-mini")
+        self.assertEqual(labels.machine("Studio-2.local"), "studio-2")
         self.assertEqual(labels.machine("Kim's Mac_Book"), "kim-s-mac-book")
 
 
