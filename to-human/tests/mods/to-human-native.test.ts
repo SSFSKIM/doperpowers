@@ -83,12 +83,12 @@ describe('MAWS native to-human', () => {
       }))
     }
     expect(calls).toEqual([])
-    // Every hook but four draws, so every one is gated: none is left that
-    // answers a question or a prompt. The four draw nothing: they learn
-    // whether a mark was sent and where each row stands in the transcript
-    // (`session.start`, `classic.SessionStart`, `session.append`) and an
-    // error's text (`turn.complete`), for the terminal's report.
-    expect(hooks.map((hook) => hook.event).filter((event) => !gated(event))).toEqual(['session.start', 'classic.SessionStart', 'session.append', 'turn.complete'])
+    // Every hook but three draws, so every one is gated: none is left that
+    // answers a question or a prompt. The three draw nothing: they learn
+    // whether a mark was sent, where each row stands in the transcript and
+    // which rows are API errors (`session.start`, `classic.SessionStart`,
+    // `session.append`), for the terminal's report.
+    expect(hooks.map((hook) => hook.event).filter((event) => !gated(event))).toEqual(['session.start', 'classic.SessionStart', 'session.append'])
     expect(envReads).toEqual(['MAWS_NATIVE_TO_HUMAN'])
   })
 })

@@ -1,4 +1,4 @@
-import type { EngineInterface, On, PromptOrigin, RenderElement, RenderInput, Timer } from 'claude-code'
+import type { ApiContentBlock, EngineInterface, On, PromptOrigin, RenderElement, RenderInput, SessionAppendInput, Timer } from 'claude-code'
 
 import { MESSAGE_TOOL, readMessage } from './message'
 
@@ -308,7 +308,7 @@ export function parse(text: string): Parsed {
 /**
  * What one row of the transcript is: the person's prompt; a row they read
  * (an assistant message carrying marks, a question they answered, an
- * agent's dispatch, an agent's failure, an API error that ended the turn); a mixed row, a message
+ * agent's dispatch, an agent's failure, an API error); a mixed row, a message
  * carrying marks with unmarked text beside them, which the person reads and
  * which opens the run of working record after it; or working record (an
  * unmarked message, a tool call and its result, agent messages and
@@ -566,6 +566,21 @@ const isSpawn = (tool: string) => tool === 'Agent' || tool === 'Workflow'
  */
 export const isRead = (tool: string) => tool === 'AskUserQuestion' || ASK_TOOLS.includes(tool) || isSpawn(tool) || tool === MESSAGE_TOOL
 
+/**
+ * Whether an appended row is an API error: one the engine writes in place of
+ * a response, naming `<synthetic>` as its model (observed on 2.1.306), as it
+ * does for no response at all (`No response requested.`), which is no error
+ * and which the transcript does not flag as one. Whether the turn ends on it
+ * (retries spent, the context limit) or goes on after it (a connection lost
+ * mid-response), the model never writes the person about it, so the row
+ * stays in the report.
+ */
+function isApiError(origin: SessionAppendInput['origin'], message: { content: readonly ApiContentBlock[] }): boolean {
+  if (origin.kind !== 'model' || !('model' in origin) || origin.model !== '<synthetic>') return false
+  const text = message.content.map((block) => (block.type === 'text' ? block.text : '')).join('').trim()
+  return text !== '' && text !== 'No response requested.'
+}
+
 /** A message tool call that sent nothing: refused, errored, or cut by an abort. */
 const isUnsent = (props: { tool: string; isErrored: boolean; isInterrupted?: boolean }) =>
   props.tool === MESSAGE_TOOL && (props.isErrored || props.isInterrupted === true)
@@ -618,6 +633,8 @@ export type View = {
   folded?: string
   /** Where each row stood in the window when it last drew, as its `onScreen` said; only the fullscreen transcript says. */
   shown: Map<string, Shown>
+  /** The rows that are an API error, by their ids: kept as they were appended, and read from the transcript file with the places. */
+  errors: Set<string>
   /** The module's start-up read (`started`) while one runs; it settles once it finished or was cut short. */
   reading?: Promise<void>
   /** Settles once the start-up read finished, or the rows stopped waiting for it. */
@@ -644,6 +661,7 @@ export const newView = (isFolding: () => boolean): View => {
     appended: 0,
     requestIds: new Map(),
     shown: new Map(),
+    errors: new Set(),
     start: { promise, settle },
     isStarted: false,
     isPastWait: false,
@@ -701,8 +719,13 @@ export function placeAll(view: View, ids: readonly string[], at = 0, step = 1) {
   })
 }
 
-/** What a transcript search lists: each row's id, and a tool call's id where its call is written. */
-const PLACES = '"uuid":"[^"]+"|"type":"tool_use","id":"[^"]+"'
+/**
+ * What a transcript search lists: each row's id, a tool call's id where its
+ * call is written, and the flag the engine writes on an API error's row,
+ * which follows that row's own id on its line (786 of 786 on this machine,
+ * 2026-10-21).
+ */
+const PLACES = '"uuid":"[^"]+"|"type":"tool_use","id":"[^"]+"|"isApiErrorMessage":true'
 
 /**
  * The search of the file `$1` for `$2`, each match on a line of its own,
@@ -734,6 +757,16 @@ export function placesIn(stdout: string): string[] {
   return stdout.split('\n').flatMap((line) => {
     const id = /"(?:uuid|id)":"([^"]+)"$/.exec(line)?.[1]
     return id === undefined ? [] : [id]
+  })
+}
+
+/** The ids of the rows `placeArgs`' output flags as API errors. */
+export function errorsIn(stdout: string): string[] {
+  let row: string | undefined
+  return stdout.split('\n').flatMap((line) => {
+    if (line === '"isApiErrorMessage":true') return row === undefined ? [] : [row]
+    row = /^"uuid":"([^"]+)"$/.exec(line)?.[1] ?? row
+    return []
   })
 }
 
@@ -842,11 +875,11 @@ async function recordRow<E extends RenderInput>(
 }
 
 /**
- * Places the rows a transcript search lists (see `View`). A transcript can be
- * far past what one read takes whole, so a search lists its rows; one that
- * fails, or is cut, leaves the rows it could not place to draw in the order
- * they come. `signal` is the dispatch's that searches: a search its abort cut
- * short says nothing.
+ * Places the rows a transcript search lists (see `View`), and notes which of
+ * them are API errors. A transcript can be far past what one read takes
+ * whole, so a search lists its rows; one that fails, or is cut, leaves the
+ * rows it could not place to draw in the order they come. `signal` is the
+ * dispatch's that searches: a search its abort cut short says nothing.
  */
 async function place($: EngineInterface, view: View, search: string[], signal: AbortSignal) {
   try {
@@ -856,7 +889,9 @@ async function place($: EngineInterface, view: View, search: string[], signal: A
       throw new Error(`grep exited ${found.exitCode}`)
     }
     placeAll(view, placesIn(found.stdout))
-    if (reorder(view) && view.isFolding()) {
+    const errors = errorsIn(found.stdout).filter((id) => !view.errors.has(id))
+    errors.forEach((id) => view.errors.add(id))
+    if ((reorder(view) || errors.some((id) => view.rowOf.has(id))) && view.isFolding()) {
       $.ui.invalidate('ui.render')
     }
   } catch (error) {
@@ -1060,7 +1095,7 @@ const native = async ($: EngineInterface, e: object) =>
  * the working record (unmarked messages, tool calls and their results) folds
  * behind buttons, until a row is unfolded by its button or the whole
  * transcript by the band above the prompt. Agent spawns and their failures
- * stay in the report, and so does an API error that ends the turn; agent
+ * stay in the report, and so does an API error, mid-turn or at its end; agent
  * messages, finish notifications and other sessions' messages are working
  * record.
  */
@@ -1093,6 +1128,7 @@ export function registerToHuman(on: On) {
       view.rowOf.clear()
       view.place.clear()
       view.guess.clear()
+      view.errors.clear()
       unfolded.clear()
       $.ui.invalidate('ui.render')
     }
@@ -1106,8 +1142,10 @@ export function registerToHuman(on: On) {
   })
 
   // Each row the main conversation keeps, as its append resolves: placed
-  // after every row before it, its tool calls with it. A row that drew while
-  // it streamed, before its place was known, moves to it.
+  // after every row before it, its tool calls with it, and noted when it is
+  // an API error. A row that drew while it streamed, before its place was
+  // known, moves to it; one that drew before it was known for an error is
+  // asked for again.
   on('session.append', { door: /./ }, async ($, e, next) => {
     const stored = await next(e)
     if (e.agentId === undefined && e.door !== 'queue' && stored.deny === undefined) {
@@ -1116,7 +1154,12 @@ export function registerToHuman(on: On) {
         const calls = stored.message.content.flatMap((block) => (block.type === 'tool_use' && typeof block.id === 'string' ? [block.id] : []))
         const ids = [stored.uuid, ...calls]
         placeAll(view, ids, LIVE + view.appended, 1 / 1000)
-        if (ids.some((id) => view.rowOf.has(id) || view.rowOf.has(GROUP + id)) && reorder(view) && isFolding()) {
+        const isError = isApiError(e.origin, stored.message)
+        if (isError) {
+          view.errors.add(stored.uuid)
+        }
+        const moved = ids.some((id) => view.rowOf.has(id) || view.rowOf.has(GROUP + id)) && reorder(view)
+        if ((moved || (isError && view.rowOf.has(stored.uuid))) && isFolding()) {
           $.ui.invalidate('ui.render')
         }
       } catch (error) {
@@ -1137,24 +1180,6 @@ export function registerToHuman(on: On) {
   // The ids of the Agent and Workflow calls the transcript drew, whose
   // failure notifications stay in the report as the spawns do.
   const spawns = new Set<string>()
-
-  // An API error that ends a turn (retries spent, the context limit) is an
-  // assistant message the engine writes, drawn through the same row as the
-  // model's text, and the model never answers after it: nothing it could
-  // send would tell the person, so the row stays in the report. The row's
-  // props do not say it is an error; `turn.complete` does, and the
-  // transcript's last assistant message is its text.
-  const errors = new Set<string>()
-  on('turn.complete', { reason: 'error' }, async ($, e, next) => {
-    if (e.agentId === undefined) {
-      const text = (await $.session.messages()).findLast((message) => message.role === 'assistant')?.text.trim()
-      if (text !== undefined && text !== '' && !errors.has(text)) {
-        errors.add(text)
-        $.ui.invalidate('ui.render')
-      }
-    }
-    return next(e)
-  })
 
   // The person's prompt breaks a run: the record before it and the record
   // after it are two, as the person reads them. Agent messages and background
@@ -1200,9 +1225,9 @@ export function registerToHuman(on: On) {
     if (await native($, e)) return next(e)
     await started($, view, next.signal, markSeen)
     const parsed = parse(e.props.text)
-    const isError = parsed.spans.length === 0 && errors.has(e.props.text.trim())
+    const isError = view.errors.has(e.requestId)
     note(view, e.requestId, e.props)
-    see($, view, e.requestId, parsed.spans.length === 0 && !isError ? 'record' : parsed.hasRecord ? 'mixed' : 'marked')
+    see($, view, e.requestId, isError ? 'marked' : parsed.spans.length === 0 ? 'record' : parsed.hasRecord ? 'mixed' : 'marked')
 
     if (parsed.spans.length > 0 && !hasSeenMark) {
       // Rows drawn before the first mark (the tool rows of this turn, the
