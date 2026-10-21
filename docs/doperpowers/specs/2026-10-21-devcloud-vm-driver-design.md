@@ -1603,8 +1603,9 @@ commit 5168e433 on its branch, 2026-10-21):
 - Observation (M3): The driver's slow path on cpx31 in hil took about 13 minutes from `up` to a
   failed services step, against M1's 218 s with a scratch driver. On this MacBook network every
   Google API call waited out a blackholed IPv6 attempt (`vm ls` 5 min, `up --dry-run` 4 min,
-  `provider test` 21 min), so the figure is not the driver's own. Acceptance 1's 8 minutes and
-  acceptance 10's 5 are measured again in M4 and M6, on a working network.
+  `provider test` 21 min), so the figure is not the driver's own. Confirmed by M4: once the network
+  was fixed (IPv6 set to link-local only on both Macs' Wi-Fi), `up` from an image took 2m30s
+  (below).
 - Observation (M3): On a host rebooted during a held departure, the services step starts the lease
   timer and the continuous shipper and nothing else; the sminos daemon and the four periodic timers
   stay inactive and disabled (M2's live reboot check, passed).
@@ -1613,6 +1614,19 @@ commit 5168e433 on its branch, 2026-10-21):
   enroll exited 2. It was created again with `dc-`, and the same VM then enrolled through `devcloud
   reconcile`: sminos 1.5.2 on the VM, `hub check` 0, listed by `sminos machines`, and gone from it
   after `down`'s departure.
+- Observation (M4, 2026-10-21): With the network fixed, `devcloud vm up` on Hetzner (cpx31, hil)
+  from the current image reached every step `ok` 2m30s after it started. That one run meets
+  acceptance 10's 5 minutes and acceptance 1's 8: `devenv validate`, the desk (sminos 1.6.1, `hub
+  check` 0), the tailnet and the closed port all passed. After a third build, `vm reap` left the
+  newest two images, and the reaper's daily build built a missing image live. The GCE default
+  account's figures come with M5 and M6.
+  Evidence: the M4 report's live section; every resource deleted by 11:49:58Z.
+- Observation (M1/M3 network, corrected 2026-10-21): The slowness blamed on the network in M3 was
+  the shared LAN of both Macs advertising IPv6 without routing it, so every Google API call waited
+  out its AAAA attempts. The person set IPv6 to link-local only on both Macs; `gcloud secrets list`
+  now takes 1.4 s.
+- Observation (M4): On a host, `sminos` is not on the PATH of a non-login shell, which is what
+  `devcloud vm ssh <n> -- <command>` runs (acceptance 3's `sminos spawn`).
 
 ## Decision Log
 
@@ -2024,6 +2038,28 @@ commit 5168e433 on its branch, 2026-10-21):
     on a separate read of the host's lease, each left a window in which another Mac's write could
     pass a lifetime beyond the cap.
   Date/Author: 2026-10-21, M3's executor through two review rounds, folded by the controller.
+
+- Decision: How M4 settled the image bake and host files:
+  - The builder's structural check is a standard-library Python file streamed to the builder. A
+    unit test keeps its credential list equal to the guard's `secrets-sources.tsx`.
+  - The forbidden set adds `/var/lib/devcloud`, the stage directory and `/etc/devcloud/enroll-code`
+    to §7's four items.
+  - The bake's clean also removes the tailnet state, without which every VM would share one tailnet
+    machine key, and root's `authorized_keys`. It waits for the power-off through the provider's
+    `state`.
+  - The daily build runs in an unbounded `vm reap`, at most once a day per account
+    (`~/.local/state/devcloud/image-builds.json`, written before each attempt).
+  - `image build` without `--account` builds every usable account with images, and a manual build
+    always builds.
+  - A failed bake keeps its step's exit code and names the step.
+  - Images are named `dc-img-<recipe>-<UTC yyyymmddHHMM>`.
+  - When `--account` names an account other than host.toml's, host.toml's type, location and spot
+    are dropped and its `disk_gb` stays.
+  - host.toml is validated before the reaper and before any provider call. It is read from the
+    working tree when the session's cwd is that repository, else through `gh api`, where a 404
+    means no file.
+  - `--dry-run` lists no images, and "ready in" counts from the command's start.
+  Date/Author: 2026-10-21, M4's executor, folded by the controller.
 
 ## Outcomes & Retrospective
 
