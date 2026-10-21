@@ -1873,8 +1873,25 @@ commit 5168e433 on its branch, 2026-10-21):
     a null `saved` means release removes the file.
   - Driver keys are enforced only when at least one valid key exists.
   - A `hub check` that times out counts as 4.
-  - A host whose configuration has no shipper has nothing to ship. A configured shipper that is
-    missing or not executable is a failed ship, so the departure holds (review finding).
+  - "Nothing to ship" holds only on a host that never had a shipper: no program, no unit, and no
+    `/var/lib/devcloud/shipper-configured`, a flag the services step sets the first time it finds a
+    shipper and nothing removes. A shipper that was configured and is now missing or not executable
+    is a failed ship, so the departure holds. This came out of two review rounds: the installed unit
+    was not enough evidence, because convergence removes it.
+  - Resume:
+    - A departure or release in state `departing` resumes without `--force`, since `lease set`
+      refuses once a departure has started.
+    - A resumed departure starts again at step 0.
+    - A retried release redoes closing admission, ending sessions and shipping until its logout has
+      succeeded (it holds on a failed ship). After the logout it resumes with cleanup only and skips
+      the steps that already succeeded.
+    - A resumed release that had already logged out prints no ready line, so the driver reads its
+      exit 0 as success.
+    - The ledger removes the descriptor last, and only after every other path is gone.
+  - Release gates every destructive step: a failed firewall removal, key restoration or unit removal
+    stops it with exit 1 before the logout, the credential removal and the record of completion.
+  - Lifecycle commands initialize the redaction context before running any child.
+  - The spot unit's start is queued (`--no-block`), because the unit is ordered after the boot unit.
   Rationale: each follows the spec's intent where it was silent; the reasons are in the M2 report.
   Date/Author: 2026-10-21, M2's executor, folded by the controller.
 
