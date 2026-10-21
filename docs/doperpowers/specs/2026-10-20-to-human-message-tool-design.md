@@ -30,6 +30,7 @@ always loaded, not deferred), after weighing the cost below.
 - [x] (2026-10-20) Design closed in the authoring session (doperpowers-88);
   consumers mapped across doperpowers, MAWS and the desk; MAWS architect and
   desk orchestrator briefed.
+- [x] (2026-10-20) Spec reviewed (adversarial design review, buildability review); findings applied in abf65e9e.
 - [ ] M1 — the tool, the view and the notification (to-human plugin)
 - [ ] M2 — the export (sminos)
 - [ ] M3 — the style, the evals, the docs, acceptance
@@ -544,9 +545,11 @@ The log event the sminos export writes for an accepted call, in
 
     {"kind": "message", "from": <alias>, "to": "host", "text": <input.text>, "src": <tool_use id>}
 
-sminos carries the tool's name as its own constant beside `ASK_TOOLS` in
-`sminos/skills/sminos/scripts/sminos.py`, and in
-`sminos/hooks/mods/bridge-rows.tsx` beside `ASK_TOOL`.
+sminos carries both message-tool names as its own constant, beside
+`ASK_TOOLS` in `sminos/skills/sminos/scripts/sminos.py` and beside
+`ASK_TOOL` in `sminos/hooks/mods/bridge-rows.tsx`:
+
+    MESSAGE_TOOLS = ("mcp__to-human__message", "mcp__maws__message")
 
 ## Surprises & Discoveries
 
