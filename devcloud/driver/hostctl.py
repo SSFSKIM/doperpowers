@@ -15,7 +15,7 @@ import shlex
 import tarfile
 
 from .compose import SEED_PATH, STAGE
-from .errors import FAILED, DriverError
+from .errors import CAP, FAILED, DriverError
 
 READY = "devcloud-depart: ready-to-logout"
 BOOT_ENV = "/etc/devcloud/boot.env"
@@ -160,12 +160,20 @@ def lifecycle(ctx, host, user="root"):
     return record.get("state")
 
 
-def lease_set(ctx, host, unix):
+OVER_CAP = 4    # `lease set --cap`'s refusal (M2's host command, I16)
+
+
+def lease_set(ctx, host, unix, cap=None):
     """`devcloud lease set` under the host's lock; the lease it printed, which
-    is the one in force (§4.1)."""
-    result = ctx.remote.run(host.name, host.alias, f"devcloud lease set {int(unix)}", timeout=60)
+    is the one in force (§4.1). With `cap` the host itself refuses, under the
+    same lock as the write, a lease past the cap that is later than the one
+    in force: the check cannot be overtaken by another Mac's write."""
+    command = f"devcloud lease set {int(unix)}" + (f" --cap {int(cap)}" if cap is not None else "")
+    result = ctx.remote.run(host.name, host.alias, command, timeout=60)
     if result.code == 3:
         raise DriverError(FAILED, f"{host.name}'s departure has started; its lease stays as it is")
+    if result.code == OVER_CAP and cap is not None:
+        raise DriverError(CAP, f"{host.name}'s lease would end past the lifetime cap, later than the lease in force")
     if result.code != 0:
         raise DriverError(FAILED, f"{host.name} did not set the lease (exit {result.code}); its label is untouched")
     try:

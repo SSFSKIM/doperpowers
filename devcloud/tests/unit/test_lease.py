@@ -42,10 +42,10 @@ class LeaseBase(unittest.TestCase):
         self.desc.write_text(text + ("DEVCLOUD_ADOPTED=1\n" if adopted else ""))
         self.desc.chmod(0o600)
 
-    def set_lease(self, value):
+    def set_lease(self, value, **kw):
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
-            code = lease.set_lease(value, out=lambda m: None, **self.paths)
+            code = lease.set_lease(value, out=lambda m: None, **self.paths, **kw)
         return code, out.getvalue()
 
 
@@ -70,6 +70,46 @@ class LeaseSetTest(LeaseBase):
                 status.set_lifecycle("depart", state, state, path=self.paths["status_path"])
                 self.assertEqual(self.set_lease(NOW + 9000), (3, ""))
                 self.assertEqual(descriptor.load(self.desc).expires, NOW + 7200)
+
+
+class LeaseSetCapTest(LeaseBase):
+    """`lease set <unix> --cap <unix>`: the driver's unconfirmed request,
+    decided under the lock against the lease in force (§4.1)."""
+
+    CAP = NOW + 3 * 3600
+
+    def test_within_the_cap_is_written(self):
+        self.assertEqual(self.set_lease(NOW + 3600, cap=self.CAP), (0, f"{NOW + 3600}\n"))
+
+    def test_past_the_cap_and_later_than_the_lease_in_force_is_refused_with_4(self):
+        code, printed = self.set_lease(NOW + 5 * 3600, cap=self.CAP)
+        self.assertEqual((code, printed), (lease.OVER_CAP, ""))
+        self.assertEqual(lease.OVER_CAP, 4)
+        self.assertEqual(descriptor.load(self.desc).expires, NOW + 7200, "the lease untouched")
+
+    def test_past_the_cap_but_shortening_the_lease_in_force_is_written(self):
+        self.write(NOW + 9 * 3600)
+        self.assertEqual(self.set_lease(NOW + 5 * 3600, cap=self.CAP), (0, f"{NOW + 5 * 3600}\n"))
+
+    def test_a_keep_host_has_no_lease_to_shorten(self):
+        self.write(None)
+        self.assertEqual(self.set_lease(NOW + 5 * 3600, cap=self.CAP)[0], lease.OVER_CAP)
+        self.assertIsNone(descriptor.load(self.desc).expires)
+
+    def test_without_cap_nothing_is_checked(self):
+        self.assertEqual(self.set_lease(NOW + 500 * 3600)[0], 0)
+
+    def test_the_departure_still_comes_first(self):
+        status.set_lifecycle("depart", "held", "held", path=self.paths["status_path"])
+        self.assertEqual(self.set_lease(NOW + 5 * 3600, cap=self.CAP)[0], 3)
+
+    def test_the_command_line(self):
+        self.assertEqual(lease.parse_set(["123"]), (123, None))
+        self.assertEqual(lease.parse_set(["123", "--cap", "456"]), (123, 456))
+        for bad in ([], ["x"], ["123", "--cap"], ["123", "--cap", "y"], ["123", "--cap", "4", "5"],
+                    ["123", "--confirmed"]):
+            with self.subTest(args=bad):
+                self.assertIsNone(lease.parse_set(bad))
 
 
 class TickTest(LeaseBase):

@@ -118,52 +118,79 @@ class LeaseTest(OpsBase):
                 self.assertEqual(self.servers()["dc-a-0001"]["labels"]["devcloud-expires"], str(NOW + HOUR))
         self.assertNotIn("set-labels", self.ops())
 
+    def real_host(self, expires, before_write=None):
+        """The host's own `devcloud lease set`, its real code under its real
+        lock, over a descriptor in the test's directory; `before_write` runs
+        just before the driver's command reaches it (another Mac's write)."""
+        import contextlib
+        import io
+        from devcloudlib import descriptor, lease
+        from test_lease import BASE
+        desc = self.tmp / "host-boot.env"
+        desc.write_text(BASE + (f"DEVCLOUD_EXPIRES={expires}\n" if expires is not None else ""))
+        paths = dict(desc_path=desc, lock_path=self.tmp / "host-lifecycle.lock", status_path=self.tmp / "host-status.json")
+
+        def host_set(value, cap=None):
+            out, said = io.StringIO(), []
+            with contextlib.redirect_stdout(out):
+                code = lease.set_lease(value, cap=cap, out=said.append, **paths)
+            return code, out.getvalue(), "\n".join(said)
+
+        def lease_set(target, command):
+            if before_write:
+                before_write(host_set)
+            parsed = lease.parse_set(command.split()[3:])
+            code, out, err = host_set(*parsed)
+            return Result(code, out, err, False)
+
+        self.remote.on("devcloud lease set", fn=lease_set)
+        # The host's lease read on its own (what a driver deciding before the write would read).
+        self.remote.on("DEVCLOUD_EXPIRES", fn=lambda target, command: Result(
+            0, f"{descriptor.load(desc).expires or ''}\n", "", False))
+        return lambda: descriptor.load(desc).expires
+
     def test_longer_is_capped_from_the_creation_time_shorter_never(self):
+        held = self.real_host(NOW + HOUR)
         # Created 10 h ago: 63 h more reaches 73 h of life, over 72 h.
         code, message = self.fails(lambda: ops.lease(self.ctx, "dc-a-0001", "63h", confirmed=False))
         self.assertEqual(code, 4)
         self.assertIn("--confirmed", message)
-        self.remote.on("devcloud lease set", out=f"{NOW + 63 * HOUR}\n")
+        self.assertIn(f"--cap {NOW - 10 * HOUR + 72 * HOUR}", self.remote.commands()[-1])
+        self.assertEqual(held(), NOW + HOUR)
         self.assertEqual(ops.lease(self.ctx, "dc-a-0001", "63h", confirmed=True), 0)
-        self.remote.rules = []
-        self.remote.on("devcloud lease set", out=f"{NOW + 1800}\n")
-        state = self.state()
-        state["servers"][0]["labels"]["devcloud-expires"] = str(NOW + 100 * HOUR)
-        self.state_file.write_text(json.dumps(state))
+        self.assertNotIn("--cap", self.remote.commands()[-1], "the person's yes: no cap")
+        self.assertEqual(held(), NOW + 63 * HOUR)
+        # Shortening the host's own lease past the cap needs no confirmation.
+        self.assertEqual(ops.lease(self.ctx, "dc-a-0001", "62h", confirmed=False), 0)
+        self.assertEqual(held(), NOW + 62 * HOUR)
         self.assertEqual(ops.lease(self.ctx, "dc-a-0001", "30m", confirmed=False), 0)
 
-    def host_lease(self, unix):
-        """The host's own lease: `lease set` writes it, DEVCLOUD_EXPIRES reads it."""
-        held = {"lease": unix}
-
-        def lease_set(target, command):
-            held["lease"] = int(command.split()[-1])
-            return Result(0, f"{held['lease']}\n", "", False)
-
-        self.remote.on("devcloud lease set", fn=lease_set)
-        self.remote.on("DEVCLOUD_EXPIRES", fn=lambda target, command: Result(0, f"{held['lease']}\n", "", False))
-        return held
-
-    def test_past_the_cap_unconfirmed_is_measured_against_the_hosts_lease_not_the_label(self):
+    def test_past_the_cap_unconfirmed_is_decided_by_the_host_not_the_label(self):
         # Confirmed earlier to 100 h of life; then `lease 1h` set the host but its label write failed, so the
         # label still says 100 h while the host says 1 h.
         state = self.state()
-        state["servers"][0]["labels"]["devcloud-expires"] = str(NOW - 10 * HOUR + 100 * HOUR)
+        state["servers"][0]["labels"]["devcloud-expires"] = str(NOW + 90 * HOUR)
         self.state_file.write_text(json.dumps(state))
-        held = self.host_lease(NOW - 10 * HOUR + 100 * HOUR)
+        held = self.real_host(NOW + 90 * HOUR)
         self.behave(fail={"set-labels": 1})
         self.assertEqual(self.fails(lambda: ops.lease(self.ctx, "dc-a-0001", "1h", confirmed=False))[0], 1)
-        self.assertEqual(held["lease"], NOW + HOUR)
+        self.assertEqual(held(), NOW + HOUR)
         self.assertEqual(self.servers()["dc-a-0001"]["labels"]["devcloud-expires"], str(NOW + 90 * HOUR))
         self.behave(fail={})
         # 70 h more is 80 h of life: within the stale label, past the host's lease, so it needs --confirmed.
         code, message = self.fails(lambda: ops.lease(self.ctx, "dc-a-0001", "70h", confirmed=False))
         self.assertEqual(code, 4)
-        self.assertEqual(held["lease"], NOW + HOUR, "the host untouched")
-        # Shortening the host's own lease past the cap needs no confirmation.
-        held["lease"] = NOW + 85 * HOUR
-        self.assertEqual(ops.lease(self.ctx, "dc-a-0001", "70h", confirmed=False), 0)
-        self.assertEqual(held["lease"], NOW + 70 * HOUR)
+        self.assertEqual(held(), NOW + HOUR, "the host untouched")
+
+    def test_a_shortening_on_another_mac_between_the_decision_and_the_write(self):
+        # The host's lease is 85 h of life, so `lease 70h` (80 h) would only shorten it; but another Mac's
+        # `lease 1h` lands just before this driver's write. The host decides under its lock: refused.
+        held = self.real_host(NOW + 75 * HOUR,
+                              before_write=lambda host_set: host_set(NOW + HOUR))
+        code, message = self.fails(lambda: ops.lease(self.ctx, "dc-a-0001", "70h", confirmed=False))
+        self.assertEqual(code, 4)
+        self.assertEqual(held(), NOW + HOUR, "no lifetime past the cap was installed")
+        self.assertNotIn("set-labels", self.ops())
 
     def test_the_label_write_goes_through_the_gate(self):
         self.remote.on("devcloud lease set", out=f"{NOW + 2 * HOUR}\n")

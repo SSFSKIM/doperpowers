@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import time
 import unittest
 import urllib.parse
 from unittest import mock
@@ -44,6 +45,7 @@ class SecretManagerTest(unittest.TestCase):
                 pass
 
             def do_POST(self):
+                time.sleep(test.delay)
                 body = urllib.parse.parse_qs(self.rfile.read(int(self.headers["Content-Length"])).decode())
                 test.assertions.append(body)
                 self.send_response(200)
@@ -51,6 +53,7 @@ class SecretManagerTest(unittest.TestCase):
                 self.wfile.write(json.dumps({"access_token": "made-up-access-token-77"}).encode())
 
             def do_GET(self):
+                time.sleep(test.delay)
                 test.gets.append((self.path, self.headers.get("Authorization")))
                 if "missing" in self.path:
                     self.send_response(404)
@@ -61,6 +64,7 @@ class SecretManagerTest(unittest.TestCase):
                 self.wfile.write(json.dumps({"payload": {"data": base64.b64encode(b"the-value\n").decode()}}).encode())
 
         cls.server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+        cls.server.handle_error = lambda request, address: None   # a client that gave up mid-answer
         threading.Thread(target=cls.server.serve_forever, daemon=True).start()
         cls.base = f"http://127.0.0.1:{cls.server.server_port}"
 
@@ -73,6 +77,7 @@ class SecretManagerTest(unittest.TestCase):
     def setUp(self):
         type(self).assertions = []
         type(self).gets = []
+        type(self).delay = 0
         self.seed = self.tmp / "seed.json"
         self.seed.write_text(json.dumps({"type": "service_account", "client_email": "driver@example.iam",
                                          "private_key_id": "kid1", "private_key": self.pem,
@@ -104,6 +109,26 @@ class SecretManagerTest(unittest.TestCase):
         path, auth = self.gets[0]
         self.assertEqual(path, "/v1/projects/example-project/secrets/hcloud-token/versions/latest:access")
         self.assertEqual(auth, "Bearer made-up-access-token-77")
+
+    def test_one_deadline_covers_the_token_exchange_and_the_secret_request(self):
+        # An uncached token: the exchange spends part of the budget, and the secret request gets only the
+        # rest, not the whole budget again (two 0.6 s answers inside 1 s are 1.2 s otherwise).
+        type(self).delay = 0.6
+        sm = gsm.SecretManager(self.seed, "example-project")
+        started = time.monotonic()
+        with self.assertRaises(DriverError):
+            sm.access("hcloud-token", timeout=1.0)
+        self.assertLess(time.monotonic() - started, 1.15)
+        self.assertEqual(len(self.assertions), 1, "the token exchange ran")
+
+    def test_no_request_starts_once_the_deadline_has_passed(self):
+        ticks = iter([100.0, 100.5, 102.0])     # the deadline set, the exchange started, then past it
+        sm = gsm.SecretManager(self.seed, "example-project", monotonic=lambda: next(ticks))
+        with self.assertRaises(DriverError) as caught:
+            sm.access("hcloud-token", timeout=1.0)
+        self.assertIn("time is spent", str(caught.exception))
+        self.assertEqual(len(self.assertions), 1)
+        self.assertEqual(self.gets, [], "the secret request never started")
 
     def test_a_missing_secret_is_a_failure_naming_it(self):
         with self.assertRaises(DriverError) as caught:

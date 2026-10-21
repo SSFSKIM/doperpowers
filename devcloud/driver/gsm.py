@@ -19,7 +19,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from .errors import FAILED, NOT_DRIVER, DriverError
+from .errors import FAILED, NOT_DRIVER, DriverError, Spent
 
 SCOPE = "https://www.googleapis.com/auth/cloud-platform"
 # DigestInfo for SHA-256 (RFC 8017 §9.2, note 1).
@@ -93,20 +93,29 @@ def assertion(seed, now):
 REQUEST_TIMEOUT = 30
 
 
-def _cap(timeout):
-    return REQUEST_TIMEOUT if timeout is None else max(0.1, min(REQUEST_TIMEOUT, timeout))
-
-
 class SecretManager:
     """`access(secret_id)` → the latest version's value (str). The token is
-    taken once per process. `timeout`, when given, caps each request's
-    (a bounded run's budget)."""
+    taken once per process. `timeout`, when given, is one deadline for the
+    whole read: the token exchange, when it runs, and the secret request each
+    get what is left of it, and neither starts once it has passed (a bounded
+    run's budget)."""
 
-    def __init__(self, seed_path, project, clock=time.time):
+    def __init__(self, seed_path, project, clock=time.time, monotonic=time.monotonic):
         self.seed_path = seed_path
         self.project = project
         self.clock = clock
+        self.monotonic = monotonic
         self._token = None
+
+    def _left(self, deadline, what):
+        """The next request's timeout: at most REQUEST_TIMEOUT, and what is
+        left before `deadline`; Spent once nothing is."""
+        if deadline is None:
+            return REQUEST_TIMEOUT
+        left = deadline - self.monotonic()
+        if left <= 0:
+            raise Spent(f"Secret Manager: {what} not started: the bounded run's time is spent")
+        return min(REQUEST_TIMEOUT, left)
 
     def _seed(self):
         try:
@@ -120,7 +129,7 @@ class SecretManager:
             raise DriverError(FAILED, f"the seed at {self.seed_path} is not a service-account key file")
         return seed
 
-    def token(self, timeout=None):
+    def token(self, deadline=None):
         if self._token is None:
             seed = self._seed()
             try:
@@ -131,7 +140,8 @@ class SecretManager:
             request = urllib.request.Request(seed["token_uri"], data=body,
                                              headers={"Content-Type": "application/x-www-form-urlencoded"})
             try:
-                with urllib.request.urlopen(request, timeout=_cap(timeout)) as response:
+                timeout = self._left(deadline, "the token exchange")
+                with urllib.request.urlopen(request, timeout=timeout) as response:
                     self._token = json.load(response).get("access_token")
             except urllib.error.HTTPError as error:
                 error.close()
@@ -143,12 +153,14 @@ class SecretManager:
         return self._token
 
     def access(self, secret_id, timeout=None):
+        deadline = None if timeout is None else self.monotonic() + timeout
         endpoint = os.environ.get("DEVCLOUD_SM_ENDPOINT", "https://secretmanager.googleapis.com").rstrip("/")
         url = (f"{endpoint}/v1/projects/{urllib.parse.quote(self.project, safe='')}"
                f"/secrets/{urllib.parse.quote(secret_id, safe='')}/versions/latest:access")
-        request = urllib.request.Request(url, headers={"Authorization": f"Bearer {self.token(timeout)}"})
+        request = urllib.request.Request(url, headers={"Authorization": f"Bearer {self.token(deadline)}"})
         try:
-            with urllib.request.urlopen(request, timeout=_cap(timeout)) as response:
+            timeout = self._left(deadline, f"the read of {secret_id}")
+            with urllib.request.urlopen(request, timeout=timeout) as response:
                 body = json.load(response)
         except urllib.error.HTTPError as error:
             error.close()

@@ -8,7 +8,10 @@
   devcloud refresh-secrets   materialize secrets.toml again (steps 7, 10, 11)
   devcloud refresh-mirrors   fetch the mirrors a persistent host keeps for its sandboxes
   devcloud enroll            finish an enrollment step 11 deferred (the devcloud-enroll service)
-  devcloud lease set <unix>  set the lease end; prints the lease now in force
+  devcloud lease set <unix> [--cap <unix>]
+                             set the lease end; prints the lease now in force; 3 the
+                             departure has started, 4 past --cap and later than the
+                             lease in force (the driver's unconfirmed request)
   devcloud lease tick        the lease service's run: warn before the end, depart at it
   devcloud depart [--force] [--no-hold] [--no-poweroff]
                              end the sessions, ship them, leave the desk and the tailnet,
@@ -88,8 +91,9 @@ def lifecycle(argv):
     user = User.from_image()
     command, args = argv[0], argv[1:]
     if command == "lease":
-        if args[:1] == ["set"] and len(args) == 2 and args[1].isdigit():
-            return lease.set_lease(int(args[1]), allow_http=ALLOW_HTTP)
+        parsed = lease.parse_set(args[1:]) if args[:1] == ["set"] else None
+        if parsed is not None:
+            return lease.set_lease(parsed[0], cap=parsed[1], allow_http=ALLOW_HTTP)
         if args == ["tick"]:
             return lease.tick(user, allow_http=ALLOW_HTTP)
         return usage()

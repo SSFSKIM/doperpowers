@@ -85,12 +85,29 @@ def _stderr(message):
     print(message, file=sys.stderr, flush=True)
 
 
-def set_lease(value, desc_path=descriptor.PATH, lock_path=None, status_path=None, out=_stderr,
+OVER_CAP = 4    # `lease set --cap`: past the cap and later than the lease in force
+
+
+def parse_set(args):
+    """`lease set`'s arguments: `<unix> [--cap <unix>]` → (value, cap), or
+    None when they are not that."""
+    if len(args) not in (1, 3) or not all(a.isdigit() for a in args[::2]):
+        return None
+    if len(args) == 3 and args[1] != "--cap":
+        return None
+    return int(args[0]), (int(args[2]) if len(args) == 3 else None)
+
+
+def set_lease(value, cap=None, desc_path=descriptor.PATH, lock_path=None, status_path=None, out=_stderr,
               allow_http=False):
-    """`devcloud lease set <unix>`: rewrites DEVCLOUD_EXPIRES under the lock
-    and prints the lease read back under it. Exit 3 once the departure has
-    started (its sessions are already ended); 1 when the descriptor cannot be
-    read or would not parse."""
+    """`devcloud lease set <unix> [--cap <unix>]`: rewrites DEVCLOUD_EXPIRES
+    under the lock and prints the lease read back under it. Exit 3 once the
+    departure has started (its sessions are already ended); 1 when the
+    descriptor cannot be read or would not parse. `--cap` is the driver's
+    lifetime cap for a request the person did not confirm: past it, the
+    lease may only be shortened, so a value past the cap and later than the
+    lease in force (a host with no lease has none to shorten) is refused
+    with exit 4, decided under the same lock as the write."""
     status_kw = {"path": status_path} if status_path else {}
     with locked(path=lock_path):
         if status.departure_started(**status_kw):
@@ -100,11 +117,17 @@ def set_lease(value, desc_path=descriptor.PATH, lock_path=None, status_path=None
         path = pathlib.Path(desc_path)
         try:
             text = path.read_text()
+            current = descriptor.parse(text, allow_http=allow_http).expires
             new = descriptor.set_expires(text, value)
             descriptor.parse(new, allow_http=allow_http)
         except (OSError, descriptor.DescriptorError) as error:
             out(f"devcloud lease set: {error}")
             return 1
+        if cap is not None and value > cap and (current is None or value > current):
+            in_force = iso(current) if current is not None else "none (keep)"
+            out(f"devcloud lease set: {iso(value)} is past the lifetime cap ({iso(cap)}) and later than the lease "
+                f"in force ({in_force}); the lease stays as it is")
+            return OVER_CAP
         mode = path.stat().st_mode & 0o7777
         proc.write_file(path, new, mode=mode, dir_mode=0o755)
         print(descriptor.load(path, allow_http=allow_http).expires, flush=True)

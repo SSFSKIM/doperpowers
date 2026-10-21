@@ -487,7 +487,8 @@ each quoted. A host whose departure has started is refused except to root.
 **`lease`** writes the host's lease first (`devcloud lease set`, under its
 lock), then the provider label with the value the host printed; past the
 lifetime cap it needs `--confirmed` unless it shortens the lease the host
-itself holds. **`down`**
+itself holds, which the host decides under its lock with the write
+(`devcloud lease set <unix> --cap <unix>`, exit 4). **`down`**
 refuses unpushed or uncommitted work under the user's `~/Developer/GitHub`
 (exit 5; `--force` proceeds), departs the host (`devcloud depart --force
 --no-poweroff`, `--no-hold` with `--force`) and deletes it after rechecking

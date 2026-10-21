@@ -183,7 +183,8 @@ class DeferredTest(EnrollBase):
                       mock.patch.object(sminos_host, "PENDING", self.tmp / "restart-pending"),
                       mock.patch.object(sminos_host, "converge", lambda user, role, env, changed:
                                         self.converged.append(changed) or "sminos daemon: running"),
-                      mock.patch.object(steps, "_fetch_text", lambda r, name: self.fetch(name))):
+                      mock.patch.object(steps, "_fetch_text", lambda r, name: self.fetch(name)),
+                      mock.patch.object(steps, "_say", lambda message: None)):   # the job's status lines
             patch.start()
             self.addCleanup(patch.stop)
 
