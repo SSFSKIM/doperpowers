@@ -217,6 +217,14 @@ ROWS = {
     **{"one-row-" + tag: [message("o4-" + tag, "toolu_ex_row_" + tag, "the call", name, "<message>ahead of the call</message>", "<message>after the call</message>"),
                           result("o5-" + tag, "toolu_ex_row_" + tag, "sent")]
        for tag, name in (("plugin", MESSAGE_TOOL), ("maws", MAWS_MESSAGE_TOOL))},
+    # A row holding two calls and a span, posted once both results are in.
+    **{"two-calls-" + tag: [
+        {"type": "assistant", "uuid": "o6-" + tag, "message": {"content": [
+            {"type": "tool_use", "id": "toolu_ex_x_" + tag, "name": name, "input": {"text": "X, the first call"}},
+            {"type": "tool_use", "id": "toolu_ex_y_" + tag, "name": name, "input": {"text": "Y, the second call"}},
+            {"type": "text", "text": "<message>after both calls</message>"}]}},
+        result("o7-" + tag, "toolu_ex_y_" + tag, "sent"), result("o8-" + tag, "toolu_ex_x_" + tag, "sent")]
+       for tag, name in (("plugin", MESSAGE_TOOL), ("maws", MAWS_MESSAGE_TOOL))},
     "refused-message": [message("m5", "toolu_ex_msg_refused", "from a subagent"),
                         result("m6", "toolu_ex_msg_refused", "message is for the main conversation", True)],
     # The human's mid-turn message quoting a steer, which the mod hands over whole.
@@ -429,15 +437,16 @@ for tag in plugin maws; do
   peer "$SO" "exorder$tag" interactive cli
   start_child "$SO"
   ctl post "$SMINOS_HOME/bridge/$SO.sock" "[{\"type\":\"session\",\"phase\":\"start\",\"session\":\"$SO\",\"cwd\":\"$REPO\",\"t\":1}]" >/dev/null
-  for part in "call-then-span-$tag" "span-after-$tag" "one-row-$tag"; do
+  for part in "call-then-span-$tag" "span-after-$tag" "one-row-$tag" "two-calls-$tag"; do
     ctl post "$SMINOS_HOME/bridge/$SO.sock" "$(rows export "$part")" >/dev/null
   done
-  until_true 100 has "$SO" "message:o4-$tag#1" || true
+  until_true 100 has "$SO" "message:o6-$tag#0" || true
   ORDER="joined message:toolu_ex_first_$tag message:o3-$tag#0 message:o4-$tag#0 message:toolu_ex_row_$tag message:o4-$tag#1"
+  ORDER="$ORDER message:toolu_ex_x_$tag message:toolu_ex_y_$tag message:o6-$tag#0"
   assert_equals "$(events_of "$SO")" "$ORDER" \
-    "$tag's message tool: a call, the span after it, and a row's span, call and span reach the log in the transcript's order"
+    "$tag's message tool: a call, the span after it, a row's span, call and span, and a row's two calls and span reach the log in the transcript's order"
   hook SessionStart "$SO" "$TO"
-  rows transcript "$TO" prompt "call-then-span-$tag" "span-after-$tag" "one-row-$tag"
+  rows transcript "$TO" prompt "call-then-span-$tag" "span-after-$tag" "one-row-$tag" "two-calls-$tag"
   hook Stop "$SO" "$TO"
   assert_equals "$(events_of "$SO")" "$ORDER" "$tag's message tool: the Stop hook's export over the same rows reads the same order, and appends nothing"
 done

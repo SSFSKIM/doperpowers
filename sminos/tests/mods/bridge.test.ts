@@ -4048,16 +4048,34 @@ describe('the export to the host', () => {
       [{ type: 'assistant', uuid: 'r-row', message: { content: blocks } }, { type: 'user', uuid: 'r-rres', message: { content: [messageResult('toolu_r')] } }],
     ])
   })
+
+  for (const order of [['toolu_x', 'toolu_y'], ['toolu_y', 'toolu_x']]) {
+    test(`${tool}: a row holding two message calls and a mark waits for both calls' results, then goes once with both (results ${order.join(' then ')})`, async () => {
+      const h = harness()
+      await h.ready()
+      const blocks = [messageUse('toolu_x', tool, 'X'), messageUse('toolu_y', tool, 'Y'), { type: 'text', text: '<message>after both</message>' }]
+      await h.append('response', { type: 'assistant', role: 'assistant', content: blocks }, { uuid: 'r-two', origin: { kind: 'model', model: 'm' } })
+      await h.responseRow({ type: 'text', text: '<message>next row</message>' }, { uuid: 'r-next' })
+      await keepMessageResult(h, order[0]!, `r-${order[0]}`, tool)
+      expect(h.ofType('export')).toEqual([])
+      await keepMessageResult(h, order[1]!, `r-${order[1]}`, tool)
+      const result = (id: string) => ({ type: 'user', uuid: `r-${id}`, message: { content: [messageResult(id)] } })
+      expect(h.ofType('export').map((e) => e.records)).toEqual([
+        [{ type: 'assistant', uuid: 'r-two', message: { content: blocks } }, result(order[0]!), result(order[1]!)],
+        [{ type: 'assistant', uuid: 'r-next', message: { content: [{ type: 'text', text: '<message>next row</message>' }] } }],
+      ])
+    })
+  }
   }
 
-  test('a message call whose result the bridge never sees holds a bounded number of exports, then lets them go in order', async () => {
+  test('a message call whose result the bridge never sees holds a bounded number of exports, then lets them go in order, its row first with the results it has', async () => {
     const h = harness()
     await h.ready()
     await h.responseRow(messageUse('toolu_lost', MESSAGE_TOOL, 'its result was refused beneath'), { uuid: 'r-lost' })
     for (let i = 0; i < 51; i++) {
       await h.responseRow({ type: 'text', text: `<message>${i}</message>` }, { uuid: `r-${i}` })
     }
-    expect(h.ofType('export').map((e) => (e.records as { uuid: string }[])[0]!.uuid)).toEqual(Array.from({ length: 51 }, (_, i) => `r-${i}`))
+    expect(h.ofType('export').map((e) => (e.records as { uuid: string }[]).map((r) => r.uuid))).toEqual([['r-lost'], ...Array.from({ length: 51 }, (_, i) => [`r-${i}`])])
     expect(h.logs.some((l) => l.includes('toolu_lost') && l.includes('Stop hook'))).toBe(true)
     await h.responseRow({ type: 'text', text: '<message>later</message>' }, { uuid: 'r-later' })
     expect(h.ofType('export').map((e) => (e.records as { uuid: string }[])[0]!.uuid).at(-1)).toBe('r-later')

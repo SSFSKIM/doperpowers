@@ -2,7 +2,7 @@ import type { SessionMessage } from 'claude-code'
 
 import { ASK_TOOL, DELIVERY_HEAD, PLUGIN } from './ask'
 import { TEXT_CAP, isRecord, loopKey, state } from './bridge-state'
-import type { BridgeEvent, TranscriptRecord } from './bridge-state'
+import type { BridgeEvent, HeldRow, TranscriptRecord } from './bridge-state'
 import { emit, hold, isHold, releaseStepEnd } from './bridge-stream'
 import type { Hold } from './bridge-stream'
 import { callEnded } from './bridge-requests'
@@ -298,10 +298,11 @@ export function observeRow(door: string, message: { name?: string; content?: unk
  * whole and appends it under the same keys.
  *
  * The log keeps events in the order they are appended, so the exports keep
- * the transcript's (exportInOrder): what the main loop keeps after a message
- * call waits until the call's result is in. A row holding a message call
- * goes with the call, its texts with it, so the child reads its blocks in
- * order (a span's src counts the row's spans).
+ * the transcript's (exportInOrder): a row holding a message call is held
+ * until every message call in it has its result, then goes once, its texts
+ * and calls with all their results, so the child reads its blocks in order
+ * (a span's src counts the row's spans); what the main loop keeps after it
+ * waits behind it.
  */
 export function exportRow(door: string, message: { name?: string; content?: unknown }, uuid: string, origin: unknown) {
   const content = Array.isArray(message.content) ? message.content.filter(isRecord) : []
@@ -311,6 +312,7 @@ export function exportRow(door: string, message: { name?: string; content?: unkn
     const row: TranscriptRecord = { type: 'assistant', uuid, message: { content: sent } }
     const calls = content.filter(isMessageCall)
     if (calls.length > 0 && !isLong(row)) {
+      state.exportHold.push({ row, calls: new Set(calls.map((b) => String(b.id))), results: [] })
       calls.forEach((b) => keepPair(String(b.id), { use: row }))
     } else if (texts.some((b) => MAY_MARK.test(b.text))) {
       exportRecord(uuid, texts, { type: 'assistant', uuid, message: { content: texts } })
@@ -346,11 +348,12 @@ function exportRecord(uuid: string, texts: { text: string }[], record: Transcrip
 }
 
 /**
- * An export, in the transcript's order: while a message call waits for its
- * result (its id holds a place in `state.exportHold`), it waits behind it. A
- * result the bridge never sees (kept while it was down, or refused beneath)
- * holds at most PAIRS_KEPT exports: past that its call is given up, and the
- * Stop hook exports it.
+ * An export, in the transcript's order: while a row holding a message call
+ * waits for its calls' results (a HeldRow in `state.exportHold`), it waits
+ * behind it. A result the bridge never sees (kept while it was down, or
+ * refused beneath) holds at most PAIRS_KEPT exports: past that the row is
+ * given up, exported with the results it has, and the Stop hook exports the
+ * calls it lacks.
  */
 function exportInOrder(records: TranscriptRecord[]) {
   if (state.exportHold.length === 0) {
@@ -359,24 +362,35 @@ function exportInOrder(records: TranscriptRecord[]) {
   }
   state.exportHold.push(records)
   const waiting = state.exportHold[0]
-  if (state.exportHold.length > PAIRS_KEPT && typeof waiting === 'string') {
-    state.log?.(`bridge: message call ${waiting}: no result after ${PAIRS_KEPT} exports; the Stop hook exports it`)
-    state.pairs.delete(waiting)
-    settleHold(waiting)
+  if (state.exportHold.length > PAIRS_KEPT && waiting !== undefined && !Array.isArray(waiting)) {
+    state.log?.(`bridge: row ${waiting.row.uuid}: no result for ${[...waiting.calls].join(', ')} after ${PAIRS_KEPT} exports; the Stop hook exports them`)
+    waiting.calls.forEach((id) => state.pairs.delete(id))
+    waiting.calls.clear()
+    releaseHeld()
   }
 }
 
-/** A waiting call's place filled with its pair (or given up, with none), and the exports it held released, up to the next call still waiting. */
-function settleHold(id: string, records?: TranscriptRecord[]): boolean {
-  const at = state.exportHold.indexOf(id)
-  if (at === -1) {
-    return false
+/** The held row waiting for this message call's result, if any. */
+const heldFor = (id: string) => state.exportHold.find((e): e is HeldRow => !Array.isArray(e) && e.calls.has(id))
+
+/** A held row's call settled (with its result) or given up (without): once none waits, the row goes, and what waited behind it. */
+function settleCall(held: HeldRow, id: string, result?: TranscriptRecord) {
+  held.calls.delete(id)
+  if (result !== undefined) {
+    held.results.push(result)
   }
-  state.exportHold.splice(at, 1, ...(records === undefined ? [] : [records]))
-  while (state.exportHold.length > 0 && typeof state.exportHold[0] !== 'string') {
-    emit({ type: 'export', records: state.exportHold.shift() as TranscriptRecord[] })
+  releaseHeld()
+}
+
+/** The exports at the head of the hold, in order, up to the first row still waiting for a call. */
+function releaseHeld() {
+  for (let head = state.exportHold[0]; head !== undefined; head = state.exportHold[0]) {
+    if (!Array.isArray(head) && head.calls.size > 0) {
+      return
+    }
+    state.exportHold.shift()
+    emit({ type: 'export', records: Array.isArray(head) ? head : [head.row, ...head.results] })
   }
-  return true
 }
 
 /**
@@ -459,7 +473,8 @@ export function enteredRow(door: string, message: { content?: unknown }, uuid: s
  * its result are both kept, the pair is exported, unless the call is a message
  * past TEXT_CAP: that pair is the Stop hook's, said in the debug log, and
  * holds nothing after it (the one exception to the order, the design's). A
- * message call kept before its result holds its place in the exports.
+ * message call's result goes to the row that holds it (exportRow), which
+ * goes once all of its calls have theirs.
  */
 function keepPair(id: string, row: { use?: TranscriptRecord; result?: TranscriptRecord }) {
   const pair = { ...state.pairs.get(id), ...row }
@@ -467,23 +482,25 @@ function keepPair(id: string, row: { use?: TranscriptRecord; result?: Transcript
     state.pairs.delete(id)
     if (isLong(pair.use)) {
       state.log?.(`bridge: row ${pair.use.uuid}: a message past ${TEXT_CAP} characters; the Stop hook exports it`)
-      settleHold(id)
       return
     }
-    if (!settleHold(id, [pair.use, pair.result])) {
+    const held = heldFor(id)
+    if (held !== undefined) {
+      settleCall(held, id, pair.result)
+    } else {
       exportInOrder([pair.use, pair.result])
     }
     return
-  }
-  if (row.use !== undefined && !isLong(row.use) && 'message' in row.use && row.use.message.content.some((b) => isMessageCall(b) && b.id === id)) {
-    state.exportHold.push(id)
   }
   state.pairs.set(id, pair)
   if (state.pairs.size > PAIRS_KEPT) {
     // A call whose other row never came: what waits behind it goes on (the Stop hook exports the call).
     const oldest = state.pairs.keys().next().value as string
     state.pairs.delete(oldest)
-    settleHold(oldest)
+    const held = heldFor(oldest)
+    if (held !== undefined) {
+      settleCall(held, oldest)
+    }
   }
 }
 

@@ -125,6 +125,8 @@ export type Request = {
 export type TranscriptRecord =
   | { type: 'assistant' | 'user'; uuid: string; origin?: unknown; message: { content: Record<string, unknown>[] } }
   | { type: 'attachment'; uuid: string; attachment: Record<string, unknown> }
+/** A response row holding message calls, held for the export until `calls`, those still without a result, is empty. */
+export type HeldRow = { row: TranscriptRecord; calls: Set<string>; results: TranscriptRecord[] }
 /**
  * A call the engine's check put to the dialog: `input` as the check holds it,
  * which pairs the call with its PermissionRequest; `shown`, the running call's
@@ -283,11 +285,11 @@ export type BridgeState = {
   /** The main loop's async asks and message calls, their call and result rows by call, until both are kept (`export`). */
   pairs: Map<string, { use?: TranscriptRecord; result?: TranscriptRecord }>
   /**
-   * The exports waiting behind a message call kept before its result, in the
-   * transcript's order: a waiting call by its id, an export by its records.
-   * Empty while no call waits.
+   * The main loop's exports in the transcript's order while a row holding a
+   * message call waits for its calls' results: the row (HeldRow), and the
+   * exports kept after it by their records. Empty while no row waits.
    */
-  exportHold: (string | TranscriptRecord[])[]
+  exportHold: (HeldRow | TranscriptRecord[])[]
   /** Requests raised and not yet settled, by id; and the last settlements, oldest first. */
   requests: Map<string, Request>
   settled: Record<string, unknown>[]
