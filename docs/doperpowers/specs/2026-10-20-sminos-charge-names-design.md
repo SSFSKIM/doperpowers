@@ -71,7 +71,7 @@ If the owner `/rename`s a session to a name sminos never proposed, the member is
 - `sessionTitle` from a `classic.UserPromptSubmit` hook, the first build (M2). The engine treats it as a rename too (2.1.304 source, `aMt` → `zdt(title, "hook")`), registered `hook`, but only at the session's next prompt. Its one advantage was a source label distinct from the owner's, and sminos stopped trusting that label: a resume restores it as `user`. The owner chose the command for its simplicity (2026-10-21).
 - `sessionTitle` from `SessionStart` changes only the session's title. At startup and at resume the engine name stayed what it was (spike).
 
-**Sessions that are not interactive.** The sessions that gain most from a name are the ones the engine named by title promotion (`auto`): `--bg` jobs and SDK sessions as MAWS launches them (`sdk-ts` entrypoint, streaming input, several prompts). A plugin's slash command may be refused there (reload.tsx registers only in interactive sessions for that reason). M5 measures, for each of those two kinds, whether `$.command.run('rename')` renames it and whether `sessionTitle` from `classic.UserPromptSubmit` does, and records the result in Surprises. A one-shot `-p` run is not measured: it ends before any derive could reach it. Where the command is refused, the mod applies the name for that kind through `sessionTitle` at its next `UserPromptSubmit`, from the same pending file, through the same `name-due` check and the same once-per-text memo. The two paths differ only in how they apply the name.
+**Sessions that are not interactive.** The sessions that gain most from a name are the ones the engine named by title promotion (`auto`): `--bg` jobs and SDK sessions as MAWS launches them (`sdk-ts` entrypoint, streaming input, several prompts). A plugin's slash command may be refused there (reload.tsx registers only in interactive sessions for that reason). M5 measured both kinds on engine 2.1.306 (Surprises): `$.command.run('rename')` renames each of them while it is between turns, registered `user`, and starts no model turn. So the mod has one path, and its timer runs in every session, interactive or not. In an SDK session the command leaves no meta "named" row and returns no `context`, but the model reads the command's own rows and knows its new name (measured). A `sessionTitle` fallback was planned for any kind that refused the command. None does, so it was not built. A one-shot `-p` run was not measured: it ends before any derive could reach it.
 
 **The name the proposal replaces is read before the fork.** The fork can run for up to two minutes (`SMINOS_DERIVE_TIMEOUT`, 120 s). If the owner `/rename`s the session in that time and derive read the engine name only afterwards, the owner's new name would become the `from` the mod checks against, and `name-due` would overwrite it at the next prompt. So derive reads the member's running engine record (the one `_on_sight` reads) and decides eligibility before it starts the fork, and keeps that record's name as `before`. When the fork returns, it reads the record again. If the record's name is no longer `before`, or the session no longer runs in that process, the naming part of this derive is discarded: the line is recorded without a `name`, and `no name: renamed during derive` is printed. The next derive judges the member afresh: a `user` name sminos never proposed is not eligible there, and gets the line only.
 
@@ -87,8 +87,6 @@ If the owner `/rename`s a session to a name sminos never proposed, the member is
 2. While a main-conversation turn runs, or an ask's dialog is up (the sminos ask's snapshot in `$.state`, `isDialogUp`), wait for a later tick. These are reload.tsx's conditions: a slash command run during a turn waits for the turn's end, and a dialog's answer must not be taken by the command.
 3. Otherwise remember the file's text as handled and run `sminos name-due --session <id>` (`$.process.run`, bounded as `address.tsx` bounds `who`). Whatever the attempt's outcome (a name, nothing, a non-zero exit, a throw or a timeout), it is the one attempt for that text, so the check runs once per pending name and not once per tick. A rename that misses through a transient failure gets another chance when the next derive rewrites the file. The one exception: if a main turn started while `name-due` ran, its answer is stale, so it is dropped and the text is left unhandled for the next idle tick.
 4. If it printed a name, run `$.command.run({ command: 'rename', args: name })`. A refusal or a throw goes to the debug log, and the memo stands.
-
-For a kind of session where M5's measurement shows the command refused, step 4 is replaced by the `sessionTitle` path (above). The hook then checks at the session's next `classic.UserPromptSubmit` instead of on the timer: steps 1 and 3 as written, no step 2, and `sessionTitle` set on the result when `name-due` printed a name, unless a hook beneath already set one.
 
 `name-due` prints the name only when the running engine record's name still equals the file's `from` and differs from the file's `name`, the record is still eligible (§2's table, the check derive makes before its fork), and the name is still free. That catches every case where something moved between derive and the rename:
 - the owner `/rename`d it, which is the race this check exists for, including a rename to the very name it had;
@@ -123,12 +121,12 @@ Each item is behavior someone can check. Items 1–5 and 7–9 run in `sminos/te
    - While a main turn runs or an ask's dialog is up, nothing runs until a tick finds the session idle.
    - A turn that starts while `name-due` runs drops that answer and leaves the text for the next idle tick.
    - Under `SMNS_INTERNAL` nothing is read.
-   - For a session kind the measurement sends to the `sessionTitle` path: the hook sets `sessionTitle` once per file text and leaves a result from beneath that already sets one unchanged.
 
    Live (`sminos/tests/mods/live-name-check.py`, by hand, a few haiku turns):
    - An idle interactive session with the sminos plugin and a pending file whose `from` is its engine name is renamed with no prompt. Its engine record shows the name with `nameSource: "user"`, and its transcript has a `custom-title` record and the engine's meta row naming it.
    - A session `/rename`d before the tick keeps its own name.
-   - The facts measured for `--bg` and SDK sessions hold.
+   - The rename starts no model turn.
+   - A `--bg` job and an SDK session (as MAWS launches one) are renamed between turns the same way, registered `user`.
 7. **`name-due`.** It prints the name when the running record's name equals `from`, differs from `name`, and the record is eligible. It prints nothing in each of these cases:
    - the record's name equals `name`, or is neither name;
    - there is no pending file, or no record of the session runs;
@@ -283,7 +281,7 @@ A manual end-to-end check, after installing the branch's sminos: in a member ses
 
 **Former-alias note**: stderr, `note: @<old> is now <label>`, once per resolution by a former alias (§4).
 
-**Engine dependency**: Claude Code ≥ 2.1.305. `$.command.run({ command: 'rename', args })` renames an idle session with source `user` and leaves the engine's meta row; for the session kinds M5 sends to the fallback, `UserPromptSubmit`'s `hookSpecificOutput.sessionTitle` renames. Pinned by `live-name-check.py`.
+**Engine dependency**: Claude Code ≥ 2.1.305. `$.command.run({ command: 'rename', args })` renames a session that is between turns, with source `user` and without starting a turn, in interactive, `--bg` and SDK sessions alike. Pinned by `live-name-check.py`.
 
 ## Surprises & Discoveries
 
@@ -293,6 +291,13 @@ A manual end-to-end check, after installing the branch's sminos: in a member ses
 - Observation: the engine records a collided `/rename` of the owner's as `collision`. Evidence: engine 2.1.304 `QTn`: `n === "user"` skips the pre-check, and a yield from `Zrn(e, "rename")` returns `recordSource: "collision"`. This is why `collision` is not eligible.
 
 - Observation: `$.command.run({ command: 'rename', args })` renames an idle interactive session with no prompt, registered `user`. Evidence: the dispatching session's scratch plugin on engine 2.1.305, 2026-10-21. A `turn.complete` hook called it 3 s after the turn. The registry read `{"name": "spike-cmd-name", "nameSource": "user"}`. The transcript got `custom-title` and `agent-name` records, the `/rename` command row and its `Session renamed to: …` output, and a meta user row `The user named this session "spike-cmd-name". …`, which the call also returns as `context`.
+- Observation: every kind of session that can be derived takes the command. Evidence: M5, engine 2.1.306, a scratch plugin whose 2 s `$.clock.every` ran `$.command.run('rename')` while the session was between turns.
+  - Interactive (tmux): `work-50 (derived)` → `m5-cmd-interactive (user)`.
+  - `--bg` job (`session.start` reads `isInteractive: true`, surface `terminal`): `alpha reply test (auto)` → `m5-cmd-bg (user)`.
+  - SDK session launched as MAWS does (`claude -p --input-format stream-json …`, `CLAUDE_CODE_ENTRYPOINT=sdk-ts`, `isInteractive: false`): `work-5b (derived)` → `m5-cmd-sdk (user)`.
+
+  None of them started a model turn. `sessionTitle` from `UserPromptSubmit` also renamed all three, registered `hook`, at their next prompt.
+- Observation: in an SDK session `/rename` leaves no meta "The user named this session" row, and `$.command.run` returns `{text: "Session renamed to: …"}` with no `context`. The caveat and `<command-name>/rename` rows are written as plain user rows. Evidence: M5. Asked afterwards whether it had been given a name, haiku answered with the new name, so the model learns it from those rows.
 - Observation: `name-due` reconciles the project (`members(project)`) before it answers, so it is not instant. Evidence: M1 executor. The mod's bound on it (M2) must allow for that.
 
 - Observation: derive's forks fail, and almost always by timing out. Evidence: `~/.claude/sminos/daemon.log` on the MacBook, 2026-10-17 to 10-21: 98 `derive --all` runs and 28 fork failures, 27 of them `the fork timed out after 120s` and one `the fork failed (exit 0)`, at most 3 per member (`maws-fe` and `doperpowers-74` 3 each). At the hourly cadence that was at most one fork of up to 2 minutes per member per hour; at M4's five minutes a member whose fork keeps timing out would cost 12, so `--all` holds a member whose fork failed out for an hour (M4). Why those forks reach 120 s (a large context rebuilding its prompt cache, say) is not established here and is a separate question.
