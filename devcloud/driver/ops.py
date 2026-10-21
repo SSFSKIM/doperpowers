@@ -166,7 +166,7 @@ def down(ctx, name, force):
             raise DriverError(GUARD, f"{name} has unpushed work in {repos}: push it, or pass --force")
     outcome = hostctl.depart(ctx, host, force=True, no_hold=force)
     if outcome in (hostctl.DONE, hostctl.AFTER_READY):
-        return _delete(ctx, entry, "departed and deleted")
+        return _delete(ctx, entry, "departed and deleted", left_desk=outcome.left_desk)
     if outcome == hostctl.HELD:
         raise DriverError(FAILED, f"{name}'s departure is held (its ship failed, or sessions keep starting); it is "
                                   "kept so its transcripts can still ship: fix it, or pass --force to delete anyway")
@@ -176,12 +176,13 @@ def down(ctx, name, force):
     if outcome == hostctl.UNREACHABLE and force:
         return _delete(ctx, entry, "deleted without its departure (unreachable)")
     if force:
-        return _delete(ctx, entry, f"deleted after a departure that ended {outcome}")
+        return _delete(ctx, entry, f"deleted after a departure that ended {outcome}",
+                       left_desk=getattr(outcome, "left_desk", False))
     raise DriverError(FAILED, f"{name}'s departure ended {outcome}; the VM is kept: pass --force to delete it anyway")
 
 
-def _delete(ctx, entry, what):
+def _delete(ctx, entry, what, left_desk=False):
     if not ctx.delete(entry):
         raise DriverError(FAILED, f"{entry.vm['name']} was not deleted: its labels changed since it was read")
-    ctx.say(f"{entry.vm['name']}: {what}")
+    ctx.say(f"{entry.vm['name']}: {what}{reaper.desk_note(entry.vm, left_desk)}")
     return 0

@@ -258,6 +258,20 @@ class DownTest(OpsBase):
         self.assertNotIn("dc-a-0001", self.servers())
         self.assertEqual(self.remote.commands("devcloud depart"), [])
 
+    def test_an_enrolled_vm_deleted_without_a_confirmed_leave_is_named_for_the_desk(self):
+        # The desk revokes nothing for being offline (H4): the person has to remove it by hand.
+        self.add_server("dc-k-0001", vm_labels(expires=NOW + HOUR, **{"devcloud-enroll": "key"}), sid="502")
+        self.add_server("dc-k-0002", vm_labels(expires=NOW + HOUR, **{"devcloud-enroll": "key"}), sid="503")
+        self.remote.on("true", code=255, target="dc-k-0001")
+        self.assertEqual(ops.down(self.ctx, "dc-k-0001", force=True), 0)
+        self.assertIn("dc-k-0001: deleted without its departure (unreachable); it was enrolled at the desk by a "
+                      "provisioning key and its leave was not confirmed, so it stays in the desk's Machines until "
+                      "someone removes it", self.out.getvalue())
+        self.remote.on("devcloud depart", code=255, marker=True, target="dc-k-0002",
+                       out="devcloud depart: leave: ok — left the desk\n" + READY + "\n")
+        self.assertEqual(ops.down(self.ctx, "dc-k-0002", force=False), 0)
+        self.assertIn("dc-k-0002: departed and deleted\n", self.out.getvalue())
+
     def test_the_delete_rechecks_the_label(self):
         self.remote.on("devcloud depart", code=0)
         self.behave(drop_on_get="devcloud")

@@ -180,7 +180,39 @@ class RunTest(DriverBase):
         self.assertNotIn("dc-a-0001", self.servers())
         log = self.paths.reap_log.read_text()
         self.assertIn("unshipped", log)
-        self.assertIn("one-time code", log, "a VM enrolled by a code that did not depart stays at the desk")
+        self.assertIn(self.DESK_LINE, log, "a VM enrolled at the desk that did not leave it stays there")
+
+    # The desk revokes no machine for being offline (H4, the owner's ruling), so a VM that was
+    # enrolled and is deleted without a confirmed `hub leave` stays in the desk's Machines.
+    DESK_LINE = "stays in the desk's Machines until someone removes it"
+
+    def test_a_key_enrolled_vm_deleted_without_departing_is_named_for_the_desk(self):
+        self.add_server("dc-a-0001", vm_labels(expires=NOW - 20 * MIN, **{"devcloud-enroll": "key"}), state="off")
+        self.run_reaper()
+        self.assertNotIn("dc-a-0001", self.servers())
+        self.assertIn(self.DESK_LINE, self.paths.reap_log.read_text())
+
+    def test_a_departure_whose_leave_the_desk_confirmed_needs_no_desk_line(self):
+        self.add_server("dc-a-0001", vm_labels(expires=NOW - 20 * MIN, **{"devcloud-enroll": "key"}))
+        self.remote.on("devcloud depart", code=255, marker=True,
+                       out="devcloud depart: leave: ok — left the desk\ndevcloud-depart: ready-to-logout\n")
+        self.run_reaper()
+        self.assertNotIn("dc-a-0001", self.servers())
+        self.assertNotIn(self.DESK_LINE, self.paths.reap_log.read_text())
+
+    def test_a_departure_whose_leave_the_desk_did_not_answer_is_named_for_the_desk(self):
+        self.add_server("dc-a-0001", vm_labels(expires=NOW - 20 * MIN, **{"devcloud-enroll": "code"}))
+        self.remote.on("devcloud depart", code=255, marker=True,
+                       out="devcloud depart: leave: ok — the desk did not answer the leave (exit 1); it stays in "
+                           "the desk's Machines until someone removes it\ndevcloud-depart: ready-to-logout\n")
+        self.run_reaper()
+        self.assertNotIn("dc-a-0001", self.servers())
+        self.assertIn(self.DESK_LINE, self.paths.reap_log.read_text())
+
+    def test_an_unenrolled_vm_needs_no_desk_line(self):
+        self.add_server("dc-a-0001", vm_labels(expires=NOW - 20 * MIN), state="off")
+        self.run_reaper()
+        self.assertNotIn(self.DESK_LINE, self.paths.reap_log.read_text())
 
     def test_a_driver_killed_after_create_leaves_4_and_the_next_run_brings_3(self):
         for i in range(4):

@@ -308,8 +308,9 @@ def sessions_and_ship(run, no_hold, grace=SESSION_GRACE, rounds=ROUNDS, ship_tim
 
 
 def leave(run, timeout=LEAVE_TIMEOUT):
-    """Step 3: `sminos hub leave` as the user; 0 and 1 both go on (on 1 the
-    desk's offline revoke removes the machine later)."""
+    """Step 3: `sminos hub leave` as the user; 0 and 1 both go on. The desk
+    revokes nothing for being offline, so on 1 the machine stays in its
+    Machines until someone removes it, which the driver tells the person."""
     host = run.host
     env = host.user_env()
     if not (sminos_host.sminos_home(host.user, env) / "daemon/hub.json").is_file():
@@ -322,7 +323,7 @@ def leave(run, timeout=LEAVE_TIMEOUT):
     if code == 0:
         return "left the desk"
     if code == 1:
-        return f"the desk did not answer the leave ({err or 'exit 1'}); its offline revoke removes this machine"
+        return f"the desk did not answer the leave ({err or 'exit 1'}); it stays in the desk's Machines until someone removes it"
     raise StepError(f"sminos hub leave exited {code}" + (f": {err}" if err else ""))
 
 

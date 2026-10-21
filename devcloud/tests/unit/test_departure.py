@@ -245,7 +245,8 @@ class DepartTest(DepartureBase):
         departure.depart(self.host(), no_poweroff=True)
         steps = {s["name"]: s for s in self.lifecycle()["steps"]}
         self.assertEqual(steps["leave"]["state"], "ok")
-        self.assertIn("offline revoke", steps["leave"]["detail"])
+        self.assertIn("stays in the desk's Machines until someone removes it", steps["leave"]["detail"],
+                      "the desk revokes nothing for being offline (H4)")
 
     def test_a_session_started_during_the_departure_is_ended_and_its_lines_shipped(self):
         self.world.ships = ["spawn", True]

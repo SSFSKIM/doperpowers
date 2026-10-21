@@ -129,23 +129,32 @@ def log(ctx, line, bounded=False):
     tell(ctx, bounded, line)
 
 
-def _delete(ctx, entry, reason, departed, decided=True, bounded=False):
+def desk_note(vm, left_desk):
+    """What a deletion leaves at the desk: an enrolled VM the desk did not
+    confirm leaving stays in its Machines, since the desk revokes nothing for
+    being offline (H4)."""
+    how = vm["labels"].get("devcloud-enroll")
+    if not how or left_desk:
+        return ""
+    by = "a provisioning key" if how == "key" else "a one-time code"
+    return (f"; it was enrolled at the desk by {by} and its leave was not confirmed, so it stays in the "
+            "desk's Machines until someone removes it")
+
+
+def _delete(ctx, entry, reason, left_desk, decided=True, bounded=False):
     vm = entry.vm
     if not ctx.delete(entry, decided_expires=vm["labels"].get("devcloud-expires") if decided else None,
                       decided_state=vm["state"] if decided else None):
         return False
-    line = f"deleted {vm['name']} ({entry.account.name}, id {vm['id']}): {reason}"
-    if not departed and vm["labels"].get("devcloud-enroll") == "code":
-        line += ("; it was enrolled by a one-time code and did not leave the desk, so it stays in the "
-                 "desk's Machines until someone removes it")
-    log(ctx, line, bounded)
+    log(ctx, f"deleted {vm['name']} ({entry.account.name}, id {vm['id']}): {reason}" + desk_note(vm, left_desk),
+        bounded)
     return True
 
 
 def _expired(ctx, entry, bounded):
     """One leased VM through the table; True when it was deleted."""
     vm, now = entry.vm, ctx.clock()
-    action = decide(vm, now)
+    action, answer = decide(vm, now), None
     if action.kind == "contact":
         if bounded:
             return False
@@ -154,8 +163,8 @@ def _expired(ctx, entry, bounded):
         action = decide(vm, now, answer, host_expires)
         tell(ctx, bounded, f"{vm['name']}: {answer}")
     if action.kind == "delete":
-        departed = action.reason == "departed"
-        return _delete(ctx, entry, action.reason, departed, bounded=bounded)
+        left = action.reason == "departed" and getattr(answer, "left_desk", False)
+        return _delete(ctx, entry, action.reason, left, bounded=bounded)
     if action.kind == "label":
         entry.client.set_labels(vm["id"], action.labels, merge=True)
         tell(ctx, bounded, f"{vm['name']}: {action.reason}")
@@ -204,7 +213,7 @@ def _run(ctx, bounded):
                     if not _expired(ctx, entry, bounded):
                         survivors.append(entry)
                 elif leftovers([entry.vm], now):
-                    if _delete(ctx, entry, f"a {kind} server older than 2 h", departed=False, decided=False,
+                    if _delete(ctx, entry, f"a {kind} server older than 2 h", left_desk=False, decided=False,
                                bounded=bounded) and kind == "builder":
                         builders.remove(entry.vm)
             except Spent:
@@ -229,7 +238,7 @@ def _run(ctx, bounded):
             try:
                 answer = hostctl.depart(ctx, entry.host, force=True, timeout=DEPART_TIMEOUT)
                 _delete(ctx, entry, f"over the throwaway cap (newest first; its departure: {answer})",
-                        departed=answer in (hostctl.DONE, hostctl.AFTER_READY), decided=False)
+                        left_desk=getattr(answer, "left_desk", False), decided=False)
             except DriverError as error:
                 ctx.warn(f"devcloud vm reap: {entry.vm['name']}: {error}")
                 failed = True

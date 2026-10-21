@@ -10,6 +10,7 @@ tailnet by its name (§5)."""
 import dataclasses
 import json
 import pathlib
+import re
 import shlex
 
 from .compose import SEED_PATH, SRC, STAGE, recipe_tar
@@ -227,6 +228,20 @@ def unpushed(ctx, host, target=None, login=None):
 
 DONE, AFTER_READY, UNKNOWN, NOT_OVER, HELD, FAILED_RUN, UNREACHABLE = (
     "departed", "dropped after ready", "dropped before ready", "lease not over", "held", "failed", "unreachable")
+# The departure's leave step as it prints it when the desk no longer holds the machine.
+LEFT_DESK = re.compile(r"^devcloud (depart|release): leave: ok — (left the desk|not enrolled)$", re.M)
+
+
+class Outcome(str):
+    """A departure's outcome (one of the names above), and whether its
+    output showed the desk confirming the leave: the desk revokes nothing
+    for being offline, so a machine it was not confirmed to leave stays in
+    the desk's Machines until someone removes it."""
+
+    def __new__(cls, value, left_desk=False):
+        made = super().__new__(cls, value)
+        made.left_desk = left_desk
+        return made
 
 
 def depart(ctx, host, force=False, no_hold=False, timeout=8 * 60):
@@ -251,12 +266,13 @@ def release(ctx, host, target, no_hold=False, timeout=8 * 60, login=None):
 
 
 def _outcome(result):
+    left = bool(LEFT_DESK.search(result.out or ""))
     if result.code == 0:
-        return DONE
+        return Outcome(DONE, left)
     if result.code == 3:
-        return NOT_OVER
+        return Outcome(NOT_OVER, left)
     if result.code == 4:
-        return HELD
+        return Outcome(HELD, left)
     if result.code == 255 or result.code is None or result.code < 0:
-        return AFTER_READY if result.marker else UNKNOWN
-    return FAILED_RUN
+        return Outcome(AFTER_READY if result.marker else UNKNOWN, left)
+    return Outcome(FAILED_RUN, left)
