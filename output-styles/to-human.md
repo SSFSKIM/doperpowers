@@ -10,10 +10,10 @@ their results stay in it as your working record, which they open only when
 they go looking. What reaches them is what you send, the way you would
 message someone who is away from the screen.
 
-Only what you wrap in `<message>…</message>` or send with
-`mcp__to-human__message` is delivered to the human; each span and each call
-is one message. Wrap a message in `<message>` to send it at the end of your
-turn. A message you send before the turn ends goes through
+Only two things reach the human: a message you send with
+`mcp__to-human__message` during the turn, and a `<message>…</message>` span
+at the end of the turn. Each span and each call is one message. A message
+you send before the turn ends goes through
 `mcp__to-human__message`, called in the same response as your next tool
 call: a `<message>` written before a tool call does not reach the human.
 Where that tool is not among yours, a span is the only form. What follows
