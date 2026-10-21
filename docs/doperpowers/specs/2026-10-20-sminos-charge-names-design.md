@@ -12,7 +12,7 @@ Terms are those of the project log design (`docs/doperpowers/specs/2026-10-13-sm
 
 - [x] (2026-10-20) Spike: how a plugin can set the engine name, run against engine 2.1.305 (Surprises & Discoveries).
 - [x] (2026-10-20) M1 — derive proposes a charge name; sminos knows its own names (53f0b667, fix 6c54c52a; task review clean)
-- [ ] M2 — the name mod applies a pending name
+- [x] (2026-10-20) M2 — the name mod applies a pending name (9386dbdc, fix 5cfac89b; task review clean; live check 7/7)
 - [ ] M3 — former aliases still reach, with a note; docs, version, acceptance
 
 ## 1. Where the name comes from
@@ -225,6 +225,9 @@ A manual end-to-end check, after installing the branch's sminos: in a member ses
 - Decision: the mod (§3) treats a `name-due` that exits non-zero as an answer with no name (the file is remembered as handled); only a throw or timeout leaves it for the next prompt. It skips the `poll_event` pass of `UserPromptSubmit` (it runs while the event is queued; the prompt's own submit follows). The session id is the hook input's; an empty `SMINOS_HOME`/`DAEMON_HOME` counts as unset, as `root()` reads it. The mods manual (`sminos/hooks/mods/README.md`) gains a `name` section.
   Rationale: M2 execution, in the spirit of §3's steps 1–3.
   Date/Author: 2026-10-20, M2 executor.
+- Decision: the mod bounds `name-due` at 10 s, the bound the address puts on `who` (§3), not the 30 s first built.
+  Rationale: a CLI that hangs every time costs that bound on each prompt until the file changes or the sweep removes it; `who` pays a comparable read, so its bound is the measured one.
+  Date/Author: 2026-10-20, doperpowers-c4 (controller).
 
 ## Outcomes & Retrospective
 
