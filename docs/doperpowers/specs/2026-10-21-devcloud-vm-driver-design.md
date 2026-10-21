@@ -1648,6 +1648,21 @@ commit 5168e433 on its branch, 2026-10-21):
   record of a failed boot unit until a reboot or `reset-failed`.
 - Observation (M5): When the hosts' gateway machine is offline, every boot stops at `tailnet-check`
   after about 85 s, on every provider. Leases and `down` still work over the tailnet.
+- Observation (M5, gateway back): Acceptance 6 on GCE (`e2-custom-4-8192`, us-west1-a) took 5m12s
+  from the start of `up` to every step `ok` on the slow path, and 3m11s from an image. Both runs
+  passed checks 1–2: no seed file, `gcloud auth list` naming only the host account, and 0 known
+  values in user-data. Acceptance 10's figure on the default account is therefore 3m11s.
+  - After a third GCE build, the reaper kept the newest two images.
+  - Acceptance 13's `up --account open` reached every step `ok`.
+  - Acceptance 7 adopted a fresh hand-made server fully. Its first `down` released it with verified
+    removal, and a new root SSH with the person's key worked after a reboot.
+  - The lease timer released dc-tmr-3119 on its own. Its creator warning reached the design session
+    through sminos ("dc-tmr-3119's lease ends at 2026-10-21T17:29Z; unpushed: none"), which is
+    acceptance 5's warning, end to end.
+  Evidence: the M5 report's live sections; everything deleted by 17:35:47Z.
+- Observation (M5): A released machine still cannot be adopted again. `setup.sh`'s final check
+  refuses home paths that release deliberately keeps (`~/.claude/.git`, an empty
+  `~/.config/claude-secrets`, `~/.claude/sminos/daemon`).
 
 ## Decision Log
 
@@ -2118,6 +2133,19 @@ commit 5168e433 on its branch, 2026-10-21):
     warning.
   - **`provider test`:** it also compares the labels `list` returns with the created set.
   Date/Author: 2026-10-21, M5's executor, folded by the controller.
+
+- Decision: After M5's review:
+  - Adopt runs the driver-key preflight before it touches the target.
+  - `down` falls back to the original login with `sudo -n`, for both its guard and the release,
+    once the driver key no longer works (the keys were already restored).
+  - A completed release removes `/var/lib/devcloud` after its final status write and runs
+    `systemctl reset-failed 'devcloud-*'`.
+  - Re-adopting a released machine is not supported. The home paths that release keeps on purpose
+    trip `setup.sh`'s final check, and supporting it means teaching that check to tell an adoption
+    from an image bake (residue).
+  Rationale: the first two keep the driver from locking itself out or stranding a half-released
+  machine. The spec never asked for re-adoption, and release keeps the home by design.
+  Date/Author: 2026-10-21, executor (controller), at M5's review.
 
 ## Outcomes & Retrospective
 
