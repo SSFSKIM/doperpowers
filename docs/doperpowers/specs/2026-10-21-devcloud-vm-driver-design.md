@@ -82,7 +82,13 @@ desk no longer counts it.
   devcloud is at 0.7.0. H4's policy value was recorded as null, by the owner's ruling. **H6 is still
   open:** at 20:29Z `sminos machines` still listed `devcloud-m5` ("never seen"). It is the person's
   step and blocks nothing here.
-- [ ] Whole-branch review (high rung), Outcomes & Retrospective, PR.
+- [x] (2026-10-21 22:05Z) Whole-branch review (high rung), Outcomes & Retrospective, PR.
+  - The review at 0fe80b09..48f33730 found 3 P1 and 5 P2. Seven were fixed in 1141f074..7e02bdad,
+    and the re-review found two more P2s in the new rollback, fixed in bb8e39bf. The third round was
+    clean.
+  - One finding is deferred (keep→ttl tailnet identity; Decision Log).
+  - CI was green on bb8e39bf.
+  - H6 was still open at 22:02Z.
 
 Human steps this initiative needs. The executor prepares each (the exact command, the page, what to
 check) and escalates it at the milestone named; the person runs it when an automated attempt is
