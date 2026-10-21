@@ -354,8 +354,10 @@ def op_image_create(gc, req):
 
 
 def op_images(gc, req):
+    """The devcloud images a create can use now: one still PENDING (an image
+    build in progress) refuses `create` with "is not ready"."""
     return [image(i) for i in gc.run("compute", "images", "list", "--no-standard-images",
-                                     "--filter=labels.devcloud:*")]
+                                     "--filter=labels.devcloud:*") if i.get("status", "READY") == "READY"]
 
 
 def op_image_delete(gc, req):

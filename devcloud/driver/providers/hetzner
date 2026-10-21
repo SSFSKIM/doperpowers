@@ -236,7 +236,9 @@ def op_image_create(hc, req):
 
 
 def op_images(hc, req):
-    return [image(i) for i in hc.run("image", "list", "-t", "snapshot", "-l", "devcloud")]
+    """The devcloud snapshots a create can use now, not one still being made."""
+    return [image(i) for i in hc.run("image", "list", "-t", "snapshot", "-l", "devcloud")
+            if i.get("status", "available") == "available"]
 
 
 def op_image_delete(hc, req):

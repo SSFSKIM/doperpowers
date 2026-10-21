@@ -296,6 +296,17 @@ class ImagesTest(HetznerBase):
         self.assertEqual(self.ok("image-delete", {"id": "1000"}), {})
 
 
+    def test_a_snapshot_still_being_made_is_not_listed(self):
+        image = self.ok("image-create", {"id": "42", "name": "devcloud-0123456789ab", "labels": {"devcloud": "image"}})
+        state = self.state()
+        state["images"][-1]["status"] = "creating"
+        self.state_path.write_text(json.dumps(state))
+        self.assertEqual(self.ok("images"), [])
+        state["images"][-1]["status"] = "available"
+        self.state_path.write_text(json.dumps(state))
+        self.assertEqual(self.ok("images"), [image])
+
+
 class UsageTest(HetznerBase):
     def test_unknown_or_missing_op_and_bad_stdin_are_usage(self):
         for argv, stdin in ((["frobnicate"], "{}"), ([], "{}"), (["list"], "[1]"), (["list"], "not json")):

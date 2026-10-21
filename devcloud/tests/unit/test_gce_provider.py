@@ -355,6 +355,15 @@ class ImagesTest(GceBase):
         self.assertEqual(self.ok("image-delete", {"id": image["id"]}), {})
         self.assertEqual(len(self.ok("images")), 1)
 
+    def test_an_image_still_being_made_is_not_listed(self):
+        # up took a PENDING image as current and its create failed: "is not ready" (M6, live).
+        state = json.loads(self.state_path.read_text())
+        state["images"].append({"id": "902", "name": "dc-img-0123456789ab-202610211000", "status": "PENDING",
+                                "creationTimestamp": "2026-10-21T10:00:00.000-07:00",
+                                "labels": {"devcloud": "image", "devcloud-recipe": "0123456789ab"}})
+        self.write_state(state)
+        self.assertEqual([i["name"] for i in self.ok("images")], ["dc-img-0123456789ab-202610210500"])
+
     def test_a_test_image_joins_no_family(self):
         self.ok("image-create", {"id": "103", "name": "dc-ptest-img-1", "labels": {"devcloud": "test"}})
         [argv] = self.calls_of("compute", "images", "create")
