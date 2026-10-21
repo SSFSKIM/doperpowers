@@ -306,8 +306,9 @@ def key_in_remote(ctx):
     """Whether this driver's public key is in the configuration repository's
     branch the hosts pull (§8.3): the boot's home step makes root's keys
     equal to that directory, so a key only on this Mac would lock the driver
-    out of the host it is making. True when the profile is not a checkout
-    (a temporary profile, whose hosts the person points elsewhere)."""
+    out of the host it is making. True, unchecked, when the profile is not a
+    checkout of the configuration repository [host] names (a temporary
+    profile, wherever it lives)."""
     profile_dir = ctx.paths.profile
     def git(*args, timeout=60):
         return subprocess.run(["git", "-C", str(profile_dir), *args], capture_output=True, text=True,
@@ -315,6 +316,11 @@ def key_in_remote(ctx):
     try:
         top = git("rev-parse", "--show-toplevel")
         if top.returncode != 0:
+            return True
+        origin = git("config", "--get", "remote.origin.url").stdout.strip()
+        if _repo(origin) != _repo(ctx.profile.host.config_repo):
+            ctx.warn("devcloud vm: the profile is not a checkout of the configuration repository; its driver keys "
+                     "are unchecked")
             return True
         rel = (profile_dir / "driver-keys" / f"{ctx.machine}.pub").resolve().relative_to(
             pathlib.Path(top.stdout.strip()).resolve())
@@ -327,3 +333,11 @@ def key_in_remote(ctx):
         return True
     mine = (profile_dir / "driver-keys" / f"{ctx.machine}.pub").read_text().strip()
     return remote.returncode == 0 and remote.stdout.strip() == mine
+
+
+def _repo(url):
+    """A git URL as host/owner/name, so the https and scp forms compare equal."""
+    url = url.strip().removesuffix("/").removesuffix(".git")
+    url = re.sub(r"^[a-z+]+://(?:[^@/]+@)?", "", url)
+    url = re.sub(r"^[^@/]+@([^:/]+):", r"\1/", url)
+    return url.lower()
