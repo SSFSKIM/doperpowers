@@ -242,8 +242,12 @@ This spec's milestones change doperpowers only. MAWS's architect
 | Style contract number | 6 (message-tool shape); 7 is MAWS's |
 
 MAWS's side, as its architect stated it:
-- (1) Its to-human parser and summaries read a message tool's input as a
-  to-human message at the call's place, under both names.
+- (1) Its to-human parser and summaries read `mcp__maws__message`'s input
+  as a to-human message at the call's place. They do not read
+  `mcp__to-human__message`: in a session MAWS shows but did not launch with
+  its lane (lane off, or begun outside MAWS), a call to the plugin's tool
+  draws as an ordinary MCP tool row (the owner's ruling, 2026-10-21). The
+  desk (desk-web) reads both names.
 - (2) `mcp__maws__message` beside `mcp__maws__ask` in MAWS launches.
 - (3) A supplement naming `mcp__maws__message` (the plugin's tool is not
   available in a MAWS session) beside every message-tool style from 3 up, with
@@ -774,6 +778,15 @@ sminos carries both message-tool names as its own constant, beside
   calls gave 0 exports).
   Date/Author: 2026-10-20, the whole-branch review (reviewer-high), fixed by
   M2's executor.
+- Decision: MAWS's readers take only `mcp__maws__message`. A call to
+  `mcp__to-human__message` in a session MAWS shows draws there as an ordinary
+  MCP tool row. This replaces "every MAWS reader takes either tool name" from
+  82a0967ff. Unchanged: under `MAWS_NATIVE_TO_HUMAN` the plugin's tool does
+  not register, MAWS's supplement names `mcp__maws__message`, the desk reads
+  both names, and sminos exports both. MAWS builds this on its branch p4-r7x.
+  Rationale: The owner's ruling: MAWS reads its own tool and no other.
+  Date/Author: 2026-10-21, the owner, relayed by the MAWS architect and
+  recorded by doperpowers-88.
 
 ## Outcomes & Retrospective
 
