@@ -3948,12 +3948,14 @@ def _maws_asked(text):
 def _ask_events(records):
     """(record index, event) for the async asks the records hold, in record
     order: a `question` for each tool_use of an ask tool called async (the
-    plugin's with `async` true, MAWS's with `blocking` false) whose paired
-    tool_result is that tool's acceptance, and an `answered` for each delivery
+    plugin's with `async` not false, MAWS's with `blocking` false) whose paired
+    tool_result is that tool's acceptance (for the plugin's, the result is
+    what says: a call written before `async` defaulted to true has no key
+    whether it blocked or not), and an `answered` for each delivery
     (the plugin's) or steer (MAWS's) of an answer. Each src is the call id;
     for MAWS's, the askId its acceptance and steer name, which is the call id
     unless the engine named no call to MAWS (then MAWS's request id). A
-    blocking ask — the plugin's without async, MAWS's by default or in a
+    blocking ask — the plugin's with `async` false, MAWS's by default or in a
     subagent, or the native AskUserQuestion — is no event: the session waits,
     and the human goes to it."""
     calls, results, out = [], {}, []
@@ -3961,7 +3963,7 @@ def _ask_events(records):
         for b in _blocks(r, "tool_use"):
             inp, name = b.get("input"), b.get("name")
             if isinstance(inp, dict) and b.get("id") and (
-                    (name in ASK_TOOLS and inp.get("async") is True) or (name == MAWS_ASK_TOOL and inp.get("blocking") is False)):
+                    (name in ASK_TOOLS and inp.get("async") is not False) or (name == MAWS_ASK_TOOL and inp.get("blocking") is False)):
                 calls.append((i, str(b["id"]), name, inp))
         for b in _blocks(r, "tool_result"):
             results[str(b.get("tool_use_id") or "")] = b
@@ -8566,7 +8568,9 @@ def guide_text(session, launch, source="", title=""):
         held_alias(*own_alias(_own_events(project, session), session), peer, session,
                    shadowing(project, session))[0]
     who = "%s [%s]" % (alias, session[:8]) if alias and alias != session[:8] else "[%s]" % session[:8]
-    cli = os.path.join(SCRIPT_DIR, "sminos")
+    # The CLI is off PATH: its installed path is given once, and the verb lines
+    # name it `sminos` (an eval round showed no session typed the bare name).
+    path, cli = os.path.join(SCRIPT_DIR, "sminos"), "sminos"
     if home is not None and home.id != project.id:
         where = ("by your own `sminos join` (your launch directory, %s, is in %s; `%s join --cwd` returns you there)"
                  % (launch, home.name, cli))
@@ -8586,7 +8590,8 @@ def guide_text(session, launch, source="", title=""):
         "sminos: you are %s in project %s on machine %s: %s. A `cd` does not change your project.%s"
         % (who, project.name, enrollment()["machine"], where, fork),
         "Other Claude sessions work in this org, on every enrolled machine and in every repository. "
-        "To find one or tell it something, use sminos (not on PATH):",
+        "To find one or tell it something, use sminos. It is not on PATH; run it as",
+        "  %s" % path,
         "  %s list            your project's sessions; --here this machine's, --org every session" % cli,
         "  %s who <commit|PR> the session a commit or PR names in its Sminos-Session line, and how to reach it" % cli,
         '  %s say "..."       recorded in your project\'s log, read at its sessions\' next chat; wakes no one:'

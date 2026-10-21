@@ -7,7 +7,8 @@
 # sits in a hung git fetch of a hub-less project, and while a derivation runs;
 # a burst from the hub costs a few ticks, not a tick a frame, however slow
 # each POST is; what fails its code or its shape never enters the log; the uplink and the
-# tick loop restart and fail apart; the run lock holds, and a change of the
+# tick loop restart and fail apart; a machine that leaves the hub (hub.json
+# gone) stops its uplink and says so; the run lock holds, and a change of the
 # daemon's code restarts it in place, the uplink back within seconds; an event the uplink imports while a tick is
 # mid-delivery to the same member is delivered once; the machine's lease at the
 # hub never lapses while the main thread is held, and lapses once the stream
@@ -568,6 +569,48 @@ if dead "$UP"; then pass "SIGTERM to daemon run under the flow ends its uplink";
 assert_contains "$(cat "$DLOG")" "uplink: stopped (pid $UP)" "which stopped on the supervisor's SIGTERM, before any kill"
 rm -f "$T/flowing"
 set +e; wait "$FLOW"; set -e
+
+# ---- the machine leaves the hub: hub.json removed under a running supervisor
+# (`sminos hub leave`) stops the uplink for good, and daemon.log says the
+# machine left rather than that the uplink restarts; an enrollment (hub.json
+# written again) brings it back. A change of hub.json that keeps a credential
+# keeps its own line (test-sync.sh pins it).
+echo "the machine leaves the hub:"
+LEFT="this machine left the hub (hub.json is gone): the uplink stays stopped until the machine is enrolled again"
+start_run
+rm "$SMINOS_HOME/daemon/hub.json"
+until_true 100 dead "$UP" || true
+if [[ -n "$UP" ]] && dead "$UP"; then pass "with hub.json gone, the supervisor stops the uplink"; else
+  fail "with hub.json gone, the supervisor stops the uplink"; echo "    uplink pid '$UP'"; fi
+assert_contains "$(cat "$DLOG")" "uplink (pid $UP): $LEFT" "daemon.log says the machine left the hub and the uplink stays stopped"
+assert_not_contains "$(grep -F "(pid $UP)" "$DLOG")" "restarting" "not that it restarts the uplink"
+GEN="$(ctl generation)"
+sleep 2
+run "$SMINOS" daemon status
+assert_contains "$OUT" "daemon: running" "two seconds on, daemon run goes on"
+assert_not_contains "$OUT" "uplink: running" "with no uplink"
+assert_equals "$(ctl generation)" "$GEN" "and no stream was opened"
+write_cred "$HUB"
+until_true 200 gen_is $((GEN + 1)) || true
+OLD_UP="$UP"
+UP="$(uplink_pid)"
+if [[ -n "$UP" && "$UP" != "$OLD_UP" ]] && alive "$UP"; then pass "enrolled again, the uplink is back on a new stream"; else
+  fail "enrolled again, the uplink is back on a new stream"; echo "    uplink pid '$UP', was $OLD_UP"; fi
+# Gone while the uplink ends on its own: whichever the supervisor sees first,
+# it says the machine left, and restarts nothing.
+rm "$SMINOS_HOME/daemon/hub.json"
+kill -9 "$UP"
+said_left() { grep -F "(pid $UP)" "$DLOG" | grep -Fq "$LEFT"; }
+until_true 100 said_left || true
+if said_left; then pass "hub.json gone as the uplink is killed: daemon.log says the machine left"; else
+  fail "hub.json gone as the uplink is killed: daemon.log says the machine left"; grep -F "(pid $UP)" "$DLOG" || true; fi
+GEN="$(ctl generation)"
+sleep 2
+assert_not_contains "$(grep -F "(pid $UP)" "$DLOG")" "restarting" "and no restart"
+assert_equals "$(ctl generation)" "$GEN" "no stream opened"
+kill "$RUN"
+set +e; wait "$RUN"; set -e
+write_cred "$HUB"
 
 # ---- a burst from the hub while every POST is slow
 # A loaded machine's tick is slow (its POSTs, a ps for each live session),

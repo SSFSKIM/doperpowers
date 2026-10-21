@@ -111,7 +111,7 @@ TOOLS = [
      "input_schema": {"type": "object", "properties": {"command": {"type": "string"}, "description": {"type": "string"}}, "required": ["command"]}},
     {"name": "mcp__plugin_ptc_ptc__exec", "description": "Run Python in this session's persistent IPython kernel. Pre-bound: read, write, bash, asyncio, and the async model calls llm(prompt, model=, effort=) and agent(prompt, model=, effort=).",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
-    {"name": "mcp__sminos__AskUserQuestion", "description": "Ask the human one to four questions. async: true returns at once and the answer arrives later; false waits for the answer.",
+    {"name": "mcp__sminos__AskUserQuestion", "description": "Ask the human one to four questions. async (default true) returns at once and the answer arrives later; false waits for the answer.",
      "input_schema": {"type": "object", "properties": {
          "questions": {"type": "array", "items": {"type": "object", "properties": {
              "question": {"type": "string"}, "header": {"type": "string"},
@@ -247,7 +247,7 @@ def canned(block, launch):
     if block.name == MESSAGE_TOOL:
         return MESSAGE_RESULT
     if block.name == "mcp__sminos__AskUserQuestion":
-        return "Queued; the human's answer arrives later." if block.input.get("async") else None
+        return "Queued; the human's answer arrives later." if block.input.get("async") is not False else None
     if not launch:
         return "(ok)"
     return "(cell running in the background)" if block.name == "mcp__plugin_ptc_ptc__exec" else "(started in the background)"

@@ -4538,9 +4538,9 @@ elif kind == "asst":
 elif kind == "peer":
     rec = {"type": "user", "origin": {"kind": "peer", "name": "other"}, "message": {"role": "user", "content":
            '<cross-session-message from="uds:/tmp/x.sock" from-name="other">\n%s\n</cross-session-message>' % args[1]}}
-elif kind == "ask":   # uuid call async|blocking|native questions-json [tool name]
+elif kind == "ask":   # uuid call async|blocking|keyless|native questions-json [tool name]
     inp = {"questions": json.loads(args[3])}
-    if args[2] != "native":
+    if args[2] not in ("native", "keyless"):
         inp["async"] = args[2] == "async"
     rec = {"type": "assistant", "message": {"role": "assistant", "content": [
         {"type": "tool_use", "id": args[1], "name": "AskUserQuestion" if args[2] == "native" else (args[4] if len(args) > 4 else ASK), "input": inp}]}}
@@ -4656,6 +4656,8 @@ assert_not_contains "$OUT" "done with the parser" "the chat itself carries no ho
 
 # Asks: an async ask records a question with its labels; its delivery records
 # the answer under the same src; a blocking ask, plugin or native, records nothing.
+# A call with no async key is async by its result (the default), or blocking
+# (one written before async defaulted to true).
 Q1='[{"question":"Which backend?","header":"Backend","multiSelect":false,"options":[{"label":"Postgres","description":"running"},{"label":"SQLite","description":"a file"}]}]'
 tx "$TA" prompt a2000001 "ask me"
 tx "$TA" ask a2000002 toolu_async1 async "$Q1"
@@ -4666,12 +4668,18 @@ tx "$TA" ask a2000006 toolu_native native "$Q1"
 tx "$TA" result a2000007 toolu_native 'User has answered your questions: "Which backend?"="Postgres".'
 tx "$TA" ask a2000008 toolu_refused async '[{"question":"Pick?","header":"P","multiSelect":false,"options":[{"label":"Only","description":""}]}]'
 tx "$TA" result a2000009 toolu_refused '<tool_use_error>a question with fewer than 2 options</tool_use_error>'
+tx "$TA" ask a200000b toolu_keyless_async keyless '[{"question":"Which shelf?","header":"Shelf","multiSelect":false,"options":[{"label":"Top","description":""},{"label":"Low","description":""}]}]'
+tx "$TA" result a200000c toolu_keyless_async ASYNC
+tx "$TA" ask a200000d toolu_keyless_block keyless "$Q1"
+tx "$TA" result a200000e toolu_keyless_block 'Your questions have been answered: "Which backend?"="SQLite". You can now continue with these answers in mind.'
 tx "$TA" asst a200000a "Asked; going on."
 hook_run Stop "$HA" "$R3" "$TA"
 assert_contains "$(hp_events "$HA")" "question:toolu_async1 " "an async ask the tool accepted records a question, src its call id"
 assert_not_contains "$(hp_events "$HA")" "toolu_block1" "a blocking ask records nothing"
 assert_not_contains "$(hp_events "$HA")" "toolu_native" "nor the native AskUserQuestion"
 assert_not_contains "$(hp_events "$HA")" "toolu_refused" "nor an async call the tool refused"
+assert_contains "$(hp_events "$HA")" "question:toolu_keyless_async " "a call with no async key the tool accepted as async records a question"
+assert_not_contains "$(hp_events "$HA")" "toolu_keyless_block" "a call with no async key that blocked (before the default) records nothing"
 assert_contains "$(grep toolu_async1 "$HPLOG/testhost.$HA.jsonl")" '"text": ["Which backend?"], "choices": ["Postgres", "SQLite"]' \
   "the question carries its text and its option labels"
 run "$SMINOS" chat hostdemo --host

@@ -98,7 +98,12 @@ assert_contains "$first" "project alpha" "the first line names its project: the 
 assert_contains "$first" "machine alpha" "and its machine"
 assert_contains "$OUT" "$STRAY" "it names the launch directory"
 assert_contains "$OUT" "no .smns" "and why the machine's project holds it: no .smns claims the directory"
-assert_contains "$OUT" "$SCRIPTS/sminos " "the CLI is named by its absolute path"
+assert_equals "$(grep -cF "$SCRIPTS/sminos" <<<"$OUT")" "1" "the CLI's absolute path is named once"
+named="$(grep -A2 -F "not on PATH; run it as" <<<"$OUT")"
+assert_equals "$named" "${named%%$'\n'*}
+  $SCRIPTS/sminos
+  sminos list            your project's sessions; --here this machine's, --org every session" \
+  "on its own line after the frame line, and the verb lines name it sminos"
 for verb in "list" "--here" "--org" "who <commit|PR>" 'say "..."' "wakes no one" "@<short>" "@<project>/<alias>" \
     "say --org|--project P|--machine M|--here" "join <project>" "charge"; do
   assert_contains "$OUT" "$verb" "it names $verb"

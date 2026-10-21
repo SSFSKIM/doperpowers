@@ -27,13 +27,14 @@ export const PLUGIN = 'sminos'
 
 export type AskOption = { label: string; description: string; preview?: string }
 export type AskQuestion = { question: string; header: string; options: AskOption[]; multiSelect: boolean }
-export type AskInput = { questions: AskQuestion[]; async?: boolean; metadata?: { source?: string } }
+export type AskInput = { questions: AskQuestion[]; async?: boolean }
 
+/** The `async` parameter's description, the one place the model reads about it. */
 export const ASYNC_PARAGRAPH =
-  "`async`: set it to true when you can go on with other work while the human decides. The call then returns at once; the questions wait in the human's view until they answer, and their answer reaches you in a later message that quotes each question. Leave it false when the work is blocked by the answer, nothing useful can proceed without the answer, or the answer is the last thing left in your turn."
+  "By default the call returns at once: the questions wait in the human's view until they answer, and their answer reaches you in a later message that quotes each question. Set it to false to wait for the answer when the work is blocked by it, nothing useful can proceed without it, or it is the last thing left in your turn."
 
 /** What the built-in answers while this tool stands in for it, as its description and as its refusal. */
-export const WITHDRAWN = `Withdrawn in this session: ask through ${ASK_TOOL}, which takes this tool's input plus async.`
+export const WITHDRAWN = `Withdrawn in this session: ask through ${ASK_TOOL}, which takes this tool's questions plus async.`
 
 export const SUBAGENT_REFUSAL = 'AskUserQuestion is for the main conversation: report what you need to the agent that dispatched you.'
 
@@ -42,8 +43,9 @@ export const LATCHED = 'Not run: the human declined the question asked in this t
 
 /**
  * The built-in's model-facing input schema on 2.1.296, less `answers` and
- * `annotations` (the permission component's channel, never the model's),
- * plus `async`.
+ * `annotations` (the permission component's channel, never the model's) and
+ * `metadata` (its analytics field, which does nothing for the model), plus
+ * `async`, which is true unless the call says false.
  */
 export const INPUT_SCHEMA: Record<string, unknown> = {
   type: 'object',
@@ -101,24 +103,29 @@ export const INPUT_SCHEMA: Record<string, unknown> = {
         },
       },
     },
-    metadata: {
-      type: 'object',
-      additionalProperties: false,
-      description: 'Optional metadata for tracking and analytics purposes. Not displayed to user.',
-      properties: {
-        source: {
-          type: 'string',
-          description: 'Optional identifier for the source of this question (e.g., "remember" for /remember command). Used for analytics tracking.',
-        },
-      },
-    },
-    async: { type: 'boolean', default: false, description: ASYNC_PARAGRAPH },
+    async: { type: 'boolean', default: true, description: ASYNC_PARAGRAPH },
   },
 }
 
-/** The model-facing description: the built-in's, then the async paragraph. */
+/**
+ * The built-in's paragraph on plan mode, from its opening words through the
+ * next blank line (the owner never uses plan mode).
+ */
+const PLAN_NOTE = /(?:^|\n)Plan mode note:[\s\S]*?(?:\n[ \t]*\n|$)/
+
+/**
+ * The model-facing description: the built-in's, less its plan-mode paragraph
+ * when it has one. What `async` does is the parameter's own description.
+ */
 export function describeAsk(builtin: string): string {
-  return `${builtin}\n\n${ASYNC_PARAGRAPH}`
+  const note = PLAN_NOTE.exec(builtin)
+  if (note === null) {
+    return builtin
+  }
+  const before = builtin.slice(0, note.index)
+  const after = builtin.slice(note.index + note[0].length)
+  // The last paragraph goes with the blank line before it.
+  return after === '' ? before.trimEnd() : `${before}${note[0].startsWith('\n') ? '\n' : ''}${after}`
 }
 
 // Validation, as the built-in's zod schema and the engine's error formatter
@@ -202,12 +209,8 @@ function issuesOf(input: Record<string, unknown>): Issue[] {
     questions.forEach((q, i) => questionIssues(issues, ['questions', i], q))
     sized(issues, ['questions'], questions.length, 1, 4)
   }
-  if (input.metadata !== undefined && expectKind(issues, ['metadata'], input.metadata, 'object')) {
-    const source = (input.metadata as Record<string, unknown>).source
-    if (source !== undefined) expectKind(issues, ['metadata', 'source'], source, 'string')
-  }
   if (input.async !== undefined) expectKind(issues, ['async'], input.async, 'boolean')
-  const unknown = Object.keys(input).filter((key) => !['questions', 'metadata', 'async'].includes(key))
+  const unknown = Object.keys(input).filter((key) => !['questions', 'async'].includes(key))
   if (unknown.length > 0) issues.push({ code: 'unrecognized_keys', path: [], keys: unknown })
   // A mistyped or missing field aborts the parse before the refinement runs.
   if (!issues.some((issue) => issue.code === 'invalid_type') && !isUnique(input.questions as AskQuestion[])) {
@@ -682,11 +685,20 @@ function textOf(content: unknown): string {
 }
 
 /**
- * Whether a stored async call was accepted: its paired tool_result is
- * ASYNC_RESULT and not an error, and its input passes validateQuestions.
+ * Whether a stored call was accepted as an async ask: its paired tool_result
+ * is ASYNC_RESULT and not an error, and its input passes validateQuestions.
+ * The result is what tells an async call from a blocking one: a call written
+ * before `async` defaulted to true carries no key whether it blocked or not,
+ * and a blocking call's result is the engine's answer or refusal. A stored
+ * call may carry the `metadata` the tool took until then, which the call
+ * was accepted with.
  */
 export function isAccepted(input: unknown, result: { content: unknown; is_error?: boolean } | undefined): boolean {
-  return result !== undefined && result.is_error !== true && textOf(result.content) === ASYNC_RESULT && validateQuestions(input) === undefined
+  if (result === undefined || result.is_error === true || textOf(result.content) !== ASYNC_RESULT) {
+    return false
+  }
+  const { metadata: _, ...asked } = isRecord(input) ? input : {}
+  return validateQuestions(asked) === undefined
 }
 
 /** The record's mark for a question answered with notes alone, which the result text reads as no option selected. */
@@ -922,7 +934,8 @@ function asksIn(rows: readonly Row[]): OpenAsk[] {
     const message = isRecord(row.message) ? row.message : {}
     for (const block of Array.isArray(message.content) ? message.content : []) {
       // A call from the model's own row: the engine's wire copy of a request's message (`api-request-blob`) repeats it.
-      if (row.type === 'assistant' && isRecord(block) && block.type === 'tool_use' && ASK_TOOLS.includes(String(block.name)) && isRecord(block.input) && block.input.async === true) {
+      // Any call not marked blocking may be async; isAccepted reads which from its result.
+      if (row.type === 'assistant' && isRecord(block) && block.type === 'tool_use' && ASK_TOOLS.includes(String(block.name)) && isRecord(block.input) && block.input.async !== false) {
         calls.push({ id: String(block.id), input: block.input })
       } else if (isRecord(block) && block.type === 'tool_result') {
         results.set(String(block.tool_use_id), block as { content: unknown; is_error?: boolean })
@@ -1742,7 +1755,7 @@ export function registerAsk(on: On) {
     }
     const { questions } = input as AskInput
     announce($, questions)
-    if ((input as AskInput).async === true) {
+    if ((input as AskInput).async !== false) {
       const ask: OpenAsk = { id: e.tool_use_id ?? `ask-${++raised}`, questions, status: 'open' }
       asks.push(ask)
       save()

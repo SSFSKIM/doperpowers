@@ -34,7 +34,7 @@ export DEBIAN_FRONTEND=noninteractive
 
 apt-get update
 apt-get install -y --no-install-recommends \
-  ca-certificates curl gnupg git git-lfs build-essential python3 python3-venv jq tmux mosh zsh \
+  ca-certificates curl gnupg git git-lfs build-essential python3 python3-venv jq ripgrep tmux mosh zsh \
   unzip xz-utils tzdata locales procps iproute2 iputils-ping openssh-client less file sudo perl xxd nftables
 sed -i 's/^# *en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen
 locale-gen

@@ -210,14 +210,15 @@ class Session(unittest.TestCase):
             s.close()
         self.fake.stop_bridge()
 
-    def subscribe(self, agent=None, bridge=True, fake=None, clock=None, received=None):
+    def subscribe(self, agent=None, bridge=True, fake=None, clock=None, received=None, redial=0.0):
         """A subscription on the test's clock, which stands for the wall
         clock too: the subscribe's arrival (`received`, by default now) and
-        the reader's stamps read it."""
+        the reader's stamps read it, and so does its redial window (`redial`,
+        none by default; the plane gives a running session's STALE_WAIT)."""
         fake = fake or self.fake
         clock = clock or self.clock
         reader = plane.BridgeReader(os.path.join(os.environ["SMINOS_HOME"], "bridge", fake.session + ".sock"),
-                                    lambda: None, stamp=clock) if bridge else None
+                                    lambda: None, stamp=clock, redial=redial, clock=clock) if bridge else None
         if reader is not None:
             reader.start()
         sub = plane.Subscription(project=PROJECT, machine="testhost", session=fake.session, agent=agent,
@@ -884,6 +885,66 @@ class Engine(Session):
                                 "(bridge: snapshot arrived 0.50 s, taken 0.75 s; build: cold %d ms 3 rows, cut on disk; "
                                 "waits 0)\n" % (sub.sub, sub.session[:8], sub.cpu_ms)])
 
+    # ---------------------------------------------------- a child killed: its socket stale
+
+    def test_a_killed_childs_stale_socket_holds_the_open_for_its_successor(self):
+        """The child is killed while a block is named and its row not yet
+        flushed: its socket stays, nobody listening, and the desk subscribes
+        again. The open dials the socket again rather than serving the
+        transcript alone, so the snapshot is the successor's, carrying the
+        block: the drawing resumed keeps it until its row lands, and nothing
+        vanishes."""
+        self.fake.start_bridge()
+        self.fake.user_row("question")
+        sub, b = self.subscribe()
+        self.assertTrue(self.pump(sub, b, lambda: b.snapshot is not None))
+        m = self.fake.message()
+        m.text(0, "drawn ")
+        m.text(0, "whole")
+        u = m.row(0, disk=False)
+        self.assertTrue(self.pump(sub, b, lambda: [x.settled_by for x in b.blocks(None)] == [u]))
+        self.fake.kill_child()
+        self.assertTrue(self.pump(sub, b, lambda: b.end is not None))
+        self.assertEqual(b.end["reason"], "discontinuity")
+        again, _ = self.subscribe(redial=plane.STALE_WAIT)
+        b2 = dx4_consumer.Consumer(None, previous=b)
+        self.settle(again, b2, 0.5)
+        self.assertIsNone(b2.snapshot, "no transcript-only snapshot while the socket is stale")
+        self.assertEqual(b2.errors, [])
+        self.fake.respawn_child()
+        self.assertTrue(self.pump(again, b2, lambda: b2.snapshot is not None))
+        self.assertEqual(b2.errors, [])
+        self.assertEqual([(x.settled_by, x.text) for x in b2.blocks(None)], [(u, "drawn whole")],
+                         "the successor's snapshot carries the block: still drawn, awaiting its row")
+        m.write(0, u)
+        m.end()
+        self.assertTrue(self.pump(again, b2, lambda: u in b2.uuids()))
+        self.settle(again, b2)
+        self.assertEqual(b2.errors, [])
+        self.assertIn((m.turn, None, 0, 0), b2.settled, "settled by its own row")
+        inventory = dx4_consumer.Inventory.from_sources(self.fake.path(None), self.fake.emitted)
+        self.assertEqual(inventory.check(b2), self.CLEAN)
+        [line] = self.opens_said(again)
+        self.assertIn(": bridge snapshot after", line)
+
+    def test_a_stale_socket_no_successor_takes_over_is_served_from_the_transcript_after_the_window(self):
+        """No successor comes: once the redial window has passed on its
+        clock, the open is served from the transcript alone, as before, and
+        its line says the bridge did not answer."""
+        self.fake.start_bridge()
+        self.fake.user_row("before")
+        self.fake.kill_child()
+        sub, b = self.subscribe(redial=plane.STALE_WAIT)
+        self.settle(sub, b, 0.5)
+        self.assertIsNone(b.snapshot, "dialled again inside the window")
+        self.clock.advance(plane.STALE_WAIT)
+        self.assertTrue(self.pump(sub, b, lambda: b.snapshot is not None))
+        self.assertFalse(sub.bridged)
+        self.assertEqual((b.snapshot["streaming"], b.uuids()), ([], [r["uuid"] for r in self.fake.rows()]))
+        [line] = self.opens_said(sub)
+        self.assertIn(": transcript-only (the bridge did not answer) after", line)
+        self.assertIsNone(b.end)
+
     def test_bridge_not_ready_past_the_window_is_a_discontinuity(self):
         self.fake.start_bridge(ready=False)
         sub, b = self.subscribe()
@@ -1507,6 +1568,70 @@ class RealChild(Engine):
                 self.fake.stop_bridge()
                 sub.close()
                 again.close()
+
+
+class StaleSocket(unittest.TestCase):
+    """The plane's choice for a bridge socket nobody listens on (Plane.subscribe):
+    a running session's is dialled again for STALE_WAIT, so the successor
+    the mod spawns serves the open with what streams; one whose process is
+    gone has no successor coming, and is served from its transcript at once."""
+
+    def setUp(self):
+        self.sid = new_session()
+        self.fake = fake_session.FakeSession(os.environ["HOME"], os.environ["SMINOS_HOME"], self.sid)
+        self.holder = subprocess.Popen(["sleep", "3600"])
+        self.record = os.path.join(os.environ["HOME"], ".claude", "sessions", "%d.json" % self.holder.pid)
+        with open(self.record, "w") as f:
+            json.dump({"pid": self.holder.pid, "sessionId": self.sid, "cwd": self.fake.dir, "kind": "interactive",
+                       "status": "busy"}, f)
+        self.p = plane.Plane("testhost", lambda: None, transcripts=plane.Transcripts(), disk=plane.Disk())
+        self.p.here = {PROJECT: {self.sid: self.fake.dir}}
+        self.project = types.SimpleNamespace(id=PROJECT, name="stale")
+
+    def tearDown(self):
+        self.p.close()
+        self.fake.stop_bridge()
+        self.holder.terminate()
+        self.holder.wait(5)
+        os.unlink(self.record)
+
+    def open(self, sub, wait):
+        """Subscribes and pumps up to `wait` s for its snapshot: the messages, and how long it took."""
+        started = time.monotonic()
+        out = self.p.subscribe(self.project, {"session": self.sid, "agentId": None, "sub": sub})
+        return self.until_snapshot(sub, out, wait), time.monotonic() - started
+
+    def until_snapshot(self, sub, out, wait):
+        deadline = time.monotonic() + wait
+        while not any(m["kind"] in ("snapshot", "end") for m in out) and time.monotonic() < deadline:
+            time.sleep(0.02)
+            out += self.p.pump_one(sub)
+        return out
+
+    def test_a_running_sessions_open_waits_for_the_successor_and_an_ended_ones_goes_at_once(self):
+        self.fake.start_bridge()
+        self.fake.user_row("before")
+        m = self.fake.message()
+        m.text(0, "streaming")
+        self.fake.kill_child()
+        out, _ = self.open("s1", 0.5)
+        self.assertEqual([x["kind"] for x in out], [], "a running session's open waits on its stale socket")
+        self.fake.respawn_child()
+        out = self.until_snapshot("s1", out, 10)
+        [snap] = [x["body"] for x in out if x["kind"] == "snapshot"]
+        self.assertEqual([[b["text"] for b in e["blocks"]] for e in snap["streaming"]], [["streaming"]],
+                         "the successor's snapshot, carrying what streams")
+        self.p.unsubscribe("s1", quiet=True)
+        m.end()
+        # Its process gone, no successor is coming: served from the transcript, without the window.
+        self.fake.kill_child()
+        self.holder.terminate()
+        self.holder.wait(5)
+        out, took = self.open("s2", 10)
+        [snap] = [x["body"] for x in out if x["kind"] == "snapshot"]
+        self.assertEqual(snap["streaming"], [])
+        self.assertEqual([r["message"]["content"] for r in snap["rows"]], ["before"])
+        self.assertLess(took, plane.STALE_WAIT, "no redial for a session that does not run")
 
 
 class Jobs(Session):

@@ -1,5 +1,22 @@
 # AskUserQuestion with `async` — one way to ask the human, waiting or not
 
+> **2026-10-20, the owner's ruling: async by default, a smaller text.** The
+> tool (now `mcp__sminos__AskUserQuestion`, in the sminos plugin) asks async
+> unless the call passes `async: false`, which blocks as a call without the
+> key did before; the schema's `default` is `true`. The async paragraph is
+> the `async` parameter's description alone, no longer appended to the
+> tool's description, and reworded for the default without changing when to
+> block. The description drops the built-in's "Plan mode note:" paragraph
+> (the owner never uses plan mode), and the schema drops the built-in's
+> `metadata` analytics field: a call that passes it is refused as one with
+> any other unknown key is. Resume, and the record's export of asks, take a
+> stored call with no `async` key as a candidate and tell async from
+> blocking by its result (`ASYNC_RESULT`, or the engine's answer or
+> refusal), since a call written before this change carries no key whether
+> it blocked or not; a stored call's `metadata` is ignored when its input is
+> checked. Where the text below says `async` defaults to false, or that the
+> input is the built-in's exactly, read this note.
+
 In a doperpowers session with function hooks on, the model asks the human
 through one tool, `mcp__doperpowers__AskUserQuestion`: the built-in
 AskUserQuestion's input exactly, plus `async`. With `async` false (the
