@@ -26,6 +26,8 @@ span or any ask tool call appears in it.
                  leans to splitting the file (a call the session can make)
   late_failure   a background job the session started (the nightly e2e set on
                  the merged M2) fails in two tests that touch the new writer
+  milestone3     the executor's checkpoint: M3 of 4 merged, M4 starting, no
+                 decision needed (with --history silent2)
 
 The transcript audit behind it (2026-10-20, 58 interactive sessions after
 7.185.0): about half the steps an agent report, a peer message or a
@@ -33,8 +35,11 @@ notification started ended on prose the human never received, against one in
 ten of the steps the human started; that share did not move with 7.185.0.
 
   python3 tests/output-styles/to-human-agent-step-eval.py ARM=STYLE.md [ARM=STYLE.md ...] \
-      [--reps 5] [--scenarios routine_peer,routine_relay,milestone,surprise,ruling,small_ruling,late_failure]
-      [--history short,long] [--out results.json]
+      [--reps 5] [--scenarios routine_peer,routine_relay,milestone,surprise,ruling,small_ruling,late_failure,milestone3]
+      [--history short,long,after_report,silent2] [--out results.json]
+
+--history after_report: M1 was reported to the human before M2 lands; silent2:
+M1 and M2 landed without a message, and milestone3 is the next checkpoint.
 
 It calls api.anthropic.com directly with ANTHROPIC_API_KEY.
 
@@ -86,6 +91,24 @@ touches 51 of them; the shipped wording touches 109, all but one that carried
 only an answer. No scenario here reproduces a decision the audit saw go
 unsent: in isolation the model reports one, so whether the clause moves real
 sessions is for the next transcript audit.
+
+Third round, 2026-10-21, on 7.197.0 against the milestone cadence (shipped,
+7.198.0: "... the problems you meet and how you resolved or will resolve
+them, ... A milestone that lands as planned needs no message of its own, but
+a long silence leaves the human unable to tell a clean run from a stalled
+one: once two or three milestones have landed since your last message, send
+where the work stands."), runs that reached the human:
+  milestone, after_report    7.197.0 12 of 12, 7.198.0 0 of 12 (M1 was
+                             reported; M2 landing as planned is not news)
+  milestone3, silent2        7.197.0 5 of 12, 7.198.0 12 of 12 (three
+                             milestones since the last message: a status
+                             report listing M1-M3)
+  milestone, long            both 8 of 8 (M1 went unreported, so M2 is the
+                             second since the last message)
+  late_failure, surprise     both every run (6 of 6, 4 of 4); every failure
+  (long)                     report opened the Critical block with Handled
+  routine_peer, routine_relay (long)  7.198.0 0 of 16
+
 The first round's routine_peer had no machine line, so the model probed
 `hostname`/`date`, got the canned empty output, and the variants reported that
 as friction; it is left out of the counts above.
@@ -196,6 +219,24 @@ INCOMING = {
         "AssertionError: 'Zo\\xeb' != 'Zo\\u00c3\\u00ab'\nFAILED tests/e2e/test_export.py::test_export_excel_opens - "
         "csv.Error: line contains NUL\n</result>\n</task-notification>",
 }
+
+M1_IN = agent_msg("Checkpoint: M1 of 4 (the query layer) landed. PR #47 merged on green CI; review clean. M2 (the streaming writer) is starting now. No decision needed.")
+# --history after_report: M1 was reported to the human, so M2 landing as planned is one milestone since the last message.
+HISTORIES["after_report"] = OPENING + [
+    {"role": "user", "content": M1_IN},
+    {"role": "assistant", "content": [{"type": "text", "text":
+        "<message>\nM1 of 4 is merged (PR #47, green CI, clean review). The plan-executor is on M2, the streaming writer.\n</message>"}]},
+]
+# --history silent2 (with milestone3): M1 and M2 landed as planned and neither reached the human; M3 now lands.
+HISTORIES["silent2"] = OPENING + [
+    {"role": "user", "content": M1_IN},
+    {"role": "assistant", "content": [{"type": "text", "text": "M1 is merged and M2 is under way, as planned."}]},
+    {"role": "user", "content": INCOMING["milestone"]},
+    {"role": "assistant", "content": [{"type": "text", "text": "M2 is merged and M3 is starting, as planned."}]},
+]
+INCOMING["milestone3"] = agent_msg(
+    "Checkpoint: M3 of 4 (the export endpoint and its cache) landed. PR #49 merged on green CI; review clean. "
+    "M4 (the UI button) is starting now. No decision needed.")
 
 def canned(block):
     name, inp = block["name"], block["input"]

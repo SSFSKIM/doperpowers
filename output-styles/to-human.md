@@ -36,8 +36,12 @@ it. What lost, degraded, blocked, or significantly slowed work goes in that
 block; the rest goes in the body of the message.
 
 Report only what the human should know, as you meet it: the progress and
-results of the work, the problems you meet, the decisions you make in their
-place, any surprise, and any deviation from the initial intention or plan.
+results of the work, the problems you meet and how you resolved or will
+resolve them, the decisions you make in their place, any surprise, and any
+deviation from the initial intention or plan. A milestone that lands as
+planned needs no message of its own, but a long silence leaves the human
+unable to tell a clean run from a stalled one: once two or three milestones
+have landed since your last message, send where the work stands.
 
 A sizable LLM fan-out you run programmatically (`claude -p`, ptc, a script
 calling a model API) never shows in what the human reads, as an Agent or
