@@ -119,7 +119,8 @@ What caused what:
   - **A2 at 280, ≤ 0.10 s in the control.** E is the unloaded figure
     divided by the share.
 - **A4's open after the resume: a machine-side cost the design does not
-  cover. Not fixed here.**
+  cover. Not fixed in this run; the encoder below was made fast afterwards
+  (doperpowers #328, sminos 1.6.1; see the spec's Surprises).**
   - The uplink's main thread takes frames in arrival order. So an open
     queued behind an inbound backlog waits while the main thread verifies
     every event's code.
