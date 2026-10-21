@@ -409,7 +409,7 @@ in a login shell: `sminos hub check`. Its answer decides:
 | 0 | accepted | nothing more (a reboot or reconcile of an enrolled host) |
 | 1 | not enrolled here | fetch the key into memory; `sminos hub enroll --name <DEVCLOUD_NAME>`, the key on stdin |
 | 3 | a credential is present but rejected (an admin revoke, the offline sweep, a `leave` whose answer was lost) | the same, with `--replace` (a new use of the key) |
-| 4 | undecided: the desk is unreachable, answered 5xx or neither, or an Access 401 for a credential still inside Access's propagation grace (about 60 s after minting) | the step is not done: keep the credential, let the daemon start, record `deferred` (which the boot's exit counts as ok), and ask again later (below). Never enroll on 4 |
+| 4 | undecided: the desk is unreachable, answered 5xx or neither, or an Access 401 for a credential still inside the propagation grace (600 s from `hub.json`'s enrollment time) | the step is not done: keep the credential, let the daemon start, record `deferred` (which the boot's exit counts as ok), and ask again later (below). Never enroll on 4 |
 | 2 | usage | fail the step |
 
 A deferred step is finished by the `devcloud-enroll` service (an I7 addition: root, every 5 minutes, on a
@@ -812,10 +812,13 @@ and config repository; `[host]` makes them the profile's. Unknown keys are refus
 **I15 — The desk's interface consumed** (desk spec "What the boot consumes", after its review,
 commit 5168e433 on its branch, 2026-10-21):
 
-- `sminos hub check`: one request to the desk, writes nothing, gives up after about 30 s. 0 the
+- `sminos hub check`: writes nothing; a dead hub gives up at about 30 s, but an Access 401 on a
+  credential past the grace is asked once more 90 s later before it answers 3, so one call can take
+  about 150 s — every timeout devcloud wraps around it (step 11, `devcloud enroll`) allows 180 s. 0 the
   credential is accepted; 1 not enrolled here; 3 a credential is present but rejected; 4 undecided —
   the desk is unreachable, answered 5xx, or neither, or Access answered 401 for a credential still
-  inside its propagation grace (a newly minted token can be refused for about 60 s); 2 usage. (Design §10's table says what the boot does with
+  inside its propagation grace (600 s from `hub.json`'s enrollment time; a newly minted token can be
+  refused until it reaches Access's edge), which answers 4 at once; 2 usage. (Design §10's table says what the boot does with
   each.)
 - `sminos hub show`: local only, 0 or 1 on the file alone; not used for the enroll decision.
 - `sminos hub enroll --name <name> [--replace]`, the code on stdin (`smns-provision-v1.…` keys,
