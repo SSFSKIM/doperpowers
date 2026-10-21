@@ -4,6 +4,7 @@
   "text": "smns-enroll-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJtYWNoaW5lIjoiU0stMi5sb2NhbCIsImtleSI6IkFBRUNBd1FGQmdjSUNRb0xEQTBPRHhBUkVoTVVGUllYR0JrYUd4d2RIaDgifQ",
   "ok": true,
   "decoded": {
+   "kind": "enroll",
    "hub": "https://desk.example.com",
    "org": "org-1",
    "token": "tok___79_Pv6-fj39vX08_Lx8O_u7ezr6uno5-bl5OPi4eA",
@@ -16,6 +17,7 @@
   "text": "smns-enroll-v1.eyJodWIiOiJodHRwOi8vMTI3LjAuMC4xOjg3NDciLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJtYWNoaW5lIjoiU0stMi5sb2NhbCIsImtleSI6IkFBRUNBd1FGQmdjSUNRb0xEQTBPRHhBUkVoTVVGUllYR0JrYUd4d2RIaDgifQ",
   "ok": true,
   "decoded": {
+   "kind": "enroll",
    "hub": "http://127.0.0.1:8747",
    "org": "org-1",
    "token": "tok___79_Pv6-fj39vX08_Lx8O_u7ezr6uno5-bl5OPi4eA",
@@ -28,6 +30,7 @@
   "text": "smns-enroll-v1.eyJodWIiOiJodHRwOi8vbG9jYWxob3N0Ojg3NDciLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJtYWNoaW5lIjoiU0stMi5sb2NhbCIsImtleSI6IkFBRUNBd1FGQmdjSUNRb0xEQTBPRHhBUkVoTVVGUllYR0JrYUd4d2RIaDgifQ",
   "ok": true,
   "decoded": {
+   "kind": "enroll",
    "hub": "http://localhost:8747",
    "org": "org-1",
    "token": "tok___79_Pv6-fj39vX08_Lx8O_u7ezr6uno5-bl5OPi4eA",
@@ -40,6 +43,7 @@
   "text": "smns-enroll-v1.eyJodWIiOiJodHRwOi8vWzo6MV06ODc0NyIsIm9yZyI6Im9yZy0xIiwidG9rZW4iOiJ0b2tfX183OV9QdjYtZmozOXZYMDhfTHg4T191N2V6cjZ1bm81LWJsNU9QaTRlQSIsIm1hY2hpbmUiOiJTSy0yLmxvY2FsIiwia2V5IjoiQUFFQ0F3UUZCZ2NJQ1FvTERBME9EeEFSRWhNVUZSWVhHQmthR3h3ZEhoOCJ9",
   "ok": true,
   "decoded": {
+   "kind": "enroll",
    "hub": "http://[::1]:8747",
    "org": "org-1",
    "token": "tok___79_Pv6-fj39vX08_Lx8O_u7ezr6uno5-bl5OPi4eA",
@@ -52,6 +56,7 @@
   "text": "smns-enroll-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJtYWNoaW5lIjoiYSIsImtleSI6IkFBRUNBd1FGQmdjSUNRb0xEQTBPRHhBUkVoTVVGUllYR0JrYUd4d2RIaDgifQ",
   "ok": true,
   "decoded": {
+   "kind": "enroll",
    "hub": "https://desk.example.com",
    "org": "org-1",
    "token": "tok___79_Pv6-fj39vX08_Lx8O_u7ezr6uno5-bl5OPi4eA",
@@ -64,6 +69,7 @@
   "text": "smns-enroll-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJtYWNoaW5lIjoiYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhIiwia2V5IjoiQUFFQ0F3UUZCZ2NJQ1FvTERBME9EeEFSRWhNVUZSWVhHQmthR3h3ZEhoOCJ9",
   "ok": true,
   "decoded": {
+   "kind": "enroll",
    "hub": "https://desk.example.com",
    "org": "org-1",
    "token": "tok___79_Pv6-fj39vX08_Lx8O_u7ezr6uno5-bl5OPi4eA",
@@ -76,6 +82,7 @@
   "text": "smns-enroll-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJtYWNoaW5lIjoiTWFjX21pbmktMi5sYW4iLCJrZXkiOiJBQUVDQXdRRkJnY0lDUW9MREEwT0R4QVJFaE1VRlJZWEdCa2FHeHdkSGg4In0",
   "ok": true,
   "decoded": {
+   "kind": "enroll",
    "hub": "https://desk.example.com",
    "org": "org-1",
    "token": "tok___79_Pv6-fj39vX08_Lx8O_u7ezr6uno5-bl5OPi4eA",
@@ -88,6 +95,7 @@
   "text": "smns-enroll-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiLDtnJnLeKCrCIsInRva2VuIjoidMO2a-KCrG4t8J-YgCIsIm1hY2hpbmUiOiJTSy0yLmxvY2FsIiwia2V5IjoiQUFFQ0F3UUZCZ2NJQ1FvTERBME9EeEFSRWhNVUZSWVhHQmthR3h3ZEhoOCJ9",
   "ok": true,
   "decoded": {
+   "kind": "enroll",
    "hub": "https://desk.example.com",
    "org": "örg-€",
    "token": "tök€n-😀",
@@ -100,6 +108,7 @@
   "text": "smns-enroll-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20vYmFzZSIsIm9yZyI6Im9yZy0xIiwidG9rZW4iOiJ0b2tfX183OV9QdjYtZmozOXZYMDhfTHg4T191N2V6cjZ1bm81LWJsNU9QaTRlQSIsIm1hY2hpbmUiOiJTSy0yLmxvY2FsIiwia2V5IjoiQUFFQ0F3UUZCZ2NJQ1FvTERBME9EeEFSRWhNVUZSWVhHQmthR3h3ZEhoOCJ9",
   "ok": true,
   "decoded": {
+   "kind": "enroll",
    "hub": "https://desk.example.com/base",
    "org": "org-1",
    "token": "tok___79_Pv6-fj39vX08_Lx8O_u7ezr6uno5-bl5OPi4eA",
@@ -112,6 +121,7 @@
   "text": "smns-enroll-v1.eyJodWIiOiJIVFRQUzovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJtYWNoaW5lIjoiU0stMi5sb2NhbCIsImtleSI6IkFBRUNBd1FGQmdjSUNRb0xEQTBPRHhBUkVoTVVGUllYR0JrYUd4d2RIaDgifQ",
   "ok": true,
   "decoded": {
+   "kind": "enroll",
    "hub": "HTTPS://desk.example.com",
    "org": "org-1",
    "token": "tok___79_Pv6-fj39vX08_Lx8O_u7ezr6uno5-bl5OPi4eA",
@@ -124,6 +134,7 @@
   "text": "smns-enroll-v1.eyJrZXkiOiJBQUVDQXdRRkJnY0lDUW9MREEwT0R4QVJFaE1VRlJZWEdCa2FHeHdkSGg4IiwibWFjaGluZSI6Im0xIiwidG9rZW4iOiJ0Iiwib3JnIjoibyIsImh1YiI6Imh0dHBzOi8vaC5leGFtcGxlIn0",
   "ok": true,
   "decoded": {
+   "kind": "enroll",
    "hub": "https://h.example",
    "org": "o",
    "token": "t",
@@ -136,6 +147,7 @@
   "text": "smns-enroll-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJtYWNoaW5lIjoiU0stMi5sb2NhbCIsImtleSI6IkFBRUNBd1FGQmdjSUNRb0xEQTBPRHhBUkVoTVVGUllYR0JrYUd4d2RIaDgiLCJleHRyYSI6WzEseyJ4IjpudWxsfV19",
   "ok": true,
   "decoded": {
+   "kind": "enroll",
    "hub": "https://desk.example.com",
    "org": "org-1",
    "token": "tok___79_Pv6-fj39vX08_Lx8O_u7ezr6uno5-bl5OPi4eA",
@@ -148,6 +160,7 @@
   "text": "smns-enroll-v1.77u_eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJtYWNoaW5lIjoiU0stMi5sb2NhbCIsImtleSI6IkFBRUNBd1FGQmdjSUNRb0xEQTBPRHhBUkVoTVVGUllYR0JrYUd4d2RIaDgifQ",
   "ok": true,
   "decoded": {
+   "kind": "enroll",
    "hub": "https://desk.example.com",
    "org": "org-1",
    "token": "tok___79_Pv6-fj39vX08_Lx8O_u7ezr6uno5-bl5OPi4eA",
@@ -160,6 +173,7 @@
   "text": "smns-enroll-v1.IAp7Imh1YiI6Imh0dHBzOi8vZGVzay5leGFtcGxlLmNvbSIsIm9yZyI6Im9yZy0xIiwidG9rZW4iOiJ0b2tfX183OV9QdjYtZmozOXZYMDhfTHg4T191N2V6cjZ1bm81LWJsNU9QaTRlQSIsIm1hY2hpbmUiOiJTSy0yLmxvY2FsIiwia2V5IjoiQUFFQ0F3UUZCZ2NJQ1FvTERBME9EeEFSRWhNVUZSWVhHQmthR3h3ZEhoOCJ9CSA",
   "ok": true,
   "decoded": {
+   "kind": "enroll",
    "hub": "https://desk.example.com",
    "org": "org-1",
    "token": "tok___79_Pv6-fj39vX08_Lx8O_u7ezr6uno5-bl5OPi4eA",
@@ -172,6 +186,7 @@
   "text": "smns-enroll-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJtYWNoaW5lIjoiU0stMi5sb2NhbCIsImtleSI6IkFBRUNBd1FGQmdjSUNRb0xEQTBPRHhBUkVoTVVGUllYR0JrYUd4d2RIaDgiLCJtYWNoaW5lIjoibGF0ZXIifQ",
   "ok": true,
   "decoded": {
+   "kind": "enroll",
    "hub": "https://desk.example.com",
    "org": "org-1",
    "token": "tok___79_Pv6-fj39vX08_Lx8O_u7ezr6uno5-bl5OPi4eA",
@@ -183,13 +198,13 @@
   "note": "another prefix",
   "text": "smns-enroll-v2.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJtYWNoaW5lIjoiU0stMi5sb2NhbCIsImtleSI6IkFBRUNBd1FGQmdjSUNRb0xEQTBPRHhBUkVoTVVGUllYR0JrYUd4d2RIaDgifQ",
   "ok": false,
-  "error": "enrollment code: not smns-enroll-v1"
+  "error": "enrollment code: not smns-enroll-v1 or smns-provision-v1"
  },
  {
   "note": "no prefix",
   "text": "eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJtYWNoaW5lIjoiU0stMi5sb2NhbCIsImtleSI6IkFBRUNBd1FGQmdjSUNRb0xEQTBPRHhBUkVoTVVGUllYR0JrYUd4d2RIaDgifQ",
   "ok": false,
-  "error": "enrollment code: not smns-enroll-v1"
+  "error": "enrollment code: not smns-enroll-v1 or smns-provision-v1"
  },
  {
   "note": "an empty body",
@@ -478,5 +493,440 @@
   "text": "smns-enroll-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJtYWNoaW5lIjoiU0stMi5sb2NhbCIsImtleSI6IkFBRUNBd1FGQmdjSUNRb0xEQTBPRHhBUkVoTVVGUllYR0JrYUd4d2RIaHgifQ",
   "ok": false,
   "error": "enrollment code: the key is not base64url"
+ },
+ {
+  "note": "provisioning: a code as the browser builds it",
+  "text": "smns-provision-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJwcmVmaXgiOiJkYy0iLCJrZXkiOiJBQUVDQXdRRkJnY0lDUW9MREEwT0R4QVJFaE1VRlJZWEdCa2FHeHdkSGg4In0",
+  "ok": true,
+  "decoded": {
+   "kind": "provision",
+   "hub": "https://desk.example.com",
+   "org": "org-1",
+   "token": "tok___79_Pv6-fj39vX08_Lx8O_u7ezr6uno5-bl5OPi4eA",
+   "prefix": "dc-",
+   "key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+  }
+ },
+ {
+  "note": "provisioning: the local runtime on 127.0.0.1",
+  "text": "smns-provision-v1.eyJodWIiOiJodHRwOi8vMTI3LjAuMC4xOjg3NDciLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJwcmVmaXgiOiJkYy0iLCJrZXkiOiJBQUVDQXdRRkJnY0lDUW9MREEwT0R4QVJFaE1VRlJZWEdCa2FHeHdkSGg4In0",
+  "ok": true,
+  "decoded": {
+   "kind": "provision",
+   "hub": "http://127.0.0.1:8747",
+   "org": "org-1",
+   "token": "tok___79_Pv6-fj39vX08_Lx8O_u7ezr6uno5-bl5OPi4eA",
+   "prefix": "dc-",
+   "key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+  }
+ },
+ {
+  "note": "provisioning: the local runtime on localhost",
+  "text": "smns-provision-v1.eyJodWIiOiJodHRwOi8vbG9jYWxob3N0Ojg3NDciLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJwcmVmaXgiOiJkYy0iLCJrZXkiOiJBQUVDQXdRRkJnY0lDUW9MREEwT0R4QVJFaE1VRlJZWEdCa2FHeHdkSGg4In0",
+  "ok": true,
+  "decoded": {
+   "kind": "provision",
+   "hub": "http://localhost:8747",
+   "org": "org-1",
+   "token": "tok___79_Pv6-fj39vX08_Lx8O_u7ezr6uno5-bl5OPi4eA",
+   "prefix": "dc-",
+   "key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+  }
+ },
+ {
+  "note": "provisioning: the local runtime on [::1]",
+  "text": "smns-provision-v1.eyJodWIiOiJodHRwOi8vWzo6MV06ODc0NyIsIm9yZyI6Im9yZy0xIiwidG9rZW4iOiJ0b2tfX183OV9QdjYtZmozOXZYMDhfTHg4T191N2V6cjZ1bm81LWJsNU9QaTRlQSIsInByZWZpeCI6ImRjLSIsImtleSI6IkFBRUNBd1FGQmdjSUNRb0xEQTBPRHhBUkVoTVVGUllYR0JrYUd4d2RIaDgifQ",
+  "ok": true,
+  "decoded": {
+   "kind": "provision",
+   "hub": "http://[::1]:8747",
+   "org": "org-1",
+   "token": "tok___79_Pv6-fj39vX08_Lx8O_u7ezr6uno5-bl5OPi4eA",
+   "prefix": "dc-",
+   "key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+  }
+ },
+ {
+  "note": "provisioning: a one-character prefix",
+  "text": "smns-provision-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJwcmVmaXgiOiJkIiwia2V5IjoiQUFFQ0F3UUZCZ2NJQ1FvTERBME9EeEFSRWhNVUZSWVhHQmthR3h3ZEhoOCJ9",
+  "ok": true,
+  "decoded": {
+   "kind": "provision",
+   "hub": "https://desk.example.com",
+   "org": "org-1",
+   "token": "tok___79_Pv6-fj39vX08_Lx8O_u7ezr6uno5-bl5OPi4eA",
+   "prefix": "d",
+   "key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+  }
+ },
+ {
+  "note": "provisioning: a 63-character prefix",
+  "text": "smns-provision-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJwcmVmaXgiOiJkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGQiLCJrZXkiOiJBQUVDQXdRRkJnY0lDUW9MREEwT0R4QVJFaE1VRlJZWEdCa2FHeHdkSGg4In0",
+  "ok": true,
+  "decoded": {
+   "kind": "provision",
+   "hub": "https://desk.example.com",
+   "org": "org-1",
+   "token": "tok___79_Pv6-fj39vX08_Lx8O_u7ezr6uno5-bl5OPi4eA",
+   "prefix": "ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+   "key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+  }
+ },
+ {
+  "note": "provisioning: a prefix with dots, dashes, underscores",
+  "text": "smns-provision-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJwcmVmaXgiOiJkY19idWlsZC43LSIsImtleSI6IkFBRUNBd1FGQmdjSUNRb0xEQTBPRHhBUkVoTVVGUllYR0JrYUd4d2RIaDgifQ",
+  "ok": true,
+  "decoded": {
+   "kind": "provision",
+   "hub": "https://desk.example.com",
+   "org": "org-1",
+   "token": "tok___79_Pv6-fj39vX08_Lx8O_u7ezr6uno5-bl5OPi4eA",
+   "prefix": "dc_build.7-",
+   "key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+  }
+ },
+ {
+  "note": "provisioning: a prefix in upper case",
+  "text": "smns-provision-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJwcmVmaXgiOiJEQy0iLCJrZXkiOiJBQUVDQXdRRkJnY0lDUW9MREEwT0R4QVJFaE1VRlJZWEdCa2FHeHdkSGg4In0",
+  "ok": true,
+  "decoded": {
+   "kind": "provision",
+   "hub": "https://desk.example.com",
+   "org": "org-1",
+   "token": "tok___79_Pv6-fj39vX08_Lx8O_u7ezr6uno5-bl5OPi4eA",
+   "prefix": "DC-",
+   "key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+  }
+ },
+ {
+  "note": "provisioning: a token and an org outside ASCII",
+  "text": "smns-provision-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiLDtnJnLeKCrCIsInRva2VuIjoidMO2a-KCrG4t8J-YgCIsInByZWZpeCI6ImRjLSIsImtleSI6IkFBRUNBd1FGQmdjSUNRb0xEQTBPRHhBUkVoTVVGUllYR0JrYUd4d2RIaDgifQ",
+  "ok": true,
+  "decoded": {
+   "kind": "provision",
+   "hub": "https://desk.example.com",
+   "org": "örg-€",
+   "token": "tök€n-😀",
+   "prefix": "dc-",
+   "key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+  }
+ },
+ {
+  "note": "provisioning: a hub with a path",
+  "text": "smns-provision-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20vYmFzZSIsIm9yZyI6Im9yZy0xIiwidG9rZW4iOiJ0b2tfX183OV9QdjYtZmozOXZYMDhfTHg4T191N2V6cjZ1bm81LWJsNU9QaTRlQSIsInByZWZpeCI6ImRjLSIsImtleSI6IkFBRUNBd1FGQmdjSUNRb0xEQTBPRHhBUkVoTVVGUllYR0JrYUd4d2RIaDgifQ",
+  "ok": true,
+  "decoded": {
+   "kind": "provision",
+   "hub": "https://desk.example.com/base",
+   "org": "org-1",
+   "token": "tok___79_Pv6-fj39vX08_Lx8O_u7ezr6uno5-bl5OPi4eA",
+   "prefix": "dc-",
+   "key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+  }
+ },
+ {
+  "note": "provisioning: fields in another order",
+  "text": "smns-provision-v1.eyJrZXkiOiJBQUVDQXdRRkJnY0lDUW9MREEwT0R4QVJFaE1VRlJZWEdCa2FHeHdkSGg4IiwicHJlZml4IjoicCIsInRva2VuIjoidCIsIm9yZyI6Im8iLCJodWIiOiJodHRwczovL2guZXhhbXBsZSJ9",
+  "ok": true,
+  "decoded": {
+   "kind": "provision",
+   "hub": "https://h.example",
+   "org": "o",
+   "token": "t",
+   "prefix": "p",
+   "key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+  }
+ },
+ {
+  "note": "provisioning: a machine field beside the prefix, ignored",
+  "text": "smns-provision-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJwcmVmaXgiOiJkYy0iLCJrZXkiOiJBQUVDQXdRRkJnY0lDUW9MREEwT0R4QVJFaE1VRlJZWEdCa2FHeHdkSGg4IiwibWFjaGluZSI6IlNLLTIubG9jYWwifQ",
+  "ok": true,
+  "decoded": {
+   "kind": "provision",
+   "hub": "https://desk.example.com",
+   "org": "org-1",
+   "token": "tok___79_Pv6-fj39vX08_Lx8O_u7ezr6uno5-bl5OPi4eA",
+   "prefix": "dc-",
+   "key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+  }
+ },
+ {
+  "note": "provisioning: an extra field",
+  "text": "smns-provision-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJwcmVmaXgiOiJkYy0iLCJrZXkiOiJBQUVDQXdRRkJnY0lDUW9MREEwT0R4QVJFaE1VRlJZWEdCa2FHeHdkSGg4IiwiZXh0cmEiOlsxLHsieCI6bnVsbH1dfQ",
+  "ok": true,
+  "decoded": {
+   "kind": "provision",
+   "hub": "https://desk.example.com",
+   "org": "org-1",
+   "token": "tok___79_Pv6-fj39vX08_Lx8O_u7ezr6uno5-bl5OPi4eA",
+   "prefix": "dc-",
+   "key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+  }
+ },
+ {
+  "note": "provisioning: a byte-order mark before the JSON",
+  "text": "smns-provision-v1.77u_eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJwcmVmaXgiOiJkYy0iLCJrZXkiOiJBQUVDQXdRRkJnY0lDUW9MREEwT0R4QVJFaE1VRlJZWEdCa2FHeHdkSGg4In0",
+  "ok": true,
+  "decoded": {
+   "kind": "provision",
+   "hub": "https://desk.example.com",
+   "org": "org-1",
+   "token": "tok___79_Pv6-fj39vX08_Lx8O_u7ezr6uno5-bl5OPi4eA",
+   "prefix": "dc-",
+   "key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+  }
+ },
+ {
+  "note": "provisioning: a duplicated field, the last kept",
+  "text": "smns-provision-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJwcmVmaXgiOiJkYy0iLCJrZXkiOiJBQUVDQXdRRkJnY0lDUW9MREEwT0R4QVJFaE1VRlJZWEdCa2FHeHdkSGg4IiwicHJlZml4IjoibGF0ZXItIn0",
+  "ok": true,
+  "decoded": {
+   "kind": "provision",
+   "hub": "https://desk.example.com",
+   "org": "org-1",
+   "token": "tok___79_Pv6-fj39vX08_Lx8O_u7ezr6uno5-bl5OPi4eA",
+   "prefix": "later-",
+   "key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+  }
+ },
+ {
+  "note": "provisioning: another code prefix",
+  "text": "smns-provision-v2.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJwcmVmaXgiOiJkYy0iLCJrZXkiOiJBQUVDQXdRRkJnY0lDUW9MREEwT0R4QVJFaE1VRlJZWEdCa2FHeHdkSGg4In0",
+  "ok": false,
+  "error": "enrollment code: not smns-enroll-v1 or smns-provision-v1"
+ },
+ {
+  "note": "provisioning: no code prefix",
+  "text": "eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJwcmVmaXgiOiJkYy0iLCJrZXkiOiJBQUVDQXdRRkJnY0lDUW9MREEwT0R4QVJFaE1VRlJZWEdCa2FHeHdkSGg4In0",
+  "ok": false,
+  "error": "enrollment code: not smns-enroll-v1 or smns-provision-v1"
+ },
+ {
+  "note": "provisioning: a one-time code's prefix over a provisioning body",
+  "text": "smns-enroll-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJwcmVmaXgiOiJkYy0iLCJrZXkiOiJBQUVDQXdRRkJnY0lDUW9MREEwT0R4QVJFaE1VRlJZWEdCa2FHeHdkSGg4In0",
+  "ok": false,
+  "error": "enrollment code: no machine"
+ },
+ {
+  "note": "provisioning: an empty body",
+  "text": "smns-provision-v1.",
+  "ok": false,
+  "error": "provisioning code: damaged"
+ },
+ {
+  "note": "provisioning: padding on the body",
+  "text": "smns-provision-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJwcmVmaXgiOiJkYy0iLCJrZXkiOiJBQUVDQXdRRkJnY0lDUW9MREEwT0R4QVJFaE1VRlJZWEdCa2FHeHdkSGg4In14",
+  "ok": false,
+  "error": "provisioning code: damaged"
+ },
+ {
+  "note": "provisioning: standard base64 characters in the body",
+  "text": "smns-provision-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJwcmVmaXgiOiJkYy0iLCJrZXkiOiJBQUVDQXdRRkJnY0lDUW9MREEwT0R4QVJFaE1VRlJZWEdCa2FHeHdkSGg4In1+fn4=",
+  "ok": false,
+  "error": "provisioning code: damaged"
+ },
+ {
+  "note": "provisioning: a body that is not UTF-8",
+  "text": "smns-provision-v1.e_99",
+  "ok": false,
+  "error": "provisioning code: damaged"
+ },
+ {
+  "note": "provisioning: a body that is not JSON",
+  "text": "smns-provision-v1.aHViPWh0dHBzOi8veA",
+  "ok": false,
+  "error": "provisioning code: damaged"
+ },
+ {
+  "note": "provisioning: NaN in the JSON",
+  "text": "smns-provision-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJwcmVmaXgiOiJkYy0iLCJrZXkiOiJBQUVDQXdRRkJnY0lDUW9MREEwT0R4QVJFaE1VRlJZWEdCa2FHeHdkSGg4IiwibiI6TmFOfQ",
+  "ok": false,
+  "error": "provisioning code: damaged"
+ },
+ {
+  "note": "provisioning: a JSON array",
+  "text": "smns-provision-v1.W3siaHViIjoiaHR0cHM6Ly9kZXNrLmV4YW1wbGUuY29tIiwib3JnIjoib3JnLTEiLCJ0b2tlbiI6InRva19fXzc5X1B2Ni1majM5dlgwOF9MeDhPX3U3ZXpyNnVubzUtYmw1T1BpNGVBIiwicHJlZml4IjoiZGMtIiwia2V5IjoiQUFFQ0F3UUZCZ2NJQ1FvTERBME9EeEFSRWhNVUZSWVhHQmthR3h3ZEhoOCJ9XQ",
+  "ok": false,
+  "error": "provisioning code: no hub"
+ },
+ {
+  "note": "provisioning: JSON null",
+  "text": "smns-provision-v1.bnVsbA",
+  "ok": false,
+  "error": "provisioning code: damaged"
+ },
+ {
+  "note": "provisioning: a JSON number",
+  "text": "smns-provision-v1.Nw",
+  "ok": false,
+  "error": "provisioning code: damaged"
+ },
+ {
+  "note": "provisioning: no hub",
+  "text": "smns-provision-v1.eyJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJwcmVmaXgiOiJkYy0iLCJrZXkiOiJBQUVDQXdRRkJnY0lDUW9MREEwT0R4QVJFaE1VRlJZWEdCa2FHeHdkSGg4In0",
+  "ok": false,
+  "error": "provisioning code: no hub"
+ },
+ {
+  "note": "provisioning: an empty hub",
+  "text": "smns-provision-v1.eyJodWIiOiIiLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJwcmVmaXgiOiJkYy0iLCJrZXkiOiJBQUVDQXdRRkJnY0lDUW9MREEwT0R4QVJFaE1VRlJZWEdCa2FHeHdkSGg4In0",
+  "ok": false,
+  "error": "provisioning code: no hub"
+ },
+ {
+  "note": "provisioning: a hub that is not a string",
+  "text": "smns-provision-v1.eyJodWIiOjcsIm9yZyI6Im9yZy0xIiwidG9rZW4iOiJ0b2tfX183OV9QdjYtZmozOXZYMDhfTHg4T191N2V6cjZ1bm81LWJsNU9QaTRlQSIsInByZWZpeCI6ImRjLSIsImtleSI6IkFBRUNBd1FGQmdjSUNRb0xEQTBPRHhBUkVoTVVGUllYR0JrYUd4d2RIaDgifQ",
+  "ok": false,
+  "error": "provisioning code: no hub"
+ },
+ {
+  "note": "provisioning: no org",
+  "text": "smns-provision-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJ0b2tlbiI6InRva19fXzc5X1B2Ni1majM5dlgwOF9MeDhPX3U3ZXpyNnVubzUtYmw1T1BpNGVBIiwicHJlZml4IjoiZGMtIiwia2V5IjoiQUFFQ0F3UUZCZ2NJQ1FvTERBME9EeEFSRWhNVUZSWVhHQmthR3h3ZEhoOCJ9",
+  "ok": false,
+  "error": "provisioning code: no org"
+ },
+ {
+  "note": "provisioning: an empty org",
+  "text": "smns-provision-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiIiLCJ0b2tlbiI6InRva19fXzc5X1B2Ni1majM5dlgwOF9MeDhPX3U3ZXpyNnVubzUtYmw1T1BpNGVBIiwicHJlZml4IjoiZGMtIiwia2V5IjoiQUFFQ0F3UUZCZ2NJQ1FvTERBME9EeEFSRWhNVUZSWVhHQmthR3h3ZEhoOCJ9",
+  "ok": false,
+  "error": "provisioning code: no org"
+ },
+ {
+  "note": "provisioning: a org that is not a string",
+  "text": "smns-provision-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOjcsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJwcmVmaXgiOiJkYy0iLCJrZXkiOiJBQUVDQXdRRkJnY0lDUW9MREEwT0R4QVJFaE1VRlJZWEdCa2FHeHdkSGg4In0",
+  "ok": false,
+  "error": "provisioning code: no org"
+ },
+ {
+  "note": "provisioning: no token",
+  "text": "smns-provision-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInByZWZpeCI6ImRjLSIsImtleSI6IkFBRUNBd1FGQmdjSUNRb0xEQTBPRHhBUkVoTVVGUllYR0JrYUd4d2RIaDgifQ",
+  "ok": false,
+  "error": "provisioning code: no token"
+ },
+ {
+  "note": "provisioning: an empty token",
+  "text": "smns-provision-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoiIiwicHJlZml4IjoiZGMtIiwia2V5IjoiQUFFQ0F3UUZCZ2NJQ1FvTERBME9EeEFSRWhNVUZSWVhHQmthR3h3ZEhoOCJ9",
+  "ok": false,
+  "error": "provisioning code: no token"
+ },
+ {
+  "note": "provisioning: a token that is not a string",
+  "text": "smns-provision-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjo3LCJwcmVmaXgiOiJkYy0iLCJrZXkiOiJBQUVDQXdRRkJnY0lDUW9MREEwT0R4QVJFaE1VRlJZWEdCa2FHeHdkSGg4In0",
+  "ok": false,
+  "error": "provisioning code: no token"
+ },
+ {
+  "note": "provisioning: no prefix",
+  "text": "smns-provision-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJrZXkiOiJBQUVDQXdRRkJnY0lDUW9MREEwT0R4QVJFaE1VRlJZWEdCa2FHeHdkSGg4In0",
+  "ok": false,
+  "error": "provisioning code: no prefix"
+ },
+ {
+  "note": "provisioning: an empty prefix",
+  "text": "smns-provision-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJwcmVmaXgiOiIiLCJrZXkiOiJBQUVDQXdRRkJnY0lDUW9MREEwT0R4QVJFaE1VRlJZWEdCa2FHeHdkSGg4In0",
+  "ok": false,
+  "error": "provisioning code: no prefix"
+ },
+ {
+  "note": "provisioning: a prefix that is not a string",
+  "text": "smns-provision-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJwcmVmaXgiOjcsImtleSI6IkFBRUNBd1FGQmdjSUNRb0xEQTBPRHhBUkVoTVVGUllYR0JrYUd4d2RIaDgifQ",
+  "ok": false,
+  "error": "provisioning code: no prefix"
+ },
+ {
+  "note": "provisioning: no key",
+  "text": "smns-provision-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJwcmVmaXgiOiJkYy0ifQ",
+  "ok": false,
+  "error": "provisioning code: no key"
+ },
+ {
+  "note": "provisioning: an empty key",
+  "text": "smns-provision-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJwcmVmaXgiOiJkYy0iLCJrZXkiOiIifQ",
+  "ok": false,
+  "error": "provisioning code: no key"
+ },
+ {
+  "note": "provisioning: a key that is not a string",
+  "text": "smns-provision-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJwcmVmaXgiOiJkYy0iLCJrZXkiOjd9",
+  "ok": false,
+  "error": "provisioning code: no key"
+ },
+ {
+  "note": "provisioning: a hub that is not a URL",
+  "text": "smns-provision-v1.eyJodWIiOiJkZXNrLmV4YW1wbGUuY29tIiwib3JnIjoib3JnLTEiLCJ0b2tlbiI6InRva19fXzc5X1B2Ni1majM5dlgwOF9MeDhPX3U3ZXpyNnVubzUtYmw1T1BpNGVBIiwicHJlZml4IjoiZGMtIiwia2V5IjoiQUFFQ0F3UUZCZ2NJQ1FvTERBME9EeEFSRWhNVUZSWVhHQmthR3h3ZEhoOCJ9",
+  "ok": false,
+  "error": "provisioning code: the hub is not a URL"
+ },
+ {
+  "note": "provisioning: a hub over http off this machine",
+  "text": "smns-provision-v1.eyJodWIiOiJodHRwOi8vZGVzay5leGFtcGxlLmNvbSIsIm9yZyI6Im9yZy0xIiwidG9rZW4iOiJ0b2tfX183OV9QdjYtZmozOXZYMDhfTHg4T191N2V6cjZ1bm81LWJsNU9QaTRlQSIsInByZWZpeCI6ImRjLSIsImtleSI6IkFBRUNBd1FGQmdjSUNRb0xEQTBPRHhBUkVoTVVGUllYR0JrYUd4d2RIaDgifQ",
+  "ok": false,
+  "error": "provisioning code: the hub is not https"
+ },
+ {
+  "note": "provisioning: the prefix \"hub\"",
+  "text": "smns-provision-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJwcmVmaXgiOiJodWIiLCJrZXkiOiJBQUVDQXdRRkJnY0lDUW9MREEwT0R4QVJFaE1VRlJZWEdCa2FHeHdkSGg4In0",
+  "ok": false,
+  "error": "provisioning code: the prefix is not admitted"
+ },
+ {
+  "note": "provisioning: the prefix \"Legacy\"",
+  "text": "smns-provision-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJwcmVmaXgiOiJMZWdhY3kiLCJrZXkiOiJBQUVDQXdRRkJnY0lDUW9MREEwT0R4QVJFaE1VRlJZWEdCa2FHeHdkSGg4In0",
+  "ok": false,
+  "error": "provisioning code: the prefix is not admitted"
+ },
+ {
+  "note": "provisioning: the prefix \"-x\"",
+  "text": "smns-provision-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJwcmVmaXgiOiIteCIsImtleSI6IkFBRUNBd1FGQmdjSUNRb0xEQTBPRHhBUkVoTVVGUllYR0JrYUd4d2RIaDgifQ",
+  "ok": false,
+  "error": "provisioning code: the prefix is not admitted"
+ },
+ {
+  "note": "provisioning: the prefix \".x\"",
+  "text": "smns-provision-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJwcmVmaXgiOiIueCIsImtleSI6IkFBRUNBd1FGQmdjSUNRb0xEQTBPRHhBUkVoTVVGUllYR0JrYUd4d2RIaDgifQ",
+  "ok": false,
+  "error": "provisioning code: the prefix is not admitted"
+ },
+ {
+  "note": "provisioning: the prefix \"a b\"",
+  "text": "smns-provision-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJwcmVmaXgiOiJhIGIiLCJrZXkiOiJBQUVDQXdRRkJnY0lDUW9MREEwT0R4QVJFaE1VRlJZWEdCa2FHeHdkSGg4In0",
+  "ok": false,
+  "error": "provisioning code: the prefix is not admitted"
+ },
+ {
+  "note": "provisioning: the prefix \"x/y\"",
+  "text": "smns-provision-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJwcmVmaXgiOiJ4L3kiLCJrZXkiOiJBQUVDQXdRRkJnY0lDUW9MREEwT0R4QVJFaE1VRlJZWEdCa2FHeHdkSGg4In0",
+  "ok": false,
+  "error": "provisioning code: the prefix is not admitted"
+ },
+ {
+  "note": "provisioning: the prefix \"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\"",
+  "text": "smns-provision-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJwcmVmaXgiOiJkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkIiwia2V5IjoiQUFFQ0F3UUZCZ2NJQ1FvTERBME9EeEFSRWhNVUZSWVhHQmthR3h3ZEhoOCJ9",
+  "ok": false,
+  "error": "provisioning code: the prefix is not admitted"
+ },
+ {
+  "note": "provisioning: the prefix \"é\"",
+  "text": "smns-provision-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJwcmVmaXgiOiLDqSIsImtleSI6IkFBRUNBd1FGQmdjSUNRb0xEQTBPRHhBUkVoTVVGUllYR0JrYUd4d2RIaDgifQ",
+  "ok": false,
+  "error": "provisioning code: the prefix is not admitted"
+ },
+ {
+  "note": "provisioning: a key of 31 bytes",
+  "text": "smns-provision-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJwcmVmaXgiOiJkYy0iLCJrZXkiOiJBUUVCQVFFQkFRRUJBUUVCQVFFQkFRRUJBUUVCQVFFQkFRRUJBUUVCQVEifQ",
+  "ok": false,
+  "error": "provisioning code: the key is not 256 bits"
+ },
+ {
+  "note": "provisioning: a padded key",
+  "text": "smns-provision-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJwcmVmaXgiOiJkYy0iLCJrZXkiOiJBQUVDQXdRRkJnY0lDUW9MREEwT0R4QVJFaE1VRlJZWEdCa2FHeHdkSGg4PSJ9",
+  "ok": false,
+  "error": "provisioning code: the key is not base64url"
+ },
+ {
+  "note": "provisioning: a key with spare bits set",
+  "text": "smns-provision-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJwcmVmaXgiOiJkYy0iLCJrZXkiOiJBQUVDQXdRRkJnY0lDUW9MREEwT0R4QVJFaE1VRlJZWEdCa2FHeHdkSGh4In0",
+  "ok": false,
+  "error": "provisioning code: the key is not base64url"
  }
 ]

@@ -1,18 +1,28 @@
 #!/usr/bin/env python3
 """sminos_hub — this machine's enrollment at the desk hub (DX7 of the desk).
 
-`sminos hub enroll` redeems an enrollment code the owner's browser built:
-`smns-enroll-v1.` and the base64url of the JSON object {hub, org, token,
-machine, key}. The code carries the org key, so it is read from a hidden
-prompt (or stdin when piped), never from the command line, where the process
-listing shows it and the shell's history keeps it; a code given as an
-argument is refused unread. The CLI decodes it as the hub's `decodeEnrollmentCode`
-does (tests/enroll_parity.py pins the two), redeems the one-time token
-at `POST <hub>/machine/enroll {token, machine}` for the machine's Access
+`sminos hub enroll` redeems a code the owner's browser built: a one-time
+enrollment code, `smns-enroll-v1.` and the base64url of the JSON object {hub,
+org, token, machine, key}, or a provisioning code, `smns-provision-v1.` over
+{hub, org, token, prefix, key}, whose token is a reusable key's secret that
+enrolls any name starting with its prefix (a VM's boot pipes it). The code
+carries the org key, so it is read from a hidden prompt (or stdin when
+piped), never from the command line, where the process listing shows it and
+the shell's history keeps it; a code given as an argument is refused unread,
+and no file is read for one. The CLI decodes either kind as the hub's
+`decodeCode` does (tests/enroll_parity.py pins the two), redeems the token at
+`POST <hub>/machine/enroll {token, machine}` for the machine's Access
 service token, and stores what the uplink needs in `daemon/hub.json` (mode
 0600, written whole): the hub, the org, the enrolled name, the service
 token's id and secret, and the org key. The hub never sees the key; nothing
 here prints or logs it, nor the secret.
+
+`sminos hub check` asks the hub whether it still accepts that credential
+and changes nothing; `sminos hub leave` revokes it at the hub and removes
+hub.json. Both read the answer by one rule (`authenticated`): the Worker's
+`403 not-enrolled` is a rejection at once, Access's 401 page only for a
+credential past its propagation grace and again on a recheck, and anything
+else decides nothing.
 
 The enrolled name is this machine's one name in sminos (`host_name()`): every
 writer it creates afterwards is `<name>/…`, hub project or not, because the
@@ -49,7 +59,14 @@ import sminos_daemon as daemon  # noqa: E402
 import sminos_uplink as uplink  # noqa: E402
 
 CODE_PREFIX = "smns-enroll-v1."
-FIELDS = ("hub", "org", "token", "machine", "key")
+PROVISION_PREFIX = "smns-provision-v1."
+# Each kind of code: its prefix, the words its refusals start with, its
+# fields, the field that names a machine (or a name's start), and how a
+# refusal calls that field.
+KINDS = {
+    "enroll": (CODE_PREFIX, "enrollment code", ("hub", "org", "token", "machine", "key"), "machine", "the machine name"),
+    "provision": (PROVISION_PREFIX, "provisioning code", ("hub", "org", "token", "prefix", "key"), "prefix", "the prefix"),
+}
 # DX7: a letter or digit, then up to 62 of letters, digits, `.`, `_`, `-`;
 # never `hub` or `legacy` in any case (the log's `hub/` and `legacy/` writers).
 MACHINE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,62}")
@@ -63,7 +80,8 @@ ANSWER_MAX = 1 << 16
 
 
 class CodeRefused(ValueError):
-    """An enrollment code DX7's decoder refuses; the reason in its words."""
+    """A code DX7's decoder refuses; its whole message, in the hub's words
+    (`enrollment code: no machine`, `provisioning code: no prefix`)."""
 
 
 class Lost(Exception):
@@ -78,7 +96,7 @@ def _no_constant(name):
     raise ValueError("%s is not JSON" % name)
 
 
-def check_hub(hub):
+def check_hub(hub, words):
     """DX7's hub: an https URL, or http on a loopback host. Stricter than a
     WHATWG parser on spellings no browser's origin serializes to (blanks or
     controls anywhere, `https:host`, `127.1`), which the uplink could not
@@ -89,40 +107,43 @@ def check_hub(hub):
     except ValueError:
         url = None
     if url is None or not url.scheme or not url.hostname or any(c.isspace() or not c.isprintable() for c in hub):
-        raise CodeRefused("the hub is not a URL")
+        raise CodeRefused("%s: the hub is not a URL" % words)
     if not uplink.hub_admitted(hub):
-        raise CodeRefused("the hub is not https")
+        raise CodeRefused("%s: the hub is not https" % words)
 
 
 def decode_code(text):
-    """The enrollment code's {hub, org, token, machine, key}, or CodeRefused
-    naming the first check that refuses it, in the order and the words of
-    the hub's decodeEnrollmentCode."""
-    if not isinstance(text, str) or not text.startswith(CODE_PREFIX):
-        raise CodeRefused("not smns-enroll-v1")
-    raw = codes.b64url_decode(text[len(CODE_PREFIX):])
+    """Either kind of code, tagged — {"kind": "enroll", hub, org, token,
+    machine, key} or {"kind": "provision", hub, org, token, prefix, key} — or
+    CodeRefused naming the first check that refuses it, in the order and the
+    words of the hub's decodeCode, worded by the kind its prefix named."""
+    kind = next((k for k, spec in KINDS.items() if isinstance(text, str) and text.startswith(spec[0])), None)
+    if kind is None:
+        raise CodeRefused("enrollment code: not smns-enroll-v1 or smns-provision-v1")
+    prefix, words, fields, name_field, name_is = KINDS[kind]
+    raw = codes.b64url_decode(text[len(prefix):])
     try:
         if raw is None:
             raise ValueError("not base64url")
         # TextDecoder's fatal UTF-8, which consumes one byte-order mark.
         d = json.loads(raw.decode("utf-8-sig"), parse_constant=_no_constant)
     except (ValueError, RecursionError):
-        raise CodeRefused("damaged") from None
+        raise CodeRefused("%s: damaged" % words) from None
     if not isinstance(d, (dict, list)):
-        raise CodeRefused("damaged")
+        raise CodeRefused("%s: damaged" % words)
     d = d if isinstance(d, dict) else {}  # an array is an object to JSON.parse, holding none of the fields
-    for field in FIELDS:
+    for field in fields:
         if not isinstance(d.get(field), str) or d[field] == "":
-            raise CodeRefused("no %s" % field)
-    check_hub(d["hub"])
-    if not is_machine_name(d["machine"]):
-        raise CodeRefused("the machine name is not admitted")
+            raise CodeRefused("%s: no %s" % (words, field))
+    check_hub(d["hub"], words)
+    if not is_machine_name(d[name_field]):
+        raise CodeRefused("%s: %s is not admitted" % (words, name_is))
     key = codes.b64url_decode(d["key"])
     if key is None:
-        raise CodeRefused("the key is not base64url")
+        raise CodeRefused("%s: the key is not base64url" % words)
     if len(key) != 32:
-        raise CodeRefused("the key is not 256 bits")
-    return {field: d[field] for field in FIELDS}
+        raise CodeRefused("%s: the key is not 256 bits" % words)
+    return {"kind": kind, **{field: d[field] for field in fields}}
 
 
 # ------------------------------------------------------------- redemption
@@ -182,10 +203,15 @@ def said(text):
     return " ".join(str(text or "").split())[:300]
 
 
-def refusal(status, answer, machine):
+def refusal(status, answer, machine, code):
     """What to tell the human for an answer that is not an enrollment."""
     error, message = (answer or {}).get("error"), said((answer or {}).get("message"))
     return {
+        "key-revoked": "this key was revoked at the hub: ask an admin for a new key",
+        "key-expired": "this key has expired: ask an admin for a new key",
+        "key-exhausted": "this key has enrolled all the machines it may: ask an admin for a new key or a higher cap",
+        "prefix-mismatch": "this key does not enroll the name %s (%s): pass --name %s…" % (
+            machine, message, code.get("prefix", "")),
         "bad-shape": "the hub refused the redemption's shape (%s): this sminos and the hub disagree on DX7 — "
                      "update sminos" % message,
         "bad-name": "the hub does not admit the name %s: pick another with --name" % machine,
@@ -307,12 +333,23 @@ def enroll(a):
     try:
         code = decode_code(read_code())
     except CodeRefused as e:
-        sminos.die("enrollment code: %s" % e)
-    machine = a.name or (old if is_machine_name(old) else code["machine"])
+        sminos.die(str(e))
+    if code["kind"] == "provision":
+        # The key enrolls only names under its prefix (compared without case,
+        # as the hub compares them): refused here, before anything is sent.
+        machine = a.name or old
+        if not is_machine_name(machine):
+            sminos.die("this machine's name %s is not one the hub admits: pass --name %s…" % (machine, code["prefix"]))
+        if not machine.lower().startswith(code["prefix"].lower()):
+            sminos.die("the name %s does not start with this key's prefix %s: pass --name %s…" % (
+                machine, code["prefix"], code["prefix"]))
+    else:
+        machine = a.name or (old if is_machine_name(old) else code["machine"])
     refuse_case_twin(machine, old, old_former)
     status, answer = redeem(code, machine)
     if status != 200 or answer is None:
-        sminos.die(refusal(status, answer, machine), 1)
+        # name-taken has its own exit: a boot picks another name and runs the same code again.
+        sminos.die(refusal(status, answer, machine, code), 3 if (answer or {}).get("error") == "name-taken" else 1)
     if not (all(isinstance(answer.get(k), str) and answer[k] for k in ("org", "machine", "client_id", "client_secret"))
             and answer["org"] == code["org"] and answer["machine"] == machine):
         sminos.die("the hub answered the redemption for org %s as %s, not for org %s as %s: nothing is stored" % (
@@ -332,7 +369,7 @@ def enroll(a):
         machine, code["hub"], code["org"], "" if machine == old else ", no longer as %s" % old))
     print("enrolled this machine as %s at %s (org %s); its credential is %s (mode 600)" % (
         machine, code["hub"], code["org"], path))
-    if not a.name and machine != code["machine"]:
+    if code["kind"] == "enroll" and not a.name and machine != code["machine"]:
         print("The code proposed %s; this machine keeps its own name, %s, so nothing it wrote is renamed. To be "
               "%s instead, run sminos hub enroll --name %s --replace and paste a new code at the prompt (this code "
               "is now bound to %s)." % (code["machine"], machine, code["machine"], code["machine"], machine))
@@ -347,16 +384,141 @@ def enroll(a):
 
 
 def show(_a):
+    """What daemon/hub.json holds, read locally: exit 0 when a credential is
+    held here, 1 when none. Whether the hub still accepts it is `check`'s."""
     d = held()
     if d is None:
         print("this machine is not enrolled at a hub (sminos hub enroll, then paste the code); it writes as %s"
               % sminos.host_name())
-        return
+        sys.exit(1)
     former = d.get("former") if isinstance(d.get("former"), dict) else {}
     print("machine  %s\nhub      %s (org %s)\nformer   %s\nsince    %s" % (
         d.get("machine") or "?", d.get("hub") or "?", d.get("org") or "?",
         ", ".join("%s (%d sessions)" % (n, len(s) if isinstance(s, list) else 0) for n, s in former.items()) or "-",
         d.get("enrolled") or "?"))
+
+
+# ------------------------------------------------------------- the hub's answer to the credential
+
+ENROLLMENT_PATH = "/machine/enrollment"
+# Access answers 401 with its own page to a service token it does not hold —
+# deleted by a revocation, or minted and not yet at its edge (the deploy
+# probe allows 60 s for that). So its 401 is a rejection only for a
+# credential enrolled this long ago, and only when it holds on a recheck this
+# long after the first (half as much again as the probe's bound, for a clock
+# that jumped at boot and made `enrolled` read old).
+ACCESS_GRACE_S = 600
+ACCESS_RECHECK_S = 90
+ACCESS_MARK = b"Cloudflare Access"
+
+
+def recheck_after():
+    try:
+        return max(0.0, float(os.environ.get("SMINOS_ACCESS_RECHECK_S", ACCESS_RECHECK_S)))
+    except ValueError:
+        return ACCESS_RECHECK_S
+
+
+def ask(cred, method, accepted):
+    """One authenticated request to /machine/enrollment, read: ("accepted",
+    answer), ("rejected", which), ("access", None) for Access's 401 page —
+    which only `authenticated` decides — or ("other", what came)."""
+    url = urllib.parse.urlsplit(cred["hub"])
+    conn = uplink.connection(cred, TIMEOUT)
+    try:
+        conn.request(method, url.path.rstrip("/") + ENROLLMENT_PATH,
+                     headers={**uplink.admission(cred), "Accept": "application/json"})
+        resp = conn.getresponse()
+        raw = resp.read(ANSWER_MAX)
+        cut = bool(resp.length)
+    except (OSError, http.client.HTTPException) as e:
+        return "other", "the hub did not answer: %s" % (" ".join(str(e).split()) or type(e).__name__)
+    finally:
+        conn.close()
+    if cut:
+        return "other", "the hub did not answer whole: the answer ended after %d bytes, short of its length" % len(raw)
+    if resp.status == 401:
+        if ACCESS_MARK in raw:
+            return "access", None
+        return "other", "the hub answered 401 without Access's page: %s" % said(raw.decode("utf-8", "replace"))
+    try:
+        answer = json.loads(raw)
+    except ValueError:
+        answer = None
+    if resp.status == 403 and isinstance(answer, dict) and answer.get("error") == "not-enrolled":
+        return "rejected", "the hub answered not-enrolled"
+    if resp.status == 200 and isinstance(answer, dict) and accepted(answer):
+        return "accepted", answer
+    return "other", "the hub answered %d %s" % (resp.status, said(raw.decode("utf-8", "replace")) or "with no body")
+
+
+def authenticated(cred, method, accepted):
+    """The hub's answer to the stored credential, by §6's rule, which `check`
+    and `leave` share: ("accepted", answer); ("rejected", which) for the
+    Worker's not-enrolled, at once, or for Access's 401 page to a credential
+    past the propagation grace that holds on one recheck; else ("other", what
+    came) — Access's 401 inside the grace among it, since a token minted
+    minutes ago may not have reached Access's edge."""
+    outcome, said_ = ask(cred, method, accepted)
+    if outcome != "access":
+        return outcome, said_
+    enrolled = sminos._ts_epoch(cred.get("enrolled"))
+    age = None if enrolled is None else time.time() - enrolled
+    if age is None or age < ACCESS_GRACE_S:
+        return "other", "Access answered 401 to a credential enrolled %s, which may not have reached Access's edge " \
+                        "yet" % ("%d s ago" % age if age is not None else "at a time hub.json does not say")
+    time.sleep(recheck_after())
+    outcome, said_ = ask(cred, method, accepted)
+    return ("rejected", "Access answered 401") if outcome == "access" else (outcome, said_)
+
+
+def stored(undecided):
+    """The credential hub.json holds, or None when this machine is not
+    enrolled. A file it cannot use is said and ends the command with the
+    verb's undecided exit: the hub cannot be asked about it, and nothing
+    here replaces or removes it."""
+    try:
+        return uplink.load_credential()
+    except uplink.CredentialBad as e:
+        sminos.die("%s: the hub cannot be asked" % e, undecided)
+
+
+def check(_a):
+    """Whether the hub still accepts this machine's credential; changes
+    nothing. Exit 0 accepted, 1 not enrolled here, 3 rejected, 4 undecided."""
+    cred = stored(4)
+    if cred is None:
+        print("this machine is not enrolled at a hub")
+        sys.exit(1)
+    outcome, said_ = authenticated(cred, "GET", lambda a: a.get("org") == cred["org"]
+                                   and a.get("machine") == cred["machine"])
+    if outcome == "accepted":
+        print("enrolled as %s at %s (org %s): accepted" % (cred["machine"], cred["hub"], cred["org"]))
+    elif outcome == "rejected":
+        sminos.die("the hub no longer accepts this machine's credential: %s" % said_, 3)
+    else:
+        sminos.die(said_, 4)
+
+
+def leave(_a):
+    """Ends this machine's enrollment at its hub; on the hub's acceptance, or
+    its rejection of a credential already revoked, hub.json goes, and the
+    daemon stops its uplink on its own. Anything else keeps it (exit 1)."""
+    cred = stored(1)
+    if cred is None:
+        print("this machine is not enrolled at a hub: nothing to leave")
+        return
+    outcome, said_ = authenticated(cred, "DELETE", lambda a: a.get("revoked") == cred["machine"])
+    if outcome == "other":
+        sminos.die("%s — the credential is kept: run sminos hub leave again later" % said_, 1)
+    os.remove(uplink.credential_path())
+    sminos.forget_caches()
+    if outcome == "accepted":
+        line = "left the hub as %s" % cred["machine"]
+    else:
+        line = "the hub had already revoked %s; the stale credential is removed" % cred["machine"]
+    sminos.daemon_log("hub: %s (%s, org %s)" % (line, cred["hub"], cred["org"]))
+    print(line)
 
 
 def add_hub(path, smns, hub, a):
@@ -395,7 +557,7 @@ def add_hub(path, smns, hub, a):
         "; its remote %s is no longer synced live (it stays the log's archive)" % smns[2] if smns[2] else ""))
 
 
-USAGE = "usage: sminos hub enroll [--name N] [--replace] (the code at its prompt, or on stdin) | show"
+USAGE = "usage: sminos hub enroll [--name N] [--replace] (the code at its prompt, or on stdin) | show | check | leave"
 
 
 def enroll_args(words):
@@ -425,7 +587,7 @@ def cmd_hub(words):
     op = words[0] if words else ""
     if op == "enroll":
         enroll(enroll_args(words[1:]))
-    elif op == "show" and len(words) == 1:
-        show(None)
+    elif op in ("show", "check", "leave") and len(words) == 1:
+        {"show": show, "check": check, "leave": leave}[op](None)
     else:
         sminos.die(USAGE)

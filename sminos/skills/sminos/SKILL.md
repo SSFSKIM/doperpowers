@@ -185,6 +185,7 @@ branch.
 
 ## Setup
 
-A project's `.smns` and its mirror, enrolling a machine at the desk hub,
-putting a project on the hub, installing the daemon, and the machine's
-policy: `references/setup.md`.
+A project's `.smns` and its mirror, enrolling a machine at the desk hub
+(by hand, or unattended through a provisioning key), checking and ending
+its enrollment, putting a project on the hub, installing the daemon, and
+the machine's policy: `references/setup.md`.
