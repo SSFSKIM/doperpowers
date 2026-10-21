@@ -1980,6 +1980,21 @@ commit 5168e433 on its branch, 2026-10-21):
   Rationale: each follows the spec's intent where it was silent; the reasons are in the M3 report.
   Date/Author: 2026-10-21, M3's executor, folded by the controller.
 
+- Decision: M3's live smoke proves acceptance 1 as one command (`up` exits 0, with the enroll inside
+  the boot) but not its 8-minute bound. That bound, and acceptance 10's 5 minutes, are measured in
+  M4 (images) and M6, on a network where Google API calls do not wait out a blackholed IPv6.
+  Rationale: during M3 every Secret Manager and gcloud call from the MacBook took 1–4 minutes for an
+  environmental reason the driver must not work around, so a time measured there says nothing about
+  the driver. Date/Author: 2026-10-21, executor (controller), at M3's review.
+- Decision: The image fence. I13 has no image `get`, so before `image-delete` the driver calls
+  `images` again (it lists only devcloud-labeled images) and deletes only if the id is still there
+  with the labels the decision used. Every relabel first does a `get` and refuses unless the target
+  still carries `devcloud`. Rationale: the constraint that nothing is modified or deleted without
+  the label re-read applies to images and relabels too (M3 review), and listing again needs no
+  protocol change. Rejected: adding `image-get` to I13, which every provider would then have to
+  implement for a check `images` already gives. Date/Author: 2026-10-21, executor (controller), at
+  M3's review.
+
 ## Outcomes & Retrospective
 
 Pending — written at finish.
