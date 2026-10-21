@@ -2083,6 +2083,18 @@ beside; a single reviewer reads one of those well in a pass.
     machine-side cost that §3 and §8 do not address. The pair was not run
     in the control.
 
+    Follow-up, 2026-10-21 (doperpowers #328, sminos 1.6.1): the encoder
+    now quotes strings with the json module's C quoting and sorts ASCII
+    keys natively, byte-identical to before. That was checked old against
+    new at volume and against MAWS's `canonical.ts` on 366,267 values. The
+    check went from 0.046 to 0.0038 CPU-s per MiB on this backlog's shape,
+    and `HubLog.take` from 0.056 to 0.014. A drain model calibrated on the
+    timings above predicts the open after the resume at about 0.7 s at
+    150 and 1.6 s at 280; that is a prediction, not a band rerun.
+    Taking a subscribe ahead of queued events was judged not worth it
+    yet: after the fix the backlog adds about 0.2 s at 150. What remains
+    at 280 is the open's own work at that CPU share.
+
     The chunk lag at 280 is most likely starvation of the chunk path
     itself, whose POSTs took up to 591 ms.
 
