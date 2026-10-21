@@ -58,6 +58,31 @@ human (a message or an ask) out of runs:
   routine_peer,        control 0 of 16, shipped line 0 of 16, decision line 0
   routine_relay        of 16, subagents line 3 of 16 (all in the long history)
                        — sent notices that changed nothing for the human
+
+Second round, 2026-10-20, on 7.194.0 (long history; small_ruling every arm
+4 of 4, each asking the human, so it does not test a decision the session
+makes itself):
+  milestone            7.194.0 12 of 12; plus the decision clause 12 of 12
+                       (with the first round, 21 of 24: its 9 of 12 was
+                       noise); the plain list "Report the progress and results
+                       of the work, the problems you meet, any surprise, any
+                       deviation ..., and any decision you make in the human's
+                       place, as you meet them." 12 of 12; "Report what the
+                       human should know as you meet it: the progress and
+                       results of the work, the problems you meet, the
+                       decisions you make in their place, any surprise, and
+                       any deviation from the initial intention or plan."
+                       12 of 12 (shipped, 7.195.0)
+  routine_peer,        7.194.0 0 of 16, decision clause 0 of 16, plain list
+  routine_relay        2 of 16 (progress the human had already been told),
+                       shipped wording 0 of 16
+The audit's should-have-sent notes (110) by kind, several per note: a
+decision made in the human's place 63, progress 58, result 41, problem 35,
+deviation 30, surprise 28, waiting on the human 22. Surprise or deviation
+touches 51 of them; the shipped wording touches 109, all but one that carried
+only an answer. No scenario here reproduces a decision the audit saw go
+unsent: in isolation the model reports one, so whether the clause moves real
+sessions is for the next transcript audit.
 The first round's routine_peer had no machine line, so the model probed
 `hostname`/`date`, got the canned empty output, and the variants reported that
 as friction; it is left out of the counts above.
