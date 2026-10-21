@@ -244,7 +244,13 @@ def _run(ctx, bounded):
             if client.has("images"):
                 listed = client.images()
                 for image in surplus_images(listed, now, compose.recipe_hash(ctx.plugin)):
-                    _image_delete(ctx, client, account, image, bounded)
+                    try:
+                        _image_delete(ctx, client, account, image, bounded)
+                    except Spent:
+                        raise
+                    except DriverError as error:
+                        ctx.warn(f"devcloud vm reap: image {image['name']} ({account.name}): {error}")
+                        failed = True
                 bakeable.append((account, client, listed, builders))
         except Spent:
             raise

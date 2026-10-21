@@ -329,6 +329,18 @@ class RunTest(DriverBase):
         self.assertNotIn("image-delete", self.ops())
         self.assertIn("labels changed", self.err.getvalue())
 
+    def test_an_image_whose_delete_fails_does_not_stop_the_others(self):
+        # Failed images are retention's now; one the cloud will not delete must not hold up the rest.
+        state = self.state()
+        state["images"] = [{"id": f"f{i}", "name": f"bad{i}", "labels": {"devcloud": "image"},
+                            "created": NOW - i * HOUR, "state": "failed"} for i in range(2)]
+        state["behavior"]["fail"] = {"image-delete": 1}
+        self.state_file.write_text(json.dumps(state))
+        self.assertEqual(self.run_reaper(), 1)
+        self.assertEqual(self.ops().count("image-delete"), 2)
+        self.assertIn("bad0", self.err.getvalue())
+        self.assertIn("bad1", self.err.getvalue())
+
     def test_a_label_repair_reads_the_target_first(self):
         self.add_server("dc-a-0001", vm_labels(expires=NOW - 20 * MIN))
         self.depart_answers(code=3)
