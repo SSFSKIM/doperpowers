@@ -42,6 +42,8 @@ a project whose .smns names a hub is never synced through git.
 """
 
 import argparse
+import contextlib
+import fcntl
 import getpass
 import glob
 import http.client
@@ -248,6 +250,20 @@ def held():
         return {}
 
 
+@contextlib.contextmanager
+def credential_lock():
+    """Held while hub.json is written or removed: enroll's write and leave's
+    check-and-remove never interleave."""
+    path = daemon.daemon_path("hub.lock")
+    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)
+
+
 def enrolled_hub():
     """This machine's hub, {url, org} (a .smns names only the org); exits
     when the machine is not enrolled."""
@@ -361,9 +377,10 @@ def enroll(a):
     if old != machine:
         former[old] = sorted(set(former.get(old, ())) | set(sessions_under(old)))
     path = uplink.credential_path()
-    sminos.write_json(path, {"hub": code["hub"], "org": code["org"], "machine": machine,
-                             "client_id": answer["client_id"], "client_secret": answer["client_secret"],
-                             "key": code["key"], "former": former, "enrolled": sminos.now()}, mode=0o600)
+    with credential_lock():
+        sminos.write_json(path, {"hub": code["hub"], "org": code["org"], "machine": machine,
+                                 "client_id": answer["client_id"], "client_secret": answer["client_secret"],
+                                 "key": code["key"], "former": former, "enrolled": sminos.now()}, mode=0o600)
     sminos.forget_caches()
     sminos.daemon_log("hub: enrolled as %s at %s (org %s)%s" % (
         machine, code["hub"], code["org"], "" if machine == old else ", no longer as %s" % old))
@@ -511,14 +528,29 @@ def leave(_a):
     outcome, said_ = authenticated(cred, "DELETE", lambda a: a.get("revoked") == cred["machine"])
     if outcome == "other":
         sminos.die("%s — the credential is kept: run sminos hub leave again later" % said_, 1)
-    os.remove(uplink.credential_path())
-    sminos.forget_caches()
     if outcome == "accepted":
         line = "left the hub as %s" % cred["machine"]
     else:
-        line = "the hub had already revoked %s; the stale credential is removed" % cred["machine"]
-    sminos.daemon_log("hub: %s (%s, org %s)" % (line, cred["hub"], cred["org"]))
-    print(line)
+        line = "the hub had already revoked %s" % cred["machine"]
+    # The answer can take minutes (the recheck's wait); an enrollment that
+    # replaced hub.json meanwhile is another, live credential, never this one's
+    # to remove. The check and the removal are one step under enroll's lock.
+    with credential_lock():
+        try:
+            now = uplink.load_credential()
+        except uplink.CredentialBad:
+            now = {}
+        replaced = now is not None and (now.get("client_id"), now.get("client_secret")) != (
+            cred["client_id"], cred["client_secret"])
+        if now is not None and not replaced:
+            os.remove(uplink.credential_path())
+    sminos.forget_caches()
+    sminos.daemon_log("hub: %s (%s, org %s)%s" % (line, cred["hub"], cred["org"],
+                                                  "; hub.json was replaced meanwhile and is kept" if replaced else ""))
+    if replaced:
+        sminos.die("%s, but another enrollment replaced this machine's credential while leave ran (as %s): it is "
+                   "kept — run sminos hub leave again to end that one" % (line, now.get("machine") or "?"), 1)
+    print(line if outcome == "accepted" else line + "; the stale credential is removed")
 
 
 def add_hub(path, smns, hub, a):

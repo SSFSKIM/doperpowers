@@ -137,6 +137,8 @@ elif cmd == "edge":  # machine n — Access answers its token 401 for n requests
     call("POST", "/control/edge", {"machine": sys.argv[3], "requests": int(sys.argv[4])})
 elif cmd == "answer":  # JSON list — the next /machine/enrollment requests answered these
     call("POST", "/control/answer", {"answers": json.loads(sys.argv[3])})
+elif cmd == "release":  # a held answer goes
+    call("POST", "/control/release")
 elif cmd == "outage":  # path — no listener until the file exists
     call("POST", "/control/outage", {"until": sys.argv[3]})
 elif cmd == "connect":  # hub.json — open the stream with its credential, read the welcome, close
@@ -1001,6 +1003,29 @@ assert_rc 0 "$RC" "enroll --replace with the same piped code enrolls anew under 
 assert_equals "$(key_uses "$KEY_K")" "$((USES + 1))" "a new enrollment: one more use of the key"
 assert_not_contains "$(json_get "$(cred)" 'd["client_id"]')" "$OLD_CID" "with a new credential"
 check_is 0 "accepted" "whose check is accepted"
+
+# A leave whose answer is slow, and an enrollment that replaces hub.json
+# meanwhile (the revocation freed the name): the replacement is another, live
+# credential, which the leave neither removes nor revokes.
+fresh dc-r1
+ctl answer '[{"hold": true}]'
+"$SMINOS" hub leave > "$T/leave.out" 2>&1 & LEAVE=$!
+PIDS+=("$LEAVE")
+revoked_r1() { [ "$(ctl state '[m["name"] for m in d["machines"] if m["name"] == "dc-r1"]')" = "[]" ]; }
+until_true 100 revoked_r1
+enroll "$CODE_K" --name dc-r1 --replace
+assert_rc 0 "$RC" "while leave waits for its answer, enroll --replace enrolls dc-r1 anew"
+SUM="$(digest)"
+ctl release
+set +e; wait "$LEAVE"; RC=$?; set -e
+OUT="$(cat "$T/leave.out")"
+printf '%s\n' "$OUT" >> "$T/all.out"
+assert_rc 1 "$RC" "the leave, answered at last, exits 1"
+assert_contains "$OUT" "left the hub as dc-r1, but another enrollment replaced this machine's credential while leave ran" \
+  "saying its own enrollment ended and another replaced it"
+assert_contains "$OUT" "run sminos hub leave again to end that one" "and how to end that one"
+assert_equals "$(digest)" "$SUM" "the replacement's hub.json survives byte-identical"
+check_is 0 "accepted" "and the hub still accepts it"
 cd "$T"
 
 # ---- no secret anywhere

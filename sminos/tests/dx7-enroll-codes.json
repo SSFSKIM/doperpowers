@@ -715,7 +715,7 @@
  },
  {
   "note": "provisioning: padding on the body",
-  "text": "smns-provision-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJwcmVmaXgiOiJkYy0iLCJrZXkiOiJBQUVDQXdRRkJnY0lDUW9MREEwT0R4QVJFaE1VRlJZWEdCa2FHeHdkSGg4In14",
+  "text": "smns-provision-v1.eyJodWIiOiJodHRwczovL2Rlc2suZXhhbXBsZS5jb20iLCJvcmciOiJvcmctMSIsInRva2VuIjoidG9rX19fNzlfUHY2LWZqMzl2WDA4X0x4OE9fdTdlenI2dW5vNS1ibDVPUGk0ZUEiLCJwcmVmaXgiOiJkYy0iLCJrZXkiOiJBQUVDQXdRRkJnY0lDUW9MREEwT0R4QVJFaE1VRlJZWEdCa2FHeHdkSGg4In0=",
   "ok": false,
   "error": "provisioning code: damaged"
  },

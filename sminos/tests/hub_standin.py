@@ -135,7 +135,8 @@ The test's own hands (the stand-in plays a hub that may lie):
 - `POST /control/answer` `{"answers": [{"status", "body", "type"?} | {"access":
   true}]}`: the next requests to `/machine/enrollment` are answered these,
   one each, in order, before anything else looks at them (`access`: Access's
-  401 page).
+  401 page; `hold`: a `DELETE` applied as usual, its answer held until
+  `POST /control/release`).
 - `POST /control/outage` `{"until"}`: the stand-in stops listening (a
   connection is refused) until the file `until` exists, then listens again
   on the same port with the same state. Answered once the listener is
@@ -578,6 +579,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def parse_request(self):
         self.consumed = False   # whether this request's body was read
+        self.hold = None        # a /control/answer hold: the answer waits for /control/release
         ok = super().parse_request()
         if ok and self.path.startswith("/machine/") and self.path != "/machine/frames":
             with lock:
@@ -645,6 +647,9 @@ class Handler(BaseHTTPRequestHandler):
             if not state["answers"]:
                 return False
             a = state["answers"].pop(0)
+            if a.get("hold"):
+                self.hold = state["release"]   # applied as usual, its answer held
+                return False
         if a.get("access"):
             self.access_denied()
         else:
@@ -661,6 +666,8 @@ class Handler(BaseHTTPRequestHandler):
             if m:
                 with lock:
                     revoke_machine(m["name"])
+                if self.hold is not None:
+                    self.hold.wait(60)
                 self.reply(200, {"revoked": m["name"]})
         else:
             self.reply(404, {"error": "not-found"})

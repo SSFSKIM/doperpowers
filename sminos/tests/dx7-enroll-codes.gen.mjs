@@ -106,7 +106,11 @@ const lit = (note, text) => cases.push({ note, text });
   lit("provisioning: a one-time code's prefix over a provisioning body", 'smns-enroll-v1.' + b64(JSON.stringify(base)));
   text('an empty body', '');
   {
-    const body = b64(JSON.stringify(base) + 'x');
+    // A body that decodes without its padding (JSON whose trailing blanks make its length need padding), so the
+    // padding alone is what the decoder refuses.
+    let json = JSON.stringify(base);
+    while (Buffer.byteLength(json) % 3 === 0) json += ' ';
+    const body = b64(json);
     text('padding on the body', body + '='.repeat((4 - (body.length % 4)) % 4));
   }
   text('standard base64 characters in the body', Buffer.from(JSON.stringify(base) + '~~~').toString('base64'));
