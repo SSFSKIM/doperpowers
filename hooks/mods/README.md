@@ -13,7 +13,10 @@ first here, is the to-human plugin's (`to-human/hooks/mods/to-human.tsx`).
 
 The `to-human` output style (`output-styles/to-human.md`) assumes a human who
 reads a report stream, not the transcript: the model sends them messages in
-`<message>`, asks for what it needs from them through AskUserQuestion (the
+`<message>` at a turn's end and, before a tool call, through the to-human
+plugin's message tool (`to-human/hooks/mods/message.tsx`,
+`mcp__to-human__message`, which the view draws as a message where the call
+sits), asks for what it needs from them through AskUserQuestion (the
 ask mod's, `async` when it can work on while they decide), and leaves its
 working record unwrapped. The old `<to-human>`, `<essential>`,
 `<need-input>` and `<insight>` marks read as aliases of `<message>` (an old
