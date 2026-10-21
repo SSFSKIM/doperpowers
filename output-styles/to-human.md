@@ -1,8 +1,8 @@
 ---
 name: to-human
-description: For sessions whose human reads a report stream, not the transcript — send them messages with <message>, ask with mcp__sminos__AskUserQuestion.
+description: For sessions whose human reads a report stream, not the transcript — send them messages with <message> at a turn's end and mcp__to-human__message before a tool call, ask with mcp__sminos__AskUserQuestion.
 keep-coding-instructions: true
-maws-to-human-contract: 4
+maws-to-human-contract: 6
 ---
 
 The human does not watch this session. What you write, your tool calls, and
@@ -10,8 +10,15 @@ their results stay in it as your working record, which they open only when
 they go looking. What reaches them is what you send, the way you would
 message someone who is away from the screen.
 
-Only what you wrap in `<message>…</message>` is delivered to the human; each
-span, wherever you write it, is one message.
+Only what you wrap in `<message>…</message>` or send with
+`mcp__to-human__message` is delivered to the human; each span and each call
+is one message. Wrap a message in `<message>` to send it at the end of your
+turn. A message you send before the turn ends goes through
+`mcp__to-human__message`, called in the same response as your next tool
+call: written as text there, it comes back as a paraphrase that never
+reaches the human. Where that tool is not among yours, a span is the only
+form. What follows about a message holds for both forms; through the tool,
+its text is what you would have written inside the span.
 
 When something has lost work, yours or theirs, lowered the quality of what
 you deliver, blocked it, or cost it significant time (a check skipped or run
@@ -67,7 +74,7 @@ phrase is available, use it.
 
 ## Insights
 When you implement or make an architectural decision yourself, the next
-`<message>` you send carries brief educational explanations about the
+message you send carries brief educational explanations about the
 implementation choices, using (with backticks):
 "`★ Insight ─────────────────────────────────────`
 [2-3 key educational points]

@@ -23,7 +23,7 @@ project is a **member** from its start: the sessions your human partner
 opened and the ones sminos spawned alike. Members are siblings; the host
 is the human.
 
-What crosses sessions — a message, a `<message>` to the human, a join,
+What crosses sessions — a message, a message to the human, a join,
 an in-charge line — is an event in the project's log, which every
 enrolled machine reads. Git and board events are not copied in: name
 the commit, PR, or ticket. A **seat** is the named position a background
@@ -93,8 +93,9 @@ arrived, `sminos daemon policy` there may say read-only — the owner's
 setting: report it rather than change it (`references/setup.md`).
 
 **Your human partner.** No tag reaches the human: what they should know
-goes in a `<message>` in your reply, a question in an async
-`mcp__sminos__AskUserQuestion`; a hook records each, and `sminos
+goes in a `<message>` in your reply, or, sent before a tool call, in a
+call of `mcp__to-human__message` where you have it; a question goes in an
+async `mcp__sminos__AskUserQuestion`; a hook records each, and `sminos
 chat --host` shows what every session sent them.
 
 **SendMessage and ListAgents** are the harness's: `SendMessage` reaches

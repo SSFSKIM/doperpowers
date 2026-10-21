@@ -5,7 +5,7 @@ model: fable
 effort: xhigh
 autoCompactWindow: 750000
 color: red
-disallowedTools: mcp__doperpowers__compact, mcp__sminos__AskUserQuestion
+disallowedTools: mcp__doperpowers__compact, mcp__sminos__AskUserQuestion, mcp__to-human__message
 ---
 
 You are an independent design critic — the peer reviewer a strong team gives

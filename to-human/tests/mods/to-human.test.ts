@@ -1,7 +1,9 @@
 import type { EngineInterface, On } from 'claude-code'
+import type { Engine } from 'claude-code/testing'
 import { describe, expect, mock, test, tier } from 'claude-code/testing'
 
 import type { RowKind } from '../../hooks/mods/to-human'
+import { MESSAGE_TOOL } from '../../hooks/mods/message'
 import { editorUrl, fileLinks, isRead, markdownBlocks, newView, parse, placeAll, placeArgs, placesIn, promptRow, registerToHuman, reorder, runEnd, runStart, sessionPlaceArgs } from '../../hooks/mods/to-human'
 
 // The kit runs tests with the timer the hooks' declarations leave out.
@@ -1083,8 +1085,159 @@ describe('file links', () => {
 })
 
 describe('isRead', () => {
-  test('questions and agent spawns stay visible while messaging is working record', async () => {
-    expect(['AskUserQuestion', 'mcp__doperpowers__AskUserQuestion', 'mcp__sminos__AskUserQuestion', 'Agent', 'Workflow'].map(isRead)).toEqual([true, true, true, true, true])
+  test('questions, agent spawns and the message tool stay visible while other messaging is working record', async () => {
+    expect(['AskUserQuestion', 'mcp__doperpowers__AskUserQuestion', 'mcp__sminos__AskUserQuestion', 'Agent', 'Workflow', MESSAGE_TOOL].map(isRead)).toEqual([true, true, true, true, true, true])
     expect(['SendMessage', 'Bash', 'Read', 'Monitor', 'TaskOutput'].map(isRead)).toEqual([false, false, false, false, false])
+  })
+})
+
+describe('the message tool', () => {
+  const PLUGIN = 'to-human'
+  const engineDrawing = (on: On) =>
+    on('ui.render', (_, e) => ({
+      type: 'Text',
+      children: [String((e.props as { text?: string }).text ?? (e.component === 'ToolResult' ? 'sent' : e.component))],
+    }))
+  type Call = { input: unknown; isRunning?: boolean; isErrored?: boolean; isInterrupted?: boolean; output?: unknown }
+  const callRow = ($: Engine, id: string, { input, isRunning = false, isErrored = false, isInterrupted = false, output }: Call) =>
+    $.ui.mount({
+      plugin: PLUGIN, surface: 'terminal', component: 'ToolUse', requestId: id,
+      props: { tool_use_id: id, tool: MESSAGE_TOOL, input, isRunning, isErrored, isInterrupted, output },
+    } as never)
+  const resultRow = ($: Engine, id: string, output: unknown, isErrored = false) =>
+    $.ui.mount({
+      plugin: PLUGIN, surface: 'terminal', component: 'ToolResult', requestId: id,
+      props: { tool_use_id: id, tool: MESSAGE_TOOL, output, isErrored },
+    } as never)
+  const message = ($: Engine, requestId: string, text: string) =>
+    $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AssistantMessage', requestId, props: { text, isFirstOfReply: true } })
+  const bash = ($: Engine, id: string) =>
+    $.ui.mount({
+      plugin: PLUGIN, surface: 'terminal', component: 'ToolUse', requestId: id,
+      props: { tool_use_id: id, tool: 'Bash', input: { command: 'ls' }, isRunning: false, isErrored: false, isInterrupted: false, output: 'ok' },
+    } as never)
+
+  test('its call draws as a message, between runs of working record it breaks, and turns the view on', async ($, on) => {
+    mock.env(on, {})
+    mock.store(on)
+    engineDrawing(on)
+    const before = await message($, 'r1', 'Reading the logs.')
+    // Before any mark the view draws as the engine does.
+    expect(await before.find({ type: 'Text', text: 'Reading the logs.' })).toBeDefined()
+    const call = await callRow($, 'toolu_m1', { input: { text: 'Approve the **codesign** prompt now.' }, output: 'sent' })
+    const after = await bash($, 'toolu_b1')
+
+    expect(await call.find({ type: 'Text', text: '● message' })).toBeDefined()
+    expect(await call.find({ type: 'Markdown', text: 'Approve the **codesign** prompt now.' })).toBeDefined()
+    expect(await call.find({ type: 'Button' })).toBeUndefined()
+    expect(await call.find({ type: 'Text', text: 'ToolUse' })).toBeUndefined()
+    // The record before it folds once the view is on, and the call closes its run: the call after opens one of its own.
+    expect(await before.find({ type: 'Button', text: 'working record' })).toBeDefined()
+    expect(await before.find({ type: 'Text', text: 'Reading the logs.' })).toBeUndefined()
+    expect(await after.find({ type: 'Button', text: 'working record' })).toBeDefined()
+  })
+
+  test('its result row draws nothing', async ($, on) => {
+    mock.env(on, {})
+    mock.store(on)
+    engineDrawing(on)
+    await callRow($, 'toolu_m1', { input: { text: 'Done.' }, output: 'sent' })
+    const result = await resultRow($, 'toolu_m1', 'sent')
+
+    expect(await result.find({ type: 'Text' })).toBeUndefined()
+    expect(await result.find({ type: 'Markdown' })).toBeUndefined()
+    expect(await result.find({ type: 'Button' })).toBeUndefined()
+  })
+
+  test('a call whose input still streams draws the text so far, never the raw JSON', async ($, on) => {
+    mock.env(on, {})
+    mock.store(on)
+    engineDrawing(on)
+    await message($, 'm0', '<message>Starting.</message>')
+    const partial = await callRow($, 'toolu_m1', { input: '{"text": "Approve the dialog\\non the', isRunning: true })
+    const empty = await callRow($, 'toolu_m2', { input: '{"te', isRunning: true })
+
+    expect(await partial.find({ type: 'Text', text: '● message …' })).toBeDefined()
+    expect(await partial.find({ type: 'Markdown', text: 'Approve the dialog\non the' })).toBeDefined()
+    const texts = [...(await partial.findAll({ type: 'Text' })), ...(await empty.findAll({ type: 'Text' }))].map((t) => t.text)
+    expect(texts.some((text) => text.includes('{'))).toBe(false)
+    expect(await empty.find({ type: 'Markdown' })).toBeUndefined()
+  })
+
+  test('a refused, errored or interrupted call was not sent: it stays working record, its result too', async ($, on) => {
+    mock.env(on, {})
+    mock.store(on)
+    engineDrawing(on)
+    await message($, 'm0', '<message>Starting.</message>')
+    const refused = await callRow($, 'toolu_m1', { input: { text: 'Done.' }, isErrored: true, output: 'message is for the main conversation' })
+    const result = await resultRow($, 'toolu_m1', 'message is for the main conversation', true)
+    const interrupted = await callRow($, 'toolu_m2', { input: { text: 'Later.' }, isInterrupted: true, output: 'Interrupted' })
+    const after = await resultRow($, 'toolu_m2', 'Interrupted')
+
+    expect(await refused.find({ type: 'Markdown' })).toBeUndefined()
+    expect(await refused.find({ type: 'Button', text: 'working record' })).toBeDefined()
+    expect(await result.find({ type: 'Button' })).toBeUndefined()
+    expect(await interrupted.find({ type: 'Markdown' })).toBeUndefined()
+    expect(await after.find({ type: 'Markdown' })).toBeUndefined()
+
+    // Unfolded, the run shows the engine's own rows.
+    await refused.press({ key: 'to-human-toggle' })
+    expect(await refused.find({ type: 'Text', text: 'ToolUse' })).toBeDefined()
+    expect(await result.find({ type: 'Text', text: 'sent' })).toBeDefined()
+  })
+
+  test('the full transcript draws its rows as the engine does', async ($, on) => {
+    mock.env(on, {})
+    mock.store(on)
+    engineDrawing(on)
+    const call = await callRow($, 'toolu_m1', { input: { text: 'Done.' }, output: 'sent' })
+    const band = await $.ui.mount({
+      plugin: PLUGIN, surface: 'terminal', component: 'AbovePrompt',
+      props: { hasSurvey: false, isWorking: false, maxRows: 5, bodyColumns: 80, scroll: { offset: 0, bodyRows: 5 }, view: {} },
+    })
+    await band.press({ key: 'to-human-mode' })
+    const result = await resultRow($, 'toolu_m1', 'sent')
+
+    expect(await call.find({ type: 'Text', text: 'ToolUse' })).toBeDefined()
+    expect(await result.find({ type: 'Text', text: 'sent' })).toBeDefined()
+  })
+
+  test('a module that starts over in a session whose only message went through the tool folds from its first answer', async ($, on) => {
+    mock.env(on, {})
+    mock.store(on)
+    let rawAnswers = 0
+    on('ui.render', (_, e) => {
+      if (e.component !== 'AbovePrompt') rawAnswers += 1
+      return { type: 'Text', children: [String((e.props as { text?: string }).text ?? e.component)] }
+    })
+    on('session.messages', () => ({
+      value: [{
+        role: 'assistant', text: '',
+        toolUses: [{ tool_use_id: 'toolu_m1', tool: MESSAGE_TOOL, input: { text: 'Approve it.' }, result: 'sent', text: 'sent' }],
+      }],
+    }))
+    on('session.id', () => ({ value: 's1' }))
+    on('process.run', async () => ({ value: { exitCode: 1, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
+    const row = await message($, 'r1', 'Reading.')
+
+    expect(rawAnswers).toBe(0)
+    expect(await row.find({ type: 'Button', text: 'working record' })).toBeDefined()
+  })
+
+  test('a refused call in the conversation is no mark', async ($, on) => {
+    mock.env(on, {})
+    mock.store(on)
+    engineDrawing(on)
+    on('session.messages', () => ({
+      value: [{
+        role: 'assistant', text: '',
+        toolUses: [{ tool_use_id: 'toolu_m1', tool: MESSAGE_TOOL, input: { text: 'Done.' }, text: 'refused', isError: true }],
+      }],
+    }))
+    on('session.id', () => ({ value: 's1' }))
+    on('process.run', async () => ({ value: { exitCode: 1, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
+    const row = await message($, 'r1', 'Reading.')
+
+    expect(await row.find({ type: 'Text', text: 'Reading.' })).toBeDefined()
   })
 })

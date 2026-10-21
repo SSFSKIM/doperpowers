@@ -5,7 +5,7 @@ model: opus
 effort: high
 autoCompactWindow: 483000
 color: green
-disallowedTools: AskUserQuestion, mcp__doperpowers__compact, mcp__sminos__AskUserQuestion
+disallowedTools: AskUserQuestion, mcp__doperpowers__compact, mcp__sminos__AskUserQuestion, mcp__to-human__message
 ---
 
 You execute a spec another session wrote and still owns. That session
