@@ -50,8 +50,9 @@ desk no longer counts it.
   and H2 were done by the executor; H5 is not needed; H8 is new. Every M1 resource was deleted
   between 04:21Z and 04:47Z; the deletion times are in the M1 report, and the one tailnet node
   left behind on purpose (the ephemeral-expiry test) removes itself.
-- [ ] M2 — The host side: leases and their lock, departure, release and its ledger, the closed public
-  port, unattended enrollment, desk control.
+- [x] (2026-10-21 07:30Z) M2 — The host side: leases and their lock, departure, release and its
+  ledger, the closed public port, unattended enrollment, desk control (810bc1b3, fixes b2a45d4f,
+  2b001c56, b2716a69; reviewed clean after two fix rounds; `devcloud` gate green).
 - [ ] M3 — The driver core, the provider protocol and the Hetzner provider, with the reaper.
 - [ ] M4 — Images and project host files.
 - [ ] M5 — The GCE provider, adopt, and the open provider path.
