@@ -8568,7 +8568,9 @@ def guide_text(session, launch, source="", title=""):
         held_alias(*own_alias(_own_events(project, session), session), peer, session,
                    shadowing(project, session))[0]
     who = "%s [%s]" % (alias, session[:8]) if alias and alias != session[:8] else "[%s]" % session[:8]
-    cli = os.path.join(SCRIPT_DIR, "sminos")
+    # The CLI is off PATH: its installed path is given once, and the verb lines
+    # name it `sminos` (an eval round showed no session typed the bare name).
+    path, cli = os.path.join(SCRIPT_DIR, "sminos"), "sminos"
     if home is not None and home.id != project.id:
         where = ("by your own `sminos join` (your launch directory, %s, is in %s; `%s join --cwd` returns you there)"
                  % (launch, home.name, cli))
@@ -8588,7 +8590,8 @@ def guide_text(session, launch, source="", title=""):
         "sminos: you are %s in project %s on machine %s: %s. A `cd` does not change your project.%s"
         % (who, project.name, enrollment()["machine"], where, fork),
         "Other Claude sessions work in this org, on every enrolled machine and in every repository. "
-        "To find one or tell it something, use sminos (not on PATH):",
+        "To find one or tell it something, use sminos. It is not on PATH; run it as",
+        "  %s" % path,
         "  %s list            your project's sessions; --here this machine's, --org every session" % cli,
         "  %s who <commit|PR> the session a commit or PR names in its Sminos-Session line, and how to reach it" % cli,
         '  %s say "..."       recorded in your project\'s log, read at its sessions\' next chat; wakes no one:'
