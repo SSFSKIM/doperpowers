@@ -2500,12 +2500,8 @@ def join_on_sight(project, sid, seat, peer, running, by=None, recheck=None, mark
         if running and alias:
             # A resumed session's engine says `user` for the charge name it
             # restored: joined under sminos's own label, as _member reads it.
-            # One that moved here from another project brings its names: its
-            # own files there hold them, which this log does not.
-            events = log_read(project, kinds=MEMBERSHIP + ("renamed", "in-charge"))
-            sessions = (sid,) + tuple(lineage(sid, _projection(events)))
-            events += [e for p in known_projects() if p.id != project.id for s in sessions for e in _own_events(p, s)]
-            source = own_name_source(alias, source, peer, proposed_names(events, sessions)[0])
+            events = log_read(project, kinds=MEMBERSHIP + ("in-charge",))
+            source = own_name_source(alias, source, peer, events, (sid,) + tuple(lineage(sid, _projection(events))))
         fields = joined_fields(alias or sid[:8], source or "derived",
                                launch_cwd(sid, fallback=str(peer.get("cwd") or ""), fresh=True), by=by,
                                session_kind=str(peer.get("kind") or ""))
@@ -2780,14 +2776,13 @@ def _projection(events):
     `continues`, the session that names it so (lineage). `aliases`: every
     alias its own joined and renamed events carried, each with the latest ts
     among them (the former aliases a name still reaches it by, §4 of the
-    charge names design); `charged`, those of them it carried under the
-    name source `charge` (charged_alias)."""
+    charge names design)."""
     info = {}
 
     def row(sid):
         return info.setdefault(sid, {"latest": None, "joined": None, "by": "", "renamed": None, "state": None,
                                      "titled": None, "in_charge": [], "status": [], "to": "", "continues": "",
-                                     "aliases": {}, "charged": set()})
+                                     "aliases": {}})
 
     for e in events:
         sid, kind = e.get("session"), e["kind"]
@@ -2801,8 +2796,6 @@ def _projection(events):
             if kind in ("joined", "renamed") and e.get("alias"):
                 held, ts = str(e["alias"]), str(e.get("ts") or "")
                 r["aliases"][held] = max(r["aliases"].get(held, ""), ts)
-                if charged_alias(e):
-                    r["charged"].add(held)
             if kind in MEMBERSHIP:
                 r["latest"] = e
                 if kind == "joined":
@@ -2897,36 +2890,22 @@ def ts_age(ts):
     return max(0.0, time.time() - then)
 
 
-def charged_alias(e):
-    """The alias a session's own joined or renamed event carried under the
-    name source `charge`, "" for any other event. Such an event is written
-    only where sminos read the alias as its own (own_name_source), so it
-    carries that knowledge into a log holding none of the proposals: the
-    project a session moved to (join)."""
-    if e.get("kind") in ("joined", "renamed") and e.get("name_source") == "charge" \
-            and writer_session(str(e.get("writer") or "")) == e.get("session"):
-        return str(e.get("alias") or "")
-    return ""
-
-
 def proposed_names(events, sessions):
-    """(names, latest): the names sminos holds as its own for a member — the
+    """(names, latest): the charge names sminos proposed for a member — the
     `name`s of the derived in-charge events of `sessions` (its session and
-    the ones it continues), and the aliases their own events carried as
-    `charge` (charged_alias) — and the newest proposal, "" for none.
-    `events` holds each writer's in seq order."""
+    the ones it continues) — and the newest of them, "" for none. `events`
+    holds each writer's in seq order."""
     named = [e for e in events if e.get("kind") == "in-charge" and e.get("session") in sessions
              and e.get("source") == "derived" and isinstance(e.get("name"), str) and e["name"]]
     latest = latest_across_writers(named)
-    charged = {charged_alias(e) for e in events if e.get("session") in sessions} - {""}
-    return {e["name"] for e in named} | charged, (latest["name"] if latest else "")
+    return {e["name"] for e in named}, (latest["name"] if latest else "")
 
 
-def own_name_source(alias, source, rec, names):
+def own_name_source(alias, source, rec, in_charge, sessions):
     """A seat-less session's name source, read on its own machine from its
-    running engine record `rec`: `charge` when its alias is one of `names`,
-    the names sminos holds as its own for it (proposed_names), and the
-    record's name too; else `source`, the one held_alias
+    running engine record `rec`: `charge` when its alias is one of the names
+    sminos proposed for it (proposed_names over its `in_charge` events, of
+    `sessions`) and the record's name too; else `source`, the one held_alias
     gave. The engine cannot say which names are sminos's: it registers a
     hook's name `hook` and restores it as `user` on a resume, so its label
     would turn sminos's name into the owner's after one resume. The proviso
@@ -2937,6 +2916,7 @@ def own_name_source(alias, source, rec, names):
     its machine last published, so every reader reads one label."""
     if not rec:
         return source
+    names, _ = proposed_names(in_charge, sessions)
     if alias in names and str(rec.get("name") or "") == alias:
         return "charge"
     if source == "charge":
@@ -2970,8 +2950,7 @@ def _member(sid, r, seat, peer, local, title=True, info=None, shadowed=None):
     # remote operator) may have set a line for each session of the chain.
     in_charge = sorted((e for x in chain for e in x["in_charge"]), key=lambda e: (e["writer"], e["seq"]))
     if not seat:
-        name_source = own_name_source(alias, name_source, rec, proposed_names(in_charge, (sid,) + former)[0]
-                                      | set().union(*(x["charged"] for x in chain)))
+        name_source = own_name_source(alias, name_source, rec, in_charge, (sid,) + former)
     if not local:
         published = (r or {}).get("state") or {}
         state_word, age = str(published.get("state") or ""), (ts_age(published["ts"]) if published else None)
@@ -5023,7 +5002,7 @@ def charge_naming(project, m):
     if rec is None:
         return None
     name, source = str(rec.get("name") or ""), str(rec.get("nameSource") or "derived")
-    names, latest = proposed_names(log_read(project, kinds=("joined", "renamed", "in-charge")), (m.session,) + m.former)
+    names, latest = proposed_names(log_read(project, kinds=("in-charge",)), (m.session,) + m.former)
     if source not in ("derived", "auto") and name not in names:
         return None
     return ChargeNaming(name, rec.get("pid"), name if name in names else latest,
