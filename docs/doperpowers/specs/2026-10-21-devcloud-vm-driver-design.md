@@ -1625,8 +1625,10 @@ commit 5168e433 on its branch, 2026-10-21):
   the shared LAN of both Macs advertising IPv6 without routing it, so every Google API call waited
   out its AAAA attempts. The person set IPv6 to link-local only on both Macs; `gcloud secrets list`
   now takes 1.4 s.
-- Observation (M4): On a host, `sminos` is not on the PATH of a non-login shell, which is what
-  `devcloud vm ssh <n> -- <command>` runs (acceptance 3's `sminos spawn`).
+- Observation (M4): On a host, `sminos` is on no shell's PATH, login or not: the profile makes it a
+  zsh alias, which only an interactive shell loads. `devcloud vm ssh <n> -- sminos …` (acceptance 3)
+  therefore failed with "command not found", while `claude`, `devcloud` and `devenv`, which
+  `setup.sh` links into /usr/local/bin, were found.
 
 ## Decision Log
 
@@ -2060,6 +2062,13 @@ commit 5168e433 on its branch, 2026-10-21):
     means no file.
   - `--dry-run` lists no images, and "ready in" counts from the command's start.
   Date/Author: 2026-10-21, M4's executor, folded by the controller.
+
+- Decision: The boot links `/usr/local/bin/sminos` to the sminos CLI that the services step
+  resolves, refreshed at every boot and reconcile, so every shell on a host finds it, including a
+  non-login `vm ssh` and the daemon's children. Rejected: running `vm ssh` commands in a login
+  shell, which does not help because the profile defines `sminos` as an alias; `zsh -ic`, whose
+  interactive rc can print, prompt or hang. Date/Author: 2026-10-21, executor (controller), from
+  M4's finding.
 
 ## Outcomes & Retrospective
 
