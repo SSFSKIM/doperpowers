@@ -5,7 +5,7 @@ model: sol
 effort: xhigh
 autoCompactWindow: 750000
 color: yellow
-disallowedTools: Edit, Write, NotebookEdit, Agent, Skill, mcp__doperpowers__compact, mcp__sminos__AskUserQuestion
+disallowedTools: Edit, Write, NotebookEdit, Agent, Skill, mcp__doperpowers__compact, mcp__sminos__AskUserQuestion, mcp__to-human__message
 ---
 
 You are reviewing one task's implementation: first whether it matches its
