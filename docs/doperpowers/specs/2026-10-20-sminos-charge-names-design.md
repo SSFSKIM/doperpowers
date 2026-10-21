@@ -368,6 +368,16 @@ A manual end-to-end check, after installing the branch's sminos: in a member ses
 
   Rationale: M4's measurement, its task review, and the controller's fix of the latency it found.
   Date/Author: 2026-10-21, M4 executor and doperpowers-c4 (controller).
+- Decision: M5's mod has one path, the command, and no `sessionTitle` fallback, because every kind measured takes the command.
+  - The timer starts in every session (no `isInteractive` matcher), since SDK sessions read `isInteractive: false` yet take the command.
+  - The ask's dialog is read from its published `$.state` snapshot.
+  - The main turn is tracked by the mod's own `turn.start`/`turn.complete` hooks, with a generation count, so a turn that starts and ends while `name-due` runs also drops the answer.
+  - The session id is read at each tick, so the right file is checked after a `/clear`.
+  - A tick never overlaps another.
+  - sminos is bumped to 1.6.0, since main had reached 1.5.1.
+
+  Rationale: M5 execution, from its measurement (Surprises).
+  Date/Author: 2026-10-21, M5 executor.
 - Decision: derive refuses a re-derive when the session's transcript has not been modified since its latest derived line ("no activity since its last line, <age> ago"). It compares the transcript's mtime with that event's ts. A first derive is unchanged.
 
   Rationale: the owner's usage concern, 2026-10-21. Without the check, a stopped member that is never retired is re-forked every 6 hours forever. A fork of an idle session rebuilds its prompt cache, the most expensive kind of call, and its answer cannot change, since the conversation is the same.
