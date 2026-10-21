@@ -88,9 +88,15 @@ class SupervisorTest(unittest.TestCase):
         self.proc = None
 
     def tearDown(self):
+        # SIGTERM, so the supervisor stops its services: each runs in a session
+        # of its own, which a SIGKILL of the supervisor leaves running forever.
         if self.proc and self.proc.poll() is None:
-            self.proc.kill()
-            self.proc.wait()
+            self.proc.terminate()
+            try:
+                self.proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+                self.proc.wait()
 
     def lines(self, name):
         path = self.tmp / name
