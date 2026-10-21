@@ -2,6 +2,7 @@
 
   devcloud vm up [--label L] [--project owner/repo[@ref]]... [--account A] [--type T] [--location L]
                  [--disk GB] [--ttl D | --keep] [--spot] [--enroll-code -] [--confirmed] [--dry-run]
+  devcloud vm adopt <user@address> [--label L] [--project …]... [--ttl D] [--confirmed] [--dry-run]
   devcloud vm ls [--json]
   devcloud vm ssh <name> [--root] [-- command...]
   devcloud vm lease <name> <duration> [--confirmed]
@@ -20,7 +21,7 @@ import os
 import signal
 import sys
 
-from . import conformance, images, ops, reaper, up
+from . import adopt, conformance, images, ops, reaper, up
 from .context import Context, Paths
 from .errors import NOT_DRIVER, USAGE, DriverError
 
@@ -57,6 +58,13 @@ def parser():
     life.add_argument("--keep", action="store_true")
     p.add_argument("--spot", action="store_true")
     p.add_argument("--enroll-code", dest="enroll_code", choices=["-"])
+    p.add_argument("--confirmed", action="store_true")
+    p.add_argument("--dry-run", dest="dry_run", action="store_true")
+    p = sub.add_parser("adopt", help="make a machine the driver did not make a host, until released")
+    p.add_argument("target", metavar="user@address")
+    p.add_argument("--label", default=None)
+    p.add_argument("--project", action="append", default=[])
+    p.add_argument("--ttl")
     p.add_argument("--confirmed", action="store_true")
     p.add_argument("--dry-run", dest="dry_run", action="store_true")
     p = sub.add_parser("ls", help="list hosts")
@@ -96,6 +104,8 @@ def _dispatch(ctx, args, command, stdin):
                 raise DriverError(USAGE, "--enroll-code -: no code on stdin")
             args.enroll_code = code
         return up.run(ctx, args)
+    if args.command == "adopt":
+        return adopt.run(ctx, args)
     if args.command == "ls":
         return ops.ls(ctx, as_json=args.json)
     if args.command == "ssh":

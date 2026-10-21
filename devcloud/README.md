@@ -436,6 +436,7 @@ refuses with exit 6: hosts never drive.
 
     devcloud vm up [--label L] [--project owner/repo[@ref]]... [--account A] [--type T] [--location L]
                    [--disk GB] [--ttl D | --keep] [--spot] [--enroll-code -] [--confirmed] [--dry-run]
+    devcloud vm adopt <user@address> [--label L] [--project …]... [--ttl D] [--confirmed] [--dry-run]
     devcloud vm ls [--json]
     devcloud vm ssh <name> [--root] [-- command...]
     devcloud vm lease <name> <duration> [--confirmed]
@@ -480,7 +481,12 @@ slow path streams the plugin's `image/` and `boot/` and runs `setup.sh`,
 delivers the seed (its path in the host's credential ledger
 first, the key on ssh's stdin), installs `/etc/devcloud/boot.env` and starts
 the boot, and waits for every step, over the tailnet once the tailnet attach
-step is `ok` (the boot closes the public port right after it). A failed step
+step is `ok` (the boot closes the public port right after it). Where the
+provider attaches the seed itself (`metadata_seed`, GCE), nothing is done
+over SSH before the tailnet: the user-data also carries, on the slow path,
+the recipe as a gzipped tarball and a first-boot script that runs
+`setup.sh`, then ledgers and installs the descriptor and starts the boot
+(`/var/log/devcloud-first-boot.log` on the VM). A failed step
 prints `devcloud status` and exits 1, keeping the VM for inspection.
 `--enroll-code -` reads a one-time desk code from stdin and, after the boot,
 writes it to the host and reconciles, for when the profile has no
@@ -539,7 +545,19 @@ answer on stdout per operation (`info`, `types`, `create`, `list`, `get`,
 non-zero exit a failure. The driver gives a provider its account's
 credentials in its environment only and scrubs them from its stderr.
 `driver/providers/hetzner` ships here (it drives `hcloud` under a private,
-empty configuration). A provider of the person's own lives in the profile's
+empty configuration), and so does `driver/providers/gce`: it drives `gcloud`
+under its own `CLOUDSDK_CONFIG` (`~/.local/state/devcloud/gce/gcloud`) with
+the driver's seed activated there, so the Mac's own gcloud identity is never
+read or changed. Its account's `vars` name the project (`GCE_PROJECT`), the
+host service account every instance runs as with the `cloud-platform` scope
+(`GCE_SERVICE_ACCOUNT`, the host's seed through the metadata server, so no
+key file reaches the VM), the image family (`GCE_IMAGE_FAMILY`), the boot
+disk (`GCE_DISK_GB`, 50 by default) and any custom machine types to offer
+(`GCE_CUSTOM_TYPES`, since a zone lists none). It offers the zone's x86-64
+types with at least 2 dedicated vCPUs and 2 GB and no accelerator, priced
+from the Cloud Billing catalog (cached a week), creates every instance with
+`block-project-ssh-keys=TRUE`, a spot request with termination action
+`DELETE`, and images in the family from a stopped builder's boot disk. A provider of the person's own lives in the profile's
 `providers/<name>`: the person registers it once (`provider register
 <account> --confirmed` records its sha256 in `driver.toml`), and `provider
 test <account>` runs it through the conformance sequence on a real server; a
@@ -547,11 +565,36 @@ pass copies the exact bytes tested to `providers/.pass/<account>` with a
 record of their sha256, and every call runs that copy, its sha256 checked
 before each call, so an edit is in use only once it has passed.
 
+**`adopt`** makes an Ubuntu 24.04 machine the driver did not make a host,
+always with `--confirmed`, its target from the command line only. Lifetime
+is `keep` unless `--ttl`. It first reaches `<user>@<address>` with the
+person's own SSH key (sudo for a user other than root), refuses another OS
+and a machine that already holds a descriptor its own record does not
+match, then saves root's and the login user's `authorized_keys` to
+`/var/lib/devcloud-adopt/` (once), authorizes the driver keys for root,
+streams the recipe and runs `setup.sh`, stages a descriptor with
+`DEVCLOUD_ADOPTED=1`, delivers the seed and starts the boot, as the slow
+path of `up` does. Its record, `~/.local/state/devcloud/adopted/<name>.json`,
+holds the address, the login user, the lease and the phase, written before
+the step it names (`preparing`, `seeded`, `booted`, `released`); `adopt` run
+again for the same target resumes from it. `ls` lists adopted machines
+(an unfinished adoption with its phase), never counted as throwaway VMs, and
+the reaper never touches them. `lease` writes the host's lease and the
+record; there are no labels. `down` (and the host's own lease end) runs
+`devcloud release`: the machine leaves the desk and the tailnet, devcloud's
+firewall, units and every credential its ledger lists go, the saved keys
+come back, and the machine keeps running. `down` releases over the tailnet,
+else as root at the recorded address, and removes the record only once a new
+connection as the original login user, with the person's own key, finds
+nothing of devcloud left.
+
 **Local state** is `~/.local/state/devcloud/`: the driver Mac's SSH key (its
 public half written to the profile's `driver-keys/<machine>.pub`, which the
 configuration sync pushes and every host authorizes), a `known_hosts` keyed
-by the server rather than its address, the reap log, and when the reaper
-last tried each account's image build (`image-builds.json`).
+by the server rather than its address (an adopted machine by its name), the
+reap log, when the reaper last tried each account's image build
+(`image-builds.json`), the adoption records (`adopted/`) and the gce
+provider's private gcloud configuration and price cache (`gce/`).
 
 ## Developing
 

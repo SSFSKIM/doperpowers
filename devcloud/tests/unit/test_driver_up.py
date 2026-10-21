@@ -342,6 +342,65 @@ class ImageTest(UpBase):
         self.assertGreaterEqual(int(ready.group(1)) * 60 + int(ready.group(2)), 50)
 
 
+class MetadataSeedTest(UpBase):
+    """A provider with `metadata_seed` (GCE, §3 step 4, §6.4): no seed is
+    delivered and nothing is done over SSH at the public address; cloud-init
+    does the first boot, and the driver waits over the tailnet."""
+
+    def setUp(self):
+        super().setUp()
+        self.behave(capabilities=["user_data", "images", "spot", "metadata_seed"])
+
+    def create(self):
+        return [c for c in self.state()["calls"] if c["op"] == "create"][0]["input"]
+
+    def files(self):
+        data = self.create()["user_data"]
+        return dict(re.findall(r"- path: (\S+)\n(?:    .*\n)*?    content: (\S+)", data))
+
+    def test_the_slow_path_is_cloud_inits_and_no_seed_is_delivered(self):
+        self.assertEqual(self.up(), 0)
+        files = self.files()
+        self.assertIn(compose.RECIPE_STAGE, files)
+        self.assertIn(compose.FIRST_BOOT, files)
+        desc = descriptor.parse(base64.b64decode(files[compose.STAGE]).decode())
+        self.assertEqual(desc.seed_kind, "gce-metadata")
+        self.assertEqual({c["target"] for c in self.remote.calls}, {"dc-vm-7f3a"}, "only the tailnet name")
+        self.assertEqual(self.remote.commands("seed"), [])
+        self.assertEqual(self.remote.commands("ledger add"), [])
+        self.assertEqual(self.remote.commands("setup.sh"), [])
+        self.assertIn("built from base, slow path", self.out.getvalue())
+
+    def test_the_image_path_carries_no_recipe(self):
+        recipe = compose.recipe_hash(_path.DEVCLOUD)
+        state = self.state()
+        state["images"] = [{"id": "img", "name": "img", "labels": {"devcloud": "image", "devcloud-recipe": recipe},
+                            "created": NOW - HOUR}]
+        self.state_file.write_text(json.dumps(state))
+        self.assertEqual(self.up(), 0)
+        self.assertEqual(self.create()["image"], "img")
+        self.assertNotIn(compose.RECIPE_STAGE, self.files())
+        self.assertIn(compose.FIRST_BOOT, self.files())
+
+    def test_spot(self):
+        self.assertEqual(self.up(spot=True), 0)
+        self.assertTrue(self.create()["spot"])
+        self.assertTrue(descriptor.parse(base64.b64decode(self.files()[compose.STAGE]).decode()).spot)
+
+    def test_a_boot_that_never_reaches_the_tailnet_says_where_to_look(self):
+        self.remote.rules = [r for r in self.remote.rules if "status.json" not in r["needle"]]
+        self.remote.on("status.json", code=255)
+        code, message = self.refused()
+        self.assertEqual(code, 1)
+        self.assertIn("first-boot", message)
+
+    def test_metadata_seed_without_user_data_is_exit_3(self):
+        self.behave(capabilities=["metadata_seed"])
+        code, message = self.refused()
+        self.assertEqual(code, 3)
+        self.assertNotIn("create", self.ops())
+
+
 class CountTest(UpBase):
     def test_a_list_that_fails_counts_as_a_failure_not_as_no_vms(self):
         for i in range(3):

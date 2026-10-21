@@ -8,20 +8,17 @@ succeeded (the boot closes the public port right after it), then over the
 tailnet by its name (§5)."""
 
 import dataclasses
-import io
 import json
 import pathlib
 import shlex
-import tarfile
 
-from .compose import SEED_PATH, STAGE
+from .compose import SEED_PATH, SRC, STAGE, recipe_tar
 from .errors import CAP, FAILED, DriverError
 
 READY = "devcloud-depart: ready-to-logout"
 BOOT_ENV = "/etc/devcloud/boot.env"
 CODE_PATH = "/etc/devcloud/enroll-code"
 STATUS = "/var/lib/devcloud/status.json"
-SRC = "/opt/devcloud-src"
 SETUP_LOG = "/var/log/devcloud-setup.log"
 DEPARTURE_STARTED = ("departing", "held", "departed")
 
@@ -67,17 +64,6 @@ def wait_cloud_init(ctx, address, key_alias):
         raise DriverError(FAILED, f"cloud-init did not finish cleanly ({result.out.strip() or result.code})")
 
 
-def recipe_tar(plugin_dir):
-    """The plugin's `image/` and `boot/` as a tar stream, without bytecode."""
-    buffer = io.BytesIO()
-    root = pathlib.Path(plugin_dir)
-    with tarfile.open(fileobj=buffer, mode="w") as tar:
-        for part in ("image", "boot"):
-            tar.add(root / part, arcname=f"devcloud/{part}",
-                    filter=lambda info: None if "__pycache__" in info.name or info.name.endswith(".pyc") else info)
-    return buffer.getvalue()
-
-
 def install_recipe(ctx, address, key_alias, build):
     """The slow path: the plugin's recipe streamed and `setup.sh` run, its
     exit checked (adopt's install path, §6.5)."""
@@ -114,6 +100,15 @@ def ledger(ctx, target, key_alias, *paths):
     result = ctx.remote.run(target, key_alias, "devcloud ledger add " + " ".join(paths), timeout=60)
     if result.code != 0:
         raise DriverError(FAILED, f"`devcloud ledger add` failed on the host (exit {result.code})")
+
+
+def stage(ctx, address, key_alias, desc):
+    """The descriptor staged over SSH, where no user-data staged it."""
+    stage_dir = STAGE.rsplit("/", 1)[0]
+    result = ctx.remote.run(address, key_alias, f"umask 077 && install -d -m 0700 {stage_dir} && cat > {STAGE}",
+                            input=desc.encode(), timeout=60)
+    if result.code != 0:
+        raise DriverError(FAILED, f"staging the descriptor failed (exit {result.code})")
 
 
 def start_boot(ctx, address, key_alias):
@@ -201,10 +196,11 @@ def host_expires(ctx, host):
         return None
 
 
-def unpushed(ctx, host):
+def unpushed(ctx, host, target=None):
     """The checkouts with unpushed or uncommitted work (`devcloud unpushed`,
-    exit 5 when there is any), as (repository, what) pairs."""
-    result = ctx.remote.run(host.name, host.alias, "devcloud unpushed", timeout=120)
+    exit 5 when there is any), as (repository, what) pairs; over the tailnet
+    unless `target` names another way to the host."""
+    result = ctx.remote.run(target or host.name, host.alias, "devcloud unpushed", timeout=120)
     if result.code == 0:
         return []
     if result.code != 5:
@@ -225,8 +221,19 @@ def depart(ctx, host, force=False, no_hold=False, timeout=8 * 60):
     if not reachable(ctx, host):
         return UNREACHABLE
     flags = ["--no-poweroff"] + (["--force"] if force else []) + (["--no-hold"] if no_hold else [])
-    result = ctx.remote.stream(host.name, host.alias, "devcloud depart " + " ".join(flags), timeout=timeout,
-                               marker=READY)
+    return _outcome(ctx.remote.stream(host.name, host.alias, "devcloud depart " + " ".join(flags), timeout=timeout,
+                                      marker=READY))
+
+
+def release(ctx, host, target, no_hold=False, timeout=8 * 60):
+    """`devcloud release --force` on an adopted machine (§6.5) at `target`
+    (its tailnet name, or its public address when the tailnet is down), read
+    as a departure is: it prints the same ready line before its logout."""
+    command = "devcloud release --force" + (" --no-hold" if no_hold else "")
+    return _outcome(ctx.remote.stream(target, host.alias, command, timeout=timeout, marker=READY))
+
+
+def _outcome(result):
     if result.code == 0:
         return DONE
     if result.code == 3:

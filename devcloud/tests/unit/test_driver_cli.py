@@ -77,6 +77,14 @@ class CliTest(DriverBase):
         self.assertEqual(self.main("image", "build", "--account", "main"), 3)
         self.assertIn("no images capability", self.err.getvalue())
 
+    def test_adopt_needs_confirmed_and_dry_runs_with_it(self):
+        self.assertEqual(self.main("adopt", "root@203.0.113.50", "--dry-run"), 4)
+        self.assertIn("--confirmed", self.err.getvalue())
+        self.assertEqual(self.main("adopt", "root@203.0.113.50", "--label", "adp", "--ttl", "2h", "--confirmed",
+                                   "--dry-run"), 0)
+        self.assertIn("root@203.0.113.50 as a new dc-adp-", self.out.getvalue())
+        self.assertEqual(self.main("adopt"), 2)
+
     def test_enroll_code_reads_stdin(self):
         self.assertEqual(self.main("up", "--enroll-code", "-", "--dry-run", stdin=b"smns-enroll-v1.x\n"), 0)
         self.assertEqual(self.main("up", "--enroll-code", "-", "--dry-run", stdin=b""), 2)

@@ -77,9 +77,9 @@ class FakeRemote:
         self.rules.append({"needle": needle, "code": code, "out": out, "err": err, "marker": marker,
                            "target": target, "times": times, "fn": fn})
 
-    def _answer(self, kind, target, alias, command, user, input):
+    def _answer(self, kind, target, alias, command, user, input, person=False):
         self.calls.append({"kind": kind, "target": target, "alias": alias, "command": command, "user": user,
-                           "input": input})
+                           "input": input, "person": person})
         for rule in self.rules:
             if rule["needle"] not in command or (rule["target"] and rule["target"] != target):
                 continue
@@ -95,8 +95,8 @@ class FakeRemote:
     def ensure_key(self):
         return KEY
 
-    def run(self, target, alias, command, *, user="root", input=None, timeout=60, connect_timeout=10):
-        return self._answer("run", target, alias, command, user, input)
+    def run(self, target, alias, command, *, user="root", input=None, timeout=60, connect_timeout=10, person=False):
+        return self._answer("run", target, alias, command, user, input, person)
 
     def stream(self, target, alias, command, *, user="root", timeout=60, marker=None):
         return self._answer("stream", target, alias, command, user, None)

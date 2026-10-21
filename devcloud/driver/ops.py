@@ -1,9 +1,10 @@
-"""`ls`, `ssh`, `lease` and `down` (M3's decisions in the driver spec)."""
+"""`ls`, `ssh`, `lease` and `down` (M3's decisions in the driver spec), for VMs
+and, through `adopt`, for adopted machines."""
 
 import json
 import shlex
 
-from . import caps, hostctl, reaper
+from . import adopt, caps, hostctl, reaper
 from .errors import CAP, FAILED, GUARD, USAGE, DriverError
 from .profile import duration, format_duration
 from .up import iso, price_text
@@ -49,8 +50,19 @@ def ls(ctx, as_json=False):
                      "lifetime": labels.get("devcloud-lifetime", "?"), "expires": _expires(e.vm), "state": state,
                      "price": price_text(type_) if type_ else "-", "creator": labels.get("devcloud-creator", "-"),
                      "confirmed": labels.get("devcloud-confirmed") == "1", "id": e.vm["id"]})
+    nodes = ctx.tailnet()
+    online = {node["name"]: node.get("online") for node in nodes}
+    for record in adopt.records(ctx):
+        if record.phase == "booted" and record.ready:
+            state = {True: "online", False: "offline"}.get(online.get(record.name), "not on the tailnet")
+        else:
+            state = f"adopting ({record.phase})" if record.phase != "released" else "releasing"
+        rows.append({"name": record.name, "account": "adopted", "provider": None, "lifetime": record.lifetime,
+                     "expires": record.expires, "state": state, "price": "-", "creator": record.creator or "-",
+                     "confirmed": True, "id": None, "adopted": True, "phase": record.phase,
+                     "target": f"{record.user}@{record.address}"})
     known = {row["name"] for row in rows}
-    for node in ctx.tailnet():
+    for node in nodes:
         if "tag:devcloud" in node.get("tags", []) and node["name"] not in known:
             rows.append({"name": node["name"], "account": None, "provider": None, "lifetime": None, "expires": None,
                          "state": "online" if node.get("online") else "offline", "price": "-", "creator": "-",
@@ -65,6 +77,9 @@ def ls(ctx, as_json=False):
     for row in rows:
         if row.get("tailnet_only"):
             table.append((row["name"], "tailnet only", "-", "-", row["state"], "-", "-"))
+        elif row.get("adopted"):
+            table.append((row["name"], "adopted", row["lifetime"], _relative(row["expires"], now), row["state"], "-",
+                          row["creator"]))
         else:
             table.append((row["name"], f"{row['provider']}/{row['account']}", row["lifetime"],
                           _relative(row["expires"], now), row["state"], row["price"], row["creator"]))
@@ -78,8 +93,8 @@ def ssh(ctx, name, root, command):
     """The user over the tailnet (`--root` for root). One argument is a shell
     line passed as given; several are an argv, each quoted. A host whose
     departure has started is refused, except to root, for inspection."""
-    entry = ctx.find(name)
-    host = entry.host
+    record = adopt.load(ctx, name)
+    host = record.host if record else ctx.find(name).host
     if not root:
         state = hostctl.lifecycle(ctx, host)
         if state in hostctl.DEPARTURE_STARTED:
@@ -96,11 +111,23 @@ def lease(ctx, name, text, confirmed):
         seconds = duration(text)
     except ValueError as error:
         raise DriverError(USAGE, str(error)) from None
-    entry = ctx.find(name)
-    vm = entry.vm
     now = int(ctx.clock())
     wanted = now + seconds
     lease_max = ctx.profile.caps.lease_max
+    record = adopt.load(ctx, name)
+    if record is not None:
+        try:
+            printed = adopt.lease(ctx, record, wanted, confirmed)
+        except DriverError as error:
+            if error.code != CAP:
+                raise
+            raise DriverError(CAP, f"{name} would stay adopted {format_duration(wanted - record.created)}, over the "
+                                   f"lifetime cap ({format_duration(lease_max)}), and its lease in force ends sooner: "
+                                   "ask the person, then pass --confirmed") from None
+        ctx.say(f"{name} lease ends {iso(printed)} ({_relative(printed, now)}); then it releases itself")
+        return 0
+    entry = ctx.find(name)
+    vm = entry.vm
     # Without the person's yes the lease may pass the lifetime cap only to
     # shorten the lease in force; the host decides that under its lock, with
     # the write, so nothing read here can be overtaken.
@@ -120,7 +147,11 @@ def lease(ctx, name, text, confirmed):
 
 def down(ctx, name, force):
     """The down guard, the departure, then the delete after the label
-    recheck. Unreachable: --force deletes without departing."""
+    recheck. Unreachable: --force deletes without departing. An adopted
+    machine is released instead, and keeps running (§6.5)."""
+    record = adopt.load(ctx, name)
+    if record is not None:
+        return adopt.down(ctx, record, force)
     entry = ctx.find(name)
     host = entry.host
     if not hostctl.reachable(ctx, host):

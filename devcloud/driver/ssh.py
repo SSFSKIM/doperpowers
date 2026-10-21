@@ -44,17 +44,22 @@ class Ssh:
 
     # --- connections ----------------------------------------------------------
 
-    def argv(self, target, alias, user="root", connect_timeout=10, tty=False):
-        argv = ["ssh", "-i", str(self.paths.key), "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes",
+    def argv(self, target, alias, user="root", connect_timeout=10, tty=False, person=False):
+        """`person`: the person's own SSH identity (their agent and default
+        keys) instead of the driver's key, for a machine to adopt, which
+        knows only theirs, and for checking its release (§6.5)."""
+        identity = [] if person else ["-i", str(self.paths.key), "-o", "IdentitiesOnly=yes"]
+        argv = ["ssh", *identity, "-o", "BatchMode=yes",
                 "-o", "StrictHostKeyChecking=accept-new", "-o", f"UserKnownHostsFile={self.paths.known_hosts}",
                 "-o", f"HostKeyAlias={alias}", "-o", f"ConnectTimeout={connect_timeout}",
                 "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=3", "-o", "LogLevel=ERROR"]
         argv += ["-t"] if tty else ["-T"]
         return argv + ["--", f"{user}@{target}"]
 
-    def run(self, target, alias, command, *, user="root", input=None, timeout=60, connect_timeout=10):
+    def run(self, target, alias, command, *, user="root", input=None, timeout=60, connect_timeout=10,
+            person=False):
         """`command` (one shell line) on the host; `input` (bytes) on its stdin."""
-        argv = self.argv(target, alias, user, connect_timeout) + [command]
+        argv = self.argv(target, alias, user, connect_timeout, person=person) + [command]
         try:
             done = self._run(argv, input=input if input is not None else b"", capture_output=True,
                              timeout=timeout)

@@ -140,6 +140,9 @@ def run(ctx, opts):
     tag, short = ctx.creator()
     expires = int(started) + r.lease if r.lifetime == "ttl" else None
     metadata_seed = r.client.has("metadata_seed")
+    if metadata_seed and not r.client.has("user_data"):
+        raise DriverError(REFUSED, f"provider {r.client.name} has metadata_seed without user_data: nothing could "
+                                   "start its first boot")
     desc = compose.descriptor(name=name, profile=ctx.profile, projects=list(opts.project or []), expires=expires,
                               creator=tag, spot=r.spot, seed="gce-metadata" if metadata_seed else "file")
     enroll = "code" if code else ("key" if ctx.profile.desk_secret else None)
@@ -148,7 +151,13 @@ def run(ctx, opts):
                             recipe=recipe, confirmed=r.confirmed, enroll=enroll,
                             test_run=ctx.env.get("DEVCLOUD_TEST_RUN"))
     image = images.current(r.client.images(), recipe) if r.client.has("images") else None
-    user_data = compose.user_data(desc, keys) if r.client.has("user_data") else None
+    if metadata_seed:
+        # No seed to deliver and no SSH before the tailnet: cloud-init does the
+        # first boot, carrying the recipe on the slow path (§3 step 4).
+        user_data = compose.boot_user_data(desc, keys, None if image else compose.recipe_archive(ctx.plugin),
+                                           ctx.profile.build)
+    else:
+        user_data = compose.user_data(desc, keys) if r.client.has("user_data") else None
     vm = r.client.create({"name": name, "type": r.type["type"], "location": r.location,
                           "image": image["id"] if image else None, "labels": labels, "ssh_public_keys": keys,
                           "user_data": user_data, "disk_gb": r.disk_gb, "spot": r.spot})
@@ -163,7 +172,7 @@ def run(ctx, opts):
         address = host.public or hostctl.public_address(ctx, entry)
         hostctl.wait_ssh(ctx, address, host.alias, ctx.clock() + SSH_WAIT)
         if user_data is None:
-            _stage_over_ssh(ctx, address, host.alias, desc)
+            hostctl.stage(ctx, address, host.alias, desc)
         hostctl.wait_cloud_init(ctx, address, host.alias)
         if image is None:
             ctx.say(f"setup     {name}: setup.sh from the plugin's recipe")
@@ -210,15 +219,6 @@ def recount(ctx, entry, r):
                            "--confirmed")
 
 
-def _stage_over_ssh(ctx, address, key_alias, desc):
-    """Without the user_data capability the descriptor is staged over SSH."""
-    stage_dir = compose.STAGE.rsplit("/", 1)[0]
-    result = ctx.remote.run(address, key_alias, f"umask 077 && install -d -m 0700 {stage_dir} && cat > {compose.STAGE}",
-                            input=desc.encode(), timeout=60)
-    if result.code != 0:
-        raise DriverError(FAILED, f"staging the descriptor failed (exit {result.code})")
-
-
 def wait_boot(ctx, host, address, deadline):
     """§3 step 8: over the public address until the tailnet attach step is
     ok, then over the tailnet; a failed step prints the status and exits 1."""
@@ -247,8 +247,11 @@ def wait_boot(ctx, host, address, deadline):
                 raise DriverError(FAILED, f"devcloud-boot.service failed on {host.name} with no step recorded as "
                                           "failed (journalctl -u devcloud-boot there); the VM is kept for inspection")
         if ctx.clock() >= deadline:
-            raise DriverError(FAILED, f"the boot of {host.name} did not finish within 15 minutes; the VM is kept "
-                                      "for inspection, its lease bounds it")
+            where = ("" if answer is not None or address is not None else
+                     f"; it never answered over the tailnet, so its first boot may have failed before the boot "
+                     f"started: see {compose.FIRST_BOOT_LOG} on it, through the provider's serial console")
+            raise DriverError(FAILED, f"the boot of {host.name} did not finish within 15 minutes{where}; the VM is "
+                                      "kept for inspection, its lease bounds it")
         ctx.sleep(POLL)
 
 

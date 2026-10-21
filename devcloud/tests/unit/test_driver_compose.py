@@ -43,6 +43,12 @@ class DescriptorTest(unittest.TestCase):
         self.assertFalse(d.spot or d.adopted)
         self.assertIsNone(d.sminos_secret)
 
+    def test_an_adopted_machine(self):
+        d = descriptor.parse(self.compose(adopted=True, expires=None))
+        self.assertTrue(d.adopted)
+        self.assertEqual(d.seed_kind, "file")
+        self.assertEqual(d.inbound, "tailnet")
+
     def test_keep_spot_metadata_seed_and_the_desk_key(self):
         d = descriptor.parse(self.compose(expires=None, creator=None, spot=True, seed="gce-metadata",
                                           profile=a_profile(desk=True)))
@@ -77,6 +83,63 @@ class UserDataTest(unittest.TestCase):
         known = redact.Known([TOKEN, SEED_PRIVATE, "madeUpSeedKeyBodyForTheScanOnly0123456789"])
         self.assertEqual(known.scrub(data), data)
         self.assertLess(len(data.encode()), 32 * 1024, "over Hetzner's user-data limit")
+
+
+class BootUserDataTest(unittest.TestCase):
+    """Where no seed is delivered (GCE), cloud-init does the whole first
+    boot: on the slow path it unpacks the recipe it carries and runs
+    setup.sh, then installs the staged descriptor, ledgered first, and starts
+    the boot (§3 step 4)."""
+
+    BUILD = {"DEVCLOUD_USER": "dev", "DEVCLOUD_UID": "1001", "DEVCLOUD_HOME": "/Users/dev"}
+
+    def compose(self, recipe=True):
+        desc = compose.descriptor(name="dc-a-0001", profile=a_profile(desk=True), projects=[], expires=NOW,
+                                  creator=None, spot=False, seed="gce-metadata")
+        data = compose.boot_user_data(desc, [KEY], recipe=compose.recipe_archive(_path.DEVCLOUD) if recipe else None,
+                                      build=self.BUILD)
+        files = dict(re.findall(r"- path: (\S+)\n(?:    .*\n)*?    content: (\S+)", data))
+        return desc, data, {path: base64.b64decode(blob) for path, blob in files.items()}
+
+    def test_the_slow_path_carries_the_recipe_and_runs_setup_before_the_descriptor(self):
+        desc, data, files = self.compose()
+        self.assertTrue(data.startswith("#cloud-config\n"))
+        self.assertEqual(files[compose.STAGE].decode(), desc)
+        self.assertEqual(files["/root/.ssh/authorized_keys"].decode(), KEY + "\n")
+        import io
+        import tarfile
+        with tarfile.open(fileobj=io.BytesIO(files[compose.RECIPE_STAGE]), mode="r:gz") as tar:
+            names = tar.getnames()
+        self.assertIn("devcloud/image/setup.sh", names)
+        self.assertIn("devcloud/boot/devcloud", names)
+        self.assertFalse(any("__pycache__" in n for n in names))
+        script = files[compose.FIRST_BOOT].decode()
+        self.assertIn(f"runcmd:\n  - [{compose.FIRST_BOOT}]", data)
+        order = [script.index(s) for s in ("tar -xzf", "DEVCLOUD_USER=dev DEVCLOUD_UID=1001 DEVCLOUD_HOME=/Users/dev "
+                                           "bash /opt/devcloud-src/devcloud/image/setup.sh",
+                                           "devcloud ledger add /etc/devcloud/boot.env",
+                                           "install -m 0600 -o root -g root", "systemctl start --no-block devcloud-boot.service")]
+        self.assertEqual(order, sorted(order), "setup.sh, then the ledger, then boot.env, then the boot")
+        import subprocess
+        subprocess.run(["bash", "-n"], input=script.encode(), check=True)
+        self.assertNotIn("/etc/devcloud/seed", data, "no seed is delivered")
+
+    def test_the_image_path_carries_no_recipe(self):
+        _, data, files = self.compose(recipe=False)
+        self.assertNotIn(compose.RECIPE_STAGE, files)
+        script = files[compose.FIRST_BOOT].decode()
+        self.assertIn("systemctl start --no-block devcloud-boot.service", script)
+
+    def test_no_secret_value_and_within_gces_metadata_limit(self):
+        _, data, _ = self.compose()
+        known = redact.Known([TOKEN, SEED_PRIVATE, "madeUpSeedKeyBodyForTheScanOnly0123456789"])
+        self.assertEqual(known.scrub(data), data)
+        self.assertLess(len(data.encode()), 256 * 1024, "over GCE's limit on one metadata value")
+
+    def test_the_slow_path_needs_the_hosts_user(self):
+        from driver.errors import DriverError
+        with self.assertRaises(DriverError):
+            compose.boot_user_data("DEVCLOUD_NAME=x\n", [KEY], recipe=b"x", build={})
 
 
 class LabelsTest(unittest.TestCase):

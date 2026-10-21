@@ -12,6 +12,7 @@ from driver.provider import pass_paths, sha256_file
 
 from driver_fixtures import FIXTURES, NOW, DriverBase, vm_labels
 
+import test_gce_provider as gce
 import test_hetzner_provider as hz
 
 
@@ -211,3 +212,39 @@ class HetznerConformanceTest(DriverBase):
         words = [" ".join(c[:2]) for c in data["calls"]]
         self.assertIn("server create-image", " ".join(" ".join(c) for c in data["calls"]))
         self.assertTrue(any("image delete" in " ".join(c) for c in data["calls"]), words)
+
+
+class GceConformanceTest(DriverBase):
+    """The shipped gce script through the whole sequence, its image
+    operations included, against the stand-in gcloud; the driver hands it
+    the seed's path and nothing reaches the person's gcloud configuration."""
+
+    def test_passes(self):
+        bin_dir = self.tmp / "bin"
+        bin_dir.mkdir()
+        (bin_dir / "gcloud").symlink_to(FIXTURES / "gcloud")
+        state = self.tmp / "gcloud.json"
+        state.write_text(json.dumps({"instances": [], "images": [], "machine_types": gce.MACHINE_TYPES,
+                                     "custom_types": {}, "next_id": 1000, "calls": [], "fail": {}}))
+        self.seed.write_text(json.dumps({"type": "service_account", "client_email": gce.SEED_EMAIL}))
+        toml = self.profile_dir / "driver.toml"
+        text = toml.read_text().replace('provider = "fake"', 'provider = "gce"').replace(
+            'location = "here"', f'location = "{gce.ZONE}"').replace('type = "medium"', 'type = "e2-standard-4"').replace(
+            'env = { FAKE_TOKEN = "fake-token-secret" }\n', '').replace(
+            f'vars = {{ FAKE_PROVIDER_STATE = "{self.state_file}" }}',
+            f'vars = {{ FAKE_GCLOUD_STATE = "{state}", GCE_PROJECT = "example-project", '
+            f'GCE_SERVICE_ACCOUNT = "{gce.SA}" }}')
+        toml.write_text(text)
+        home = self.tmp / "home"
+        ctx = self.make_ctx(env={"PATH": f"{bin_dir}:{os.environ['PATH']}", "HOME": str(home),
+                                 "CLOUDSDK_CONFIG": str(self.tmp / "persons-gcloud")})
+        self.assertEqual(conformance.test(ctx, "main", gone_window=3, running_window=3, poll=1), 0)
+        out = self.out.getvalue()
+        self.assertIn("types ok (e2-highcpu-2", out)
+        self.assertIn("images ok", out)
+        data = json.loads(state.read_text())
+        self.assertEqual(data["instances"], [])
+        self.assertEqual(data["images"], [])
+        self.assertEqual(data["activated"], [str(self.seed)])
+        self.assertEqual({c["env"]["CLOUDSDK_CONFIG"] for c in data["calls"]},
+                         {str(home / ".local/state/devcloud/gce/gcloud")})
