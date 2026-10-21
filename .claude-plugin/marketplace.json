@@ -9,7 +9,7 @@
     {
       "name": "doperpowers",
       "description": "Emerges by humans, Converges by Agent",
-      "version": "7.203.0",
+      "version": "7.203.1",
       "source": "./",
       "author": {
         "name": "SSFSKIM",
@@ -46,7 +46,7 @@
     {
       "name": "to-human",
       "description": "The report view under the to-human output style: messages fold to their <message> spans, the working record (tool calls, agent and other sessions' messages) behind [ working record ] buttons; the message tool (`mcp__to-human__message`) sends a message before another tool call word for word; each message the model sends raises a notification (`$.ui.notify`)",
-      "version": "0.5.1",
+      "version": "0.5.3",
       "source": "./to-human",
       "author": {
         "name": "SSFSKIM",
@@ -58,7 +58,7 @@
     {
       "name": "sminos",
       "description": "The orchestration interface: the machine side of the MAWS desk, and how sessions and humans reach each other. The sminos CLI (the project log, messages between sessions, spawned seats, the daemon and its uplink to the desk hub), the bridge that makes a session watchable and steerable from outside it, the async AskUserQuestion, and the hooks that record what a session sent its human",
-      "version": "1.5.2",
+      "version": "1.6.1",
       "source": "./sminos",
       "author": {
         "name": "SSFSKIM",

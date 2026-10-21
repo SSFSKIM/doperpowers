@@ -1958,6 +1958,151 @@ beside; a single reviewer reads one of those well in a pass.
     s, so the rest of each figure is the network between the web, the hub
     and the machine.
 
+- Observation (board #108, the band re-run on main, 2026-10-21): the band
+  again at load 150 and 280, with the Linux fix in. Same host shape and
+  zone (GCE c2d-standard-16 Spot, us-east4-c), same load method, and the
+  instruments byte-identical to the first run's 218aa515:
+  - code aec6f74c, sminos 1.5.1 (`read_proc_start` reads /proc since
+    2983a6a0), MAWS master 909a1e5b;
+  - one thread got 0.097–0.117 of a CPU at N = 150 and 0.055–0.059 at 280.
+
+  New in this run is a **control** at each load point: the same stress-ng
+  under `nice -n 19`. load1 stays where it was (136–150, 280–282), but each
+  bench thread gets 0.86–1.00 of a CPU. A miss that passes in the control
+  comes from the benches' CPU share, not from the load count.
+
+  Unloaded on this host: A1 17–20 ms, A2 mid-message 20–23 ms, after-prompt
+  29–34 ms, A6 0.200–0.204 s. Each cell reads first run → this run.
+
+  | check (bound) | load 150 | load 280 | control 150 / 280 |
+  |---|---|---|---|
+  | A1 idle (≤ 0.6 s at the band) | 0.12–0.26 → 0.19–0.25 s | 0.14–1.67 (2 of 10 over) → 0.15–0.51 s | 0.06–0.08 / 0.06–0.08 s |
+  | A2 mid-message (0.3 s; no band figure) | 0.16–0.24 → 0.19–0.29 s | 0.30–1.02 → 0.30–0.63 s | — / 0.06–0.08 s |
+  | A2 after-prompt (0.3 s) | 0.19–0.38 (4 of 5 over) → 0.26–0.39 s (2 of 5) | 0.18–0.58 (4 of 5) → 0.16–0.61 s (3 of 5) | 0.07–0.09 / 0.07–0.10 s |
+  | A2 long-answer (no early end) | holds → holds | holds → holds | — |
+  | A3 +30 s, small (0.3 s) | 46–56 s → 0.01–1.00 s (2 of 34 over) | 64–120 s, 11 of 34 never → 0.01–1.46 s (1 of 34) | ≤ 0.22 / ≤ 0.16 s |
+  | A3 +30 s, large (0.3 s) | 46–55 s → 0.07–13.2 s (4 of 6 over) | 68–119 s, 4 of 6 never → 0.16–29.8 s (5 of 6) | 0.06–0.12 / 0.06–0.10 s |
+  | A3 +0.5 s (stream ready at) | incomplete (27.6 → 5.3 s) | incomplete (79 → 10.0 s) | incomplete (0.60 / 0.65 s) |
+  | A3 index (loaded ≤ 0.35 CPU-s) | 0.13 → 0.13 | 0.13 → 0.13 | — |
+  | A4 pair as written (4 s, 16 MiB) | incomplete → incomplete | incomplete → incomplete | — |
+  | A4 pair sized to the host (next observation) | — → blocked write seen; open after the resume 4.36 s | — → blocked write seen; chunk lag 1.43 s; open after the resume 7.24 s | — |
+  | A6 kill (0.5 s; no band figure) | 1.01 / 3.39 / 2.67 → 2.95 / 2.56 / 0.96 s | 5.46 / 4.64 / 4.93 → 5.79 / 2.07 / 5.71 s | 0.36 / 0.41 / 0.35 and 0.48 / 0.49 / 0.41 s |
+
+  - **What the /proc fix moved.**
+    - At 150 the uplink's stream was ready at 5.3 s, against 27.6 s before.
+      At 280 it was ready at 10.0 s, against 79 s.
+    - The +30 s small opens' p50 went from 52 s to 0.06 s at 150, and from
+      113 s to 0.08 s at 280. Every one of the 40 opens at 280 got its
+      snapshot.
+    - A1 at 280 is now within its band bound. Its N is ≤ 0.09 s, where the
+      first run's reached 1.35 s.
+
+    Those misses were most likely the ps fork, which took 47% of the
+    uplink main thread's samples in the first run. The code also differs
+    otherwise between the runs (sminos 1.2.15 → 1.5.1, MAWS master). A6
+    was not the ps fork: it reads the same as before.
+  - **What remains is CPU starvation.** Every miss below passes in the
+    control at the same load1.
+    - **A6.** The successor's endpoint answered the DX5 probe 0.44–2.62 s
+      after the kill at 150 and 1.42–5.30 s after it at 280. Unloaded it
+      answers in 0.20 s, and in the control in 0.41 s.
+
+      Most of that is a fresh Python process. Importing `sminos` and
+      `sminos_bridge`, which a bridge child's start pays, costs 0.06 CPU-s
+      unloaded. It took 1.04–1.10 s wall at 150 and 2.21–2.37 s at 280.
+      Respawning at once (§6) cannot beat that under starvation. Moving the
+      child's role into the daemon (MAWS #52) would remove the process
+      start.
+    - **A3 +30 s large.** One 15,000-row cold build costs 1.18 CPU-s:
+      10.3 s wall at 150 and 15.8 s at 280 (`bench_index`). Warming six
+      therefore does not fit in 30 s. An open either waits behind a warm
+      build that is still running (N up to 12.9 s at 150, 29.5 s at 280) or
+      builds cold itself (4.87 s).
+
+      A3's +0.5 s clauses stay unmeasurable at the band. The stream is not
+      ready at 0.5 s even in the control (0.60–0.78 s). Unloaded on this
+      host it now is ready in time: small 0.11 s, large 0.74 s cold (its
+      build 0.66 CPU-s), and after a restart large 0.09 s loaded.
+    - **A2 at 280.** E follows the share: the unloaded 20–34 ms over a
+      share of 0.056 is 0.4–0.6 s. N stays ≤ 0.16 s, so the rest is the
+      local hub, the client and the session, all at the same share.
+  - One A6 trial at 280 reports itself incomplete. The DX5 probe's own gap
+    held a request open across it. In the first run all three trials did.
+
+  Evidence: the run's `results.md` and raw logs, outside the repo, in
+  `/tmp/dsk-scripts/band2/` on the MacBook. The runbook is
+  [2026-10-20-desk-open-fast-band-runbook.md](2026-10-20-desk-open-fast-band-runbook.md).
+- Observation (board #108, A4's pair at the band): the pair as written
+  cannot block a hub write on a loaded host.
+  - **The pair as written.** Unloaded, the loopback buffers between the
+    local hub and the pause proxy absorbed backlogs of 1, 2, 4, 8 and
+    12 MiB whole: the probe was answered before the resume. Only 16 MiB
+    blocked. At load the 16 MiB upload took 17.4 s at 150 and 31.6 s at
+    280. The pause cannot outlast that: under the local hub's 2 s
+    heartbeat it must stay below 6 s, which is both the uplink's silence
+    bound and the hub's lease (three heartbeats each).
+  - **The pair sized to the host.** Two host-side settings changed; the
+    code under test did not:
+    - the loopback's TCP buffers were capped at 1 MiB for these runs only,
+      which makes 4 MiB absorbed and 6 MiB blocking;
+    - the local hub's heartbeat was lengthened with the local command's own
+      `--heartbeat-ms`, passed through a one-line host-only patch of
+      `bench_rig.py`.
+
+    The backlog was 6 MiB. The pause was the 6 MiB upload's estimate plus
+    3 s: 9 s at 150 with a 6 s heartbeat, and 15 s at 280 with a 7 s
+    heartbeat. The hub's 10 s write bound still caps the span a write
+    stays blocked. A 256 KiB cap was tried first and dropped: after the
+    resume the stream stalled 2.86 s (the shape of TCP's zero-window
+    persist timer), and one stream ended `machine-offline`.
+  - **What the sized pair showed.** At both loads the probe saw the blocked
+    write, and the hub side of A4 held: every session POST the uplink sent
+    in the window was answered 200, and the stream survived the pause.
+
+    | | load 150 | load 280 |
+    |---|---|---|
+    | POSTs in the window, all 200 | 85, slowest 163 ms | 71, slowest 591 ms |
+    | chunk lag (bound 1 s) | ≤ 0.32 s | 1.43 s, over |
+    | open 1 s after the resume (bound 1 s) | 4.36 s, N 4.17 s, over | 7.24 s, N 6.72 s, over |
+  - **Why the open after the resume misses.** The wait is on the machine.
+    The bridge's snapshot arrived as late as N, so the main thread reached
+    the subscribe only then.
+
+    In a py-spy rerun at 150 (open N 6.26 s), 12 of the 14 dumps in that
+    window had the main thread in `on_events` → `HubLog.take`, taking the
+    6 MiB backlog. Ten of those twelve were in the code check, each
+    through `sminos_codes.failure` → `_digest` → `canonical` → `string`, a
+    per-character Python loop over each 64 KiB text. That loop costs
+    0.047 CPU-s per MiB on the MacBook, against 0.003 for `json.dumps` on
+    the same text.
+
+    The main thread takes frames in arrival order, so an inbound backlog
+    delays every open behind it. The cost of that is small unloaded (the
+    16 MiB pair's open after the resume took 0.28 s, the sized 6 MiB
+    pair's 0.035 s), but at a share of 0.1 it is seconds per MiB. It is a
+    machine-side cost that §3 and §8 do not address. The pair was not run
+    in the control.
+
+    Follow-up, 2026-10-21 (doperpowers #328, sminos 1.6.1): the encoder
+    now quotes strings with the json module's C quoting and sorts ASCII
+    keys natively, byte-identical to before. That was checked old against
+    new at volume and against MAWS's `canonical.ts` on 366,267 values. The
+    check went from 0.046 to 0.0038 CPU-s per MiB on this backlog's shape,
+    and `HubLog.take` from 0.056 to 0.014. A drain model calibrated on the
+    timings above predicts the open after the resume at about 0.7 s at
+    150 and 1.6 s at 280; that is a prediction, not a band rerun.
+    Taking a subscribe ahead of queued events was judged not worth it
+    yet: after the fix the backlog adds about 0.2 s at 150. What remains
+    at 280 is the open's own work at that CPU share.
+
+    The chunk lag at 280 is most likely starvation of the chunk path
+    itself, whose POSTs took up to 591 ms.
+
+  Evidence: `/tmp/dsk-scripts/band2/raw/` on the MacBook:
+  `{base0,base0c,base0d,base0e}/a4-*.log`, `p150/a4hb-held-6000ms-9s-6m.log`,
+  `p280/a4hb-held-7000ms-15s-6m.log`, and `diag-a4/` (its dumps and
+  daemon.log).
+
 ## Decision Log
 
 - Decision: verification. The spec gets one independent review by the
@@ -2558,9 +2703,27 @@ At load 150 idle and mid-message opens stay in the tens to hundreds of
 milliseconds, but a child crash takes 1–3.4 s, and opens 30 s after an
 uplink start take 46–56 s. Most of that is one Linux-only fork per live
 session per check that the Macs never run; with it patched, the +30 s opens
-were back within bounds. At 280 every scenario degrades. Whether that is
-the same cause or the machine's own share under starvation is the next
-question; the Linux fix lands separately.
+were back within bounds. At 280 every scenario degrades.
+
+Re-run on main with the Linux fix in (board #108, Surprises), the fork's
+share is gone:
+- idle opens hold their band bound at both loads (≤ 0.25 s at 150,
+  ≤ 0.51 s at 280);
+- the uplink's start and the small +30 s opens are back from tens of
+  seconds to a p50 of tens of milliseconds.
+
+Three things still miss: a child crash takes 1–6 s, large +30 s opens
+wait behind warming, and mid-message opens at 280 take 0.3–0.6 s. Each
+passes when the benches get their CPU back at the same load1, so each is
+the machine's share under starvation, not a code path the Macs avoid.
+A4's open after a blocked write misses too: it waits behind an inbound
+backlog. It was not run in that control, but its wait is CPU-bound work
+on the uplink's main thread.
+
+Under load one machine-side cost shows. The uplink verifies an inbound
+backlog's codes on its main thread, ahead of the opens queued behind
+them, and its canonical encoder walks each string one character at a
+time.
 
 **What held from the design.** The diagnosis in §1 was right about where
 the seconds went: the snapshot gated on a cut no bridge could deliver (§2),

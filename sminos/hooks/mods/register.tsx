@@ -3,6 +3,7 @@ import type { On } from 'claude-code'
 import { registerAddress } from './address'
 import { registerAsk, registerAskBand } from './ask'
 import { registerBridge } from './bridge'
+import { registerName } from './name'
 
 /**
  * The plugin's one hooks module: each mod registers its own hooks. The engine
@@ -21,4 +22,5 @@ export function register(on: On) {
   registerAskBand(on)
   registerAsk(on)
   registerAddress(on)
+  registerName(on)
 }

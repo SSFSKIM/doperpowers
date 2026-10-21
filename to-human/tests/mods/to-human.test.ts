@@ -4,7 +4,7 @@ import { describe, expect, mock, test, tier } from 'claude-code/testing'
 
 import type { RowKind } from '../../hooks/mods/to-human'
 import { MESSAGE_TOOL } from '../../hooks/mods/message'
-import { START_WAIT_MS, editorUrl, fileLinks, isRead, markdownBlocks, newView, parse, placeAll, placeArgs, placesIn, promptRow, registerToHuman, reorder, runEnd, runStart, sessionPlaceArgs } from '../../hooks/mods/to-human'
+import { START_WAIT_MS, editorUrl, errorsIn, fileLinks, isRead, markdownBlocks, newView, parse, placeAll, placeArgs, placesIn, promptRow, registerToHuman, reorder, runEnd, runStart, sessionPlaceArgs } from '../../hooks/mods/to-human'
 
 // The kit runs tests with the timer the hooks' declarations leave out.
 declare const setTimeout: (callback: (value?: unknown) => void, ms: number) => unknown
@@ -375,9 +375,15 @@ describe('transcript order', () => {
 
   test('the search lists each row by its id and each call by its tool_use_id, in the file\'s order', async () => {
     expect(placeArgs('/t.jsonl').includes('/t.jsonl')).toBe(true)
-    const stdout = ['"uuid":"u1"', '"type":"tool_use","id":"toolu_1"', '"uuid":"u2"', '', 'noise'].join('\n')
+    const stdout = ['"uuid":"u1"', '"type":"tool_use","id":"toolu_1"', '"uuid":"u2"', '"isApiErrorMessage":true', '', 'noise'].join('\n')
 
     expect(placesIn(stdout)).toEqual(['u1', 'toolu_1', 'u2'])
+  })
+
+  test('the search names an API error by the row whose line flags it', async () => {
+    const stdout = ['"isApiErrorMessage":true', '"uuid":"u1"', '"type":"tool_use","id":"toolu_1"', '"uuid":"e1"', '"isApiErrorMessage":true', '"uuid":"u2"'].join('\n')
+
+    expect(errorsIn(stdout)).toEqual(['e1'])
   })
 
   test('drawn rows sort by their places; a row with none keeps its spot after them', async () => {
@@ -865,36 +871,92 @@ describe('failures', () => {
       children: [String((e.props as { text?: string }).text ?? e.component)],
     }))
 
-  test('an API error that ends the main turn stays in the report', async ($, on) => {
+  const response = (uuid: string, text: string, model = '<synthetic>', agentId?: string) => ({
+    message: { type: 'assistant' as const, role: 'assistant' as const, content: [{ type: 'text' as const, text }] },
+    door: 'response' as const,
+    origin: { kind: 'model' as const, model },
+    uuid,
+    ...(agentId !== undefined && { agentId }),
+  })
+  const message = ($: Engine, requestId: string, text: string) =>
+    $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AssistantMessage', requestId, props: { text, isFirstOfReply: true } })
+  const bash = ($: Engine, id: string) =>
+    $.ui.mount({
+      plugin: PLUGIN, surface: 'terminal', component: 'ToolUse', requestId: id,
+      props: { tool_use_id: id, tool: 'Bash', input: { command: 'ls' }, isRunning: false, isErrored: false, isInterrupted: false, output: 'ok' },
+    } as never)
+
+  test('an API error stays in the report, whether it drew before its row was kept or after', async ($, on) => {
     mock.env(on, {})
     mock.store(on)
     engineDrawing(on)
-    const error = 'API Error: terminated'
-    on('session.messages', () => ({
-      value: [
-        { role: 'user', text: 'Go.', toolUses: [] },
-        { role: 'assistant', text: 'Working.', toolUses: [] },
-        { role: 'assistant', text: error, toolUses: [] },
-      ],
-    }))
-    on('turn.complete', () => ({ text: '' }))
-    const message = (requestId: string, text: string) =>
-      $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AssistantMessage', requestId, props: { text, isFirstOfReply: true } })
-    await message('m1', '<message>Starting.</message>')
-    const record = await message('r1', 'Working.')
-    const row = await message('e1', error)
+    const error = 'API Error: Connection refused'
+    await message($, 'm1', '<message>Starting.</message>')
+    const record = await message($, 'r1', 'Working.')
+    const early = await message($, 'e1', error)
+    // Drawn before it is kept, it is one more unmarked row of the run.
+    expect(await early.find({ type: 'Text', text: error })).toBeUndefined()
 
-    // Drawn before the turn ends, it is one more unmarked row of the run.
-    expect(await row.find({ type: 'Text', text: error })).toBeUndefined()
+    await $.session.append(response('e1', error))
+    await $.session.append(response('e2', 'API Error: 400 bad request'))
+    const late = await message($, 'e2', 'API Error: 400 bad request')
 
-    // A subagent's error is its spawner's business.
-    await $.turn.complete({ answer: '', durationMs: 1, isAborted: false, turnId: 't0', reason: 'error', agentId: 'a1' })
-    expect(await row.find({ type: 'Text', text: error })).toBeUndefined()
-
-    await $.turn.complete({ answer: 'Working.', durationMs: 1, isAborted: false, turnId: 't1', reason: 'error' })
-    expect(await row.find({ type: 'Text', text: error })).toBeDefined()
+    expect(await early.find({ type: 'Text', text: error })).toBeDefined()
+    expect(await late.find({ type: 'Text', text: 'API Error: 400 bad request' })).toBeDefined()
     expect(await record.find({ type: 'Button', text: 'working record' })).toBeDefined()
     expect(await record.find({ type: 'Text', text: 'Working.' })).toBeUndefined()
+  })
+
+  test('the turn going on after an API error opens a run of its own', async ($, on) => {
+    mock.env(on, {})
+    mock.store(on)
+    engineDrawing(on)
+    const error = 'API Error: Connection lost mid-response. The response above may be incomplete.'
+    await message($, 'm1', '<message>Starting.</message>')
+    await $.session.append(response('e1', error))
+    const row = await message($, 'e1', error)
+    const after = await bash($, 'toolu_b1')
+
+    expect(await row.find({ type: 'Text', text: error })).toBeDefined()
+    expect(await row.find({ type: 'Button' })).toBeUndefined()
+    expect(await after.find({ type: 'Button', text: 'working record' })).toBeDefined()
+  })
+
+  test("the model's text, a subagent's error and the stand-in for no response are working record", async ($, on) => {
+    mock.env(on, {})
+    mock.store(on)
+    engineDrawing(on)
+    await message($, 'm1', '<message>Starting.</message>')
+    await $.session.append(response('r1', 'API Error: quoted by the model', 'claude-opus-5-5'))
+    await $.session.append(response('r2', 'API Error: terminated', '<synthetic>', 'a1'))
+    await $.session.append(response('r3', 'No response requested.'))
+    const rows = [
+      await message($, 'r1', 'API Error: quoted by the model'),
+      await message($, 'r2', 'API Error: terminated'),
+      await message($, 'r3', 'No response requested.'),
+    ]
+
+    // One run, folded behind the first row's button.
+    expect(await rows[0]!.find({ type: 'Button', text: 'working record' })).toBeDefined()
+    for (const row of rows) {
+      expect((await row.findAll({ type: 'Text' })).some((text) => text.text.startsWith('API Error') || text.text.startsWith('No response'))).toBe(false)
+    }
+  })
+
+  test('an API error a resumed transcript holds stays in the report', async ($, on) => {
+    mock.env(on, {})
+    mock.store(on)
+    engineDrawing(on)
+    const transcript = ['"uuid":"m1"', '"uuid":"r1"', '"uuid":"e1"', '"isApiErrorMessage":true', '"uuid":"p2"'].join('\n')
+    on('process.run', async () => ({ value: { exitCode: 0, stdout: transcript, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
+    on('classic.SessionStart', () => ({}))
+    await $.classic.SessionStart({ source: 'resume', transcript_path: '/t.jsonl' })
+    await message($, 'm1', '<message>Starting.</message>')
+    const record = await message($, 'r1', 'Working.')
+    const row = await message($, 'e1', 'API Error: Connection refused')
+
+    expect(await row.find({ type: 'Text', text: 'API Error: Connection refused' })).toBeDefined()
+    expect(await record.find({ type: 'Button', text: 'working record' })).toBeDefined()
   })
 
   test('a spawned agent\'s failure notification stays in the report, a failed command\'s does not', async ($, on) => {
@@ -1249,20 +1311,26 @@ describe('the message tool', () => {
     expect(await result.find({ type: 'Text', text: 'sent' })).toBeDefined()
   })
 
-  test('the full transcript draws its rows as the engine does', async ($, on) => {
+  test('the full transcript draws it as a message too, the rows around it as the engine does', async ($, on) => {
     mock.env(on, {})
     mock.store(on)
     engineDrawing(on)
-    const call = await callRow($, 'toolu_m1', { input: { text: 'Done.' }, output: 'sent' })
+    const call = await callRow($, 'toolu_m1', { input: { text: 'Approve the **codesign** prompt now.' }, output: 'sent' })
     const band = await $.ui.mount({
       plugin: PLUGIN, surface: 'terminal', component: 'AbovePrompt',
       props: { hasSurvey: false, isWorking: false, maxRows: 5, bodyColumns: 80, scroll: { offset: 0, bodyRows: 5 }, view: {} },
     })
     await band.press({ key: 'to-human-mode' })
+    expect(await band.find({ type: 'Button', text: 'report only' })).toBeDefined()
     const result = await resultRow($, 'toolu_m1', 'sent')
+    const after = await bash($, 'toolu_b1')
 
-    expect(await call.find({ type: 'Text', text: 'ToolUse' })).toBeDefined()
-    expect(await result.find({ type: 'Text', text: 'sent' })).toBeDefined()
+    expect(await call.find({ type: 'Text', text: '● message' })).toBeDefined()
+    expect(await call.find({ type: 'Markdown', text: 'Approve the **codesign** prompt now.' })).toBeDefined()
+    expect(await call.find({ type: 'Text', text: 'ToolUse' })).toBeUndefined()
+    expect(await result.find({ type: 'Text' })).toBeUndefined()
+    expect(await after.find({ type: 'Text', text: 'ToolUse' })).toBeDefined()
+    expect(await after.find({ type: 'Button' })).toBeUndefined()
   })
 
   test('a module that starts over in a session whose only message went through the tool folds from its first answer', async ($, on) => {
