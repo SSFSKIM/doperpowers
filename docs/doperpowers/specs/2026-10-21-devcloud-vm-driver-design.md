@@ -65,7 +65,12 @@ desk no longer counts it.
   one fix round. Measured live on Hetzner: `up` from an image took 2m30s to every step `ok`
   (acceptance 10, and acceptance 1's time), and the slow path took 3m15s. Retention kept the newest
   two images, and acceptance 8 passed. Every resource was deleted by 12:40Z.
-- [ ] M5 — The GCE provider, adopt, and the open provider path.
+- [x] (2026-10-21 18:40Z) M5 — The GCE provider, adopt, and the open provider path. Commits
+  ea1464f5..5a6bf8c6, with fixes 844ff710, de23fa04, 66b2c551 and 342a6ed5. Reviewed clean after
+  three rounds. Measured live on GCE: acceptance 6 took 5m12s on the slow path and 3m11s from an
+  image. Acceptance 10's retention, acceptance 13 and a full acceptance 7 passed, and the lease
+  timer released a VM by itself, with its warning reaching the creating session. Every resource was
+  deleted by 17:35:47Z.
 - [ ] M6 — The skill, the always-on Mac, and acceptance.
 - [ ] Whole-branch review (high rung), Outcomes & Retrospective, PR.
 
@@ -2135,7 +2140,9 @@ commit 5168e433 on its branch, 2026-10-21):
   Date/Author: 2026-10-21, M5's executor, folded by the controller.
 
 - Decision: After M5's review:
-  - Adopt runs the driver-key preflight before it touches the target.
+  - Adopt runs the driver-key preflight before it touches the target. `up` and adopt share
+    `pushed_driver_keys`, which makes the local key before it checks that the profile's remote
+    holds it, so the key adopt then authorizes is the one it checked.
   - `down` falls back to the original login with `sudo -n`, for both its guard and the release,
     once the driver key no longer works (the keys were already restored).
   - A completed release removes `/var/lib/devcloud` after its final status write and runs
