@@ -1,0 +1,5 @@
+# archive/
+
+A bare directory name is this directory's; `skills/…` paths are the repository's.
+
+Retired skills kept for reference, not loaded by any harness (`codex-migration/`: move a Claude Code session into Codex as a resumable thread; `experimental-context/`: the keyed `<revisit>` re-injection mode, its skill, SessionStart/UserPromptExpansion hooks and test kept together, unwired; `domain-modeling/`: the CONTEXT.md glossary and ADR convention; `execplan/`: the single-ExecPlan skill, folded into the living spec in v7.84.0, with the vendored Codex PLANS.md beside it under `references/` — the sections that bind are quoted verbatim in `skills/execspec/references/living-spec.md`, so nothing loads this copy; `writing-plans/`: the execution-plan skill, retired in v7.124.0 when the spec's execution section became the one shape for every route — its surviving rules, milestone sizing, what a milestone carries, spike milestones, the last milestone, no placeholders, live in that same reference).
