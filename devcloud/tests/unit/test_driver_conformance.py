@@ -95,7 +95,10 @@ class FailTest(ConformanceBase):
         self.assertFalse(copy.exists(), "a failed test leaves no passing copy")
 
     def test_an_altered_label(self):
-        self.assert_fails_at("get", alter_label={"devcloud-test": "altered"})
+        self.assert_fails_at("list", alter_label={"devcloud-test": "altered"})  # list is read first
+
+    def test_a_list_that_drops_a_label(self):
+        self.assert_fails_at("list", drop_on_list="devcloud-test")
 
     def test_listing_an_unlabeled_server(self):
         self.assert_fails_at("list", list_unlabeled=True)

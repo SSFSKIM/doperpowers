@@ -18,6 +18,7 @@ with a `behavior` object a test sets to make it misbehave:
   now            created time for new servers (default the clock)
   drop_on_set    set-labels drops this label key
   drop_on_get    get answers without this label key
+  drop_on_list   list answers without this label key
   fail_after_create  create makes the server, then exits 1
 
 Every call is appended to `calls` ({op, argv, input, env, pid}); `record_env`
@@ -141,7 +142,10 @@ def list_(state, request, behavior):
                         "public_ipv4": None, "state": "running", "created": 0})
     if behavior.get("keep_deleted"):
         servers += state["deleted"]
-    return [public(s, behavior) for s in servers]
+    out = [public(s, behavior) for s in servers]
+    for vm in out:
+        vm["labels"] = {k: v for k, v in vm["labels"].items() if k != behavior.get("drop_on_list")}
+    return out
 
 
 def find(state, server_id):

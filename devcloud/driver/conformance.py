@@ -115,8 +115,12 @@ def _steps(ctx, client, account, labels, made, gone_window, running_window, poll
     made["server"] = server = client.create(request)
     ctx.say(f"create ok ({name}, id {server['id']})")
     listed = client.list()
-    if not any(vm["id"] == server["id"] for vm in listed):
+    mine = [vm for vm in listed if vm["id"] == server["id"]]
+    if not mine:
         raise Failed("list", "the new server is not listed")
+    if mine[0]["labels"] != labels:
+        # The reaper decides on what list answers: a label it drops, it never sees.
+        raise Failed("list", f"labels {mine[0]['labels']} are not the ones created, verbatim")
     if any("devcloud" not in vm["labels"] for vm in listed):
         raise Failed("list", "it lists a server without the devcloud label")
     ctx.say("list ok")
