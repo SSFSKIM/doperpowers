@@ -522,9 +522,13 @@ line, at most 120 characters. `derive` runs only for a local member with no
 `set` line, at least 10 tool calls by its model (the `tool_use` blocks of
 its main conversation's assistant records), and no `derived` event in the
 last six hours; `--all` applies that to every local member but one whose
-fork failed within the hour. The daemon runs `derive --all` every five
-minutes (§8), so a member's first line comes within about five minutes of
-its tenth tool call; a run that refuses everyone costs about a second. The cost is one model
+fork failed within the hour, members with no derived line first and the
+others oldest line first. The daemon runs `derive --all --refreshes 2`
+every five minutes (§8): its forks run one after another, each up to two
+minutes, so it forks at most two members that already have a line and
+leaves the rest to the next run, and a member's first line comes within
+minutes of its tenth tool call; a run that refuses everyone costs about a
+second. The cost is one model
 call that reads the parent's prompt cache when the session was active
 within the cache's hour, and rebuilds it otherwise.
 
@@ -672,7 +676,7 @@ per tick):
    a local `say` would, and settle per §4.
 5. **Push.** Commit what this tick appended and push, so a state published
    in this tick reaches the remote in this tick.
-6. **Derive.** Every five minutes, start `derive --all` as a child process and
+6. **Derive.** Every five minutes, start `derive --all --refreshes 2` (§5) as a child process and
    do not wait for it — a fork's model call can take minutes, and the
    delivery interval must not; one derivation in flight at a time.
 

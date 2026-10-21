@@ -41,11 +41,12 @@ member too, seat-less, from the first call that reads its project.
     sminos join     <project> | --cwd                     # this session's project, declared: a session is in
                    its launch directory's project (a `cd` moves nothing) until it joins another; --cwd goes
                    back; alone: which project it is in, and why. Not for a seat
-    sminos derive   <member> | --all                      # ask a session its line, by a headless internal fork,
+    sminos derive   <member> | --all [--refreshes N]      # ask a session its line, by a headless internal fork,
                    once its model made ten tool calls; a session under a name the engine made up (or one sminos
                    gave it) is also asked for a charge name, handed to its name mod as
-                   $SMINOS_HOME/names/<session>.json. --all (the daemon's, every five minutes) holds a member
-                   whose fork failed out for an hour
+                   $SMINOS_HOME/names/<session>.json. --all (the daemon's, every five minutes) derives first
+                   lines before refreshes and holds a member whose fork failed out for an hour; --refreshes
+                   caps the members with a line it forks (the daemon passes 2), oldest line first
     sminos name-due --session <id>                        # the name mod's check: the session's pending
                    name when it is due, else nothing (not for a person to run)
     sminos record                                         # the Stop / SessionStart hook's verb (payload on stdin);
@@ -5135,9 +5136,14 @@ def cmd_derive(a):
     by a headless internal fork, and record the answer as a derived line —
     only where §5 allows (derive_refusal). --all: every local member of every
     project known here, as the daemon runs it every five minutes, but a
-    member whose fork failed within the hour (DERIVE_RETRY)."""
+    member whose fork failed within the hour (DERIVE_RETRY); first lines
+    before refreshes (derive_order). --refreshes N (the daemon's): at most N
+    members that already have a derived line are forked, so a run, whose
+    forks go one after another, never holds a first line back for long."""
     if bool(a.member) == bool(a.all):
         die("usage: sminos derive <member> | --all")
+    if a.refreshes is not None and (not a.all or a.refreshes < 0):
+        die("usage: sminos derive --all [--refreshes N] — N, at least 0, with --all only")
     sweep_internal()
     if a.all:
         targets = [(p, m) for p in known_projects() for m in members(p) if m.local]
@@ -5157,12 +5163,35 @@ def cmd_derive(a):
     if a.all:
         sweep_pending_names()
         sweep_older("derive-failed", DERIVE_RETRY)
-    failed = sum(not derive_member(project, m, held_off=a.all) for project, m in targets)
+        targets = derive_order(targets)
+    else:
+        targets = [(p, m, False) for p, m in targets]
+    forked_refreshes = failed = 0
+    for project, m, refresh in targets:
+        spent = refresh and a.refreshes is not None and forked_refreshes >= a.refreshes
+        outcome = derive_member(project, m, held_off=a.all, refreshes_spent=a.refreshes if spent else None)
+        failed += outcome == "failed"
+        forked_refreshes += refresh and outcome in ("derived", "failed")
     if failed:
         sys.exit(1)
 
 
-def derive_member(project, m, held_off=False):
+def derive_order(targets):
+    """--all's order: (project, member, refresh) with the members that have
+    no derived line first, so a first line never waits behind other members'
+    forks, then the refreshes, the oldest line first."""
+    lines = {}
+    for p in {p.id: p for p, _ in targets}.values():
+        for e in log_read(p, kinds=("in-charge",)):
+            if e.get("source") == "derived":
+                lines.setdefault((p.id, e.get("session")), []).append(e)
+    last = {k: str(latest_across_writers(v).get("ts") or "") for k, v in lines.items()}
+    ordered = [(p, m, last.get((p.id, m.session), "")) for p, m in targets]
+    ordered.sort(key=lambda t: (bool(t[2]), t[2]))
+    return [(p, m, bool(ts)) for p, m, ts in ordered]
+
+
+def derive_member(project, m, held_off=False, refreshes_spent=None):
     """Derive one member's line where §5 allows (derive_refusal), and, where
     it may be named (charge_naming), its charge name with it: kept only when
     the answer gives one in the charge-name form and free, and when the
@@ -5171,7 +5200,9 @@ def derive_member(project, m, held_off=False):
     on the in-charge event and is handed to the session (hand_name). A
     failed fork is stamped, and with `held_off` (--all) the member is not
     forked again until DERIVE_RETRY has passed; a derive that succeeds clears
-    the stamp. False when the fork failed, nothing recorded."""
+    the stamp. `refreshes_spent`, the run's cap on refreshes once it is
+    reached: a member that would be forked is left to the next run. Returns
+    "refused", "deferred", "derived", or "failed" (nothing recorded)."""
     why = derive_refusal(project, m)
     if not why and held_off:
         age = derive_failed_age(m.session)
@@ -5179,7 +5210,10 @@ def derive_member(project, m, held_off=False):
             why = "its last fork failed %s ago" % short_age(age)
     if why:
         print("%s: not derived — %s" % (m.alias, why))
-        return True
+        return "refused"
+    if refreshes_spent is not None:
+        print("%s: not derived — left to the next run, which refreshes at most %d" % (m.alias, refreshes_spent))
+        return "deferred"
     naming = charge_naming(project, m)
     try:
         line, answer = derive_line(project, m, naming_prompt(naming) if naming else DERIVE_PROMPT)
@@ -5188,7 +5222,7 @@ def derive_member(project, m, held_off=False):
         sys.stderr.write("sminos: derive %s failed: %s; nothing recorded\n%s" % (
             m.alias, e.reason, "".join("    %s\n" % x for x in tail)))
         derive_failed_mark(m.session, True)
-        return False
+        return "failed"
     derive_failed_mark(m.session, False)
     name = why_not = ""
     if naming:
@@ -5206,7 +5240,7 @@ def derive_member(project, m, held_off=False):
         hand_name(m.session, name, naming.before, line)
     elif why_not:
         print("%s: no name: %s" % (m.alias, why_not))
-    return True
+    return "derived"
 
 
 def cmd_name_due(a):
@@ -9554,6 +9588,7 @@ def build_parser():
     dv = sub.add_parser("derive", add_help=False)
     dv.add_argument("member", nargs="?", default="")
     dv.add_argument("--all", action="store_true")
+    dv.add_argument("--refreshes", type=int, default=None)
     dv.set_defaults(fn=cmd_derive)
 
     nd = sub.add_parser("name-due", add_help=False)

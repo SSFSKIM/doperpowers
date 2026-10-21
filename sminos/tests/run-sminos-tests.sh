@@ -5255,6 +5255,7 @@ for i in 1 2 3 4 5 6 7 8 9 10 11 12; do tx "$TD" prompt "f00000$i" "prompt $i"; 
 tx "$TD" tool f2000001 4
 tx "$TD" tool f2000002 5
 tx "$TD" sidechain-tool f2000003 6
+tx "$TD" tool f2000002 1   # a block the engine wrote again, its id the same: counted once
 run "$SMINOS" derive hd
 assert_contains "$OUT" "hd: not derived — 9 tool calls, needs 10" "a session whose model made nine tool calls is not derived, the count named"
 assert_not_contains "$(cat "$HPLOG/testhost.$HD.jsonl" 2>/dev/null)" "in-charge" "however many prompts its human typed, and however many calls a subagent made"
@@ -5770,6 +5771,64 @@ python3 -c 'import os, sys, time; t = time.time() - 8 * 86400; os.utime(sys.argv
 run "$SMINOS" derive --all
 assert_file_absent "$SMINOS_HOME/names/$CB.json" "derive --all removes a pending name older than a week"
 assert_file_exists "$SMINOS_HOME/names/$CS.json" "and keeps a newer one"
+
+# derive --all forks one member after another, each fork up to two minutes:
+# members with no line go first, and the daemon's --refreshes caps the members
+# with a line it forks, oldest line first, so a first line never waits long.
+# Its own HOME and registry, so only these members are known.
+SCH="$TEST_ROOT/sched"
+SCH_ENV=(HOME="$SCH/home" SMINOS_HOME="$SCH/registry")
+mkdir -p "$SCH/home/.claude/sessions" "$SCH/home/.claude/projects/sched" "$SCH/repo"
+mkdir -m 700 "$SCH/registry"
+gitq init -q "$SCH/repo"
+(cd "$SCH/repo" && env "${SCH_ENV[@]}" "$SMINOS" project init --name sched >/dev/null)
+SCHP="$(smns_id "$SCH/repo")"
+sch_member() { # name session — a running session of the project whose model made ten tool calls
+  printf '{"pid":%s,"sessionId":"%s","name":"%s","nameSource":"derived","kind":"interactive","status":"idle","cwd":"%s"}\n' \
+    "$SOCK_PID" "$2" "$1" "$SCH/repo" > "$SCH/home/.claude/sessions/$1.json"
+  tx "$SCH/home/.claude/projects/sched/$2.jsonl" tool "${2:0:8}" 10
+  (cd "$SCH/repo" && env "${SCH_ENV[@]}" "$SMINOS" list >/dev/null)
+}
+sch_line() { # session ts — a derived line dated ts
+  (cd "$SCH/repo" && env "${SCH_ENV[@]}" python3 - "$SMINOS_PY" "$SCHP" "$1" "$2" <<'PY'
+import importlib.util, json, os, sys
+spec = importlib.util.spec_from_file_location("sminos", sys.argv[1]); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+p = mod.find_project(sys.argv[2])
+mod.lifecycle(p, sys.argv[3], "in-charge", text="an old line", source="derived")
+path = os.path.join(os.environ["SMINOS_HOME"], "projects", sys.argv[2], "log", "testhost.%s.jsonl" % sys.argv[3])
+rows = [json.loads(l) for l in open(path)]
+for e in rows:
+    if e.get("kind") == "in-charge":
+        e["ts"] = sys.argv[4]
+open(path, "w").write("".join(json.dumps(e, ensure_ascii=False) + "\n" for e in rows))
+PY
+  )
+}
+SF=0e000001-0000-4000-8000-0000000000e1
+sch_member sched-first "$SF"   # joined first: listed last, behind every refresh
+for i in 1 2 3 4; do
+  sch_member "sched-old$i" "0e00001$i-0000-4000-8000-0000000000f$i"
+done
+sch_line 0e000011-0000-4000-8000-0000000000f1 "2000-01-03T00:00:00.000Z"
+sch_line 0e000012-0000-4000-8000-0000000000f2 "2000-01-01T00:00:00.000Z"   # the oldest line
+sch_line 0e000013-0000-4000-8000-0000000000f3 "2000-01-04T00:00:00.000Z"
+sch_line 0e000014-0000-4000-8000-0000000000f4 "2000-01-02T00:00:00.000Z"
+sch_forks() { # → the sessions the forks since line $1 of calls.log resumed, in order
+  tail -n +"$(( $1 + 1 ))" "$STUB_STATE/log/calls.log" | sed -n 's/.*--resume \([0-9a-f-]*\) --fork-session.*/\1/p' | tr '\n' ' '
+}
+CALLS_AT="$(wc -l < "$STUB_STATE/log/calls.log" | tr -d ' ')"
+STUB_FORK_SLEEP=1 run env "${SCH_ENV[@]}" "$SMINOS" derive --all --refreshes 2
+assert_rc 0 "$RC" "a capped derive --all exits 0"
+assert_equals "$(sch_forks "$CALLS_AT")" "$SF 0e000012-0000-4000-8000-0000000000f2 0e000014-0000-4000-8000-0000000000f4 " \
+  "the member with no line is forked first, then only two refreshes, the oldest lines first"
+assert_contains "$OUT" "sched-old1: not derived — left to the next run, which refreshes at most 2" "the other refreshes are left to the next run"
+assert_contains "$OUT" "sched-old3: not derived — left to the next run, which refreshes at most 2" "both of them"
+CALLS_AT="$(wc -l < "$STUB_STATE/log/calls.log" | tr -d ' ')"
+run env "${SCH_ENV[@]}" "$SMINOS" derive --all
+assert_equals "$(sch_forks "$CALLS_AT")" "0e000011-0000-4000-8000-0000000000f1 0e000013-0000-4000-8000-0000000000f3 " \
+  "a derive --all with no cap forks every member it finds due"
+run env "${SCH_ENV[@]}" "$SMINOS" derive "sched-first" --refreshes 2
+assert_rc 2 "$RC" "--refreshes goes with --all only"
 
 # Acceptance 8: an alias a member held before still reaches it, behind every
 # current alias, and the sender is told the name it goes by now (§4).
