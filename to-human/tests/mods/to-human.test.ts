@@ -4,7 +4,7 @@ import { describe, expect, mock, test, tier } from 'claude-code/testing'
 
 import type { RowKind } from '../../hooks/mods/to-human'
 import { MESSAGE_TOOL } from '../../hooks/mods/message'
-import { editorUrl, fileLinks, isRead, markdownBlocks, newView, parse, placeAll, placeArgs, placesIn, promptRow, registerToHuman, reorder, runEnd, runStart, sessionPlaceArgs } from '../../hooks/mods/to-human'
+import { START_WAIT_MS, editorUrl, fileLinks, isRead, markdownBlocks, newView, parse, placeAll, placeArgs, placesIn, promptRow, registerToHuman, reorder, runEnd, runStart, sessionPlaceArgs } from '../../hooks/mods/to-human'
 
 // The kit runs tests with the timer the hooks' declarations leave out.
 declare const setTimeout: (callback: (value?: unknown) => void, ms: number) => unknown
@@ -12,7 +12,57 @@ declare const setTimeout: (callback: (value?: unknown) => void, ms: number) => u
 tier('user')
 
 /** A `next` as the engine hands a hook the tests call themselves: the chain beneath, and the dispatch's signal. */
-const beneath = <F extends (e: Record<string, unknown>) => Promise<unknown>>(chain: F) => Object.assign(chain, { signal: { aborted: false } })
+const beneath = <F extends (e: Record<string, unknown>) => Promise<unknown>>(chain: F, signal = new AbortController().signal) => Object.assign(chain, { signal })
+
+/** Resolves after `ms` milliseconds of the kit's own timer. */
+const tick = (ms = 1) => new Promise((resolve) => setTimeout(resolve, ms))
+
+/**
+ * The view's hooks called as the engine would call them, over a start-up read
+ * whose conversation (a mark sent before) answers once `release` runs, and a
+ * clock whose wait for the rows the test ends itself (`endWait`).
+ */
+function startingView() {
+  type Event = Record<string, unknown>
+  type Handler = (engine: EngineInterface, e: Event, next: unknown) => Promise<unknown>
+  const hooks: { event: string; matcher: Event; handler: Handler }[] = []
+  const on = ((event: string, ...rest: unknown[]) => {
+    hooks.push({ event, matcher: rest.length > 1 ? (rest[0] as Event) : {}, handler: rest[rest.length - 1] as Handler })
+  }) as unknown as On
+  registerToHuman(on)
+  const state = { reads: 0, invalidations: 0, waits: [] as number[] }
+  let release = () => {}
+  const gate = new Promise<void>((resolve) => (release = resolve))
+  let endWait = () => {}
+  const engine = {
+    env: { get: async () => undefined },
+    session: {
+      messages: async () => ((state.reads += 1), await gate, [{ role: 'assistant', text: '<message>Earlier.</message>', toolUses: [] }]),
+      id: async () => 's1',
+    },
+    process: { run: async () => ({ exitCode: 1, stdout: '', stderr: '' }) },
+    clock: {
+      after: (ms: number, fn: () => void) => (state.waits.push(ms), (endWait = fn), { cancel: () => (endWait = () => {}) }),
+      now: async () => 0,
+    },
+    ui: {
+      resolve: () => ({ Box: 'Box', Text: 'Text', Button: 'Button', Markdown: 'Markdown' }),
+      invalidate: () => {
+        state.invalidations += 1
+      },
+      log: () => {},
+    },
+  } as unknown as EngineInterface
+  const hook = (event: string, component?: string) => hooks.find((h) => h.event === event && h.matcher.component === component)!.handler
+  const draw = (requestId: string, signal = new AbortController().signal) =>
+    hook('ui.render', 'AssistantMessage')(
+      engine,
+      { surface: 'terminal', component: 'AssistantMessage', requestId, props: { text: 'Reading.', isFirstOfReply: true } },
+      beneath(async () => ({ type: 'Text', children: ['raw'] }), signal),
+    )
+  const start = () => hook('session.start')(engine, { cwd: '/w', surface: 'terminal', isInteractive: true }, beneath(async () => ({ cwd: '/w' })))
+  return { state, draw, start, release: () => release(), endWait: () => endWait() }
+}
 
 describe('register', () => {
   test('parse splits marked spans from the working record', async () => {
@@ -324,7 +374,7 @@ describe('transcript order', () => {
   const PLUGIN = 'to-human'
 
   test('the search lists each row by its id and each call by its tool_use_id, in the file\'s order', async () => {
-    expect(placeArgs('/t.jsonl').at(-1)).toBe('/t.jsonl')
+    expect(placeArgs('/t.jsonl').includes('/t.jsonl')).toBe(true)
     const stdout = ['"uuid":"u1"', '"type":"tool_use","id":"toolu_1"', '"uuid":"u2"', '', 'noise'].join('\n')
 
     expect(placesIn(stdout)).toEqual(['u1', 'toolu_1', 'u2'])
@@ -490,6 +540,7 @@ describe('rows off the window', () => {
       env: { get: async () => undefined },
       session: { messages: async () => [], id: async () => 's1' },
       process: { run: async () => ({ exitCode: 1, stdout: '', stderr: '' }) },
+      clock: { after: () => ({ cancel: () => {} }), now: async () => 0 },
       ui: {
         resolve: () => ({ Box: 'Box', Text: 'Text', Button: 'Button', Markdown: 'Markdown' }),
         invalidate: () => {},
@@ -551,43 +602,55 @@ describe('rows off the window', () => {
     expect(scrolls.length).toBe(2)
   })
 
-  test('a start-up read cut short by its dispatch is made again by the hooks still waiting', async () => {
-    type Event = Record<string, unknown>
-    type Handler = (engine: EngineInterface, e: Event, next: unknown) => unknown
-    const hooks: { event: string; matcher: Event; handler: Handler }[] = []
-    const on = ((event: string, ...rest: unknown[]) => {
-      hooks.push({ event, matcher: rest.length > 1 ? rest[0] as Event : {}, handler: rest[rest.length - 1] as Handler })
-    }) as unknown as On
-    registerToHuman(on)
-    let reads = 0
-    let release = () => {}
-    const gate = new Promise<void>((resolve) => (release = resolve))
-    const engine = {
-      env: { get: async () => undefined },
-      session: {
-        messages: async () => ((reads += 1), await gate, [{ role: 'assistant', text: '<message>Earlier.</message>', toolUses: [] }]),
-        id: async () => 's1',
-      },
-      process: { run: async () => ({ exitCode: 1, stdout: '', stderr: '' }) },
-      ui: { resolve: () => ({ Box: 'Box', Text: 'Text', Button: 'Button', Markdown: 'Markdown' }), invalidate: () => {}, log: () => {} },
-    } as unknown as EngineInterface
-    const assistant = hooks.find((h) => h.event === 'ui.render' && h.matcher.component === 'AssistantMessage')!
-    const draw = (requestId: string, signal: { aborted: boolean }) =>
-      assistant.handler(engine, { surface: 'terminal', component: 'AssistantMessage', requestId, props: { text: 'Reading.', isFirstOfReply: true } },
-        Object.assign(async () => ({ type: 'Text', children: ['raw'] }), { signal }))
+  test('a start-up read cut short by its dispatch is made again by the hooks still waiting, and the row cut short answers at once', async () => {
+    const view = startingView()
 
     // The first row's dispatch starts the read and is superseded while it runs.
-    const first = { aborted: false }
-    const superseded = draw('r1', first)
-    for (let i = 0; i < 100 && reads === 0; i++) await new Promise((resolve) => setTimeout(resolve, 1))
-    const waiting = draw('r2', { aborted: false })
-    await new Promise((resolve) => setTimeout(resolve, 5))
-    first.aborted = true
-    release()
-    await superseded
+    const first = new AbortController()
+    const superseded = view.draw('r1', first.signal)
+    for (let i = 0; i < 100 && view.state.reads === 0; i++) await tick()
+    const waiting = view.draw('r2')
+    await tick(5)
+    first.abort()
+    expect(await Promise.race([superseded.then(() => 'answered'), tick(50).then(() => 'still waiting')])).toBe('answered')
+    view.release()
 
     expect(JSON.stringify(await waiting)).not.toContain('raw')
-    expect(reads).toBe(2)
+    expect(view.state.reads).toBe(2)
+  })
+
+  test("the start-up read begun at the module's session.start is not cut short by a row's redraw", async () => {
+    const view = startingView()
+    void view.start()
+    const row = new AbortController()
+    const superseded = view.draw('r1', row.signal)
+    await tick(5)
+    row.abort()
+    await superseded
+    view.release()
+
+    expect(JSON.stringify(await view.draw('r1'))).not.toContain('raw')
+    expect(view.state.reads).toBe(1)
+  })
+
+  test('the rows wait for the start-up read START_WAIT_MS at most, then draw with what is known, and are asked for again once it lands', async () => {
+    const view = startingView()
+    void view.start()
+    const row = view.draw('r1')
+    await tick(5)
+    expect(view.state.waits).toEqual([START_WAIT_MS])
+
+    // Past the wait a row draws as the engine does, no mark being known yet,
+    // and a row asked about later does not wait at all.
+    view.endWait()
+    expect(JSON.stringify(await row)).toContain('raw')
+    expect(JSON.stringify(await view.draw('r2'))).toContain('raw')
+
+    const asked = view.state.invalidations
+    view.release()
+    for (let i = 0; i < 100 && view.state.invalidations === asked; i++) await tick()
+    expect(view.state.invalidations).toBeGreaterThan(asked)
+    expect(JSON.stringify(await view.draw('r1'))).not.toContain('raw')
   })
 
   test('a session that has sent no mark still draws as the engine does, and no transcript yet places nothing', async ($, on) => {
