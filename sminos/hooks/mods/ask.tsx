@@ -590,9 +590,19 @@ export async function openDialog($: EngineInterface, questions: AskQuestion[]): 
  */
 export const DIALOG_SOURCE = 'sminos-ask'
 
-/** What an ask's notification says: its first question, and how many more it carries. */
-export function announcement(questions: readonly AskQuestion[]): string {
+/** The engine's reminder for a dialog that has waited, as it words it for an AskUserQuestion dialog (recorded on 2.1.305). */
+export const DIALOG_REMINDER = 'Claude needs your permission'
+
+/**
+ * What an ask's notification says: its first question, and how many more it
+ * carries; undefined for a blank one, which the engine's dialog refuses to
+ * raise, so nothing waits to be answered.
+ */
+export function announcement(questions: readonly AskQuestion[]): string | undefined {
   const first = (questions[0] as AskQuestion).question
+  if (first.trim() === '') {
+    return undefined
+  }
   return questions.length > 1 ? `${first} (+${questions.length - 1} more)` : first
 }
 
@@ -605,7 +615,11 @@ export function announcement(questions: readonly AskQuestion[]): string {
  * hook calling out to a terminal app) would hold the call.
  */
 function announce($: EngineInterface, questions: readonly AskQuestion[]) {
-  $.ui.notify(announcement(questions)).catch((error: unknown) => $.ui.log(`ask: the question's notification failed (${message(error)})`, { to: 'debug' }))
+  const text = announcement(questions)
+  if (text === undefined) {
+    return
+  }
+  $.ui.notify(text).catch((error: unknown) => $.ui.log(`ask: the question's notification failed (${message(error)})`, { to: 'debug' }))
 }
 
 // Asking without waiting. An async ask returns at once and stands open in
@@ -1705,12 +1719,15 @@ export function registerAsk(on: On) {
     !next.called && (next.error.kind as string) !== 're-entry' && isServing && next.origin.plugin === 'engine' ? { deny: WITHDRAWN } : next(e),
   )
 
-  // The engine's reminder that a dialog has waited (`permission_prompt`) is
-  // not passed on while a dialog this mod raised stands: a blocking ask was
-  // announced as it was asked, and an async ask's dialog is open because the
-  // human pressed to answer it. The channel still writes; only the hooks beneath
-  // do not hear it.
-  on('classic.Notification', { notification_type: 'permission_prompt' }, (_, e, next) =>
+  // The engine's reminder that a dialog has waited is not passed on while a
+  // dialog this mod raised stands: a blocking ask was announced as it was
+  // asked, and an async ask's dialog is open because the human pressed to
+  // answer it. Only the generic reminder, the one the engine gives an
+  // AskUserQuestion dialog, which a tool's permission dialog shares (one queued
+  // beside the ask's is kept from the hooks too); the reminders that name what
+  // waits (network access for a sandboxed command, a plan) pass. The channel
+  // still writes; only the hooks beneath do not hear it.
+  on('classic.Notification', { notification_type: 'permission_prompt', message: DIALOG_REMINDER }, (_, e, next) =>
     entries.some((entry) => entry.isClaimed && entry.outcome === undefined) ? {} : next(e),
   )
 

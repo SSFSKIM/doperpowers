@@ -5,6 +5,7 @@ import type { AskNote, AskQuestion } from '../../hooks/mods/ask'
 import {
   ASK_TOOL,
   ASK_TOOLS,
+  DIALOG_REMINDER,
   DIALOG_SOURCE,
   PLUGIN,
   answerAsync,
@@ -1061,6 +1062,7 @@ describe('the person told of an ask', () => {
   test('the notification is the first question, with how many more the ask carries', async () => {
     expect(announcement([BACKEND])).toBe('Which backend?')
     expect(announcement([BACKEND, FEATURES])).toBe('Which backend? (+1 more)')
+    expect(announcement([{ ...BACKEND, question: '  ' }, FEATURES])).toBeUndefined()
   })
 
   test('an async ask notifies as it opens, once', async () => {
@@ -1079,10 +1081,11 @@ describe('the person told of an ask', () => {
     expect(h.notified()).toEqual(['Which backend?'])
   })
 
-  test('a refused ask notifies nothing: invalid, or a subagent\'s', async () => {
+  test("an ask that cannot be raised notifies nothing: invalid, a subagent's, or a blank first question the dialog refuses", async () => {
     const h = await ready()
     await h.call(ASK_TOOL, { questions: [question('Pick one?', 'One', ['Only'])], async: true })
     await h.call(ASK_TOOL, { questions: [BACKEND], async: true }, MODEL, 'agent-1')
+    await h.call(ASK_TOOL, { questions: [{ ...BACKEND, question: ' ' }], async: true })
     expect(h.notified()).toEqual([])
   })
 
@@ -1115,6 +1118,9 @@ describe('the person told of an ask', () => {
     )
     await h.settle()
     expect(await h.notification('permission_prompt')).toBe(false)
+    expect(DIALOG_REMINDER).toBe('Claude needs your permission')
+    // A reminder that names what waits is another dialog's, and passes.
+    expect(await h.notification('permission_prompt', 'A sandboxed command needs network access')).toBe(true)
     expect(await h.notification('idle_prompt', 'Claude is waiting for your input')).toBe(true)
     close(answered(ANSWER))
     await dialog

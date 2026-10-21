@@ -148,8 +148,13 @@ one a press opens) reaches the PreToolUse and PermissionRequest hooks with
 `metadata.source` `sminos-ask` (`DIALOG_SOURCE`), so a hook that announces a
 question's dialog can pass over one already announced, or opened by the
 person's own press; and while it stands, the engine's reminder that a dialog
-has waited (`permission_prompt`) is kept from the `Notification` hooks
-beneath (`classic.Notification`), though the channel still writes. Live
+has waited (`permission_prompt`, in the generic words it gives an
+AskUserQuestion dialog, `DIALOG_REMINDER`) is kept from the `Notification`
+hooks beneath (`classic.Notification`), though the channel still writes. A
+tool's permission dialog shares those words, so one queued beside the ask's
+dialog loses its reminder to the hooks too (the ask has said the session
+waits, and the PermissionRequest hooks still hear that dialog); a reminder
+that names what waits (network access, a plan) passes. Live
 check `tests/mods/live-ask-notify-check.py` (`--from main` runs it against
 the code before).
 
