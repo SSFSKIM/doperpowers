@@ -161,7 +161,8 @@ def run(ctx, opts):
     labels = compose.labels(kind="vm", lifetime=r.lifetime, expires=expires, by=ctx.machine, creator=short,
                             recipe=recipe, confirmed=r.confirmed, enroll=enroll,
                             test_run=ctx.env.get("DEVCLOUD_TEST_RUN"))
-    image = images.current(r.client.images(), recipe) if r.client.has("images") else None
+    image = (images.current(r.client.images(), recipe, arch=r.type.get("architecture")) if r.client.has("images")
+             else None)
     if metadata_seed:
         # No seed to deliver and no SSH before the tailnet: cloud-init does the
         # first boot, carrying the recipe on the slow path (§3 step 4).

@@ -32,18 +32,25 @@ CLEAN = ("cloud-init clean --logs --machine-id --seed && "
          "systemctl --no-block poweroff")
 
 
-def current(images, recipe):
+ARCH_LABEL = "devcloud-arch"
+ANY = object()
+
+
+def current(images, recipe, arch=ANY):
     """The newest image (`devcloud=image`) whose recipe hash is `recipe` and
-    which a create can use now (`state` ready), or None."""
+    which a create can use now (`state` ready), or None. With `arch` (the
+    requested type's `architecture`, None when its provider names none), only
+    an image baked on that architecture: Hetzner offers x86 and Arm types."""
     ours = [i for i in images if i["labels"].get("devcloud") == "image" and i["labels"].get("devcloud-recipe") == recipe
-            and i.get("state") == "ready"]
+            and i.get("state") == "ready" and (arch is ANY or i["labels"].get(ARCH_LABEL) == arch)]
     return max(ours, key=lambda i: (i["created"], i["id"]), default=None)
 
 
-def builder_type(types):
+def builder_type(types, arch=None):
     """The smallest available type whose disk is the least the provider
-    offers, so the image fits every type (§7)."""
-    offered = [t for t in types if t.get("available")]
+    offers, so the image fits every type (§7); of architecture `arch` when
+    given."""
+    offered = [t for t in types if t.get("available") and (arch is None or t.get("architecture") == arch)]
     if not offered:
         raise DriverError(REFUSED, "the provider offers no available type for a builder here")
     least = min(t["disk_gb"] for t in offered)
@@ -101,7 +108,10 @@ def _stamp(now):
 def build(ctx, account, client):
     """Bakes one image for `account` and returns it (an I13 Image)."""
     recipe = compose.recipe_hash(ctx.plugin)
-    type_ = builder_type(client.types(account.location))
+    types = client.types(account.location)
+    # The architecture of the account's default type, which most VMs take.
+    arch = next((t.get("architecture") for t in types if t["type"] == account.type), None)
+    type_ = builder_type(types, arch)
     keys = ctx.driver_keys()
     taken = {vm["name"] for vm in client.list()}
     name = names.draw("bake", taken, ctx.token_hex)
@@ -132,6 +142,8 @@ def build(ctx, account, client):
         wait_off(ctx, entry)
         step = "image"
         image_labels = {"devcloud": "image", "devcloud-recipe": recipe, "devcloud-by": ctx.machine}
+        if type_.get("architecture"):
+            image_labels[ARCH_LABEL] = type_["architecture"]
         if test_run:
             image_labels["devcloud-test"] = test_run
         made = client.image_create(vm["id"], f"dc-img-{recipe}-{_stamp(ctx.clock())}", image_labels)

@@ -30,16 +30,16 @@ def server(sid, name, labels, *, location="hil", stype="cpx31", ipv4="203.0.113.
 
 
 SERVER_TYPES = [
-    {"id": 24, "name": "cpx31", "cores": 4, "memory": 8.0, "disk": 160, "deprecated": False,
+    {"id": 24, "name": "cpx31", "cores": 4, "memory": 8.0, "disk": 160, "deprecated": False, "architecture": "x86",
      "locations": [{"name": "hil", "available": True, "deprecation": None},
                    {"name": "nbg1", "available": False, "deprecation": {"announced": "2026-01-01"}}],
      "prices": [{"location": "hil", "price_hourly": {"net": "0.1178000000", "gross": "0.1178000000000000"}},
                 {"location": "nbg1", "price_hourly": {"net": "0.0201", "gross": "0.0239190000000000"}}]},
-    {"id": 104, "name": "cx22", "cores": 2, "memory": 4.0, "disk": 40, "deprecated": False,
+    {"id": 104, "name": "cax11", "cores": 2, "memory": 4.0, "disk": 40, "deprecated": False, "architecture": "arm",
      "locations": [{"name": "nbg1", "available": True, "deprecation": None},
                    {"name": "fsn1", "available": True, "deprecation": None}],
      "prices": [{"location": "nbg1", "price_hourly": {"net": "0.006", "gross": "0.0071400000000000"}}]},
-    {"id": 22, "name": "cpx11", "cores": 2, "memory": 2.0, "disk": 40, "deprecated": True,
+    {"id": 22, "name": "cpx11", "cores": 2, "memory": 2.0, "disk": 40, "deprecated": True, "architecture": "x86",
      "locations": [{"name": "hil", "available": True, "deprecation": None}],
      "prices": []},
 ]
@@ -134,17 +134,18 @@ class InfoAndTypesTest(HetznerBase):
     def test_types_for_a_location(self):
         self.assertEqual(self.ok("types", {"location": "hil"}), [
             {"type": "cpx31", "vcpus": 4, "memory_gb": 8.0, "disk_gb": 160, "available": True,
-             "hourly_price": 0.1178, "currency": "EUR"},
+             "hourly_price": 0.1178, "currency": "EUR", "architecture": "x86"},
             {"type": "cpx11", "vcpus": 2, "memory_gb": 2.0, "disk_gb": 40, "available": False,
-             "hourly_price": None, "currency": "EUR"},
+             "hourly_price": None, "currency": "EUR", "architecture": "x86"},
         ])
 
     def test_types_unavailable_at_the_location_and_omitted_where_absent(self):
         types = {t["type"]: t for t in self.ok("types", {"location": "nbg1"})}
-        self.assertEqual(sorted(types), ["cpx31", "cx22"])
+        self.assertEqual(sorted(types), ["cax11", "cpx31"])
         self.assertFalse(types["cpx31"]["available"])
-        self.assertTrue(types["cx22"]["available"])
-        self.assertEqual(types["cx22"]["hourly_price"], 0.00714)
+        self.assertTrue(types["cax11"]["available"])
+        self.assertEqual(types["cax11"]["hourly_price"], 0.00714)
+        self.assertEqual(types["cax11"]["architecture"], "arm", "Hetzner's Arm types are its CAX")
 
     def test_every_call_uses_a_private_config_and_never_the_token_on_argv(self):
         self.ok("types", {"location": "hil"})

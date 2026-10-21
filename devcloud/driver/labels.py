@@ -20,6 +20,7 @@ ALLOWED = {
     "devcloud-held": r"1",
     "devcloud-bake": r"failed-[a-z0-9-]{1,56}",
     "devcloud-test": _WORD,
+    "devcloud-arch": _WORD,
 }
 _PATTERNS = {key: re.compile(rf"(?:{value})\Z") for key, value in ALLOWED.items()}
 

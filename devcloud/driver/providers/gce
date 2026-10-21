@@ -262,7 +262,7 @@ def op_types(gc, req):
         memory = round(t["memoryMb"] / 1024, 2)
         out.append({"type": t["name"], "vcpus": t["guestCpus"], "memory_gb": memory, "disk_gb": disk,
                     "available": not t.get("deprecated"), "hourly_price": price(t["name"], t["guestCpus"], memory, rates),
-                    "currency": "USD"})
+                    "currency": "USD", "architecture": "x86"})
     return out
 
 

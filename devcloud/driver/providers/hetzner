@@ -162,7 +162,7 @@ def op_types(hc, req):
             "type": t["name"], "vcpus": t["cores"], "memory_gb": t["memory"], "disk_gb": t["disk"],
             "available": bool(entry.get("available")) and not t.get("deprecated"),
             "hourly_price": float(price["price_hourly"]["gross"]) if price else None,
-            "currency": "EUR",
+            "currency": "EUR", "architecture": t.get("architecture"),
         })
     return out
 

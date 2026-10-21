@@ -183,7 +183,7 @@ class InfoAndTypesTest(GceBase):
         self.assertEqual(sorted(types), ["e2-custom-4-8192", "e2-highcpu-2", "e2-standard-4", "n1-standard-2"])
         self.assertEqual(types["e2-custom-4-8192"], {"type": "e2-custom-4-8192", "vcpus": 4, "memory_gb": 8.0,
                                                      "disk_gb": 50, "available": True, "hourly_price": None,
-                                                     "currency": "USD"})
+                                                     "currency": "USD", "architecture": "x86"})
         self.assertFalse(types["n1-standard-2"]["available"], "a deprecated type is not available")
 
     def test_the_disk_default_comes_from_the_account(self):

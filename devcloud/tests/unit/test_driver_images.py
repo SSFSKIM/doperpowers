@@ -25,9 +25,11 @@ HOUR = 3600
 RECIPE = compose.recipe_hash(_path.DEVCLOUD)
 
 
-def image(iid, recipe, created, kind="image", state="ready"):
-    return {"id": iid, "name": f"img-{iid}", "labels": {"devcloud": kind, "devcloud-recipe": recipe},
-            "created": created, "state": state}
+def image(iid, recipe, created, kind="image", state="ready", arch=None):
+    labels = {"devcloud": kind, "devcloud-recipe": recipe}
+    if arch:
+        labels["devcloud-arch"] = arch
+    return {"id": iid, "name": f"img-{iid}", "labels": labels, "created": created, "state": state}
 
 
 class CurrentTest(unittest.TestCase):
@@ -48,6 +50,18 @@ class CurrentTest(unittest.TestCase):
         self.assertIsNone(images.current([], RECIPE))
 
 
+    def test_only_an_image_of_the_requested_architecture(self):
+        """Hetzner offers x86 and Arm (CAX) types: an image baked on one
+        cannot boot the other."""
+        listed = [image("x", RECIPE, NOW - HOUR, arch="x86"), image("a", RECIPE, NOW, arch="arm"),
+                  image("u", RECIPE, NOW + 1)]
+        self.assertEqual(images.current(listed, RECIPE, arch="x86")["id"], "x")
+        self.assertEqual(images.current(listed, RECIPE, arch="arm")["id"], "a")
+        self.assertEqual(images.current(listed, RECIPE, arch=None)["id"], "u",
+                         "a provider that names no architecture matches only an image that names none")
+        self.assertEqual(images.current(listed, RECIPE)["id"], "u", "without one asked, any image is current")
+
+
 class BuilderTypeTest(unittest.TestCase):
     def test_the_smallest_available_type_with_the_providers_least_disk(self):
         types = [{"type": "big", "vcpus": 8, "memory_gb": 16, "disk_gb": 40, "available": True, "hourly_price": 0.4},
@@ -55,6 +69,14 @@ class BuilderTypeTest(unittest.TestCase):
                  {"type": "roomy", "vcpus": 1, "memory_gb": 1, "disk_gb": 80, "available": True, "hourly_price": 0.005},
                  {"type": "gone", "vcpus": 1, "memory_gb": 1, "disk_gb": 20, "available": False, "hourly_price": 0.1}]
         self.assertEqual(images.builder_type(types)["type"], "tiny")
+
+    def test_the_architecture_asked_for(self):
+        types = [{"type": "cax11", "vcpus": 2, "memory_gb": 4, "disk_gb": 40, "available": True, "hourly_price": 0.005,
+                  "architecture": "arm"},
+                 {"type": "cx22", "vcpus": 2, "memory_gb": 4, "disk_gb": 40, "available": True, "hourly_price": 0.007,
+                  "architecture": "x86"}]
+        self.assertEqual(images.builder_type(types)["type"], "cax11")
+        self.assertEqual(images.builder_type(types, arch="x86")["type"], "cx22")
 
     def test_nothing_available_is_a_refusal(self):
         with self.assertRaises(DriverError) as caught:
@@ -181,6 +203,20 @@ class BuildTest(BuildBase):
         self.assertIn(made["name"], self.out.getvalue())
         self.assertEqual(images.current(self.ctx.client(self.ctx.profile.account("main")).images(), RECIPE)["id"],
                          made["id"])
+
+    def test_the_image_carries_the_architecture_of_the_accounts_default_type(self):
+        state = self.state()
+        state["types"] = {"here": [
+            {"type": "armsmall", "vcpus": 2, "memory_gb": 4, "disk_gb": 40, "available": True, "hourly_price": 0.005,
+             "architecture": "arm"},
+            {"type": "small", "vcpus": 2, "memory_gb": 4, "disk_gb": 40, "available": True, "hourly_price": 0.01,
+             "architecture": "x86"},
+            {"type": "medium", "vcpus": 4, "memory_gb": 8, "disk_gb": 160, "available": True, "hourly_price": 0.1,
+             "architecture": "x86"}]}
+        self.state_file.write_text(json.dumps(state))
+        self.assertEqual(self.build(), 0)
+        self.assertEqual(self.calls("create")[0]["type"], "small", "the default type's (medium's) architecture")
+        self.assertEqual(self.state()["images"][0]["labels"]["devcloud-arch"], "x86")
 
     def test_the_bakes_order(self):
         self.build()

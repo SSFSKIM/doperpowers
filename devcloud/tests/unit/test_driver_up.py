@@ -294,6 +294,20 @@ class ImageTest(UpBase):
                             "created": created, "state": "ready"} for iid, recipe, created, kind in entries]
         self.state_file.write_text(json.dumps(state))
 
+    def test_an_image_of_another_architecture_is_the_slow_path(self):
+        recipe = compose.recipe_hash(_path.DEVCLOUD)
+        state = self.state()
+        state["types"] = {"here": [{"type": "medium", "vcpus": 4, "memory_gb": 8, "disk_gb": 160, "available": True,
+                                    "hourly_price": 0.1, "architecture": "x86"}]}
+        self.state_file.write_text(json.dumps(state))
+        self.images(("arm", recipe, NOW - HOUR, "image"))
+        state = self.state()
+        state["images"][0]["labels"]["devcloud-arch"] = "arm"
+        self.state_file.write_text(json.dumps(state))
+        self.assertEqual(self.up(), 0)
+        self.assertIsNone(self.create()["image"])
+        self.assertTrue(self.remote.commands("image/setup.sh"))
+
     def create(self):
         return [c for c in self.state()["calls"] if c["op"] == "create"][0]["input"]
 
