@@ -35,6 +35,7 @@ import binascii
 import hashlib
 import hmac
 import json
+import json.encoder
 import math
 import re
 
@@ -51,10 +52,11 @@ HUB_PREFIX = "hub/"
 B64URL_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
 B64URL_RE = re.compile(r"[A-Za-z0-9_-]*")
 SURROGATE_RE = re.compile("[\ud800-\udfff]")
-SHORT_ESCAPES = {'"': '\\"', "\\": "\\\\", "\b": "\\b", "\f": "\\f", "\n": "\\n", "\r": "\\r", "\t": "\\t"}
 MEMBER_RE = re.compile(r"[0-9a-f]{32}")
 ISO_MILLIS_RE = re.compile(r"([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})\.[0-9]{3}Z")
 MAX_SAFE = 2 ** 53 - 1
+EXACT = 2 ** 53  # every integer no larger in magnitude is a double exactly
+_quoted = json.encoder.encode_basestring  # string()'s writer: the json module's own (C) quoting
 
 
 class NotCanonical(ValueError):
@@ -119,7 +121,11 @@ def number(value):
     """ECMAScript's Number::toString of the double nearest `value` (RFC 8785
     §3.2.2.3). repr() of a float is its shortest round-tripping digits, as
     ECMAScript's are; the layout is ECMAScript's: for digits s (k of them) and
-    value 0.s × 10^n, plain while -6 < n <= 21, else d[.ddd]e±(n-1)."""
+    value 0.s × 10^n, plain while -6 < n <= 21, else d[.ddd]e±(n-1). An
+    integer a double holds exactly (no larger in magnitude than 2^53, at most
+    16 digits) is that layout's plain case: its own digits."""
+    if type(value) is int and -EXACT <= value <= EXACT:
+        return str(value)
     try:
         x = float(value)
     except OverflowError as e:
@@ -149,23 +155,21 @@ def number(value):
 
 
 def string(text):
-    """A string as ECMAScript's JSON.stringify writes it; a lone surrogate is refused."""
-    if SURROGATE_RE.search(text):
+    """A string as ECMAScript's JSON.stringify writes it; a lone surrogate is
+    refused. Python's JSON encoder with ensure_ascii off (its C function)
+    writes exactly that: `"` and `\\` escaped, every character below U+0020
+    as JSON.stringify's short escape (\\b \\t \\n \\f \\r) or else \\u00xx in
+    lower-case hex, and every other character as itself (U+007F, U+2028,
+    U+2029 and astral characters too). An ASCII string holds no surrogate."""
+    if not text.isascii() and SURROGATE_RE.search(text):
         raise NotCanonical("a string holds a lone surrogate")
-    out = ['"']
-    for ch in text:
-        if ch in SHORT_ESCAPES:
-            out.append(SHORT_ESCAPES[ch])
-        elif ch < " ":
-            out.append("\\u%04x" % ord(ch))
-        else:
-            out.append(ch)
-    out.append('"')
-    return "".join(out)
+    return _quoted(text)
 
 
 def canonical(value):
     """RFC 8785 (JCS) text of a JSON value."""
+    if type(value) is str:  # most of what an event holds
+        return string(value)
     if value is None:
         return "null"
     if value is True:
@@ -176,11 +180,16 @@ def canonical(value):
         return number(value)
     if isinstance(value, str):
         return string(value)
+    # The joins take generators, not lists: a list comprehension is inlined since Python 3.12, which would let
+    # canonical() write nesting twice as deep as it refuses (RecursionError) now.
     if isinstance(value, list):
         return "[" + ",".join(canonical(item) for item in value) + "]"
     if isinstance(value, dict):
         if not all(isinstance(k, str) for k in value):
             raise NotCanonical("an object key that is not a string")
+        if all(k.isascii() for k in value):
+            # No surrogate to refuse, and the keys' own order is that of their UTF-16 code units.
+            return "{" + ",".join(_quoted(k) + ":" + canonical(value[k]) for k in sorted(value)) + "}"
         keyed = [(string(k), k) for k in value]  # refuses a lone surrogate before the sort encodes it
         keyed.sort(key=lambda pair: pair[1].encode("utf-16-be"))
         return "{" + ",".join(text + ":" + canonical(value[k]) for text, k in keyed) + "}"

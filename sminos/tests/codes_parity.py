@@ -6,8 +6,11 @@ it), reproduced byte for byte or refused, each negative by the first check
 that refuses it, as its `fails_by` names (DX1's order: the encoding of its
 code and nonce, a `hub/` event's position, the code); then what DX1 refuses
 that the file does not hold — lone surrogates, NaN and the infinities, a code
-or nonce that is not the canonical base64url of 32 or 16 bytes — and the
-position cases generate.py asserts but does not write out.
+or nonce that is not the canonical base64url of 32 or 16 bytes — the
+canonical text against its definition written out here (every Unicode
+scalar value, every surrogate, random strings and values, the key order,
+integers about 2^53), and the position cases generate.py asserts but does not
+write out.
 Prints one `ok <name>` or `FAIL <name>` line per case, for
 run-sminos-tests.sh to count.
 
@@ -16,6 +19,7 @@ run-sminos-tests.sh to count.
 
 import copy
 import json
+import random
 import sys
 
 sys.path.insert(0, sys.argv[1])
@@ -112,6 +116,94 @@ for text in ("NaN", "Infinity", "-Infinity", '{"n": NaN}', "[Infinity]", "1e400"
     check("loads refuses %s" % text, raises(codes.loads, text))
 check("loads reads a lone surrogate escape (canonical refuses it)", raises(codes.canonical, codes.loads('"\\ud800"')))
 check("loads reads an escaped surrogate pair as one character", codes.loads('"\\ud83d\\ude00"') == "\U0001f600")
+
+# ---- the encoder against its definition, past the vectors: a string as JSON.stringify writes it, one character at a
+# time (sminos_codes's own encoder until it took the json module's C quoting), an object's keys in the order of their
+# UTF-16 code units, an integer as the double it is.
+SHORT = {'"': '\\"', "\\": "\\\\", "\b": "\\b", "\f": "\\f", "\n": "\\n", "\r": "\\r", "\t": "\\t"}
+
+
+def defined(value):
+    """The RFC 8785 text of a value, written out by the definition; None where there is none."""
+    if isinstance(value, str):
+        if any("\ud800" <= ch <= "\udfff" for ch in value):
+            return None
+        return '"' + "".join(SHORT.get(ch) or ("\\u%04x" % ord(ch) if ch < " " else ch) for ch in value) + '"'
+    if isinstance(value, list):
+        items = [defined(item) for item in value]
+        return None if None in items else "[" + ",".join(items) + "]"
+    if isinstance(value, dict):
+        texts = {k: (defined(k), defined(v)) for k, v in value.items()}
+        if any(None in pair for pair in texts.values()):
+            return None  # a lone surrogate in a key is refused before the sort, which cannot encode one
+        return "{" + ",".join("%s:%s" % texts[k] for k in sorted(value, key=lambda k: k.encode("utf-16-be"))) + "}"
+    if value is None or isinstance(value, bool):
+        return json.dumps(value)
+    try:
+        return written(codes.number, float(value))
+    except OverflowError:
+        return None
+
+
+def written(fn, value):
+    try:
+        return fn(value)
+    except codes.NotCanonical:
+        return None
+
+
+def agree(name, values, fn=codes.canonical):
+    n, differ = 0, []
+    for value in values:
+        n += 1
+        if written(fn, value) != defined(value):
+            differ.append(value)
+    check("%s: as defined (%d)" % (name, n), not differ, "%d differ, the first %r" % (len(differ), differ[:1]))
+
+
+SCALARS = [c for c in range(0x110000) if not 0xD800 <= c <= 0xDFFF]
+agree("every Unicode scalar value, alone", (chr(c) for c in SCALARS), codes.string)
+agree("every Unicode scalar value, in runs of 61 beside its neighbours",
+      ("".join(chr(c) for c in SCALARS[i:i + 61]) for i in range(0, len(SCALARS), 61)), codes.string)
+agree("every surrogate code point, alone and amid ASCII, Latin-1, Hangul and astral text (refused)",
+      (pre + chr(c) + post for c in range(0xD800, 0xE000)
+       for pre, post in (("", ""), ("x", "é"), ("한", "\U0001F600"), ("\U0001F600", "\n"))), codes.string)
+rng = random.Random(8785)
+RANGES = ((0, 0x20), (0x20, 0x7F), (0x7F, 0x100), (0x100, 0xD800), (0xE000, 0x10000), (0x10000, 0x110000))
+NAMED = '"\\\b\f\n\r\t\x00\x1f\x7f  ﻿￿\U00010000\U0001F600\U0010FFFF'
+
+
+def any_string(most=24):
+    return "".join(rng.choice(NAMED) if rng.random() < 0.3 else chr(rng.randrange(*rng.choice(RANGES)))
+                   for _ in range(rng.randrange(most)))
+
+
+def any_value(depth=0):
+    x = rng.random()
+    if depth > 2 or x < 0.4:
+        return any_string()
+    if x < 0.55:
+        return rng.choice([None, True, False, 0, -1, 2 ** 53, -(2 ** 53) - 1, 1.5, 1e21, 1e-7, float("nan")])
+    if x < 0.7:
+        return [any_value(depth + 1) for _ in range(rng.randrange(4))]
+    ascii_keys = rng.random() < 0.5
+    return {("".join(chr(rng.randrange(0x20, 0x7F)) for _ in range(rng.randrange(5))) if ascii_keys else any_string(6)):
+            any_value(depth + 1) for _ in range(rng.randrange(8))}
+
+
+agree("random strings of controls, escapes, U+007F, U+2028/2029, BMP and astral characters",
+      (any_string() for _ in range(30000)), codes.string)
+agree("random strings with a lone surrogate among them (refused)",
+      (s[:i] + chr(rng.randrange(0xD800, 0xE000)) + s[i:] for s in (any_string() for _ in range(3000))
+       for i in (rng.randrange(len(s) + 1),)), codes.string)
+agree("random values: objects of ASCII keys and of any keys, nested", (any_value() for _ in range(10000)))
+ORDER = ["￿", "\U0001F600", "", "\U00010000", "퟿", "a", "", "\x7f", " ", "\U0010FFFF", "ab",
+         "a\U0001F600", "a￿", "é", "Z"]
+agree("objects whose keys' UTF-16 order is not their code point order, shuffled",
+      ({k: i for i, k in enumerate(rng.sample(ORDER, len(ORDER)))} for _ in range(500)))
+agree("integers about 2^53, 10^21 and past the largest double, and of every bit length to 64",
+      [s * x for s in (1, -1) for x in (2 ** 53 - 1, 2 ** 53, 2 ** 53 + 1, 2 ** 53 + 2, 10 ** 21, 10 ** 21 + 1, 2 ** 1024)]
+      + [s * rng.getrandbits(b) for b in range(65) for s in (1, -1) for _ in range(40)], codes.number)
 
 def respelled(text):
     """The canonical spelling's last character with a spare bit set: the same bytes, written another way."""
