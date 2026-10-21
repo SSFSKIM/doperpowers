@@ -11,7 +11,7 @@ Terms are those of the project log design (`docs/doperpowers/specs/2026-10-13-sm
 ## Progress
 
 - [x] (2026-10-20) Spike: how a plugin can set the engine name, run against engine 2.1.305 (Surprises & Discoveries).
-- [ ] M1 — derive proposes a charge name; sminos knows its own names
+- [x] (2026-10-20) M1 — derive proposes a charge name; sminos knows its own names (53f0b667, fix 6c54c52a; task review clean)
 - [ ] M2 — the name mod applies a pending name
 - [ ] M3 — former aliases still reach, with a note; docs, version, acceptance
 
@@ -217,6 +217,9 @@ A manual end-to-end check, after installing the branch's sminos: in a member ses
 - Decision: the `charge` relabel (§2) is made only from a running engine record; rows without one take the published source.
   Rationale: M1 task review, 2026-10-20. Relabelling every row whose alias is a proposal turned a demotion the owning machine published (`user`, after an owner rename that shadows) back into `charge` on other machines, so local and remote rows disagreed and `charge_of` chose different lines. The owning machine is the one that can see the engine; the others read its verdict from the log.
   Date/Author: 2026-10-20, doperpowers-c4 (controller).
+- Decision: a running seat-less session's `joined` event (`join_on_sight`) takes its source through the same relabel, so a resumed charge-named session that re-joins after being retired logs `charge`, not the engine's `user`.
+  Rationale: M1 fix. `publish_renames` compares against the last `renamed` or `joined`; an earlier `renamed(charge)` hid the raw `user` join from the tick, so the log would have kept `user` for that session.
+  Date/Author: 2026-10-20, M1 executor.
 
 ## Outcomes & Retrospective
 
