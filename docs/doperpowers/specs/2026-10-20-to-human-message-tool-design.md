@@ -32,7 +32,7 @@ always loaded, not deferred), after weighing the cost below.
   desk orchestrator briefed.
 - [x] (2026-10-20) Spec reviewed (adversarial design review, buildability review); findings applied in abf65e9e.
 - [x] (2026-10-20) M1 — the tool, the view and the notification (to-human plugin): 4101d65d, with the copy and style-gate wave 356ac1cc, reviewed clean
-- [ ] M2 — the export (sminos)
+- [x] (2026-10-20) M2 — the export (sminos): 5f708d8f, fixes e8a7aea3 and a825d3fd, reviewed clean
 - [ ] M3 — the style, the evals, the docs, acceptance
 
 ## The loss, measured
