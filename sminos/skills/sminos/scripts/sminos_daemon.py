@@ -1096,12 +1096,18 @@ def credential_bytes():
         return None
 
 
+LEFT_THE_HUB = "this machine left the hub (hub.json is gone): the uplink stays stopped until the machine is enrolled again"
+
+
 class UplinkSupervisor(threading.Thread):
     """`daemon run`'s keeper of the uplink: while the machine holds a hub
     credential (daemon/hub.json), one `daemon uplink` child runs, restarted
     with backoff whenever it exits, and at once on the credential it holds
-    when hub.json changes (an enrollment replaced, or a first one); `stop`
-    ends it (SIGTERM, then a kill). The child's output goes to daemon.log."""
+    when hub.json changes (an enrollment replaced, or a first one). Once
+    hub.json is gone (`sminos hub leave`), the child is stopped and none
+    starts until an enrollment writes it again, which daemon.log says.
+    `stop` ends it (SIGTERM, then a kill). The child's output goes to
+    daemon.log."""
 
     def __init__(self):
         super().__init__(name="uplink-supervisor", daemon=True)
@@ -1125,9 +1131,13 @@ class UplinkSupervisor(threading.Thread):
                     stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
                     env={**os.environ, UPLINK_PARENT_ENV: str(os.getpid())})
             while self.proc.poll() is None and not self.halt.wait(0.2):
-                if credential_bytes() != held:
-                    sminos.daemon_log("uplink (pid %d): hub.json changed; restarting it on the credential as it "
-                                      "is now" % self.proc.pid)
+                now = credential_bytes()
+                if now != held:
+                    if now is None:
+                        sminos.daemon_log("uplink (pid %d): %s" % (self.proc.pid, LEFT_THE_HUB))
+                    else:
+                        sminos.daemon_log("uplink (pid %d): hub.json changed; restarting it on the credential as "
+                                          "it is now" % self.proc.pid)
                     self.stop_child()
                     backoff = 1
                     break
@@ -1135,10 +1145,15 @@ class UplinkSupervisor(threading.Thread):
                 if self.halt.is_set():
                     break
                 rc = self.proc.returncode
+                how = "on signal %d" % -rc if rc < 0 else "with %d" % rc
+                if credential_bytes() is None:
+                    # Gone while the child ended: nothing is restarted.
+                    sminos.daemon_log("uplink (pid %d) exited %s; %s" % (self.proc.pid, how, LEFT_THE_HUB))
+                    backoff = 1
+                    continue
                 if time.time() - started > UPLINK_BACKOFF_MAX:
                     backoff = 1
-                sminos.daemon_log("uplink (pid %d) exited %s; restarting in %ds" % (
-                    self.proc.pid, "on signal %d" % -rc if rc < 0 else "with %d" % rc, backoff))
+                sminos.daemon_log("uplink (pid %d) exited %s; restarting in %ds" % (self.proc.pid, how, backoff))
                 if self.halt.wait(backoff):
                     break
                 backoff = min(backoff * 2, UPLINK_BACKOFF_MAX)

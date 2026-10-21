@@ -40,7 +40,9 @@ chunk whole, so only the catch-up copy a snapshot gives is the tail, and a
 resync (which the mod posts alone, bounded under the engine's limit on a
 body) is taken as it comes, cut the same way. A resync that bound shortened
 (`truncated`) cuts pending permissions' inputs too: a request this child
-already holds keeps the input its own raise carried.
+already holds keeps the input its own raise carried. Questions it would not
+fit with go ahead of it whole, each as its own `raised`, and the resync
+names them (`pendingAhead`): each is kept as that raise left it.
 The rows no hook of the mod's sees (a manual compaction's) it reads here too:
 
     GET  /rows?loop=&after=<uuid>      a loop's whole rows on disk past <uuid> (404 while it is not)
@@ -734,6 +736,13 @@ class Bridge:
                             # made from that draw still finds it pending.
                             raised = held
                         pending[rid] = {**self._fresh_request(), **old, "raised": raised}
+                # Questions whose whole entries went ahead of the resync as
+                # their own `raised`, since with them it would not fit the
+                # engine's limit on a body: kept as those raises left them.
+                ahead = e.get("pendingAhead")
+                for rid in ahead if isinstance(ahead, list) else []:
+                    if isinstance(rid, str) and rid not in pending and rid in self.pending:
+                        pending[rid] = self.pending[rid]
                 self.pending = pending
             for s in e.get("settled") or []:
                 if isinstance(s, dict) and isinstance(s.get("request"), str) and s["request"] not in self.settled:

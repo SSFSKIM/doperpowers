@@ -439,6 +439,26 @@ assert_contains "$HV" "toolu_perm08" "a raised request is printed with its id"
 assert_contains "$HV" "rm -rf /tmp/x" "and what it asks"
 assert_contains "$HV" "deny (terminal)" "and its settlement with who answered"
 
+echo "a resync that sent questions ahead of it:"
+# Whole questions alone past the engine's limit on a body: the mod sends them
+# ahead of the resync, each as its own raise, and the resync names them
+# (pendingAhead). The child keeps each as that raise left it, so the question
+# is still pending and its answers still match it; a name it never got a
+# raise for is not made up.
+ctl post "$SOCK" '[{"type":"raised","request":"toolu_ahead1","tool":"AskUserQuestion","input":'"$QUESTIONS"',"agentId":null}]' >/dev/null
+ctl post "$SOCK" '[{"type":"resync","turns":[],"streaming":[],"agents":[],"truncated":true,
+ "pending":[{"request":"toolu_kept2","tool":"Bash","input":{"command":"ls"},"agentId":null}],
+ "pendingAhead":["toolu_ahead1","toolu_never1"],"settled":[]}]' >/dev/null
+SNAP="$(snapshot "$SOCK")"
+assert_equals "$(python3 -c 'import json, sys; print(" ".join(p["request"] for p in json.loads(sys.argv[1])["pending"]))' "$SNAP")" \
+  "toolu_kept2 toolu_ahead1" "the resync's own request and the question sent ahead are pending, and nothing else"
+assert_equals "$(field_of "$SNAP" pending.1.input)" "$(python3 -c 'import json, sys; print(json.dumps(json.loads(sys.argv[1])))' "$QUESTIONS")" \
+  "the question as its raise carried it, whole"
+run "$SMINOS" answer "$SID" toolu_ahead1 Apple Soup
+assert_rc 0 "$RC" "it is answered as any question"
+assert_equals "$(field_of "$(decision_of toolu_ahead1)" decision.updatedInput.answers)" '{"Which fruit?": "Apple", "Which sides?": "Soup"}' \
+  "its answers matched against its questions"
+
 echo "a resync:"
 ctl post "$SOCK" '[{"type":"resync","turns":[],"streaming":[],"agents":[],
  "pending":[{"request":"toolu_kept1","tool":"Bash","input":{"command":"ls"},"agentId":null}],
