@@ -1279,7 +1279,8 @@ export function registerToHuman(on: On) {
     // A message sent through the tool draws as a span does, under its label,
     // and turns the view on as a span does. While its input streams the row
     // draws the text so far, or nothing until some has arrived. The full
-    // transcript draws the call as the engine does.
+    // transcript draws it so too: the engine's row is the call's input as one
+    // dim, cut line, where the message would be lost among the tool calls.
     if (read && e.props.tool === MESSAGE_TOOL && groupOf.get(e.requestId) === undefined) {
       const message = readMessage(e.props.input)
       const text = message?.text.trim() ?? ''
@@ -1288,9 +1289,6 @@ export function registerToHuman(on: On) {
       if (text !== '' && !hasSeenMark) {
         hasSeenMark = true
         $.ui.invalidate('ui.render')
-      }
-      if (!isFolding()) {
-        return next(e)
       }
       if (text === '') {
         const { Box } = $.ui.resolve(e)
@@ -1364,8 +1362,8 @@ export function registerToHuman(on: On) {
     }
     const read = isRead(e.props.tool) && !unsent.has(e.props.tool_use_id)
     see($, view, e.requestId, read ? 'marked' : 'record')
-    if (read && e.props.tool === MESSAGE_TOOL && isFolding()) {
-      // The call's row is the message; "sent" is for the model.
+    if (read && e.props.tool === MESSAGE_TOOL) {
+      // The call's row is the message, in either view; "sent" is for the model.
       const { Box } = $.ui.resolve(e)
       return <Box />
     }
