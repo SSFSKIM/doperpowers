@@ -47,7 +47,7 @@ before it is built (Decision Log).
 - [x] M6 — The uplink's sender lanes, with connection reuse proven (2026-10-20, reviewed clean after two fix rounds; d5fa1d6a..aa57759b; the fix 2f64aa96..4400ced7 passed by the coordinator's reviewer and merged at eeb71406, sminos 1.2.13; the A9 by-hand hour of the owner's daemon.log pending the roll)
 - [x] M7 — The build saved and warmed, bounded; the look off the open path (2026-10-20, reviewed clean after two fix rounds; 63683909..7a9fdccb, sminos 1.2.10, gate GREEN 39469065139; the by-hand A3 line on the owner's Mac pending the roll)
 - [x] M8 — The child respawns at once; a resync fits the engine's limit (2026-10-20, reviewed clean after one fix round; 1aa1a002..227187e8, sminos 1.2.12, gate GREEN 39482745539; one A6 trial of ten over the bound, 0.525 s, recorded)
-- [ ] M9 — Acceptance, documents, the branch review (2026-10-20, machine side done: A1–A9 run as written at load < 50, every figure passing, the 100–300 band pending: devcloud (the owner chose a devcloud host; a separate agent runs task-9-report.md's band runs); A10 gates GREEN (39493005844) on 996e1052 (sminos 1.2.14), MAWS gates cited, live-resume 14/14, live-bridge 15/15 after the M9 fix; documents current; the xhigh panel's three P2s fixed (218aa515) and the coordinator's reviews' tombstone P2s (4072c8b8, 1.2.18), the coordinator's check of the delta pending; by-hand checks on the owner's Mac and `deskLatency()` pending the second roll, #302)
+- [x] M9 — Acceptance, documents, the branch review (2026-10-21: A1–A10 run as written at load < 50, every figure passing; the 100–300 band run on a devcloud host, its figures and misses recorded (Surprises); by hand after the roll A3, A5 and A9 pass and `deskLatency()` is recorded, A4's by-hand line not yet evaluable (no 503 with opens before it since the roll); the xhigh panel and the coordinator's reviews fixed; #302 merged as a1ea3e42 and rolled to both Macs at 00:02Z on sminos 1.2.18)
 
 ## Terms
 
@@ -1860,7 +1860,7 @@ beside; a single reviewer reads one of those well in a pass.
 - Observation (M9): the acceptance run on the finished branch (sminos
   1.2.14, 5edd1a4e; the MacBook, local hub MAWS 0f9c18d65 with M4, live
   haiku; load1 4.9–9.7, so every figure is outside the 100–300 band, which
-  stays pending: devcloud). A1 idle E 15–20 ms (N ≤ 0.01 s). A2 mid-message 5 of 5
+  is the next observation's). A1 idle E 15–20 ms (N ≤ 0.01 s). A2 mid-message 5 of 5
   counted, E 18–21 ms, `waits` 0, inventory clean; long-answer 3 of 5 trials
   counted (windows 12.8–14.0 s), E 14–21 ms at +1 s and +7 s, no end before
   the step's; after-prompt E 14–26 ms. A3 (`bench_scale opens --live 40
@@ -1892,6 +1892,67 @@ beside; a single reviewer reads one of those well in a pass.
   checks that the successor takes the endpoint over (0.21 s, 15/15).
   Evidence: `.doperpowers/sde/2026-10-20-desk-open-fast-design/task-9-report.md`,
   `m9-runs/`.
+
+- Observation (M9, the 100–300 band): run once each on an isolated Linux
+  host, a GCE c2d-standard-16 Spot VM (16 vCPU), with code 218aa515 and MAWS
+  master fb5f55c1, `--hub local`, claude-haiku-5-5 straight at the API,
+  `stress-ng --cpu N --cpu-method matrixprod` in the benches' own cgroup;
+  load1 136.8–153.0 at N = 150 (one thread gets about 0.10 of a CPU) and
+  254.5–283.9 at N = 280 (about 0.056). The same host unloaded: A1 E 18–32
+  ms. At load 150:
+  - A1 E 0.12–0.26 s, N 0.02–0.08 s: passes its band bound (≤ 0.6 s).
+  - A2 mid-message E 0.16–0.24 s, `waits` 0, inventory clean; long-answer
+    holds (no end before the step's, E 0.12–0.47 s); after-prompt E
+    0.19–0.38 s, 4 of 5 over the < 50 bound of 0.3 s.
+  - A4's pair incomplete: the 16 MiB upload was answered only after the
+    pause, so no blocked hub write was seen; the open 7.0 s after the
+    resume took E 5.70 s.
+  - A6 E_kill 1.01 / 3.39 / 2.67 s, over 0.5 s.
+  - A3 scale incomplete (the stream was ready at 27 s, after the +0.5 s
+    moment) and +30 s opens took 46–56 s; A3 index passes (cold 1.15,
+    loaded 0.13 CPU-s on the synthetic 175 MB transcript).
+
+  At load 280:
+  - A1 E 0.14–1.67 s, 2 of 10 over 0.6 s (1.37, 1.67).
+  - A2 mid-message E 0.30–1.02 s; after-prompt 0.18–0.58 s; long-answer
+    holds.
+  - A4 incomplete as at 150. A6 E_kill 4.6–5.5 s, and the DX5 probe lost
+    events (the run reports itself incomplete).
+  - A3 scale: 15 of 40 opens had no snapshot in 120 s; A3 index passes.
+
+  A3's +0.5 s clauses cannot be measured on that host at any load: the
+  stream was ready at 1.06 s even unloaded.
+  Evidence: the band agent's `results.md` and raw logs (outside the repo;
+  the coordinator holds them).
+- Observation (M9, the band's cause): py-spy at load 150 put 47% of the
+  uplink main thread's samples in `read_proc_start`. On Linux it forks
+  `ps -o lstart=` for each live session at each check, 40 per check in the
+  bench, reached from the tick's presence and the plane's scans; on macOS
+  it reads the process table in process (`_darwin_start`). With a
+  host-only patch reading `/proc/<pid>/stat` (`proc_started_at`), the
+  stream was ready at 5.3 s, and +30 s small opens took 0.02–0.19 s; large
+  opens took 0.18–0.60 s, except three early ones beside a cold build at
+  12–15 s. So A3's band miss is mostly a Linux-only path the Macs do not
+  run; whether the A6 and the A1/A2 misses at 280 share it is not shown. The
+  Linux path is fixed in a separate PR.
+- Observation (M9, by hand on the owner's Mac after the roll, sminos 1.2.18
+  at 00:02Z):
+  - A3 passes: every open line read `build: warm 0 ms`, `waits` 0.
+  - A5 passes: the open lines carry §5's fields, and the lane lines show
+    dials and closes with their counts.
+  - A9 over two hours (00:02–02:02Z): on the MacBook 37 dials per lane,
+    11–12 POSTs per connection, 34 of 36 closes idle; on the mini 20 / 15
+    dials, 9.3 / 4.8 POSTs per connection, idle closes; never a dial per
+    POST.
+  - A4's by-hand line is not evaluable yet: the one 503 since the roll (the
+    mini, 00:02:20, 3 s after its restart) had no open before it.
+  - `window.deskLatency()`, through Playwright on the owner's Chrome, 4
+    sessions at 00:11–00:13Z, direct load / in-app re-open: view.first-rows
+    swarm-orch 1.41 / 0.34 s, doperpowers-48 1.21 / 0.52 s, smns-erb-71
+    (28,540 rows) 1.18 / 0.56 s, CI-opt (16,851 rows) 0.98 / 0.42 s;
+    view.drawn 15–108 ms. The machine's E in the same opens was 0.01–0.13
+    s, so the rest of each figure is the network between the web, the hub
+    and the machine.
 
 ## Decision Log
 
@@ -2448,8 +2509,8 @@ beside; a single reviewer reads one of those well in a pass.
 ## Outcomes & Retrospective
 
 Written 2026-10-21, at the branch's PR (head 62e57510, sminos 1.2.14), before
-the xhigh panel and before the roll; the review loop refreshes it after its
-fix waves, and the by-hand lines are filled in after the roll.
+the xhigh panel and before the roll; refreshed after the roll with the
+band, the by-hand reads and the deployed figures.
 
 **What the purpose asked, and where it stands.** A session view opens in
 about a second whenever the machine can run. Measured end to end, through
@@ -2462,9 +2523,21 @@ cold build, and every live session is warm 30 s after start. A child crash
 is redrawn in 0.17–0.22 s, against 1.2–6.6 s. A blocked hub write no longer
 stops the uplink: 37 POSTs answered 200 inside a 4 s block, and an open 9 ms
 after it. Not established yet:
-- the 100–300 band, which a devcloud host is running (the owner's choice);
-- the deployed path, the owner's `window.deskLatency()` after the roll;
-- the by-hand daemon.log reads on the owner's Mac.
+- A4's by-hand line, which waits for a 503 with opens before it.
+
+After the roll (2026-10-21): the by-hand reads pass (A3 `build: warm 0 ms`,
+A5, A9's two hours), and the deployed path is now measured. A desk tab's
+first rows took 0.98–1.41 s on a direct load and 0.34–0.56 s on an in-app
+re-open, against the machine's 0.01–0.13 s, so the remaining time is the
+network between the web, the hub and the machine, not the machine. The
+100–300 band, run on a Linux host, is where the purpose does not hold yet.
+At load 150 idle and mid-message opens stay in the tens to hundreds of
+milliseconds, but a child crash takes 1–3.4 s, and opens 30 s after an
+uplink start take 46–56 s. Most of that is one Linux-only fork per live
+session per check that the Macs never run; with it patched, the +30 s opens
+were back within bounds. At 280 every scenario degrades. Whether that is
+the same cause or the machine's own share under starvation is the next
+question; the Linux fix lands separately.
 
 **What held from the design.** The diagnosis in §1 was right about where
 the seconds went: the snapshot gated on a cut no bridge could deliver (§2),
