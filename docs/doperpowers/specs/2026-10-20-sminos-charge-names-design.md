@@ -191,6 +191,8 @@ A manual end-to-end check, after installing the branch's sminos: in a member ses
 
 - Observation: `name-due` reconciles the project (`members(project)`) before it answers, so it is not instant. Evidence: M1 executor. The mod's bound on it (M2) must allow for that.
 
+- Observation: a resumed session's engine record first carries a fresh generated `derived` name and only seconds later the restored `user` name. Evidence: `live-name-check.py`, M2, engine 2.1.305, sampling the record for 20 s after `--resume`. §2's "restored as `user`" holds once the restore lands; in the window, `name-due` sees a name other than `from` and prints nothing, and a derive is discarded as "renamed during derive", so nothing is applied wrongly.
+
 ## Decision Log
 
 - Decision: verification. One independent spec review by `doperpowers:adversarial-reviewer` (the spec is technical-heavy: engine behavior, a cross-process hand-off, name resolution), and in the same round its buildability review of the execution section (three milestones). The branch review is `doperpowers:review-code` at medium (`reviewer-medium`). The live check runs by hand before merge.
@@ -220,6 +222,9 @@ A manual end-to-end check, after installing the branch's sminos: in a member ses
 - Decision: a running seat-less session's `joined` event (`join_on_sight`) takes its source through the same relabel, so a resumed charge-named session that re-joins after being retired logs `charge`, not the engine's `user`.
   Rationale: M1 fix. `publish_renames` compares against the last `renamed` or `joined`; an earlier `renamed(charge)` hid the raw `user` join from the tick, so the log would have kept `user` for that session.
   Date/Author: 2026-10-20, M1 executor.
+- Decision: the mod (§3) treats a `name-due` that exits non-zero as an answer with no name (the file is remembered as handled); only a throw or timeout leaves it for the next prompt. It skips the `poll_event` pass of `UserPromptSubmit` (it runs while the event is queued; the prompt's own submit follows). The session id is the hook input's; an empty `SMINOS_HOME`/`DAEMON_HOME` counts as unset, as `root()` reads it. The mods manual (`sminos/hooks/mods/README.md`) gains a `name` section.
+  Rationale: M2 execution, in the spirit of §3's steps 1–3.
+  Date/Author: 2026-10-20, M2 executor.
 
 ## Outcomes & Retrospective
 
