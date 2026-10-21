@@ -80,6 +80,10 @@ Until the merge, the always-on Mac's launchd reaper (`com.doperpowers.devcloud-r
 - **The profile's guardrail.** The person's profile has a Bash guardrail that pre-approved commands, so the desk's permission card did not appear. The person has since removed it. This is logged in the friction tracker (#304).
 - **The pricing catalog fetch** hung or returned 401, and was abandoned. The gce provider reads catalog prices with a 7-day cache instead.
 
+## PR
+
+https://github.com/SSFSKIM/doperpowers/pull/333 is open, ready for review, and not merged. CI is green on its head 8bc33586: https://github.com/SSFSKIM/doperpowers/actions/runs/39683608925.
+
 ## Residue
 
 These are in `docs/doperpowers/TECH-DEBT.md`, under "the devcloud VM driver", and in the PR's Residue section.
