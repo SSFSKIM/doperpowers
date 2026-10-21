@@ -245,8 +245,10 @@ MAWS's side, as its architect stated it:
 - (1) Its to-human parser and summaries read a message tool's input as a
   to-human message at the call's place, under both names.
 - (2) `mcp__maws__message` beside `mcp__maws__ask` in MAWS launches.
-- (3) A shape boundary at 6 with a supplement naming `mcp__maws__message`,
-  and MAWS's full contract moving to 7.
+- (3) A supplement naming `mcp__maws__message` (the plugin's tool is not
+  available in a MAWS session) beside every message-tool style from 3 up, with
+  no shape boundary at 6, and MAWS's full contract moving to 7. So MAWS stops
+  losing mid-turn messages when its side lands, whichever release comes first.
 
 The child first verifies the loss on MAWS's own wire with a probe.
 
@@ -588,6 +590,13 @@ sminos carries both message-tool names as its own constant, beside
   event behind a deferred long message. It is machinery for a 64k-character
   message, which no session sends.
   Date/Author: 2026-10-20, doperpowers-88.
+- Decision: MAWS drops its shape boundary at 6. Its `mcp__maws__message`
+  supplement goes beside every message-tool style from 3 up. Nothing in the
+  contract table moves: 6 stays the plugin's number, and 7 stays MAWS's.
+  Rationale: With a boundary, a MAWS session kept losing mid-turn messages
+  until this plugin's style declared 6. Without one, MAWS's fix depends on
+  MAWS's release alone.
+  Date/Author: 2026-10-20, the MAWS architect, recorded by doperpowers-88.
 
 ## Outcomes & Retrospective
 
