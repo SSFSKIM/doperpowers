@@ -361,7 +361,7 @@ function harness(
         return clockNow
       },
     },
-    ui: { log: (text: string) => logs.push(text), toast: (text: string) => toasts.push(text) },
+    ui: { log: (text: string) => logs.push(text), toast: (text: string) => toasts.push(text), notify: async () => ({ isSent: true, channel: 'terminal_bell' }) },
     state: {
       get: async (ref: { plugin: string; key: string }) => {
         guardReads.push({ op: 'state.get', args: ref })
@@ -3729,7 +3729,7 @@ describe('requests from outside: questions', () => {
 
   test("an async question open before the bridge started (a reloaded module's, taken up from the last) is pending in its first resync", async () => {
     const asked = askHooks().find((x) => x.event === 'tool.call' && x.matcher?.tool === ASK_TOOL)
-    await asked?.handler({ ui: { invalidate: () => {} } }, { tool: ASK_TOOL, tool_use_id: 'toolu_r1', questions: [FRUIT], async: true }, async () => ({}))
+    await asked?.handler({ ui: { invalidate: () => {}, notify: async () => ({ isSent: true, channel: 'terminal_bell' }) } }, { tool: ASK_TOOL, tool_use_id: 'toolu_r1', questions: [FRUIT], async: true }, async () => ({}))
     const h = harness()
     await h.ready()
     expect(h.ofType('resync')[0]).toMatchObject({ pending: [expect.objectContaining({ request: 'toolu_r1', tool: ASK_TOOL, input: { questions: [FRUIT] }, async: true })] })

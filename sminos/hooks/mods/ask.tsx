@@ -583,6 +583,31 @@ export async function openDialog($: EngineInterface, questions: AskQuestion[]): 
   }
 }
 
+/**
+ * What the dialog this mod raises carries as its `metadata.source`, so a
+ * settings hook that announces a question's dialog (PreToolUse,
+ * PermissionRequest) can pass over one the ask has already announced.
+ */
+export const DIALOG_SOURCE = 'sminos-ask'
+
+/** What an ask's notification says: its first question, and how many more it carries. */
+export function announcement(questions: readonly AskQuestion[]): string {
+  const first = (questions[0] as AskQuestion).question
+  return questions.length > 1 ? `${first} (+${questions.length - 1} more)` : first
+}
+
+/**
+ * Tells the person the model asked, as it asks (a blocking ask as its dialog
+ * is raised, an async one as it opens): a native notification through their
+ * own channel (`$.ui.notify`), which their `Notification` hooks read as
+ * `plugin_notification`. The tool answers its call itself, so no settings
+ * hook hears the model's call. Not awaited: the hooks it runs (a settings
+ * hook calling out to a terminal app) would hold the call.
+ */
+function announce($: EngineInterface, questions: readonly AskQuestion[]) {
+  $.ui.notify(announcement(questions)).catch((error: unknown) => $.ui.log(`ask: the question's notification failed (${message(error)})`, { to: 'debug' }))
+}
+
 // Asking without waiting. An async ask returns at once and stands open in
 // the human's view; a press opens the same dialog, and the answer is handed
 // to the model: as a prompt of its own while the session is idle, else held
@@ -1656,9 +1681,9 @@ export function registerAsk(on: On) {
     return { ...result, context: [...(result.context ?? []), ...items.map((item) => item.text)] }
   }).catch((_, e, next) => next(e))
 
-  // The mod's own raise is widened to its entry's whole set; every other call
-  // from the model, or a stray one from this plugin, is refused. Another
-  // plugin's $.ui.ask is its own business and passes.
+  // The mod's own raise is widened to its entry's whole set, marked as the
+  // ask's dialog; every other call from the model, or a stray one from this
+  // plugin, is refused. Another plugin's $.ui.ask is its own business and passes.
   on('tool.call', { tool: 'AskUserQuestion' }, async ($, e, next) => {
     if (!isServing || (next.origin.plugin !== PLUGIN && next.origin.plugin !== 'engine')) {
       return next(e)
@@ -1667,7 +1692,7 @@ export function registerAsk(on: On) {
     if (entry === undefined) {
       return { deny: WITHDRAWN }
     }
-    const result = await next({ ...e, questions: entry.questions } as typeof e)
+    const result = await next({ ...e, questions: entry.questions, metadata: { source: DIALOG_SOURCE } } as typeof e)
     entry.outcome = outcomeOf(result as Parameters<typeof outcomeOf>[0])
     entry.toolUseId = e.tool_use_id
     // What the engine returned for this dialog's call, which the bridge's
@@ -1680,6 +1705,15 @@ export function registerAsk(on: On) {
     !next.called && (next.error.kind as string) !== 're-entry' && isServing && next.origin.plugin === 'engine' ? { deny: WITHDRAWN } : next(e),
   )
 
+  // The engine's reminder that a dialog has waited (`permission_prompt`) is
+  // not passed on while a dialog this mod raised stands: a blocking ask was
+  // announced as it was asked, and an async ask's dialog is open because the
+  // human pressed to answer it. The channel still writes; only the hooks beneath
+  // do not hear it.
+  on('classic.Notification', { notification_type: 'permission_prompt' }, (_, e, next) =>
+    entries.some((entry) => entry.isClaimed && entry.outcome === undefined) ? {} : next(e),
+  )
+
   on('tool.call', { tool: 'mcp__sminos__AskUserQuestion' }, async ($, e) => {
     if (e.agentId !== undefined) {
       return { deny: SUBAGENT_REFUSAL }
@@ -1690,6 +1724,7 @@ export function registerAsk(on: On) {
       return { deny: invalid }
     }
     const { questions } = input as AskInput
+    announce($, questions)
     if ((input as AskInput).async === true) {
       const ask: OpenAsk = { id: e.tool_use_id ?? `ask-${++raised}`, questions, status: 'open' }
       asks.push(ask)
