@@ -123,7 +123,8 @@ class NameCheck(LB.Live):
         self.pid = rec.get("pid")
         wait_for("the bridge's endpoint", 90, self.status)
         time.sleep(2)
-        return rec
+        # Read afresh: the record found first was written before the session's hooks ran.
+        return self.record() or {}
 
     def rows(self):
         rows = []
@@ -166,9 +167,13 @@ class NameCheck(LB.Live):
     def run(self):
         self.setup()
         self.launch()
-        rec = self.ready()
+        self.ready()
+        ran = wait_for("the probe's SessionStart", 30, lambda: os.path.exists(self.probe_log)
+                       and '"startup"' in open(self.probe_log).read() and open(self.probe_log).read())
+        time.sleep(1)
+        # The record as it stands after the probe's title was answered.
+        rec = self.record() or {}
         generated = rec.get("name")
-        ran = open(self.probe_log).read() if os.path.exists(self.probe_log) else ""
         self.check("engine fact: SessionStart's sessionTitle leaves the engine name as it was",
                    '"startup"' in ran and rec.get("nameSource") == "derived" and generated != PROBE_TITLE,
                    "probe ran %r; record %s (%s)" % (ran.strip(), generated, rec.get("nameSource")))

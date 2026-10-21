@@ -25,12 +25,12 @@ type Event = ClassicEventOf['classic.UserPromptSubmit']
 type Result = ClassicResultOf['classic.UserPromptSubmit']
 
 /**
- * How long the check may take: `name-due` reconciles the session's project
- * (members()) before it answers, which outlasts `who`'s ten seconds on a
- * large log. A `$` call costs the hook's own budget nothing, and the prompt
+ * How long the check may take, as the address bounds `who`: `name-due`
+ * reconciles the session's project before it answers, a read comparable to
+ * `who`'s. A `$` call costs the hook's own budget nothing, and the prompt
  * waits on it only when a name is pending and new.
  */
-export const NAME_DUE_TIMEOUT_MS = 30_000
+export const NAME_DUE_TIMEOUT_MS = 10_000
 
 /** The one line the model reads when its session was renamed. */
 export function renamedContext(name: string): string {
