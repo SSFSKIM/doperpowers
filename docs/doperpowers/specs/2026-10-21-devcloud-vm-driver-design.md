@@ -46,8 +46,10 @@ desk no longer counts it.
   of the person's folded in (Decision Log, fifteen entries dated 2026-10-21).
 - [x] (2026-10-21) Two further review rounds on the revisions; their findings folded in (amended and
   added Decision Log entries).
-- [ ] M1 — Spike: the preflight, and the live facts the design leans on. (2026-10-21: preflight
-  done — H1 and H2 carried out by the executor, no escalation needed; Surprises.)
+- [x] (2026-10-21 05:10Z) M1 — Spike: the preflight, and the live facts the design leans on. H1
+  and H2 were done by the executor; H5 is not needed; H8 is new. Every M1 resource was deleted
+  between 04:21Z and 04:47Z; the deletion times are in the M1 report, and the one tailnet node
+  left behind on purpose (the ephemeral-expiry test) removes itself.
 - [ ] M2 — The host side: leases and their lock, departure, release and its ledger, the closed public
   port, unattended enrollment, desk control.
 - [ ] M3 — The driver core, the provider protocol and the Hetzner provider, with the reaper.
@@ -66,8 +68,9 @@ refused or it needs a browser or their judgment.
 | H2 | The GCE host service account and its Secret Manager grant | the executor if its account is permitted, else the person | M1's preflight |
 | H3 | The seed key file onto the always-on Mac | the person | before M6 (acceptance 5, 11) |
 | H4 | A desk provisioning key, `offline_revoke_s` 24 h, into Secret Manager | the person, once the desk ships keys | M6 verifies its policy value |
-| H5 | A tailnet ACL rule letting the Macs reach `tag:devcloud` on port 22 | the person | only if M1 finds it blocked |
+| H5 | A tailnet ACL rule letting the Macs reach `tag:devcloud` on port 22 | the person | not needed: M1 found it open |
 | H6 | Removing the parent's leftover test machine `devcloud-m5` from the desk's Machines | the person | an M6 step; evidence: `sminos machines` no longer lists it |
+| H8 | Raising the devcloud Hetzner project's limits (6 primary IPs → 12, 16 shared vCPU → 32) | the person | asked at M1; until granted, the provider's exit 3 refuses what does not fit (Decision Log) |
 | H7 | Approving M5's test provider before it first runs with a credential (`provider register --confirmed`) | the person | M5 |
 
 ## Terms
@@ -304,15 +307,27 @@ touched by this. Adopted machines and `keep` VMs do not count toward the throwaw
    `DEVCLOUD_SPOT=1` for a spot request, and the desk's provisioning key id when the profile has one.
    The descriptor carries ids, never values.
 4. **Compose user-data**, when the provider has `user_data`: cloud-init that writes the authorized
-   SSH keys (§8.3) and the descriptor. From an image it writes `/etc/devcloud/boot.env` directly.
-   Without one (the slow path) it stages the descriptor at `/var/lib/devcloud-stage/boot.env`
-   (0600), runs `setup.sh`, checks that it exited 0, and only then installs `/etc/devcloud/boot.env`:
-   `setup.sh` fails while `boot.env` exists (its final check, "what the image never carries"), so a
-   descriptor written first would fail every first boot without an image. It starts the boot only
-   where no seed is delivered (`metadata_seed`). Nothing secret: a provider keeps user-data for the
-   server's life, readable through its API and from inside the VM (parent's driver note). Without
-   the `user_data` capability the driver creates the server with its SSH keys and does the same over
-   SSH at the public address, through adopt's install path (§6.5).
+   SSH keys (§8.3) and stages the descriptor at `/var/lib/devcloud-stage/boot.env` (0600). It never
+   writes `/etc/devcloud/boot.env` itself before `setup.sh` has run: `setup.sh` fails while `boot.env`
+   exists (its final check, "what the image never carries"). What follows depends on the seed:
+   - **A seed is delivered** (no `metadata_seed`; Hetzner): the rest is the driver's, over SSH at the
+     public address once cloud-init has finished. On the slow path it streams the plugin's `devcloud/`
+     and runs `setup.sh`, checking that it exited 0 (adopt's install path, §6.5); then the seed (step
+     7); then it installs `/etc/devcloud/boot.env` from the stage and starts the boot. The image path
+     skips the stream and `setup.sh`. An image enables `devcloud-boot.service`, which carries
+     `ConditionPathExists=/etc/devcloud/boot.env`, so the VM's first boot, before the driver has
+     installed the descriptor, skips the unit instead of recording a failed boot.
+   - **No seed is delivered** (`metadata_seed`; GCE): cloud-init does it all. On the slow path the
+     user-data also carries the recipe (`devcloud/image/` and `devcloud/boot/` as one base64 tarball,
+     about 47 KB, inside GCE's 256 KB per metadata value), unpacks it, runs `setup.sh`, checks its
+     exit, then installs `boot.env`. From an image it installs `boot.env` straight away. Either way it
+     then starts the boot (`systemctl start --no-block devcloud-boot.service`).
+
+   The recipe goes over SSH where SSH comes first, because it is over Hetzner's 32 KiB user-data
+   limit (M1). Nothing in user-data is secret: a provider keeps user-data for the server's life,
+   readable through its API and from inside the VM (parent's driver note). Without the `user_data`
+   capability the driver creates the server with its SSH keys and does all of the above over SSH at
+   the public address, through adopt's install path (§6.5).
 5. **Create** through the provider's `create`, from the current image when the provider has `images`
    and one exists (§7), else from the provider's Ubuntu 24.04 by the slow path, which `up` names in
    its output. The labels (I14) — lifetime, lease, creator, driver machine, recipe hash, how it
@@ -321,11 +336,11 @@ touched by this. Adopted machines and `keep` VMs do not count toward the throwaw
    the reaper and billing forever.
 6. **Re-count** (§2).
 7. **Deliver the seed**, unless the provider has `metadata_seed`: once cloud-init has finished (on
-   the slow path, after `setup.sh` and the descriptor are in place — the seed's ledger entry creates
-   `/var/lib/devcloud`, which `setup.sh`'s final check also refuses), its path appended to the
-   credential ledger (§6.5), the seed key file streamed over SSH into a root-only path at the public
-   address (M5's method: read from its file into `ssh`'s stdin, never argv, never printed); then
-   start `devcloud-boot.service`.
+   the slow path, after `setup.sh` has run — the seed's ledger entry creates `/var/lib/devcloud`,
+   which `setup.sh`'s final check also refuses), its path appended to the credential ledger (§6.5),
+   the seed key file streamed over SSH into a root-only path at the public address (M5's method: read
+   from its file into `ssh`'s stdin, never argv, never printed); then install
+   `/etc/devcloud/boot.env` from the stage and start `devcloud-boot.service` (step 4).
 8. **Wait** for the boot over SSH — over the public address until the tailnet attach step reports
    `ok`, then over the tailnet, since the boot closes the public port right after it (§5). Up to 15
    minutes; on a failed step print `devcloud status`'s lines and exit 1, leaving the VM for
@@ -585,7 +600,11 @@ without a key on disk; the narrow account is the default because it is what made
 here. Instances are created with that account and the `cloud-platform` scope, an ephemeral external
 IPv4 (outbound only, once §5 closes inbound), labels as given (I14's restriction makes every one a
 valid GCE label), and user-data under the `user-data` metadata key, which Ubuntu's cloud-init reads;
-the boot starts from cloud-init, since there is no seed to deliver. A spot request creates a spot VM
+the boot starts from cloud-init, since there is no seed to deliver. Every instance carries the
+metadata `block-project-ssh-keys=TRUE`: a project's common `ssh-keys` make the guest agent create
+their users at first boot, before cloud-init, and one named like `DEVCLOUD_USER` then has the wrong
+uid and home and breaks `setup.sh` (M1); the driver reaches GCE hosts over the tailnet and needs no
+key there. A spot request creates a spot VM
 with termination action `DELETE`. Images are custom images in an image family. The script runs
 `gcloud` under its own `CLOUDSDK_CONFIG` with the seed activated — the driver passes it the seed
 key file's path in its environment — so the Mac's own gcloud identity is never changed.
@@ -658,8 +677,10 @@ never receives a seed, a descriptor, or any secret, which is why the bake does n
 known-value scan; that scan stays where it runs today, on the container image in the `devcloud`
 gate. `up` uses the newest image of its account whose recipe hash is current; with none it takes the
 slow path and the reaper, at its next run on the always-on Mac, builds one for each such account
-that lacks a current image (at most once a day per account). Whether a Hetzner snapshot made in one
-location creates servers in another is M1's question; if not, images are per location.
+that lacks a current image (at most once a day per account). A Hetzner snapshot creates servers in
+every location (M1), so images are per account, not per location. The builder runs in the account's
+default location, and that location's smallest type sets the image's disk. Hetzner's US locations
+give 40 GB, so the image cannot create a type with a smaller disk, which no account's type has today.
 
 ### 8. Where the driver runs, and with what
 
@@ -685,6 +706,11 @@ to it afterwards. So a VM one Mac made is reachable from the other, and the alwa
 reaches every VM. A host never pushes its configuration, so a key it generated could not reach this
 directory, which is why hosts do not drive. Host keys are recorded on first contact (`accept-new`
 into the driver's own `known_hosts`), as M5 did; providers expose no host key before first boot.
+Each entry is keyed by the server, not by its address: every connection passes
+`HostKeyAlias=<provider server id>` (for an adopted machine, its name), whether it goes to the
+public address or the tailnet name, and the driver drops the entry when it deletes the server.
+Hetzner gives a deleted server's IPv4 to the next server within minutes (twice in M1), so an entry
+keyed by address would refuse the new host and `up`'s wait would spin until its timeout.
 
 **8.4 Entry point**: the plugin's `bin/devcloud` (a plugin's `bin/` is on a session's `PATH`, as
 ci-kit's `ci-gate` is) runs the plugin's `boot/devcloud` with a Python 3.11+ found on `PATH` — the
@@ -766,12 +792,23 @@ order: what it streams to the desk must already be scrubbed. A host's managed se
 plugin in the user tier, the bridge inside the guard — so on a host today the bridge is off and the
 desk can neither steer a session nor answer its requests. The parent deferred seating the plugins as
 the Macs do (its Decision Log entry ending "Revisit when a host must enroll or that release lands",
-option E there); enrollment makes it due. M1 finds whether a host session's bridge runs on the
-current engine and whether the engine release that gives remote-source plugins the prepend tier has
-landed; M2 implements the plugin ordering that puts the bridge outside the guard while keeping the
-guard active from a host's first session — E, or what M1 finds. If no ordering achieves both, the
-work stops BLOCKED for the person: a bridge outside no guard would stream secret values to the desk,
-and a first session without the guard would write them to its transcript.
+option E there); enrollment makes it due. M1 confirmed the bridge is off on a host today. It also
+found that the engine release giving remote-source plugins the prepend tier has not landed (2.1.306),
+so M2 implements E. The doperpowers marketplace is seated from a directory: the boot keeps a
+root-owned copy of the marketplace at a fixed path. The settings step writes managed
+`prependPlugins` (to-human, sminos, doperpowers), `enabledPlugins` for those three, and
+`extraKnownMarketplaces.doperpowers` naming that directory, in place of `prependPlugins: []`; the
+security default stays out, as the parent left it. Before any session can start, that is before the
+services step, the boot runs `claude plugin marketplace add <path>` as the user, idempotently. M1
+verified this live: to-human, sminos and doperpowers load in the prepend tier and cua and devcloud
+in the user tier, the bridge runs, and the guard scrubs from the first session. Without the
+pre-recording, the first session loaded no plugin of the doperpowers marketplace at all, devcloud's
+guard included ("its source doesn't match its extraKnownMarketplaces entry"). The config
+repository's `sync/apply.py` only adds marketplaces not yet recorded, so a reconcile does not revert
+the record. The engine does not auto-update a directory marketplace, so the boot and pull-config
+refresh the copy, and M2 chooses the source. A bridge outside no guard would stream secret values to
+the desk, and a first session without the guard would write them to its transcript; either one
+would stop the work BLOCKED for the person.
 
 ### 11. The skill
 
@@ -911,7 +948,9 @@ started), `services.py` (the lease and enroll services in the list; the boot's s
 the persisted lifecycle status, §4.2), `profile.py` (`host_settings` and the plugin seating, §10), a new
 `devcloudlib/lease.py` (the lock, warning, departure, release, the unpushed scan) and
 `devcloudlib/ledger.py`, `boot/devcloud` (the host commands), `image/setup.sh` (nftables installed,
-the boot unit's ordering after cloud-init, the spot shutdown unit shipped disabled), tests under
+the boot unit's ordering after cloud-init and its `ConditionPathExists=/etc/devcloud/boot.env` (§3
+step 4), the spot shutdown unit shipped disabled, and a refusal, in one line naming both, of an
+existing `DEVCLOUD_USER` whose uid or home differs from the inputs (M1's GCE finding)), tests under
 `devcloud/tests/unit/` and `devcloud/tests/integration.py`.
 
 Interfaces: produces I12, the host commands of I16, and consumes I15 (sminos's `hub check`, `hub
@@ -943,8 +982,16 @@ Decisions:
   on containers and when the key is absent or `open`.
 - The spot shutdown unit is enabled by the boot only when `DEVCLOUD_SPOT=1`, and checks
   `instance/preempted` (§4.2).
-- The plugin ordering on hosts is the one M1's question 7 names; a host's first session already runs
-  under the guard. No ordering that achieves both → BLOCKED to the person (§10).
+- The inbound ruleset and its unit start from M1's spike (`m1/inbound.sh` in the SDE workspace,
+  verified live on Hetzner across a reboot): policy drop; accept `lo`, `tailscale0`,
+  established/related, ICMP, ICMPv6, UDP 41641, DHCPv4 and DHCPv6 replies; the unit
+  `Before=network-pre.target`; the file opens with `table inet devcloud` / `delete table inet devcloud`
+  so a reload is idempotent.
+- The plugin ordering on hosts is option E, seated from a directory marketplace recorded before the
+  first session (§10, M1's question 7): a host's first session already runs under the guard. M2
+  chooses how the root-owned copy is kept current (the public repository at the plugin's version, or
+  the clone `sync/apply.py` keeps) and what `host_settings` does when the profile sets its own
+  `prependPlugins`.
 - The fakes in `devcloud/tests/fixtures/` grow a fake `tailscale` that records `up`'s auth-key file
   attributes and `logout`, a fake `session-mirror` whose ship can be made to fail, and the fake
   `sminos` (`fixtures/sminos.py`) learns `hub check`'s exits, `hub enroll` (with `--replace`) reading
@@ -1438,6 +1485,80 @@ commit 5168e433 on its branch, 2026-10-21):
   Evidence: `gcloud secrets list`, the token hashes compared against each `hcloud` context without
   printing them, `gcloud iam service-accounts create …` and the two bindings' etags, `sminos hub
   check` → exit 2, `ssh mac-mini` (2026-10-21).
+- Observation (M1, 2026-10-21): The tailnet's ACL already lets both Macs reach `tag:devcloud` on
+  port 22 over MagicDNS (`ssh root@<name>`: 1.4 s from the MacBook, 1.0 s from the always-on Mac). §5
+  stands; H5 is not needed.
+  Evidence: a Hetzner VM booted with the parent's boot as `tag:devcloud`; `$SSH_CONNECTION` naming a
+  100.x source.
+- Observation (M1): An OAuth client secret with `?ephemeral=true&preauthorized=true` joins as
+  `tag:devcloud`, at the first join and after a logout. `tailscale logout` removes an ephemeral node
+  from every peer's `tailscale status` within 2 seconds, and a re-join keeps the MagicDNS name under a
+  new address. No status or netmap field shows that a node is ephemeral.
+  Evidence: `tailscale logout` at 04:24:51Z and the node gone from the MacBook's status at 04:24:53Z.
+- Observation (M1): §5's policy, as one `inet devcloud` table loaded by `devcloud-inbound.service`
+  (`Before=network-pre.target`), needs no change. Tailnet SSH, the direct path (UDP 41641), the
+  relayed path (DERP), and IPv4 and IPv6 egress all work before and after a reboot. Public port 22
+  is closed on both families. The table coexists with tailscaled's `iptables-nft` tables, and Ubuntu
+  24.04's Hetzner image already ships `nft`.
+  Evidence: `nc -z`/`nc -6 -z` against the public addresses, with an unprotected VM as control;
+  `tailscale ping` direct, then via DERP with 41641 blocked; the host back on the tailnet 21 s after
+  `systemctl reboot`.
+- Observation (M1): A Hetzner snapshot is not bound to a location: one built on cpx11 in hil created
+  servers in hil and in nbg1. Times from `create` to every step `ok`: slow path (cpx31, hil) 218 s;
+  image path 138 s in hil and 164 s in nbg1 from the hil snapshot. The builder's `setup.sh` takes
+  92 s, the snapshot 18 s, and the image is 1.88 GB with a 40 GB disk. The boot itself takes 75–115 s,
+  mostly the config apply and step 12, so an image saves about 90 s, and both paths are well inside
+  acceptance 10's 5 minutes.
+  Evidence: the M1 report's times log; `hcloud image list -t snapshot`.
+- Observation (M1): The devcloud Hetzner project's limits are 6 primary IPs, 16 shared vCPU and 8
+  dedicated vCPU. A dual-stack server takes two primary IPs, so the project holds three servers with
+  public addresses. With three VMs up, a fourth server is refused (`resource_limit_exceeded`,
+  "Primary IP limit exceeded"), whether it asks for IPv4 only or IPv6 only, and that includes a
+  builder or a `provider test` server. The caps' worst case, 3 × 8 shared vCPU, is above the 16-vCPU
+  limit. Every refusal carries `resource_limit_exceeded`, which §6.3 maps to exit 3, kind `limit`.
+  Evidence: probes with three, then two dual-stack servers, IPv4-only servers, and private-network-only
+  servers (shared cores refused at 18, dedicated at 10).
+- Observation (M1): GCE works as §6.4 designs it, provided project-wide SSH keys are blocked. With
+  the host account attached (`cloud-platform` scope), Ubuntu 24.04's cloud-init runs `write_files` and
+  `runcmd`; the stage, `setup.sh`, its exit check, the install of `boot.env` and the boot's start all
+  ran from cloud-init. The boot with `DEVCLOUD_SEED=gce-metadata` reached every step. On the host,
+  `test ! -e /etc/devcloud/seed` holds and the user's `gcloud auth list` names only the host account.
+  The slow path on e2-standard-4 in us-west1-b took 281 s (`setup.sh` 142 s). Spot creation with
+  `--provisioning-model SPOT --instance-termination-action DELETE` works. `instance/preempted` answers
+  `FALSE`, and `instance/scheduling/provisioning-model` answers 404.
+  The first instance failed in `setup.sh` because the project's common `ssh-keys` names a user called
+  `DEVCLOUD_USER`. The guest agent created that account (wrong uid, home under `/home`) before
+  `runcmd`, and `setup.sh` skipped `useradd` for an existing name. The same instance with
+  `block-project-ssh-keys=TRUE` booted cleanly.
+  Evidence: `gcloud compute project-info describe`; `bash -x setup.sh` on the failed instance; the
+  second instance's `getent passwd` and `devcloud status`.
+- Observation (M1): The recipe (`devcloud/image` and `devcloud/boot`) is about 47 KB as base64. That
+  is above Hetzner's 32 KiB user-data limit and inside GCE's 256 KB per metadata value; §3 step 4 did
+  not say how a slow-path machine gets it.
+- Observation (M1): An image enables `devcloud-boot.service`, which starts at the VM's first boot
+  before the driver can deliver a seed. On every Hetzner image VM it recorded a failed boot
+  ("no boot descriptor" with the descriptor staged; it would have failed at `seed` with the descriptor
+  written directly, as §3 first had it).
+- Observation (M1): Hetzner gives a deleted server's IPv4 to the next server within minutes (twice in
+  one run). A `known_hosts` entry keyed by address then refuses the new host ("REMOTE HOST
+  IDENTIFICATION HAS CHANGED").
+- Observation (M1): On a host booted with today's `prependPlugins: []`, all five plugins load in the
+  user tier and the sminos bridge turns itself off at the first settled hook ("the bridge is off —
+  sminos must load outside devcloud and cua"). Option E, seated from a directory marketplace recorded
+  by `claude plugin marketplace add <path>` before the first session, puts to-human, sminos and
+  doperpowers in the prepend tier and cua and devcloud in the user tier. With it, the bridge's socket
+  answers, and a token-shaped string a tool printed reaches the model as a `[redacted:…]` handle with
+  0 raw occurrences in the transcript. Without the pre-recording, the first session loaded no plugin
+  of the marketplace at all, devcloud's guard included. The engine release that gives remote-source
+  plugins the prepend tier has not landed (2.1.306 still says "in a later release").
+  Evidence: debug logs of four probe sessions on two hosts; `strings` of the 2.1.306 binary; `npm
+  view @anthropic-ai/claude-code dist-tags`.
+- Observation (M1): The profile's `secrets.toml` names a Secret Manager secret that does not exist,
+  so every boot records step `secrets` as `missing` while `devcloud status` exits 0. The secret's id
+  is private.
+  Evidence: `devcloud status` on every M1 host.
+- Observation (M1): The person's GCE project holds an unrelated spot instance with no devcloud label;
+  the reaper's label rule matters there from the start.
 
 ## Decision Log
 
@@ -1657,6 +1778,53 @@ commit 5168e433 on its branch, 2026-10-21):
   the provider declares it from M3 on, so M3's test could not pass with them missing. Rejected:
   declaring `images` only from M4, which would test a different provider in M3 than ships.
   Date/Author: 2026-10-21, design session.
+
+- Decision: Hosts seat their plugins by option E, from a directory marketplace that is recorded
+  before the first session (§10, M2). The boot keeps a root-owned copy of the doperpowers
+  marketplace. Managed settings name it under `extraKnownMarketplaces` and prepend to-human, sminos
+  and doperpowers, and the boot runs `claude plugin marketplace add <path>` as the user before the
+  services start. Rationale: M1 verified this live, with the bridge on and the guard scrubbing from
+  the first session. The engine release that gives remote-source plugins the prepend tier has not
+  landed, so E is the only ordering that seats the bridge outside the guard. Rejected: E without
+  the pre-recording, whose first session loaded none of the marketplace's plugins (devcloud's guard
+  among them); waiting for the engine release. Date/Author: 2026-10-21, executor (controller), from
+  M1.
+- Decision: The descriptor is always staged, never written to `/etc/devcloud/boot.env` by
+  user-data before the seed (§3 steps 4 and 7). Where a seed is delivered, the driver installs it
+  after the seed and starts the boot; on the slow path it first streams `devcloud/` over SSH and runs
+  `setup.sh`. Where no seed is delivered (GCE), cloud-init does it all, the slow path carrying the
+  recipe as a base64 tarball in user-data. `devcloud-boot.service` gains
+  `ConditionPathExists=/etc/devcloud/boot.env`. Rationale: the recipe is over Hetzner's 32 KiB
+  user-data limit but within GCE's 256 KB, and an image's enabled boot unit ran at the first boot
+  before the seed and recorded a failure on every image VM (M1). Rejected: having GCE's user-data
+  fetch the recipe from the public repository at the plugin's commit (M1's proposal), which needs
+  that commit to be on the remote, a hash check, and a network fetch where shipping the bytes
+  suffices; writing `boot.env` directly on the image path, as §3 first had it.
+  Date/Author: 2026-10-21, executor (controller), from M1.
+- Decision: The gce provider creates every instance with `block-project-ssh-keys=TRUE` (§6.4), and
+  `setup.sh` refuses an existing `DEVCLOUD_USER` whose uid or home differs from its inputs (M2).
+  Rationale: the project's common `ssh-keys` made the guest agent create the person's account name
+  with another uid and home before cloud-init, and `setup.sh` then failed far from the cause (M1).
+  The refusal turns that into a one-line failure on any base that ships such an account.
+  Date/Author: 2026-10-21, executor (controller), from M1.
+- Decision: The driver's `known_hosts` entries are keyed by server (`HostKeyAlias=<provider server
+  id>`, an adopted machine's name), for the public address and the tailnet name alike, and dropped
+  at deletion (§8.3). Rationale: Hetzner reuses a deleted server's IPv4 within minutes, so an entry
+  keyed by address refused the next server (M1). Rejected: `StrictHostKeyChecking=no`, which drops
+  the first-contact pinning altogether. Date/Author: 2026-10-21, executor (controller), from M1.
+- Decision: Images are per account, not per location (§7). Rationale: a Hetzner snapshot made in
+  hil created servers in hil and nbg1 (M1). Date/Author: 2026-10-21, executor (controller), from M1.
+- Decision: The caps keep their values (`vcpu_max = 8`, `throwaway = 3`) although the devcloud
+  Hetzner project's limits (6 primary IPs, so three dual-stack servers, and 16 shared vCPU) are
+  below the caps' worst case. The person is asked to raise them (H8). Until then, what does not fit
+  is refused by the provider with exit 3, kind `limit`, as §6.3 designs. Acceptance 4's full cap
+  proof spans accounts until H8 lands: its three unconfirmed VMs include acceptance 6's GCE VM, so
+  Hetzner holds at most three servers. Rationale: the caps are global across accounts, and lowering
+  `vcpu_max` for one Hetzner project's limit would also narrow GCE; the provider's refusal is
+  already the designed path for a project limit. Rejected: lowering `vcpu_max` to 4 in the profile
+  (M1's interim proposal); IPv4-only Hetzner servers (one primary IP each, six servers), which would
+  cost the VMs their IPv6 egress, kept as the fallback if the person declines H8.
+  Date/Author: 2026-10-21, executor (controller), from M1.
 
 ## Outcomes & Retrospective
 
