@@ -148,7 +148,8 @@ class DepartureBase(unittest.TestCase):
         host = StandIn(user=self.user, run=world.run, call=world.call, status_path=self.tmp / "status.json",
                        ledger_path=self.tmp / "credentials.ledger", desc_path=self.tmp / "boot.env",
                        lock_path=self.tmp / "lifecycle.lock", adopt_dir=self.tmp / "adopt", unit_dir=self.units,
-                       inbound_nft=self.tmp / "inbound.nft", now=lambda: NOW, monotonic=lambda: world.clock,
+                       inbound_nft=self.tmp / "inbound.nft", shipper_seen=self.tmp / "shipper-configured",
+                       now=lambda: NOW, monotonic=lambda: world.clock,
                        sleep=lambda s: setattr(world, "clock", world.clock + s))
         host.world = world
         return host
@@ -320,6 +321,17 @@ class DepartTest(DepartureBase):
                 self.assertIn(broken, ship["detail"])
         self.assertEqual(departure.depart(self.host(), no_hold=True, no_poweroff=True), departure.DONE,
                          "--no-hold goes past it")
+
+    def test_a_shipper_the_services_step_converged_away_still_holds(self):
+        # The boot once found a shipper; it went, and a reconcile then removed
+        # its unit. The flag the boot left is the evidence that remains.
+        (self.home / ".claude/tools/session-mirror").unlink()
+        (self.units / "devcloud-session-mirror.service").unlink()
+        (self.tmp / "shipper-configured").write_text("")
+        self.world.spawn()
+        self.assert_held(departure.depart(self.host()), "ship failed")
+        ship = [s for s in self.lifecycle()["steps"] if s["name"] == "ship"][-1]
+        self.assertIn("missing", ship["detail"])
 
     def test_an_adopted_machine_is_released_not_departed(self):
         self.adopted = True
@@ -504,6 +516,39 @@ class ReleaseTest(DepartureBase):
         self.assertEqual((record["steps"][-1]["name"], record["steps"][-1]["state"]), ("remove-units", "failed"))
         for path in self.written:
             self.assertTrue(path.exists(), "credentials removed though the units that rewrite them remain")
+
+    def test_a_retry_before_the_logout_closes_admission_and_ships_again(self):
+        manifest = self.tmp / "adopt/keys.json"
+        good = manifest.read_text()
+        manifest.write_text("not json")
+        self.assertEqual(departure.release(self.host()), departure.FAILED)
+        # Still on the tailnet: a person logs in and starts a session meanwhile.
+        manifest.write_text(good)
+        session = self.world.spawn()
+        self.world.events.clear()
+        self.assertEqual(departure.release(self.host()), departure.DONE)
+        runs = self.world.runs()
+        self.assertIn(["systemctl", "--user", "disable", "--now", "sminos-daemon.service"], runs,
+                      "admission not closed again")
+        self.assertIn(("kill", session, signal.SIGTERM), self.world.events, "the new session was left running")
+        self.assertNotIn(session, self.world.procs)
+        ship = self.world.index(lambda e: e[0] == "run" and e[1][-2:] == ["ship", "--once"])
+        self.assertLess(self.world.index(lambda e: e[0] == "kill"), ship)
+        self.assertLess(ship, self.world.index(lambda e: e[0] == "run" and e[1] == ["tailscale", "logout"]))
+        self.assertFalse(any(r[:2] == ["nft", "delete"] for r in runs), "the firewall step, done, ran again")
+        self.assertEqual(self.lifecycle()["state"], "departed")
+
+    def test_a_retry_before_the_logout_holds_when_its_ship_fails(self):
+        manifest = self.tmp / "adopt/keys.json"
+        good = manifest.read_text()
+        manifest.write_text("not json")
+        departure.release(self.host())
+        manifest.write_text(good)
+        self.world.ships = [False]
+        self.world.events.clear()
+        self.assert_held(departure.release(self.host()), "ship failed")
+        for path in self.written:
+            self.assertTrue(path.exists())
 
     def test_a_second_release_after_a_completed_one_does_nothing(self):
         ledger.add(self.tmp / "boot.env", path=self.led)     # the boot lists the descriptor

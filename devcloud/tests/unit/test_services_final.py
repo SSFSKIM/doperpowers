@@ -170,9 +170,10 @@ class OwedRestartTest(unittest.TestCase):
         self.pending = tmp / "pending"
         self.booted = tmp / "booted"
         self.booted.write_text("")             # a boot made this host
-        patcher = mock.patch.object(services, "BOOTED", self.booted)
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        for patcher in (mock.patch.object(services, "BOOTED", self.booted),
+                        mock.patch.object(services, "SHIPPER_SEEN", tmp / "shipper-configured")):
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
     def apply(self, env_changed, run):
         return services.apply_systemd(self.user, env_changed, run=run, unit_dir=self.units, pending_dir=self.pending)

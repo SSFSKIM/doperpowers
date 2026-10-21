@@ -40,6 +40,10 @@ BOOTED = pathlib.Path("/run/devcloud/booted")
 # before the run that owes it tries and removed once it succeeded, so a failed
 # run leaves it for the next.
 PENDING_DIR = pathlib.Path("/var/lib/devcloud/pending")
+# Written the first time the services step finds a shipper, never removed by
+# a later one: the departure's evidence that this host's configuration ships
+# its sessions, kept after the shipper went and the step removed its unit.
+SHIPPER_SEEN = pathlib.Path("/var/lib/devcloud/shipper-configured")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -141,6 +145,9 @@ def apply_systemd(user, env_changed, run=run, unit_dir=UNIT_DIR, pending_dir=PEN
     gate = admission(lifecycle)
     every = service_list(user, persistent=persistent)
     listed = [s for s in every if s.every is not None or available(s)]
+    if any(s.name == "session-mirror" for s in listed):
+        SHIPPER_SEEN.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+        SHIPPER_SEEN.touch()
     wanted = units(listed, user)
     owed = set()
     for name, text in wanted.items():

@@ -60,9 +60,25 @@ class SecondGuardTest(unittest.TestCase):
         self.pending = tmp / "pending"
         booted = tmp / "booted"
         booted.write_text("")
-        patch = mock.patch.object(services, "BOOTED", booted)
-        patch.start()
-        self.addCleanup(patch.stop)
+        self.seen = tmp / "shipper-configured"
+        for patch in (mock.patch.object(services, "BOOTED", booted),
+                      mock.patch.object(services, "SHIPPER_SEEN", self.seen)):
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def test_a_shipper_found_once_is_remembered_after_convergence_removes_its_unit(self):
+        self.apply()
+        self.assertTrue(self.seen.exists(), "the boot found a shipper and left no evidence of it")
+        (self.home / ".claude/tools/session-mirror").unlink()
+        calls, _ = self.apply()
+        self.assertIn(["systemctl", "disable", "--now", "devcloud-session-mirror.service"], calls)
+        self.assertFalse((self.units / "devcloud-session-mirror.service").exists())
+        self.assertTrue(self.seen.exists(), "convergence erased the evidence")
+
+    def test_a_host_that_never_had_a_shipper_has_no_flag(self):
+        (self.home / ".claude/tools/session-mirror").unlink()
+        self.apply()
+        self.assertFalse(self.seen.exists())
 
     def apply(self, lifecycle=None, spot=False):
         recorder = Recorder()

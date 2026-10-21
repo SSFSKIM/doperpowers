@@ -70,6 +70,7 @@ class Host:
     adopt_dir: pathlib.Path = ADOPT_DIR
     unit_dir: pathlib.Path = UNIT_DIR
     inbound_nft: pathlib.Path = INBOUND_NFT
+    shipper_seen: pathlib.Path = None    # services.SHIPPER_SEEN by default
     out: object = None
     as_user: object = proc.as_user
     now: object = time.time
@@ -80,6 +81,8 @@ class Host:
     def __post_init__(self):
         if self.call is None:
             self.call = proc.call
+        if self.shipper_seen is None:
+            self.shipper_seen = services.SHIPPER_SEEN
 
     def installed(self, unit):
         return (self.unit_dir / unit).exists()
@@ -259,12 +262,13 @@ def _shipper(host):
 
 def ship_once(run, timeout=SHIP_TIMEOUT):
     """`session-mirror ship --once` as the user; False when it failed. A host
-    whose configuration has no shipper (no program, no unit) has nothing to
-    ship; a shipper configured but missing or not executable is a failed ship."""
+    that never had a shipper (no program, no unit, and the services step never
+    found one) has nothing to ship; one configured but now missing or not
+    executable is a failed ship."""
     host = run.host
     program = _shipper(host)
     if not os.access(program, os.X_OK):
-        if not os.path.lexists(program) and not host.installed(SHIPPER_UNIT):
+        if not (os.path.lexists(program) or host.installed(SHIPPER_UNIT) or host.shipper_seen.exists()):
             return True, "no shipper configured (nothing to ship)"
         return False, f"the shipper {program} is {'not executable' if os.path.lexists(program) else 'missing'}"
     try:
@@ -531,8 +535,10 @@ def remove_credentials(run):
 
 def release(host, force=False, no_hold=False):
     """`devcloud release`; returns its exit status (I16). Run again after one
-    that stopped part way, it skips what already succeeded: steps 0-2 once a
-    run went past the ship, and each later step that ended ok."""
+    that stopped part way, it skips each step after the ship that already
+    succeeded; steps 0-2 and the final check run again until a logout has
+    succeeded, since a host still on the tailnet can have started a session
+    since (only cleanup is left once it is off)."""
     with lease.locked(path=host.lock_path):
         d, resumed, code = _begin(host, "release", force)
         if d is None:
@@ -544,7 +550,7 @@ def release(host, force=False, no_hold=False):
             done = {s["name"] for s in run.steps if s["state"] == "ok"}
         status.set_lifecycle("release", "departing", "resumed" if resumed else "started", steps=run.steps,
                              path=host.status_path)
-        if not any(s["name"] == "leave" for s in run.steps):
+        if "logout" not in done:
             try:
                 run.step("close-admission", lambda: close_admission(run))
                 sessions_and_ship(run, no_hold)
