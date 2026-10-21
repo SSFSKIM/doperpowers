@@ -787,6 +787,16 @@ sminos carries both message-tool names as its own constant, beside
   Rationale: The owner's ruling: MAWS reads its own tool and no other.
   Date/Author: 2026-10-21, the owner, relayed by the MAWS architect and
   recorded by doperpowers-88.
+- Decision: the style's clause on a message before a tool call names what
+  happens, not how: "a `<message>` written before a tool call does not reach
+  the human", in place of "written as text there, it comes back as a
+  paraphrase that never reaches the human".
+  Rationale: The human read the old clause as unclear. The model needs the
+  consequence to act on, and the API's paraphrasing stays recorded in this
+  spec. No eval rerun: the rule and its reason are unchanged, and the old
+  style, which never named the tool, already used it for 4 of 5 mid-turn
+  messages.
+  Date/Author: 2026-10-21, the human, recorded by doperpowers-88.
 
 ## Outcomes & Retrospective
 
