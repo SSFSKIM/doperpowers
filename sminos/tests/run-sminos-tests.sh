@@ -5799,6 +5799,22 @@ run "$SMINOS" list   # it ends: retired
 CLAUDE_CODE_SESSION_ID="$FS" run "$SMINOS" say "@oldname are you there"
 assert_rc 4 "$RC" "a retired member's former alias reaches nothing"
 assert_not_contains "$OUT" "note:" "and tells of no rename"
+# Nor does a retired seat's: a seat-less member put into a seat of another
+# name, then retired, is still a row find_target reads (by its seat's name).
+FQ=0fa00009-0000-4000-8000-0000000000f9
+fa_peer seatless-old "$FQ" "$FAR" fa-q
+run "$SMINOS" list
+"$SMINOS" seat add fa-repo fa-seat --session "$FQ" >/dev/null
+run "$SMINOS" status seatless-old "seated"
+assert_contains "$OUT" "note: @seatless-old is now @fa-seat#${FQ:0:8}" "(seated, its alias before the seat's reaches it)"
+run "$SMINOS" retire fa-seat
+assert_rc 0 "$RC" "(the seat is retired)"
+run "$SMINOS" status seatless-old "retired"
+assert_rc 4 "$RC" "a retired seat's former alias reaches nothing through find_target"
+assert_not_contains "$OUT" "note:" "and tells of no rename"
+assert_not_contains "$(cat "$FALOG/testhost.$FQ.jsonl")" '"text": "retired"' "nothing is recorded on it"
+run "$SMINOS" status fa-seat "by its name"
+assert_rc 0 "$RC" "the retired seat is still found by its own name"
 rm -f "$HOME/.claude/sessions/fa-"*.json
 cd "$WORK"
 rm -f "$HOME/.claude/sessions/cn-"*.json

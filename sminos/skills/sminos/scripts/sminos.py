@@ -3281,12 +3281,14 @@ def alias_reach(m, name, short=""):
     shares (§4 of the charge names design): "alias" when it is the member's
     alias, "former" when it is an alias the member held before
     (former_aliases), "" when neither. With `short` (`name#short`), only a
-    member the short of whose session, or of one it continues, starts so."""
+    member the short of whose session, or of one it continues, starts so.
+    A retired row (a seat find_target still finds by its own name) answers
+    to no alias it held before."""
     if short and not any(s and s[:8].startswith(short) for s in (m.session,) + m.former):
         return ""
     if name == m.alias:
         return "alias"
-    return "former" if any(a == name for a, _ in m.former_aliases) else ""
+    return "former" if m.state != "retired" and any(a == name for a, _ in m.former_aliases) else ""
 
 
 def current_first(hits, name):
