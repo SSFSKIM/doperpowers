@@ -1,4 +1,4 @@
-import type { EngineInterface, On, PromptOrigin, RenderElement, RenderInput } from 'claude-code'
+import type { EngineInterface, On, PromptOrigin, RenderElement, RenderInput, Timer } from 'claude-code'
 
 import { MESSAGE_TOOL, readMessage } from './message'
 
@@ -618,23 +618,38 @@ export type View = {
   folded?: string
   /** Where each row stood in the window when it last drew, as its `onScreen` said; only the fullscreen transcript says. */
   shown: Map<string, Shown>
-  /** The module's start-up read (`started`), once begun: true once it finished under a dispatch that ran on. */
-  starting?: Promise<boolean>
+  /** The module's start-up read (`started`) while one runs; it settles once it finished or was cut short. */
+  reading?: Promise<void>
+  /** Settles once the start-up read finished, or the rows stopped waiting for it. */
+  start: { promise: Promise<void>; settle: () => void }
+  /** The read finished under a dispatch that ran on. */
+  isStarted: boolean
+  /** `START_WAIT_MS` ran out before the read finished: the rows draw with what is known. */
+  isPastWait: boolean
+  /** The timer that ends the rows' wait, set by the first row that waited. */
+  deadline?: Timer
   /** Whether the view folds now: a mark has been seen and the whole transcript is not asked for. */
   isFolding: () => boolean
 }
 
-export const newView = (isFolding: () => boolean): View => ({
-  unfolded: new Set(),
-  order: [],
-  rowOf: new Map(),
-  place: new Map(),
-  guess: new Map(),
-  appended: 0,
-  requestIds: new Map(),
-  shown: new Map(),
-  isFolding,
-})
+export const newView = (isFolding: () => boolean): View => {
+  let settle = () => {}
+  const promise = new Promise<void>((resolve) => (settle = resolve))
+  return {
+    unfolded: new Set(),
+    order: [],
+    rowOf: new Map(),
+    place: new Map(),
+    guess: new Map(),
+    appended: 0,
+    requestIds: new Map(),
+    shown: new Map(),
+    start: { promise, settle },
+    isStarted: false,
+    isPastWait: false,
+    isFolding,
+  }
+}
 
 /** A group of calls is known by its first call's id, which is where it stands. */
 const GROUP = 'group:'
@@ -689,9 +704,17 @@ export function placeAll(view: View, ids: readonly string[], at = 0, step = 1) {
 /** What a transcript search lists: each row's id, and a tool call's id where its call is written. */
 const PLACES = '"uuid":"[^"]+"|"type":"tool_use","id":"[^"]+"'
 
+/**
+ * The search of the file `$1` for `$2`, each match on a line of its own,
+ * exiting 0 when one was found and 1 when none was: by rg where the machine
+ * has it, else by grep. A long session's transcript runs to hundreds of MB,
+ * where macOS's grep takes seconds (437 MB: 8.6 s; rg, 0.7 s).
+ */
+const SEARCH = 'search() { if command -v rg >/dev/null 2>&1; then exec rg --no-config -a -o -N --no-filename -e "$2" -- "$1"; fi; exec grep -o -E -e "$2" -- "$1"; }'
+
 /** The search that lists a transcript's rows in its order (`PLACES`). */
 export function placeArgs(path: string): string[] {
-  return ['grep', '-o', '-E', PLACES, path]
+  return ['sh', '-c', `${SEARCH}; search "$1" "$2"`, 'sh', path, PLACES]
 }
 
 /**
@@ -699,10 +722,10 @@ export function placeArgs(path: string): string[] {
  * the configuration's `projects/` (the engine names the file after the
  * session): what a module that starts mid-session reads, with no path to go
  * by. A session with no file yet (a new one, a fork before its first write)
- * lists no rows, as grep does.
+ * lists no rows, as a search that finds none.
  */
 export function sessionPlaceArgs(sessionId: string): string[] {
-  const script = 'for f in "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"/projects/*/"$1".jsonl; do [ -f "$f" ] && exec grep -o -E "$2" "$f"; done; exit 1'
+  const script = `${SEARCH}; for f in "\${CLAUDE_CONFIG_DIR:-$HOME/.claude}"/projects/*/"$1".jsonl; do [ -f "$f" ] && search "$f" "$2"; done; exit 1`
   return ['sh', '-c', script, 'sh', sessionId, PLACES]
 }
 
@@ -870,18 +893,65 @@ async function placeSession($: EngineInterface, view: View, signal: AbortSignal)
 
 /**
  * Reads, under one dispatch, whether the session has sent a mark (`onMark`
- * runs if so) and where its rows stand; false when that dispatch was aborted
- * before the read finished, which leaves it for another to make.
+ * runs as soon as one is found, the conversation answering well before the
+ * transcript's search) and where its rows stand; false when that dispatch
+ * was aborted before the read finished, which leaves it for another to make.
+ * Rows that stopped waiting for it are asked for again.
  */
 async function startUp($: EngineInterface, view: View, signal: AbortSignal, onMark: () => void): Promise<boolean> {
-  const [isMarked] = await Promise.all([sentMark($, signal), placeSession($, view, signal)])
+  const marked = sentMark($, signal).then((isMarked) => {
+    if (isMarked) {
+      onMark()
+      if (view.isPastWait) {
+        $.ui.invalidate('ui.render')
+      }
+    }
+  })
+  await Promise.all([marked, placeSession($, view, signal)])
   if (signal.aborted) {
     return false
   }
-  if (isMarked) {
-    onMark()
+  if (view.isPastWait) {
+    $.ui.invalidate('ui.render')
   }
   return true
+}
+
+/**
+ * Begins a start-up read under the dispatch `$` and `signal` belong to. It
+ * settles once the read finished, which ends every row's wait, or was cut
+ * short, which leaves the next read to whoever asks.
+ */
+function begin($: EngineInterface, view: View, signal: AbortSignal, onMark: () => void): Promise<void> {
+  const read: Promise<void> = startUp($, view, signal, onMark)
+    .catch(() => false)
+    .then((isRead) => {
+      if (isRead) {
+        view.isStarted = true
+        view.deadline?.cancel()
+        view.start.settle()
+      }
+      if (view.reading === read) {
+        view.reading = undefined
+      }
+    })
+  view.reading = read
+  return read
+}
+
+/** How long the rows wait, together, for the start-up read: well inside a draw's 10 s budget. */
+export const START_WAIT_MS = 3000
+
+/** Resolves once `promise` settles or `signal` aborts, whichever comes first. */
+function untilAborted(promise: Promise<unknown>, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    const done = () => {
+      signal.removeEventListener('abort', done)
+      resolve()
+    }
+    signal.addEventListener('abort', done, { once: true })
+    promise.then(done, done)
+  })
 }
 
 /**
@@ -893,22 +963,35 @@ async function startUp($: EngineInterface, view: View, signal: AbortSignal, onMa
  * screen kept the engine's height: the fullscreen transcript holds a row off
  * its window at the height it last had and lets go of it as the row scrolls
  * back in at the window's top edge, where the release reads as the transcript
- * pulling the person back down. Every hook that draws waits on this read; the
- * rows keep what they drew meanwhile.
- * The read runs under the dispatch that asked first, and one superseded
- * meanwhile (a row drawn again) cuts it short: the hooks still waiting read
- * again under their own. `$.session.messages()` starts at the last
- * compaction, so a mark sent only before one is not found.
+ * pulling the person back down. So every hook that draws waits on this read,
+ * the rows keeping what they drew meanwhile, but only while its own dispatch
+ * stands and for at most `START_WAIT_MS` from the first row that waited: the
+ * engine holds a draw's budget at 10 s, and two draws in a row that ran on
+ * past it, deaf to their signal, have it end the hooks worker and unload the
+ * plugin (2.1.302, on a 437 MB transcript). Past the wait the rows draw with
+ * what is known, and are asked for again once the read lands.
+ * The read runs under `session.start`, which each load of the module raises,
+ * and where no redraw cuts it short. A row asked about before that begins one
+ * under its own dispatch, which a redraw of the row cuts short: the hooks
+ * still waiting read again under their own. `$.session.messages()` starts at
+ * the last compaction, so a mark sent only before one is not found.
  */
 async function started($: EngineInterface, view: View, signal: AbortSignal, onMark: () => void) {
-  while (!signal.aborted) {
-    const read = (view.starting ??= startUp($, view, signal, onMark))
-    if (await read) {
-      return
-    }
-    if (view.starting === read) {
-      view.starting = undefined
-    }
+  if (view.isStarted || view.isPastWait) {
+    return
+  }
+  view.deadline ??= $.clock.after(START_WAIT_MS, () => {
+    view.isPastWait = true
+    view.start.settle()
+  })
+  while (!view.isStarted && !view.isPastWait && !signal.aborted) {
+    await untilAborted(Promise.race([view.reading ?? begin($, view, signal, onMark), view.start.promise]), signal)
+  }
+  // The rows that waited go on each from an answer of its own, not all in
+  // one turn of the hooks worker, which would keep it from its heartbeat.
+  // Only a pause: a clock that does not answer holds no row back.
+  if (!signal.aborted) {
+    await $.clock.now().catch(() => {})
   }
 }
 
@@ -990,6 +1073,16 @@ export function registerToHuman(on: On) {
   const markSeen = () => {
     hasSeenMark = true
   }
+
+  // Each load of the module raises this, the first and every reload: the
+  // start-up read (`started`) runs here, where no redraw of a row cuts it
+  // short, unless it already finished under a row's draw.
+  on('session.start', async ($, e, next) => {
+    if (!view.isStarted) {
+      begin($, view, next.signal, markSeen)
+    }
+    return next(e)
+  })
 
   // A cleared or resumed session's rows are another transcript's: what the
   // view knew of the one before is dropped, the new file's order is read, and
