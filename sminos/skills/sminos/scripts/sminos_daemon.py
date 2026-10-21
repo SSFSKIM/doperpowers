@@ -37,7 +37,7 @@ every project known here, each in the order of §8:
   5. push        (mirrored projects) commit what the tick appended, push
   6. archive     (hub projects with a remote, on the machine the hub
                  designates) copy the log into the archive clone, push
-  7. derive      once an hour, `derive --all` as a child it does not wait on;
+  7. derive      every five minutes, `derive --all --refreshes 2` as a child it does not wait on;
                  and the sweep of the bridges' files and of join overrides
 
 Before the first, every running session of this machine is mapped to its
@@ -79,9 +79,18 @@ GIT_TIMEOUT = 30
 # A push the remote rejected because it moved is retried, after another fetch
 # and integration, this many times.
 PUSH_RETRIES = 3
-# `derive --all` runs at most this often; SMINOS_DERIVE_EVERY overrides it in
-# seconds, and a value of 0 or less turns derivation off.
-DERIVE_EVERY = 3600
+# `derive --all` runs at most this often, so a member's first line (and name)
+# comes within about this long of its model's tenth tool call: a run that
+# refuses everyone costs about a second (measured on the owner's MacBook,
+# 39 projects, 2026-10-21), and the six-hour spacing of a member's later
+# derives is derive's own. SMINOS_DERIVE_EVERY overrides it in seconds, and a
+# value of 0 or less turns derivation off.
+DERIVE_EVERY = 300
+# Each run forks at most this many members that already have a derived line
+# (their lines are due only every six hours), so a run's forks, one after
+# another and each up to two minutes, hold a first line back for minutes at
+# most; first lines go before them and are not capped.
+DERIVE_REFRESHES = 2
 # The uplink is restarted after this many seconds, doubling from 1 while it
 # keeps exiting within the bound; one that ran longer starts the count again.
 UPLINK_BACKOFF_MAX = 60
@@ -874,7 +883,7 @@ def derive_running(d):
 
 
 def derive_duty():
-    """Duty 6: once an hour, `derive --all` as a child process this tick does
+    """Duty 6: every five minutes, `derive --all` as a child process this tick does
     not wait for — a fork's model call can take minutes, and the delivery
     interval must not; one derivation in flight at a time, across every
     process that ticks here: the check, the start, and the record of the
@@ -890,7 +899,8 @@ def derive_duty():
         if derive_running(d) or time.time() - float(d.get("started") or 0) < every:
             return
         with open(os.path.join(sminos.root(), "daemon.log"), "a") as out:
-            _DERIVE = subprocess.Popen([sys.executable, os.path.join(sminos.SCRIPT_DIR, "sminos.py"), "derive", "--all"],
+            _DERIVE = subprocess.Popen([sys.executable, os.path.join(sminos.SCRIPT_DIR, "sminos.py"), "derive", "--all",
+                                        "--refreshes", str(DERIVE_REFRESHES)],
                                        stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
                                        start_new_session=True)
         rec["derive"] = {"pid": _DERIVE.pid, "start": sminos.proc_start(_DERIVE.pid), "started": time.time()}

@@ -140,7 +140,7 @@ by, other machines. Each tick, per project: sync the mirror (projects
 with a remote), join sessions seen on this machine and move those whose
 project changed, publish state changes and renames, retry owed
 deliveries (a failed push is retried each tick and given up after 60
-with a line in `$SMINOS_HOME/daemon.log`); hourly, `derive --all`. On an
+with a line in `$SMINOS_HOME/daemon.log`); every five minutes, `derive --all`. On an
 enrolled machine the loop also keeps its `uplink` child, the one stream
 to the hub that carries every hub project both ways.
 
