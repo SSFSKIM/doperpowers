@@ -601,6 +601,31 @@ describe('registerAppeal', () => {
     expect(h.calls.filter((c) => c.op === 'model.complete').length).toBe(1)
   })
 
+  test("the pass is spent over core's plain ask only: never over a plugin's ask, a host's, a classic hook's or a setting's, nor one an engine before 2.1.307 marked with a decider", async () => {
+    const h = harness({ judge: '<verdict>grant</verdict><response>The user asked.</response>' })
+    await h.start()
+    await h.call({ tool: 'Bash', tool_use_id: 't1', agentId: 'a1', command: 'git push --force' }, blocked('[Git Destructive]'))
+    await h.appealCall({ tool: APPEAL, tool_use_id: 't2', agentId: 'a1', block: 'b1', argument: 'The user asked.' })
+    const rerun = { tool: 'Bash', tool_use_id: 't3', agentId: 'a1', input: { command: 'git push --force' }, approver: 'person' }
+    const untouched: [Record<string, unknown>, Record<string, unknown>][] = [
+      // 2.1.307: a hook beneath asked (the engine names its plugin; the ask is a person's).
+      [rerun, { ...ask, plugin: 'guard' }],
+      // 2.1.307: a host's callback answers this session's asks.
+      [{ ...rerun, approver: 'host' }, ask],
+      [rerun, { ...ask, hook: 'PreToolUse' }],
+      [rerun, { ...ask, setting: 'permissions.blockReadsOutsideWorkingDirectories' }],
+      // Before 2.1.307: a hook's person-only ask, and the host's.
+      [rerun, { ...ask, decider: 'person' }],
+      [{ tool: 'Bash', tool_use_id: 't3', agentId: 'a1', input: { command: 'git push --force' } }, { ...ask, decider: 'host' }],
+    ]
+    for (const [e, verdict] of untouched) {
+      expect(await h.check(e, verdict)).toEqual(verdict)
+    }
+    // None of them spent it: core's plain ask, a person to answer it, takes the pass.
+    expect(await h.check(rerun, ask)).toEqual({ decision: 'allow', reason: 'appeal b1 granted' })
+    expect(h.logged().map((l) => l.event)).toEqual(['block', 'ruling', 'used'])
+  })
+
   test('a prompt submitted after a grant ends the pass; one during the judge makes no ruling, and nothing is relayed', async () => {
     const h = harness({ judge: '<verdict>grant</verdict><response>The user asked.</response>' })
     await h.start()
