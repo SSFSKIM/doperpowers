@@ -134,10 +134,11 @@ def build(ctx, account, client):
             image_labels["devcloud-test"] = test_run
         made = client.image_create(vm["id"], f"dc-img-{recipe}-{_stamp(ctx.clock())}", image_labels)
     except BaseException as error:
-        _discard(ctx, entry, step)
+        gone = _discard(ctx, entry, step)
         if isinstance(error, DriverError):
-            raise DriverError(error.code, f"the bake of {name} failed at {step}: {error}; the builder is "
-                                          "deleted") from None
+            left = ("the builder is deleted" if gone else
+                    f"the builder (id {vm['id']}) is left; the reaper deletes builders older than 2 hours")
+            raise DriverError(error.code, f"the bake of {name} failed at {step}: {error}; {left}") from None
         raise
     gone = _delete(ctx, entry)
     ctx.say(f"image     {made['name']} (id {made['id']}, recipe {recipe}) for account {account.name}")
@@ -180,7 +181,8 @@ def wait_off(ctx, entry):
 
 
 def _discard(ctx, entry, step):
-    """A failed bake: the builder labeled with the step, then deleted."""
+    """A failed bake: the builder labeled with the step, then deleted.
+    Whether it is gone."""
     try:
         entry.client.set_labels(entry.vm["id"], {"devcloud-bake": f"failed-{step}"}, merge=True)
     except DriverError as error:
@@ -188,6 +190,8 @@ def _discard(ctx, entry, step):
     if not _delete(ctx, entry):
         ctx.warn(f"devcloud vm image build: the builder {entry.vm['name']} (id {entry.vm['id']}) is left; the "
                  "reaper deletes builders older than 2 hours")
+        return False
+    return True
 
 
 def _delete(ctx, entry):

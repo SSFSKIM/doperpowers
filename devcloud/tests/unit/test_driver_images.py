@@ -232,6 +232,21 @@ class BuildTest(BuildBase):
         self.assertIn("poweroff", message)
         self.assertEqual(self.state()["deleted"][0]["labels"]["devcloud-bake"], "failed-poweroff")
 
+    def test_a_failed_bake_whose_builder_survives_says_so(self):
+        self.remote.rules.insert(0, {"needle": "image/setup.sh", "code": 1, "out": "E: broke", "err": "",
+                                     "marker": False, "target": None, "times": None, "fn": None})
+        self.behave(fail={"delete": 1})
+        code, message = self.failed()
+        self.assertEqual(code, 1)
+        self.assertNotIn("is deleted", message)
+        self.assertIn("is left", message)
+        self.assertIn("dc-bake-b001", self.servers())
+
+    def test_a_failed_bake_says_its_builder_is_deleted_when_it_is(self):
+        self.remote.rules.insert(0, {"needle": "image/setup.sh", "code": 1, "out": "E: broke", "err": "",
+                                     "marker": False, "target": None, "times": None, "fn": None})
+        self.assertIn("is deleted", self.failed()[1])
+
     def test_a_refused_image_create_fails_at_image(self):
         self.behave(refuse={"image-create": "quota"})
         code, message = self.failed()
@@ -314,6 +329,20 @@ class DailyBuildTest(BuildBase):
         self.clock.now += 2 * HOUR
         reaper.run(self.ctx)
         self.assertEqual(len(self.calls("create")), creates + 1)
+
+    def test_an_old_builder_whose_delete_fails_still_holds_off_the_build(self):
+        """A leftover builder the reaper could not delete is still a builder:
+        no second one starts beside it (its delete raising, or refused)."""
+        for behavior in ({"fail": {"delete": 1}}, {"drop_on_get": "devcloud"}):
+            with self.subTest(behavior=behavior):
+                self.setUp()
+                self.add_server("dc-bake-0001", {"devcloud": "builder", "devcloud-by": "othermac"},
+                                created=self.clock.now - 3 * HOUR)
+                self.behave(**behavior)
+                with mock.patch.object(images, "build") as build:
+                    reaper.run(self.ctx)
+                build.assert_not_called()
+                self.assertIn("dc-bake-0001", self.servers())
 
     def test_no_build_while_a_builder_exists_nor_in_a_bounded_run_nor_without_images(self):
         with mock.patch.object(images, "build") as build:

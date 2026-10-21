@@ -194,16 +194,17 @@ def _run(ctx, bounded):
         builders = []
         for entry in entries:
             kind = entry.vm["labels"].get("devcloud")
+            if kind == "builder":
+                # A builder holds off the daily build until its delete is known to have happened.
+                builders.append(entry.vm)
             try:
                 if kind == "vm":
                     if not _expired(ctx, entry, bounded):
                         survivors.append(entry)
                 elif leftovers([entry.vm], now):
-                    if not _delete(ctx, entry, f"a {kind} server older than 2 h", departed=False, decided=False,
-                                   bounded=bounded) and kind == "builder":
-                        builders.append(entry.vm)
-                elif kind == "builder":
-                    builders.append(entry.vm)
+                    if _delete(ctx, entry, f"a {kind} server older than 2 h", departed=False, decided=False,
+                               bounded=bounded) and kind == "builder":
+                        builders.remove(entry.vm)
             except Spent:
                 raise
             except DriverError as error:
