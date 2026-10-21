@@ -75,6 +75,32 @@ brought a status, and complete is the executor's end.
 
 It calls api.anthropic.com directly with ANTHROPIC_API_KEY.
 
+Message-tool round, 2026-10-21: 7.200.0 (control) against 7.201.0 (variant,
+the message tool's style), both with the message tool in their tools,
+claude-opus-5-5 at high effort, judge at low, 4 reps of each scenario on its
+own history, 148 responses, every message counted:
+                      control                  variant
+  mid-turn messages   5: 4 tool calls,         8: 8 tool calls,
+                      0 spans, 1 lost          0 spans, 0 lost
+  lost share          1 of 5 (20%)             0 of 8 (0%)
+  final messages      28 spans, 0 tool calls   27 spans, 0 tool calls (100%)
+  tool calls per run  0.10                     0.20
+  cut_off_tool 0, judge_errors 0, mid_span_trailing 0 in both arms.
+One progress note came back in all 148 responses: the control's keep_working
+rep 3, the dialog request, ruled addressed to the human and needing their
+action. With the tool in its list, the old style sent its mid-turn messages
+through it too (keep_working 3 of 4), so the arms differ by little here; the
+loss the earlier rounds measured is a session without the tool.
+keep_working: the request to approve the dialog went out before the smoke
+export in 4 of 4 variant runs and 3 of 4 control runs (the fourth a progress
+note), each in a Critical block ending "Needs you: yes", and every run then
+ran the export and sent the executor its result. small_ruling: 2 of 4 variant
+runs made the call themselves and reported it through the tool rather than
+asking. Runs that reached the human, both arms: routine notices 0 of 16;
+milestone, milestone3, complete, ruling, surprise and late_failure every run.
+The shell's echo prints its arguments as written, so two variant keep_working
+runs that ran `echo "exit=$?"` called the shell a quirk in their final report.
+
 Results, 2026-10-20, claude-opus-5-5 at high effort, runs that reached the
 human (a message or an ask) out of runs:
   surprise, ruling,    every arm, both histories: 8 of 8 per arm; small_ruling

@@ -47,6 +47,22 @@ ending the turn.
 e.g. control=<(git show HEAD~1:output-styles/to-human.md) variant=output-styles/to-human.md.
 It calls api.anthropic.com directly with ANTHROPIC_API_KEY.
 
+Message-tool round, 2026-10-21: 7.200.0 (control) against 7.201.0 (variant),
+both with the message tool in their tools, same settings, 4 reps of each
+scenario per arm, 61 responses:
+  every arm    announced the run before launching it 8 of 8 (claude_p 4 of 4,
+               ptc_llm 4 of 4), every one through the message tool
+               (tool_message 8, text_message 0) and naming the models, the
+               efforts, the count and the purpose; smoke 0 of 8
+  messages     mid-turn 8 per arm, all tool calls, 0 lost: no progress note
+               came back in any response; no final message (each run ended on
+               a tool call: the launch's follow-up, or smoke's step budget)
+  tool calls   0.67 per run in each arm; cut_off_tool 0, judge_errors 0,
+               mid_span_trailing 0
+Against the round below, where the 12 announcements were all progress notes
+the human never saw, the tool carries the announcement in both arms: the old
+style uses a tool it finds in its list.
+
 Results, 2026-10-20, claude-opus-5-5 at high effort, judge at low effort, 4
 reps per arm of ptc_llm and claude_p, 2 of smoke, recounted with the launch
 detection as it now stands:
