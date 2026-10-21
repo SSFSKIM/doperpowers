@@ -264,19 +264,25 @@ class InterruptTest(DriverBase):
     def test_an_interrupt_during_a_call_stops_the_providers_group(self):
         self.behave(hang=["list"])
         client = self.ctx.client(self.ctx.profile.account("main"))
+        cancelled = threading.Event()
+
         def interrupt_once_the_provider_runs():
-            # A fixed delay raced a slow start of the fake under load: interrupt once its call is recorded.
+            # A fixed delay raced a slow start of the fake under load: interrupt once its call is
+            # recorded, and never once the test is over (cancelled) or the call never came.
             deadline = time.monotonic() + 30
-            while time.monotonic() < deadline:
+            while not cancelled.is_set() and time.monotonic() < deadline:
                 try:
                     if self.state()["calls"]:
-                        break
+                        os.kill(os.getpid(), signal.SIGINT)
+                        return
                 except ValueError:      # read while the fake rewrote it
                     pass
-                time.sleep(0.05)
-            os.kill(os.getpid(), signal.SIGINT)
+                cancelled.wait(0.05)
 
-        threading.Thread(target=interrupt_once_the_provider_runs, daemon=True).start()
+        monitor = threading.Thread(target=interrupt_once_the_provider_runs)
+        self.addCleanup(monitor.join)
+        self.addCleanup(cancelled.set)
+        monitor.start()
         with self.assertRaises(KeyboardInterrupt):
             client.list()
         pid = self.state()["calls"][-1]["pid"]

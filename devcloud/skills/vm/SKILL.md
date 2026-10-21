@@ -28,7 +28,10 @@ The account, type, location and disk come from the project's
 person's accounts, each with its default type and location, are in
 their profile, `~/.claude/devcloud/driver.toml` (`$DEVCLOUD_PROFILE`
 when set); `--account` and `--type` choose others, and `--dry-run`
-checks and prices any of them. The boot sets each project up through its
+checks and prices any of them. The VM clones each project from GitHub at
+its default branch, so work that exists only in this checkout never
+reaches it: commit and push it to a branch, then name the branch,
+`--project owner/repo@<branch>`. The boot sets each project up through its
 `devenv/`; a repository without one needs it first (`devcloud:devenv`
 writes it). Lease by the work: the default is 12 h, and a shorter `--ttl`
 costs less if the session forgets to `down`.
