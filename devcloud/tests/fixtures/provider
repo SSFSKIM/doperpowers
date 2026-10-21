@@ -17,6 +17,7 @@ with a `behavior` object a test sets to make it misbehave:
   state_word     the state every server reports (default running)
   now            created time for new servers (default the clock)
   drop_on_set    set-labels drops this label key
+  drop_on_get    get answers without this label key
 
 Every call is appended to `calls` ({op, argv, input, env}); `record_env`
 names the variables whose values a call records."""
@@ -80,7 +81,7 @@ def handle(state, op, raw):
     fn = OPS.get(op)
     if fn is None:
         return 2, None, f"unknown op {op!r}"
-    return 0, fn(state, request, behavior), err
+    return 0, json.dumps(fn(state, request, behavior)), err
 
 
 def return_after_save(state):
@@ -144,7 +145,11 @@ def find(state, server_id):
 
 def get(state, request, behavior):
     server = find(state, request["id"])
-    return public(server, behavior) if server else None
+    if not server:
+        return None
+    vm = public(server, behavior)
+    vm["labels"] = {k: v for k, v in vm["labels"].items() if k != behavior.get("drop_on_get")}
+    return vm
 
 
 def set_labels(state, request, behavior):

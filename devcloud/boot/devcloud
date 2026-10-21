@@ -24,6 +24,7 @@
                              uncommitted work, one per line; exit 5 when there is any
   devcloud ledger add <path>...
                              list credential paths before writing them (a driver's)
+  devcloud vm ...            the VM driver, on a Mac (devcloud vm --help)
   devcloud run-scrubbed -- <command>...
                              run a command with its output scrubbed of the host's values
                              (a systemd unit's ExecStart; runs as any user)
@@ -34,7 +35,22 @@ the jobs do nothing once a departure has started."""
 import os
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+HERE = os.path.dirname(os.path.realpath(__file__))
+sys.path.insert(0, HERE)
+if sys.argv[1:2] == ["vm"]:
+    # The VM driver (its spec's §8.4), on a Mac. It keeps the caller's PATH:
+    # hcloud and gcloud live under Homebrew and the user's SDK there, and a
+    # profile provider may need its own tools. A host never drives.
+    if os.path.exists("/etc/devcloud/boot.env"):
+        print("devcloud vm: this machine is a devcloud host; drive from a Mac", file=sys.stderr)
+        sys.exit(6)
+    sys.path.insert(0, os.path.dirname(HERE))
+    try:
+        from driver import cli
+    except ImportError:
+        print("devcloud vm: this copy of devcloud has no driver (a host's); drive from a Mac", file=sys.stderr)
+        sys.exit(6)
+    sys.exit(cli.main(sys.argv[2:]))
 # The caller's PATH, for a command run-scrubbed runs as the unit gave it.
 CALLER_PATH = os.environ.get("PATH", "")
 # Root runs only system binaries: the user can write to their own PATH entries.
@@ -119,6 +135,10 @@ def main(argv):
         return run_scrubbed(argv[2:])
     if not argv:
         return usage()
+    if argv in (["status"], ["unpushed"]) and not os.path.isdir("/etc/devcloud"):
+        print(f"devcloud {argv[0]}: this machine is not a devcloud host (no /etc/devcloud); "
+              "`devcloud vm` drives hosts from here", file=sys.stderr)
+        return 1
     if argv == ["status"]:
         data = status.load()
         if not data["steps"]:
@@ -131,6 +151,10 @@ def main(argv):
     known = argv[0] in ("lease", "depart", "release", "ledger") or (len(argv) == 1 and argv[0] in JOBS)
     if not known:
         return usage()
+    if not os.path.isdir("/etc/devcloud"):
+        print(f"devcloud {argv[0]}: this machine is not a devcloud host (no /etc/devcloud); "
+              "`devcloud vm` drives hosts from here", file=sys.stderr)
+        return 1
     if os.geteuid() != 0:
         print(f"devcloud {argv[0]}: run as root", file=sys.stderr)
         return 1

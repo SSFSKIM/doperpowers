@@ -8,6 +8,7 @@ import json
 import os
 import pathlib
 import re
+import secrets as secrets_mod
 import socket
 import subprocess
 import sys
@@ -71,7 +72,7 @@ class Entry:
 class Context:
     def __init__(self, paths, env=None, secrets=None, remote=None, clock=time.time, sleep=time.sleep,
                  out=sys.stdout, err=sys.stderr, machine=None, tailnet=None, desk=None, creator=None,
-                 timeouts=None, plugin=PLUGIN_DIR, key_pushed=None):
+                 timeouts=None, plugin=PLUGIN_DIR, key_pushed=None, token_hex=None):
         self.paths = paths
         self.env = dict(os.environ if env is None else env)
         self.clock = clock
@@ -89,6 +90,7 @@ class Context:
         self.desk = desk or desk_machines
         self.creator = creator or (lambda: session_creator(self.env))
         self.key_pushed = key_pushed or (lambda: key_in_remote(self))
+        self.token_hex = token_hex or (lambda: secrets_mod.token_hex(2))
 
     # --- lazily loaded --------------------------------------------------------------
 
@@ -147,18 +149,21 @@ class Context:
                     self.warn(f"devcloud vm: skipping account {account.name}: {error}")
         return out
 
+    def fleet_of(self, account, client, kinds=("vm",)):
+        """The account's labeled servers whose devcloud label is one of
+        `kinds` (None: every kind)."""
+        return [Entry(account, client, vm) for vm in client.list()
+                if kinds is None or vm["labels"].get("devcloud") in kinds]
+
     def fleet(self, quiet=False, kinds=("vm",)):
-        """Every labeled server of every usable account whose devcloud label
-        is one of `kinds`; a provider that fails is named and skipped."""
+        """`fleet_of` every usable account; a provider that fails is named
+        and skipped."""
         entries = []
         for account, client in self.usable(quiet=quiet):
             try:
-                vms = client.list()
+                entries += self.fleet_of(account, client, kinds)
             except DriverError as error:
                 self.warn(f"devcloud vm: account {account.name}: {error}")
-                continue
-            entries += [Entry(account, client, vm) for vm in vms
-                        if kinds is None or vm["labels"].get("devcloud") in kinds]
         return entries
 
     def find(self, name):
@@ -166,6 +171,26 @@ class Context:
             if entry.vm["name"] == name:
                 return entry
         raise DriverError(FAILED, f"no VM named {name} in any usable account")
+
+    def driver_keys(self):
+        """Every driver Mac's public key (the profile's driver-keys/), this
+        one's made first when missing."""
+        own = self.remote.ensure_key()
+        keys = {own.strip()}
+        directory = self.paths.profile / "driver-keys"
+        if directory.is_dir():
+            keys |= {p.read_text().strip() for p in sorted(directory.glob("*.pub")) if p.read_text().strip()}
+        return sorted(keys)
+
+    def taken_names(self, servers):
+        """Names a new VM must not take: live servers of every account, adoption
+        records, tailnet nodes, desk machines."""
+        taken = {vm["name"] for vm in servers}
+        if self.paths.adopted.is_dir():
+            taken |= {p.stem for p in self.paths.adopted.glob("*.json")}
+        taken |= {node["name"] for node in self.tailnet()}
+        taken |= set(self.desk())
+        return taken
 
     def user(self):
         user = self.profile.build.get("DEVCLOUD_USER")

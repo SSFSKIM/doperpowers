@@ -67,6 +67,7 @@ class SecretManagerTest(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         cls.server.shutdown()
+        cls.server.server_close()
         shutil.rmtree(cls.tmp, True)
 
     def setUp(self):
