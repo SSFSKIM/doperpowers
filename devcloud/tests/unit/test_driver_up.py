@@ -291,7 +291,7 @@ class ImageTest(UpBase):
     def images(self, *entries):
         state = self.state()
         state["images"] = [{"id": iid, "name": f"img-{iid}", "labels": {"devcloud": kind, "devcloud-recipe": recipe},
-                            "created": created} for iid, recipe, created, kind in entries]
+                            "created": created, "state": "ready"} for iid, recipe, created, kind in entries]
         self.state_file.write_text(json.dumps(state))
 
     def create(self):
@@ -375,7 +375,7 @@ class MetadataSeedTest(UpBase):
         recipe = compose.recipe_hash(_path.DEVCLOUD)
         state = self.state()
         state["images"] = [{"id": "img", "name": "img", "labels": {"devcloud": "image", "devcloud-recipe": recipe},
-                            "created": NOW - HOUR}]
+                            "created": NOW - HOUR, "state": "ready"}]
         self.state_file.write_text(json.dumps(state))
         self.assertEqual(self.up(), 0)
         self.assertEqual(self.create()["image"], "img")

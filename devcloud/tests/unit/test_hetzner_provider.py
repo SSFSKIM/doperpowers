@@ -287,7 +287,7 @@ class ImagesTest(HetznerBase):
         labels = {"devcloud": "image", "devcloud-recipe": "0123456789ab"}
         image = self.ok("image-create", {"id": "42", "name": "devcloud-0123456789ab", "labels": labels})
         self.assertEqual(image, {"id": "1000", "name": "devcloud-0123456789ab", "labels": labels,
-                                 "created": epoch("2026-10-21T05:00:00+00:00")})
+                                 "created": epoch("2026-10-21T05:00:00+00:00"), "state": "ready"})
         [argv] = self.calls_of("server", "create-image")
         self.assertEqual(argv[argv.index("--type") + 1], "snapshot")
         self.assertEqual(self.ok("images"), [image])
@@ -296,15 +296,13 @@ class ImagesTest(HetznerBase):
         self.assertEqual(self.ok("image-delete", {"id": "1000"}), {})
 
 
-    def test_a_snapshot_still_being_made_is_not_listed(self):
+    def test_every_owned_snapshot_is_listed_with_its_state(self):
         image = self.ok("image-create", {"id": "42", "name": "devcloud-0123456789ab", "labels": {"devcloud": "image"}})
+        self.assertEqual(image["state"], "ready")
         state = self.state()
         state["images"][-1]["status"] = "creating"
         self.state_path.write_text(json.dumps(state))
-        self.assertEqual(self.ok("images"), [])
-        state["images"][-1]["status"] = "available"
-        self.state_path.write_text(json.dumps(state))
-        self.assertEqual(self.ok("images"), [image])
+        self.assertEqual([i["state"] for i in self.ok("images")], ["pending"])
 
 
 class UsageTest(HetznerBase):

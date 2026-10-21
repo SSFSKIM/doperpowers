@@ -20,6 +20,7 @@ with a `behavior` object a test sets to make it misbehave:
   drop_on_get    get answers without this label key
   drop_on_list   list answers without this label key
   fail_after_create  create makes the server, then exits 1
+  image_state    the state image-create gives an image (default ready); null: none at all
 
 Every call is appended to `calls` ({op, argv, input, env, pid}); `record_env`
 names the variables whose values a call records."""
@@ -183,6 +184,8 @@ def image_create(state, request, behavior):
     state["next_id"] = state.get("next_id", 100) + 1
     image = {"id": f"img-{state['next_id']}", "name": request["name"], "labels": dict(request["labels"]),
              "created": int(behavior.get("now", time.time())), "_from": request["id"]}
+    if behavior.get("image_state", "ready") is not None:
+        image["state"] = behavior.get("image_state", "ready")
     state["images"].append(image)
     return {k: v for k, v in image.items() if not k.startswith("_")}
 

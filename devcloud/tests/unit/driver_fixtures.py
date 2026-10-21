@@ -150,9 +150,20 @@ class DriverBase(unittest.TestCase):
         self.remote = FakeRemote()
         self.clock = Clock()
         self.tailnet_nodes = []
-        self.desk_machines = []
+        self.desk_machines = []         # the names an enrolled driver's current listing shows
+        self.desk_output = None         # else `sminos machines`' whole stdout; None for neither: no sminos
+        self.desk_timeouts = []
         self.out, self.err = io.StringIO(), io.StringIO()
         self.ctx = self.make_ctx()
+
+    def sminos_machines(self, timeout):
+        """`sminos machines` as the CLI prints it (see test_driver_desk)."""
+        self.desk_timeouts.append(timeout)
+        if self.desk_output is not None:
+            return self.desk_output
+        if not self.desk_machines:
+            return None
+        return "MACHINE  STATE  LIVE  PROJECTS\n" + "".join(f"{n}  online  0  -\n" for n in self.desk_machines)
 
     def pass_copy(self):
         working = self.profile_dir / "providers" / "fake"
@@ -165,7 +176,7 @@ class DriverBase(unittest.TestCase):
     def make_ctx(self, **kw):
         defaults = dict(paths=self.paths, secrets=self.secrets, remote=self.remote, clock=self.clock,
                         sleep=self.clock.sleep, out=self.out, err=self.err, machine="testmac",
-                        tailnet=lambda: list(self.tailnet_nodes), desk=lambda: list(self.desk_machines),
+                        tailnet=lambda: list(self.tailnet_nodes), sminos_machines=self.sminos_machines,
                         creator=lambda: ("@abcd1234", "abcd1234"), env={"PATH": os.environ["PATH"]},
                         key_pushed=lambda: True, host_file=lambda project: (None, "no devenv/host.toml here"))
         defaults.update(kw)

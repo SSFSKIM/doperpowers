@@ -167,7 +167,7 @@ elif group == "images create":
     if not any(i["disks"][0]["source"].endswith("/disks/" + disk) for i in state["instances"]):
         not_found("disks", disk)
     made = {"id": str(new_id()), "name": name, "creationTimestamp": NOW, "labels": labels_of(flag("--labels")),
-            "family": flag("--family"), "sourceDisk": disk, "_force": flag("--force", False)}
+            "family": flag("--family"), "sourceDisk": disk, "_force": flag("--force", False), "status": "READY"}
     state["images"].append(made)
     out([made])
 elif group == "images list":

@@ -25,9 +25,9 @@ HOUR = 3600
 RECIPE = compose.recipe_hash(_path.DEVCLOUD)
 
 
-def image(iid, recipe, created, kind="image"):
+def image(iid, recipe, created, kind="image", state="ready"):
     return {"id": iid, "name": f"img-{iid}", "labels": {"devcloud": kind, "devcloud-recipe": recipe},
-            "created": created}
+            "created": created, "state": state}
 
 
 class CurrentTest(unittest.TestCase):
@@ -35,6 +35,12 @@ class CurrentTest(unittest.TestCase):
         found = images.current([image("a", "aaaaaaaaaaaa", NOW - 3 * HOUR), image("b", RECIPE, NOW - 2 * HOUR),
                                 image("c", RECIPE, NOW - HOUR), image("d", "dddddddddddd", NOW)], RECIPE)
         self.assertEqual(found["id"], "c")
+
+    def test_only_an_image_a_create_can_use_now(self):
+        # Live (M6): up took the image a build had just begun and its create failed: "is not ready".
+        found = images.current([image("b", RECIPE, NOW - HOUR), image("p", RECIPE, NOW, state="pending"),
+                                image("f", RECIPE, NOW, state="failed")], RECIPE)
+        self.assertEqual(found["id"], "b")
 
     def test_none_when_no_image_is_current_and_test_images_never_count(self):
         self.assertIsNone(images.current([image("a", "aaaaaaaaaaaa", NOW)], RECIPE))

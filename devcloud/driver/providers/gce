@@ -145,9 +145,13 @@ def vm(inst):
     }
 
 
+IMAGE_STATES = {"READY": "ready", "PENDING": "pending"}
+
+
 def image(img):
+    status = img.get("status") or "unknown"
     return {"id": img["name"], "name": img["name"], "labels": img.get("labels") or {},
-            "created": unix_seconds(img["creationTimestamp"])}
+            "created": unix_seconds(img["creationTimestamp"]), "state": IMAGE_STATES.get(status, status.lower())}
 
 
 def disk_gb():
@@ -354,10 +358,10 @@ def op_image_create(gc, req):
 
 
 def op_images(gc, req):
-    """The devcloud images a create can use now: one still PENDING (an image
-    build in progress) refuses `create` with "is not ready"."""
+    """Every devcloud image, whatever its state: the listing is also the fence
+    for deleting one, so a failed image must stay in it."""
     return [image(i) for i in gc.run("compute", "images", "list", "--no-standard-images",
-                                     "--filter=labels.devcloud:*") if i.get("status", "READY") == "READY"]
+                                     "--filter=labels.devcloud:*")]
 
 
 def op_image_delete(gc, req):

@@ -265,8 +265,8 @@ class DownTest(OpsBase):
         self.remote.on("true", code=255, target="dc-k-0001")
         self.assertEqual(ops.down(self.ctx, "dc-k-0001", force=True), 0)
         self.assertIn("dc-k-0001: deleted without its departure (unreachable); it was enrolled at the desk by a "
-                      "provisioning key and its leave was not confirmed, so it stays in the desk's Machines until "
-                      "someone removes it", self.out.getvalue())
+                      "provisioning key and neither its departure nor the desk confirmed its leave, so it may still "
+                      "be in the desk's Machines: remove it by hand if so", self.out.getvalue())
         self.remote.on("devcloud depart", code=255, marker=True, target="dc-k-0002",
                        out="devcloud depart: leave: ok — left the desk\n" + READY + "\n")
         self.assertEqual(ops.down(self.ctx, "dc-k-0002", force=False), 0)

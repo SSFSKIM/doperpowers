@@ -101,9 +101,13 @@ def vm(server):
     }
 
 
+IMAGE_STATES = {"available": "ready", "creating": "pending"}
+
+
 def image(img):
+    status = img.get("status") or "unknown"
     return {"id": str(img["id"]), "name": img.get("description"), "labels": img.get("labels") or {},
-            "created": unix_seconds(img["created"])}
+            "created": unix_seconds(img["created"]), "state": IMAGE_STATES.get(status, status)}
 
 
 def describe_server(hc, sid):
@@ -236,9 +240,8 @@ def op_image_create(hc, req):
 
 
 def op_images(hc, req):
-    """The devcloud snapshots a create can use now, not one still being made."""
-    return [image(i) for i in hc.run("image", "list", "-t", "snapshot", "-l", "devcloud")
-            if i.get("status", "available") == "available"]
+    """Every devcloud snapshot, whatever its state (the delete fence lists them)."""
+    return [image(i) for i in hc.run("image", "list", "-t", "snapshot", "-l", "devcloud")]
 
 
 def op_image_delete(hc, req):

@@ -142,6 +142,8 @@ def _steps(ctx, client, account, labels, made, gone_window, running_window, poll
         found = [i for i in client.images() if i["id"] == image["id"]]
         if not found or found[0]["labels"] != labels:
             raise Failed("images", "the new image is not listed with its labels verbatim")
+        if not isinstance(found[0].get("state"), str) or not found[0]["state"]:
+            raise Failed("images", "the new image is listed without its state (ready, pending, or the provider's word)")
         client.image_delete(image["id"], labels)
         if not _wait(ctx, gone_window, poll, lambda: all(i["id"] != image["id"] for i in client.images())):
             raise Failed("images", "the deleted image is still listed")

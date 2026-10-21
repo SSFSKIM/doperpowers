@@ -102,12 +102,17 @@ def leftovers(vms, now):
     return [vm for vm in vms if vm["labels"].get("devcloud") in ("builder", "test") and now - vm["created"] > LEFTOVER]
 
 
-def surplus_images(images, now):
-    """Images beyond the newest two, and provider-test images past 2 h."""
-    kept = sorted((i for i in images if i["labels"].get("devcloud") == "image"),
-                  key=lambda i: (i["created"], i["id"]), reverse=True)
+def surplus_images(images, now, recipe=None):
+    """Failed images; ready images beyond the newest two, those of the current
+    `recipe` kept first; and provider-test images past 2 h. A pending image
+    is a build's, still being made; one without a state (a provider that
+    gives none) is not known to have failed."""
+    ours = [i for i in images if i["labels"].get("devcloud") == "image"]
+    failed = [i for i in ours if i.get("state") and i["state"] not in ("ready", "pending")]
+    kept = sorted((i for i in ours if i.get("state") == "ready"),
+                  key=lambda i: (i["labels"].get("devcloud-recipe") == recipe, i["created"], i["id"]), reverse=True)
     tests = [i for i in images if i["labels"].get("devcloud") == "test" and now - i["created"] > LEFTOVER]
-    return kept[KEEP_IMAGES:] + tests
+    return failed + kept[KEEP_IMAGES:] + tests
 
 
 # --- the run ---------------------------------------------------------------------------
@@ -130,21 +135,29 @@ def log(ctx, line, bounded=False):
 
 
 def desk_note(ctx, vm, left_desk):
-    """What a deletion leaves at the desk: an enrolled VM the desk did not
-    confirm leaving stays in its Machines, since the desk revokes nothing for
-    being offline (H4). A VM that departed on its own at its lease end is
-    deleted without contact, so the desk is asked: a list without the VM
-    (the driver's own enrollment reads it) is the confirmation; an empty one
-    says nothing either way."""
+    """What a deletion leaves at the desk. The desk revokes nothing for being
+    offline (H4), so an enrolled VM whose departure did not confirm its leave
+    is named for removal by hand, unless the desk shows it gone. A VM that
+    departed on its own at its lease end is deleted without contact, so the
+    desk is asked; its absence counts only from the org's directory, read
+    through this driver's enrollment, and only when that directory is newer
+    than the lease end: an older one, or a table of this machine alone, may
+    simply predate the VM."""
     how = vm["labels"].get("devcloud-enroll")
     if not how or left_desk:
         return ""
-    listed = ctx.desk()
-    if listed and vm["name"] not in listed:
-        return ""
     by = "a provisioning key" if how == "key" else "a one-time code"
-    return (f"; it was enrolled at the desk by {by} and its leave was not confirmed, so it stays in the "
-            "desk's Machines until someone removes it")
+    ended = _expires(vm)
+    since = ctx.clock() - ended if ended is not None and ended <= ctx.clock() else None
+    listing = ctx.desk_listing()
+    if listing is not None and listing.org:
+        if vm["name"] in listing.names:
+            return (f"; it was enrolled at the desk by {by}, its leave was not confirmed and the desk still "
+                    "lists it, so it stays in the desk's Machines until someone removes it")
+        if since is not None and listing.age < since:
+            return ""
+    return (f"; it was enrolled at the desk by {by} and neither its departure nor the desk confirmed its leave, "
+            "so it may still be in the desk's Machines: remove it by hand if so")
 
 
 def _delete(ctx, entry, reason, left_desk, decided=True, bounded=False):
@@ -230,7 +243,7 @@ def _run(ctx, bounded):
         try:
             if client.has("images"):
                 listed = client.images()
-                for image in surplus_images(listed, now):
+                for image in surplus_images(listed, now, compose.recipe_hash(ctx.plugin)):
                     _image_delete(ctx, client, account, image, bounded)
                 bakeable.append((account, client, listed, builders))
         except Spent:
@@ -282,7 +295,12 @@ def _image_delete(ctx, client, account, image, bounded):
     except NotOwned as refusal:
         ctx.warn(f"devcloud vm reap: {refusal}")
         return False
-    why = f"beyond the newest {KEEP_IMAGES}" if image["labels"]["devcloud"] == "image" else "a test image"
+    if image["labels"]["devcloud"] != "image":
+        why = "a test image"
+    elif image.get("state") not in ("ready", "pending"):
+        why = f"its state is {image['state']}"
+    else:
+        why = f"beyond the newest {KEEP_IMAGES}"
     log(ctx, f"deleted image {image['name']} ({account.name}, id {image['id']}): {why}", bounded)
     return True
 

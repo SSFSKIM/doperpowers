@@ -88,10 +88,26 @@ class DecisionTest(unittest.TestCase):
                    {"id": "3", "name": "t-old", "labels": {"devcloud": "test"}, "created": NOW - 3 * HOUR},
                    {"id": "4", "name": "vm", "labels": vm_labels(expires=NOW), "created": NOW - 9 * HOUR}]
         self.assertEqual([v["name"] for v in reaper.leftovers(servers, NOW)], ["b-old", "t-old"])
-        images = [{"id": f"i{i}", "name": f"img{i}", "labels": {"devcloud": "image"}, "created": NOW - i * HOUR}
-                  for i in range(4)]
-        images.append({"id": "t", "name": "test-img", "labels": {"devcloud": "test"}, "created": NOW - 9 * HOUR})
+        images = [{"id": f"i{i}", "name": f"img{i}", "labels": {"devcloud": "image"}, "created": NOW - i * HOUR,
+                   "state": "ready"} for i in range(4)]
+        images.append({"id": "t", "name": "test-img", "labels": {"devcloud": "test"}, "created": NOW - 9 * HOUR,
+                       "state": "ready"})
         self.assertEqual([i["id"] for i in reaper.surplus_images(images, NOW)], ["i2", "i3", "t"])
+
+    def test_retention_deletes_failed_images_leaves_pending_ones_and_keeps_current_ones_first(self):
+        def img(iid, hours, recipe, state="ready"):
+            return {"id": iid, "name": iid, "labels": {"devcloud": "image", "devcloud-recipe": recipe},
+                    "created": NOW - hours * HOUR, "state": state}
+        listed = [img("stale-new", 0, "bbbbbbbbbbbb"), img("cur-1", 1, "aaaaaaaaaaaa"),
+                  img("cur-2", 2, "aaaaaaaaaaaa"), img("building", 0, "aaaaaaaaaaaa", "pending"),
+                  img("broken", 3, "aaaaaaaaaaaa", "failed")]
+        surplus = [i["id"] for i in reaper.surplus_images(listed, NOW, recipe="aaaaaaaaaaaa")]
+        self.assertEqual(sorted(surplus), ["broken", "stale-new"],
+                         "a failed image goes; a pending one is a build's; the current recipe's are kept first")
+        unstated = img("unstated", 5, "aaaaaaaaaaaa")
+        del unstated["state"]
+        self.assertEqual([i["id"] for i in reaper.surplus_images([unstated], NOW, recipe="aaaaaaaaaaaa")], [],
+                         "an image whose provider gives no state is not known to have failed")
 
 
 class RunTest(DriverBase):
@@ -180,11 +196,11 @@ class RunTest(DriverBase):
         self.assertNotIn("dc-a-0001", self.servers())
         log = self.paths.reap_log.read_text()
         self.assertIn("unshipped", log)
-        self.assertIn(self.DESK_LINE, log, "a VM enrolled at the desk that did not leave it stays there")
+        self.assertIn("in the desk's Machines", log, "a VM enrolled at the desk that did not leave it stays there")
 
     # The desk revokes no machine for being offline (H4, the owner's ruling), so a VM that was
     # enrolled and is deleted without a confirmed `hub leave` stays in the desk's Machines.
-    DESK_LINE = "stays in the desk's Machines until someone removes it"
+    DESK_LINE = "in the desk's Machines"
 
     def test_a_key_enrolled_vm_deleted_without_departing_is_named_for_the_desk(self):
         self.add_server("dc-a-0001", vm_labels(expires=NOW - 20 * MIN, **{"devcloud-enroll": "key"}), state="off")
@@ -192,20 +208,7 @@ class RunTest(DriverBase):
         self.assertNotIn("dc-a-0001", self.servers())
         self.assertIn(self.DESK_LINE, self.paths.reap_log.read_text())
 
-    def test_a_vm_that_departed_on_its_own_and_left_the_desk_needs_no_desk_line(self):
-        # Live (M6): a VM departs at its lease end and powers off; the reaper deletes it without
-        # contact, and the desk, which the driver's own enrollment can read, no longer lists it.
-        self.desk_machines = ["macbook", "mini"]
-        self.add_server("dc-a-0001", vm_labels(expires=NOW - 20 * MIN, **{"devcloud-enroll": "key"}), state="off")
-        self.run_reaper()
-        self.assertNotIn("dc-a-0001", self.servers())
-        self.assertNotIn(self.DESK_LINE, self.paths.reap_log.read_text())
-
-    def test_a_vm_the_desk_still_lists_is_named_for_the_desk(self):
-        self.desk_machines = ["macbook", "dc-a-0001"]
-        self.add_server("dc-a-0001", vm_labels(expires=NOW - 20 * MIN, **{"devcloud-enroll": "key"}), state="off")
-        self.run_reaper()
-        self.assertIn(self.DESK_LINE, self.paths.reap_log.read_text())
+    # Whether the desk still lists a VM deleted unseen: test_driver_desk, on the CLI's own shapes.
 
     def test_a_departure_whose_leave_the_desk_confirmed_needs_no_desk_line(self):
         self.add_server("dc-a-0001", vm_labels(expires=NOW - 20 * MIN, **{"devcloud-enroll": "key"}))
@@ -247,7 +250,7 @@ class RunTest(DriverBase):
         self.add_server("dc-bake-0002", {"devcloud": "builder"}, created=NOW - HOUR)
         state = self.state()
         state["images"] = [{"id": f"i{i}", "name": f"img{i}", "labels": {"devcloud": "image"},
-                            "created": NOW - i * HOUR} for i in range(3)]
+                            "created": NOW - i * HOUR, "state": "ready"} for i in range(3)]
         state["behavior"]["list_unlabeled"] = True
         self.state_file.write_text(json.dumps(state))
         self.run_reaper()
@@ -306,7 +309,7 @@ class RunTest(DriverBase):
     def test_an_image_relabeled_after_the_list_is_not_deleted(self):
         state = self.state()
         state["images"] = [{"id": f"i{i}", "name": f"img{i}", "labels": {"devcloud": "image"},
-                            "created": NOW - i * HOUR} for i in range(3)]
+                            "created": NOW - i * HOUR, "state": "ready"} for i in range(3)]
         self.state_file.write_text(json.dumps(state))
         client = self.ctx.client(self.ctx.profile.account("main"))
         listed = client.images

@@ -33,8 +33,10 @@ CLEAN = ("cloud-init clean --logs --machine-id --seed && "
 
 
 def current(images, recipe):
-    """The newest image (`devcloud=image`) whose recipe hash is `recipe`, or None."""
-    ours = [i for i in images if i["labels"].get("devcloud") == "image" and i["labels"].get("devcloud-recipe") == recipe]
+    """The newest image (`devcloud=image`) whose recipe hash is `recipe` and
+    which a create can use now (`state` ready), or None."""
+    ours = [i for i in images if i["labels"].get("devcloud") == "image" and i["labels"].get("devcloud-recipe") == recipe
+            and i.get("state") == "ready"]
     return max(ours, key=lambda i: (i["created"], i["id"]), default=None)
 
 
@@ -215,7 +217,8 @@ def ls(ctx):
         for i in sorted(listed, key=lambda i: (i["created"], i["id"]), reverse=True):
             created = datetime.datetime.fromtimestamp(i["created"], datetime.timezone.utc).strftime("%Y-%m-%dT%H:%MZ")
             rows.append((account.name, i["name"] or "-", i["id"], i["labels"].get("devcloud-recipe", "-"), created,
-                         "current" if newest is not None and i["id"] == newest["id"] else ""))
+                         "current" if newest is not None and i["id"] == newest["id"] else
+                         ("" if i.get("state") == "ready" else i.get("state") or "no state")))
     widths = [max(len(r[c]) for r in rows) for c in range(len(rows[0]))]
     for r in rows:
         ctx.say("  ".join(cell.ljust(w) for cell, w in zip(r, widths)).rstrip())

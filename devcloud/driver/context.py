@@ -73,7 +73,7 @@ class Entry:
 
 class Context:
     def __init__(self, paths, env=None, secrets=None, remote=None, clock=time.time, sleep=time.sleep,
-                 out=sys.stdout, err=sys.stderr, machine=None, tailnet=None, desk=None, creator=None,
+                 out=sys.stdout, err=sys.stderr, machine=None, tailnet=None, sminos_machines=None, creator=None,
                  timeouts=None, plugin=PLUGIN_DIR, key_pushed=None, token_hex=None, monotonic=time.monotonic,
                  host_file=None):
         self.paths = paths
@@ -90,7 +90,8 @@ class Context:
         self._profile = None
         self._clients = {}
         self.tailnet = tailnet or tailnet_nodes
-        self.desk = desk or desk_machines
+        # `sminos machines`' stdout, or None when there is no answer; the argument is its timeout.
+        self.sminos_machines = sminos_machines or (lambda timeout: run_sminos_machines(self.env, timeout))
         self.creator = creator or (lambda: session_creator(self.env))
         self.key_pushed = key_pushed or (lambda: key_in_remote(self))
         self.token_hex = token_hex or (lambda: secrets_mod.token_hex(2))
@@ -209,6 +210,14 @@ class Context:
             keys |= {p.read_text().strip() for p in sorted(directory.glob("*.pub")) if p.read_text().strip()}
         return sorted(keys)
 
+    def desk_listing(self):
+        """The desk's machines as this driver's enrollment reads them, within
+        what a bounded run has left; None when nothing could be read."""
+        left = self.remaining()
+        if left is not None and left < DESK_MIN:
+            return None
+        return parse_machines(self.sminos_machines(DESK_TIMEOUT if left is None else min(DESK_TIMEOUT, left)))
+
     def taken_names(self, servers):
         """Names a new VM must not take: live servers of every account, adoption
         records, tailnet nodes, desk machines."""
@@ -216,7 +225,8 @@ class Context:
         if self.paths.adopted.is_dir():
             taken |= {p.stem for p in self.paths.adopted.glob("*.json")}
         taken |= {node["name"] for node in self.tailnet()}
-        taken |= set(self.desk())
+        listing = parse_machines(self.sminos_machines(DESK_TIMEOUT))
+        taken |= set(listing.names if listing else [])
         return taken
 
     def user(self):
@@ -270,19 +280,55 @@ def _sminos(env):
     return str(clone) if clone.exists() else None
 
 
-def desk_machines(env=None):
-    """The desk's machine names, when this machine is enrolled; [] otherwise."""
-    env = env or os.environ
+DESK_TIMEOUT = 30
+DESK_MIN = 2            # a bounded run with less left asks the desk nothing
+
+
+@dataclasses.dataclass(frozen=True)
+class Machines:
+    """`sminos machines` read: the names in its table; whether they are the
+    org's directory (an enrolled machine's, rather than its table of itself
+    alone); and that directory's age at most, in seconds."""
+    names: list
+    org: bool
+    age: int
+
+
+_AGE = re.compile(r"^\(the org's directory is (\d+)([smhd]) old")
+_UNIT = {"s": 1, "m": 60, "h": 3600, "d": 86400}
+
+
+def parse_machines(stdout):
+    """The shapes sminos prints (sminos.py, `cmd_machines`, `org_age_line`):
+    a line saying the machine is not enrolled or has no org directory yet,
+    then a table of itself; or the org's table, then, when the directory is
+    older than a minute, its age, rounded down to a unit. None when there is
+    no table."""
+    lines = (stdout or "").splitlines()
+    try:
+        header = next(i for i, line in enumerate(lines) if line.split()[:2] == ["MACHINE", "STATE"])
+    except StopIteration:
+        return None
+    names, age = [], 60
+    for line in lines[header + 1:]:
+        found = _AGE.match(line)
+        if found:
+            age = (int(found.group(1)) + 1) * _UNIT[found.group(2)]
+        elif line.strip() and not line.startswith("("):
+            names.append(line.split()[0])
+    return Machines(names=names, org=header == 0, age=age)
+
+
+def run_sminos_machines(env, timeout):
+    """`sminos machines`' stdout, or None: no CLI, a failure or the timeout."""
     cli = _sminos(env)
     if not cli:
-        return []
+        return None
     try:
-        done = subprocess.run([cli, "machines"], capture_output=True, text=True, timeout=30)
+        done = subprocess.run([cli, "machines"], capture_output=True, text=True, timeout=timeout)
     except (OSError, subprocess.TimeoutExpired):
-        return []
-    if done.returncode != 0:
-        return []
-    return [line.split()[0] for line in done.stdout.splitlines()[1:] if line.strip() and not line.startswith("(")]
+        return None
+    return done.stdout if done.returncode == 0 else None
 
 
 def session_creator(env):

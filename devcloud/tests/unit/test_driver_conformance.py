@@ -109,6 +109,10 @@ class FailTest(ConformanceBase):
     def test_not_reporting_running(self):
         self.assert_fails_at("running", state_word="starting")
 
+    def test_images_without_their_state(self):
+        # Whether a create can use an image now is the image's `state` (I13): up chooses on it.
+        self.assert_fails_at("images", image_state=None)
+
     def test_set_labels_that_do_not_round_trip(self):
         self.assert_fails_at("set-labels", drop_on_set="devcloud-held")
 
