@@ -138,6 +138,26 @@ step; one that fails (a submission dropped or refused, the human's prompt
 dropped beneath) puts them back ahead of any answered meanwhile, toasts why, and
 leaves the next route to try.
 
+The person is told of each ask as the model asks it: the tool's hook raises
+`$.ui.notify` with the first question (`(+N more)` when the ask carries
+more), a blocking ask's as its dialog is raised, an async ask's as it opens,
+and their `Notification` hooks read it as `plugin_notification` before their
+notification channel writes. No settings hook hears the model's call itself,
+which the tool answers. The dialog the mod raises (a blocking ask's, or the
+one a press opens) reaches the PreToolUse and PermissionRequest hooks with
+`metadata.source` `sminos-ask` (`DIALOG_SOURCE`), so a hook that announces a
+question's dialog can pass over one already announced, or opened by the
+person's own press; and while it stands, the engine's reminder that a dialog
+has waited (`permission_prompt`, in the generic words it gives an
+AskUserQuestion dialog, `DIALOG_REMINDER`) is kept from the `Notification`
+hooks beneath (`classic.Notification`), though the channel still writes. A
+tool's permission dialog shares those words, so one queued beside the ask's
+dialog loses its reminder to the hooks too (the ask has said the session
+waits, and the PermissionRequest hooks still hear that dialog); a reminder
+that names what waits (network access, a plan) passes. Live
+check `tests/mods/live-ask-notify-check.py` (`--from main` runs it against
+the code before).
+
 An async ask can also be answered from outside the terminal (`sminos answer`,
 later the web): the bridge hands the answers to `answerAsync`, which refuses
 one already answered or whose dialog is up, and otherwise delivers them by the

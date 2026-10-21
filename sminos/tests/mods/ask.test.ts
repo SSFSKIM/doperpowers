@@ -5,6 +5,8 @@ import type { AskNote, AskQuestion } from '../../hooks/mods/ask'
 import {
   ASK_TOOL,
   ASK_TOOLS,
+  DIALOG_REMINDER,
+  DIALOG_SOURCE,
   PLUGIN,
   answerAsync,
   observeAsks,
@@ -14,6 +16,7 @@ import {
   LATCHED,
   SUBAGENT_REFUSAL,
   WITHDRAWN,
+  announcement,
   answerRows,
   askRow,
   deliveredIds,
@@ -197,6 +200,8 @@ function harness(
     kept?: Map<string, unknown>
     /** The conversation the engine holds, as `$.session.messages()` answers it in each form; one that throws rejects. */
     history?: { rows: SessionMessage[]; api: { role: string; content: unknown }[] } | (() => never)
+    /** `$.ui.notify` rejects, as on a hook's deny or a failed write. */
+    notifyFails?: boolean
   } = {},
 ) {
   const hooks: { event: string; matcher: Matcher; handler: Handler; onFailure?: Handler }[] = []
@@ -276,6 +281,13 @@ function harness(
         }),
       log: (text: string) => calls.push({ op: 'ui.log', args: text }),
       toast: (text: string) => calls.push({ op: 'ui.toast', args: text }),
+      notify: async (text: string) => {
+        calls.push({ op: 'ui.notify', args: text })
+        if (options.notifyFails === true) {
+          throw new Error('refused')
+        }
+        return { isSent: true, channel: 'terminal_bell' }
+      },
       invalidate: (event: string) => calls.push({ op: 'ui.invalidate', args: event }),
     },
     turn: { abort: async (args: unknown) => void calls.push({ op: 'turn.abort', args }) },
@@ -433,7 +445,16 @@ function harness(
 
   const submitted = () => calls.filter((c) => c.op === 'prompt.submit').map((c) => c.args as string)
 
-  return { calls, raises, start, call, raise, settle, describe, registered, engine, dispatch, paste, classicStart, turnStart, step, fail, turnComplete, prompt, press, submitted, kept }
+  const notified = () => calls.filter((c) => c.op === 'ui.notify').map((c) => c.args as string)
+
+  /** The engine's Notification through the classic hooks; whether the hooks beneath (the settings') heard it. */
+  const notification = async (notification_type: string, message = 'Claude needs your permission') => {
+    let isHeard = false
+    await dispatch('classic.Notification', { hook_event_name: 'Notification', session_id: 's', transcript_path: '/t.jsonl', cwd: '/', message, notification_type }, MODEL, async () => ((isHeard = true), {}))
+    return isHeard
+  }
+
+  return { calls, raises, start, call, raise, settle, describe, registered, engine, dispatch, paste, classicStart, turnStart, step, fail, turnComplete, prompt, press, submitted, notified, notification, kept }
 }
 
 describe('registerAsk: the tool and the built-in', () => {
@@ -1028,6 +1049,92 @@ describe('an async ask', () => {
     await h.settle()
     expect(h.submitted()).toEqual([deliveryText(id, `${text}\n[Image source: /private${FOLDER}/1.png]`)])
     expect(h.calls.some((c) => c.op === 'fs.read')).toBe(false)
+  })
+})
+
+describe('the person told of an ask', () => {
+  const ready = async (options: Parameters<typeof harness>[0] = {}) => {
+    const h = harness(options)
+    await h.start()
+    return h
+  }
+
+  test('the notification is the first question, with how many more the ask carries', async () => {
+    expect(announcement([BACKEND])).toBe('Which backend?')
+    expect(announcement([BACKEND, FEATURES])).toBe('Which backend? (+1 more)')
+    expect(announcement([{ ...BACKEND, question: '  ' }, FEATURES])).toBeUndefined()
+  })
+
+  test('an async ask notifies as it opens, once', async () => {
+    const h = await ready()
+    await h.call(ASK_TOOL, { questions: [BACKEND, FEATURES], async: true })
+    expect(h.notified()).toEqual(['Which backend? (+1 more)'])
+  })
+
+  test('a blocking ask notifies as its dialog is raised, once', async () => {
+    const h = await ready()
+    const pending = h.call(ASK_TOOL, { questions: [BACKEND] })
+    await h.settle()
+    expect(h.notified()).toEqual(['Which backend?'])
+    await h.raise(0, answered(ANSWER))
+    await pending
+    expect(h.notified()).toEqual(['Which backend?'])
+  })
+
+  test("an ask that cannot be raised notifies nothing: invalid, a subagent's, or a blank first question the dialog refuses", async () => {
+    const h = await ready()
+    await h.call(ASK_TOOL, { questions: [question('Pick one?', 'One', ['Only'])], async: true })
+    await h.call(ASK_TOOL, { questions: [BACKEND], async: true }, MODEL, 'agent-1')
+    await h.call(ASK_TOOL, { questions: [{ ...BACKEND, question: ' ' }], async: true })
+    expect(h.notified()).toEqual([])
+  })
+
+  test('the dialog the ask raises is marked as its own, and a press to answer notifies nothing', async () => {
+    const h = await ready()
+    await h.call(ASK_TOOL, { questions: [BACKEND], async: true })
+    const pressed = h.press(`ask-answer:${asyncAsks()[0]?.id}`)
+    await h.settle()
+    const { shown } = await h.raise(0, answered(ANSWER))
+    await pressed
+    expect(shown[0]?.metadata).toEqual({ source: DIALOG_SOURCE })
+    expect(DIALOG_SOURCE).toBe('sminos-ask')
+    expect(h.notified()).toEqual(['Which backend?'])
+  })
+
+  test("the engine's reminder that a dialog waits is withheld from the hooks beneath while the ask's dialog stands, and only then", async () => {
+    const h = await ready()
+    expect(await h.notification('permission_prompt')).toBe(true)
+    const pending = h.call(ASK_TOOL, { questions: [BACKEND] })
+    await h.settle()
+    // Raised, not yet claimed by the engine's call: a reminder now is another dialog's.
+    expect(await h.notification('permission_prompt')).toBe(true)
+    const r = h.raises[0] as (typeof h.raises)[number]
+    let close: (answer: Answer) => void = () => {}
+    const dialog = h.dispatch(
+      'tool.call',
+      { tool: 'AskUserQuestion', tool_use_id: 'nested_0', questions: [{ question: r.question, header: r.options.header, multiSelect: false, options: [option('Postgres'), option('SQLite')] }] },
+      MOD,
+      () => new Promise<Answer>((resolve) => (close = resolve)),
+    )
+    await h.settle()
+    expect(await h.notification('permission_prompt')).toBe(false)
+    expect(DIALOG_REMINDER).toBe('Claude needs your permission')
+    // A reminder that names what waits is another dialog's, and passes.
+    expect(await h.notification('permission_prompt', 'A sandboxed command needs network access')).toBe(true)
+    expect(await h.notification('idle_prompt', 'Claude is waiting for your input')).toBe(true)
+    close(answered(ANSWER))
+    await dialog
+    r.resolve('label')
+    await pending
+    expect(await h.notification('permission_prompt')).toBe(true)
+  })
+
+  test('a notification that fails leaves the ask as it was, with a debug line', async () => {
+    const h = await ready({ notifyFails: true })
+    const { result } = await h.call(ASK_TOOL, { questions: [BACKEND], async: true })
+    await h.settle()
+    expect(result).toEqual({ result: ASYNC_RESULT })
+    expect(h.calls.filter((c) => c.op === 'ui.log').map((c) => c.args)).toContain("ask: the question's notification failed (refused)")
   })
 })
 

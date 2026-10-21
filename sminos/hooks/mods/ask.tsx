@@ -583,6 +583,45 @@ export async function openDialog($: EngineInterface, questions: AskQuestion[]): 
   }
 }
 
+/**
+ * What the dialog this mod raises carries as its `metadata.source`, so a
+ * settings hook that announces a question's dialog (PreToolUse,
+ * PermissionRequest) can pass over one the ask has already announced.
+ */
+export const DIALOG_SOURCE = 'sminos-ask'
+
+/** The engine's reminder for a dialog that has waited, as it words it for an AskUserQuestion dialog (recorded on 2.1.305). */
+export const DIALOG_REMINDER = 'Claude needs your permission'
+
+/**
+ * What an ask's notification says: its first question, and how many more it
+ * carries; undefined for a blank one, which the engine's dialog refuses to
+ * raise, so nothing waits to be answered.
+ */
+export function announcement(questions: readonly AskQuestion[]): string | undefined {
+  const first = (questions[0] as AskQuestion).question
+  if (first.trim() === '') {
+    return undefined
+  }
+  return questions.length > 1 ? `${first} (+${questions.length - 1} more)` : first
+}
+
+/**
+ * Tells the person the model asked, as it asks (a blocking ask as its dialog
+ * is raised, an async one as it opens): a native notification through their
+ * own channel (`$.ui.notify`), which their `Notification` hooks read as
+ * `plugin_notification`. The tool answers its call itself, so no settings
+ * hook hears the model's call. Not awaited: the hooks it runs (a settings
+ * hook calling out to a terminal app) would hold the call.
+ */
+function announce($: EngineInterface, questions: readonly AskQuestion[]) {
+  const text = announcement(questions)
+  if (text === undefined) {
+    return
+  }
+  $.ui.notify(text).catch((error: unknown) => $.ui.log(`ask: the question's notification failed (${message(error)})`, { to: 'debug' }))
+}
+
 // Asking without waiting. An async ask returns at once and stands open in
 // the human's view; a press opens the same dialog, and the answer is handed
 // to the model: as a prompt of its own while the session is idle, else held
@@ -1656,9 +1695,9 @@ export function registerAsk(on: On) {
     return { ...result, context: [...(result.context ?? []), ...items.map((item) => item.text)] }
   }).catch((_, e, next) => next(e))
 
-  // The mod's own raise is widened to its entry's whole set; every other call
-  // from the model, or a stray one from this plugin, is refused. Another
-  // plugin's $.ui.ask is its own business and passes.
+  // The mod's own raise is widened to its entry's whole set, marked as the
+  // ask's dialog; every other call from the model, or a stray one from this
+  // plugin, is refused. Another plugin's $.ui.ask is its own business and passes.
   on('tool.call', { tool: 'AskUserQuestion' }, async ($, e, next) => {
     if (!isServing || (next.origin.plugin !== PLUGIN && next.origin.plugin !== 'engine')) {
       return next(e)
@@ -1667,7 +1706,7 @@ export function registerAsk(on: On) {
     if (entry === undefined) {
       return { deny: WITHDRAWN }
     }
-    const result = await next({ ...e, questions: entry.questions } as typeof e)
+    const result = await next({ ...e, questions: entry.questions, metadata: { source: DIALOG_SOURCE } } as typeof e)
     entry.outcome = outcomeOf(result as Parameters<typeof outcomeOf>[0])
     entry.toolUseId = e.tool_use_id
     // What the engine returned for this dialog's call, which the bridge's
@@ -1680,6 +1719,18 @@ export function registerAsk(on: On) {
     !next.called && (next.error.kind as string) !== 're-entry' && isServing && next.origin.plugin === 'engine' ? { deny: WITHDRAWN } : next(e),
   )
 
+  // The engine's reminder that a dialog has waited is not passed on while a
+  // dialog this mod raised stands: a blocking ask was announced as it was
+  // asked, and an async ask's dialog is open because the human pressed to
+  // answer it. Only the generic reminder, the one the engine gives an
+  // AskUserQuestion dialog, which a tool's permission dialog shares (one queued
+  // beside the ask's is kept from the hooks too); the reminders that name what
+  // waits (network access for a sandboxed command, a plan) pass. The channel
+  // still writes; only the hooks beneath do not hear it.
+  on('classic.Notification', { notification_type: 'permission_prompt', message: DIALOG_REMINDER }, (_, e, next) =>
+    entries.some((entry) => entry.isClaimed && entry.outcome === undefined) ? {} : next(e),
+  )
+
   on('tool.call', { tool: 'mcp__sminos__AskUserQuestion' }, async ($, e) => {
     if (e.agentId !== undefined) {
       return { deny: SUBAGENT_REFUSAL }
@@ -1690,6 +1741,7 @@ export function registerAsk(on: On) {
       return { deny: invalid }
     }
     const { questions } = input as AskInput
+    announce($, questions)
     if ((input as AskInput).async === true) {
       const ask: OpenAsk = { id: e.tool_use_id ?? `ask-${++raised}`, questions, status: 'open' }
       asks.push(ask)
