@@ -74,6 +74,7 @@ describe('texts', () => {
     expect(describeCompact(967_000)).toContain('a backstop, not the plan')
     expect(describeCompact(967_000)).toContain('never as a percentage of the window')
     expect(describeCompact(967_000)).toContain('Not during a design discussion, at any size')
+    expect(describeCompact(967_000)).toContain('Prefer not to compact while a decision or work is pending')
   })
 
   test('the compact description tells the model when it is told its size, by the gate', async () => {
