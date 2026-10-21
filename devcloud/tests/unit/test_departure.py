@@ -240,6 +240,15 @@ class DepartTest(DepartureBase):
         self.assertIn(["systemctl", "disable", "--now", "devcloud-refresh-secrets.timer"], self.world.runs(),
                       "one timer's failure stopped the others")
 
+    def test_a_failed_logout_still_departs_the_vm(self):
+        """The VM is deleted next, and its node is ephemeral: the coordination
+        server removes it once it is offline (§4.1)."""
+        self.world.failing[("tailscale", "logout")] = "tailscale exited 1"
+        self.assertEqual(departure.depart(self.host(), no_poweroff=True), departure.DONE)
+        steps = {s["name"]: s["state"] for s in self.lifecycle()["steps"]}
+        self.assertEqual((steps["logout"], steps["stop-services"]), ("failed", "ok"))
+        self.assertEqual(self.lifecycle()["state"], "departed")
+
     def test_the_desk_not_answering_the_leave_goes_on(self):
         self.world.calls["leave"] = (1, "", "sminos: the desk did not answer")
         departure.depart(self.host(), no_poweroff=True)
@@ -629,6 +638,36 @@ class ReleaseTest(DepartureBase):
         record = self.lifecycle()
         self.assertEqual(record["state"], "departed")
         self.assertEqual([s["name"] for s in record["steps"] if s["state"] == "ok"][-1], "remove-credentials")
+
+    def test_a_failed_logout_keeps_the_release_resumable(self):
+        """An adopted machine keeps running and its node is not ephemeral: a
+        release that removed everything after a failed logout would leave it
+        on the tailnet with nothing of devcloud left to retry from."""
+        self.world.failing[("tailscale", "logout")] = "tailscale exited 1"
+        self.world.calls["--json"] = (0, json.dumps({"BackendState": "Running"}), "")
+        self.assertEqual(departure.release(self.host()), departure.FAILED)
+        record = self.lifecycle()
+        self.assertEqual(record["state"], "departing")
+        self.assertEqual((record["steps"][-1]["name"], record["steps"][-1]["state"]), ("logout", "failed"))
+        self.assertTrue((self.units / "devcloud-lease.timer").exists(), "units removed after a failed logout")
+        for path in self.written:
+            self.assertTrue(path.exists(), f"{path} removed after a failed logout")
+        # Run again once tailscale can log out: it resumes, the logout first.
+        del self.world.failing[("tailscale", "logout")]
+        self.world.events.clear()
+        self.assertEqual(departure.release(self.host()), departure.DONE)
+        self.assertIn(["tailscale", "logout"], self.world.runs())
+        for path in self.written:
+            self.assertFalse(path.exists())
+        self.assertEqual(self.lifecycle()["state"], "departed")
+
+    def test_a_failed_logout_that_tailscale_shows_logged_out_goes_on(self):
+        self.world.failing[("tailscale", "logout")] = "tailscale exited 1 (timed out)"
+        self.world.calls["--json"] = (0, json.dumps({"BackendState": "NeedsLogin"}), "")
+        self.assertEqual(departure.release(self.host()), departure.DONE)
+        logout = next(s for s in self.lifecycle()["steps"] if s["name"] == "logout")
+        self.assertEqual(logout["state"], "ok")
+        self.assertIn("NeedsLogin", logout["detail"])
 
     def test_a_held_release_removes_nothing(self):
         self.world.ships = [False]

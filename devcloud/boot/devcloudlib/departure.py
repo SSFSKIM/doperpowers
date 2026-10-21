@@ -17,7 +17,8 @@ the leave, the firewall table and its unit removed, the saved
 `authorized_keys` restored, the logout, devcloud's units stopped and removed,
 and every credential the ledger lists removed, the descriptor and then the
 ledger last. The machine keeps running. A failed firewall removal, key
-restore, unit removal or credential removal stops the release there (exit 1,
+restore, logout (unless `tailscale status` shows the node logged out), unit
+removal or credential removal stops the release there (exit 1,
 state `departing`) before anything that would cut the person off or leave
 them nothing to resume from; run again, it resumes after the last step that
 succeeded.
@@ -327,14 +328,33 @@ def leave(run, timeout=LEAVE_TIMEOUT):
     raise StepError(f"sminos hub leave exited {code}" + (f": {err}" if err else ""))
 
 
-def logout(run, d):
+def logout(run, d, confirm=False):
     """Step 4: the line the driver reads as success once the logout cuts its
-    connection, flushed, then `tailscale logout`."""
+    connection, flushed, then `tailscale logout`. With `confirm` (the
+    release's), a failed logout still counts when `tailscale status` shows the
+    node logged out (`NeedsLogin`): a command that timed out may have done its
+    work."""
     run.host.say(READY)
     if d.tailscale != "join":
         return "not a tailnet node of its own"
-    run.host.run(["tailscale", "logout"], log="lifecycle", timeout=run.bound(60))
+    try:
+        run.host.run(["tailscale", "logout"], log="lifecycle", timeout=run.bound(60))
+    except StepError as error:
+        if not confirm:
+            raise
+        state = _backend_state(run)
+        if state != "NeedsLogin":
+            raise StepError(f"{error}; tailscale status shows {state or 'nothing readable'}, not NeedsLogin") from None
+        return f"tailscale logout failed ({error}), but tailscale status shows the node logged out (NeedsLogin)"
     return "logged out of the tailnet"
+
+
+def _backend_state(run):
+    code, out, _ = run.host.call(["tailscale", "status", "--json"], log="lifecycle", timeout=run.bound(30))
+    try:
+        return json.loads(out).get("BackendState") if code == 0 else None
+    except (ValueError, AttributeError):
+        return None
 
 
 def stop_services(run):
@@ -565,12 +585,15 @@ def release(host, force=False, no_hold=False):
                 host.say(f"devcloud release: held ({held.reason}); the lease service tries again at its next run")
                 return HELD
         # (step, whether its failure stops the release): the firewall and the
-        # keys are the person's way in once the tailnet is gone; units left
-        # would rewrite the credentials; credentials left need the descriptor.
+        # keys are the person's way in once the tailnet is gone; the machine
+        # keeps running and its node is not ephemeral, so a logout that did
+        # not happen would leave it on the tailnet with nothing of devcloud
+        # left to retry from; units left would rewrite the credentials;
+        # credentials left need the descriptor.
         for name, fn, stops in (("leave", lambda: leave(run), False),
                                 ("firewall", lambda: remove_firewall(run), True),
                                 ("restore-keys", lambda: restore_keys(run), True),
-                                ("logout", lambda: logout(run, d), False),
+                                ("logout", lambda: logout(run, d, confirm=True), True),
                                 ("remove-units", lambda: remove_units(run), True),
                                 ("remove-credentials", lambda: remove_credentials(run), True)):
             if name in done:
