@@ -228,6 +228,23 @@ class LedgerTest(unittest.TestCase):
         self.assertEqual(outside.read_text(), "not devcloud's")
         self.assertFalse(self.path.exists())
 
+    def test_the_last_paths_go_after_every_other_and_stay_while_one_failed(self):
+        desc, other = self.tmp / "boot.env", self.user.home / ".pgpass"
+        other.parent.mkdir(parents=True)
+        for path in (desc, other):
+            path.write_text("made-up")
+            ledger.add(path, path=self.path)       # the descriptor listed first, as the boot lists it
+
+        def refuse(user, fn):
+            raise PermissionError("made-up refusal")
+        removed, failures = ledger.remove_all(self.user, refuse, path=self.path, last=[desc])
+        self.assertEqual((removed, len(failures)), ([], 1))
+        self.assertTrue(desc.exists(), "the descriptor went while another credential was left")
+        self.assertTrue(self.path.exists())
+        removed, failures = ledger.remove_all(self.user, lambda user, fn: fn(), path=self.path, last=[desc])
+        self.assertEqual((removed, failures), ([str(other), str(desc)], []))
+        self.assertFalse(desc.exists() or self.path.exists())
+
 
 class InboundTest(unittest.TestCase):
     def test_the_ruleset_is_one_table_devcloud_owns_and_reloads_idempotently(self):
