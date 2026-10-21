@@ -189,6 +189,8 @@ A manual end-to-end check, after installing the branch's sminos: in a member ses
 - Observation: sessions named by title promotion have no `custom-title` record. Evidence: of the 8 `auto`-named members on the MacBook, 7 have no `custom-title` record (5 to 2 674 `ai-title` records each); the eighth's one custom title is a later `/rename` (`sitting-fork`). This is why `name-due` compares engine names, not `session_title`.
 - Observation: the engine records a collided `/rename` of the owner's as `collision`. Evidence: engine 2.1.304 `QTn`: `n === "user"` skips the pre-check, and a yield from `Zrn(e, "rename")` returns `recordSource: "collision"`. This is why `collision` is not eligible.
 
+- Observation: `name-due` reconciles the project (`members(project)`) before it answers, so it is not instant. Evidence: M1 executor. The mod's bound on it (M2) must allow for that.
+
 ## Decision Log
 
 - Decision: verification. One independent spec review by `doperpowers:adversarial-reviewer` (the spec is technical-heavy: engine behavior, a cross-process hand-off, name resolution), and in the same round its buildability review of the execution section (three milestones). The branch review is `doperpowers:review-code` at medium (`reviewer-medium`). The live check runs by hand before merge.
@@ -203,6 +205,15 @@ A manual end-to-end check, after installing the branch's sminos: in a member ses
 - Decision: a name is sminos's when it is any of the session's proposed names, not only the latest.
   Rationale: design review round 2, 2026-10-20. A resumed session holding applied name A (engine label `user`) with a newer proposal B pending, or refused as taken, would otherwise read as owner-named, and derive would stop for good. Rejected: recording the applied name in a separate event. The set of proposals already identifies it, needs no new event kind, and an owner choosing one of sminos's names is harmless.
   Date/Author: 2026-10-20, doperpowers-c4.
+- Decision: a `charge` label already in the log yields to the running engine record's `nameSource` when that record no longer holds the name. 
+  Rationale: M1 execution. Once `publish_renames` has logged `charge`, `held_alias` returns the logged label for an owner rename it hides (shadowing), so without this the §2 proviso would not hold. Tested: such a member lists as `user` and derive refuses it.
+  Date/Author: 2026-10-20, M1 executor.
+- Decision: the taken list (§1) also carries the aliases of the project's non-retired seats with no member row, which `shadowing` refuses too; it leaves out the member's own lineage and derive's internal forks; names are compared lowercased and only names of the charge-name form are listed in the prompt.
+  Rationale: M1 execution; the list exists to keep the fork from proposing what the engine or sminos would refuse.
+  Date/Author: 2026-10-20, M1 executor.
+- Decision: "renamed during derive" (§3) also compares the record's pid, so a session restarted in another process during the fork counts as moved. Trimming strips quotes, then one trailing period, then quotes again. Refusal reasons print as `<alias>: no name: <reason>`, and only for eligible members. `name-due` finds the project from the engine record (`record_project`), so the pending file keeps the spec's fields; an unexpected error is a stderr warning with exit 0, and a session id that is not a UUID is a usage error. The per-member body of derive is `derive_member()`, so a stopped member (which the CLI's reconciliation retires before derive reaches it) is testable directly.
+  Rationale: M1 execution, in the spirit of §1 and §3.
+  Date/Author: 2026-10-20, M1 executor.
 
 ## Outcomes & Retrospective
 
