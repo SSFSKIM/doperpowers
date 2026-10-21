@@ -129,12 +129,18 @@ def log(ctx, line, bounded=False):
     tell(ctx, bounded, line)
 
 
-def desk_note(vm, left_desk):
+def desk_note(ctx, vm, left_desk):
     """What a deletion leaves at the desk: an enrolled VM the desk did not
     confirm leaving stays in its Machines, since the desk revokes nothing for
-    being offline (H4)."""
+    being offline (H4). A VM that departed on its own at its lease end is
+    deleted without contact, so the desk is asked: a list without the VM
+    (the driver's own enrollment reads it) is the confirmation; an empty one
+    says nothing either way."""
     how = vm["labels"].get("devcloud-enroll")
     if not how or left_desk:
+        return ""
+    listed = ctx.desk()
+    if listed and vm["name"] not in listed:
         return ""
     by = "a provisioning key" if how == "key" else "a one-time code"
     return (f"; it was enrolled at the desk by {by} and its leave was not confirmed, so it stays in the "
@@ -146,7 +152,7 @@ def _delete(ctx, entry, reason, left_desk, decided=True, bounded=False):
     if not ctx.delete(entry, decided_expires=vm["labels"].get("devcloud-expires") if decided else None,
                       decided_state=vm["state"] if decided else None):
         return False
-    log(ctx, f"deleted {vm['name']} ({entry.account.name}, id {vm['id']}): {reason}" + desk_note(vm, left_desk),
+    log(ctx, f"deleted {vm['name']} ({entry.account.name}, id {vm['id']}): {reason}" + desk_note(ctx, vm, left_desk),
         bounded)
     return True
 

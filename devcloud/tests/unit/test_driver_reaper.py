@@ -192,6 +192,21 @@ class RunTest(DriverBase):
         self.assertNotIn("dc-a-0001", self.servers())
         self.assertIn(self.DESK_LINE, self.paths.reap_log.read_text())
 
+    def test_a_vm_that_departed_on_its_own_and_left_the_desk_needs_no_desk_line(self):
+        # Live (M6): a VM departs at its lease end and powers off; the reaper deletes it without
+        # contact, and the desk, which the driver's own enrollment can read, no longer lists it.
+        self.desk_machines = ["macbook", "mini"]
+        self.add_server("dc-a-0001", vm_labels(expires=NOW - 20 * MIN, **{"devcloud-enroll": "key"}), state="off")
+        self.run_reaper()
+        self.assertNotIn("dc-a-0001", self.servers())
+        self.assertNotIn(self.DESK_LINE, self.paths.reap_log.read_text())
+
+    def test_a_vm_the_desk_still_lists_is_named_for_the_desk(self):
+        self.desk_machines = ["macbook", "dc-a-0001"]
+        self.add_server("dc-a-0001", vm_labels(expires=NOW - 20 * MIN, **{"devcloud-enroll": "key"}), state="off")
+        self.run_reaper()
+        self.assertIn(self.DESK_LINE, self.paths.reap_log.read_text())
+
     def test_a_departure_whose_leave_the_desk_confirmed_needs_no_desk_line(self):
         self.add_server("dc-a-0001", vm_labels(expires=NOW - 20 * MIN, **{"devcloud-enroll": "key"}))
         self.remote.on("devcloud depart", code=255, marker=True,

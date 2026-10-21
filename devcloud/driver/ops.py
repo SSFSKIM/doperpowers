@@ -184,5 +184,5 @@ def down(ctx, name, force):
 def _delete(ctx, entry, what, left_desk=False):
     if not ctx.delete(entry):
         raise DriverError(FAILED, f"{entry.vm['name']} was not deleted: its labels changed since it was read")
-    ctx.say(f"{entry.vm['name']}: {what}{reaper.desk_note(entry.vm, left_desk)}")
+    ctx.say(f"{entry.vm['name']}: {what}{reaper.desk_note(ctx, entry.vm, left_desk)}")
     return 0
