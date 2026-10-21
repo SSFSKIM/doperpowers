@@ -9,8 +9,8 @@ with one machine already enrolled and active: `testhost`, whose service token
 is <client-id> / <client-secret>.
 
 - `GET /machine/stream`: admitted only with an enrolled machine's service
-  token (`CF-Access-Client-Id` / `CF-Access-Client-Secret`; else 403
-  `{"error": "not-enrolled"}`); an SSE stream whose first frame is `welcome`,
+  token (`CF-Access-Client-Id` / `CF-Access-Client-Secret`; else refused as
+  Access refuses it, below); an SSE stream whose first frame is `welcome`,
   then `hb` every heartbeat, and whatever the hub writes. Each machine has its
   own stream; a machine's new stream ends its previous one, and its
   generation counts them.
@@ -31,10 +31,11 @@ is <client-id> / <client-secret>.
   a stream, is renewed by each `hb-ack` of that stream's generation, and
   lapses three heartbeats after the last renewal while its stream is open:
   `leases` says whether each machine's current one is online, `lapses`
-  records each lapse. Events or a
-  rejection for a project not opened on this stream are `refused`
-  (`not-open`). The answer, `200 {"ok": true, "frames": n}`, comes once every
-  reply is written down the stream.
+  records each lapse. Any frame but `hello` and `session` for a project not
+  opened on this stream is `refused` (`not-open`). The answer, `200 {"ok": true,
+  "frames": n, "refused": [{index, reason}]}`, comes once every reply is
+  written down the stream, `refused` naming each frame refused whole by its
+  place in the POST, a part set by its last part (MAWS #88).
 - The org's directory (the org directory's M2): the Registry's projects —
   each machine's own project (`kind` `machine`, its id a UUID v5 of the org
   and its lower-cased name, registered for `testhost` at start and for a
@@ -55,7 +56,25 @@ is <client-id> / <client-secret>.
   admitting); under another name it is `token-used`. A name another machine
   holds, compared without case, is `name-taken` and binds nothing. A token
   past its `ttl_s` is `expired`, releasing a pending name. Every error is
-  `{"error", "message"}` with DX7's status.
+  `{"error", "message"}` with DX7's status. A provisioning key's secret is
+  redeemed at the same path, in the hub's order of checks: `key-revoked`
+  (410), `key-expired` (410), `prefix-mismatch` (403, the name not under
+  the key's prefix without case), `busy` (the fault), then a name held by a
+  pending machine of this key rotates its credential (no use counted), a
+  name held otherwise is `name-taken`, and a new enrollment past the key's
+  `max_uses` is `key-exhausted` (410); else a pending enrollment of 900 s
+  is made through the key and a use counted.
+- `GET /machine/enrollment`, admitted as the stream is: the machine's own
+  record, `{org, machine, state, confirmed}`. `DELETE /machine/enrollment`:
+  its own revocation, `{revoked: <name>}` — the machine row gone, its stream
+  ended, its project retired, and its service token deleted.
+- Access, in front of every `/machine/` path but the redemption: a service
+  token it does not hold (never minted, rotated away, or deleted by a
+  revocation) is answered as production Access answers it, 401 with an HTML
+  page naming `Cloudflare Access`; a token it holds whose machine the hub no
+  longer has (`/control/revoke` with `orphan`: the window before the token's
+  deletion is confirmed) reaches the hub and gets the Worker's 403
+  `{"error": "not-enrolled"}`.
 
 Any other request is admitted as Access would admit nothing: 404.
 
@@ -104,10 +123,33 @@ The test's own hands (the stand-in plays a hub that may lie):
   mint leaves it), `other-org` (applied, answered for another org),
   `truncate` (applied, then a 200 announcing its whole length that sends
   half of it and closes).
+- `POST /control/provisioning-key` `{"prefix", "max_uses"?, "revoked"?,
+  "expired"?}`: a provisioning key, as an admin's `POST
+  /api/provisioning-keys` makes it (`201 {"token", "org", "id"}`); with
+  `"id"`, that key's `revoked` and `expired` set as given (`200 {"id"}`).
+- `POST /control/revoke` `{"machine", "orphan"?}`: an admin's revocation of
+  the machine (as `DELETE /machine/enrollment` does it); with `orphan`, its
+  service token stays at Access, so its requests get the Worker's 403.
+- `POST /control/edge` `{"machine", "requests"}`: Access answers the
+  machine's current token its 401 for that many requests, then admits it —
+  a token minted and not yet at Access's edge.
+- `POST /control/answer` `{"answers": [{"status", "body", "type"?} | {"access":
+  true}]}`: the next requests to `/machine/enrollment` are answered these,
+  one each, in order, before anything else looks at them (`access`: Access's
+  401 page; `hold`: a `DELETE` applied as usual, its answer held until
+  `POST /control/release`; `raw`: these bytes, as latin-1 text, written as
+  they are — head and body — then the connection closed).
+- `POST /control/outage` `{"until"}`: the stand-in stops listening (a
+  connection is refused) until the file `until` exists, then listens again
+  on the same port with the same state. Answered once the listener is
+  closed.
 - `GET /control/state`: `{"generation" (of the stream opened last),
   "generations", "connected", "posted", "machines", "enrollments",
   "redemptions", "faults", "post_faults", "projects", "hb_acks", "sessions",
-  "leases", "lapses", "registry", "online", "orgs"}` — `registry` the
+  "leases", "lapses", "registry", "online", "orgs", "keys", "requests"}` —
+  `keys` the provisioning keys without their secrets, `requests` every
+  `/machine/` request but a frame POST, `{method, path, at}` as each
+  arrived, the redemptions among them — `registry` the
   directory's projects, `online` each machine's `{online, seen}`, `orgs` how
   many `org` frames each machine's streams were sent
   — `machines` without their secrets, `redemptions` every body
@@ -157,11 +199,23 @@ state = {"generations": {}, "last": None, "streams": {}, "posted": [], "faults":
          "redemptions": [], "projects": {}, "hb_acks": [], "sessions": [], "leases": {}, "lapses": [], "conns": 0,
          # name_key → {name, client_id, client_secret, state, enrollment}
          "machines": {"testhost": {"name": "testhost", "client_id": CLIENT_ID, "client_secret": CLIENT_SECRET,
-                                   "state": "active", "enrollment": ""}},
-         # token → {id, state, machine, ttl_s, expires}
+                                   "state": "active", "enrollment": "", "confirmed": None}},
+         # token → {id, state, machine, ttl_s, expires, key?}; an enrollment made through a provisioning key
+         # is held under `key:<id>`, which no token equals
          "enrollments": {},
          # the org's directory: project id → {name, kind, machine?, retired}; machine name → {online, seen}
-         "registry": {}, "online": {}, "orgs": {}}
+         "registry": {}, "online": {}, "orgs": {},
+         # provisioning keys: id → {id, token, prefix, max_uses, uses, revoked, expired}
+         "keys": {},
+         # Access: tokens it still holds whose machine the hub no longer has ({client_id, client_secret}),
+         # and client id → how many more requests it answers 401 (a token not yet at its edge)
+         "orphans": [], "edge": {},
+         "answers": [], "requests": []}
+server = None   # the listener, replaced by an outage's end (the lock held)
+PORT = 0
+ACCESS_PAGE = (b"<!DOCTYPE html><html><head><title>Access denied | Cloudflare Access</title></head>"
+               b"<body><h1>Forbidden</h1><p>You don't have permission to view this application. Cloudflare Access"
+               b"</p></body></html>")
 
 
 def machine_project_id(machine):
@@ -297,6 +351,57 @@ def expire_lapsed(now):
             e["state"] = "expired"
 
 
+def revoke_machine(name, orphan=False):
+    """The hub's revocation of the machine holding `name` (the lock held):
+    its row gone, its stream ended, its project retired; its service token
+    deleted at Access unless `orphan` (the deletion not yet confirmed).
+    Its name, or None when no machine holds it."""
+    m = state["machines"].pop(name.lower(), None)
+    if m is None:
+        return None
+    if orphan and m["client_id"]:
+        state["orphans"].append({"client_id": m["client_id"], "client_secret": m["client_secret"]})
+    s = state["streams"].get(m["name"])
+    if s is not None:
+        s.end()
+    state["leases"].pop(m["name"], None)
+    state["online"].pop(m["name"], None)
+    held = state["registry"].get(machine_project_id(m["name"]))
+    if held is not None:
+        held["retired"] = True
+    directory_changed()
+    return m["name"]
+
+
+def key_redemption(key, machine, fault):
+    """A provisioning key's secret redeemed under `machine`, in the hub's
+    order of checks (the lock held): the enrollment the credential is minted
+    for, or (status, error, message)."""
+    if key["revoked"]:
+        return 410, "key-revoked", "this provisioning key was revoked"
+    if key["expired"]:
+        return 410, "key-expired", "this provisioning key has expired"
+    if not machine.lower().startswith(key["prefix"].lower()):
+        return 403, "prefix-mismatch", 'this key enrolls only machines named "%s…"' % key["prefix"]
+    if fault == "busy":
+        return 409, "busy", "a redemption of this name is in flight; try again"
+    held = state["machines"].get(machine.lower())
+    if held is not None:
+        e = next((e for e in state["enrollments"].values() if e["id"] == held["enrollment"]), None)
+        if held["state"] == "pending" and held["name"] == machine and e is not None and e.get("key") == key["id"]:
+            return e   # the lost-answer retry: the credential rotates, no use is counted
+        return 409, "name-taken", 'a machine named "%s" is enrolled in this org; pick another name' % held["name"]
+    if key["max_uses"] is not None and key["uses"] >= key["max_uses"]:
+        return 410, "key-exhausted", "this provisioning key has enrolled all the machines it may"
+    eid = secrets.token_hex(8)
+    e = state["enrollments"]["key:" + eid] = {"id": eid, "state": "pending", "machine": machine, "ttl_s": 900,
+                                              "expires": time.time() + 900, "key": key["id"]}
+    key["uses"] += 1
+    state["machines"][machine.lower()] = {"name": machine, "client_id": None, "client_secret": None,
+                                          "state": "pending", "enrollment": eid, "confirmed": None}
+    return e
+
+
 # ------------------------------------------------------------- the log plane (the lock held)
 
 
@@ -345,7 +450,7 @@ def shape_error(e):
 
 def apply(machine, s, frame, replies):
     """One frame up, as DC3's Project applies it; replies to this machine go
-    to `replies`, in order."""
+    to `replies`, in order. The reason, when the frame was refused whole."""
     t = frame.get("t")
     if t == "hb-ack":
         state["hb_acks"].append({"machine": machine, "generation": frame.get("generation"), "at": frame.get("at"),
@@ -359,18 +464,19 @@ def apply(machine, s, frame, replies):
         now = time.time()
         state["sessions"].append({"machine": machine, "generation": s.generation, "message": frame.get("message"),
                                   "received": now, "at": now})
-        return
+        return None
     pid = frame.get("project")
     if not (isinstance(pid, str) and PROJECT_ID.fullmatch(pid)):
         replies.append({"t": "refused", "project": str(pid),
                         "refusal": {"reason": "bad-shape", "message": "the frame names no .smns project id"}})
-        return
+        return "bad-shape"
     p = project(pid)
     p.setdefault("follow", {})
 
     def refuse(refusal):
         replies.append({"t": "refused", "project": pid, "refusal": refusal})
         p["audit"].append({"kind": "refused", "machine": machine, **refusal})
+        return refusal["reason"]
 
     if t == "hello":
         have = frame.get("have")
@@ -391,15 +497,15 @@ def apply(machine, s, frame, replies):
             suffix = [e for e in evs if e["seq"] > have.get(w, 0)]
             for i in range(0, len(suffix), BATCH):
                 replies.append({"t": "events", "project": pid, "events": suffix[i:i + BATCH]})
-        return
+        return None
     if p["open"].get(machine) != s.generation:
         return refuse({"reason": "not-open", "message": "send hello for this project on this stream first"})
     if t == "rejected":
         p["audit"].append({"kind": "rejected", "machine": machine,
                            **{k: v for k, v in frame.items() if k in ("event", "nonce", "reason", "message")}})
-        return
+        return None
     if t != "events":
-        return
+        return None
     events = frame.get("events")
     if not isinstance(events, list):
         return refuse({"reason": "bad-shape", "message": "events is a list"})
@@ -444,6 +550,7 @@ def apply(machine, s, frame, replies):
             replies.append({"t": "resend", "project": pid, "writer": w, "from": last + 1})
     if accepted:
         fan_out(pid, p, accepted, sender=machine)
+    return None   # an event refused here leaves the frame applied: its refusal goes down the stream alone
 
 
 def join_part(s, frame):
@@ -476,15 +583,21 @@ class Handler(BaseHTTPRequestHandler):
 
     def parse_request(self):
         self.consumed = False   # whether this request's body was read
-        return super().parse_request()
+        self.hold = None        # a /control/answer hold: the answer waits for /control/release
+        ok = super().parse_request()
+        if ok and self.path.startswith("/machine/") and self.path != "/machine/frames":
+            with lock:
+                state["requests"].append({"method": self.command, "path": self.path, "at": time.time()})
+        return ok
 
-    def reply(self, status, body, close=False):
-        """A JSON answer; the connection closes after it when asked, or when
-        the request's body was not read (the next request would start in it)."""
+    def reply(self, status, body, close=False, content_type="application/json"):
+        """An answer, JSON unless it is bytes of `content_type`; the
+        connection closes after it when asked, or when the request's body was
+        not read (the next request would start in it)."""
         close = close or (not self.consumed and int(self.headers.get("Content-Length") or 0) > 0)
-        data = json.dumps(body).encode()
+        data = body if isinstance(body, bytes) else json.dumps(body).encode()
         self.send_response(status)
-        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(data)))
         if close:
             self.send_header("Connection", "close")
@@ -495,33 +608,90 @@ class Handler(BaseHTTPRequestHandler):
     def error(self, status, code, message):
         self.reply(status, {"error": code, "message": message})
 
+    def access_denied(self):
+        """Production Access's answer to a service token it does not hold."""
+        self.reply(401, ACCESS_PAGE, content_type="text/html")
+
     def body(self):
         self.consumed = True
         return self.rfile.read(int(self.headers.get("Content-Length") or 0))
 
     def admitted(self):
         """The enrolled machine whose service token this request carries, or
-        None (refused). A pending machine's first admitted request confirms it."""
+        None (refused: by Access, 401, for a token it does not hold or has not
+        yet at its edge; by the hub, 403 not-enrolled, for one it holds whose
+        machine is gone). A pending machine's first admitted request confirms
+        it."""
         cid, secret = self.headers.get("CF-Access-Client-Id"), self.headers.get("CF-Access-Client-Secret")
         with lock:
             for m in state["machines"].values():
                 if cid and m["client_id"] == cid and m["client_secret"] == secret:
+                    if state["edge"].get(cid):
+                        state["edge"][cid] -= 1
+                        break
                     if m["state"] == "pending":
                         m["state"] = "active"
+                        m["confirmed"] = iso(time.time())
                         for e in state["enrollments"].values():
                             if e["id"] == m["enrollment"]:
                                 e["state"] = "confirmed"
                         register(machine_project_id(m["name"]), m["name"])
                         directory_changed()
-                    return m["name"]
-        self.reply(403, {"error": "not-enrolled"})
+                    return m
+            else:
+                if cid and {"client_id": cid, "client_secret": secret} in state["orphans"]:
+                    self.reply(403, {"error": "not-enrolled"})
+                    return None
+        self.access_denied()
         return None
+
+    def canned(self):
+        """Whether an answer /control/answer queued was sent for this request."""
+        with lock:
+            if not state["answers"]:
+                return False
+            a = state["answers"].pop(0)
+            if a.get("hold"):
+                self.hold = state["release"]   # applied as usual, its answer held
+                return False
+        if a.get("access"):
+            self.access_denied()
+        elif "raw" in a:
+            self.wfile.write(a["raw"].encode("latin-1"))
+            self.wfile.flush()
+            self.close_connection = True
+        else:
+            body = a.get("body", "")
+            self.reply(a["status"], body.encode() if isinstance(body, str) else body,
+                       content_type=a.get("type", "application/json"))
+        return True
+
+    def do_DELETE(self):
+        if self.path == "/machine/enrollment":
+            if self.canned():
+                return
+            m = self.admitted()
+            if m:
+                with lock:
+                    revoke_machine(m["name"])
+                if self.hold is not None:
+                    self.hold.wait(60)
+                self.reply(200, {"revoked": m["name"]})
+        else:
+            self.reply(404, {"error": "not-found"})
 
     def do_GET(self):
         if self.path == "/machine/stream":
-            machine = self.admitted()
-            if machine:
-                self.stream(machine)
+            m = self.admitted()
+            if m:
+                self.stream(m["name"])
+        elif self.path == "/machine/enrollment":
+            if self.canned():
+                return
+            m = self.admitted()
+            if m:
+                self.reply(200, {"org": ORG, "machine": m["name"], "state": m["state"],
+                                 "confirmed": m.get("confirmed")})
         elif self.path == "/control/state":
             with lock:
                 last = state["last"]
@@ -540,7 +710,9 @@ class Handler(BaseHTTPRequestHandler):
                     "registry": state["registry"], "online": state["online"], "orgs": state["orgs"],
                     "machines": [{k: v for k, v in m.items() if k != "client_secret"}
                                  for m in state["machines"].values()],
-                    "enrollments": [{k: v for k, v in e.items()} for e in state["enrollments"].values()]})
+                    "enrollments": [{k: v for k, v in e.items()} for e in state["enrollments"].values()],
+                    "keys": [{k: v for k, v in key.items() if k != "token"} for key in state["keys"].values()],
+                    "requests": state["requests"]})
         elif self.path.startswith("/control/since?"):
             q = urllib.parse.parse_qs(self.path.split("?", 1)[1])
             with lock:
@@ -550,9 +722,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         if self.path == "/machine/frames":
-            machine = self.admitted()
-            if machine:
-                self.frames(machine)
+            m = self.admitted()
+            if m:
+                self.frames(m["name"])
         elif self.path == "/machine/enroll":
             self.redeem()
         elif self.path == "/control/send":
@@ -626,6 +798,41 @@ class Handler(BaseHTTPRequestHandler):
             with lock:
                 state["faults"] = list(json.loads(self.body()).get("redeem", []))
             self.reply(200, {"faults": state["faults"]})
+        elif self.path == "/control/provisioning-key":
+            req = json.loads(self.body())
+            with lock:
+                if "id" in req:
+                    key = state["keys"][req["id"]]
+                    key.update({k: bool(req[k]) for k in ("revoked", "expired") if k in req})
+                    return self.reply(200, {"id": key["id"]})
+                key = {"id": secrets.token_hex(16), "token": secrets.token_urlsafe(32), "prefix": req["prefix"],
+                       "max_uses": req.get("max_uses"), "uses": 0, "revoked": bool(req.get("revoked")),
+                       "expired": bool(req.get("expired"))}
+                state["keys"][key["id"]] = key
+            self.reply(201, {"token": key["token"], "org": ORG, "id": key["id"]})
+        elif self.path == "/control/revoke":
+            req = json.loads(self.body())
+            with lock:
+                revoked = revoke_machine(req["machine"], orphan=bool(req.get("orphan")))
+            self.reply(200, {"revoked": revoked})
+        elif self.path == "/control/edge":
+            req = json.loads(self.body())
+            with lock:
+                cid = state["machines"][req["machine"].lower()]["client_id"]
+                state["edge"][cid] = int(req["requests"])
+            self.reply(200, {})
+        elif self.path == "/control/answer":
+            with lock:
+                state["answers"] = list(json.loads(self.body()).get("answers", []))
+            self.reply(200, {})
+        elif self.path == "/control/outage":
+            until = json.loads(self.body())["until"]
+            with lock:
+                down = server
+            down.shutdown()
+            down.server_close()
+            self.reply(200, {}, close=True)
+            threading.Thread(target=reopen, args=(until,), daemon=True).start()
         else:
             self.reply(404, {"error": "not-found"})
 
@@ -686,8 +893,8 @@ class Handler(BaseHTTPRequestHandler):
                     state["posted"].append({**record, "status": 400})
                     return self.reply(400, {"error": "bad-shape", "line": i})
                 frames.append(frame)
-            replies = []
-            for frame in frames:
+            replies, refused = [], []
+            for index, frame in enumerate(frames):
                 if frame["t"] == "part":
                     try:
                         frame = join_part(s, frame)
@@ -696,14 +903,16 @@ class Handler(BaseHTTPRequestHandler):
                         return self.reply(400, {"error": "bad-shape", "message": "a malformed part"})
                     if frame is None:
                         continue
-                apply(machine, s, frame, replies)
+                reason = apply(machine, s, frame, replies)
+                if reason is not None:
+                    refused.append({"index": index, "reason": reason})
             status = 502 if fault == "apply-502" else 200
             state["posted"].append({**record, "status": status})
             s.put(replies, done)
         done.wait(WAIT)
         if status != 200:
             return self.reply(status, {"error": "bad-gateway"})
-        return self.reply(200, {"ok": True, "frames": len(frames)})
+        return self.reply(200, {"ok": True, "frames": len(frames), "refused": refused})
 
     def redeem(self):
         """DX7's redemption, in the hub's order of checks (registry.ts)."""
@@ -719,27 +928,32 @@ class Handler(BaseHTTPRequestHandler):
             if not is_machine_name(machine):
                 return self.error(400, "bad-name", '"%s" is not an admitted machine name' % machine)
             expire_lapsed(time.time())
-            e = state["enrollments"].get(token)
-            if e is None:
+            e = None if token.startswith("key:") else state["enrollments"].get(token)   # the hub hashes a token
+            key = None if e is not None else next((k for k in state["keys"].values() if k["token"] == token), None)
+            if e is None and key is None:
                 return self.error(404, "unknown-token", "no such token")
             fault = state["faults"].pop(0) if state["faults"] else None
-            if fault == "busy":
+            if key is not None:
+                e = key_redemption(key, machine, fault)
+                if isinstance(e, tuple):
+                    return self.error(*e)
+            elif fault == "busy":
                 return self.error(409, "busy", "a redemption of this token is in flight; try again")
-            if e["state"] == "expired":
+            elif e["state"] == "expired":
                 return self.error(410, "expired", "this token has expired; ask for a new one")
-            if e["state"] == "confirmed":
+            elif e["state"] == "confirmed":
                 return self.error(409, "confirmed", "this token enrolled its machine, which has connected; "
                                                     "ask for a new one")
-            if e["state"] == "pending" and e["machine"] != machine:
+            elif e["state"] == "pending" and e["machine"] != machine:
                 return self.error(409, "token-used", 'this token is bound to the machine "%s"' % e["machine"])
-            if e["state"] == "open":
+            elif e["state"] == "open":
                 taken = state["machines"].get(machine.lower())
                 if taken:
                     return self.error(409, "name-taken", 'a machine named "%s" is enrolled in this org; pick another '
                                                          "name and redeem this token under it" % taken["name"])
                 e.update(state="pending", machine=machine)
                 state["machines"][machine.lower()] = {"name": machine, "client_id": None, "client_secret": None,
-                                                      "state": "pending", "enrollment": e["id"]}
+                                                      "state": "pending", "enrollment": e["id"], "confirmed": None}
             e["expires"] = time.time() + e["ttl_s"]
             held = state["machines"][machine.lower()]
             held.update(client_id=None, client_secret=None)  # a rotation stops the old credential at once
@@ -845,10 +1059,29 @@ class Handler(BaseHTTPRequestHandler):
                          "at": getattr(done, "at", None)})
 
 
+def listen():
+    """A listener on PORT (any free port the first time), serving in a
+    thread of its own (the lock held)."""
+    global server, PORT
+    server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
+    server.daemon_threads = True
+    server.block_on_close = False   # an outage closes the listener from a request's own thread
+    PORT = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+
+
+def reopen(until):
+    """An outage's end: once the file `until` exists, the same port again."""
+    while not os.path.exists(until):
+        time.sleep(0.05)
+    with lock:
+        listen()
+
+
 threading.Thread(target=sweep_leases, daemon=True).start()
-server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-server.daemon_threads = True
+with lock:
+    listen()
 with open(PORT_FILE + ".tmp", "w") as f:
-    f.write(str(server.server_address[1]))
+    f.write(str(PORT))
 os.replace(PORT_FILE + ".tmp", PORT_FILE)
-server.serve_forever()
+threading.Event().wait()

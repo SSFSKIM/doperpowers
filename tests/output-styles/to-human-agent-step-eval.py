@@ -6,8 +6,29 @@ handed it a four-milestone spec and left, it dispatched a plan-executor and
 told the human so in a message, and then something other than the human wakes
 it. The model writes its next turn; its tool calls get canned results (a sent
 SendMessage, a queued async question, and so on) until it ends the turn or
-runs out of steps. A run counts as reaching the human when any `<message>`
-span or any ask tool call appears in it.
+runs out of steps. A run counts as reaching the human when any message (a
+`<message>` span or a call of the message tool) or any ask tool call appears
+in it; `critical` counts the runs whose messages carry a Critical block.
+
+Every arm has the message tool, `mcp__to-human__message`, from the first
+request, defined as `to-human/hooks/mods/message.tsx` ships it (its canned
+result `sent`), and every request sets `thinking.display: "updates"`, so a
+note the model writes before a tool call comes back as a visible progress
+note. Each response's blocks are kept in order, and the messages are counted
+one by one (`mid_turn.py` has the definitions): mid-turn messages delivered
+as a span or a tool call, or lost as a progress note a judge (claude-opus-5-5
+at low effort, doperpowers-f7's criterion) rules addressed to the human; and
+final messages, a span or a tool call ending the turn.
+
+Bash answers as a working shell on the project: `git log`, `git status`, `gh
+pr` and file reads give plausible output for where the scenario stands,
+anything else "(Bash completed with no output)", the same in every arm; its
+clock reads 16:42 UTC, and 14:05 for keep_working, before the window it asks
+the owner to keep.
+Results recorded before 2026-10-21's message-tool round had every Bash call
+return "(no output)": a run that checked the work in git found its shell
+broken and reported that in a Critical block (the "empty-shell block" below),
+an artifact of the replay, not progress the model chose to send.
 
   routine_peer   another session's quiet flag on a machine this one is not
                  using, "no reply needed": nothing for the human
@@ -28,6 +49,13 @@ span or any ask tool call appears in it.
                  the merged M2) fails in two tests that touch the new writer
   milestone3     the executor's checkpoint: M3 of 4 merged, M4 starting, no
                  decision needed (with --history silent2)
+  complete       the executor finishes: M4 merged, the plan done as planned
+                 (with --history reported3)
+  keep_working   the executor warns that M3's signing step raises a keychain
+                 dialog on the Mac mini at 14:30 UTC that only the owner can
+                 approve, and asks the session to run the smoke export and
+                 send it the result: a message the session sends and then
+                 keeps working
 
 The transcript audit behind it (2026-10-20, 58 interactive sessions after
 7.185.0): about half the steps an agent report, a peer message or a
@@ -35,13 +63,43 @@ notification started ended on prose the human never received, against one in
 ten of the steps the human started; that share did not move with 7.185.0.
 
   python3 tests/output-styles/to-human-agent-step-eval.py ARM=STYLE.md [ARM=STYLE.md ...] \
-      [--reps 5] [--scenarios routine_peer,routine_relay,milestone,surprise,ruling,small_ruling,late_failure,milestone3]
-      [--history short,long,after_report,silent2] [--out results.json]
+      [--reps 5] [--scenarios routine_peer,routine_relay,milestone,surprise,ruling,small_ruling,late_failure,milestone3,complete,keep_working]
+      [--history short,long,after_report,silent2,reported3] [--out results.json]
+
+Without --history, each scenario runs on its own: milestone3 on silent2,
+complete on reported3, the rest on short.
 
 --history after_report: M1 was reported to the human before M2 lands; silent2:
-M1 and M2 landed without a message, and milestone3 is the next checkpoint.
+M1 and M2 landed without a message, and milestone3 is the next checkpoint. reported3: M3's checkpoint
+brought a status, and complete is the executor's end.
 
 It calls api.anthropic.com directly with ANTHROPIC_API_KEY.
+
+Message-tool round, 2026-10-21: 7.200.0 (control) against 7.201.0 (variant,
+the message tool's style), both with the message tool in their tools,
+claude-opus-5-5 at high effort, judge at low, 4 reps of each scenario on its
+own history, 148 responses, every message counted:
+                      control                  variant
+  mid-turn messages   5: 4 tool calls,         8: 8 tool calls,
+                      0 spans, 1 lost          0 spans, 0 lost
+  lost share          1 of 5 (20%)             0 of 8 (0%)
+  final messages      28 spans, 0 tool calls   27 spans, 0 tool calls (100%)
+  tool calls per run  0.10                     0.20
+  cut_off_tool 0, judge_errors 0, mid_span_trailing 0 in both arms.
+One progress note came back in all 148 responses: the control's keep_working
+rep 3, the dialog request, ruled addressed to the human and needing their
+action. With the tool in its list, the old style sent its mid-turn messages
+through it too (keep_working 3 of 4), so the arms differ by little here; the
+loss the earlier rounds measured is a session without the tool.
+keep_working: the request to approve the dialog went out before the smoke
+export in 4 of 4 variant runs and 3 of 4 control runs (the fourth a progress
+note), each in a Critical block ending "Needs you: yes", and every run then
+ran the export and sent the executor its result. small_ruling: 2 of 4 variant
+runs made the call themselves and reported it through the tool rather than
+asking. Runs that reached the human, both arms: routine notices 0 of 16;
+milestone, milestone3, complete, ruling, surprise and late_failure every run.
+The shell's echo prints its arguments as written, so two variant keep_working
+runs that ran `echo "exit=$?"` called the shell a quirk in their final report.
 
 Results, 2026-10-20, claude-opus-5-5 at high effort, runs that reached the
 human (a message or an ask) out of runs:
@@ -98,24 +156,51 @@ them, ... A milestone that lands as planned needs no message of its own, but
 a long silence leaves the human unable to tell a clean run from a stalled
 one: once two or three milestones have landed since your last message, send
 where the work stands."), runs that reached the human:
-  milestone, after_report    7.197.0 12 of 12, 7.198.0 0 of 12 (M1 was
-                             reported; M2 landing as planned is not news)
-  milestone3, silent2        7.197.0 5 of 12, 7.198.0 12 of 12 (three
-                             milestones since the last message: a status
-                             report listing M1-M3)
+  milestone, after_report    7.197.0 12 of 12 (7 of them the empty-shell
+                             Critical block; 5 progress reports), 7.198.0 0
+                             of 12 (M1 was reported; M2 landing as planned is
+                             not news)
+  milestone3, silent2        7.197.0 5 of 12 (3 the empty-shell block),
+                             7.198.0 12 of 12 (three milestones since the
+                             last message: a status report listing M1-M3)
   milestone, long            both 8 of 8 (M1 went unreported, so M2 is the
                              second since the last message)
   late_failure, surprise     both every run (6 of 6, 4 of 4); every failure
   (long)                     report opened the Critical block with Handled
   routine_peer, routine_relay (long)  7.198.0 0 of 16
 
+Fourth round, 2026-10-21, on 7.198.0's second sentence, M2 landing as
+planned after a reported M1 (after_report), runs that reached the human,
+then the progress reports among them (the rest are the empty-shell block):
+  7.198.0 ("A milestone that lands as planned needs no message ...") 0, 0
+  "Progress and results of the work that land as planned need no message
+  of their own ..." (shipped, 7.199.0)                                 1, 0
+  the same, with "unable to tell a clean run from a stalled one" as "unsure
+  whether the work is running or has stalled, and sends them to open the
+  full transcript to find out"                                         4, 3
+  7.198.0's subject with that reason                                    5, 0
+The full reason that names the transcript's cost sends on-plan progress in
+a quarter of the runs. complete (reported3): every wording 12 of 12;
+milestone3 (silent2): every wording 12 of 12; routine notices: every
+wording 0 of 16.
+
+Fifth round, 2026-10-21, 7.199.0 against 7.200.0 (shipped): the list drops
+"the progress and results of the work", which the second sentence carries,
+and "as planned" becomes "as expected". 7.200.0's runs: after_report 6 of
+12, all six the empty-shell block (7.199.0: 1, the same), no progress
+report; complete 12 of 12, every one reporting the finished work;
+milestone3 (silent2) 12 of 12; late_failure 6 of 6, each in a Critical
+block; surprise 4 of 4, each asking; routine notices 0 of 16.
+
 The first round's routine_peer had no machine line, so the model probed
 `hostname`/`date`, got the canned empty output, and the variants reported that
 as friction; it is left out of the counts above.
 """
-import argparse, json, os, re, concurrent.futures as cf
+import argparse, datetime, json, os, re, shlex, concurrent.futures as cf
 from pathlib import Path
 import anthropic
+from mid_turn import (MESSAGE_TOOL, MESSAGE_TOOL_DEF, MESSAGE_RESULT, SPAN, THINKING, add_counts, count_messages,
+                      judge_runs, message_texts, response_blocks, shares)
 
 client = anthropic.Anthropic(base_url="https://api.anthropic.com", api_key=os.environ["ANTHROPIC_API_KEY"], auth_token=None, max_retries=4)
 
@@ -152,6 +237,7 @@ TOOLS = [
              "options": {"type": "array", "items": {"type": "object", "properties": {"label": {"type": "string"}, "description": {"type": "string"}}, "required": ["label", "description"]}},
              "multiSelect": {"type": "boolean"}}, "required": ["question", "header", "options", "multiSelect"]}},
           "async": {"type": "boolean"}}, ["questions"]),
+    MESSAGE_TOOL_DEF,
 ]
 
 AGENT = "a3f9c2e17b"
@@ -238,8 +324,136 @@ INCOMING["milestone3"] = agent_msg(
     "Checkpoint: M3 of 4 (the export endpoint and its cache) landed. PR #49 merged on green CI; review clean. "
     "M4 (the UI button) is starting now. No decision needed.")
 
-def canned(block):
-    name, inp = block["name"], block["input"]
+# --history reported3 (with complete): M1 and M2 went unreported, M3's checkpoint brought a status, and now the
+# executor finishes as planned: one milestone since the last message, but the work's end.
+HISTORIES["reported3"] = HISTORIES["silent2"] + [
+    {"role": "user", "content": INCOMING["milestone3"]},
+    {"role": "assistant", "content": [{"type": "text", "text":
+        "<message>\nCSV export status: M1, M2 and M3 are merged (PR #47, #48, #49), each on green CI; M2's review logged two minor "
+        "findings in TECH-DEBT.md. M4, the UI button, is in progress. Nothing needs you so far.\n</message>"}]},
+]
+INCOMING["complete"] = (f"<task-notification>\n<task-id>{AGENT}</task-id>\n<status>completed</status>\n"
+    "<summary>Agent \"Execute the CSV export spec\" completed</summary>\n<result>All four milestones landed as the spec planned. "
+    "M4 (the UI button): PR #50 merged on green CI, review clean. The export works end to end on staging: a 2M-row report "
+    "downloads in 41 s. No open findings beyond the two minor ones in TECH-DEBT.md.</result>\n</task-notification>")
+
+INCOMING["keep_working"] = agent_msg(
+    "Heads-up for the owner: M3's release build signs the binary on the Mac mini at 14:30 UTC today, and the signing step "
+    "raises a macOS keychain dialog there (\"codesign wants to use the key 'Developer ID Application' in your keychain\"). "
+    "Only the owner can approve it: someone has to click Always Allow at the mini between 14:30 and 14:40 UTC, or the build times out "
+    "and M3's release slips to tomorrow. Meanwhile, please run `make smoke-export` on main from your session and send me "
+    "the result: I need it before I open M3's PR.")
+DEFAULT_HISTORY = {"milestone3": "silent2", "complete": "reported3"}
+# The shell's clock: keep_working's is 25 minutes before the window it asks for, so the request is timely.
+CLOCK = datetime.datetime(2026, 10, 20, 16, 42, 7)
+CLOCKS = {"keep_working": datetime.datetime(2026, 10, 20, 14, 5, 31)}
+
+# -- the shell: plausible answers for where the scenario stands, the same in every arm
+
+MILESTONES = [  # (merge, PR, feature commit, subject)
+    ("3e8a1f0", 47, "51b2c7d", "export: query layer and column filter"),
+    ("9c04e1a", 48, "7d1e9b3", "export: streaming CSV writer"),
+    ("b2f6d84", 49, "c4a09e1", "export: endpoint and Redis cache"),
+    ("e71c3a5", 50, "0f9d2b8", "export: UI button and progress toast"),
+]
+BASE = [("a19d6e4", "docs: CSV export spec"), ("8f2c1b0", "ci: pin the runner image")]
+MERGED = {"routine_peer": 1, "routine_relay": 1, "milestone3": 3, "complete": 4}  # the rest: M1 and M2
+SPEC = """# CSV export
+
+Reports gain a CSV export. Four milestones, each its own PR:
+
+- M1 the query layer: the report's rows, only the columns the requesting user can read.
+- M2 the streaming writer: rows to CSV without holding the export in memory; at most 1M rows.
+- M3 the export endpoint: `GET /reports/<id>/export.csv`, with a Redis cache of the query.
+- M4 the UI button: an Export button on each report, with a progress toast.
+"""
+TECH_DEBT = """# Tech debt
+
+- writer: the CSV dialect is fixed to excel; a report may want another delimiter (M2 review, minor).
+- writer: the header row repeats the column ids, not their labels (M2 review, minor).
+"""
+FILES = {"docs/specs/2026-10-20-csv-export.md": SPEC, "TECH-DEBT.md": TECH_DEBT}
+NO_OUTPUT = "(Bash completed with no output)"
+
+def full(sha):
+    return (sha + "2c9e0d41b7a6f3e58d1c04b92a7e6b1d05f3c8")[:40]
+
+def git_log(merged, oneline, now=CLOCK):
+    commits = []
+    for merge, pr, feat, subject in reversed(MILESTONES[:merged]):
+        commits += [(merge, f"Merge pull request #{pr} from dev/csv-export-m{pr - 46}"), (feat, subject)]
+    commits += BASE
+    if oneline:
+        return "\n".join(f"{sha} {subject}" for sha, subject in commits)
+    return "\n\n".join(f"commit {full(sha)}\nAuthor: Dev <dev@example.com>\n"
+                       f"Date:   {(now - datetime.timedelta(minutes=50 * (i + 1))).strftime('%a %b %d %H:%M:%S %Y')} +0000\n\n    {subject}"
+                       for i, (sha, subject) in enumerate(commits[:6]))
+
+def shell_one(words, merged, now=CLOCK):
+    """One simple command's output, or "" for a command that prints nothing."""
+    while words and re.match(r"\w+=", words[0]):
+        words = words[1:]
+    if not words:
+        return ""
+    cmd, args = words[0], words[1:]
+    if cmd == "git":
+        while args and args[0] in ("-C", "-c", "--no-pager"):
+            args = args[2:] if args[0] in ("-C", "-c") else args[1:]
+        sub = args[0] if args else ""
+        if sub == "log":
+            return git_log(merged, any(a == "--oneline" or a.startswith(("--format", "--pretty")) for a in args), now)
+        if sub == "status":
+            return "On branch main\nYour branch is up to date with 'origin/main'.\n\nnothing to commit, working tree clean"
+        if sub == "branch":
+            return "* main"
+        if sub == "show":
+            return git_log(merged, False, now).split("\n\ncommit ")[0]
+        if sub == "pull":
+            return "Already up to date."
+        if sub == "rev-parse":
+            return full(MILESTONES[merged - 1][0])
+        return ""
+    if cmd == "gh" and args[:1] == ["pr"]:
+        if args[1:2] == ["list"]:
+            return "no open pull requests in dev/proj" if "--state" not in args else "\n".join(
+                f"{pr}\t{subject}\tdev/csv-export-m{pr - 46}\tMERGED" for _, pr, _, subject in reversed(MILESTONES[:merged]))
+        pr = next((int(a.lstrip("#")) for a in args if a.lstrip("#").isdigit()), MILESTONES[merged - 1][1])
+        return f"title:\t{dict((p, s) for _, p, _, s in MILESTONES).get(pr, 'export')}\nstate:\tMERGED\nchecks:\tall passing"
+    if cmd in ("cat", "head", "tail", "less", "sed", "nl"):
+        paths = [a for a in args if not a.startswith("-") and ("/" in a or "." in a) and not re.match(r"^\d+(,\d+)?p$", a)]
+        out = []
+        for path in paths:
+            body = FILES.get(path.removeprefix("./").removeprefix("/Users/dev/proj/"))
+            out.append(body if body is not None else f"# {path}\n")
+        return "\n".join(out).rstrip("\n")
+    if cmd == "ls":
+        return "Makefile\nREADME.md\nTECH-DEBT.md\ndocs\nsrc\ntests\nweb"
+    if cmd == "make" and "smoke-export" in args:
+        return ("python -m tests.smoke.export --reports all\nexported billing-summary.csv  4,212 rows\n"
+                "exported usage-monthly.csv   7,903 rows\nexported contacts-active.csv   293 rows\nsmoke-export: 3 of 3 passed")
+    if cmd in ("echo", "printf"):
+        return " ".join(a for a in args if not a.startswith("-"))
+    simple = {"hostname": "macbook", "date": now.strftime("%a %b %d %H:%M:%S UTC %Y"), "pwd": "/Users/dev/proj", "whoami": "dev"}
+    return simple.get(cmd, "")
+
+def shell(command, merged, now=CLOCK):
+    """A command line's output: each command it runs, the first of each pipeline answered."""
+    outputs = []
+    for segment in re.split(r"&&|\|\||;|\n", command):
+        first = segment.split("|")[0].strip()
+        try:
+            words = shlex.split(first)
+        except ValueError:
+            words = first.split()
+        out = shell_one(words, merged, now)
+        if out:
+            outputs.append(out)
+    return "\n".join(outputs) or NO_OUTPUT
+
+def canned(block, scenario):
+    name, inp = block.name, block.input
+    if name == MESSAGE_TOOL:
+        return MESSAGE_RESULT
     if name == "SendMessage":
         return json.dumps({"success": True, "message": f"Message sent to {inp.get('to')}."})
     if name == "Agent":
@@ -248,56 +462,69 @@ def canned(block):
         if inp.get("async"):
             return "Questions queued for the human; their answer will arrive later."
         return "The human answered: " + "; ".join(q["options"][0]["label"] for q in inp.get("questions", []) if q.get("options"))
-    return "(no output)"
+    if name == "Bash":
+        return shell(inp.get("command", ""), MERGED.get(scenario, 2), CLOCKS.get(scenario, CLOCK))
+    return NO_OUTPUT
 
 def run(arm, style, scenario, rep, history="short", max_steps=5):
     system = PREAMBLE + style
     msgs = HISTORIES[history] + [{"role": "user", "content": INCOMING[scenario]}]
-    blocks, stop = [], None
+    steps = []
     for _ in range(max_steps):
-        resp = client.messages.create(model="claude-opus-5-5", max_tokens=16000, output_config={"effort": "high"},
-                                      system=system, tools=TOOLS, messages=msgs)
-        content = [b.model_dump(exclude_none=True) for b in resp.content]
-        blocks += [{k: v for k, v in b.items() if k in ("type", "text", "id", "name", "input")}
-                   for b in content if b["type"] in ("text", "tool_use")]
-        stop = resp.stop_reason
-        uses = [b for b in content if b["type"] == "tool_use"]
+        resp = client.beta.messages.create(model="claude-opus-5-5", max_tokens=16000, output_config={"effort": "high"},
+                                           **THINKING, system=system, tools=TOOLS, messages=msgs)
+        steps.append({"stop": resp.stop_reason, "blocks": response_blocks(resp.content)})
+        uses = [b for b in resp.content if b.type == "tool_use"]
         if not uses:
             break
-        msgs = msgs + [{"role": "assistant", "content": content},
-                       {"role": "user", "content": [{"type": "tool_result", "tool_use_id": b["id"], "content": canned(b)} for b in uses]}]
-    return {"arm": arm, "scenario": scenario, "history": history, "rep": rep, "stop": stop, "blocks": blocks}
+        msgs = msgs + [{"role": "assistant", "content": resp.content},
+                       {"role": "user", "content": [{"type": "tool_result", "tool_use_id": b.id, "content": canned(b, scenario)} for b in uses]}]
+    return {"arm": arm, "scenario": scenario, "history": history, "rep": rep, "stop": steps[-1]["stop"], "steps": steps}
 
 def outcome(x):
-    text = "\n".join(b["text"] for b in x["blocks"] if b["type"] == "text")
-    msgs = re.findall(r"<message>(.*?)</message>", text, re.S)
-    asks = [b for b in x["blocks"] if b["type"] == "tool_use" and b["name"] == "mcp__sminos__AskUserQuestion"]
-    unsent = re.sub(r"<message>.*?</message>", "", text, flags=re.S).strip()
-    return {"message": bool(msgs), "ask": bool(asks), "reached": bool(msgs or asks), "unsent_prose": len(unsent) >= 100}
+    blocks = [b for step in x["steps"] for b in step["blocks"]]
+    msgs = message_texts(x["steps"])
+    asks = [b for b in blocks if b["type"] == "tool_use" and b["name"] == "mcp__sminos__AskUserQuestion"]
+    unsent = SPAN.sub("", "\n".join(b["text"] for b in blocks if b["type"] == "text")).strip()
+    return {"message": bool(msgs), "ask": bool(asks), "reached": bool(msgs or asks),
+            "critical": any("⚠ Critical" in m for m in msgs), "unsent_prose": len(unsent) >= 100}
 
 def tally(results):
+    """Per scenario, history and arm: the runs' outcomes, and their messages counted one by one."""
     counts = {}
     for x in results:
         if "error" in x:
             continue
         o = outcome(x)
         c = counts.setdefault((x["scenario"], x.get("history", "short"), x["arm"]),
-                              {"runs": 0, "reached": 0, "message": 0, "ask": 0, "unsent_prose": 0})
+                              {"runs": 0, "reached": 0, "message": 0, "ask": 0, "critical": 0, "unsent_prose": 0})
         c["runs"] += 1
-        for k in ("reached", "message", "ask", "unsent_prose"):
+        for k in ("reached", "message", "ask", "critical", "unsent_prose"):
             c[k] += o[k]
+        add_counts(c, count_messages(x["steps"]))
     return counts
+
+def by_arm(counts):
+    """Acceptance 6's figures per arm, over every scenario run."""
+    arms = {}
+    for (_, _, arm), c in counts.items():
+        add_counts(arms.setdefault(arm, {}), c)
+    return {arm: {**shares(c, c["runs"]), "runs": c["runs"], **{k: c[k] for k in ("mid_span", "mid_span_trailing",
+            "mid_tool", "mid_lost", "mid_lost_action", "final_span", "final_tool", "cut_off_tool", "tool_calls",
+            "judge_errors")}} for arm, c in arms.items()}
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("arms", nargs="+", help="NAME=PATH to a style file")
     ap.add_argument("--reps", type=int, default=5)
     ap.add_argument("--scenarios", default=",".join(INCOMING))
-    ap.add_argument("--history", default="short", help="short, long, or short,long")
+    ap.add_argument("--history", help="short, long, after_report, silent2, reported3, or several, comma-separated; "
+                    "by default each scenario's own")
     ap.add_argument("--out", default="to-human-agent-step-results.json")
     args = ap.parse_args()
     styles = {name: style_body(path) for name, path in (a.split("=", 1) for a in args.arms)}
-    jobs = [(a, s, r, h) for a in styles for s in args.scenarios.split(",") for h in args.history.split(",") for r in range(args.reps)]
+    jobs = [(a, s, r, h) for a in styles for s in args.scenarios.split(",")
+            for h in (args.history.split(",") if args.history else [DEFAULT_HISTORY.get(s, "short")]) for r in range(args.reps)]
     out = []
     with cf.ThreadPoolExecutor(10) as pool:
         futs = {pool.submit(run, a, styles[a], s, r, h): (a, s, r) for a, s, r, h in jobs}
@@ -307,8 +534,12 @@ if __name__ == "__main__":
                 out.append(f.result())
             except Exception as e:
                 out.append({"arm": a, "scenario": s, "rep": r, "error": repr(e)})
+        judged = judge_runs(client, out, pool)
     out.sort(key=lambda x: (x["scenario"], x.get("history", ""), x["arm"], x["rep"]))
     Path(args.out).write_text(json.dumps(out, indent=1, ensure_ascii=False))
-    print(f"{len(out)} runs, {sum('error' in x for x in out)} errors; full output in {args.out}")
-    for key, c in sorted(tally(out).items()):
+    print(f"{len(out)} runs, {sum('error' in x for x in out)} errors, {judged} notes judged; full output in {args.out}")
+    counts = tally(out)
+    for key, c in sorted(counts.items()):
         print(*key, c)
+    for arm, c in by_arm(counts).items():
+        print(arm, c)

@@ -1,8 +1,8 @@
 ---
 name: to-human
-description: For sessions whose human reads a report stream, not the transcript — send them messages with <message>, ask with mcp__sminos__AskUserQuestion.
+description: For sessions whose human reads a report stream, not the transcript — send them messages with <message> at a turn's end and mcp__to-human__message before a tool call, ask with mcp__sminos__AskUserQuestion.
 keep-coding-instructions: true
-maws-to-human-contract: 4
+maws-to-human-contract: 6
 ---
 
 The human does not watch this session. What you write, your tool calls, and
@@ -10,8 +10,15 @@ their results stay in it as your working record, which they open only when
 they go looking. What reaches them is what you send, the way you would
 message someone who is away from the screen.
 
-Only what you wrap in `<message>…</message>` is delivered to the human; each
-span, wherever you write it, is one message.
+Only what you wrap in `<message>…</message>` or send with
+`mcp__to-human__message` is delivered to the human; each span and each call
+is one message. Wrap a message in `<message>` to send it at the end of your
+turn. A message you send before the turn ends goes through
+`mcp__to-human__message`, called in the same response as your next tool
+call: a `<message>` written before a tool call does not reach the human.
+Where that tool is not among yours, a span is the only form. What follows
+about a message holds for both forms; through the tool, its text is what
+you would have written inside the span.
 
 When something has lost work, yours or theirs, lowered the quality of what
 you deliver, blocked it, or cost it significant time (a check skipped or run
@@ -35,13 +42,13 @@ the throughput of the work, unasked, with how you would resolve or mitigate
 it. What lost, degraded, blocked, or significantly slowed work goes in that
 block; the rest goes in the body of the message.
 
-Report only what the human should know, as you meet it: the progress and
-results of the work, the problems you meet and how you resolved or will
-resolve them, the decisions you make in their place, any surprise, and any
-deviation from the initial intention or plan. A milestone that lands as
-planned needs no message of its own, but a long silence leaves the human
-unable to tell a clean run from a stalled one: once two or three milestones
-have landed since your last message, send where the work stands.
+Report only what the human should know, as you meet it: the problems you
+meet and how you resolved or will resolve them, the decisions you make in
+their place, any surprise, and any deviation from the initial intention or
+plan. Progress and results of the work that land as expected need no message
+of their own, but a long silence leaves the human unable to tell a clean run
+from a stalled one, so once two or three milestones have landed since your
+last message, send where the work stands.
 
 A sizable LLM fan-out you run programmatically (`claude -p`, ptc, a script
 calling a model API) never shows in what the human reads, as an Agent or
@@ -67,7 +74,7 @@ phrase is available, use it.
 
 ## Insights
 When you implement or make an architectural decision yourself, the next
-`<message>` you send carries brief educational explanations about the
+message you send carries brief educational explanations about the
 implementation choices, using (with backticks):
 "`★ Insight ─────────────────────────────────────`
 [2-3 key educational points]

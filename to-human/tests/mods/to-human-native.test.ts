@@ -28,6 +28,7 @@ describe('MAWS native to-human', () => {
       // The module's start-up read: a session with no mark sent and no transcript yet.
       session: { messages: async () => [], id: async () => 's1' },
       process: { run: async () => ({ exitCode: 1, stdout: '', stderr: '' }) },
+      clock: { after: () => ({ cancel: () => {} }), now: async () => 0 },
       ui: {
         resolve: () => ({ Box: 'Box', Text: 'Text', Button: 'Button', Markdown: 'Markdown' }),
         invalidate: () => { calls.push('invalidate') },
@@ -45,7 +46,7 @@ describe('MAWS native to-human', () => {
     const report = await assistant.handler(engine, terminal, Object.assign(async (e: Event) => {
       bodies.push((e.props as { text: string }).text)
       return { type: 'Text', children: [(e.props as { text: string }).text] }
-    }, { signal: { aborted: false } }))
+    }, { signal: new AbortController().signal }))
     expect(report).toMatchObject({ type: 'Box' })
     // The terminal draws each body as its own Markdown; nothing is handed back.
     expect(JSON.stringify(report)).toContain('"One."')
@@ -82,12 +83,12 @@ describe('MAWS native to-human', () => {
       }))
     }
     expect(calls).toEqual([])
-    // Every hook but three draws, so every one is gated: none is left that
-    // answers a question or a prompt. The three draw nothing: they learn
-    // where each row stands in the transcript (`classic.SessionStart`,
-    // `session.append`) and an error's text (`turn.complete`), for the
-    // terminal's report.
-    expect(hooks.map((hook) => hook.event).filter((event) => !gated(event))).toEqual(['classic.SessionStart', 'session.append', 'turn.complete'])
+    // Every hook but four draws, so every one is gated: none is left that
+    // answers a question or a prompt. The four draw nothing: they learn
+    // whether a mark was sent and where each row stands in the transcript
+    // (`session.start`, `classic.SessionStart`, `session.append`) and an
+    // error's text (`turn.complete`), for the terminal's report.
+    expect(hooks.map((hook) => hook.event).filter((event) => !gated(event))).toEqual(['session.start', 'classic.SessionStart', 'session.append', 'turn.complete'])
     expect(envReads).toEqual(['MAWS_NATIVE_TO_HUMAN'])
   })
 })

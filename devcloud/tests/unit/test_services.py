@@ -1,3 +1,4 @@
+import os
 import pathlib
 import signal
 import subprocess
@@ -88,9 +89,22 @@ class SupervisorTest(unittest.TestCase):
         self.proc = None
 
     def tearDown(self):
+        # Each service runs in a session of its own, which a supervisor that
+        # dies without stopping it (a SIGKILL) leaves running forever: SIGTERM
+        # the supervisor so it stops them, then kill the groups it had.
         if self.proc and self.proc.poll() is None:
-            self.proc.kill()
-            self.proc.wait()
+            groups = subprocess.run(["pgrep", "-P", str(self.proc.pid)], capture_output=True, text=True).stdout.split()
+            self.proc.terminate()
+            try:
+                self.proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+                self.proc.wait()
+            for pid in groups:
+                try:
+                    os.killpg(int(pid), signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
 
     def lines(self, name):
         path = self.tmp / name

@@ -5,7 +5,7 @@ model: opus
 effort: high
 autoCompactWindow: 750000
 color: blue
-disallowedTools: AskUserQuestion, mcp__doperpowers__compact, mcp__sminos__AskUserQuestion
+disallowedTools: AskUserQuestion, mcp__doperpowers__compact, mcp__sminos__AskUserQuestion, mcp__to-human__message
 ---
 
 You are implementing one milestone of a spec's Plan of Work — one task of

@@ -1,8 +1,8 @@
-"""Parity of sminos_hub's enrollment-code decoder with DX7's
-(`decodeEnrollmentCode`): every case of dx7-enroll-codes.json — codes the
-hub's own `encodeEnrollmentCode` built, and damaged ones — decoded to the same
-fields or refused for the same reason, in the hub's words. The file was
-written by dx7-enroll-codes.gen.mjs over MAWS commit bd266073
+"""Parity of sminos_hub's code decoder with DX7's (`decodeCode`): every case
+of dx7-enroll-codes.json — one-time enrollment codes and provisioning codes
+the hub's own encoders built, and damaged ones — decoded to the same tagged
+fields or refused with the same message, in the hub's words, whole. The file
+was written by dx7-enroll-codes.gen.mjs over MAWS commit 0602580be
 (apps/desk-hub/src/protocol/identity.ts and base64url.ts). Then the hub
 spellings the CLI refuses beyond the hub's decoder: a hub URL no browser's
 origin serializes to (the code's hub is `location.origin`), which WHATWG's
@@ -33,7 +33,7 @@ def verdict(text):
     try:
         return True, hub.decode_code(text)
     except hub.CodeRefused as e:
-        return False, "enrollment code: %s" % e
+        return False, str(e)
 
 
 for case in CASES:
@@ -42,23 +42,26 @@ for case in CASES:
     check(("decodes: " if case["ok"] else "refuses: ") + case["note"], (ok, got) == (case["ok"], want),
           "got %r" % (got,))
 
-check("the file holds both kinds", any(c["ok"] for c in CASES) and any(not c["ok"] for c in CASES))
+for kind, words in (("enroll", "enrollment code: "), ("provision", "provisioning code: ")):
+    check("the file holds a decoded case of kind %s" % kind, any(c["ok"] and c["decoded"]["kind"] == kind for c in CASES))
+    check("the file holds refused cases of kind %s" % kind,
+          any(not c["ok"] and c["error"].startswith(words) for c in CASES))
 
-BASE = next(c["decoded"] for c in CASES if c["ok"])
+for kind, prefix in (("enroll", "smns-enroll-v1."), ("provision", "smns-provision-v1.")):
+    base = {k: v for k, v in next(c["decoded"] for c in CASES if c["ok"] and c["decoded"]["kind"] == kind).items()
+            if k != "kind"}
 
+    def code_of(**fields):
+        body = json.dumps({**base, **fields}, separators=(",", ":"), ensure_ascii=False).encode()
+        return prefix + base64.urlsafe_b64encode(body).rstrip(b"=").decode()
 
-def code_of(**fields):
-    body = json.dumps({**BASE, **fields}, separators=(",", ":"), ensure_ascii=False).encode()
-    return hub.CODE_PREFIX + base64.urlsafe_b64encode(body).rstrip(b"=").decode()
-
-
-for name, url in (("an IPv4 loopback in short form", "http://127.1:8747"),
-                  ("an IPv6 loopback written out", "http://[0:0:0:0:0:0:0:1]:8747"),
-                  ("https without its slashes", "https:desk.example.com"),
-                  ("a hub with leading space", " https://desk.example.com"),
-                  ("a hub with a tab inside", "https://desk.exa\tmple.com")):
-    ok, why = verdict(code_of(hub=url))
-    check("refuses beyond the hub's decoder: %s" % name, not ok and "hub" in why, why)
+    for name, url in (("an IPv4 loopback in short form", "http://127.1:8747"),
+                      ("an IPv6 loopback written out", "http://[0:0:0:0:0:0:0:1]:8747"),
+                      ("https without its slashes", "https:desk.example.com"),
+                      ("a hub with leading space", " https://desk.example.com"),
+                      ("a hub with a tab inside", "https://desk.exa\tmple.com")):
+        ok, why = verdict(code_of(hub=url))
+        check("refuses beyond the hub's decoder (%s): %s" % (kind, name), not ok and "hub" in why, why)
 
 for name in ("SK-2.local", "a", "Mac_mini-2.lan", "x" * 63, "hubs", "legacy2"):
     check("an admitted name: %s" % name, hub.is_machine_name(name))

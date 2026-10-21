@@ -67,7 +67,9 @@ temporary directories when testing.
 ## The desk hub
 
     sminos hub enroll [--name N] [--replace]   # this machine at the desk hub
-    sminos hub show                            # its enrolled name, hub, org, and the names it wrote under before
+    sminos hub show                            # its enrolled name, hub, org, and the names it wrote under before (local; exit 1 when none)
+    sminos hub check                           # does the hub still accept this machine's credential? (changes nothing)
+    sminos hub leave                           # end this machine's enrollment, at the hub and here
     sminos project init --hub                  # this repository syncs through the hub, never git
 
 The desk's **Machines → Enroll a machine** gives a one-time code.
@@ -82,6 +84,38 @@ hub admits it. What it wrote under an earlier name stays on this machine
 and never reaches the hub. `--replace` enrolls again with a new code.
 The credential is `$SMINOS_HOME/daemon/hub.json` (mode 0600; never print
 it).
+
+**At provisioning time** (a VM's boot, no human), an admin's
+**Machines → Provisioning keys** gives a reusable, revocable code,
+`smns-provision-v1.…`, that enrolls any name starting with its prefix
+(`dc-`) until it expires, is revoked, or is used up. It carries the org
+key too: keep it in a secret store and pipe it, never write it to the
+host — `printf %s "$CODE" | sminos hub enroll --name dc-build-7f3a`. The
+name is `--name`, else the host's, and one not under the prefix is
+refused before anything is sent (exit 2). A name another machine holds
+exits 3 (pick another suffix, same code); every other refusal — the key
+revoked, expired or used up, which need an admin, or a hub that did not
+answer, which a rerun of the same line covers — exits 1.
+
+**`hub check`** asks the hub whether it still accepts the stored
+credential, and writes nothing: exit 0 accepted, 1 not enrolled here, 3
+rejected (revoked by an admin, by the key's offline auto-revoke, or by a
+`leave` whose answer was lost), 4 undecided — the hub unreachable, an
+answer that is neither, or Access refusing a credential enrolled less
+than ten minutes ago, which may not have reached its edge (Access's 401 is
+read as a revocation only past that grace and when it holds on a recheck
+90 s later, `SMINOS_ACCESS_RECHECK_S`). A boot's rule, before it starts
+the daemon: 0 skip enrolling; 1 enroll; 3 enroll again with `--replace`,
+the same code and name; 4 keep the credential and run `check` again later,
+with backoff, until it answers 0, 1 or 3 — never re-enroll or remove
+anything on 4.
+
+**`hub leave`** revokes this machine's enrollment at the hub (a VM's
+teardown runs it) and removes `hub.json`, after which the daemon stops its
+uplink within a second: exit 0 when it left, when the hub had already
+revoked the credential (the same reading as `check`'s), or when nothing
+was enrolled here; exit 1, the credential kept, when the hub could not be
+told — run it again, or let the key's offline auto-revoke finish it.
 
 `project init --hub` writes the enrolled org into `.smns` —
 `"hub": {"org": "<org>"}`, no URL: each machine reaches the hub its own
