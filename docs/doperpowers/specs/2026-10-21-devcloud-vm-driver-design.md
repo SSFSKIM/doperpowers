@@ -1453,7 +1453,8 @@ commit 5168e433 on its branch, 2026-10-21):
                                                                         # on a host, root, under the lifecycle lock
     depart, release: 0 done (or already done) · 1 failed · 2 usage · 3 lease not over (without --force)
                      4 held (ship failed, or sessions kept starting) · stdout `devcloud-depart: ready-to-logout` before the logout
-    lease set:       0 set, the resulting lease printed · 1 failed · 2 usage · 3 the departure has started
+    lease set <unix> [--cap <unix>]: 0 set, the resulting lease printed · 1 failed · 2 usage · 3 the departure has started
+                     4 over the cap: the value is past --cap and later than the lease in force (decided under the lock)
     the lease service starts depart and release as transient units (`devcloud-depart`, `devcloud-release`, --collect)
 
 ## Surprises & Discoveries
@@ -1994,6 +1995,29 @@ commit 5168e433 on its branch, 2026-10-21):
   protocol change. Rejected: adding `image-get` to I13, which every provider would then have to
   implement for a check `images` already gives. Date/Author: 2026-10-21, executor (controller), at
   M3's review.
+
+- Decision: How M3's two review rounds settled the safety paths:
+  - The caps fail closed. Both the count before `create` and the recount after it need every usable
+    account's `list` to succeed. A recount that cannot be made deletes the VM just made and exits
+    1. `ls` alone shows a partial fleet, naming the failing account.
+  - One ownership gate in the protocol client covers every mutation. `delete` and `set-labels` do a
+    `get` first; `image-delete` relies on the fresh `images` listing (the image fence above).
+  - The passing copy's sha256 is checked before every call.
+  - The bounded reaper run in `up` and `ls` has a 60 s monotonic deadline. It is carried as one
+    deadline through the token exchange and the Secret Manager request, and no call starts once it
+    has passed. urllib's timeout applies per socket operation, so a response that trickles in can
+    still overrun; that is accepted.
+  - On KeyboardInterrupt or SIGTERM the protocol client kills the provider's process group, and
+    `provider test` deletes in a real `finally`.
+  - Incidental reaper lines go to stderr, so `ls --json` stays JSON.
+  - A one-time-code enrollment counts only when reconcile succeeded and its services entry is newer
+    than the one read before the code was delivered. Both times come from the host's clock.
+  - The lifetime cap of `vm lease` is decided by the host under its lock. `devcloud lease set
+    <unix> --cap <unix>` exits 4 when the value is past the cap and later than the lease in force,
+    and the driver passes `--cap` unless it was given `--confirmed`. Deciding on the label, and then
+    on a separate read of the host's lease, each left a window in which another Mac's write could
+    pass a lifetime beyond the cap.
+  Date/Author: 2026-10-21, M3's executor through two review rounds, folded by the controller.
 
 ## Outcomes & Retrospective
 
