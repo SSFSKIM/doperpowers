@@ -90,6 +90,14 @@ def departure_started(path=None):
     return record is not None and record.get("state") in DEPARTURE_STARTED
 
 
+def release_started(path=None):
+    """Whether a release has started on this adopted machine (§6.5): from
+    then on nothing configures it again, since each boot step would undo a
+    step the release did (the firewall, the keys, the tailnet)."""
+    record = lifecycle(path)
+    return record is not None and record.get("op") == "release" and record.get("state") in DEPARTURE_STARTED
+
+
 def set_lifecycle(op, state, detail, steps=None, path=None):
     """Records the departure (`op` depart) or release (`op` release) as
     `state`; `steps` replaces the record's step outcomes when given."""

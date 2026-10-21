@@ -4,8 +4,9 @@ the secrets refresh (7, 10, 11) and the mirror refresh (no step of its own).
 Each step is recorded in the status file; a failed step stops the run, and the
 next run retries from its top. Runs hold one lock, so a job never interleaves
 with a boot. Every job also takes the lifecycle lock shared and does nothing
-once a departure has started (Design §4.1), and every credential a step
-writes is listed in the credential ledger first (§6.5)."""
+once a departure has started (Design §4.1); the boot takes it for each step
+and configures nothing once a release has started (§6.5). Every credential a
+step writes is listed in the credential ledger first (§6.5)."""
 
 import contextlib
 import fcntl
@@ -44,6 +45,10 @@ ENV_HEADER = ("# Written by devcloud (boot step 10, reconcile, refresh-secrets):
 
 class Stop(Exception):
     """A step failed; the run ends."""
+
+
+class ReleaseStarted(Exception):
+    """A release has started; the boot configures nothing more."""
 
 
 class Run:
@@ -601,10 +606,11 @@ RECONCILE = (("tailnet-check", tailnet_check), ("secrets", secrets_step), ("home
              ("settings-and-env", settings_and_env), ("services", services_step))
 
 
-def _run(steps, r, done=None):
+def _run(steps, r, done=None, guard=contextlib.nullcontext):
     try:
         for name, fn in steps:
-            step(r, name, fn)
+            with guard():
+                step(r, name, fn)
     except Stop:
         return 1
     if done:
@@ -622,16 +628,37 @@ BOOT = (("identity", identity), ("seed", seed), ("bootstrap-secrets", bootstrap_
         ("tailnet-attach", tailnet_attach), ("configuration", configuration)) + RECONCILE
 
 
+@contextlib.contextmanager
+def _unless_released():
+    """One boot step under the lifecycle lock, shared, and only while no
+    release has started (§6.5): a release takes the lock between two steps,
+    and the boot stops at the next."""
+    with lease.locked(shared=True):
+        if status.release_started():
+            raise ReleaseStarted
+        yield
+
+
+RELEASE_NOTE = "the release has started: the boot configures nothing (`devcloud release` resumes it)"
+
+
 def boot():
     with _locked():
+        if status.release_started():
+            _say(RELEASE_NOTE)
+            return 0
         status.reset()
         services.mark_booted(False)
         r = Run("boot")
-        code = _run(BOOT, r, done=lambda: _mark_applied(r))
-        if code == 0 and _run((("projects", projects),), r):
-            # The host works without a project: the failure is recorded, and
-            # its own exit status lets the services start all the same.
-            code = PROJECTS_FAILED
+        try:
+            code = _run(BOOT, r, done=lambda: _mark_applied(r), guard=_unless_released)
+            if code == 0 and _run((("projects", projects),), r, guard=_unless_released):
+                # The host works without a project: the failure is recorded, and
+                # its own exit status lets the services start all the same.
+                code = PROJECTS_FAILED
+        except ReleaseStarted:
+            _say(RELEASE_NOTE)
+            return 0
         made = code in (0, PROJECTS_FAILED)
         services.mark_booted(made)
         if made and services.systemd_is_init():
