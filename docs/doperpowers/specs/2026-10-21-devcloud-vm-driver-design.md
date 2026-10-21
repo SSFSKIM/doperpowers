@@ -83,12 +83,12 @@ refused or it needs a browser or their judgment.
 | H1 | The Hetzner devcloud project's API token into Secret Manager | the person | escalated by M1's preflight if missing |
 | H2 | The GCE host service account and its Secret Manager grant | the executor if its account is permitted, else the person | M1's preflight |
 | H3 | The seed key file onto the always-on Mac | the person | done 2026-10-21 (early, for M4's timing): `~/.config/devcloud/seed.json`, 0600; the Mac's own gcloud default untouched |
-| H4 | A desk provisioning key into Secret Manager; its `offline_revoke_s` is null ("never"), by the owner's ruling (Decision Log) | the person, once the desk ships keys | done: `sminos-provisioning-key-devcloud` v2, a `dc-` key expiring 2027-01-19; M6 records the policy value |
+| H4 | A desk provisioning key into Secret Manager; its `offline_revoke_s` is null ("never"), by the owner's ruling (Decision Log) | the person, once the desk ships keys | done: a `dc-` key expiring 2027-01-19; M6 records the policy value |
 | H5 | A tailnet ACL rule letting the Macs reach `tag:devcloud` on port 22 | the person | not needed: M1 found it open |
 | H6 | Removing the parent's leftover test machine `devcloud-m5` from the desk's Machines | the person | an M6 step; evidence: `sminos machines` no longer lists it |
 | H8 | The Hetzner limits (6 primary IPs, 16 shared vCPU) | the person | answered at M1: GCE becomes the default account, no limit request (Decision Log) |
 | H9 | Optional: raising the GCE project's E2 vCPU quotas in us-west1 (E2 24 → 48, all regions 32 → 48), so the caps' worst case fits | the person | declined (2026-10-21): requests over the quota are refused with exit 3 |
-| H7 | Approving M5's test provider before it first runs with a credential (`provider register --confirmed`) | the person | M5 |
+| H7 | Approving the test provider before it first runs with a credential (`provider register --confirmed`) | the person | M5, and again for M6's acceptance 13: approved by the person through the main session (2026-10-21) |
 
 ## Terms
 
@@ -1518,7 +1518,7 @@ commit 5168e433 on its branch, 2026-10-21):
   "blocked on the desk". SSH to the always-on Mac works (it has Python 3.14 and gcloud, no `hcloud`).
   Evidence: `gcloud secrets list`, the token hashes compared against each `hcloud` context without
   printing them, `gcloud iam service-accounts create …` and the two bindings' etags, `sminos hub
-  check` → exit 2, `ssh mac-mini` (2026-10-21).
+  check` → exit 2, `ssh` to the always-on Mac (2026-10-21).
 - Observation (M1, 2026-10-21): The tailnet's ACL already lets both Macs reach `tag:devcloud` on
   port 22 over MagicDNS (`ssh root@<name>`: 1.4 s from the MacBook, 1.0 s from the always-on Mac). §5
   stands; H5 is not needed.

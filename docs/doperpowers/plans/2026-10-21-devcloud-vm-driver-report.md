@@ -12,7 +12,7 @@ whole-branch review and the PR have not started.
   account, its Secret Manager accessor binding, and the driver key account allowed to attach it)
   were carried out without the person. The auto-mode classifier allowed every write.
 - Desk: sminos 1.3.1 is installed and `hub check` exits 2, so the desk parts stay "blocked on the desk".
-- The always-on Mac answers `ssh mac-mini`. It has no `hcloud` (to install at M6).
+- The always-on Mac answers `ssh` by its tailnet name. It has no `hcloud` (to install at M6).
 - M1's seven live questions: a task-executor was dispatched (ledger: Task 1, base 313f528). It was
   still running, waiting on its own background work, at hand-back. Its report will be
   `.doperpowers/sde/2026-10-21-devcloud-vm-driver-design/task-1-report.md`. It may have live Hetzner/GCE
