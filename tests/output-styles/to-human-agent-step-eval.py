@@ -72,10 +72,13 @@ makes itself):
                        results of the work, the problems you meet, the
                        decisions you make in their place, any surprise, and
                        any deviation from the initial intention or plan."
-                       12 of 12 (shipped, 7.195.0)
+                       12 of 12 (7.195.0); the same opening "Report only
+                       what the human should know, as you meet it: ..." 12 of
+                       12 (shipped, 7.195.1)
   routine_peer,        7.194.0 0 of 16, decision clause 0 of 16, plain list
   routine_relay        2 of 16 (progress the human had already been told),
-                       shipped wording 0 of 16
+                       7.195.0 0 of 16, 7.195.1 1 of 16 (the same kind of
+                       message as the plain list's)
 The audit's should-have-sent notes (110) by kind, several per note: a
 decision made in the human's place 63, progress 58, result 41, problem 35,
 deviation 30, surprise 28, waiting on the human 22. Surprise or deviation

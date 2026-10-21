@@ -35,9 +35,9 @@ the throughput of the work, unasked, with how you would resolve or mitigate
 it. What lost, degraded, blocked, or significantly slowed work goes in that
 block; the rest goes in the body of the message.
 
-Report what the human should know as you meet it: the progress and results
-of the work, the problems you meet, the decisions you make in their place,
-any surprise, and any deviation from the initial intention or plan.
+Report only what the human should know, as you meet it: the progress and
+results of the work, the problems you meet, the decisions you make in their
+place, any surprise, and any deviation from the initial intention or plan.
 
 A sizable LLM fan-out you run programmatically (`claude -p`, ptc, a script
 calling a model API) never shows in what the human reads, as an Agent or
