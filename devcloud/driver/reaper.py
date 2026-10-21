@@ -181,7 +181,9 @@ def _run(ctx, bounded):
     failed = False
     survivors = []
     bakeable = []       # (account, client, its images, its live builders), for the daily build
+    accounts = []
     for account, client in ctx.usable(quiet=bounded):
+        accounts.append(account)
         try:
             entries = ctx.fleet_of(account, client, kinds=None)
         except Spent:
@@ -233,6 +235,9 @@ def _run(ctx, bounded):
                 failed = True
         for account, client, listed, builders in bakeable:
             failed |= not _daily_build(ctx, account, client, listed, builders)
+        # One dated line per scheduled run, so the agent's output shows it running when nothing is due.
+        tell(ctx, bounded, f"run {_utc(ctx.clock())} {'failed' if failed else 'done'}: accounts "
+                           f"{', '.join(a.name for a in accounts) or 'none usable'}")
     return 1 if failed else 0
 
 

@@ -248,6 +248,14 @@ class RunTest(DriverBase):
         self.run_reaper()
         self.assertIn("reap: deleted dc-off-0002", self.out.getvalue())
 
+    def test_each_scheduled_run_ends_with_one_dated_line_and_a_bounded_run_with_none(self):
+        # The agent's output is how anyone sees it run every 10 minutes, deletions or not.
+        self.run_reaper(bounded=True)
+        self.assertNotIn("reap: run", self.err.getvalue() + self.out.getvalue())
+        self.assertEqual(self.run_reaper(), 0)
+        self.assertRegex(self.out.getvalue().splitlines()[-1],
+                         r"^reap: run \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ done: accounts main$")
+
     def test_an_image_relabeled_after_the_list_is_not_deleted(self):
         state = self.state()
         state["images"] = [{"id": f"i{i}", "name": f"img{i}", "labels": {"devcloud": "image"},
