@@ -25,7 +25,7 @@ def server(sid, name, labels, *, location="hil", stype="cpx31", ipv4="203.0.113.
            status="running", created="2026-10-21T04:20:02Z"):
     return {"id": sid, "name": name, "status": status, "created": created, "labels": labels,
             "server_type": {"id": 24, "name": stype},
-            "datacenter": {"name": location + "-dc1", "location": {"name": location}},
+            "location": {"id": 5, "name": location, "network_zone": "us-west"},
             "public_net": {"ipv4": {"ip": ipv4} if ipv4 else None, "ipv6": None}}
 
 

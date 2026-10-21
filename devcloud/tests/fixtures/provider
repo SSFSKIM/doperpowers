@@ -18,6 +18,7 @@ with a `behavior` object a test sets to make it misbehave:
   now            created time for new servers (default the clock)
   drop_on_set    set-labels drops this label key
   drop_on_get    get answers without this label key
+  fail_after_create  create makes the server, then exits 1
 
 Every call is appended to `calls` ({op, argv, input, env}); `record_env`
 names the variables whose values a call records."""
@@ -74,6 +75,9 @@ def handle(state, op, raw):
         return 0, "this is not json", err
     if op in behavior.get("refuse", {}):
         return 3, {"error": f"{op} refused by the stand-in", "kind": behavior["refuse"][op]}, err
+    if op == "create" and behavior.get("fail_after_create"):
+        create(state, request, behavior)          # made, then the provider fails before it answers
+        return 1, None, err
     if op in behavior.get("fail", {}):
         return int(behavior["fail"][op]), None, err
     if not isinstance(request, dict):

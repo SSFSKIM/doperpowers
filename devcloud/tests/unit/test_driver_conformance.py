@@ -113,6 +113,12 @@ class FailTest(ConformanceBase):
         self.fails()
         self.assertEqual(self.servers(), {})
 
+    def test_a_server_made_by_a_create_that_failed_is_found_by_its_run_label_and_deleted(self):
+        self.behave(fail_after_create=True)
+        code, message = self.fails()
+        self.assertEqual(code, 1)
+        self.assertEqual(self.servers(), {})
+
     def test_a_leftover_is_named_and_exit_1(self):
         self.behave(fail={"set-labels": 1, "delete": 1})
         code, message = self.fails()

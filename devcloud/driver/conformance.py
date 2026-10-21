@@ -82,7 +82,7 @@ def _utc(now):
 def _sequence(ctx, client, account, gone_window, running_window, poll):
     run_id = f"pt-{datetime.datetime.fromtimestamp(ctx.clock(), datetime.timezone.utc):%Y%m%d%H%M}-{ctx.token_hex()}"
     labels = {"devcloud": "test", "devcloud-test": run_id}
-    made = {"server": None, "image": None}     # what exists until the test sees it gone
+    made = {"server": None, "image": None, "created": False}   # what exists until the test sees it gone
     try:
         _steps(ctx, client, account, labels, made, gone_window, running_window, poll)
         problem = None
@@ -90,7 +90,7 @@ def _sequence(ctx, client, account, gone_window, running_window, poll):
         problem = f"provider test of {account.name} failed at {failure}"
     except DriverError as error:
         problem = f"provider test of {account.name} failed at the provider: {error}"
-    leftovers = _clean(ctx, client, made["server"], made["image"])
+    leftovers = _clean(ctx, client, made, labels)
     if leftovers:
         problem = (f"{problem}; " if problem else "provider test: ") + f"it could not clean up: {', '.join(leftovers)}"
     if problem:
@@ -106,6 +106,7 @@ def _steps(ctx, client, account, labels, made, gone_window, running_window, poll
     request = {"name": name, "type": type_["type"], "location": account.location, "image": None, "labels": labels,
                "ssh_public_keys": ctx.driver_keys(), "disk_gb": None, "spot": False,
                "user_data": "#cloud-config\n{}\n" if "user_data" in capabilities else None}
+    made["created"] = True
     made["server"] = server = client.create(request)
     ctx.say(f"create ok ({name}, id {server['id']})")
     listed = client.list()
@@ -146,24 +147,34 @@ def _steps(ctx, client, account, labels, made, gone_window, running_window, poll
     ctx.say("gone ok")
 
 
-def _clean(ctx, client, server, image):
+def _clean(ctx, client, made, labels):
     """Deletes what the test made and still exists; returns the leftovers,
-    each named on stderr. The recheck is the core's: the devcloud label."""
+    each named on stderr. A create that failed may still have made a server,
+    which carries the run's label, so it is looked for by that label. The
+    recheck is the core's: the devcloud label."""
     leftovers = []
+    image, server = made["image"], made["server"]
     if image is not None:
         try:
             client.image_delete(image["id"])
         except DriverError:
             leftovers.append(f"leftover image {image['id']}")
-    if server is not None:
+    candidates = [server["id"]] if server is not None else []
+    if server is None and made["created"]:
         try:
-            current = client.get(server["id"])
-            if current is not None and "devcloud" in current["labels"]:
-                client.delete(server["id"])
-            elif current is not None:
-                leftovers.append(f"leftover server {server['id']} (it lost its devcloud label; not deleted)")
+            candidates = [vm["id"] for vm in client.list()
+                          if vm["labels"].get("devcloud-test") == labels["devcloud-test"]]
         except DriverError:
-            leftovers.append(f"leftover server {server['id']}")
+            leftovers.append(f"a server labeled devcloud-test={labels['devcloud-test']} may be left")
+    for server_id in candidates:
+        try:
+            current = client.get(server_id)
+            if current is not None and "devcloud" in current["labels"]:
+                client.delete(server_id)
+            elif current is not None:
+                leftovers.append(f"leftover server {server_id} (it lost its devcloud label; not deleted)")
+        except DriverError:
+            leftovers.append(f"leftover server {server_id}")
     for line in leftovers:
         ctx.warn(f"devcloud vm provider test: {line}: delete it by hand")
     return leftovers

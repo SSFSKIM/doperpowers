@@ -90,7 +90,9 @@ def vm(server):
     return {
         "id": str(server["id"]),
         "name": server["name"],
-        "location": server["datacenter"]["location"]["name"],
+        # The API names the location at the top level; `datacenter`, which once carried it, is gone (live,
+        # 2026-10-21). Either is read.
+        "location": (server.get("location") or (server.get("datacenter") or {}).get("location") or {})["name"],
         "type": server["server_type"]["name"],
         "labels": server.get("labels") or {},
         "public_ipv4": ipv4.get("ip") or None,

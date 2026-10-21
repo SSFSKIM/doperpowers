@@ -115,7 +115,7 @@ elif command == "server create":
         "id": sid, "name": flags["--name"], "status": "running", "created": NOW,
         "labels": labels_from(flags.get("--label")),
         "server_type": {"id": stype["id"], "name": stype["name"]},
-        "datacenter": {"name": flags["--location"] + "-dc1", "location": {"name": flags["--location"]}},
+        "location": {"id": 5, "name": flags["--location"], "network_zone": "us-west"},
         "public_net": {"ipv4": {"ip": f"203.0.113.{sid % 256}"}, "ipv6": None},
         "image": {"name": flags["--image"]},
         "_ssh_keys": keys,
