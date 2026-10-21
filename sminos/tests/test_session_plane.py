@@ -3856,27 +3856,32 @@ class Lifecycle(unittest.TestCase):
         return [[f["t"] for f in body] for body in hub.bodies()]
 
     def test_a_project_opened_again_is_gated_until_its_new_hello_is_answered_and_opened_once(self):
-        """The hub refuses `not-open` mid-stream (it lost the project's open
-        state): the project is opened again, once however many refusals come,
-        and its session messages wait for that hello's answer."""
+        """The hub lost the project's open state mid-stream: a POST's answer
+        names two of its frames refused `not-open`, and the project is opened
+        again, once, however many refusals come — a later answer's while
+        that hello is out, or the stream's own copy of a refusal, however
+        late — and its session messages wait for that hello's answer."""
         project, runs, _ = self.ended_presence_project("reopen-gate")
         hub = ScriptedHub()
         self.addCleanup(hub.close)
         link, items, hl = self.on_lanes(project, hub)
         link.open(hl)
         self.answered(link, items)
-        hub.script = ["hold"]
-        refused = {"t": "refused", "project": project.id, "refusal": {"reason": "not-open"}}
-        link.on_refused(refused, None)
-        link.on_refused(refused, None)
-        self.assertTrue(wait_for(lambda: len(hub.posts) == 2), "the second hello reached the hub, which holds it")
+        hub.closed.add(project.id)
+        hub.script = [200, "hold"]
+        upload = {"t": "events", "project": project.id, "events": []}
+        link.log_lane.send([upload, dict(upload)])
+        self.answered(link, items)        # the answer names both refused: the hello goes, held at the hub
+        self.assertTrue(wait_for(lambda: len(hub.posts) == 3), "the second hello reached the hub, which holds it")
+        self.assertEqual(self.kinds(hub)[2][0], "hello")
+        link.refused_whole([(0, "not-open", upload)])   # another answer's, while that hello is out
         # The hub's two chains (M4): the held hello's `have` comes ahead of its
-        # 200, and a refusal of a frame sent before that hello comes after it.
+        # 200, and the stream's copy of a refusal sent before that hello after it.
         link.on_have({"t": "have", "project": project.id, "have": {}}, None)
-        link.on_refused(refused, None)
+        link.on_refused({"t": "refused", "project": project.id, "refusal": {"reason": "not-open"}}, None)
         link.post_session([plane.envelope(project.id, "testhost", runs, "presence", None, None, {"after": True})])
         time.sleep(0.4)
-        self.assertEqual(len(hub.posts), 2, "nothing of the project passes its held hello")
+        self.assertEqual(len(hub.posts), 3, "nothing of the project passes its held hello")
         hub.release.set()
         self.answered(link, items)
         self.assertTrue(wait_for(lambda: ["session"] in self.kinds(hub)), "released: the message goes")
@@ -3908,7 +3913,7 @@ class Lifecycle(unittest.TestCase):
         held = len(hub.posts)
         link.post_session([plane.envelope(project.id, "testhost", runs, "presence", None, None, {"older": True})])
         self.assertTrue(wait_for(lambda: len(hub.posts) > held), "the body is out, held at the hub")
-        link.on_refused({"t": "refused", "project": project.id, "refusal": {"reason": "not-open"}}, None)
+        link.refused_whole([(0, "not-open", {"t": "events", "project": project.id, "events": []})])
         self.assertTrue(wait_for(lambda: len(hub.posts) > held + 1), "the re-open's hello went")
         self.answered(link, items)
         hub.release.set()
@@ -3959,7 +3964,7 @@ class Lifecycle(unittest.TestCase):
         tombstone = link.plane.presence(project.id)
         self.assertEqual([(m["session"], m["body"]) for m in tombstone], [(runs, {"record": None, "bridge": False})])
         link.post_session(tombstone)       # queued behind the held body
-        link.on_refused({"t": "refused", "project": project.id, "refusal": {"reason": "not-open"}}, None)
+        link.refused_whole([(0, "not-open", {"t": "events", "project": project.id, "events": []})])
         self.assertTrue(wait_for(lambda: len(hub.posts) > held + 1), "the re-open's hello went")
         self.answered(link, items)
         hub.release.set()
@@ -4308,10 +4313,16 @@ class ScriptedHub:
     `fin` (answered 200, then the connection closed with no `Connection:
     close`); `close` (answered 200 with `Connection: close`); `503-close`
     (answered 503 with `Connection: close`, as the stand-in answers a
-    released hold); ("slow", s)."""
+    released hold); ("slow", s); ("refuse", [(index, reason), ...]) (answered
+    200 naming those frames refused). A 200 says `refused` as the deployed
+    hub does (MAWS #88): besides the script's, every frame but `hello` of a
+    project in `closed` — the projects the hub holds not open — is refused
+    `not-open`, and a `hello` opens its project, frame by frame in POST
+    order."""
 
     def __init__(self):
         self.posts, self.script, self.conns = [], [], 0
+        self.closed = set()
         self.lock = threading.Lock()
         self.release = threading.Event()
         hub = self
@@ -4328,8 +4339,10 @@ class ScriptedHub:
             def log_message(self, *_):
                 pass
 
-            def answer(self, status, close=False):
-                data = b'{"ok":true}' if status == 200 else b'{"error":"scripted"}'
+            def answer(self, status, close=False, refused=()):
+                data = json.dumps({"ok": True, "frames": 0, "refused": [{"index": i, "reason": r}
+                                                                         for i, r in sorted(refused)]}).encode() \
+                    if status == 200 else b'{"error":"scripted"}'
                 self.send_response(status)
                 self.send_header("Content-Length", str(len(data)))
                 if close:
@@ -4351,22 +4364,34 @@ class ScriptedHub:
                     hub.posts.append({"conn": self.conn, "body": body, "path": self.path,
                                       "generation": self.headers.get("X-Desk-Generation")})
                     action = hub.script.pop(0) if hub.script else 200
-                if isinstance(action, tuple):
+                    refused = set()
+                    for i, line in enumerate(line for line in body.splitlines() if line):
+                        frame = json.loads(line)
+                        message = frame.get("message") if isinstance(frame.get("message"), dict) else {}
+                        pid = frame.get("project") or message.get("project")
+                        if frame.get("t") == "hello":
+                            hub.closed.discard(pid)
+                        elif pid in hub.closed:
+                            refused.add((i, "not-open"))
+                if isinstance(action, tuple) and action[0] == "refuse":
+                    refused |= set(action[1])
+                    action = 200
+                elif isinstance(action, tuple):
                     time.sleep(action[1])
                     action = 200
                 if action in ("hold", "hold-503"):
                     hub.release.wait(30)
-                    return self.answer(200 if action == "hold" else 503)
+                    return self.answer(200, refused=refused) if action == "hold" else self.answer(503)
                 if action == "503-close":
                     return self.answer(503, close=True)
                 if action == "drop":
                     self.close_connection = True
                     return None
                 if action == "close":
-                    return self.answer(200, close=True)
+                    return self.answer(200, close=True, refused=refused)
                 if isinstance(action, int):
-                    return self.answer(action)
-                self.answer(200)
+                    return self.answer(action, refused=refused)
+                self.answer(200, refused=refused)
                 self.close_connection = True
                 if action == "rst":  # linger 0: the close resets the connection
                     self.connection.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
@@ -4456,15 +4481,46 @@ class Lanes(unittest.TestCase):
         self.assertGreater(dialled[1], first, "each dial its own number")
         self.assertEqual(self.said[0], "session lane dialled the hub (connection #%d)" % first)
 
+    def test_an_answers_refusals_reach_the_continuations_of_the_frames_they_name(self):
+        """A 200 names the frames the hub refused whole by their place in the
+        POST (DX2's `refused`): each line one, a part set by its last part.
+        Each `send`'s continuation is told its own; the lane's `refused` hears
+        them all, a place that ends no frame as such."""
+        heard = []
+        s = self.uplink.Sender("session", {"hub": self.hub.url, "client_id": "c", "client_secret": "s"}, 7,
+                               self.items.put, lambda: False, heard.extend)
+        s.release("p1")
+        s.start()
+        self.addCleanup(s.close)
+        big = {"t": "session", "message": {"project": "p1", "n": 1, "body": {"pad": "x" * self.uplink.FRAME_LIMIT}}}
+        parts = len(self.uplink.to_wire(big))
+        self.assertGreater(parts, 1)
+        a, c = self.frames(0)[0], self.frames(2)[0]
+        self.hub.script = ["hold", ("refuse", [(1, "bad-shape"), (parts, "not-open"), (parts + 1, "bad-shape")])]
+        s.send(self.frames(9))
+        self.posted(1)                 # held: what follows goes in one body
+        told = {}
+        s.send([a], then=lambda refused: told.update(first=refused))
+        s.send([big, c], then=lambda refused: told.update(second=refused))
+        self.hub.release.set()
+        self.posted(2)
+        self.assertEqual(len(self.hub.bodies()[1]), parts + 2, "a, the parts, c: one body")
+        kind, thens = self.items.get(timeout=5)   # the held POST carried no continuation and was refused nothing
+        self.assertEqual(kind, "sent")
+        for then in thens:
+            then()
+        self.assertEqual(told, {"first": {}, "second": {id(big): "not-open", id(c): "bad-shape"}})
+        self.assertEqual(heard, [(1, "bad-shape", None), (parts, "not-open", big), (parts + 1, "bad-shape", c)])
+
     def test_continuations_run_after_the_200_and_never_after_a_failure(self):
         s = self.lane("log")
         ran = []
-        s.send(self.frames(1), then=lambda: ran.append(1))
+        s.send(self.frames(1), then=lambda _refused: ran.append(1))
         self.ran(self.items.get(timeout=5))
         self.assertEqual(ran, [1])
         self.hub.script = ["hold-503"]
-        s.send(self.frames(2), then=lambda: ran.append(2))
-        s.send(self.frames(3), then=lambda: ran.append(3))
+        s.send(self.frames(2), then=lambda _refused: ran.append(2))
+        s.send(self.frames(3), then=lambda _refused: ran.append(3))
         self.posted(2)
         self.assertTrue(s.posting())
         self.hub.release.set()
@@ -4476,7 +4532,7 @@ class Lanes(unittest.TestCase):
                                          r"503 .*\)", line) for line in self.said), "the lane's close names it")
         s.join(3)
         self.assertFalse(s.is_alive(), "a lane that lost a POST exits")
-        s.send(self.frames(4), then=lambda: ran.append(4))
+        s.send(self.frames(4), then=lambda _refused: ran.append(4))
         time.sleep(0.3)
         self.assertEqual(ran, [1], "no continuation after the failure")
         self.assertEqual(len(self.hub.posts), 2, "nothing queued behind it is posted")
@@ -4508,7 +4564,7 @@ class Lanes(unittest.TestCase):
         self.posted(1)
         self.assertEqual(self.ns(0), [("p2", 2)], "a released project's message goes; the other's waits")
         s.send(self.frames(3, "p1"))
-        s.send(self.frames(4, "p3") + self.frames(5, "p2"), then=lambda: ran.append("p3 p2"))
+        s.send(self.frames(4, "p3") + self.frames(5, "p2"), then=lambda _refused: ran.append("p3 p2"))
         self.posted(2)
         self.assertEqual(self.ns(1), [("p2", 5)])
         s.release("p1")
@@ -4545,16 +4601,16 @@ class Lanes(unittest.TestCase):
         s = self.lane("log")
         self.hub.script = ["fin"]
         for i in (1, 2):
-            s.send(self.frames(i), then=lambda: None)
+            s.send(self.frames(i), then=lambda _refused: None)
             self.ran(self.items.get(timeout=5))
         self.assertEqual([p["conn"] for p in self.hub.posts], [1, 2])
         self.assertTrue(any(line.endswith("after 1 POSTs (the hub closed it)") for line in self.said), self.said)
         self.hub.script = ["rst"]
-        s.send(self.frames(3), then=lambda: None)
+        s.send(self.frames(3), then=lambda _refused: None)
         self.ran(self.items.get(timeout=5))
         time.sleep(0.2)
         with mock.patch.object(self.uplink, "readable", lambda _sock: False):
-            s.send(self.frames(4), then=lambda: None)
+            s.send(self.frames(4), then=lambda _refused: None)
             self.ran(self.items.get(timeout=5))
         self.assertEqual([p["conn"] for p in self.hub.posts], [1, 2, 2, 3],
                          "the reset connection carried nothing; its POST went once, on a fresh one")
@@ -4564,10 +4620,10 @@ class Lanes(unittest.TestCase):
 
     def test_a_failure_after_the_send_is_a_loss(self):
         s = self.lane("log")
-        s.send(self.frames(1), then=lambda: None)
+        s.send(self.frames(1), then=lambda _refused: None)
         self.ran(self.items.get(timeout=5))
         self.hub.script = ["drop"]
-        s.send(self.frames(2), then=lambda: None)
+        s.send(self.frames(2), then=lambda _refused: None)
         kind, err = self.items.get(timeout=5)
         self.assertEqual(kind, "closed")
         self.assertIsInstance(err, self.uplink.NotDelivered)
@@ -4578,7 +4634,7 @@ class Lanes(unittest.TestCase):
         s = self.lane("log")
         self.hub.script = ["close"]
         for i in (1, 2):
-            s.send(self.frames(i), then=lambda: None)
+            s.send(self.frames(i), then=lambda _refused: None)
             self.ran(self.items.get(timeout=5))
         self.assertEqual([p["conn"] for p in self.hub.posts], [1, 2])
         self.assertIn("log lane closed connection #%d after 1 POSTs (the hub closed it)" % self.numbers("dialled")[0],
@@ -4590,7 +4646,7 @@ class Lanes(unittest.TestCase):
         closes to tell a failed POST from an edge's close)."""
         s = self.lane("log")
         self.hub.script = ["503-close"]
-        s.send(self.frames(1), then=lambda: None)
+        s.send(self.frames(1), then=lambda _refused: None)
         kind, err = self.items.get(timeout=5)
         self.assertEqual(kind, "closed")
         self.assertTrue(str(err).startswith("the hub answered 503"), str(err))
@@ -4605,8 +4661,8 @@ class Lanes(unittest.TestCase):
             self.hub.script = ["hold"]
             s = self.lane("log", ended=ended.is_set)
             before = len(self.hub.posts)
-            s.send(self.frames(1), then=lambda: None)
-            s.send(self.frames(2), then=lambda: None)
+            s.send(self.frames(1), then=lambda _refused: None)
+            s.send(self.frames(2), then=lambda _refused: None)
             self.posted(before + 1)
             t0 = time.time()
             ended.set() if stop == "ended" else s.close()
@@ -4624,7 +4680,7 @@ class Lanes(unittest.TestCase):
         with mock.patch.object(self.uplink, "POST_TIMEOUT", 0.3):
             s = self.lane("log")
             t0 = time.time()
-            s.send(self.frames(1), then=lambda: None)
+            s.send(self.frames(1), then=lambda _refused: None)
             kind, err = self.items.get(timeout=5)
         self.assertEqual(kind, "closed")
         self.assertIsInstance(err, self.uplink.NotDelivered)
@@ -4650,7 +4706,7 @@ class Lanes(unittest.TestCase):
         s.send(self.frames(0, "p2"))
         self.posted(1)
         s.send(self.frames(1, "p1"))
-        self.assertFalse(s.hold("p1"), "the body out carries p2 alone")
+        self.assertEqual(s.hold("p1"), (None, []), "the body out carries p2 alone, and nothing is dropped")
         s.send(self.frames(2, "p1"))
         s.send(self.frames(3, "p2"))
         self.hub.release.set()
@@ -4681,13 +4737,18 @@ class Lanes(unittest.TestCase):
         s.send([message("presence")])
         s.send([message("chunk", 1)])
         s.send([{"t": "pending", "project": "p1", "raised": []}, message("raised"), message("settled")],
-               then=lambda: ran.append("requests"))
+               then=lambda _refused: ran.append("requests"))
         s.send([{"t": "rpc-result", "project": "p1", "nonce": "n1", "outcome": {}}, message("compact")],
-               then=lambda: ran.append("rpcs"))
+               then=lambda _refused: ran.append("rpcs"))
         s.send([message("presence", project="p2")])
         s.send([message("presence"), message("chunk", 2)])
         queued = s.queued()
-        self.assertTrue(s.hold("p1"), "the body out carries p1: the hub may apply it after the hello")
+        flying, dropped = s.hold("p1")
+        self.assertIsNotNone(flying, "the body out carries p1: the hub may apply it after the hello")
+        self.assertEqual([(f["t"], f.get("message", {}).get("kind")) for f in dropped],
+                         [("session", "presence"), ("pending", None), ("session", "raised"), ("session", "settled"),
+                          ("rpc-result", None), ("session", "compact"), ("session", "presence")],
+                         "the frames dropped, for their owners to owe as they stand")
         self.assertLess(s.queued(), queued, "what was dropped is no longer counted as unsent")
         s.send([message("presence")])   # after the hold: the re-open's own, kept
         self.hub.release.set()
@@ -4781,7 +4842,7 @@ class Lanes(unittest.TestCase):
         self.hub.script = [("slow", 0.4)]
         with mock.patch.object(self.uplink, "SLOW_POST_SECONDS", 0.2):
             s = self.lane("log")
-            s.send(self.frames(1), then=lambda: None)
+            s.send(self.frames(1), then=lambda _refused: None)
             self.ran(self.items.get(timeout=5))
         self.assertTrue(any(re.fullmatch(r"a log lane POST took 0\.\d s", line) for line in self.said), self.said)
 
