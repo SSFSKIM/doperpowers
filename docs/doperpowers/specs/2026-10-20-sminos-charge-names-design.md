@@ -4,9 +4,9 @@ A session's name is how every other session and the owner tell it apart: it is t
 
 After this change a session with a generated name is renamed, once its in-charge line exists, to a 2–4 word name that says what it owns (`sminos-desk-orchestrator`, `ask-mod-reload-safety`). The name changes again only when the session's standing responsibility does. A name the owner gave, a seat's alias and a name a host gave are never touched. A peer that still writes the old alias reaches the renamed session and is told its new name.
 
-To see it: in a session that has had ten prompts from its human, run `sminos derive <alias>` (or wait for the daemon's hourly run). It prints the line and the proposed name. At that session's next prompt the footer shows the new name, `sminos list` shows it as the alias with its in-charge line beside it, and the model reads one line of context saying it was renamed. `sminos say "@doperpowers-c4 hi"` from another session still delivers, and prints `note: @doperpowers-c4 is now @sminos-desk-orchestrator#8659f74a`.
+To see it: in a session that has had ten prompts from its human, run `sminos derive <alias>` (or wait for the daemon's hourly run). It prints the line and the proposed name. Within a minute, once that session is between turns, the footer shows the new name, `sminos list` shows it as the alias with its in-charge line beside it, and the session's transcript carries the engine's own note that it was renamed. `sminos say "@doperpowers-c4 hi"` from another session still delivers, and prints `note: @doperpowers-c4 is now @sminos-desk-orchestrator#8659f74a`.
 
-Terms are those of the project log design (`docs/doperpowers/specs/2026-10-13-smns-project-log-design.md`): **member**, **alias**, **in-charge line** (§5 there: one line per member saying what it is in charge of; sources `set`, the owner's name, `derived`, the title), **derive** (§5: the daemon forks a member's session headless every hour and asks it for that line, for local members with at least 10 prompts from their human, at most once per 6 hours), **seat**. New here: **engine name**, the name the Claude Code engine registers for a running session in `~/.claude/sessions/<pid>.json` (`name`, with `nameSource` saying where it came from), which is what sminos reads as a seat-less member's alias (`held_alias` in `sminos/skills/sminos/scripts/sminos.py`); **charge name**, a name sminos proposed from the in-charge line; **pending name**, a charge name written for its session's mod to apply; **former alias**, an alias a member held before its current one.
+Terms are those of the project log design (`docs/doperpowers/specs/2026-10-13-smns-project-log-design.md`): **member**, **alias**, **in-charge line** (§5 there: one line per member saying what it is in charge of; sources, as this design reorders them, `set`, `derived`, the owner's name, the title), **derive** (§5: the daemon forks a member's session headless every hour and asks it for that line, for local members with at least 10 prompts from their human, at most once per 6 hours), **seat**. New here: **engine name**, the name the Claude Code engine registers for a running session in `~/.claude/sessions/<pid>.json` (`name`, with `nameSource` saying where it came from), which is what sminos reads as a seat-less member's alias (`held_alias` in `sminos/skills/sminos/scripts/sminos.py`); **charge name**, a name sminos proposed from the in-charge line; **pending name**, a charge name written for its session's mod to apply; **former alias**, an alias a member held before its current one.
 
 ## Progress
 
@@ -14,6 +14,8 @@ Terms are those of the project log design (`docs/doperpowers/specs/2026-10-13-sm
 - [x] (2026-10-20) M1 — derive proposes a charge name; sminos knows its own names (53f0b667, fix 6c54c52a; task review clean)
 - [x] (2026-10-20) M2 — the name mod applies a pending name (9386dbdc, fix 5cfac89b; task review clean; live check 7/7)
 - [x] (2026-10-20) M3 — former aliases still reach, with a note; docs, version, acceptance (4c8176ae, fix 2240f707; task review clean; full ci-gate GREEN on 4c8176ae, sminos gate on 2240f707)
+- [ ] (2026-10-21) Branch review (reviewer-medium): three P2 findings. The fixes for name-due's eligibility recheck and the former-alias session binding are in progress. The cross-project `charge` provenance is dropped along with the `charge` source (Decision Log).
+- [ ] (2026-10-21) Owner's design change: M4 — derive for every member, no `charge` source; M5 — the mod renames through the engine's `/rename` between turns. Then the branch review again at medium.
 
 ## 1. Where the name comes from
 
@@ -39,7 +41,7 @@ A member that is not eligible gets today's prompt (`DERIVE_PROMPT`), unchanged.
 
 **Cadence: derive's own.** The first name arrives with the first derived line: 10 prompts from the human, then at most every 6 hours, from the daemon's hourly `derive --all`. The owner chose this over a lower naming threshold, to spend no extra model calls (2026-10-20). A short session keeps its generated name. A member whose line was `set` (`sminos charge`, `spawn --brief`) is not derived and so is not named. Today that is almost only seats, which are not named anyway (§2).
 
-## 2. Which names sminos may replace, and knowing its own
+## 2. Which names sminos may replace
 
 **Eligibility is read from the session's running engine record, not from the member row.** The member row cannot be trusted for this. `held_alias` keeps the alias a session already holds, and that alias's source, whenever the engine name is one it treats as generated (`collision` among them) or would shadow another member. So an owner's `/rename` that collided, or that shadows another member's alias, still lists as the old `derived` alias (the design review ran the function: both return `('project-ab', 'derived')`). Eligibility judged from the row would overwrite those names. Derive reads the record `_on_sight` chooses, as it reads `before` (§3):
 
@@ -47,41 +49,50 @@ A member that is not eligible gets today's prompt (`DERIVE_PROMPT`), unchanged.
 |---|---|
 | `nameSource` `derived` (the engine's `<dir>-<hex>`) | yes |
 | `nameSource` `auto` (the engine promoted a title: SDK, MAWS, `--bg`, bridge sessions) | yes |
-| `name` is one of the member's proposed names (§1), whatever its `nameSource` (`hook`, or `user` after a resume) | yes; the name is passed to the fork to keep |
-| any other: `user` (the owner's `/rename` or `--name`), `peer` (a host named it), `collision`, a `hook` name that is not the proposal | no |
+| `name` is one of the member's proposed names (§1), whatever its `nameSource` (`user`, as every name sminos applies reads, §3) | yes; the name is passed to the fork to keep |
+| any other: `user` (the owner's `/rename` or `--name`, a name sminos never proposed), `peer` (a host named it), `collision`, a `hook` name that is not a proposal | no: the line only |
 | no running record (the session is stopped) | no: the line only |
 | the member is a seat | no |
 
 `collision` is excluded because the engine also records it for the owner's own `/rename` that collided (`QTn` in the engine: a `user` request that yields is recorded `collision`). Treating it as generated would overwrite a name the owner chose.
 
-**sminos decides which names are its own from its log, not from the engine's source label.** The spike showed the engine does not keep that label: a name set through the hook is registered `hook`, and after a resume the same name is restored as `user`, because the transcript stores no source. If sminos trusted the label, one resume would turn every charge name into "the owner named it". Derive would stop (`derive_refusal`: "its human named it"), the name would replace the derived line as the member's in-charge line (`charge_of`, source `name`), and the name could never follow the responsibility again. So, where a member row is built (`_member`), a seat-less member whose alias is one of its proposed names (§1) has name source `charge`, whatever the engine says, provided that, for a local member with a running engine record, the record's name is that same name. Without that proviso, an owner rename that `held_alias` hides would still read as sminos's. The test is "one of", not "the latest". A session that holds an applied name A while a newer proposal B waits, or was refused because B was taken (§3), must still read A as sminos's. Otherwise the resumed session's `user` label would stop every later derive. `charge_of`'s `name` source and `derive_refusal`'s "its human named it" read `user` only, so after the relabel they apply only to a `user` name sminos never proposed. `publish_renames` publishes `charge` as it publishes any source change, so other machines and the desk read the same label. The relabel is made only where the session's running engine record is read, its own machine; a row built without that record (another machine's member, a stopped one) takes the source its machine last published, so a demotion back to `user` there reaches every reader too. If the owner later `/rename`s the session to a name sminos never proposed, the source reads `user` again: their name wins, and derive stops proposing (the member is no longer eligible). An owner who renames it to one of sminos's proposed names is indistinguishable from sminos, and no harm follows from that.
+**sminos knows its own names by its log, and only where naming needs it.** A name sminos applies reads `user`, as the engine registers every `/rename` (§3), and nothing relabels it. The proposed-names set (§1) is what tells sminos's names from the owner's, and only two places ask: the table above (derive's eligibility, judged before the fork) and `name-due` (§3). The test is "one of", not "the latest": a session that holds an applied name A while a newer proposal B waits, or was refused because B was taken, stays eligible. Nothing else needs to tell the two apart, because derive treats an owner's name as it treats any other (design change of 2026-10-21, Decision Log):
+- **Derive runs for owner-named members too.** `derive_refusal` no longer refuses a member its human named. A `set` line still stops derive, as do the prompt threshold and the six-hour spacing. An owner-named member that is not eligible gets today's prompt, so its line is derived and its name is left alone.
+- **A derived line outranks the name.** `charge_of` reads its sources in the order `set` > `derived` > the owner's name > the title. A name is the member's line only until its first derive.
+If the owner `/rename`s a session to a name sminos never proposed, the member is no longer eligible: derive keeps deriving its line, and its name is never replaced. An owner who renames it to one of sminos's proposed names is indistinguishable from sminos, and no harm follows from that.
 
-## 3. Applying a name: the engine's hook path, at the next prompt
+## 3. Applying a name: the engine's `/rename`, between turns
 
-**The only way a plugin renames a session the way sminos needs is `sessionTitle` from a `UserPromptSubmit` hook.** The engine (2.1.304 source, `aMt` → `zdt(title, "hook")`, confirmed live on 2.1.305) treats it as a rename. It writes the `custom-title` and `agent-name` records, registers the engine name with `nameSource: "hook"`, applies its own collision rule (a name a live session on this machine holds yields a suffixed one), and is not overwritten later by the engine's title promotion, which replaces only `derived` and `auto` names. A function-hook mod returns it from `classic.UserPromptSubmit`. *Alternatives, both measured or read:*
-- `$.command.run({ command: "rename", args })` runs the owner's `/rename` and registers `user`, the label sminos must not read as its own (§2). It also writes command rows into the transcript, and it runs only once the session is idle.
-- `sessionTitle` from `SessionStart` changes only the session's title. At startup and at resume the engine name stayed what it was (spike). Using it would leave the title and the engine name disagreeing.
+**The mod runs the engine's own `/rename`: `$.command.run({ command: 'rename', args: name })`.** Measured on engine 2.1.305 (2026-10-21, a scratch plugin whose `turn.complete` hook called it 3 s after the turn ended): it renamed an idle session with no prompt. The registry read `{"name": …, "nameSource": "user"}`. The transcript got `custom-title` and `agent-name` records, the `/rename` command row with its `Session renamed to: …` output, and a meta user row `The user named this session "<name>". …`, which `$.command.run` also returns as `context`. That row is how the model learns of the rename, so the mod adds no line of its own. The engine applies its collision rule as for any `/rename` the owner types: a name a live session on this machine holds yields a suffixed one recorded `collision` (Surprises). Title promotion replaces only `derived` and `auto` names, so it does not overwrite it. *Alternatives:*
+- `sessionTitle` from a `classic.UserPromptSubmit` hook, the first build (M2). The engine treats it as a rename too (2.1.304 source, `aMt` → `zdt(title, "hook")`), registered `hook`, but only at the session's next prompt. Its one advantage was a source label distinct from the owner's, and sminos stopped trusting that label: a resume restores it as `user`. The owner chose the command for its simplicity (2026-10-21).
+- `sessionTitle` from `SessionStart` changes only the session's title. At startup and at resume the engine name stayed what it was (spike).
 
-The cost is timing: a pending name applies at the session's next prompt. That prompt can be the owner's, a peer message the engine submits (`source: system`), a plugin's prompt, or a scheduled wake-up. A session nobody prompts again keeps its old name, and its alias with it. That is acceptable: a session no one talks to is not being misread.
+**Sessions that are not interactive.** The sessions that gain most from a name are the ones the engine named by title promotion (`auto`): `--bg` jobs and SDK sessions as MAWS launches them (`sdk-ts` entrypoint, streaming input, several prompts). A plugin's slash command may be refused there (reload.tsx registers only in interactive sessions for that reason). M5 measures, for each of those two kinds, whether `$.command.run('rename')` renames it and whether `sessionTitle` from `classic.UserPromptSubmit` does, and records the result in Surprises. A one-shot `-p` run is not measured: it ends before any derive could reach it. Where the command is refused, the mod applies the name for that kind through `sessionTitle` at its next `UserPromptSubmit`, from the same pending file, through the same `name-due` check and the same once-per-text memo. The two paths differ only in how they apply the name.
 
-**The name the proposal replaces is read before the fork.** The fork can run for up to two minutes (`SMINOS_DERIVE_TIMEOUT`, 120 s). If the owner `/rename`s the session in that time and derive read the engine name only afterwards, the owner's new name would become the `from` the mod checks against, and `name-due` would overwrite it at the next prompt. So derive reads the member's running engine record (the one `_on_sight` reads) and decides eligibility before it starts the fork, and keeps that record's name as `before`. When the fork returns, it reads the record again. If the record's name is no longer `before`, or the session no longer runs in that process, the naming part of this derive is discarded: the line is recorded without a `name`, and `no name: renamed during derive` is printed. The next derive judges the member afresh, and a `user` name is refused there as today.
+**The name the proposal replaces is read before the fork.** The fork can run for up to two minutes (`SMINOS_DERIVE_TIMEOUT`, 120 s). If the owner `/rename`s the session in that time and derive read the engine name only afterwards, the owner's new name would become the `from` the mod checks against, and `name-due` would overwrite it at the next prompt. So derive reads the member's running engine record (the one `_on_sight` reads) and decides eligibility before it starts the fork, and keeps that record's name as `before`. When the fork returns, it reads the record again. If the record's name is no longer `before`, or the session no longer runs in that process, the naming part of this derive is discarded: the line is recorded without a `name`, and `no name: renamed during derive` is printed. The next derive judges the member afresh: a `user` name sminos never proposed is not eligible there, and gets the line only.
 
 **Handing the name to the session.** Derive runs in the daemon or a terminal, never in the session, so the name crosses through a file. After recording an event with a name:
 - `before` already equals the name → remove any pending file for the session;
 - it differs → write the pending file (Interfaces) with `from` set to `before`;
 - no running record when derive started (the session is stopped) → nothing. A resume draws a new engine name anyway. The next derive after the session runs again writes the file.
 
-`derive --all` also removes pending files older than 7 days. A session that went that long without a prompt gets a fresh file from its next derive.
+`derive --all` also removes pending files older than 7 days. A session that went that long without being renamed (stopped, or never between turns with the mod loaded) gets a fresh file from its next derive.
 
-**The mod checks before it applies; the CLI owns the check.** `sminos/hooks/mods/name.tsx`, registered in `sminos/hooks/mods/register.tsx`, hooks `classic.UserPromptSubmit`:
-1. Let the hooks beneath answer (`next(e)`). If their result already sets `sessionTitle`, or the session is an internal fork (`SMNS_INTERNAL`), return it unchanged.
-2. Read the session's pending file (`$.fs`, under the sminos home: `SMINOS_HOME`, else `DAEMON_HOME`, else `$HOME/.claude/sminos`, as `root()` resolves it). If there is none, or its text is the text this module last handled, return the result unchanged. This read is the only cost a prompt pays when no rename is due.
-3. Otherwise run `sminos name-due --session <id>` (`$.process.run`, bounded as `address.tsx` bounds `who`). Whatever the attempt's outcome (a name, nothing, a non-zero exit, a throw or a timeout), remember the file's text as handled, so the check runs once per pending name and not once per prompt. A rename that misses through a transient failure gets another chance when the next derive rewrites the file.
-4. If it printed a name, return the result with `sessionTitle` set to it and one line added to `additionalContext`: `sminos renamed this session to "<name>" after its standing responsibility; other sessions now see and address it by that name.` If it printed nothing, return the result unchanged.
+**The mod checks before it applies; the CLI owns the check.** `sminos/hooks/mods/name.tsx`, registered in `sminos/hooks/mods/register.tsx`, does nothing in an internal fork (`SMNS_INTERNAL`). Otherwise, from the session's start:
+1. On a timer (as `hooks/mods/reload.tsx` in doperpowers polls `installed_plugins.json`, every 15 s), read the session's pending file (`$.fs`, under the sminos home: `SMINOS_HOME`, else `DAEMON_HOME`, else `$HOME/.claude/sminos`, as `root()` resolves it). If there is none, or its text is the text this module last handled, do nothing. This read is the only standing cost.
+2. While a main-conversation turn runs, or an ask's dialog is up (the sminos ask's snapshot in `$.state`, `isDialogUp`), wait for a later tick. These are reload.tsx's conditions: a slash command run during a turn waits for the turn's end, and a dialog's answer must not be taken by the command.
+3. Otherwise remember the file's text as handled and run `sminos name-due --session <id>` (`$.process.run`, bounded as `address.tsx` bounds `who`). Whatever the attempt's outcome (a name, nothing, a non-zero exit, a throw or a timeout), it is the one attempt for that text, so the check runs once per pending name and not once per tick. A rename that misses through a transient failure gets another chance when the next derive rewrites the file. The one exception: if a main turn started while `name-due` ran, its answer is stale, so it is dropped and the text is left unhandled for the next idle tick.
+4. If it printed a name, run `$.command.run({ command: 'rename', args: name })`. A refusal or a throw goes to the debug log, and the memo stands.
 
-`name-due` prints the name only when the running engine record's name still equals the file's `from` and differs from the file's `name`, and the name is still free. That catches every case where something moved between derive and this prompt: the owner `/rename`d it, which is the race this check exists for; the name is already applied; a resume put the session in a new process under a new engine name. **Free** means two things: no other non-retired member of the session's project holds it as its alias, on any machine (else `shadowing` would keep the old alias while the engine showed the new name); and no other running session on this machine holds it as its engine name (else the engine would yield a suffixed `collision` name, which is not sminos's and so not eligible again). A proposal that is no longer free is not due. The file stays, the mod's memo stops it from asking again, and the next derive is told the name is taken and proposes another. What is left is the window between `name-due` answering and the engine applying, a fraction of a second. A collision in that window leaves the session under the engine's suffixed name, which is still descriptive. That is accepted, not handled. The check reads the engine record, not the hook input's `session_title`. `session_title` is the custom title, and a session named by title promotion (`auto`) has none in its transcript (7 of the 8 such sessions on the MacBook; the eighth was later `/rename`d), so comparing against it could not tell "unchanged" from "renamed" for those. *Alternative:* the mod scans `~/.claude/sessions/*.json` itself. That lost because it re-implements in TypeScript the choice of the running record among a crashed process's leftovers, which `_on_sight`/`peer_running` already make. A process spawn once per rename is cheap.
+For a kind of session where M5's measurement shows the command refused, step 4 is replaced by the `sessionTitle` path (above). The hook then checks at the session's next `classic.UserPromptSubmit` instead of on the timer: steps 1 and 3 as written, no step 2, and `sessionTitle` set on the result when `name-due` printed a name, unless a hook beneath already set one.
 
-Once the engine applies the name, nothing more is needed. `held_alias` takes a non-generated engine name as the alias. `publish_renames` (the daemon, every tick) appends `renamed` with source `charge` (§2). `sminos who --session` (the commit address) picks it up within its minute. The guide (`smns-guide.sh`) shows it at the next compaction or resume.
+`name-due` prints the name only when the running engine record's name still equals the file's `from` and differs from the file's `name`, the record is still eligible (§2's table, the check derive makes before its fork), and the name is still free. That catches every case where something moved between derive and the rename:
+- the owner `/rename`d it, which is the race this check exists for, including a rename to the very name it had;
+- it was put into a seat;
+- the name is already applied;
+- a resume put the session in a new process under a new engine name. **Free** means two things: no other non-retired member of the session's project holds it as its alias, on any machine (else `shadowing` would keep the old alias while the engine showed the new name); and no other running session on this machine holds it as its engine name (else the engine would yield a suffixed `collision` name, which is not sminos's and so not eligible again). A proposal that is no longer free is not due. The file stays, the mod's memo stops it from asking again, and the next derive is told the name is taken and proposes another. What is left is the window between `name-due` answering and the engine applying, a fraction of a second. A collision in that window leaves the session under the engine's suffixed name, which is still descriptive. That is accepted, not handled. The check reads the engine record, not the session's custom title. A session named by title promotion (`auto`) has no custom title in its transcript (7 of the 8 such sessions on the MacBook; the eighth was later `/rename`d), so comparing against it could not tell "unchanged" from "renamed" for those. *Alternative:* the mod scans `~/.claude/sessions/*.json` itself. That lost because it re-implements in TypeScript the choice of the running record among a crashed process's leftovers, which `_on_sight`/`peer_running` already make. A process spawn once per rename is cheap.
+
+Once the engine applies the name, nothing more is needed. `held_alias` takes a non-generated engine name as the alias. `publish_renames` (the daemon, every tick) appends `renamed` with source `user`, as for any `/rename`. `sminos who --session` (the commit address) picks it up within its minute. The guide (`smns-guide.sh`) shows it at the next compaction or resume.
 
 ## 4. Former aliases still reach the member
 
@@ -89,7 +100,7 @@ A rename breaks every `@alias` a peer learned. Today a name matches only a membe
 
 - **Precedence:** a current alias always wins. A former alias is only a fallback, so a session that now goes by a name, or later takes it, owns it. If several members formerly held it (generated names do repeat over time, as `doperpowers-19` did), the one that held it most recently wins: the latest ts among the `joined`/`renamed` events carrying it. Equal ts is refused as ambiguous, named as today.
 - **Scope:** the scope rules do not change. A bare `@old` looks in the sender's project. `@old#short` looks across the org, and the short still has to match. `@<project>/old` looks in that project. Retired members still answer to nothing.
-- **The note:** whenever a target was found by a former alias, the command prints `note: @<old> is now <label>` on stderr through the CLI's `warn`, where `<label>` is the member as `candidate_labels` names it (`@alias#short`, or project-qualified across projects). This holds for `say` (once per tag) and for every member verb that goes through `find_target` (`steer`, `watch`, `charge <member>`, …). Stderr leaves stdout contracts (`--json`) unchanged, and a calling model reads both. The recorded recipient is the member's current alias, as for any tag.
+- **The note:** whenever a target was found by a former alias, the command prints `note: @<old> is now <label>` on stderr through the CLI's `note`, a sibling of `warn`, where `<label>` is the member as `candidate_labels` names it (`@alias#short`, or project-qualified across projects). This holds for `say` (once per tag) and for every member verb that goes through `find_target` (`steer`, `watch`, `charge <member>`, …). Stderr leaves stdout contracts (`--json`) unchanged, and a calling model reads both. The recorded recipient is the member's current alias, as for any tag.
 
 This applies to any rename, including the owner's `/rename`, not only to charge names: the problem it fixes is the rename, whoever made it. The owner asked for it on 2026-10-20 ("old aliases are still found and messaged, and a note says the name changed").
 
@@ -98,19 +109,36 @@ This applies to any rename, including the owner's `/rename`, not only to charge 
 Each item is behavior someone can check. Items 1–5 and 7–8 run in `sminos/tests/run-sminos-tests.sh` (the `sminos` gate) against the stub `claude` its derive tests already use (`STUB_FORK_RESULT`). Item 6 runs in the mods suite and the live check.
 
 1. **A generated-name member gets a charge name.** For a `derived`-named member with ≥10 human prompts, `sminos derive <alias>` with the fork answering `Owns the desk's uplink.\nname: desk-uplink-owner` prints `<alias>: Owns the desk's uplink.` and `<alias>: name desk-uplink-owner`. It appends an `in-charge` event `{source: derived, text: …, name: desk-uplink-owner}`, and writes `$SMINOS_HOME/names/<session>.json` with `name: desk-uplink-owner` and `from` set to the engine record's name. The fork's prompt carries the naming part and the taken list.
-2. **Names it must not touch.** A member named `user` (a name sminos never proposed for it) is refused by derive as today (`not derived — its human named it`): no fork, no event, no pending file, as the existing test asserts. For members whose running engine record is named `peer`, `collision` or a foreign `hook` name, for a stopped member, and for a seat with no `set` line, the fork's prompt is today's `DERIVE_PROMPT` verbatim, the event carries no `name`, and no pending file is written. The same holds for a member that joined under a generated alias and was then `/rename`d by its owner to a name that collided (engine record `collision`) or that shadows another member's alias (engine record `user`). Its member row still lists the old `derived` alias, and it must still not be named. These two cases are built by renaming an already-joined member, not by fixtures whose row already says `collision` or `user`. If the stub fork changes the member's engine record to a `user` name while it runs, the line is recorded with no `name`, `no name: renamed during derive` is printed, and `name-due` prints nothing afterwards.
+2. **Names it must not touch.** For members whose running engine record is named `user` (a name sminos never proposed for it), `peer`, `collision` or a foreign `hook` name, for a stopped member, and for a seat with no `set` line, derive runs (an owner-named member is no longer refused), the fork's prompt is today's `DERIVE_PROMPT` verbatim, the event carries no `name`, and no pending file is written. The same holds for a member that joined under a generated alias and was then `/rename`d by its owner to a name that collided (engine record `collision`) or that shadows another member's alias (engine record `user`). Its member row still lists the old `derived` alias, and it must still not be named. These two cases are built by renaming an already-joined member, not by fixtures whose row already says `collision` or `user`. If the stub fork changes the member's engine record to a `user` name while it runs, the line is recorded with no `name`, `no name: renamed during derive` is printed, and `name-due` prints nothing afterwards.
 3. **Stability.** With a proposed name already in the log, the prompt says `Its current name is \`desk-uplink-owner\``. If the fork answers the same name and the engine name already equals it, no pending file remains. If it answers a different valid name, a pending file with the new name and `from: desk-uplink-owner` is written.
 4. **Bad names are dropped, the line kept.** Answers naming `Desk Uplink`, `one-two-three-four-five`, a 60-character name, a taken alias, or no `name:` line all record the line with no `name`, print `no name: <reason>`, and write no pending file.
-5. **sminos knows its own name after a resume.** A member whose engine record says `nameSource: "user"` and whose name is one of its proposed names lists with `name_source: "charge"` in `sminos list --json`. Its in-charge line is the derived one, not the name. `derive` does not refuse it with "its human named it". The daemon's tick publishes `renamed` with `name_source: charge` once. When the record's name then changes to something else (the owner's `/rename`), it lists as `user`, and its next derive is refused with "its human named it", as today. The sequence resume → a derive proposing a different name B → B taken by another session before it applies (`name-due` prints nothing) still lists the session as `charge` under its applied name, and the next derive runs, is told B is taken, and its new proposal applies.
-6. **The mod applies it at the next prompt, once.** In the mods suite (`sminos/tests/mods/name.test.ts`): with a pending file and `name-due` printing a name, the hook returns `sessionTitle` and the context line. A second prompt with the same file runs no second `name-due`. With no file, the CLI is never run. A result from beneath that already sets `sessionTitle` passes unchanged. Under `SMNS_INTERNAL` nothing is read. Live (`sminos/tests/mods/live-name-check.py`, by hand, a few haiku turns): an interactive session with the sminos plugin and a pending file whose `from` is its engine name is renamed at its next prompt (the engine record shows the name with `nameSource: "hook"`, the transcript a `custom-title` record), and a session `/rename`d before that prompt keeps its own name.
-7. **`name-due`.** It prints the name when the running record's name equals `from` and differs from `name`. It prints nothing when the record's name equals `name`, when it is neither, when there is no pending file, and when no record of the session runs. It also prints nothing when, after the file was written, the name came to be held by another member of the project (a remote member, through its log events) or by another running session on this machine (its engine record).
-8. **Former aliases.** After a member's alias moves from `oldname` to `newname` (a `renamed` event), `sminos say "@oldname hi"` from another member of the project records the message to `newname`, delivers it, and prints `note: @oldname is now @newname#<short>` on stderr. The same holds for `@oldname#<short>` from another project and for `sminos steer oldname …` (`find_target`). If another current member's alias is `oldname`, that member gets the message and no note is printed. If two members held `oldname`, the more recent holder gets it. A retired member's former alias reaches nothing.
+5. **A name sminos applied stays sminos's to change; an owner's name is never replaced.** No member row and no log event carries a `charge` source. A member whose engine record says `nameSource: "user"` and whose name is one of its proposed names lists `name_source: "user"`. Its in-charge line is the derived one (`set` > `derived` > name > title). Its next derive runs with the naming prompt and `Its current name is …`. An owner-named member with no derived line has its name as its line, and after its first derive the derived line. When the record's name changes to one sminos never proposed (the owner's `/rename`), derive still runs, but with today's prompt: no `name`, no pending file. The sequence resume → a derive proposing a different name B → B taken by another session before it applies (`name-due` prints nothing) leaves the session eligible under its applied name, and the next derive runs, is told B is taken, and its new proposal applies.
+6. **The mod applies it between turns, once.** In the mods suite (`sminos/tests/mods/name.test.ts`):
+   - With a pending file and `name-due` printing a name, an idle tick runs `$.command.run({ command: 'rename', args: <name> })` once. A later tick with the same file text runs no second `name-due`.
+   - With no file, the CLI is never run.
+   - While a main turn runs or an ask's dialog is up, nothing runs until a tick finds the session idle.
+   - A turn that starts while `name-due` runs drops that answer and leaves the text for the next idle tick.
+   - Under `SMNS_INTERNAL` nothing is read.
+   - For a session kind the measurement sends to the `sessionTitle` path: the hook sets `sessionTitle` once per file text and leaves a result from beneath that already sets one unchanged.
+
+   Live (`sminos/tests/mods/live-name-check.py`, by hand, a few haiku turns):
+   - An idle interactive session with the sminos plugin and a pending file whose `from` is its engine name is renamed with no prompt. Its engine record shows the name with `nameSource: "user"`, and its transcript has a `custom-title` record and the engine's meta row naming it.
+   - A session `/rename`d before the tick keeps its own name.
+   - The facts measured for `--bg` and SDK sessions hold.
+7. **`name-due`.** It prints the name when the running record's name equals `from`, differs from `name`, and the record is eligible. It prints nothing in each of these cases:
+   - the record's name equals `name`, or is neither name;
+   - there is no pending file, or no record of the session runs;
+   - the record is no longer eligible: the owner `/rename`d it to the very name it had (now `user`, not a proposal), or the session was put into a seat;
+   - after the file was written, the name came to be held by another member of the project (a remote member, through its log events) or by another running session on this machine (its engine record).
+8. **Former aliases.** After a member's alias moves from `oldname` to `newname` (a `renamed` event), `sminos say "@oldname hi"` from another member of the project records the message to `newname`, delivers it, and prints `note: @oldname is now @newname#<short>` on stderr. The same holds for `@oldname#<short>` from another project and for `sminos steer oldname …` (`find_target`). If another current member's alias is `oldname`, that member gets the message and no note is printed. If two members held `oldname`, the more recent holder gets it. A retired member's former alias reaches nothing. A seat's lifecycle verb that reaches its occupant through a former alias is bound to that occupant's session, so it never acts on a replacement that filled the seat since the lookup.
 
 ## Execution
 
 **Binding on every milestone.** The sminos plugin only: nothing in doperpowers' own `hooks/mods/` changes. The CLI stays one Python file plus its siblings under `sminos/skills/sminos/scripts/`, standard library only. Mods are TypeScript under `sminos/hooks/mods/`, typechecked by `tests/mods/typecheck.sh` (the `mods-types` gate; it needs the engine's declarations laid in `.claude-plugin/types/`, `tests/mods/typecheck.sh --lay`, or copied from the main checkout's gitignored `.claude-plugin/types/`). Verify commits with `ci-gate` from the worktree, not by running the gates locally; one focused test file while iterating is fine. The engine facts this design rests on (§3 and Surprises) are pinned by the live check in M2, not by unit tests: a unit test cannot see the engine.
 
 ### M1 — derive proposes a charge name; sminos knows its own names
+
+*Built as written. M4 removes its `charge` source and relabel after the owner's design change of 2026-10-21.*
 
 **At its end:** derive builds the naming prompt for eligible members, parses and validates the name, records it on the `in-charge` event, and writes or removes the pending file. Member rows report `charge` for sminos's own names. `charge_of` and `derive_refusal` stop reading those as the owner's. `sminos name-due` answers. `derive --all` sweeps stale pending files.
 
@@ -125,6 +153,8 @@ Each item is behavior someone can check. Items 1–5 and 7–8 run in `sminos/te
 **Proves:** acceptance 1–5 and 7.
 
 ### M2 — the name mod applies a pending name
+
+*Built as written, then reworked by M5 after the owner's design change of 2026-10-21. This entry records what M2 built.*
 
 **At its end:** a running session with a due pending name is renamed at its next `UserPromptSubmit` through the engine's hook path, once, and the model is told.
 
@@ -152,6 +182,67 @@ Each item is behavior someone can check. Items 1–5 and 7–8 run in `sminos/te
 
 **Proves:** acceptance 8; then the whole acceptance list, the `sminos` and `sminos-mods` gates and `mods-types` through `ci-gate`, and the live check by hand.
 
+### M4 — derive for every member; no `charge` source
+
+**At its end:**
+- `derive_refusal` no longer refuses a member its human named. A `set` line, the prompt threshold and the six-hour spacing still stop derive.
+- `charge_of` reads `set` > `derived` > the owner's name > the title.
+- The `charge` name source and every relabel that produced it are gone: `own_name_source` or whatever M1 and its fix named it, the relabel in `_member`, the one in `join_on_sight`, and the demotion of a logged `charge`. A name sminos applied reads `user`, as the engine says.
+- Naming eligibility is unchanged (§2's table, the pre-fork snapshot, `name-due`'s checks, including the eligibility recheck the branch review added).
+
+**Touches:**
+- `sminos/skills/sminos/scripts/sminos.py`.
+- `sminos/skills/sminos/scripts/sminos_daemon.py`, if anything there names `charge`.
+- `sminos/tests/run-sminos-tests.sh`: acceptance 2 and 5 as revised. Remove the tests that pinned `charge`, including the two-machine ones, or turn them into tests of the new order.
+- `docs/doperpowers/specs/2026-10-13-smns-project-log-design.md`. In §5, the source order becomes set > derived > name > title, and "`derive` runs only for a local member with no source 1–2 line" becomes "with no `set` line". In the Decision Log's `charge_source` and `derive` notes, owner-named members are no longer refused. In the event table, the `joined` `name_source` values carry no `charge`, if M1 added it.
+- `CLAUDE.md`'s sminos row, if it says `charge`.
+
+**Interfaces:** removes the `charge` name source. Everything else M1 produced stands.
+
+**Decisions:** a member that was refused before and is not eligible now gets today's `DERIVE_PROMPT`, so its owner's name is never touched. Nothing migrates log events that already say `charge`. They exist only on this unmerged branch's test fixtures and on any machine that ran it, and a reader treats an unknown source as it treats `user`. If the code needs a rule for that, state it in the report.
+
+**Does not touch:** the mod (M5), name resolution.
+
+**Proves:** acceptance 1–5 and 7 as revised, `ci-gate --gates sminos,sminos-suites`.
+
+### M5 — the mod renames through the engine's `/rename`, between turns
+
+**At its end:** a running session with a due pending name is renamed with `$.command.run({ command: 'rename', args })` at the first timer tick that finds it idle, once per pending file text. Where the measurement requires it, a `--bg` or SDK session is renamed through `sessionTitle` at its next `UserPromptSubmit` (§3).
+
+**Steps, in order:**
+1. **Measure first.** Build a scratch plugin outside the repository, as the spike did under `/tmp/spike-hookname/`. With it, run the two kinds of session §3 names:
+   - a `--bg` job;
+   - an SDK-driven session as MAWS launches one: `sdk-ts` entrypoint, streaming input, several prompts. Read how MAWS launches one in `/Users/new/Developer/GitHub/MAWS`.
+
+   For each kind, record whether `$.command.run({ command: 'rename', args })` renames it (registry `name`/`nameSource`, the transcript's records) and whether `sessionTitle` from `classic.UserPromptSubmit` does. Also record, for the interactive case, whether the rename starts a model turn. Record the commands and outputs in the report, and message the controller with the facts before building on them.
+2. Rework `sminos/hooks/mods/name.tsx` to §3's steps:
+   - the timer, as reload.tsx's watch is built;
+   - the idle and dialog conditions, read as reload.tsx reads them (the sminos ask's snapshot is this plugin's own state);
+   - the memo, with its one exception;
+   - the command;
+   - the `sessionTitle` path only for a kind step 1 found refusing the command.
+
+   Drop the `classic.UserPromptSubmit` hook and the mod's own context line, unless the fallback needs the hook. Decide whether the timer registers only in interactive sessions from step 1's facts.
+3. `sminos/tests/mods/name.test.ts`: acceptance 6 as revised.
+4. `sminos/tests/mods/live-name-check.py` pins the new engine facts:
+   - `$.command.run` rename renames an idle session with source `user` and leaves the meta reminder row;
+   - an owner's `/rename` made before the tick is kept;
+   - step 1's facts for `--bg` and SDK sessions, as far as the check can drive them.
+
+   Drop the `SessionStart`-`sessionTitle` fact and the resume-label fact, which nothing relies on any more.
+5. Docs:
+   - the `name` section of `sminos/hooks/mods/README.md`;
+   - CLAUDE.md's sentence on `name.tsx` (sminos row);
+   - `sminos/hooks/hooks.json`'s description;
+   - the project-log design §5's paragraph that says the mod applies the name "at the session's next prompt".
+6. Version: sminos is already 1.4.0 on this branch. Run `scripts/bump-version.sh --check` against `origin/main`'s sminos version. Bump again (minor) only if main has reached or passed 1.4.0.
+
+**Interfaces:** consumes the pending file and `name-due` (M1, as fixed by the branch review).
+
+**Does not touch:** the CLI, beyond anything step 1 shows the fallback needs.
+
+**Proves:** acceptance 6 as revised. Then the whole list: `ci-gate` (all gates) on the final HEAD, and the live check by hand.
+
 ## Concrete Steps
 
 From the worktree root:
@@ -162,7 +253,7 @@ From the worktree root:
     ci-gate                                          # every gate on the committed HEAD: GREEN <url>
     python3 sminos/tests/mods/live-name-check.py     # by hand; prints one ok/FAIL line per engine fact and behavior
 
-A manual end-to-end check, after installing the branch's sminos: in a member session with ≥10 prompts, `sminos derive <alias>` prints the line and `name <name>`; `cat ~/.claude/sminos/names/<session>.json` shows it pending; the next prompt in that session changes the footer's name; `sminos list` shows the new alias with `charge` in `--json`; `sminos say "@<old alias> ping"` from another session prints the note.
+A manual end-to-end check, after installing the branch's sminos: in a member session with ≥10 prompts, `sminos derive <alias>` prints the line and `name <name>`; `cat ~/.claude/sminos/names/<session>.json` shows it pending; within about 15 s of that session being between turns its footer's name changes; `sminos list` shows the new alias with its derived line; `sminos say "@<old alias> ping"` from another session prints the note.
 
 ## Interfaces and Dependencies
 
@@ -176,11 +267,11 @@ A manual end-to-end check, after installing the branch's sminos: in a member ses
 
 **`sminos name-due --session <uuid>`**: stdout is the name to apply (one line) or nothing. It exits 0 except on a usage error. The name is due when the pending file exists and parses, a running engine record of the session exists (as `_on_sight` chooses it), its `name` equals `from`, it differs from `name`, and `name` is still free (§3).
 
-**Name source `charge`**: in member rows (`list --json`'s `name_source`) and in `renamed`/`joined` events. It means the alias is one of the session's proposed names, and, on its machine, its running engine name too (§2).
+**No new name source.** M1 built a `charge` source; M4 removes it (design change of 2026-10-21). A name sminos applied reads `user`.
 
 **Former-alias note**: stderr, `note: @<old> is now <label>`, once per resolution by a former alias (§4).
 
-**Engine dependency**: Claude Code ≥ 2.1.304. `UserPromptSubmit` `hookSpecificOutput.sessionTitle` renames with source `hook`. Pinned by `live-name-check.py`.
+**Engine dependency**: Claude Code ≥ 2.1.305. `$.command.run({ command: 'rename', args })` renames an idle session with source `user` and leaves the engine's meta row; for the session kinds M5 sends to the fallback, `UserPromptSubmit`'s `hookSpecificOutput.sessionTitle` renames. Pinned by `live-name-check.py`.
 
 ## Surprises & Discoveries
 
@@ -189,6 +280,7 @@ A manual end-to-end check, after installing the branch's sminos: in a member ses
 - Observation: sessions named by title promotion have no `custom-title` record. Evidence: of the 8 `auto`-named members on the MacBook, 7 have no `custom-title` record (5 to 2 674 `ai-title` records each); the eighth's one custom title is a later `/rename` (`sitting-fork`). This is why `name-due` compares engine names, not `session_title`.
 - Observation: the engine records a collided `/rename` of the owner's as `collision`. Evidence: engine 2.1.304 `QTn`: `n === "user"` skips the pre-check, and a yield from `Zrn(e, "rename")` returns `recordSource: "collision"`. This is why `collision` is not eligible.
 
+- Observation: `$.command.run({ command: 'rename', args })` renames an idle interactive session with no prompt, registered `user`. Evidence: the dispatching session's scratch plugin on engine 2.1.305, 2026-10-21. A `turn.complete` hook called it 3 s after the turn. The registry read `{"name": "spike-cmd-name", "nameSource": "user"}`. The transcript got `custom-title` and `agent-name` records, the `/rename` command row and its `Session renamed to: …` output, and a meta user row `The user named this session "spike-cmd-name". …`, which the call also returns as `context`.
 - Observation: `name-due` reconciles the project (`members(project)`) before it answers, so it is not instant. Evidence: M1 executor. The mod's bound on it (M2) must allow for that.
 
 - Observation: a resumed session's engine record first carries a fresh generated `derived` name and only seconds later the restored `user` name. Evidence: `live-name-check.py`, M2, engine 2.1.305, sampling the record for 20 s after `--resume`. §2's "restored as `user`" holds once the restore lands; in the window, `name-due` sees a name other than `from` and prints nothing, and a derive is discarded as "renamed during derive", so nothing is applied wrongly.
@@ -234,6 +326,21 @@ A manual end-to-end check, after installing the branch's sminos: in a member ses
 - Decision: the former-alias note (§4) is written by `note()`, a sibling of `warn` that prints `sminos: note: …`, not by `warn` itself, whose `warning:` prefix would read a rename as a fault. `<old>` is the bare name the tag carried, without its `#short` or `project/`; `<label>` is project-qualified when the member's project is not the caller's. A former alias leaves out the current alias and the short of every session in the lineage (the placeholders a nameless session joined under). The predicate is `alias_reach`, and the current-before-former order is `current_first`, both shared by `match_members` and `find_target`. The latest holder is chosen before `one_per_session`, so a session held in two projects' logs is not refused as ambiguous with itself. `former_aliases` stays off `list --json`, since no consumer needs it. Refusals' "elsewhere" lists now name other projects' members that held the name before.
   Rationale: M3 execution, in the spirit of §4.
   Date/Author: 2026-10-20, M3 executor.
+- Decision: branch review (reviewer-medium), three P2 findings.
+  - (a) `name-due` rechecks eligibility against the running record, so an owner `/rename` to the very name it had, or seating the session, stops the rename.
+  - (c) A seat lifecycle verb that reaches its occupant through a former alias is bound to that occupant's session.
+  - (b) Not built: the loss of `charge` provenance on `sminos join <other-project>`.
+
+  Rationale: (a) and (c) protect the owner's name and the addressed session, the two risks the design names. (b) became moot with the `charge` source (next entry). After a join, the proposals are not in the destination's log, so the session stops being named there, which is the conservative outcome.
+  Date/Author: 2026-10-21, doperpowers-c4 (controller), with the dispatching session.
+- Decision: the owner's design change.
+  - The mod applies a name with the engine's `/rename` (`$.command.run`) at the first timer tick that finds the session between turns, not with `sessionTitle` at its next prompt.
+  - Derive runs for owner-named members too, and `charge_of` reads `set` > `derived` > name > title.
+  - The `charge` source and its relabel are removed, so a name sminos applied reads `user`.
+  - Naming eligibility is unchanged: the running engine record (`derived`/`auto`, or a name among the member's proposals), the pre-fork snapshot, and `name-due`'s checks.
+
+  Rationale: the owner chose this for simplicity. A name applies without waiting for a prompt. The engine tells the model itself. The machinery that kept sminos's names apart from the owner's (the relabel, its cross-machine publication, its demotion and join paths) existed only to keep derive running and the name out of the line, and both are now true for every member. Rejected: the `UserPromptSubmit` `sessionTitle` path, whose only advantage was a source label (`hook`) that sminos had already stopped trusting, since a resume restores it as `user`. It stays only as the fallback for a kind of non-interactive session where the command is measured refused (§3).
+  Date/Author: 2026-10-21, the owner, through the dispatching session.
 
 ## Outcomes & Retrospective
 
