@@ -153,7 +153,7 @@ class CreateTest(UpBase):
                  at(f"install -m 0600 -o root -g root {compose.STAGE} /etc/devcloud/boot.env"),
                  at("systemctl start --no-block devcloud-boot.service"), at("status.json")]
         self.assertEqual(order, sorted(order), commands)
-        seed_call = next(c for c in self.remote.calls if "seed.json.tmp" in c["command"])
+        seed_call = next(c for c in self.remote.calls if "cat > /etc/devcloud/seed/seed.json.tmp" in c["command"])
         self.assertEqual(seed_call["input"], self.seed.read_bytes(), "the seed goes on stdin")
         self.assertNotIn(self.seed.read_text(), " ".join(commands))
         setup = next(c for c in self.remote.calls if "setup.sh" in c["command"])
@@ -251,12 +251,13 @@ class CreateTest(UpBase):
         create = [c for c in self.state()["calls"] if c["op"] == "create"][0]["input"]
         self.assertEqual(create["labels"]["devcloud-enroll"], "code")
         commands = self.remote.commands()
-        ledger = next(i for i, c in enumerate(commands) if "ledger add /etc/devcloud/enroll-code" in c)
+        ledger = next(i for i, c in enumerate(commands)
+                      if "ledger add /etc/devcloud/enroll-code /etc/devcloud/enroll-code.tmp" in c)
         write = next(i for i, c in enumerate(commands) if "cat > /etc/devcloud/enroll-code.tmp" in c)
         reconcile = next(i for i, c in enumerate(commands) if c == "devcloud reconcile")
         self.assertLess(ledger, write)
         self.assertLess(write, reconcile)
-        code_call = next(c for c in self.remote.calls if "enroll-code.tmp" in c["command"])
+        code_call = next(c for c in self.remote.calls if "cat > /etc/devcloud/enroll-code.tmp" in c["command"])
         self.assertEqual(code_call["input"], b"smns-enroll-v1.madeup\n")
         self.assertEqual(code_call["target"], "dc-vm-7f3a", "over the tailnet")
         self.assertIn("enroll    dc-vm-7f3a: enrolled", self.out.getvalue())

@@ -24,7 +24,8 @@ streamed there as `python3 - <command> ...` (standard library only, Python
                       root's authorized_keys, so the driver reaches root
   rollback            an adoption that never booted (no descriptor
                       installed) given back: every path the credential
-                      ledger lists (the seed; refused, removing nothing, when
+                      ledger lists (the seed, and its staged .tmp; refused,
+                      removing nothing, when
                       one that exists lies outside /etc/devcloud and
                       /var/lib/devcloud, which only `devcloud release`
                       removes), the staged descriptor, devcloud's units, the
@@ -53,6 +54,9 @@ UNIT_DIR = "/etc/systemd/system"
 # What an adoption writes as root before its boot; anything else the ledger
 # lists is a boot's, in the user's home, which only the release removes (as the user).
 ROLLBACK_SCOPE = ("/etc/devcloud/", "/var/lib/devcloud/")
+# Where the driver stages the seed before its rename (hostctl.deliver_seed),
+# removed whether or not the ledger lists it (an older driver did not).
+STAGED = ["/etc/devcloud/seed/seed.json.tmp"]
 
 
 class Refused(Exception):
@@ -183,7 +187,7 @@ def rollback(root="/", passwd=pwd.getpwnam, systemctl=_systemctl):
     if foreign:
         raise Refused(f"the ledger lists {', '.join(foreign)}, which only `devcloud release` removes: this "
                       "machine booted as a host")
-    for path in listed:
+    for path in listed + [p for p in STAGED if p not in listed]:
         _remove(_under(root, path))
     _remove(_under(root, STAGE_DIR))
     unit_dir = _under(root, UNIT_DIR)
@@ -198,6 +202,34 @@ def rollback(root="/", passwd=pwd.getpwnam, systemctl=_systemctl):
     _remove(_under(root, STATE_DIR))
     return (f"removed {len(listed)} ledgered path(s), the staged descriptor and {', '.join(units) or 'no unit'}; "
             f"{keys}")
+
+
+def _replace(target, data, uid, gid):
+    """`target` replaced by `data` (0600, owned uid:gid) in one rename: a
+    write that fails, or a machine that stops, leaves the working file whole
+    (it may be the one way in)."""
+    staged = target.with_name(f".{target.name}.devcloud-restore")
+    _remove(staged)
+    fd = os.open(staged, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    try:
+        try:
+            view = memoryview(data)
+            while view:
+                view = view[os.write(fd, view):]
+            os.fchown(fd, uid, gid)
+            os.fchmod(fd, 0o600)
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.replace(staged, target)
+    except BaseException:
+        _remove(staged)
+        raise
+    directory = os.open(target.parent, os.O_RDONLY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
 
 
 def _restore_keys(root, passwd):
@@ -220,14 +252,7 @@ def _restore_keys(root, passwd):
         if not target.parent.is_dir():
             target.parent.mkdir(mode=0o700, parents=True)
             os.chown(target.parent, owner.pw_uid, owner.pw_gid)
-        _remove(target)
-        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-        try:
-            os.write(fd, data)
-            os.fchown(fd, owner.pw_uid, owner.pw_gid)
-            os.fchmod(fd, 0o600)
-        finally:
-            os.close(fd)
+        _replace(target, data, owner.pw_uid, owner.pw_gid)
         restored.append(f"{entry['path']} restored")
     _remove(adopt)
     return "; ".join(restored)

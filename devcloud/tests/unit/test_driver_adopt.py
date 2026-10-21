@@ -98,7 +98,7 @@ class Target(FakeRemote):
             self._phase("stage")
             m["staged"] = input.decode()
             return Result(0, "", "")
-        if "seed.json.tmp" in command:
+        if "cat > /etc/devcloud/seed/seed.json.tmp" in command:
             self._phase("seed")
             m["seeded"] += 1
             return Result(0, "", "")
@@ -257,7 +257,8 @@ class AdoptionTest(AdoptBase):
         def at(needle):
             return next(i for i, c in enumerate(commands) if needle in c)
         order = [at("python3 - inspect"), at("python3 - save-keys root"), at("python3 - authorize"), at("tar -x"),
-                 at("image/setup.sh"), at("devcloud ledger add /etc/devcloud/seed/seed.json"),
+                 at("image/setup.sh"),
+                 at("devcloud ledger add /etc/devcloud/seed/seed.json /etc/devcloud/seed/seed.json.tmp"),
                  at("seed.json.tmp"), at("systemctl start --no-block devcloud-boot.service")]
         self.assertEqual(order, sorted(order), commands)
         person = [c["command"] for c in self.remote.calls if c["person"]]
@@ -693,6 +694,43 @@ class HostScriptTest(AdoptBase):
         self.assertEqual(self.systemctl, [["disable", "--now", "devcloud-boot.service", "devcloud-spot.service"],
                                           ["daemon-reload"]])
         self.assertIn("nothing saved", rollback(), "run again, it has nothing left to do")
+
+    def test_rollback_removes_a_seed_its_delivery_left_staged(self):
+        """deliver_seed writes seed.json.tmp, then renames it: a machine stopped
+        in between holds the key there, ledgered or not (an older driver
+        ledgered only seed.json)."""
+        rollback = self.rollback_machine()
+        (self.root / "etc/devcloud/seed/seed.json").rename(self.root / "etc/devcloud/seed/seed.json.tmp")
+        rollback()
+        self.assertFalse((self.root / "etc/devcloud/seed/seed.json.tmp").exists())
+
+    def test_a_key_restore_that_fails_leaves_the_working_keys_whole(self):
+        """Root's authorized_keys is the way in for a root-login adoption: a
+        write that fails (ENOSPC) must not leave it empty, and a later run
+        restores from the backup still there."""
+        import errno
+        rollback = self.rollback_machine()
+        keys = self.root / "root/.ssh/authorized_keys"
+        working = keys.read_text()
+        real_write = adopt_host.os.write
+
+        def full(fd, data):
+            raise OSError(errno.ENOSPC, "No space left on device")
+        adopt_host.os.write = full
+        try:
+            with self.assertRaises(OSError):
+                rollback()
+        finally:
+            adopt_host.os.write = real_write
+        self.assertEqual(keys.read_text(), working)
+        self.assertEqual(sorted(p.name for p in keys.parent.iterdir()), ["authorized_keys"], "no staged copy left")
+        self.assertTrue((self.root / "var/lib/devcloud-adopt/keys.json").exists(), "the backup stays for a retry")
+        rollback()
+        self.assertEqual(keys.read_text(), "ssh-ed25519 AAAAperson person@laptop\n")
+        self.assertEqual(oct(keys.stat().st_mode & 0o777), "0o600")
+
+    def test_the_release_check_covers_a_staged_seed(self):
+        self.assertIn(f"test ! -e {compose.SEED_PATH}.tmp", adopt.RELEASED)
 
     def test_rollback_never_removes_as_root_what_only_a_release_removes(self):
         rollback = self.rollback_machine()

@@ -91,7 +91,8 @@ def deliver_seed(ctx, address, key_alias):
     """The seed key file into a root-only path, its path in the credential
     ledger first (§3 step 7, §6.5); read from its file into ssh's stdin,
     never argv, never printed."""
-    ledger(ctx, address, key_alias, SEED_PATH, BOOT_ENV)
+    # The staging file too: a delivery stopped before its rename leaves the key there.
+    ledger(ctx, address, key_alias, SEED_PATH, f"{SEED_PATH}.tmp", BOOT_ENV)
     seed_dir = str(pathlib.PurePosixPath(SEED_PATH).parent)
     command = (f"umask 077 && install -d -m 0700 {seed_dir} && cat > {SEED_PATH}.tmp && "
                f"mv {SEED_PATH}.tmp {SEED_PATH} && test -s {SEED_PATH}")
@@ -143,7 +144,7 @@ def progress(ctx, target, key_alias):
 def deliver_code(ctx, target, key_alias, code):
     """The one-time enrollment code (`--enroll-code -`, §10) into a root-only
     file, ledgered first, then a reconcile whose step 11 enrolls with it."""
-    ledger(ctx, target, key_alias, CODE_PATH)
+    ledger(ctx, target, key_alias, CODE_PATH, f"{CODE_PATH}.tmp")
     result = ctx.remote.run(target, key_alias, f"umask 077 && cat > {CODE_PATH}.tmp && mv {CODE_PATH}.tmp {CODE_PATH}",
                             input=code, timeout=60)
     if result.code != 0:
