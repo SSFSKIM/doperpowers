@@ -65,9 +65,10 @@ def wait_cloud_init(ctx, address, key_alias):
         raise DriverError(FAILED, f"cloud-init did not finish cleanly ({result.out.strip() or result.code})")
 
 
-def install_recipe(ctx, address, key_alias, build):
+def install_recipe(ctx, address, key_alias, build, adopting=False):
     """The slow path: the plugin's recipe streamed and `setup.sh` run, its
-    exit checked (adopt's install path, §6.5)."""
+    exit checked (adopt's install path, §6.5, `adopting`: setup.sh then
+    refuses rather than delete an account in its way)."""
     for key in ("DEVCLOUD_USER", "DEVCLOUD_UID", "DEVCLOUD_HOME"):
         if not build.get(key):
             raise DriverError(FAILED, f"the profile's build.env lacks {key}, which setup.sh needs")
@@ -76,6 +77,8 @@ def install_recipe(ctx, address, key_alias, build):
     if result.code != 0:
         raise DriverError(FAILED, f"streaming the recipe failed (exit {result.code})")
     inputs = " ".join(f"{k}={shlex.quote(build[k])}" for k in ("DEVCLOUD_USER", "DEVCLOUD_UID", "DEVCLOUD_HOME"))
+    if adopting:
+        inputs += " DEVCLOUD_ADOPTING=1"
     setup = (f"{inputs} bash {SRC}/devcloud/image/setup.sh >{SETUP_LOG} 2>&1 "
              f"|| {{ code=$?; tail -n 30 {SETUP_LOG}; exit $code; }}")
     result = ctx.remote.run(address, key_alias, setup, timeout=3600)

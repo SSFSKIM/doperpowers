@@ -60,10 +60,12 @@ curl -fsSL "https://github.com/hetznercloud/cli/releases/latest/download/hcloud-
   | tar -xz -C /usr/local/bin hcloud
 
 # The user: the Mac's name, uid and home, zsh as the login shell. Ubuntu's
-# image ships an `ubuntu` user at uid 1000, which gives way when it is in the way.
+# image ships an `ubuntu` user at uid 1000, which gives way when it is in the
+# way — never on a machine being adopted (DEVCLOUD_ADOPTING=1), whose accounts
+# are the person's.
 if getent passwd "$DEVCLOUD_UID" >/dev/null && [[ "$(getent passwd "$DEVCLOUD_UID" | cut -d: -f1)" != "$DEVCLOUD_USER" ]]; then
   taken="$(getent passwd "$DEVCLOUD_UID" | cut -d: -f1)"
-  [[ "$taken" == ubuntu ]] || { echo "uid $DEVCLOUD_UID is taken by $taken" >&2; exit 1; }
+  [[ "$taken" == ubuntu && "${DEVCLOUD_ADOPTING:-}" != 1 ]] || { echo "uid $DEVCLOUD_UID is taken by $taken" >&2; exit 1; }
   userdel -r ubuntu 2>/dev/null || userdel ubuntu
 fi
 if ! getent passwd "$DEVCLOUD_USER" >/dev/null; then

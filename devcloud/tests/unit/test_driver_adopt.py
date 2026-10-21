@@ -70,6 +70,10 @@ class Target(FakeRemote):
             return Result(0, "", "")
         if "python3 - inspect" in command:
             return Result(0, json.dumps({"id": m["os"][0], "version": m["os"][1], "descriptor": m["descriptor"]}), "")
+        if "python3 - preflight" in command:
+            self.test.assertIn("preflight dev 1001 /Users/dev", command, "the profile's build.env")
+            m["preflights"] = m.get("preflights", 0) + 1
+            return Result(0, json.dumps({"problems": m.get("account_problems", [])}), "")
         if "python3 - save-keys" in command:
             self._phase("save-keys")
             m["keys_saved"] = True
@@ -248,8 +252,8 @@ class AdoptionTest(AdoptBase):
                  at("seed.json.tmp"), at("systemctl start --no-block devcloud-boot.service")]
         self.assertEqual(order, sorted(order), commands)
         person = [c["command"] for c in self.remote.calls if c["person"]]
-        self.assertTrue(person and all("inspect" in c or "save-keys" in c or "authorize" in c or c.endswith("true")
-                                       for c in person), person)
+        self.assertTrue(person and all("inspect" in c or "preflight" in c or "save-keys" in c or "authorize" in c
+                                       or c.endswith("true") for c in person), person)
         self.assertEqual({c["alias"] for c in self.remote.calls}, {NAME}, "keyed by the machine's name")
         desc = descriptor.parse(self.remote.m["staged"])
         self.assertEqual((desc.name, desc.adopted, desc.seed_kind, desc.inbound), (NAME, True, "file", "tailnet"))
@@ -265,6 +269,26 @@ class AdoptionTest(AdoptBase):
         self.assertEqual((save["user"], save["person"]), ("ubuntu", True))
         self.assertTrue(save["command"].startswith("sudo -n "))
         self.assertIn("save-keys ubuntu", save["command"])
+
+    def test_an_account_setup_sh_would_remove_or_take_over_is_refused_before_any_change(self):
+        """Adopting ubuntu@addr, ubuntu at uid 1000, with a profile wanting uid
+        1000 for another name: setup.sh would `userdel -r ubuntu`, and the
+        release could never give the login back."""
+        self.remote.login = "ubuntu"
+        self.remote.m["account_problems"] = ["uid 1001 belongs to ubuntu"]
+        code, message = self.refused(target=f"ubuntu@{ADDRESS}")
+        self.assertEqual(code, 1)
+        self.assertIn("uid 1001 belongs to ubuntu", message)
+        self.assertIn("never deletes or replaces", message)
+        self.assertFalse(self.remote.m["keys_saved"])
+        self.assertFalse(self.remote.m["authorized"])
+        self.assertEqual(self.remote.m["setup"], 0)
+        self.assertIsNone(self.record())
+
+    def test_setup_sh_runs_told_it_is_adopting(self):
+        self.assertEqual(self.adopt(), 0)
+        [setup] = self.remote.commands("image/setup.sh")
+        self.assertIn("DEVCLOUD_ADOPTING=1", setup)
 
     def test_root_logins_refused_by_the_machine_stop_after_the_keys(self):
         self.remote.login = "ubuntu"
@@ -295,6 +319,14 @@ class ResumeTest(AdoptBase):
         self.assertIn("resuming", self.out.getvalue())
         self.assertEqual(self.remote.m["setup"], 1)
         self.assertEqual(self.record()["phase"], "booted")
+
+    def test_a_resume_after_setup_sh_made_the_account_preflights_again_on_the_machine(self):
+        """The machine keeps the preflight's verdict: the account setup.sh made
+        on the first run is not a reason to refuse the second."""
+        self.write_record("preparing")
+        self.remote.m.update(keys_saved=True)
+        self.assertEqual(self.adopt(), 0)
+        self.assertEqual(self.remote.m["preflights"], 1)
 
     def test_from_seeded_skips_the_preparation(self):
         self.write_record("seeded")
@@ -528,6 +560,38 @@ class HostScriptTest(AdoptBase):
         self.assertEqual(adopt_host.save_keys("ubuntu", root=self.root, passwd=self.passwd), "already saved")
         self.assertEqual((adopt / "root.authorized_keys").read_text(), "ssh-ed25519 AAAAperson person@laptop\n",
                          "a second run never saves the keys devcloud wrote")
+
+    def preflight(self, user="dev", uid="1001", home="/Users/dev", accounts=()):
+        """`accounts`: (name, uid, home) the stand-in machine has."""
+        class Pw:
+            def __init__(self, name, uid, home):
+                self.pw_name, self.pw_uid, self.pw_dir = name, uid, home
+
+        def by(field):
+            def look(value):
+                for a in accounts:
+                    if (a[0] if field == "name" else a[1]) == value:
+                        return Pw(*a)
+                raise KeyError(value)
+            return look
+        return adopt_host.preflight(user, uid, home, root=self.root, by_name=by("name"), by_uid=by("uid"))
+
+    def test_preflight_names_each_account_or_home_setup_sh_would_remove_or_take_over(self):
+        ubuntu = ("ubuntu", 1001, "/home/ubuntu")
+        self.assertEqual(self.preflight(accounts=[ubuntu]), ["uid 1001 belongs to ubuntu (home /home/ubuntu)"])
+        self.assertIn("an account named dev already exists", self.preflight(accounts=[("dev", 1001, "/Users/dev")])[0])
+        (self.root / "Users/dev").mkdir(parents=True)
+        self.assertEqual(self.preflight(), ["/Users/dev already exists"])
+        self.assertFalse((self.root / "var/lib/devcloud-adopt").exists(), "a refusal changes nothing")
+
+    def test_preflight_passes_once_and_its_verdict_stays_for_a_resume(self):
+        self.assertEqual(self.preflight(), [])
+        self.assertTrue((self.root / "var/lib/devcloud-adopt/preflight.json").exists())
+        # setup.sh then made the account: a resumed adoption is not refused for it.
+        self.assertEqual(self.preflight(accounts=[("dev", 1001, "/Users/dev")]), [])
+        self.assertIn("1002", self.preflight(uid="1002")[0], "a profile changed since asks again")
+        adopt_host.save_keys("ubuntu", root=self.root, passwd=self.passwd)
+        self.assertTrue((self.root / "var/lib/devcloud-adopt/keys.json").exists())
 
     def test_the_streamed_form(self):
         import subprocess

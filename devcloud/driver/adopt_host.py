@@ -5,6 +5,14 @@ streamed there as `python3 - <command> ...` (standard library only, Python
   inspect             one JSON line: the OS (`ID`, `VERSION_ID`) and the
                       boot descriptor's name and adoption flag when there is
                       one
+  preflight <user> <uid> <home>
+                      one JSON line, {"problems": [...]}: each existing
+                      account or home setup.sh would remove or take over to
+                      make the profile's user (an account of that name, one
+                      holding that uid, the home path). None: the verdict is
+                      kept in /var/lib/devcloud-adopt/preflight.json, so a
+                      resumed adoption is not refused for the account
+                      setup.sh made on its first run.
   save-keys <login>   root's and <login>'s authorized_keys copied to
                       /var/lib/devcloud-adopt with the manifest keys.json
                       that release restores from: {"keys": [{"path",
@@ -57,6 +65,39 @@ def inspect(root="/"):
     return {"id": release.get("ID"), "version": release.get("VERSION_ID"), "descriptor": descriptor}
 
 
+def preflight(user, uid, home, root="/", by_name=pwd.getpwnam, by_uid=pwd.getpwuid):
+    """What setup.sh would remove or take over to make `user` (uid `uid`,
+    home `home`): adopt never deletes or replaces an existing account, so
+    any of them refuses the adoption before anything is changed."""
+    verdict = _under(root, ADOPT_DIR) / "preflight.json"
+    wanted = {"user": user, "uid": int(uid), "home": home}
+    if verdict.exists():
+        checked = json.loads(verdict.read_text())
+        if checked == wanted:
+            return []
+        return [f"an earlier adoption here was checked for {checked['user']} (uid {checked['uid']}, home "
+                f"{checked['home']}), and build.env now asks for {user} (uid {uid}, home {home})"]
+    problems = []
+    try:
+        have = by_name(user)
+        problems.append(f"an account named {user} already exists (uid {have.pw_uid}, home {have.pw_dir})")
+    except KeyError:
+        pass
+    try:
+        holder = by_uid(int(uid))
+        if holder.pw_name != user:
+            problems.append(f"uid {uid} belongs to {holder.pw_name} (home {holder.pw_dir})")
+    except KeyError:
+        pass
+    if os.path.lexists(_under(root, home)):
+        problems.append(f"{home} already exists")
+    if not problems:
+        verdict.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chmod(verdict.parent, 0o700)
+        verdict.write_text(json.dumps(wanted) + "\n")
+    return problems
+
+
 def _home(user, passwd):
     return pathlib.Path(passwd(user).pw_dir)
 
@@ -102,12 +143,15 @@ def authorize(keys, root="/", passwd=pwd.getpwnam):
 def main(argv):
     if argv[:1] == ["inspect"]:
         print(json.dumps(inspect()))
+    elif argv[:1] == ["preflight"] and len(argv) == 4 and argv[2].isdigit():
+        print(json.dumps({"problems": preflight(*argv[1:])}))
     elif argv[:1] == ["save-keys"] and len(argv) == 2:
         print(save_keys(argv[1]))
     elif argv[:1] == ["authorize"] and len(argv) == 2:
         print(authorize(base64.b64decode(argv[1]).decode().splitlines()))
     else:
-        print("usage: python3 - inspect | save-keys <login> | authorize <base64 keys>", file=sys.stderr)
+        print("usage: python3 - inspect | preflight <user> <uid> <home> | save-keys <login> | authorize <base64 keys>",
+              file=sys.stderr)
         return 2
     return 0
 

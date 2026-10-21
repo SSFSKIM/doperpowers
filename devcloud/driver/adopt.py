@@ -22,6 +22,7 @@ import dataclasses
 import json
 import pathlib
 import re
+import shlex
 
 from . import compose, hostctl, names
 from .errors import CAP, FAILED, USAGE, DriverError
@@ -29,6 +30,7 @@ from .hostctl import Host
 from .profile import duration, format_duration
 
 PHASES = ("preparing", "seeded", "booted", "released")
+BUILD_KEYS = ("DEVCLOUD_USER", "DEVCLOUD_UID", "DEVCLOUD_HOME")
 CONTACT_TIMEOUT = 45
 SSH_WAIT = 3 * 60
 BOOT_WAIT = 15 * 60
@@ -186,6 +188,8 @@ def run(ctx, opts):
                                       "than root, sudo must work without a password)")
         if chan is not None:
             _check(ctx, chan, None if fresh else record)
+        if record.phase == "preparing":
+            _preflight(ctx, chan, record)
     except DriverError:
         if fresh:
             ctx.remote.forget(record.name)
@@ -223,6 +227,27 @@ def _check(ctx, chan, record):
                                   "matching adoption record here: see devcloud vm ls")
 
 
+def _preflight(ctx, chan, record):
+    """Before anything is changed: no existing account or home that setup.sh
+    would remove or take over to make the profile's user (it deletes an
+    `ubuntu` account holding the uid, and adds to a home it finds). Adopt
+    never deletes or replaces an account; the machine keeps the verdict, so
+    a resume after setup.sh made the user is not refused for it."""
+    build = ctx.profile.build
+    for key in BUILD_KEYS:
+        if not build.get(key):
+            raise DriverError(FAILED, f"the profile's build.env lacks {key}, which setup.sh needs")
+    args = " ".join(shlex.quote(build[key]) for key in BUILD_KEYS)
+    found = json.loads(_script(ctx, chan, f"preflight {args}", "checking the machine's accounts")
+                       .strip().splitlines()[-1])
+    if found["problems"]:
+        raise DriverError(FAILED, f"{record.user}@{record.address} already has what setup.sh would remove or take "
+                                  f"over to make the hosts' user {build['DEVCLOUD_USER']} (uid {build['DEVCLOUD_UID']}, "
+                                  f"home {build['DEVCLOUD_HOME']}, the profile's build.env): "
+                                  f"{'; '.join(found['problems'])}. Adopt never deletes or replaces an existing "
+                                  "account; nothing was changed")
+
+
 def _prepare(ctx, record, chan, keys):
     """`preparing`: the keys the machine had saved (once), the driver's key
     authorized for root, the recipe and setup.sh, the descriptor staged."""
@@ -236,7 +261,7 @@ def _prepare(ctx, record, chan, keys):
         raise DriverError(FAILED, f"{record.address} refuses root over SSH with the driver's key (sshd's "
                                   "PermitRootLogin): adopt needs it, as every devcloud host does") from None
     ctx.say(f"setup     {record.name}: setup.sh from the plugin's recipe")
-    hostctl.install_recipe(ctx, record.address, record.name, ctx.profile.build)
+    hostctl.install_recipe(ctx, record.address, record.name, ctx.profile.build, adopting=True)
     desc = compose.descriptor(name=record.name, profile=ctx.profile, projects=record.projects,
                               expires=record.expires, creator=f"@{record.creator}" if record.creator else None,
                               spot=False, seed="file", adopted=True)
