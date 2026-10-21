@@ -137,6 +137,12 @@ elif cmd == "edge":  # machine n — Access answers its token 401 for n requests
     call("POST", "/control/edge", {"machine": sys.argv[3], "requests": int(sys.argv[4])})
 elif cmd == "answer":  # JSON list — the next /machine/enrollment requests answered these
     call("POST", "/control/answer", {"answers": json.loads(sys.argv[3])})
+elif cmd == "cut":  # status content-type text n — the next n answered chunked, `text` padded to 65 536 bytes in
+    # one chunk, and the connection closed before the last (zero) chunk: an answer cut short of its end
+    body = sys.argv[5].ljust(65536)
+    raw = ("HTTP/1.1 %s Cut\r\nContent-Type: %s\r\nTransfer-Encoding: chunked\r\n\r\n%x\r\n%s\r\n"
+           % (sys.argv[3], sys.argv[4], len(body), body))
+    call("POST", "/control/answer", {"answers": [{"raw": raw}] * int(sys.argv[6])})
 elif cmd == "release":  # a held answer goes
     call("POST", "/control/release")
 elif cmd == "outage":  # path — no listener until the file exists
@@ -1026,6 +1032,29 @@ assert_contains "$OUT" "left the hub as dc-r1, but another enrollment replaced t
 assert_contains "$OUT" "run sminos hub leave again to end that one" "and how to end that one"
 assert_equals "$(digest)" "$SUM" "the replacement's hub.json survives byte-identical"
 check_is 0 "accepted" "and the hub still accepts it"
+
+# An answer cut short of its end decides nothing, whatever its first bytes
+# say: a chunked 403 not-enrolled whose last chunk never came, and Access's
+# 401 page cut the same way, past the grace (the first and its recheck).
+fresh dc-t1
+leave_keeps() { # label — leave exits 1 and leaves the credential byte-identical
+  local sum; sum="$(digest)"
+  run "$SMINOS" hub leave
+  assert_rc 1 "$RC" "leave: $1"
+  assert_contains "$OUT" "cut short" "leave: $1, saying the answer was cut short"
+  assert_equals "$(digest)" "$sum" "leave: $1, the credential untouched"
+}
+ctl cut 403 application/json '{"error":"not-enrolled","message":"cut"}' 2
+check_is 4 "was cut short of its end" "a chunked 403 not-enrolled cut short of its end is undecided"
+ctl cut 403 application/json '{"error":"not-enrolled","message":"cut"}' 2
+leave_keeps "a chunked 403 not-enrolled cut short of its end"
+past_grace
+ctl cut 401 text/html '<html><title>Cloudflare Access</title></html>' 2
+check_is 4 "was cut short of its end" "Access's 401 page cut short, past the grace, is undecided"
+ctl cut 401 text/html '<html><title>Cloudflare Access</title></html>' 2
+leave_keeps "Access's 401 page cut short, past the grace"
+ctl answer '[]'
+check_is 0 "accepted" "the credential, kept, is still accepted"
 cd "$T"
 
 # ---- no secret anywhere

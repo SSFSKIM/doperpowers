@@ -137,7 +137,8 @@ The test's own hands (the stand-in plays a hub that may lie):
   true}]}`: the next requests to `/machine/enrollment` are answered these,
   one each, in order, before anything else looks at them (`access`: Access's
   401 page; `hold`: a `DELETE` applied as usual, its answer held until
-  `POST /control/release`).
+  `POST /control/release`; `raw`: these bytes, as latin-1 text, written as
+  they are — head and body — then the connection closed).
 - `POST /control/outage` `{"until"}`: the stand-in stops listening (a
   connection is refused) until the file `until` exists, then listens again
   on the same port with the same state. Answered once the listener is
@@ -655,6 +656,10 @@ class Handler(BaseHTTPRequestHandler):
                 return False
         if a.get("access"):
             self.access_denied()
+        elif "raw" in a:
+            self.wfile.write(a["raw"].encode("latin-1"))
+            self.wfile.flush()
+            self.close_connection = True
         else:
             body = a.get("body", "")
             self.reply(a["status"], body.encode() if isinstance(body, str) else body,

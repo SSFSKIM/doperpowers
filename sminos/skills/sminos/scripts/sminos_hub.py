@@ -436,24 +436,41 @@ def recheck_after():
         return ACCESS_RECHECK_S
 
 
+def whole_body(resp):
+    """The answer's body when it is known to be whole — read to the end its
+    length declares, through a chunked body's last chunk, or to the close of a
+    body with neither — and at most ANSWER_MAX bytes; else None. A bounded
+    read stops at its bound, or returns what came before an early close,
+    without raising: only the response's end being reached says the body is
+    all there."""
+    raw = resp.read(ANSWER_MAX)
+    if not resp.isclosed() and resp.read(1):   # one byte more: the end (a chunked body's last chunk), or past the bound
+        return None
+    return raw if resp.isclosed() and not resp.length else None
+
+
 def ask(cred, method, accepted):
     """One authenticated request to /machine/enrollment, read: ("accepted",
     answer), ("rejected", which), ("access", None) for Access's 401 page —
-    which only `authenticated` decides — or ("other", what came)."""
+    which only `authenticated` decides — or ("other", what came). Only a
+    whole answer is read as anything but other: a body cut short can say
+    `not-enrolled`, or carry Access's mark, without being either."""
     url = urllib.parse.urlsplit(cred["hub"])
     conn = uplink.connection(cred, TIMEOUT)
     try:
         conn.request(method, url.path.rstrip("/") + ENROLLMENT_PATH,
                      headers={**uplink.admission(cred), "Accept": "application/json"})
         resp = conn.getresponse()
-        raw = resp.read(ANSWER_MAX)
-        cut = bool(resp.length)
+        raw = whole_body(resp)
+    except http.client.IncompleteRead:
+        return "other", "the hub's answer (%d) was cut short of its end" % resp.status
     except (OSError, http.client.HTTPException) as e:
         return "other", "the hub did not answer: %s" % (" ".join(str(e).split()) or type(e).__name__)
     finally:
         conn.close()
-    if cut:
-        return "other", "the hub did not answer whole: the answer ended after %d bytes, short of its length" % len(raw)
+    if raw is None:
+        return "other", "the hub's answer (%d) was not whole: cut short of its end, or longer than %d bytes" % (
+            resp.status, ANSWER_MAX)
     if resp.status == 401:
         if ACCESS_MARK in raw:
             return "access", None
