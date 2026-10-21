@@ -101,11 +101,11 @@ describe('applyPendingName', () => {
     expect(h.runs).toEqual([])
   })
 
-  test('a CLI that cannot run leaves the file to the next prompt', async () => {
+  test('a CLI that cannot run applies nothing, and is not tried again for the same file', async () => {
     const h = harness({ files: { [FILE]: PENDING }, answers: [new Error('timed out'), { exitCode: 0, stdout: 'desk-uplink-owner\n' }] })
     expect(await h.prompt()).toEqual({})
-    expect((await h.prompt()).sessionTitle).toBe('desk-uplink-owner')
-    expect(h.runs.length).toBe(2)
+    expect(await h.prompt()).toEqual({})
+    expect(h.runs.length).toBe(1)
   })
 
   test('a CLI that answers with an error applies nothing, and is not asked again for the same file', async () => {

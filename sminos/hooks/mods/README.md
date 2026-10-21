@@ -427,9 +427,10 @@ The CLI owns the check, `sminos name-due --session <id>`: the name is due
 when the session's running engine record still holds the name the file
 replaces (no owner's `/rename`, no resume under a new name since), does not
 hold the name already, and the name is still free in the project and on the
-machine. The mod runs it once per pending file, remembering the file's text
-once the CLI has answered (a CLI that could not run is asked again at the
-next prompt), so a prompt with nothing new pays one failed read. A title a
+machine. The mod runs it once per pending file, whatever comes of it (a
+CLI that hangs or fails is not tried again: the next derive rewrites the
+file, and that is the retry), so a prompt with nothing new pays one failed
+read. A title a
 hook beneath set passes unchanged, an internal fork (`SMNS_INTERNAL`) reads
 nothing, and the poll-event channel's enqueue-time pass is left to the
 prompt's own submit. `sminos/tests/mods/live-name-check.py` pins the engine

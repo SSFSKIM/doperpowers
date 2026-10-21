@@ -37,7 +37,7 @@ export function renamedContext(name: string): string {
   return `sminos renamed this session to "${name}" after its standing responsibility; other sessions now see and address it by that name.`
 }
 
-/** The text of the pending file the CLI last answered for: checked once. */
+/** The text of the pending file last checked: checked once. */
 const state: { handled?: string } = {}
 
 /** Forgets the handled file (tests). */
@@ -63,16 +63,18 @@ export async function applyPendingName($: EngineInterface, e: Event, next: (e: E
   if (pending === undefined || pending === state.handled) {
     return result
   }
+  // One attempt per pending file, whatever comes of it: a CLI that keeps
+  // hanging would otherwise stall every prompt. A missed rename is retried
+  // when the next derive rewrites the file.
+  state.handled = pending
   let answer
   try {
     answer = await $.process.run([`${$.plugin.root}/skills/sminos/scripts/sminos`, 'name-due', '--session', e.session_id], {
       timeoutMs: NAME_DUE_TIMEOUT_MS,
     })
   } catch {
-    // Not answered (it could not start, or timed out): the next prompt asks again.
     return result
   }
-  state.handled = pending
   const name = answer.exitCode === 0 ? (answer.stdout.trim().split('\n')[0] ?? '').trim() : ''
   if (name === '') {
     return result
