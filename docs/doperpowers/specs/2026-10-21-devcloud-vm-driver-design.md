@@ -494,7 +494,8 @@ comes from the descriptor because the driver knows it for certain; the metadata 
 - **Excess**: unconfirmed throwaway VMs above the cap, newest first, departed (`--force`) when
   reachable and deleted, until three remain (§2).
 - **Leftovers**: builders (§7) and `provider test` servers (§6.2) of usable accounts older than 2
-  hours; images beyond the newest two per account. The reaper never runs an unregistered provider or
+  hours; per account, failed images, and ready images beyond the newest two (current recipe first);
+  pending images are their build's, and an image with no state is neither deleted nor chosen. The reaper never runs an unregistered provider or
   one with no passing copy, so a leftover of one is `provider test`'s to report (§6.2).
 
 It never touches a resource without the devcloud label, and before every delete it calls `get` and
@@ -1391,13 +1392,16 @@ providers in `<profile>/providers/<name>`):
 
     with the images capability
     image-create {"id", "name", "labels"}            → Image            # from the server `id`
-    images       {}                                  → [Image]          # only images carrying the devcloud label
+    images       {}                                  → [Image]          # every image carrying the devcloud label, whatever its state
     image-delete {"id"}                              → {}
 
     Vm    = {"id", "name", "location", "type", "labels", "public_ipv4": string|null, "state", "created"}
-    Image = {"id", "name", "labels", "created"}
+    Image = {"id", "name", "labels", "created", "state"}
     # created: Unix seconds; state: "running" when the server is powered on, else the provider's word
     # for it (the reaper's unreachable path tells the two apart, §4.3); shown by ls
+    # Image state: "ready" when a create can use it now, "pending" while it is being made, else the
+    # provider's word (e.g. "failed"). `up` and the daily build's current-image check use ready images
+    # only; `image-delete`'s fence reads the full list; `provider test` fails an image with no state
 
 The core's side of the contract — the invariants, the label recheck, the capability fallbacks — is
 §6.1; the conformance test and registration are §6.2.
@@ -1683,14 +1687,13 @@ commit 5168e433 on its branch, 2026-10-21):
     let the call proceed: a `PermissionRequest` hook decision `allow` relayed by the bridge.
   - The person has since removed the guardrail from the profile.
   Evidence: the M6 report, acceptance 3.
-- Observation (M6): Retention keeps the newest two images regardless of recipe, so it can drop a
-  current-recipe image in favour of a newer stale one. At 18:32Z it deleted the current-recipe
+- Observation (M6): Retention kept the newest two images regardless of recipe, so it could drop a
+  current-recipe image in favour of a newer stale one; it now prefers current-recipe images. At 18:32Z it deleted the current-recipe
   build 1 and kept a stale image the always-on Mac had built a minute later. Harmless once a newer
   current image exists. Evidence: the M6 report, Discoveries.
 - Observation (M6): The provider's `images` listed a GCE image that build 3 had only just begun
-  (PENDING), and `up --confirmed` failed on it with "is not ready". `images` now lists only images a
-  `create` can use (GCE READY, Hetzner available), which narrows I13. A FAILED GCE image is therefore
-  unlisted, and nothing deletes it (residue).
+  (PENDING), and `up --confirmed` failed on it with "is not ready". Images now carry a `state` (I13;
+  Decision Log).
 - Observation (M6): A VM that departed by itself before the reaper deleted it powered off was named
   for removal from the desk by hand, a false positive. The reaper deletes without contact, so labels
   cannot tell a departed VM from a crashed one. The note now asks the desk (d7efe1e1).
@@ -2220,6 +2223,25 @@ commit 5168e433 on its branch, 2026-10-21):
   and the scratch checkout is then removed. `hcloud` is installed there, because the Hetzner account
   is usable and the reaper needs its CLI.
   Date/Author: 2026-10-21, executor, M6.
+
+- Decision: An image carries a `state` in I13, and `images` lists every owned image whatever its
+  state. Selection and cleanup read that state:
+  - `up` and the daily build use only ready images.
+  - Retention deletes failed images and keeps the newest two ready ones, current recipe first.
+  - Pending images are left to their build.
+  - Each failed delete is its own warning.
+  Rationale: M6 first filtered `images` down to usable images, after `up` picked a PENDING GCE
+  image. Review found that the filter also hid FAILED images from the image-delete ownership fence,
+  so nothing could clean them up. Selection and inventory are separate concerns.
+  Rejected: filtering at the inventory boundary.
+  Date/Author: 2026-10-21, executor and controller, M6 review.
+- Decision: The desk note is suppressed only on trustworthy absence. Two things must both hold:
+  the listing is the org's directory, not a self-only table; and that directory is newer than the
+  VM's lease end. The lookup also carries the reaper's remaining budget. When the budget is spent,
+  the conservative note is written without a lookup.
+  Rationale: `sminos machines` prints a cached directory, or only this machine when the driver is
+  not enrolled. The bounded run's 60 s must hold.
+  Date/Author: 2026-10-21, executor, M6 review.
 
 ## Outcomes & Retrospective
 
