@@ -4211,6 +4211,82 @@ class TickCost(unittest.TestCase):
         with mock.patch.object(sminos.subprocess, "run", side_effect=AssertionError("a process was run")):
             self.assertEqual(sminos.read_proc_start(holder.pid), "", "no process holds the pid now")
 
+    def off_utc(self):
+        """The local zone nine hours from UTC for the test: ps prints the
+        local zone, the harness records UTC, and a runner on UTC would make
+        the two the same text."""
+        zone = os.environ.get("TZ")
+        os.environ["TZ"] = "KST-9"
+        time.tzset()
+
+        def restore():
+            if zone is None:
+                os.environ.pop("TZ", None)
+            else:
+                os.environ["TZ"] = zone
+            time.tzset()
+        self.addCleanup(restore)
+
+    @staticmethod
+    def ps(pid, zone=None):
+        env = {**os.environ, "LC_ALL": "C", "LANG": "C", **({"TZ": zone} if zone else {})}
+        return " ".join(subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True,
+                                       env=env).stdout.split())
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "read off /proc on Linux")
+    def test_on_linux_a_start_time_is_read_off_proc_without_running_ps(self):
+        import sminos
+        self.off_utc()
+        pid = os.getpid()
+        recorded = self.ps(pid, "UTC")   # what the harness writes: LC_ALL=C TZ=UTC ps -o lstart=
+        gone = subprocess.Popen(["true"])
+        gone.wait()
+        with mock.patch.object(sminos.subprocess, "Popen", side_effect=AssertionError("a process was run")):
+            self.assertTrue(sminos.read_proc_start(pid))
+            self.assertTrue(sminos.same_process({"pid": pid, "procStart": recorded}, fresh=True))
+            self.assertFalse(sminos.same_process({"pid": pid, "procStart": "Mon Jan 1 00:00:00 2001"}, fresh=True),
+                             "another process's start time")
+            self.assertEqual(sminos.read_proc_start(gone.pid), "", "no process holds the pid now")
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "read off /proc on Linux")
+    def test_on_linux_the_reading_is_what_ps_prints(self):
+        import sminos
+        self.off_utc()
+        holder = subprocess.Popen(["sleep", "60"])
+        self.addCleanup(holder.wait)
+        self.addCleanup(holder.kill)
+        for pid in (os.getpid(), holder.pid):
+            ps = self.ps(pid)
+            got = sminos.read_proc_start(pid)
+            self.assertLessEqual(abs(time.mktime(sminos._parse_lstart(got)) - time.mktime(sminos._parse_lstart(ps))),
+                                 2, "within same_process's tolerance")
+            self.assertEqual(got, ps, "and ps's own text, to the second")
+
+    def test_linux_s_reading_is_ps_s_second_not_the_truer_instant(self):
+        """ps adds the start's whole seconds to /proc/stat's boot time,
+        itself a whole second: on a boot 0.7 s past its second, a process
+        that began 0.5 s into a second reads as ps reads it, the second
+        before proc_started_at's instant."""
+        import sminos
+        proc = tempfile.mkdtemp(dir=T)
+        hz = os.sysconf("SC_CLK_TCK")
+        now = time.time()
+        boot = int(now) - 3600 + 0.7
+        ticks = int((int(now) - 60 + 0.5 - boot) * hz)
+        os.makedirs(os.path.join(proc, "4242"))
+        with open(os.path.join(proc, "stat"), "w") as f:
+            f.write("cpu  0 0 0 0\nintr 0\nctxt 0\nbtime %d\nprocesses 1\n" % int(boot))
+        with open(os.path.join(proc, "uptime"), "w") as f:
+            f.write("%.2f 0.00\n" % (now - boot))
+        with open(os.path.join(proc, "4242", "stat"), "w") as f:
+            f.write("4242 (claude (bg) x) S 1 4242 4242 0 -1 4194560 0 0 0 0 0 0 0 0 20 0 1 0 %d 0 0\n" % ticks)
+        with mock.patch.object(sminos, "PROC", proc):
+            self.assertEqual(sminos._linux_start(4242), int(boot) + ticks // hz)
+            self.assertEqual(int(sminos.proc_started_at(4242)), int(boot) + ticks // hz + 1)
+            self.assertEqual(sminos._linux_start(4343), 0, "no such process")
+            os.unlink(os.path.join(proc, "stat"))
+            self.assertIsNone(sminos._linux_start(4242), "no Linux /proc: ps answers")
+
 
 def wait_for(test, timeout=10.0):
     deadline = time.time() + timeout
