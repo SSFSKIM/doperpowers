@@ -1,11 +1,13 @@
 import type { On } from 'claude-code'
 
+import { registerMessage } from './message'
 import { registerNotify } from './notify'
 import { registerToHuman } from './to-human'
 
 /**
- * The plugin's one hooks module: the view, and the notification of each
- * message the model sends. The view is a plugin of its own, not one of
+ * The plugin's one hooks module: the view, the notification of each message
+ * the model sends, and the message tool, which the view draws and which
+ * notifies as it is called. The view is a plugin of its own, not one of
  * sminos' or doperpowers' mods: the engine runs none of a plugin's render
  * hooks on a row that plugin submitted, and sminos submits prompts (the
  * bridge's deliveries from other sessions, the ask's answers) as doperpowers
@@ -18,4 +20,5 @@ import { registerToHuman } from './to-human'
 export function register(on: On) {
   registerToHuman(on)
   registerNotify(on)
+  registerMessage(on)
 }

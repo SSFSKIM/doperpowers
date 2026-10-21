@@ -3802,6 +3802,14 @@ def cmd_chat(a):
 # export appends nothing.
 
 HOST_KINDS = ("message", "question", "answered")
+# The message tools a transcript may hold: the to-human plugin's
+# (to-human/hooks/mods/message.tsx), and MAWS's own, which a MAWS launch
+# registers in its place. A session sends its human a message before another
+# tool call through one (a span written there comes back from the API as a
+# progress note's paraphrase, without its tags); a call whose result is in
+# and is no error is a message at the call's place, src its call id. sminos
+# declares no dependency on either, so it knows them by name.
+MESSAGE_TOOLS = ("mcp__to-human__message", "mcp__maws__message")
 # The ask tool's names a transcript may hold (hooks/mods/ask.tsx ASK_TOOLS):
 # the sminos plugin's, where it moves, and the doperpowers plugin's, where it
 # was first. Sessions are resumed and copied across the move: read either.
@@ -3837,14 +3845,14 @@ def extract_marks(text):
     return [{"kind": s["kind"], "text": s["text"]} for s in sminos_marks.parse(text)["spans"] if s["text"]]
 
 
-def _blocks(record, kind):
-    """A transcript record's content blocks of one type; a string content is
-    one text block."""
+def _blocks(record, kind=None):
+    """A transcript record's content blocks of one type, or all of them in
+    order with none; a string content is one text block."""
     message = record.get("message")
     content = message.get("content") if isinstance(message, dict) else None
     if isinstance(content, str):
-        return [{"type": "text", "text": content}] if kind == "text" else []
-    return [b for b in content if isinstance(b, dict) and b.get("type") == kind] if isinstance(content, list) else []
+        return [{"type": "text", "text": content}] if kind in ("text", None) else []
+    return [b for b in content if isinstance(b, dict) and kind in (b.get("type"), None)] if isinstance(content, list) else []
 
 
 def _result_text(content):
@@ -3985,19 +3993,40 @@ def extract_asks(records):
     return [e for _, e in _ask_events(records)]
 
 
+def _sent_text(block, results):
+    """The text a message tool's call sent: its input's text, once the call's
+    result is among `results` and is no error (a refused, failed or
+    interrupted call sent nothing). None for any other block, and for a call
+    with no text to send."""
+    if block.get("type") != "tool_use" or block.get("name") not in MESSAGE_TOOLS or not block.get("id"):
+        return None
+    inp, res = block.get("input"), results.get(str(block["id"]))
+    text = inp.get("text") if isinstance(inp, dict) else None
+    if not isinstance(text, str) or not text.strip() or res is None or res.get("is_error") is True:
+        return None
+    return text
+
+
 def host_events(records, alias):
     """The events a run of transcript records holds for the host, in record
     order, ready for log_append_batch: each marked span of an assistant record
-    as a `message` (src `<record uuid>#<span index>`), each accepted async ask
-    as a `question`, each delivery of an answer as `answered` (src the call id,
-    or MAWS's askId)."""
+    as a `message` (src `<record uuid>#<span index>`), each accepted call of a
+    message tool as a `message` at its place among the spans (src its call
+    id), each accepted async ask as a `question`, each delivery of an answer as
+    `answered` (src the call id, or MAWS's askId)."""
+    results = {str(b.get("tool_use_id") or ""): b for r in records for b in _blocks(r, "tool_result")}
     out = []
     for i, r in enumerate(records):
         if r.get("type") != "assistant" or not isinstance(r.get("uuid"), str) or not r["uuid"]:
             continue
-        spans = [s for b in _blocks(r, "text") for s in extract_marks(str(b.get("text") or ""))]
-        out += [(i, {"kind": "message", "from": alias, "to": "host", "text": s["text"], "src": "%s#%d" % (r["uuid"], n)})
-                for n, s in enumerate(spans)]
+        n = 0
+        for b in _blocks(r):
+            if b.get("type") == "text":
+                for s in extract_marks(str(b.get("text") or "")):
+                    out.append((i, {"kind": "message", "from": alias, "to": "host", "text": s["text"], "src": "%s#%d" % (r["uuid"], n)}))
+                    n += 1
+            elif (text := _sent_text(b, results)) is not None:
+                out.append((i, {"kind": "message", "from": alias, "to": "host", "text": text, "src": str(b["id"])}))
     for i, e in _ask_events(records):
         if e["kind"] == "question":
             out.append((i, {"kind": "question", "from": alias, "to": "host", "text": e["text"],
@@ -4271,19 +4300,51 @@ def _last_message_text(tpath):
     return "\n".join(texts) if key is not None else None
 
 
+def _message_call_open(tpath):
+    """Whether the transcript's last message is an assistant's holding a call
+    of a message tool whose result is not on the transcript yet, read from its
+    end past the tool results after it. False when it cannot be read."""
+    try:
+        f = open(tpath, "rb")
+    except OSError:
+        return False
+    key, answered = None, set()
+    with f:
+        for _, line in _lines_backward(f, _complete_end(f)):
+            r = _record(line)
+            if not r or r.get("isSidechain") or r.get("type") not in ("user", "assistant"):
+                continue
+            if r["type"] == "user":
+                results = _blocks(r, "tool_result")
+                if key is not None or not results:
+                    break
+                answered.update(str(b.get("tool_use_id") or "") for b in results)
+                continue
+            message = r.get("message") if isinstance(r.get("message"), dict) else {}
+            k = message.get("id") or r.get("uuid")
+            if key is not None and k != key:
+                break
+            key = k
+            if any(b.get("name") in MESSAGE_TOOLS and str(b.get("id") or "") not in answered for b in _blocks(r, "tool_use")):
+                return True
+    return False
+
+
 def await_flush(tpath, last_message, until):
     """Before a Stop's export: wait, polling, until the transcript's last
     message is the turn's answer — an assistant message reading the payload's
     `last_assistant_message` — or until `until` (epoch seconds). The same text
     earlier in the transcript is not the answer: a mark the turn repeats is
-    still waited for. True when it is there; at the deadline the export takes
-    what is there, and the next Stop the rest."""
+    still waited for. While the last message holds a message tool's call, the
+    wait is also for that call's result: a turn can end on it with no answer
+    after it (an Esc, a hook that stops the continuation, a turn end the
+    engine asked for), the payload's last message then empty, and a call
+    exported only with its result. True when it is there; at the deadline the
+    export takes what is there, and the next Stop the rest."""
     text = str(last_message or "").strip()
-    if not text:
-        return True
     while True:
-        last = _last_message_text(tpath)
-        if last is not None and last.strip() == text:
+        last = _last_message_text(tpath) if text else None
+        if (not text or (last is not None and last.strip() == text)) and not _message_call_open(tpath):
             return True
         if time.time() + FLUSH_POLL > until:
             return False
@@ -4293,10 +4354,11 @@ def await_flush(tpath, last_message, until):
 def export_host(project, session, tpath, alias):
     """Append what the transcript holds for the host past the session's export
     position, as one batch, then advance the position to the last assistant
-    record read whose ask calls all have their results (so a question is
-    never split from the result that accepts it). With no position, the
-    trailing run of assistant records is exported (§4). Exports of a session
-    are serialised by its export lock, taken before the log's locks."""
+    record read whose ask and message calls all have their results (so a
+    question or a message is never split from the result that accepts it).
+    With no position, the trailing run of assistant records is exported (§4).
+    Exports of a session are serialised by its export lock, taken before the
+    log's locks."""
     with flocked(project_path(project, "cursors", "export", reader_key(session) + ".lock")):
         past = _records_past(project, session, tpath)
         if past is None:
@@ -4308,7 +4370,7 @@ def export_host(project, session, tpath, alias):
         new, pending = None, set()
         for at, r in records:
             for b in _blocks(r, "tool_use"):
-                if b.get("name") in (*ASK_TOOLS, MAWS_ASK_TOOL) and b.get("id"):
+                if b.get("name") in (*ASK_TOOLS, MAWS_ASK_TOOL, *MESSAGE_TOOLS) and b.get("id"):
                     pending.add(str(b["id"]))
             for b in _blocks(r, "tool_result"):
                 pending.discard(str(b.get("tool_use_id") or ""))

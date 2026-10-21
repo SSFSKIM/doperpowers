@@ -1,5 +1,7 @@
 import type { EngineInterface, On, PromptOrigin, RenderElement, RenderInput } from 'claude-code'
 
+import { MESSAGE_TOOL, readMessage } from './message'
+
 /**
  * The ask mod's tool, the model's one way to ask the human in an interactive
  * session, under each plugin that registered it: sminos, where it moves, and
@@ -557,8 +559,16 @@ const MODE = 'to-human-mode'
 
 const isSpawn = (tool: string) => tool === 'Agent' || tool === 'Workflow'
 
-/** Questions (the built-in's and the ask mod's) and agent spawns stay in the report; messaging is working record. */
-export const isRead = (tool: string) => tool === 'AskUserQuestion' || ASK_TOOLS.includes(tool) || isSpawn(tool)
+/**
+ * Questions (the built-in's and the ask mod's), agent spawns and the message
+ * tool's messages stay in the report; other messaging (an agent's
+ * `SendMessage`) is working record.
+ */
+export const isRead = (tool: string) => tool === 'AskUserQuestion' || ASK_TOOLS.includes(tool) || isSpawn(tool) || tool === MESSAGE_TOOL
+
+/** A message tool call that sent nothing: refused, errored, or cut by an abort. */
+const isUnsent = (props: { tool: string; isErrored: boolean; isInterrupted?: boolean }) =>
+  props.tool === MESSAGE_TOOL && (props.isErrored || props.isInterrupted === true)
 
 /** A row's `onScreen`: the units of it the window shows, `null` while it is out of the window. */
 type Shown = { first: number; last: number; of: number } | null
@@ -833,10 +843,12 @@ async function place($: EngineInterface, view: View, search: string[], signal: A
   }
 }
 
-/** Whether the conversation holds a marked assistant message. */
+/** Whether the conversation holds a marked assistant message, or a message sent through the tool. */
 async function sentMark($: EngineInterface, signal: AbortSignal): Promise<boolean> {
+  const isSent = (use: { tool: string; input: unknown; isError?: true }) =>
+    use.tool === MESSAGE_TOOL && use.isError !== true && (readMessage(use.input)?.text.trim() ?? '') !== ''
   try {
-    return (await $.session.messages()).some((m) => m.role === 'assistant' && parse(m.text).spans.length > 0)
+    return (await $.session.messages()).some((m) => m.role === 'assistant' && (parse(m.text).spans.length > 0 || m.toolUses.some(isSent)))
   } catch (error) {
     if (!signal.aborted) {
       $.ui.log(`to-human: the conversation could not be read for a mark (${String(error)})`, { to: 'debug' })
@@ -898,6 +910,56 @@ async function started($: EngineInterface, view: View, signal: AbortSignal, onMa
       view.starting = undefined
     }
   }
+}
+
+/**
+ * Messages as the report draws them, a span's or the message tool's alike:
+ * each under its label, `after` beneath them.
+ *
+ * A span's body is markdown as the model wrote it (a table, a list, a code
+ * fence), drawn as the surface draws a reply's text (see `markdownBlocks`),
+ * directly under its label. The bullet is the engine's two-column gutter, so
+ * the body is padded by as much to sit where the transcript's text does. The
+ * row stands one line below the row above, as the engine's rows do. On the
+ * terminal its file links open in VS Code (see `fileLinks`).
+ */
+function spanRows<E extends RenderInput>($: EngineInterface, e: E, spans: readonly Span[], bullet: string, after: RenderElement | null = null): RenderElement {
+  const { Box, Text, Markdown } = $.ui.resolve(e)
+  const last = spans.length - 1
+  const bodies = spans.map((span, i) => (
+    <Box flexDirection="column">
+      {markdownBlocks(span.text).map((block, j) => {
+        if (e.surface !== 'terminal') return <Markdown text={block} />
+        const { text, targets } = fileLinks(block)
+        return targets.length === 0 ? (
+          <Markdown text={text} />
+        ) : (
+          <Markdown key={`${LINKS}${i}:${j}`} text={text} onLinkPress={() => {}} pressableLinks={targets.slice(0, 256)} />
+        )
+      })}
+    </Box>
+  ))
+
+  return (
+    <Box flexDirection="column" marginTop={1}>
+      {spans.map((span, i) => {
+        const style = STYLE[span.kind]
+        return (
+          <Box flexDirection="column" marginBottom={i < last ? 1 : 0}>
+            <Box>
+              <Text color={style.color} bold>
+                {i === 0 ? bullet : '  '}
+                {style.label}
+                {span.isOpen ? ' …' : ''}
+              </Text>
+            </Box>
+            <Box paddingLeft={2}>{bodies[i]}</Box>
+          </Box>
+        )
+      })}
+      {after}
+    </Box>
+  )
 }
 
 // MAWS draws this channel itself when it advertises native support; the
@@ -1066,7 +1128,7 @@ export function registerToHuman(on: On) {
       return recordRow($, e, next, view, { bullet })
     }
 
-    const { Box, Text, Button, Markdown } = $.ui.resolve(e)
+    const { Box, Button } = $.ui.resolve(e)
     const requestId = e.requestId
     const toggleThis = () => toggle(view, requestId)
 
@@ -1085,60 +1147,30 @@ export function registerToHuman(on: On) {
       )
     }
 
-    const last = parsed.spans.length - 1
-
-    // A span's body is markdown as the model wrote it (a table, a list, a
-    // code fence), drawn as the surface draws a reply's text (see
-    // `markdownBlocks`), directly under its label. The bullet is the engine's
-    // two-column gutter, so the body is padded by as much to sit where the
-    // transcript's text does. The row stands one line below the row above,
-    // as the engine's rows do.
-    // On the terminal its file links open in VS Code (see `fileLinks`).
-    const bodies = parsed.spans.map((span, i) => (
-      <Box flexDirection="column">
-        {markdownBlocks(span.text).map((block, j) => {
-          if (e.surface !== 'terminal') return <Markdown text={block} />
-          const { text, targets } = fileLinks(block)
-          return targets.length === 0 ? (
-            <Markdown text={text} />
-          ) : (
-            <Markdown key={`${LINKS}${i}:${j}`} text={text} onLinkPress={() => {}} pressableLinks={targets.slice(0, 256)} />
-          )
-        })}
-      </Box>
-    ))
-
-    return (
-      <Box flexDirection="column" marginTop={1}>
-        {parsed.spans.map((span, i) => {
-          const style = STYLE[span.kind]
-          return (
-            <Box flexDirection="column" marginBottom={i < last ? 1 : 0}>
-              <Box>
-                <Text color={style.color} bold>
-                  {i === 0 ? bullet : '  '}
-                  {style.label}
-                  {span.isOpen ? ' …' : ''}
-                </Text>
-              </Box>
-              <Box paddingLeft={2}>{bodies[i]}</Box>
-            </Box>
-          )
-        })}
-        {parsed.hasRecord ? (
-          // The one button of this message's record and of the run after it.
-          <Box paddingLeft={2} marginTop={1}>
-            <Button key={TOGGLE} label="working record" dimColor onPress={toggleThis} />
-          </Box>
-        ) : null}
-      </Box>
+    return spanRows(
+      $,
+      e,
+      parsed.spans,
+      bullet,
+      parsed.hasRecord ? (
+        // The one button of this message's record and of the run after it.
+        <Box paddingLeft={2} marginTop={1}>
+          <Button key={TOGGLE} label="working record" dimColor onPress={toggleThis} />
+        </Box>
+      ) : null,
     )
   })
 
+  // The message tool's calls that sent nothing (refused, errored, cut by an
+  // abort), by their ids: their rows, the call's and its result's, stand in
+  // the working record as the engine draws them. The result row cannot say
+  // it was cut, so it reads what its call's row said.
+  const unsent = new Set<string>()
+
   // A tool call is working record too, and stands in the run it falls in,
   // except one the person reads: the question dialog's, whose row is the
-  // answer they gave, and an agent spawn; each breaks the run as a marked
-  // message does. A standalone call's
+  // answer they gave, an agent spawn, and a message sent through the tool;
+  // each breaks the run as a marked message does. A standalone call's
   // result is a row of its own beneath it once the call resolves, so until
   // then (no output, and no abort, which leaves one) the call's row is the
   // last of the two. A row of a group the engine expanded draws its output
@@ -1147,7 +1179,32 @@ export function registerToHuman(on: On) {
   on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
     if (await native($, e)) return next(e)
     await started($, view, next.signal, markSeen)
-    const read = isRead(e.props.tool)
+    if (isUnsent(e.props)) {
+      unsent.add(e.props.tool_use_id)
+    }
+    const read = isRead(e.props.tool) && !unsent.has(e.props.tool_use_id)
+    // A message sent through the tool draws as a span does, under its label,
+    // and turns the view on as a span does. While its input streams the row
+    // draws the text so far, or nothing until some has arrived. The full
+    // transcript draws the call as the engine does.
+    if (read && e.props.tool === MESSAGE_TOOL && groupOf.get(e.requestId) === undefined) {
+      const message = readMessage(e.props.input)
+      const text = message?.text.trim() ?? ''
+      note(view, e.requestId, e.props)
+      see($, view, e.requestId, 'marked')
+      if (text !== '' && !hasSeenMark) {
+        hasSeenMark = true
+        $.ui.invalidate('ui.render')
+      }
+      if (!isFolding()) {
+        return next(e)
+      }
+      if (text === '') {
+        const { Box } = $.ui.resolve(e)
+        return <Box />
+      }
+      return spanRows($, e, [{ kind: 'message', text, isOpen: message?.isWhole !== true }], '● ')
+    }
     if (isSpawn(e.props.tool)) {
       spawns.add(e.props.tool_use_id)
     }
@@ -1209,8 +1266,16 @@ export function registerToHuman(on: On) {
   on('ui.render', { component: 'ToolResult' }, async ($, e, next) => {
     if (await native($, e)) return next(e)
     await started($, view, next.signal, markSeen)
-    const read = isRead(e.props.tool)
+    if (isUnsent(e.props)) {
+      unsent.add(e.props.tool_use_id)
+    }
+    const read = isRead(e.props.tool) && !unsent.has(e.props.tool_use_id)
     see($, view, e.requestId, read ? 'marked' : 'record')
+    if (read && e.props.tool === MESSAGE_TOOL && isFolding()) {
+      // The call's row is the message; "sent" is for the model.
+      const { Box } = $.ui.resolve(e)
+      return <Box />
+    }
     return isFolding() && !read ? recordRow($, e, next, view, { opens: false }) : next(e)
   })
 

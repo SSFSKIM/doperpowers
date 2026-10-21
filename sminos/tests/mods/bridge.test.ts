@@ -3980,6 +3980,149 @@ describe('the export to the host', () => {
     ])
   })
 
+  // The message tools, by value: the to-human plugin's, and MAWS's in a MAWS launch.
+  const MESSAGE_TOOL = 'mcp__to-human__message'
+  const MAWS_MESSAGE_TOOL = 'mcp__maws__message'
+  const messageUse = (id: string, name: string, text: string) => ({ type: 'tool_use', id, name, input: { text } })
+  const messageResult = (id: string, isError = false) => ({ type: 'tool_result', tool_use_id: id, content: isError ? 'refused' : 'sent', ...(isError && { is_error: true }) })
+  /** A message tool's result row, as the engine keeps it. */
+  const keepMessageResult = (h: ReturnType<typeof harness>, id: string, uuid: string, tool = MESSAGE_TOOL, isError = false) =>
+    h.append('tool-result', { type: 'user', role: 'user', content: [messageResult(id, isError)] }, { uuid, origin: { kind: 'tool', tool } })
+
+  test("a message tool's call goes with its result, both rows in one export, under either tool's name, whichever row the engine keeps first; the child judges a refused one", async () => {
+    const h = harness()
+    await h.ready()
+    await h.responseRow(messageUse('toolu_t1', MESSAGE_TOOL, 'Approve the dialog.'), { uuid: 'r-t1' })
+    expect(h.ofType('export')).toEqual([])
+    await keepMessageResult(h, 'toolu_t1', 'r-t1res')
+    await keepMessageResult(h, 'toolu_t2', 'r-t2res', MAWS_MESSAGE_TOOL)
+    await h.responseRow(messageUse('toolu_t2', MAWS_MESSAGE_TOOL, 'Built.'), { uuid: 'r-t2' })
+    await h.responseRow(messageUse('toolu_t3', MESSAGE_TOOL, 'from a subagent'), { uuid: 'r-t3' })
+    await keepMessageResult(h, 'toolu_t3', 'r-t3res', MESSAGE_TOOL, true)
+    const use = (id: string, name: string, text: string, uuid: string) => ({ type: 'assistant', uuid, message: { content: [messageUse(id, name, text)] } })
+    const result = (id: string, uuid: string, isError = false) => ({ type: 'user', uuid, message: { content: [messageResult(id, isError)] } })
+    expect(h.ofType('export').map((e) => e.records)).toEqual([
+      [use('toolu_t1', MESSAGE_TOOL, 'Approve the dialog.', 'r-t1'), result('toolu_t1', 'r-t1res')],
+      [use('toolu_t2', MAWS_MESSAGE_TOOL, 'Built.', 'r-t2'), result('toolu_t2', 'r-t2res')],
+      [use('toolu_t3', MESSAGE_TOOL, 'from a subagent', 'r-t3'), result('toolu_t3', 'r-t3res', true)],
+    ])
+  })
+
+  for (const tool of [MESSAGE_TOOL, MAWS_MESSAGE_TOOL]) {
+  test(`${tool}: what the main loop keeps after a message call waits for the call's result, so the log keeps the transcript's order`, async () => {
+    const h = harness()
+    await h.ready()
+    const span = (uuid: string, text: string) => ({ type: 'assistant', uuid, message: { content: [{ type: 'text', text }] } })
+    const use = (id: string, text: string, uuid: string) => ({ type: 'assistant', uuid, message: { content: [messageUse(id, tool, text)] } })
+    const result = (id: string, uuid: string, isError = false) => ({ type: 'user', uuid, message: { content: [messageResult(id, isError)] } })
+    await h.responseRow({ type: 'text', text: '<message>before</message>' }, { uuid: 'r-0' })
+    await h.responseRow(messageUse('toolu_a', tool, 'A'), { uuid: 'r-a' })
+    await h.responseRow({ type: 'text', text: '<message>B</message>' }, { uuid: 'r-b' })
+    await h.responseRow(messageUse('toolu_c', tool, 'C'), { uuid: 'r-c' })
+    await h.responseRow({ type: 'text', text: '<message>D</message>' }, { uuid: 'r-d' })
+    expect(h.ofType('export').map((e) => e.records)).toEqual([[span('r-0', '<message>before</message>')]])
+    // C's result first: it waits behind A, as do B and D.
+    await keepMessageResult(h, 'toolu_c', 'r-cres', tool)
+    expect(h.ofType('export').map((e) => e.records)).toHaveLength(1)
+    // A refused: its pair goes (the child logs nothing for it), and the rest after it, in order.
+    await keepMessageResult(h, 'toolu_a', 'r-ares', tool, true)
+    await h.responseRow({ type: 'text', text: '<message>E</message>' }, { uuid: 'r-e' })
+    expect(h.ofType('export').map((e) => e.records)).toEqual([
+      [span('r-0', '<message>before</message>')],
+      [use('toolu_a', 'A', 'r-a'), result('toolu_a', 'r-ares', true)],
+      [span('r-b', '<message>B</message>')],
+      [use('toolu_c', 'C', 'r-c'), result('toolu_c', 'r-cres')],
+      [span('r-d', '<message>D</message>')],
+      [span('r-e', '<message>E</message>')],
+    ])
+  })
+
+  test(`${tool}: a row holding a message call and a mark goes whole with the call's result, so the child reads its blocks in order`, async () => {
+    const h = harness()
+    await h.ready()
+    const blocks = [{ type: 'text', text: '<message>first</message>' }, messageUse('toolu_r', tool, 'R'), { type: 'text', text: '<message>after</message>' }]
+    await h.append('response', { type: 'assistant', role: 'assistant', content: blocks }, { uuid: 'r-row', origin: { kind: 'model', model: 'm' } })
+    expect(h.ofType('export')).toEqual([])
+    await keepMessageResult(h, 'toolu_r', 'r-rres', tool)
+    expect(h.ofType('export').map((e) => e.records)).toEqual([
+      [{ type: 'assistant', uuid: 'r-row', message: { content: blocks } }, { type: 'user', uuid: 'r-rres', message: { content: [messageResult('toolu_r')] } }],
+    ])
+  })
+
+  for (const order of [['toolu_x', 'toolu_y'], ['toolu_y', 'toolu_x']]) {
+    test(`${tool}: a row holding two message calls and a mark waits for both calls' results, then goes once with both (results ${order.join(' then ')})`, async () => {
+      const h = harness()
+      await h.ready()
+      const blocks = [messageUse('toolu_x', tool, 'X'), messageUse('toolu_y', tool, 'Y'), { type: 'text', text: '<message>after both</message>' }]
+      await h.append('response', { type: 'assistant', role: 'assistant', content: blocks }, { uuid: 'r-two', origin: { kind: 'model', model: 'm' } })
+      await h.responseRow({ type: 'text', text: '<message>next row</message>' }, { uuid: 'r-next' })
+      await keepMessageResult(h, order[0]!, `r-${order[0]}`, tool)
+      expect(h.ofType('export')).toEqual([])
+      await keepMessageResult(h, order[1]!, `r-${order[1]}`, tool)
+      const result = (id: string) => ({ type: 'user', uuid: `r-${id}`, message: { content: [messageResult(id)] } })
+      expect(h.ofType('export').map((e) => e.records)).toEqual([
+        [{ type: 'assistant', uuid: 'r-two', message: { content: blocks } }, result(order[0]!), result(order[1]!)],
+        [{ type: 'assistant', uuid: 'r-next', message: { content: [{ type: 'text', text: '<message>next row</message>' }] } }],
+      ])
+    })
+  }
+  }
+
+  test('a message call whose result the bridge never sees holds a bounded number of exports, then lets them go in order, its row first with the results it has', async () => {
+    const h = harness()
+    await h.ready()
+    await h.responseRow(messageUse('toolu_lost', MESSAGE_TOOL, 'its result was refused beneath'), { uuid: 'r-lost' })
+    for (let i = 0; i < 51; i++) {
+      await h.responseRow({ type: 'text', text: `<message>${i}</message>` }, { uuid: `r-${i}` })
+    }
+    expect(h.ofType('export').map((e) => (e.records as { uuid: string }[]).map((r) => r.uuid))).toEqual([['r-lost'], ...Array.from({ length: 51 }, (_, i) => [`r-${i}`])])
+    expect(h.logs.some((l) => l.includes('toolu_lost') && l.includes('Stop hook'))).toBe(true)
+    await h.responseRow({ type: 'text', text: '<message>later</message>' }, { uuid: 'r-later' })
+    expect(h.ofType('export').map((e) => (e.records as { uuid: string }[])[0]!.uuid).at(-1)).toBe('r-later')
+  })
+
+  test('a message call whose result the bridge never sees, followed only by message calls, holds at most the bound, then the queue flows in order', async () => {
+    const h = harness()
+    await h.ready()
+    await h.responseRow(messageUse('toolu_missed', MESSAGE_TOOL, 'its result was refused beneath'), { uuid: 'r-missed' })
+    for (let i = 0; i < 60; i++) {
+      await h.responseRow(messageUse(`toolu_m${i}`, i % 2 === 0 ? MESSAGE_TOOL : MAWS_MESSAGE_TOOL, `message ${i}`), { uuid: `r-m${i}` })
+      await keepMessageResult(h, `toolu_m${i}`, `r-m${i}res`, i % 2 === 0 ? MESSAGE_TOOL : MAWS_MESSAGE_TOOL)
+    }
+    const uuids = h.ofType('export').map((e) => (e.records as { uuid: string }[]).map((r) => r.uuid))
+    expect(uuids).toEqual([['r-missed'], ...Array.from({ length: 60 }, (_, i) => [`r-m${i}`, `r-m${i}res`])])
+    expect(h.logs.some((l) => l.includes('r-missed') && l.includes('toolu_missed') && l.includes('Stop hook'))).toBe(true)
+  })
+
+  test("a message past the events' cap holds nothing after it: it is the Stop hook's, the exception the design allows", async () => {
+    const h = harness()
+    await h.ready()
+    await h.responseRow(messageUse('toolu_big', MESSAGE_TOOL, 'x'.repeat(TEXT_CAP + 1)), { uuid: 'r-big' })
+    await h.responseRow({ type: 'text', text: '<message>after the long one</message>' }, { uuid: 'r-next' })
+    expect(h.ofType('export').map((e) => (e.records as { uuid: string }[])[0]!.uuid)).toEqual(['r-next'])
+  })
+
+  test("a message past the events' cap is left to the Stop hook's export, in either row order, and said so in the debug log", async () => {
+    const h = harness()
+    await h.ready()
+    const long = 'x'.repeat(TEXT_CAP + 1)
+    await h.responseRow(messageUse('toolu_l1', MESSAGE_TOOL, long), { uuid: 'r-l1' })
+    await keepMessageResult(h, 'toolu_l1', 'r-l1res')
+    await keepMessageResult(h, 'toolu_l2', 'r-l2res', MAWS_MESSAGE_TOOL)
+    await h.responseRow(messageUse('toolu_l2', MAWS_MESSAGE_TOOL, long), { uuid: 'r-l2' })
+    expect(h.ofType('export')).toEqual([])
+    expect(['r-l1', 'r-l2'].map((u) => h.logs.some((l) => l.includes(u) && l.includes('Stop hook')))).toEqual([true, true])
+  })
+
+  test("a message call whose result never came, and a message tool's call in a subagent, are not exported", async () => {
+    const h = harness()
+    await h.ready()
+    await h.responseRow(messageUse('toolu_open', MESSAGE_TOOL, 'still running'), { uuid: 'r-open' })
+    await h.responseRow(messageUse('toolu_sub', MESSAGE_TOOL, 'from a subagent'), { uuid: 'r-sub', agentId: 'a7' })
+    await h.append('tool-result', { type: 'user', role: 'user', content: [messageResult('toolu_sub', true)] }, { uuid: 'r-subres', agentId: 'a7', origin: { kind: 'tool', tool: MESSAGE_TOOL } })
+    expect(h.ofType('export')).toEqual([])
+  })
+
   test("a blocking ask, an async one whose result never came, and another tool's result are not exported", async () => {
     const h = harness()
     await h.ready()

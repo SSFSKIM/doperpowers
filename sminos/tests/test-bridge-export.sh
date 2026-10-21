@@ -147,8 +147,17 @@ def ask(uuid, call, is_async, name=ASK):
     return {"type": "assistant", "uuid": uuid, "message": {"content": [
         {"type": "tool_use", "id": call, "name": name, "input": {"questions": Q, "async": is_async}}]}}
 
-def result(uuid, call, t=ASYNC_RESULT):
-    return {"type": "user", "uuid": uuid, "message": {"content": [{"type": "tool_result", "tool_use_id": call, "content": t}]}}
+def result(uuid, call, t=ASYNC_RESULT, is_error=False):
+    return {"type": "user", "uuid": uuid, "message": {"content": [
+        {"type": "tool_result", "tool_use_id": call, "content": t, **({"is_error": True} if is_error else {})}]}}
+
+# The message tools: the to-human plugin's, and MAWS's in a MAWS launch.
+MESSAGE_TOOL, MAWS_MESSAGE_TOOL = "mcp__to-human__message", "mcp__maws__message"
+
+def message(uuid, call, t, name=MESSAGE_TOOL, before=None, after=None):
+    content = [{"type": "tool_use", "id": call, "name": name, "input": {"text": t}}]
+    content = ([{"type": "text", "text": before}] if before else []) + content + ([{"type": "text", "text": after}] if after else [])
+    return {"type": "assistant", "uuid": uuid, "message": {"content": content}}
 
 PLUGIN_PROMPT = "The doperpowers plugin sent a message:\n"
 # The tool and its framing under the plugin the ask moves to.
@@ -194,6 +203,37 @@ ROWS = {
         {"type": "user", "uuid": "r6", "origin": {"kind": "plugin", "name": "sminos"},
          "message": {"content": [{"type": "text", "text": SMINOS_PROMPT + delivery("toolu_ex_crossed") + PLUGIN_FRAMING}]}},
     ],
+    # A message sent through either message tool, with its result, the pair
+    # one export as the mod posts it; and a refused call.
+    "message": [message("m1", "toolu_ex_msg", "Approve the dialog at 07:15, please."), result("m2", "toolu_ex_msg", "sent")],
+    "maws-message": [message("m3", "toolu_ex_maws_msg", "Built; deploying next.", MAWS_MESSAGE_TOOL), result("m4", "toolu_ex_maws_msg", "sent")],
+    # A call followed by a span, under each name, as the mod posts them: the
+    # pair once the result is in, then the span that waited behind it; and a
+    # row holding a span, a call and a span, posted whole with the call's result.
+    **{"call-then-span-" + tag: [message("o1-" + tag, "toolu_ex_first_" + tag, "A, sent first", name), result("o2-" + tag, "toolu_ex_first_" + tag, "sent")]
+       for tag, name in (("plugin", MESSAGE_TOOL), ("maws", MAWS_MESSAGE_TOOL))},
+    **{"span-after-" + tag: [text("o3-" + tag, "<message>B, written after the call</message>")]
+       for tag in ("plugin", "maws")},
+    **{"one-row-" + tag: [message("o4-" + tag, "toolu_ex_row_" + tag, "the call", name, "<message>ahead of the call</message>", "<message>after the call</message>"),
+                          result("o5-" + tag, "toolu_ex_row_" + tag, "sent")]
+       for tag, name in (("plugin", MESSAGE_TOOL), ("maws", MAWS_MESSAGE_TOOL))},
+    # A row holding two calls and a span, posted once both results are in.
+    **{"two-calls-" + tag: [
+        {"type": "assistant", "uuid": "o6-" + tag, "message": {"content": [
+            {"type": "tool_use", "id": "toolu_ex_x_" + tag, "name": name, "input": {"text": "X, the first call"}},
+            {"type": "tool_use", "id": "toolu_ex_y_" + tag, "name": name, "input": {"text": "Y, the second call"}},
+            {"type": "text", "text": "<message>after both calls</message>"}]}},
+        result("o7-" + tag, "toolu_ex_y_" + tag, "sent"), result("o8-" + tag, "toolu_ex_x_" + tag, "sent")]
+       for tag, name in (("plugin", MESSAGE_TOOL), ("maws", MAWS_MESSAGE_TOOL))},
+    # A call whose result the bridge missed, as the mod posts it once it gives
+    # the call up (its row, no result), and two later calls with theirs; the
+    # transcript holds the missed result, which the Stop hook reads.
+    "missed-row": [message("q1", "toolu_ex_missed", "its result never reached the bridge")],
+    "missed-result": [result("q2", "toolu_ex_missed", "sent")],
+    "after-missed": [message("q3", "toolu_ex_later1", "later, one"), result("q4", "toolu_ex_later1", "sent")],
+    "after-missed-2": [message("q5", "toolu_ex_later2", "later, two", MAWS_MESSAGE_TOOL), result("q6", "toolu_ex_later2", "sent")],
+    "refused-message": [message("m5", "toolu_ex_msg_refused", "from a subagent"),
+                        result("m6", "toolu_ex_msg_refused", "message is for the main conversation", True)],
     # The human's mid-turn message quoting a steer, which the mod hands over whole.
     "quoted": [
         {"type": "attachment", "uuid": "a5", "attachment": {"type": "queued_command", "commandMode": "prompt", "prompt": QUOTED,
@@ -370,6 +410,72 @@ assert_equals "$(events_of "$SG")" "joined question:toolu_ex_sminos question:too
   "an ask under the sminos plugin's name, and one under doperpowers' answered under sminos's framing, each export a question and its answer"
 assert_equals "$(text_of "$SG" answered toolu_ex_sminos)" 'The user answered: "Which backend?"="Postgres".' \
   "the answer under the sminos framing is the engine's result text, without the framing"
+
+echo "the message tools:"
+# A message tool's call and its result, which the mod hands over as one
+# export: the child logs an accepted call as the message the Stop hook's
+# export logs for it, under the same src, so the Stop appends nothing more.
+SH=5b000001-0000-4000-8000-0000000000ea
+TH="$HOME/.claude/projects/x/$SH.jsonl"
+peer "$SH" exmsg interactive cli
+start_child "$SH"
+ctl post "$SMINOS_HOME/bridge/$SH.sock" "[{\"type\":\"session\",\"phase\":\"start\",\"session\":\"$SH\",\"cwd\":\"$REPO\",\"t\":1}]" >/dev/null
+for pair in message maws-message refused-message; do
+  ctl post "$SMINOS_HOME/bridge/$SH.sock" "$(rows export "$pair")" >/dev/null
+done
+ctl post "$SMINOS_HOME/bridge/$SH.sock" "$(rows export eh)" >/dev/null
+until_true 100 has "$SH" "message:eh#0" || true
+MSGS="joined message:toolu_ex_msg message:toolu_ex_maws_msg message:eh#0"
+assert_equals "$(events_of "$SH")" "$MSGS" \
+  "an accepted call of either message tool reaches the log as a message, src its call id; a refused call is none"
+assert_contains "$(grep '"toolu_ex_msg"' "$LOG/testhost.$SH.jsonl")" '"kind": "message", "from": "exmsg", "to": "host", "text": "Approve the dialog at 07:15, please.", "src": "toolu_ex_msg"' \
+  "the message carries from, to host, the call's text and src, as the Stop hook writes it"
+hook SessionStart "$SH" "$TH"
+rows transcript "$TH" prompt message maws-message refused-message eh
+hook Stop "$SH" "$TH"
+assert_equals "$(events_of "$SH")" "$MSGS" "the Stop hook's export over the same rows appends no second copy"
+"$SMINOS" chat exdemo --host > "$T/host" 2>&1 || true
+assert_contains "$(cat "$T/host")" "exmsg: Built; deploying next." "chat --host prints a message sent through MAWS's tool"
+# Order: a call followed by a span, and a row holding a span, a call and a
+# span, reach the log in the transcript's order, as the Stop hook reads it.
+for tag in plugin maws; do
+  case "$tag" in plugin) SO=5b000001-0000-4000-8000-0000000000fa ;; *) SO=5b000001-0000-4000-8000-0000000000fb ;; esac
+  TO="$HOME/.claude/projects/x/$SO.jsonl"
+  peer "$SO" "exorder$tag" interactive cli
+  start_child "$SO"
+  ctl post "$SMINOS_HOME/bridge/$SO.sock" "[{\"type\":\"session\",\"phase\":\"start\",\"session\":\"$SO\",\"cwd\":\"$REPO\",\"t\":1}]" >/dev/null
+  for part in "call-then-span-$tag" "span-after-$tag" "one-row-$tag" "two-calls-$tag"; do
+    ctl post "$SMINOS_HOME/bridge/$SO.sock" "$(rows export "$part")" >/dev/null
+  done
+  until_true 100 has "$SO" "message:o6-$tag#0" || true
+  ORDER="joined message:toolu_ex_first_$tag message:o3-$tag#0 message:o4-$tag#0 message:toolu_ex_row_$tag message:o4-$tag#1"
+  ORDER="$ORDER message:toolu_ex_x_$tag message:toolu_ex_y_$tag message:o6-$tag#0"
+  assert_equals "$(events_of "$SO")" "$ORDER" \
+    "$tag's message tool: a call, the span after it, a row's span, call and span, and a row's two calls and span reach the log in the transcript's order"
+  hook SessionStart "$SO" "$TO"
+  rows transcript "$TO" prompt "call-then-span-$tag" "span-after-$tag" "one-row-$tag" "two-calls-$tag"
+  hook Stop "$SO" "$TO"
+  assert_equals "$(events_of "$SO")" "$ORDER" "$tag's message tool: the Stop hook's export over the same rows reads the same order, and appends nothing"
+done
+
+# A call whose result the bridge missed: the mod gives it up at its bound and
+# the calls after it flow; the Stop hook's export writes the missed call.
+SL=5b000001-0000-4000-8000-0000000000fc
+TL="$HOME/.claude/projects/x/$SL.jsonl"
+peer "$SL" exmissed interactive cli
+start_child "$SL"
+ctl post "$SMINOS_HOME/bridge/$SL.sock" "[{\"type\":\"session\",\"phase\":\"start\",\"session\":\"$SL\",\"cwd\":\"$REPO\",\"t\":1}]" >/dev/null
+for part in missed-row after-missed after-missed-2; do
+  ctl post "$SMINOS_HOME/bridge/$SL.sock" "$(rows export "$part")" >/dev/null
+done
+until_true 100 has "$SL" "message:toolu_ex_later2" || true
+assert_equals "$(events_of "$SL")" "joined message:toolu_ex_later1 message:toolu_ex_later2" \
+  "a given-up call's row, sent without its result, logs nothing; the calls after it log in order"
+hook SessionStart "$SL" "$TL"
+rows transcript "$TL" prompt missed-row missed-result after-missed after-missed-2
+hook Stop "$SL" "$TL"
+assert_equals "$(events_of "$SL")" "joined message:toolu_ex_later1 message:toolu_ex_later2 message:toolu_ex_missed" \
+  "the Stop hook's export writes the missed call once, its result on disk, and nothing else again"
 
 echo "a recovery resync (the first post lost):"
 # The mod's first post, [session start, resync], never reached the child; its

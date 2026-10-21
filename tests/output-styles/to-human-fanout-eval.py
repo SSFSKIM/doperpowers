@@ -8,17 +8,29 @@ prepared (a kernel cell that runs `llm()` or `agent()`, directly or through a
 function one of the run's cells defined; a shell command one of whose commands
 runs `claude -p` or the review script), ends its turn, or runs out of steps.
 After a launch it gets one more response, past the step budget if need be, so
-a notice sent just after is seen too. A judge that does not know the arm then
+a notice sent just after is seen too; when that response, or the one the
+budget ends on, calls only the message tool, the run goes on for up to two
+more (`SETTLE`), so whether that message ended the turn can be told. A judge that does not know the arm then
 reads what the model wrote before the launch.
 
 On claude-opus-5-5 a note longer than a sentence or two that the model writes
 before a tool call in the same response comes back as a progress-update
 `thinking` block, a short paraphrase without the `<message>` tags, and never
 as text; the runs request `display: "updates"` so those notes are seen. The
-judge reads the `<message>` spans and those notes together; `text_message`
-counts the runs where a `<message>` span before the launch came back as text,
-the only form that reaches the human's report, and `message_in_launch` the
-runs that wrote one into the launch call itself.
+judge reads the messages and those notes together; `text_message` counts the
+runs where a `<message>` span before the launch came back as text,
+`tool_message` the runs that sent one through the message tool (the two forms
+that reach the human's report), and `message_in_launch` the runs that wrote
+one into the launch call itself.
+
+Every arm has the message tool, `mcp__to-human__message`, from the first
+request, defined as `to-human/hooks/mods/message.tsx` ships it (its canned
+result `sent`). Each response's blocks are kept in order, and the messages
+are also counted one by one (`mid_turn.py` has the definitions): mid-turn
+messages delivered as a span or a tool call, or lost as a progress note a
+second judge (claude-opus-5-5 at low effort, doperpowers-f7's criterion)
+rules addressed to the human; and final messages, a span or a tool call
+ending the turn.
 
   ptc_llm    1,240 support transcripts to classify; a 10-file pilot through
              ptc's llm() (claude-haiku-5-5, medium) came back clean: the full
@@ -34,6 +46,22 @@ runs that wrote one into the launch call itself.
 
 e.g. control=<(git show HEAD~1:output-styles/to-human.md) variant=output-styles/to-human.md.
 It calls api.anthropic.com directly with ANTHROPIC_API_KEY.
+
+Message-tool round, 2026-10-21: 7.200.0 (control) against 7.201.0 (variant),
+both with the message tool in their tools, same settings, 4 reps of each
+scenario per arm, 61 responses:
+  every arm    announced the run before launching it 8 of 8 (claude_p 4 of 4,
+               ptc_llm 4 of 4), every one through the message tool
+               (tool_message 8, text_message 0) and naming the models, the
+               efforts, the count and the purpose; smoke 0 of 8
+  messages     mid-turn 8 per arm, all tool calls, 0 lost: no progress note
+               came back in any response; no final message (each run ended on
+               a tool call: the launch's follow-up, or smoke's step budget)
+  tool calls   0.67 per run in each arm; cut_off_tool 0, judge_errors 0,
+               mid_span_trailing 0
+Against the round below, where the 12 announcements were all progress notes
+the human never saw, the tool carries the announcement in both arms: the old
+style uses a tool it finds in its list.
 
 Results, 2026-10-20, claude-opus-5-5 at high effort, judge at low effort, 4
 reps per arm of ptc_llm and claude_p, 2 of smoke, recounted with the launch
@@ -59,6 +87,8 @@ any arm, the notes being invisible to it.
 import argparse, ast, itertools, json, os, re, shlex, concurrent.futures as cf
 from pathlib import Path
 import anthropic
+from mid_turn import (MESSAGE_TOOL, MESSAGE_TOOL_DEF, MESSAGE_RESULT, THINKING, add_counts, count_messages,
+                      judge_runs, message_only, message_texts, response_blocks, shares, spans)
 
 client = anthropic.Anthropic(base_url="https://api.anthropic.com", api_key=os.environ["ANTHROPIC_API_KEY"], auth_token=None, max_retries=4)
 
@@ -88,6 +118,7 @@ TOOLS = [
              "options": {"type": "array", "items": {"type": "object", "properties": {"label": {"type": "string"}, "description": {"type": "string"}}, "required": ["label", "description"]}},
              "multiSelect": {"type": "boolean"}}, "required": ["question", "header", "options", "multiSelect"]}},
          "async": {"type": "boolean"}}, "required": ["questions"]}},
+    MESSAGE_TOOL_DEF,
 ]
 
 def convo(user, steps):
@@ -213,11 +244,15 @@ def launches(name, inp, helpers):
                for c in shell_commands(inp.get("command", "")))
 
 def canned(block, launch):
+    if block.name == MESSAGE_TOOL:
+        return MESSAGE_RESULT
     if block.name == "mcp__sminos__AskUserQuestion":
         return "Queued; the human's answer arrives later." if block.input.get("async") else None
     if not launch:
         return "(ok)"
     return "(cell running in the background)" if block.name == "mcp__plugin_ptc_ptc__exec" else "(started in the background)"
+
+SETTLE = 2  # responses past the run's end, while the last one calls only the message tool
 
 def run(arm, style, scenario, rep, max_steps=4):
     system = PREAMBLE + style
@@ -226,38 +261,34 @@ def run(arm, style, scenario, rep, max_steps=4):
     for m in messages:
         for c in m["content"] if m["role"] == "assistant" else []:
             launches(c["name"], c["input"], helpers)
-    steps, launch_step, outcome = [], None, "out_of_steps"
-    for i in range(max_steps + 1):
-        if i == max_steps and launch_step is None:  # past the budget only for a launch's follow-up
-            break
+    steps, launch_step, outcome, settle = [], None, "out_of_steps", 0
+    for i in itertools.count():
+        ended = launch_step is not None and i > launch_step + 1 or launch_step is None and i >= max_steps
+        if ended:  # past the budget only for a launch's follow-up, then only to settle a lone message call
+            if not message_only(steps[-1]["blocks"]) or settle == SETTLE:
+                break
+            settle += 1
         resp = client.beta.messages.create(
             model="claude-opus-5-5", max_tokens=16000, output_config={"effort": "high"},
-            thinking={"type": "adaptive", "display": "updates"}, betas=["thinking-display-updates-2026-08-18"],
-            system=system, tools=TOOLS, messages=messages,
+            **THINKING, system=system, tools=TOOLS, messages=messages,
         )
-        blocks, results = [], []
-        for b in resp.content:
-            if b.type == "text":
-                blocks.append({"type": "text", "text": b.text})
-            elif b.type == "thinking" and b.thinking:
-                blocks.append({"type": "progress", "text": b.thinking})
-            elif b.type == "tool_use":
-                blocks.append({"type": "tool_use", "name": b.name, "input": b.input})
-                launch = launches(b.name, b.input, helpers)
-                if launch and launch_step is None:
-                    launch_step = i
-                    blocks[-1]["launch"] = True
-                result = canned(b, launch)
-                if result is None:
-                    outcome = "blocking_ask"
-                results.append({"type": "tool_result", "tool_use_id": b.id, "content": result or ""})
-        steps.append(blocks)
+        blocks, results = response_blocks(resp.content), []
+        for b, kept in zip((b for b in resp.content if b.type == "tool_use"), (k for k in blocks if k["type"] == "tool_use")):
+            launch = launches(b.name, b.input, helpers)
+            if launch and launch_step is None:
+                launch_step = i
+                kept["launch"] = True
+            result = canned(b, launch)
+            if result is None:
+                outcome = "blocking_ask"
+            results.append({"type": "tool_result", "tool_use_id": b.id, "content": result or ""})
+        steps.append({"stop": resp.stop_reason, "blocks": blocks})
         if outcome == "blocking_ask":
             break
         if resp.stop_reason != "tool_use":
             outcome = "launched" if launch_step is not None else "ended_turn"
             break
-        if launch_step is not None and i > launch_step:
+        if launch_step is not None and i > launch_step and not message_only(blocks):
             outcome = "launched"
             break
         messages += [{"role": "assistant", "content": resp.content}, {"role": "user", "content": results}]
@@ -266,18 +297,29 @@ def run(arm, style, scenario, rep, max_steps=4):
     return {"arm": arm, "scenario": scenario, "rep": rep, "outcome": outcome, "steps": steps}
 
 def split_messages(x):
-    """The <message> spans before the launch call, the progress notes before
-    it, and the spans after it."""
+    """The messages before the launch call (spans and message-tool texts), the
+    progress notes before it, and the messages after it."""
     before, notes, after, seen = [], [], [], False
-    for blocks in x["steps"]:
-        for b in blocks:
+    for step in x["steps"]:
+        for b in step["blocks"]:
             if b.get("launch"):
                 seen = True
-            if b["type"] == "text":
-                (after if seen else before).extend(re.findall(r"<message>(.*?)</message>", b["text"], re.S))
+            if b["type"] in ("text", "tool_use"):
+                (after if seen else before).extend(message_texts([{"blocks": [b]}]))
             elif b["type"] == "progress" and not seen:
                 notes.append(b["text"])
     return before, notes, after
+
+def before_launch(x, kind):
+    """Whether a message of this kind (a span in "text", a message-tool call in
+    "tool_use") came before the launch call."""
+    for step in x["steps"]:
+        for b in step["blocks"]:
+            if b.get("launch"):
+                return False
+            if b["type"] == kind and (b.get("name") == MESSAGE_TOOL if kind == "tool_use" else spans(b["text"])):
+                return True
+    return False
 
 JUDGE = """An agent working while its human was away sent the messages below. Read them as that human would, and answer about an LLM run the agent was about to start (many model calls or agents run from a script or a kernel), from what the messages themselves say.
 
@@ -311,14 +353,26 @@ def tally(results):
             continue
         c[x["outcome"]] = c.get(x["outcome"], 0) + 1
         before, notes, after = split_messages(x)
-        c["text_message"] = c.get("text_message", 0) + bool(before)
+        c["text_message"] = c.get("text_message", 0) + before_launch(x, "text")
+        c["tool_message"] = c.get("tool_message", 0) + before_launch(x, "tool_use")
         c["message_after_launch"] = c.get("message_after_launch", 0) + bool(after and x["outcome"] == "launched")
         c["message_in_launch"] = c.get("message_in_launch", 0) + any(
-            b.get("launch") and "<message>" in str(b["input"]) for blocks in x["steps"] for b in blocks)
+            b.get("launch") and "<message>" in str(b["input"]) for step in x["steps"] for b in step["blocks"])
         for k, v in (x.get("judged") or {}).items():
             if v is True:
                 c[k] = c.get(k, 0) + 1
+        add_counts(c, count_messages(x["steps"]))
     return counts
+
+def by_arm(counts):
+    """Acceptance 6's figures per arm, over every scenario run."""
+    arms = {}
+    for (_, arm), c in counts.items():
+        add_counts(arms.setdefault(arm, {}), {k: v for k, v in c.items() if isinstance(v, int)})
+    return {arm: {**shares(c, c["runs"] - c.get("error", 0)), "runs": c["runs"], **{k: c.get(k, 0) for k in (
+            "mid_span", "mid_span_trailing", "mid_tool", "mid_lost", "mid_lost_action", "final_span", "final_tool",
+            "cut_off_tool", "tool_calls", "judge_errors")}}
+            for arm, c in arms.items()}
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
@@ -346,8 +400,12 @@ if __name__ == "__main__":
                 out[futs[f]]["judged"] = f.result()
             except Exception as e:
                 out[futs[f]]["judged"] = {"error": repr(e)}
+        judged = judge_runs(client, out, pool)
     out.sort(key=lambda x: (x["scenario"], x["arm"], x["rep"]))
     Path(args.out).write_text(json.dumps(out, indent=1, ensure_ascii=False))
-    print(f"{len(out)} runs, {sum('error' in x for x in out)} errors; full output in {args.out}")
-    for key, c in sorted(tally(out).items()):
+    print(f"{len(out)} runs, {sum('error' in x for x in out)} errors, {judged} notes judged; full output in {args.out}")
+    counts = tally(out)
+    for key, c in sorted(counts.items()):
         print(*key, c)
+    for arm, c in by_arm(counts).items():
+        print(arm, c)
