@@ -603,6 +603,15 @@ sminos carries both message-tool names as its own constant, beside
   Evidence: MAWS's eval on its own wire (claude-opus-5-5, high effort) lost 4
   of 11 mid-turn messages before, all four asking the owner to act, and 0 of
   11 after. Relayed by doperpowers-88.
+- Observation: the desk's side is deployed: MAWS PR #94, merged as 8afe47ea,
+  deployed as x-desk-build hub@8afe47ea web@master.8afe47ea, by smns-erb-71.
+  - A `message` event whose `src` is a tool-use id lands on the call's
+    to_human row (`to-human:<id>`), under both tool names.
+  - The session view draws a message live, as a pending row, while its input
+    streams (read from the partial JSON).
+  - The hub's push fires on `kind: "message"` and does not read `src`.
+  Nothing on the desk depends on this branch's merge order.
+  Evidence: relayed by doperpowers-88, 2026-10-20.
 
 ## Decision Log
 
