@@ -31,10 +31,11 @@ is <client-id> / <client-secret>.
   a stream, is renewed by each `hb-ack` of that stream's generation, and
   lapses three heartbeats after the last renewal while its stream is open:
   `leases` says whether each machine's current one is online, `lapses`
-  records each lapse. Events or a
-  rejection for a project not opened on this stream are `refused`
-  (`not-open`). The answer, `200 {"ok": true, "frames": n}`, comes once every
-  reply is written down the stream.
+  records each lapse. Any frame but `hello` and `session` for a project not
+  opened on this stream is `refused` (`not-open`). The answer, `200 {"ok": true,
+  "frames": n, "refused": [{index, reason}]}`, comes once every reply is
+  written down the stream, `refused` naming each frame refused whole by its
+  place in the POST, a part set by its last part (MAWS #88).
 - The org's directory (the org directory's M2): the Registry's projects —
   each machine's own project (`kind` `machine`, its id a UUID v5 of the org
   and its lower-cased name, registered for `testhost` at start and for a
@@ -448,7 +449,7 @@ def shape_error(e):
 
 def apply(machine, s, frame, replies):
     """One frame up, as DC3's Project applies it; replies to this machine go
-    to `replies`, in order."""
+    to `replies`, in order. The reason, when the frame was refused whole."""
     t = frame.get("t")
     if t == "hb-ack":
         state["hb_acks"].append({"machine": machine, "generation": frame.get("generation"), "at": frame.get("at"),
@@ -462,18 +463,19 @@ def apply(machine, s, frame, replies):
         now = time.time()
         state["sessions"].append({"machine": machine, "generation": s.generation, "message": frame.get("message"),
                                   "received": now, "at": now})
-        return
+        return None
     pid = frame.get("project")
     if not (isinstance(pid, str) and PROJECT_ID.fullmatch(pid)):
         replies.append({"t": "refused", "project": str(pid),
                         "refusal": {"reason": "bad-shape", "message": "the frame names no .smns project id"}})
-        return
+        return "bad-shape"
     p = project(pid)
     p.setdefault("follow", {})
 
     def refuse(refusal):
         replies.append({"t": "refused", "project": pid, "refusal": refusal})
         p["audit"].append({"kind": "refused", "machine": machine, **refusal})
+        return refusal["reason"]
 
     if t == "hello":
         have = frame.get("have")
@@ -494,15 +496,15 @@ def apply(machine, s, frame, replies):
             suffix = [e for e in evs if e["seq"] > have.get(w, 0)]
             for i in range(0, len(suffix), BATCH):
                 replies.append({"t": "events", "project": pid, "events": suffix[i:i + BATCH]})
-        return
+        return None
     if p["open"].get(machine) != s.generation:
         return refuse({"reason": "not-open", "message": "send hello for this project on this stream first"})
     if t == "rejected":
         p["audit"].append({"kind": "rejected", "machine": machine,
                            **{k: v for k, v in frame.items() if k in ("event", "nonce", "reason", "message")}})
-        return
+        return None
     if t != "events":
-        return
+        return None
     events = frame.get("events")
     if not isinstance(events, list):
         return refuse({"reason": "bad-shape", "message": "events is a list"})
@@ -547,6 +549,7 @@ def apply(machine, s, frame, replies):
             replies.append({"t": "resend", "project": pid, "writer": w, "from": last + 1})
     if accepted:
         fan_out(pid, p, accepted, sender=machine)
+    return None   # an event refused here leaves the frame applied: its refusal goes down the stream alone
 
 
 def join_part(s, frame):
@@ -885,8 +888,8 @@ class Handler(BaseHTTPRequestHandler):
                     state["posted"].append({**record, "status": 400})
                     return self.reply(400, {"error": "bad-shape", "line": i})
                 frames.append(frame)
-            replies = []
-            for frame in frames:
+            replies, refused = [], []
+            for index, frame in enumerate(frames):
                 if frame["t"] == "part":
                     try:
                         frame = join_part(s, frame)
@@ -895,14 +898,16 @@ class Handler(BaseHTTPRequestHandler):
                         return self.reply(400, {"error": "bad-shape", "message": "a malformed part"})
                     if frame is None:
                         continue
-                apply(machine, s, frame, replies)
+                reason = apply(machine, s, frame, replies)
+                if reason is not None:
+                    refused.append({"index": index, "reason": reason})
             status = 502 if fault == "apply-502" else 200
             state["posted"].append({**record, "status": status})
             s.put(replies, done)
         done.wait(WAIT)
         if status != 200:
             return self.reply(status, {"error": "bad-gateway"})
-        return self.reply(200, {"ok": True, "frames": len(frames)})
+        return self.reply(200, {"ok": True, "frames": len(frames), "refused": refused})
 
     def redeem(self):
         """DX7's redemption, in the hub's order of checks (registry.ts)."""

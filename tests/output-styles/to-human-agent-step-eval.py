@@ -7,7 +7,11 @@ told the human so in a message, and then something other than the human wakes
 it. The model writes its next turn; its tool calls get canned results (a sent
 SendMessage, a queued async question, and so on) until it ends the turn or
 runs out of steps. A run counts as reaching the human when any `<message>`
-span or any ask tool call appears in it.
+span or any ask tool call appears in it. Every Bash call returns "(no output)",
+so a run that tries to check the work in git finds its shell broken and
+reports that in a Critical block; `critical` counts the runs whose messages
+carry one, which on the milestone scenarios are this replay's artifact, not
+progress the model chose to send.
 
   routine_peer   another session's quiet flag on a machine this one is not
                  using, "no reply needed": nothing for the human
@@ -101,11 +105,13 @@ them, ... A milestone that lands as planned needs no message of its own, but
 a long silence leaves the human unable to tell a clean run from a stalled
 one: once two or three milestones have landed since your last message, send
 where the work stands."), runs that reached the human:
-  milestone, after_report    7.197.0 12 of 12, 7.198.0 0 of 12 (M1 was
-                             reported; M2 landing as planned is not news)
-  milestone3, silent2        7.197.0 5 of 12, 7.198.0 12 of 12 (three
-                             milestones since the last message: a status
-                             report listing M1-M3)
+  milestone, after_report    7.197.0 12 of 12 (7 of them the empty-shell
+                             Critical block; 5 progress reports), 7.198.0 0
+                             of 12 (M1 was reported; M2 landing as planned is
+                             not news)
+  milestone3, silent2        7.197.0 5 of 12 (3 the empty-shell block),
+                             7.198.0 12 of 12 (three milestones since the
+                             last message: a status report listing M1-M3)
   milestone, long            both 8 of 8 (M1 went unreported, so M2 is the
                              second since the last message)
   late_failure, surprise     both every run (6 of 6, 4 of 4); every failure
@@ -113,17 +119,27 @@ where the work stands."), runs that reached the human:
   routine_peer, routine_relay (long)  7.198.0 0 of 16
 
 Fourth round, 2026-10-21, on 7.198.0's second sentence, M2 landing as
-planned after a reported M1 (after_report), runs that reached the human:
-  7.198.0 ("A milestone that lands as planned needs no message ...") 0 of 12
+planned after a reported M1 (after_report), runs that reached the human,
+then the progress reports among them (the rest are the empty-shell block):
+  7.198.0 ("A milestone that lands as planned needs no message ...") 0, 0
   "Progress and results of the work that land as planned need no message
-  of their own ..." (shipped, 7.199.0)                                 1 of 12
+  of their own ..." (shipped, 7.199.0)                                 1, 0
   the same, with "unable to tell a clean run from a stalled one" as "unsure
   whether the work is running or has stalled, and sends them to open the
-  full transcript to find out"                                         4 of 12
-  7.198.0's subject with that reason                                    5 of 12
-The reason that names the transcript's cost pushes on-plan progress back
-into messages. complete (reported3): every wording 12 of 12; milestone3
-(silent2): every wording 12 of 12; routine notices: every wording 0 of 16.
+  full transcript to find out"                                         4, 3
+  7.198.0's subject with that reason                                    5, 0
+The full reason that names the transcript's cost sends on-plan progress in
+a quarter of the runs. complete (reported3): every wording 12 of 12;
+milestone3 (silent2): every wording 12 of 12; routine notices: every
+wording 0 of 16.
+
+Fifth round, 2026-10-21, 7.199.0 against 7.200.0 (shipped): the list drops
+"the progress and results of the work", which the second sentence carries,
+and "as planned" becomes "as expected". 7.200.0's runs: after_report 6 of
+12, all six the empty-shell block (7.199.0: 1, the same), no progress
+report; complete 12 of 12, every one reporting the finished work;
+milestone3 (silent2) 12 of 12; late_failure 6 of 6, each in a Critical
+block; surprise 4 of 4, each asking; routine notices 0 of 16.
 
 The first round's routine_peer had no machine line, so the model probed
 `hostname`/`date`, got the canned empty output, and the variants reported that
@@ -302,7 +318,8 @@ def outcome(x):
     msgs = re.findall(r"<message>(.*?)</message>", text, re.S)
     asks = [b for b in x["blocks"] if b["type"] == "tool_use" and b["name"] == "mcp__sminos__AskUserQuestion"]
     unsent = re.sub(r"<message>.*?</message>", "", text, flags=re.S).strip()
-    return {"message": bool(msgs), "ask": bool(asks), "reached": bool(msgs or asks), "unsent_prose": len(unsent) >= 100}
+    return {"message": bool(msgs), "ask": bool(asks), "reached": bool(msgs or asks),
+            "critical": any("⚠ Critical" in m for m in msgs), "unsent_prose": len(unsent) >= 100}
 
 def tally(results):
     counts = {}
@@ -311,9 +328,9 @@ def tally(results):
             continue
         o = outcome(x)
         c = counts.setdefault((x["scenario"], x.get("history", "short"), x["arm"]),
-                              {"runs": 0, "reached": 0, "message": 0, "ask": 0, "unsent_prose": 0})
+                              {"runs": 0, "reached": 0, "message": 0, "ask": 0, "critical": 0, "unsent_prose": 0})
         c["runs"] += 1
-        for k in ("reached", "message", "ask", "unsent_prose"):
+        for k in ("reached", "message", "ask", "critical", "unsent_prose"):
             c[k] += o[k]
     return counts
 
