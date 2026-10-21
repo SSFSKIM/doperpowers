@@ -1,4 +1,4 @@
-import type { EngineInterface, On, SessionStartInput, TurnCompleteInput } from 'claude-code'
+import type { EngineInterface, On, SessionStartInput, ToolDescribeResult, TurnCompleteInput } from 'claude-code'
 
 /**
  * The tool as the model names it, `mcp__<plugin>__<name>` with the plugin's
@@ -108,21 +108,15 @@ export function describeCompact(threshold: number | undefined, gate: OfferGate =
     '- Above 450k: the same. Prefer not to pass 600k; go past it only while',
     '  the work needs what is in context verbatim, up to where the harness',
     `  compacts on its own ${own}: a backstop, not the plan.`,
-    'Not during a design discussion, at any size: its state is the',
-    'conversation itself (the reasoning, the alternatives weighed, how the',
-    'human took each), which a summary flattens. Its close, once the design',
-    'is written down, is the checkpoint.',
-    'Prefer not to compact while a decision or work is pending: a question',
-    'to the human not yet answered, a decision you are still weighing, a',
-    'subagent or background job whose result you will judge against what',
-    'sent it. Settling it takes the context that raised it, whole.',
+    'Not during a design discussion: its state is the conversation itself,',
+    'which a summary flattens; once the design is written down, that is the',
+    'checkpoint. Nor while something is pending: an unanswered question to',
+    'the human, a decision you are still weighing, a subagent or job whose',
+    'result you will judge against what sent it; settling it takes the',
+    'context that raised it.',
     '',
-    'How. Last tool call of the turn, alone, after pending results arrived;',
-    'then end your turn.',
-    '- instructions (optional): what to keep verbatim or drop beyond the',
-    '  standard summary.',
-    `- resume (optional): the prompt to receive after the reset; default`,
-    `  "${RESUME_DEFAULT}"`,
+    'How: the last tool call of the turn, alone, after pending results have',
+    'arrived; then end your turn.',
   ].join('\n')
 }
 
@@ -151,9 +145,7 @@ export function usageText(context: ContextFigures, threshold: number): string {
  * The offer, as a prompt of the plugin's that starts a turn of its own once
  * the turn it follows has ended (the model reads it under "The doperpowers
  * plugin sent a message:", and the report view folds it into the working
- * record, which a Stop hook's row could not be). The tool waits behind tool
- * search, so the offer sends the model to its description, which says when
- * a checkpoint is worth it, before it decides. The decline is a line, not
+ * record, which a Stop hook's row could not be). The decline is a line, not
  * silence: an answer with no text costs the engine's "no visible output"
  * nudge, one more step. Below `EARLY_BELOW` it says compacting is not
  * necessarily recommended.
@@ -170,11 +162,10 @@ export function offerText(context: ContextFigures, threshold: number): string {
   return [
     usageText(context, threshold),
     ...early,
-    "Before you decide, read mcp__doperpowers__compact's description: it says when a",
-    'checkpoint is worth it (if the tool is not loaded, ToolSearch with',
-    '"select:mcp__doperpowers__compact" loads it). If you truly think this is the right',
-    'time to compact, compact now with it (alone, then end your turn). Otherwise',
-    'reply "Not compacting." (one line, a reason optional) and end your turn.',
+    'If you truly think this is the right time to compact, you can compact now with',
+    'mcp__doperpowers__compact (alone, then end your turn; its description says when a',
+    "checkpoint is worth it). Otherwise reply \"Not compacting.\" (one line, a reason",
+    'optional) and end your turn.',
   ].join('\n')
 }
 
@@ -213,6 +204,9 @@ export function scheduledText(request: CompactRequest): string {
 }
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error))
+
+/** A tool.describe answer that keeps the tool out of tool-search deferral. */
+const inline = (described: ToolDescribeResult): ToolDescribeResult => ({ ...described, isDeferred: false }) as ToolDescribeResult
 
 /**
  * The request the compact tool took this turn, spent at the turn's end;
@@ -518,6 +512,12 @@ export function registerCompact(on: On) {
     }
     return result
   }).catch((_, e, next) => next(e))
+
+  // Tool search defers every MCP tool, and this is an MCP tool to the
+  // engine: the model would see its name alone and read the guidance only
+  // after loading it. A tool.describe verdict of isDeferred: false keeps it
+  // inline (the engine's own placement, passed as e.isDeferred, loses).
+  on('tool.describe', { tool: 'mcp__doperpowers__compact' }, async (_, e, next) => inline(await next(e)))
 
   on('tool.call', { tool: 'mcp__doperpowers__compact' }, (_, e) => {
     if (e.agentId !== undefined) {
