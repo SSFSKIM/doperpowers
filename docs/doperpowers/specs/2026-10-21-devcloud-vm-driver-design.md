@@ -60,7 +60,11 @@ desk no longer counts it.
   acceptance 4 dry-runs passed, and so did M2's held reboot. Every VM was deleted the same day
   (dc-smk-baf2 09:08Z, dc-acc-88f5 10:12Z). The third review's one remaining finding, a response
   trickling past the 60 s reaper bound, was accepted as best-effort (Decision Log).
-- [ ] M4 — Images and project host files.
+- [x] (2026-10-21 12:55Z) M4 — Images and project host files. Commits 516d5215 and 3b2c2284, with
+  fixes dbf3ea68 and 96f2993c (the latter links sminos onto every host's PATH). Reviewed clean after
+  one fix round. Measured live on Hetzner: `up` from an image took 2m30s to every step `ok`
+  (acceptance 10, and acceptance 1's time), and the slow path took 3m15s. Retention kept the newest
+  two images, and acceptance 8 passed. Every resource was deleted by 12:40Z.
 - [ ] M5 — The GCE provider, adopt, and the open provider path.
 - [ ] M6 — The skill, the always-on Mac, and acceptance.
 - [ ] Whole-branch review (high rung), Outcomes & Retrospective, PR.
@@ -1614,6 +1618,8 @@ commit 5168e433 on its branch, 2026-10-21):
   enroll exited 2. It was created again with `dc-`, and the same VM then enrolled through `devcloud
   reconcile`: sminos 1.5.2 on the VM, `hub check` 0, listed by `sminos machines`, and gone from it
   after `down`'s departure.
+- Observation (M4): On the fixed network the slow path took 3m15s and the image path 2m30s, so an
+  image saves about 45 s on Hetzner.
 - Observation (M4, 2026-10-21): With the network fixed, `devcloud vm up` on Hetzner (cpx31, hil)
   from the current image reached every step `ok` 2m30s after it started. That one run meets
   acceptance 10's 5 minutes and acceptance 1's 8: `devenv validate`, the desk (sminos 1.6.1, `hub
