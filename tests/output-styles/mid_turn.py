@@ -9,22 +9,37 @@ paraphrase without its `<message>` tags), visible only with `display:
 `progress` (a non-empty thinking block) and `tool_use`, so where each message
 went can be read back.
 
-  mid-turn message  in a response that calls a tool: a `<message>` span in its
-                    text (delivered), a call of the message tool (delivered),
-                    or a progress note before one of its tool calls that the
-                    judge rules addressed to the human (lost)
+  mid-turn message  in a response that calls a tool: a `<message>` span in a
+                    text block before one of its calls (delivered), a call of
+                    the message tool (delivered), or a progress note before
+                    one of its calls that the judge rules addressed to the
+                    human (lost). A span in a text block after the response's
+                    last call is mid-turn too, since the turn goes on past
+                    it, and delivered, since it came back as text; it is also
+                    counted apart (`mid_span_trailing`), being rare.
   final message     a span in the response that ends the turn (no tool call),
                     or a message-tool call in a response that calls nothing
                     else and is followed by that one (the tool used for the
                     turn's last word)
+  cut off           a message-tool call in the run's last response when that
+                    response calls nothing else and the run stopped before
+                    the next: it could be either kind, so it is counted as
+                    neither (`cut_off_tool`)
+
+Spans are read as the to-human view reads them (sminos_marks.parse, the port
+of the view's grammar): a tag inside inline code or a fenced block is
+literal, and an unclosed mark runs to the end of the text.
 
 Design: docs/doperpowers/specs/2026-10-20-to-human-message-tool-design.md
 (acceptance 6).
 """
-import json, re
+import json, re, sys
 from pathlib import Path
 
-MESSAGE_TSX = Path(__file__).resolve().parents[2] / "to-human" / "hooks" / "mods" / "message.tsx"
+REPO = Path(__file__).resolve().parents[2]
+MESSAGE_TSX = REPO / "to-human" / "hooks" / "mods" / "message.tsx"
+sys.path.insert(0, str(REPO / "sminos" / "skills" / "sminos" / "scripts"))
+import sminos_marks  # noqa: E402
 
 
 def _const(src, name):
@@ -56,7 +71,18 @@ MESSAGE_TOOL, MESSAGE_TOOL_DEF, MESSAGE_RESULT = shipped_message_tool()
 
 THINKING = {"thinking": {"type": "adaptive", "display": "updates"}, "betas": ["thinking-display-updates-2026-08-18"]}
 
-SPAN = re.compile(r"<message>(.*?)</message>", re.S)
+SPAN = re.compile(r"<message>(.*?)</message>", re.S)  # for stripping marks from prose, not for counting
+
+
+def spans(text):
+    """The message spans of one text block, read as the view reads them."""
+    return [span["text"] for span in sminos_marks.parse(text)["spans"]]
+
+
+def message_only(blocks):
+    """Whether a response's tool calls are all message-tool calls (and it makes one)."""
+    uses = [b for b in blocks if b["type"] == "tool_use"]
+    return bool(uses) and all(b["name"] == MESSAGE_TOOL for b in uses)
 
 # doperpowers-f7's criterion (their audit, 2026-10-20), word for word.
 JUDGE = """A coding agent works for a human who is away from the screen; the human reads only what the agent wraps in <message> tags. The API returned the text below as a short summary of a note the agent wrote between two tool calls; the summary may have dropped any <message> tags.
@@ -115,7 +141,7 @@ def message_texts(steps):
     for step in steps:
         for b in step["blocks"]:
             if b["type"] == "text":
-                out += SPAN.findall(b["text"])
+                out += spans(b["text"])
             elif b["type"] == "tool_use" and b["name"] == MESSAGE_TOOL:
                 out.append(str(b["input"].get("text", "")))
     return out
@@ -123,22 +149,25 @@ def message_texts(steps):
 
 def count_messages(steps):
     """The run's messages, one by one, by where they went."""
-    c = dict.fromkeys(("mid_span", "mid_tool", "mid_lost", "mid_lost_action", "notes_judged", "judge_errors",
-                       "final_span", "final_tool", "tool_calls"), 0)
+    c = dict.fromkeys(("mid_span", "mid_span_trailing", "mid_tool", "mid_lost", "mid_lost_action", "notes_judged",
+                       "judge_errors", "final_span", "final_tool", "cut_off_tool", "tool_calls"), 0)
     final = len(steps) - 1 if steps and steps[-1]["stop"] != "tool_use" else None
     for i, step in enumerate(steps):
         blocks = step["blocks"]
         if i == final:
-            c["final_span"] += sum(len(SPAN.findall(b["text"])) for b in blocks if b["type"] == "text")
+            c["final_span"] += sum(len(spans(b["text"])) for b in blocks if b["type"] == "text")
             continue
-        uses = [b for b in blocks if b["type"] == "tool_use"]
-        last_word = bool(uses) and all(b["name"] == MESSAGE_TOOL for b in uses) and i + 1 == final
-        for b in blocks:
+        alone = message_only(blocks)
+        kind = "final_tool" if alone and i + 1 == final else "cut_off_tool" if alone and i + 1 == len(steps) else "mid_tool"
+        for at, b in enumerate(blocks):
             if b["type"] == "text":
-                c["mid_span"] += len(SPAN.findall(b["text"]))
+                n = len(spans(b["text"]))
+                c["mid_span"] += n
+                if not any(later["type"] == "tool_use" for later in blocks[at + 1:]):
+                    c["mid_span_trailing"] += n
             elif b["type"] == "tool_use" and b["name"] == MESSAGE_TOOL:
                 c["tool_calls"] += 1
-                c["final_tool" if last_word else "mid_tool"] += 1
+                c[kind] += 1
         for b in notes_to_judge([step]):
             v = b.get("judged")
             if v is None:
@@ -164,4 +193,5 @@ def shares(c, runs):
     final = c.get("final_span", 0) + c.get("final_tool", 0)
     return {"mid": mid, "lost": c.get("mid_lost", 0), "lost_share": round(c.get("mid_lost", 0) / mid, 3) if mid else None,
             "final": final, "final_span_share": round(c.get("final_span", 0) / final, 3) if final else None,
+            "cut_off_tool": c.get("cut_off_tool", 0),
             "tool_calls_per_run": round(c.get("tool_calls", 0) / runs, 2) if runs else None}

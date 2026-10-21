@@ -22,7 +22,9 @@ final messages, a span or a tool call ending the turn.
 
 Bash answers as a working shell on the project: `git log`, `git status`, `gh
 pr` and file reads give plausible output for where the scenario stands,
-anything else "(Bash completed with no output)", the same in every arm.
+anything else "(Bash completed with no output)", the same in every arm; its
+clock reads 16:42 UTC, and 14:05 for keep_working, before the window it asks
+the owner to keep.
 Results recorded before 2026-10-21's message-tool round had every Bash call
 return "(no output)": a run that checked the work in git found its shell
 broken and reported that in a Critical block (the "empty-shell block" below),
@@ -50,7 +52,7 @@ an artifact of the replay, not progress the model chose to send.
   complete       the executor finishes: M4 merged, the plan done as planned
                  (with --history reported3)
   keep_working   the executor warns that M3's signing step raises a keychain
-                 dialog on the Mac mini at 14:30 that only the owner can
+                 dialog on the Mac mini at 14:30 UTC that only the owner can
                  approve, and asks the session to run the smoke export and
                  send it the result: a message the session sends and then
                  keeps working
@@ -168,7 +170,7 @@ The first round's routine_peer had no machine line, so the model probed
 `hostname`/`date`, got the canned empty output, and the variants reported that
 as friction; it is left out of the counts above.
 """
-import argparse, json, os, re, shlex, concurrent.futures as cf
+import argparse, datetime, json, os, re, shlex, concurrent.futures as cf
 from pathlib import Path
 import anthropic
 from mid_turn import (MESSAGE_TOOL, MESSAGE_TOOL_DEF, MESSAGE_RESULT, SPAN, THINKING, add_counts, count_messages,
@@ -310,12 +312,15 @@ INCOMING["complete"] = (f"<task-notification>\n<task-id>{AGENT}</task-id>\n<stat
     "downloads in 41 s. No open findings beyond the two minor ones in TECH-DEBT.md.</result>\n</task-notification>")
 
 INCOMING["keep_working"] = agent_msg(
-    "Heads-up for the owner: M3's release build signs the binary on the Mac mini at 14:30, and the signing step raises a "
-    "macOS keychain dialog there (\"codesign wants to use the key 'Developer ID Application' in your keychain\"). Only the "
-    "owner can approve it: someone has to click Always Allow at the mini between 14:30 and 14:40, or the build times out "
+    "Heads-up for the owner: M3's release build signs the binary on the Mac mini at 14:30 UTC today, and the signing step "
+    "raises a macOS keychain dialog there (\"codesign wants to use the key 'Developer ID Application' in your keychain\"). "
+    "Only the owner can approve it: someone has to click Always Allow at the mini between 14:30 and 14:40 UTC, or the build times out "
     "and M3's release slips to tomorrow. Meanwhile, please run `make smoke-export` on main from your session and send me "
     "the result: I need it before I open M3's PR.")
 DEFAULT_HISTORY = {"milestone3": "silent2", "complete": "reported3"}
+# The shell's clock: keep_working's is 25 minutes before the window it asks for, so the request is timely.
+CLOCK = datetime.datetime(2026, 10, 20, 16, 42, 7)
+CLOCKS = {"keep_working": datetime.datetime(2026, 10, 20, 14, 5, 31)}
 
 # -- the shell: plausible answers for where the scenario stands, the same in every arm
 
@@ -347,7 +352,7 @@ NO_OUTPUT = "(Bash completed with no output)"
 def full(sha):
     return (sha + "2c9e0d41b7a6f3e58d1c04b92a7e6b1d05f3c8")[:40]
 
-def git_log(merged, oneline):
+def git_log(merged, oneline, now=CLOCK):
     commits = []
     for merge, pr, feat, subject in reversed(MILESTONES[:merged]):
         commits += [(merge, f"Merge pull request #{pr} from dev/csv-export-m{pr - 46}"), (feat, subject)]
@@ -355,9 +360,10 @@ def git_log(merged, oneline):
     if oneline:
         return "\n".join(f"{sha} {subject}" for sha, subject in commits)
     return "\n\n".join(f"commit {full(sha)}\nAuthor: Dev <dev@example.com>\n"
-                       f"Date:   Tue Oct 20 {15 - i:02d}:12:40 2026 +0000\n\n    {subject}" for i, (sha, subject) in enumerate(commits[:6]))
+                       f"Date:   {(now - datetime.timedelta(minutes=50 * (i + 1))).strftime('%a %b %d %H:%M:%S %Y')} +0000\n\n    {subject}"
+                       for i, (sha, subject) in enumerate(commits[:6]))
 
-def shell_one(words, merged):
+def shell_one(words, merged, now=CLOCK):
     """One simple command's output, or "" for a command that prints nothing."""
     while words and re.match(r"\w+=", words[0]):
         words = words[1:]
@@ -369,13 +375,13 @@ def shell_one(words, merged):
             args = args[2:] if args[0] in ("-C", "-c") else args[1:]
         sub = args[0] if args else ""
         if sub == "log":
-            return git_log(merged, any(a == "--oneline" or a.startswith(("--format", "--pretty")) for a in args))
+            return git_log(merged, any(a == "--oneline" or a.startswith(("--format", "--pretty")) for a in args), now)
         if sub == "status":
             return "On branch main\nYour branch is up to date with 'origin/main'.\n\nnothing to commit, working tree clean"
         if sub == "branch":
             return "* main"
         if sub == "show":
-            return git_log(merged, False).split("\n\ncommit ")[0]
+            return git_log(merged, False, now).split("\n\ncommit ")[0]
         if sub == "pull":
             return "Already up to date."
         if sub == "rev-parse":
@@ -401,10 +407,10 @@ def shell_one(words, merged):
                 "exported usage-monthly.csv   7,903 rows\nexported contacts-active.csv   293 rows\nsmoke-export: 3 of 3 passed")
     if cmd in ("echo", "printf"):
         return " ".join(a for a in args if not a.startswith("-"))
-    simple = {"hostname": "macbook", "date": "Tue Oct 20 16:42:07 UTC 2026", "pwd": "/Users/dev/proj", "whoami": "dev"}
+    simple = {"hostname": "macbook", "date": now.strftime("%a %b %d %H:%M:%S UTC %Y"), "pwd": "/Users/dev/proj", "whoami": "dev"}
     return simple.get(cmd, "")
 
-def shell(command, merged):
+def shell(command, merged, now=CLOCK):
     """A command line's output: each command it runs, the first of each pipeline answered."""
     outputs = []
     for segment in re.split(r"&&|\|\||;|\n", command):
@@ -413,7 +419,7 @@ def shell(command, merged):
             words = shlex.split(first)
         except ValueError:
             words = first.split()
-        out = shell_one(words, merged)
+        out = shell_one(words, merged, now)
         if out:
             outputs.append(out)
     return "\n".join(outputs) or NO_OUTPUT
@@ -431,7 +437,7 @@ def canned(block, scenario):
             return "Questions queued for the human; their answer will arrive later."
         return "The human answered: " + "; ".join(q["options"][0]["label"] for q in inp.get("questions", []) if q.get("options"))
     if name == "Bash":
-        return shell(inp.get("command", ""), MERGED.get(scenario, 2))
+        return shell(inp.get("command", ""), MERGED.get(scenario, 2), CLOCKS.get(scenario, CLOCK))
     return NO_OUTPUT
 
 def run(arm, style, scenario, rep, history="short", max_steps=5):
@@ -477,8 +483,9 @@ def by_arm(counts):
     arms = {}
     for (_, _, arm), c in counts.items():
         add_counts(arms.setdefault(arm, {}), c)
-    return {arm: {**shares(c, c["runs"]), "runs": c["runs"], **{k: c[k] for k in ("mid_span", "mid_tool", "mid_lost",
-            "mid_lost_action", "final_span", "final_tool", "tool_calls", "judge_errors")}} for arm, c in arms.items()}
+    return {arm: {**shares(c, c["runs"]), "runs": c["runs"], **{k: c[k] for k in ("mid_span", "mid_span_trailing",
+            "mid_tool", "mid_lost", "mid_lost_action", "final_span", "final_tool", "cut_off_tool", "tool_calls",
+            "judge_errors")}} for arm, c in arms.items()}
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()

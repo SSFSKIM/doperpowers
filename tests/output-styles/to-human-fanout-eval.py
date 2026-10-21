@@ -8,7 +8,9 @@ prepared (a kernel cell that runs `llm()` or `agent()`, directly or through a
 function one of the run's cells defined; a shell command one of whose commands
 runs `claude -p` or the review script), ends its turn, or runs out of steps.
 After a launch it gets one more response, past the step budget if need be, so
-a notice sent just after is seen too. A judge that does not know the arm then
+a notice sent just after is seen too; when that response, or the one the
+budget ends on, calls only the message tool, the run goes on for up to two
+more (`SETTLE`), so whether that message ended the turn can be told. A judge that does not know the arm then
 reads what the model wrote before the launch.
 
 On claude-opus-5-5 a note longer than a sentence or two that the model writes
@@ -69,8 +71,8 @@ any arm, the notes being invisible to it.
 import argparse, ast, itertools, json, os, re, shlex, concurrent.futures as cf
 from pathlib import Path
 import anthropic
-from mid_turn import (MESSAGE_TOOL, MESSAGE_TOOL_DEF, MESSAGE_RESULT, SPAN, THINKING, add_counts, count_messages,
-                      judge_runs, message_texts, response_blocks, shares)
+from mid_turn import (MESSAGE_TOOL, MESSAGE_TOOL_DEF, MESSAGE_RESULT, THINKING, add_counts, count_messages,
+                      judge_runs, message_only, message_texts, response_blocks, shares, spans)
 
 client = anthropic.Anthropic(base_url="https://api.anthropic.com", api_key=os.environ["ANTHROPIC_API_KEY"], auth_token=None, max_retries=4)
 
@@ -234,6 +236,8 @@ def canned(block, launch):
         return "(ok)"
     return "(cell running in the background)" if block.name == "mcp__plugin_ptc_ptc__exec" else "(started in the background)"
 
+SETTLE = 2  # responses past the run's end, while the last one calls only the message tool
+
 def run(arm, style, scenario, rep, max_steps=4):
     system = PREAMBLE + style
     messages = list(SCENARIOS[scenario])
@@ -241,10 +245,13 @@ def run(arm, style, scenario, rep, max_steps=4):
     for m in messages:
         for c in m["content"] if m["role"] == "assistant" else []:
             launches(c["name"], c["input"], helpers)
-    steps, launch_step, outcome = [], None, "out_of_steps"
-    for i in range(max_steps + 1):
-        if i == max_steps and launch_step is None:  # past the budget only for a launch's follow-up
-            break
+    steps, launch_step, outcome, settle = [], None, "out_of_steps", 0
+    for i in itertools.count():
+        ended = launch_step is not None and i > launch_step + 1 or launch_step is None and i >= max_steps
+        if ended:  # past the budget only for a launch's follow-up, then only to settle a lone message call
+            if not message_only(steps[-1]["blocks"]) or settle == SETTLE:
+                break
+            settle += 1
         resp = client.beta.messages.create(
             model="claude-opus-5-5", max_tokens=16000, output_config={"effort": "high"},
             **THINKING, system=system, tools=TOOLS, messages=messages,
@@ -265,7 +272,7 @@ def run(arm, style, scenario, rep, max_steps=4):
         if resp.stop_reason != "tool_use":
             outcome = "launched" if launch_step is not None else "ended_turn"
             break
-        if launch_step is not None and i > launch_step:
+        if launch_step is not None and i > launch_step and not message_only(blocks):
             outcome = "launched"
             break
         messages += [{"role": "assistant", "content": resp.content}, {"role": "user", "content": results}]
@@ -294,7 +301,7 @@ def before_launch(x, kind):
         for b in step["blocks"]:
             if b.get("launch"):
                 return False
-            if b["type"] == kind and (b.get("name") == MESSAGE_TOOL if kind == "tool_use" else SPAN.search(b["text"])):
+            if b["type"] == kind and (b.get("name") == MESSAGE_TOOL if kind == "tool_use" else spans(b["text"])):
                 return True
     return False
 
@@ -347,7 +354,8 @@ def by_arm(counts):
     for (_, arm), c in counts.items():
         add_counts(arms.setdefault(arm, {}), {k: v for k, v in c.items() if isinstance(v, int)})
     return {arm: {**shares(c, c["runs"] - c.get("error", 0)), "runs": c["runs"], **{k: c.get(k, 0) for k in (
-            "mid_span", "mid_tool", "mid_lost", "mid_lost_action", "final_span", "final_tool", "tool_calls", "judge_errors")}}
+            "mid_span", "mid_span_trailing", "mid_tool", "mid_lost", "mid_lost_action", "final_span", "final_tool",
+            "cut_off_tool", "tool_calls", "judge_errors")}}
             for arm, c in arms.items()}
 
 if __name__ == "__main__":

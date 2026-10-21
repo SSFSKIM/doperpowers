@@ -7,7 +7,7 @@ It drives each eval's run() through scripted responses, then checks what the
 requests carried (display "updates", the shipped message tool), what each
 tool call got back, the per-message counts, and the agent-step eval's shell.
 """
-import importlib.util, json, os, sys, types
+import importlib.util, json, os, re, sys, types
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -99,8 +99,8 @@ steps = [
     {"stop": "end_turn", "blocks": [{"type": "progress", "text": "end"}, {"type": "text", "text": "<message>C</message> and <message>D</message>"}]},
 ]
 c = mid_turn.count_messages(steps)
-want = {"mid_span": 1, "mid_tool": 1, "mid_lost": 1, "mid_lost_action": 1, "notes_judged": 2, "judge_errors": 0,
-        "final_span": 2, "final_tool": 1, "tool_calls": 2}
+want = {"mid_span": 1, "mid_span_trailing": 0, "mid_tool": 1, "mid_lost": 1, "mid_lost_action": 1, "notes_judged": 2,
+        "judge_errors": 0, "final_span": 2, "final_tool": 1, "cut_off_tool": 0, "tool_calls": 2}
 check("the per-message counts", c == want, json.dumps(c))
 check("only notes before a tool call are judged", [b["text"] for b in mid_turn.notes_to_judge(steps)] ==
       ["Telling you the dialog needs approving at 14:30.", "Checking the log next."])
@@ -109,7 +109,23 @@ check("a run cut off on a tool call has no final message", out_of_steps["final_s
       and out_of_steps["mid_span"] == 1, json.dumps(out_of_steps))
 s = mid_turn.shares(mid_turn.add_counts(dict(c), c), 2)
 check("the shares", s == {"mid": 6, "lost": 2, "lost_share": 0.333, "final": 6, "final_span_share": 0.667,
-                          "tool_calls_per_run": 2.0}, json.dumps(s))
+                          "cut_off_tool": 0, "tool_calls_per_run": 2.0}, json.dumps(s))
+code = [
+    {"stop": "tool_use", "blocks": [
+        {"type": "text", "text": "The view reads `<message>x</message>` as literal, and so does this:\n```\n<message>y</message>\n```"},
+        {"type": "text", "text": "<message>before the call</message>"},
+        {"type": "tool_use", "id": "t1", "name": "Bash", "input": {}},
+        {"type": "text", "text": "<message>after the last call</message>"}]},
+    {"stop": "end_turn", "blocks": [{"type": "text", "text": "`<message>quoted</message>` and <message>final</message>"}]},
+]
+c = mid_turn.count_messages(code)
+check("spans read as the view reads them, code literal", c["mid_span"] == 2 and c["final_span"] == 1, json.dumps(c))
+check("a span after the response's last call is mid-turn, counted apart", c["mid_span_trailing"] == 1, json.dumps(c))
+cut = [steps[0], {"stop": "tool_use", "blocks": [{"type": "tool_use", "id": "t9", "name": mid_turn.MESSAGE_TOOL, "input": {"text": "last?"}}]}]
+c = mid_turn.count_messages(cut)
+check("a lone message call the run stopped after is cut off, neither kind", c["cut_off_tool"] == 1 and c["mid_tool"] == 1
+      and c["final_tool"] == 0 and c["tool_calls"] == 2, json.dumps(c))
+check("cut-off calls stay out of the shares", mid_turn.shares(c, 1)["mid"] == 3 and mid_turn.shares(c, 1)["final"] == 0)
 check("the messages a run delivered, in order", mid_turn.message_texts(steps) == ["A", "B", "done", "C", "D"])
 check("the judge prompt keeps f7's wording", mid_turn.JUDGE.startswith("A coding agent works for a human who is away")
       and '{"addressed_to_human": true|false, "needs_action_from_human": true|false, "why": "<one short clause>"}' in mid_turn.JUDGE
@@ -166,6 +182,14 @@ check("shell: sed -n on a file", "Four milestones" in shell("sed -n '1,40p' docs
 check("shell: gh pr view", "MERGED" in shell("gh pr view 48", 2))
 check("shell: hostname and date", shell("hostname; date", 2).startswith("macbook\nTue Oct 20"))
 check("shell: a command that prints nothing", shell("sleep 5", 2) == "(Bash completed with no output)")
+check("shell: keep_working's clock is before its window", step.canned(types.SimpleNamespace(
+    name="Bash", input={"command": "date"}), "keep_working") == "Tue Oct 20 14:05:31 UTC 2026"
+      and "14:30 UTC" in step.INCOMING["keep_working"] and "between 14:30 and 14:40 UTC" in step.INCOMING["keep_working"])
+dates = re.findall(r"Date:\s+\w+ \w+ \d+ (\d\d:\d\d):", step.canned(types.SimpleNamespace(
+    name="Bash", input={"command": "git log -5"}), "keep_working"))
+check("shell: keep_working's commits come before its clock", dates and all(d < "14:05" for d in dates), str(dates))
+check("shell: the other scenarios' clock", step.canned(types.SimpleNamespace(name="Bash", input={"command": "date"}), "milestone")
+      == "Tue Oct 20 16:42:07 UTC 2026")
 check("shell: an unclosed quote", shell("grep -rn 'oops src", 2) == "(Bash completed with no output)")
 check("shell: echo prints", shell("echo done && git branch", 2) == "done\n* main")
 
@@ -196,6 +220,32 @@ c = fan.tally(fan_out)[("ptc_llm", "variant")]
 check("fanout: the tally", c["tool_message"] == 1 and c["text_message"] == 0 and c["mid_tool"] == 1 and c["mid_lost"] == 1
       and c["final_span"] == 1 and c["announces_run"] == 1, json.dumps(c))
 check("fanout: the arm's figures", fan.by_arm(fan.tally(fan_out))["variant"]["lost_share"] == 0.5)
+
+LAUNCH = {"code": "res = await asyncio.gather(*[llm(PROMPT + read(f), model='claude-haiku-5-5', effort='medium') for f in files[10:]])"}
+fake = FakeClient([
+    [use(0, "mcp__plugin_ptc_ptc__exec", LAUNCH)],
+    [use(1, mid_turn.MESSAGE_TOOL, {"text": "Launched 1,230 haiku calls; the report follows when they land."})],
+    [text("")],
+])
+fan.client = fake
+x = fan.run("variant", "STYLE", "ptc_llm", 0)
+c = mid_turn.count_messages(x["steps"])
+check("fanout: a lone message call after the launch runs on to the turn's end", len(fake.requests) == 3
+      and c["final_tool"] == 1 and c["mid_tool"] == 0 and c["cut_off_tool"] == 0, json.dumps(c))
+fake = FakeClient([[use(0, "mcp__plugin_ptc_ptc__exec", LAUNCH)]] +
+                  [[use(i, mid_turn.MESSAGE_TOOL, {"text": "again %d" % i})] for i in range(1, 9)])
+fan.client = fake
+x = fan.run("variant", "STYLE", "ptc_llm", 0)
+c = mid_turn.count_messages(x["steps"])
+check("fanout: the continuation is bounded, and a run still cut off says so", len(fake.requests) == 2 + fan.SETTLE
+      and c["cut_off_tool"] == 1 and c["mid_tool"] == fan.SETTLE and c["final_tool"] == 0, "%d requests, %s" % (len(fake.requests), json.dumps(c)))
+fake = FakeClient([[use(i, "Bash", {"command": "ls"})] for i in range(3)] + [[use(3, mid_turn.MESSAGE_TOOL, {"text": "x"})]]
+                  + [[use(4, mid_turn.MESSAGE_TOOL, {"text": "y"})], [text("<message>z</message>")]])
+fan.client = fake
+x = fan.run("variant", "STYLE", "smoke", 0)
+c = mid_turn.count_messages(x["steps"])
+check("fanout: the step budget settles a lone message call too", len(fake.requests) == 6 and x["outcome"] == "ended_turn"
+      and c["final_span"] == 1 and c["final_tool"] == 1 and c["mid_tool"] == 1 and c["cut_off_tool"] == 0, "%d requests, %s" % (len(fake.requests), json.dumps(c)))
 
 print("\n%d failed" % len(FAILED) if FAILED else "\nall passed")
 sys.exit(1 if FAILED else 0)
