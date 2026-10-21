@@ -1,8 +1,8 @@
 # mods
 
 Function hooks of the sminos plugin: one module (`register.tsx`, named by
-`hooks/hooks.json` under `modules`) that registers the bridge, the ask and
-the address, in that order. The engine loads it only where
+`hooks/hooks.json` under `modules`) that registers the bridge, the ask,
+the address and the name, in that order. The engine loads it only where
 `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` is set and ignores it elsewhere; the
 shell hooks beside this folder (`smns-record.sh`, `smns-guide.sh`) run
 everywhere.
@@ -408,6 +408,32 @@ one) or once the kept line is a minute old (an alias renamed mid-session); a
 CLI that cannot run keeps the line it had. A subagent's request reads the
 parent's session id, so a subagent's commits carry the session someone can
 reach. The engine re-sends its reminder only when the text changes.
+
+## name (`name.tsx`)
+
+A session with a generated name is renamed after what it is in charge of
+(`docs/doperpowers/specs/2026-10-20-sminos-charge-names-design.md`).
+`sminos derive` proposes the name with the session's in-charge line and,
+when the engine name it replaces is still the session's, hands it over as a
+pending file, `<sminos home>/names/<session>.json`. The mod applies it at
+the session's next prompt, whoever submits it: on `classic.UserPromptSubmit`
+it returns the name as `sessionTitle`, which the engine takes as a rename
+with source `hook` (the engine name, the transcript's `custom-title` and
+`agent-name`, never overwritten by its title promotion), and adds one line of
+context telling the model. `SessionStart`'s `sessionTitle` sets the title
+alone, and `/rename` would register the owner's `user`, so neither serves.
+
+The CLI owns the check, `sminos name-due --session <id>`: the name is due
+when the session's running engine record still holds the name the file
+replaces (no owner's `/rename`, no resume under a new name since), does not
+hold the name already, and the name is still free in the project and on the
+machine. The mod runs it once per pending file, remembering the file's text
+once the CLI has answered (a CLI that could not run is asked again at the
+next prompt), so a prompt with nothing new pays one failed read. A title a
+hook beneath set passes unchanged, an internal fork (`SMNS_INTERNAL`) reads
+nothing, and the poll-event channel's enqueue-time pass is left to the
+prompt's own submit. `sminos/tests/mods/live-name-check.py` pins the engine
+facts it rests on.
 
 ## Developing
 
