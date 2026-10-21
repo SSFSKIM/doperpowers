@@ -1249,20 +1249,26 @@ describe('the message tool', () => {
     expect(await result.find({ type: 'Text', text: 'sent' })).toBeDefined()
   })
 
-  test('the full transcript draws its rows as the engine does', async ($, on) => {
+  test('the full transcript draws it as a message too, the rows around it as the engine does', async ($, on) => {
     mock.env(on, {})
     mock.store(on)
     engineDrawing(on)
-    const call = await callRow($, 'toolu_m1', { input: { text: 'Done.' }, output: 'sent' })
+    const call = await callRow($, 'toolu_m1', { input: { text: 'Approve the **codesign** prompt now.' }, output: 'sent' })
     const band = await $.ui.mount({
       plugin: PLUGIN, surface: 'terminal', component: 'AbovePrompt',
       props: { hasSurvey: false, isWorking: false, maxRows: 5, bodyColumns: 80, scroll: { offset: 0, bodyRows: 5 }, view: {} },
     })
     await band.press({ key: 'to-human-mode' })
+    expect(await band.find({ type: 'Button', text: 'report only' })).toBeDefined()
     const result = await resultRow($, 'toolu_m1', 'sent')
+    const after = await bash($, 'toolu_b1')
 
-    expect(await call.find({ type: 'Text', text: 'ToolUse' })).toBeDefined()
-    expect(await result.find({ type: 'Text', text: 'sent' })).toBeDefined()
+    expect(await call.find({ type: 'Text', text: '● message' })).toBeDefined()
+    expect(await call.find({ type: 'Markdown', text: 'Approve the **codesign** prompt now.' })).toBeDefined()
+    expect(await call.find({ type: 'Text', text: 'ToolUse' })).toBeUndefined()
+    expect(await result.find({ type: 'Text' })).toBeUndefined()
+    expect(await after.find({ type: 'Text', text: 'ToolUse' })).toBeDefined()
+    expect(await after.find({ type: 'Button' })).toBeUndefined()
   })
 
   test('a module that starts over in a session whose only message went through the tool folds from its first answer', async ($, on) => {
