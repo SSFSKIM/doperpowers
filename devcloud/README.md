@@ -583,9 +583,10 @@ the reaper never touches them. `lease` writes the host's lease and the
 record; there are no labels. `down` (and the host's own lease end) runs
 `devcloud release`: the machine leaves the desk and the tailnet, devcloud's
 firewall, units and every credential its ledger lists go, the saved keys
-come back, then devcloud's state directory (`/var/lib/devcloud`, so the
-machine can be adopted again), and the machine keeps running; the user and
-the rest of the home stay. `down` releases over the tailnet, else as root at
+come back, then devcloud's state directory (`/var/lib/devcloud`), and the
+machine keeps running; the user and the rest of the home stay. Adopting a
+released machine again is not supported: what the home keeps (the
+configuration checkout, among others) still fails `setup.sh`'s final check. `down` releases over the tailnet, else as root at
 the recorded address, else (a release that stopped after it gave the keys
 back) as the original login user there with the person's own key, and
 removes the record only once a new connection as that user finds nothing of

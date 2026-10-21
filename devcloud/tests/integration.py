@@ -880,7 +880,7 @@ def release_through_the_lease_service():
         time.sleep(2)
     check("remove-credentials: ok" in journal, f"the transient unit's journal: {journal[-1500:]}")
     check(sh(ADOPTED, "test -e /var/lib/devcloud", check_rc=False).returncode != 0,
-          "/var/lib/devcloud remains, so setup.sh would refuse to adopt the machine again")
+          "/var/lib/devcloud survived the release")
     remembered = out(ADOPTED, "systemctl list-units --all --no-legend --plain 'devcloud-*' | grep not-found || true")
     check(remembered.strip() == "", f"systemd still lists removed units: {remembered}")
     for path in listed:

@@ -587,13 +587,13 @@ def release(host, force=False, no_hold=False):
 
 def forget(run):
     """The end of a completed release: devcloud's state directory goes (its
-    record of this release with it), since setup.sh refuses a machine that
-    has one and the machine can be adopted again; and systemd forgets the
-    failures of the units removed, which it would list until the next boot."""
+    record of this release with it), leaving no devcloud state outside the
+    home; and systemd forgets the failures of the units removed, which it
+    would list until the next boot."""
     host = run.host
     try:
         ledger.remove_one(str(host.state_dir))
     except OSError as error:
-        host.say(f"devcloud release: {host.state_dir} stays ({error}); remove it before adopting this machine again")
+        host.say(f"devcloud release: {host.state_dir} stays ({error})")
     host.call(["systemctl", "reset-failed", "devcloud-*"], log="lifecycle", timeout=30)
     host.say("devcloud release: released")

@@ -576,10 +576,10 @@ class ReleaseTest(DepartureBase):
         return state, self.host(status_path=state / "status.json", ledger_path=led,
                                 shipper_seen=state / "shipper-configured")
 
-    def test_a_completed_release_removes_the_state_directory_so_the_machine_can_be_adopted_again(self):
+    def test_a_completed_release_removes_the_state_directory(self):
         state, host = self.state()
         self.assertEqual(departure.release(host), departure.DONE)
-        self.assertFalse(state.exists(), "setup.sh refuses a machine that has /var/lib/devcloud")
+        self.assertFalse(state.exists(), "devcloud's state directory survived the release")
         self.assertFalse((self.tmp / "boot.env").exists())
         self.assertEqual(self.kept.read_text(), "the person's own file")
         self.assertTrue(self.home.is_dir())
