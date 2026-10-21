@@ -231,6 +231,9 @@ A manual end-to-end check, after installing the branch's sminos: in a member ses
 - Decision: any `name-due` attempt marks the pending file's text handled, a throw or a timeout included (§3 step 3), replacing "a CLI that could not run leaves the file unhandled".
   Rationale: the dispatching session, 2026-10-20. `name-due` reconciles the project, which can wait on a lock held elsewhere; retrying on every prompt turned a CLI that keeps hanging into 10 s on each prompt for as long as the file exists. A rename missed through a transient failure is retried when the next derive rewrites the file (within 6 hours), which is cheaper than a stalled prompt.
   Date/Author: 2026-10-20, doperpowers-c4.
+- Decision: the former-alias note (§4) is written by `note()`, a sibling of `warn` that prints `sminos: note: …`, not by `warn` itself, whose `warning:` prefix would read a rename as a fault. `<old>` is the bare name the tag carried, without its `#short` or `project/`; `<label>` is project-qualified when the member's project is not the caller's. A former alias leaves out the current alias and the short of every session in the lineage (the placeholders a nameless session joined under). The predicate is `alias_reach`, and the current-before-former order is `current_first`, both shared by `match_members` and `find_target`. The latest holder is chosen before `one_per_session`, so a session held in two projects' logs is not refused as ambiguous with itself. `former_aliases` stays off `list --json`, since no consumer needs it. Refusals' "elsewhere" lists now name other projects' members that held the name before.
+  Rationale: M3 execution, in the spirit of §4.
+  Date/Author: 2026-10-20, M3 executor.
 
 ## Outcomes & Retrospective
 
