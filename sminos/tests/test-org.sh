@@ -280,18 +280,19 @@ printf '%s\n' '{"type":"assistant","uuid":"st000002","isSidechain":false,"messag
 hook_payload Stop "$STRAY" "$BARE" "$TX" | CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" "$HOOK"
 assert_contains "$(cat "$SMINOS_HOME/projects/$AMP/log/"*.jsonl 2>/dev/null)" "done in the bare directory" \
   "a stray's <message> is exported to its machine project's log"
-# derive --all covers the machine project's strays: one its human named is
-# asked nothing (§5 of the log design), one the harness named is derived.
+# derive --all covers the machine project's strays: one whose model made no
+# tool call yet is asked nothing (§5 of the log design), one that made ten is
+# derived.
 DRIFT=5a000005-0000-4000-8000-0000000000a5
 live_pid
 printf '{"pid":%s,"sessionId":"%s","name":"drift","nameSource":"derived","kind":"interactive","status":"idle","cwd":"%s"}\n' \
   "$LIVE_PID" "$DRIFT" "$BARE" > "$HOME/.claude/sessions/drift.json"
 for i in 1 2 3 4 5 6 7 8 9 10; do
-  printf '{"type":"user","uuid":"dr%06d","isSidechain":false,"origin":{"kind":"human"},"message":{"role":"user","content":"step %s"}}\n' "$i" "$i"
+  printf '{"type":"assistant","uuid":"dr%06d","isSidechain":false,"message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_dr%06d","name":"Bash","input":{}}]}}\n' "$i" "$i"
 done > "$(dirname "$TX")/$DRIFT.jsonl"
 run_in "$BARE" "$SMINOS" derive --all
-assert_contains "$OUT" "stray: not derived — its human named it" "derive --all covers the stray in its machine project"
-assert_contains "$OUT" "drift: keeps the bare directory tidy" "and derives a harness-named one"
+assert_contains "$OUT" "stray: not derived — 0 tool calls, needs 10" "derive --all covers the stray in its machine project"
+assert_contains "$OUT" "drift: keeps the bare directory tidy" "and derives one whose model made ten tool calls"
 assert_contains "$(cat "$SMINOS_HOME/projects/$AMP/log/alpha.$DRIFT.jsonl")" '"source": "derived"' \
   "recording its derived line in the machine project's log"
 rm -f "$HOME/.claude/sessions/drift.json"
