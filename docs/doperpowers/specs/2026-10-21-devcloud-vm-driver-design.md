@@ -71,7 +71,17 @@ desk no longer counts it.
   image. Acceptance 10's retention, acceptance 13 and a full acceptance 7 passed, and the lease
   timer released a VM by itself, with its warning reaching the creating session. Every resource was
   deleted by 17:35:47Z.
-- [ ] M6 — The skill, the always-on Mac, and acceptance.
+- [x] (2026-10-21 20:30Z) M6 — The skill, the always-on Mac, and acceptance. Commits 7cf40bdb..d7efe1e1,
+  with fixes c309ac4b, 1634e7b9 and 554d3e42. Reviewed clean after one fix round. Acceptance 1–13
+  passed live on the GCE default account, with these figures:
+  - Acceptance 1, from an image: 3m22s.
+  - Acceptance 5: the scheduled reaper on the always-on Mac deleted the VM 15m30s after its lease
+    ended.
+  - Acceptance 3: the desk Allow went through the bridge.
+  - Every resource was deleted by 19:40:45Z.
+  devcloud is at 0.7.0. H4's policy value was recorded as null, by the owner's ruling. **H6 is still
+  open:** at 20:29Z `sminos machines` still listed `devcloud-m5` ("never seen"). It is the person's
+  step and blocks nothing here.
 - [ ] Whole-branch review (high rung), Outcomes & Retrospective, PR.
 
 Human steps this initiative needs. The executor prepares each (the exact command, the page, what to
@@ -85,7 +95,7 @@ refused or it needs a browser or their judgment.
 | H3 | The seed key file onto the always-on Mac | the person | done 2026-10-21 (early, for M4's timing): `~/.config/devcloud/seed.json`, 0600; the Mac's own gcloud default untouched |
 | H4 | A desk provisioning key into Secret Manager; its `offline_revoke_s` is null ("never"), by the owner's ruling (Decision Log) | the person, once the desk ships keys | done: a `dc-` key expiring 2027-01-19; M6 records the policy value |
 | H5 | A tailnet ACL rule letting the Macs reach `tag:devcloud` on port 22 | the person | not needed: M1 found it open |
-| H6 | Removing the parent's leftover test machine `devcloud-m5` from the desk's Machines | the person | an M6 step; evidence: `sminos machines` no longer lists it |
+| H6 | Removing the parent's leftover test machine `devcloud-m5` from the desk's Machines | the person | an M6 step; evidence: `sminos machines` no longer lists it. Open at 20:29Z (still listed) |
 | H8 | The Hetzner limits (6 primary IPs, 16 shared vCPU) | the person | answered at M1: GCE becomes the default account, no limit request (Decision Log) |
 | H9 | Optional: raising the GCE project's E2 vCPU quotas in us-west1 (E2 24 → 48, all regions 32 → 48), so the caps' worst case fits | the person | declined (2026-10-21): requests over the quota are refused with exit 3 |
 | H7 | Approving the test provider before it first runs with a credential (`provider register --confirmed`) | the person | M5, and again for M6's acceptance 13: approved by the person through the main session (2026-10-21) |
