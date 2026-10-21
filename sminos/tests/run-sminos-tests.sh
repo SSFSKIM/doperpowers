@@ -4544,9 +4544,14 @@ elif kind == "ask":   # uuid call async|blocking|native questions-json [tool nam
         inp["async"] = args[2] == "async"
     rec = {"type": "assistant", "message": {"role": "assistant", "content": [
         {"type": "tool_use", "id": args[1], "name": "AskUserQuestion" if args[2] == "native" else (args[4] if len(args) > 4 else ASK), "input": inp}]}}
-elif kind == "result":   # uuid call text|ASYNC
+elif kind == "result":   # uuid call text|ASYNC [error]
     rec = {"type": "user", "message": {"role": "user", "content": [
-        {"type": "tool_result", "tool_use_id": args[1], "content": ASYNC_RESULT if args[2] == "ASYNC" else args[2]}]}}
+        {"type": "tool_result", "tool_use_id": args[1], "content": ASYNC_RESULT if args[2] == "ASYNC" else args[2],
+         **({"is_error": True} if args[3:] == ["error"] else {})}]}}
+elif kind == "msg":   # uuid call text [tool name] [lead text]: a message tool's call, after a text block when given
+    lead = [{"type": "text", "text": args[4]}] if len(args) > 4 else []
+    rec = {"type": "assistant", "message": {"role": "assistant", "content": lead + [
+        {"type": "tool_use", "id": args[1], "name": args[3] if len(args) > 3 else "mcp__to-human__message", "input": {"text": args[2]}}]}}
 elif kind == "deliver-att":
     rec = {"type": "attachment", "attachment": {"type": "hook_additional_context", "content": [HEAD % (args[1], args[2])],
                                                 "hookName": "tool.call", "hookEvent": "PostToolUse"}}
@@ -4851,6 +4856,43 @@ sed -n 4,5p "$SCRIPT_DIR/maws-ask-async.jsonl" >> "$TW"
 hook_run Stop "$HW" "$R3" "$TW"
 assert_equals "$(hp_events "$HW")" "joined question:$MAWS_CALL " "the next Stop, its acceptance on disk, records the question under the call id"
 
+# A message sent through a message tool (the to-human plugin's, and MAWS's
+# own in a MAWS launch): an accepted call is a message at the call's place
+# among the spans, src its call id; a refused call is none; a call whose
+# result is not on disk yet holds the export position, so the next Stop
+# still exports it, and never twice.
+for MT in mcp__to-human__message mcp__maws__message; do
+  case "$MT" in
+    mcp__to-human__*) HT=61000001-0000-4000-8000-000000000061 MTA=mtplugin ;;
+    *) HT=62000001-0000-4000-8000-000000000062 MTA=mtmaws ;;
+  esac
+  TT="$TXD/$HT.jsonl"
+  hp_peer "$MTA" "$HT" user interactive
+  hook_run SessionStart "$HT" "$R3" "$TT" startup
+  tx "$TT" prompt m1000001 "tell me, then work"
+  tx "$TT" asst m1000002 '<message>before the call</message>'
+  tx "$TT" msg m1000003 toolu_msg1 'Approve the dialog on the mini at 07:15.' "$MT" '<message>in the same row, ahead of it</message>'
+  tx "$TT" result m1000004 toolu_msg1 sent
+  tx "$TT" msg m1000005 toolu_msg_refused 'from a subagent' "$MT"
+  tx "$TT" result m1000006 toolu_msg_refused 'message is for the main conversation' error
+  tx "$TT" asst m1000007 '<message>after the call</message>'
+  tx "$TT" msg m1000008 toolu_msg2 'Its result is not on disk yet.' "$MT"
+  hook_run Stop "$HT" "$R3" "$TT"
+  assert_equals "$(hp_events "$HT")" "joined message:m1000002#0 message:m1000003#0 message:toolu_msg1 message:m1000007#0 " \
+    "$MT: an accepted call records a message at its place among the spans, src its call id; a refused one and one with no result yet record nothing"
+  assert_contains "$(grep toolu_msg1 "$HPLOG/testhost.$HT.jsonl")" '"kind": "message", "from": "'"$MTA"'", "to": "host", "text": "Approve the dialog on the mini at 07:15.", "src": "toolu_msg1"' \
+    "$MT: the message carries from, to host, the call's text word for word, and src the call id"
+  tx "$TT" result m1000009 toolu_msg2 sent
+  tx "$TT" asst m100000a 'Done.'
+  hook_run Stop "$HT" "$R3" "$TT"
+  assert_equals "$(hp_events "$HT")" "joined message:m1000002#0 message:m1000003#0 message:toolu_msg1 message:m1000007#0 message:toolu_msg2 " \
+    "$MT: the call that waited for its result held the export position: the next Stop records it"
+  hook_run Stop "$HT" "$R3" "$TT"
+  assert_equals "$(grep -c '"src": "toolu_msg' "$HPLOG/testhost.$HT.jsonl")" "2" "$MT: a Stop replayed records neither again"
+  run "$SMINOS" chat hostdemo --host
+  assert_contains "$OUT" "$MTA: Approve the dialog on the mini at 07:15." "$MT: chat --host prints the message as it prints a span"
+done
+
 # An export that died after the first of two spans in one record: the retry
 # appends only the second.
 tx "$TA" asst a4000001 '<message>first of two</message> <message>second of two</message>'
@@ -5114,6 +5156,27 @@ assert_not_contains "$(cat "$HPLOG/testhost.$HB.jsonl")" "still in the queue" "n
 tx "$TB" asst b2000009 '<message>still in the queue</message>'
 hook_run Stop "$HB" "$R3" "$TB"
 assert_equals "$(grep -c 'still in the queue' "$HPLOG/testhost.$HB.jsonl" || true)" "1" "the next Stop exports it once it is on disk"
+# A turn that ends on a message tool's result, with no response after it (an
+# Esc, a hook that stops the continuation, a turn end the engine asked for):
+# the payload's last message is empty, and the result can still be queued.
+# The Stop waits for it under the same bound, so the message is exported now
+# rather than at the next Stop.
+for MT in mcp__to-human__message mcp__maws__message; do
+  tag="${MT#mcp__}"; tag="${tag%%__*}"
+  tx "$TB" prompt "b3-$tag-1" "tell me and stop"
+  tx "$TB" msg "b3-$tag-2" "toolu_flush_$tag" "sent as the turn ended ($tag)" "$MT"
+  hook_stop_last "$HB" "$R3" "$TB" "" & LATE=$!
+  sleep 0.4
+  tx "$TB" result "b3-$tag-3" "toolu_flush_$tag" sent
+  T0="$(python3 -c 'import time; print(time.time())')"
+  wait "$LATE"
+  TOOK="$(python3 -c 'import sys, time; print("%.2f" % (time.time() - float(sys.argv[1])))' "$T0")"
+  assert_equals "$(grep -c '"src": "toolu_flush_'"$tag"'"' "$HPLOG/testhost.$HB.jsonl" || true)" "1" \
+    "$MT: a Stop whose transcript ends on the call, its result landing after the hook started, waits for the result and exports the message"
+  if python3 -c 'import sys; sys.exit(not float(sys.argv[1]) < 1.0)' "$TOOK"; then
+    pass "$MT: the wait ends as the result lands (${TOOK}s after it)"
+  else fail "$MT: the wait ends as the result lands"; echo "    took ${TOOK}s after it"; fi
+done
 # The window is chosen before grouping: an answer given now to a question
 # asked long ago shows, its question beneath it, by default and since today.
 HQ=6f00000a-0000-4000-8000-00000000006f

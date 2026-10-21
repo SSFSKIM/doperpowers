@@ -34,11 +34,11 @@ import { callEnded } from './bridge-requests'
  * transcript, and their `row-seen`s (door `compaction`) take its place.
  *
  * Messages to the host (DC2 M4): the main loop's rows that may carry one, a
- * text row with a mark, an async ask with its result, and a row that may
- * answer an ask, go to the child as they are kept (`export`), and the child
- * appends them to the project's log through the Stop hook's own writer and
- * keys, so they reach the log as they complete and the Stop hook's export
- * finds them already there.
+ * text row with a mark, an async ask with its result, a message tool's call
+ * with its result, and a row that may answer an ask, go to the child as they
+ * are kept (`export`), and the child appends them to the project's log
+ * through the Stop hook's own writer and keys, so they reach the log as they
+ * complete and the Stop hook's export finds them already there.
  *
  * A delivery's row (DC8.G6): the prompt row a delivery submitted becomes is
  * named once it is kept (`delivered` `entered`, enteredRow).
@@ -52,13 +52,22 @@ const ROW_KIND: Record<string, string> = { text: 'text', thinking: 'thinking', r
  * A superset of what sminos_marks.py reads as a span; the child's parser decides.
  */
 const MAY_MARK = /<(?:message|to-human|essential|need-input|insight)>|\x1b\[1;/
-/** Async asks whose other row (the call, or its result) has not been kept yet. */
-const ASKS_KEPT = 50
+/** Calls paired for the export (async asks, message calls) whose other row (the call, or its result) has not been kept yet. */
+const PAIRS_KEPT = 50
 /** MAWS's ask tool, which a session under MAWS asks through instead of the plugin's (sminos.MAWS_ASK_TOOL). */
 const MAWS_ASK_TOOL = 'mcp__maws__ask'
 /** A call of an ask tool that does not wait for its answer: the plugin's with `async` true, MAWS's with `blocking` false. */
 const isAsyncAsk = (name: unknown, input: Record<string, unknown>) =>
   (name === ASK_TOOL && input.async === true) || (name === MAWS_ASK_TOOL && input.blocking === false)
+/**
+ * The message tools a transcript may hold (sminos.MESSAGE_TOOLS): the to-human
+ * plugin's, and MAWS's own, which a MAWS launch registers in its place. sminos
+ * declares no dependency on either, so it knows them by name.
+ */
+const MESSAGE_TOOLS: readonly string[] = ['mcp__to-human__message', 'mcp__maws__message']
+/** A message tool's call whose text is past TEXT_CAP. */
+const isLongMessage = (block: Record<string, unknown>) =>
+  MESSAGE_TOOLS.includes(String(block.name)) && isRecord(block.input) && typeof block.input.text === 'string' && block.input.text.length > TEXT_CAP
 /** The tag a MAWS steer opens with (sminos.MAWS_STEER_RE). */
 const MAWS_STEER = '[MAWS ask '
 /** A text that may answer an async ask: the ask mod's delivery, or a MAWS steer. The child's parser decides. */
@@ -275,10 +284,12 @@ export function observeRow(door: string, message: { name?: string; content?: unk
  * The main loop's rows that may hold a message to the host, or an answer to
  * its question, handed to the child in the shape the transcript keeps them,
  * so `sminos record`'s own reading of them (sminos.host_events) decides what
- * is logged: a text row that may hold a mark; an async ask once both its call
- * and its result are kept, in whichever order; a row that may answer one
- * (answerRecord). A text past TEXT_CAP is left to the Stop hook's export,
- * which reads the transcript whole and appends it under the same keys.
+ * is logged: a text row that may hold a mark; an async ask or a message
+ * tool's call once both its call and its result are kept, in whichever order
+ * (the child logs the call only if its result is no error); a row that may
+ * answer an ask (answerRecord). A text past TEXT_CAP, a message call's
+ * included, is left to the Stop hook's export, which reads the transcript
+ * whole and appends it under the same keys.
  */
 export function exportRow(door: string, message: { name?: string; content?: unknown }, uuid: string, origin: unknown) {
   const content = Array.isArray(message.content) ? message.content.filter(isRecord) : []
@@ -288,15 +299,16 @@ export function exportRow(door: string, message: { name?: string; content?: unkn
       exportRecord(uuid, texts, { type: 'assistant', uuid, message: { content: texts } })
     }
     for (const b of content) {
-      if (b.type === 'tool_use' && typeof b.id === 'string' && isRecord(b.input) && isAsyncAsk(b.name, b.input)) {
-        keepAsk(b.id, { use: { type: 'assistant', uuid, message: { content: [b] } } })
+      if (b.type === 'tool_use' && typeof b.id === 'string' && isRecord(b.input) && (isAsyncAsk(b.name, b.input) || MESSAGE_TOOLS.includes(String(b.name)))) {
+        keepPair(b.id, { use: { type: 'assistant', uuid, message: { content: [b] } } })
       }
     }
   } else if (door === 'tool-result') {
-    const isAsk = isRecord(origin) && origin.kind === 'tool' && (origin.tool === ASK_TOOL || origin.tool === MAWS_ASK_TOOL)
+    const tool = isRecord(origin) && origin.kind === 'tool' ? String(origin.tool) : undefined
+    const isPaired = tool !== undefined && (tool === ASK_TOOL || tool === MAWS_ASK_TOOL || MESSAGE_TOOLS.includes(tool))
     for (const b of content) {
-      if (b.type === 'tool_result' && typeof b.tool_use_id === 'string' && (isAsk || state.asks.has(b.tool_use_id))) {
-        keepAsk(b.tool_use_id, { result: { type: 'user', uuid, message: { content: [b] } } })
+      if (b.type === 'tool_result' && typeof b.tool_use_id === 'string' && (isPaired || state.pairs.has(b.tool_use_id))) {
+        keepPair(b.tool_use_id, { result: { type: 'user', uuid, message: { content: [b] } } })
       }
     }
   } else {
@@ -391,17 +403,25 @@ export function enteredRow(door: string, message: { content?: unknown }, uuid: s
   emit({ type: 'delivered', key: submission!.key, outcome: 'entered', uuid })
 }
 
-/** One row of an ask call; once its call and its result are both kept, the pair is exported. */
-function keepAsk(id: string, row: { use?: TranscriptRecord; result?: TranscriptRecord }) {
-  const ask = { ...state.asks.get(id), ...row }
-  if (ask.use !== undefined && ask.result !== undefined) {
-    state.asks.delete(id)
-    emit({ type: 'export', records: [ask.use, ask.result] })
+/**
+ * One row of a paired call (an async ask, a message tool's); once its call and
+ * its result are both kept, the pair is exported, unless the call is a message
+ * past TEXT_CAP: that pair is the Stop hook's, said in the debug log.
+ */
+function keepPair(id: string, row: { use?: TranscriptRecord; result?: TranscriptRecord }) {
+  const pair = { ...state.pairs.get(id), ...row }
+  if (pair.use !== undefined && pair.result !== undefined) {
+    state.pairs.delete(id)
+    if ('message' in pair.use && pair.use.message.content.some(isLongMessage)) {
+      state.log?.(`bridge: row ${pair.use.uuid}: a message past ${TEXT_CAP} characters; the Stop hook exports it`)
+      return
+    }
+    emit({ type: 'export', records: [pair.use, pair.result] })
     return
   }
-  state.asks.set(id, ask)
-  if (state.asks.size > ASKS_KEPT) {
-    state.asks.delete(state.asks.keys().next().value as string)
+  state.pairs.set(id, pair)
+  if (state.pairs.size > PAIRS_KEPT) {
+    state.pairs.delete(state.pairs.keys().next().value as string)
   }
 }
 

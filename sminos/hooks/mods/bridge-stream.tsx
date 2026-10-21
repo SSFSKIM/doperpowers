@@ -293,7 +293,7 @@ export function forgetLive() {
   state.named.clear()
   // A /clear comes between turns: the new session's main loop is idle.
   state.isTurnUnknown = false
-  state.asks.clear()
+  state.pairs.clear()
   state.requests.clear()
   state.settled = []
 }

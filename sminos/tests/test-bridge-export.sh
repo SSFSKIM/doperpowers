@@ -147,8 +147,15 @@ def ask(uuid, call, is_async, name=ASK):
     return {"type": "assistant", "uuid": uuid, "message": {"content": [
         {"type": "tool_use", "id": call, "name": name, "input": {"questions": Q, "async": is_async}}]}}
 
-def result(uuid, call, t=ASYNC_RESULT):
-    return {"type": "user", "uuid": uuid, "message": {"content": [{"type": "tool_result", "tool_use_id": call, "content": t}]}}
+def result(uuid, call, t=ASYNC_RESULT, is_error=False):
+    return {"type": "user", "uuid": uuid, "message": {"content": [
+        {"type": "tool_result", "tool_use_id": call, "content": t, **({"is_error": True} if is_error else {})}]}}
+
+# The message tools: the to-human plugin's, and MAWS's in a MAWS launch.
+MESSAGE_TOOL, MAWS_MESSAGE_TOOL = "mcp__to-human__message", "mcp__maws__message"
+
+def message(uuid, call, t, name=MESSAGE_TOOL):
+    return {"type": "assistant", "uuid": uuid, "message": {"content": [{"type": "tool_use", "id": call, "name": name, "input": {"text": t}}]}}
 
 PLUGIN_PROMPT = "The doperpowers plugin sent a message:\n"
 # The tool and its framing under the plugin the ask moves to.
@@ -194,6 +201,12 @@ ROWS = {
         {"type": "user", "uuid": "r6", "origin": {"kind": "plugin", "name": "sminos"},
          "message": {"content": [{"type": "text", "text": SMINOS_PROMPT + delivery("toolu_ex_crossed") + PLUGIN_FRAMING}]}},
     ],
+    # A message sent through either message tool, with its result, the pair
+    # one export as the mod posts it; and a refused call.
+    "message": [message("m1", "toolu_ex_msg", "Approve the dialog at 07:15, please."), result("m2", "toolu_ex_msg", "sent")],
+    "maws-message": [message("m3", "toolu_ex_maws_msg", "Built; deploying next.", MAWS_MESSAGE_TOOL), result("m4", "toolu_ex_maws_msg", "sent")],
+    "refused-message": [message("m5", "toolu_ex_msg_refused", "from a subagent"),
+                        result("m6", "toolu_ex_msg_refused", "message is for the main conversation", True)],
     # The human's mid-turn message quoting a steer, which the mod hands over whole.
     "quoted": [
         {"type": "attachment", "uuid": "a5", "attachment": {"type": "queued_command", "commandMode": "prompt", "prompt": QUOTED,
@@ -370,6 +383,32 @@ assert_equals "$(events_of "$SG")" "joined question:toolu_ex_sminos question:too
   "an ask under the sminos plugin's name, and one under doperpowers' answered under sminos's framing, each export a question and its answer"
 assert_equals "$(text_of "$SG" answered toolu_ex_sminos)" 'The user answered: "Which backend?"="Postgres".' \
   "the answer under the sminos framing is the engine's result text, without the framing"
+
+echo "the message tools:"
+# A message tool's call and its result, which the mod hands over as one
+# export: the child logs an accepted call as the message the Stop hook's
+# export logs for it, under the same src, so the Stop appends nothing more.
+SH=5b000001-0000-4000-8000-0000000000ea
+TH="$HOME/.claude/projects/x/$SH.jsonl"
+peer "$SH" exmsg interactive cli
+start_child "$SH"
+ctl post "$SMINOS_HOME/bridge/$SH.sock" "[{\"type\":\"session\",\"phase\":\"start\",\"session\":\"$SH\",\"cwd\":\"$REPO\",\"t\":1}]" >/dev/null
+for pair in message maws-message refused-message; do
+  ctl post "$SMINOS_HOME/bridge/$SH.sock" "$(rows export "$pair")" >/dev/null
+done
+ctl post "$SMINOS_HOME/bridge/$SH.sock" "$(rows export eh)" >/dev/null
+until_true 100 has "$SH" "message:eh#0" || true
+MSGS="joined message:toolu_ex_msg message:toolu_ex_maws_msg message:eh#0"
+assert_equals "$(events_of "$SH")" "$MSGS" \
+  "an accepted call of either message tool reaches the log as a message, src its call id; a refused call is none"
+assert_contains "$(grep '"toolu_ex_msg"' "$LOG/testhost.$SH.jsonl")" '"kind": "message", "from": "exmsg", "to": "host", "text": "Approve the dialog at 07:15, please.", "src": "toolu_ex_msg"' \
+  "the message carries from, to host, the call's text and src, as the Stop hook writes it"
+hook SessionStart "$SH" "$TH"
+rows transcript "$TH" prompt message maws-message refused-message eh
+hook Stop "$SH" "$TH"
+assert_equals "$(events_of "$SH")" "$MSGS" "the Stop hook's export over the same rows appends no second copy"
+"$SMINOS" chat exdemo --host > "$T/host" 2>&1 || true
+assert_contains "$(cat "$T/host")" "exmsg: Built; deploying next." "chat --host prints a message sent through MAWS's tool"
 
 echo "a recovery resync (the first post lost):"
 # The mod's first post, [session start, resync], never reached the child; its

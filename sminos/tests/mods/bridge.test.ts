@@ -3980,6 +3980,55 @@ describe('the export to the host', () => {
     ])
   })
 
+  // The message tools, by value: the to-human plugin's, and MAWS's in a MAWS launch.
+  const MESSAGE_TOOL = 'mcp__to-human__message'
+  const MAWS_MESSAGE_TOOL = 'mcp__maws__message'
+  const messageUse = (id: string, name: string, text: string) => ({ type: 'tool_use', id, name, input: { text } })
+  const messageResult = (id: string, isError = false) => ({ type: 'tool_result', tool_use_id: id, content: isError ? 'refused' : 'sent', ...(isError && { is_error: true }) })
+  /** A message tool's result row, as the engine keeps it. */
+  const keepMessageResult = (h: ReturnType<typeof harness>, id: string, uuid: string, tool = MESSAGE_TOOL, isError = false) =>
+    h.append('tool-result', { type: 'user', role: 'user', content: [messageResult(id, isError)] }, { uuid, origin: { kind: 'tool', tool } })
+
+  test("a message tool's call goes with its result, both rows in one export, under either tool's name, whichever row the engine keeps first; the child judges a refused one", async () => {
+    const h = harness()
+    await h.ready()
+    await h.responseRow(messageUse('toolu_t1', MESSAGE_TOOL, 'Approve the dialog.'), { uuid: 'r-t1' })
+    expect(h.ofType('export')).toEqual([])
+    await keepMessageResult(h, 'toolu_t1', 'r-t1res')
+    await keepMessageResult(h, 'toolu_t2', 'r-t2res', MAWS_MESSAGE_TOOL)
+    await h.responseRow(messageUse('toolu_t2', MAWS_MESSAGE_TOOL, 'Built.'), { uuid: 'r-t2' })
+    await h.responseRow(messageUse('toolu_t3', MESSAGE_TOOL, 'from a subagent'), { uuid: 'r-t3' })
+    await keepMessageResult(h, 'toolu_t3', 'r-t3res', MESSAGE_TOOL, true)
+    const use = (id: string, name: string, text: string, uuid: string) => ({ type: 'assistant', uuid, message: { content: [messageUse(id, name, text)] } })
+    const result = (id: string, uuid: string, isError = false) => ({ type: 'user', uuid, message: { content: [messageResult(id, isError)] } })
+    expect(h.ofType('export').map((e) => e.records)).toEqual([
+      [use('toolu_t1', MESSAGE_TOOL, 'Approve the dialog.', 'r-t1'), result('toolu_t1', 'r-t1res')],
+      [use('toolu_t2', MAWS_MESSAGE_TOOL, 'Built.', 'r-t2'), result('toolu_t2', 'r-t2res')],
+      [use('toolu_t3', MESSAGE_TOOL, 'from a subagent', 'r-t3'), result('toolu_t3', 'r-t3res', true)],
+    ])
+  })
+
+  test("a message past the events' cap is left to the Stop hook's export, in either row order, and said so in the debug log", async () => {
+    const h = harness()
+    await h.ready()
+    const long = 'x'.repeat(TEXT_CAP + 1)
+    await h.responseRow(messageUse('toolu_l1', MESSAGE_TOOL, long), { uuid: 'r-l1' })
+    await keepMessageResult(h, 'toolu_l1', 'r-l1res')
+    await keepMessageResult(h, 'toolu_l2', 'r-l2res', MAWS_MESSAGE_TOOL)
+    await h.responseRow(messageUse('toolu_l2', MAWS_MESSAGE_TOOL, long), { uuid: 'r-l2' })
+    expect(h.ofType('export')).toEqual([])
+    expect(['r-l1', 'r-l2'].map((u) => h.logs.some((l) => l.includes(u) && l.includes('Stop hook')))).toEqual([true, true])
+  })
+
+  test("a message call whose result never came, and a message tool's call in a subagent, are not exported", async () => {
+    const h = harness()
+    await h.ready()
+    await h.responseRow(messageUse('toolu_open', MESSAGE_TOOL, 'still running'), { uuid: 'r-open' })
+    await h.responseRow(messageUse('toolu_sub', MESSAGE_TOOL, 'from a subagent'), { uuid: 'r-sub', agentId: 'a7' })
+    await h.append('tool-result', { type: 'user', role: 'user', content: [messageResult('toolu_sub', true)] }, { uuid: 'r-subres', agentId: 'a7', origin: { kind: 'tool', tool: MESSAGE_TOOL } })
+    expect(h.ofType('export')).toEqual([])
+  })
+
   test("a blocking ask, an async one whose result never came, and another tool's result are not exported", async () => {
     const h = harness()
     await h.ready()

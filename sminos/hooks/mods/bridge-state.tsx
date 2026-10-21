@@ -280,8 +280,8 @@ export type BridgeState = {
   isTurnUnknown: boolean
   /** The session's engine record (`<config>/sessions/<pid>.json`), from the child's hello. */
   record?: string
-  /** The ask tool's calls and results on the main loop, by call, until both rows of an async ask are kept (`export`). */
-  asks: Map<string, { use?: TranscriptRecord; result?: TranscriptRecord }>
+  /** The main loop's async asks and message calls, their call and result rows by call, until both are kept (`export`). */
+  pairs: Map<string, { use?: TranscriptRecord; result?: TranscriptRecord }>
   /** Requests raised and not yet settled, by id; and the last settlements, oldest first. */
   requests: Map<string, Request>
   settled: Record<string, unknown>[]
@@ -333,7 +333,7 @@ const fresh = (): BridgeState => ({
   named: new Map(),
   freshLoops: new Set(),
   isTurnUnknown: false,
-  asks: new Map(),
+  pairs: new Map(),
   requests: new Map(),
   settled: [],
   minted: 0,
