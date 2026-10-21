@@ -13,7 +13,7 @@ Terms are those of the project log design (`docs/doperpowers/specs/2026-10-13-sm
 - [x] (2026-10-20) Spike: how a plugin can set the engine name, run against engine 2.1.305 (Surprises & Discoveries).
 - [x] (2026-10-20) M1 — derive proposes a charge name; sminos knows its own names (53f0b667, fix 6c54c52a; task review clean)
 - [x] (2026-10-20) M2 — the name mod applies a pending name (9386dbdc, fix 5cfac89b; task review clean; live check 7/7)
-- [ ] M3 — former aliases still reach, with a note; docs, version, acceptance
+- [x] (2026-10-20) M3 — former aliases still reach, with a note; docs, version, acceptance (4c8176ae, fix 2240f707; task review clean; full ci-gate GREEN on 4c8176ae, sminos gate on 2240f707)
 
 ## 1. Where the name comes from
 
