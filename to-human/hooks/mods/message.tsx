@@ -16,16 +16,24 @@ import { previewLine } from './notify'
  */
 export const MESSAGE_TOOL = 'mcp__to-human__message' // the name register() returns; a test pins it
 
-export const DESCRIPTION =
-  'Send the human a message now, word for word. Use it for a message you send before another tool call, in the same response as that call; a message at the end of your turn stays a <message> span.'
+// When to use it is the style's rule, not the description's: the style is its one source.
+export const DESCRIPTION = 'Send the human a message.'
 
 export const INPUT_SCHEMA = {
   type: 'object',
   properties: {
-    text: { type: 'string', description: 'The message, in Markdown: what you would write inside <message>…</message>.' },
+    text: { type: 'string', description: 'The message, in Markdown.' },
   },
   required: ['text'],
 }
+
+/**
+ * The output style the tool is registered under, as `/config`'s `outputStyle`
+ * row names it (`$.config.list()`, read live on 2.1.305: a plugin's style is
+ * `<plugin>:<name>`). Under any other style no rule tells the model when to
+ * use the tool, so it is not offered.
+ */
+export const TO_HUMAN_STYLE = 'doperpowers:to-human'
 
 /** What an accepted call returns. */
 export const SENT = 'sent'
@@ -87,9 +95,11 @@ const message = (error: unknown) => (error instanceof Error ? error.message : St
 
 /**
  * Registers the tool and serves it. It is registered as an interactive
- * session starts (nobody reads a headless session's report), except under
- * MAWS (`MAWS_NATIVE_TO_HUMAN`), whose launches register their own
- * `mcp__maws__message`. It is always loaded, so the first message costs no
+ * session starts under the to-human style (nobody reads a headless session's
+ * report, and only the style says when to use the tool), except under MAWS
+ * (`MAWS_NATIVE_TO_HUMAN`), whose launches register their own
+ * `mcp__maws__message`. The style is read once, at the start: a session that
+ * switches to the style in `/config` gets the tool at its next start. It is always loaded, so the first message costs no
  * ToolSearch. A call from the main conversation raises the person's
  * notification and returns `sent`; a subagent's is refused, since only the
  * main conversation reaches the human. The notification is raised here, not
@@ -99,7 +109,13 @@ const message = (error: unknown) => (error instanceof Error ? error.message : St
 export function registerMessage(on: On) {
   on('session.start', { isInteractive: true }, async ($, e, next) => {
     const maws = await $.env.get('MAWS_NATIVE_TO_HUMAN')
-    if (maws === undefined || maws === '') {
+    let style: unknown
+    try {
+      style = (await $.config.list()).find((row) => row.key === 'outputStyle')?.value
+    } catch (error) {
+      $.ui.log(`to-human: the message tool is not registered: the output style could not be read (${message(error)})`, { to: 'debug' })
+    }
+    if ((maws === undefined || maws === '') && style === TO_HUMAN_STYLE) {
       try {
         const { tool } = await $.tool.register({ name: 'message', description: DESCRIPTION, inputSchema: INPUT_SCHEMA })
         if (tool !== MESSAGE_TOOL) {
@@ -117,6 +133,8 @@ export function registerMessage(on: On) {
   on('tool.describe', { tool: MESSAGE_TOOL }, async (_, e, next) => ({ ...(await next(e)), isDeferred: false }))
 
   on('tool.call', { tool: MESSAGE_TOOL }, async ($, e) => {
+    // Only the main conversation reaches the human, by the human's ruling;
+    // letting a subagent message them directly is SSFSKIM/doperpowers#310.
     if (e.agentId !== undefined) {
       return { deny: SUBAGENT_REFUSAL }
     }
