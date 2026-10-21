@@ -380,6 +380,7 @@ A manual end-to-end check, after installing the branch's sminos: in a member ses
   Date/Author: 2026-10-21, M5 executor.
 - Decision: derive refuses a re-derive when the session's transcript has not been modified since its latest derived line ("no activity since its last line, <age> ago"). It compares the transcript's mtime with that event's ts. A first derive is unchanged.
 
+  As built (b6378732): the check runs after the six-hour spacing and before the tool count, so a refused member takes no refresh slot (35121486's `--refreshes N`, which the daemon passes as 2). A turn that ran during the fork itself does not count as activity; the session's next write does.
   Rationale: the owner's usage concern, 2026-10-21. Without the check, a stopped member that is never retired is re-forked every 6 hours forever. A fork of an idle session rebuilds its prompt cache, the most expensive kind of call, and its answer cannot change, since the conversation is the same.
   Date/Author: 2026-10-21, the owner, through the dispatching session.
 
