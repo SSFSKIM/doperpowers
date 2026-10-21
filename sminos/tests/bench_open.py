@@ -44,9 +44,11 @@ messages all taken and then unsubscribed before the second subscribes, its
 drawing handed on; a trial counts only with a window of 12 s or more, A2's —
 `--long-words` and `--model` lengthen it — and an `end` before the step's
 that the instrument did not ask for is said), `kill` (live: the child
-SIGKILLed mid-stream by the pid its /status answers, the client subscribing
-again on each `end`, measured from the kill to the successor's bridged
-snapshot), `restart` (the same open on a fresh uplink, then after each
+SIGKILLed mid-stream by the pid its /status answers, once it has run the
+mod's STABLE_MS (a younger child's successor waits RESPAWN_STEP_MS by
+design, so back-to-back kills would measure the backoff), the client
+subscribing again on each `end`, measured from the kill to the successor's
+bridged snapshot), `restart` (the same open on a fresh uplink, then after each
 restart), `held` (local hub: A4's pair, in its order, each step observed
 before the next — a subscription's snapshot and first chunk; the pause
 proxy, between the uplink and the hub, armed; a second machine's upload of
@@ -103,6 +105,8 @@ import dx4_consumer  # noqa: E402
 from bench_rig import SCRIPTS, FakeKind, LiveKind, Rig, _read, call, line_key, read_tees, wait_for  # noqa: E402
 
 SCENARIOS = ("idle", "after-prompt", "mid-message", "long-answer", "kill", "restart", "held")
+# The mod's STABLE_MS (bridge.tsx), with a margin: a child this old is followed at once when it ends.
+CHILD_STABLE = 30.5
 LEAVES_OUT = "the reader queue, the record scan, the ticks, the refreshes, the warmer and the uplink's thread"
 
 PROMPTS = {
@@ -678,12 +682,17 @@ def sc_kill(bench, a):
         sys.exit("bench_open: --scenario kill needs --live (the mod respawns the child)")
     settle(bench)
     for _ in range(a.opens):
+        # A crash after a stable run: the mod follows it at once (§6).
+        age = time.time() - k.live.status()["started"]
+        if age < CHILD_STABLE:
+            time.sleep(CHILD_STABLE - age)
         o = bench.opened(bench.open())
         t0 = k.prompt(PROMPTS["kill"])
         wait_for("the answer streaming", 120, lambda: sum(
             1 for _, e in k.events(t0) if e.get("type") == "chunk" and (e.get("chunk") or {}).get("kind") == "text")
             >= 20, 0.005)
-        pid = k.live.status()["pid"]
+        status = k.live.status()
+        pid, child_age = status["pid"], round(time.time() - status["started"], 1)
         killed = time.time()
         os.kill(pid, signal.SIGKILL)
         successor, chain = None, []
@@ -709,8 +718,14 @@ def sc_kill(bench, a):
             bench.incomplete.append("kill: no bridged snapshot within 30 s of the kill")
         else:
             bench.until(successor, lambda: k.turn_done(t0), 180)
+            # The turn's last rows (its response, the Stop hooks' summary) land on disk
+            # about when its result does, and reach the client a tick later: the
+            # inventory waits for them, as the other scenarios do, and says how many
+            # were still on their way at the result.
+            late = len(dx4_consumer.Inventory.from_sources(k.transcript(), []).check(successor.consumer)["holes"])
+            bench.until(successor, lambda: last_row_held(bench, successor), 5)
             bench.record("kill", successor, E_kill=round(successor.snap_at - killed, 3), resubscribes=len(chain),
-                         chain=chain)
+                         child_age=child_age, rows_after_result=late, chain=chain)
             bench.close(successor)
         wait_for("the turn's end", 180, lambda: k.turn_done(t0), 0.2)
         time.sleep(1.0)

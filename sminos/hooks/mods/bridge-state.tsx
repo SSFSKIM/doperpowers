@@ -10,7 +10,12 @@ import type { Place } from './bridge-place'
 
 /** The longest string an event carries; the rest is in the transcript. */
 export const TEXT_CAP = 65_536
-export const RESPAWN_FIRST_MS = 1_000
+/** A child that ended on its own is started again after this long, the first time (after a stable run, or ever)... */
+export const RESPAWN_FIRST_MS = 0
+/** ...and this long the next time it ends at once, doubling from there while it keeps doing so. */
+export const RESPAWN_STEP_MS = 1_000
+/** Characters of a block's text a snapshot or a resync carries: past it, its tail, marked `truncated`. */
+export const BLOCK_TAIL = 65_536
 export const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
 export type Effort = (typeof EFFORTS)[number]
 
@@ -65,7 +70,7 @@ export type Interrupt = { recorded: Promise<void> }
  * the row and `namedAt` the notice's stamp (ms). A named block is kept until
  * its step ends, since the engine flushes its row only then.
  */
-export type Block = { index: number; kind: string; text: string; upTo: number; id?: string; name?: string; uuid?: string; namedAt?: number }
+export type Block = { index: number; kind: string; text: string; upTo: number; id?: string; name?: string; uuid?: string; namedAt?: number; truncated?: true }
 /**
  * A message still streaming, as the child's snapshot carries it (DX4): its
  * blocks, named or not, the ones a row settled, and `upTo`, its last chunk.
@@ -195,8 +200,12 @@ export type BridgeState = {
   /** The poster loop (started in session.start) and, while it sleeps, what wakes it. */
   isPosterRunning: boolean
   wake?: () => void
-  /** A post failed: the next waits for RETRY_MS. */
-  isWaiting: boolean
+  /**
+   * A post to the child of `generation` failed: that child's next post waits
+   * RETRY_MS. A wait set for a child since replaced holds up nothing: its
+   * successor posts at once.
+   */
+  retry?: { generation: number }
   /**
    * Between a /clear's session.end and the new session's child: nothing is
    * sent (the old child must not get the new session's events), and the live
@@ -347,7 +356,6 @@ const fresh = (): BridgeState => ({
   queue: [],
   isPosting: false,
   isPosterRunning: false,
-  isWaiting: false,
   isEnding: false,
   turns: new Map(),
   messages: new Map(),
@@ -384,19 +392,26 @@ export const parsed = (text: string): Record<string, unknown> | undefined => {
 }
 
 /**
- * A value with every string in it, at any depth, held to TEXT_CAP; `cut`
- * says whether any was.
+ * A value with every string in it, at any depth, held to `cap` (TEXT_CAP)
+ * UTF-16 units; `cut` says whether any was. A cut never ends inside a
+ * surrogate pair (one that would keep a pair's high half alone is a unit
+ * shorter): a lone surrogate has no canonical form, so the input could be
+ * neither sealed nor matched against a decision's digest.
  */
-export function capped(value: unknown): Capped {
+export function capped(value: unknown, cap = TEXT_CAP): Capped {
   if (typeof value === 'string') {
-    return value.length > TEXT_CAP ? { value: value.slice(0, TEXT_CAP), cut: true } : { value, cut: false }
+    if (value.length <= cap) {
+      return { value, cut: false }
+    }
+    const last = value.charCodeAt(cap - 1)
+    return { value: value.slice(0, last >= 0xd800 && last <= 0xdbff ? cap - 1 : cap), cut: true }
   }
   if (Array.isArray(value)) {
-    const items = value.map(capped)
+    const items = value.map((v) => capped(v, cap))
     return { value: items.map((i) => i.value), cut: items.some((i) => i.cut) }
   }
   if (typeof value === 'object' && value !== null) {
-    const entries = Object.entries(value).map(([k, v]) => [k, capped(v)] as const)
+    const entries = Object.entries(value).map(([k, v]) => [k, capped(v, cap)] as const)
     return { value: Object.fromEntries(entries.map(([k, c]) => [k, c.value])), cut: entries.some(([, c]) => c.cut) }
   }
   return { value, cut: false }

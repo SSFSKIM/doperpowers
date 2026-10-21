@@ -14,6 +14,23 @@ length, built once per file, extended from where it stopped, shared by every
 subscription on it and kept a while after the last one goes). The main
 thread parses only the bytes flushed since its subscription's Tail last read.
 
+The build — the index, the loop's jobs ledger and its chain — is saved under
+daemon/plane/ as it is first made and as it grows, as it leaves memory, and
+at the uplink's stop, and a process that has not built a file loads it
+while the file still holds, before the saved end, the very bytes it read (a
+CRC-32 of that prefix), so a restart costs an open a load, not a parse. The
+live members of the stream's open projects have their main transcripts held
+and extended in the background (Warmer): a warm job runs only while its
+worker has no foreground job — an open's build, a page, a look, an
+`output` — queued, at most one per transcript and WARM_PARALLEL across the
+process, round-robin; so a live session's first open is warm and never
+waits behind another's. Every job shares the process's GIL with the main
+thread, so the first round begins WARM_EVERY after the warmer's first tick
+and no warm job starts while an open awaits its snapshot.
+The look at the disk facts is off the open's path: the snapshot goes with
+the facts as they stand, the look is asked right after it, and the first
+`subagents` carries what it found.
+
 Presence. For every session of a hub project on this machine, its record in
 the engine's registry (`~/.claude/sessions/<pid>.json`: `status`,
 `waitingFor`, `needs`, verbatim; null once no process holds it) and whether
@@ -52,7 +69,10 @@ row order, composite cd2667d8):
   the subscription carries is kept and its block-row relayed. The cut's own
   row, not on disk at the snapshot, is awaited as a notice too, so it goes
   out as it lands; nothing drawn waits on it, so past its due it is
-  forgotten rather than ending anything;
+  forgotten rather than ending anything. A streaming block whose text
+  passed the bridge's BLOCK_TAIL (65,536 characters: a huge tool input)
+  carries only its tail there, marked `truncated: true`, which the snapshot
+  passes on as it is: its chunks, and its row once it lands, are whole;
 - that is for a bridge whose snapshot says `namedBlocks: true` (its child
   keeps named blocks and its mod's last resync declared it). Any other — a
   mod and child from before it, still running after the uplink was
@@ -91,8 +111,9 @@ Each open writes one daemon.log line (Subscription.noted): its outcome
 after N s from the subscribe frame's arrival at the uplink's reader, then
 where the time went — when the bridge's snapshot reached its reader and
 when the open took it (the main thread's absence between), how the build
-came (cold or warm), its CPU on the worker and the rows it holds, whether
-the cut's row was on disk, and `waits` (how many builds answered
+came (loaded from a saved build, warm in memory, or cold), its CPU on the
+worker and the rows it holds, whether the cut's row was on disk, and
+`waits` (how many builds answered
 "waiting": 0 from a bridge that keeps named blocks, whose snapshot waits
 for nothing).
 
@@ -128,9 +149,12 @@ process whose transcript this machine does not hold ends `session-ended`, at
 
 import collections
 import glob
+import hashlib
 import http.client
+import itertools
 import json
 import os
+import pickle
 import queue
 import re
 import socket
@@ -138,6 +162,7 @@ import subprocess
 import sys
 import threading
 import time
+import zlib
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import sminos  # noqa: E402
@@ -151,7 +176,14 @@ END_GRACE = 1.0           # s: once the session is not running, what it still fl
 ROWS_BUDGET = 512 * 1024  # bytes of row JSON in a snapshot or a page: "as many as fit"
 ROW_KEY = b'"uuid"'       # a line without these bytes holds no row: it is not parsed
 READ_BLOCK = 8 << 20      # bytes an index reads at a time
-INDEX_KEEP = 4            # transcripts whose index is kept after their last subscription went
+INDEX_KEEP = 32           # transcripts whose index is kept after their last subscription went (or the warmer let go)
+WARM_EVERY = 2.0          # s: how often the live members are looked over and a round of warm jobs begins
+WARM_PARALLEL = 2         # warm jobs queued or running at once, in the process
+SAVE_GROWTH = 16 << 20    # bytes of transcript an index grows by before its build is saved again
+STOP_SAVE_SECONDS = 5.0   # s: the uplink's stop waits this long for the held builds to be saved
+BUILD_FORMAT = 2          # what a saved build holds: bumped whenever Index, jobs.Ledger or Chain change it
+BUILD_KEEP_DAYS = 14      # a saved build not written or loaded this long is swept at the uplink's start
+BUILD_DIR = "plane"       # under daemon/: the saved builds
 PRESENCE_EVERY = 0.2      # s: how often the engine's records are looked at
 BRIDGE_RECHECK = 2.0      # s: how often a bridge that answered is asked again
 METAS_EVERY = 0.5         # s: how often a main subscription's subagent tree is looked at
@@ -160,6 +192,10 @@ MEMBERS_EVERY = 10.0      # s: how often the members are read again when no sess
 IDENTITY_EVERY = 10.0     # s: how stale a running pid's identity may be (its start time read this often)
 TOMBSTONE_FILE = "presence.json"  # under daemon/: project id → the time its sessions' leaving was last said and taken
 TOMBSTONE_MARGIN = 60.0   # s: a session that left this long before that time is said again (clock steps, a write in flight)
+# s: how long a leaver is kept for a re-open's heal (say_again), a bound on memory alone: which leavers a
+# heal says again is decided by when the body it heals was queued, not by age. A body out an hour after its
+# oldest line was queued would have ended its lane long before (16 MiB queued, or any POST past 60 s).
+GONE_KEEP = 3600.0
 DIFF_MAX = 4 << 20        # bytes of diff text; the rest is cut and said so
 GIT_TIMEOUT = 30
 PROBE_TIMEOUT = 1.0
@@ -265,7 +301,9 @@ class Index:
     offset of its line and the line's length — read forward from where it
     stopped, so a page reads its own rows' bytes and nothing else. Used on
     its transcript's worker alone. Once it has read the file, `extend` and
-    `rows` raise Reset when the file was replaced, shrank, or is gone."""
+    `rows` raise Reset when the file was replaced, shrank, or is gone.
+    `crc` is the CRC-32 of the bytes before `end`, kept as they are read:
+    what a saved build is checked against when it is loaded."""
 
     def __init__(self, path):
         self.path = path
@@ -274,6 +312,7 @@ class Index:
         self.uuids, self.offsets, self.lengths = [], [], []
         self.at = {}           # uuid → its first position
         self.parsed = 0        # bytes handed to the parser, all told: what building it cost
+        self.crc = 0           # zlib.crc32 of the file's bytes before `end`
 
     def check(self, st, through):
         if self.ino is not None and (st.st_ino != self.ino or st.st_size < through):
@@ -297,8 +336,10 @@ class Index:
                 block = f.read(READ_BLOCK)
                 if not block:
                     break
-                lines = (carry + block).split(b"\n")
+                data = carry + block
+                lines = data.split(b"\n")
                 carry = lines.pop()
+                self.crc = zlib.crc32(memoryview(data)[:len(data) - len(carry)], self.crc)
                 for line in lines:
                     if ROW_KEY in line:
                         self.parsed += len(line)
@@ -523,30 +564,115 @@ class Chain:
         self.join(x)
 
 
+def builds_dir():
+    return os.path.join(sminos.root(), "daemon", BUILD_DIR)
+
+
+def build_file(path):
+    """Where a transcript's saved build lives: named by its realpath's hash."""
+    real = os.path.realpath(path).encode("utf-8", "surrogateescape")
+    return os.path.join(builds_dir(), hashlib.sha256(real).hexdigest()[:24] + ".build")
+
+
+def sweep_builds(now=None):
+    """At the uplink's start (one uplink at a time, so no save is under way):
+    the saved builds neither written nor loaded for BUILD_KEEP_DAYS, and any
+    write a crash left half done, removed."""
+    now = time.time() if now is None else now
+    d = builds_dir()
+    try:
+        names = os.listdir(d)
+    except OSError:
+        return
+    for name in names:
+        path = os.path.join(d, name)
+        try:
+            if name.endswith(".tmp") or (name.endswith(".build") and
+                                         now - os.stat(path).st_mtime > BUILD_KEEP_DAYS * 86400):
+                os.unlink(path)
+        except OSError:
+            pass
+
+
+def _remove(path):
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+
+
+def _prefix_holds(index):
+    """Whether the file still holds, before the saved index's `end`, the
+    very bytes the index read: their CRC-32 against the one it kept. A
+    checksum, not a digest: it catches a rewrite in place, not an adversary
+    (the saved build is the daemon's own file). The file is read once, in
+    blocks, without being parsed: 0.04 CPU-s for 317 MB, where a parse is
+    0.75 (open-fast M7's Decision Log)."""
+    crc, left = 0, index.end
+    buf = bytearray(min(READ_BLOCK, max(left, 1)))
+    view = memoryview(buf)
+    with open(index.path, "rb") as f:
+        while left:
+            n = f.readinto(view[:min(len(buf), left)])
+            if not n:
+                return False
+            crc = zlib.crc32(view[:n], crc)
+            left -= n
+    return crc == index.crc
+
+
+def _shaped(obj, kind, fresh):
+    """Whether a loaded object is a `kind` holding what a fresh one holds: a
+    build saved by code whose classes held other fields is not used, even if
+    BUILD_FORMAT was not bumped."""
+    return type(obj) is kind and vars(obj).keys() == vars(fresh).keys()
+
+
 class Transcript:
     """One transcript file's index, its loop's jobs ledger, its chain, and
     the worker that reads it: every read of the file's bulk — an open's
-    build, a page, a look at the disk facts, an `output` — is a job run here,
-    one at a time, in the order submitted. A job is `job(transcript)` and
-    hands its own result over; the index, the ledger and the chain, fed every
-    row the index reads, are touched by jobs alone."""
+    build, a page, a look at the disk facts, an `output`, a warm job — is a
+    job run here, one at a time. Two queues: `submit`'s, the foreground,
+    what a subscription waits on, in the order submitted; and
+    `submit_background`'s, the warmer's and the saves', taken only while no
+    foreground job is queued. A running job is never interrupted. A job is
+    `job(transcript)` and hands its own result over; the index, the ledger
+    and the chain, fed every row the index reads, are touched by jobs alone.
+
+    The build is saved to disk (save, build_file) after the first extend in
+    this process and again whenever the index grew SAVE_GROWTH bytes past
+    the last save — as a background step once the job that extended it is
+    done, so a save delays no answer and no open queued behind it; the first
+    extend loads the saved build (load) and reads on from its end."""
 
     def __init__(self, path):
         self.path = path
         self.index = Index(path)
         self.ledger = jobs.Ledger()
         self.chain = Chain(main=not is_agent_path(path))
-        self.users = 0         # the subscriptions holding it (under Transcripts' lock)
+        self.users = 0         # the subscriptions and the warmer holding it (under Transcripts' lock)
         self.indexed = False   # an extend has read the file since the index began: the next is warm
-        self.how = None        # how the index last came: "cold" (parsed from the first byte) or "warm"
-        self.cpu_ms = 0        # the CPU the last extend cost on this worker
+        self.tried = False     # the saved build was looked for (by the first extend)
+        self.how = None        # how the index last came: "loaded" (a saved build), "cold" (parsed from the first byte) or "warm"
+        self.cpu_ms = 0        # the CPU the last extend cost on this worker, a load included
+        self.saved = None      # index.end as last saved or loaded (on disk): None, neither yet in this process
+        self.tried_end = None  # index.end as last saved, loaded, or tried and failed: the growth rule's mark
+        self.save_due = False  # the last extend calls for a save, taken when no foreground job is queued
+        self.warming = False   # a warm job is queued or running (Warmer)
         self.lock = threading.Lock()
         self.jobs = collections.deque()
+        self.background = collections.deque()
         self.working = False
 
     def submit(self, job):
+        self.queue(self.jobs, job)
+
+    def submit_background(self, job):
+        self.queue(self.background, job)
+
+    def queue(self, jobs_, job):
         with self.lock:
-            self.jobs.append(job)
+            jobs_.append(job)
             if self.working:
                 return
             self.working = True
@@ -555,49 +681,147 @@ class Transcript:
     def work(self):
         while True:
             with self.lock:
-                if not self.jobs:
+                if self.jobs:
+                    job = self.jobs.popleft()
+                elif self.save_due:
+                    job = Transcript.save
+                elif self.background:
+                    job = self.background.popleft()
+                else:
                     self.working = False
                     return
-                job = self.jobs.popleft()
             job(self)
 
     def extended(self):
-        """The index, brought up to the file's end. A file replaced or shrunk
-        since leaves a fresh index for whoever reads next, and the Reset says
-        so to the reader holding rows of the old one."""
+        """The index, brought up to the file's end — on the first extend in
+        this process from the saved build's end, when one can be used. A file
+        replaced or shrunk since leaves a fresh index for whoever reads next,
+        and the Reset says so to the reader holding rows of the old one."""
+        how, cpu = "warm" if self.indexed else "cold", time.thread_time()
+        if not self.tried:
+            self.tried = True
+            if self.load():
+                how = "loaded"
         ledger, chain = self.ledger, self.chain
 
         def on_row(row):
             ledger.add(row)
             chain.add(row)
 
-        how, cpu = "warm" if self.indexed else "cold", time.thread_time()
         try:
             self.index.extend(on_row)
         except Reset:
             self.index, self.ledger, self.chain = Index(self.path), jobs.Ledger(), Chain(self.chain.main)
-            self.indexed = False
+            self.indexed, self.saved, self.tried_end = False, None, None
             raise
         self.indexed = True
         self.how, self.cpu_ms = how, int(round((time.thread_time() - cpu) * 1000))
+        if self.index.ino is not None and (self.tried_end is None or self.index.end - self.tried_end >= SAVE_GROWTH):
+            self.save_due = True
         return self.index
+
+    def load(self):
+        """The saved build into the index, the ledger and the chain: True.
+        False when there is none, or the one there cannot be used — of
+        another format or shape, of another file (its realpath or inode), of
+        a file now shorter than what it read or whose bytes before the saved
+        end are not the ones it read (_prefix_holds), or unreadable — and
+        then it is removed. A saved build is the daemon's own file under a
+        0700 directory: loading it is trusted."""
+        file = build_file(self.path)
+        try:
+            with open(file, "rb") as f:
+                data = f.read()
+        except FileNotFoundError:
+            return False
+        except OSError:
+            _remove(file)
+            return False
+        try:
+            fmt, real, ino, end, index, ledger, chain = pickle.loads(data)
+            st = os.stat(self.path)
+            ok = fmt == BUILD_FORMAT and real == os.path.realpath(self.path) and st.st_ino == ino \
+                and st.st_size >= end and _shaped(index, Index, Index(self.path)) and index.end == end \
+                and index.ino == ino and _shaped(ledger, jobs.Ledger, jobs.Ledger()) \
+                and _shaped(chain, Chain, Chain(chain.main)) and chain.main == self.chain.main
+            if ok:
+                index.path = self.path
+                ok = _prefix_holds(index)
+        except Exception:  # noqa: BLE001 — any build that cannot be read is no build
+            ok = False
+        if not ok:
+            _remove(file)
+            return False
+        index.path = self.path
+        self.index, self.ledger, self.chain = index, ledger, chain
+        self.indexed, self.saved, self.tried_end = True, end, end
+        try:
+            os.utime(file)   # used: the sweep keeps it
+        except OSError:
+            pass
+        return True
+
+    def save(self):
+        """The build as of index.end written whole beside the saved builds
+        (0600, under a 0700 directory) and moved into place: True once
+        saved. One that fails is said in the log; the growth rule tries it
+        again once the index grows SAVE_GROWTH more, an eviction or the stop
+        at once (save_changed: `saved` still says what is on disk)."""
+        self.save_due = False
+        if self.index.ino is None:
+            return False
+        file = build_file(self.path)
+        tmp = "%s.%d.%d.tmp" % (file, os.getpid(), threading.get_ident())
+        end = self.index.end
+        try:
+            data = pickle.dumps((BUILD_FORMAT, os.path.realpath(self.path), self.index.ino, end, self.index,
+                                 self.ledger, self.chain), protocol=5)
+            os.makedirs(os.path.dirname(file), mode=0o700, exist_ok=True)
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "wb") as f:
+                f.write(data)
+            os.replace(tmp, file)
+        except Exception as e:  # noqa: BLE001 — a build not saved costs a parse after a restart, nothing else
+            _remove(tmp)
+            log("the build of %s could not be saved (%r): it is parsed again after a restart" % (self.path, e))
+            self.tried_end = end
+            return False
+        self.saved = self.tried_end = end
+        return True
+
+    def save_changed(self):
+        """save, when the index read past what is on disk: whether the build
+        on disk is now current (nothing to save, or saved)."""
+        if self.index.ino is not None and self.saved != self.index.end:
+            return self.save()
+        return True
 
 
 class Transcripts:
-    """The transcripts the subscriptions read, by path: one Transcript per
-    file, shared by every subscription on it, and kept after the last one
-    goes — the `keep` released last — so a second subscription, or the same
-    browser subscribing again, builds nothing. One per process
-    (TRANSCRIPTS), kept across the uplink's streams."""
+    """The transcripts the subscriptions and the warmer read, by path: one
+    Transcript per file, shared by every holder, and kept after the last one
+    lets go — the `keep` released last, each saved on its worker as it
+    leaves — so a second subscription, or the same browser subscribing
+    again, builds nothing, and one evicted loads. One per process
+    (TRANSCRIPTS), kept across the uplink's streams.
+
+    An evicted Transcript is `retiring` until its save has run: acquired
+    again meanwhile, it is that same Transcript that comes back, so one
+    worker per file orders every save of it and an older build never lands
+    over a newer one. Each retirement has its own number, which an acquire
+    voids: a save that ends lets go of its own retirement only, never of
+    one that began after it."""
 
     def __init__(self, keep=INDEX_KEEP):
         self.keep = keep
         self.lock = threading.Lock()
         self.held = collections.OrderedDict()   # path → Transcript, the least recently used first
+        self.retiring = {}                      # path → (an evicted Transcript whose save has not run yet, its retirement)
+        self.retirements = itertools.count(1)
 
     def acquire(self, path):
         with self.lock:
-            t = self.held.pop(path, None) or Transcript(path)
+            t = self.held.pop(path, None) or (self.retiring.pop(path, None) or (Transcript(path),))[0]
             t.users += 1
             self.held[path] = t
             return t
@@ -608,11 +832,139 @@ class Transcripts:
             if self.held.get(t.path) is t:
                 self.held.move_to_end(t.path)
             idle = [p for p, held in self.held.items() if held.users <= 0]
-            for p in idle[:max(0, len(idle) - self.keep)]:
-                del self.held[p]
+            gone = [self.held.pop(p) for p in idle[:max(0, len(idle) - self.keep)]]
+            retired = [(g, next(self.retirements)) for g in gone]
+            for g, n in retired:
+                self.retiring[g.path] = (g, n)
+        for g, n in retired:
+            g.submit_background(lambda t, n=n: self.retire(t, n))
+
+    def retire(self, t, n):
+        """Retirement `n`'s job: the build saved, then let go, unless the
+        Transcript was acquired again meanwhile (and maybe retired anew)."""
+        try:
+            t.save_changed()
+        finally:
+            with self.lock:
+                if self.retiring.get(t.path) == (t, n):
+                    del self.retiring[t.path]
+
+    def save_all(self, seconds=STOP_SAVE_SECONDS):
+        """The uplink's stop: each held build saved where it read past its
+        last save — the retiring ones too — a background job on its own
+        worker, all of them waited for `seconds` at most: (how many builds
+        are now current on disk, how many were held)."""
+        with self.lock:
+            held = list(self.held.values()) + [t for t, _ in self.retiring.values()]
+        done = []
+        for t in held:
+            ev, ok = threading.Event(), []
+            done.append((ev, ok))
+
+            def job(tr, ev=ev, ok=ok):
+                try:
+                    ok.append(tr.save_changed())
+                finally:
+                    ev.set()
+            t.submit_background(job)
+        deadline = time.monotonic() + seconds
+        for ev, _ in done:
+            if not ev.wait(max(0.0, deadline - time.monotonic())):
+                break
+        return sum(1 for ev, ok in done if ev.is_set() and ok == [True]), len(done)
 
 
 TRANSCRIPTS = Transcripts()
+
+
+class Warmer:
+    """The live sessions' builds kept current in the background (open-fast
+    §4), so a live session's first open is warm, without starving the opens.
+    Every WARM_EVERY `tick` holds the main transcript of each session it is
+    handed — the live members of the stream's open projects, each located
+    once — and lets go of the rest, taking them off the round in hand; once
+    that round is done it begins another over those it holds. Each tick submits the round's next
+    warm jobs while fewer than WARM_PARALLEL are queued or running in the
+    process, passing over a transcript that has one. A warm job is a
+    background job, taken only while its worker has no foreground job
+    queued: it extends the index, and the Transcript's save rule follows. It
+    does not look at the disk: a look is a subscription's. One per uplink
+    process, kept across its streams as the Transcripts are.
+
+    A worker's queue orders the jobs of one transcript; the GIL is shared by
+    all of them and the uplink's main thread. So the first round begins
+    WARM_EVERY after the first tick — a fresh process's cold builds would
+    otherwise stretch its stream's handshake threefold, and the opens that
+    arrive during it — and no warm job is submitted while an open awaits its
+    snapshot (`opening`); one already running runs on."""
+
+    def __init__(self, transcripts=None, locate=None, every=WARM_EVERY, parallel=WARM_PARALLEL):
+        self.transcripts = transcripts or TRANSCRIPTS
+        self.locate = locate or sminos.transcript_now
+        self.every, self.parallel = every, parallel
+        self.held = {}                      # session → its main Transcript, held while it is handed in
+        self.round = collections.deque()    # the sessions this round has still to visit
+        self.next_round = None
+        self.lock = threading.Lock()
+        self.running = 0                    # warm jobs queued or running (under the lock)
+        self.failing = {}                   # path → the failure last said (under the lock)
+
+    def tick(self, sessions, now=None, opening=False):
+        now = time.monotonic() if now is None else now
+        if self.next_round is None:
+            self.next_round = now + self.every
+        if now >= self.next_round:
+            self.next_round = now + self.every
+            self.hold(sessions)
+            if self.round:
+                self.round = collections.deque(sid for sid in self.round if sid in self.held)
+            else:
+                self.round.extend(self.held)
+        while self.round and not opening:
+            with self.lock:
+                if self.running >= self.parallel:
+                    return
+                self.running += 1
+            t = self.held.get(self.round.popleft())
+            if t is None or t.warming:
+                with self.lock:
+                    self.running -= 1
+                continue
+            t.warming = True
+            t.submit_background(self.warm)
+
+    def hold(self, sessions):
+        for sid in [s for s in self.held if s not in sessions]:
+            self.transcripts.release(self.held.pop(sid))
+        for sid in sorted(sessions):
+            if sid not in self.held:
+                path = self.locate(sid)   # a miss is looked for again next round
+                if path:
+                    self.held[sid] = self.transcripts.acquire(path)
+
+    def warm(self, t):
+        try:
+            try:
+                t.extended()
+            except Reset:
+                t.extended()   # the file was replaced: built again from its start
+            with self.lock:
+                self.failing.pop(t.path, None)
+        except Exception as e:  # noqa: BLE001 — said once while it keeps failing; the next round tries again
+            with self.lock:
+                said, self.failing[t.path] = self.failing.get(t.path), repr(e)
+            if said != repr(e):
+                log("warming %s failed: %r" % (t.path, e))
+        finally:
+            t.warming = False
+            with self.lock:
+                self.running -= 1
+
+    def close(self):
+        """Lets go of everything held."""
+        self.round.clear()
+        for sid in list(self.held):
+            self.transcripts.release(self.held.pop(sid))
 
 
 class Built:
@@ -622,16 +974,16 @@ class Built:
     rows that fit, newest first, `more` whether older ones are left; `past`
     the rows past the cut, (uuid, row) oldest first, which go out live;
     `ledger` the loop's jobs ledger and `chain` its chain as of `offset`, the
-    subscription's own to feed from there; `facts` the disk facts, once
-    looked at; `how` the index came ("cold" or "warm"), `cpu_ms` what its
-    extend cost on the worker, `rows` the rows it holds — the open line's."""
+    subscription's own to feed from there; `how` the index came
+    ("loaded", "warm" or "cold"), `cpu_ms` what its extend cost on the
+    worker, `rows` the rows it holds — the open line's. It holds no disk
+    facts: the look is off the open's path."""
 
     def __init__(self, ino, offset, emitted, shown, more, past, ledger, chain, how="cold", cpu_ms=0, rows=0):
         self.ino, self.offset = ino, offset
         self.emitted, self.shown, self.more, self.past = emitted, shown, more, past
         self.ledger, self.chain = ledger, chain
         self.how, self.cpu_ms, self.rows = how, cpu_ms, rows
-        self.facts = None
 
 
 def build(t, cut, bridged, wait=False):
@@ -1334,13 +1686,12 @@ class Subscription:
             if not path:
                 return self.unlocated(now, cut, wait, out)
             self.building = True
-            bridged, looked = self.bridged, self.looker()
+            bridged = self.bridged
 
             def opening(t):
-                kind, built = build(t, cut, bridged, wait)
-                if kind == "built":
-                    built.facts = looked()
-                return kind, built
+                # The build alone: the snapshot goes with the facts as they
+                # stand, and the look is asked on the pump right after it.
+                return build(t, cut, bridged, wait)
 
             self.ask(path, opening)
             return False
@@ -1365,7 +1716,7 @@ class Subscription:
             out += self.end("session-ended", "no transcript of the session on this machine")
             return False
         self.tail.path, self.tail.offset, self.tail.ino = self.source.path, built.offset, built.ino
-        self.ledger, self.chain, self.facts = built.ledger, built.chain, built.facts
+        self.ledger, self.chain = built.ledger, built.chain
         self.emitted = built.emitted
         for u, row in built.past:
             if u not in self.emitted and u not in self.pool:
@@ -1425,7 +1776,7 @@ class Subscription:
                 self.noticed[cut] = (None, now)
                 self.due[cut] = now + NOTICE_WAIT
                 self.loose.add(cut)
-        self.next_look = now + METAS_EVERY
+        self.next_look = now   # the look, off the open's path: asked once this snapshot is out
         self.was_alive = self.alive()
         self.body = self.derive(self.was_alive)
         body = {"rows": shown, "more": more, "offChain": self.off_chain(shown), **self.body, "presence": self.presence(),
@@ -1940,13 +2291,17 @@ class Plane:
     subscriptions it serves. Made anew with every stream; `close` lets the
     readers go."""
 
-    def __init__(self, machine, wake, bridges=None, transcripts=None, disk=None):
+    def __init__(self, machine, wake, bridges=None, transcripts=None, disk=None, warmer=None):
         self.machine = machine
         self.wake = wake
         self.bridges = bridges or Bridges()   # kept across streams by the uplink: no answer is relearned
         self.bridges.wake = wake
         self.transcripts = transcripts or TRANSCRIPTS   # the process's: no index is rebuilt across streams
         self.disk = disk or DISK                        # and no meta or agent file read again unchanged
+        # The warmer: kept across streams by the uplink, which hands one in,
+        # so what it holds stays held; one of this plane's own lets go with it.
+        self.own_warmer = warmer is None
+        self.warmer = warmer or Warmer(self.transcripts)
         self.records = Records()
         self.live = {}            # session → its engine record, as last scanned
         self.next_scan = 0.0
@@ -1957,6 +2312,8 @@ class Plane:
         self.tombstoned = {}      # project id → the read whose leavers a connect said, until the hub takes them
         self.wall = time.time
         self.sent = {}            # (project id, session) → presence body last sent
+        self.again = {}           # project id → since: its presence said again at the next look (say_again)
+        self.gone = {}            # project id → {session: when first said not running}, not seen back (GONE_KEEP)
         self.subs = {}            # sub → Subscription
         self.diffs = queue.Queue()
         self.read_for = None      # the running sessions the members were last read for
@@ -1966,6 +2323,8 @@ class Plane:
         for s in self.subs.values():
             s.close()
         self.subs.clear()
+        if self.own_warmer:
+            self.warmer.close()
 
     # ---------------------------------------------------- who is here
 
@@ -2007,35 +2366,66 @@ class Plane:
         One whose leaving has no time is said every time."""
         now = time.monotonic() if now is None else now
         out = []
+        members = self.members.get(pid, ())
+        gone = self.gone[pid] = {sid: at for sid, at in self.gone.get(pid, {}).items() if now - at <= GONE_KEEP}
+
+        def not_running(sid):
+            gone.setdefault(sid, now)   # when it was first said gone: a later say does not keep it longer
+            out.append(envelope(pid, self.machine, sid, "presence", None, None, {"record": None, "bridge": False}))
         if force:
             self.live = self.records.scan()
             mark = tombstone_marks().get(pid)
             since = None if mark is None else mark - TOMBSTONE_MARGIN
             for sid, at in sorted(self.left.get(pid, {}).items()):
                 if since is None or at is None or at >= since:
-                    out.append(envelope(pid, self.machine, sid, "presence", None, None,
-                                        {"record": None, "bridge": False}))
+                    not_running(sid)
             if pid in self.read_at:
                 self.tombstoned[pid] = self.read_at[pid]
         socks = bridge_socks() if socks is None else socks
-        for sid in sorted(self.members.get(pid, ())):
+        since = self.again.pop(pid, None)
+        again = since is not None
+        if again:
+            said = {m["session"] for m in out}
+            for sid in sorted(sid for sid, at in gone.items() if at >= since and sid not in members and sid not in said):
+                not_running(sid)
+        for sid in sorted(members):
             body = self.presence_of(sid, now, socks)
-            if force or self.sent.get((pid, sid)) != body:
+            if force or again or self.sent.get((pid, sid)) != body:
                 self.sent[(pid, sid)] = body
+                gone.pop(sid, None)
                 out.append(envelope(pid, self.machine, sid, "presence", None, None, body))
-        for key in [k for k in self.sent if k[0] == pid and k[1] not in self.members.get(pid, ())]:
+        for key in [k for k in self.sent if k[0] == pid and k[1] not in members]:
             body = self.sent.pop(key)
             if body["record"] is not None or body["bridge"]:
-                out.append(envelope(pid, self.machine, key[1], "presence", None, None,
-                                    {"record": None, "bridge": False}))
+                not_running(key[1])
         return out
 
-    def accepted(self, pid):
+    def say_again(self, pid, since):
+        """The project's presence is said again at its next look, changed or
+        not, since a copy older than the one last sent may reach the hub
+        after it (a body in flight at a re-open, applied after the hello,
+        whose oldest line of the project was queued at `since`, monotonic):
+        every member's, and every leaver this plane first said gone at or
+        after `since` and has not seen back. One said gone before can carry
+        no live presence in that body, its live presence having been queued
+        before its tombstone, however long either waited. A leaver said twice
+        is harmless."""
+        self.again[pid] = min(since, self.again.get(pid, since))
+
+    def take_read(self, pid):
+        """The read the forced presence just drawn for the project said its
+        leavers from, taken by the POST that carries it (`accepted`'s
+        `read`); None when there was none."""
+        return self.tombstoned.pop(pid, None)
+
+    def accepted(self, pid, read=None):
         """The hub answered 200 to the POST that carried a connect's presence
         for the project: its leavers are said, so the next connect says only
-        those that left since that read. Kept across restarts; a mark that
-        cannot be written leaves the old one, which says more, never less."""
-        at = self.tombstoned.pop(pid, None)
+        those that left since that read — `read`, the one that POST's
+        presence was drawn from (take_read), else the latest forced one's.
+        Kept across restarts; a mark that cannot be written leaves the old
+        one, which says more, never less."""
+        at = self.tombstoned.pop(pid, None) if read is None else read
         if at is None:
             return
         path = tombstone_path()
@@ -2154,7 +2544,9 @@ class Plane:
         finished diffs. Envelopes, in the order to post them. The members are
         read again — a reconciling read of each log, which reads the start
         time of every live session — when a session came or went, and every
-        MEMBERS_EVERY for what only the log changes (a seat retired)."""
+        MEMBERS_EVERY for what only the log changes (a seat retired). The
+        warmer is handed the live members of those projects, and whether an
+        open awaits its snapshot."""
         now = time.monotonic()
         out = []
         if now >= self.next_scan:
@@ -2178,6 +2570,8 @@ class Plane:
                 out += s.pump()
             if s.ended:
                 self.subs.pop(sub, None)
+        self.warmer.tick({sid for pid in projects for sid in self.members.get(pid, ()) if sid in self.live}, now,
+                         opening=any(s.n is None for s in self.subs.values()))
         while True:
             try:
                 sub, body = self.diffs.get_nowait()

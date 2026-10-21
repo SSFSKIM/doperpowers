@@ -11,17 +11,28 @@ down — `GET /machine/stream`, Server-Sent Events — and frames up by `POST
 /machine/frames`, each under the stream's generation. A stream silent for
 three heartbeat periods is dead; the uplink reconnects with backoff.
 
-Three threads: a reader that only reads the stream (the SSE parse, no
-sminos call) into a queue, so the stream is drained whatever the rest is
-doing; beside it the stream's acker, which answers each heartbeat with
-`hb-ack` (no sminos call either), so the machine's lease at the hub never
-waits on the main thread; and the process's main thread, which does every
-sminos call and every other POST. sminos's per-invocation caches are module
-globals no second thread may share, and a git phase of the tick loop, a
-derivation, or this process's own delivery never holds the reader up. The
-main thread takes whatever is queued as one batch, then ticks once: what the
-batch imported is delivered once per project, so a burst from the hub costs
-a tick, not a tick a frame.
+The threads: a reader that only reads the stream (the SSE parse, no sminos
+call) into a queue, so the stream is drained whatever the rest is doing;
+beside it the stream's acker, which answers each heartbeat with `hb-ack` on a
+connection of its own (no sminos call either), so the machine's lease at the
+hub never waits on the main thread; two sender lanes (Sender), each a thread
+with one persistent connection to the hub, which post in order what the main
+thread queues for them — the log lane the log plane's frames (the connect's
+bundle, uploads, outcomes, rejections, the machine's presence, every
+re-`hello`), the session lane the session plane's, the requests' and the RPC
+results, its frames of a project held until that project's `hello` was
+answered — so a POST the hub holds, or a fresh TLS handshake, stops neither
+the pump nor the other lane; and the process's main thread, which does every
+sminos call and never waits on the network. sminos's per-invocation caches
+are module globals no second thread may share, and a git phase of the tick
+loop, a derivation, or this process's own delivery never holds the reader
+up. The main thread takes whatever is queued as one batch, then ticks once:
+what the batch imported is delivered once per project, so a burst from the
+hub costs a tick, not a tick a frame. A lane's answers come back on the same
+queue: after a 200 the continuations of what it carried run there, in
+order. Each lane says in daemon.log every connection it dials and closes,
+with how many POSTs each carried, and any POST slower than
+SLOW_POST_SECONDS.
 
 The hub sends the org's directory down the stream (`org`: every project of
 the org, with its kind and whether it is retired, and every enrolled
@@ -42,7 +53,11 @@ even on a stream that never drops. The session plane
 (sminos_plane.py) rides the same stream: each session's presence after the
 `hello` and whenever it changes, and the hub's subscriptions served as DX4
 messages; a bridge's reader wakes the main thread, so what it read goes up
-at once. The machine's policy (sminos_policy) goes up in `machine` on every
+at once. The plane's transcripts and its warmer are the process's, kept
+across streams: the builds the warmer keeps current for the live members
+are saved under daemon/plane/ as they grow and once more at the uplink's
+stop (STOP_SAVE_SECONDS at most), and loaded by the next process, which
+sweeps the ones past their keep as it starts. The machine's policy (sminos_policy) goes up in `machine` on every
 connect and again whenever it changes; the requests the bridges raise and
 settle go up as DX4 `raised` and `settled` with their codes, and the
 complete pending set after every connect (sminos_requests); what
@@ -50,10 +65,19 @@ delivery made of each event from outside, as DX4 `delivery`
 (sminos_outcomes); and the RPCs the hub forwards, verified, executed at most
 once, and answered as `rpc-result` until `rpc-ack` (sminos_rpc). A POST the
 hub does not answer 200 ends the stream, and the next one redoes the
-handshake: nothing posted is taken as landed without its answer. Frames
-larger than a frame's bound travel as parts, both ways.
+handshake: what the handshake heals is marked sent when queued (the vector's
+reach, a complete pending set, an RPC result), and what it does not (the
+presence tombstone, rejections reported, outcomes dropped) only once the hub
+answered 200, in flight meanwhile. Settlements and compaction messages wait
+longer (sminos_flights): the hub answers 200 even to a session frame it
+refuses `not-open`, so they are the hub's only once a confirmation of their
+project queued after that 200 was answered too — the project's probe, an
+empty `events` frame on the log lane CONFIRM_AFTER after the first of them
+was answered — and a `not-open` owes them again.
+Frames larger than a frame's bound travel as parts, both ways.
 """
 
+import collections
 import errno
 import fcntl
 import http.client
@@ -101,6 +125,15 @@ ACK_GAP = 1.0             # heartbeats are answered at most once a second, the n
 SCAN_EVERY = 2.0          # how often the projects known here are looked over for a hub project to open
 UPLOAD_EVERY = 0.5        # how often this machine's writers are looked at for events to upload
 CHECKOUTS_EVERY = 10.0    # how often the machine presence's checkouts are read again (the policy: every scan)
+IDLE_CLOSE = 60.0         # a lane's connection idle this long is closed by the lane (SMINOS_IDLE_CLOSE, for a test)
+SEND_QUEUE_MAX = 16 << 20  # a lane holding more unsent than this: the hub is not taking frames, the stream ends
+SLOW_POST_SECONDS = 5.0   # a lane's POST slower than this is said in daemon.log
+UPLOAD_AHEAD = POST_LIMIT  # an upload pass queues no more while the log lane holds this much unsent
+CONFIRM_AFTER = 2.0       # s: a project's answered settlements are confirmed by a probe this long after the first
+CONNECTIONS = itertools.count(1)  # the lanes' connections, numbered across the process's streams
+# What a reused connection's send raises when the hub closed it while idle:
+# nothing of the request reached it, so it goes once more on a fresh one.
+STALE = (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)
 
 
 class CredentialBad(Exception):
@@ -282,8 +315,9 @@ class Stream(threading.Thread):
     The heartbeats are answered here, not on the main thread: the hub renews
     the machine's lease only with an `hb-ack` of the stream's generation, and
     the main thread can be held far longer than the lease — a slow tick, a
-    POST the hub holds, a frame that reads a large transcript, a backlog of
-    frames queued ahead of the heartbeat. The reader hands each `hb` to the
+    delivery to a session slow to take its frames, a frame that reads a large
+    transcript, a backlog of frames queued ahead of the heartbeat — and a
+    lane by a POST the hub holds. The reader hands each `hb` to the
     stream's acker, a thread that posts the answer and touches nothing of
     sminos, so the lease lasts exactly as long as the stream and this process
     do. A POST of an answer the hub does not take ends the stream, as any
@@ -494,13 +528,18 @@ class Stopping(EndStream):
     """The uplink is ending (SIGTERM, or its daemon is gone) while it posts."""
 
 
+def frame_headers(cred, generation):
+    return {"Content-Type": "application/x-ndjson", "X-Desk-Generation": str(generation), **admission(cred)}
+
+
 def post(cred, generation, frames, ended=lambda: False):
-    """Frames up (DX2's POST): NDJSON, each body at most POST_LIMIT bytes,
-    under the stream's generation. NotDelivered unless the hub answers 200 —
-    a POST of an older stream is refused stale-generation, and a hub whose
-    replies failed to reach the stream answers something else. The hub holds
-    its answer until its replies are on the stream, so each exchange is
-    watched: Stopping, within POLL, once `ended()` (and before each body)."""
+    """Frames up (DX2's POST) on a connection of their own, the acker's path:
+    NDJSON, each body at most POST_LIMIT bytes, under the stream's
+    generation. NotDelivered unless the hub answers 200 — a POST of an older
+    stream is refused stale-generation, and a hub whose replies failed to
+    reach the stream answers something else. The hub holds its answer until
+    its replies are on the stream, so each exchange is watched: Stopping,
+    within POLL, once `ended()` (and before each body)."""
     bodies, body, size = [], [], 0
     for line in (line.encode("utf-8") for frame in frames for line in to_wire(frame)):
         if body and size + len(line) + 1 > POST_LIMIT:
@@ -520,27 +559,29 @@ def post(cred, generation, frames, ended=lambda: False):
                 status, " ".join(answer.decode("utf-8", "replace").split())[:300]))
 
 
-def exchange(cred, path, generation, body, ended):
-    """One POST, (status, answer): the whole HTTP exchange — connect, the
-    body sent, the head and the answer read — runs on a thread of its own,
-    and this one watches it. Once `ended()`, within POLL whichever step it is
-    blocked in, its socket is shut and Stopping raised (the exchange's
-    thread, a daemon, dies with the process that is ending); NotDelivered on
-    any failure, or when it outlasts twice the socket bound (a hub that
-    answers a byte at a time)."""
+def shut(sock):
+    if sock is not None:
+        try:
+            sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+
+
+def watched(work, sock_of, ended):
+    """work() — one HTTP exchange, (status, answer): connect, the body sent,
+    the head and the answer read — run on a thread of its own, this one
+    watching it. Once `ended()`, within POLL whichever step it is blocked
+    in, the socket sock_of() names is shut and Stopping raised (the
+    exchange's thread, a daemon, dies with the process that is ending);
+    NotDelivered on any failure, or when it outlasts twice the socket bound
+    (a hub that answers a byte at a time)."""
     out = {}
 
     def run():
-        conn = out["conn"] = connection(cred, POST_TIMEOUT)
         try:
-            conn.request("POST", path, body=body, headers={
-                "Content-Type": "application/x-ndjson", "X-Desk-Generation": str(generation), **admission(cred)})
-            resp = conn.getresponse()
-            out["answer"] = (resp.status, resp.read(ANSWER_MAX))
+            out["answer"] = work()
         except (OSError, http.client.HTTPException) as e:
             out["error"] = " ".join(str(e).split()) or type(e).__name__
-        finally:
-            conn.close()
 
     worker = threading.Thread(target=run, name="uplink-post", daemon=True)
     worker.start()
@@ -551,18 +592,465 @@ def exchange(cred, path, generation, body, ended):
             break
         late = time.time() > deadline
         if ended() or late:
-            sock = out["conn"].sock if out.get("conn") else None
-            if sock is not None:
-                try:
-                    sock.shutdown(socket.SHUT_RDWR)
-                except OSError:
-                    pass
+            shut(sock_of())
             if late:
-                raise NotDelivered("no whole answer within %ds" % (2 * POST_TIMEOUT))
+                raise NotDelivered("no whole answer within %gs" % (2 * POST_TIMEOUT))
             raise Stopping("the uplink is ending during a POST")
     if "error" in out:
         raise NotDelivered(out["error"])
     return out["answer"]
+
+
+def exchange(cred, path, generation, body, ended):
+    """One POST on a connection of its own, (status, answer), watched: the
+    acker's."""
+    held = {}
+
+    def work():
+        conn = held["conn"] = connection(cred, POST_TIMEOUT)
+        try:
+            conn.request("POST", path, body=body, headers=frame_headers(cred, generation))
+            resp = conn.getresponse()
+            return resp.status, resp.read(ANSWER_MAX)
+        finally:
+            conn.close()
+
+    return watched(work, lambda: held["conn"].sock if "conn" in held else None, ended)
+
+
+# ------------------------------------------------------------- the sender lanes
+
+
+def readable(sock):
+    """Whether a kept connection has something to read while no request is
+    out on it: its end (the hub closed it while it was idle), or bytes no
+    answer accounts for. Either way it is not reused."""
+    with selectors.DefaultSelector() as sel:
+        sel.register(sock, selectors.EVENT_READ)
+        return bool(sel.select(0))
+
+
+def idle_close():
+    try:
+        return float(os.environ.get("SMINOS_IDLE_CLOSE") or IDLE_CLOSE)
+    except ValueError:
+        return IDLE_CLOSE
+
+
+def project_of(frame):
+    """The project a frame up is of, when it says (a session message's, a
+    pending set's, an RPC result's); else None."""
+    pid = frame.get("project")
+    if not isinstance(pid, str) and isinstance(frame.get("message"), dict):
+        pid = frame["message"].get("project")
+    return pid if isinstance(pid, str) else None
+
+
+def by_project(frames):
+    """The frames as runs of one project each, in the order each project
+    first comes, each run in its own order."""
+    runs = {}
+    for frame in frames:
+        runs.setdefault(project_of(frame), []).append(frame)
+    return list(runs.values())
+
+
+RENEWED_KINDS = ("presence", "raised", "settled", "compact")
+
+
+def renewed(frame):
+    """Whether a re-open of the frame's project sends anew what the frame
+    says, so a copy queued before that re-open is obsolete and, posted after
+    its hello, would contradict it: the complete pending set, a session's
+    presence and an RPC's result (the hello carries them as they are now),
+    and a request's raise or settlement and a compaction's message (the
+    `not-open` that re-opens it owes them again from their outboxes). A
+    subscription's messages are not: nothing sends them again."""
+    if frame.get("t") in ("pending", "rpc-result"):
+        return True
+    message = frame.get("message")
+    return frame.get("t") == "session" and isinstance(message, dict) and message.get("kind") in RENEWED_KINDS
+
+
+class Entry:
+    """Wire lines queued on a lane — on the session lane, of one project,
+    and either all `renewed` or none — and the `send` they came from: `join`
+    is [its entries not yet taken into a body, its continuation], which is
+    due with the body that takes the last. `at`: when it was queued
+    (monotonic, the plane's clock)."""
+
+    def __init__(self, project, join, renewed=False):
+        self.project, self.join, self.renewed = project, join, renewed
+        self.at = time.monotonic()
+        self.lines = collections.deque()
+        self.size = 0
+
+    def add(self, lines):
+        for line in lines:
+            self.lines.append(line)
+            self.size += len(line) + 1
+
+
+class Dial:
+    """A lane's connection being dialled: `done` once it landed as the
+    lane's connection or failed (`error`, said)."""
+
+    def __init__(self, conn):
+        self.conn = conn
+        self.done = threading.Event()
+        self.error = None
+
+
+class Sender(threading.Thread):
+    """A sender lane: a thread with one persistent connection to the hub,
+    posting in FIFO order what the main thread queues (`send`), so the main
+    thread never waits on the network. Made at the stream's welcome, closed
+    with the stream.
+
+    `send` converts the frames to wire lines on the caller's thread and
+    queues them as one entry. The log lane posts each entry as its own body
+    or bodies, never two entries in one body (each call site sends one
+    project's reply-owing frames per entry); the session lane takes
+    everything queued as bodies of at most POST_LIMIT, and holds a project's
+    entries aside, in order, until `release` says that project's `hello` was
+    answered (the hub refuses a frame of a project it has not opened
+    `not-open`), the other projects' going meanwhile; a project opened again
+    (`hold`) drops what its new hello sends anew. After a body's 200 the
+    lane puts ("sent", [then, ...]) on the stream's items, for the main loop
+    to run in order. A non-200 answer, a failure, a POST that outlasts
+    2 × POST_TIMEOUT, or more than SEND_QUEUE_MAX unsent ends the lane:
+    ("closed", NotDelivered) is put once (for the bound, raised from `send`),
+    its queue dropped, and the stream ends as for any lost POST. `close()` and
+    the uplink's end stop it silently, its blocked exchange shut.
+
+    The connection is kept across POSTs, each answer read whole. One the hub
+    answered `Connection: close` on, one whose socket reads its end before a
+    request (the hub closed it idle), and one idle IDLE_CLOSE are closed, and
+    the next POST dials afresh; `warm` dials ahead of a POST about to come.
+    One dial is out at a time, and one its watcher gave up on stays the
+    lane's until it lands or fails (`connect`). A send that fails on a
+    reused connection is retried once on a fresh one (nothing of it reached
+    the hub); a failure once the request went out is
+    a loss — the hub may have applied it, and the next stream's handshake
+    heals it. Each dial and each close is a daemon.log line with the
+    connection's number, a close with how many POSTs it carried and why, and
+    a POST slower than SLOW_POST_SECONDS a line of its own."""
+
+    def __init__(self, lane, cred, generation, put, ended):
+        super().__init__(name="uplink-%s-lane" % lane, daemon=True)
+        self.lane, self.cred, self.generation, self.put = lane, cred, generation, put
+        self.path = urllib.parse.urlsplit(cred["hub"]).path.rstrip("/") + FRAMES_PATH
+        self.idle_for = idle_close()
+        self.closing = threading.Event()
+        self.ended = lambda: ended() or self.closing.is_set()
+        self.cv = threading.Condition()
+        self.entries = collections.deque()  # Entry, in the order they go
+        self.aside = {}                     # project → [Entry]: the session lane's, until `release`
+        self.released = set()
+        self.unsent = 0                     # bytes queued or aside, not yet taken into a body
+        self.state = "idle"                 # idle | posting | closed
+        self.flying = {}                    # project → when its oldest line in the body out was queued
+        self.warming = False
+        self.conn_lock = threading.Lock()
+        self.conn = None
+        self.dialling = None                # the Dial out, at most one (`connect`)
+        self.number = 0                     # the connection's, of CONNECTIONS
+        self.posts = 0                      # POSTs answered on it
+        self.used = 0.0                     # when it was dialled or last answered (monotonic)
+
+    # ---------------------------------------------------- the main thread's
+
+    def send(self, frames, then=None):
+        """Queues frames as one entry (on the session lane, one per run of a
+        project's frames, in order); `then` runs on the main thread once all
+        of them were answered 200, never when the lane fails first. Dropped
+        once the lane is closed. NotDelivered past SEND_QUEUE_MAX."""
+        join, entries = [0, then], []
+        for frame in frames:
+            pid, again = (project_of(frame), renewed(frame)) if self.lane == "session" else (None, False)
+            if not entries or (entries[-1].project, entries[-1].renewed) != (pid, again):
+                entries.append(Entry(pid, join, again))
+            entries[-1].add(line.encode("utf-8") for line in to_wire(frame))
+        join[0] = len(entries)
+        with self.cv:
+            if self.state == "closed":
+                return
+            if not entries:
+                if then is not None:
+                    self.put(("sent", [then]))
+                return
+            for e in entries:
+                held = self.lane == "session" and e.project is not None and e.project not in self.released
+                (self.aside.setdefault(e.project, []) if held else self.entries).append(e)
+                self.unsent += e.size
+            over = self.unsent > SEND_QUEUE_MAX
+            self.cv.notify()
+        if over:
+            self.close()
+            raise NotDelivered("the %s lane holds more than %d MiB unsent: the hub is not taking frames" % (
+                self.lane, SEND_QUEUE_MAX >> 20))
+
+    def warm(self):
+        """Dial now, when no connection is held and no dial is out, so the
+        handshake is done by the time what is about to be posted is."""
+        with self.cv:
+            if self.conn is None and self.dialling is None and self.state == "idle":
+                self.warming = True
+                self.cv.notify()
+
+    def release(self, project):
+        """The session lane: the project's `hello` was answered; its entries go."""
+        with self.cv:
+            self.released.add(project)
+            self.entries.extend(self.aside.pop(project, ()))
+            self.cv.notify()
+
+    def hold(self, project):
+        """The session lane: the project is being opened again (its `hello`
+        sent anew); its entries not yet taken into a body go back aside,
+        ahead of those that follow, until the next `release` — except what
+        that hello's re-open sends anew (`renewed`), which is dropped, so
+        nothing posted after the hello contradicts it. A dropped entry's
+        continuation never runs: the `not-open` that re-opens the project
+        voided the attempt it would have answered. When a body carrying the
+        project is out now, which the hub may apply after the hello
+        (`Link.open` heals that), when the oldest of its lines of the project
+        was queued; else None."""
+        with self.cv:
+            flying = self.flying.get(project)
+            self.released.discard(project)
+            mine = [e for e in itertools.chain(self.entries, self.aside.pop(project, ())) if e.project == project]
+            self.entries = collections.deque(e for e in self.entries if e.project != project)
+            for e in mine:
+                if e.renewed:
+                    self.unsent -= sum(len(line) + 1 for line in e.lines)
+            kept = [e for e in mine if not e.renewed]
+            if kept:
+                self.aside[project] = kept
+        return flying
+
+    def posting(self):
+        return self.state == "posting"
+
+    def queued(self):
+        """Bytes queued and not yet taken into a body."""
+        return self.unsent
+
+    def close(self):
+        """The stream is done with: what is queued dropped, a blocked
+        exchange shut, the thread ended; nothing put."""
+        self.closing.set()
+        with self.cv:
+            self.state = "closed"
+            self.entries.clear()
+            self.aside.clear()
+            self.unsent = 0
+            self.cv.notify()
+        shut(self.sock())
+
+    # ---------------------------------------------------- the lane's thread
+
+    def run(self):
+        try:
+            while True:
+                job = self.next_job()
+                if job is None:
+                    return
+                if job == "idle":
+                    self.drop("idle")
+                elif job == "warm":
+                    self.dial_ahead()
+                elif not self.post_body(*job):
+                    return
+        finally:
+            self.drop("the stream ended")
+
+    def next_job(self):
+        """What the lane does next, once there is something: (body, thens)
+        to post, "warm", or "idle" (its connection's idle time is up); None
+        once it is closed."""
+        with self.cv:
+            while True:
+                if self.state == "closed" or self.ended():
+                    self.state = "closed"
+                    return None
+                if self.entries:
+                    self.state = "posting"
+                    return self.take()
+                if self.warming:
+                    self.warming = False
+                    if self.conn is None and self.dialling is None:
+                        return "warm"
+                    continue
+                wait = None
+                if self.conn is not None:
+                    wait = self.used + self.idle_for - time.monotonic()
+                    if wait <= 0:
+                        return "idle"
+                self.cv.wait(wait)
+
+    def take(self):
+        """The next body and the continuations it completes: on the log lane
+        the head entry's lines up to POST_LIMIT (a larger entry goes as
+        several bodies, its continuation with the last), on the session lane
+        every queued entry's up to POST_LIMIT. Under the lock."""
+        lines, size, thens = [], 0, []
+        self.flying = {}
+        while self.entries:
+            e = self.entries[0]
+            while e.lines:
+                n = len(e.lines[0]) + 1
+                if lines and size + n > POST_LIMIT:
+                    return b"\n".join(lines) + b"\n", thens
+                self.flying[e.project] = min(self.flying.get(e.project, e.at), e.at)
+                lines.append(e.lines.popleft())
+                size += n
+                self.unsent -= n
+            self.entries.popleft()
+            e.join[0] -= 1
+            if e.join[0] == 0 and e.join[1] is not None:
+                thens.append(e.join[1])
+            if self.lane == "log":
+                break
+        return b"\n".join(lines) + b"\n", thens
+
+    def post_body(self, body, thens):
+        """One body posted and answered; whether the lane goes on."""
+        started = time.monotonic()
+        try:
+            status, answer, closes = watched(lambda: self.exchange(body), self.sock, self.ended)
+        except Stopping:
+            return False
+        except NotDelivered as e:
+            self.drop("failed: %s" % e)
+            self.lost(str(e))
+            return False
+        finally:
+            with self.cv:
+                self.flying = {}   # answered, or given up with the lane
+        took = time.monotonic() - started
+        if took > SLOW_POST_SECONDS:
+            log("a %s lane POST took %.1f s" % (self.lane, took))
+        if status != 200:
+            why = "the hub answered %d %s" % (status, " ".join(answer.decode("utf-8", "replace").split())[:300])
+            self.drop("failed: %s" % why)
+            self.lost(why)
+            return False
+        if closes:
+            self.drop("the hub closed it")
+        with self.cv:
+            if self.state == "closed":
+                return False
+            self.state = "idle"
+        if thens:
+            self.put(("sent", thens))
+        return True
+
+    def lost(self, why):
+        """A POST of the lane was not delivered: said once on the items,
+        unless the lane was closed from this end meanwhile. The lane is
+        ended from here, so a dial landing later closes what it made."""
+        with self.cv:
+            if self.state == "closed" or self.ended():
+                return
+            self.state = "closed"
+            self.entries.clear()
+            self.aside.clear()
+            self.unsent = 0
+        self.closing.set()
+        self.put(("closed", NotDelivered(why)))
+
+    def sock(self):
+        """The socket a watcher shuts: the connection's, else the dial's
+        out, once it has one (a TLS handshake that hangs)."""
+        conn = self.conn
+        if conn is None:
+            dial = self.dialling
+            conn = dial.conn if dial is not None else None
+        return conn.sock if conn is not None else None
+
+    def exchange(self, body):
+        """One POST on the lane's connection, (status, the answer whole,
+        whether the answer closes the connection); on the exchange's thread
+        (`watched`). The caller drops a closing connection once it read the
+        status, so a failed POST's close says it failed."""
+        for retry in (False, True):
+            conn, reused = self.connect()
+            try:
+                conn.request("POST", self.path, body=body, headers=frame_headers(self.cred, self.generation))
+                break
+            except STALE as e:
+                if not reused or retry:
+                    raise
+                self.drop("failed: %s" % (" ".join(str(e).split()) or type(e).__name__))
+        resp = conn.getresponse()
+        answer = resp.read()
+        self.posts += 1
+        self.used = time.monotonic()
+        return resp.status, answer, resp.will_close
+
+    def connect(self):
+        """The connection a request goes on, and whether it was reused: the
+        one held, unless it reads its end (the hub closed it idle), else the
+        lane's dial. The lane has one dial out at a time: one an earlier
+        exchange began and its watcher gave up on (a warm dial stalled past
+        its deadline) is still the lane's, and this exchange waits for it,
+        within its own deadline, rather than dialling a second — so a late
+        dial never replaces the connection another exchange is using, and a
+        lane warmed again and again leaves one worker behind, not one each."""
+        conn = self.conn
+        if conn is not None and readable(conn.sock):
+            self.drop("the hub closed it")
+        elif conn is not None:
+            return conn, True
+        with self.conn_lock:
+            dial, mine = self.dialling, self.dialling is None
+            if mine:
+                dial = self.dialling = Dial(connection(self.cred, POST_TIMEOUT))
+        if mine:
+            self.land(dial)
+        while not dial.done.wait(POLL):
+            if self.ended():
+                raise OSError("the lane closed during its dial")
+        if dial.error is not None:
+            raise OSError(dial.error)
+        return dial.conn, False
+
+    def land(self, dial):
+        """The dial run on this thread: its connection is the lane's, unless
+        the lane ended while it was out — then nothing holds it, and it is
+        closed here, as one that failed is."""
+        try:
+            dial.conn.connect()
+            with self.conn_lock:
+                if self.ended():
+                    raise OSError("the lane closed during its dial")
+                self.conn, self.number, self.posts, self.used = dial.conn, next(CONNECTIONS), 0, time.monotonic()
+        except BaseException as e:
+            dial.conn.close()
+            dial.error = " ".join(str(e).split()) or type(e).__name__
+            raise
+        finally:
+            with self.conn_lock:
+                self.dialling = None
+            dial.done.set()
+        log("%s lane dialled the hub (connection #%d)" % (self.lane, self.number))
+
+    def dial_ahead(self):
+        """`warm`'s dial, on the lane's thread; a failure is the next POST's to meet."""
+        try:
+            watched(self.connect, self.sock, self.ended)
+        except (Stopping, NotDelivered) as e:
+            if not self.ended():
+                log("the %s lane could not dial the hub ahead of its POST (%s)" % (self.lane, e))
+
+    def drop(self, why):
+        with self.conn_lock:
+            conn, self.conn = self.conn, None
+        if conn is None:
+            return
+        conn.close()
+        log("%s lane closed connection #%d after %d POSTs (%s)" % (self.lane, self.number, self.posts, why))
 
 
 # ------------------------------------------------------------- the projects
@@ -663,12 +1151,28 @@ class Here:
 class Link:
     """One stream's conversation with the hub. Frames down are dispatched by
     `t`: the log plane's here, the session plane's to `self.plane`, the RPCs
-    to `self.rpcs`. Frames up are posted under
-    the stream's generation, and a POST not answered 200 ends the stream: the
-    next one redoes the handshake, which is idempotent, rather than assume
-    anything landed. `wake` asks the main thread for a tick now."""
+    to `self.rpcs`. Frames up go on the stream's two sender lanes (Sender),
+    under its generation: the log lane carries the log plane's — the
+    connect's bundle, uploads, delivery outcomes, rejections, the machine's
+    presence and every re-`hello` — and the session lane the session plane's,
+    the requests' and the RPC results. A POST not answered 200 ends the
+    stream: the next one redoes the handshake, which is idempotent, rather
+    than assume anything landed. So a mark the handshake heals is placed
+    when its frames are queued; one it does not — the presence tombstone,
+    rejections reported, outcomes dropped — in the continuation that runs
+    after the 200 of the POST that carried them, its producer not taking the
+    same again meanwhile (`reporting`, `delivering`); settlements and
+    compaction messages, in flight from `sending`, leave their outbox in that
+    continuation and are the hub's once a confirmation of their project
+    queued after it is answered (`confirm_held`), a `not-open` owing them
+    again. A continuation
+    clears its in-flight flags and opens the session gate whatever its local
+    writes meet; a write that fails is kept and done on a later pass
+    (settle_marks), so a disk error never holds the network back. `wake` asks the main thread for a tick
+    now."""
 
-    def __init__(self, cred, logs, ended=lambda: False, wake=lambda: None, bridges=None, reqs=None, rpcs=None):
+    def __init__(self, cred, logs, ended=lambda: False, wake=lambda: None, bridges=None, reqs=None, rpcs=None,
+                 warmer=None):
         self.cred = cred
         self.ended = ended
         self.logs = logs          # project id → HubLog, kept across streams
@@ -681,7 +1185,7 @@ class Link:
         self.passed = set()
         self.received = None      # when the reader took the frame being dispatched (epoch s), when known
         self.failing = self.plane_failing = ""
-        self.plane = plane.Plane(cred["machine"], wake, bridges)
+        self.plane = plane.Plane(cred["machine"], wake, bridges, warmer=warmer)   # the warmer kept across streams
         self.requests = reqs or requests.Requests(cred["key"], cred["machine"])  # kept across streams by the uplink
         self.requests.wake = wake
         self.rpcs = rpcs or rpc.Rpcs(cred["key"], cred["machine"])  # kept across streams by the uplink
@@ -692,20 +1196,48 @@ class Link:
         self.follows = {}         # project id → whether its last `hello` on this stream said `follow`
         self.checkouts = {}       # project id → whether it had a known checkout here when last read
         self.imported = {}        # project id → HubLog: imports not yet delivered (deliver_imports)
+        self.log_lane = self.session_lane = None  # the stream's senders, from its welcome on
+        self.reporting = collections.Counter()   # project id → POSTs of its rejections not yet answered
+        self.delivering = set()   # project ids whose delivery outcomes are in a POST not yet answered
+        self.opening = set()      # project ids whose `hello` is out: a refusal does not open them again
+        self.probing = set()      # project ids whose confirmation probe is out (confirm_held)
+        self.unrecorded = {}      # project id → rejections the hub took, their record not yet written
+        self.undropped = {}       # project id → (outbox, lines) the hub took, their drop not yet done
+        self.unsettled = {}       # (project id, what) → the failure last said (settle_marks)
         self.handlers = {"welcome": self.on_welcome, "hb": self.on_hb, "have": self.on_have,
                          "events": self.on_events, "resend": self.on_resend, "refused": self.on_refused,
                          "part": self.on_part, "subscribe": self.on_subscribe, "unsubscribe": self.on_unsubscribe,
                          "rows": self.on_rows, "diff": self.on_diff, "output": self.on_output, "rpc": self.on_rpc,
                          "rpc-ack": self.on_rpc_ack, "org": self.on_org}
 
-    def post(self, frames):
-        post(self.cred, self.generation, frames, self.ended)
-
     def post_session(self, messages):
         if messages:
-            self.post([plane.frame(m) for m in messages])
+            self.session_lane.send([plane.frame(m) for m in messages])
+
+    def ran(self, thens):
+        """A lane's ("sent", thens): the continuations of what the hub
+        answered 200, in order. One that fails is that frame's failure, not
+        the stream's."""
+        for then in thens:
+            try:
+                then()
+            except EndStream:
+                raise
+            except (Exception, SystemExit) as e:  # noqa: BLE001 — as a frame handler's
+                log("the continuation of a POST failed: %r" % e)
+
+    def close_lanes(self):
+        """Whether a lane was in a POST as they closed."""
+        lanes = [lane for lane in (self.log_lane, self.session_lane) if lane is not None]
+        posting = any(lane.posting() for lane in lanes)
+        for lane in lanes:
+            lane.close()
+        self.log_lane = self.session_lane = None
+        return posting
 
     def close(self):
+        if self.close_lanes() and self.ended():
+            log("the uplink is ending during a POST: the stream is closed")
         self.plane.close()
 
     def dispatch(self, frame, stream):
@@ -750,9 +1282,20 @@ class Link:
         for hl in self.logs.values():
             hl.reset()
         self.plane.close()
+        self.requests.reset()
         self.rpcs.reset()
         self.next_scan = 0.0
         self.next_confirm = time.time() + archive.archive_every()
+        self.close_lanes()
+        self.reporting.clear()
+        self.delivering.clear()
+        self.opening.clear()
+        if self.generation is not None:
+            # The generation every POST names is known from here on: nothing is posted before it.
+            self.log_lane, self.session_lane = (Sender(lane, self.cred, self.generation, stream.items.put, self.ended)
+                                                for lane in ("log", "session"))
+            self.log_lane.start()
+            self.session_lane.start()
         log("connected to %s as %s (stream %s)" % (self.cred["hub"], frame.get("machine"), generation))
 
     def on_hb(self, _frame, _stream):
@@ -779,8 +1322,7 @@ class Link:
         if appended:
             self.imported[hl.project.id] = hl
         if rejections and hl.project.id in self.opened:
-            self.post(rejections)
-            hl.reported(rejections)
+            self.report(hl, rejections)
 
     def on_resend(self, frame, _stream):
         hl = self.logs.get(frame.get("project"))
@@ -793,8 +1335,26 @@ class Link:
         if hl is None:
             log("the hub refused: %s" % json.dumps(frame.get("refusal"), ensure_ascii=False)[:300])
             return
+        refusal = frame.get("refusal") if isinstance(frame.get("refusal"), dict) else {}
+        if refusal.get("reason") == "not-open" and hl.project.id in self.opened:
+            # The hub answers 200 to a session frame it refuses, and says so
+            # down the stream before that answer or after it: what of the
+            # project is in flight, or answered and not confirmed, is owed
+            # again, and goes with the re-open or after it.
+            self.requests.refused(hl.project.id)
+            self.rpcs.refused(hl.project.id)
+        if refusal.get("reason") == "not-open" and hl.project.id in self.opening:
+            # A hello of it is out, so the frame refused went before that hello
+            # (the hub's chains answer apart: its `have` may be here already),
+            # and the hello opens it again. Its vector stands; a loss after
+            # it is refused again once the hello is answered, and handled then.
+            log("the hub refused in %s: not-open, while a hello of it is out: that hello opens it" %
+                hl.project.name)
+            return
         hl.on_refused(frame)
-        if hl.have is None and hl.project.id in self.opened:
+        if hl.have is None and hl.project.id in self.opened and hl.project.id not in self.opening:
+            # The hub no longer has it open (`not-open`): opened anew, once
+            # while a hello of it is out, its session messages held meanwhile.
             self.opened.discard(hl.project.id)
             self.open(hl)
 
@@ -815,6 +1375,8 @@ class Link:
     def on_subscribe(self, frame, _stream):
         project = self.opened_project(frame)
         if project is not None:
+            # A connection ready by the time the snapshot is: the dial overlaps the build.
+            self.session_lane.warm()
             self.post_session(self.plane.subscribe(project, frame, self.received))
 
     def on_unsubscribe(self, frame, _stream):
@@ -886,49 +1448,199 @@ class Link:
         project it neither has a checkout of nor a session in is opened to
         follow (`follow`): no machine presence, and no session presence but
         the leavers'. A live member that joined under a former name of this
-        machine joins again first, so the vector and the upload carry it."""
+        machine joins again first, so the vector and the upload carry it.
+
+        The bundle goes as one entry of the log lane, and the project's
+        session messages wait (the session lane's gate, closed again on a
+        project opened anew) until the hub answered it; what the session lane
+        still held of a project opened anew that this hello sends as it is
+        now (`renewed`: its pending set, presence, requests and RPCs) is
+        dropped, so no older copy follows it. Then the gate opens,
+        before any local bookkeeping, and the bookkeeping follows: the
+        settlements answered before it (and those it carried) kept as
+        relayed, the read its presence's leavers were drawn from marked taken
+        (the tombstone mark), its rejections recorded as reported. What
+        `deliveries` posts after it follows it on the same connection, so the
+        hub applies it after the hello, and a hello that fails ends the
+        stream before any continuation behind it runs. While a hello of the project is out
+        (`opening`), a refusal does not open it again."""
+        pid = hl.project.id
+        self.opening.add(pid)
+        flying = self.session_lane.hold(pid)
         hl.rejoin_former()
-        unreported = hl.unreported()
+        unreported = [] if self.reporting[pid] else [f for f in hl.unreported()
+                                                       if f not in self.unrecorded.get(pid, ())]
         self.plane.refresh(hl.project)
         machine = hl.presence()
         self.checkouts[hl.project.id] = bool(machine["message"]["body"]["checkouts"])
         follow = not self.holds(hl.project.id)
         sessions = [plane.frame(m) for m in self.plane.presence(hl.project.id, force=True)]
+        read = self.plane.take_read(pid)
         # The project's bridges are followed before its set is drawn up: the
         # set goes now if they are read, else once they are (Requests.due).
         self.requests.follow(self.bridged(self.opened | {hl.project.id}))
         self.requests.take()
         owed = self.requests.opening(hl.project.id)
         results = self.rpcs.opening(hl.project.id)
-        self.post([hl.hello(follow)] + ([] if follow else [machine]) + sessions + unreported + owed + results)
-        self.plane.accepted(hl.project.id)   # the hub took the leavers' presence: only later ones are said again
-        self.opened.add(hl.project.id)
-        self.follows[hl.project.id] = follow
+        if unreported:
+            self.reporting[pid] += 1
+        attempt = self.requests.sending(owed)
+        self.rpcs.sending(results)
+        confirm = self.confirming(pid)
+
+        def answered():
+            self.opening.discard(pid)
+            self.session_lane.release(pid)   # the hub has it open: what the network waited for comes first
+            if flying is not None:
+                # A session-lane body of the project was out at the re-open:
+                # the hub may apply it after this hello, its older set and
+                # presence over the new. Both go again, behind it on its lane:
+                # the presence of the members, and of every leaver said gone
+                # since that body's oldest line was queued.
+                self.requests.stale.add(pid)
+                self.plane.say_again(pid, flying)
+            # Applied behind the hello, the project open: the hub's (a write that fails is said, and costs a resend).
+            self.requests.delivered(owed, attempt, confirmed=True)
+            confirm()
+            try:
+                if read is not None:
+                    self.plane.accepted(pid, read)   # the hub took these leavers: only later ones are said again
+            finally:
+                if unreported:
+                    self.reported(hl, unreported)
+
+        self.log_lane.send([hl.hello(follow)] + ([] if follow else [machine]) + sessions + unreported + owed + results,
+                           then=answered)
+        self.opened.add(pid)
+        self.follows[pid] = follow
         if not follow:
-            self.machine_sent[hl.project.id] = machine["message"]["body"]
-        hl.reported(unreported)
-        self.requests.sent(owed)
-        self.rpcs.sent(results)
+            self.machine_sent[pid] = machine["message"]["body"]
         self.deliveries(hl)
 
+    def confirming(self, pid):
+        """The continuation of a confirmation of the project queued now (its
+        probe, or a hello that opens it): once it is answered, the
+        settlements and compaction messages answered before now are the
+        hub's (sminos_flights)."""
+        marks = self.requests.mark(), self.rpcs.mark()
+
+        def answered():
+            self.requests.confirmed(pid, marks[0])
+            self.rpcs.confirmed(pid, marks[1])
+        return answered
+
+    def confirm_held(self):
+        """Each open project holding settlements or compaction messages the
+        hub answered 200 for CONFIRM_AFTER, and no probe out: its probe on
+        the log lane, an empty `events` frame. The hub refuses it `not-open`
+        before answering when it does not hold the project open (the refusal
+        owes them again), and does nothing else with it. What is held is
+        confirmed within CONFIRM_AFTER, plus the probe's wait in the log
+        lane's queue (it goes behind the uploads and any log POST the hub
+        holds; UPLOAD_AHEAD gives it no priority), plus its exchange —
+        archive period or not. Not proof: the probe's refusal, written before
+        its answer, can still be unread by the stream's reader when the
+        answer's continuation runs (sminos_flights)."""
+        now = time.monotonic()
+        for pid in sorted(self.opened - self.opening - self.probing):
+            since = [t for t in (self.requests.flights.held_since(pid), self.rpcs.flights.held_since(pid))
+                     if t is not None]
+            if not since or now - min(since) < CONFIRM_AFTER:
+                continue
+            self.probing.add(pid)
+            confirm = self.confirming(pid)
+
+            def answered(pid=pid, confirm=confirm):
+                self.probing.discard(pid)
+                confirm()
+            self.log_lane.send([{"t": "events", "project": pid, "events": []}], then=answered)
+
+    def report(self, hl, rejections):
+        """Rejections up, reported once the hub answered them."""
+        self.reporting[hl.project.id] += 1
+        self.log_lane.send(rejections, then=lambda: self.reported(hl, rejections))
+
+    def reported(self, hl, rejections):
+        """The hub answered the rejections: no longer in flight, and recorded
+        as reported (settle_marks)."""
+        pid = hl.project.id
+        self.reporting[pid] -= 1
+        owed = self.unrecorded.setdefault(pid, [])
+        owed.extend(f for f in rejections if f not in owed)
+        self.settle_marks(hl)
+
+    def settle_marks(self, hl):
+        """What the hub took and this machine has yet to record, recorded:
+        the rejections reported (uplink.json), the outcomes dropped (the
+        outbox). A write that fails is said once and kept, and tried again on
+        the next pass (`deliveries`, every upload pass); what it keeps is
+        never posted again meanwhile."""
+        pid = hl.project.id
+        if self.unrecorded.get(pid):
+            try:
+                hl.reported(self.unrecorded[pid])
+                del self.unrecorded[pid]
+                self.unsettled.pop((pid, "reported"), None)
+            except (Exception, SystemExit) as e:  # noqa: BLE001 — kept, and tried again
+                self.unsettled_once((pid, "reported"), "recording the rejections of %s reported failed (%r): "
+                                    "tried again" % (hl.project.name, e))
+        if pid in self.undropped:
+            box, lines = self.undropped[pid]
+            try:
+                box.drop(lines)
+                del self.undropped[pid]
+                self.unsettled.pop((pid, "dropped"), None)
+            except (Exception, SystemExit) as e:  # noqa: BLE001 — kept, and tried again
+                self.unsettled_once((pid, "dropped"), "dropping the outcomes of %s posted failed (%r): tried again"
+                                    % (hl.project.name, e))
+
+    def unsettled_once(self, key, line):
+        if self.unsettled.get(key) != line:
+            self.unsettled[key] = line
+            log(line)
+
     def upload(self, hl):
-        for frame, reach in hl.uploads():
-            self.post([frame])
+        """The project's uploads queued, each its own entry, as far as the log
+        lane holds less than UPLOAD_AHEAD unsent: the rest go on a later pass,
+        so a long backlog paces itself instead of filling the lane past its
+        bound. Each frame is drawn only once there is room for it, and the
+        rest stays drawn where it was (HubLog.next_upload): a pass while the
+        lane is full draws nothing, and no event is sealed twice."""
+        while self.log_lane.queued() < UPLOAD_AHEAD:
+            got = hl.next_upload()
+            if got is None:
+                return
+            frame, reach = got
+            self.log_lane.send([frame])
             hl.took(reach)
 
     def deliveries(self, hl):
         """What delivery made of the events from outside, as DX4 `delivery`
         messages sealed as they go; dropped from the outbox once the hub
-        answered the POST that carried them."""
+        answered the POST that carried them, and not taken again meanwhile —
+        nor while a drop that failed is still owed (settle_marks)."""
+        pid = hl.project.id
+        self.settle_marks(hl)
+        if pid in self.delivering or pid in self.undropped:
+            return
         box = outcomes.Outbox(hl.project)
         if not box.waiting():
             return
         records, lines = box.take()
-        frames = [f for f in (outcomes.message(self.cred["key"], self.cred["machine"], hl.project.id, r)
+        frames = [f for f in (outcomes.message(self.cred["key"], self.cred["machine"], pid, r)
                               for r in records) if f is not None]
-        if frames:
-            self.post(frames)
-        box.drop(lines)
+        if not frames:
+            self.undropped[pid] = (box, lines)
+            self.settle_marks(hl)
+            return
+        self.delivering.add(pid)
+
+        def answered():
+            self.delivering.discard(pid)
+            self.undropped[pid] = (box, lines)
+            self.settle_marks(hl)
+
+        self.log_lane.send(frames, then=answered)
 
     def machine_presence(self, now):
         """Each open project held or followed, as it is now, and the machine's
@@ -955,7 +1667,7 @@ class Link:
                 if not follow:
                     machine = machine or hl.presence()
                     frames.append(machine)
-                self.post(frames)
+                self.log_lane.send(frames)
                 self.follows[pid] = follow
                 if follow:
                     self.machine_sent.pop(pid, None)
@@ -964,7 +1676,7 @@ class Link:
                 log("%s: %s" % (hl.project.name, "followed (no checkout and no session here)" if follow else
                                 "held (a checkout or a session here)"))
             elif not follow and machine is not None and machine["message"]["body"] != self.machine_sent.get(pid):
-                self.post([machine])
+                self.log_lane.send([machine])
                 self.machine_sent[pid] = machine["message"]["body"]
 
     def bridged(self, pids):
@@ -976,21 +1688,27 @@ class Link:
 
     def relay_requests(self):
         """The requests of the open projects' bridged sessions: readers for
-        them, and what they read, up."""
+        them, and what they read, up — one entry per project, so each
+        continuation follows the POST that carried its own frames and no
+        other project's gate. A settlement leaves the outbox once that POST
+        was answered and is relayed once a confirmation queued after that is
+        (confirm_held);
+        a complete set is taken when queued (every connect sends one
+        again)."""
         self.requests.follow(self.bridged(self.opened))
         self.requests.take()
-        frames = self.requests.due(self.opened)
-        if frames:
-            self.post(frames)
-            self.requests.sent(frames)
+        for frames in by_project(self.requests.due(self.opened)):
+            attempt = self.requests.sending(frames)
+            self.session_lane.send(frames, then=lambda f=frames, a=attempt: self.requests.delivered(f, a))
 
     def relay_rpcs(self):
-        """The RPCs' results and their compactions' progress, up."""
+        """The RPCs' results and their compactions' progress, up, one entry
+        per project: a result goes again on every stream until `rpc-ack`; a
+        compact message is owed as a settlement is (sminos_flights)."""
         self.rpcs.compacted(self.requests.take_compacts())
-        frames = self.rpcs.due(self.opened)
-        if frames:
-            self.post(frames)
-            self.rpcs.sent(frames)
+        for frames in by_project(self.rpcs.due(self.opened)):
+            attempt = self.rpcs.sending(frames)
+            self.session_lane.send(frames, then=lambda f=frames, a=attempt: self.rpcs.delivered(f, a))
 
     def tick(self):
         """Between frames: new hub projects opened, and what this machine's
@@ -1027,13 +1745,15 @@ class Link:
             if every > 0 and now >= self.next_confirm:
                 # The hub reads the archive designation at each hello: asked
                 # again, it answers with the designation as it is now. One
-                # project per POST, as `open` sends them: the deployed hub
-                # answers 503 to a POST carrying the hellos of more than about
-                # six projects, which dropped every machine's stream at its
-                # first confirmation once its org held seven (2026-10-19).
+                # project per POST, as `open` sends them (the log lane posts
+                # each entry alone): the deployed hub answered 503 to a POST
+                # carrying the hellos of more than about six projects, which
+                # dropped every machine's stream at its first confirmation
+                # once its org held seven (2026-10-19). A hello the hub holds
+                # holds the log lane alone.
                 self.next_confirm = now + every
                 for pid in sorted(self.opened):
-                    self.post([self.logs[pid].hello(self.follows.get(pid, False))])
+                    self.log_lane.send([self.logs[pid].hello(self.follows.get(pid, False))])
             if now >= self.next_upload or nudged:
                 self.next_upload = now + UPLOAD_EVERY
                 for pid in sorted(self.opened):
@@ -1050,6 +1770,7 @@ class Link:
             self.post_session(self.plane.tick({pid: self.logs[pid].project for pid in self.opened}))
             self.relay_requests()
             self.relay_rpcs()
+            self.confirm_held()
             self.plane_failing = ""
         except EndStream:
             raise
@@ -1059,7 +1780,7 @@ class Link:
                 log("the session plane failed: %r" % e)
 
 
-def serve(stream, cred, ended, logs, bridges=None, reqs=None, rpcs=None):
+def serve(stream, cred, ended, logs, bridges=None, reqs=None, rpcs=None, warmer=None):
     """Handle one stream's frames until it closes, a POST is not delivered,
     or the uplink ends; whether the hub welcomed it. A wake (the session
     plane's readers) is a tick after the batch in hand; at most one waits."""
@@ -1070,7 +1791,7 @@ def serve(stream, cred, ended, logs, bridges=None, reqs=None, rpcs=None):
             woken.set()
             stream.items.put(("wake",))
 
-    link = Link(cred, logs, ended, wake, bridges, reqs, rpcs)
+    link = Link(cred, logs, ended, wake, bridges, reqs, rpcs, warmer)
     try:
         return serve_link(link, stream, ended, woken)
     finally:
@@ -1078,10 +1799,12 @@ def serve(stream, cred, ended, logs, bridges=None, reqs=None, rpcs=None):
 
 
 def serve_link(link, stream, ended, woken):
-    """serve's loop, the stream's frames and the wakes in arrival order. What
-    is queued when the main thread looks up is one batch (DRAIN_FRAMES,
-    DRAIN_FOR), its imports delivered once, then one tick: a tick can be
-    slow (its POSTs, its reads of the fleet), and one a frame would let a
+    """serve's loop: the stream's frames, the wakes and the lanes' answers in
+    arrival order — ("sent", thens) runs the continuations of what the hub
+    answered 200, ("closed", NotDelivered) ends the stream. What is queued
+    when the main thread looks up is one batch (DRAIN_FRAMES, DRAIN_FOR), its
+    imports delivered once, then one tick: a tick can be slow (its reads of
+    the fleet, a delivery to a slow session), and one a frame would let a
     burst from the hub queue for minutes. The org's directory is handled
     before each item, ahead of whatever is queued (Stream.take_org)."""
     welcomed = False
@@ -1109,9 +1832,13 @@ def serve_link(link, stream, ended, woken):
                 while item is not None:
                     org_now()
                     if item[0] == "closed":
+                        if isinstance(item[1], EndStream):
+                            raise item[1]   # a lane's POST not delivered
                         log("the stream closed: %s" % item[1])
                         return welcomed
-                    if item[0] == "wake":
+                    if item[0] == "sent":
+                        link.ran(item[1])
+                    elif item[0] == "wake":
                         woken.clear()
                     elif item[0] == "org":
                         pass   # taken just now
@@ -1198,17 +1925,22 @@ def cmd_uplink(_a):
         return halt.is_set() or os.getppid() != parent
 
     log("started (pid %d) for %s as %s" % (os.getpid(), cred["hub"], cred["machine"]))
-    backoff, logs, bridges = 1, {}, plane.Bridges()
+    plane.sweep_builds()
+    backoff, logs, bridges, warmer = 1, {}, plane.Bridges(), plane.Warmer()
     reqs = requests.Requests(cred["key"], cred["machine"])
     rpcs = rpc.Rpcs(cred["key"], cred["machine"])
     while not ended():
         stream = Stream(cred, ended)
         stream.start()
-        welcomed = serve(stream, cred, ended, logs, bridges, reqs, rpcs)
+        welcomed = serve(stream, cred, ended, logs, bridges, reqs, rpcs, warmer)
         stream.close()
         backoff = 1 if welcomed else min(backoff * 2, BACKOFF_MAX)
         deadline = time.time() + backoff
         while not ended() and time.time() < deadline:
             halt.wait(POLL)
     reqs.close()
+    at = time.monotonic()
+    saved, held = plane.TRANSCRIPTS.save_all()
+    if held:
+        log("the builds held: %d of %d saved or already current in %.2f s" % (saved, held, time.monotonic() - at))
     log("stopped (pid %d)%s" % (os.getpid(), "" if halt.is_set() else ": its daemon is gone"))

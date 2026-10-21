@@ -27,8 +27,13 @@ import http.client
 import io
 import json
 import os
+import pickle
+import queue
+import re
 import shutil
+import signal
 import socket
+import struct
 import subprocess
 import sys
 import tempfile
@@ -38,6 +43,7 @@ import types
 import unittest
 import urllib.parse
 import uuid as uuidlib
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest import mock
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -285,7 +291,9 @@ class Engine(Session):
         self.assertEqual(s["streaming"], [])
         self.assertIsNone(s["usage"], "no bridge: usage null")
         self.assertEqual(s["presence"], {"record": {"status": "busy"}, "bridge": False})
-        self.assertEqual(s["subagents"], [{"agentId": "a1", "meta": {"agentType": "x"}, "status": "unknown",
+        self.assertEqual(s["subagents"], [], "the look is off the open's path: none of the disk's facts yet")
+        self.assertTrue(self.pump(sub, b, lambda: b.changes), "the first `subagents` follows the snapshot's look")
+        self.assertEqual(b.body["subagents"], [{"agentId": "a1", "meta": {"agentType": "x"}, "status": "unknown",
                                            "evidence": "none"}],
                          "a meta with no toolUseId and no spawn record: unknown, one of §9.3's named cases")
         self.assertEqual((s["jobs"], s["mcp"]), ([], []))
@@ -1129,7 +1137,8 @@ class Engine(Session):
         sa = self.fake.message(agent="a1", turn="t-a1")
         self.assertTrue(self.pump(sub, b, lambda: b.snapshot is not None))
         self.assertNotIn("usage", b.snapshot)
-        [entry] = b.snapshot["subagents"]
+        self.assertTrue(self.pump(sub, b, lambda: b.changes), "the first `subagents`, once the look is in")
+        [entry] = b.body["subagents"]
         self.assertEqual({k: entry[k] for k in ("agentId", "meta", "status", "evidence")},
                          {"agentId": "a1", "meta": {"agentType": "worker"}, "status": "unknown", "evidence": "none"},
                          "that agent's own entry alone")
@@ -1534,12 +1543,43 @@ class Jobs(Session):
         self.assertTrue(self.pump(sub, b, lambda: not sub.looking))
 
     def opened(self, sub, b):
-        self.assertTrue(self.pump(sub, b, lambda: b.snapshot is not None or b.end is not None))
+        """The open, through the first look at the disk the snapshot asks
+        (off the open's path, open-fast M7): the body as it then stands."""
+        self.assertTrue(self.pump(sub, b, lambda: b.end is not None or (
+            b.snapshot is not None and sub.looks >= 1 and not sub.looking)))
         self.assertIsNone(b.end)
-        return b.snapshot
+        return b.body
 
     def entry(self, body, agent):
         return next(e for e in body["subagents"] if e["agentId"] == agent)
+
+    def test_the_snapshot_goes_before_the_look_and_the_first_subagents_follows(self):
+        """The open's build alone is on its path: the snapshot goes with the
+        facts as they stand (none, on a first open), the look is asked on the
+        pump right after it, and the first `subagents` carries what it found."""
+        r = Rows()
+        self.write(r.call("Agent", "toolu_A", description="a"))
+        self.write(r.row(type="user", message={"role": "user", "content": "the brief"}), agent="aA")
+        self.fake.meta("aA", {"toolUseId": "toolu_A"})
+        self.fake.agents = [{"agentId": "aA", "parentAgentId": None, "running": True}]
+        self.fake.start_bridge()
+        sub, b = self.subscribe()
+        asked = []
+        real = sub.ask
+
+        def ask(path, read):
+            asked.append(sub.n is None)
+            return real(path, read)
+        sub.ask = ask
+        self.assertTrue(self.pump(sub, b, lambda: b.snapshot is not None))
+        self.assertEqual(asked[:1], [True], "the open asks its build alone")
+        self.assertEqual(sub.looks, 0, "no look was answered before the snapshot")
+        self.assertEqual([e for e in b.snapshot["subagents"] if "file" in e or "meta" in e], [],
+                         "the snapshot's tree holds nothing read off the disk")
+        self.assertTrue(self.pump(sub, b, lambda: len(b.changes) >= 1))
+        self.assertEqual(asked[1:2], [False], "the look, asked once the snapshot is out")
+        self.assertIn("file", self.entry(b.body, "aA"), "the first `subagents` carries the look's facts")
+        self.assertEqual(b.errors, [])
 
     # ---------------------------------------------------- the shared fixture
 
@@ -3080,6 +3120,498 @@ class TranscriptIndex(unittest.TestCase):
         self.assertIs(transcripts.acquire("/t/3"), held[3])
         self.assertIsNot(transcripts.acquire("/t/0"), held[0], "one evicted builds again")
 
+    # ---------------------------------------------------- the saved build (open-fast M7)
+
+    def thread_rows(self, n, r=None):
+        """`n` turns of a chained conversation, each with a background shell
+        the jobs ledger keeps: the rows, and the Thread that wrote them."""
+        r = r or Thread()
+        rows = []
+        for i in range(n):
+            call = r.tool_call("toolu_%d_%d" % (r.i, i), "msg_%d_%d" % (r.i, i))
+            call["message"]["content"][0].update(name="Bash", input={"command": "c%d" % i, "run_in_background": True})
+            rows += [r.prompt("p%d" % i), call]
+            result = r.tool_result(call["message"]["content"][0]["id"], call)
+            result["toolUseResult"] = {"backgroundTaskId": "bg%d_%d" % (r.i, i)}
+            rows += [result, r.answer("a%d" % i, "msg_a_%d_%d" % (r.i, i))]
+        self.append("".join(json.dumps(row) + "\n" for row in rows))
+        return rows, r
+
+    @staticmethod
+    def state(t):
+        """What a build holds, comparable across two Transcripts of one file."""
+        i = t.index
+        return (i.uuids, i.offsets, i.lengths, i.at, i.end, vars(t.ledger), list(t.chain.line), sorted(t.chain.offs))
+
+    def cold(self):
+        t = plane.Transcript(self.path)
+        t.tried = True   # never looks for a saved build: the reference parse
+        t.extended()
+        return t
+
+    def run_job(self, t, job, background=False):
+        done = threading.Event()
+
+        def wrapped(tr):
+            try:
+                job(tr)
+            finally:
+                done.set()
+        (t.submit_background if background else t.submit)(wrapped)
+        self.assertTrue(done.wait(10), "the job ran")
+        self.assertTrue(wait_for(lambda: not t.working), "the worker is idle again: its save, if due, is done")
+
+    def test_a_saved_build_loads_and_extends_from_its_end(self):
+        rows, r = self.thread_rows(30)
+        first = plane.Transcript(self.path)
+        self.run_job(first, lambda t: t.extended())
+        self.assertEqual(first.how, "cold")
+        saved = plane.build_file(self.path)
+        self.assertTrue(os.path.exists(saved), "the first build in the process is saved on its worker")
+        self.assertEqual(os.stat(saved).st_mode & 0o777, 0o600)
+        self.assertEqual(os.stat(os.path.dirname(saved)).st_mode & 0o777, 0o700)
+        self.assertEqual(os.path.dirname(saved), os.path.join(os.environ["SMINOS_HOME"], "daemon", "plane"))
+        self.assertEqual([n for n in os.listdir(os.path.dirname(saved)) if n.endswith(".tmp")], [], "moved into place")
+        more, _ = self.thread_rows(5, r)
+        t = plane.Transcript(self.path)
+        t.extended()
+        self.assertEqual(t.how, "loaded", "a Transcript new to the process starts from the saved build")
+        self.assertEqual(t.index.uuids, [x["uuid"] for x in rows + more])
+        self.assertLess(t.index.parsed - first.index.parsed, sum(len(json.dumps(x)) + 1 for x in more) + 1,
+                        "only what was flushed past the saved end was parsed")
+        self.assertEqual(self.state(t), self.state(self.cold()), "the index, the ledger and the chain as a cold build's")
+        self.assertEqual(sorted(t.ledger.jobs), sorted(self.cold().ledger.jobs))
+        self.assertEqual(len(t.ledger.jobs), 35)
+        t.extended()
+        self.assertEqual(t.how, "warm")
+
+    def test_a_saved_build_that_cannot_be_used_is_removed_and_the_build_starts_cold(self):
+        for how in ("format", "inode", "shorter", "garbage", "another file", "an older shape"):
+            with self.subTest(how=how):
+                self.path = os.path.join(tempfile.mkdtemp(dir=T), "t.jsonl")
+                rows, _ = self.thread_rows(10)
+                first = plane.Transcript(self.path)
+                first.extended()
+                self.assertTrue(first.save())
+                saved = plane.build_file(self.path)
+                fmt = plane.BUILD_FORMAT
+                if how == "format":
+                    fmt += 1
+                elif how == "inode":
+                    with open(self.path, "rb") as f:
+                        data = f.read()
+                    with open(self.path + ".new", "wb") as f:
+                        f.write(data)
+                    os.replace(self.path + ".new", self.path)
+                elif how == "shorter":
+                    with open(self.path, "r+") as f:
+                        f.truncate(first.index.end - 10)
+                elif how == "garbage":
+                    with open(saved, "wb") as f:
+                        f.write(b"not a build")
+                elif how == "another file":
+                    other = os.path.join(os.path.dirname(self.path), "o.jsonl")
+                    shutil.copy(self.path, other)
+                    shutil.copy(saved, plane.build_file(other))
+                    self.path, saved = other, plane.build_file(other)
+                else:
+                    first.index.__dict__.pop("parsed")   # a build of an Index that held other fields
+                    self.assertTrue(first.save())
+                with mock.patch.object(plane, "BUILD_FORMAT", fmt):
+                    t = plane.Transcript(self.path)
+                    try:
+                        t.extended()
+                    except plane.Reset:
+                        t.extended()
+                self.assertFalse(os.path.exists(saved), "removed")
+                self.assertEqual(t.how, "cold")
+                with open(self.path, "rb") as f:
+                    whole = f.read()
+                self.assertEqual(t.index.end, whole.rfind(b"\n") + 1)
+                self.assertEqual(self.state(t), self.state(self.cold()))
+
+    def test_eviction_saves_first_and_a_later_open_loads(self):
+        rows, r = self.thread_rows(10)
+        transcripts = plane.Transcripts(keep=1)
+        a = transcripts.acquire(self.path)
+        self.run_job(a, lambda t: t.extended())
+        saved = plane.build_file(self.path)
+        at_first = os.path.getsize(saved)
+        self.thread_rows(10, r)
+        self.run_job(a, lambda t: t.extended())
+        self.assertEqual(os.path.getsize(saved), at_first, "a small growth is not saved at once")
+        transcripts.release(a)
+        other = os.path.join(os.path.dirname(self.path), "other.jsonl")
+        with open(other, "w") as f:
+            f.write(json.dumps({"uuid": "o"}) + "\n")
+        transcripts.release(transcripts.acquire(other))
+        self.assertNotIn(self.path, transcripts.held, "evicted")
+        self.assertTrue(wait_for(lambda: not a.working and os.path.getsize(saved) > at_first), "saved as it left")
+        b = transcripts.acquire(self.path)
+        self.assertIsNot(b, a)
+        self.run_job(b, lambda t: t.extended())
+        self.assertEqual((b.how, b.index.parsed - a.index.parsed), ("loaded", 0), "loaded whole: nothing parsed")
+        self.assertEqual(self.state(b), self.state(a))
+
+    def test_the_stop_saves_every_held_build_within_its_bound(self):
+        transcripts = plane.Transcripts()
+        held, threads = [], {}
+        for i in range(3):
+            self.path = os.path.join(tempfile.mkdtemp(dir=T), "t%d.jsonl" % i)
+            _, threads[i] = self.thread_rows(5)
+            t = transcripts.acquire(self.path)
+            self.run_job(t, lambda tr: tr.extended())
+            self.thread_rows(5, threads[i])
+            self.run_job(t, lambda tr: tr.extended())
+            held.append(t)
+        stuck, go = held[2], threading.Event()
+        stuck.submit(lambda _t: go.wait(10))   # a job the stop cannot pass
+        started = time.monotonic()
+        saved, total = transcripts.save_all(seconds=0.5)
+        self.assertLess(time.monotonic() - started, 2.0, "bounded")
+        go.set()
+        self.assertEqual((saved, total), (2, 3))
+        for t in held[:2]:
+            fresh = plane.Transcript(t.path)
+            fresh.extended()
+            self.assertEqual((fresh.how, fresh.index.parsed - t.index.parsed), ("loaded", 0), "saved at its end")
+
+    def test_a_same_inode_rewrite_that_keeps_the_tail_is_not_loaded(self):
+        """The file rewritten in place, its length and its last rows kept:
+        rows in the middle — a call that started a background job, its
+        result, the rows the chain links — under other uuids and another
+        task id. The load reads a sample of rows at their saved offsets and
+        refuses the build."""
+        rows, _ = self.thread_rows(30)
+        first = plane.Transcript(self.path)
+        first.extended()
+        self.assertTrue(first.save())
+        size, ino = os.path.getsize(self.path), os.stat(self.path).st_ino
+        lo, hi = 50, 62
+        old = [rows[i]["uuid"] for i in range(lo, hi)]
+        swap = {u: str(uuidlib.uuid4()) for u in old}
+        with open(self.path, "r+b") as f:
+            f.seek(first.index.offsets[lo])
+            span = f.read(first.index.offsets[hi] - first.index.offsets[lo])
+            text = span.decode()
+            for u, v in swap.items():
+                text = text.replace(u, v)
+            text = text.replace('"bg', '"BG')
+            self.assertEqual(len(text.encode()), len(span), "the same length")
+            self.assertIn('"BG', text, "a background job's task id among the rows rewritten")
+            f.seek(first.index.offsets[lo])
+            f.write(text.encode())
+        self.assertEqual((os.path.getsize(self.path), os.stat(self.path).st_ino), (size, ino), "in place")
+        t = plane.Transcript(self.path)
+        t.extended()
+        self.assertEqual(t.how, "cold", "the saved build is refused")
+        self.assertEqual(self.state(t), self.state(self.cold()), "the rows as they are now")
+        self.assertIn(swap[old[0]], t.index.uuids)
+
+    def test_an_evicted_build_reacquired_before_its_save_never_publishes_over_a_newer_one(self):
+        """Evicted while its worker is busy, so its save is still queued;
+        acquired again and built further meanwhile: the saved build, once
+        every save is done, is the newer one."""
+        _, r = self.thread_rows(10)
+        transcripts = plane.Transcripts(keep=0)
+        a = transcripts.acquire(self.path)
+        go, entered = threading.Event(), threading.Event()
+        a.submit(lambda t: t.extended())                      # its first build: a save is due after it
+        a.submit(lambda _t: (entered.set(), go.wait(10)))     # a job the worker sits in before that save
+        self.assertTrue(entered.wait(10))
+        self.thread_rows(10, r)
+        transcripts.release(a)                                # evicted, its save queued behind
+        b = transcripts.acquire(self.path)
+        b.submit(lambda t: t.extended())                      # the newer build
+        if b is not a:
+            self.assertTrue(wait_for(lambda: not b.working), "the newer build and its save are done")
+        go.set()
+        self.assertTrue(wait_for(lambda: not a.working and not b.working))
+        with open(plane.build_file(self.path), "rb") as f:
+            end = pickle.load(f)[3]
+        self.assertEqual(end, os.path.getsize(self.path), "the saved build is the newer one")
+
+    def saved_then_rewritten(self, edit):
+        """A build saved, then the file rewritten in place by `edit(lines)`
+        (the lines as bytes, without their ends, edited in place), its size
+        and inode kept: the Transcript that loads it next."""
+        first = plane.Transcript(self.path)
+        first.extended()
+        self.assertTrue(first.save())
+        size, ino = os.path.getsize(self.path), os.stat(self.path).st_ino
+        with open(self.path, "rb") as f:
+            lines = f.read().split(b"\n")
+        edit(lines)
+        with open(self.path, "r+b") as f:
+            f.write(b"\n".join(lines))
+        self.assertEqual((os.path.getsize(self.path), os.stat(self.path).st_ino), (size, ino), "in place")
+        t = plane.Transcript(self.path)
+        t.extended()
+        return t
+
+    def test_two_rows_that_trade_a_byte_in_place_are_not_loaded(self):
+        """The reviewer's case: two adjacent rows no sample reads, one a byte
+        longer and the next a byte shorter; the size, every uuid and every
+        sampled row as they were."""
+        self.append("".join(json.dumps({"uuid": "u%03d" % i, "type": "user", "pad": "xx"}) + "\n"
+                            for i in range(100)))
+
+        def trade(lines):
+            lines[1] = lines[1].replace(b'"xx"', b'"xxx"')
+            lines[2] = lines[2].replace(b'"xx"', b'"x"')
+        t = self.saved_then_rewritten(trade)
+        self.assertEqual(t.how, "cold", "the saved build is refused")
+        self.assertEqual(len(t.index.uuids), 100, "every row, none lost")
+        self.assertEqual(self.state(t), self.state(self.cold()))
+
+    def test_a_row_that_keeps_its_uuid_and_length_but_not_its_place_in_the_chain_is_not_loaded(self):
+        """A row the old sample read (an answer), its uuid and length kept,
+        its parent another row's uuid: the chain the saved build holds is no
+        longer the file's."""
+        rows, _ = self.thread_rows(30)
+
+        def reparent(lines):
+            row = json.loads(lines[55])
+            self.assertEqual(row["type"], "assistant")
+            lines[55] = lines[55].replace(row["parentUuid"].encode(), rows[52]["uuid"].encode())
+        t = self.saved_then_rewritten(reparent)
+        self.assertEqual(t.how, "cold", "the saved build is refused")
+        self.assertEqual(self.state(t), self.state(self.cold()), "the chain as the file says it now")
+
+    def test_a_build_retired_again_during_its_running_save_stays_retiring(self):
+        """Evicted, its save running; acquired again and evicted again in
+        that window: the first save's end lets go of nothing but its own
+        retirement, so the second is still the one Transcript of the file —
+        a stop counts it, and a third acquire gets it back."""
+        _, r = self.thread_rows(10)
+        transcripts = plane.Transcripts(keep=0)
+        a = transcripts.acquire(self.path)
+        self.run_job(a, lambda t: t.extended())
+        self.thread_rows(5, r)
+        self.run_job(a, lambda t: t.extended())         # read past its save: dirty
+        real, calls = a.save_changed, []
+
+        def save_changed():   # the first two saves wait to be let through
+            if len(calls) >= 2:
+                return real()
+            entered, go = threading.Event(), threading.Event()
+            calls.append((entered, go))
+            entered.set()
+            go.wait(10)
+            return real()
+        a.save_changed = save_changed
+        transcripts.release(a)                         # the first retirement: its save starts
+        self.assertTrue(wait_for(lambda: calls and calls[0][0].is_set()), "the first save runs")
+        self.assertIs(transcripts.acquire(self.path), a, "taken back during its save")
+        transcripts.release(a)                         # the second retirement, queued behind
+        calls[0][1].set()                              # the first save ends; its callback runs
+        self.assertTrue(wait_for(lambda: len(calls) == 2 and calls[1][0].is_set()), "the second save runs")
+        self.assertIs((transcripts.retiring.get(self.path) or (None,))[0], a, "the second retirement stands")
+        self.assertEqual(transcripts.save_all(seconds=0.2)[1], 1, "a stop counts it")
+        c = transcripts.acquire(self.path)
+        self.assertIs(c, a, "one Transcript per file")
+        self.thread_rows(5, r)
+        c.submit(lambda t: t.extended())
+        calls[1][1].set()
+        transcripts.release(c)
+        self.assertTrue(wait_for(lambda: not a.working and self.path not in transcripts.retiring))
+        with open(plane.build_file(self.path), "rb") as f:
+            end = pickle.load(f)[3]
+        self.assertEqual(end, os.path.getsize(self.path), "the newest build is the one saved")
+
+    def test_a_failed_save_is_not_counted_and_the_stop_and_eviction_retry_it(self):
+        self.thread_rows(5)
+        transcripts = plane.Transcripts(keep=0)
+        t = transcripts.acquire(self.path)
+        saved = plane.build_file(self.path)
+        real, fails = os.replace, [True]
+
+        def replace(src, dst):
+            if fails[0] and dst == saved:
+                raise OSError(28, "No space left on device")
+            return real(src, dst)
+        with mock.patch.object(plane.os, "replace", replace):
+            self.run_job(t, lambda tr: tr.extended())   # the first build's save fails
+            self.assertFalse(os.path.exists(saved))
+            self.assertEqual(transcripts.save_all(seconds=5), (0, 1), "the stop counts the save it could not make")
+            self.assertFalse(os.path.exists(saved))
+            fails[0] = False
+            transcripts.release(t)                       # evicted: its dirty build saved as it leaves
+            self.assertTrue(wait_for(lambda: os.path.exists(saved) and not t.working), "the eviction retried it")
+        fresh = plane.Transcript(self.path)
+        fresh.extended()
+        self.assertEqual((fresh.how, fresh.index.end), ("loaded", os.path.getsize(self.path)))
+
+    def test_saved_builds_past_their_keep_are_swept(self):
+        d = os.path.join(os.environ["SMINOS_HOME"], "daemon", "plane")
+        os.makedirs(d, mode=0o700, exist_ok=True)
+        old, new, half = (os.path.join(d, n) for n in ("old.build", "new.build", "x.build.1.2.tmp"))
+        for p in (old, new, half):
+            with open(p, "wb") as f:
+                f.write(b"x")
+        long_ago = time.time() - (plane.BUILD_KEEP_DAYS + 1) * 86400
+        os.utime(old, (long_ago, long_ago))
+        plane.sweep_builds()
+        self.assertEqual((os.path.exists(old), os.path.exists(new), os.path.exists(half)), (False, True, False),
+                         "the old one and a write a crash left half done go; a recent one stays")
+        os.unlink(new)
+
+
+class Warmer(unittest.TestCase):
+    """The warmer (open-fast M7, §4): live members' main transcripts held and
+    extended in the background, behind every foreground job, one warm job
+    per transcript, WARM_PARALLEL across the process, round-robin."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(dir=T)
+        self.transcripts = plane.Transcripts()
+
+    def transcript(self, name, rows=3):
+        path = os.path.join(self.dir, name + ".jsonl")
+        with open(path, "a") as f:
+            for i in range(rows):
+                f.write(json.dumps({"uuid": "%s-%d" % (name, i), "type": "user"}) + "\n")
+        return path
+
+    def warm_all(self, warmer, sessions, until, clock, wait=10.0):
+        deadline = time.time() + wait
+        while time.time() < deadline:
+            warmer.tick(sessions, clock())
+            if until():
+                return True
+            clock.advance(0.25)
+            time.sleep(0.01)
+        return False
+
+    def test_a_live_members_transcript_is_held_and_extended_before_any_subscription(self):
+        paths = {"s1": self.transcript("s1"), "s2": self.transcript("s2")}
+        clock = Clock()
+        warmer = plane.Warmer(self.transcripts, locate=paths.get)
+        self.assertTrue(self.warm_all(warmer, {"s1", "s2"}, lambda: len(warmer.held) == 2 and all(
+            t.index.uuids and not t.warming for t in warmer.held.values()), clock))
+        t = self.transcripts.held[paths["s1"]]
+        self.assertEqual((t.users, t.how, len(t.index.uuids)), (1, "cold", 3), "held, built cold in the background")
+        self.assertTrue(wait_for(lambda: os.path.exists(plane.build_file(paths["s1"]))), "and saved")
+        kind, built = self.build_on(t)
+        self.assertEqual((kind, built.how), ("built", "warm"), "the first open is warm")
+        warmer.tick({"s2"}, clock() + plane.WARM_EVERY)
+        self.assertNotIn("s1", warmer.held)
+        self.assertEqual(t.users, 0, "released once the session is no longer a live member")
+
+    @staticmethod
+    def build_on(t):
+        got = queue.Queue()
+        t.submit(lambda tr: got.put(plane.build(tr, None, False)))
+        return got.get(timeout=10)
+
+    def test_an_opens_build_runs_ahead_of_a_queued_warm_job_and_a_warm_job_never_queues_twice(self):
+        path = self.transcript("s1")
+        t = self.transcripts.acquire(path)
+        order, go = [], threading.Event()
+        t.submit(lambda _t: (order.append("running"), go.wait(10)))
+        self.assertTrue(wait_for(lambda: order))
+        warmer = plane.Warmer(self.transcripts, locate={"s1": path}.get)
+        clock = Clock()
+        warmer.tick({"s1"}, clock())
+        clock.advance(plane.WARM_EVERY)
+        warmer.tick({"s1"}, clock())
+        self.assertTrue(t.warming)
+        clock.advance(plane.WARM_EVERY * 3)
+        warmer.tick({"s1"}, clock())
+        clock.advance(plane.WARM_EVERY * 3)
+        warmer.tick({"s1"}, clock())
+        self.assertEqual(len(t.background), 1, "one warm job queued, however many ticks pass")
+        t.submit(lambda _t: order.append("open"))
+        real = plane.Transcript.extended
+
+        def extended(tr):
+            order.append("warm")
+            return real(tr)
+        with mock.patch.object(plane.Transcript, "extended", extended):
+            go.set()
+            self.assertTrue(wait_for(lambda: not t.working and not t.warming))
+        self.assertEqual(order, ["running", "open", "warm"], "the open's job first, the warm job when none is queued")
+        self.assertEqual(warmer.running, 0, "its slot given back")
+
+    def test_the_first_round_waits_a_period_and_none_goes_while_an_open_builds(self):
+        """The process's first round begins WARM_EVERY after the warmer's
+        first tick, so the stream's handshake runs before any build competes
+        with it; and no warm job is submitted while an open awaits its
+        snapshot (a warm job already running runs on)."""
+        paths = {"s1": self.transcript("s1"), "s2": self.transcript("s2")}
+        warmer = plane.Warmer(self.transcripts, locate=paths.get)
+        clock = Clock()
+        warmer.tick({"s1", "s2"}, clock())
+        self.assertEqual((warmer.held, warmer.running), ({}, 0), "nothing at the first tick")
+        clock.advance(plane.WARM_EVERY)
+        warmer.tick({"s1", "s2"}, clock(), opening=True)
+        self.assertEqual(sorted(warmer.held), ["s1", "s2"], "held once the period is up")
+        self.assertEqual(warmer.running, 0, "but nothing submitted while an open builds")
+        warmer.tick({"s1", "s2"}, clock())
+        self.assertTrue(wait_for(lambda: all(t.index.uuids for t in warmer.held.values())), "then warmed")
+
+    def test_a_session_that_leaves_is_let_go_while_its_round_is_pending(self):
+        """A round held up by opens does not hold its sessions: each period
+        lets go of those no longer handed in and takes them off the round."""
+        paths = {"s1": self.transcript("s1"), "s2": self.transcript("s2")}
+        warmer = plane.Warmer(self.transcripts, locate=paths.get)
+        clock = Clock()
+        warmer.tick({"s1", "s2"}, clock())
+        clock.advance(plane.WARM_EVERY)
+        warmer.tick({"s1", "s2"}, clock(), opening=True)
+        self.assertEqual(sorted(warmer.round), ["s1", "s2"], "a round pending behind an open")
+        t1 = warmer.held["s1"]
+        clock.advance(plane.WARM_EVERY)
+        warmer.tick({"s2"}, clock(), opening=True)
+        self.assertNotIn("s1", warmer.held, "let go, the round still pending")
+        self.assertEqual(t1.users, 0)
+        self.assertEqual(list(warmer.round), ["s2"], "and off the round")
+        warmer.tick({"s2"}, clock())
+        self.assertTrue(wait_for(lambda: warmer.held["s2"].index.uuids and warmer.running == 0))
+
+    def test_at_most_two_warm_jobs_run_at_once_across_forty_live_transcripts_visited_round_robin(self):
+        sessions = ["s%02d" % i for i in range(40)]
+        paths = {s: self.transcript(s) for s in sessions}
+        by_path = {p: s for s, p in paths.items()}
+        lock, now, peak, visits = threading.Lock(), [0], [0], []
+        real = plane.Transcript.extended
+
+        def extended(tr):
+            with lock:
+                now[0] += 1
+                peak[0] = max(peak[0], now[0])
+                visits.append(by_path[tr.path])
+            try:
+                time.sleep(0.01)
+                return real(tr)
+            finally:
+                with lock:
+                    now[0] -= 1
+        warmer = plane.Warmer(self.transcripts, locate=paths.get)
+        clock = Clock()
+        with mock.patch.object(plane.Transcript, "extended", extended):
+            self.assertTrue(self.warm_all(warmer, set(sessions), lambda: len(visits) >= 80, clock, wait=30))
+        self.assertLessEqual(peak[0], plane.WARM_PARALLEL, "at most WARM_PARALLEL at once")
+        self.assertEqual(peak[0], 2)
+        self.assertEqual(sorted(visits[:40]), sessions, "every live session warmed once before any twice")
+        self.assertEqual(sorted(visits[40:80]), sessions, "and the next round each once again")
+
+    def test_the_plane_warms_the_live_members_of_its_open_projects(self):
+        """Plane.tick hands the warmer each live member of an open project; a
+        member that is not live is not warmed."""
+        project, runs, ended = Lifecycle.ended_presence_project(self, "warm-plane")
+        path = os.path.join(os.environ["HOME"], ".claude", "projects", "-warm-plane", runs + ".jsonl")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.write(json.dumps({"uuid": "w1", "type": "user"}) + "\n")
+        warmer = plane.Warmer(self.transcripts)
+        pl = plane.Plane("testhost", lambda: None, transcripts=self.transcripts, disk=plane.Disk(), warmer=warmer)
+        self.assertTrue(wait_for(lambda: pl.tick({project.id: project}) is not None and
+                                 path in self.transcripts.held and self.transcripts.held[path].index.uuids))
+        self.assertEqual(list(warmer.held), [runs], "the running member only")
+        pl.close()
+        self.assertIn(runs, warmer.held, "a warmer the uplink keeps across streams holds on past the plane")
+
 
 class Lifecycle(unittest.TestCase):
     """The engine's records as presence reads them, and the machine's policy."""
@@ -3225,57 +3757,391 @@ class Lifecycle(unittest.TestCase):
         _, got = self.connect(project, wall=lambda: time.time() + 8 * 86400)
         self.assertEqual(got.get(ended), {"record": None, "bridge": False}, "said, eight days on: %s" % got)
 
-    def test_a_connect_the_hub_never_took_keeps_the_old_mark(self):
-        """A reconnect whose POST fails before the hub takes its presence
-        (Link.open, the hub answering 503) leaves the mark where it was, so
-        the leavers it carried are said on the next connect."""
+    def test_a_hello_answered_503_leaves_every_mark_and_the_next_stream_says_it_all_again(self):
+        """A connect whose hello POST the hub answers 503 (Link.open; the
+        hub's D1: a reply it owed was not written) leaves the presence
+        tombstone mark, the unreported rejections and the delivery outbox
+        exactly as they were — their marks run only after a 200, and the
+        outcomes queued behind the hello on the log lane are never posted —
+        and the next stream's hello says the leaver, reports the rejection,
+        and posts the outcomes again; taken, each mark moves."""
+        import sminos_hublog as hublog
+        import sminos_outcomes as outcomes
         import sminos_uplink as uplink
-        project, _, ended = self.ended_presence_project("ended-unaccepted")
+        project, runs, ended = self.ended_presence_project("ended-unaccepted")
         old, _ = self.connect(project, wall=lambda: time.time() - 3600)
         old.accepted(project.id)
         mark = self.marks()[project.id]
+        hub = ScriptedHub()
+        self.addCleanup(hub.close)
+        cred = {"machine": "testhost", "org": "org-1", "key": b"k" * 32, "hub": hub.url, "client_id": "c",
+                "client_secret": "s"}
+        hl = hublog.HubLog(project, cred)
+        rejection = {"t": "rejected", "project": project.id, "event": {"writer": "hub/x", "seq": 3},
+                     "reason": "bad-code", "message": "a forgery"}
+        state = hl.state()
+        state["unreported"] = [rejection]
+        hl.save(state)
+        box = outcomes.Outbox(project)
+        box.record({"writer": "hub/x", "seq": 1}, runs, "delivered", None)
+        outbox = read(box.path)
 
-        class Log:
-            def __init__(self):
-                self.project = project
-
-            def rejoin_former(self):
-                pass
-
-            def unreported(self):
-                return []
-
-            def presence(self):
-                return {"t": "session", "message": {"kind": "machine", "body": {"checkouts": []}}}
-
-            def hello(self, follow=False):
-                return {"t": "hello", "project": project.id, **({"follow": True} if follow else {})}
-
-            def reported(self, _):
-                pass
-
-        posted = []
-
-        def refused(frames):
-            posted.append(frames)
-            raise uplink.NotDelivered("the hub answered 503")
-
-        def link_of(post):
-            link = uplink.Link({"machine": "testhost", "org": "org-1", "key": b"k" * 32, "hub": "http://127.0.0.1:9"}, {})
+        def stream(generation):
+            link = uplink.Link(cred, {})
             link.plane.wall = lambda: time.time() + 3600
-            link.post = post
-            return link
+            items = queue.Queue()
+            link.on_welcome({"t": "welcome", "generation": generation, "machine": "testhost"},
+                            types.SimpleNamespace(items=items))
+            self.addCleanup(link.close)
+            link.open(hl)
+            return link, items
 
-        with self.assertRaises(uplink.NotDelivered):
-            link_of(refused).open(Log())
-        self.assertTrue(any(f.get("t") == "session" and f["message"].get("session") == ended
-                            and f["message"]["body"] == {"record": None, "bridge": False}
-                            for f in posted[0]), "the leaver was in the POST that failed")
+        def leaver_in(body):
+            return any(f.get("t") == "session" and f["message"].get("session") == ended
+                       and f["message"]["body"] == {"record": None, "bridge": False} for f in body)
+
+        hub.script = [503]
+        link, items = stream(1)
+        kind, err = items.get(timeout=10)
+        self.assertEqual(kind, "closed")
+        self.assertIsInstance(err, uplink.NotDelivered)
+        link.close()
+        self.assertEqual(len(hub.posts), 1, "the outcomes behind the hello were never posted")
+        hello = hub.bodies()[0]
+        self.assertEqual(hello[0]["t"], "hello")
+        self.assertTrue(leaver_in(hello), "the leaver was in the POST that failed")
+        self.assertIn(rejection, hello, "and the rejection")
         self.assertEqual(self.marks()[project.id], mark, "the mark stays where it was")
-        _, got = self.connect(project, wall=lambda: time.time() + 7200)
-        self.assertEqual(got.get(ended), {"record": None, "bridge": False}, "and the next connect says it again")
-        link_of(posted.append).open(Log())
+        self.assertEqual(hl.unreported(), [rejection], "the rejection stays unreported")
+        self.assertEqual(read(box.path), outbox, "the outbox stays whole")
+
+        link, items = stream(2)
+        for _ in range(2):  # the hello's continuation, then the outcomes'
+            kind, thens = items.get(timeout=10)
+            self.assertEqual(kind, "sent")
+            link.ran(thens)
+        hello, delivery = hub.bodies()[1:]
+        self.assertTrue(leaver_in(hello), "the next stream's hello says the leaver again")
+        self.assertIn(rejection, hello, "and reports the rejection again")
+        self.assertEqual([(f["message"]["kind"], f["message"]["body"]["outcome"]) for f in delivery],
+                         [("delivery", "delivered")], "and the outcomes follow it")
+        self.assertEqual({p["conn"] for p in hub.posts[1:]}, {2}, "one connection carries the log lane's POSTs")
         self.assertGreater(self.marks()[project.id], mark, "taken: the mark moves")
+        self.assertEqual(hl.unreported(), [], "the rejection reported")
+        self.assertFalse(box.waiting(), "the outcomes dropped")
+
+    def on_lanes(self, project, hub, wall=None):
+        """A Link on a stream of generation 1 whose lanes post to `hub`, with
+        the project's HubLog among its logs: (link, the stream's items, hl)."""
+        import sminos_hublog as hublog
+        import sminos_uplink as uplink
+        cred = {"machine": "testhost", "org": "org-1", "key": b"k" * 32, "hub": hub.url, "client_id": "c",
+                "client_secret": "s"}
+        hl = hublog.HubLog(project, cred)
+        link = uplink.Link(cred, {project.id: hl})
+        link.plane.wall = wall or (lambda: time.time() + 3600)
+        items = queue.Queue()
+        link.on_welcome({"t": "welcome", "generation": 1, "machine": "testhost"}, types.SimpleNamespace(items=items))
+        self.addCleanup(link.close)
+        return link, items, hl
+
+    def answered(self, link, items):
+        """The next lane answer, a 200's: its continuations run as the main loop runs them."""
+        kind, thens = items.get(timeout=10)
+        self.assertEqual(kind, "sent", thens)
+        link.ran(thens)
+
+    @staticmethod
+    def kinds(hub):
+        return [[f["t"] for f in body] for body in hub.bodies()]
+
+    def test_a_project_opened_again_is_gated_until_its_new_hello_is_answered_and_opened_once(self):
+        """The hub refuses `not-open` mid-stream (it lost the project's open
+        state): the project is opened again, once however many refusals come,
+        and its session messages wait for that hello's answer."""
+        project, runs, _ = self.ended_presence_project("reopen-gate")
+        hub = ScriptedHub()
+        self.addCleanup(hub.close)
+        link, items, hl = self.on_lanes(project, hub)
+        link.open(hl)
+        self.answered(link, items)
+        hub.script = ["hold"]
+        refused = {"t": "refused", "project": project.id, "refusal": {"reason": "not-open"}}
+        link.on_refused(refused, None)
+        link.on_refused(refused, None)
+        self.assertTrue(wait_for(lambda: len(hub.posts) == 2), "the second hello reached the hub, which holds it")
+        # The hub's two chains (M4): the held hello's `have` comes ahead of its
+        # 200, and a refusal of a frame sent before that hello comes after it.
+        link.on_have({"t": "have", "project": project.id, "have": {}}, None)
+        link.on_refused(refused, None)
+        link.post_session([plane.envelope(project.id, "testhost", runs, "presence", None, None, {"after": True})])
+        time.sleep(0.4)
+        self.assertEqual(len(hub.posts), 2, "nothing of the project passes its held hello")
+        hub.release.set()
+        self.answered(link, items)
+        self.assertTrue(wait_for(lambda: ["session"] in self.kinds(hub)), "released: the message goes")
+        time.sleep(0.3)
+        heads = [body[0] for body in self.kinds(hub)]
+        self.assertEqual(heads.count("hello"), 2, "opened again once: %s" % heads)
+        # The lanes are independent once the hello's continuation released
+        # the session lane: an upload on the log lane may come after the
+        # message. What the gate promises is the message after its hello.
+        replacement = [i for i, head in enumerate(heads) if head == "hello"][1]
+        self.assertGreater(heads.index("session"), replacement, "the message after the hello it waited for: %s" % heads)
+        self.assertEqual(hub.bodies()[heads.index("session")][0]["message"]["body"], {"after": True})
+        self.assertEqual(hl.have, {}, "the vector the new hello brought stands: its uploads go on")
+
+    def test_presence_in_flight_at_a_reopen_is_said_again_after_the_hello(self):
+        """A session-lane body carrying a member's presence is out (held at
+        the hub) when the hub refuses the project `not-open`; the re-open's
+        hello carries its presence as it is now, and the hub may apply the
+        older body after it. Once the hello is answered, the members'
+        presence is said again at the next look, changed or not, behind that
+        body on its lane."""
+        project, runs, _ = self.ended_presence_project("reopen-in-flight")
+        hub = ScriptedHub()
+        self.addCleanup(hub.close)
+        link, items, hl = self.on_lanes(project, hub)
+        link.open(hl)
+        self.answered(link, items)
+        hub.script = ["hold"]
+        held = len(hub.posts)
+        link.post_session([plane.envelope(project.id, "testhost", runs, "presence", None, None, {"older": True})])
+        self.assertTrue(wait_for(lambda: len(hub.posts) > held), "the body is out, held at the hub")
+        link.on_refused({"t": "refused", "project": project.id, "refusal": {"reason": "not-open"}}, None)
+        self.assertTrue(wait_for(lambda: len(hub.posts) > held + 1), "the re-open's hello went")
+        self.answered(link, items)
+        hub.release.set()
+        link.post_session(link.plane.presence(project.id))   # the next look, as a tick takes it
+        self.assertTrue(wait_for(lambda: any(
+            f.get("t") == "session" and f["message"]["kind"] == "presence" and f["message"]["session"] == runs
+            for b in hub.bodies()[held + 2:] for f in b), 3),
+            "the member's presence is said again after the body: %s" % self.kinds(hub))
+        link.post_session(link.plane.presence(project.id))
+        time.sleep(0.3)
+        again = [f for b in hub.bodies()[held + 2:] for f in b
+                 if f.get("t") == "session" and f["message"]["session"] == runs]
+        self.assertEqual(len(again), 1, "said again once, not at every look")
+
+    def ghost(self, name, heal_after):
+        """A member's live presence is out (held at the hub); the member
+        ends, and its tombstone queues behind that body; the hub refuses the
+        project `not-open` and it is opened again, the tombstone queued
+        dropped as the hello renews presence; the heal's look comes
+        `heal_after` s after the leave. The hub applies the held live
+        presence after the hello. What the hub was told of the leaver, in
+        the order it applied it."""
+        import sminos
+        project, runs, _ = self.ended_presence_project(name)
+        hub = ScriptedHub()
+        self.addCleanup(hub.close)
+        link, items, hl = self.on_lanes(project, hub)
+        link.open(hl)
+        self.answered(link, items)
+        hub.script = ["hold"]
+        held = len(hub.posts)
+        live = {"record": {"status": "busy"}, "bridge": False}
+        link.post_session([plane.envelope(project.id, "testhost", runs, "presence", None, None, live)])
+        self.assertTrue(wait_for(lambda: len(hub.posts) > held), "the live presence is out, held at the hub")
+        sessions = os.path.join(os.environ["HOME"], ".claude", "sessions")
+        for name in os.listdir(sessions):
+            with open(os.path.join(sessions, name)) as f:
+                rec = json.load(f)
+            if rec.get("sessionId") == runs:
+                os.kill(rec["pid"], signal.SIGTERM)
+                os.unlink(os.path.join(sessions, name))
+        def ended():
+            sminos.forget_caches()
+            sminos.view_of(project, titles=False)
+            link.plane.refresh(project)
+            return runs not in link.plane.members.get(project.id, ())
+        self.assertTrue(wait_for(ended), "the member ended")
+        tombstone = link.plane.presence(project.id)
+        self.assertEqual([(m["session"], m["body"]) for m in tombstone], [(runs, {"record": None, "bridge": False})])
+        link.post_session(tombstone)       # queued behind the held body
+        link.on_refused({"t": "refused", "project": project.id, "refusal": {"reason": "not-open"}}, None)
+        self.assertTrue(wait_for(lambda: len(hub.posts) > held + 1), "the re-open's hello went")
+        self.answered(link, items)
+        hub.release.set()
+        # The next look, as a tick takes it, `heal_after` s on.
+        link.post_session(link.plane.presence(project.id, now=time.monotonic() + heal_after))
+        time.sleep(0.5)
+        bodies = hub.bodies()
+        order = bodies[:held] + [bodies[held + 1], bodies[held]] + bodies[held + 2:]   # the hello, then the held body
+        return [f["message"]["body"] for b in order for f in b
+                if f.get("t") == "session" and f["message"]["kind"] == "presence" and f["message"]["session"] == runs]
+
+    def test_a_session_that_left_while_its_live_presence_was_in_flight_at_a_reopen_is_not_left_live(self):
+        """The hub applies the held live presence after the hello: the
+        presence said again behind it says the leaver not running too, so the
+        hub does not keep it live."""
+        said = self.ghost("reopen-ghost", 0)
+        self.assertEqual(said[-1:], [{"record": None, "bridge": False}],
+                         "the hub's last word on the leaver is that it is not running: %s" % said)
+
+    def test_a_leaver_whose_live_presence_waited_long_in_the_queue_is_not_left_live_by_a_late_heal(self):
+        """The live presence a body carries may have waited long in the
+        lane's queue before that body was formed, so a leave long before the
+        heal is no reason to skip the leaver: what keeps it is that its
+        tombstone was said after the oldest frame of the body out at the
+        re-open, however long ago (within GONE_KEEP, a bound on memory)."""
+        said = self.ghost("reopen-ghost-late", 600)
+        self.assertEqual(said[-1:], [{"record": None, "bridge": False}],
+                         "a heal ten minutes after the leave still says it: %s" % said)
+
+    def test_a_heal_says_again_only_the_leavers_a_body_still_in_flight_could_contradict(self):
+        """The leavers `say_again` says not running again are those said gone
+        at or after the oldest frame of the project's body out at the re-open
+        (`since`): only a session live when such a frame was queued can be
+        contradicted by it. One said gone before carries no live presence in
+        that body. GONE_KEEP bounds what is kept, as memory alone."""
+        project, _, ended = self.ended_presence_project("gone-bound")
+        pl, got = self.connect(project)
+        self.assertEqual(got.get(ended), {"record": None, "bridge": False}, "said gone at the connect")
+        at = pl.gone[project.id][ended]
+
+        def said_again(since, now):
+            pl.say_again(project.id, since)
+            return [m["session"] for m in pl.presence(project.id, now=now) if m["body"]["record"] is None]
+        self.assertEqual(said_again(at - 1, at + 1), [ended], "the body out is older than the leave: said again")
+        self.assertEqual(said_again(at - 1, at + 1200), [ended], "however long ago the leave was")
+        self.assertEqual(said_again(at + 1, at + 2), [], "the body out began after it was said gone: not")
+        self.assertEqual(said_again(at - 1, at + plane.GONE_KEEP + 1), [], "past the memory bound: not kept")
+        self.assertEqual(pl.gone.get(project.id), {})
+
+
+    def test_each_hellos_answer_takes_the_presence_read_it_carried(self):
+        """Two presence-bearing hellos of one project in flight, answered 200
+        then 503: the mark is the first one's read, never the second's."""
+        project, _, _ = self.ended_presence_project("two-reads")
+        hub = ScriptedHub()
+        self.addCleanup(hub.close)
+        now = [time.time() + 100]
+        link, items, hl = self.on_lanes(project, hub, wall=lambda: now[0])
+        hub.script = ["hold", 503]
+        link.open(hl)
+        first = now[0]
+        now[0] += 100
+        link.open(hl)
+        self.assertTrue(wait_for(lambda: len(hub.posts) == 1))
+        hub.release.set()
+        self.answered(link, items)
+        kind, _ = items.get(timeout=10)
+        self.assertEqual(kind, "closed", "the second hello answered 503")
+        self.assertEqual(self.marks()[project.id], first, "the mark is the read the answered hello carried")
+
+    def test_a_failed_rejection_write_releases_the_gate_and_is_written_later(self):
+        """The hello was answered and the rejections it carried reached the
+        hub, but recording that fails (a write error): the project's session
+        messages go all the same, nothing is held as in flight, and the
+        record is written on a later pass."""
+        project, runs, _ = self.ended_presence_project("reported-fails")
+        hub = ScriptedHub()
+        self.addCleanup(hub.close)
+        link, items, hl = self.on_lanes(project, hub)
+        rejection = {"t": "rejected", "project": project.id, "event": {"writer": "hub/x", "seq": 4},
+                     "reason": "bad-code", "message": "a forgery"}
+        state = hl.state()
+        state["unreported"] = [rejection]
+        hl.save(state)
+        real, calls = hl.reported, []
+
+        def flaky(frames):
+            calls.append(frames)
+            if len(calls) == 1:
+                raise OSError("No space left on device")
+            real(frames)
+
+        hl.reported = flaky
+        link.open(hl)
+        self.answered(link, items)
+        link.post_session([plane.envelope(project.id, "testhost", runs, "presence", None, None, {"after": True})])
+        self.assertTrue(wait_for(lambda: len(hub.posts) == 2), "the gate is released: the message goes")
+        self.assertEqual(link.reporting[project.id], 0, "nothing held as in flight")
+        self.assertEqual(hl.unreported(), [rejection], "the write failed")
+        link.settle_marks(hl)
+        self.assertEqual(hl.unreported(), [], "written on the next pass")
+        self.assertEqual(len(calls), 2)
+
+    def test_a_failed_outbox_drop_is_retried_and_its_outcomes_not_posted_again(self):
+        import sminos_outcomes as outcomes
+        project, runs, _ = self.ended_presence_project("drop-fails")
+        hub = ScriptedHub()
+        self.addCleanup(hub.close)
+        link, items, hl = self.on_lanes(project, hub)
+        box = outcomes.Outbox(project)
+        box.record({"writer": "hub/x", "seq": 1}, runs, "delivered", None)
+        real, calls = outcomes.Outbox.drop, []
+
+        def flaky(self_, n):
+            calls.append(n)
+            if len(calls) == 1:
+                raise OSError("No space left on device")
+            real(self_, n)
+
+        with mock.patch.object(outcomes.Outbox, "drop", flaky):
+            link.open(hl)
+            self.answered(link, items)   # the hello's
+            self.answered(link, items)   # the outcomes'
+            self.assertNotIn(project.id, link.delivering, "nothing held as in flight")
+            self.assertTrue(box.waiting(), "the drop failed")
+            link.deliveries(hl)
+            time.sleep(0.3)
+        self.assertEqual(self.kinds(hub), [self.kinds(hub)[0], ["session"]], "the outcomes posted once")
+        self.assertFalse(box.waiting(), "dropped on the next pass")
+        self.assertEqual(len(calls), 2)
+
+    def test_a_paced_backlog_is_sealed_once_across_its_upload_passes(self):
+        """A backlog of this machine's writer larger than UPLOAD_AHEAD goes
+        over several upload passes, each queueing while the log lane has
+        room: every event is read off and sealed once, not once a pass for
+        what the earlier passes left behind, and all of it reaches the hub
+        in order."""
+        import sminos
+        import sminos_hublog as hublog
+        import sminos_uplink as uplink
+        root = os.path.join(T, "paced-backlog")
+        subprocess.run(["git", "-c", "init.defaultBranch=main", "init", "-q", root], check=True)
+        subprocess.run([os.path.join(SCRIPTS, "sminos"), "project", "init", "--name", "paced-backlog"], cwd=root,
+                       check=True, capture_output=True)
+        sminos.forget_caches()
+        project = sminos.resolve_project(root)
+        writer = "testhost/5a000003-0000-4000-8000-0000000000c3"
+        n = 12
+        for i in range(n):
+            sminos.log_append(project, writer, "say", **{"from": "k", "to": "*", "text": "%02d " % i + "x" * 4000})
+        hub = ScriptedHub()
+        self.addCleanup(hub.close)
+        link, _items, hl = self.on_lanes(project, hub)
+        hl.on_have({"t": "have", "project": project.id, "have": {}})
+        sealed, real = [], hublog.seal
+
+        def counting(key, pid, event):
+            sealed.append(event["seq"])
+            return real(key, pid, event)
+
+        hub.script = ["hold"]   # the first upload's POST: the lane fills behind it
+        with mock.patch.object(hublog, "BATCH_BYTES", 1), mock.patch.object(uplink, "UPLOAD_AHEAD", 9000), \
+                mock.patch.object(hublog, "seal", counting):
+            link.upload(hl)
+            self.assertTrue(wait_for(lambda: len(hub.posts) == 1), "the first upload is held at the hub")
+            link.upload(hl)
+            first = len(sealed)
+            hub.release.set()
+            passes = 1
+
+            def uploaded():
+                nonlocal passes
+                if link.log_lane.queued() == 0 and not link.log_lane.posting():
+                    passes += 1
+                    link.upload(hl)
+                return [e["seq"] for body in hub.bodies() for f in body for e in f["events"]]
+
+            self.assertTrue(wait_for(lambda: len(uploaded()) == n), "the whole backlog reached the hub")
+        self.assertEqual(uploaded(), list(range(1, n + 1)), "in order, each once")
+        self.assertGreater(passes, 2, "over several passes")
+        self.assertEqual(sorted(sealed), list(range(1, n + 1)), "each event sealed once: %s" % sealed)
+        self.assertLess(first, n, "the lane's bound stopped the first passes short of the backlog")
 
     def test_the_daemon_sweeps_what_the_bridge_left_for_ended_sessions(self):
         """A session no process runs leaves its kept file once it has been
@@ -3344,6 +4210,504 @@ class TickCost(unittest.TestCase):
             holder.wait()
         with mock.patch.object(sminos.subprocess, "run", side_effect=AssertionError("a process was run")):
             self.assertEqual(sminos.read_proc_start(holder.pid), "", "no process holds the pid now")
+
+
+def wait_for(test, timeout=10.0):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        got = test()
+        if got:
+            return got
+        time.sleep(0.02)
+    return test()
+
+
+class ScriptedHub:
+    """A hub's `POST /machine/frames` as a lane's tests script it: HTTP/1.1,
+    connections kept, each POST recorded with the number of the connection it
+    came on (in accept order) and its body, and answered by the next action
+    of `script` (200 once it is empty): a status; `hold` (answered 200 once
+    `release` is set); `hold-503`; `drop` (the request read, the connection
+    closed with no answer); `rst` (answered 200, then the connection reset);
+    `fin` (answered 200, then the connection closed with no `Connection:
+    close`); `close` (answered 200 with `Connection: close`); `503-close`
+    (answered 503 with `Connection: close`, as the stand-in answers a
+    released hold); ("slow", s)."""
+
+    def __init__(self):
+        self.posts, self.script, self.conns = [], [], 0
+        self.lock = threading.Lock()
+        self.release = threading.Event()
+        hub = self
+
+        class Handler(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def setup(self):
+                super().setup()
+                with hub.lock:
+                    hub.conns += 1
+                    self.conn = hub.conns
+
+            def log_message(self, *_):
+                pass
+
+            def answer(self, status, close=False):
+                data = b'{"ok":true}' if status == 200 else b'{"error":"scripted"}'
+                self.send_response(status)
+                self.send_header("Content-Length", str(len(data)))
+                if close:
+                    self.send_header("Connection", "close")
+                    self.close_connection = True
+                self.end_headers()
+                self.wfile.write(data)
+                self.wfile.flush()
+
+            def handle(self):
+                try:
+                    super().handle()
+                except (BrokenPipeError, ConnectionResetError):
+                    pass   # the lane gave its POST up and shut its socket: nothing to answer
+
+            def do_POST(self):
+                body = self.rfile.read(int(self.headers.get("Content-Length") or 0)).decode()
+                with hub.lock:
+                    hub.posts.append({"conn": self.conn, "body": body, "path": self.path,
+                                      "generation": self.headers.get("X-Desk-Generation")})
+                    action = hub.script.pop(0) if hub.script else 200
+                if isinstance(action, tuple):
+                    time.sleep(action[1])
+                    action = 200
+                if action in ("hold", "hold-503"):
+                    hub.release.wait(30)
+                    return self.answer(200 if action == "hold" else 503)
+                if action == "503-close":
+                    return self.answer(503, close=True)
+                if action == "drop":
+                    self.close_connection = True
+                    return None
+                if action == "close":
+                    return self.answer(200, close=True)
+                if isinstance(action, int):
+                    return self.answer(action)
+                self.answer(200)
+                self.close_connection = True
+                if action == "rst":  # linger 0: the close resets the connection
+                    self.connection.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+                return None
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.server.daemon_threads = True
+        self.url = "http://127.0.0.1:%d" % self.server.server_address[1]
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def bodies(self):
+        return [[json.loads(line) for line in p["body"].splitlines() if line] for p in self.posts]
+
+    def close(self):
+        self.release.set()
+        self.server.shutdown()
+        self.server.server_close()
+
+
+class Lanes(unittest.TestCase):
+    """The uplink's sender lanes (sminos_uplink.Sender): one kept connection
+    each, posting in order what the main thread queues, a continuation per
+    entry run on the main thread after its 200, and a failure that ends the
+    stream; against a scripted hub."""
+
+    def setUp(self):
+        import sminos_uplink as uplink
+        self.uplink = uplink
+        self.hub = ScriptedHub()
+        self.addCleanup(self.hub.close)
+        self.items = queue.Queue()
+        self.said = []
+        patch = mock.patch.object(uplink, "log", self.said.append)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def lane(self, name="log", ended=lambda: False, released=("p1",)):
+        """A lane on the scripted hub; on the session lane, the projects
+        `released` as if their hellos were answered."""
+        s = self.uplink.Sender(name, {"hub": self.hub.url, "client_id": "c", "client_secret": "s"}, 7,
+                               self.items.put, ended)
+        for pid in released:
+            s.release(pid)
+        s.start()
+        self.addCleanup(s.close)
+        return s
+
+    @staticmethod
+    def frames(n, project="p1"):
+        return [{"t": "session", "message": {"project": project, "n": n}}]
+
+    def ns(self, i):
+        return [(f["message"]["project"], f["message"]["n"]) for f in self.hub.bodies()[i]]
+
+    def posted(self, n):
+        self.assertTrue(wait_for(lambda: len(self.hub.posts) >= n), "%d POSTs reached the hub" % n)
+
+    def ran(self, item):
+        """A `sent` item's continuations run, as the main loop runs them."""
+        kind, thens = item
+        self.assertEqual(kind, "sent")
+        for then in thens:
+            then()
+
+    def numbers(self, what):
+        """The connection numbers the lane's lines say it `what`ed, in order."""
+        pattern = {"dialled": r"lane dialled the hub \(connection #(\d+)\)",
+                   "closed": r"lane closed connection #(\d+) after"}[what]
+        return [int(m.group(1)) for line in self.said for m in [re.search(pattern, line)] if m]
+
+    def test_a_lane_keeps_one_connection_across_posts_and_closes_it_idle(self):
+        with mock.patch.dict(os.environ, {"SMINOS_IDLE_CLOSE": "1"}):
+            s = self.lane("session")
+        for i in range(5):
+            s.send(self.frames(i))
+            self.posted(i + 1)
+        self.assertEqual({p["conn"] for p in self.hub.posts}, {1}, "five POSTs, one connection")
+        self.assertEqual({(p["path"], p["generation"]) for p in self.hub.posts}, {("/machine/frames", "7")})
+        self.assertTrue(wait_for(lambda: self.numbers("closed"), 3), "idle for a second: closed")
+        first = self.numbers("dialled")[0]
+        self.assertIn("session lane closed connection #%d after 5 POSTs (idle)" % first, self.said)
+        s.send(self.frames(5))
+        self.posted(6)
+        self.assertEqual(self.hub.posts[5]["conn"], 2, "the next POST after the idle close dials afresh")
+        dialled = self.numbers("dialled")
+        self.assertEqual(len(dialled), 2)
+        self.assertGreater(dialled[1], first, "each dial its own number")
+        self.assertEqual(self.said[0], "session lane dialled the hub (connection #%d)" % first)
+
+    def test_continuations_run_after_the_200_and_never_after_a_failure(self):
+        s = self.lane("log")
+        ran = []
+        s.send(self.frames(1), then=lambda: ran.append(1))
+        self.ran(self.items.get(timeout=5))
+        self.assertEqual(ran, [1])
+        self.hub.script = ["hold-503"]
+        s.send(self.frames(2), then=lambda: ran.append(2))
+        s.send(self.frames(3), then=lambda: ran.append(3))
+        self.posted(2)
+        self.assertTrue(s.posting())
+        self.hub.release.set()
+        kind, err = self.items.get(timeout=5)
+        self.assertEqual(kind, "closed")
+        self.assertIsInstance(err, self.uplink.NotDelivered)
+        self.assertTrue(str(err).startswith("the hub answered 503"), str(err))
+        self.assertTrue(any(re.fullmatch(r"log lane closed connection #\d+ after 2 POSTs \(failed: the hub answered "
+                                         r"503 .*\)", line) for line in self.said), "the lane's close names it")
+        s.join(3)
+        self.assertFalse(s.is_alive(), "a lane that lost a POST exits")
+        s.send(self.frames(4), then=lambda: ran.append(4))
+        time.sleep(0.3)
+        self.assertEqual(ran, [1], "no continuation after the failure")
+        self.assertEqual(len(self.hub.posts), 2, "nothing queued behind it is posted")
+        self.assertTrue(self.items.empty(), "the failure is put once")
+
+    def test_the_log_lane_posts_each_entry_alone_and_the_session_lane_merges(self):
+        for name in ("log", "session"):
+            self.hub.posts.clear()
+            self.hub.release.clear()
+            self.hub.script = ["hold"]
+            s = self.lane(name)
+            s.send(self.frames(1))
+            self.posted(1)
+            s.send(self.frames(2))
+            s.send(self.frames(3))
+            time.sleep(0.2)
+            self.hub.release.set()
+            want = [[("p1", 1)], [("p1", 2)], [("p1", 3)]] if name == "log" else [[("p1", 1)], [("p1", 2), ("p1", 3)]]
+            self.posted(len(want))
+            time.sleep(0.2)
+            self.assertEqual([self.ns(i) for i in range(len(self.hub.posts))], want, name)
+            s.close()
+
+    def test_a_projects_session_messages_wait_for_its_release_and_others_do_not(self):
+        s = self.lane("session", released=())
+        s.release("p2")
+        ran = []
+        s.send(self.frames(1, "p1") + self.frames(2, "p2"))
+        self.posted(1)
+        self.assertEqual(self.ns(0), [("p2", 2)], "a released project's message goes; the other's waits")
+        s.send(self.frames(3, "p1"))
+        s.send(self.frames(4, "p3") + self.frames(5, "p2"), then=lambda: ran.append("p3 p2"))
+        self.posted(2)
+        self.assertEqual(self.ns(1), [("p2", 5)])
+        s.release("p1")
+        self.posted(3)
+        self.assertEqual(self.ns(2), [("p1", 1), ("p1", 3)], "released: its messages go, in order")
+        time.sleep(0.2)
+        self.assertTrue(self.items.empty(), "a continuation waits for every project its entry carries")
+        s.release("p3")
+        self.ran(self.items.get(timeout=5))
+        self.assertEqual(ran, ["p3 p2"])
+        self.assertEqual(self.ns(3), [("p3", 4)])
+
+    def test_a_lane_past_its_bound_ends_the_stream(self):
+        self.hub.script = ["hold"]
+        with mock.patch.object(self.uplink, "SEND_QUEUE_MAX", 8000):
+            s = self.lane("log")
+            s.send(self.frames(0))
+            self.posted(1)
+            big = [{"t": "events", "project": "p1", "pad": "x" * 3000}]
+            s.send(big)
+            s.send(big)
+            with self.assertRaises(self.uplink.NotDelivered) as e:
+                s.send(big)
+            self.assertIn("is not taking frames", str(e.exception))
+        s.join(3)
+        self.assertFalse(s.is_alive(), "its held POST given up")
+        self.assertEqual(len(self.hub.posts), 1)
+
+    def test_a_stale_connection_is_dialled_afresh_before_the_send_and_retried_once_after_it(self):
+        """The hub closed the kept connection while it was idle: seen before
+        the send (the socket reads its end), it is dialled afresh; reset and
+        not seen, the send fails, and the POST goes once more on a fresh
+        connection."""
+        s = self.lane("log")
+        self.hub.script = ["fin"]
+        for i in (1, 2):
+            s.send(self.frames(i), then=lambda: None)
+            self.ran(self.items.get(timeout=5))
+        self.assertEqual([p["conn"] for p in self.hub.posts], [1, 2])
+        self.assertTrue(any(line.endswith("after 1 POSTs (the hub closed it)") for line in self.said), self.said)
+        self.hub.script = ["rst"]
+        s.send(self.frames(3), then=lambda: None)
+        self.ran(self.items.get(timeout=5))
+        time.sleep(0.2)
+        with mock.patch.object(self.uplink, "readable", lambda _sock: False):
+            s.send(self.frames(4), then=lambda: None)
+            self.ran(self.items.get(timeout=5))
+        self.assertEqual([p["conn"] for p in self.hub.posts], [1, 2, 2, 3],
+                         "the reset connection carried nothing; its POST went once, on a fresh one")
+        self.assertTrue(any(re.search(r"after 2 POSTs \(failed: .*(reset|pipe)", line, re.I) for line in self.said),
+                        self.said)
+        self.assertEqual(len(self.numbers("dialled")), 3)
+
+    def test_a_failure_after_the_send_is_a_loss(self):
+        s = self.lane("log")
+        s.send(self.frames(1), then=lambda: None)
+        self.ran(self.items.get(timeout=5))
+        self.hub.script = ["drop"]
+        s.send(self.frames(2), then=lambda: None)
+        kind, err = self.items.get(timeout=5)
+        self.assertEqual(kind, "closed")
+        self.assertIsInstance(err, self.uplink.NotDelivered)
+        time.sleep(0.3)
+        self.assertEqual(len(self.hub.posts), 2, "not retried: the hub may have applied it")
+
+    def test_a_connection_close_answer_drops_the_connection(self):
+        s = self.lane("log")
+        self.hub.script = ["close"]
+        for i in (1, 2):
+            s.send(self.frames(i), then=lambda: None)
+            self.ran(self.items.get(timeout=5))
+        self.assertEqual([p["conn"] for p in self.hub.posts], [1, 2])
+        self.assertIn("log lane closed connection #%d after 1 POSTs (the hub closed it)" % self.numbers("dialled")[0],
+                      self.said)
+
+    def test_a_failed_answer_that_closes_the_connection_says_the_post_failed(self):
+        """A non-200 answer that also closes the connection: the close line
+        names the failure, not the close (the owner reads daemon.log's
+        closes to tell a failed POST from an edge's close)."""
+        s = self.lane("log")
+        self.hub.script = ["503-close"]
+        s.send(self.frames(1), then=lambda: None)
+        kind, err = self.items.get(timeout=5)
+        self.assertEqual(kind, "closed")
+        self.assertTrue(str(err).startswith("the hub answered 503"), str(err))
+        closes = [line for line in self.said if "lane closed connection" in line]
+        self.assertEqual(len(closes), 1, closes)
+        self.assertRegex(closes[0], r"log lane closed connection #\d+ after 1 POSTs \(failed: the hub answered 503 .*\)")
+
+    def test_close_and_the_uplinks_end_stop_a_held_lane_silently(self):
+        ended = threading.Event()
+        for stop in ("ended", "close"):
+            self.hub.release.clear()
+            self.hub.script = ["hold"]
+            s = self.lane("log", ended=ended.is_set)
+            before = len(self.hub.posts)
+            s.send(self.frames(1), then=lambda: None)
+            s.send(self.frames(2), then=lambda: None)
+            self.posted(before + 1)
+            t0 = time.time()
+            ended.set() if stop == "ended" else s.close()
+            s.join(3)
+            self.assertFalse(s.is_alive(), stop)
+            self.assertLess(time.time() - t0, 1.5, "within POLL of the end, whatever the exchange is blocked in")
+            self.hub.release.set()
+            time.sleep(0.3)
+            self.assertTrue(self.items.empty(), "%s: nothing put" % stop)
+            ended.clear()
+        self.assertEqual(len(self.hub.posts), 2, "what was queued behind the held POST is dropped")
+
+    def test_a_post_past_its_bound_is_a_loss(self):
+        self.hub.script = ["hold"]
+        with mock.patch.object(self.uplink, "POST_TIMEOUT", 0.3):
+            s = self.lane("log")
+            t0 = time.time()
+            s.send(self.frames(1), then=lambda: None)
+            kind, err = self.items.get(timeout=5)
+        self.assertEqual(kind, "closed")
+        self.assertIsInstance(err, self.uplink.NotDelivered)
+        self.assertLess(time.time() - t0, 2.0)
+
+    def test_warm_dials_before_the_first_post(self):
+        s = self.lane("session")
+        s.warm()
+        self.assertTrue(wait_for(lambda: self.numbers("dialled"), 3), "dialled with nothing to post")
+        self.assertTrue(wait_for(lambda: self.hub.conns == 1, 3))
+        s.warm()
+        s.send(self.frames(1))
+        self.posted(1)
+        self.assertEqual(self.hub.posts[0]["conn"], 1, "the POST takes the warmed connection")
+        self.assertEqual(len(self.numbers("dialled")), 1)
+
+    def test_a_released_project_gated_again_keeps_its_queued_messages_back_in_order(self):
+        """`hold` (a project opened again): its entries queued and not yet
+        posted go back aside, ahead of the ones that follow, until the next
+        `release`; another project's go on."""
+        s = self.lane("session", released=("p1", "p2"))
+        self.hub.script = ["hold"]
+        s.send(self.frames(0, "p2"))
+        self.posted(1)
+        s.send(self.frames(1, "p1"))
+        self.assertFalse(s.hold("p1"), "the body out carries p2 alone")
+        s.send(self.frames(2, "p1"))
+        s.send(self.frames(3, "p2"))
+        self.hub.release.set()
+        self.posted(2)
+        time.sleep(0.3)
+        self.assertEqual([self.ns(i) for i in range(len(self.hub.posts))], [[("p2", 0)], [("p2", 3)]])
+        s.release("p1")
+        self.posted(3)
+        self.assertEqual(self.ns(2), [("p1", 1), ("p1", 2)])
+
+    def test_a_project_opened_again_drops_what_its_hello_sends_anew_and_keeps_its_subscriptions_messages(self):
+        """`hold` for a project opened again: of its entries not yet taken,
+        what the re-open's hello sends as it is now — the complete pending
+        set, a request's raise or settlement, an RPC's result, a compaction's
+        message, a session's presence — is dropped, never to go after that
+        hello and contradict it; a subscription's messages wait for the
+        `release` and go, in order. A dropped entry's continuation never
+        runs."""
+        s = self.lane("session", released=("p1", "p2"))
+        self.hub.script = ["hold"]
+        s.send(self.frames(0, "p1"))
+        self.posted(1)
+
+        def message(kind, n=None, project="p1"):
+            return {"t": "session", "message": {"project": project, "kind": kind, "sub": "s1" if n is not None
+                                                else None, "n": n, "body": {}}}
+        ran = []
+        s.send([message("presence")])
+        s.send([message("chunk", 1)])
+        s.send([{"t": "pending", "project": "p1", "raised": []}, message("raised"), message("settled")],
+               then=lambda: ran.append("requests"))
+        s.send([{"t": "rpc-result", "project": "p1", "nonce": "n1", "outcome": {}}, message("compact")],
+               then=lambda: ran.append("rpcs"))
+        s.send([message("presence", project="p2")])
+        s.send([message("presence"), message("chunk", 2)])
+        queued = s.queued()
+        self.assertTrue(s.hold("p1"), "the body out carries p1: the hub may apply it after the hello")
+        self.assertLess(s.queued(), queued, "what was dropped is no longer counted as unsent")
+        s.send([message("presence")])   # after the hold: the re-open's own, kept
+        self.hub.release.set()
+        self.posted(2)
+        time.sleep(0.2)
+        self.assertEqual(self.hub.bodies()[1], [message("presence", project="p2")], "another project's goes on")
+        s.release("p1")
+        self.posted(3)
+        time.sleep(0.2)
+        self.assertEqual([[(f["t"], f.get("message", {}).get("kind"), f.get("message", {}).get("n")) for f in b]
+                          for b in self.hub.bodies()[2:]],
+                         [[("session", "chunk", 1), ("session", "chunk", 2), ("session", "presence", None)]])
+        self.assertTrue(self.items.empty(), "no continuation of a dropped entry: %s" % ran)
+        self.assertEqual(s.queued(), 0)
+
+    def stalled_dials(self, gate):
+        """`connection` as the lanes dial it, each dial stalled until `gate`
+        is set, before any socket exists (a DNS lookup that hangs): nothing a
+        watcher can shut. The connections made, in order."""
+        real, made = self.uplink.connection, []
+
+        def connection(cred, timeout):
+            conn = real(cred, timeout)
+            dial = conn.connect
+
+            def stalled():
+                gate.wait(10)
+                dial()
+            conn.connect = stalled
+            made.append(conn)
+            return conn
+        return connection, made
+
+    @staticmethod
+    def workers():
+        """The exchange workers alive (`watched`'s threads)."""
+        return {t for t in threading.enumerate() if t.name == "uplink-post" and t.is_alive()}
+
+    def test_a_warm_dial_past_its_deadline_stays_the_lanes_one_dial_and_never_replaces_its_connection(self):
+        """A warm dial that outlasts its watcher (stalled before its socket
+        exists): the lane dials nothing more meanwhile, however often it is
+        warmed — a POST waits, within its own deadline, for that dial — and
+        the connection that dial makes, once it lands, is the one every POST
+        goes on: one connection at the hub, one dial line, no worker beyond
+        the dial's own."""
+        gate = threading.Event()
+        connection, made = self.stalled_dials(gate)
+        before = self.workers()
+        with mock.patch.object(self.uplink, "connection", connection), \
+                mock.patch.object(self.uplink, "POST_TIMEOUT", 0.4):
+            s = self.lane("session")
+            s.warm()
+            self.assertTrue(wait_for(lambda: any("could not dial the hub ahead" in line for line in self.said), 3),
+                            self.said)
+            for _ in range(3):
+                s.warm()
+                time.sleep(0.3)
+            self.assertEqual(len(self.workers() - before), 1, "warmed again while its dial is out: no second dial")
+            s.send(self.frames(1))
+            time.sleep(0.2)
+            gate.set()
+            self.posted(1)
+            s.send(self.frames(2))
+            self.posted(2)
+        self.assertEqual(len(made), 1, "one dial")
+        self.assertEqual([p["conn"] for p in self.hub.posts], [1, 1], "both POSTs on the one connection")
+        self.assertEqual(self.hub.conns, 1)
+        self.assertEqual(len(self.numbers("dialled")), 1, self.said)
+        self.assertTrue(self.items.empty(), "nothing failed")
+
+    def test_a_dial_that_lands_after_its_lane_closed_closes_its_own_connection(self):
+        """The lane's dial stalls, its POST past its deadline ends the lane;
+        the dial landing after that installs nothing and closes the
+        connection it made."""
+        gate = threading.Event()
+        connection, made = self.stalled_dials(gate)
+        before = self.workers()
+        with mock.patch.object(self.uplink, "connection", connection), \
+                mock.patch.object(self.uplink, "POST_TIMEOUT", 0.2):
+            s = self.lane("session")
+            s.send(self.frames(1))
+            kind, _ = self.items.get(timeout=5)
+            self.assertEqual(kind, "closed")
+            gate.set()
+            self.assertTrue(wait_for(lambda: made[0].sock is None and not self.workers() - before, 3),
+                            "the late dial closed what it made, and its worker ended")
+        self.assertIsNone(s.conn)
+        self.assertEqual(self.numbers("dialled"), [], "nothing installed")
+
+    def test_a_slow_post_is_said(self):
+        self.hub.script = [("slow", 0.4)]
+        with mock.patch.object(self.uplink, "SLOW_POST_SECONDS", 0.2):
+            s = self.lane("log")
+            s.send(self.frames(1), then=lambda: None)
+            self.ran(self.items.get(timeout=5))
+        self.assertTrue(any(re.fullmatch(r"a log lane POST took 0\.\d s", line) for line in self.said), self.said)
 
 
 def call(url, method, path, body=None, headers=None):
@@ -3577,6 +4941,13 @@ class Uplink(unittest.TestCase):
 
     def tearDown(self):
         self.fake.stop_bridge()
+
+    def test_a0_a_live_members_build_is_warmed_and_saved_before_any_subscription(self):
+        """The warmer in the uplink (open-fast M7): the live member's main
+        transcript is built in the background and saved, no open asked."""
+        self.assertFalse([m for m in self.hub.messages() if m.get("sub")], "no subscription yet")
+        saved = plane.build_file(self.fake.path(None))
+        self.assertTrue(wait_for(lambda: os.path.exists(saved), timeout=15), "warmed and saved by the uplink")
 
     # ---------------------------------------------------- helpers
 
@@ -3989,6 +5360,101 @@ class Uplink(unittest.TestCase):
         self.assertIsNone(b.end)
         self.assertEqual(b.errors, [])
         self.hub.send({"t": "unsubscribe", "project": self.project, "sub": b.sub})
+
+    # ---------------------------------------------------- the sender lanes, against the stand-in
+
+    def restart_uplink(self, **env):
+        """The uplink started again, with `env` over the test's; returns once
+        it said its sessions' presence on its new stream."""
+        count = len(self.hub.messages())
+        Uplink.uplink.terminate()
+        Uplink.uplink.wait(10)
+        Uplink.uplink = subprocess.Popen([os.path.join(SCRIPTS, "sminos"), "daemon", "uplink"],
+                                         env={**os.environ, **env}, stdout=subprocess.DEVNULL,
+                                         stderr=subprocess.DEVNULL)
+        Uplink.procs.append(Uplink.uplink)
+        ok = self.hub.wait(lambda ms: any(m["kind"] == "presence" and m["session"] == self.sid for m in ms[count:]),
+                           timeout=15)
+        self.assertIsNotNone(ok, "the uplink is back with its sessions' presence")
+
+    def opened_within(self, bound):
+        """One open, subscribe to snapshot at the stand-in, then unsubscribed:
+        its time."""
+        t0 = time.time()
+        b = self.subscribe()
+        self.assertTrue(self.feed(b, lambda: b.snapshot is not None, timeout=10), "the open got its snapshot")
+        at = next(x["at"] for x in self.hub.state()["sessions"]
+                  if x["message"].get("sub") == b.sub and x["message"]["kind"] == "snapshot")
+        self.hub.send({"t": "unsubscribe", "project": self.project, "sub": b.sub})
+        self.assertLessEqual(at - t0, bound, "the snapshot at the stand-in within %g s of the subscribe" % bound)
+        return b
+
+    def test_h_a_held_hello_on_the_log_lane_delays_no_open(self):
+        """The hub holds the archive period's re-hello (A4, the uplink's
+        proof): the log lane waits in that POST, and the opens go on the
+        session lane meanwhile, each within a second; released (and refused,
+        as the stand-in answers a held POST), the stream ends as any lost
+        POST ends it, and the next one serves opens again."""
+        if not isinstance(self.hub, StandinHub):
+            self.skipTest("the stand-in's hold")
+        self.restart_uplink(SMINOS_ARCHIVE_EVERY="1")
+        self.addCleanup(self.restart_uplink)
+        state = self.hub.state()
+        held_before = len([p for p in state["posted"] if p["status"] == "held"])
+        generation = state["generation"]
+        call(self.hub.url, "POST", "/control/post-fault", {"faults": [{"fault": "hold", "has": "hello"}]})
+        held = wait_for(lambda: [p for p in self.hub.state()["posted"] if p["status"] == "held"][held_before:], 10)
+        self.assertTrue(held, "the next re-hello is held")
+        self.assertEqual(held[0]["generation"], str(generation))
+        self.opened_within(1.0)
+        for _ in range(3):
+            time.sleep(6)
+            self.opened_within(1.0)
+        state = self.hub.state()
+        self.assertEqual(state["generation"], generation, "the stream stood through the hold")
+        self.assertEqual(len([p for p in state["posted"] if p["status"] == "held"]), held_before + 1,
+                         "the log lane posted nothing more behind the held POST")
+        daemon_log = os.path.join(os.environ["SMINOS_HOME"], "daemon.log")
+        before = len(read(daemon_log))   # what this test's release says, not an earlier test's lines
+        call(self.hub.url, "POST", "/control/release", {})
+        self.assertTrue(wait_for(lambda: self.hub.state()["generation"] > generation, 15), "the stream ends")
+        def said():
+            text = read(daemon_log)[before:]
+            return ("a POST was not delivered (the hub answered 503" in text
+                    and re.search(r"uplink: log lane closed connection #\d+ after \d+ POSTs \(failed: the hub "
+                                  r"answered 503", text))
+
+        self.assertTrue(wait_for(said, 5), "the stream's end and the log lane's close, both said")
+        self.assertIsNotNone(self.hub.wait(lambda ms: self.hub.state()["projects"][self.project]["open"].get(
+            self.hub.machine) == self.hub.state()["generation"], timeout=15), "and the next one hellos")
+        self.opened_within(1.0)
+
+    def test_i_a_lanes_posts_share_a_connection_until_it_idles(self):
+        """A9 against the stand-in: the session lane's POSTs come on one
+        connection; after a pause past SMINOS_IDLE_CLOSE the next comes on a
+        new one, and daemon.log's connection lines say the same."""
+        if not isinstance(self.hub, StandinHub):
+            self.skipTest("the stand-in's connection numbers")
+        self.restart_uplink(SMINOS_IDLE_CLOSE="1")
+        self.addCleanup(self.restart_uplink)
+        logged = len(read(os.path.join(os.environ["SMINOS_HOME"], "daemon.log")).splitlines())
+
+        def conn_of(b):
+            return next(p["conn"] for p in self.hub.state()["posted"] if b.sub in p["body"])
+
+        conns = [conn_of(self.opened_within(5.0)) for _ in range(5)]
+        self.assertEqual(len(set(conns)), 1, "five POSTs on the session lane, one connection: %s" % conns)
+        time.sleep(2.0)
+        later = conn_of(self.opened_within(5.0))
+        self.assertNotEqual(later, conns[0], "after a 2 s pause, a new connection")
+        said = read(os.path.join(os.environ["SMINOS_HOME"], "daemon.log")).splitlines()[logged:]
+        closed = [re.search(r"uplink: session lane closed connection #(\d+) after (\d+) POSTs \(idle\)", line)
+                  for line in said]
+        closed = [(int(m.group(1)), int(m.group(2))) for m in closed if m]
+        dialled = [int(m.group(1)) for m in (re.search(r"uplink: session lane dialled the hub \(connection #(\d+)\)",
+                                                       line) for line in said) if m]
+        self.assertTrue(closed and closed[-1][1] >= 5, "the idle close says its POSTs: %s" % closed)
+        self.assertGreater(dialled[-1], closed[-1][0], "and the next POST's connection is a new dial")
 
 
 if __name__ == "__main__":

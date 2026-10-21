@@ -34,6 +34,13 @@ mod streamed is the only copy outside the engine. The snapshot says so
 (`namedBlocks: true`) only when the mod's last resync declared it keeps them
 too: a mod from before that resyncs copies without the blocks it named, and
 a reader of a snapshot that does not say so waits for the cut's row on disk.
+A block's kept text is its last BLOCK_TAIL characters once it passes that,
+marked `truncated: true`, as the mod keeps it: the chunk events carry every
+chunk whole, so only the catch-up copy a snapshot gives is the tail, and a
+resync (which the mod posts alone, bounded under the engine's limit on a
+body) is taken as it comes, cut the same way. A resync that bound shortened
+(`truncated`) cuts pending permissions' inputs too: a request this child
+already holds keeps the input its own raise carried.
 The rows no hook of the mod's sees (a manual compaction's) it reads here too:
 
     GET  /rows?loop=&after=<uuid>      a loop's whole rows on disk past <uuid> (404 while it is not)
@@ -109,6 +116,7 @@ ANSWER_WAIT_MS = 5000          # an async question's answer, relayed to the mod
 EXPORTS_QUEUED = 1000          # the mod's exports waiting for the log; past it, the Stop hook's export has them
 STALE_TRIES, STALE_PAUSE = 3, 0.1  # a socket refused this many times, this far apart, is stale
 TAIL_BLOCK = 65536             # a transcript's tail is read backward this many bytes at a time
+BLOCK_TAIL = 65536             # characters of a streaming block's text a snapshot carries: past it, its tail, `truncated`
 ROWS_SCAN_MAX = 4 << 20        # bytes: how far back from its end GET /rows looks for the row it reads past
 NOTICES = ("block-row", "row-seen")  # each row the session keeps is named by one, in write order (the cut)
 NONCE_HEADER = "X-Bridge-Nonce"       # this child's, from its hello: a post without it is another module's
@@ -449,7 +457,7 @@ def _message(e):
     for b in e.get("blocks") or []:
         if isinstance(b, dict) and isinstance(b.get("index"), int) and (
                 b["index"] not in settled or isinstance(b.get("uuid"), str)):
-            blocks[b["index"]] = dict(b)
+            blocks[b["index"]] = _bounded(dict(b))
     m = {"turnId": e.get("turnId"), "agentId": e.get("agentId"), "step": e.get("step"), "model": e.get("model"),
          "upTo": e.get("upTo") if isinstance(e.get("upTo"), int) else -1, "blocks": blocks, "settled": settled}
     return m
@@ -460,6 +468,15 @@ def _shown(m):
     a named one with its row's `uuid` and `namedAt`."""
     return {"turnId": m["turnId"], "agentId": m["agentId"], "step": m["step"], "model": m.get("model"),
             "upTo": m["upTo"], "blocks": [dict(m["blocks"][i]) for i in sorted(m["blocks"])]}
+
+
+def _bounded(b):
+    """A block whose text passed BLOCK_TAIL characters keeps its tail, marked
+    `truncated`: the catch-up copy a snapshot gives. A subscriber that
+    streamed from the start has every chunk whole."""
+    if isinstance(b.get("text"), str) and len(b["text"]) > BLOCK_TAIL:
+        b["text"], b["truncated"] = b["text"][-BLOCK_TAIL:], True
+    return b
 
 
 def _fold(m, index, e):
@@ -477,6 +494,7 @@ def _fold(m, index, e):
     else:
         b["text"] += str(chunk.get("json") or "")
     b["upTo"] = index
+    _bounded(b)
 
 
 def is_question(raised):
@@ -704,8 +722,18 @@ class Bridge:
                 for r in e["pending"]:
                     rid = r.get("request") if isinstance(r, dict) else None
                     if isinstance(rid, str):
-                        pending[rid] = {**self._fresh_request(), **(self.pending.get(rid) or {}),
-                                        "raised": {k: v for k, v in r.items() if k not in ("type", "n")}}
+                        old = self.pending.get(rid) or {}
+                        raised = {k: v for k, v in r.items() if k not in ("type", "n")}
+                        held = old.get("raised")
+                        if e.get("truncated") is True and r.get("truncated") is True and isinstance(held, dict) \
+                                and held.get("tool") == r.get("tool"):
+                            # A resync shortened past the engine's limit cuts
+                            # pending inputs: a request this child holds keeps
+                            # what its raise carried — the input the session
+                            # holds and the hub drew — so a decision's digest
+                            # made from that draw still finds it pending.
+                            raised = held
+                        pending[rid] = {**self._fresh_request(), **old, "raised": raised}
                 self.pending = pending
             for s in e.get("settled") or []:
                 if isinstance(s, dict) and isinstance(s.get("request"), str) and s["request"] not in self.settled:

@@ -700,8 +700,12 @@ class Rig:
 
     def spawn(self, argv, log=None, env=None):
         out = open(os.path.join(self.root, log), "ab") if log else subprocess.DEVNULL
-        p = subprocess.Popen(argv, stdout=out, stderr=subprocess.STDOUT if log else subprocess.DEVNULL,
-                             env=env if env is not None else None)
+        try:
+            p = subprocess.Popen(argv, stdout=out, stderr=subprocess.STDOUT if log else subprocess.DEVNULL,
+                                 env=env if env is not None else None)
+        finally:
+            if log:
+                out.close()   # the child holds its own copy
         self.procs.append(p)
         return p
 

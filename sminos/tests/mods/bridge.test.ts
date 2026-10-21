@@ -5,6 +5,7 @@ import { ASK_TOOL, ASYNC_RESULT, PLUGIN, deliveryText, registerAsk, resetAsk } f
 import {
   AGENTS_REFRESH_MS,
   BACKGROUND_WINDOW_MS,
+  BLOCK_TAIL,
   HEARTBEAT_MS,
   INTERRUPT_HOLD_MS,
   OFF_LINE,
@@ -12,6 +13,8 @@ import {
   RECORD_WAIT_MS,
   ROWS_POLLS,
   ROWS_POLL_MS,
+  RESYNC_INPUT_CAP,
+  RESYNC_MAX,
   STEER_LINE,
   STEP_END_WAIT_MS,
   TRANSCRIPT_RETRY_MS,
@@ -50,6 +53,8 @@ const beneath = <T extends object>(next: T, plugins: readonly string[], options:
   return Object.assign(next, { trace }, 'origin' in next && options.origin === undefined ? {} : { origin })
 }
 /** devcloud's marker as its loaded module answers it (at version 0), and as an older devcloud stored it (version 1), which outlives its module. */
+/** The longest body `$.http.fetch` sends, in characters. */
+const ENGINE_BODY_MAX = 4_194_304
 const LIVE_MARKER = { value: { owner: 'devcloud', version: 1 }, version: 0 }
 const STORED_MARKER = { value: { owner: 'devcloud', version: 1 }, version: 1 }
 
@@ -168,6 +173,8 @@ function harness(
     socketPath?: string
     nonce?: string
     events: Record<string, unknown>[]
+    /** The body's length in characters. */
+    size: number
     release: () => void
     fail: () => void
     /** The child answers 409: the post is not this module instance's. */
@@ -325,7 +332,13 @@ function harness(
           const fail = () => reject(new Error('refused'))
           const refuse = () => resolve({ status: 409, ok: false, headers: {}, text: '{"error":"another module\'s"}' })
           const n = posts.length
-          posts.push({ url, socketPath: init.socketPath, nonce: init.headers?.['x-bridge-nonce'], events: JSON.parse(init.body ?? '[]'), release, fail, refuse })
+          const body = init.body ?? '[]'
+          posts.push({ url, socketPath: init.socketPath, nonce: init.headers?.['x-bridge-nonce'], events: JSON.parse(body), size: body.length, release, fail, refuse })
+          // As the engine (2.1.300): a body past its limit is refused before it is sent.
+          if (body.length > ENGINE_BODY_MAX) {
+            reject(new Error(`the request body is ${body.length} characters, over ${ENGINE_BODY_MAX}`))
+            return
+          }
           if (!options.hold) {
             ;(options.failAt?.includes(n) ? fail : release)()
           }
@@ -634,20 +647,113 @@ describe('the child', () => {
     expect(h.children.length).toBe(0)
   })
 
-  test('a child that ends is followed by a new one, later each time it ends at once', async () => {
+  test('a child that ends is followed by a new one at once, then later each time it ends at once', async () => {
     const h = harness()
     await h.start()
     h.children[0]!.end()
     await h.settle()
-    const first = h.timers.filter((t) => t.kind === 'after')
-    expect(first.map((t) => t.ms)).toEqual([1000])
-    first[0]!.fn()
+    const respawns = () => h.timers.filter((t) => t.kind === 'after')
+    expect(respawns().map((t) => t.ms)).toEqual([0])
+    respawns()[0]!.fn()
     await h.settle()
     expect(h.children.length).toBe(2)
     expect(h.children[1]!.argv).toEqual(h.children[0]!.argv)
-    h.children[1]!.end()
+    // One extra immediate try is all a child that dies at once costs; then a second, doubling.
+    for (const i of [1, 2]) {
+      h.children[i]!.end()
+      await h.settle()
+      respawns().at(-1)!.fn()
+      await h.settle()
+    }
+    expect(respawns().map((t) => t.ms)).toEqual([0, 1000, 2000])
+    expect(h.children.length).toBe(4)
+  })
+
+  test('a child that ends after a stable run is followed by a new one at once, whatever the ones before it cost', async () => {
+    const h = harness()
+    await h.start()
+    const respawns = () => h.timers.filter((t) => t.kind === 'after')
+    for (const _ of [0, 1, 2]) {
+      h.children.at(-1)!.end()
+      await h.settle()
+      respawns().at(-1)!.fn()
+      await h.settle()
+    }
+    expect(respawns().map((t) => t.ms)).toEqual([0, 1000, 2000])
+    // This one runs 30 s (STABLE_MS, by the engine's clock) before it ends.
+    h.advance(30_000)
+    h.children.at(-1)!.end()
     await h.settle()
-    expect(h.timers.filter((t) => t.kind === 'after').map((t) => t.ms)).toEqual([1000, 2000])
+    expect(respawns().map((t) => t.ms)).toEqual([0, 1000, 2000, 0])
+  })
+
+  test("a post in flight when its child dies fails without holding up the successor: the successor's session start and resync go at once", async () => {
+    const h = harness({ hold: true })
+    const releaseAll = async () => {
+      for (let i = 0; i < h.posts.length; i++) {
+        h.posts[i]!.release()
+        await h.settle()
+      }
+    }
+    await h.ready()
+    await releaseAll()
+    await h.turn('t1')
+    await h.settle()
+    const inFlight = h.posts.at(-1)!
+    const timers = h.timers.length
+    h.children[0]!.end()
+    await h.settle()
+    h.timers[timers]!.fn()
+    await h.settle()
+    h.children[1]!.write(hello(SID, SOCK, undefined, 'n1'))
+    await h.settle()
+    inFlight.fail()
+    await h.settle()
+    expect(h.timers.filter((t) => t.kind === 'after' && t.ms === 500).length).toBe(0)
+    const start = h.posts.at(-1)!
+    expect([start.nonce, start.events.map((e) => e.type)]).toEqual(['n1', ['session']])
+    start.release()
+    await h.settle()
+    expect(h.posts.at(-1)!.events.map((e) => e.type)).toEqual(['resync'])
+  })
+
+  test("a retry's wait set for a child that then died does not hold up its successor, nor does its end clear the successor's own", async () => {
+    const h = harness({ hold: true })
+    const releaseAll = async () => {
+      for (let i = 0; i < h.posts.length; i++) {
+        h.posts[i]!.release()
+        await h.settle()
+      }
+    }
+    await h.ready()
+    await releaseAll()
+    await h.turn('t1')
+    await h.settle()
+    // The post fails while its child still stands: the retry waits RETRY_MS.
+    h.posts.at(-1)!.fail()
+    await h.settle()
+    const obsolete = h.timers.filter((t) => t.kind === 'after' && t.ms === 500)
+    expect(obsolete.length).toBe(1)
+    const timers = h.timers.length
+    h.children[0]!.end()
+    await h.settle()
+    h.timers[timers]!.fn()
+    await h.settle()
+    h.children[1]!.write(hello(SID, SOCK, undefined, 'n1'))
+    await h.settle()
+    const start = h.posts.at(-1)!
+    expect([start.nonce, start.events.map((e) => e.type)]).toEqual(['n1', ['session']])
+    // The successor's own post fails: its wait stands through the obsolete one's end.
+    start.fail()
+    await h.settle()
+    const posted = h.posts.length
+    obsolete[0]!.fn()
+    await h.settle()
+    expect(h.posts.length).toBe(posted)
+    h.timers.filter((t) => t.kind === 'after' && t.ms === 500).at(-1)!.fn()
+    await h.settle()
+    expect(h.posts.length).toBe(posted + 1)
+    expect(h.posts.at(-1)!.events.map((e) => e.type)).toEqual(['gap'])
   })
 
   test('a session whose id changed (a /clear) gets a child under the new id, the old one stopped', async () => {
@@ -681,8 +787,9 @@ describe('the child', () => {
     await h.settle()
     h.children[1]!.write(hello(SID, SOCK, undefined, 'n1'))
     await h.settle()
-    expect(h.posts.slice(before).map((p) => p.nonce)).toEqual(['n1'])
-    expect(h.posts[before]!.events.map((e) => e.type)).toEqual(['session', 'resync'])
+    expect(h.posts.slice(before).map((p) => p.nonce)).toEqual(['n1', 'n1'])
+    // The session's start, then the resync in a post of its own.
+    expect(h.posts.slice(before).map((p) => p.events.map((e) => e.type))).toEqual([['session'], ['resync']])
   })
 
   test('a post refused as another module instance\'s (409, a reload took the session) stops this one for good', async () => {
@@ -719,16 +826,21 @@ describe('the child', () => {
     await h.settle()
     expect(h.posts.length).toBe(2)
     expect(h.posts[1]!.nonce).toBe('n1')
-    expect(h.posts[1]!.events.map((e) => e.type)).toEqual(['session', 'resync'])
+    expect(h.posts[1]!.events.map((e) => e.type)).toEqual(['session'])
+    h.posts[1]!.release()
+    await h.settle()
+    expect(h.posts.length).toBe(3)
+    expect(h.posts[2]!.nonce).toBe('n1')
+    expect(h.posts[2]!.events.map((e) => e.type)).toEqual(['resync'])
   })
 
   test("the first post lost (session start and all): the recovery's resync carries the session's start info, which the child takes", async () => {
     const h = harness({ failAt: [0] })
     await h.ready()
-    expect(h.posts[0]!.events.map((e) => e.type)).toEqual(['session', 'resync'])
+    expect(h.posts[0]!.events.map((e) => e.type)).toEqual(['session'])
     await h.fire(500)
-    expect(h.posts[1]!.events.map((e) => e.type)).toEqual(['gap', 'resync'])
-    expect(h.posts[1]!.events[1]).toMatchObject({ sessionInfo: { session: SID, cwd: '/w', surface: 'terminal', isInteractive: true, model: 'claude-haiku', version: '2.1.300' } })
+    expect(h.posts.slice(1).map((p) => p.events.map((e) => e.type))).toEqual([['gap'], ['resync']])
+    expect(h.posts[2]!.events[0]).toMatchObject({ sessionInfo: { session: SID, cwd: '/w', surface: 'terminal', isInteractive: true, model: 'claude-haiku', version: '2.1.300' } })
   })
 
   test('the heartbeat carries the turn state', async () => {
@@ -833,8 +945,13 @@ describe('the stream', () => {
     expect(h.posts.length).toBe(1)
     h.posts[0]!.release()
     await h.settle()
+    // The resync goes alone, and what came meanwhile after it.
     expect(h.posts.length).toBe(2)
-    expect(h.posts[1]!.events.map((e) => e.turnId)).toEqual(['t1', 't2'])
+    expect(h.posts[1]!.events.map((e) => e.type)).toEqual(['resync'])
+    h.posts[1]!.release()
+    await h.settle()
+    expect(h.posts.length).toBe(3)
+    expect(h.posts[2]!.events.map((e) => e.turnId)).toEqual(['t1', 't2'])
   })
 
   test('a post lost mid-message: the next opens with the gap and a resync whose text covers its upTo', async () => {
@@ -842,7 +959,10 @@ describe('the stream', () => {
     await h.start()
     h.children[0]!.write(hello())
     await h.settle()
+    // The session's start, then its resync.
     h.posts[0]!.release()
+    await h.settle()
+    h.posts[1]!.release()
     await h.settle()
     const e = { turnId: 't1', index: 0, model: 'm', messageCount: 1 }
     const tag = { turnId: 't1', agentId: null, step: 0 }
@@ -856,25 +976,27 @@ describe('the stream', () => {
       g.result = Promise.resolve({ turnId: 't1', index: 0, stopReason: 'end_turn', usage: null })
       return g
     }) as AsyncGenerator<unknown, unknown>
-    await gen.next() // step start posted (1); A queued
+    await gen.next() // step start posted (2); A queued
     await h.settle()
-    h.posts[1]!.release()
+    h.posts[2]!.release()
     await h.settle()
-    expect(h.posts[2]!.events).toMatchObject([{ type: 'chunk', ...tag, chunkIndex: 0 }])
+    expect(h.posts[3]!.events).toMatchObject([{ type: 'chunk', ...tag, chunkIndex: 0 }])
     await gen.next() // B queued behind the post of A
     await h.settle()
-    h.posts[2]!.fail() // A and B never reach the child
+    h.posts[3]!.fail() // A and B never reach the child
     await h.settle()
-    expect(h.posts.length).toBe(3) // the next post waits
+    expect(h.posts.length).toBe(4) // the next post waits
     h.timers.filter((t) => t.kind === 'after').at(-1)!.fn()
     await h.settle()
-    const resent = h.posts[3]!.events
-    expect(resent[0]).toMatchObject({ type: 'gap', dropped: 2 })
-    expect(resent[1]).toMatchObject({ type: 'resync', streaming: [{ ...tag, upTo: 1, blocks: [{ index: 0, kind: 'text', text: 'AB', upTo: 1 }] }] })
-    h.posts[3]!.release()
+    // The gap, then the resync in a post of its own.
+    expect(h.posts[4]!.events).toMatchObject([{ type: 'gap', dropped: 2 }])
+    h.posts[4]!.release()
+    await h.settle()
+    expect(h.posts[5]!.events).toMatchObject([{ type: 'resync', streaming: [{ ...tag, upTo: 1, blocks: [{ index: 0, kind: 'text', text: 'AB', upTo: 1 }] }] }])
+    h.posts[5]!.release()
     await gen.next() // C follows the resync
     await h.settle()
-    expect(h.posts[4]!.events).toMatchObject([{ type: 'chunk', ...tag, chunkIndex: 2, chunk: { text: 'C' } }])
+    expect(h.posts[6]!.events).toMatchObject([{ type: 'chunk', ...tag, chunkIndex: 2, chunk: { text: 'C' } }])
   })
 
   test('a child replaced mid-message gets the message so far in its first post', async () => {
@@ -889,9 +1011,8 @@ describe('the stream', () => {
         await h.settle()
         h.children[1]!.write(hello())
         await h.settle()
-        const first = h.posts.at(-1)!.events
-        expect(first.map((e) => e.type)).toEqual(['session', 'resync'])
-        expect(first[1]).toMatchObject({
+        expect(h.posts.slice(-2).map((p) => p.events.map((e) => e.type))).toEqual([['session'], ['resync']])
+        expect(h.posts.at(-1)!.events[0]).toMatchObject({
           streaming: [
             { turnId: 't0', agentId: null, step: 0, upTo: -1, blocks: [] },
             { turnId: 't1', agentId: 'a1', step: 0, upTo: 0, blocks: [{ index: 0, kind: 'text', text: 'Hel', upTo: 0 }] },
@@ -2318,11 +2439,14 @@ describe("a delivered prompt's row (G6)", () => {
     }
     return h.posts.find((p) => p.events.some(isRefusal))!
   }
-  /** The poster's retry after a failed post, and the post it makes. */
+  /** The poster's retry after a failed post: the gap it posts, answered, then the resync in a post of its own. */
   const retry = async (h: ReturnType<typeof harness>) => {
     h.timers.filter((t) => t.kind === 'after').at(-1)!.fn()
     await h.settle()
-    return h.posts.at(-1)!
+    const gap = h.posts.at(-1)!
+    gap.release()
+    await h.settle()
+    return { gap, resync: h.posts.at(-1)! }
   }
 
   test('a refusal whose post is lost rides every resync, with its reason, until a post that carried it is answered', async () => {
@@ -2338,20 +2462,20 @@ describe("a delivered prompt's row (G6)", () => {
     ;(await untilRefusal(h)).fail() // the refusal never reaches the child
     await h.settle()
     let recovery = await retry(h)
-    expect(recovery.events.map((e) => e.type)).toEqual(['gap', 'resync'])
-    expect(recovery.events[1]!.refused).toEqual([{ key, reason: 'a Stop hook stands' }])
-    recovery.fail() // nor does the resync that carried it
+    expect([recovery.gap, recovery.resync].map((p) => p.events.map((e) => e.type))).toEqual([['gap'], ['resync']])
+    expect(recovery.resync.events[0]!.refused).toEqual([{ key, reason: 'a Stop hook stands' }])
+    recovery.resync.fail() // nor does the resync that carried it
     await h.settle()
     recovery = await retry(h)
-    expect(recovery.events[1]!.refused).toEqual([{ key, reason: 'a Stop hook stands' }])
-    recovery.release() // the child has it now
+    expect(recovery.resync.events[0]!.refused).toEqual([{ key, reason: 'a Stop hook stands' }])
+    recovery.resync.release() // the child has it now
     await h.settle()
     await h.turn('t9')
     await h.settle()
     h.posts.at(-1)!.fail()
     await h.settle()
     recovery = await retry(h)
-    expect(recovery.events[1]).toMatchObject({ type: 'resync', refused: [] })
+    expect(recovery.resync.events[0]).toMatchObject({ type: 'resync', refused: [] })
   })
 
   test('a refusal whose own post was answered is not carried by a later resync', async () => {
@@ -2369,7 +2493,7 @@ describe("a delivered prompt's row (G6)", () => {
     await h.settle()
     h.posts.at(-1)!.fail()
     await h.settle()
-    expect((await retry(h)).events[1]).toMatchObject({ type: 'resync', refused: [] })
+    expect((await retry(h)).resync.events[0]).toMatchObject({ type: 'resync', refused: [] })
   })
 })
 
@@ -2752,7 +2876,7 @@ describe('streaming per content block', () => {
       // still carrying its text, marked with the row that named it and when.
       h.children[0]!.write(hello())
       await h.settle()
-      const resync = h.posts.at(-1)!.events[1]!
+      const resync = h.ofType('resync').at(-1)!
       // It declares that it keeps named blocks, so the child's snapshot may say so.
       expect(resync).toMatchObject({ type: 'resync', namedBlocks: true })
       expect(resync.streaming).toEqual([
@@ -2806,6 +2930,263 @@ describe('streaming per content block', () => {
       await h.responseRow({ type: 'text', text: 'b' }, { uuid: 'r-2' })
     })
     expect(h.ofType('block-row').map((e) => e.uuid)).toEqual(['r-1'])
+  })
+})
+
+describe("a post fits the engine's limit", () => {
+  /** Letters a..z in turn, `size` of each: a tail of them shows where it was cut. */
+  const pieces = (n: number, size: number) => Array.from({ length: n }, (_, i) => String.fromCharCode(97 + (i % 26)).repeat(size))
+  type Shown = { agentId: string | null; blocks: Record<string, unknown>[] }
+
+  test('a tool input streaming 5,000,000 characters, then a new child: every post fits; the resync, alone in its post, carries the last BLOCK_TAIL characters marked truncated; no gap, no second resync', async () => {
+    const h = harness()
+    await h.ready()
+    await h.turn('t1')
+    const json = pieces(5_000, 1_000)
+    const whole = json.join('')
+    const chunks = [{ kind: 'tool', index: 0, id: 'toolu_big', name: 'Write' }, ...json.map((j) => ({ kind: 'input', index: 0, json: j }))]
+    let resynced = 0
+    await h.step({ turnId: 't1', index: 0, model: 'm', messageCount: 1 }, chunks, async () => {
+      await h.settle()
+      // The child is killed mid-stream; its successor says hello.
+      const timers = h.timers.length
+      h.children[0]!.end()
+      await h.settle()
+      h.timers[timers]!.fn()
+      await h.settle()
+      const before = h.posts.length
+      h.children[1]!.write(hello())
+      await h.settle()
+      const resyncs = h.posts.slice(before).filter((p) => p.events.some((e) => e.type === 'resync'))
+      resynced = resyncs.length
+      expect(resyncs.map((p) => p.events.length)).toEqual([1])
+      const streaming = resyncs[0]!.events[0]!.streaming as Shown[]
+      expect(streaming.map((m) => m.blocks.length)).toEqual([1])
+      const block = streaming[0]!.blocks[0]!
+      const { text: _text, ...rest } = block
+      expect(rest).toEqual({ index: 0, kind: 'tool', id: 'toolu_big', name: 'Write', upTo: 5_000, truncated: true })
+      // Compared, not diffed: a failure's report would carry the strings whole.
+      expect((block.text as string).length).toBe(BLOCK_TAIL)
+      expect(block.text === whole.slice(-BLOCK_TAIL)).toBe(true)
+    })
+    expect(resynced).toBe(1)
+    expect(h.posts.filter((p) => p.size > ENGINE_BODY_MAX).map((p) => p.size)).toEqual([])
+    expect(h.ofType('gap')).toEqual([])
+    // The ready's resync and the successor's, no other.
+    expect(h.ofType('resync').length).toBe(2)
+    // Chunk events stay whole: a subscriber that streamed from the start holds every character.
+    const streamed = h
+      .ofType('chunk')
+      .map((e) => (e.chunk as { json?: string }).json ?? '')
+      .join('')
+    expect(streamed === whole).toBe(true)
+  })
+
+  test('a resync past RESYNC_MAX drops streaming messages oldest first, and says so', async () => {
+    const h = harness()
+    await h.ready()
+    // Three loops streaming at once, each 25 blocks cut to their tail: about 1.6 M characters a message.
+    const blocks = (letter: string) => Array.from({ length: 25 }, (_, i) => ({ kind: 'text', index: i, text: letter.repeat(70_000) }))
+    let resync: Record<string, unknown> | undefined
+    await h.step({ turnId: 't1', index: 0, model: 'm', messageCount: 1 }, blocks('a'), async () => {
+      await h.step({ turnId: 'ts', index: 0, model: 'm', messageCount: 1, agentId: 'a7' }, blocks('b'), async () => {
+        await h.step({ turnId: 'tu', index: 0, model: 'm', messageCount: 1, agentId: 'a8' }, blocks('c'), async () => {
+          await h.settle()
+          h.children[0]!.write(hello())
+          await h.settle()
+          resync = h.ofType('resync').at(-1)
+        })
+      })
+    })
+    expect(resync?.truncated).toBe(true)
+    const streaming = resync!.streaming as Shown[]
+    expect(streaming.map((m) => m.agentId)).toEqual(['a7', 'a8'])
+    expect(streaming.flatMap((m) => m.blocks).map((b) => [b.truncated, (b.text as string).length])).toEqual(Array(50).fill([true, BLOCK_TAIL]))
+    expect(JSON.stringify(resync).length).toBeLessThanOrEqual(RESYNC_MAX)
+    expect(h.posts.filter((p) => p.size > ENGINE_BODY_MAX).map((p) => p.size)).toEqual([])
+    expect(h.ofType('gap')).toEqual([])
+  })
+
+  test('a block of exactly BLOCK_TAIL UTF-16 units is whole; one unit more is cut to its last BLOCK_TAIL', async () => {
+    const h = harness()
+    await h.ready()
+    let resync: Record<string, unknown> | undefined
+    await h.step({ turnId: 't1', index: 0, model: 'm', messageCount: 1 }, [{ kind: 'text', index: 0, text: 'x'.repeat(BLOCK_TAIL) }, { kind: 'text', index: 1, text: `y${'x'.repeat(BLOCK_TAIL)}` }], async () => {
+      h.children[0]!.write(hello())
+      await h.settle()
+      resync = h.ofType('resync').at(-1)
+    })
+    const [exact, over] = (resync!.streaming as Shown[])[0]!.blocks
+    expect([exact!.truncated, (exact!.text as string).length]).toEqual([undefined, BLOCK_TAIL])
+    expect([over!.truncated, (over!.text as string).length, (over!.text as string).startsWith('y')]).toEqual([true, BLOCK_TAIL, false])
+  })
+
+  test("a cut that would split a surrogate pair drops the pair's lone half: the tail is BLOCK_TAIL - 1 units and starts on a whole character", async () => {
+    const h = harness()
+    await h.ready()
+    // One unit of 'x', then astral characters: the last BLOCK_TAIL units begin on a low surrogate.
+    const text = `x${'😀'.repeat(BLOCK_TAIL / 2)}z`
+    let resync: Record<string, unknown> | undefined
+    await h.step({ turnId: 't1', index: 0, model: 'm', messageCount: 1 }, [{ kind: 'text', index: 0, text }], async () => {
+      h.children[0]!.write(hello())
+      await h.settle()
+      resync = h.ofType('resync').at(-1)
+    })
+    const block = (resync!.streaming as Shown[])[0]!.blocks[0]!
+    const tail = block.text as string
+    expect(tail.length).toBe(BLOCK_TAIL - 1)
+    expect(tail.charCodeAt(0)).toBe(0xd83d)
+    expect(tail === text.slice(-(BLOCK_TAIL - 1))).toBe(true)
+  })
+
+  test('the bound counts UTF-16 units, as the engine measures a body: astral text is cut at half as many characters (the child counts code points, bridge_order pins it)', async () => {
+    const h = harness()
+    await h.ready()
+    const text = '😀'.repeat(40_000)
+    let resync: Record<string, unknown> | undefined
+    await h.step({ turnId: 't1', index: 0, model: 'm', messageCount: 1 }, [{ kind: 'text', index: 0, text }], async () => {
+      h.children[0]!.write(hello())
+      await h.settle()
+      resync = h.ofType('resync').at(-1)
+    })
+    const block = (resync!.streaming as Shown[])[0]!.blocks[0]!
+    expect([block.truncated, (block.text as string).length, [...(block.text as string)].length]).toEqual([true, BLOCK_TAIL, BLOCK_TAIL / 2])
+  })
+
+  test('a resync under RESYNC_MAX is whole and says nothing of truncation', async () => {
+    const h = harness()
+    await h.ready()
+    await h.step({ turnId: 't1', index: 0, model: 'm', messageCount: 1 }, [{ kind: 'text', index: 0, text: 'short' }], async () => {
+      h.children[0]!.write(hello())
+      await h.settle()
+    })
+    const resync = h.ofType('resync').at(-1)!
+    expect('truncated' in resync).toBe(false)
+    expect((resync.streaming as Shown[])[0]!.blocks).toEqual([{ index: 0, kind: 'text', text: 'short', upTo: 0 }])
+  })
+
+  test("a resync whose pending requests alone pass RESYNC_MAX shortens the permissions' inputs, largest first, each marked truncated: every request keeps its id and tool, and the post fits", async () => {
+    const h = harness()
+    await h.ready()
+    await h.turn('t1')
+    // 65 Write permissions pending, each input at the per-string cap.
+    const content = 'w'.repeat(TEXT_CAP)
+    for (let i = 0; i < 65; i++) {
+      const input = { file_path: `/w/f${i}`, content }
+      await h.called(`toolu_w${i}`, 'Write', input)
+      void h.permission('Write', input)
+      await h.settle()
+    }
+    expect(h.ofType('raised').length).toBe(65)
+    h.children[0]!.write(hello())
+    await h.settle()
+    const resync = h.ofType('resync').at(-1)!
+    expect(resync.truncated).toBe(true)
+    expect(JSON.stringify(resync).length).toBeLessThanOrEqual(RESYNC_MAX)
+    const pending = resync.pending as { request: string; tool: string; input: { file_path: string; content: string }; truncated?: boolean }[]
+    expect(pending.map((p) => [p.request, p.tool, p.input.file_path])).toEqual(Array.from({ length: 65 }, (_, i) => [`toolu_w${i}`, 'Write', `/w/f${i}`]))
+    const shortened = pending.filter((p) => p.input.content.length < TEXT_CAP)
+    expect(shortened.length).toBeGreaterThan(0)
+    expect(shortened.length).toBeLessThan(65)
+    expect(shortened.every((p) => p.truncated === true && p.input.content.length === RESYNC_INPUT_CAP)).toBe(true)
+    expect(h.posts.filter((p) => p.size > ENGINE_BODY_MAX).map((p) => p.size)).toEqual([])
+    expect(h.ofType('gap')).toEqual([])
+  })
+
+  test('a shortened input never ends inside a surrogate pair, in a resync as in a raise past TEXT_CAP: each string stays well-formed, so it has a canonical form to seal', async () => {
+    // A lone surrogate: a high one with no low after it, or a low one with no high before it.
+    const lone = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/
+    const h = harness()
+    await h.ready()
+    await h.turn('t1')
+    // 65 Write permissions, each a well-formed 65,535-unit string: inside TEXT_CAP, so raised whole.
+    const content = 'x' + '😀'.repeat((TEXT_CAP - 2) / 2)
+    for (let i = 0; i < 65; i++) {
+      const input = { file_path: `/w/f${i}`, content }
+      await h.called(`toolu_w${i}`, 'Write', input)
+      void h.permission('Write', input)
+      await h.settle()
+    }
+    // And one past TEXT_CAP, cut as it is raised: its 65,536th unit is a high surrogate.
+    const long = { file_path: '/w/long', content: 'x' + '😀'.repeat(TEXT_CAP / 2) }
+    await h.called('toolu_long', 'Write', long)
+    void h.permission('Write', long)
+    await h.settle()
+    const raisedLong = h.ofType('raised').find((e) => e.request === 'toolu_long')!
+    const cut = (raisedLong.input as { content: string }).content
+    expect([raisedLong.truncated, cut.length, lone.test(cut)]).toEqual([true, TEXT_CAP - 1, false])
+    h.children[0]!.write(hello())
+    await h.settle()
+    const resync = h.ofType('resync').at(-1)!
+    expect(resync.truncated).toBe(true)
+    const pending = resync.pending as { request: string; input: { content: string }; truncated?: boolean }[]
+    const shortened = pending.filter((p) => p.input.content.length < TEXT_CAP - 1)
+    expect(shortened.length).toBeGreaterThan(0)
+    expect(shortened.map((p) => [p.truncated, p.input.content.length, lone.test(p.input.content)])).toEqual(
+      shortened.map(() => [true, RESYNC_INPUT_CAP - 1, false]),
+    )
+  })
+
+  test("a question's input is kept whole when a resync is shortened: its answers are matched against it", async () => {
+    const h = harness()
+    await h.ready()
+    await h.turn('t1')
+    const content = 'w'.repeat(TEXT_CAP)
+    for (let i = 0; i < 64; i++) {
+      const input = { file_path: `/w/f${i}`, content }
+      await h.called(`toolu_w${i}`, 'Write', input)
+      void h.permission('Write', input)
+      await h.settle()
+    }
+    const question = 'q'.repeat(TEXT_CAP)
+    const ask = { questions: [{ question, header: 'H', options: [{ label: 'a' }, { label: 'b' }], multiSelect: false }] }
+    await h.called('toolu_q', 'AskUserQuestion', ask)
+    void h.permission('AskUserQuestion', ask)
+    await h.settle()
+    h.children[0]!.write(hello())
+    await h.settle()
+    const resync = h.ofType('resync').at(-1)!
+    expect(JSON.stringify(resync).length).toBeLessThanOrEqual(RESYNC_MAX)
+    const asked = (resync.pending as { request: string; input: typeof ask; truncated?: boolean }[]).find((p) => p.request === 'toolu_q')!
+    expect(asked.input.questions[0]!.question === question).toBe(true)
+    expect(asked.truncated).toBeUndefined()
+  })
+
+  test('what queued while a post was in flight goes in posts that each fit, in order, nothing lost', async () => {
+    const h = harness({ hold: true })
+    const releaseAll = async () => {
+      for (let i = 0; i < h.posts.length; i++) {
+        h.posts[i]!.release()
+        await h.settle()
+      }
+    }
+    await h.ready()
+    await releaseAll()
+    const held = h.posts.length
+    // A post in flight; behind it, 6 M characters of chunks.
+    await h.hook('turn.start', { turnId: 't1' })(h.engine, { turnId: 't1', text: '' }, async () => ({ turnId: 't1' }))
+    await h.settle()
+    const text = pieces(100, 60_000)
+    const e = { turnId: 't1', index: 0, model: 'm', messageCount: 1 }
+    const gen = h.hook('turn.step', e)(h.engine, e, () => {
+      const g = (async function* () {
+        for (const t of text) {
+          yield { kind: 'text', index: 0, text: t }
+        }
+        return { turnId: 't1', index: 0, answer: '', toolUses: [], stopReason: 'end_turn', usage: null }
+      })() as AsyncGenerator<unknown, unknown> & { result: Promise<unknown> }
+      g.result = Promise.resolve({ turnId: 't1', index: 0, stopReason: 'end_turn', usage: null })
+      return g
+    }) as AsyncGenerator<unknown, unknown>
+    for (let r = await gen.next(); !r.done; r = await gen.next()) {
+      // the stream passes on
+    }
+    await h.settle()
+    await releaseAll()
+    expect(h.posts.filter((p) => p.size > ENGINE_BODY_MAX).map((p) => p.size)).toEqual([])
+    expect(h.posts.length).toBeGreaterThan(held + 2)
+    expect(h.ofType('gap')).toEqual([])
+    expect(h.ofType('chunk').map((c) => c.chunkIndex)).toEqual(text.map((_, i) => i))
   })
 })
 
@@ -3090,7 +3471,7 @@ describe('requests from outside: a permission prompt', () => {
     await h.recorded('toolu_1', 'user_reject', 'reject')
     h.children[0]!.write(hello())
     await h.settle()
-    const resync = h.posts.at(-1)!.events[1]!
+    const resync = h.ofType('resync').at(-1)!
     expect(resync).toMatchObject({
       type: 'resync',
       pending: [expect.objectContaining({ request: 'toolu_2', tool: 'Bash', input: { command: 'ls' }, agentId: null })],
@@ -3753,7 +4134,7 @@ describe('row notices and the cut', () => {
     // Its block, with no row, is in no later resync.
     h.children[0]!.end()
     await h.settle()
-    h.timers.find((t) => t.kind === 'after' && t.ms === 1000 && !t.cancelled)!.fn()
+    h.timers.find((t) => t.kind === 'after' && t.ms === 0 && !t.cancelled)!.fn()
     await h.settle()
     h.children[1]!.write(hello(SID, SOCK, undefined, 'n1'))
     await h.settle()
@@ -4028,6 +4409,9 @@ describe("a compaction's rows, which no session.append raises", () => {
     }
     expect(notices(h)).toEqual(['row-seen:p0', 'row-seen:b1', 'row-seen:s1', 'block-row:r', 'row-seen:b2', 'row-seen:s2'])
     h.children[0]!.write(hello())
+    await h.settle()
+    // The session's start is answered; the resync follows in a post of its own.
+    h.posts.forEach((p) => p.release())
     await h.settle()
     expect(h.ofType('resync').at(-1)).toMatchObject({ cut: { main: 's2' } })
   })
@@ -4499,7 +4883,7 @@ describe("the bridge's place among the secrets guards (next.trace)", () => {
     expect(h.children[1]!.argv).toEqual(['/plug/skills/sminos/scripts/sminos', 'bridge', '--session', SID])
     // A new child, a new nonce: what an old instance still posts is turned away.
     const after = await greetNewest(h, 'n1')
-    expect(after()[0]!.events.map((e) => e.type)).toEqual(['session', 'resync'])
+    expect(after().slice(0, 2).map((p) => p.events.map((e) => e.type))).toEqual([['session'], ['resync']])
     await callBeneath(h, ['doperpowers', 'devcloud'])
     await h.settle()
     expect(after().every((p) => p.nonce === 'n1')).toBe(true)
@@ -4591,7 +4975,7 @@ describe("the bridge's place among the secrets guards (next.trace)", () => {
     await rowBeneath(h, ['doperpowers', 'devcloud'])
     expectOn(h)
     const after = await greetNewest(h, 'n1')
-    const resync = after()[0]!.events.find((e) => e.type === 'resync')!
+    const resync = after().flatMap((p) => p.events).find((e) => e.type === 'resync')!
     expect(resync.pending).toEqual([])
     expect(resync.settled).toEqual([
       expect.objectContaining({ request: 'toolu_plugin_9', winner: 'terminal', outcome: 'answered', by: 'terminal' }),
@@ -4612,7 +4996,7 @@ describe("the bridge's place among the secrets guards (next.trace)", () => {
     poll.respond(410)
     await rowBeneath(h, ['doperpowers', 'devcloud'])
     const after = await greetNewest(h, 'n1')
-    const resync = after()[0]!.events.find((e) => e.type === 'resync')!
+    const resync = after().flatMap((p) => p.events).find((e) => e.type === 'resync')!
     expect(resync.pending).toEqual([])
     expect(resync.settled).toEqual([expect.objectContaining({ request: 'tu1', outcome: 'withdrawn', by: 'bridge' })])
   })
@@ -4639,7 +5023,7 @@ describe("the bridge's place among the secrets guards (next.trace)", () => {
     await rowBeneath(h, ['doperpowers', 'devcloud'])
     expectOn(h)
     const after = await greetNewest(h, 'n1')
-    const resync = after()[0]!.events.find((e) => e.type === 'resync')!
+    const resync = after().flatMap((p) => p.events).find((e) => e.type === 'resync')!
     expect(resync.pending).toEqual([])
     expect(await answered).toEqual({})
   })

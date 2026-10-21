@@ -110,6 +110,7 @@ import sminos  # noqa: E402
 import sminos_bridge as bridge  # noqa: E402
 import sminos_codes as codes  # noqa: E402
 import sminos_control as control  # noqa: E402
+import sminos_flights as flights  # noqa: E402
 import sminos_jobs as jobs  # noqa: E402
 import sminos_policy as policy  # noqa: E402
 
@@ -348,6 +349,7 @@ class Rpcs:
         self.resume_locks = {}    # session → the lock a Resume of it runs under
         self.locks_lock = threading.Lock()
         self.compact_out = []     # DX4 compact messages owed, as frames
+        self.flights = flights.Flights()  # compact messages in flight, and answered but not confirmed
         self.unwritten = {}       # nonce → its outcome, whose ledger write failed: never sent until it is kept
         self.copies_asked = set()  # claimed Resumes whose kept job the harness was asked about (check_copy)
         self.next_reconcile = 0.0
@@ -746,7 +748,7 @@ class Rpcs:
         self.take()
         if self.clock() >= self.next_reconcile:
             self.reconcile()
-        compacts = [f for f in self.compact_out if f["message"]["project"] in opened]
+        compacts = [f for f in self.compact_out if f["message"]["project"] in opened and not self.flights.in_flight(f)]
         return self.results(set(opened), False) + compacts
 
     def opening(self, pid):
@@ -755,15 +757,52 @@ class Rpcs:
         self.take()
         return self.results({pid}, True)
 
-    def sent(self, frames):
-        """`frames` reached the hub (a POST answered 200)."""
-        ids = {id(f) for f in frames}
-        self.compact_out = [f for f in self.compact_out if id(f) not in ids]
+    def sending(self, frames):
+        """`frames`, of one project, were queued on a lane: the attempt, for
+        `delivered`. A result is taken as sent on this stream now (every
+        connect sends it again until `rpc-ack`, and so does every re-open); a
+        compact message, which nothing rebuilds, is in flight
+        (sminos_flights)."""
         self.sent_here.update(f["nonce"] for f in frames if f.get("t") == "rpc-result")
+        compacts = [f for f in frames if f.get("t") != "rpc-result"]
+        return self.flights.send(compacts[0]["message"]["project"], compacts) if compacts else None
+
+    def delivered(self, frames, attempt):
+        """The POST of `attempt` carrying `frames` was answered 200: its
+        compact messages leave `compact_out`, unless a `not-open` voided the
+        attempt; they are owed again until `confirmed`."""
+        took = {id(f) for f in frames if f.get("t") != "rpc-result" and self.flights.answered(f, attempt)}
+        self.compact_out = [f for f in self.compact_out if id(f) not in took]
+
+    def mark(self):
+        """Taken as a confirmation of a project is queued, for `confirmed`."""
+        return self.flights.mark()
+
+    def confirmed(self, pid, mark):
+        """A confirmation of the project queued at `mark` was answered: the
+        compact messages answered before it was queued are the hub's."""
+        self.flights.confirm(pid, mark)
+
+    def refused(self, pid):
+        """The hub refused the project `not-open`: its compact messages in
+        flight or answered are owed again; its results go after the re-open's
+        hello as on every open."""
+        self.compact_out = self.flights.refuse(pid) + self.compact_out
+
+    def sent(self, frames):
+        """`frames` reached the hub (queued, answered and confirmed at once)."""
+        by = {}
+        for f in frames:
+            by.setdefault(f.get("project") or f["message"]["project"], []).append(f)
+        for pid, mine in by.items():
+            self.delivered(mine, self.sending(mine))
+            self.confirmed(pid, self.mark())   # the answer's stamp is before this mark
 
     def reset(self):
-        """A new stream: nothing is taken as sent on it yet."""
+        """A new stream: nothing is taken as sent on it yet, and what was in
+        flight or answered unconfirmed on the last one is owed again."""
         self.sent_here.clear()
+        self.compact_out = [f for _, f in self.flights.reset()] + self.compact_out
 
 
 # ------------------------------------------------------------- checks

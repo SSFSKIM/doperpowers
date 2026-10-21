@@ -5,7 +5,7 @@ import type {} from '../../../devcloud/types/devcloud'
 import { ASK_TOOL, PLUGIN, asyncAsks, observeAsks } from './ask'
 import { OFF_LINE, ON_LINE, isCuaEnabled, isLiveMarker, verdictOf } from './bridge-place'
 import type { Guard, Place, Verdict } from './bridge-place'
-import { EFFORTS, RESPAWN_FIRST_MS, capped, isEffort, loopKey, message, parsed, state } from './bridge-state'
+import { EFFORTS, RESPAWN_FIRST_MS, RESPAWN_STEP_MS, capped, isEffort, loopKey, message, parsed, state } from './bridge-state'
 import type { Answer, Command, Decision, DeliveryKey, Override, Request, Steer, Stops, Wake } from './bridge-state'
 import { adoptKept, adoptSeed, emit, endStep, forgetLive, poster, pump, releaseStepEnd, requeue, resyncEvent, stopChild } from './bridge-stream'
 import {
@@ -27,8 +27,8 @@ import { announceRow, compacted, enteredRow, exportRow, noticeRow, observeRow } 
 import { claimAgent, forgetAgents, refreshAgents, watchAgents } from './bridge-agents'
 
 export { OFF_LINE, ON_LINE } from './bridge-place'
-export { TEXT_CAP, capped, resetBridge } from './bridge-state'
-export { STEP_END_WAIT_MS } from './bridge-stream'
+export { BLOCK_TAIL, TEXT_CAP, capped, resetBridge } from './bridge-state'
+export { RESYNC_INPUT_CAP, RESYNC_MAX, STEP_END_WAIT_MS } from './bridge-stream'
 export { RECORD_WAIT_MS, TRANSCRIPT_RETRY_MS, onAskNote } from './bridge-requests'
 export { ROWS_POLLS, ROWS_POLL_MS, compacted } from './bridge-rows'
 export { AGENTS_REFRESH_MS } from './bridge-agents'
@@ -44,7 +44,9 @@ export { AGENTS_REFRESH_MS } from './bridge-agents'
  * answers with a `result` event. Events go to the socket as `POST /events`,
  * one request in flight at a time, so they arrive in the order they happened
  * and batch themselves under load. A module reload kills the child and runs
- * `session.start` again, which spawns the next. Each post carries the nonce
+ * `session.start` again, which spawns the next; a child that ends on its own
+ * is started again at once, with a backoff only while successors keep ending
+ * at once (`startChild`). Each post carries the nonce
  * its child's hello named, so the child turns away (409) what an older module
  * instance still has in flight after a reload, and a module whose post is
  * turned away stops for good.
@@ -1071,8 +1073,10 @@ function onLine($: EngineInterface, generation: number, line: string) {
 
 /**
  * Starts the session's child and reads its lines until it ends; one that
- * ended on its own is started again, after a second, doubling while it keeps
- * ending at once, up to a minute.
+ * ended on its own is started again at once (a crash's successor serves
+ * within a fraction of a second), then after a second if that one ends at
+ * once too, doubling while they keep doing so, up to a minute. A child that
+ * ran STABLE_MS (by the engine's clock) is followed at once again.
  */
 function startChild($: EngineInterface, session: string) {
   state.session = session
@@ -1084,7 +1088,7 @@ function startChild($: EngineInterface, session: string) {
   const generation = ++state.generation
   state.socket = undefined
   state.nonce = undefined
-  const startedAt = Date.now()
+  const startedAt = $.clock.now()
   void (async () => {
     let pending = ''
     try {
@@ -1109,17 +1113,18 @@ function startChild($: EngineInterface, session: string) {
     } catch (error) {
       $.ui.log(`bridge: the child failed: ${message(error)}`, { to: 'debug' })
     }
+    const ran = (await $.clock.now()) - (await startedAt)
     if (generation !== state.generation) {
       return
     }
     state.socket = undefined
     state.nonce = undefined
     state.child = undefined
-    if (Date.now() - startedAt >= STABLE_MS) {
+    if (ran >= STABLE_MS) {
       state.respawnMs = RESPAWN_FIRST_MS
     }
     const delay = state.respawnMs
-    state.respawnMs = Math.min(delay * 2, RESPAWN_MAX_MS)
+    state.respawnMs = delay < RESPAWN_STEP_MS ? RESPAWN_STEP_MS : Math.min(delay * 2, RESPAWN_MAX_MS)
     $.clock.after(delay, () => {
       if (generation === state.generation) {
         startChild($, session)

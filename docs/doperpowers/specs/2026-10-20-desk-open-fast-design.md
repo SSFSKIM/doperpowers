@@ -43,11 +43,11 @@ before it is built (Decision Log).
 - [x] M2 — The instruments: `bench_open.py` (micro and full path), `bench_scale.py opens` (2026-10-20, reviewed clean after two fix rounds; 0482d416..acde4b3a, sminos 1.2.5)
 - [x] M3 — The web keeps a carried block across a reconnect (MAWS) (2026-10-20, reviewed clean; MAWS `desk-open-fast-web` bda992c29, PR #86)
 - [x] M4 — The hub's reply chain decoupled (MAWS) (2026-10-20, reviewed clean; MAWS `desk-open-fast-hub` fba324cc4..beb065470, master merged at ef190e5e2)
-- [x] M5 — The snapshot goes at once; a notice's row is due at its step's end (2026-10-20, reviewed clean; 8d7fae3f, sminos 1.2.6; built, not rolled)
-- [ ] M6 — The uplink's sender lanes, with connection reuse proven
-- [ ] M7 — The build saved and warmed, bounded; the look off the open path
-- [ ] M8 — The child respawns at once; a resync fits the engine's limit
-- [ ] M9 — Acceptance, documents, the branch review
+- [x] M5 — The snapshot goes at once; a notice's row is due at its step's end (2026-10-20, reviewed clean; 8d7fae3f, sminos 1.2.6; the legacy-bridge fix ba3816df reviewed clean and merged at 417210c8, sminos 1.2.9)
+- [x] M6 — The uplink's sender lanes, with connection reuse proven (2026-10-20, reviewed clean after two fix rounds; d5fa1d6a..aa57759b; the fix 2f64aa96..4400ced7 passed by the coordinator's reviewer and merged at eeb71406, sminos 1.2.13; the A9 by-hand hour of the owner's daemon.log pending the roll)
+- [x] M7 — The build saved and warmed, bounded; the look off the open path (2026-10-20, reviewed clean after two fix rounds; 63683909..7a9fdccb, sminos 1.2.10, gate GREEN 39469065139; the by-hand A3 line on the owner's Mac pending the roll)
+- [x] M8 — The child respawns at once; a resync fits the engine's limit (2026-10-20, reviewed clean after one fix round; 1aa1a002..227187e8, sminos 1.2.12, gate GREEN 39482745539; one A6 trial of ten over the bound, 0.525 s, recorded)
+- [ ] M9 — Acceptance, documents, the branch review (2026-10-20, machine side done: A1–A9 run as written at load < 50, every figure passing, the 100–300 band pending: devcloud (the owner chose a devcloud host; a separate agent runs task-9-report.md's band runs); A10 gates GREEN (39493005844) on 996e1052 (sminos 1.2.14), MAWS gates cited, live-resume 14/14, live-bridge 15/15 after the M9 fix; documents current; the xhigh panel's three P2s fixed (218aa515) and the coordinator's reviews' tombstone P2s (4072c8b8, 1.2.18), the coordinator's check of the delta pending; by-hand checks on the owner's Mac and `deskLatency()` pending the second roll, #302)
 
 ## Terms
 
@@ -524,14 +524,37 @@ heals it:
 - **At enqueue** (healed by the handshake if the POST is lost, or re-sent
   until acknowledged on its own): `opened.add`, `follows`, `machine_sent`,
   `hl.took(reach)` (the hub's `have` on the next hello resets it),
-  `requests.sent` (the complete pending set goes after every connect),
-  `rpcs.sent` (results are re-sent until `rpc-ack`).
+  `requests.sending` for the pending set (the complete set goes after every
+  connect), `rpcs.sending` for results (re-sent after every connect until
+  `rpc-ack`).
 - **In the POST's `then`** (not healed: a loss would be silent):
   `plane.accepted(pid)` (the presence tombstone mark), `hl.reported(frames)`
   (rejections reported), `box.drop(lines)` (delivery outcomes dropped from
   the outbox). Their producers hold an **in-flight flag** per project until
   the `then` ran, and `deliveries(hl)` and `unreported()` are not taken again
   while it is held, so nothing is posted twice.
+- **Settlements and DX4 compact messages: in flight, then held until
+  confirmed** [M6 fix, 2026-10-20]. The first draft put `requests.sent` at
+  enqueue for every request frame, on the premise that the handshake heals
+  it; that holds for the pending set, not for a settlement, which no
+  handshake rebuilds (its winner and decision record live only in the
+  outbox), so a lost POST, a cut stream or a restart lost it for good. Such
+  a message is `flying` from enqueue (neither due nor in `opening`'s backlog
+  again), leaves the outbox in its POST's `then` under the project's epoch
+  (a `not-open` bumps it, voiding the attempts in flight), and stays held,
+  still owed, until a confirmation of its project queued after that answer
+  is answered — the hello carrying it in its own POST, or the project's
+  probe (an empty `events` frame on the log lane, `CONFIRM_AFTER` 2 s after
+  the first held answer, one at a time, `Link.confirm_held`) — and only then
+  is a settlement written to `daemon/requests.json`. A `not-open` owes again
+  everything of that project in flight or held, ahead of the re-open; a new
+  stream owes again everything held; a settlement a later raise superseded
+  is never owed again. Relays send one entry per project, each with its own
+  `then`. What this cannot close is the hub's: it answers 200 to a session
+  frame it refuses `not-open` (unawaited, on its control lane, naming no
+  frame), and a probe's own refusal can still be unread by the stream's
+  reader when its 200's `then` runs (residue: the POST's answer should report
+  refusals).
 - What `open(hl)` posts after the hello (`deliveries(hl)`) stays where it
   is: a lane is one connection, FIFO, so the hub applies it after the hello,
   and a hello that fails ends the stream before any `then` behind it runs.
@@ -546,6 +569,33 @@ posts the others meanwhile, so an un-acknowledged `hello` of one project
 release set is the sender's, reset with the stream. The acker is unchanged
 and keeps its own exchange: a held log-lane POST must not delay a heartbeat's
 answer.
+
+A project opened again (`Sender.hold`) is gated before its hello is queued.
+Of its entries not yet taken into a body, those the re-open sends anew
+(`renewed`) are dropped: the complete pending set, a session's presence, an
+RPC's result (the hello carries each as it is now), a request's raise or
+settlement, and a compaction's message (the `not-open` re-owes them from
+their outboxes). A subscription's messages go back aside in order, because
+nothing sends them again. So nothing posted after that hello contradicts
+it; a dropped entry's continuation never runs, the refusal having voided its
+attempt. A session-lane body of the project already out at the refusal
+(`hold` reports it) can be applied by the hub after the re-open's hello,
+which arrives later on the other connection (a large body still uploading
+is enough), so the hello's continuation then owes the project's complete
+set again (`requests.stale`) and has the plane say its presence again at
+its next look (`Plane.say_again`): every member's, and every session the
+plane said not running and has not seen back since (`gone`), since a
+tombstone `hold` dropped is gone and the in-flight body may carry the
+leaver's last live presence. Both go behind that body on its FIFO lane and
+supersede what it carried; a tombstone said twice is harmless. Which
+leavers the heal says again is decided by the body it heals: `hold` returns
+when the oldest line of the project in the body out was queued, and the
+plane says not running again every leaver it first said gone at or after
+that time. A session's live presence is queued before its tombstone, so any
+leaver whose live presence that body carries is among them, however long
+either waited in the queue; one said gone before carries none. `GONE_KEEP`
+(an hour) bounds the plane's memory of leavers, nothing more. [panel fix,
+2026-10-20; tombstones and their bound, the coordinator's reviews]
 
 **Head-of-line.** A re-`hello` the hub holds now stalls the log lane alone
 for its duration; opens, chunks, requests and RPC results flow on the
@@ -566,11 +616,22 @@ connection idle for `IDLE_CLOSE` (60 s) is closed by the sender, so a stale
 keep-alive the edge dropped is rarely met. **Warming**: `on_subscribe` calls
 `session_lane.warm()`, which makes the sender dial now if it holds no
 connection, so the TLS handshake overlaps the reader's connect and the
-build rather than following the snapshot. **The connection lines**: a
+build rather than following the snapshot. A lane has one dial out at a
+time: a dial whose watcher gave up (a warm dial stalled past its deadline,
+before any socket exists) stays the lane's, the next exchange waits for it
+within its own deadline rather than dialling a second, and `warm` does
+nothing while it is out; a dial lands as the lane's connection only while
+the lane has not ended, and otherwise closes what it made (a lost POST ends
+the lane). So a late dial never replaces the connection an exchange is
+using, and a lane leaves at most one dial worker behind. [panel fix,
+2026-10-20] **The connection lines**: a
 sender writes one daemon.log line per dial — `uplink: <lane> lane dialled
 the hub (connection #n)` — and one per close — `uplink: <lane> lane closed
-connection #n after <k> POSTs (<idle|the hub closed it|failed: why>)` — and
-one for any POST slower than `SLOW_POST_SECONDS` (5) with its lane and
+connection #n after <k> POSTs (<idle|the hub closed it|failed: why>)` — a
+POST answered non-200 closes its connection as `failed: the hub answered
+<status> …` whether or not the answer also closes it, `the hub closed it`
+being a 200 whose answer closes the connection or a kept connection found
+closed before a send [M9 fix, 2026-10-20] — and one for any POST slower than `SLOW_POST_SECONDS` (5) with its lane and
 duration. The hub stand-in speaks HTTP/1.1 from M1 (today HTTP/1.0, which
 closes every connection, so reuse could not be seen there) and records each
 request's connection id; the owner's daemon.log shows reuse and the idle
@@ -586,7 +647,7 @@ read by the main loop in arrival order):
 
 | state | `send(frames, then)` | `warm()` | body answered 200 | body not 200 / error / deadline | `close()` / `ended()` |
 |---|---|---|---|---|---|
-| idle (no conn) | queue; wake → posting (dials first) | dial → idle (conn) | — | — | closed |
+| idle (no conn) | queue; wake → posting (dials first) | dial → idle (conn), unless a dial is out | — | — | closed |
 | idle (conn) | queue; wake → posting | — | — | — | conn shut; closed |
 | posting | queue (posted after the bodies in flight) | — | `("sent", thens)` on the items; more queued → posting, else idle | `("closed", why)` on the items; queue dropped → closed | conn shut; the exchange raises → closed, nothing put |
 | closed | dropped | — | — | — | — |
@@ -768,13 +829,45 @@ enough. Two bounds, and a rule:
   events still carry every chunk whole: a subscriber that streamed from the
   start holds the whole text; only the catch-up copy a snapshot or a resync
   gives is the tail. The flag reaches DX4's `StreamingBlock` as an extra key
-  the web passes over.
-- **A resync is posted alone.** The poster ends a batch before a resync and
-  after it, so a body holding one holds nothing else. `resyncEvent` measures
-  its JSON and, over `RESYNC_MAX` (4,000,000 characters — the bounded blocks
-  make this a pathological case of thousands of open requests), drops
-  streaming entries oldest first and marks the resync `truncated: true`; the
-  child takes what it carries.
+  the web passes over. The bound counts UTF-16 units in the mod (as the
+  engine measures a body) and code points in the child (as Python counts a
+  string): astral text is cut at half as many characters in the mod, never
+  splitting a surrogate pair (a tail that would start on a low surrogate is
+  one unit shorter), and the child never cuts a block the mod kept.
+  [M8, 2026-10-20]
+- **A resync is posted alone, and fits.** The poster ends a batch before a
+  resync and after it, so a body holding one holds nothing else; a batch of
+  other events whose body would pass the engine's limit is split (the second
+  half back at the queue's head) until it fits or holds one event.
+  `resyncEvent` measures its JSON and, over `RESYNC_MAX` (4,000,000
+  characters), marks the resync `truncated: true` and cuts it in two steps
+  until it fits: streaming entries dropped, oldest first (a catch-up copy
+  only: their rows still land); then pending permissions' inputs, largest
+  first, each string held to `RESYNC_INPUT_CAP` (1,024 characters) and the
+  entry marked `truncated: true` as `raised` marks an input cut to
+  `TEXT_CAP`. Every pending entry keeps its identity (`request`, `tool`,
+  `agentId`, `deadline`, `async`, `toolUseId`, `t`); a question's input
+  stays whole, since the child matches a decision's answers against its
+  questions. A string is never cut inside a surrogate pair: a cut whose
+  last kept unit is a high surrogate is one unit shorter, as `capped` does
+  for every cap, `TEXT_CAP`'s included (a lone surrogate has no canonical
+  form, so the raise could not be sealed and no decision's digest could
+  match it). The child takes what it carries, except that a pending request
+  it already holds keeps its own raised copy when the resync and its entry
+  are `truncated`: that copy is the input the session holds and the hub
+  drew, so a decision's digest made from that draw still finds the request
+  pending, and nothing is raised again; a request the child first learns
+  from a shortened resync takes the shortened copy, which the uplink relays
+  and the hub redraws. [panel fix, 2026-10-20] Not covered, by choice:
+  pending questions whose whole inputs alone pass the budget (about 64
+  pending asks each near 64 KiB) still give an oversized resync, lost and
+  retried as before; questions are human-rate and short, and shortening one
+  would break answer matching (residue). [M8 review, 2026-10-20]
+- **A failed post's retry belongs to its child.** The 500 ms wait after a
+  failed post (`RETRY_MS`) is scoped to the generation of the child it was
+  posted to: a post in flight when its child died sets none, and a wait set
+  for a child that then died holds up nothing of its successor's, so a
+  respawn's session start and resync go at once. [M8 review, 2026-10-20]
 - Pending requests' inputs are already cut at 65,536 characters with
   `truncated: true` (DX5); unchanged.
 
@@ -1434,7 +1527,9 @@ each next patch per sminos milestone; `scripts/bump-version.sh --check
   turn completes. `settled` is unchanged. This holds in the mod's
   `resyncEvent` and in the child's snapshot line alike.
 - A resync travels in a post of its own; `resyncEvent` may carry
-  `truncated: true` when it dropped streaming entries to fit `RESYNC_MAX`.
+  `truncated: true` when it dropped streaming entries or shortened pending
+  permissions' inputs to fit `RESYNC_MAX` (a shortened entry carries
+  `truncated: true` itself) [M8 review, 2026-10-20].
 - The consumer rule: a notice's row is due `NOTICE_WAIT` after the end of
   the loop's step open when the notice came, or after the notice when none
   was; the rest of the rule as written.
@@ -1493,7 +1588,9 @@ the figures substituted.
 class Sender(threading.Thread):
     def __init__(self, lane, cred, generation, put, ended): ...   # lane: "log" | "session"; put: the stream's items.put
     def send(self, frames, then=None): ...     # main thread; frames -> wire lines queued as one entry
-    def warm(self): ...                        # main thread; dial now if no connection is held
+    def warm(self): ...                        # main thread; dial now if no connection is held and no dial is out
+    def hold(self, project): ...               # session lane: a project opened again; its renewed entries dropped, the rest aside;
+                                               #   returns whether a body carrying the project is out (Link.open heals it) [panel fix]
     def release(self, project): ...            # session lane: this project's entries may go
     def close(self): ...                       # shut the socket, drop the queue, exit
 
@@ -1506,6 +1603,7 @@ SEND_QUEUE_MAX = 16 << 20
 SLOW_POST_SECONDS = 5.0
 # daemon.log lines: "uplink: <lane> lane dialled the hub (connection #n)";
 #   "uplink: <lane> lane closed connection #n after <k> POSTs (idle|the hub closed it|failed: <why>)";
+#     a non-200 answer is "failed: …" even when it also closes the connection [M9 fix]
 #   "uplink: a <lane> lane POST took <s> s"
 ```
 
@@ -1520,6 +1618,7 @@ export const RESPAWN_FIRST_MS = 0
 export const RESPAWN_STEP_MS = 1_000
 export const BLOCK_TAIL = 65_536          // characters of a block's catch-up text kept
 export const RESYNC_MAX = 4_000_000       // characters of a resync's JSON
+export const RESYNC_INPUT_CAP = 1_024     // characters of each string a shortened permission's input keeps [M8 review]
 type Block = { index: number; kind: string; text: string; upTo: number; id?: string; name?: string; uuid?: string; namedAt?: number; truncated?: true }
 ```
 
@@ -1696,6 +1795,103 @@ beside; a single reviewer reads one of those well in a pass.
   5 s). The fake session through the stand-in: mid-message E 2 ms,
   long-answer (13.2 s windows) E 2–4 ms with no early end.
   Evidence: `.doperpowers/sde/2026-10-20-desk-open-fast-design/task-5-report.md`.
+
+- Observation: mixed-version producers during a roll. A plugin upgrade
+  reaches the uplink before it reaches the sessions' bridges: the
+  autoreload holds while a main turn runs, and `--bg` sessions never
+  reload. So the plane serves both bridge generations for as long as an old
+  session lives, and a pre-M5 bridge (which deletes a block at its
+  `block-row`) can name an unflushed cut without carrying that block.
+  Evidence: the whole-branch reviewer-high on main...df5f6a14 (P2,
+  `sminos_plane.py` ~643–644), reproduced with the legacy bridge and the new
+  reference consumer; the fix's RED run against M5's plane gave a snapshot
+  at once with history `[before]` and only the unnamed block in
+  `streaming`, the named unflushed block nowhere. The mod spawns the child
+  from its own `$.plugin.root`, so a new child under an old mod arises only
+  if a plugin root is replaced under a running mod.
+
+- Observation (M7): a real build loads about 30 times faster than this
+  section's earlier "unpickle in 0.284 cpu s": CI-opt's build pickles to
+  2.5 MB and loads in 9 ms (0.05 CPU-s with the prefix checksum), the
+  synthetic 15k-row build in 8 ms, so the `marshal` alternative is moot.
+  Warming slows whatever else needs Python by sharing the GIL, not by
+  queueing ahead of it (the M7 fix's first-round wait). An open queued behind
+  a running warm build reads `build: warm 0 ms`, its wait visible only in
+  N, so A3's "E equals its cold build plus 0.3 s" holds only where the open
+  does the build itself. A3 figures (`bench_scale.py opens --live 40
+  --large 6`, load 13.6–14.3, outside the band): +30 s all six large opens
+  warm at 0.010–0.013 s (before: five cold at 0.42–0.49); restart +0.5 s
+  large 0.020 / 0.022 s `loaded` (before: 0.42–0.43 cold); small opens
+  unchanged (0.02 s). `bench_index.py` on CI-opt (332 MB, 16,228 rows):
+  cold 0.75 CPU-s, loaded 0.05, warm 0.00. Not done: a second restart (the
+  bench restarts once) and the by-hand A3 line on the owner's Mac, which
+  needs the roll (M9).
+  Evidence: `.doperpowers/sde/2026-10-20-desk-open-fast-design/task-7-report.md`.
+
+- Observation (M8): A6, live haiku through the local hub (MAWS 0f9c18d65
+  with M4), load 10.5–15.3 (outside the 100–300 band, which stays
+  incomplete), kills of a child aged 31–40 s: E_kill 0.165–0.218 s in nine
+  of ten trials, one at 0.525 s, over the 0.5 s bound — the successor
+  answered at once but held the subscription 0.33 s for the mod's first
+  resync, a barrier the snapshot needs (no fixed timer is on that path;
+  likely the engine under load). Before: 1.17–1.41 s on the pre-M8 scripts
+  in the same rig, 1.26–6.55 s at M2. Kills back to back measure §6's
+  backoff instead (0.189 / 1.183 / 2.413 s). If the outlier recurs in M9's
+  kill run, measure hello → session-start → resync applied before choosing
+  a change.
+- Observation (M8): one run's inventory reported `holes` 2 / 3 / 0 after a
+  kill. The kill scenario took its inventory at the session's `result` line,
+  when the turn's last rows (the response, then `system/stop_hook_summary`
+  about 0.19 s later) are on disk but not yet at the client; `after-prompt`
+  and `long-answer` already waited `last_row_held`, `kill` did not. With the
+  wait (3d842d16) a run reports `rows_after_result` 0 / 1 / 0 and `holes` 0,
+  and pre-M8 (fbf8051a) and M8 scripts alike gave 0 holes in six more
+  trials. The race is supported, not traced: the original run kept no
+  directory, so its hole rows were never named. Each kill also reports 1
+  `vanished`, before M8 and after: the named block streaming at the kill,
+  dropped on the transcript-only snapshots the plane serves while the dead
+  child's socket is stale (5–7, about 25 ms apart), redrawn from the
+  successor's bridged snapshot (residue).
+- Observation (M8): in `claude plugin test`, a failing assertion whose diff
+  carries megabytes ends the file's run with no report ("the file did not
+  load"); `Date.now` is frozen in the mods' test runtime.
+  Evidence: `.doperpowers/sde/2026-10-20-desk-open-fast-design/task-8-report.md`.
+
+- Observation (M9): the acceptance run on the finished branch (sminos
+  1.2.14, 5edd1a4e; the MacBook, local hub MAWS 0f9c18d65 with M4, live
+  haiku; load1 4.9–9.7, so every figure is outside the 100–300 band, which
+  stays pending: devcloud). A1 idle E 15–20 ms (N ≤ 0.01 s). A2 mid-message 5 of 5
+  counted, E 18–21 ms, `waits` 0, inventory clean; long-answer 3 of 5 trials
+  counted (windows 12.8–14.0 s), E 14–21 ms at +1 s and +7 s, no end before
+  the step's; after-prompt E 14–26 ms. A3 (`bench_scale opens --live 40
+  --large 6`): +0.5 s large 0.485 s cold (build 429 ms), small 0.118 s; +30 s
+  all warm, 2–39 ms; restart +0.5 s large 0.042 s loaded, small 0.012 s;
+  the second-restart clause unmeasured (the bench restarts once).
+  `bench_index` on CI-opt (333 MB, 16,302 rows): cold 0.74, loaded 0.05,
+  warm 0.00 CPU-s. A4's pair (`--pause-stream 4 --backlog 16m`):
+  `hub_write_blocked` true, 37 POSTs in the window all 200 (max 22 ms),
+  chunk lag ≤ 31 ms, the stream survived, the open after the resume E 9 ms.
+  A6 E_kill 0.438 / 0.190 / 0.191 s; the 0.438 s trial is M8's resync wait
+  again (the plane held the successor's subscription 0.255 s): the same
+  mechanism twice in 13 spaced trials across M8 and M9, once over the bound,
+  and the instrument does not yet split hello → resync applied. A8's layer
+  test re-run 35/35 on MAWS 30db4165c, its fixture byte-identical to
+  sminos's. live-resume-check 14/14. A2's "`streaming` carries the thinking
+  block with its `uuid`" is shown by consequence in the live run (cut not on
+  disk, block drawn, 0 undrawn) and pinned directly by unit tests, not a
+  field of the open's line.
+- Observation (M9): two checks written before M6 and M8 no longer proved
+  what they said, and one hid a logging fault. `Uplink.test_h` passed in the
+  suite only because an earlier test wrote the close line it grepped for;
+  alone it failed, because a lane dropped a connection whose answer closed
+  it before reading the status, so a 503 with `Connection: close` was logged
+  `(the hub closed it)`, not `failed: the hub answered 503`. Fixed in
+  996e1052: the status is read first, and the test reads only what its
+  release wrote. live-bridge-check sampled the killed child's socket 0.2 s
+  after the kill, by when §6's at-once successor already answers; it now
+  checks that the successor takes the endpoint over (0.21 s, 15/15).
+  Evidence: `.doperpowers/sde/2026-10-20-desk-open-fast-design/task-9-report.md`,
+  `m9-runs/`.
 
 ## Decision Log
 
@@ -2022,6 +2218,298 @@ beside; a single reviewer reads one of those well in a pass.
   Date/Author: 2026-10-20, the M5 executor, accepted on review, folded by
   the controller.
 
+- Decision (M5 fix, from the whole-branch reviewer-high, ruled in scope by
+  the coordinator): the plane serves the no-wait snapshot only from a bridge
+  whose snapshot line declares `namedBlocks: true`. The mod's `resyncEvent`
+  carries `namedBlocks: true`; the child starts false and sets it from every
+  resync (`namedBlocks is True`, replaced, not latched), and its snapshot
+  line carries it — true only when the child and the mod that last resynced
+  it are both new. Every other bridge gets the pre-M5 cut wait: "waiting"
+  builds, asked again each pump with no wake, until `NOTICE_WAIT` after the
+  bridge's snapshot, then `discontinuity`; an unlocated transcript with a
+  cut waits likewise. The step-end deadline (§2) applies to both. Declared,
+  never inferred: an empty `streaming` cannot tell an old bridge from a
+  quiet one. Rejected: a hello field (the plane never sees the child's
+  hello; the snapshot line is what the open reads); a child-only declaration
+  (a new child under an old mod is resynced with copies lacking the named
+  blocks). DX5 amended (`[open-fast M5 fix, 2026-10-20]`). sminos 1.2.7,
+  `desk-open-fast-m5fix` ba3816df.
+  Date/Author: 2026-10-20, the M5 fix executor, reviewed clean, folded by
+  the controller.
+
+- Decision (M6, beyond §3, accepted on review): a kept connection is checked
+  before each request (a zero-timeout select: a socket that reads its end
+  is dropped as "the hub closed it" and the POST dials afresh), since an edge
+  idle close lets the write succeed and fails at `getresponse`, which §3
+  rightly makes a loss; §3's retry-once on a failed send stays. Uploads pace
+  themselves: `Link.upload` queues nothing while the log lane holds
+  `UPLOAD_AHEAD` (`POST_LIMIT`, 4 MiB) unsent, checked before the producer
+  runs, so a long-offline machine's backlog never trips `SEND_QUEUE_MAX`.
+  Session-lane entries split per project, a `then` shared by the pieces and
+  due with the body that takes the last. The close reasons gain "the stream
+  ended"; connection numbers are process-wide; a `("sent", …)` item goes
+  only when continuations are due; the stream-end line is today's word for
+  word (the lane is named by the close line just before it).
+  Date/Author: 2026-10-20, the M6 executor, folded by the controller.
+- Decision (M6 review, two rounds): recovery and acknowledgement under the
+  lanes. A re-opened project is gated again (`Sender.hold` takes it out of
+  `released` and moves its queued, not-yet-taken entries back aside in
+  order) before its hello is queued, and recovery hellos coalesce
+  (`Link.opening`); while a project is opening, a `not-open` refusal is
+  logged and changes nothing, its vector included (the refused frame went
+  before the hello now opening it; a later loss is refused again after the
+  hello's continuation clears `opening`, the item queue ordering it). Each
+  hello's continuation marks the presence read it carried
+  (`Plane.take_read`, `accepted(pid, read)`). The continuation releases the
+  HTTP state first (`opening`, the gate, the in-flight counts) and does the
+  local bookkeeping after it; a failed rejection record or outbox drop is
+  kept and retried on every `deliveries` pass (`settle_marks`), never
+  latching a gate or a flag, never posting again.
+  Date/Author: 2026-10-20, the M6 executor and its reviewer, folded by the
+  controller.
+
+- Decision (M7, beyond §4, accepted on review): the daemon's
+  `UPLINK_STOP_GRACE` goes from 3 s to 8 s (`sminos_daemon.py`, outside the
+  milestone's list): `daemon run` SIGKILLed its uplink 3 s after SIGTERM,
+  which would cut the stop save §4 bounds at `STOP_SAVE_SECONDS` (5 s); 8 s
+  is that bound plus the stream's close. A save is a background-priority step
+  run after the job that made it due (ahead of other background jobs,
+  behind any queued foreground job), never inside `extended()`, so a save
+  never delays an open's answer. A load touches the build's mtime, so a
+  build in daily use that never grows `SAVE_GROWTH` is not swept at
+  `BUILD_KEEP_DAYS`; the sweep also removes a crash's `.tmp`. A load
+  refuses a build whose objects' fields differ from fresh instances' (a
+  forgotten `BUILD_FORMAT` bump). One process-wide `Warmer` survives stream
+  changes (passed down as `Bridges` is; a Plane made without one owns and
+  releases its own), else every reconnect would push about 8 of 40 live
+  sessions past `INDEX_KEEP`. A transcript the warmer cannot locate is looked
+  for again at the next round. The `opening` hand-off counts every
+  subscription still awaiting its snapshot, so a legacy bridge's cut wait
+  (up to `NOTICE_WAIT`) pauses new warm jobs that long; accepted.
+  Date/Author: 2026-10-20, the M7 executor, folded by the controller.
+- Decision (M7 fix, from the after-run): the first warm round starts
+  `WARM_EVERY` after the warmer's first tick, and no warm job is submitted
+  while any subscription awaits its snapshot (a running one carries on).
+  §4's bounds (one queue position, `WARM_PARALLEL`) do not cover the GIL:
+  two cold builds during a fresh process's handshake stretched it from 0.05
+  to 0.46 s and pushed a +0.5 s small open from 0.02 s to 0.5–0.7 s
+  (`setswitchinterval(0.0005)` did not help). After a restart warm jobs are
+  ~9 ms loads, so the wait costs only a first-ever start.
+  Date/Author: 2026-10-20, the M7 executor, folded by the controller.
+- Decision (M7 review, two rounds): a saved build is trusted only when it
+  is provably the file's prefix. `Index` keeps `crc`, the `zlib.crc32` of
+  the bytes before `end`, folded in block by block as `extend` reads (a
+  partial last line excluded until its newline); a load reads the file to
+  the saved end unparsed and compares, and on a mismatch removes the build
+  and starts cold. `BUILD_FORMAT` is 2 (a format-1 build is refused).
+  Rejected: a sample of rows at their saved offsets (round 1's fix) — two
+  unsampled neighbours trading a byte, or a row keeping its uuid and length
+  while changing its parent, both loaded stale. The checksum detects
+  rewrites, not adversaries (the daemon's own file, 0700 directory).
+  Measured on CI-opt's 317 MB from the page cache: crc32 0.04 CPU-s,
+  adler32 0.05, sha1 0.17, blake2b 0.38, md5 0.67; the load is 0.05 CPU-s
+  in all against 0.75 cold. Eviction keeps the evicted Transcript in
+  `Transcripts.retiring` until its save has run, `acquire` handing the same
+  object back, so one worker orders every save of a file and the main
+  thread never blocks; each retirement draws a number that an acquire
+  voids, and a save lets go of its own `(t, n)` only. `saved` is what is on
+  disk (a save or a load); the growth throttle keeps its own mark
+  (`tried_end`), so a failed save is retried by eviction and the stop and
+  not counted by `save_all`. The warmer reconciles departures every period,
+  pruning a pending round.
+  Date/Author: 2026-10-20, the M7 executor and its reviewer, folded by the
+  controller.
+
+- Decision (M8, beyond §6–7, accepted on review): a child's stable run is
+  timed on the engine's clock (`$.clock.now`), which the mod's tests can
+  move. The poster splits any batch whose body would pass 4,194,304
+  characters, so A7's "every post fits" holds for chunk traffic too; one
+  event alone over the limit is still a lost post. The child bounds every
+  block it takes, a resync's included (`_message`), so an old mod's long
+  block is cut as it arrives. `bridge_order.py`'s reader holds the cut's own
+  row as the plane does: loose (due from the snapshot whatever step is open,
+  forgotten past its due), a carried named block's cut strict (the M5
+  review's deferred Minor). `bench_open --scenario kill` kills only a child
+  that has run `STABLE_MS` (30.5 s with margin), since §6 backs off a crash
+  within 30 s of the last, and waits up to 5 s for the transcript's last
+  row before its inventory (`rows_after_result`), so a hole is a row the
+  plane never delivered. DX5 amended (`[open-fast M8, 2026-10-20]`).
+  Date/Author: 2026-10-20, the M8 executor, folded by the controller.
+- Decision (M8 review): the retry wait is scoped to its child's generation
+  (`state.retry = { generation }`), inert once a successor exists rather
+  than cleared at its hello. A resync over `RESYNC_MAX` shortens pending
+  permissions' inputs after dropping streaming (§7, `RESYNC_INPUT_CAP`
+  1,024); question and async-ask inputs are never shortened. The case of
+  whole questions alone passing the budget is scoped out and recorded as
+  residue (§7): it takes about 64 pending asks each near 64 KiB, questions
+  are human-rate and short, and the only cuts available (shortening a
+  question, or dropping a pending request from the catch-up) would break
+  answer matching or lose a request.
+  Date/Author: 2026-10-20, the controller, on the M8 reviewer's finding.
+
+- Decision (M6 fix, from the coordinator's whole-branch reviewer-high on
+  ba3816df..f5a814f4, four rounds): §3 amended — settlements and DX4
+  compact messages are held in flight and then until confirmed (§3's new
+  bullet), `Requests` and `Rpcs` sharing `sminos_flights.Flights`: a
+  per-project epoch recorded by `sending` and checked by `delivered(frames,
+  attempt)`; held entries stamped when answered and released by
+  `confirm(pid, mark)` for a mark taken when the confirmation is queued;
+  frames in a hello's own POST confirmed at once (the hub applies them
+  behind the hello, the project open); `refuse(pid)` owes the project's held
+  and in-flight messages again and lets go of the voided attempts' entries.
+  The confirmation is a probe, not a hello: a hello is the open handshake (a
+  Registry round trip, the machines upsert, the lease, `have`, the backlog
+  read) and re-opens the project, so it cannot surface a refusal; an empty
+  `events` frame on an open project stores, fans out and renews nothing,
+  and on one not open is refused on the replies lane before the hub answers
+  (MAWS 992faf00b, identical to the deployed c26b74cc). The hub takes a
+  duplicate settlement once (`markSettled`), so a resend is the side erred
+  on. Bound: `CONFIRM_AFTER` plus the probe's wait in the log lane's queue
+  plus its exchange, whatever `SMINOS_ARCHIVE_EVERY`. Ruled residue, not
+  fixed here (the coordinator agreed): both remaining windows need the hub
+  to report a refusal in the POST's answer; a machine-only hello/`have`
+  barrier matched in per-project FIFO order was rejected as too much for a
+  stop-gap. Also from the review: `HubLog.uploads` is a generator and
+  `next_upload` keeps one draw across the paced passes (dropped on a
+  `have`, a followed `resend`, a refusal, a new stream), `Link.upload`
+  drawing only once the log lane has room, so each event is sealed once (a
+  budget rejected: it would still re-parse each writer's file per pass).
+  sminos 1.2.11, `desk-open-fast-m6fix` 2f64aa96..4400ced7, passed by the
+  coordinator's reviewer; merged at eeb71406 (1.2.13).
+  Date/Author: 2026-10-20, the M6 fix executor and its reviewers, folded by
+  the controller.
+
+- Decision (M9): the target-band figures are written "incomplete at
+  100–300 (no run in band)" until the owner chooses whether a devcloud host
+  under `stress-ng --cpu 150 --cpu-method matrixprod` runs them (the
+  commands are in task-9-report.md, "If the owner chooses a devcloud host");
+  either answer slots in without another milestone. setup.md is unchanged:
+  no knob of this branch is the owner's (`SMINOS_IDLE_CLOSE` is read for a
+  test only, `CONFIRM_AFTER` has no override). A lane's close line names a
+  non-200 POST `failed: …` even when its answer also closes the connection
+  (§3); live-bridge-check's stale-socket clause is replaced by "the successor
+  takes the endpoint over and answers", the stale-socket rule staying pinned
+  by `test-bridge.sh`. A10's two live checks ran in M9, against the branch
+  in their own isolation, rather than after the roll.
+  Date/Author: 2026-10-20, the M9 executor and the controller.
+
+- Decision (panel fix, the xhigh whole-branch review of d7fd164f..62e57510;
+  three P2s confirmed, each reproduced): (1) `Sender.hold` drops a re-opened
+  project's queued entries the re-open sends anew (`renewed`: the pending
+  set, presence, raises and settlements, RPC results, compaction messages)
+  rather than releasing them after its hello — the panel reproduced an empty
+  set queued before a `not-open` going after the re-open's set, dropping a
+  pending permission at the hub; presence, RPC results and compaction
+  messages had the same shape. A subscription's messages are kept. A
+  session-lane body already out at the refusal is healed by a fresh set and
+  presence behind it (`hold`'s answer, `requests.stale`, `Plane.say_again`,
+  a flag rather than forgetting `plane.sent`, which would lose an owed
+  tombstone); built on the controller's call, since a large body still
+  uploading can land after the small hello. Left: a member that left
+  between the in-flight presence and the hello, whose older "running"
+  presence can stand until the session changes again. (2) A lane has one
+  dial out at a time; one its watcher gave up on stays the lane's, lands
+  only while the lane has not ended and closes itself otherwise; `lost()`
+  ends the lane. A dial token was rejected: it needs a bound of its own.
+  (3) `capped` never ends a cut on a high surrogate (the resync's
+  `RESYNC_INPUT_CAP`, and `TEXT_CAP`'s raise cut, which predates the
+  branch); on a truncated resync the child keeps a held request's raised
+  copy, so a remote decision's digest and the input the session holds stay
+  one set of bytes (amends M8's "the child takes what it carries"). sminos
+  1.2.15, bdc1c21b..218aa515, 8/8 gates GREEN (39505085148); main (#301,
+  ff012ef9) merged at adb55df4, its content already held.
+  Date/Author: 2026-10-21, the panel fix executor, folded by the controller.
+- Decision (the coordinator's reviewer-high on 62e57510..218aa515, one P2):
+  the heal's presence pass re-sent current members only, so a leaver whose
+  queued tombstone `hold` dropped, and whose live presence rode the
+  in-flight body, stayed live at the hub for good. The plane keeps the
+  sessions it said not running (`gone[pid]`, each with the time it was first
+  said gone, which a re-send does not extend) and `say_again`'s pass says
+  them not running again. Chosen over keeping the dropped frames in the
+  Sender: it holds wire lines, and the plane already knows who left. Its
+  first bound, `GONE_KEEP` 300 s from the leave (ee66cc3e), was tied to the
+  leave rather than to the stale presence: a live presence can wait in the
+  session lane's queue past it, so a heal at 301 s missed a leaver whose
+  body was still to land (the coordinator's reviewer-high on
+  218aa515..ee66cc3e). The heal now takes the body's own clock: `hold`
+  returns when its oldest line of the project was queued, and `say_again(pid,
+  since)` says again every leaver first said gone since — exact, because a
+  session's live presence precedes its tombstone on the lane; `GONE_KEEP`
+  became an hour's memory cap. Tracking each session's live presences
+  through the lane until confirmed was rejected: the Sender carries wire
+  lines, the plane does not see bodies, and the body's timestamp gives the
+  same answer with one number. sminos 1.2.16 (above main after the merge),
+  1.2.17, then 1.2.18; 3ac6660b..4072c8b8. A full
+  gate on 2aeaa663 failed once in test-join.sh's two-machine "joined there"
+  (code the branch does not touch; the same tree passed at 218aa515, and
+  sminos-suites re-run alone passed, 39508461065): a flake.
+  Date/Author: 2026-10-21, the panel fix executor, folded by the controller.
+
 ## Outcomes & Retrospective
 
-Pending — written at finish.
+Written 2026-10-21, at the branch's PR (head 62e57510, sminos 1.2.14), before
+the xhigh panel and before the roll; the review loop refreshes it after its
+fix waves, and the by-hand lines are filled in after the roll.
+
+**What the purpose asked, and where it stands.** A session view opens in
+about a second whenever the machine can run. Measured end to end, through
+the real uplink and the real hub code on a local runtime with a browser
+client, at load < 50: every open scenario is now tens of milliseconds. Idle
+E 15–20 ms. Mid-message 18–21 ms, against 2–2.6 s before M5, with the
+long-answer open no longer dying at 5 s. After a prompt 14–26 ms. After a
+daemon restart, a large session opens loaded in 0.04 s, against a 0.42 s
+cold build, and every live session is warm 30 s after start. A child crash
+is redrawn in 0.17–0.22 s, against 1.2–6.6 s. A blocked hub write no longer
+stops the uplink: 37 POSTs answered 200 inside a 4 s block, and an open 9 ms
+after it. Not established yet:
+- the 100–300 band, which a devcloud host is running (the owner's choice);
+- the deployed path, the owner's `window.deskLatency()` after the roll;
+- the by-hand daemon.log reads on the owner's Mac.
+
+**What held from the design.** The diagnosis in §1 was right about where
+the seconds went: the snapshot gated on a cut no bridge could deliver (§2),
+the uplink serializing every POST behind one connection and one thread (§3),
+a build parsed from scratch after every restart (§4), and a fixed respawn
+delay (§6). Each fix landed as designed and moved the figure it was meant
+to move. The reference consumer and the inventory (M1) earned their cost
+twice: they caught a measurement race in M8's kill run that time alone
+would have passed, and they made "the drawing is whole" a checked claim
+rather than an impression.
+
+**What the design got wrong, and the branch corrected.**
+- §3 marked settlements sent at enqueue on the premise that the handshake
+  heals a loss. That holds for the pending set but not for a settlement,
+  and the coordinator's whole-branch reviewer found it. Following it through
+  showed that the hub answers 200 to a frame it refuses `not-open`, which no
+  machine-side scheme can fully close. The branch holds what was answered
+  until a probe confirms it, and leaves the remaining windows to a hub
+  change (Residue).
+- M5's no-wait snapshot assumed every bridge keeps its named blocks. A
+  mixed-generation roll breaks that, hence the `namedBlocks` declaration.
+- M7's first row-sample check on saved builds gave way to a whole-prefix
+  CRC: a sample is not a correctness guarantee.
+- The xhigh panel on the whole branch found three more of the same kind,
+  each reproduced: a re-open's gate released frames older than its own
+  hello; a warm dial that outlived its deadline could replace the lane's
+  connection; a 1,024-character cut could split a surrogate pair, after
+  which no decision's digest could match. All three are fixed (218aa515).
+
+The pattern across all three: a premise true of the common case and false
+of one class of object or one moment of a roll. A focused reviewer looking
+for exactly that found each one.
+
+**What cost more than it should have.** The M6 fix took four rounds, three
+of them chasing successively narrower windows of the same hub-side cause,
+before the loop was stopped by naming the cause. Stopping one round earlier
+would have lost nothing. The lesson: when each round's finding is a smaller
+instance of one external behaviour, rule on the behaviour.
+
+**Left behind.** The PR's Residue lists the follow-ups, each with its
+context:
+- the hub reporting refusals in the POST's answer;
+- the memory-only outbox, held list and compact messages;
+- the held list's missing hard cap;
+- oversized pending questions in a resync;
+- the vanished block on transcript-only snapshots during an outage;
+- the resync-wait outlier in the kill run;
+- bridge_order's unported release rule.
