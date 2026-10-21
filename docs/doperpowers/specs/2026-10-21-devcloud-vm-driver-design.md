@@ -409,8 +409,16 @@ in a login shell: `sminos hub check`. Its answer decides:
 | 0 | accepted | nothing more (a reboot or reconcile of an enrolled host) |
 | 1 | not enrolled here | fetch the key into memory; `sminos hub enroll --name <DEVCLOUD_NAME>`, the key on stdin |
 | 3 | a credential is present but rejected (an admin revoke, the offline sweep, a `leave` whose answer was lost) | the same, with `--replace` (a new use of the key) |
-| 4 | the desk is unreachable or erred | keep the credential and go on; the daemon retries. Never enroll on 4 |
+| 4 | undecided: the desk is unreachable, answered 5xx or neither, or an Access 401 for a credential still inside Access's propagation grace (about 60 s after minting) | the step is not done: keep the credential, let the daemon start, record `deferred` (which the boot's exit counts as ok), and ask again later (below). Never enroll on 4 |
 | 2 | usage | fail the step |
+
+A deferred step is finished by the `devcloud-enroll` service (an I7 addition: root, every 5 minutes, on a
+host whose descriptor names `DEVCLOUD_SMINOS_SECRET`), which runs `devcloud enroll`: nothing unless
+the status says `deferred`, otherwise the same `hub check` and this table's action for 0, 1 or 3. The
+interval is fixed and unbounded: one request every 5 minutes costs nothing, and a host that a revoke
+while stopped plus a brief desk outage left unenrolled until its next reboot — the daemon never holds
+the key, so it cannot re-enroll on its own — is the failure this exists to prevent. `devcloud status`
+shows `enroll deferred since <time>`.
 
 Then the daemon is installed as the parent built it. `sminos hub show` reads only the local file and
 is not used for this decision. An enroll exiting 3 (name taken) or with a key refusal fails the step
@@ -423,7 +431,8 @@ machines it minted, which the desk lists by key.
 Until the desk ships keys, `up --enroll-code -` reads a one-time code from its stdin; once the boot
 has finished (unenrolled), the driver writes the code over SSH to a root-only file,
 `/etc/devcloud/enroll-code`, and runs `devcloud reconcile`, whose step 11 enrolls with it the same
-way and deletes the file whatever the outcome — one path for every provider, GCE included, where
+way and deletes the file once a 0, 1 or 3 has decided, whatever the enroll's outcome (a deferred step
+keeps it for `devcloud enroll`; `up` then reports the deferral and exits 0) — one path for every provider, GCE included, where
 nothing is delivered before the tailnet is up. Sandboxes never enroll (the parent's rule).
 
 ### 11. The skill
@@ -545,7 +554,9 @@ Decisions:
 - The enrollment follows Design §10's `hub check` table and I15. The provisioning key is fetched
   only when `hub check` says 1 or 3, kept in memory, and handed to the child's stdin. The one-time
   code file (`/etc/devcloud/enroll-code`, 0600 root), when present, is used in place of the key, and
-  read and deleted in the same step whatever the outcome.
+  deleted once a 0, 1 or 3 has decided, whatever the enroll's outcome. On 4 the step records
+  `deferred` and the boot goes on; `devcloud enroll` (a new entry in `devcloud`'s jobs) and the
+  `devcloud-enroll` service (every 5 minutes, in the service list) finish it as Design §10 says.
 - The inbound policy is one nftables table devcloud owns (`inet devcloud`), loaded by a
   `devcloud-inbound.service` ordered before the network comes up at later boots; the step is a no-op
   on containers and when the key is absent or `open`.
@@ -560,8 +571,9 @@ Does not touch: the driver (`devcloud/driver/`), any provider, the guard mods.
 Proves (tests pin each): a leased descriptor joins ephemeral and an unleased one does not; the warning
 fires once per lease value and names dirty and unpushed checkouts; departure order and bounds, and a
 hung step does not stop the next; `release` leaves the user and non-devcloud files and removes each
-credential; the `hub check` table (0 skip, 1 enroll, 3 enroll with `--replace`, 4 continue without
-enrolling, 2 fail) and the enroll exit table (0, 1 with each retryable and fatal reason, 2, 3); the key never reaches a file or argv (assert over the fake's recorded
+credential; the `hub check` table (0 skip, 1 enroll, 3 enroll with `--replace`, 4 defer: no enroll, the
+daemon still starts, and `devcloud enroll` acts on a later 1 or 3 and does nothing after a 0;
+2 fail) and the enroll exit table (0, 1 with each retryable and fatal reason, 2, 3); the key never reaches a file or argv (assert over the fake's recorded
 argv and the filesystem); the nftables ruleset text (a unit test on the generator; the live check is
 M1's and M6's); a reboot past the lease boots and departs.
 
@@ -801,8 +813,9 @@ and config repository; `[host]` makes them the profile's. Unknown keys are refus
 commit 5168e433 on its branch, 2026-10-21):
 
 - `sminos hub check`: one request to the desk, writes nothing, gives up after about 30 s. 0 the
-  credential is accepted; 1 not enrolled here; 3 a credential is present but rejected; 4 the desk is
-  unreachable, answered 5xx, or neither; 2 usage. (Design §10's table says what the boot does with
+  credential is accepted; 1 not enrolled here; 3 a credential is present but rejected; 4 undecided —
+  the desk is unreachable, answered 5xx, or neither, or Access answered 401 for a credential still
+  inside its propagation grace (a newly minted token can be refused for about 60 s); 2 usage. (Design §10's table says what the boot does with
   each.)
 - `sminos hub show`: local only, 0 or 1 on the file alone; not used for the enroll decision.
 - `sminos hub enroll --name <name> [--replace]`, the code on stdin (`smns-provision-v1.…` keys,
@@ -812,8 +825,8 @@ commit 5168e433 on its branch, 2026-10-21):
   enrolling while already enrolled without `--replace`; 2 invocation error, including a name outside
   the key's prefix (`dc-`).
 - `sminos hub leave`: 0 not enrolled any more — it left, or the desk or its access layer already
-  refuses the credential — and `hub.json` removed; 1 unreachable, 5xx or another error, `hub.json`
-  kept (the desk's offline sweep revokes it); 2 usage.
+  refuses the credential — and `hub.json` removed; 1 unreachable, 5xx, an Access 401 inside the propagation grace, or another
+  error, `hub.json` kept (the desk's offline sweep revokes it); 2 usage.
 - Per key, the desk revokes a machine offline longer than the key's `offline_revoke_s` (never, or
   1 h to 30 d).
 - The sminos version that ships this is the floor; an older one exits 2 on a provisioning key.
@@ -878,6 +891,13 @@ commit 5168e433 on its branch, 2026-10-21):
   Rationale: a throwaway VM needs systemd, the desk and the tailnet like a long-lived one; only its
   end differs. Rejected: a third role, which would fork every role check in the boot for one bit.
   Date/Author: 2026-10-21, design session.
+- Decision: `hub check` exit 4 means undecided (unreachable, 5xx, or an Access 401 inside the
+  propagation grace); step 11 defers on it and the `devcloud-enroll` service asks again every 5
+  minutes, unbounded, until 0, 1 or 3. Rationale: the desk's last review (smns-erb-71's message,
+  2026-10-21) found that a VM revoked while stopped and booted during a brief outage would otherwise
+  stay unenrolled until its next reboot. Rejected: retrying inside the boot step, which delays every
+  boot by the outage and still gives up at a bound; exponential backoff, which buys nothing at one
+  request per try. Date/Author: 2026-10-21, design session.
 
 ## Outcomes & Retrospective
 
