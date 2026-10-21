@@ -4829,6 +4829,17 @@ def chat_host(project, a):
 # of by forking it headless, and the fork is internal: SMNS_INTERNAL keeps the
 # hook from recording it, and $SMINOS_HOME/internal/<pid>, written before the
 # fork starts, keeps reconciliation from joining it (§5).
+#
+# The fork starts in safe mode — without the session's plugins, hooks, mods
+# and MCP servers, which a fork answering from the conversation has no use
+# for (with them it was offered their tools) — and persists nothing. They
+# were most of its start, and where it failed: on the owner's MacBook
+# (2026-10-17 to 10-21, board #111) 30 of 264 forks timed out at 120 s, and
+# those that left logs had taken a median 12.5 s and 33 s to start the
+# plugins' local MCP servers (cua_repl, ptc; 8 of 13 ptc starts hit the 30 s
+# limit) where sessions starting in the same minutes took 1.3 s and 2.9 s:
+# the daemon's processes ran in launchd's lower scheduling band, which a
+# loaded machine starves (the plist's ProcessType).
 
 DERIVE_QUESTION = ("In one line: what is this session in charge of in this project — its standing responsibility, "
                    "not its latest step?")
@@ -5133,13 +5144,15 @@ def derive_line(project, m, prompt=DERIVE_PROMPT):
     """Fork the member's session headless, ask it `prompt`, and return
     (line, answer): its one-line answer (answer_line) and the whole text the
     answer's name is read from. The fork starts behind a gate: its pid is marked internal before it can
-    register. Its session id is minted here (`--session-id`), so its
-    transcript is known and deleted whatever the outcome — an answer, a
-    crash, a timeout — and so is the marker. The prompt comes last: `--tools`
-    takes several values and would swallow a prompt right after it."""
+    register. It starts in safe mode and persists nothing (the section's
+    note); its session id is minted here (`--session-id`) all the same, so a
+    transcript an engine wrote anyway is known and deleted whatever the
+    outcome — an answer, a crash, a timeout — and so is the marker. The
+    prompt comes last: `--tools` takes several values and would swallow a
+    prompt right after it."""
     fork = str(uuidlib.uuid4())
-    args = ["claude", "-p", "--resume", m.session, "--fork-session", "--session-id", fork, "--tools", "",
-            "--output-format", "json", prompt]
+    args = ["claude", "-p", "--resume", m.session, "--fork-session", "--session-id", fork, "--safe-mode",
+            "--no-session-persistence", "--tools", "", "--output-format", "json", prompt]
     gate_r, gate_w = os.pipe()
     marker = ""
     out = err = ""

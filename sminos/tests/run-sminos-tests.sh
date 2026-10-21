@@ -5410,9 +5410,9 @@ assert_equals "$(host_count)" "$HOST_BEFORE" "the host stream has no new line"
 assert_equals "$(find "$HOME/.claude/projects" -name '*.jsonl' | wc -l | tr -d ' ')" "$TX_BEFORE" "the fork's transcript is deleted"
 assert_contains "$(grep 'fork-env:' "$STUB_STATE/log/calls.log" | tail -1)" "internal=1 marker=yes" "the fork runs with SMNS_INTERNAL set and its pid marked before it starts"
 FORK_ARGV="$(grep -- '--fork-session' "$STUB_STATE/log/calls.log" | tail -1)"
-if grep -Eq -- "^-p --resume $HD --fork-session --session-id [0-9a-f-]{36} --tools  --output-format json In one line: what is this session in charge of" <<<"$FORK_ARGV"; then
-  pass "the fork is the headless resume the design names, its id pinned, the prompt last"
-else fail "the fork is the headless resume the design names, its id pinned, the prompt last"; echo "    in: $FORK_ARGV"; fi
+if grep -Eq -- "^-p --resume $HD --fork-session --session-id [0-9a-f-]{36} --safe-mode --no-session-persistence --tools  --output-format json In one line: what is this session in charge of" <<<"$FORK_ARGV"; then
+  pass "the fork is the headless resume the design names, its id pinned, in safe mode and persisting nothing, the prompt last"
+else fail "the fork is the headless resume the design names, its id pinned, in safe mode and persisting nothing, the prompt last"; echo "    in: $FORK_ARGV"; fi
 assert_equals "$(ls "$SMINOS_HOME/internal" 2>/dev/null | wc -l | tr -d ' ')" "0" "and its marker is removed"
 FORK_ID="$(sed -n 's/.*--session-id \([0-9a-f-]*\).*/\1/p' <<<"$FORK_ARGV")"
 assert_file_absent "$HPLOG/testhost.$FORK_ID.jsonl" "and the hook recorded nothing for the fork"
@@ -6729,10 +6729,10 @@ args = d["ProgramArguments"]
 print(d["Label"], args[2:], os.path.realpath(args[1]) == os.path.realpath(sys.argv[3]),
       os.path.realpath(args[0]) == os.path.realpath(sys.argv[4]),
       env["SMINOS_HOME"] == sys.argv[2], env.get("ANTHROPIC_BASE_URL"), "ANTHROPIC_AUTH_TOKEN" in env,
-      bool(env.get("PATH")), d["KeepAlive"], d["RunAtLoad"])
+      bool(env.get("PATH")), d["KeepAlive"], d["RunAtLoad"], d.get("ProcessType"))
 PY_PLIST
-)" "com.doperpowers.sminos-daemon ['daemon', 'run'] True True True http://gateway.test False True True True" \
-  "a well-formed plist: daemon run through this CLI's sminos.py on the Python that ran the install, SMINOS_HOME, PATH, and the gateway route as the environment sets it"
+)" "com.doperpowers.sminos-daemon ['daemon', 'run'] True True True http://gateway.test False True True True Interactive" \
+  "a well-formed plist: daemon run through this CLI's sminos.py on the Python that ran the install, SMINOS_HOME, PATH, the gateway route as the environment sets it, in the sessions' scheduling band"
 assert_contains "$OUT" "on $INSTALL_PY (Python 3." "the install says which Python the service runs on"
 assert_equals "$(mode_of "$PLIST")" "0600" "readable only by its owner: it may carry the gateway's token"
 # A first install, before any verb made the registry: launchd opens daemon.out
