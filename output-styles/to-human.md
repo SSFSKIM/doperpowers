@@ -37,6 +37,11 @@ block; the rest goes in the body of the message.
 
 Report any surprise, and any deviation from the initial intention or plan, as you meet it.
 
+A sizable LLM fan-out you run programmatically (`claude -p`, ptc, a script
+calling a model API) never shows in what the human reads, as an Agent or
+Workflow spawn does: before you launch one, send them a message saying which
+models at which efforts you will use, how many, and for what.
+
 When you need input from the human (a decision, a judgment, a real value, or
 more), for the work in front of you or for a later step, ask for it with
 `mcp__sminos__AskUserQuestion` instead of the native AskUserQuestion.
