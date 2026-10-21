@@ -5684,6 +5684,66 @@ assert_equals "$RC|$OUT" "0|" "nor when no record of the session runs"
 run "$SMINOS" name-due
 assert_rc 2 "$RC" "name-due without --session is a usage error"
 
+# name-due judges the session as derive does, as it stands now: an owner's
+# /rename to the very name it had, or a seat it took since, ends the naming.
+CO=0c000010-0000-4000-8000-0000000000d0
+cn_member cnrepo-o5 "$CO" derived
+STUB_FORK_RESULT=$'Owns the owner race.\nname: owner-race-name' run "$SMINOS" derive cnrepo-o5
+run "$SMINOS" name-due --session "$CO"
+assert_equals "$RC|$OUT" "0|owner-race-name" "(a proposal for a generated name is due)"
+cn_peer cnrepo-o5 "$CO" user   # the owner /renames it to the name it already had
+run "$SMINOS" name-due --session "$CO"
+assert_equals "$RC|$OUT" "0|" "not once the owner gave the session the very name it had"
+CQ=0c000011-0000-4000-8000-0000000000d1
+cn_member cnrepo-q7 "$CQ" derived
+STUB_FORK_RESULT=$'Owns the seated work.\nname: seated-later-name' run "$SMINOS" derive cnrepo-q7
+run "$SMINOS" name-due --session "$CQ"
+assert_equals "$RC|$OUT" "0|seated-later-name" "(a proposal for a seat-less session is due)"
+"$SMINOS" seat add cn-repo cnseatq --session "$CQ" >/dev/null
+run "$SMINOS" name-due --session "$CQ"
+assert_equals "$RC|$OUT" "0|" "nor once the session took a seat"
+
+# A name the session held before a seat took it binds that session, as its
+# short does, so a refill between the lookup and the lock is refused
+# (locked_fresh) rather than acted on.
+CW=0c000012-0000-4000-8000-0000000000d2
+cn_member cnrepo-w1 "$CW" derived
+run "$SMINOS" list
+"$SMINOS" seat add cn-repo cnseatw --session "$CW" >/dev/null
+bound_by() { # name → find_target's kind and the session it binds
+  python3 - "$SMINOS_PY" "$1" 2>/dev/null <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("sminos", sys.argv[1]); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+t = mod.find_target(sys.argv[2])
+print("%s %s" % (t[0], t[2]))
+PY
+}
+assert_equals "$(bound_by cnrepo-w1)" "seat $CW" "a seat found by an alias its session held before binds that session"
+assert_equals "$(bound_by cnseatw)" "seat " "while the seat's own name binds the seat"
+
+# A charge-named session that moves to another project keeps its name as
+# sminos's: the names it proposed are in the log it left.
+R5="$TEST_ROOT/cn-other-repo"
+mkdir -p "$R5"
+gitq init -q "$R5"
+(cd "$R5" && "$SMINOS" project init --name cnother >/dev/null)
+CNO="$(smns_id "$R5")"
+CM=0c000013-0000-4000-8000-0000000000d3
+cn_member cnrepo-m3 "$CM" derived
+STUB_FORK_RESULT=$'Owns the moving work.\nname: mover-owned-name' run "$SMINOS" derive cnrepo-m3
+cn_peer mover-owned-name "$CM" hook
+assert_equals "$(json_row mover-owned-name name_source)" "charge" "(the applied name is sminos's)"
+cn_peer mover-owned-name "$CM" user   # resumed
+CLAUDE_CODE_SESSION_ID="$CM" run "$SMINOS" join cnother
+assert_rc 0 "$RC" "(the session joins another project)"
+assert_equals "$(grep '"joined"' "$SMINOS_HOME/projects/$CNO/log/testhost.$CM.jsonl" | tail -1 | python3 -c 'import json, sys; print(json.loads(sys.stdin.read())["name_source"])')" \
+  "charge" "it joins there under sminos's label, though its engine says user and that log holds none of its proposals"
+assert_equals "$(json_row mover-owned-name name_source cnother)" "charge" "and lists there as sminos's"
+STUB_FORK_RESULT=$'Owns the moving work.\nname: mover-owned-name' run "$SMINOS" derive cnother/mover-owned-name
+assert_not_contains "$OUT" "not derived" "derive there is not refused as its human's name"
+assert_contains "$(cat "$FORK_PROMPT")" 'Its current name is `mover-owned-name`' "and asks to keep the name"
+rm -f "$(cn_record "$CM")"
+
 # derive --all sweeps pending names a week old.
 write_pending "$CB" stale-old-name desk-uplink-steward
 write_pending "$CS" fresh-new-name desk-uplink-steward
