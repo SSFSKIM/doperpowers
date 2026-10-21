@@ -10,9 +10,10 @@ import pwd
 import signal
 import tempfile
 import unittest
+from unittest import mock
 
 import _path  # noqa: F401
-from devcloudlib import departure, ledger, status
+from devcloudlib import departure, ledger, proc, redact, status
 from devcloudlib.proc import StepError, User
 
 NOW = 1_792_000_000
@@ -299,10 +300,26 @@ class DepartTest(DepartureBase):
     def test_an_unenrolled_host_leaves_nothing_and_a_host_without_a_shipper_ships_nothing(self):
         (self.home / ".claude/sminos/daemon/hub.json").unlink()
         (self.home / ".claude/tools/session-mirror").unlink()
+        (self.units / "devcloud-session-mirror.service").unlink()     # the configuration has none
         self.assertEqual(departure.depart(self.host(), no_poweroff=True), departure.DONE)
         steps = {s["name"]: s for s in self.lifecycle()["steps"]}
         self.assertEqual(steps["leave"]["detail"], "not enrolled")
         self.assertIn("no shipper", steps["ship"]["detail"])
+
+    def test_a_configured_shipper_that_is_missing_or_not_executable_holds(self):
+        shipper = self.home / ".claude/tools/session-mirror"
+        for broken in ("not executable", "missing"):
+            with self.subTest(broken=broken):
+                self.world.events.clear()
+                if broken == "missing":
+                    shipper.unlink()
+                else:
+                    shipper.chmod(0o644)
+                self.assert_held(departure.depart(self.host()), "ship failed")
+                ship = [s for s in self.lifecycle()["steps"] if s["name"] == "ship"][-1]
+                self.assertIn(broken, ship["detail"])
+        self.assertEqual(departure.depart(self.host(), no_hold=True, no_poweroff=True), departure.DONE,
+                         "--no-hold goes past it")
 
     def test_an_adopted_machine_is_released_not_departed(self):
         self.adopted = True
@@ -323,6 +340,35 @@ class DepartTest(DepartureBase):
         self.assertNotIn(["systemctl", "poweroff"], runs)
         self.assertLessEqual(self.world.clock, departure.PREEMPT_BUDGET, "the session wait outlasted the window")
         self.assertEqual(self.lifecycle()["state"], "departed")
+
+
+class RedactionTest(DepartureBase):
+    """A lifecycle command is a process of its own: it learns the host's
+    secrets before any child runs, as the boot and the jobs do."""
+
+    def test_a_childs_output_reaches_the_log_scrubbed(self):
+        canary = "made-up-store-value-Zq81Lr5Tx0Kp"
+        store = self.home / ".config/claude-secrets"
+        store.mkdir(parents=True)
+        (store / "API_KEY").write_text(canary)
+        shipper = self.home / ".claude/tools/session-mirror"
+        shipper.write_text(f"#!/bin/sh\necho shipping with {canary}\n")
+        logs = self.tmp / "log"
+        for patch in (mock.patch.object(proc, "LOG_DIR", logs), mock.patch.object(proc, "KNOWN", redact.Known())):
+            patch.start()
+            self.addCleanup(patch.stop)
+        world_run = self.world.run
+
+        def run(argv, **kw):
+            world_run(argv, **kw)
+            if argv[-2:] == ["ship", "--once"]:
+                return proc.run(argv, **kw)     # the real child, its output logged
+        host = self.host()
+        host.run = run
+        self.assertEqual(departure.depart(host, no_poweroff=True), departure.DONE)
+        text = (logs / "lifecycle.log").read_text()
+        self.assertIn("shipping with", text)
+        self.assertNotIn(canary, text)
 
 
 class ReleaseTest(DepartureBase):
@@ -422,6 +468,73 @@ class ReleaseTest(DepartureBase):
         self.assertIn(str(stuck / "OLD_NAME"), ledger.entries(self.led))
         self.assertFalse((self.home / ".pgpass").exists(), "one failure stopped the other removals")
         self.assertEqual(self.lifecycle()["state"], "departing")
+
+    def assert_access_kept(self, step):
+        """A release stopped before it could cut the person off: no logout, no
+        ready line, every credential and the ledger there, resumable."""
+        runs = self.world.runs()
+        self.assertNotIn(["tailscale", "logout"], runs)
+        self.assertNotIn(("say", departure.READY), self.world.events)
+        for path in self.written:
+            self.assertTrue(path.exists(), f"{path} removed by a release that failed")
+        self.assertTrue(self.led.exists())
+        record = self.lifecycle()
+        self.assertEqual((record["op"], record["state"]), ("release", "departing"))
+        self.assertEqual((record["steps"][-1]["name"], record["steps"][-1]["state"]), (step, "failed"))
+
+    def test_a_failed_key_restore_stops_before_the_logout(self):
+        (self.tmp / "adopt/keys.json").write_text("not json")
+        self.assertEqual(departure.release(self.host()), departure.FAILED)
+        self.assert_access_kept("restore-keys")
+        self.assertFalse(any(r[:4] == ["systemctl", "disable", "--now", "devcloud-boot.service"]
+                             for r in self.world.runs()), "units removed after a failed restore")
+
+    def test_a_failed_firewall_removal_stops_before_the_logout(self):
+        self.world.failing[("nft", "delete")] = "nft exited 1"
+        self.assertEqual(departure.release(self.host()), departure.FAILED)
+        self.assert_access_kept("firewall")
+        self.assertEqual(self.saved_keys.read_text(), "ssh-ed25519 AAAAdriver devcloud\n",
+                         "went on to the keys behind a firewall still up")
+
+    def test_a_failed_unit_removal_is_not_a_completed_release(self):
+        self.world.failing[("systemctl", "disable", "--now", "devcloud-boot.service")] = "systemctl exited 1"
+        self.assertEqual(departure.release(self.host()), departure.FAILED)
+        record = self.lifecycle()
+        self.assertEqual(record["state"], "departing")
+        self.assertEqual((record["steps"][-1]["name"], record["steps"][-1]["state"]), ("remove-units", "failed"))
+        for path in self.written:
+            self.assertTrue(path.exists(), "credentials removed though the units that rewrite them remain")
+
+    def test_a_second_release_after_a_completed_one_does_nothing(self):
+        ledger.add(self.tmp / "boot.env", path=self.led)     # the boot lists the descriptor
+        self.assertEqual(departure.release(self.host()), departure.DONE)
+        self.assertFalse((self.tmp / "boot.env").exists())
+        self.world.events.clear()
+        self.assertEqual(departure.release(self.host()), departure.DONE)
+        self.assertEqual(self.world.runs(), [])
+
+    @unittest.skipIf(os.geteuid() == 0, "root removes what a mode forbids")
+    def test_a_release_that_left_a_credential_resumes_where_it_stopped(self):
+        ledger.add(self.tmp / "boot.env", path=self.led)
+        stuck = self.home / ".config/claude-secrets"
+        stuck.chmod(0o500)
+        self.addCleanup(stuck.chmod, 0o700)
+        self.write_descriptor(LATER)
+        self.assertEqual(departure.release(self.host(), force=True), departure.FAILED)
+        self.assertTrue((self.tmp / "boot.env").exists(), "the descriptor went before the other credentials")
+        stuck.chmod(0o700)
+        self.world.events.clear()
+        # Run again without --force: the release under way is resumed, not refused.
+        self.assertEqual(departure.release(self.host()), departure.DONE)
+        runs = self.world.runs()
+        self.assertFalse(any(r[-2:] == ["ship", "--once"] for r in runs), "shipped again")
+        self.assertNotIn(["tailscale", "logout"], runs, "logged out again")
+        self.assertFalse(any(r[:2] == ["nft", "delete"] for r in runs))
+        for path in self.written + [self.tmp / "boot.env", self.led]:
+            self.assertFalse(path.exists(), f"{path} survived the resumed release")
+        record = self.lifecycle()
+        self.assertEqual(record["state"], "departed")
+        self.assertEqual([s["name"] for s in record["steps"] if s["state"] == "ok"][-1], "remove-credentials")
 
     def test_a_held_release_removes_nothing(self):
         self.world.ships = [False]

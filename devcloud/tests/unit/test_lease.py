@@ -16,7 +16,7 @@ import unittest
 from unittest import mock
 
 import _path  # noqa: F401
-from devcloudlib import departure, descriptor, lease, status
+from devcloudlib import departure, descriptor, lease, proc, redact, status
 from devcloudlib.proc import User
 
 from test_departure import DepartureBase
@@ -113,6 +113,20 @@ class TickTest(LeaseBase):
         self.assertEqual(self.tick(end + 1800)[1], [end + 3600], "an extension re-arms the warning")
         self.assertEqual(self.set_lease(NOW + 600)[0], 0)
         self.assertEqual(self.tick(NOW + 1)[1], [NOW + 600], "a lease set inside the window warns at once")
+
+    def test_learns_the_hosts_secrets_before_any_child_runs(self):
+        canary = "made-up-store-value-Wn4Ty7Ub2Xc9"
+        store = self.user.home / ".config/claude-secrets"
+        store.mkdir(parents=True)
+        (store / "API_KEY").write_text(canary)
+        self.write(NOW)
+        seen = []
+        with mock.patch.object(proc, "KNOWN", redact.Known()):
+            lease.tick(self.user, state_path=self.tmp / "lease.json", now=lambda: NOW, active=lambda unit: False,
+                       start=lambda unit, argv: seen.append(proc.KNOWN.scrub(canary)), say=lambda m: None,
+                       **self.paths)
+        self.assertEqual(len(seen), 1)
+        self.assertNotIn(canary, seen[0], "the transient unit's start ran before the host's secrets were known")
 
     def test_a_lease_write_racing_the_lease_service_is_serialized(self):
         # The lease ends now; an extension holds the lock. The lease service

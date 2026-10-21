@@ -101,10 +101,11 @@ class SecondGuardTest(unittest.TestCase):
 
     def test_the_spot_unit_is_enabled_on_a_spot_vm_only(self):
         calls, _ = self.apply(spot=True)
-        self.assertIn(["systemctl", "enable", "--now", services.SPOT_UNIT], calls)
+        # Queued, not awaited: the unit is ordered after the boot unit this runs in.
+        self.assertIn(["systemctl", "enable", "--now", "--no-block", services.SPOT_UNIT], calls)
         calls, _ = self.apply(spot=False)
         self.assertIn(["systemctl", "disable", services.SPOT_UNIT], calls)
-        self.assertNotIn(["systemctl", "enable", "--now", services.SPOT_UNIT], calls)
+        self.assertFalse(any(c[:2] == ["systemctl", "enable"] and services.SPOT_UNIT in c for c in calls))
 
 
 class ServicesStepTest(unittest.TestCase):

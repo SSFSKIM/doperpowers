@@ -189,8 +189,10 @@ def apply_systemd(user, env_changed, run=run, unit_dir=UNIT_DIR, pending_dir=PEN
             run(["systemctl", "enable", f"{unit}.service"], log="services", timeout=60)
         started.append(s.name)
     if persistent and (unit_dir / SPOT_UNIT).exists():
-        run(["systemctl", "enable" if spot else "disable", *(["--now"] if spot else []), SPOT_UNIT],
-            log="services", timeout=60)
+        # Its start queued, not awaited: the unit is ordered after the boot
+        # unit this runs in, so a start waited for here would never end.
+        run(["systemctl", "enable", "--now", "--no-block", SPOT_UNIT] if spot
+            else ["systemctl", "disable", SPOT_UNIT], log="services", timeout=60)
     if BOOTED.exists():
         start_gated(user, run=run, pending_dir=pending_dir, lifecycle=lifecycle)
     detail = "systemd: " + (", ".join(started) or "nothing")

@@ -15,12 +15,19 @@ lease service's next run starts again, step 0 re-applied first.
 `devcloud release`, on an adopted machine: steps 0-2 as the departure's, then
 the leave, the firewall table and its unit removed, the saved
 `authorized_keys` restored, the logout, devcloud's units stopped and removed,
-and every credential the ledger lists removed, the ledger last. The machine
-keeps running.
+and every credential the ledger lists removed, the descriptor and then the
+ledger last. The machine keeps running. A failed firewall removal, key
+restore, unit removal or credential removal stops the release there (exit 1,
+state `departing`) before anything that would cut the person off or leave
+them nothing to resume from; run again, it resumes after the last step that
+succeeded.
 
 Both run under the lifecycle lock, re-read the lease under it, and refuse
-with exit 3 ("lease not over") unless it has ended or they were given
---force. Each step's outcome is a status entry (status.json's `lifecycle`)."""
+with exit 3 ("lease not over") unless it has ended, they were given --force,
+or they resume one under way. Each step's outcome is a status entry
+(status.json's `lifecycle`). Each is a process of its own: it learns the
+host's secrets before its first step, so no child's output reaches its log
+unscrubbed."""
 
 import dataclasses
 import json
@@ -43,6 +50,7 @@ SHIP_TIMEOUT = 300
 LEAVE_TIMEOUT = 180     # I15: one `hub` call can take about 150 s
 ADOPT_DIR = pathlib.Path("/var/lib/devcloud-adopt")
 INBOUND_UNIT = "devcloud-inbound.service"
+SHIPPER_UNIT = "devcloud-session-mirror.service"
 INBOUND_NFT = pathlib.Path("/etc/devcloud/inbound.nft")
 UNIT_DIR = pathlib.Path("/etc/systemd/system")
 # The spot reclaim's window: steps 0-4 within 25 of the provider's ~30 seconds.
@@ -101,6 +109,9 @@ class Host:
 
     def preempted(self):
         return _preempted()
+
+    def know_secrets(self, d):
+        proc.know_host(self.user, d.seed_path if d.seed_kind == "file" else None, env_path=services.ENV_PATH)
 
 
 def claude_pids(uid):
@@ -247,11 +258,15 @@ def _shipper(host):
 
 
 def ship_once(run, timeout=SHIP_TIMEOUT):
-    """`session-mirror ship --once` as the user; False when it failed."""
+    """`session-mirror ship --once` as the user; False when it failed. A host
+    whose configuration has no shipper (no program, no unit) has nothing to
+    ship; a shipper configured but missing or not executable is a failed ship."""
     host = run.host
     program = _shipper(host)
     if not os.access(program, os.X_OK):
-        return True, "no shipper configured (nothing to ship)"
+        if not os.path.lexists(program) and not host.installed(SHIPPER_UNIT):
+            return True, "no shipper configured (nothing to ship)"
+        return False, f"the shipper {program} is {'not executable' if os.path.lexists(program) else 'missing'}"
     try:
         host.run([str(program), "ship", "--once"], user=host.user, env=host.user_env(), log="lifecycle",
                  timeout=run.bound(timeout), cwd=str(host.user.home))
@@ -270,8 +285,8 @@ def sessions_and_ship(run, no_hold, grace=SESSION_GRACE, rounds=ROUNDS, ship_tim
         run.step("end-sessions", lambda: end_sessions(run, grace))
         if number == 1:
             run.step("stop-shipper", lambda: host.run(
-                ["systemctl", "stop", "devcloud-session-mirror.service"], log="lifecycle",
-                timeout=run.bound(60)) or "devcloud-session-mirror.service stopped")
+                ["systemctl", "stop", SHIPPER_UNIT], log="lifecycle",
+                timeout=run.bound(60)) or f"{SHIPPER_UNIT} stopped")
         ok, detail = ship_once(run, ship_timeout)
         run.record("ship", "ok" if ok else "failed", detail)
         if not ok:
@@ -338,35 +353,42 @@ def _lease_over(d, host):
 
 
 def _begin(host, op, force):
-    """The checks under the lock, before any step: the descriptor, the lease
-    (unless forced), and a departure already over. Returns (descriptor, exit)."""
+    """The checks under the lock, before any step: the operation already
+    done (read first: a completed release has removed the descriptor), the
+    descriptor, and the lease, unless forced or resuming a run of the same
+    operation under way. Returns (descriptor, the record resumed or None,
+    exit)."""
+    record = status.lifecycle(host.status_path)
+    if record and record.get("op") == op and record.get("state") == "departed":
+        host.say(f"devcloud {op}: already done ({record['at']})")
+        return None, None, DONE
     try:
         d = descriptor.load(host.desc_path, allow_http=host.allow_http)
     except descriptor.DescriptorError as error:
         host.say(f"devcloud {op}: {error}")
-        return None, FAILED
+        return None, None, FAILED
     if d.role != "persistent":
         host.say(f"devcloud {op}: a sandbox never departs; its host removes it")
-        return None, FAILED
+        return None, None, FAILED
     if (op == "release") != d.adopted:
         host.say(f"devcloud {op}: " + ("only an adopted machine (DEVCLOUD_ADOPTED=1) is released"
                                         if op == "release" else "an adopted machine is released, not departed"))
-        return None, FAILED
-    record = status.lifecycle(host.status_path)
-    if record and record.get("op") == op and record.get("state") == "departed":
-        host.say(f"devcloud {op}: already done ({record['at']})")
-        return None, DONE
-    if not force and not _lease_over(d, host):
+        return None, None, FAILED
+    # A run that passed these checks once and stopped part way: its lease
+    # cannot have moved since (`lease set` refuses once a departure started).
+    resumed = record if record and record.get("op") == op and record.get("state") == "departing" else None
+    if not force and resumed is None and not _lease_over(d, host):
         when = f"ends {lease.iso(d.expires)}" if d.expires is not None else "has no end (keep)"
         host.say(f"devcloud {op}: lease not over (it {when}); --force departs anyway")
-        return None, NOT_OVER
-    return d, None
+        return None, None, NOT_OVER
+    host.know_secrets(d)
+    return d, resumed, None
 
 
 def depart(host, force=False, no_hold=False, no_poweroff=False):
     """`devcloud depart`; returns its exit status (I16)."""
     with lease.locked(path=host.lock_path):
-        d, code = _begin(host, "depart", force)
+        d, _, code = _begin(host, "depart", force)
         if d is None:
             return code
         run = Run(host, "depart")
@@ -413,6 +435,7 @@ def depart_preempted(host):
         except descriptor.DescriptorError as error:
             host.say(f"devcloud depart: {error}")
             return FAILED
+        host.know_secrets(d)
         run = Run(host, "depart", deadline=deadline)
         status.set_lifecycle("depart", "departing", "reclaimed by the provider", steps=[], path=host.status_path)
         run.step("close-admission", lambda: close_admission(run))
@@ -497,38 +520,55 @@ def remove_units(run):
 
 
 def remove_credentials(run):
-    """Release step 7: every path the ledger lists, then the ledger."""
+    """Release step 7: every path the ledger lists, the descriptor last of
+    them (a retry loads it to resume), then the ledger."""
     host = run.host
-    removed, failures = ledger.remove_all(host.user, host.as_user, path=host.ledger_path)
+    removed, failures = ledger.remove_all(host.user, host.as_user, path=host.ledger_path, last=[host.desc_path])
     if failures:
-        raise StepError(f"removed {len(removed)}; left: {', '.join(failures)}; the ledger stays")
+        raise StepError(f"removed {len(removed)}; left: {', '.join(failures)}; the ledger and the descriptor stay")
     return f"removed {len(removed)} credential paths, then the ledger"
 
 
 def release(host, force=False, no_hold=False):
-    """`devcloud release`; returns its exit status (I16)."""
+    """`devcloud release`; returns its exit status (I16). Run again after one
+    that stopped part way, it skips what already succeeded: steps 0-2 once a
+    run went past the ship, and each later step that ended ok."""
     with lease.locked(path=host.lock_path):
-        d, code = _begin(host, "release", force)
+        d, resumed, code = _begin(host, "release", force)
         if d is None:
             return code
         run = Run(host, "release")
-        status.set_lifecycle("release", "departing", "started", steps=[], path=host.status_path)
-        try:
-            run.step("close-admission", lambda: close_admission(run))
-            sessions_and_ship(run, no_hold)
-        except _Held as held:
-            status.set_lifecycle("release", "held", f"held ({held.reason})", steps=run.steps,
-                                 path=host.status_path)
-            host.say(f"devcloud release: held ({held.reason}); the lease service tries again at its next run")
-            return HELD
-        run.step("leave", lambda: leave(run))
-        run.step("firewall", lambda: remove_firewall(run))
-        run.step("restore-keys", lambda: restore_keys(run))
-        run.step("logout", lambda: logout(run, d))
-        run.step("remove-units", lambda: remove_units(run))
-        if not run.step("remove-credentials", lambda: remove_credentials(run)):
-            status.set_lifecycle("release", "departing", "credentials left: run it again", steps=run.steps,
-                                 path=host.status_path)
-            return FAILED
+        done = set()
+        if resumed:
+            run.steps = list(resumed.get("steps") or [])
+            done = {s["name"] for s in run.steps if s["state"] == "ok"}
+        status.set_lifecycle("release", "departing", "resumed" if resumed else "started", steps=run.steps,
+                             path=host.status_path)
+        if not any(s["name"] == "leave" for s in run.steps):
+            try:
+                run.step("close-admission", lambda: close_admission(run))
+                sessions_and_ship(run, no_hold)
+            except _Held as held:
+                status.set_lifecycle("release", "held", f"held ({held.reason})", steps=run.steps,
+                                     path=host.status_path)
+                host.say(f"devcloud release: held ({held.reason}); the lease service tries again at its next run")
+                return HELD
+        # (step, whether its failure stops the release): the firewall and the
+        # keys are the person's way in once the tailnet is gone; units left
+        # would rewrite the credentials; credentials left need the descriptor.
+        for name, fn, stops in (("leave", lambda: leave(run), False),
+                                ("firewall", lambda: remove_firewall(run), True),
+                                ("restore-keys", lambda: restore_keys(run), True),
+                                ("logout", lambda: logout(run, d), False),
+                                ("remove-units", lambda: remove_units(run), True),
+                                ("remove-credentials", lambda: remove_credentials(run), True)):
+            if name in done:
+                continue
+            if not run.step(name, fn) and stops:
+                status.set_lifecycle("release", "departing", f"{name} failed: run it again to resume",
+                                     steps=run.steps, path=host.status_path)
+                host.say(f"devcloud release: {name} failed; nothing after it ran. "
+                         "`devcloud release` again resumes from there")
+                return FAILED
         status.set_lifecycle("release", "departed", "released", steps=run.steps, path=host.status_path)
         return DONE

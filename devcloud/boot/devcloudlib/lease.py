@@ -158,6 +158,8 @@ def tick(user, desc_path=descriptor.PATH, lock_path=None, status_path=None, stat
             return 1
         if not d.leased:
             return 0
+        # A process of its own: the host's secrets known before any child runs.
+        proc.know_host(user, d.seed_path if d.seed_kind == "file" else None, env_path=ENV_PATH)
         record = status.lifecycle(**status_kw)
         if record and record.get("state") == "departed":
             return 0

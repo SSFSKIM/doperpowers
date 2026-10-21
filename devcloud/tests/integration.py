@@ -55,7 +55,7 @@ failures = []
 
 
 def cleanup():
-    for container in (HOST, FX, VM, SEATED, ADOPTED):
+    for container in (HOST, FX, VM, SEATED, ADOPTED, SPOT):
         subprocess.run(["docker", "rm", "-f", container], capture_output=True)
     subprocess.run(["docker", "rmi", "-f", SYSTEMD_IMAGE, PLANTED, BROKEN_DPKG], capture_output=True)
     subprocess.run(["docker", "network", "rm", NET], capture_output=True)
@@ -801,7 +801,34 @@ def sandbox_with_identity():
 
 ADOPTED = f"{TAG}-adopted"
 SEATED = f"{TAG}-seated"
+SPOT = f"{TAG}-spot"
 MARKETPLACE_COPY = "/var/lib/devcloud/marketplaces/doperpowers"
+
+
+@case("a spot VM boots to its end and its reclaim unit starts after the boot (no wait on a unit ordered after it)")
+def spot_vm_boots():
+    desc = descriptor("dc-spot-5e6f", extra="DEVCLOUD_SPOT=1\n")
+    desc.write_text(desc.read_text().replace("KIND=container", "KIND=vm").replace("ROLE=sandbox", "ROLE=persistent")
+                    .replace("TAILSCALE=host", "TAILSCALE=none"))
+    docker("run", "-d", "--name", SPOT, "--hostname", "dc-spot-5e6f", "--network", NET, "--privileged",
+           "--cgroupns=host", "-v", "/sys/fs/cgroup:/sys/fs/cgroup:rw", "--tmpfs", "/run", "--tmpfs", "/run/lock",
+           "-v", f"{desc}:/etc/devcloud/boot.env:ro", SYSTEMD_IMAGE)
+    end = time.monotonic() + 300
+    while (state := sh(SPOT, "systemctl is-active devcloud-boot.service", check_rc=False).stdout.strip()) != "active":
+        check(state != "failed" and time.monotonic() < end, f"devcloud-boot.service is {state} on a spot VM: " + sh(
+            SPOT, "cat /var/lib/devcloud/status.json; systemctl list-jobs --no-pager; "
+                  "journalctl -u devcloud-boot --no-pager -n 40", check_rc=False).stdout[-2500:])
+        time.sleep(2)
+    check(sh(SPOT, "devcloud status", check_rc=False).returncode == 0, out(SPOT, "devcloud status || true"))
+    check(out(SPOT, "systemctl is-enabled devcloud-spot.service || true").strip() == "enabled",
+          "the spot unit is not enabled on a spot VM")
+    end = time.monotonic() + 30
+    while out(SPOT, "systemctl is-active devcloud-spot.service || true").strip() != "active":
+        check(time.monotonic() < end, "the spot unit never started: "
+              + out(SPOT, "systemctl status devcloud-spot.service --no-pager || true"))
+        time.sleep(1)
+    check("devcloud-spot.service enabled" in steps(SPOT)["services"]["detail"], steps(SPOT)["services"]["detail"])
+    docker("rm", "-f", SPOT)
 
 
 @case("an adopted machine's lease end releases it through the lease service's transient unit (the driver's §6.5)")

@@ -21,7 +21,7 @@ import urllib.request
 import uuid
 
 from . import descriptor, envfile, inbound, lease, ledger, plugins, proc, profile as profile_mod, \
-    projects as projects_mod, redact, secrets, services, sminos_host, status
+    projects as projects_mod, secrets, services, sminos_host, status
 from .descriptor import DescriptorError
 from .proc import StepError, User, as_user, run, write_file
 from .secretmanager import AccessError, Tokens
@@ -64,9 +64,8 @@ class Run:
             self.desc = descriptor.load(allow_http=os.environ.get("DEVCLOUD_ALLOW_HTTP") == "1")
             self.user = User.from_image()
             self.tokens = Tokens(self.desc)
-            proc.KNOWN.update(redact.host_values(self.user, env_path=ENV_PATH))
-            if self.desc.seed_kind == "file":
-                _know_seed(self.desc.seed_path)
+            proc.know_host(self.user, self.desc.seed_path if self.desc.seed_kind == "file" else None,
+                           env_path=ENV_PATH)
 
     @property
     def claude_dir(self):
@@ -76,18 +75,6 @@ class Run:
         """What profile.env's references expand against: the user's login
         environment and the host's identity."""
         return self.user.env(_read_env(IDENTITY_ENV))
-
-
-def _know_seed(path):
-    """The seed key's secret fields, so no log can hold them."""
-    try:
-        key = json.loads(pathlib.Path(path).read_text())
-    except (OSError, ValueError):
-        return
-    if isinstance(key, dict):
-        proc.KNOWN.update(str(key[f]) for f in ("private_key", "private_key_id") if key.get(f))
-        if isinstance(key.get("private_key"), str):
-            proc.KNOWN.update(line for line in key["private_key"].splitlines() if len(line) >= 40)
 
 
 def _read_env(path):

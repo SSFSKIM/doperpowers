@@ -22,6 +22,15 @@ SYSTEM_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 KNOWN = redact.Known()
 
 
+def know_host(user, seed_path=None, env_path="/etc/devcloud/env"):
+    """Every secret value already on this host made known, before a process
+    runs any child whose output it logs: the boot and the jobs on loading,
+    each lifecycle command (a process of its own) before its first step."""
+    KNOWN.update(redact.host_values(user, env_path=env_path))
+    if seed_path:
+        KNOWN.update(redact.seed_values(seed_path))
+
+
 class StepError(Exception):
     """A step's failure; the message is its status detail, so it names no value."""
 

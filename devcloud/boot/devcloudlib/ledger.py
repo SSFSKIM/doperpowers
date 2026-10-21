@@ -63,13 +63,19 @@ def remove_one(target):
         os.unlink(target)
 
 
-def remove_all(user, as_user, path=None):
+def remove_all(user, as_user, path=None, last=()):
     """Removes every listed path — under the user's home as the user — then
-    the ledger, once every removal succeeded. Returns (removed, failures),
-    each failure `<path> (<reason>)`; with any failure the ledger stays."""
+    the ledger, once every removal succeeded. The paths in `last` go only
+    after all the others did (the descriptor: a run that stopped part way
+    still has it to resume from). Returns (removed, failures), each failure
+    `<path> (<reason>)`; with any failure the ledger stays."""
     removed, failures = [], []
     home = str(user.home).rstrip("/") + "/"
-    for target in entries(path):
+    last = {os.path.abspath(str(p)) for p in last}
+    listed = entries(path)
+    for target in [t for t in listed if t not in last] + [t for t in listed if t in last]:
+        if target in last and failures:
+            break
         try:
             if target.startswith(home):
                 as_user(user, lambda target=target: remove_one(target))
