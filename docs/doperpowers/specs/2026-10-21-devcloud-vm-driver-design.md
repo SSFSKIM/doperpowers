@@ -692,7 +692,38 @@ the managed settings, `/etc/devcloud/env`, the boot descriptor, and sminos's `hu
 never prunes it. Release removes every entry it lists and removes the ledger itself only after every
 removal has succeeded. Release reading the current profile, as first designed, would miss a target
 the profile renamed or dropped after the boot wrote it; the ledger records what was written,
-whenever it was.
+whenever it was. A `secrets.toml` file entry must name a path inside the home: nothing absolute
+after `~/`, no `..`, not the home itself. The release never removes the home itself.
+
+**Hardening from the whole-branch review** (Decision Log, "After the whole-branch review"):
+- **Adopt's account preflight.** Before anything changes, adopt checks that `setup.sh` would remove
+  or take over no existing account or home: no account with the hosts' user's name, none holding
+  its uid, and no existing home path.
+  - Adopt never deletes or replaces an account; it refuses and names them.
+  - The machine keeps the verdict (`/var/lib/devcloud-adopt/preflight.json`), so a resumed adoption
+    is not refused for the account `setup.sh` itself made.
+  - `setup.sh` run by adopt (`DEVCLOUD_ADOPTING=1`) refuses rather than delete `ubuntu`.
+- **The boot's release guard.** On an adopted machine the boot runs each step under the lifecycle
+  lock, held shared. It configures nothing once a release has started (status `departing`, `held` or
+  `departed` with op `release`), because its steps would undo the release's: the driver keys over
+  the restored `authorized_keys`, the firewall, the tailnet join. VMs are excluded: their departure,
+  bounded at minutes, must not wait behind a long `apply` step.
+- **The release's logout gate.** A failed `tailscale logout` stops the release, which stays
+  resumable (state `departing`). The one exception is when `tailscale status` already shows the node
+  logged out (`NeedsLogin`). An adopted machine keeps running and its node is not ephemeral; a VM's
+  departure keeps its best-effort logout, since the VM is deleted and its node is ephemeral.
+- **`down` on an adoption that never booted.** On a machine with no descriptor installed, `down`
+  rolls back what the adoption delivered:
+  - the ledgered paths under `/etc/devcloud` and `/var/lib/devcloud`
+  - the staged descriptor
+  - devcloud's units
+  - the saved keys, restored
+  It then verifies as a release does, and removes the record. It refuses if the ledger lists any
+  other existing path. `released` is never written before cleanup has succeeded.
+- **Adopted `down`, unconfirmed leave.** Adopted `down` gives the same desk note as VM `down` when
+  the release did not confirm the leave. The adoption record keeps `enroll` for this. A resumed
+  release repeats the lines of the steps it skips, marked "(an earlier run)", so that a leave
+  confirmed on the first run still reads as confirmed.
 
 ### 7. Images
 
@@ -1393,6 +1424,7 @@ providers in `<profile>/providers/<name>`):
     required
     info        {}                                   → {"protocol": 1, "capabilities": [...]}   # subset of user_data, images, spot, metadata_seed
     types       {"location"}                         → [{"type", "vcpus", "memory_gb", "disk_gb", "available", "hourly_price": number|null}]
+                                                     # each may carry "architecture": "x86"|"arm" (the shipped providers do)
     create      {"name", "type", "location", "image": id|null, "labels", "ssh_public_keys",
                  "user_data": string|null, "disk_gb", "spot"}   → Vm     # labels applied inside the create itself
     list        {}                                   → [Vm]             # only resources carrying the devcloud label
@@ -1425,6 +1457,7 @@ provider):
     devcloud-by=<driver machine's name, lowercased>
     devcloud-creator=<session short id>
     devcloud-recipe=<12 hex>
+    devcloud-arch=x86|arm                    # an image's architecture, from its builder (the account's default type); up uses only a matching image
     devcloud-confirmed=1                     # created with --confirmed; not counted toward the throwaway cap
     devcloud-enroll=key|code                 # how the VM enrolls at the desk; absent: it does not
     devcloud-held=1                          # its departure is held on a failed ship (§4.3)
@@ -2252,6 +2285,29 @@ commit 5168e433 on its branch, 2026-10-21):
   Rationale: `sminos machines` prints a cached directory, or only this machine when the driver is
   not enrolled. The bounded run's 60 s must hold.
   Date/Author: 2026-10-21, executor, M6 review.
+
+- Decision: After the whole-branch review, adopt and release are hardened at their seams with the
+  boot (§6.5, "Hardening from the whole-branch review"):
+  - **The account preflight**, with `DEVCLOUD_ADOPTING`. Rationale: `setup.sh`'s UID-collision
+    handling, right for a disposable image base, could `userdel -r` the person's own login, which
+    release could not restore.
+  - **The boot's release guard on adopted machines.** Rationale: a reboot mid-release re-ran the key
+    step after `restore-keys` had deleted the backup.
+  - **The logout gate.** Rationale: an adopted machine's node is not ephemeral, so a release that
+    finished without logging out left it joined.
+  - **The rollback of an adoption that never booted, with no early `released`.** Rationale: `down
+    --force` on such a record marked it released and then failed for want of the descriptor, every
+    time.
+  - **The adopted desk note.** Rationale: the owner's H4 ruling leaves `hub leave` as the only clean
+    removal.
+  - **Home-only `secrets.toml` file targets.** Rationale: `~//etc/passwd` had reached the root
+    removal path.
+  - **The image architecture label** (`devcloud-arch`; `types` carries `architecture`). Rationale:
+    Hetzner offers x86 and ARM types, and an image of the other architecture would be chosen.
+  Deferred: moving a kept host onto a lease leaves its tailnet node non-ephemeral, so a crash after
+  that conversion strands the node. Whether to rejoin as ephemeral or refuse the conversion is a
+  product choice (PR, Unresolved Review Findings).
+  Date/Author: 2026-10-21, the fix wave and the controller, after the review at the high rung.
 
 ## Outcomes & Retrospective
 
