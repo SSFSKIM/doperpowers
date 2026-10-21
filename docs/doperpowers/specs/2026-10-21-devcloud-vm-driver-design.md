@@ -83,7 +83,7 @@ refused or it needs a browser or their judgment.
 | H1 | The Hetzner devcloud project's API token into Secret Manager | the person | escalated by M1's preflight if missing |
 | H2 | The GCE host service account and its Secret Manager grant | the executor if its account is permitted, else the person | M1's preflight |
 | H3 | The seed key file onto the always-on Mac | the person | done 2026-10-21 (early, for M4's timing): `~/.config/devcloud/seed.json`, 0600; the Mac's own gcloud default untouched |
-| H4 | A desk provisioning key, `offline_revoke_s` 24 h, into Secret Manager | the person, once the desk ships keys | M6 verifies its policy value |
+| H4 | A desk provisioning key into Secret Manager; its `offline_revoke_s` is null ("never"), by the owner's ruling (Decision Log) | the person, once the desk ships keys | done: `sminos-provisioning-key-devcloud` v2, a `dc-` key expiring 2027-01-19; M6 records the policy value |
 | H5 | A tailnet ACL rule letting the Macs reach `tag:devcloud` on port 22 | the person | not needed: M1 found it open |
 | H6 | Removing the parent's leftover test machine `devcloud-m5` from the desk's Machines | the person | an M6 step; evidence: `sminos machines` no longer lists it |
 | H8 | The Hetzner limits (6 primary IPs, 16 shared vCPU) | the person | answered at M1: GCE becomes the default account, no limit request (Decision Log) |
@@ -428,8 +428,8 @@ alive:
    the user's `claude` processes exists — `sminos spawn` launches one directly, without the daemon
    (`sminos/skills/sminos/scripts/sminos.py`, `spawn_fresh`) — the departure ends them as step 1 does
    and ships again. That is at most three rounds; after the third the departure holds.
-3. `sminos hub leave` as the user (exit 0 or 1 both proceed; on 1 the desk's offline revoke removes
-   the machine later, §4.4).
+3. `sminos hub leave` as the user (exit 0 or 1 both proceed; on 1 the machine stays in the desk's
+   Machines, offline, until removed there by hand, §4.4).
 4. `tailscale logout`, after printing one flushed line on stdout, `devcloud-depart: ready-to-logout`.
 5. Stop devcloud's services, but not the transient departure unit, which runs on to record the end.
 6. Power off, unless `--no-poweroff` (the reaper's and `down`'s path, which delete right after).
@@ -503,18 +503,18 @@ It never departs or deletes an adopted machine; the machine's own lease service 
 It runs from a scheduled job on the person's always-on Mac every 10 minutes (`devcloud vm reap
 --install` writes a launchd agent), and at the start of every `up` and `ls` on any driver, bounded to
 60 seconds there. Each deletion is one line in `~/.local/state/devcloud/reap.log`; deleting a VM that
-did not depart and was enrolled by a one-time code (`devcloud-enroll=code`) says that it stays in
-the desk's Machines until someone removes it (§10).
+did not confirm `hub leave`, however it was enrolled (key or one-time code), says that it stays in
+the desk's Machines until someone removes it there (§10; no key has an offline revoke, H4).
 
 **4.4 What covers what.**
 
 | Event | Transcripts | Desk | Tailnet | Server |
 |---|---|---|---|---|
 | Lease ends, host healthy | sessions ended, then the departure ships; a failed ship holds the departure, retried | `hub leave` | `logout` | reaper deletes; a held VM 24 h past its lease end, logged as unshipped loss |
-| Host hung or crashed, then lease ends | lost since the last ship (seconds, the shipper is continuous) | the desk's offline revoke after the key's 24 h (H4); a VM enrolled by a one-time code has none and stays until removed by hand, which the reaper's log names | ephemeral expiry, about an hour | reaper deletes 15 min past the label's lease when the provider reports it not running, 6 h past when it reports it running |
+| Host hung or crashed, then lease ends | lost since the last ship (seconds, the shipper is continuous) | stays in the desk's Machines, offline, until removed there by hand (no key has an offline revoke, H4); the reaper's log line for its deletion names it | ephemeral expiry, about an hour | reaper deletes 15 min past the label's lease when the provider reports it not running, 6 h past when it reports it running |
 | `devcloud vm down` | as a healthy lease end; held → `down` exits 1, `--force` proceeds | `hub leave` | `logout` | deleted at once |
-| GCE spot reclaimed | best-effort fast departure, no hold | best-effort `hub leave`, else the offline revoke | best-effort `logout`, else ephemeral expiry | provider deletes |
-| `keep` VM | never departs | stays; if stopped long enough for the offline revoke, re-enrolls at its next boot (`hub check` 3, `--replace`) | stays | only `down` |
+| GCE spot reclaimed | best-effort fast departure, no hold | best-effort `hub leave`, else stays until removed by hand | best-effort `logout`, else ephemeral expiry | provider deletes |
+| `keep` VM | never departs | stays; if the desk revoked it meanwhile, re-enrolls at its next boot (`hub check` 3, `--replace`) | stays | only `down` |
 | Adopted machine, lease ends or `down` | the release ships, as a departure | `hub leave` | `logout` | keeps running, devcloud removed (§6.5) |
 
 ### 5. Exposure: the public port closes once the tailnet is up
@@ -788,10 +788,15 @@ again through its seed — the desk records that broader trust as accepted (its 
 off disk keeps it out of images, snapshots and backups, and recovery is revoking the key and then the
 machines it minted, which the desk lists by key.
 
-The provisioning key used for leased VMs has a finite offline revoke, 24 hours (H4): the desk
-revokes a machine offline that long, so a VM that died without leaving is gone from the desk a day
-later, and a stopped `keep` VM it revoked re-enrolls at its next boot through `hub check` 3 and
-`--replace`. M6 verifies the key's policy value; the sweep itself is the desk's to prove.
+The provisioning key used for leased VMs has no offline revoke (`offline_revoke_s` null, by the
+owner's ruling; Decision Log): an enrolled machine stays enrolled however long it is offline.
+`hub leave` is therefore the only clean removal. Where it cannot run, the machine stays in the
+desk's Machines, offline, until someone removes it there: a VM that hangs or crashes, a reclaimed
+Spot VM whose fast departure did not finish, a VM the reaper deletes while it is unreachable, and a
+held departure deleted 24 h past its lease end. The reaper's log line for every deletion without a
+confirmed `hub leave` says so (§4.3). Key expiry does not sweep either: it refuses new enrollments
+(410 key-expired), and a machine already enrolled stays. The current key expires 2027-01-19, and a
+new key goes into a new version of the same secret before then (the VM reads the latest version).
 
 Until the desk ships keys, `up --enroll-code -` reads a one-time code from its stdin; once the boot
 has finished (unenrolled), the driver writes the code over SSH to a root-only file,
@@ -799,7 +804,7 @@ has finished (unenrolled), the driver writes the code over SSH to a root-only fi
 way and deletes the file once a 0, 1 or 3 has decided, whatever the enroll's outcome (a deferred step
 keeps it for `devcloud enroll`; `up` then reports the deferral and exits 0) — one path for every
 provider, GCE included, where nothing is delivered before the tailnet is up. A VM enrolled by a
-one-time code has no offline revoke: if it dies without leaving, it stays in the desk's Machines until
+one-time code is no different: if it dies without leaving, it stays in the desk's Machines until
 someone removes it, and the reaper's log line for its deletion says so (§4.3). Sandboxes never enroll
 (the parent's rule).
 
@@ -853,8 +858,8 @@ with doperpowers:writing-skills and sanity-tested in a session before it ships.
   only. Sandboxes never enroll at the desk, which is where this initiative's value lies.
 - A budget in money: the caps bound time, count, size and disk; the provider's billing is the record.
 - Removing kept tailnet nodes or desk machines from outside the machine: the Tailscale OAuth client
-  has only the auth-keys scope, and the desk offers no browserless admin revoke; ephemeral nodes and
-  the desk's offline revoke cover throwaway machines.
+  has only the auth-keys scope, and the desk offers no browserless admin revoke; ephemeral nodes cover
+  throwaway machines on the tailnet; at the desk, `hub leave` is the only clean removal (§10).
 - Workload identity federation for Hetzner hosts (a keyless seed off GCE), deferred by the parent.
 
 ## Execution
@@ -1231,8 +1236,8 @@ remain and a new SSH connection to the public address as the original login user
 
 What exists at its end: `devcloud:vm` ships; the always-on Mac drives and reaps (H3, `reap
 --install` there); acceptance 1–13 pass as written (their desk parts as Constraints say), including
-the full cap proof and acceptance 5's deletion by the scheduled reaper; the desk's provisioning key
-has a 24 h offline revoke; the parent's leftover `devcloud-m5` is gone from the desk; the devcloud
+the full cap proof and acceptance 5's deletion by the scheduled reaper; the desk's provisioning key's
+policy value is recorded (null, H4); the parent's leftover `devcloud-m5` is gone from the desk; the devcloud
 plugin's version is bumped; the README and the parent spec point here.
 
 Touches: `devcloud/skills/vm/SKILL.md`, `devcloud/README.md`, `devcloud/.claude-plugin/plugin.json`
@@ -1251,7 +1256,8 @@ Decisions:
 - The provisioning-key path of acceptance 1 needs H4; if the desk has not shipped keys by then,
   acceptance 1 runs with `--enroll-code -` (the person pastes a one-time code) and the key path's
   live check is recorded as pending in Progress, with M2's tests standing for it.
-- H4's key policy: read the key's `offline_revoke_s` from the desk and record that it is 86400.
+- H4's key policy: read the key's `offline_revoke_s` from the desk and record it (null, by the
+  owner's ruling; Decision Log).
 - H6: the person removes `devcloud-m5` from the desk's Machines; `sminos machines` no longer listing
   it is the evidence, recorded in Progress.
 
@@ -1310,7 +1316,7 @@ private):
     tailscale_secret = "<Secret Manager id>"      # DEVCLOUD_TS_SECRET (the OAuth client)
 
     [desk]
-    provisioning_secret = "<Secret Manager id>"   # optional until the desk ships keys; its key's offline_revoke_s is 24 h (H4)
+    provisioning_secret = "<Secret Manager id>"   # optional until the desk ships keys; its key's offline_revoke_s is null (H4)
 
     [[account]]
     name = "<name>"
@@ -1434,8 +1440,8 @@ commit 5168e433 on its branch, 2026-10-21):
   refuses the credential — and `hub.json` removed; 1 unreachable, 5xx, an Access 401 inside the propagation grace, or another
   error, `hub.json` kept (the desk's offline sweep revokes it); 2 usage.
 - Per key, the desk revokes a machine offline longer than the key's `offline_revoke_s` (never, or
-  1 h to 30 d). The key for leased VMs uses 24 h (H4). A machine enrolled by a one-time code has no
-  offline revoke.
+  1 h to 30 d). The key for leased VMs uses never (null), by the owner's ruling (H4), as every
+  org key does; a machine enrolled by a one-time code has none either.
 - Version floor: sminos 1.4.1 (doperpowers PR #313, merged as acdb9148; the hub is deployed at MAWS
   4326f0a9). An older sminos exits 2 on `hub check` and on a provisioning key.
 - Final-review hardenings (the desk session, 2026-10-21):
@@ -1860,7 +1866,7 @@ commit 5168e433 on its branch, 2026-10-21):
   documented metadata key; the driver knows the intent for certain. Rejected: detecting spot from
   metadata.
   Date/Author: 2026-10-21, design session.
-- Decision: Desk cleanup is finite: the provisioning key for leased VMs has `offline_revoke_s`
+- Decision (superseded the same day, below: the key's offline revoke is never): Desk cleanup is finite: the provisioning key for leased VMs has `offline_revoke_s`
   24 h (H4), which M6 verifies; a VM enrolled by a one-time code has no offline revoke and stays in
   the desk's Machines until removed by hand, which the reaper's log line names (§4.4, §10).
   Rationale: with "never" a crashed VM would stay counted at the desk forever; 24 h is long enough
@@ -2153,6 +2159,20 @@ commit 5168e433 on its branch, 2026-10-21):
   Rationale: the first two keep the driver from locking itself out or stranding a half-released
   machine. The spec never asked for re-adoption, and release keeps the home by design.
   Date/Author: 2026-10-21, executor (controller), at M5's review.
+
+- Decision: The desk's provisioning key has no offline revoke (`offline_revoke_s` null, "never"),
+  superseding "Desk cleanup is finite". The desk session read GET /api/provisioning-keys at 18:04Z:
+  null on every org key. The owner then ruled, through the desk session, that keys "should not
+  expire until 2027-01-19", so machines on the `dc-` key are never revoked for being offline. There
+  is no key rotation and no new secret version.
+  Rationale: the owner wants enrolled machines to stay enrolled.
+  Consequence: `hub leave` is the only clean removal. A VM that dies without it stays in the desk's
+  Machines, offline, until removed there by hand. That covers Spot preemption, a crash, the reaper
+  deleting an unreachable VM, and a held departure deleted 24 h past its lease. The reaper's log line
+  names each such deletion, whatever the enrollment path (§4.4, §10). Key expiry does not help: it
+  only refuses new enrollments (410 key-expired). The key expires 2027-01-19; a new key goes into a
+  new version of the same secret before then (residue).
+  Date/Author: 2026-10-21, the owner, via the desk session and the design session.
 
 ## Outcomes & Retrospective
 
