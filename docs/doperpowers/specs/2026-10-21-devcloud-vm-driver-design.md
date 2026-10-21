@@ -53,7 +53,13 @@ desk no longer counts it.
 - [x] (2026-10-21 07:30Z) M2 — The host side: leases and their lock, departure, release and its
   ledger, the closed public port, unattended enrollment, desk control (810bc1b3, fixes b2a45d4f,
   2b001c56, b2716a69; reviewed clean after two fix rounds; `devcloud` gate green).
-- [ ] M3 — The driver core, the provider protocol and the Hetzner provider, with the reaper.
+- [x] (2026-10-21 11:40Z) M3 — The driver core, the provider protocol and the Hetzner provider,
+  with the reaper. Commits b06944fc..2e7d699f, with fixes bd50512b and aee127fc after two review
+  rounds. In the live smoke, `provider test hetzner` passed, and `up` exited 0 in one command, with
+  enrollment inside the boot, 9m25s on the IPv6-blackholed network. Acceptance 2 and 9 and the
+  acceptance 4 dry-runs passed, and so did M2's held reboot. Every VM was deleted the same day
+  (dc-smk-baf2 09:08Z, dc-acc-88f5 10:12Z). The third review's one remaining finding, a response
+  trickling past the 60 s reaper bound, was accepted as best-effort (Decision Log).
 - [ ] M4 — Images and project host files.
 - [ ] M5 — The GCE provider, adopt, and the open provider path.
 - [ ] M6 — The skill, the always-on Mac, and acceptance.
