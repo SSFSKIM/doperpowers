@@ -1376,6 +1376,12 @@ or how it is answered reaches `cua` as a ticket before it ships.
   handles restore across it, both guards deriving them from the same sources.
   Date/Author: 2026-10-19, the devcloud session (board #101).
 
+- Decision: The provisioning driver this spec put out of scope is
+  `docs/doperpowers/specs/2026-10-21-devcloud-vm-driver-design.md` (`devcloud vm`, devcloud 0.7.0),
+  which narrows role `persistent` to a systemd host with its own identity that may carry a lease,
+  and seats a host's plugins by option E above now that hosts enroll at the desk.
+  Date/Author: 2026-10-21, the VM driver's M6.
+
 ## Outcomes & Retrospective
 
 **Outcome (2026-10-17).** The purpose holds as stated. A throwaway Ubuntu VM booted from the devcloud image with a descriptor and the seed. A sandbox container on it booted the same way. Both became hosts without a step typed by hand:

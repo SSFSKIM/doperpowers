@@ -69,7 +69,9 @@ def parser():
     p.add_argument("--dry-run", dest="dry_run", action="store_true")
     p = sub.add_parser("ls", help="list hosts")
     p.add_argument("--json", action="store_true")
-    p = sub.add_parser("ssh", help="a shell or a command on a host")
+    p = sub.add_parser("ssh", help="a shell or a command on a host",
+                       usage="devcloud vm ssh <name> [--root] [-- command...]",
+                       description="One argument after -- is a shell line as given; several are quoted as words.")
     p.add_argument("name")
     p.add_argument("--root", action="store_true")
     p = sub.add_parser("lease", help="set a host's lease end to now + duration")

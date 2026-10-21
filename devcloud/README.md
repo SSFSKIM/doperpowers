@@ -6,6 +6,11 @@ workflow plugin, and a person opts into devcloud. It carries the secrets
 guard, the host image and boot program that make any Linux userland work
 like the person's Mac, and the `devenv` skill that writes a repository's
 `devenv/` (design: `docs/doperpowers/specs/2026-10-15-devcloud-design.md`).
+It also carries the VM driver, `devcloud vm`, which makes such hosts on
+cloud machines and deletes them when their lease ends, and the `vm` skill,
+which tells a session when a VM is worth it, what needs the person's yes,
+and how to add a cloud (design:
+`docs/doperpowers/specs/2026-10-21-devcloud-vm-driver-design.md`).
 
 ## The secrets guard (`hooks/mods/secrets.tsx`)
 
@@ -432,7 +437,8 @@ The plugin's `bin/devcloud` is on a session's `PATH`; it runs
 `boot/devcloud` with a Python 3.11+ from `PATH`, which hands `vm` to the
 driver with the caller's `PATH` (hcloud and gcloud live under Homebrew and
 the user's SDK). On a host (`/etc/devcloud/boot.env` exists) `devcloud vm`
-refuses with exit 6: hosts never drive.
+refuses with exit 6: hosts never drive. A session learns it from
+`skills/vm/SKILL.md` (`devcloud:vm`).
 
     devcloud vm up [--label L] [--project owner/repo[@ref]]... [--account A] [--type T] [--location L]
                    [--disk GB] [--ttl D | --keep] [--spot] [--enroll-code -] [--confirmed] [--dry-run]
@@ -535,7 +541,9 @@ image with a fresh `images` (still listed, with the labels it was chosen by).
 Each deletion is a line in `~/.local/state/devcloud/reap.log`. `up` and `ls`
 run it bounded first: no departures, 60 seconds in all, its lines on stderr;
 `reap --install` writes a launchd agent that runs it every 10 minutes, on the
-always-on Mac. `up` counts the throwaway cap only from lists that answered:
+always-on Mac; the agent runs the marketplace clone's `bin/devcloud` when
+there is one, else the copy that installed it, and each of its runs ends
+with one dated line in `~/.local/state/devcloud/reap.out`. `up` counts the throwaway cap only from lists that answered:
 an account whose list fails stops the `up` before anything is created.
 
 **Providers** are executables speaking one JSON request on stdin and one JSON

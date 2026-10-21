@@ -7,3 +7,5 @@ A second plugin in this marketplace (its entry found by name, versioned on its o
 The host: `image/` (`setup.sh`, the `Dockerfile` whose one step it is) and `boot/` (`devcloud-boot`, steps 1–12 in `devcloudlib/steps.py`, step 12's projects and mirror cache in `devcloudlib/projects.py`, step 11's sminos daemon on an enrolled persistent host in `devcloudlib/sminos_host.py`, the tailnet join with the Tailscale OAuth client in step 4; `devcloud` for status and the jobs; `devcloud-services`, the supervisor where PID 1 is not systemd), tested in containers by `devcloud/tests/run.sh` (the `devcloud` gate).
 
 `skills/devenv/` writes a repository's `devenv/` from its CI, manifests and README and proves it with `devenv up`.
+
+The VM driver: `driver/` (`devcloud vm`, run by `bin/devcloud`; the shipped providers in `driver/providers/`), design in `docs/doperpowers/specs/2026-10-21-devcloud-vm-driver-design.md`, unit-tested in `tests/unit/test_driver_*.py` and the providers' own tests; `skills/vm/` is what a session reads to use it.
