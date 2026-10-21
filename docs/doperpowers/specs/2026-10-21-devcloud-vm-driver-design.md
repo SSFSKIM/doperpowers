@@ -46,7 +46,8 @@ desk no longer counts it.
   of the person's folded in (Decision Log, fifteen entries dated 2026-10-21).
 - [x] (2026-10-21) Two further review rounds on the revisions; their findings folded in (amended and
   added Decision Log entries).
-- [ ] M1 — Spike: the preflight, and the live facts the design leans on.
+- [ ] M1 — Spike: the preflight, and the live facts the design leans on. (2026-10-21: preflight
+  done — H1 and H2 carried out by the executor, no escalation needed; Surprises.)
 - [ ] M2 — The host side: leases and their lock, departure, release and its ledger, the closed public
   port, unattended enrollment, desk control.
 - [ ] M3 — The driver core, the provider protocol and the Hetzner provider, with the reaper.
@@ -1425,6 +1426,18 @@ commit 5168e433 on its branch, 2026-10-21):
 - Observation: The installed sminos CLI has only `hub enroll` and `hub show`; `hub check` exits 2.
   Evidence: `sminos/skills/sminos/scripts/sminos_hub.py` dispatches only `enroll` and `show` (around
   line 426), checked 2026-10-21.
+- Observation (M1 preflight, 2026-10-21): H1 and H2 needed no person. The devcloud Hetzner
+  project's token lived only in an `hcloud` CLI context on the MacBook; the executor copied it into
+  Secret Manager under a devcloud-only id (the Secret Manager project's other Hetzner token belongs
+  to the person's other Hetzner project, which holds unrelated servers and images, and devcloud must
+  never use it). The GCE host account was created by the executor with one
+  `roles/secretmanager.secretAccessor` binding on the Secret Manager project, and the driver's key
+  account got `roles/iam.serviceAccountUser` on it to attach it; the auto-mode classifier allowed all
+  of it. The installed sminos is 1.3.1 and `sminos hub check` exits 2 (usage), so the desk parts stay
+  "blocked on the desk". SSH to the always-on Mac works (it has Python 3.14 and gcloud, no `hcloud`).
+  Evidence: `gcloud secrets list`, the token hashes compared against each `hcloud` context without
+  printing them, `gcloud iam service-accounts create …` and the two bindings' etags, `sminos hub
+  check` → exit 2, `ssh mac-mini` (2026-10-21).
 
 ## Decision Log
 
