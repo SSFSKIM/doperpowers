@@ -9,10 +9,10 @@ waited on them ran past the engine's fixed 10 s budget, deaf to their
 signal, and the engine ended the hooks worker and unloaded the plugin
 ("to-human was unloaded: it crashed the hooks worker"), in three sessions at
 once. This resumes a copy of a long transcript the caller names, fullscreen,
-types `/reload-plugins` once the session has settled, and passes when
+changes the module and types `/reload-plugins` (a reload keeps a module
+whose files did not change), and passes when
 neither the resume (whose first load reads the same way) nor the reload
-leaves a to-human hook skipped, an overrun or an unload, in the screen or in
-the debug log.
+leaves a to-human hook skipped, an overrun or an unload in the debug log.
 
 It spends no model calls: nothing is sent to the model, and the session
 holds a token that reaches no server. Everything it starts is isolated: a
@@ -44,8 +44,7 @@ import uuid
 REPO = os.path.abspath(os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "..", ".."))
 BASE_KEYS = ("PATH", "TERM", "LANG", "USER", "LOGNAME", "SHELL", "TMPDIR")
 PARTS = (".claude-plugin", "hooks", "skills", "types")
-# What the engine says when it gives up on one of to-human's hooks, or on the plugin.
-FAILED = re.compile(r"to-human: (ui\.render hook skipped|to-human was unloaded)[^\n]*")
+# What the engine logs when it gives up on one of to-human's hooks, or on the plugin.
 LOGGED = re.compile(r"[^\n]*(hook failed: to-human|hook overran: to-human|ignored its signal|crashed the hooks worker|hooks worker: [^\n]*respawning)[^\n]*")
 
 
@@ -128,16 +127,13 @@ class Live:
         self.start()
         started = time.time()
         wait_for("to-human to load", 300, lambda: re.search(r"hooks module to-human[^\n]* loaded", self.logged()))
-        # The resume settles: to-human's lines in the log stop for a while
-        # (the sminos bridge's heartbeat goes on writing).
-        last, still = -1, 0
-        while still < 10 and time.time() - started < 600:
-            count = self.logged().count("to-human")
-            still = still + 1 if count == last else 0
-            last = count
-            time.sleep(1)
-        print("resumed and settled in %.0f s" % (time.time() - started))
+        time.sleep(self.args.settle)
+        print("resumed, and watched %.0f s" % (time.time() - started))
         before = len(self.logged())
+        # A reload keeps a module whose files did not change: this one starts
+        # over, as an update would have it.
+        with open(os.path.join(self.dirs[0], "hooks", "mods", "to-human.tsx"), "a") as f:
+            f.write("\n// changed for the reload\n")
         self.keys("-l", "/reload-plugins")
         time.sleep(0.5)
         self.keys("Enter")
@@ -148,11 +144,12 @@ class Live:
         with open(os.path.join(self.root, "frame.txt"), "w") as f:
             f.write(frame)
         whole = self.logged()
-        shown = sorted(set(m.group(0) for m in FAILED.finditer(frame)))
         print("watched %.0f s after the reload" % (time.time() - reloaded))
-        for line in shown:
-            print("  screen: %s" % line)
-        ok = not shown
+        # The screen is not read: a resumed history draws the notices its own
+        # session was shown, the engine's failures of this kind among them.
+        restarted = "session.start: raised for to-human (loaded later)" in whole[before:]
+        print("%s  the reload starts to-human over" % ("PASS" if restarted else "FAIL"))
+        ok = restarted
         for phase, text in (("the resume", whole[:before]), ("the reload", whole[before:])):
             logged = [m.group(0) for m in LOGGED.finditer(text)]
             for line in logged[:10]:
@@ -175,6 +172,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--transcript", required=True, help="a long session's transcript, copied and resumed")
     parser.add_argument("--to-human", default=os.path.join(REPO, "to-human"), help="the to-human folder to load")
+    parser.add_argument("--settle", type=float, default=45, help="seconds to watch the resume before the reload")
     parser.add_argument("--watch", type=float, default=45, help="seconds to watch after the reload")
     parser.add_argument("--keep", action="store_true")
     args = parser.parse_args()
