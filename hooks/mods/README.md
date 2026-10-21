@@ -383,8 +383,10 @@ directory, not the subagent's: the identical call (for Bash, its
 `description` aside) in the same loop and directory, within 10 minutes,
 once, and for Bash before any other Bash call in that loop. The
 `tool.check` hook applies it only over core's plain `ask` — no `rule`,
-`hook`, `setting`, `decider`, no organization `ceiling` — so a pass never
-overrides a deny rule, a settings ask rule, a classic hook, or a host. Any
+`hook`, `setting` or `plugin`, no `approver` of `host`, no organization
+`ceiling` (and, on an engine before 2.1.307, no `decider`) — so a pass never
+overrides a deny rule, a settings ask rule, a classic hook, another plugin's
+ask (the engine puts every hook's ask to a person), or a host. Any
 `prompt.submit`, and any answer to a question, ends every pass and makes a
 judge call in flight no ruling: the ruling was on the conversation as it
 was. An answer reaches the model through no prompt, so the mod hooks

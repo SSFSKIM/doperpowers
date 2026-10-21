@@ -355,7 +355,10 @@ export function registerAppeal(on: On) {
   on('tool.call', { tool: 'mcp__doperpowers__appeal' }, ($, e) => appeal($, e as { agentId?: string; block?: unknown; argument?: unknown }))
 
   // The pass: only over core's plain ask, never over a rule, a classic hook,
-  // a setting's own check, a host's ask, or an organization's ceiling.
+  // a setting's own check, a plugin's ask (a hook's ask is a person's), a
+  // host's ask, or an organization's ceiling. Engines before 2.1.307 marked
+  // the host's and a hook's person-only ask with `decider` instead, and a
+  // session started on one still loads this plugin when a reload brings it.
   on('tool.check', { tool: /^/ }, async ($, e, next) => {
     const verdict = await next(e)
     if (
@@ -363,7 +366,9 @@ export function registerAppeal(on: On) {
       verdict.rule !== undefined ||
       verdict.hook !== undefined ||
       verdict.setting !== undefined ||
-      verdict.decider !== undefined ||
+      verdict.plugin !== undefined ||
+      e.approver === 'host' ||
+      'decider' in verdict ||
       e.ceiling !== undefined ||
       typeof e.tool_use_id !== 'string'
     ) {
