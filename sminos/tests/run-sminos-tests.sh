@@ -5288,6 +5288,26 @@ FORK_ID="$(sed -n 's/.*--session-id \([0-9a-f-]*\).*/\1/p' <<<"$FORK_ARGV")"
 assert_file_absent "$HPLOG/testhost.$FORK_ID.jsonl" "and the hook recorded nothing for the fork"
 run "$SMINOS" derive hd
 assert_contains "$OUT" "not derived" "a session derived within six hours is not derived again"
+# Past the six hours, a session whose transcript was not written since its
+# line (a stopped one never retired, say) is not forked again: the same
+# conversation gives the same answer.
+python3 - "$HPLOG/testhost.$HD.jsonl" "$TD" <<'PY_IDLE'
+import json, os, sys, time
+rows = [json.loads(l) for l in open(sys.argv[1])]
+for e in rows:
+    if e.get("kind") == "in-charge":
+        e["ts"] = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(time.time() - 7 * 3600))
+open(sys.argv[1], "w").write("".join(json.dumps(e, ensure_ascii=False) + "\n" for e in rows))
+t = time.time() - 8 * 3600
+os.utime(sys.argv[2], (t, t))
+PY_IDLE
+HD_FORKS="$(grep -c -- "--resume $HD --fork-session" "$STUB_STATE/log/calls.log" || true)"
+run "$SMINOS" derive hd
+assert_contains "$OUT" "hd: not derived — no activity since its last line, " "a transcript unchanged since its line, past the six hours, is not derived again"
+assert_equals "$(grep -c -- "--resume $HD --fork-session" "$STUB_STATE/log/calls.log" || true)" "$HD_FORKS" "(no fork was started for it)"
+tx "$TD" asst f3000001 "one more turn"
+run "$SMINOS" derive hd
+assert_contains "$OUT" "hd: owns the stub tool" "once one more record is written, it is derived again"
 # A user-named session with tool calls enough and no line set: its name is its
 # line until it is derived, as it is; its name is left alone.
 HU=6e000009-0000-4000-8000-00000000006e
@@ -5806,13 +5826,15 @@ PY
 }
 SF=0e000001-0000-4000-8000-0000000000e1
 sch_member sched-first "$SF"   # joined first: listed last, behind every refresh
-for i in 1 2 3 4; do
+for i in 1 2 3 4 5; do
   sch_member "sched-old$i" "0e00001$i-0000-4000-8000-0000000000f$i"
 done
 sch_line 0e000011-0000-4000-8000-0000000000f1 "2000-01-03T00:00:00.000Z"
 sch_line 0e000012-0000-4000-8000-0000000000f2 "2000-01-01T00:00:00.000Z"   # the oldest line
 sch_line 0e000013-0000-4000-8000-0000000000f3 "2000-01-04T00:00:00.000Z"
 sch_line 0e000014-0000-4000-8000-0000000000f4 "2000-01-02T00:00:00.000Z"
+sch_line 0e000015-0000-4000-8000-0000000000f5 "1999-12-31T00:00:00.000Z"   # older still, but idle since
+python3 -c 'import os, sys; t = 946512000; os.utime(sys.argv[1], (t, t))' "$SCH/home/.claude/projects/sched/0e000015-0000-4000-8000-0000000000f5.jsonl"
 sch_forks() { # → the sessions the forks since line $1 of calls.log resumed, in order
   tail -n +"$(( $1 + 1 ))" "$STUB_STATE/log/calls.log" | sed -n 's/.*--resume \([0-9a-f-]*\) --fork-session.*/\1/p' | tr '\n' ' '
 }
@@ -5823,6 +5845,8 @@ assert_equals "$(sch_forks "$CALLS_AT")" "$SF 0e000012-0000-4000-8000-0000000000
   "the member with no line is forked first, then only two refreshes, the oldest lines first"
 assert_contains "$OUT" "sched-old1: not derived — left to the next run, which refreshes at most 2" "the other refreshes are left to the next run"
 assert_contains "$OUT" "sched-old3: not derived — left to the next run, which refreshes at most 2" "both of them"
+assert_contains "$OUT" "sched-old5: not derived — no activity since its last line" \
+  "a member idle since its line is refused, taking no refresh, though its line is the oldest"
 CALLS_AT="$(wc -l < "$STUB_STATE/log/calls.log" | tr -d ' ')"
 run env "${SCH_ENV[@]}" "$SMINOS" derive --all
 assert_equals "$(sch_forks "$CALLS_AT")" "0e000011-0000-4000-8000-0000000000f1 0e000013-0000-4000-8000-0000000000f3 " \

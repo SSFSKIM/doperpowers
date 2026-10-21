@@ -521,7 +521,9 @@ output style, record its answer as a host message. The answer is the
 line, at most 120 characters. `derive` runs only for a local member with no
 `set` line, at least 10 tool calls by its model (the `tool_use` blocks of
 its main conversation's assistant records), and no `derived` event in the
-last six hours; `--all` applies that to every local member but one whose
+last six hours — and, for a member with a derived line, a transcript
+written since that line, since the same conversation gives the same answer
+and forking an idle session rebuilds its prompt cache; `--all` applies that to every local member but one whose
 fork failed within the hour, members with no derived line first and the
 others oldest line first. The daemon runs `derive --all --refreshes 2`
 every five minutes (§8): its forks run one after another, each up to two

@@ -4865,7 +4865,9 @@ def derive_refusal(project, m):
     """Why a member is not derived, or "": only a local member with no set
     line, at least ten tool calls by its model, and no derived line in the
     last six hours (§5; whatever its name, which only decides whether derive
-    may also name it: charge_naming)."""
+    may also name it: charge_naming); and one with a derived line only once
+    its transcript was written since that line — the same conversation gives
+    the same answer, and forking an idle session rebuilds its prompt cache."""
     if not m.session:
         return "it holds no session"
     if not m.local:
@@ -4881,6 +4883,8 @@ def derive_refusal(project, m):
     if age is not None and age < DERIVE_EVERY:
         return "derived %s ago" % short_age(age)
     try:
+        if age is not None and os.path.getmtime(path) <= time.time() - age:
+            return "no activity since its last line, %s ago" % short_age(age)
         n = model_tool_calls(path, DERIVE_MIN_TOOL_CALLS)
     except OSError as e:
         return "its transcript is unreadable: %s" % e
