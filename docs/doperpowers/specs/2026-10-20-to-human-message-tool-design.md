@@ -561,6 +561,19 @@ sminos carries both message-tool names as its own constant, beside
   using claude-opus-5-5 (high effort for turns, low effort as judge) across
   30 runs …`.
 
+- Observation: the message tool runs without a permission prompt in both
+  `default` and `auto` modes, so no `tool.check` allow was added (M1).
+  Evidence: a live check with the worktree's to-human plugin in an isolated
+  config (4 haiku calls). The call returned `sent`, the view drew it as
+  `● message`, the Notification hook got a `plugin_notification`, and the
+  debug log shows `tool.call … resolved by a hooks module` with no permission
+  line.
+- Observation: subagents still list the tool. The agent definitions that
+  withhold compact and the ask tool through `disallowedTools` (this repo's
+  `agents/*.md`, the user's `~/.claude/agents/`) do not name it, so a
+  subagent sees its definition and gets the refusal if it calls it (M1's
+  executor).
+
 ## Decision Log
 
 - Decision: Verification. One independent spec review by
@@ -597,6 +610,34 @@ sminos carries both message-tool names as its own constant, beside
   until this plugin's style declared 6. Without one, MAWS's fix depends on
   MAWS's release alone.
   Date/Author: 2026-10-20, the MAWS architect, recorded by doperpowers-88.
+
+- Decision: M1's gaps, resolved by its executor.
+  - A call whose `text` is missing or blank is refused (`EMPTY_REFUSAL` in
+    `message.tsx`, outside the contract), so an empty message is never drawn,
+    notified or exported.
+  - An interrupted call counts as unsent, as an errored one does. One set of
+    unsent ids keeps the call row and its result row in agreement.
+  - In the band's full-transcript mode the call and its result draw the
+    engine's own rows. The empty result row applies only while the view folds.
+  - Streaming input that arrives as a string is partial JSON, and the text so
+    far is drawn. An object is whole. Nothing draws before any text arrives.
+  - `previewLine` lives in `notify.tsx` and `message.tsx` imports it. The
+    import cycle (message → notify → to-human → message) is safe: every
+    cross-module use is inside a function.
+  Date/Author: 2026-10-20, M1's executor, folded by the plan-executor.
+- Decision: M3 adds `mcp__to-human__message` to the `disallowedTools` of
+  this repo's `agents/*.md`, beside compact and the ask tool. Subagents then
+  stop paying for a definition they can only be refused. The user's own
+  `~/.claude/agents/` is outside the repository and goes back to the spec's
+  author.
+  Rationale: The repo already withholds the main-conversation-only tools this
+  way (CLAUDE.md, the `hooks/` row). The refusal stays the guarantee for
+  built-in types and forks.
+  Date/Author: 2026-10-20, the plan-executor.
+- Decision: rebase onto `origin/main` after M1 and M2 are reviewed clean and
+  before M3 dispatches. M3 edits the style and the agent-step eval, which
+  7.198.0 changed on main. The versions are bumped again past main at the end.
+  Date/Author: 2026-10-20, the plan-executor.
 
 ## Outcomes & Retrospective
 
