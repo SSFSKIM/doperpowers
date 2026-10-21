@@ -2490,6 +2490,11 @@ def join_on_sight(project, sid, seat, peer, running, by=None, recheck=None, mark
             if old:
                 held = own_alias(_own_events(project, old), old)
         alias, source = held_alias(*held, peer, sid, shadowing(project, sid))
+        if running and alias:
+            # A resumed session's engine says `user` for the charge name it
+            # restored: joined under sminos's own label, as _member reads it.
+            events = log_read(project, kinds=MEMBERSHIP + ("in-charge",))
+            source = own_name_source(alias, source, peer, events, (sid,) + tuple(lineage(sid, _projection(events))))
         fields = joined_fields(alias or sid[:8], source or "derived",
                                launch_cwd(sid, fallback=str(peer.get("cwd") or ""), fresh=True), by=by,
                                session_kind=str(peer.get("kind") or ""))
@@ -2883,21 +2888,24 @@ def proposed_names(events, sessions):
 
 
 def own_name_source(alias, source, rec, in_charge, sessions):
-    """A seat-less member's name source: `charge` when its alias is one of
-    the names sminos proposed for it (proposed_names over its `in_charge`
-    events, of `sessions`) and, where its engine record runs here (`rec`),
-    that record's name too; else `source`, the one held_alias gave. The
-    engine cannot say which names are sminos's: it registers a hook's name
-    `hook` and restores it as `user` on a resume, so its label would turn
-    sminos's name into the owner's after one resume. The proviso keeps an
-    owner's rename that held_alias hides (a collision, a shadowed name) from
-    reading as sminos's: an alias the log calls `charge` that the running
-    engine no longer holds takes the record's source."""
+    """A seat-less session's name source, read on its own machine from its
+    running engine record `rec`: `charge` when its alias is one of the names
+    sminos proposed for it (proposed_names over its `in_charge` events, of
+    `sessions`) and the record's name too; else `source`, the one held_alias
+    gave. The engine cannot say which names are sminos's: it registers a
+    hook's name `hook` and restores it as `user` on a resume, so its label
+    would turn sminos's name into the owner's after one resume. The proviso
+    keeps an owner's rename that held_alias hides (a collision, a shadowed
+    name) from reading as sminos's: an alias the log calls `charge` that the
+    running engine no longer holds takes the record's source. With no
+    record (another machine's member, a stopped one) the source is the one
+    its machine last published, so every reader reads one label."""
+    if not rec:
+        return source
     names, _ = proposed_names(in_charge, sessions)
-    engine = str(rec.get("name") or "") if rec else None
-    if alias in names and engine in (None, alias):
+    if alias in names and str(rec.get("name") or "") == alias:
         return "charge"
-    if source == "charge" and rec:
+    if source == "charge":
         return str(rec.get("nameSource") or "derived")
     return source
 

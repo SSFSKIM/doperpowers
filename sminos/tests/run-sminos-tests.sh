@@ -5466,6 +5466,19 @@ json.dump({"session": sys.argv[2], "name": sys.argv[3], "from": sys.argv[4], "li
 renamed_charge() { # session → how many of its renamed events say name_source charge
   grep '"renamed"' "$CNLOG/testhost.$1.jsonl" 2>/dev/null | grep -c '"name_source": "charge"' || true
 }
+last_joined_source() { # session → the name_source of its latest joined event
+  grep '"joined"' "$CNLOG/testhost.$1.jsonl" | tail -1 | python3 -c 'import json, sys; print(json.loads(sys.stdin.read())["name_source"])'
+}
+# Another machine reading the same log: its own HOME (none of this machine's
+# engine records), its own name; the log, the project and the registry shared.
+CN_OTHER_HOME="$TEST_ROOT/cn-other"
+mkdir -p "$CN_OTHER_HOME/.claude/sessions"
+other_row() { # alias field → that field of the alias's row in list --json, as the other machine reads it
+  HOME="$CN_OTHER_HOME" DAEMON_HOST=othermachine "$SMINOS" list --json | python3 -c 'import json, sys
+rows = [d for d in json.load(sys.stdin) if d["alias"] == sys.argv[1]]
+v = rows[0].get(sys.argv[2]) if rows else "<no row>"
+print(v if isinstance(v, str) else json.dumps(v))' "$1" "$2"
+}
 
 # Acceptance 1: a member under a name the engine made up is named after its line.
 CA=0c000001-0000-4000-8000-0000000000c1
@@ -5500,11 +5513,20 @@ assert_equals "$(json_row desk-uplink-owner charge)" "Owns the desk's uplink." "
 run "$SMINOS" daemon tick
 run "$SMINOS" daemon tick
 assert_equals "$(renamed_charge "$CA")" "1" "the daemon's tick publishes the rename, source charge, once"
+assert_equals "$(other_row desk-uplink-owner machine)|$(other_row desk-uplink-owner local)" "testhost|false" "(the other machine reads the member as testhost's)"
+assert_equals "$(other_row desk-uplink-owner name_source)|$(other_row desk-uplink-owner charge_source)" "charge|derived" \
+  "another machine reads the published charge name as sminos's, its line the derived one"
 cn_peer desk-uplink-owner "$CA" user   # resumed: the engine restores a hook's name as the owner's
 assert_equals "$(json_row desk-uplink-owner name_source)" "charge" "after a resume, whose engine record says user, the name is still sminos's"
 assert_equals "$(json_row desk-uplink-owner charge_source)" "derived" "and its line the derived one, not the name"
 run "$SMINOS" daemon tick
 assert_equals "$(renamed_charge "$CA")" "1" "with nothing more to publish"
+assert_equals "$(other_row desk-uplink-owner name_source)" "charge" "and another machine still reads it as sminos's"
+rm -f "$(cn_record "$CA")"
+run "$SMINOS" list   # the session ends: retired
+cn_peer desk-uplink-owner "$CA" user   # and is resumed, its engine saying user for the name it restored
+run "$SMINOS" list
+assert_equals "$(last_joined_source "$CA")" "charge" "a resumed session joins again under sminos's own label, not the engine's user"
 
 # Acceptance 3: the name holds from one derive to the next.
 cn_age "$CA"
@@ -5536,6 +5558,9 @@ assert_equals "$(json_row desk-uplink-keeper name_source)" "charge" "applied, it
 run "$SMINOS" daemon tick
 cn_peer desk-uplink-steward "$CA" user
 assert_equals "$(json_row desk-uplink-keeper name_source)" "user" "a charge name the engine no longer holds is not sminos's, whatever the log says"
+run "$SMINOS" daemon tick
+assert_equals "$(other_row desk-uplink-keeper name_source)" "user" "another machine reads the published user, not charge again"
+assert_equals "$(other_row desk-uplink-keeper charge_source)" "$(json_row desk-uplink-keeper charge_source)" "and the in-charge line from the same source as here"
 cn_age "$CA"
 run "$SMINOS" derive desk-uplink-keeper
 assert_contains "$OUT" "desk-uplink-keeper: not derived — its human named it" "and derive leaves the owner's choice alone"
