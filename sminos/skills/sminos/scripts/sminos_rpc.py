@@ -82,7 +82,9 @@ A compaction's outcome reaches browsers as DX4 `compact`, carrying the RPC's
 nonce, from the bridge's `compact` events for the command this daemon issued
 (read by the requests' readers, sminos_requests). The command's id is kept on
 the RPC's ledger entry until its compaction ends, so one held for its turn's
-end that runs after a restart still carries the nonce.
+end that runs after a restart still carries the nonce. The messages are owed
+as a settlement is (sminos_owed): until a POST's answer takes them, kept in
+`daemon/rpcs-owed.json` across restarts.
 
 Checks 1-6 and the ledger's lookup run on the uplink's main thread, which
 alone may call sminos (its caches are module globals); the digest, the kind,
@@ -110,11 +112,12 @@ import sminos  # noqa: E402
 import sminos_bridge as bridge  # noqa: E402
 import sminos_codes as codes  # noqa: E402
 import sminos_control as control  # noqa: E402
-import sminos_flights as flights  # noqa: E402
 import sminos_jobs as jobs  # noqa: E402
+import sminos_owed as owed  # noqa: E402
 import sminos_policy as policy  # noqa: E402
 
 LEDGER_FILE = "rpcs.json"
+OWED_FILE = "rpcs-owed.json"  # daemon/: the compaction messages not yet the hub's (sminos_owed)
 FRESH_S = 60              # an RPC older (or younger) than this by the machine's clock is stale
 KEPT_S = 86400            # the ledger keeps an entry a day
 LOOSE_S = 600             # a refusal kept out of the ledger waits this long for its project to open
@@ -348,8 +351,9 @@ class Rpcs:
         self.model_locks = {}     # session → the lock its model and effort are read and changed under
         self.resume_locks = {}    # session → the lock a Resume of it runs under
         self.locks_lock = threading.Lock()
-        self.compact_out = []     # DX4 compact messages owed, as frames
-        self.flights = flights.Flights()  # compact messages in flight, and answered but not confirmed
+        self.flying = {}          # id(frame) → frame: compact messages on a lane, their POST not yet answered
+        self.kept = owed.Kept(OWED_FILE, log)
+        self.compact_out = [f for f in self.kept.load() if is_compact(f)]   # DX4 compact messages owed, as frames
         self.unwritten = {}       # nonce → its outcome, whose ledger write failed: never sent until it is kept
         self.copies_asked = set()  # claimed Resumes whose kept job the harness was asked about (check_copy)
         self.next_reconcile = 0.0
@@ -647,6 +651,7 @@ class Rpcs:
             self.compact_out.append({"t": "session", "message": {
                 "project": named[0] if named else pid, "machine": self.machine, "session": named[1] if named else sid,
                 "kind": "compact", "sub": None, "n": None, "body": body}})
+            self.kept.save(self.compact_out)
             if e.get("phase") == "end" and self.compact_ids.pop(cid, None) is not None:
                 self.forget_compact(named[2])
         self.compact_ids = {c: v for c, v in self.compact_ids.items() if now - v[3] < KEPT_S}
@@ -744,11 +749,11 @@ class Rpcs:
 
     def due(self, opened):
         """What goes up now for the projects open on the stream: new
-        results, then DX4 compact messages. Not taken until `sent`."""
+        results, then DX4 compact messages. Not taken until `sending`."""
         self.take()
         if self.clock() >= self.next_reconcile:
             self.reconcile()
-        compacts = [f for f in self.compact_out if f["message"]["project"] in opened and not self.flights.in_flight(f)]
+        compacts = [f for f in self.compact_out if f["message"]["project"] in opened and id(f) not in self.flying]
         return self.results(set(opened), False) + compacts
 
     def opening(self, pid):
@@ -758,51 +763,63 @@ class Rpcs:
         return self.results({pid}, True)
 
     def sending(self, frames):
-        """`frames`, of one project, were queued on a lane: the attempt, for
-        `delivered`. A result is taken as sent on this stream now (every
-        connect sends it again until `rpc-ack`, and so does every re-open); a
-        compact message, which nothing rebuilds, is in flight
-        (sminos_flights)."""
-        self.sent_here.update(f["nonce"] for f in frames if f.get("t") == "rpc-result")
-        compacts = [f for f in frames if f.get("t") != "rpc-result"]
-        return self.flights.send(compacts[0]["message"]["project"], compacts) if compacts else None
+        """`frames` were queued on a lane. A result is taken as sent on this
+        stream now (every connect sends it again until `rpc-ack`, and so does
+        every re-open); a compact message, which nothing rebuilds, is in
+        flight until `delivered`, `unsent`, or the next stream's `reset`."""
+        for f in frames:
+            if f.get("t") == "rpc-result":
+                self.sent_here.add(f["nonce"])
+            else:
+                self.flying[id(f)] = f
 
-    def delivered(self, frames, attempt):
-        """The POST of `attempt` carrying `frames` was answered 200: its
-        compact messages leave `compact_out`, unless a `not-open` voided the
-        attempt; they are owed again until `confirmed`."""
-        took = {id(f) for f in frames if f.get("t") != "rpc-result" and self.flights.answered(f, attempt)}
-        self.compact_out = [f for f in self.compact_out if id(f) not in took]
+    def delivered(self, frames, refused):
+        """The POST carrying `frames` was answered 200, `refused` naming
+        ({id(frame): reason}) those the hub refused whole: a compact message
+        it took leaves `compact_out`; one refused `not-open` stays owed (its
+        project is opened again), and a result so refused goes again; one
+        refused otherwise would be refused again, and leaves, said."""
+        took = set()
+        for f in frames:
+            reason = refused.get(id(f))
+            if f.get("t") == "rpc-result":
+                if reason == "not-open":
+                    self.sent_here.discard(f["nonce"])
+            elif self.flying.pop(id(f), None) is not None and reason != "not-open":
+                took.add(id(f))
+                if reason is not None:
+                    log("the hub refused a compact message of %s (%s): not sent again" % (
+                        f["message"]["session"], reason))
+        if took:
+            self.compact_out = [f for f in self.compact_out if id(f) not in took]
+            self.kept.save(self.compact_out)
 
-    def mark(self):
-        """Taken as a confirmation of a project is queued, for `confirmed`."""
-        return self.flights.mark()
-
-    def confirmed(self, pid, mark):
-        """A confirmation of the project queued at `mark` was answered: the
-        compact messages answered before it was queued are the hub's."""
-        self.flights.confirm(pid, mark)
-
-    def refused(self, pid):
-        """The hub refused the project `not-open`: its compact messages in
-        flight or answered are owed again; its results go after the re-open's
-        hello as on every open."""
-        self.compact_out = self.flights.refuse(pid) + self.compact_out
+    def unsent(self, frames):
+        """Frames dropped from a lane before any POST carried them (a
+        re-open's `hold`): no longer in flight, owed as they stand."""
+        for f in frames:
+            if f.get("t") == "rpc-result":
+                self.sent_here.discard(f["nonce"])
+            else:
+                self.flying.pop(id(f), None)
 
     def sent(self, frames):
-        """`frames` reached the hub (queued, answered and confirmed at once)."""
-        by = {}
-        for f in frames:
-            by.setdefault(f.get("project") or f["message"]["project"], []).append(f)
-        for pid, mine in by.items():
-            self.delivered(mine, self.sending(mine))
-            self.confirmed(pid, self.mark())   # the answer's stamp is before this mark
+        """`frames` reached the hub (queued and answered at once)."""
+        self.sending(frames)
+        self.delivered(frames, {})
 
     def reset(self):
         """A new stream: nothing is taken as sent on it yet, and what was in
-        flight or answered unconfirmed on the last one is owed again."""
+        flight on the last one is owed as it stands."""
         self.sent_here.clear()
-        self.compact_out = [f for _, f in self.flights.reset()] + self.compact_out
+        self.flying.clear()
+
+
+def is_compact(frame):
+    """Whether a kept item is a DX4 compact message as `compacted` makes it."""
+    m = frame.get("message") if isinstance(frame, dict) else None
+    return isinstance(m, dict) and frame.get("t") == "session" and m.get("kind") == "compact" \
+        and isinstance(m.get("project"), str) and isinstance(m.get("body"), dict)
 
 
 # ------------------------------------------------------------- checks

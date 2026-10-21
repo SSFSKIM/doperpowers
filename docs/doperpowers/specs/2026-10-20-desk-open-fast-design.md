@@ -2506,6 +2506,25 @@ beside; a single reviewer reads one of those well in a pass.
   sminos-suites re-run alone passed, 39508461065): a flake.
   Date/Author: 2026-10-21, the panel fix executor, folded by the controller.
 
+- Decision (after the branch, doperpowers board #106): M6's held list and
+  its probe are gone, replaced by the hub's answer. The hub now names in a
+  POST's 200 the frames it refused whole (`refused: [{index, reason}]`,
+  MAWS #88, deployed by MAWS #91 on 2026-10-21), so each continuation is told
+  which of its own frames were refused: a settlement or a compaction message
+  the answer does not name is the hub's at once, and one refused `not-open`
+  stays owed, its project is opened again from the answer
+  (`Link.refused_whole`, once while a hello is out), and it goes behind that
+  hello. The stream's own `not-open` copy only is said. The epochs, the
+  held list, `CONFIRM_AFTER`, `confirm_held` and `sminos_flights.py` went
+  with them, which closes both windows the M6 fix left as residue, and the
+  held list's missing cap with it. The same change makes what the uplink
+  owes survive a restart: the settlements in `daemon/requests-owed.json`,
+  the compaction messages in `daemon/rpcs-owed.json`, each `{"version": 1,
+  "owed": [...]}`, written at every change and read back at start (a file of
+  another version is ignored and replaced at the next change)
+  (`sminos_owed.py`).
+  Date/Author: 2026-10-21, the #106 executor.
+
 ## Outcomes & Retrospective
 
 Written 2026-10-21, at the branch's PR (head 62e57510, sminos 1.2.14), before

@@ -43,7 +43,6 @@ import test_session_plane as tsp  # noqa: E402 — first: it makes this run's HO
 
 import sminos  # noqa: E402
 import sminos_codes as codes  # noqa: E402
-import sminos_flights as flights  # noqa: E402
 import sminos_outcomes as outcomes  # noqa: E402
 import sminos_policy as policy  # noqa: E402
 import sminos_requests as requests  # noqa: E402
@@ -830,6 +829,8 @@ class Requests(unittest.TestCase):
     PID = "6f1c0a8e-3b2d-4c5e-9f70-8a1b2c3d4e5f"
 
     def setUp(self):
+        forget_owed()
+        self.addCleanup(forget_owed)
         self.sid = str(uuidlib.uuid4())
         self.bridge = Bridge(self.sid)
         self.r = requests.Requests(KEY, "testhost")
@@ -1272,47 +1273,55 @@ class Requests(unittest.TestCase):
 # ---------------------------------------------------------------- the uplink
 
 
-class Flights(unittest.TestCase):
-    """sminos_flights.Flights, the in-flight and held bookkeeping, alone."""
+def forget_owed():
+    """No owed settlement or compaction message left on disk by an earlier
+    test: each Requests and Rpcs reads them back as it starts."""
+    for name in (requests.OWED_FILE, rpc.OWED_FILE):
+        try:
+            os.unlink(os.path.join(os.environ["SMINOS_HOME"], "daemon", name))
+        except FileNotFoundError:
+            pass
 
-    def test_only_a_confirmation_queued_after_the_answer_confirms(self):
-        """A confirmation queued while the frame's POST is still out says
-        nothing of it, even when the frame's 200 lands before the
-        confirmation's answer: only one queued after that 200 confirms it."""
-        fl, f = flights.Flights(), {"n": 1}
-        attempt = fl.send("p", [f])
-        early = fl.mark()                       # queued before the frame's 200
-        self.assertTrue(fl.answered(f, attempt))
-        self.assertEqual(fl.confirm("p", early), [], "queued before the answer: confirms nothing")
-        late = fl.mark()
-        self.assertEqual(fl.confirm("p", late), [f], "queued after it: confirms it")
-        self.assertIsNone(fl.held_since("p"), "nothing held")
 
-    def test_a_refusal_lets_go_of_the_voided_attempts_and_keeps_a_newer_one(self):
-        fl, f, g, h = flights.Flights(), {"n": 1}, {"n": 2}, {"n": 3}
-        voided = fl.send("p", [f, g])
-        other = fl.send("q", [h])
-        fl.refuse("p")
-        self.assertEqual([id(h)], list(fl.flying), "the voided attempt's frames are let go; the other project's kept")
-        self.assertFalse(fl.in_flight(f))
-        newer = fl.send("p", [f])
-        self.assertFalse(fl.answered(f, voided), "the voided attempt's answer takes nothing")
-        self.assertTrue(fl.in_flight(f), "and leaves the newer attempt of the same frame in flight")
-        self.assertTrue(fl.answered(f, newer))
-        self.assertTrue(fl.answered(h, other))
+class Owed(unittest.TestCase):
+    """sminos_owed's file, through its owners."""
+
+    def setUp(self):
+        forget_owed()
+        self.addCleanup(forget_owed)
+
+    def test_a_file_of_another_version_is_ignored_and_replaced_at_the_next_change(self):
+        path = os.path.join(os.environ["SMINOS_HOME"], "daemon", requests.OWED_FILE)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        frame = {"t": "session", "message": {"project": "p", "machine": "testhost", "session": "s", "kind": "settled",
+                                             "sub": None, "n": None, "body": {"request": "r"}}}
+        sminos.write_json(path, {"version": 2, "owed": [{"session": "s", "request": "r", "t": 1, "project": "p",
+                                                         "frame": frame}]})
+        said = []
+        with mock.patch.object(requests, "log", said.append):
+            r = requests.Requests(KEY, "testhost")
+        self.addCleanup(r.close)
+        self.assertEqual((r.outbox, r.queued), ([], {}), "nothing taken from a newer version's file")
+        self.assertTrue(any("not version 1's (2)" in line for line in said), said)
+        r.keep()
+        with open(path) as f:
+            self.assertEqual(json.load(f), {"version": 1, "owed": []}, "replaced by this version's at a change")
+        rpc_path = os.path.join(os.environ["SMINOS_HOME"], "daemon", rpc.OWED_FILE)
+        sminos.write_json(rpc_path, {"version": 2, "owed": [{**frame, "message": {**frame["message"],
+                                                                                  "kind": "compact", "body": {}}}]})
+        self.assertEqual(rpc.Rpcs(KEY, "testhost").compact_out, [], "nor a compaction message")
 
 
 class RelayedOnLanes(unittest.TestCase):
     """What the relay of requests and of RPC results marks, against the
     uplink's sender lanes (sminos_uplink.Link on a scripted hub, the real
-    bridge child): a settlement and a compaction's message are the hub's only
-    once a POST carrying them was answered 200 and a hello of their project
-    queued after it was answered too — the handshake rebuilds the pending
-    set, never a settlement, and the hub answers 200 to a frame it refuses
-    `not-open` — so one lost on the way (the POST failed, the stream cut, the
-    uplink restarted, the project refused `not-open` before or after the
-    200) reaches the hub later. An RPC result is re-sent after every connect
-    until `rpc-ack`."""
+    bridge child): a settlement and a compaction's message are the hub's once
+    a POST carrying them was answered 200 and the answer does not name them
+    among the frames the hub refused whole (DX2's `refused`) — the handshake
+    rebuilds the pending set, never a settlement — so one lost on the way
+    (the POST failed, the stream cut, the uplink restarted, the project
+    refused `not-open`) reaches the hub later. An RPC result is re-sent after
+    every connect until `rpc-ack`."""
 
     @classmethod
     def setUpClass(cls):
@@ -1324,6 +1333,8 @@ class RelayedOnLanes(unittest.TestCase):
         import sminos_hublog as hublog
         import sminos_uplink as uplink
         self.uplink, self.hublog = uplink, hublog
+        forget_owed()
+        self.addCleanup(forget_owed)
         self.hub = tsp.ScriptedHub()
         self.addCleanup(self.hub.close)
         self.cred = {"machine": "testhost", "org": "org-relayed", "key": KEY, "hub": self.hub.url,
@@ -1390,6 +1401,11 @@ class RelayedOnLanes(unittest.TestCase):
     def relayed(self, rid):
         return [k for k in requests.load_relayed().get(self.sid, []) if k[0] == rid]
 
+    def owed_on_disk(self, rid):
+        path = os.path.join(os.environ["SMINOS_HOME"], "daemon", requests.OWED_FILE)
+        with open(path) as f:
+            return [x for x in json.load(f)["owed"] if x["request"] == rid]
+
     def test_a_settlement_whose_post_is_lost_reaches_the_hub_on_the_next_stream(self):
         for how in ("503", "cut"):
             with self.subTest(how=how):
@@ -1406,95 +1422,125 @@ class RelayedOnLanes(unittest.TestCase):
                 link.relay_requests()
                 self.assertEqual(messages(r.due({self.pid}), "settled"), [], "and owed no more")
 
-    def test_a_settlement_queued_before_a_restart_reaches_the_hub_from_the_next_uplink(self):
+    def test_a_settlement_unanswered_at_an_uplink_restart_reaches_the_hub_with_its_bridge_gone(self):
+        """The uplink stops while the POST carrying a settlement is out, and
+        the session's bridge is gone by the time the next one starts, so no
+        snapshot can bring the settlement back: the next uplink reads it
+        from daemon/requests-owed.json and its hello carries it."""
+        import sminos_bridge as bridge
         rid = "toolu_restart"
         r = self.requests()
         link, items, _ = self.stream(1, r)
         self.settle(link, rid)
+        self.assertTrue(self.owed_on_disk(rid), "kept on disk as it was made")
         lost = self.lose(link, items, link.relay_requests, "cut")
         self.assertTrue(self.settled_in(lost, rid))
         r.close()
-        # A fresh uplink over the same SMINOS_HOME: its Requests read from
-        # disk, its outbox empty; the bridge's snapshot lists the settlement.
-        r = self.requests()
-        link, items, _ = self.stream(2, r)
-        n = len(self.hub.posts)
-
-        def relayed():
-            link.relay_requests()
-            self.drain(link, items)
-            return any(self.settled_in(b, rid) for b in self.hub.bodies()[n:])
-
-        self.assertTrue(wait_for(relayed), "the settlement reaches the hub from the new uplink")
-        self.assertTrue(wait_for(lambda: self.drain(link, items) or not link.requests.outbox),
-                        "answered: out of the outbox")
-        self.assertEqual(self.relayed(rid), [], "but not relayed until a confirmation queued after it is answered")
-        self.assertTrue(wait_for(lambda: link.confirm_held() or self.drain(link, items) or self.relayed(rid)),
-                        "relayed once the project's probe was answered")
-
-    NOT_OPEN = {"t": "refused", "refusal": {"reason": "not-open"}}
+        self.bridge.stop()
+        self.assertTrue(wait_for(lambda: not os.path.exists(bridge.endpoint(self.sid))), "the bridge is gone")
+        r = self.requests()   # a fresh uplink over the same SMINOS_HOME
+        self.assertEqual([k[:2] for k in r.queued], [(self.sid, rid)], "owed, from disk")
+        link, items, hello = self.stream(2, r)
+        self.assertTrue(self.settled_in(hello, rid), "the next uplink's hello carries it: %s" % hello)
+        self.assertTrue(self.relayed(rid), "answered: kept as relayed")
+        self.assertEqual((r.queued, self.owed_on_disk(rid)), ({}, []), "and owed no more, on disk either")
 
     def refuse_not_open(self, link, items):
-        """The hub lost the project's open state and refused a frame of it
-        `not-open`: the project is opened again, its hello answered. The
-        index of the first POST after the refusal."""
+        """A POST's answer named a frame of the project refused `not-open`
+        (the hub lost the project's open state): the project is opened
+        again, its hello answered. The index of the first POST after the
+        refusal."""
         n = len(self.hub.posts)
-        link.on_refused({**self.NOT_OPEN, "project": self.pid}, None)
+        link.refused_whole([(0, "not-open", {"t": "events", "project": self.pid, "events": []})])
         self.assertTrue(wait_for(lambda: len(self.hub.posts) > n), "the hello opening it again went")
         self.assertEqual(self.hub.bodies()[n][0]["t"], "hello")
         self.answered(link, items)
         return n
 
-    def goes_again(self, link, items, rid, after):
-        """The settlement reaches the hub in a POST after the refusal (the
-        re-open's hello or the relay after it), and only then is relayed."""
-        def again():
-            link.relay_requests()
-            self.drain(link, items)
-            return [i for i, b in enumerate(self.hub.bodies()) if i >= after and self.settled_in(b, rid)]
-        got = wait_for(again)
-        self.assertTrue(got, "the settlement goes again after the refusal: %s" % self.hub.bodies()[after:])
-        self.assertTrue(wait_for(lambda: self.drain(link, items) or self.relayed(rid)), "answered: relayed")
-        return got
-
-    def test_a_settlement_refused_not_open_before_its_200_goes_again_after_the_reopen(self):
-        """The POST carrying a settlement is held; meanwhile the hub refuses
-        the project `not-open` (it lost the project's open state) and the
-        project is opened again. That POST answered 200 at last does not make
-        the settlement the hub's: it goes again after the re-open. While the
-        POST is held, the relay queues nothing twice."""
-        rid = "toolu_refused_before"
+    def test_a_settlement_refused_not_open_goes_again_after_the_hello_that_opens_its_project(self):
+        """The hub lost the project's open state; the POST carrying a
+        settlement is held at the hub, and answered 200 naming it refused
+        `not-open`. While it is held the relay queues nothing twice; the
+        answer leaves it owed, not relayed, and opens the project again: the
+        settlement goes in that hello's POST, behind the hello, and is
+        relayed once that is answered."""
+        rid = "toolu_refused"
         r = self.requests()
         link, items, _ = self.stream(1, r)
         self.settle(link, rid)
         n = len(self.hub.posts)
+        self.hub.closed.add(self.pid)
         self.hub.script = ["hold"]
         link.relay_requests()
         self.assertTrue(wait_for(lambda: len(self.hub.posts) > n), "the relay's POST is held at the hub")
         for _ in range(3):
             link.relay_requests()
         time.sleep(0.3)
-        self.assertEqual(len(self.hub.posts), n + 1, "one POST for the attempt: nothing queued twice while it is held")
-        after = self.refuse_not_open(link, items)
-        self.hub.release.set()          # the held POST answers 200 now
-        self.goes_again(link, items, rid, after)
+        self.assertEqual(len(self.hub.posts), n + 1, "one POST: nothing queued twice while it is held")
+        self.assertTrue(self.settled_in(self.hub.bodies()[n], rid))
+        self.hub.release.set()
+        kind, thens = items.get(timeout=10)
+        self.assertEqual(kind, "sent")
+        link.ran(thens[:-1])            # the relay's continuation, before the refusal re-opens the project
+        self.assertEqual(self.relayed(rid), [], "refused: not relayed")
+        self.assertEqual(messages(r.due({self.pid}), "settled")[0]["body"]["request"], rid, "owed, and due")
+        thens[-1]()                     # the answer's refusals: the project opened again
+        self.assertTrue(wait_for(lambda: len(self.hub.posts) > n + 1), "the hello opening it again went")
+        hello = self.hub.bodies()[n + 1]
+        self.assertEqual(hello[0]["t"], "hello")
+        self.assertTrue(self.settled_in(hello, rid), "the settlement goes behind that hello: %s" % hello)
+        self.assertEqual(self.relayed(rid), [], "not relayed before that hello is answered")
+        self.answered(link, items)
+        self.assertTrue(self.relayed(rid), "answered: relayed")
+        link.relay_requests()
+        self.assertEqual(messages(r.due({self.pid}), "settled"), [], "and owed no more")
 
-    def test_a_settlement_refused_not_open_after_its_200_goes_again_after_the_reopen(self):
-        """The POST carrying a settlement is answered 200 and its
-        continuation runs; then the hub's `not-open` refusal of it comes (the
-        refusal goes down the stream apart from the answer). The settlement
-        goes again after the re-open."""
-        rid = "toolu_refused_after"
+    def test_a_mixed_answer_leaves_owed_only_the_frames_it_names(self):
+        """One POST carries three settlements; its answer names the second
+        refused `not-open`. The first and the third are relayed, the second
+        is not, and goes again behind the hello that opens the project."""
+        rids = ["toolu_mixed_%d" % i for i in range(3)]
+        r = self.requests()
+        link, items, _ = self.stream(1, r)
+        for rid in rids:
+            self.settle(link, rid)
+        frames = r.due({self.pid})
+        index = next(i for i, f in enumerate(frames) if f.get("t") == "session"
+                     and f["message"]["kind"] == "settled" and f["message"]["body"]["request"] == rids[1])
+        n = len(self.hub.posts)
+        self.hub.script = [("refuse", [(index, "not-open")])]
+        link.relay_requests()
+        self.assertTrue(wait_for(lambda: len(self.hub.posts) > n))
+        self.assertEqual(self.hub.bodies()[n], frames, "the frames as `due` gave them, in one POST")
+        self.answered(link, items)      # its continuation, then the refusal's re-open
+        self.assertTrue(self.relayed(rids[0]) and self.relayed(rids[2]), "the frames not named are the hub's")
+        self.assertEqual(self.relayed(rids[1]), [], "the one named is not")
+        self.assertTrue(wait_for(lambda: len(self.hub.posts) > n + 1), "the hello opening it again went")
+        hello = self.hub.bodies()[n + 1]
+        self.assertEqual([m["body"]["request"] for m in messages(hello, "settled")], [rids[1]],
+                         "only the one named goes again, behind the hello: %s" % hello)
+        self.answered(link, items)
+        self.assertTrue(self.relayed(rids[1]), "and is relayed once that is answered")
+
+    def test_the_streams_own_refusal_after_an_answer_that_took_the_settlement_changes_nothing(self):
+        """The hub's `refused` down the stream copies what a POST's answer
+        already named; one that comes for a project whose frames the hub
+        took (another POST's, or a late copy) opens nothing and owes
+        nothing again."""
+        rid = "toolu_stream_copy"
         r = self.requests()
         link, items, _ = self.stream(1, r)
         self.settle(link, rid)
         n = len(self.hub.posts)
         link.relay_requests()
         self.assertTrue(wait_for(lambda: len(self.hub.posts) > n))
-        self.answered(link, items)      # the relay's 200, its continuation run
-        self.assertTrue(self.settled_in(self.hub.bodies()[n], rid))
-        after = self.refuse_not_open(link, items)
-        self.goes_again(link, items, rid, after)
+        self.answered(link, items)
+        self.assertTrue(self.relayed(rid))
+        link.on_refused({"t": "refused", "project": self.pid, "refusal": {"reason": "not-open"}}, None)
+        link.relay_requests()
+        time.sleep(0.3)
+        self.assertEqual(len(self.hub.posts), n + 1, "no hello, nothing sent again: %s" % self.hub.bodies()[n + 1:])
+        self.assertNotIn(self.pid, link.opening)
 
     @staticmethod
     def pending_at_hub(bodies):
@@ -1586,43 +1632,12 @@ class RelayedOnLanes(unittest.TestCase):
         self.assertEqual(self.pending_at_hub(order), {"toolu_new"},
                          "the permission still pending here is pending at the hub: %s" % bodies[held:])
 
-    def test_with_no_archive_period_a_held_settlement_is_confirmed_within_the_bound(self):
-        """No re-hello comes (archive confirmations off, no follow change, no
-        reconnect): a settlement answered 200 is confirmed all the same, by
-        the project's own probe (an empty `events` frame on the log lane)
-        CONFIRM_AFTER after it was answered, and reaches requests.json; the
-        held list empties."""
-        rid = "toolu_probe"
-        r = self.requests()
-        with mock.patch.dict(os.environ, {"SMINOS_ARCHIVE_EVERY": "0"}):
-            link, items, _ = self.stream(1, r)
-            self.settle(link, rid)
-            n = len(self.hub.posts)
-            link.relay_requests()
-            self.assertTrue(wait_for(lambda: len(self.hub.posts) > n))
-            self.answered(link, items)
-            answered_at = time.monotonic()
-            self.assertIsNotNone(r.flights.held_since(self.pid), "answered, held")
-            self.assertEqual(self.relayed(rid), [])
-
-            def confirmed():
-                link.confirm_held()
-                self.drain(link, items)
-                return self.relayed(rid)
-
-            self.assertTrue(wait_for(confirmed, timeout=self.uplink.CONFIRM_AFTER + 5), "relayed within the bound")
-            took = time.monotonic() - answered_at
-        self.assertGreaterEqual(took, self.uplink.CONFIRM_AFTER - 0.05, "not before CONFIRM_AFTER")
-        self.assertLess(took, self.uplink.CONFIRM_AFTER + 2, "within CONFIRM_AFTER and one round trip")
-        self.assertIsNone(r.flights.held_since(self.pid), "the held list is empty")
-        probes = [b for b in self.hub.bodies()[n + 1:] if b == [{"t": "events", "project": self.pid, "events": []}]]
-        self.assertEqual(len(probes), 1, "one probe: %s" % self.hub.bodies()[n + 1:])
-        link.confirm_held()
-        time.sleep(0.2)
-        self.assertEqual(len([b for b in self.hub.bodies() if b and b[0].get("t") == "events"]), 1,
-                         "nothing held: no probe")
-
     def test_an_rpc_result_and_a_compaction_message_lost_go_again_on_the_next_stream(self):
+        """Both are lost with a POST; the uplink restarts: the result follows
+        the next hello (until `rpc-ack`) and the compaction's message, read
+        back from daemon/rpcs-owed.json, goes again. One refused `not-open`
+        goes again after the hello that opens its project; one the hub took
+        does not."""
         rp = rpc.Rpcs(KEY, "testhost")
         r = self.requests()
         link, items, _ = self.stream(1, r, rp)
@@ -1631,10 +1646,8 @@ class RelayedOnLanes(unittest.TestCase):
         rp.ledger.put(nonce, {"project": self.pid, "rpc": "interrupt", "session": self.sid, "at": now,
                               "outcome": rpc.done({}), "done_at": now, "acked": False})
         self.addCleanup(rp.ack, {"t": "rpc-ack", "nonce": nonce})
-        compact = {"t": "session", "message": {"project": self.pid, "machine": "testhost", "session": self.sid,
-                                               "kind": "compact", "sub": None, "n": None,
-                                               "body": {"rpc": nonce, "phase": "end"}}}
-        rp.compact_out.append(compact)
+        rp.compact_ids["c1"] = (self.pid, self.sid, nonce, now)
+        rp.compacted([(self.sid, self.pid, {"id": "c1", "phase": "end"})])
 
         def result_in(body):
             return [f for f in body if f.get("t") == "rpc-result" and f["nonce"] == nonce]
@@ -1644,6 +1657,8 @@ class RelayedOnLanes(unittest.TestCase):
 
         lost = self.lose(link, items, link.relay_rpcs, "503")
         self.assertTrue(result_in(lost) and compact_in(lost), "both were in the POST lost: %s" % lost)
+        rp = rpc.Rpcs(KEY, "testhost")   # the uplink restarts
+        self.assertEqual([m["message"]["body"]["rpc"] for m in rp.compact_out], [nonce], "owed, from disk")
         link, items, hello = self.stream(2, r, rp)
         self.assertTrue(result_in(hello), "the result follows the next hello (until rpc-ack)")
         n = len(self.hub.posts)
@@ -1656,11 +1671,32 @@ class RelayedOnLanes(unittest.TestCase):
         self.assertTrue(wait_for(relayed), "the compaction's message goes again")
         self.assertTrue(wait_for(lambda: self.drain(link, items) or rp.compact_out == []), "answered: owed no more")
         self.assertEqual(rp.due({self.pid}), [], "neither is due again on this stream")
-        # Answered, not yet confirmed by a later hello: a `not-open` now owes it again.
+        self.assertEqual(rpc.Rpcs(KEY, "testhost").compact_out, [], "nor owed on disk")
         after = self.refuse_not_open(link, items)
-        self.assertTrue(result_in(self.hub.bodies()[after]), "the re-open's hello carries the result")
-        n = after
-        self.assertTrue(wait_for(relayed), "the compaction's message goes again after the re-open")
+        self.assertTrue(result_in(self.hub.bodies()[after]), "a re-open's hello carries the result")
+        link.relay_rpcs()
+        time.sleep(0.3)
+        self.drain(link, items)
+        self.assertFalse(any(compact_in(b) for b in self.hub.bodies()[after:]), "the message the hub took: not again")
+
+        rp.compacted([(self.sid, self.pid, {"id": "c2", "phase": "start"})])
+        n = len(self.hub.posts)
+        self.hub.closed.add(self.pid)
+        self.hub.script = [200, "hold"]   # the message's POST refused; the hello it brings held a moment
+        link.relay_rpcs()
+        self.assertTrue(wait_for(lambda: len(self.hub.posts) > n))
+        self.answered(link, items)        # refused: owed, and the project opened again
+        self.assertEqual(len(rp.compact_out), 1, "refused `not-open`: still owed")
+        self.assertTrue(wait_for(lambda: len(self.hub.posts) > n + 1), "the hello opening it again went")
+        link.relay_rpcs()
+        time.sleep(0.3)
+        self.assertEqual(len(self.hub.posts), n + 2, "it waits for that hello: %s" % self.hub.bodies()[n + 2:])
+        self.hub.release.set()
+        self.answered(link, items)
+        self.assertTrue(wait_for(lambda: self.drain(link, items) or any(
+            m["body"]["phase"] == "start" for b in self.hub.bodies()[n + 2:] for m in messages(b, "compact"))),
+            "it goes after the hello")
+        self.assertTrue(wait_for(lambda: self.drain(link, items) or rp.compact_out == []), "and is owed no more")
 
 
 class Uplink(unittest.TestCase):
