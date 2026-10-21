@@ -31,7 +31,7 @@ always loaded, not deferred), after weighing the cost below.
   consumers mapped across doperpowers, MAWS and the desk; MAWS architect and
   desk orchestrator briefed.
 - [x] (2026-10-20) Spec reviewed (adversarial design review, buildability review); findings applied in abf65e9e.
-- [ ] M1 — the tool, the view and the notification (to-human plugin)
+- [x] (2026-10-20) M1 — the tool, the view and the notification (to-human plugin): 4101d65d, reviewed clean
 - [ ] M2 — the export (sminos)
 - [ ] M3 — the style, the evals, the docs, acceptance
 
@@ -574,6 +574,15 @@ sminos carries both message-tool names as its own constant, beside
   subagent sees its definition and gets the refusal if it calls it (M1's
   executor).
 
+- Observation: the Stop path's flush wait reaches a message call only once
+  the call's row is on disk when the hook reads the transcript. If the call
+  and its result are both still in the engine's write queue (about 100 ms),
+  the tail shows no call, and the message goes out at the next Stop, or
+  through the bridge when it runs. That is rare, because the hook takes longer
+  than one flush to start. An unconditional wait on an empty
+  `last_assistant_message` was not added: it would add up to 2 s to every
+  Stop after an Esc (M2's executor).
+
 ## Decision Log
 
 - Decision: Verification. One independent spec review by
@@ -638,6 +647,31 @@ sminos carries both message-tool names as its own constant, beside
   before M3 dispatches. M3 edits the style and the agent-step eval, which
   7.198.0 changed on main. The versions are bumped again past main at the end.
   Date/Author: 2026-10-20, the plan-executor.
+
+- Decision: M2's gaps, resolved by its executor.
+  - A message-tool call's event sits at the call's position among its
+    record's blocks. A span's `src` index is unchanged.
+  - An accepted call whose text is missing or blank yields no event (M1
+    refuses one anyway). The text is exported word for word, not trimmed.
+  - The bridge forwards a refused or errored pair to the child, and
+    `host_events` drops it, as it does a refused async ask.
+  - `TEXT_CAP` is checked once the call and its result are both kept, in
+    either row order.
+  - `keepAsk`, `state.asks` and `ASKS_KEPT` are renamed `keepPair`,
+    `state.pairs` and `PAIRS_KEPT` inside the sminos bridge modules, since
+    the map now holds message calls too.
+  - The flush wait reads the transcript's last message past its tool
+    results, under the existing deadline.
+  Date/Author: 2026-10-20, M2's executor, folded by the plan-executor.
+- Decision: subagents do not get the message tool for now. M3 adds
+  `mcp__to-human__message` to the `disallowedTools` of every `agents/*.md`
+  that already withholds `mcp__sminos__AskUserQuestion` (nine files). The
+  `agentId` refusal stays, and a pointer to SSFSKIM/doperpowers#310 sits
+  beside it in `message.tsx`. #310 is the ticket for letting a subagent
+  message the human directly, not built here.
+  Rationale: The human's ruling, relayed by the spec's author. It replaces
+  the earlier entry that left this to M3's judgment.
+  Date/Author: 2026-10-20, the human, recorded by the plan-executor.
 
 ## Outcomes & Retrospective
 
