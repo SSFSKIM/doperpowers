@@ -263,6 +263,13 @@ class ReconcileStopTest(unittest.TestCase):
         if self.proc and self.proc.poll() is None:
             self.proc.kill()
             self.proc.wait()
+        # Killing the supervisor leaves the service it was running (it ignores
+        # SIGTERM by design) orphaned and looping forever; end it by its pid.
+        for pid in self.pids():
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
 
     def start(self, desired):
         stubborn = ('trap "" TERM; echo $$ >> $PWD/pids; '
