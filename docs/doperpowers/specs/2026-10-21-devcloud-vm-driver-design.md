@@ -1,8 +1,9 @@
 # devcloud VM driver — a session gets its own cloud machine, and it cleans up after itself
 
-**Date.** 2026-10-21. **Status.** Design approved in conversation (2026-10-20/21); two independent
-reviews (spec, buildability) folded in on 2026-10-21 as the fifteen decisions dated that day in the
-Decision Log. **Parent.** `docs/doperpowers/specs/2026-10-15-devcloud-design.md` (the host image
+**Date.** 2026-10-21. **Status.** Design approved in conversation (2026-10-20/21); three review rounds
+(spec and buildability, then two rounds on the revisions) folded in on 2026-10-21, each as dated
+Decision Log entries; the third round found only two gaps inside the second round's fixes, and
+review stopped there. **Parent.** `docs/doperpowers/specs/2026-10-15-devcloud-design.md` (the host image
 and boot program; it put "provisioning drivers" out of scope, and this spec is that driver).
 **Prior art in this repository's family.** M5's throwaway provisioner (an untracked script that
 created, seeded, booted and deleted one Hetzner VM by hand), and ci-kit's runner pool
@@ -43,6 +44,8 @@ desk no longer counts it.
 - [x] (2026-10-21) Design approved; spec written.
 - [x] (2026-10-21) Independent reviews (spec, buildability); their findings and one design decision
   of the person's folded in (Decision Log, fifteen entries dated 2026-10-21).
+- [x] (2026-10-21) Two further review rounds on the revisions; their findings folded in (amended and
+  added Decision Log entries).
 - [ ] M1 — Spike: the preflight, and the live facts the design leans on.
 - [ ] M2 — The host side: leases and their lock, departure, release and its ledger, the closed public
   port, unattended enrollment, desk control.
@@ -337,9 +340,11 @@ stays with its lease and labels, and `down` or the reaper removes it.
 **4.1 On the host.** The host's descriptor holds the authoritative lease; the `devcloud-expires`
 label is a cached copy the reaper reads when the host does not answer. A lifecycle lock,
 `/run/devcloud/lifecycle.lock` (`flock`), serializes every lease write (`devcloud lease set`), the
-lease service, and `depart` and `release`, each of which re-reads `DEVCLOUD_EXPIRES` under it. Without
-it an extension could land between the lease service's decision and its departure, and a host
-would end its sessions with a lease that says it should live. `devcloud lease set` refuses once the
+lease service, and `depart` and `release`, each of which re-reads `DEVCLOUD_EXPIRES` under it and
+refuses with exit 3, "lease not over", unless the lease has ended or it was given `--force` (which
+`down` passes). Without it an extension could land between the lease service's decision and the
+moment its transient unit takes the lock, and a host would end its sessions — or an adopted machine
+lose devcloud altogether — with a lease that says it should live. `devcloud lease set` refuses once the
 departure has started (status `departing`, `held` or `departed`): the sessions are already ended.
 On success it prints the resulting lease, read under the lock, and the driver writes that value to
 the label rather than the one it asked for. Every periodic job (refresh-secrets, reconcile,
@@ -374,9 +379,13 @@ given `--force` (which `down` passes): a reaper that decided on a stale label mu
 whose lease was extended. Then, in this order, each step bounded so a broken one cannot keep a VM
 alive:
 
-0. **Close admission**: stop devcloud's periodic services (all but the lease service and the
-   transient departure unit) and the sminos daemon, so no job, spawn, resume or delivery the
-   daemon carries can start a session; the continuous shipper keeps running.
+0. **Close admission**: stop and disable devcloud's periodic timers (all but the lease timer; the
+   transient departure unit runs on) and the sminos daemon (`systemctl --user disable --now
+   sminos-daemon.service`, as the user), so no job, spawn, resume or delivery the daemon carries can
+   start a session, and nothing starts them again on its own: `sminos_host.py` enables lingering and
+   the daemon's unit, so the user manager would start the daemon at the next boot whatever devcloud
+   decides. Nothing re-enables them: a departing VM is deleted, and on an adopted machine the release
+   removes devcloud's units. The continuous shipper keeps running.
 1. **End the running sessions**: SIGTERM the user's `claude` processes, wait 30 seconds, SIGKILL
    what remains. The transcripts stop growing before the last ship, so the ship has the last line.
 2. **Stop the continuous shipper and run `session-mirror ship --once`** as the user, bounded at
@@ -406,10 +415,10 @@ first (they are idempotent), since a session may have started while the departur
 `--no-hold` (which `down --force` passes) proceeds past a hold. While the departure has started,
 `devcloud vm ssh` refuses the host, except with `--root`, which is for inspection. The lifecycle
 status lives in `/var/lib/devcloud/status.json` (`devcloud/boot/devcloudlib/status.py`) and survives
-a reboot, so a host that reboots during a departure does not reopen admission: while the status is
-`departing` or `held`, the boot's services step starts neither the sminos daemon nor the periodic
-services, the lease service excepted, whose next run retries the departure from step 0; while it is
-`departed`, it starts none of them. What remains open is a session started by a direct login in the
+a reboot. A host that reboots during a departure does not reopen admission: what step 0 disabled
+stays off, and, as a second guard, while the status is `departing` or `held` the boot's services
+step starts neither the sminos daemon nor the periodic services, the lease service excepted, whose
+next run retries the departure from step 0; while it is `departed`, it starts none of them. What remains open is a session started by a direct login in the
 seconds between the last check and the logout; its lines after that check are lost. The status file records `departing` when the
 departure starts and `departed` with the time when it ends; `depart` is idempotent (a second run after
 a completed one exits 0 doing nothing).
@@ -606,7 +615,9 @@ release over the tailnet when the machine is reachable, else over the recorded p
 record is removed once the release is verified, over the public address as the original login user.
 
 The release (`devcloud release`, root, under the lifecycle lock; the lease service starts it as the
-transient unit `devcloud-release`, §4.1), in order:
+transient unit `devcloud-release`, §4.1) first re-reads `DEVCLOUD_EXPIRES` and refuses with exit 3,
+"lease not over", unless the lease has ended or it was given `--force`, which `down` passes (an
+adopted `keep` machine, having no lease, is released only that way). Then, in order:
 
 1. Close admission, end the sessions and ship, as the departure's steps 0–2 with its final check
    (§4.2), holding as it does.
@@ -943,8 +954,10 @@ Does not touch: the driver (`devcloud/driver/`), any provider, the guard mods.
 
 Proves (tests pin each): a leased descriptor joins ephemeral and an unleased one does not; the warning
 fires once per lease value and names dirty and unpushed checkouts; departure order and bounds — the
-periodic services and the daemon stopped and the user's `claude` processes ended before the ship, and
-a hung step does not stop the next; a spawn during the departure (a `claude` started between step 1
+periodic timers and the daemon stopped and disabled (the unit tests assert `systemctl --user disable
+--now sminos-daemon.service` as the user and the disable of every periodic timer but the lease
+timer, re-applied on a held retry) and the user's `claude` processes ended before the ship, and a
+hung step does not stop the next; a spawn during the departure (a `claude` started between step 1
 and the ship) is ended and its lines shipped by the final check, and three rounds that keep finding
 one hold with `held (sessions keep starting)`; a periodic job run during a hold (refresh-secrets)
 exits at once without restarting the daemon; neither reopens admission or loses lines before the
@@ -952,8 +965,9 @@ final check; the lease service starting `depart` and `release` as transient unit
 started running through credential removal and recording its end after the lease service's own unit
 was stopped; `devcloud-depart: ready-to-logout` printed and flushed just before the logout, after
 every refusal and the hold are decided; a failed ship holds (no leave, no logout, no power-off, status `held (ship failed)`, exit 4)
-and a later run starts again at step 1; `depart` without `--force` refuses with exit 3 while the lease
-is not over; the lease service racing a lease write (the lock serializes them, and the departure
+and a later run starts again at step 1; `depart` and `release` without `--force` refuse with exit 3
+while the lease is not over; with the transient unit dispatched but paused before it runs, a lease
+renewed meanwhile makes the release do nothing (exit 3, no step run); the lease service racing a lease write (the lock serializes them, and the departure
 reads the value the write left); `lease set` printing the resulting lease; `lease set` refused once
 the departure started; the ledger: release
 after a `secrets.toml` target was renamed or removed still removes the old target, the root gcloud
@@ -966,9 +980,10 @@ later 1 or 3 and does nothing after a 0; 2 fail) and the enroll exit table (0, 1
 and fatal reason, 2, 3); no secret and no code file → no enrollment; the key never reaches a file or
 argv (assert over the fake's recorded argv and the filesystem); the nftables ruleset text (a unit test
 on the generator; the live check is M1's and M6's); the spot unit enabled only with `DEVCLOUD_SPOT=1`;
-a reboot past the lease boots and departs; a reboot during a hold does not reopen admission (no
-daemon, no periodic service but the lease service, whose next run retries from step 0), and a
-reboot after `departed` starts none of them; in a container session as the parent probed it, the
+a reboot past the lease boots and departs; the services step's second guard — with the status
+`departing` or `held` it starts no daemon and no periodic service but the lease service, whose next
+run retries from step 0, and with `departed` none of them; the live reboot check is M3's, M2 having
+no real systemd host; in a container session as the parent probed it, the
 bridge stays on and the guard's marker is live from the first session.
 
 ### M3 — The driver core, the provider protocol and the Hetzner provider, with the reaper
@@ -978,7 +993,7 @@ provider test | provider register` (and `--dry-run`, `reap --install`) work agai
 the shipped `hetzner` provider. A partial live smoke (one or two VMs, deleted the same day) meets
 acceptance 1 (its desk parts as Constraints say), 2 and 9 and the dry-run parts of 4, and `provider
 test` passes on the Hetzner account. The profile has `driver.toml` and `driver-keys/`. The full cap
-proof and acceptance 5 are M6's.
+proof and acceptance 5 are M6's. M2's live reboot check runs here, on the first real systemd VM.
 
 Touches: a new `devcloud/driver/` package (the core: caps, naming, descriptor and user-data
 composition, the protocol client, SSH, the reaper, `provider test` and `register`), the shipped
@@ -1029,7 +1044,9 @@ Decisions:
 Does not touch: the image orchestration (M4 — `up` takes only the slow path here), the gce provider and adopt (M5),
 the skill (M6).
 
-Proves: the cap table of §2 (each cap, the `--confirmed` bypass, a confirmed VM not counted, an
+Proves: live, on a systemd VM whose sminos daemon was enabled, a departure held (its ship made to
+fail) and a reboot leave the daemon and the periodic services stopped, the lease timer alone running
+(M2's check, here because M2 has no real systemd host); the cap table of §2 (each cap, the `--confirmed` bypass, a confirmed VM not counted, an
 otherwise-valid low-vCPU request whose requested disk exceeds both its type's disk and the cap
 refused with exit 4 before any create, and a type whose own disk exceeds the cap accepted without
 `--confirmed`); the
@@ -1372,9 +1389,9 @@ commit 5168e433 on its branch, 2026-10-21):
     6 not a driver here: no seed key, or this machine is a devcloud host
     7 the account's provider is not usable: not registered, or no passing copy yet
 
-    devcloud depart [--force] [--no-hold] [--no-poweroff] | release [--no-hold] | lease set <unix>
+    devcloud depart [--force] [--no-hold] [--no-poweroff] | release [--force] [--no-hold] | lease set <unix>
                                                                         # on a host, root, under the lifecycle lock
-    depart, release: 0 done (or already done) · 1 failed · 2 usage · 3 lease not over (depart without --force)
+    depart, release: 0 done (or already done) · 1 failed · 2 usage · 3 lease not over (without --force)
                      4 held (ship failed, or sessions kept starting) · stdout `devcloud-depart: ready-to-logout` before the logout
     lease set:       0 set, the resulting lease printed · 1 failed · 2 usage · 3 the departure has started
     the lease service starts depart and release as transient units (`devcloud-depart`, `devcloud-release`, --collect)
@@ -1543,13 +1560,19 @@ commit 5168e433 on its branch, 2026-10-21):
   lines, and leaving after a failed ship strands the transcripts on a machine about to be deleted;
   stopping the daemon alone did not close admission, since `sminos spawn` launches `claude` without
   it (`sminos.py`, `spawn_fresh`) and the periodic jobs restart it through the services step
-  (`sminos_host.py`, `converge`; `steps.py`, `refresh_secrets`). The boot reads the persisted
-  lifecycle status, so a reboot during a departure starts only the lease service (none after
-  `departed`). Residual: a session started by a
+  (`sminos_host.py`, `converge`; `steps.py`, `refresh_secrets`). Step 0 disables what it stops
+  (`systemctl --user disable --now sminos-daemon.service` as the user, and every periodic timer but
+  the lease timer), because `sminos_host.py` enables lingering and the daemon's unit, so the user
+  manager would start the daemon at the next boot whatever devcloud's services step decided; nothing
+  re-enables them, since a departing VM is deleted and a release removes devcloud's units. The
+  services step's check of the persisted lifecycle status stays as a second guard: with `departing`
+  or `held` it starts only the lease service, with `departed` none. M3 runs the live reboot check, on
+  the first real systemd VM. Residual: a session started by a
   direct login in the seconds between the last check and the logout loses its lines after that
   check. Rejected: shipping first and ending sessions after (the first order); the daemon's stop as
-  the whole of admission control (the second); unbounded rounds, which a spawning loop could keep
-  from ever departing.
+  the whole of admission control (the second); gating the reboot in devcloud's services step alone
+  (the third), which the user manager's own start of the enabled daemon bypassed; unbounded rounds,
+  which a spawning loop could keep from ever departing.
   Date/Author: 2026-10-21, design session.
 - Decision: The slow path stages the descriptor at `/var/lib/devcloud-stage/boot.env`, runs
   `setup.sh`, checks its exit, and only then installs `/etc/devcloud/boot.env` (§3 step 4); the image
@@ -1604,7 +1627,11 @@ commit 5168e433 on its branch, 2026-10-21):
 - Decision: The lease service never runs `depart` or `release` in-process; it starts them as a
   transient unit (`systemd-run --unit devcloud-depart --collect`, or `devcloud-release`), and "stop
   devcloud's services" leaves that unit running through credential removal and the recording of the
-  end (§4.1, §4.2, §6.5). M5 proves it live: an adopted machine with a short lease releases through
+  end (§4.1, §4.2, §6.5). Because the unit takes the lock later than the lease service decided,
+  `release` carries the same fence as `depart`: under the lock it re-reads `DEVCLOUD_EXPIRES` and
+  refuses with exit 3, "lease not over", unless the lease has ended or it was given `--force`, which
+  `down` passes; otherwise a lease renewed in between would still lose the adopted machine its
+  devcloud. M5 proves it live: an adopted machine with a short lease releases through
   the real timer path, after which the ledger's credentials are gone and the public SSH check passes.
   Rationale: a release run inside `devcloud-lease.service` stopped its own unit, and so killed
   itself, before it had removed the credentials. Rejected: exempting the lease service from the stop,
