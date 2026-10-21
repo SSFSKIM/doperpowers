@@ -720,6 +720,11 @@ after `~/`, no `..`, not the home itself. The release never removes the home its
   - the saved keys, restored
   It then verifies as a release does, and removes the record. It refuses if the ledger lists any
   other existing path. `released` is never written before cleanup has succeeded.
+  - The keys are restored atomically: a staged copy gets its owner and mode 0600, is fsynced, and is
+    renamed over `authorized_keys`. A failure leaves the working file and the backup whole.
+  - A delivery's staging files (`seed.json.tmp`, `enroll-code.tmp`) are ledgered before they are
+    written. The rollback removes `seed.json.tmp` even when the ledger does not list it.
+  - `down`'s release check requires both seed files to be gone.
 - **Adopted `down`, unconfirmed leave.** Adopted `down` gives the same desk note as VM `down` when
   the release did not confirm the leave. The adoption record keeps `enroll` for this. A resumed
   release repeats the lines of the steps it skips, marked "(an earlier run)", so that a leave
@@ -2311,4 +2316,51 @@ commit 5168e433 on its branch, 2026-10-21):
 
 ## Outcomes & Retrospective
 
-Pending — written at finish.
+**Against the purpose.** The purpose holds as written: a session can now get a cloud machine with
+its project already prepared, put work on it, and have it go away on time. It was shown live on
+2026-10-21:
+- **One command to a ready host.** `devcloud vm up --project SSFSKIM/doperpowers` returns a ready
+  host on the default GCE account. It took 3m22s from an image and 5m12s on the slow path, inside
+  acceptance 1's 8-minute bound and acceptance 10's 5 minutes.
+- **No enrollment code.** The machine enrolls at the desk through the provisioning key, with no code
+  typed.
+- **Work goes onto it.** A seat started on it, an operator prompt reached it as the human's words,
+  and a permission request it raised was answered from the desk in a browser.
+- **It goes away on time.** The lease warned the creating session and named the unpushed work. The
+  machine ended its sessions, shipped their last lines, and left the desk and the tailnet. The
+  always-on Mac's scheduled reaper deleted it 15m30s after the lease ended.
+- **Beyond the default account.** Hetzner works as a second shipped provider. A cloud the driver does
+  not ship was added once as a profile provider: registered with the person's approval, tested, and
+  used. A hand-made Ubuntu server was adopted and then given back intact, its original login working
+  after a reboot.
+- **The person's limits held.** Four kinds of cap refused unconfirmed requests, and `--confirmed`
+  passed them.
+- **Nothing personal in the public diff.** The whole branch diff carries none of the profile's
+  values (acceptance 12).
+
+**What changed from the design.**
+- **Default account.** GCE us-west1 replaced Hetzner, because Hetzner's account limits (H8) do not
+  fit the caps' worst case.
+- **The desk key.** The owner ruled that its offline revoke is "never". `hub leave` is therefore the
+  only clean desk removal, and the driver names every VM deleted without a confirmed leave.
+- **Images** carry a state and an architecture.
+- **Adopt and release** gained the account preflight, the boot's release guard, the logout gate and
+  a pre-boot rollback. All came from the whole-branch review, which caught three seam defects that
+  six milestone reviews had not: credential cleanup, the person's own account, and a reboot during
+  release.
+
+**Lessons.**
+- **Review the lifecycle whole.** Per-milestone reviews passed each part, while the defects that
+  mattered most crossed milestones. One machine's lifecycle traced end to end found them. A design
+  whose pieces share one lifecycle earns a review at the seams before the last milestone, not only
+  at the end.
+- **Live runs found what the unit tests could not.** Examples: the IPv6-blackholed LAN, a PENDING
+  image chosen by `up`, a false desk note for a VM that had left by itself, and the profile's
+  guardrail hiding the desk's permission card. Each became a test once it was known.
+- **Human steps cost the most wall-clock time.** Most delays were the gateway outage, the network
+  fix, and approvals relayed through the design session. Asking for them before the milestone
+  reached them (H6, H7) kept the build moving.
+
+**Left open:** H6 (the parent's `devcloud-m5` at the desk) is the person's step. The deferred items
+and residue are in `docs/doperpowers/TECH-DEBT.md`, under "the devcloud VM driver". After merge, the
+always-on Mac's reaper is moved onto the installed plugin (the PR's post-merge steps).
