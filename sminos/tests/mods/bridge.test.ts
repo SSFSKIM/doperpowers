@@ -3152,6 +3152,64 @@ describe("a post fits the engine's limit", () => {
     expect(asked.truncated).toBeUndefined()
   })
 
+  test('a resync whose whole questions alone pass RESYNC_MAX sends them ahead whole, each as its own raised, and names them: every post fits, every question reaches the new child once, no gap, no second resync', async () => {
+    const h = harness()
+    await h.ready()
+    await h.turn('t1')
+    // 65 questions pending, each near TEXT_CAP: about 4.3 M characters of inputs that cannot be shortened.
+    const asks = Array.from({ length: 65 }, (_, i) => ({
+      questions: [{ question: `q${i} ${'q'.repeat(TEXT_CAP - 8)}`, header: 'H', options: [{ label: 'a' }, { label: 'b' }], multiSelect: false }],
+    }))
+    for (let i = 0; i < asks.length; i++) {
+      await h.called(`toolu_q${i}`, 'AskUserQuestion', asks[i]!)
+      void h.permission('AskUserQuestion', asks[i]!)
+      await h.settle()
+    }
+    expect(h.ofType('raised').length).toBe(65)
+    // A new child says hello: its start, then the resync.
+    const before = h.posts.length
+    h.children[0]!.write(hello())
+    await h.settle()
+    const posts = h.posts.slice(before)
+    expect(h.posts.filter((p) => p.size > ENGINE_BODY_MAX).map((p) => p.size)).toEqual([])
+    expect(h.ofType('gap')).toEqual([])
+    const at = posts.findIndex((p) => p.events.some((e) => e.type === 'resync'))
+    expect(posts.filter((p) => p.events.some((e) => e.type === 'resync')).map((p) => p.events.length)).toEqual([1])
+    expect(at).toBe(posts.length - 1)
+    const resync = posts[at]!.events[0]!
+    expect(JSON.stringify(resync).length).toBeLessThanOrEqual(RESYNC_MAX)
+    expect(resync.truncated).toBe(true)
+    // Ahead of it, after the start: the questions it does not carry, each whole, in the order raised.
+    const ahead = posts.slice(0, at).flatMap((p) => p.events).filter((e) => e.type === 'raised')
+    expect(ahead.length).toBeGreaterThan(0)
+    expect(resync.pendingAhead).toEqual(ahead.map((e) => e.request))
+    const carried = resync.pending as { request: string; input: unknown; truncated?: boolean }[]
+    const ids = [...carried.map((p) => p.request), ...ahead.map((e) => e.request as string)].sort()
+    expect(ids).toEqual(asks.map((_, i) => `toolu_q${i}`).sort())
+    // Compared, not diffed: a failure's report would carry the strings whole.
+    const whole = (request: unknown, input: unknown) => JSON.stringify(input) === JSON.stringify(asks[Number(String(request).slice('toolu_q'.length))])
+    expect([...carried.map((p) => whole(p.request, p.input)), ...ahead.map((e) => whole(e.request, e.input))].every(Boolean)).toBe(true)
+    expect([...carried, ...ahead].some((p) => p.truncated === true)).toBe(false)
+    // The ready's resync and the new child's, no other: nothing was refused and sent again.
+    expect(h.ofType('resync').length).toBe(2)
+  })
+
+  test('a resync that fits sends nothing ahead and names nothing', async () => {
+    const h = harness()
+    await h.ready()
+    await h.turn('t1')
+    const ask = { questions: [{ question: 'Which?', header: 'H', options: [{ label: 'a' }, { label: 'b' }], multiSelect: false }] }
+    await h.called('toolu_q', 'AskUserQuestion', ask)
+    void h.permission('AskUserQuestion', ask)
+    await h.settle()
+    const before = h.posts.length
+    h.children[0]!.write(hello())
+    await h.settle()
+    const events = h.posts.slice(before).flatMap((p) => p.events)
+    expect(events.map((e) => e.type)).toEqual(['session', 'resync'])
+    expect('pendingAhead' in events[1]!).toBe(false)
+  })
+
   test('what queued while a post was in flight goes in posts that each fit, in order, nothing lost', async () => {
     const h = harness({ hold: true })
     const releaseAll = async () => {

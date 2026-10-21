@@ -120,7 +120,11 @@ for nothing).
 A gap in the bridge's stream, and its end while the session runs (the child
 ends every subscription on a module reload), end the subscription with
 `discontinuity`: the browser subscribes again. Without a bridge the rows come
-from the transcript alone, streaming empty and usage null.
+from the transcript alone, streaming empty and usage null. A running
+session's bridge socket that nobody listens on (its child killed, whose
+successor the mod spawns at once) is dialled again for STALE_WAIT before the
+open goes without it: the successor's snapshot carries what streams, where a
+transcript-only one would drop a block named and not yet flushed.
 
 What the session runs (DX4, "Jobs and agent status"; DC8 M4): the snapshot
 and every `subagents` message carry the widened body sminos_jobs derives —
@@ -201,6 +205,12 @@ GIT_TIMEOUT = 30
 PROBE_TIMEOUT = 1.0
 CONNECT_WAIT = 10.0       # s: the bridge holds GET /events until ready, at most 5 s
 NOT_READY_WINDOW = 5.0    # s: a 503 (not ready) is asked again this long, as `sminos watch` does
+# s: a running session's bridge socket that refuses the connect (nobody listens: its child was killed) is dialled
+# again this long before the open goes transcript-only. The mod spawns a successor at once after a child that ran
+# a while (bridge.tsx's RESPAWN_FIRST_MS), a second later after one that ended at once, and the successor moves its
+# socket into place before it says hello.
+STALE_WAIT = 3.0
+REDIAL_EVERY = 0.05       # s: between two dials of a socket that refused
 RECORD_FIELDS = ("status", "waitingFor", "needs")
 AGENT_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 TASK_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")   # DX3 `output`'s taskId, as the engine spells task ids
@@ -1364,13 +1374,19 @@ class BridgeReader(threading.Thread):
     ("unavailable", why, at) when nothing answers there, ("refused", status,
     at) when the bridge turned the subscription down (503: not ready), or
     ("closed", why, at) when it ended; `at` is when it arrived (`stamp`, the
-    wall clock). It calls nothing of sminos."""
+    wall clock). A socket that refuses the connect (nobody listens on it) is
+    dialled again every REDIAL_EVERY until `redial` seconds (on `clock`) have
+    passed since the reader began, before it is "unavailable": a killed
+    child's successor takes the endpoint over meanwhile. It calls nothing of
+    sminos."""
 
-    def __init__(self, path, wake, stamp=time.time):
+    def __init__(self, path, wake, stamp=time.time, redial=0.0, clock=time.monotonic):
         super().__init__(name="plane-bridge", daemon=True)
         self.path = path
         self.wake = wake
         self.stamp = stamp
+        self.redial = redial
+        self.clock = clock
         self.items = queue.Queue()
         self.closing = threading.Event()
         self.sock = None
@@ -1382,15 +1398,23 @@ class BridgeReader(threading.Thread):
     def run(self):
         """A 503 (the child has not had the mod's first resync) is asked
         again until NOT_READY_WINDOW has passed since the first, as `sminos
-        watch` retries it; then it is ("refused", 503)."""
+        watch` retries it; then it is ("refused", 503). A refused connect is
+        dialled again until the redial window has passed."""
         not_ready_until = None
+        redial_until = self.clock() + self.redial
         while True:
             conn = bridge._UnixConnection(self.path, CONNECT_WAIT)
             try:
-                if not self.stream(conn):
-                    return
+                again = self.stream(conn, redial_until)
             finally:
                 conn.close()
+            if again is None:
+                return
+            if again == "redial":
+                if self.closing.wait(REDIAL_EVERY):
+                    self.put(("closed", "closed here"))
+                    return
+                continue
             now = time.monotonic()
             not_ready_until = not_ready_until or now + NOT_READY_WINDOW
             if now >= not_ready_until or self.closing.is_set():
@@ -1398,15 +1422,21 @@ class BridgeReader(threading.Thread):
                 return
             time.sleep(0.1)
 
-    def stream(self, conn):
-        """One GET /events: True when it was answered 503 (try again), False
-        once its fate is put."""
+    def stream(self, conn, redial_until):
+        """One GET /events: "503" when it was answered 503 (try again),
+        "redial" when the connect was refused before `redial_until` (dial
+        again), None once its fate is put."""
         try:
             try:
                 conn.connect()
+            except ConnectionRefusedError as e:
+                if self.clock() < redial_until and not self.closing.is_set():
+                    return "redial"
+                self.put(("unavailable", str(e)))
+                return None
             except OSError as e:
                 self.put(("unavailable", str(e)))
-                return False
+                return None
             # Held here: the response to a `Connection: close` request takes
             # the socket from `conn`, which forgets it.
             self.sock = conn.sock
@@ -1415,21 +1445,21 @@ class BridgeReader(threading.Thread):
             conn.request("GET", "/events")
             resp = conn.getresponse()
             if resp.status == 503:
-                return True
+                return "503"
             if resp.status != 200:
                 self.put(("refused", resp.status))
-                return False
+                return None
             self.sock.settimeout(None)
             while True:
                 line = resp.readline()
                 if not line:
                     self.put(("closed", "the bridge ended the stream"))
-                    return False
+                    return None
                 if line.strip():
                     self.put(("line", json.loads(line)))
         except (OSError, ValueError, http.client.HTTPException) as e:
             self.put(("closed", "closed here" if self.closing.is_set() else str(e) or repr(e)))
-            return False
+            return None
 
     def close(self):
         self.closing.set()
@@ -2466,8 +2496,13 @@ class Plane:
         if os.path.exists(bridge.endpoint(sid)):
             # The reader finds out whether it answers, off this thread: a
             # socket nobody listens on is "unavailable", and the
-            # subscription is served from the transcript alone.
-            reader = BridgeReader(bridge.endpoint(sid), self.wake)
+            # subscription is served from the transcript alone. A running
+            # session's is dialled again for STALE_WAIT first: its child was
+            # killed, the mod spawns a successor at once, and the successor's
+            # snapshot carries what streams — a transcript-only one would
+            # drop a block named and not yet flushed from the drawing.
+            reader = BridgeReader(bridge.endpoint(sid), self.wake,
+                                  redial=STALE_WAIT if self.running(sid) else 0.0)
             reader.start()
         self.subs[sub] = Subscription(
             project.id, self.machine, sid, agent, sub, reader=reader,

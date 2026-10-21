@@ -26,7 +26,8 @@ import type { Block, BridgeEvent, Override, Refusal, Request, Streaming } from '
  * catch-up copy a resync gives is the tail); a resync is posted alone and,
  * past RESYNC_MAX, drops streaming messages, oldest first, then shortens
  * pending permissions' inputs to RESYNC_INPUT_CAP characters a string, saying
- * so (`truncated`); and a batch too long for one post is split.
+ * so (`truncated`), then sends questions ahead of it whole, as their own
+ * `raised`; and a batch too long for one post is split.
  */
 
 export type Hold = BridgeEvent & {
@@ -69,6 +70,9 @@ const REFUSALS_HELD = 100
 const BLOCK_KIND: Record<string, string> = { text: 'text', thinking: 'thinking', tool: 'tool', input: 'tool' }
 
 const messageKey = (turnId: unknown, agentId: unknown, step: unknown) => `${String(turnId)}|${String(agentId)}|${String(step)}`
+
+/** The `raised` events a resync sent ahead of it (resyncEvents): part of that resync, never counted lost. */
+const aheadOfResync = new WeakSet<BridgeEvent>()
 
 /** A chunk folded into its message's block, and the block's start noted for pairing its row. */
 function trackChunk(e: BridgeEvent) {
@@ -195,22 +199,26 @@ export const raisedFields = (r: Request) => ({
 /**
  * The live state whole, and what the child keeps for this session: what it
  * replaces its own with. One whose JSON passes RESYNC_MAX says so
- * (`truncated`) and is cut until it fits, in two steps: streaming messages
+ * (`truncated`) and is cut until it fits, in three steps: streaming messages
  * dropped, oldest first (their catch-up copy only: their rows still land);
  * then pending permissions' inputs, largest first, each string held to
  * RESYNC_INPUT_CAP and the request marked `truncated`, as `raised` marks an
- * input cut to TEXT_CAP. Every request keeps its id, tool, agent and window,
- * which deciding it needs; a question's input stays whole, since its answers
- * are matched against its questions. The child takes what it carries, but a
- * request it already holds keeps the input its raise carried, so a decision
- * made from that draw still matches it. A string is never cut inside a
- * surrogate pair (`capped`).
+ * input cut to TEXT_CAP; then questions (async asks among them), largest
+ * first, sent ahead of the resync whole, each as its own `raised` (the poster
+ * splits them into posts that fit), the resync naming them (`pendingAhead`)
+ * so the child keeps each as that raise left it. Every request keeps its id,
+ * tool, agent and window, which deciding it needs; a question's input stays
+ * whole, since its answers are matched against its questions. The child
+ * takes what it carries, but a request it already holds keeps the input its
+ * raise carried, so a decision made from that draw still matches it. A
+ * string is never cut inside a surrogate pair (`capped`). The events to
+ * post, the resync last.
  */
-export function resyncEvent(): BridgeEvent {
+export function resyncEvents(): BridgeEvent[] {
   const resync = wholeResync()
   let size = JSON.stringify(resync).length
   if (size <= RESYNC_MAX) {
-    return resync
+    return [resync]
   }
   const streaming = resync.streaming as unknown[]
   // `"truncated":true,`, and a comma for each entry dropped (estimates that only overcount).
@@ -234,7 +242,36 @@ export function resyncEvent(): BridgeEvent {
     size -= length - JSON.stringify(short).length
     pending[i] = short
   }
-  return { ...resync, streaming: streaming.slice(dropped), pending, truncated: true }
+  const ahead = new Set<number>()
+  if (size > RESYNC_MAX) {
+    // `"pendingAhead":[],`, and each id moved there (estimates that only overcount).
+    size += 18
+    const questions = pending
+      .map((p, i) => ({ i, length: JSON.stringify(p).length }))
+      .filter(({ i }) => kept.has(String(pending[i]!.request)))
+      .sort((a, b) => b.length - a.length)
+    for (const { i, length } of questions) {
+      if (size <= RESYNC_MAX) {
+        break
+      }
+      size -= length - JSON.stringify(String(pending[i]!.request)).length
+      ahead.add(i)
+    }
+  }
+  const sent = pending.filter((_, i) => ahead.has(i)).map((p) => ({ type: 'raised', ...p }) as BridgeEvent)
+  for (const e of sent) {
+    aheadOfResync.add(e)
+  }
+  return [
+    ...sent,
+    {
+      ...resync,
+      streaming: streaming.slice(dropped),
+      pending: pending.filter((_, i) => !ahead.has(i)),
+      ...(sent.length > 0 && { pendingAhead: sent.map((e) => e.request) }),
+      truncated: true,
+    },
+  ]
 }
 
 function wholeResync(): BridgeEvent {
@@ -343,8 +380,8 @@ export function adoptKept(kept: unknown) {
  * event lost and every one queued behind them.
  */
 function lose(events: BridgeEvent[]) {
-  const dropped = events.reduce((n, e) => n + (e.type === 'gap' ? Number(e.dropped) : e.type === 'resync' || isHold(e) ? 0 : 1), 0)
-  requeue([{ type: 'gap', dropped, t: Date.now() }, resyncEvent()])
+  const dropped = events.reduce((n, e) => n + (e.type === 'gap' ? Number(e.dropped) : e.type === 'resync' || isHold(e) || aheadOfResync.has(e) ? 0 : 1), 0)
+  requeue([{ type: 'gap', dropped, t: Date.now() }, ...resyncEvents()])
 }
 
 /**

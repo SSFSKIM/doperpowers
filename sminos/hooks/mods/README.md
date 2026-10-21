@@ -411,10 +411,18 @@ as a `claude --bg "<prompt>"` job that joined under its prompt) and prints
 nothing for a session in no project,
 an internal fork (`SMNS_INTERNAL`), or one that is no member (a headless run
 its host did not mark). The engine asks before every model request of every
-loop, twice (commit, then pr): the mod keeps the line and asks the CLI again
-only for a new session id (a session sent to the background goes on as a new
-one) or once the kept line is a minute old (an alias renamed mid-session); a
-CLI that cannot run keeps the line it had. A subagent's request reads the
+loop, twice (commit, then pr), and each ask of the CLI is a Python start: the
+mod keeps the line and asks the CLI again only for a new session id (a
+session sent to the background goes on as a new one; a module loaded afresh
+holds none), after a compaction, or once the kept line is ten minutes old
+(an alias renamed mid-session, a `sminos join`); no line (none yet, or a CLI
+that cannot run, which keeps the line it had) is asked for again a minute
+on. A request waits only for a session's first line: one past its time is
+used while the CLI is asked in the background. No file's change stands in
+for the ten minutes: what the line is composed from (the engine's record of
+the session, the session's own log file, the project's log, the transcript)
+is rewritten at every turn or message for reasons of its own, so watching
+it would ask about once a turn. A subagent's request reads the
 parent's session id, so a subagent's commits carry the session someone can
 reach. The engine re-sends its reminder only when the text changes.
 
