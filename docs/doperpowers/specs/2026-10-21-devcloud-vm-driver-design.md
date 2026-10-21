@@ -141,10 +141,11 @@ parts of checks 1, 3, 5 and 7 need sminos 1.4.1 or later on the VM and the desk'
    repository with a `devenv/`; the profile naming the desk's provisioning key, H4 — M6 says what
    stands in until the desk ships keys) exits 0 within 8 minutes and prints the name, the provider, the
    tailnet name, the lease end and the hourly price. Then: `devcloud vm ssh <n> -- devcloud status`
-   prints every step `ok`; `devcloud vm ssh <n> -- 'cd ~/Developer/GitHub/<repo> && devenv validate'`
+   prints every step `ok`; `devcloud vm ssh <n> -- 'cd ~/Developer/GitHub/<repo> && devenv validate <repo>'`
    exits 0; `sminos machines` lists `<n>` online, and nobody typed an enrollment code;
    `tailscale status` lists `<n>`. The user-data the provider keeps for the server, read back
-   through its API, holds none of the person's secret values (the guard's known-value matcher,
+   through its API (Hetzner returns none through its API, so there it is read from inside through
+   its metadata service, M3), holds none of the person's secret values (the guard's known-value matcher,
    `devcloud/tests/scan-secrets.ts`, reports 0).
 2. **No public door.** After `up` returns, a TCP connect to the VM's public IPv4 address on port 22
    fails (`nc -z -w 5 <ip> 22` exits non-zero), and `devcloud vm ssh <n> -- true` succeeds over the
@@ -1383,7 +1384,7 @@ The core's side of the contract — the invariants, the label recheck, the capab
 **I14 — Labels** (keys and values `[a-z0-9-]`, at most 63 characters, stored verbatim by every
 provider):
 
-    devcloud=vm|image|builder|test
+    devcloud=vm|image|builder|test|sshkey
     devcloud-lifetime=ttl|keep
     devcloud-expires=<Unix seconds>          # a cached copy of the host's lease (§4.1)
     devcloud-by=<driver machine's name, lowercased>
@@ -1393,7 +1394,8 @@ provider):
     devcloud-enroll=key|code                 # how the VM enrolls at the desk; absent: it does not
     devcloud-held=1                          # its departure is held on a failed ship (§4.3)
     devcloud-bake=failed-<step>              # a builder whose bake failed (M4)
-    devcloud-test=<run id>                   # live test runs and provider test
+    devcloud-test=<run id>                   # live test runs and provider test (DEVCLOUD_TEST_RUN=<id> adds it to up's labels)
+    devcloud=sshkey                          # a driver key the driver registered with a provider that needs one at create (Hetzner); the reaper ignores it
 
 **I15 — The desk's interface consumed** (desk spec "What the boot consumes", after its review,
 commit 5168e433 on its branch, 2026-10-21):
@@ -1588,6 +1590,22 @@ commit 5168e433 on its branch, 2026-10-21):
   server (36 vCPU) do not.
   Evidence: `dc-lat-0001` (e2-custom-4-8192, us-west1-b, created 05:25Z, deleted 05:39Z); `ping`
   from both Macs; `gcloud compute regions describe us-west1`, `project-info describe`.
+- Observation (M3, 2026-10-21): Hetzner's server JSON has a top-level `location` and no
+  `datacenter`. `hcloud server create-image` has no `-o json`. Hetzner returns no user-data through
+  its API; only the in-server metadata service (`169.254.169.254/hetzner/v1/userdata`) serves it.
+- Observation (M3): The driver's slow path on cpx31 in hil took about 13 minutes from `up` to a
+  failed services step, against M1's 218 s with a scratch driver. On this MacBook network every
+  Google API call waited out a blackholed IPv6 attempt (`vm ls` 5 min, `up --dry-run` 4 min,
+  `provider test` 21 min), so the figure is not the driver's own. Acceptance 1's 8 minutes and
+  acceptance 10's 5 are measured again in M4 and M6, on a working network.
+- Observation (M3): On a host rebooted during a held departure, the services step starts the lease
+  timer and the continuous shipper and nothing else; the sminos daemon and the four periodic timers
+  stay inactive and disabled (M2's live reboot check, passed).
+- Observation (M3): `devenv validate` takes the project's name (`devenv validate <name>`).
+- Observation (M3): The desk key first created for H4 had the name prefix `dc-1234`, and step 11's
+  enroll exited 2. It was created again with `dc-`, and the same VM then enrolled through `devcloud
+  reconcile`: sminos 1.5.2 on the VM, `hub check` 0, listed by `sminos machines`, and gone from it
+  after `down`'s departure.
 
 ## Decision Log
 
@@ -1729,7 +1747,8 @@ commit 5168e433 on its branch, 2026-10-21):
   manager would start the daemon at the next boot whatever devcloud's services step decided; nothing
   re-enables them, since a departing VM is deleted and a release removes devcloud's units. The
   services step's check of the persisted lifecycle status stays as a second guard: with `departing`
-  or `held` it starts only the lease service, with `departed` none. M3 runs the live reboot check, on
+  or `held` it starts only the lease service and the continuous shipper (whose work the hold waits
+  for; a retry's step 1 stops it again), with `departed` none. M3 runs the live reboot check, on
   the first real systemd VM. Residual: a session started by a
   direct login in the seconds between the last check and the logout loses its lines after that
   check. Rejected: shipping first and ending sessions after (the first order); the daemon's stop as
@@ -1928,6 +1947,38 @@ commit 5168e433 on its branch, 2026-10-21):
   key exists (its Secret Manager id goes in `driver.toml`'s `[desk]`), and earlier checks enroll
   with a one-time code. Date/Author: 2026-10-21, the desk session (smns-erb-71) through the design
   session.
+
+- Decision: How M3 settled the driver core's gaps:
+  - The driver reads Secret Manager without gcloud, signing the seed's RS256 JWT in the standard
+    library and making the JWT-bearer grant. It reads once per provider call, with no cache.
+  - Hetzner needs a registered SSH key for root at create, so the driver registers its key once as
+    `devcloud-<sha12>`, labeled `devcloud=sshkey` (a new I14 value), which the reaper ignores.
+    Nothing retires one yet when a driver machine goes away (residue).
+  - A disk beyond the type's own on Hetzner is a refusal (exit 3, `unavailable`): Hetzner adds no
+    disk at create.
+  - `types` may carry `currency`, and prices print in it.
+  - A provider gets a minimal environment: PATH, HOME, LANG, TMPDIR, USER, and the account's vars
+    and secrets. Its stderr is shown only on a failure or refusal (the last 20 lines, scrubbed).
+  - `vm ssh` runs a single argument after `--` as a shell line and quotes several as words.
+  - The bounded reaper run inside `up` and `ls` deletes only expired servers that are not running,
+    leftovers and surplus images. Departures and the excess rule belong to the scheduled reaper, so
+    `up` and `ls` never wait on SSH.
+  - An excess unconfirmed VM is deleted whatever its forced departure's outcome, with a loss line.
+  - `up` refuses (exit 1) when the driver's key is not in the config repository's remote, since a
+    host's home step installs `authorized_keys` from the remote.
+  - `DEVCLOUD_TEST_RUN=<id>` adds `devcloud-test=<id>` to `up`'s labels.
+  - Host keys use the alias `devcloud-<account>-<server id>` in the driver's own `known_hosts`.
+  - `devcloud-by` is the hostname, lowercased and sanitized.
+  - `lease` on a `keep` VM makes it `ttl`.
+  - `down --force` deletes after a failed or held departure; an unknown outcome still exits 1.
+  - The reap agent runs the marketplace clone's `bin/devcloud`, so plugin updates reach it.
+  - The creator is the session's sminos short id (`@<short>` in the descriptor, `<short>` in the
+    label).
+  - `--dry-run` runs no reaper.
+  - `provider test` round-trips `devcloud-held=1`, runs a private copy of the bytes it hashed, and
+    finds and deletes a server that a failed `create` still made, by its run label.
+  Rationale: each follows the spec's intent where it was silent; the reasons are in the M3 report.
+  Date/Author: 2026-10-21, M3's executor, folded by the controller.
 
 ## Outcomes & Retrospective
 
