@@ -305,14 +305,18 @@ kairos, agents, appeal and interim register them too,
 and the engine admits one
 unmatched registration of an event per module.
 
-The tool is an MCP tool to the engine, which tool search defers (the model
-sees the name alone until it loads the tool with `ToolSearch`), so the
-guidance in its description would reach the model only once it had already
-thought of compacting. A `tool.describe` hook answers `isDeferred: false`,
-which the engine takes over its own placement (SPEC 14.4.2, since 2.1.287),
-so it ships inline in every request: the definition (about 2.1k
-characters) in the prompt-cache prefix, where `/context` counts it under
-"MCP tools". Its answer is a line.
+The tool is an MCP tool to the engine, which tool search defers: the model
+sees the name alone until it loads the tool with `ToolSearch`, and one
+loaded before a compaction stays loaded after it (the compaction's
+`preCompactDiscoveredTools`). Its guidance is read where the model acts on
+it: the offer sends the model to the description before it decides, with
+the `select:` query that loads it. Before 7.202.0 a `tool.describe` hook
+kept it inline in every request, subagents' included; the owner let it be
+deferred (2026-10-20), the definition's tokens not worth carrying in every
+session for a tool read only after the plugin's own message. Where tool
+search is off it is listed inline like any tool. The cost: below the
+floor, where no offer comes, the model reads the guidance only if it loads
+the tool on its own thought of compacting. Its answer is a line.
 
 Known limits: the threshold is read once, at session start, so a window
 changed by `/autocompact` mid-session is not followed; a model that keeps
@@ -340,7 +344,10 @@ Design and the engine facts it stands on:
 A `tool.call` hook on every tool reads the classifier's denial out of an
 error result (`Permission for this action was denied by the Claude Code
 auto mode classifier. Reason: …`), gives the block an id (`b1`, `b2`, …)
-and adds one `context` line telling the model it may appeal once. A block
+and adds one `context` line telling the model it may appeal once, that the
+tool's description says when an appeal fits, and the `select:` query that
+loads it (the tool waits behind tool search, deferred since 7.202.0 by the
+owner's call of 2026-10-20, as compact's does). A block
 naming `[Data Exfiltration]` (the classifier's hard block) or `[User Deny
 Rules]` (a `permissions.deny` rule reached by another route) gets neither.
 `mcp__doperpowers__appeal` (`block`, `argument`), registered in every loop,

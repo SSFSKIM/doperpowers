@@ -134,9 +134,13 @@ export function recordBlock(ledger: Ledger, call: { agentId?: string; tool: stri
   return block
 }
 
-/** The note the model reads after a denial it may appeal. */
+/**
+ * The note the model reads after a denial it may appeal. The tool waits
+ * behind tool search, so the note says how to load it, and that its
+ * description says when an appeal fits.
+ */
 export function blockNotice(id: string): string {
-  return `Auto mode block ${id}. The classifier lacks context and can misjudge; if you think this call was legitimate, appeal once before you stop or work around it: mcp__doperpowers__appeal with block "${id}".`
+  return `Auto mode block ${id}. The classifier lacks context and can misjudge; if you think this call was legitimate, appeal once before you stop or work around it: mcp__doperpowers__appeal with block "${id}". Its description says when an appeal fits; if the tool is not loaded, ToolSearch with "select:mcp__doperpowers__appeal" loads it.`
 }
 
 /**

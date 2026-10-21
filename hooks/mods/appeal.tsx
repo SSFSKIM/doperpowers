@@ -1,4 +1,4 @@
-import type { EngineInterface, On, SessionMessage, ToolCallArgs, ToolDescribeResult } from 'claude-code'
+import type { EngineInterface, On, SessionMessage, ToolCallArgs } from 'claude-code'
 
 import {
   APPEAL_DESCRIPTION,
@@ -70,9 +70,6 @@ function toolInput(e: Record<string, unknown>): Record<string, unknown> {
 }
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error))
-
-/** A tool.describe answer that keeps the tool out of tool-search deferral. */
-const inline = (described: ToolDescribeResult): ToolDescribeResult => ({ ...described, isDeferred: false }) as ToolDescribeResult
 
 /**
  * The session's ledger, and its log: one file per session, seeded from what
@@ -324,8 +321,6 @@ export function registerAppeal(on: On) {
     await appealStart($)
     return next(e)
   })
-
-  on('tool.describe', { tool: 'mcp__doperpowers__appeal' }, async (_, e, next) => inline(await next(e)))
 
   on('command.run', { command: 'appeals' }, async ($) => ({ text: await appealsReport($) }))
 
