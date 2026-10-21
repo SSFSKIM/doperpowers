@@ -4832,14 +4832,17 @@ def chat_host(project, a):
 #
 # The fork starts in safe mode — without the session's plugins, hooks, mods
 # and MCP servers, which a fork answering from the conversation has no use
-# for (with them it was offered their tools) — and persists nothing. They
-# were most of its start, and where it failed: on the owner's MacBook
-# (2026-10-17 to 10-21, board #111) 30 of 264 forks timed out at 120 s, and
-# those that left logs had taken a median 12.5 s and 33 s to start the
-# plugins' local MCP servers (cua_repl, ptc; 8 of 13 ptc starts hit the 30 s
-# limit) where sessions starting in the same minutes took 1.3 s and 2.9 s:
-# the daemon's processes ran in launchd's lower scheduling band, which a
-# loaded machine starves (the plist's ProcessType).
+# for (with them it was offered their tools) — persists nothing, and is sent
+# uncached (DISABLE_PROMPT_CACHING): its tool list is not the session's, so
+# it never reads a cache, and the hour-long one it would write (the
+# session's setting) is read by nothing, the session's next fork being six
+# hours away. The plugins were most of its start, and where it failed: on
+# the owner's MacBook (2026-10-17 to 10-21, board #111) 30 of 264 forks
+# timed out at 120 s, and those that left logs had taken a median 12.5 s and
+# 33 s to start the plugins' local MCP servers (cua_repl, ptc; 8 of 13 ptc
+# starts hit the 30 s limit) where sessions starting in the same minutes
+# took 1.3 s and 2.9 s: the daemon's processes ran in launchd's lower
+# scheduling band, which a loaded machine starves (the plist's ProcessType).
 
 DERIVE_QUESTION = ("In one line: what is this session in charge of in this project — its standing responsibility, "
                    "not its latest step?")
@@ -4851,6 +4854,8 @@ DERIVE_LINE_MAX = 120
 # daemon runs it every five minutes, and a fork that timed out tends to time
 # out again); a derive that names the member does not wait.
 DERIVE_RETRY = 3600
+# A failed fork's line carries why, cut to this many characters.
+DERIVE_WHY_MAX = 200
 
 # A member sminos may name (charge_naming) is asked for a charge name with its
 # line: the prompt is naming_prompt's, and the answer's name is kept only in
@@ -5140,17 +5145,31 @@ def derive_failed_mark(session, failed):
         warn("the failed derive of %s could not be %s: %s" % (session[:8], "stamped" if failed else "cleared", e))
 
 
+def fork_failure(obj, err):
+    """Why a fork ended without an answer, as one line of at most
+    DERIVE_WHY_MAX characters: its result's error text when it reported an
+    error, else the head of its stderr; "" when it said nothing."""
+    said = []
+    if obj and obj.get("is_error"):
+        errors = obj.get("errors")
+        said = [str(obj.get("result") or "")] + ([str(e) for e in errors] if isinstance(errors, list) else [])
+    text = " ".join(" ".join(said).split()) or " ".join((err or "").split())
+    return text[:DERIVE_WHY_MAX]
+
+
 def derive_line(project, m, prompt=DERIVE_PROMPT):
     """Fork the member's session headless, ask it `prompt`, and return
     (line, answer): its one-line answer (answer_line) and the whole text the
     answer's name is read from. The fork starts behind a gate: its pid is marked internal before it can
-    register. It starts in safe mode and persists nothing (the section's
-    note); its session id is minted here (`--session-id`) all the same, so a
-    transcript an engine wrote anyway is known and deleted whatever the
-    outcome — an answer, a crash, a timeout — and so is the marker. The
-    prompt comes last: `--tools` takes several values and would swallow a
-    prompt right after it."""
+    register. It starts in safe mode, uncached, and persists nothing (the
+    section's note); its session id is minted here (`--session-id`) all the
+    same, so a transcript an engine wrote anyway is known and deleted
+    whatever the outcome — an answer, a crash, a timeout — and so is the
+    marker. A failure says why (fork_failure). The prompt comes last:
+    `--tools` takes several values and would swallow a prompt right after
+    it."""
     fork = str(uuidlib.uuid4())
+    env = {**os.environ, "SMNS_INTERNAL": "1", "DISABLE_PROMPT_CACHING": "1"}
     args = ["claude", "-p", "--resume", m.session, "--fork-session", "--session-id", fork, "--safe-mode",
             "--no-session-persistence", "--tools", "", "--output-format", "json", prompt]
     gate_r, gate_w = os.pipe()
@@ -5160,7 +5179,7 @@ def derive_line(project, m, prompt=DERIVE_PROMPT):
     try:
         try:
             proc = subprocess.Popen(["/bin/sh", "-c", 'read -r _ <&%d; exec %d<&-; exec "$@"' % (gate_r, gate_r), "sh"]
-                                    + args, cwd=member_cwd(project, m), env={**os.environ, "SMNS_INTERNAL": "1"},
+                                    + args, cwd=member_cwd(project, m), env=env,
                                     stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                     text=True, pass_fds=(gate_r,))
         except OSError as e:
@@ -5184,7 +5203,8 @@ def derive_line(project, m, prompt=DERIVE_PROMPT):
         except subprocess.TimeoutExpired:
             proc.kill()
             out, err = proc.communicate()
-            raise DeriveFailed("the fork timed out after %ds" % timeout, err)
+            why = fork_failure(None, err)
+            raise DeriveFailed("the fork timed out after %ds%s" % (timeout, ": " + why if why else ""), err)
         for raw in reversed((out or "").splitlines()):
             if raw.strip().startswith("{"):
                 try:
@@ -5195,7 +5215,8 @@ def derive_line(project, m, prompt=DERIVE_PROMPT):
                     obj = d
                     break
         if proc.returncode != 0 or obj is None or obj.get("is_error"):
-            raise DeriveFailed("the fork failed (exit %d)" % proc.returncode, err)
+            why = fork_failure(obj, err)
+            raise DeriveFailed("the fork failed (exit %d)%s" % (proc.returncode, ": " + why if why else ""), err)
         answer = str(obj.get("result") or "")
         line = answer_line(answer)
         if not line:
