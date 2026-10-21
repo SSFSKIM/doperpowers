@@ -163,8 +163,8 @@ def run(ctx, opts):
         ctx.say(f"adopt     {user}@{address} {what}  lifetime {life}  projects {' '.join(opts.project) or '-'}")
         ctx.say("caps      adopt always needs the person's yes: confirmed")
         return 0
-    from .up import require_key_pushed
-    require_key_pushed(ctx, "adopt")
+    from .up import pushed_driver_keys
+    keys = pushed_driver_keys(ctx, "adopt")
     fresh = record is None
     if fresh:
         servers = [e.vm for e in ctx.fleet(quiet=True)]
@@ -192,7 +192,7 @@ def run(ctx, opts):
         raise
     begun = ctx.clock()
     if record.phase == "preparing":
-        _prepare(ctx, record, chan)
+        _prepare(ctx, record, chan, keys)
     if record.phase in ("preparing", "seeded"):
         record.phase = "seeded"
         save(ctx, record)
@@ -223,13 +223,13 @@ def _check(ctx, chan, record):
                                   "matching adoption record here: see devcloud vm ls")
 
 
-def _prepare(ctx, record, chan):
+def _prepare(ctx, record, chan, keys):
     """`preparing`: the keys the machine had saved (once), the driver's key
     authorized for root, the recipe and setup.sh, the descriptor staged."""
     save(ctx, record)
     _script(ctx, chan, f"save-keys {record.user}", "saving the machine's authorized_keys")
-    keys = base64.b64encode("\n".join(ctx.driver_keys()).encode()).decode()
-    _script(ctx, chan, f"authorize {keys}", "authorizing the driver's key for root")
+    encoded = base64.b64encode("\n".join(keys).encode()).decode()
+    _script(ctx, chan, f"authorize {encoded}", "authorizing the driver's key for root")
     try:
         hostctl.wait_ssh(ctx, record.address, record.name, ctx.clock() + SSH_WAIT)
     except DriverError:

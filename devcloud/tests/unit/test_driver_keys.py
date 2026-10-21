@@ -3,12 +3,14 @@ equal to the configuration repository's driver-keys/, so `up` refuses while
 this driver's key is not there yet — checked in the profile's checkout when it
 is a checkout of that repository, and unchecked otherwise (a temporary
 profile, wherever it lives)."""
+import argparse
 import os
 import pathlib
 import subprocess
 
 import _path  # noqa: F401
-from driver import context
+from driver import adopt, context
+from driver.errors import DriverError
 
 from driver_fixtures import KEY, DriverBase
 
@@ -21,7 +23,7 @@ def git(cwd, *args):
                         "GIT_AUTHOR_EMAIL": "t@x", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@x"})
 
 
-class KeyInRemoteTest(DriverBase):
+class Checkout(DriverBase):
     def setUp(self):
         super().setUp()
         (self.profile_dir / "driver-keys" / "testmac.pub").write_text(KEY + "\n")
@@ -41,6 +43,9 @@ class KeyInRemoteTest(DriverBase):
         git(self.profile_dir, "commit", "-q", "-m", "c")
         git(self.profile_dir, "push", "-q", "origin", "main")
 
+
+class KeyInRemoteTest(Checkout):
+
     def test_a_checkout_of_the_config_repository_without_the_key_refuses(self):
         self.checkout(CONFIG, pushed=False)
         self.assertFalse(context.key_in_remote(self.ctx))
@@ -56,3 +61,39 @@ class KeyInRemoteTest(DriverBase):
 
     def test_a_profile_outside_any_checkout_is_unchecked(self):
         self.assertTrue(context.key_in_remote(self.ctx))
+
+
+NEW_KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINewKeyAfterTheOldOneWasLost devcloud-testmac"
+
+
+class AdoptPreflightTest(Checkout):
+    """adopt's preflight checks the key this Mac will use, so the key is
+    made (and its public half written to the profile, as ssh.ensure_key
+    does) before the check reads it."""
+
+    def setUp(self):
+        super().setUp()
+        self.ctx = self.make_ctx(key_pushed=None)
+        def ensure_key():
+            mine = self.profile_dir / "driver-keys" / "testmac.pub"
+            mine.write_text(NEW_KEY + "\n")
+            return NEW_KEY
+        self.remote.ensure_key = ensure_key
+
+    def refused(self):
+        opts = argparse.Namespace(target="root@203.0.113.50", label="adp", project=[], ttl=None, confirmed=True,
+                                  dry_run=False)
+        with self.assertRaises(DriverError) as caught:
+            adopt.run(self.ctx, opts)
+        self.assertEqual(caught.exception.code, 1)
+        self.assertIn("configuration repository", str(caught.exception))
+        self.assertEqual(self.remote.calls, [], "the machine was contacted")
+
+    def test_first_use_makes_the_key_then_refuses_it_unpublished(self):
+        self.checkout(CONFIG, pushed=False)
+        (self.profile_dir / "driver-keys" / "testmac.pub").unlink()
+        self.refused()
+
+    def test_a_regenerated_key_is_checked_not_the_old_published_one(self):
+        self.checkout(CONFIG, pushed=True)      # the old key is in the repository; this Mac lost it
+        self.refused()

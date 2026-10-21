@@ -44,14 +44,19 @@ def price_text(type_):
     return f"{price:g} {type_['currency']}/h" if type_.get("currency") else f"{price:g}/h"
 
 
-def require_key_pushed(ctx, verb):
-    """The boot's home step makes root's keys the configuration repository's
-    driver keys (§8.3): one only on this Mac would lock the driver out of the
-    host it makes or adopts, once its public port closed."""
+def pushed_driver_keys(ctx, verb):
+    """The driver keys, once this Mac's is in the configuration repository.
+    The boot's home step makes root's keys the repository's driver keys
+    (§8.3): one only on this Mac would lock the driver out of the host it
+    makes or adopts, once its public port closed. The key is made (and its
+    public half written to the profile) first, so the check reads the key
+    this Mac will use, not a missing file or a lost key's synced one."""
+    keys = ctx.driver_keys()
     if not ctx.key_pushed():
         raise DriverError(FAILED, f"this driver's key (driver-keys/{ctx.machine}.pub in the profile) is not in the "
                                   "configuration repository yet, and a host's boot would replace root's keys "
                                   f"without it: run the configuration sync (~/.claude/sync/sync.sh), then {verb} again")
+    return keys
 
 
 def iso(unix):
@@ -141,8 +146,7 @@ def run(ctx, opts):
         return 0
 
     started = ctx.clock()
-    keys = ctx.driver_keys()
-    require_key_pushed(ctx, "up")
+    keys = pushed_driver_keys(ctx, "up")
     name = names.draw(label, ctx.taken_names(servers), ctx.token_hex)
     tag, short = ctx.creator()
     expires = int(started) + r.lease if r.lifetime == "ttl" else None
