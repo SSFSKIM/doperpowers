@@ -13,6 +13,11 @@
   daemon executes itself again in place when its scripts change, so
   KeepAlive and the throttle meet only a crash. The gateway route's values (a token among them) sit here in
   plain text, in a file only its owner can read (0600): accepted.
+  ProcessType Interactive: without it launchd spawns an agent as a daemon, in
+  a lower scheduling band (base priority 20 against the sessions' 31) that
+  everything it starts inherits, `derive`'s forks of claude among them, and a
+  loaded machine starves that band: forks that start in seconds took minutes
+  and timed out (board #111). Loaded again only by a new bootstrap.
 -->
 <plist version="1.0">
 <dict>
@@ -27,6 +32,7 @@
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>ThrottleInterval</key><integer>60</integer>
+  <key>ProcessType</key><string>Interactive</string>
   <key>EnvironmentVariables</key>
   <dict>
 {{ENV}}

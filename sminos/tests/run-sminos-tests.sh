@@ -188,12 +188,13 @@ PY
 # at its start and stop as the harness would, and the JSON result on stdout.
 # `--session-id` pins the fork's id, as the real harness honours it.
 # STUB_FORK_RESULT is its answer, STUB_FORK_FAIL=1 a failed run,
-# STUB_FORK_CRASH=1 a crash that prints nothing, and STUB_FORK_LIST=1 has it
+# STUB_FORK_CRASH=1 a crash that prints nothing on stdout (STUB_FORK_CRASH_STDERR,
+# what it prints on stderr), and STUB_FORK_LIST=1 has it
 # list the project's members while it runs. STUB_FORK_RENAME=<record>=<name>
 # has the parent's owner rename it (/rename: the record's name, source user)
 # while the fork runs. The prompt it was given is kept in fork-prompt.txt.
 if [ $fork -eq 1 ]; then
-  echo "fork-env:internal=${SMNS_INTERNAL:-} marker=$([ -f "$SMINOS_HOME/internal/$$" ] && echo yes || echo no)" >> "$STUB_STATE/log/calls.log"
+  echo "fork-env:internal=${SMNS_INTERNAL:-} marker=$([ -f "$SMINOS_HOME/internal/$$" ] && echo yes || echo no) nocache=${DISABLE_PROMPT_CACHING:-}" >> "$STUB_STATE/log/calls.log"
   printf '%s' "$prompt" > "$STUB_STATE/log/fork-prompt.txt"
   if [ -n "${STUB_FORK_RENAME:-}" ]; then
     python3 - "${STUB_FORK_RENAME%=*}" "${STUB_FORK_RENAME##*=}" <<'PY'
@@ -215,7 +216,10 @@ PY
   hook() { printf '{"session_id":"%s","transcript_path":"%s","cwd":"%s","hook_event_name":"%s","source":"%s"}' \
     "$fork_uuid" "$f" "$PWD" "$1" "$2" | CLAUDE_PLUGIN_ROOT="$STUB_PLUGIN_ROOT" "$STUB_PLUGIN_ROOT/hooks/smns-record.sh"; }
   hook SessionStart fork
-  [ "${STUB_FORK_CRASH:-0}" = "1" ] && exit 3
+  if [ "${STUB_FORK_CRASH:-0}" = "1" ]; then
+    if [ -n "${STUB_FORK_CRASH_STDERR:-}" ]; then printf '%s\n' "$STUB_FORK_CRASH_STDERR" >&2; fi
+    exit 3
+  fi
   # STUB_FORK_SLEEP: a model call that takes this many seconds.
   [ -n "${STUB_FORK_SLEEP:-}" ] && sleep "$STUB_FORK_SLEEP"
   python3 - "$f" "$answer" <<'PY'
@@ -5409,10 +5413,11 @@ assert_contains "$(cat "$STUB_STATE/fork-list.json")" '"alias": "hd"' "while the
 assert_equals "$(host_count)" "$HOST_BEFORE" "the host stream has no new line"
 assert_equals "$(find "$HOME/.claude/projects" -name '*.jsonl' | wc -l | tr -d ' ')" "$TX_BEFORE" "the fork's transcript is deleted"
 assert_contains "$(grep 'fork-env:' "$STUB_STATE/log/calls.log" | tail -1)" "internal=1 marker=yes" "the fork runs with SMNS_INTERNAL set and its pid marked before it starts"
+assert_contains "$(grep 'fork-env:' "$STUB_STATE/log/calls.log" | tail -1)" "nocache=1" "and is sent uncached: nothing would read the cache it wrote"
 FORK_ARGV="$(grep -- '--fork-session' "$STUB_STATE/log/calls.log" | tail -1)"
-if grep -Eq -- "^-p --resume $HD --fork-session --session-id [0-9a-f-]{36} --tools  --output-format json In one line: what is this session in charge of" <<<"$FORK_ARGV"; then
-  pass "the fork is the headless resume the design names, its id pinned, the prompt last"
-else fail "the fork is the headless resume the design names, its id pinned, the prompt last"; echo "    in: $FORK_ARGV"; fi
+if grep -Eq -- "^-p --resume $HD --fork-session --session-id [0-9a-f-]{36} --safe-mode --no-session-persistence --tools  --output-format json In one line: what is this session in charge of" <<<"$FORK_ARGV"; then
+  pass "the fork is the headless resume the design names, its id pinned, in safe mode and persisting nothing, the prompt last"
+else fail "the fork is the headless resume the design names, its id pinned, in safe mode and persisting nothing, the prompt last"; echo "    in: $FORK_ARGV"; fi
 assert_equals "$(ls "$SMINOS_HOME/internal" 2>/dev/null | wc -l | tr -d ' ')" "0" "and its marker is removed"
 FORK_ID="$(sed -n 's/.*--session-id \([0-9a-f-]*\).*/\1/p' <<<"$FORK_ARGV")"
 assert_file_absent "$HPLOG/testhost.$FORK_ID.jsonl" "and the hook recorded nothing for the fork"
@@ -5483,10 +5488,19 @@ assert_contains "$OUT" "stub: the fork exploded" "printing the tail of its stder
 assert_not_contains "$(cat "$HPLOG/testhost.$HE.jsonl")" "in-charge" "and writing nothing"
 assert_equals "$(find "$HOME/.claude/projects" -name '*.jsonl' | wc -l | tr -d ' ')" "$TX_BEFORE" "its transcript is deleted all the same"
 assert_equals "$(ls "$SMINOS_HOME/internal" 2>/dev/null | wc -l | tr -d ' ')" "0" "and its marker"
+assert_contains "$OUT" "sminos: derive he failed: the fork failed (exit 1): <message>owns the stub tool</message>; nothing recorded" \
+  "the failed line says why: the error text its result reported"
+STUB_FORK_FAIL=1 STUB_FORK_RESULT="API Error: 503 $(printf 'x%.0s' $(seq 1 300))TAIL" run "$SMINOS" derive he
+assert_contains "$OUT" "the fork failed (exit 1): API Error: 503 xxxx" "an error text in the failed line"
+assert_not_contains "$OUT" "TAIL" "cut short: the line stays bounded"
 STUB_FORK_CRASH=1 run "$SMINOS" derive he
 assert_rc 1 "$RC" "a fork that crashes without printing anything exits 1"
+assert_contains "$OUT" "sminos: derive he failed: the fork failed (exit 3); nothing recorded" "saying only how it ended when it said nothing"
 assert_not_contains "$(cat "$HPLOG/testhost.$HE.jsonl")" "in-charge" "writing nothing"
 assert_equals "$(find "$HOME/.claude/projects" -name '*.jsonl' | wc -l | tr -d ' ')" "$TX_BEFORE" "and leaves no transcript: its id was pinned before it started"
+STUB_FORK_CRASH=1 STUB_FORK_CRASH_STDERR=$'Error: the gateway refused\n  at its second line' run "$SMINOS" derive he
+assert_contains "$OUT" "sminos: derive he failed: the fork failed (exit 3): Error: the gateway refused at its second line; nothing recorded" \
+  "with no result to read, the head of its stderr, on one line"
 # A failed fork holds its member out of --all (the daemon's, every five
 # minutes) for an hour; a derive that names it tries at once; a success clears it.
 he_forks() { grep -c -- "--resume $HE --fork-session" "$STUB_STATE/log/calls.log" || true; }
@@ -6729,10 +6743,10 @@ args = d["ProgramArguments"]
 print(d["Label"], args[2:], os.path.realpath(args[1]) == os.path.realpath(sys.argv[3]),
       os.path.realpath(args[0]) == os.path.realpath(sys.argv[4]),
       env["SMINOS_HOME"] == sys.argv[2], env.get("ANTHROPIC_BASE_URL"), "ANTHROPIC_AUTH_TOKEN" in env,
-      bool(env.get("PATH")), d["KeepAlive"], d["RunAtLoad"])
+      bool(env.get("PATH")), d["KeepAlive"], d["RunAtLoad"], d.get("ProcessType"))
 PY_PLIST
-)" "com.doperpowers.sminos-daemon ['daemon', 'run'] True True True http://gateway.test False True True True" \
-  "a well-formed plist: daemon run through this CLI's sminos.py on the Python that ran the install, SMINOS_HOME, PATH, and the gateway route as the environment sets it"
+)" "com.doperpowers.sminos-daemon ['daemon', 'run'] True True True http://gateway.test False True True True Interactive" \
+  "a well-formed plist: daemon run through this CLI's sminos.py on the Python that ran the install, SMINOS_HOME, PATH, the gateway route as the environment sets it, in the sessions' scheduling band"
 assert_contains "$OUT" "on $INSTALL_PY (Python 3." "the install says which Python the service runs on"
 assert_equals "$(mode_of "$PLIST")" "0600" "readable only by its owner: it may carry the gateway's token"
 # A first install, before any verb made the registry: launchd opens daemon.out
