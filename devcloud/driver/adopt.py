@@ -37,9 +37,11 @@ VERIFY_WAIT = 3 * 60
 _USER = re.compile(r"[a-z_][a-z0-9_-]{0,31}\Z")
 _ADDRESS = re.compile(r"[A-Za-z0-9.:\[\]-]{1,253}\Z")
 # The release left nothing of devcloud: no descriptor, no ledger, no unit (the transient release unit
-# included, so it has finished), no firewall table. Run as root at the public address.
+# included, so it has finished), no firewall table. Run as root at the public address. A unit whose
+# file is gone but whose failure systemd still remembers until the next boot (`not-found failed`,
+# the boot unit of an adoption whose boot failed) is no unit.
 RELEASED = ("test ! -e /etc/devcloud/boot.env && test ! -e /var/lib/devcloud/credentials.ledger && "
-            "! systemctl list-units --all --no-legend 'devcloud-*' | grep -q . && "
+            "! systemctl list-units --all --no-legend --plain 'devcloud-*' | grep -v ' not-found ' | grep -q . && "
             "! systemctl list-unit-files --no-legend 'devcloud-*' | grep -q . && "
             "! nft list table inet devcloud >/dev/null 2>&1")
 
