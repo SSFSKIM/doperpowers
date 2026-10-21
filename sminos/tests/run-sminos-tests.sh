@@ -5305,6 +5305,21 @@ HD_FORKS="$(grep -c -- "--resume $HD --fork-session" "$STUB_STATE/log/calls.log"
 run "$SMINOS" derive hd
 assert_contains "$OUT" "hd: not derived — no activity since its last line, " "a transcript unchanged since its line, past the six hours, is not derived again"
 assert_equals "$(grep -c -- "--resume $HD --fork-session" "$STUB_STATE/log/calls.log" || true)" "$HD_FORKS" "(no fork was started for it)"
+# Within one second: a transcript last written at .800 is idle for a line
+# written at .900 of the same second (the line's milliseconds count).
+python3 - "$HPLOG/testhost.$HD.jsonl" "$TD" <<'PY_SAME_SECOND'
+import json, os, sys, time
+whole = int(time.time() - 7 * 3600)
+rows = [json.loads(l) for l in open(sys.argv[1])]
+for e in rows:
+    if e.get("kind") == "in-charge":
+        e["ts"] = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(whole)) + ".900Z"
+open(sys.argv[1], "w").write("".join(json.dumps(e, ensure_ascii=False) + "\n" for e in rows))
+os.utime(sys.argv[2], (whole + 0.8, whole + 0.8))
+PY_SAME_SECOND
+run "$SMINOS" derive hd
+assert_contains "$OUT" "hd: not derived — no activity since its last line, " "a transcript written earlier in the same second as its line is idle too"
+assert_equals "$(grep -c -- "--resume $HD --fork-session" "$STUB_STATE/log/calls.log" || true)" "$HD_FORKS" "(no fork was started for it)"
 tx "$TD" asst f3000001 "one more turn"
 run "$SMINOS" derive hd
 assert_contains "$OUT" "hd: owns the stub tool" "once one more record is written, it is derived again"

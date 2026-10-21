@@ -37,11 +37,13 @@ const ASK = { plugin: 'sminos', key: 'ask' } as const
 
 /** What the namer reaches the engine and the CLI through; the session start makes it from `$`. */
 export type NameIo = {
-  /** The session's pending file; rejects when there is none. */
-  read: () => Promise<string>
-  /** `sminos name-due` for the session, bounded. */
-  due: () => Promise<{ exitCode: number; stdout: string }>
-  /** The engine's `/rename`. */
+  /** The session the process is in now (a /clear or a resume moves it). */
+  session: () => Promise<string>
+  /** That session's pending file; rejects when there is none. */
+  read: (session: string) => Promise<string>
+  /** `sminos name-due` for that session, bounded. */
+  due: (session: string) => Promise<{ exitCode: number; stdout: string }>
+  /** The engine's `/rename`, which acts on the session the process is in when it runs. */
   rename: (name: string) => Promise<unknown>
   /** An ask's dialog is up: the module that raised it takes its answer, not a command run meanwhile. */
   isAskDialogUp: () => Promise<boolean>
@@ -50,6 +52,9 @@ export type NameIo = {
 
 /** The main turn, as the turn hooks below see it: whether one runs, and how many have started. */
 const turn = { isRunning: false, started: 0 }
+
+/** How many sessions ended in this process: a /clear or a resume goes on under another id, with no session.start. */
+const sessions = { ended: 0 }
 
 /** A turn starts; a subagent's run raises its own, with its agentId, and is not the main turn. */
 export function turnStarted(e: { agentId?: string }) {
@@ -65,10 +70,15 @@ export function turnEnded(e: { agentId?: string }) {
   }
 }
 
-/** Forgets the turn (tests, which share this module). */
+export function sessionEnded() {
+  sessions.ended += 1
+}
+
+/** Forgets the turn and the sessions (tests, which share this module). */
 export function resetName() {
   turn.isRunning = false
   turn.started = 0
+  sessions.ended = 0
 }
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error))
@@ -79,7 +89,15 @@ export function createNamer(io: NameIo) {
   let isBusy = false
 
   async function step() {
-    const pending = await io.read().catch(() => undefined)
+    // What the attempt rests on, taken before anything is awaited: no main
+    // turn starts and no session ends from here until the command, or the
+    // answer is stale or meant for another session. Every await below is a
+    // window for either, so the tick judges them all again, synchronously,
+    // right before it renames.
+    const at = { started: turn.started, ended: sessions.ended }
+    const hasMoved = () => turn.isRunning || turn.started !== at.started || sessions.ended !== at.ended
+    const session = await io.session()
+    const pending = await io.read(session).catch(() => undefined)
     if (pending === undefined || pending === handled) {
       return
     }
@@ -90,17 +108,17 @@ export function createNamer(io: NameIo) {
     }
     // One attempt per pending file, whatever comes of it: a CLI that keeps
     // hanging would otherwise cost a check on every tick. A missed rename is
-    // retried when the next derive rewrites the file.
-    const before = { handled, started: turn.started }
+    // retried when the next derive rewrites the file. The exception is an
+    // attempt that something above overtook: the file is left for a later
+    // idle tick (the same text, or, after a /clear, the new session's own).
+    const before = handled
     handled = pending
-    const answer = await io.due().then(
+    const answer = await io.due(session).then(
       (value) => ({ value }),
       (error: unknown) => ({ error }),
     )
-    // A turn started meanwhile, whatever the check answered: the answer may
-    // be stale, and the session is not idle. The next idle tick asks again.
-    if (turn.started !== before.started || turn.isRunning) {
-      handled = before.handled
+    if (hasMoved()) {
+      handled = before
       return
     }
     if ('error' in answer) {
@@ -113,11 +131,12 @@ export function createNamer(io: NameIo) {
       return
     }
     // The person may have opened an ask's dialog while the check ran (a press
-    // starts no turn): its answer is its own. And a turn may have started
-    // while the dialog was read. Either way the next idle tick renames.
-    const isDialogUp = await io.isAskDialogUp()
-    if (isDialogUp || turn.isRunning || turn.started !== before.started) {
-      handled = before.handled
+    // starts no turn), and the session id is read again in case it moved with
+    // no session.end seen. Nothing is awaited between this judgment and the
+    // command, which acts on the session the process is in.
+    const [isDialogUp, now] = await Promise.all([io.isAskDialogUp(), io.session()])
+    if (isDialogUp || hasMoved() || now !== session) {
+      handled = before
       return
     }
     try {
@@ -154,13 +173,10 @@ export async function startNaming($: EngineInterface) {
     return
   }
   const home = await sminosHome($)
-  let session = ''
   const namer = createNamer({
-    read: async () => {
-      session = await $.session.id()
-      return $.fs.read(`${home}/names/${session}.json`)
-    },
-    due: () => $.process.run([`${$.plugin.root}/skills/sminos/scripts/sminos`, 'name-due', '--session', session], { timeoutMs: NAME_DUE_TIMEOUT_MS }),
+    session: () => $.session.id(),
+    read: (session) => $.fs.read(`${home}/names/${session}.json`),
+    due: (session) => $.process.run([`${$.plugin.root}/skills/sminos/scripts/sminos`, 'name-due', '--session', session], { timeoutMs: NAME_DUE_TIMEOUT_MS }),
     rename: (name) => $.command.run({ command: 'rename', args: name }),
     isAskDialogUp: async () => {
       const { value } = await $.state.get(ASK)
@@ -191,5 +207,12 @@ export function registerName(on: On) {
     } finally {
       turnEnded(e)
     }
+  })
+  // Any end: a /clear or a resume goes on under another session id (matched,
+  // as the bridge holds the module's unmatched registration; an id is never
+  // empty).
+  on('session.end', { sessionId: /./ }, (_, e, next) => {
+    sessionEnded()
+    return next(e)
   })
 }

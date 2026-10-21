@@ -4882,8 +4882,11 @@ def derive_refusal(project, m):
     age = ts_age(derived["ts"]) if derived else None
     if age is not None and age < DERIVE_EVERY:
         return "derived %s ago" % short_age(age)
+    # The line's own milliseconds: a transcript last written earlier in the
+    # same second is idle too.
+    then = _ts_epoch(derived["ts"]) if derived else None
     try:
-        if age is not None and os.path.getmtime(path) <= time.time() - age:
+        if age is not None and then is not None and os.path.getmtime(path) <= then:
             return "no activity since its last line, %s ago" % short_age(age)
         n = model_tool_calls(path, DERIVE_MIN_TOOL_CALLS)
     except OSError as e:
