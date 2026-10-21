@@ -2,11 +2,15 @@
 provider executable: exits, timeouts, the environment, the scrub, and which
 executable an account's calls run."""
 import json
+import os
 import shutil
+import signal
+import threading
+import time
 
 import _path  # noqa: F401
 from driver import provider
-from driver.errors import DriverError
+from driver.errors import DriverError, NotOwned, Spent
 
 from driver_fixtures import TOKEN, DriverBase, vm_labels
 
@@ -141,7 +145,138 @@ class UsabilityTest(DriverBase):
         client = self.ctx.client(self.account())
         self.assertEqual(client.executable, provider.SHIPPED_DIR / "hetzner")
 
+    def test_a_missing_working_file_leaves_the_copy_serving(self):
+        (self.profile_dir / "providers" / "fake").unlink()
+        self.add_server("dc-a-0001", vm_labels(expires=1))
+        self.assertEqual([vm["name"] for vm in self.ctx.client(self.account()).list()], ["dc-a-0001"])
+
+    def test_a_change_to_the_copy_after_the_client_was_built_is_exit_7_at_the_next_call(self):
+        client = self.ctx.client(self.account())
+        client.list()
+        calls = len(self.state()["calls"])
+        copy = self.profile_dir / "providers" / ".pass" / "main"
+        copy.write_text(copy.read_text() + "\n# swapped after the check\n")
+        code, message = self.code_of(client.list)
+        self.assertEqual(code, 7)
+        self.assertIn("no longer matches its pass record", message)
+        self.assertEqual(len(self.state()["calls"]), calls, "the changed copy never ran")
+
     def test_usable_skips_and_names_an_unusable_account(self):
         (self.profile_dir / "providers" / ".pass" / "main").unlink()
         self.assertEqual(self.ctx.usable(), [])
         self.assertIn("skipping account main", self.err.getvalue())
+
+
+class GateTest(DriverBase):
+    """Every delete and relabel reads its target again first (the ownership
+    gate): `get` for a server, `images` for an image (I13 has no image get)."""
+
+    def client(self):
+        return self.ctx.client(self.ctx.profile.account("main"))
+
+    def unlabel(self, sid):
+        state = self.state()
+        server = next(s for s in state["servers"] if s["id"] == sid)
+        server["labels"] = {k: v for k, v in server["labels"].items() if k != "devcloud"}
+        self.state_file.write_text(json.dumps(state))
+
+    def test_set_labels_refuses_a_target_that_lost_the_devcloud_label(self):
+        sid = self.add_server("dc-a-0001", vm_labels(expires=1))
+        self.unlabel(sid)
+        with self.assertRaises(NotOwned):
+            self.client().set_labels(sid, vm_labels(expires=2))
+        self.assertNotIn("set-labels", self.ops())
+        self.assertNotIn("devcloud", self.servers()["dc-a-0001"]["labels"])
+
+    def test_set_labels_refuses_a_target_that_is_gone(self):
+        with self.assertRaises(NotOwned):
+            self.client().set_labels("777", vm_labels(expires=2))
+        self.assertNotIn("set-labels", self.ops())
+
+    def test_merge_lays_the_changes_over_the_labels_read_now(self):
+        sid = self.add_server("dc-a-0001", vm_labels(expires=1))
+        state = self.state()
+        state["servers"][0]["labels"]["devcloud-held"] = "1"     # written after this driver's list
+        self.state_file.write_text(json.dumps(state))
+        self.client().set_labels(sid, {"devcloud-expires": "5"}, merge=True)
+        labels = self.servers()["dc-a-0001"]["labels"]
+        self.assertEqual((labels["devcloud-expires"], labels["devcloud-held"]), ("5", "1"))
+
+    def test_delete_refuses_an_unlabeled_target_and_one_its_fence_rejects(self):
+        sid = self.add_server("dc-a-0001", vm_labels(expires=1))
+        with self.assertRaises(NotOwned):
+            self.client().delete(sid, fence=lambda current: "its lease changed")
+        self.unlabel(sid)
+        with self.assertRaises(NotOwned):
+            self.client().delete(sid)
+        self.assertIn("dc-a-0001", self.servers())
+        self.assertNotIn("delete", self.ops())
+        self.assertFalse(self.client().delete("777"), "already gone: nothing to delete")
+
+    def images(self, *images):
+        state = self.state()
+        state["images"] = list(images)
+        self.state_file.write_text(json.dumps(state))
+
+    def test_the_image_fence(self):
+        decided = {"devcloud": "image", "devcloud-recipe": "aaaaaaaaaaaa"}
+        self.images({"id": "i1", "name": "img1", "labels": dict(decided, **{"devcloud-recipe": "bbbbbbbbbbbb"}),
+                     "created": 1})
+        with self.assertRaises(NotOwned):
+            self.client().image_delete("i1", decided)
+        self.assertEqual([i["id"] for i in self.state()["images"]], ["i1"], "relabeled since: kept")
+        self.assertFalse(self.client().image_delete("i9", decided), "no longer listed: nothing to delete")
+        self.images({"id": "i1", "name": "img1", "labels": decided, "created": 1})
+        self.assertTrue(self.client().image_delete("i1", decided))
+        self.assertEqual(self.state()["images"], [])
+        self.assertEqual(self.ops()[-2:], ["images", "image-delete"], "listed again right before the delete")
+
+
+class BudgetTest(DriverBase):
+    """A bounded run's deadline reaches each call's credential reads and
+    timeout, and no call starts once it is spent."""
+
+    def client(self):
+        return self.ctx.client(self.ctx.profile.account("main"))
+
+    def test_no_call_starts_once_the_budget_is_spent(self):
+        with self.ctx.bounded(0):
+            with self.assertRaises(Spent):
+                self.client().list()
+        self.assertEqual(self.state()["calls"], [])
+        self.assertEqual(self.secrets.reads, [], "not even the credential read")
+
+    def test_the_budget_caps_the_timeout_and_the_credential_reads(self):
+        self.behave(hang=["list"])
+        started = time.monotonic()
+        with self.ctx.bounded(1):
+            with self.assertRaises(DriverError) as caught:
+                self.client().list()
+        self.assertLess(time.monotonic() - started, 10, "the 2 min list timeout was not cut to the budget")
+        self.assertIn("timed out", str(caught.exception))
+        self.assertTrue(all(t is not None and t <= 1 for t in self.secrets.timeouts), self.secrets.timeouts)
+        self.behave(hang=[])
+        self.client().list()
+        self.assertIsNone(self.secrets.timeouts[-1], "outside the bounded run nothing is cut")
+
+
+class InterruptTest(DriverBase):
+    def test_an_interrupt_during_a_call_stops_the_providers_group(self):
+        self.behave(hang=["list"])
+        client = self.ctx.client(self.ctx.profile.account("main"))
+        timer = threading.Timer(1.0, os.kill, (os.getpid(), signal.SIGINT))
+        timer.start()
+        self.addCleanup(timer.cancel)
+        with self.assertRaises(KeyboardInterrupt):
+            client.list()
+        pid = self.state()["calls"][-1]["pid"]
+        self.addCleanup(_stop_group, pid)       # the client should have; never leave it running
+        with self.assertRaises(ProcessLookupError):
+            os.killpg(pid, 0)
+
+
+def _stop_group(pgid):
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass

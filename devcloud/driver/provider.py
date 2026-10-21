@@ -15,7 +15,7 @@ import subprocess
 from devcloudlib import redact
 
 from . import labels as label_rules
-from .errors import FAILED, REFUSED, UNUSABLE, USAGE, DriverError
+from .errors import FAILED, REFUSED, UNUSABLE, USAGE, DriverError, NotOwned, Spent
 from .profile import SHIPPED
 
 SHIPPED_DIR = pathlib.Path(__file__).resolve().parent / "providers"
@@ -62,12 +62,13 @@ def working_file(profile_dir, account):
 
 
 def usable_executable(profile_dir, account):
-    """What every call of the account runs (§6.2): the shipped script, or
+    """What every call of the account runs (§6.2), and the sha256 each call
+    checks it against: the shipped script (no hash: it is the plugin's), or
     the profile provider's passing copy once it is registered and its copy's
-    sha256 matches its pass record. Exit 7 otherwise."""
-    working = working_file(profile_dir, account)
+    sha256 matches its pass record. The working file is not read here: a
+    missing or edited one leaves the copy serving. Exit 7 otherwise."""
     if account.shipped:
-        return working
+        return working_file(profile_dir, account), None
     if not account.registered:
         raise not_registered(account)
     copy, record = pass_paths(profile_dir, account.name)
@@ -79,13 +80,23 @@ def usable_executable(profile_dir, account):
         raise DriverError(UNUSABLE, f"provider {account.provider} of account {account.name} has no passing copy "
                                     f"yet (run devcloud vm provider test {account.name})")
     if sha256_file(copy) != recorded:
-        raise DriverError(UNUSABLE, f"account {account.name}'s passing copy no longer matches its pass record "
-                                    f"(run devcloud vm provider test {account.name})")
-    return copy
+        raise DriverError(UNUSABLE, _changed(account))
+    return copy, recorded
+
+
+def _changed(account):
+    return (f"account {account.name}'s passing copy no longer matches its pass record "
+            f"(run devcloud vm provider test {account.name})")
 
 
 class Client:
-    def __init__(self, account, executable, secrets, env=None, seed_path=None, timeouts=None, warn=None):
+    """One account's provider. `sha256`, when given, is checked against the
+    executable before every call; `budget`, when given, answers the seconds a
+    bounded run has left (None outside one), which caps each call's
+    credential reads and timeout, and no call starts once it is spent."""
+
+    def __init__(self, account, executable, secrets, env=None, seed_path=None, timeouts=None, warn=None,
+                 sha256=None, budget=None):
         self.account = account
         self.executable = pathlib.Path(executable)
         self.secrets = secrets
@@ -93,18 +104,27 @@ class Client:
         self.seed_path = seed_path
         self.timeouts = timeouts or {}
         self.warn = warn or (lambda line: None)
+        self.sha256 = sha256
+        self.budget = budget or (lambda: None)
         self._capabilities = None
 
     @property
     def name(self):
         return f"{self.account.provider}/{self.account.name}"
 
-    def environment(self):
+    def _left(self, op):
+        """The bounded run's seconds left; Spent once there are none."""
+        left = self.budget()
+        if left is not None and left <= 0:
+            raise Spent(f"provider {self.name}: {op} not started: the bounded run's time is spent")
+        return left
+
+    def environment(self, op="call"):
         env = {k: self.base_env[k] for k in INHERITED if k in self.base_env}
         env.update(self.account.vars)
         secret_values = []
         for var, secret_id in self.account.env.items():
-            value = self.secrets.access(secret_id)
+            value = self.secrets.access(secret_id, timeout=self._left(op))
             value = value[:-1] if value.endswith("\n") else value
             env[var] = value
             secret_values.append(value)
@@ -116,16 +136,25 @@ class Client:
         payload = {} if payload is None else payload
         if op in ("create", "set-labels", "image-create"):
             label_rules.check(payload["labels"])
-        env, secret_values = self.environment()
+        self._left(op)
+        env, secret_values = self.environment(op)
         timeout = self.timeouts.get(op, LONG if op in LONG_OPS else SHORT)
+        left = self._left(op)
+        if left is not None:
+            timeout = min(timeout, left)
+        if self.sha256 is not None and sha256_file(self.executable) != self.sha256:
+            raise DriverError(UNUSABLE, _changed(self.account))
         proc = subprocess.Popen([str(self.executable), op], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE, env=env, start_new_session=True)
         try:
             out, err = proc.communicate(json.dumps(payload).encode(), timeout=timeout)
         except subprocess.TimeoutExpired:
-            os.killpg(proc.pid, signal.SIGKILL)
-            proc.communicate()
-            raise DriverError(FAILED, f"provider {self.name}: {op} timed out after {timeout} s") from None
+            _stop(proc)
+            raise DriverError(FAILED, f"provider {self.name}: {op} timed out after {timeout:g} s") from None
+        except BaseException:
+            # An interrupt or a SIGTERM: the provider's whole group goes with the driver.
+            _stop(proc)
+            raise
         known = redact.Known(secret_values)
         shown = known.scrub(err.decode(errors="replace")).strip()
         if proc.returncode == 0:
@@ -186,11 +215,38 @@ class Client:
         answer = self.call("get", {"id": str(server_id)})
         return None if answer is None else _vm(self, answer, "get")
 
-    def set_labels(self, server_id, labels):
-        return _vm(self, self.call("set-labels", {"id": str(server_id), "labels": labels}), "set-labels")
+    # --- the ownership gate: every delete and relabel reads its target again first ---
 
-    def delete(self, server_id):
+    def _owned(self, server_id, what):
+        current = self.get(server_id)
+        if current is None:
+            raise NotOwned(f"provider {self.name}: server {server_id} is gone; nothing to {what}")
+        if "devcloud" not in current["labels"]:
+            raise NotOwned(f"{current['name']} lost its devcloud label; not going to {what} it")
+        return current
+
+    def set_labels(self, server_id, labels, merge=False):
+        """`set-labels` after a `get` that still finds the devcloud label;
+        `merge` lays `labels` over the labels read then, else they are the
+        whole set."""
+        current = self._owned(server_id, "relabel")
+        full = {**current["labels"], **labels} if merge else labels
+        return _vm(self, self.call("set-labels", {"id": str(server_id), "labels": full}), "set-labels")
+
+    def delete(self, server_id, fence=None):
+        """`delete` after a `get`: False when the server is already gone;
+        NotOwned unless it still carries the devcloud label and `fence`
+        (current Vm → why not, or None) passes."""
+        current = self.get(server_id)
+        if current is None:
+            return False
+        if "devcloud" not in current["labels"]:
+            raise NotOwned(f"{current['name']} lost its devcloud label; not deleting it")
+        why = fence(current) if fence else None
+        if why:
+            raise NotOwned(f"{current['name']}: {why}; not deleting it")
         self.call("delete", {"id": str(server_id)})
+        return True
 
     def image_create(self, server_id, name, labels):
         return _image(self, self.call("image-create", {"id": str(server_id), "name": name, "labels": labels}))
@@ -201,8 +257,25 @@ class Client:
             raise DriverError(FAILED, f"provider {self.name}: images is not a list")
         return [_image(self, image) for image in answer]
 
-    def image_delete(self, image_id):
+    def image_delete(self, image_id, labels):
+        """The image fence (I13 has no image `get`): `images` again, and the
+        delete only while the id is still listed with the labels the decision
+        used. False when it is already gone."""
+        current = next((i for i in self.images() if i["id"] == str(image_id)), None)
+        if current is None:
+            return False
+        if current["labels"] != labels:
+            raise NotOwned(f"image {current['name']}'s labels changed since it was decided on; not deleting it")
         self.call("image-delete", {"id": str(image_id)})
+        return True
+
+
+def _stop(proc):
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    proc.communicate()
 
 
 VM_KEYS = ("id", "name", "location", "type", "labels", "public_ipv4", "state", "created")

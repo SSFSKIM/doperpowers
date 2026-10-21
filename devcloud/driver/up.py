@@ -101,7 +101,8 @@ def run(ctx, opts):
         except DriverError as error:
             ctx.warn(f"devcloud vm up: the reaper's run before up: {error}")
     r = resolve(ctx, opts)
-    servers = [e.vm for e in ctx.fleet(quiet=True, kinds=None)]
+    # Every usable account's list must answer: one that failed is not zero VMs.
+    servers = [e.vm for e in ctx.fleet(quiet=True, kinds=None, strict=True)]
     v = verdict(ctx, r, servers)
     ctx.say(describe(r))
     ctx.say(f"caps      {v.line}")
@@ -166,7 +167,14 @@ def recount(ctx, entry, r):
     newest unconfirmed throwaway VM above the cap, when it is this one, goes."""
     if r.lifetime != "ttl" or r.confirmed:
         return
-    counted = caps.throwaway([e.vm for e in ctx.fleet(quiet=True)])
+    try:
+        counted = caps.throwaway([e.vm for e in ctx.fleet(quiet=True, strict=True)])
+    except DriverError as error:
+        # A recount that cannot be made cannot show this VM is within the cap.
+        gone = ctx.delete(entry)
+        raise DriverError(FAILED, f"the recount after the create failed: {error}; "
+                                  + (f"deleted {entry.vm['name']}" if gone else
+                                     f"{entry.vm['name']} could not be deleted: down it, or the reaper will")) from None
     cap = ctx.profile.caps.throwaway
     if len(counted) <= cap:
         return
@@ -232,13 +240,26 @@ def wait_boot(ctx, host, address, deadline):
 
 def enroll_with_code(ctx, host, code):
     """§10's stand-in for the desk's key: the code delivered after the boot,
-    then a reconcile whose step 11 enrolls with it."""
-    hostctl.deliver_code(ctx, host.name, host.alias, code)
+    then a reconcile whose step 11 enrolls with it. Enrolled only when that
+    reconcile exited 0 and wrote a services entry of its own: the boot's
+    entry from before it proves nothing about the code."""
+    before = _services(hostctl.progress(ctx, host.name, host.alias))
+    result = hostctl.deliver_code(ctx, host.name, host.alias, code)
+    if result.code != 0:
+        why = ("the connection dropped" if result.code is None or result.code < 0 or result.code == 255
+               else f"devcloud reconcile exited {result.code}")
+        raise DriverError(FAILED, f"the enrollment with the code failed on {host.name} ({why})")
     answer = hostctl.progress(ctx, host.name, host.alias)
-    services = next((s for s in (answer[0] if answer else {}).get("steps", []) if s["name"] == "services"), None)
-    if services is None or services["state"] == "failed":
-        detail = services["detail"] if services else "no answer"
-        raise DriverError(FAILED, f"the enrollment with the code failed on {host.name} ({detail})")
-    if answer and answer[0].get("enroll"):
-        ctx.say(f"enroll    deferred: the desk was undecided; devcloud-enroll finishes it")
+    services = _services(answer)
+    if services is None or (before is not None and services.get("at", "") <= before.get("at", "")):
+        raise DriverError(FAILED, f"the enrollment with the code is unconfirmed on {host.name}: the reconcile wrote "
+                                  "no services entry of its own")
+    if services["state"] == "failed":
+        raise DriverError(FAILED, f"the enrollment with the code failed on {host.name} ({services['detail']})")
+    if answer[0].get("enroll"):
+        ctx.say("enroll    deferred: the desk was undecided; devcloud-enroll finishes it")
     ctx.say(f"enroll    {host.name}: {services['detail'] or services['state']}")
+
+
+def _services(answer):
+    return next((s for s in (answer[0] if answer else {}).get("steps", []) if s["name"] == "services"), None)

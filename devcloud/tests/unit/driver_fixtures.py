@@ -52,9 +52,11 @@ class FakeSecrets:
     def __init__(self, values=None):
         self.values = values if values is not None else {"fake-token-secret": TOKEN}
         self.reads = []
+        self.timeouts = []
 
-    def access(self, secret_id):
+    def access(self, secret_id, timeout=None):
         self.reads.append(secret_id)
+        self.timeouts.append(timeout)
         if secret_id not in self.values:
             from driver.errors import DriverError
             raise DriverError(1, f"Secret Manager has no secret {secret_id}")

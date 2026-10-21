@@ -4,9 +4,11 @@ boot/devcloud → the driver."""
 import io
 import os
 import pathlib
+import signal
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 import _path  # noqa: F401
 from driver import cli
@@ -32,6 +34,21 @@ class CliTest(DriverBase):
         for argv in (["ls"], ["up", "--dry-run"], ["provider", "test", "main"], ["down", "x"]):
             self.assertEqual(self.main(*argv), 6, argv)
         self.assertIn("no seed key", self.err.getvalue())
+
+    def test_a_sigterm_ends_the_command_as_an_interrupt_does(self):
+        previous = signal.getsignal(signal.SIGTERM)
+        self.addCleanup(signal.signal, signal.SIGTERM, previous)
+
+        def terminated(argv):
+            os.kill(os.getpid(), signal.SIGTERM)
+            return 0
+
+        with mock.patch.object(cli, "main", terminated):
+            with self.assertRaises(cli.Terminated):
+                cli.command_line(["ls"])
+        with mock.patch("driver.ops.ls", side_effect=cli.Terminated):
+            self.assertEqual(self.main("ls"), 143)
+        self.assertIn("devcloud vm: terminated", self.err.getvalue())
 
     def test_usage_is_2(self):
         for argv in ([], ["fly"], ["up", "--keep", "--ttl", "3h"], ["up", "--disk", "lots"], ["lease", "x"],

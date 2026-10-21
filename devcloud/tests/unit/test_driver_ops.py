@@ -46,6 +46,19 @@ class LsTest(OpsBase):
         self.assertEqual(data["vms"][0]["name"], "dc-a-0001")
         self.assertEqual(data["vms"][0]["expires"], NOW + HOUR)
 
+    def test_json_stays_json_when_the_reaper_deleted_something(self):
+        self.add_server("dc-a-0001", vm_labels(expires=NOW + HOUR))
+        self.add_server("dc-off-0002", vm_labels(expires=NOW - HOUR), state="off")
+        self.assertEqual(ops.ls(self.ctx, as_json=True), 0)
+        data = json.loads(self.out.getvalue())
+        self.assertEqual([vm["name"] for vm in data["vms"]], ["dc-a-0001"])
+        self.assertIn("reap: deleted dc-off-0002", self.err.getvalue())
+
+    def test_a_failing_list_is_named_and_the_rest_shown(self):
+        self.behave(fail={"list": 1})
+        self.assertEqual(ops.ls(self.ctx), 0)
+        self.assertIn("account main", self.err.getvalue())
+
     def test_a_failing_edit_of_the_working_file_leaves_ls_working(self):
         (self.profile_dir / "providers" / "fake").write_text("#!/bin/sh\nexit 1\n")
         self.add_server("dc-a-0001", vm_labels(expires=NOW + HOUR))
@@ -118,6 +131,45 @@ class LeaseTest(OpsBase):
         state["servers"][0]["labels"]["devcloud-expires"] = str(NOW + 100 * HOUR)
         self.state_file.write_text(json.dumps(state))
         self.assertEqual(ops.lease(self.ctx, "dc-a-0001", "30m", confirmed=False), 0)
+
+    def host_lease(self, unix):
+        """The host's own lease: `lease set` writes it, DEVCLOUD_EXPIRES reads it."""
+        held = {"lease": unix}
+
+        def lease_set(target, command):
+            held["lease"] = int(command.split()[-1])
+            return Result(0, f"{held['lease']}\n", "", False)
+
+        self.remote.on("devcloud lease set", fn=lease_set)
+        self.remote.on("DEVCLOUD_EXPIRES", fn=lambda target, command: Result(0, f"{held['lease']}\n", "", False))
+        return held
+
+    def test_past_the_cap_unconfirmed_is_measured_against_the_hosts_lease_not_the_label(self):
+        # Confirmed earlier to 100 h of life; then `lease 1h` set the host but its label write failed, so the
+        # label still says 100 h while the host says 1 h.
+        state = self.state()
+        state["servers"][0]["labels"]["devcloud-expires"] = str(NOW - 10 * HOUR + 100 * HOUR)
+        self.state_file.write_text(json.dumps(state))
+        held = self.host_lease(NOW - 10 * HOUR + 100 * HOUR)
+        self.behave(fail={"set-labels": 1})
+        self.assertEqual(self.fails(lambda: ops.lease(self.ctx, "dc-a-0001", "1h", confirmed=False))[0], 1)
+        self.assertEqual(held["lease"], NOW + HOUR)
+        self.assertEqual(self.servers()["dc-a-0001"]["labels"]["devcloud-expires"], str(NOW + 90 * HOUR))
+        self.behave(fail={})
+        # 70 h more is 80 h of life: within the stale label, past the host's lease, so it needs --confirmed.
+        code, message = self.fails(lambda: ops.lease(self.ctx, "dc-a-0001", "70h", confirmed=False))
+        self.assertEqual(code, 4)
+        self.assertEqual(held["lease"], NOW + HOUR, "the host untouched")
+        # Shortening the host's own lease past the cap needs no confirmation.
+        held["lease"] = NOW + 85 * HOUR
+        self.assertEqual(ops.lease(self.ctx, "dc-a-0001", "70h", confirmed=False), 0)
+        self.assertEqual(held["lease"], NOW + 70 * HOUR)
+
+    def test_the_label_write_goes_through_the_gate(self):
+        self.remote.on("devcloud lease set", out=f"{NOW + 2 * HOUR}\n")
+        self.behave(drop_on_get="devcloud")
+        self.assertEqual(self.fails(lambda: ops.lease(self.ctx, "dc-a-0001", "2h", confirmed=False))[0], 1)
+        self.assertNotIn("set-labels", self.ops())
 
     def test_a_bad_duration_is_usage(self):
         self.assertEqual(self.fails(lambda: ops.lease(self.ctx, "dc-a-0001", "soon", confirmed=False))[0], 2)

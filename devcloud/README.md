@@ -485,7 +485,9 @@ provisioning key.
 argument after `--` is a shell line as given, several are an argument list,
 each quoted. A host whose departure has started is refused except to root.
 **`lease`** writes the host's lease first (`devcloud lease set`, under its
-lock), then the provider label with the value the host printed. **`down`**
+lock), then the provider label with the value the host printed; past the
+lifetime cap it needs `--confirmed` unless it shortens the lease the host
+itself holds. **`down`**
 refuses unpushed or uncommitted work under the user's `~/Developer/GitHub`
 (exit 5; `--force` proceeds), departs the host (`devcloud depart --force
 --no-poweroff`, `--no-hold` with `--force`) and deletes it after rechecking
@@ -498,11 +500,15 @@ repaired, not acted on; a running host that does not answer gets 6 hours; a
 held departure 24 hours, logged as unshipped loss), unconfirmed throwaway
 VMs above the cap (newest first), builders and `provider test` servers older
 than 2 hours, and images beyond the newest two. It never touches a resource
-without the `devcloud` label and rechecks it, and the lease it decided on,
-with a `get` right before each delete. Each deletion is a line in
-`~/.local/state/devcloud/reap.log`. `up` and `ls` run it bounded first (no
-departures); `reap --install` writes a launchd agent that runs it every 10
-minutes, on the always-on Mac.
+without the `devcloud` label. Every delete and relabel, the reaper's and
+every command's, reads its target again first: a server with a `get` (its
+`devcloud` label, and for the reaper the lease and state it decided on), an
+image with a fresh `images` (still listed, with the labels it was chosen by).
+Each deletion is a line in `~/.local/state/devcloud/reap.log`. `up` and `ls`
+run it bounded first: no departures, 60 seconds in all, its lines on stderr;
+`reap --install` writes a launchd agent that runs it every 10 minutes, on the
+always-on Mac. `up` counts the throwaway cap only from lists that answered:
+an account whose list fails stops the `up` before anything is created.
 
 **Providers** are executables speaking one JSON request on stdin and one JSON
 answer on stdout per operation (`info`, `types`, `create`, `list`, `get`,
@@ -516,8 +522,8 @@ empty configuration). A provider of the person's own lives in the profile's
 <account> --confirmed` records its sha256 in `driver.toml`), and `provider
 test <account>` runs it through the conformance sequence on a real server; a
 pass copies the exact bytes tested to `providers/.pass/<account>` with a
-record of their sha256, and every call runs that copy, so an edit is in use
-only once it has passed.
+record of their sha256, and every call runs that copy, its sha256 checked
+before each call, so an edit is in use only once it has passed.
 
 **Local state** is `~/.local/state/devcloud/`: the driver Mac's SSH key (its
 public half written to the profile's `driver-keys/<machine>.pub`, which the

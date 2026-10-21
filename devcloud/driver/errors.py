@@ -16,3 +16,18 @@ class DriverError(Exception):
     def __init__(self, code, message):
         super().__init__(message)
         self.code = code
+
+
+class NotOwned(DriverError):
+    """The ownership gate refused a delete or a relabel: the target, read
+    again right before, no longer carries what the decision was made on."""
+
+    def __init__(self, message):
+        super().__init__(FAILED, message)
+
+
+class Spent(DriverError):
+    """A bounded run's time is spent: no new provider call starts."""
+
+    def __init__(self, message="the bounded run's time is spent"):
+        super().__init__(FAILED, message)

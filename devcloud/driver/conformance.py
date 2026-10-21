@@ -18,7 +18,7 @@ import shutil
 import tempfile
 
 from . import provider as provider_mod
-from .errors import CAP, FAILED, USAGE, DriverError
+from .errors import CAP, FAILED, USAGE, DriverError, NotOwned
 
 TEST_LABELS = ("devcloud", "devcloud-test")
 
@@ -83,14 +83,19 @@ def _sequence(ctx, client, account, gone_window, running_window, poll):
     run_id = f"pt-{datetime.datetime.fromtimestamp(ctx.clock(), datetime.timezone.utc):%Y%m%d%H%M}-{ctx.token_hex()}"
     labels = {"devcloud": "test", "devcloud-test": run_id}
     made = {"server": None, "image": None, "created": False}   # what exists until the test sees it gone
+    problem = None
     try:
-        _steps(ctx, client, account, labels, made, gone_window, running_window, poll)
-        problem = None
-    except Failed as failure:
-        problem = f"provider test of {account.name} failed at {failure}"
-    except DriverError as error:
-        problem = f"provider test of {account.name} failed at the provider: {error}"
-    leftovers = _clean(ctx, client, made, labels)
+        try:
+            _steps(ctx, client, account, labels, made, gone_window, running_window, poll)
+        except Failed as failure:
+            problem = f"provider test of {account.name} failed at {failure}"
+        except DriverError as error:
+            problem = f"provider test of {account.name} failed at the provider: {error}"
+    finally:
+        # Whatever ended the steps, an interrupt or a SIGTERM included (the
+        # client has already stopped the provider's group), the test's own
+        # server and image go.
+        leftovers = _clean(ctx, client, made, labels)
     if leftovers:
         problem = (f"{problem}; " if problem else "provider test: ") + f"it could not clean up: {', '.join(leftovers)}"
     if problem:
@@ -133,7 +138,7 @@ def _steps(ctx, client, account, labels, made, gone_window, running_window, poll
         found = [i for i in client.images() if i["id"] == image["id"]]
         if not found or found[0]["labels"] != labels:
             raise Failed("images", "the new image is not listed with its labels verbatim")
-        client.image_delete(image["id"])
+        client.image_delete(image["id"], labels)
         if not _wait(ctx, gone_window, poll, lambda: all(i["id"] != image["id"] for i in client.images())):
             raise Failed("images", "the deleted image is still listed")
         made["image"] = None
@@ -150,15 +155,15 @@ def _steps(ctx, client, account, labels, made, gone_window, running_window, poll
 def _clean(ctx, client, made, labels):
     """Deletes what the test made and still exists; returns the leftovers,
     each named on stderr. A create that failed may still have made a server,
-    which carries the run's label, so it is looked for by that label. The
-    recheck is the core's: the devcloud label."""
+    which carries the run's label, so it is looked for by that label. Each
+    delete goes through the client's ownership gate."""
     leftovers = []
     image, server = made["image"], made["server"]
     if image is not None:
         try:
-            client.image_delete(image["id"])
-        except DriverError:
-            leftovers.append(f"leftover image {image['id']}")
+            client.image_delete(image["id"], labels)
+        except DriverError as error:
+            leftovers.append(f"leftover image {image['id']} ({error})")
     candidates = [server["id"]] if server is not None else []
     if server is None and made["created"]:
         try:
@@ -168,11 +173,9 @@ def _clean(ctx, client, made, labels):
             leftovers.append(f"a server labeled devcloud-test={labels['devcloud-test']} may be left")
     for server_id in candidates:
         try:
-            current = client.get(server_id)
-            if current is not None and "devcloud" in current["labels"]:
-                client.delete(server_id)
-            elif current is not None:
-                leftovers.append(f"leftover server {server_id} (it lost its devcloud label; not deleted)")
+            client.delete(server_id)
+        except NotOwned as refusal:
+            leftovers.append(f"leftover server {server_id} ({refusal})")
         except DriverError:
             leftovers.append(f"leftover server {server_id}")
     for line in leftovers:

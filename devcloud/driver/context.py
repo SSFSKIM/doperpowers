@@ -3,6 +3,7 @@ state live (§8), Secret Manager, the providers of every account, SSH to the
 hosts, the tailnet and the desk. Commands take a Context; tests build one
 from stand-ins."""
 
+import contextlib
 import dataclasses
 import json
 import os
@@ -17,7 +18,7 @@ import time
 from . import labels as label_rules
 from . import profile as profile_mod
 from . import provider
-from .errors import FAILED, UNUSABLE, DriverError
+from .errors import FAILED, UNUSABLE, DriverError, NotOwned
 from .gsm import SecretManager
 from .hostctl import Host, alias
 from .ssh import Ssh
@@ -72,7 +73,7 @@ class Entry:
 class Context:
     def __init__(self, paths, env=None, secrets=None, remote=None, clock=time.time, sleep=time.sleep,
                  out=sys.stdout, err=sys.stderr, machine=None, tailnet=None, desk=None, creator=None,
-                 timeouts=None, plugin=PLUGIN_DIR, key_pushed=None, token_hex=None):
+                 timeouts=None, plugin=PLUGIN_DIR, key_pushed=None, token_hex=None, monotonic=time.monotonic):
         self.paths = paths
         self.env = dict(os.environ if env is None else env)
         self.clock = clock
@@ -91,6 +92,8 @@ class Context:
         self.creator = creator or (lambda: session_creator(self.env))
         self.key_pushed = key_pushed or (lambda: key_in_remote(self))
         self.token_hex = token_hex or (lambda: secrets_mod.token_hex(2))
+        self.monotonic = monotonic
+        self._deadline = None
 
     # --- lazily loaded --------------------------------------------------------------
 
@@ -116,6 +119,21 @@ class Context:
             self._remote = Ssh(self.paths, self.machine)
         return self._remote
 
+    @contextlib.contextmanager
+    def bounded(self, seconds):
+        """A run with an overall deadline: every provider call inside it
+        takes its credential reads and its timeout from what is left, and
+        none starts once nothing is."""
+        previous = self._deadline
+        self._deadline = self.monotonic() + seconds
+        try:
+            yield
+        finally:
+            self._deadline = previous
+
+    def remaining(self):
+        return None if self._deadline is None else self._deadline - self.monotonic()
+
     def say(self, line=""):
         print(line, file=self.out, flush=True)
 
@@ -128,9 +146,9 @@ class Context:
         """The account's provider; exit 7 when it is not usable."""
         if executable is None and account.name in self._clients:
             return self._clients[account.name]
-        exe = executable or provider.usable_executable(self.paths.profile, account)
+        exe, sha = (executable, None) if executable else provider.usable_executable(self.paths.profile, account)
         client = provider.Client(account, exe, self.secrets, env=self.env, seed_path=self.paths.seed,
-                                 timeouts=self.timeouts, warn=self.warn)
+                                 timeouts=self.timeouts, warn=self.warn, sha256=sha, budget=self.remaining)
         if executable is None:
             self._clients[account.name] = client
         return client
@@ -155,14 +173,19 @@ class Context:
         return [Entry(account, client, vm) for vm in client.list()
                 if kinds is None or vm["labels"].get("devcloud") in kinds]
 
-    def fleet(self, quiet=False, kinds=("vm",)):
-        """`fleet_of` every usable account; a provider that fails is named
-        and skipped."""
+    def fleet(self, quiet=False, kinds=("vm",), strict=False):
+        """`fleet_of` every usable account. A provider whose list fails is
+        named and skipped, for what only shows the fleet (`ls`, `find`);
+        `strict`, for what counts it against a cap, fails instead: a list
+        that failed must not count as no VMs."""
         entries = []
         for account, client in self.usable(quiet=quiet):
             try:
                 entries += self.fleet_of(account, client, kinds)
             except DriverError as error:
+                if strict:
+                    raise DriverError(FAILED, f"account {account.name}'s VMs could not be listed, so the throwaway "
+                                              f"cap cannot be counted ({error})") from None
                 self.warn(f"devcloud vm: account {account.name}: {error}")
         return entries
 
@@ -199,25 +222,22 @@ class Context:
         return user
 
     def delete(self, entry, decided_expires=None, decided_state=None):
-        """The label recheck, then the delete (§4.3, §6.1): `get` immediately
-        before; refused unless the devcloud label is still there and, when
-        given, the lease label and the state are still what was decided on.
-        Returns whether it deleted."""
-        current = entry.client.get(entry.vm["id"])
-        if current is None:
-            self.remote.forget(entry.host.alias)
-            return True
-        labels = current["labels"]
-        if "devcloud" not in labels:
-            self.warn(f"devcloud vm: {current['name']} lost its devcloud label; not deleting it")
+        """A server's delete through the provider client's ownership gate
+        (§4.3, §6.1): `get` immediately before; refused unless the devcloud
+        label is still there and, when given, the lease label and the state
+        are still what was decided on. Returns whether the server is gone."""
+        def fence(current):
+            labels = current["labels"]
+            if decided_expires is not None and labels.get("devcloud-expires") != decided_expires:
+                return "its lease changed since it was decided on"
+            if decided_state is not None and (current["state"] == "running") != (decided_state == "running"):
+                return "its state changed since it was decided on"
+            return None
+        try:
+            entry.client.delete(entry.vm["id"], fence=fence)
+        except NotOwned as refusal:
+            self.warn(f"devcloud vm: {refusal}")
             return False
-        if decided_expires is not None and labels.get("devcloud-expires") != decided_expires:
-            self.warn(f"devcloud vm: {current['name']}'s lease changed since it was decided on; not deleting it")
-            return False
-        if decided_state is not None and (current["state"] == "running") != (decided_state == "running"):
-            self.warn(f"devcloud vm: {current['name']}'s state changed since it was decided on; not deleting it")
-            return False
-        entry.client.delete(entry.vm["id"])
         self.remote.forget(entry.host.alias)
         return True
 

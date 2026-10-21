@@ -13,6 +13,7 @@ import base64
 import hashlib
 import json
 import os
+import pathlib
 import time
 import urllib.error
 import urllib.parse
@@ -89,9 +90,17 @@ def assertion(seed, now):
 
 # --- Secret Manager -----------------------------------------------------------------
 
+REQUEST_TIMEOUT = 30
+
+
+def _cap(timeout):
+    return REQUEST_TIMEOUT if timeout is None else max(0.1, min(REQUEST_TIMEOUT, timeout))
+
+
 class SecretManager:
     """`access(secret_id)` → the latest version's value (str). The token is
-    taken once per process."""
+    taken once per process. `timeout`, when given, caps each request's
+    (a bounded run's budget)."""
 
     def __init__(self, seed_path, project, clock=time.time):
         self.seed_path = seed_path
@@ -101,7 +110,7 @@ class SecretManager:
 
     def _seed(self):
         try:
-            seed = json.loads(open(self.seed_path).read())
+            seed = json.loads(pathlib.Path(self.seed_path).read_text())
         except FileNotFoundError:
             raise DriverError(NOT_DRIVER, f"no seed key at {self.seed_path}: this machine is not a driver") from None
         except ValueError:
@@ -111,7 +120,7 @@ class SecretManager:
             raise DriverError(FAILED, f"the seed at {self.seed_path} is not a service-account key file")
         return seed
 
-    def token(self):
+    def token(self, timeout=None):
         if self._token is None:
             seed = self._seed()
             try:
@@ -122,9 +131,10 @@ class SecretManager:
             request = urllib.request.Request(seed["token_uri"], data=body,
                                              headers={"Content-Type": "application/x-www-form-urlencoded"})
             try:
-                with urllib.request.urlopen(request, timeout=30) as response:
+                with urllib.request.urlopen(request, timeout=_cap(timeout)) as response:
                     self._token = json.load(response).get("access_token")
             except urllib.error.HTTPError as error:
+                error.close()
                 raise DriverError(FAILED, f"the seed's token exchange was refused (HTTP {error.code})") from None
             except (urllib.error.URLError, OSError, ValueError) as error:
                 raise DriverError(FAILED, f"the seed's token exchange failed ({type(error).__name__})") from None
@@ -132,15 +142,16 @@ class SecretManager:
                 raise DriverError(FAILED, "the seed's token exchange returned no token")
         return self._token
 
-    def access(self, secret_id):
+    def access(self, secret_id, timeout=None):
         endpoint = os.environ.get("DEVCLOUD_SM_ENDPOINT", "https://secretmanager.googleapis.com").rstrip("/")
         url = (f"{endpoint}/v1/projects/{urllib.parse.quote(self.project, safe='')}"
                f"/secrets/{urllib.parse.quote(secret_id, safe='')}/versions/latest:access")
-        request = urllib.request.Request(url, headers={"Authorization": f"Bearer {self.token()}"})
+        request = urllib.request.Request(url, headers={"Authorization": f"Bearer {self.token(timeout)}"})
         try:
-            with urllib.request.urlopen(request, timeout=30) as response:
+            with urllib.request.urlopen(request, timeout=_cap(timeout)) as response:
                 body = json.load(response)
         except urllib.error.HTTPError as error:
+            error.close()
             raise DriverError(FAILED, f"Secret Manager refused {secret_id} (HTTP {error.code})") from None
         except (urllib.error.URLError, OSError, ValueError) as error:
             raise DriverError(FAILED, f"Secret Manager did not answer for {secret_id} ({type(error).__name__})") from None

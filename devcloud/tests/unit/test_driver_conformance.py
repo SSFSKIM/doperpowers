@@ -119,6 +119,19 @@ class FailTest(ConformanceBase):
         self.assertEqual(code, 1)
         self.assertEqual(self.servers(), {})
 
+    def test_an_interrupt_after_create_still_deletes_the_server_and_propagates(self):
+        self.behave(state_word="starting")         # the running wait sleeps, where the interrupt lands
+
+        def interrupted(seconds):
+            raise KeyboardInterrupt
+
+        ctx = self.make_ctx(sleep=interrupted)
+        with self.assertRaises(KeyboardInterrupt):
+            conformance.test(ctx, "main", gone_window=3, running_window=3, poll=1)
+        self.assertEqual(self.servers(), {}, "the finally deleted the server the test made")
+        copy, record = pass_paths(self.profile_dir, "main")
+        self.assertFalse(copy.exists())
+
     def test_a_leftover_is_named_and_exit_1(self):
         self.behave(fail={"set-labels": 1, "delete": 1})
         code, message = self.fails()

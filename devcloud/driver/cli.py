@@ -16,6 +16,7 @@ provider is not usable: not registered, or no passing copy yet."""
 
 import argparse
 import os
+import signal
 import sys
 
 from . import conformance, ops, reaper, up
@@ -23,6 +24,15 @@ from .context import Context, Paths
 from .errors import NOT_DRIVER, USAGE, DriverError
 
 HOST_MARKER = "/etc/devcloud/boot.env"
+
+
+class Terminated(BaseException):
+    """A SIGTERM, raised where the driver is, so its cleanups run (the
+    provider's group stopped, a provider test's server deleted)."""
+
+
+def _terminate(signum, frame):
+    raise Terminated()
 
 
 class _Parser(argparse.ArgumentParser):
@@ -121,3 +131,12 @@ def main(argv, env=None, ctx=None, host_marker=HOST_MARKER, stdin=None):
     except KeyboardInterrupt:
         print("devcloud vm: interrupted", file=err)
         return 130
+    except Terminated:
+        print("devcloud vm: terminated", file=err)
+        return 143
+
+
+def command_line(argv):
+    """`devcloud vm` as a process: a SIGTERM ends it as an interrupt does."""
+    signal.signal(signal.SIGTERM, _terminate)
+    return main(argv)

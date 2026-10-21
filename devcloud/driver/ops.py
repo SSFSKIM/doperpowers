@@ -100,15 +100,18 @@ def lease(ctx, name, text, confirmed):
     vm = entry.vm
     now = int(ctx.clock())
     wanted = now + seconds
-    current = _expires(vm)
-    longer = current is None or wanted > current
     lease_max = ctx.profile.caps.lease_max
-    if longer and not confirmed and wanted - vm["created"] > lease_max:
-        raise DriverError(CAP, f"{name} would live {format_duration(wanted - vm['created'])} from its creation, over "
-                               f"the lifetime cap ({format_duration(lease_max)}): ask the person, then pass --confirmed")
+    if not confirmed and wanted - vm["created"] > lease_max:
+        # Past the lifetime cap only to shorten, and shorter than the host's
+        # own lease, which is the authority: the label can lead it after a
+        # label write that failed.
+        held = hostctl.host_expires(ctx, entry.host)
+        if held is None or wanted > held:
+            raise DriverError(CAP, f"{name} would live {format_duration(wanted - vm['created'])} from its creation, "
+                                   f"over the lifetime cap ({format_duration(lease_max)}): ask the person, then pass "
+                                   "--confirmed")
     printed = hostctl.lease_set(ctx, entry.host, wanted)
-    labels = {**vm["labels"], "devcloud-expires": str(printed), "devcloud-lifetime": "ttl"}
-    entry.client.set_labels(vm["id"], labels)
+    entry.client.set_labels(vm["id"], {"devcloud-expires": str(printed), "devcloud-lifetime": "ttl"}, merge=True)
     ctx.say(f"{name} lease ends {iso(printed)} ({_relative(printed, now)})")
     return 0
 

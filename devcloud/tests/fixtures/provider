@@ -20,7 +20,7 @@ with a `behavior` object a test sets to make it misbehave:
   drop_on_get    get answers without this label key
   fail_after_create  create makes the server, then exits 1
 
-Every call is appended to `calls` ({op, argv, input, env}); `record_env`
+Every call is appended to `calls` ({op, argv, input, env, pid}); `record_env`
 names the variables whose values a call records."""
 import fcntl
 import json
@@ -65,7 +65,8 @@ def handle(state, op, raw):
     except ValueError:
         request = "<not json>"
     state["calls"].append({"op": op, "argv": sys.argv[1:], "input": request,
-                           "env": {k: os.environ.get(k) for k in behavior.get("record_env", [])}})
+                           "env": {k: os.environ.get(k) for k in behavior.get("record_env", [])},
+                           "pid": os.getpid()})
     err = stderr_line(behavior)
     if op in behavior.get("hang", []):
         # Save the call before sleeping: the test reads it after the kill.

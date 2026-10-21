@@ -3,7 +3,9 @@ against the stand-in provider and stand-in hosts — lease fencing, excess,
 leftovers, images, the bounded run of `up` and `ls`, the log, `--install`."""
 import json
 import plistlib
+import time
 import unittest
+from unittest import mock
 
 import _path  # noqa: F401
 from driver import hostctl, reaper
@@ -218,6 +220,60 @@ class RunTest(DriverBase):
         self.assertNotIn("dc-off-0001", self.servers())
         self.assertIn("dc-run-0001", self.servers())
         self.assertEqual(sum(n.startswith("dc-x-") for n in self.servers()), 4)
+
+    def test_the_bounded_run_stops_at_its_deadline_with_a_hanging_provider(self):
+        self.add_server("dc-off-0001", vm_labels(expires=NOW - 20 * MIN), state="off")
+        self.add_server("dc-off-0002", vm_labels(expires=NOW - 20 * MIN), state="off")
+        self.behave(hang=["get"])
+        started = time.monotonic()
+        with mock.patch.object(reaper, "BOUND", 1):
+            self.assertEqual(self.run_reaper(bounded=True), 1)
+        self.assertLess(time.monotonic() - started, 10, "the bound did not cut the hanging call")
+        self.assertEqual(self.ops(), ["list", "get"], "no call started once the budget was spent")
+        self.assertIn("1 s bound", self.err.getvalue())
+        self.assertTrue(all(t is not None and t <= 1 for t in self.secrets.timeouts), self.secrets.timeouts)
+        self.assertEqual(sorted(self.servers()), ["dc-off-0001", "dc-off-0002"])
+
+    def test_the_bounded_runs_lines_go_to_stderr_and_the_scheduled_runs_to_stdout(self):
+        self.add_server("dc-off-0001", vm_labels(expires=NOW - 20 * MIN), state="off")
+        self.run_reaper(bounded=True)
+        self.assertEqual(self.out.getvalue(), "")
+        self.assertIn("reap: deleted dc-off-0001", self.err.getvalue())
+        self.add_server("dc-off-0002", vm_labels(expires=NOW - 20 * MIN), state="off")
+        self.run_reaper()
+        self.assertIn("reap: deleted dc-off-0002", self.out.getvalue())
+
+    def test_an_image_relabeled_after_the_list_is_not_deleted(self):
+        state = self.state()
+        state["images"] = [{"id": f"i{i}", "name": f"img{i}", "labels": {"devcloud": "image"},
+                            "created": NOW - i * HOUR} for i in range(3)]
+        self.state_file.write_text(json.dumps(state))
+        client = self.ctx.client(self.ctx.profile.account("main"))
+        listed = client.images
+
+        def stale_list():
+            # The reaper's list is taken; then the image is relabeled before its delete.
+            answer = listed()
+            client.images = listed
+            state = self.state()
+            state["images"][2]["labels"]["devcloud-recipe"] = "cccccccccccc"
+            self.state_file.write_text(json.dumps(state))
+            return answer
+
+        client.images = stale_list
+        self.run_reaper()
+        self.assertEqual(sorted(i["id"] for i in self.state()["images"]), ["i0", "i1", "i2"])
+        self.assertNotIn("image-delete", self.ops())
+        self.assertIn("labels changed", self.err.getvalue())
+
+    def test_a_label_repair_reads_the_target_first(self):
+        self.add_server("dc-a-0001", vm_labels(expires=NOW - 20 * MIN))
+        self.depart_answers(code=3)
+        self.remote.on("DEVCLOUD_EXPIRES", out=f"{NOW + 5 * HOUR}\n")
+        self.behave(drop_on_get="devcloud")
+        self.run_reaper()
+        self.assertNotIn("set-labels", self.ops())
+        self.assertEqual(self.servers()["dc-a-0001"]["labels"]["devcloud-expires"], str(NOW - 20 * MIN))
 
     def test_an_unusable_account_is_never_run(self):
         (self.profile_dir / "providers" / ".pass" / "main").unlink()

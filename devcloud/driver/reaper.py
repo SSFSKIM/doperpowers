@@ -9,7 +9,9 @@ the devcloud label, rechecks the label (and the lease it decided on) with a
 provider, and never sees an adopted machine, which carries no provider label.
 
 Run at the start of `up` and `ls` it is bounded: it departs no host (that
-takes minutes), so it deletes only what needs no departure."""
+takes minutes), so it deletes only what needs no departure, all of it within
+an overall 60 s (`BOUND`, §4.3), and its lines go to stderr, the command's
+own output being what stdout is for."""
 
 import dataclasses
 import datetime
@@ -20,7 +22,7 @@ import subprocess
 import sys
 
 from . import caps, hostctl
-from .errors import FAILED, DriverError
+from .errors import FAILED, DriverError, NotOwned, Spent
 
 GRACE = 15 * 60                 # past the label's lease before anything is done
 UNREACHABLE_RUNNING = 6 * 3600  # a running host that does not answer is given this long
@@ -30,6 +32,7 @@ KEEP_IMAGES = 2
 DEPART_TIMEOUT = 6 * 60
 LABEL = "com.doperpowers.devcloud-reap"
 INTERVAL = 600
+BOUND = 60                      # the bounded run's whole budget, in seconds
 
 
 @dataclasses.dataclass(frozen=True)
@@ -109,14 +112,20 @@ def _utc(now):
     return datetime.datetime.fromtimestamp(now, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def log(ctx, line):
+def tell(ctx, bounded, line):
+    """A reaper line: the output of `vm reap`, incidental (stderr) inside
+    another command."""
+    (ctx.warn if bounded else ctx.say)(f"reap: {line}")
+
+
+def log(ctx, line, bounded=False):
     ctx.paths.reap_log.parent.mkdir(parents=True, exist_ok=True)
     with open(ctx.paths.reap_log, "a") as f:
         f.write(f"{_utc(ctx.clock())} {line}\n")
-    ctx.say(f"reap: {line}")
+    tell(ctx, bounded, line)
 
 
-def _delete(ctx, entry, reason, departed, decided=True):
+def _delete(ctx, entry, reason, departed, decided=True, bounded=False):
     vm = entry.vm
     if not ctx.delete(entry, decided_expires=vm["labels"].get("devcloud-expires") if decided else None,
                       decided_state=vm["state"] if decided else None):
@@ -125,7 +134,7 @@ def _delete(ctx, entry, reason, departed, decided=True):
     if not departed and vm["labels"].get("devcloud-enroll") == "code":
         line += ("; it was enrolled by a one-time code and did not leave the desk, so it stays in the "
                  "desk's Machines until someone removes it")
-    log(ctx, line)
+    log(ctx, line, bounded)
     return True
 
 
@@ -139,24 +148,39 @@ def _expired(ctx, entry, bounded):
         answer = hostctl.depart(ctx, entry.host, timeout=DEPART_TIMEOUT)
         host_expires = hostctl.host_expires(ctx, entry.host) if answer == hostctl.NOT_OVER else None
         action = decide(vm, now, answer, host_expires)
-        ctx.say(f"reap: {vm['name']}: {answer}")
+        tell(ctx, bounded, f"{vm['name']}: {answer}")
     if action.kind == "delete":
         departed = action.reason == "departed"
-        return _delete(ctx, entry, action.reason, departed)
+        return _delete(ctx, entry, action.reason, departed, bounded=bounded)
     if action.kind == "label":
-        entry.client.set_labels(vm["id"], {**vm["labels"], **action.labels})
-        ctx.say(f"reap: {vm['name']}: {action.reason}")
+        entry.client.set_labels(vm["id"], action.labels, merge=True)
+        tell(ctx, bounded, f"{vm['name']}: {action.reason}")
     return False
 
 
 def run(ctx, bounded=False):
     """One reaper run over every usable account. Returns the exit code: 0,
-    or 1 when an account's provider failed (the others still ran)."""
+    or 1 when an account's provider failed (the others still ran) or a
+    bounded run ran out of time."""
+    if not bounded:
+        return _run(ctx, bounded)
+    with ctx.bounded(BOUND):
+        try:
+            return _run(ctx, bounded)
+        except Spent:
+            ctx.warn(f"devcloud vm: the reaper's run stopped at its {BOUND} s bound; the scheduled reaper "
+                     "finishes it")
+            return 1
+
+
+def _run(ctx, bounded):
     failed = False
     survivors = []
     for account, client in ctx.usable(quiet=bounded):
         try:
             entries = ctx.fleet_of(account, client, kinds=None)
+        except Spent:
+            raise
         except DriverError as error:
             ctx.warn(f"devcloud vm reap: account {account.name}: {error}")
             failed = True
@@ -169,18 +193,19 @@ def run(ctx, bounded=False):
                     if not _expired(ctx, entry, bounded):
                         survivors.append(entry)
                 elif leftovers([entry.vm], now):
-                    _delete(ctx, entry, f"a {kind} server older than 2 h", departed=False, decided=False)
+                    _delete(ctx, entry, f"a {kind} server older than 2 h", departed=False, decided=False,
+                            bounded=bounded)
+            except Spent:
+                raise
             except DriverError as error:
                 ctx.warn(f"devcloud vm reap: {entry.vm['name']}: {error}")
                 failed = True
         try:
             if client.has("images"):
                 for image in surplus_images(client.images(), now):
-                    if image["labels"].get("devcloud") in ("image", "test"):
-                        client.image_delete(image["id"])
-                        log(ctx, f"deleted image {image['name']} ({account.name}, id {image['id']}): beyond "
-                                 f"the newest {KEEP_IMAGES}" if image["labels"]["devcloud"] == "image"
-                            else f"deleted image {image['name']} ({account.name}, id {image['id']}): a test image")
+                    _image_delete(ctx, client, account, image, bounded)
+        except Spent:
+            raise
         except DriverError as error:
             ctx.warn(f"devcloud vm reap: account {account.name} images: {error}")
             failed = True
@@ -195,6 +220,19 @@ def run(ctx, bounded=False):
                 ctx.warn(f"devcloud vm reap: {entry.vm['name']}: {error}")
                 failed = True
     return 1 if failed else 0
+
+
+def _image_delete(ctx, client, account, image, bounded):
+    """One surplus image through the image fence; whether it was deleted."""
+    try:
+        if not client.image_delete(image["id"], image["labels"]):
+            return False
+    except NotOwned as refusal:
+        ctx.warn(f"devcloud vm reap: {refusal}")
+        return False
+    why = f"beyond the newest {KEEP_IMAGES}" if image["labels"]["devcloud"] == "image" else "a test image"
+    log(ctx, f"deleted image {image['name']} ({account.name}, id {image['id']}): {why}", bounded)
+    return True
 
 
 # --- the scheduled job (launchd, on the always-on Mac) ---------------------------------------

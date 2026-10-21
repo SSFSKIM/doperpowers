@@ -50,7 +50,7 @@ if sys.argv[1:2] == ["vm"]:
     except ImportError:
         print("devcloud vm: this copy of devcloud has no driver (a host's); drive from a Mac", file=sys.stderr)
         sys.exit(6)
-    sys.exit(cli.main(sys.argv[2:]))
+    sys.exit(cli.command_line(sys.argv[2:]))
 # The caller's PATH, for a command run-scrubbed runs as the unit gave it.
 CALLER_PATH = os.environ.get("PATH", "")
 # Root runs only system binaries: the user can write to their own PATH entries.
