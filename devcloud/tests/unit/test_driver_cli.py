@@ -52,7 +52,7 @@ class CliTest(DriverBase):
 
     def test_usage_is_2(self):
         for argv in ([], ["fly"], ["up", "--keep", "--ttl", "3h"], ["up", "--disk", "lots"], ["lease", "x"],
-                     ["up", "--enroll-code", "abc"], ["provider", "register"]):
+                     ["up", "--enroll-code", "abc"], ["provider", "register"], ["image"], ["image", "bake"]):
             with self.subTest(argv=argv):
                 self.assertEqual(self.main(*argv), 2)
 
@@ -68,6 +68,14 @@ class CliTest(DriverBase):
         self.main("ssh", "dc-a-0001", "--root")
         self.assertEqual(self.remote.calls[-1]["user"], "root")
         self.assertEqual(self.remote.calls[-1]["command"], "")
+
+    def test_image_ls_and_build_reach_the_images(self):
+        self.assertEqual(self.main("image", "ls"), 0)
+        self.assertIn("ACCOUNT", self.out.getvalue())
+        self.behave(capabilities=["user_data"])
+        self.ctx = self.make_ctx()
+        self.assertEqual(self.main("image", "build", "--account", "main"), 3)
+        self.assertIn("no images capability", self.err.getvalue())
 
     def test_enroll_code_reads_stdin(self):
         self.assertEqual(self.main("up", "--enroll-code", "-", "--dry-run", stdin=b"smns-enroll-v1.x\n"), 0)

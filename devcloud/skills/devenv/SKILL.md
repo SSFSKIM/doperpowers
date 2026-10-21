@@ -32,6 +32,16 @@ person's `devenv` runner reads it on their Macs and on devcloud hosts
 - **`env`** (optional): `KEY=value` lines and `secret:KEY=<Secret Manager id>`
   lines. Values are literal — no `$VAR` expansion; one pair of surrounding
   quotes is dropped. Names starting `DEVENV_` are the runner's.
+- **`host.toml`** (optional), only when the repository needs a different
+  cloud machine than the person's default from `devcloud vm up --project
+  <owner/repo>`: `account` (an account name from the person's
+  `~/.claude/devcloud/driver.toml`), `type`, `location`, `disk_gb`, `spot`,
+  each optional. It chooses among what the person already set up and
+  nothing more: any other key, or an account the profile lacks, makes `up`
+  exit 2 before creating anything, and the person's caps still apply.
+  `devcloud vm up --project <owner/repo> --dry-run` shows what it resolves
+  to; run in a checkout of that repository it reads the working tree's file,
+  so an edit can be tried before it is pushed.
 
 Install from the lockfile without rewriting it (`npm ci`,
 `pnpm install --frozen-lockfile`, `uv sync --frozen`, `bundle install` with a

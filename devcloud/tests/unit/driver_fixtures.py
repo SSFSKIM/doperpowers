@@ -167,7 +167,7 @@ class DriverBase(unittest.TestCase):
                         sleep=self.clock.sleep, out=self.out, err=self.err, machine="testmac",
                         tailnet=lambda: list(self.tailnet_nodes), desk=lambda: list(self.desk_machines),
                         creator=lambda: ("@abcd1234", "abcd1234"), env={"PATH": os.environ["PATH"]},
-                        key_pushed=lambda: True)
+                        key_pushed=lambda: True, host_file=lambda project: (None, "no devenv/host.toml here"))
         defaults.update(kw)
         return context.Context(**defaults)
 

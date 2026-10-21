@@ -3,14 +3,15 @@ compose its descriptor and user-data, create it with its labels, recount,
 deliver the seed, wait for the boot, print what was made.
 
 A failure before the server exists leaves nothing; after it, the VM stays
-with its lease and labels for `down` or the reaper. M3 takes only the slow
-path (no image): M4 adds images."""
+with its lease and labels for `down` or the reaper. A VM starts from its
+account's newest image whose recipe hash is current (§7), else from the
+provider's Ubuntu by the slow path."""
 
 import dataclasses
 import datetime
 import json
 
-from . import caps, compose, hostctl, names, reaper
+from . import caps, compose, hostctl, hostfile, images, names, reaper
 from .errors import CAP, FAILED, REFUSED, USAGE, DriverError
 from .profile import duration, format_duration
 
@@ -47,13 +48,25 @@ def iso(unix):
     return datetime.datetime.fromtimestamp(unix, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%MZ")
 
 
-def resolve(ctx, opts):
-    """Flags, then the profile's defaults (§3 step 1; host.toml joins in M4)."""
+def resolve(ctx, opts, wanted=None):
+    """Flags, then the first project's host.toml (`wanted`), then the
+    profile's defaults (§3 step 1, §9). The file's type, location and spot
+    were chosen for its account (its own, else the default one), so a flag
+    naming another account drops them; its disk stays."""
     profile = ctx.profile
-    account = profile.account(opts.account or profile.default_account)
+    wanted = wanted or hostfile.HostFile(project="", source="")
+    account = profile.account(opts.account or wanted.account or profile.default_account)
+    bound = account.name == (wanted.account or profile.default_account)
+    if not bound and any(v is not None for v in (wanted.type, wanted.location, wanted.spot)):
+        ctx.say(f"host.toml {wanted.project}'s type, location and spot are ignored: they are for account "
+                f"{wanted.account or profile.default_account}, and --account names {account.name}")
+    if not bound:
+        wanted = dataclasses.replace(wanted, type=None, location=None, spot=None)
     client = ctx.client(account)
-    if opts.spot and not client.has("spot"):
-        raise DriverError(REFUSED, f"provider {account.provider} has no spot capability")
+    spot = bool(opts.spot or wanted.spot)
+    if spot and not client.has("spot"):
+        why = "" if opts.spot else f" (devenv/host.toml of {wanted.project} asks for spot)"
+        raise DriverError(REFUSED, f"provider {account.provider} has no spot capability{why}")
     if opts.keep and opts.ttl:
         raise DriverError(USAGE, "--ttl and --keep exclude each other")
     lifetime = "keep" if opts.keep else "ttl"
@@ -65,8 +78,9 @@ def resolve(ctx, opts):
             raise DriverError(USAGE, f"--ttl: {error}") from None
     if opts.disk is not None and opts.disk <= 0:
         raise DriverError(USAGE, "--disk must be a positive number of GB")
-    location = opts.location or account.location
-    type_name = opts.type or account.type
+    disk = opts.disk if opts.disk is not None else wanted.disk_gb
+    location = opts.location or wanted.location or account.location
+    type_name = opts.type or wanted.type or account.type
     offered = {t["type"]: t for t in client.types(location)}
     type_ = offered.get(type_name)
     if type_ is None:
@@ -74,7 +88,7 @@ def resolve(ctx, opts):
     if not type_.get("available"):
         raise DriverError(REFUSED, f"{type_name} is not available in {location} now")
     return Resolved(account=account, client=client, location=location, type=type_, lifetime=lifetime, lease=lease,
-                    disk_gb=opts.disk, spot=bool(opts.spot), confirmed=bool(opts.confirmed))
+                    disk_gb=disk, spot=spot, confirmed=bool(opts.confirmed))
 
 
 def verdict(ctx, r, servers):
@@ -93,14 +107,19 @@ def describe(r):
 
 
 def run(ctx, opts):
+    begun = ctx.clock()
     label = names.check_label(opts.label or "vm")
     code = opts.enroll_code
+    # A project's file is checked before anything runs: a bad one is exit 2 with nothing done.
+    wanted = hostfile.governing(ctx, list(opts.project or []))
+    if wanted is not None:
+        ctx.say(f"host.toml {wanted.project}'s, from {wanted.source}")
     if not opts.dry_run:
         try:
             reaper.run(ctx, bounded=True)
         except DriverError as error:
             ctx.warn(f"devcloud vm up: the reaper's run before up: {error}")
-    r = resolve(ctx, opts)
+    r = resolve(ctx, opts, wanted)
     # Every usable account's list must answer: one that failed is not zero VMs.
     servers = [e.vm for e in ctx.fleet(quiet=True, kinds=None, strict=True)]
     v = verdict(ctx, r, servers)
@@ -124,27 +143,31 @@ def run(ctx, opts):
     desc = compose.descriptor(name=name, profile=ctx.profile, projects=list(opts.project or []), expires=expires,
                               creator=tag, spot=r.spot, seed="gce-metadata" if metadata_seed else "file")
     enroll = "code" if code else ("key" if ctx.profile.desk_secret else None)
+    recipe = compose.recipe_hash(ctx.plugin)
     labels = compose.labels(kind="vm", lifetime=r.lifetime, expires=expires, by=ctx.machine, creator=short,
-                            recipe=compose.recipe_hash(ctx.plugin), confirmed=r.confirmed, enroll=enroll,
+                            recipe=recipe, confirmed=r.confirmed, enroll=enroll,
                             test_run=ctx.env.get("DEVCLOUD_TEST_RUN"))
+    image = images.current(r.client.images(), recipe) if r.client.has("images") else None
     user_data = compose.user_data(desc, keys) if r.client.has("user_data") else None
-    vm = r.client.create({"name": name, "type": r.type["type"], "location": r.location, "image": None,
-                          "labels": labels, "ssh_public_keys": keys, "user_data": user_data,
-                          "disk_gb": r.disk_gb, "spot": r.spot})
-    ctx.say(f"created   {name} (id {vm['id']}) from base, slow path")
+    vm = r.client.create({"name": name, "type": r.type["type"], "location": r.location,
+                          "image": image["id"] if image else None, "labels": labels, "ssh_public_keys": keys,
+                          "user_data": user_data, "disk_gb": r.disk_gb, "spot": r.spot})
+    made_from = f"{image['name']} (id {image['id']})" if image else "built from base, slow path"
+    ctx.say(f"created   {name} (id {vm['id']}) from " + (f"image {made_from}" if image else "base, slow path"))
     from .context import Entry
     entry = Entry(r.account, r.client, vm)
     recount(ctx, entry, r)
 
     host = entry.host
     if not metadata_seed:
-        address = host.public or _public(ctx, entry)
+        address = host.public or hostctl.public_address(ctx, entry)
         hostctl.wait_ssh(ctx, address, host.alias, ctx.clock() + SSH_WAIT)
         if user_data is None:
             _stage_over_ssh(ctx, address, host.alias, desc)
         hostctl.wait_cloud_init(ctx, address, host.alias)
-        ctx.say(f"setup     {name}: setup.sh from the plugin's recipe")
-        hostctl.install_recipe(ctx, address, host.alias, ctx.profile.build)
+        if image is None:
+            ctx.say(f"setup     {name}: setup.sh from the plugin's recipe")
+            hostctl.install_recipe(ctx, address, host.alias, ctx.profile.build)
         hostctl.deliver_seed(ctx, address, host.alias)
         hostctl.start_boot(ctx, address, host.alias)
     else:
@@ -152,13 +175,13 @@ def run(ctx, opts):
     wait_boot(ctx, host, address, started + BOOT_WAIT)
     if code:
         enroll_with_code(ctx, host, code)
-    elapsed = int(ctx.clock() - started)
+    elapsed = int(ctx.clock() - begun)
     ctx.say(f"{name}  ready in {elapsed // 60}m{elapsed % 60:02d}s")
     ctx.say(f"  provider  {r.client.name}  location {r.location}  type {r.type['type']}")
     ctx.say(f"  tailnet   {name}")
     ctx.say(f"  lease     " + (f"ends {iso(expires)} (in {format_duration(r.lease)})" if expires else "none (keep)"))
     ctx.say(f"  price     {r.price}")
-    ctx.say("  image     built from base, slow path")
+    ctx.say(f"  image     {made_from}")
     return 0
 
 
@@ -185,15 +208,6 @@ def recount(ctx, entry, r):
     raise DriverError(CAP, f"over the throwaway cap ({len(counted)} alive after the create, cap {cap}: another "
                            f"driver created one meanwhile); deleted {entry.vm['name']}: ask the person, then pass "
                            "--confirmed")
-
-
-def _public(ctx, entry):
-    for _ in range(30):
-        vm = entry.client.get(entry.vm["id"])
-        if vm and vm.get("public_ipv4"):
-            return vm["public_ipv4"]
-        ctx.sleep(5)
-    raise DriverError(FAILED, f"{entry.vm['name']} has no public IPv4 for the first contact")
 
 
 def _stage_over_ssh(ctx, address, key_alias, desc):

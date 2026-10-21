@@ -39,6 +39,17 @@ def alias(account, server_id):
 
 # --- first contact (the public address) ---------------------------------------
 
+def public_address(ctx, entry):
+    """The server's public IPv4, which a provider may report only some
+    seconds after the create."""
+    for _ in range(30):
+        vm = entry.client.get(entry.vm["id"])
+        if vm and vm.get("public_ipv4"):
+            return vm["public_ipv4"]
+        ctx.sleep(5)
+    raise DriverError(FAILED, f"{entry.vm['name']} has no public IPv4 for the first contact")
+
+
 def wait_ssh(ctx, address, key_alias, deadline):
     while True:
         if ctx.remote.run(address, key_alias, "true", timeout=30).code == 0:

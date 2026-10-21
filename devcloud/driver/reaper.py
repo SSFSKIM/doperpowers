@@ -8,6 +8,10 @@ the devcloud label, rechecks the label (and the lease it decided on) with a
 `get` immediately before every delete, never runs an unusable account's
 provider, and never sees an adopted machine, which carries no provider label.
 
+A scheduled (unbounded) run also builds an image for each account that lacks
+a current one (§7), at most once a day per account and never while a builder
+of the account is alive.
+
 Run at the start of `up` and `ls` it is bounded: it departs no host (that
 takes minutes), so it deletes only what needs no departure, all of it within
 an overall 60 s (`BOUND`, §4.3), and its lines go to stderr, the command's
@@ -21,7 +25,7 @@ import plistlib
 import subprocess
 import sys
 
-from . import caps, hostctl
+from . import caps, compose, hostctl, images as images_mod
 from .errors import FAILED, DriverError, NotOwned, Spent
 
 GRACE = 15 * 60                 # past the label's lease before anything is done
@@ -176,6 +180,7 @@ def run(ctx, bounded=False):
 def _run(ctx, bounded):
     failed = False
     survivors = []
+    bakeable = []       # (account, client, its images, its live builders), for the daily build
     for account, client in ctx.usable(quiet=bounded):
         try:
             entries = ctx.fleet_of(account, client, kinds=None)
@@ -186,6 +191,7 @@ def _run(ctx, bounded):
             failed = True
             continue
         now = ctx.clock()
+        builders = []
         for entry in entries:
             kind = entry.vm["labels"].get("devcloud")
             try:
@@ -193,8 +199,11 @@ def _run(ctx, bounded):
                     if not _expired(ctx, entry, bounded):
                         survivors.append(entry)
                 elif leftovers([entry.vm], now):
-                    _delete(ctx, entry, f"a {kind} server older than 2 h", departed=False, decided=False,
-                            bounded=bounded)
+                    if not _delete(ctx, entry, f"a {kind} server older than 2 h", departed=False, decided=False,
+                                   bounded=bounded) and kind == "builder":
+                        builders.append(entry.vm)
+                elif kind == "builder":
+                    builders.append(entry.vm)
             except Spent:
                 raise
             except DriverError as error:
@@ -202,8 +211,10 @@ def _run(ctx, bounded):
                 failed = True
         try:
             if client.has("images"):
-                for image in surplus_images(client.images(), now):
+                listed = client.images()
+                for image in surplus_images(listed, now):
                     _image_delete(ctx, client, account, image, bounded)
+                bakeable.append((account, client, listed, builders))
         except Spent:
             raise
         except DriverError as error:
@@ -219,7 +230,27 @@ def _run(ctx, bounded):
             except DriverError as error:
                 ctx.warn(f"devcloud vm reap: {entry.vm['name']}: {error}")
                 failed = True
+        for account, client, listed, builders in bakeable:
+            failed |= not _daily_build(ctx, account, client, listed, builders)
     return 1 if failed else 0
+
+
+def _daily_build(ctx, account, client, listed, builders):
+    """§7: an image for an account that lacks a current one, at most once a
+    day; the attempt is recorded before it starts. False when it failed."""
+    now = ctx.clock()
+    recipe = compose.recipe_hash(ctx.plugin)
+    if not images_mod.needs_build(listed, builders, recipe, images_mod.last_build(ctx, account.name), now):
+        return True
+    images_mod.record_build(ctx, account.name, now)
+    tell(ctx, False, f"account {account.name} has no image of recipe {recipe}: building one")
+    try:
+        made = images_mod.build(ctx, account, client)
+    except DriverError as error:
+        log(ctx, f"image build for account {account.name} failed: {error}")
+        return False
+    log(ctx, f"built image {made['name']} ({account.name}, id {made['id']}, recipe {recipe})")
+    return True
 
 
 def _image_delete(ctx, client, account, image, bounded):

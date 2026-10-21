@@ -15,6 +15,7 @@ import subprocess
 import sys
 import time
 
+from . import hostfile
 from . import labels as label_rules
 from . import profile as profile_mod
 from . import provider
@@ -73,7 +74,8 @@ class Entry:
 class Context:
     def __init__(self, paths, env=None, secrets=None, remote=None, clock=time.time, sleep=time.sleep,
                  out=sys.stdout, err=sys.stderr, machine=None, tailnet=None, desk=None, creator=None,
-                 timeouts=None, plugin=PLUGIN_DIR, key_pushed=None, token_hex=None, monotonic=time.monotonic):
+                 timeouts=None, plugin=PLUGIN_DIR, key_pushed=None, token_hex=None, monotonic=time.monotonic,
+                 host_file=None):
         self.paths = paths
         self.env = dict(os.environ if env is None else env)
         self.clock = clock
@@ -93,6 +95,8 @@ class Context:
         self.key_pushed = key_pushed or (lambda: key_in_remote(self))
         self.token_hex = token_hex or (lambda: secrets_mod.token_hex(2))
         self.monotonic = monotonic
+        # A project's devenv/host.toml: (text or None, where it was read).
+        self.host_file = host_file or (lambda project: hostfile.read(project, os.getcwd(), self.env))
         self._deadline = None
 
     # --- lazily loaded --------------------------------------------------------------

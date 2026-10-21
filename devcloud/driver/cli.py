@@ -6,6 +6,7 @@
   devcloud vm ssh <name> [--root] [-- command...]
   devcloud vm lease <name> <duration> [--confirmed]
   devcloud vm down <name> [--force]
+  devcloud vm image build [--account A] | image ls
   devcloud vm reap [--install]
   devcloud vm provider register <account> --confirmed | provider test <account>
 
@@ -19,7 +20,7 @@ import os
 import signal
 import sys
 
-from . import conformance, ops, reaper, up
+from . import conformance, images, ops, reaper, up
 from .context import Context, Paths
 from .errors import NOT_DRIVER, USAGE, DriverError
 
@@ -70,6 +71,11 @@ def parser():
     p = sub.add_parser("down", help="depart and delete a host")
     p.add_argument("name")
     p.add_argument("--force", action="store_true")
+    p = sub.add_parser("image", help="build or list an account's images")
+    isub = p.add_subparsers(dest="image_action", required=True, parser_class=_Parser)
+    q = isub.add_parser("build")
+    q.add_argument("--account")
+    isub.add_parser("ls")
     p = sub.add_parser("reap", help="delete what outlived its lease, purpose or retention")
     p.add_argument("--install", action="store_true")
     p = sub.add_parser("provider", help="register or test an account's provider")
@@ -98,6 +104,8 @@ def _dispatch(ctx, args, command, stdin):
         return ops.lease(ctx, args.name, args.duration, confirmed=args.confirmed)
     if args.command == "down":
         return ops.down(ctx, args.name, force=args.force)
+    if args.command == "image":
+        return images.build_command(ctx, args.account) if args.image_action == "build" else images.ls(ctx)
     if args.command == "reap":
         return reaper.install(ctx) if args.install else reaper.run(ctx)
     if args.action == "register":

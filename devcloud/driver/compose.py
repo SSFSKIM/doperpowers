@@ -60,15 +60,16 @@ def _file(path, content, append=False):
 
 def user_data(staged_descriptor, keys):
     """cloud-init that authorizes the driver keys for root and stages the
-    descriptor (§3 step 4). Each file's content is base64, so no value needs
-    YAML quoting. The rest — setup.sh, the seed, boot.env, the boot's start
-    — is the driver's over SSH where a seed is delivered."""
+    descriptor (§3 step 4); with no descriptor (an image's builder, §7) only
+    the keys. Each file's content is base64, so no value needs YAML quoting.
+    The rest — setup.sh, the seed, boot.env, the boot's start — is the
+    driver's over SSH where a seed is delivered."""
     authorized = "".join(key.strip() + "\n" for key in keys)
     return ("#cloud-config\n"
             "disable_root: false\n"
             "write_files:\n"
             + _file("/root/.ssh/authorized_keys", authorized, append=True)
-            + _file(STAGE, staged_descriptor))
+            + (_file(STAGE, staged_descriptor) if staged_descriptor is not None else ""))
 
 
 def labels(kind, lifetime, expires, by, creator, recipe, confirmed, enroll, test_run):

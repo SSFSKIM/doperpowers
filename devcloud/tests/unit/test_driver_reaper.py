@@ -8,7 +8,7 @@ import unittest
 from unittest import mock
 
 import _path  # noqa: F401
-from driver import hostctl, reaper
+from driver import hostctl, images, reaper
 
 from driver_fixtures import NOW, READY, DriverBase, vm_labels
 
@@ -95,6 +95,11 @@ class DecisionTest(unittest.TestCase):
 
 
 class RunTest(DriverBase):
+    def setUp(self):
+        super().setUp()
+        # Its daily image build is tried and tested in test_driver_images; here it has just been tried.
+        images.record_build(self.ctx, "main", NOW)
+
     def run_reaper(self, **kw):
         return reaper.run(self.ctx, **kw)
 

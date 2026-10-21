@@ -284,6 +284,64 @@ class CreateTest(UpBase):
         self.assertIn("failed", message)
 
 
+class ImageTest(UpBase):
+    """§3 step 5, §7: the newest image whose recipe hash is current, else the
+    slow path; a provider without images always takes the slow path."""
+
+    def images(self, *entries):
+        state = self.state()
+        state["images"] = [{"id": iid, "name": f"img-{iid}", "labels": {"devcloud": kind, "devcloud-recipe": recipe},
+                            "created": created} for iid, recipe, created, kind in entries]
+        self.state_file.write_text(json.dumps(state))
+
+    def create(self):
+        return [c for c in self.state()["calls"] if c["op"] == "create"][0]["input"]
+
+    def test_the_newest_current_image_is_used_and_setup_is_skipped(self):
+        recipe = compose.recipe_hash(_path.DEVCLOUD)
+        self.images(("old", recipe, NOW - 3 * HOUR, "image"), ("new", recipe, NOW - 2 * HOUR, "image"),
+                    ("stale", "aaaaaaaaaaaa", NOW - HOUR, "image"), ("probe", recipe, NOW, "test"))
+        self.assertEqual(self.up(), 0)
+        self.assertEqual(self.create()["image"], "new")
+        commands = self.remote.commands()
+        self.assertFalse(any("setup.sh" in c or "tar -x" in c for c in commands), commands)
+        def at(needle):
+            return next(i for i, c in enumerate(commands) if needle in c)
+        order = [at("cloud-init status --wait"), at("devcloud ledger add /etc/devcloud/seed/seed.json"),
+                 at("cat > /etc/devcloud/seed/seed.json.tmp"), at("install -m 0600"),
+                 at("systemctl start --no-block devcloud-boot.service")]
+        self.assertEqual(order, sorted(order), commands)
+        out = self.out.getvalue()
+        self.assertIn("from image img-new", out)
+        self.assertIn("image     img-new", out)
+        self.assertNotIn("slow path", out)
+
+    def test_no_current_image_is_the_slow_path(self):
+        self.images(("stale", "aaaaaaaaaaaa", NOW - HOUR, "image"))
+        self.assertEqual(self.up(), 0)
+        self.assertIsNone(self.create()["image"])
+        self.assertTrue(self.remote.commands("image/setup.sh"))
+        self.assertIn("built from base, slow path", self.out.getvalue())
+
+    def test_a_provider_without_images_always_takes_the_slow_path(self):
+        self.behave(capabilities=["user_data"])
+        self.images(("new", compose.recipe_hash(_path.DEVCLOUD), NOW, "image"))
+        self.assertEqual(self.up(), 0)
+        self.assertNotIn("images", self.ops())
+        self.assertIsNone(self.create()["image"])
+        self.assertTrue(self.remote.commands("image/setup.sh"))
+
+    def test_ready_counts_from_the_start_of_the_command(self):
+        def slow_reaper(ctx, bounded=False):
+            self.clock.now += 50
+            return 0
+        from unittest import mock
+        with mock.patch("driver.reaper.run", slow_reaper):
+            self.assertEqual(self.up(), 0)
+        ready = re.search(r"ready in (\d+)m(\d+)s", self.out.getvalue())
+        self.assertGreaterEqual(int(ready.group(1)) * 60 + int(ready.group(2)), 50)
+
+
 class CountTest(UpBase):
     def test_a_list_that_fails_counts_as_a_failure_not_as_no_vms(self):
         for i in range(3):

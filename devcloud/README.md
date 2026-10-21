@@ -469,17 +469,35 @@ each cap's verdict and the hourly price), names the VM `dc-<label>-<4 hex>`
 (no live server, tailnet node or desk machine of that name), composes the
 boot descriptor (ids, never values) and user-data that stages it at
 `/var/lib/devcloud-stage/boot.env` and authorizes every driver key for root,
-and creates the server with its labels in the create call itself. It counts
-again (two drivers racing past the cap: the newest goes), then, at the
-public address, streams the plugin's `image/` and `boot/` and runs
-`setup.sh`, delivers the seed (its path in the host's credential ledger
+and creates the server with its labels in the create call itself, from the
+account's newest image whose recipe hash (`image/` and `boot/`, hashed) is
+current, else from the provider's Ubuntu. It counts again (two drivers
+racing past the cap: the newest goes), then, at the public address, on the
+slow path streams the plugin's `image/` and `boot/` and runs `setup.sh`,
+delivers the seed (its path in the host's credential ledger
 first, the key on ssh's stdin), installs `/etc/devcloud/boot.env` and starts
 the boot, and waits for every step, over the tailnet once the tailnet attach
 step is `ok` (the boot closes the public port right after it). A failed step
 prints `devcloud status` and exits 1, keeping the VM for inspection.
 `--enroll-code -` reads a one-time desk code from stdin and, after the boot,
 writes it to the host and reconciles, for when the profile has no
-provisioning key.
+provisioning key. With `--project`, the first project's `devenv/host.toml`
+(`account`, `type`, `location`, `disk_gb`, `spot`; read from the session's
+checkout when it is that repository, else from GitHub with `gh api`) sits
+between the flags and the profile's defaults; an unknown key or an account
+the profile lacks is exit 2 before anything runs.
+
+**Images.** `image build [--account A]` creates a builder (the smallest type
+with the provider's least disk, labeled `devcloud=builder`, given the driver
+keys and nothing else), runs `setup.sh`, checks that it holds no descriptor,
+seed, credential file the guard knows or sminos enrollment
+(`driver/bake_check.py`), resets cloud-init, the machine id, the SSH host
+keys and the tailnet state, powers it off and records the image
+(`devcloud=image`, the recipe hash), then deletes the builder. A bake that
+fails labels its builder `devcloud-bake=failed-<step>` and deletes it.
+`image ls` lists them. The scheduled reaper builds an image for an account
+that lacks a current one, at most once a day per account and never while a
+builder of the account is alive.
 
 **`ssh`** reaches the host's user over the tailnet (`--root` for root); one
 argument after `--` is a shell line as given, several are an argument list,
@@ -529,7 +547,8 @@ before each call, so an edit is in use only once it has passed.
 **Local state** is `~/.local/state/devcloud/`: the driver Mac's SSH key (its
 public half written to the profile's `driver-keys/<machine>.pub`, which the
 configuration sync pushes and every host authorizes), a `known_hosts` keyed
-by the server rather than its address, and the reap log.
+by the server rather than its address, the reap log, and when the reaper
+last tried each account's image build (`image-builds.json`).
 
 ## Developing
 
