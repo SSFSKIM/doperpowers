@@ -71,6 +71,20 @@ plugin_names() {
   jq -r '.plugins[].name' "$CONFIG"
 }
 
+# Succeeds when version $1 is above $2, comparing X.Y.Z numerically (a
+# suffix such as -rc1 is ignored).
+version_gt() {
+  local -a a b
+  local i
+  IFS=. read -r -a a <<<"${1%%[!0-9.]*}"
+  IFS=. read -r -a b <<<"${2%%[!0-9.]*}"
+  for i in 0 1 2; do
+    ((10#${a[i]:-0} > 10#${b[i]:-0})) && return 0
+    ((10#${a[i]:-0} < 10#${b[i]:-0})) && return 1
+  done
+  return 1
+}
+
 # Fail unless the plugin is declared.
 require_plugin() {
   if ! plugin_names | grep -qxF "$1"; then
@@ -232,10 +246,20 @@ cmd_bump() {
 
   preflight_manifests "$plugin"
 
+  # The marketplace updates by version number alone: a number at or below one
+  # already released never installs, and main may have moved since the pull.
+  local path field fullpath old_ver
+  while IFS=$'\t' read -r path field; do
+    old_ver=$(read_json_field "$REPO_ROOT/$path" "$field")
+    if ! version_gt "$new_version" "$old_ver"; then
+      echo "error: $new_version is not above $old_ver in $path; a release under a number already used never installs — bump past the current version" >&2
+      exit 1
+    fi
+  done < <(declared_files "$plugin")
+
   echo "Bumping $plugin's declared files to $new_version..."
   echo ""
 
-  local path field fullpath old_ver
   while IFS=$'\t' read -r path field; do
     fullpath="$REPO_ROOT/$path"
     old_ver=$(read_json_field "$fullpath" "$field")

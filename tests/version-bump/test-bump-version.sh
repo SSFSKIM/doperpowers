@@ -4,7 +4,8 @@
 # one plugin together, never another plugin's, and a declared manifest that
 # is missing or unreadable aborts the bump before anything is written (no
 # partial bumps). A marketplace entry is addressed by the plugin's name, so
-# reordering the marketplace never moves the wrong version.
+# reordering the marketplace never moves the wrong version. A version not
+# above the current one is refused.
 #
 # BUMP_SCRIPT overrides the script under test (used to verify the test
 # fails against a pre-preflight version of the script).
@@ -122,6 +123,31 @@ if /bin/bash "$happy_repo/scripts/bump-version.sh" --plugin nope 9.9.9 >"$TEST_R
 fi
 cmp -s "$TEST_ROOT/market.before" "$happy_repo/.claude-plugin/marketplace.json" \
   || fail "an unknown plugin's bump changed the marketplace"
+
+# A version not above the current one is refused, nothing written: the
+# marketplace updates by number alone, so a lower or equal number never
+# installs. Compared numerically (2.3.10 is above 2.3.4).
+for stale in 2.3.3 2.3.4 1.9.99; do
+  if /bin/bash "$happy_repo/scripts/bump-version.sh" "$stale" >"$TEST_ROOT/stale.out" 2>&1; then
+    fail "bump accepted $stale over 2.3.4"
+  fi
+  [[ "$(jq -r '.version' "$happy_repo/package.json")" == "2.3.4" && "$(market_version "$happy_repo" fixture)" == "2.3.4" ]] \
+    || fail "a refused bump to $stale changed a manifest"
+done
+/bin/bash "$happy_repo/scripts/bump-version.sh" 2.3.10 >"$TEST_ROOT/numeric.out" \
+  || fail "bump refused 2.3.10 over 2.3.4"
+[[ "$(jq -r '.version' "$happy_repo/package.json")" == "2.3.10" ]] \
+  || fail "2.3.10 was not written"
+
+# Drift: the bump must be above the highest declared version, not just the
+# first file's.
+drift_repo="$TEST_ROOT/drift"
+make_fixture "$drift_repo" '{ "name": "fixture-plugin", "version": "1.5.0" }'
+if /bin/bash "$drift_repo/scripts/bump-version.sh" 1.3.0 >"$TEST_ROOT/drift.out" 2>&1; then
+  fail "bump accepted 1.3.0 under a manifest at 1.5.0"
+fi
+[[ "$(jq -r '.version' "$drift_repo/package.json")" == "1.2.3" ]] \
+  || fail "a refused drift bump changed package.json"
 
 # A marketplace entry the plugin's name does not find: the bump must fail
 # before writing ANY file.
