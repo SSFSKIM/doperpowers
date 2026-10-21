@@ -372,7 +372,7 @@ A descriptor with `DEVCLOUD_EXPIRES` makes the boot do three more things:
 
 - **Join the tailnet as an ephemeral node** (`?ephemeral=true&preauthorized=true` on the OAuth
   client secret, the parameter's default per Tailscale's OAuth documentation): the coordination
-  server removes an ephemeral node 30–60 minutes after it goes offline, and at once on `tailscale
+  server removes an ephemeral node about an hour after it goes offline (70 minutes measured, M1), and at once on `tailscale
   logout`, so a VM that dies without departing still leaves the tailnet (board #90). Without a lease
   the node is non-ephemeral, as the parent built it.
 - **Run the lease service**, `devcloud-lease` (a timer every 5 minutes, in the parent's service list,
@@ -384,7 +384,7 @@ A descriptor with `DEVCLOUD_EXPIRES` makes the boot do three more things:
   and a departure inside that unit would kill itself before it had removed the credentials or
   recorded its end. An active unit of that name means a departure is already under way, and the run
   does nothing more.
-- **Warn the creator**: `sminos say "@<creator>" "<name>'s lease ends at <time>; unpushed: <repos>"`
+- **Warn the creator**: `sminos say "@<creator> <name>'s lease ends at <time>; unpushed: <repos>"` (one argument: `say` takes a single text, M2)
   as the user, where unpushed lists each git checkout under `~/Developer/GitHub` with commits not on
   its upstream or uncommitted changes. Without a creator, or unenrolled, the warning goes to the
   journal and `wall` only. One warning per lease value: extending re-arms it.
@@ -492,7 +492,7 @@ the desk's Machines until someone removes it (§10).
 | Event | Transcripts | Desk | Tailnet | Server |
 |---|---|---|---|---|
 | Lease ends, host healthy | sessions ended, then the departure ships; a failed ship holds the departure, retried | `hub leave` | `logout` | reaper deletes; a held VM 24 h past its lease end, logged as unshipped loss |
-| Host hung or crashed, then lease ends | lost since the last ship (seconds, the shipper is continuous) | the desk's offline revoke after the key's 24 h (H4); a VM enrolled by a one-time code has none and stays until removed by hand, which the reaper's log names | ephemeral expiry, 30–60 min | reaper deletes 15 min past the label's lease when the provider reports it not running, 6 h past when it reports it running |
+| Host hung or crashed, then lease ends | lost since the last ship (seconds, the shipper is continuous) | the desk's offline revoke after the key's 24 h (H4); a VM enrolled by a one-time code has none and stays until removed by hand, which the reaper's log names | ephemeral expiry, about an hour | reaper deletes 15 min past the label's lease when the provider reports it not running, 6 h past when it reports it running |
 | `devcloud vm down` | as a healthy lease end; held → `down` exits 1, `--force` proceeds | `hub leave` | `logout` | deleted at once |
 | GCE spot reclaimed | best-effort fast departure, no hold | best-effort `hub leave`, else the offline revoke | best-effort `logout`, else ephemeral expiry | provider deletes |
 | `keep` VM | never departs | stays; if stopped long enough for the offline revoke, re-enrolls at its next boot (`hub check` 3, `--replace`) | stays | only `down` |
@@ -845,7 +845,8 @@ with doperpowers:writing-skills and sanity-tested in a session before it ships.
 - The parent's constraints hold (public repository, no personal values in it; Python 3.11+ standard
   library only plus the CLIs the image installs; never print a secret value; idempotent steps;
   Ubuntu 24.04; same-day deletion of test resources, recorded in Progress; devcloud's own version
-  bumped through `scripts/bump-version.sh --plugin devcloud` in the commit that changes the plugin;
+  bumped through `scripts/bump-version.sh --plugin devcloud` once for this branch, in M6 (Decision
+  Log), since nothing installs from the branch before it merges;
   every new test suite becomes or joins a ci-kit gate, and the ci-kit session is told when gates
   change).
 - Every provider resource the driver creates carries the label `devcloud=<kind>` (I14), applied in
@@ -1559,6 +1560,14 @@ commit 5168e433 on its branch, 2026-10-21):
   Evidence: `devcloud status` on every M1 host.
 - Observation (M1): The person's GCE project holds an unrelated spot instance with no devcloud label;
   the reaper's label rule matters there from the start.
+- Observation (M1): A VM deleted without `tailscale logout` left the tailnet about 70 minutes after
+  it went offline, not the 30–60 minutes Tailscale documents.
+  Evidence: the expiry-test node, deleted at 04:35:04Z and gone from `tailscale status` at 05:45:01Z.
+- Observation (M2): `sminos say` takes one text argument (`"@<tag> <text>"`), not the two that §4.1
+  first showed.
+- Observation (M2): On Ubuntu 24.04, `cloud-final.service` runs after `multi-user.target`, so a boot
+  unit wanted by multi-user and ordered after cloud-final forms an ordering cycle. The boot unit is
+  ordered after `cloud-config.service` instead, which still follows cloud-init's user-data writes.
 
 ## Decision Log
 
@@ -1825,6 +1834,36 @@ commit 5168e433 on its branch, 2026-10-21):
   (M1's interim proposal); IPv4-only Hetzner servers (one primary IP each, six servers), which would
   cost the VMs their IPv6 egress, kept as the fallback if the person declines H8.
   Date/Author: 2026-10-21, executor (controller), from M1.
+
+- Decision: devcloud's version is bumped once for this branch, in M6, not in each milestone's commit
+  as the parent's constraint had it. Rationale: nothing installs from an unmerged branch, and one
+  bump avoids four version conflicts with main. Date/Author: 2026-10-21, executor (controller), at
+  M2's review.
+- Decision: How M2 seats plugins and runs its host jobs (M2's gaps):
+  - The marketplace copy is a root clone at `/var/lib/devcloud/marketplaces/doperpowers` of the
+    source the synced `settings.json` declares under `extraKnownMarketplaces.doperpowers`. It follows
+    that source's head and is refreshed at step 10 and by a pull-config that finds no change. With
+    no declared marketplace the host stays in the user tier, with the guard on and the bridge off.
+  - Managed settings point the doperpowers declaration at the copy, keep the profile's own
+    `prependPlugins`, and merge `enabledPlugins`.
+  - Seating applies to every role, sandboxes included.
+  - The lease and enroll timers run on every persistent host, and their jobs do nothing unless the
+    host is leased or enrollment was deferred.
+  - The host gains these commands beyond I16: `lease tick` (the lease timer's job), `unpushed` (exit
+    5 when it finds work), `ledger add <path>…` (for the driver's writes, which M3 calls before
+    streaming the seed or a code file) and `depart --preempted` (the spot unit's).
+  - Status gains a step state `deferred` and `lifecycle` and `enroll` records that survive a reset.
+  - The inbound table loads inside step 4, right after the join, and established connections
+    survive it.
+  - Release prints `devcloud-depart: ready-to-logout` too.
+  - Adopt writes `/var/lib/devcloud-adopt/keys.json`, `{"keys": [{path, owner, saved|null}]}`, where
+    a null `saved` means release removes the file.
+  - Driver keys are enforced only when at least one valid key exists.
+  - A `hub check` that times out counts as 4.
+  - A host whose configuration has no shipper has nothing to ship. A configured shipper that is
+    missing or not executable is a failed ship, so the departure holds (review finding).
+  Rationale: each follows the spec's intent where it was silent; the reasons are in the M2 report.
+  Date/Author: 2026-10-21, M2's executor, folded by the controller.
 
 ## Outcomes & Retrospective
 
