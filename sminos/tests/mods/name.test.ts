@@ -223,6 +223,37 @@ describe('createNamer', () => {
     expect(renames).toEqual(['desk-uplink-owner'])
   })
 
+  test('a turn that starts while the dialog is read again holds the rename for the next idle tick', async () => {
+    let reads = 0
+    let checks = 0
+    const renames: string[] = []
+    resetName()
+    const namer = createNamer({
+      read: async () => PENDING,
+      due: async () => {
+        checks += 1
+        return { exitCode: 0, stdout: 'desk-uplink-owner\n' }
+      },
+      rename: async (name) => {
+        renames.push(name)
+      },
+      isAskDialogUp: async () => {
+        reads += 1
+        if (reads === 2) {
+          turnStarted(MAIN)
+        }
+        return false
+      },
+      log: () => {},
+    })
+    await namer.tick()
+    expect(renames).toEqual([])
+    turnEnded(MAIN)
+    await namer.tick()
+    expect(checks).toBe(2)
+    expect(renames).toEqual(['desk-uplink-owner'])
+  })
+
   test('a CLI that cannot run renames nothing, and is not tried again for the same file', async () => {
     const { w, namer } = world({ file: PENDING, answers: [new Error('timed out'), { exitCode: 0, stdout: 'desk-uplink-owner\n' }] })
     await namer.tick()

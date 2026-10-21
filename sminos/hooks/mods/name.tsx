@@ -113,8 +113,10 @@ export function createNamer(io: NameIo) {
       return
     }
     // The person may have opened an ask's dialog while the check ran (a press
-    // starts no turn): its answer is its own, so the next idle tick renames.
-    if (await io.isAskDialogUp()) {
+    // starts no turn): its answer is its own. And a turn may have started
+    // while the dialog was read. Either way the next idle tick renames.
+    const isDialogUp = await io.isAskDialogUp()
+    if (isDialogUp || turn.isRunning || turn.started !== before.started) {
       handled = before.handled
       return
     }
