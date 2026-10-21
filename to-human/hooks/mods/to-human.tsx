@@ -881,8 +881,8 @@ async function startUp($: EngineInterface, view: View, signal: AbortSignal, onMa
  * screen kept the engine's height: the fullscreen transcript holds a row off
  * its window at the height it last had and lets go of it as the row scrolls
  * back in at the window's top edge, where the release reads as the transcript
- * pulling the person back down. Every hook that draws, or keeps a line out of
- * what is drawn, waits on this read; the rows keep what they drew meanwhile.
+ * pulling the person back down. Every hook that draws waits on this read; the
+ * rows keep what they drew meanwhile.
  * The read runs under the dispatch that asked first, and one superseded
  * meanwhile (a row drawn again) cuts it short: the hooks still waiting read
  * again under their own. `$.session.messages()` starts at the last
@@ -1278,23 +1278,6 @@ export function registerToHuman(on: On) {
     const result = await next(e)
     $.ui.invalidate('ui.render')
     return result
-  })
-
-  // A plugin update the doperpowers plugin's reload applied leaves its line
-  // (`/reload-plugins: Reloaded: N plugins · …`), the machinery's and no row
-  // of the report. The engine draws such a line through no render hook, so
-  // the view cannot fold it once drawn: while the report folds, the line goes
-  // to the debug log as it is logged. The full transcript keeps it, and a
-  // reload that failed, whose line says no `Reloaded:`, or that loaded with
-  // anything past the first line (load errors, an unreachable marketplace),
-  // stays in both. A reload keeps the modules of the plugins it did not
-  // change; one that updated this plugin starts the module over, and its line
-  // can come before any row draws again, so the module's start-up read tells
-  // whether the session has sent a mark.
-  on('ui.log', { to: 'transcript', text: /^\/reload-plugins: Reloaded: [^\n]*$/ }, async ($, e, next) => {
-    if (await native($, e)) return next(e)
-    await started($, view, next.signal, markSeen)
-    return next(isFolding() ? { ...e, to: 'debug' } : e)
   })
 
   // A plain click on a span's file link opens it in VS Code, at its line.

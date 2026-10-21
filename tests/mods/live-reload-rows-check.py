@@ -4,14 +4,14 @@
 The reload mod runs `/reload-plugins` itself when installed_plugins.json
 shows a new install of a plugin the session runs. Its `session.append` hook
 (door `command`) keeps that command's three rows (the caveat, the command
-line, the `local_command` output) empty, and logs the output's text as the
-plugin's transcript line (`$.ui.log`), a system notice. What only a running engine shows, pinned so a
+line, the `local_command` output) empty, and shows the output's text as a
+toast, which leaves no row. What only a running engine shows, pinned so a
 release that breaks it fails loudly:
-- the transcript rows such a reload leaves (A): the three kept empty, the
-  notice a system row, in that order;
+- the transcript rows such a reload leaves (A): the three kept empty, in
+  that order, and no other;
 - that this holds both when another plugin is updated and when doperpowers
   itself is, whose reload replaces the module whose hook sees the rows (B);
-- what the screen draws for them (C): no `(no content)` line, the notice;
+- what the screen draws for them (C): no `(no content)` line, the toast;
   the main screen is read with tmux frames around the reload, and the
   transcript view (ctrl+o) once it has settled;
 - what the model is sent (D): the request after the reloads, read off a
@@ -81,7 +81,7 @@ PROBE = "rlprobe"
 QUESTION = "RLCHECK-ECHO"
 # Text that is the reload's own, in any of its rows.
 RELOAD_TEXT = ("<local-command-caveat>", "<command-name>/reload-plugins", "<local-command-stdout>", "Reloaded:")
-# The notice's text, which the screen draws after the plugin's name.
+# The toast's text, which the screen draws after the plugin's name.
 NOTICE = "/reload-plugins: "
 DEBUG_WORDS = ("loaded (worker", "unloaded", "session.append", "command.run", "reload:", "refreshActivePlugins",
                "$.ui.", "re-entry")
@@ -485,16 +485,15 @@ class ReloadRows(LB.Live):
             self.check("%s: the caveat, the command line and the output are kept, and none holds the reload's text" % label,
                        len(caveat) == 1 and len(command) == 1 and len(output) == 1 and not held,
                        "rows' texts %s; reload text still held: %s" % (json.dumps(texts, ensure_ascii=False)[:300], held))
-            self.check("%s: the output's text is a system notice of the plugin's, after the three rows" % label,
-                       len(notice) == 1 and "Reloaded:" in row_text(rows[notice[0]])
-                       and caveat and command and output and caveat[0] < command[0] < output[0] < notice[0],
-                       "caveat %s, command %s, output %s, notice %s: %r" % (
-                           caveat, command, output, notice, row_text(rows[notice[0]])[:120] if notice else None))
+            self.check("%s: the three rows come in order, and the output's text leaves no row" % label,
+                       not notice and caveat and command and output and caveat[0] < command[0] < output[0],
+                       "caveat %s, command %s, output %s, notice rows %s" % (caveat, command, output, notice))
             self.check("%s: neither the screen nor the transcript view draws a (no content) line" % label,
                        not screen_no_content,
                        "lines: %r" % screen_no_content)
-            self.check("%s: the screen draws the notice" % label, any(NOTICE in l for l in settled),
-                       "settled lines: %r" % [l.strip()[:100] for l in settled][:8])
+            self.check("%s: the screen draws the toast" % label,
+                       any(NOTICE + "Reloaded:" in l for l in drawn),
+                       "drawn lines: %r" % [l.strip()[-100:] for l in drawn][:8])
         else:
             self.check("%s: without the hook the three rows keep their text" % label,
                        any("<local-command-caveat>" in t for t in texts["caveat"])
