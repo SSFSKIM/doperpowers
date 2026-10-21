@@ -11,15 +11,29 @@ import type { AttributionTextInput, AttributionTextResult, EngineInterface, On }
  * one that is no member, and then nothing is added.
  *
  * The engine asks before every model request of every loop (commit, then
- * pr), so the line is kept and asked again only when the session id changes
- * (a session sent to the background goes on under a new one) or the kept
- * one is a minute old (an alias renamed mid-session). A subagent's request
+ * pr), and the CLI is a Python start, so the line is kept and the CLI asked
+ * again only when it may answer otherwise: for a new session id (a session
+ * sent to the background goes on under a new one; a module loaded afresh,
+ * as at each session start, holds none), after a compaction, and once the
+ * kept line is ten minutes old (an alias renamed mid-session, a `sminos
+ * join`). No file's change stands in for that timer: what the line is
+ * composed from — the engine's record of the session (its name), the
+ * session's own log file (the alias it joined or was renamed under), the
+ * project's log (a name another member holds), the transcript (where the
+ * session was moved to), the join override, the machine's enrollment —
+ * lies mostly in files the engine and the session rewrite at every turn or
+ * message for reasons of their own, so their times would ask about once a
+ * turn. A request never waits on a line it already has: one past its time
+ * is used while the CLI is asked in the background. A subagent's request
  * reads the parent's session id: its commits carry the session someone can
  * reach.
  */
 
 /** How long a line is kept before the CLI is asked again. */
-export const ADDRESS_TTL_MS = 60_000
+export const ADDRESS_TTL_MS = 10 * 60_000
+
+/** How soon the CLI is asked again when it answered no line (as for a session the engine has not registered yet) or failed (the line kept as it was). */
+export const ADDRESS_RETRY_MS = 60_000
 
 /** A git trailer line: a token, a colon, a space (git's own separator). */
 const TRAILER_LINE = /^[A-Za-z0-9-]+:\s/
@@ -45,7 +59,7 @@ export function withAddress(kind: string, text: string, line: string): string {
   return kind === 'commit' && TRAILER_LINE.test(last) ? `${base}\n${line}` : `${base}\n\n${line}`
 }
 
-type Kept = { session: string; line: string; at: number }
+type Kept = { session: string; line: string; until: number }
 
 const state: { kept?: Kept; asking?: Promise<void> } = {}
 
@@ -55,27 +69,45 @@ export function resetAddress() {
   state.asking = undefined
 }
 
-/** The address line of `session`: the kept one while fresh, else asked of the CLI once for every caller waiting. */
+/** Makes the kept line due: the next request asks the CLI again, and keeps the line should the CLI fail. */
+export function refreshAddress() {
+  if (state.kept !== undefined) {
+    state.kept = { ...state.kept, until: 0 }
+  }
+}
+
+/** Asks the CLI for `session`'s line and keeps its answer, or `line` when it cannot answer. */
+async function askCli($: EngineInterface, session: string, line: string, now: () => number): Promise<void> {
+  let answered = false
+  try {
+    const r = await $.process.run([`${$.plugin.root}/skills/sminos/scripts/sminos`, 'who', '--session', session], { timeoutMs: 10_000 })
+    if (r.exitCode === 0) {
+      line = r.stdout.trim().split('\n')[0] ?? ''
+      answered = true
+    }
+  } catch {
+    // Kept as it was: a CLI that cannot run now is asked again a minute on.
+  }
+  state.kept = { session, line, until: now() + (answered && line !== '' ? ADDRESS_TTL_MS : ADDRESS_RETRY_MS) }
+}
+
+/**
+ * The address line of `session`: the kept one, the CLI asked once for every
+ * caller when it is due — in the background when a line is kept, the caller
+ * waiting only for a session with none.
+ */
 export async function addressLine($: EngineInterface, session: string, now: () => number = Date.now): Promise<string> {
-  const kept = state.kept
-  if (kept !== undefined && kept.session === session && now() - kept.at < ADDRESS_TTL_MS) {
+  const kept = state.kept?.session === session ? state.kept : undefined
+  if (kept !== undefined && now() < kept.until) {
     return kept.line
   }
-  state.asking ??= (async () => {
-    let line = kept?.session === session ? kept.line : ''
-    try {
-      const r = await $.process.run([`${$.plugin.root}/skills/sminos/scripts/sminos`, 'who', '--session', session], { timeoutMs: 10_000 })
-      if (r.exitCode === 0) {
-        line = r.stdout.trim().split('\n')[0] ?? ''
-      }
-    } catch {
-      // Kept as it was: a CLI that cannot run now is asked again a minute on.
-    }
-    state.kept = { session, line, at: now() }
-  })().finally(() => {
+  const asking = (state.asking ??= askCli($, session, kept?.line ?? '', now).finally(() => {
     state.asking = undefined
-  })
-  await state.asking
+  }))
+  if (kept !== undefined) {
+    return kept.line
+  }
+  await asking
   return state.kept?.session === session ? state.kept.line : ''
 }
 
@@ -96,4 +128,14 @@ export async function addressText(
 
 export function registerAddress(on: On) {
   on('attribution.text', { kind: /^(?:commit|pr)$/ }, ($, e, next) => addressText($, e, next))
+  // A compaction that stood (a precompute replaces nothing; a skip leaves the
+  // conversation as it was): a long session's checkpoint, where the line is
+  // asked for again.
+  on('session.compact', { trigger: /^(?:manual|auto|plugin)$/ }, async (_, e, next) => {
+    const r = await next(e)
+    if (r.skip === undefined) {
+      refreshAddress()
+    }
+    return r
+  })
 }
