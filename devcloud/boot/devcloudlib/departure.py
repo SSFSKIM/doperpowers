@@ -71,6 +71,7 @@ class Host:
     unit_dir: pathlib.Path = UNIT_DIR
     inbound_nft: pathlib.Path = INBOUND_NFT
     shipper_seen: pathlib.Path = None    # services.SHIPPER_SEEN by default
+    state_dir: pathlib.Path = status.PATH.parent     # /var/lib/devcloud
     out: object = None
     as_user: object = proc.as_user
     now: object = time.time
@@ -366,6 +367,9 @@ def _begin(host, op, force):
     if record and record.get("op") == op and record.get("state") == "departed":
         host.say(f"devcloud {op}: already done ({record['at']})")
         return None, None, DONE
+    if op == "release" and not host.state_dir.exists() and not host.desc_path.exists():
+        host.say("devcloud release: already done (nothing of devcloud is left here)")
+        return None, None, DONE
     try:
         d = descriptor.load(host.desc_path, allow_http=host.allow_http)
     except descriptor.DescriptorError as error:
@@ -577,4 +581,19 @@ def release(host, force=False, no_hold=False):
                          "`devcloud release` again resumes from there")
                 return FAILED
         status.set_lifecycle("release", "departed", "released", steps=run.steps, path=host.status_path)
+        forget(run)
         return DONE
+
+
+def forget(run):
+    """The end of a completed release: devcloud's state directory goes (its
+    record of this release with it), since setup.sh refuses a machine that
+    has one and the machine can be adopted again; and systemd forgets the
+    failures of the units removed, which it would list until the next boot."""
+    host = run.host
+    try:
+        ledger.remove_one(str(host.state_dir))
+    except OSError as error:
+        host.say(f"devcloud release: {host.state_dir} stays ({error}); remove it before adopting this machine again")
+    host.call(["systemctl", "reset-failed", "devcloud-*"], log="lifecycle", timeout=30)
+    host.say("devcloud release: released")

@@ -869,17 +869,20 @@ def release_through_the_lease_service():
     tick = sh(ADOPTED, "systemctl start devcloud-lease.service", check_rc=False)
     check(tick.returncode == 0, "the lease service's run failed: " + out(
         ADOPTED, "journalctl -u devcloud-lease --no-pager -n 30 || true"))
+    # A completed release ends by removing devcloud's state directory, its own record with it.
     end = time.monotonic() + 180
     while True:
-        record = json.loads(out(ADOPTED, "cat /var/lib/devcloud/status.json")).get("lifecycle") or {}
-        if record.get("state") == "departed":
+        journal = out(ADOPTED, "journalctl -u devcloud-release --no-pager -o cat || true")
+        if "devcloud release: released" in journal:
             break
-        check(time.monotonic() < end, f"the release never ended: {record}\n" + out(
-            ADOPTED, "journalctl -u devcloud-release --no-pager -n 60 || true"))
+        check(time.monotonic() < end and "failed; nothing after it ran" not in journal,
+              f"the release never ended: {journal[-2500:]}")
         time.sleep(2)
-    check(record["op"] == "release", str(record))
-    journal = out(ADOPTED, "journalctl -u devcloud-release --no-pager -o cat")
     check("remove-credentials: ok" in journal, f"the transient unit's journal: {journal[-1500:]}")
+    check(sh(ADOPTED, "test -e /var/lib/devcloud", check_rc=False).returncode != 0,
+          "/var/lib/devcloud remains, so setup.sh would refuse to adopt the machine again")
+    remembered = out(ADOPTED, "systemctl list-units --all --no-legend --plain 'devcloud-*' | grep not-found || true")
+    check(remembered.strip() == "", f"systemd still lists removed units: {remembered}")
     for path in listed:
         check(sh(ADOPTED, f"test -e {path}", check_rc=False).returncode != 0, f"{path} survived the release")
     check(sh(ADOPTED, "test -e /var/lib/devcloud/credentials.ledger", check_rc=False).returncode != 0, "the ledger")

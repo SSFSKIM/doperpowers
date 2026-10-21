@@ -143,14 +143,16 @@ class DepartureBase(unittest.TestCase):
             lines.append("DEVCLOUD_ADOPTED=1")
         (self.tmp / "boot.env").write_text("\n".join(lines) + "\n")
 
-    def host(self):
+    def host(self, **over):
         world = self.world
-        host = StandIn(user=self.user, run=world.run, call=world.call, status_path=self.tmp / "status.json",
-                       ledger_path=self.tmp / "credentials.ledger", desc_path=self.tmp / "boot.env",
-                       lock_path=self.tmp / "lifecycle.lock", adopt_dir=self.tmp / "adopt", unit_dir=self.units,
-                       inbound_nft=self.tmp / "inbound.nft", shipper_seen=self.tmp / "shipper-configured",
-                       now=lambda: NOW, monotonic=lambda: world.clock,
-                       sleep=lambda s: setattr(world, "clock", world.clock + s))
+        paths = dict(status_path=self.tmp / "status.json", ledger_path=self.tmp / "credentials.ledger",
+                     desc_path=self.tmp / "boot.env", lock_path=self.tmp / "lifecycle.lock",
+                     adopt_dir=self.tmp / "adopt", unit_dir=self.units, inbound_nft=self.tmp / "inbound.nft",
+                     shipper_seen=self.tmp / "shipper-configured", state_dir=self.tmp / "state")
+        paths.update(over)
+        host = StandIn(user=self.user, run=world.run, call=world.call, now=lambda: NOW,
+                       monotonic=lambda: world.clock, sleep=lambda s: setattr(world, "clock", world.clock + s),
+                       **paths)
         host.world = world
         return host
 
@@ -557,6 +559,52 @@ class ReleaseTest(DepartureBase):
         self.world.events.clear()
         self.assertEqual(departure.release(self.host()), departure.DONE)
         self.assertEqual(self.world.runs(), [])
+
+    def state(self):
+        """The real layout: the status, the ledger and the shipper flag in
+        devcloud's state directory, with what else the boot kept there."""
+        state = self.tmp / "state"
+        (state / "marketplaces/doperpowers").mkdir(parents=True)
+        (state / "identity.env").write_text("DEVCLOUD_NAME=dc-build-7f3a\n")
+        (state / "shipper-configured").write_text("")
+        (state / "lease.json").write_text("{}\n")
+        led = state / "credentials.ledger"
+        for path in ledger.entries(self.led) + [str(self.tmp / "boot.env")]:
+            ledger.add(path, path=led)
+        self.led.unlink()
+        self.led = led
+        return state, self.host(status_path=state / "status.json", ledger_path=led,
+                                shipper_seen=state / "shipper-configured")
+
+    def test_a_completed_release_removes_the_state_directory_so_the_machine_can_be_adopted_again(self):
+        state, host = self.state()
+        self.assertEqual(departure.release(host), departure.DONE)
+        self.assertFalse(state.exists(), "setup.sh refuses a machine that has /var/lib/devcloud")
+        self.assertFalse((self.tmp / "boot.env").exists())
+        self.assertEqual(self.kept.read_text(), "the person's own file")
+        self.assertTrue(self.home.is_dir())
+        self.world.events.clear()
+        self.assertEqual(departure.release(host), departure.DONE, "a second release has nothing left to do")
+        self.assertEqual(self.world.runs(), [])
+
+    @unittest.skipIf(os.geteuid() == 0, "root removes what a mode forbids")
+    def test_a_release_that_left_a_credential_keeps_the_state_directory(self):
+        state, host = self.state()
+        stuck = self.home / ".config/claude-secrets"
+        stuck.chmod(0o500)
+        self.addCleanup(stuck.chmod, 0o700)
+        self.assertEqual(departure.release(host), departure.FAILED)
+        self.assertTrue((state / "credentials.ledger").exists())
+        self.assertTrue((state / "identity.env").exists())
+        self.assertNotIn(["systemctl", "reset-failed", "devcloud-*"], self.world.runs())
+
+    def test_systemd_forgets_the_removed_units_failures_at_the_end(self):
+        self.assertEqual(departure.release(self.host()), departure.DONE)
+        w = self.world
+        units = w.index(lambda e: e[0] == "run" and e[1][:3] == ["systemctl", "disable", "--now"]
+                        and "devcloud-boot.service" in e[1])
+        reset = w.index(lambda e: e[0] == "call" and e[1] == ["systemctl", "reset-failed", "devcloud-*"])
+        self.assertLess(units, reset)
 
     @unittest.skipIf(os.geteuid() == 0, "root removes what a mode forbids")
     def test_a_release_that_left_a_credential_resumes_where_it_stopped(self):
