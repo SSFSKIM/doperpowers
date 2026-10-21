@@ -536,9 +536,9 @@ The tool as registered:
 
     name: 'message'
     inputSchema: { type: 'object', properties: { text: { type: 'string',
-        description: 'The message, in Markdown: what you would write inside <message>…</message>.' } },
+        description: 'The message, in Markdown.' } },
       required: ['text'] }
-    description: 'Send the human a message now, word for word. Use it for a message you send before another tool call, in the same response as that call; a message at the end of your turn stays a <message> span.'
+    description: 'Send the human a message.'   // when to use it is the style's rule, not the description's
     result (accepted call): 'sent'
     deny (subagent): 'message is for the main conversation; a subagent reaches the human through the session that dispatched it: put this in your report.'
 
@@ -671,6 +671,36 @@ sminos carries both message-tool names as its own constant, beside
   message the human directly, not built here.
   Rationale: The human's ruling, relayed by the spec's author. It replaces
   the earlier entry that left this to M3's judgment.
+  Date/Author: 2026-10-20, the human, recorded by the plan-executor.
+
+- Decision: M2's live export holds its order behind a message call (the
+  review's finding). Everything kept after an ordinary call on the main loop
+  queues until the call's pair is whole, refused or errored pairs included,
+  and is released in transcript order. A row holding a call is exported
+  whole with the pair. A call whose result never reaches the bridge holds at
+  most `PAIRS_KEPT` (50) exports, after which the queue flows and the Stop
+  hook exports the call. An over-cap call holds nothing. An async ask's pair
+  still does not hold what follows it, as before M2.
+  Date/Author: 2026-10-20, M2's executor, folded by the plan-executor.
+- Decision: tool-only messaging was considered and rejected for now. That
+  means every message through the tool, with `<message>` kept only as a
+  fallback.
+  Rationale: An agent cannot end a turn on a tool use, since the harness asks
+  for a visible reply after the result. A final message sent through the tool
+  would cost one more request over the whole context at every turn end. A
+  `preventContinuation` hook might end the turn after the call, but that is
+  untested. Every reader already reads both forms, so revisiting this later
+  changes only the style.
+  Date/Author: 2026-10-20, the human, recorded by doperpowers-88.
+- Decision: the rule for when to use the tool lives in the style, its one
+  source. The tool's description only names it: `Send the human a message.`
+  The field reads `The message, in Markdown.` The name, input, result and
+  refusals are unchanged, so the contract table stands. The tool is
+  registered only under the to-human output style, if the mod can read the
+  active style cleanly at `session.start`. Otherwise registration stays as
+  it is and the gap goes in TECH-DEBT.md.
+  Rationale: A session with the plugin but under another style would
+  otherwise see a tool whose description gives no rule.
   Date/Author: 2026-10-20, the human, recorded by the plan-executor.
 
 ## Outcomes & Retrospective
