@@ -46,7 +46,14 @@ PAT_EXECUTOR_READS_SPEC_YES='Executor must read the whole spec:[^a-zA-Z<]*yes'
 # guaranteed token with a near-certain artifact noun makes the assertion
 # always-true. And the verb must come BEFORE the noun — that ordering is what
 # rejects "signs off on the implementation report without checking".
-PAT_REVIEWER_READS_ARTIFACT='\(read\|inspect\|examin\|verify\|check\|judge\|look at\|against\|evaluate\).*\(code\|diff\|implementation\)\|actual \(code\|diff\|implementation\)\|code itself'
+# "implementation" is the one artifact noun that is also the executor's report
+# ("implementation report/claims/summary"), so it counts only where nothing
+# follows it, punctuation does, or one of a closed set of continuations that
+# leaves the thing itself as the object ("against the brief", "itself", ...).
+# Naming the report-like words to reject would turn the verdict on vocabulary
+# again; an unlisted continuation fails closed, which is the safe direction.
+IMPL_ARTIFACT='implementation\($\|[.,;:)!?"]\| \(against\|itself\|directly\|on\|and\|to\|matches\|rather\|not\|for\|with\|in\|is\|as\|before\|files\)\)'
+PAT_REVIEWER_READS_ARTIFACT='\(read\|inspect\|examin\|verify\|check\|judge\|look at\|against\|evaluate\).*\(code\|diff\|'"$IMPL_ARTIFACT"'\)\|actual \(code\|diff\|'"$IMPL_ARTIFACT"'\)\|code itself'
 
 # The isolation prerequisite has two names: the mechanism is a worktree, and the
 # skill's own pointer to it reads "an isolated checkout (isolated-workspace.md)".
@@ -97,6 +104,13 @@ match|PAT_REVIEWER_READS_ARTIFACT|Inspect the actual implementation.
 nomatch|PAT_REVIEWER_READS_ARTIFACT|Accept the executor's report and approve if it claims success.
 nomatch|PAT_REVIEWER_READS_ARTIFACT|The reviewer trusts the executor's report of the code changes.
 nomatch|PAT_REVIEWER_READS_ARTIFACT|The reviewer signs off on the implementation report without checking.
+nomatch|PAT_REVIEWER_READS_ARTIFACT|The reviewer is skeptical and reads the implementation report, then approves based on that report alone.
+nomatch|PAT_REVIEWER_READS_ARTIFACT|The reviewer checks the implementation summary and approves.
+nomatch|PAT_REVIEWER_READS_ARTIFACT|Verify the implementation claims, then sign off.
+nomatch|PAT_REVIEWER_READS_ARTIFACT|It reads the actual implementation report from the executor.
+match|PAT_REVIEWER_READS_ARTIFACT|Read the implementation.
+match|PAT_REVIEWER_READS_ARTIFACT|Judge the implementation against the task brief.
+match|PAT_REVIEWER_READS_ARTIFACT|The reviewer examines the implementation itself, not the report.
 match|PAT_ISOLATION_PREREQ|An isolated checkout, described in `skills/subagent-driven-execution/isolated-workspace.md`.
 match|PAT_ISOLATION_PREREQ|- Set up an isolated git worktree on its own branch
 match|PAT_ISOLATION_PREREQ|Create an isolated workspace before the first task.
