@@ -112,7 +112,7 @@ export SMINOS_UUID_POLL=5
 export DAEMON_BOOT_ID="boot-current"
 export DAEMON_HOST="testhost"
 export SMINOS_NO_EXEC=1
-# The daemon's hourly derivation starts a child; only the case that pins it turns it on.
+# The daemon's derivation (every five minutes) starts a child; only the cases that pin it turn it on.
 export SMINOS_DERIVE_EVERY=0
 WORK="$TEST_ROOT/work"
 mkdir -p "$HOME/.claude/sessions" "$WORK" "$STUB_STATE/agents" "$STUB_STATE/log"
@@ -189,9 +189,20 @@ PY
 # `--session-id` pins the fork's id, as the real harness honours it.
 # STUB_FORK_RESULT is its answer, STUB_FORK_FAIL=1 a failed run,
 # STUB_FORK_CRASH=1 a crash that prints nothing, and STUB_FORK_LIST=1 has it
-# list the project's members while it runs.
+# list the project's members while it runs. STUB_FORK_RENAME=<record>=<name>
+# has the parent's owner rename it (/rename: the record's name, source user)
+# while the fork runs. The prompt it was given is kept in fork-prompt.txt.
 if [ $fork -eq 1 ]; then
   echo "fork-env:internal=${SMNS_INTERNAL:-} marker=$([ -f "$SMINOS_HOME/internal/$$" ] && echo yes || echo no)" >> "$STUB_STATE/log/calls.log"
+  printf '%s' "$prompt" > "$STUB_STATE/log/fork-prompt.txt"
+  if [ -n "${STUB_FORK_RENAME:-}" ]; then
+    python3 - "${STUB_FORK_RENAME%=*}" "${STUB_FORK_RENAME##*=}" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+d["name"], d["nameSource"] = sys.argv[2], "user"
+open(sys.argv[1], "w").write(json.dumps(d) + "\n")
+PY
+  fi
   n=$(cat "$counter" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$counter"
   fork_uuid="${session_id:-$(printf '%08x' "$n")-f0f0-4000-8000-00000000f0f0}"
   parent="$(ls "$HOME"/.claude/projects/*/"$resume_uuid.jsonl" 2>/dev/null | head -1 || true)"
@@ -4571,6 +4582,12 @@ elif kind == "custom-title":   # what /rename writes; "" clears it
 elif kind == "sidechain":
     rec = {"type": "assistant", "isSidechain": True, "message": {"role": "assistant", "content": [{"type": "text", "text": args[1]}]}}
     base.pop("isSidechain")
+elif kind in ("tool", "sidechain-tool"):   # uuid [count]: an assistant record of the model's tool calls
+    calls = [{"type": "tool_use", "id": "toolu_%s_%d" % (args[0], i), "name": "Bash", "input": {"command": "true"}}
+             for i in range(int(args[1]) if len(args) > 1 else 1)]
+    rec = {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Running."}] + calls}}
+    if kind == "sidechain-tool":
+        base["isSidechain"] = True
 else:
     sys.exit("tx.py: unknown kind " + kind)
 with open(path, "a") as f:
@@ -5317,8 +5334,8 @@ tx "$TC" asst e1000004 '<message>second mark</message>'
 hook_run Stop "$HC" "$R3" "$TC"
 assert_equals "$(hp_events "$HC")" "joined message:e1000002#0 message:e1000004#0 " "its Stop joins it and exports the whole first turn"
 
-# The in-charge line: charge beats a name the human set; the name beats a
-# derived line; a derived line beats the transcript's title.
+# The in-charge line: charge beats a derived line; a derived line beats a name
+# the human set; the name beats the transcript's title.
 run "$SMINOS" list --json
 assert_equals "$(json_row ha charge)" "ha" "a user-named member's line is its name"
 assert_equals "$(json_row ha charge_source)" "name" "sourced from the name"
@@ -5329,7 +5346,7 @@ import importlib.util, sys
 spec = importlib.util.spec_from_file_location("sminos", sys.argv[1]); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
 mod.lifecycle(mod.find_project(sys.argv[2]), sys.argv[3], "in-charge", text="a derived guess", source="derived")
 PY_DERIVED
-assert_equals "$(json_row ha charge)" "ha" "the name beats a derived line"
+assert_equals "$(json_row ha charge)|$(json_row ha charge_source)" "a derived guess|derived" "a derived line beats the name"
 run "$SMINOS" charge hb "owns the GUI tool"
 assert_rc 0 "$RC" "the operator sets a member's line"
 assert_contains "$(tail -1 "$HPLOG/testhost.$HB.jsonl")" '"kind": "in-charge", "session": "'"$HB"'", "text": "owns the GUI tool", "source": "set"' \
@@ -5362,10 +5379,17 @@ assert_equals "$(json_row hc charge)" "구글 테이크아웃 Gemini 대화 기�
 HD=5f000006-0000-4000-8000-00000000005f
 TD="$TXD/$HD.jsonl"
 hp_peer hd "$HD" derived interactive
-for i in 1 2 3 4 5 6 7 8 9; do tx "$TD" prompt "f00000$i" "prompt $i"; tx "$TD" asst "f10000$i" "answer $i"; done
+# The threshold is ten tool calls by the session's own model in its main
+# conversation: not the human's prompts, not a subagent's calls.
+for i in 1 2 3 4 5 6 7 8 9 10 11 12; do tx "$TD" prompt "f00000$i" "prompt $i"; tx "$TD" asst "f10000$i" "answer $i"; done
+tx "$TD" tool f2000001 4
+tx "$TD" tool f2000002 5
+tx "$TD" sidechain-tool f2000003 6
+tx "$TD" tool f2000002 1   # a block the engine wrote again, its id the same: counted once
 run "$SMINOS" derive hd
-assert_contains "$OUT" "not derived" "a session with fewer than ten prompts is not derived"
-tx "$TD" prompt f0000010 "prompt 10"
+assert_contains "$OUT" "hd: not derived — 9 tool calls, needs 10" "a session whose model made nine tool calls is not derived, the count named"
+assert_not_contains "$(cat "$HPLOG/testhost.$HD.jsonl" 2>/dev/null)" "in-charge" "however many prompts its human typed, and however many calls a subagent made"
+tx "$TD" tool f2000004
 tx "$TD" peer f0000011 "a frame is not a prompt"
 run "$SMINOS" list --json
 MEMBERS_BEFORE="$(printf '%s' "$OUT" | grep -c '"session"')"
@@ -5394,20 +5418,64 @@ FORK_ID="$(sed -n 's/.*--session-id \([0-9a-f-]*\).*/\1/p' <<<"$FORK_ARGV")"
 assert_file_absent "$HPLOG/testhost.$FORK_ID.jsonl" "and the hook recorded nothing for the fork"
 run "$SMINOS" derive hd
 assert_contains "$OUT" "not derived" "a session derived within six hours is not derived again"
-# A user-named session with prompts enough and no line set: its name is its line.
+# Past the six hours, a session whose transcript was not written since its
+# line (a stopped one never retired, say) is not forked again: the same
+# conversation gives the same answer.
+python3 - "$HPLOG/testhost.$HD.jsonl" "$TD" <<'PY_IDLE'
+import json, os, sys, time
+rows = [json.loads(l) for l in open(sys.argv[1])]
+for e in rows:
+    if e.get("kind") == "in-charge":
+        e["ts"] = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(time.time() - 7 * 3600))
+open(sys.argv[1], "w").write("".join(json.dumps(e, ensure_ascii=False) + "\n" for e in rows))
+t = time.time() - 8 * 3600
+os.utime(sys.argv[2], (t, t))
+PY_IDLE
+HD_FORKS="$(grep -c -- "--resume $HD --fork-session" "$STUB_STATE/log/calls.log" || true)"
+run "$SMINOS" derive hd
+assert_contains "$OUT" "hd: not derived — no activity since its last line, " "a transcript unchanged since its line, past the six hours, is not derived again"
+assert_equals "$(grep -c -- "--resume $HD --fork-session" "$STUB_STATE/log/calls.log" || true)" "$HD_FORKS" "(no fork was started for it)"
+# Within one second: a transcript last written at .800 is idle for a line
+# written at .900 of the same second (the line's milliseconds count).
+python3 - "$HPLOG/testhost.$HD.jsonl" "$TD" <<'PY_SAME_SECOND'
+import json, os, sys, time
+whole = int(time.time() - 7 * 3600)
+rows = [json.loads(l) for l in open(sys.argv[1])]
+for e in rows:
+    if e.get("kind") == "in-charge":
+        e["ts"] = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(whole)) + ".900Z"
+open(sys.argv[1], "w").write("".join(json.dumps(e, ensure_ascii=False) + "\n" for e in rows))
+os.utime(sys.argv[2], (whole + 0.8, whole + 0.8))
+PY_SAME_SECOND
+run "$SMINOS" derive hd
+assert_contains "$OUT" "hd: not derived — no activity since its last line, " "a transcript written earlier in the same second as its line is idle too"
+assert_equals "$(grep -c -- "--resume $HD --fork-session" "$STUB_STATE/log/calls.log" || true)" "$HD_FORKS" "(no fork was started for it)"
+tx "$TD" asst f3000001 "one more turn"
+run "$SMINOS" derive hd
+assert_contains "$OUT" "hd: owns the stub tool" "once one more record is written, it is derived again"
+# A user-named session with tool calls enough and no line set: its name is its
+# line until it is derived, as it is; its name is left alone.
 HU=6e000009-0000-4000-8000-00000000006e
 hp_peer hu "$HU" user interactive
-for i in 1 2 3 4 5 6 7 8 9 10; do tx "$TXD/$HU.jsonl" prompt "u90000$i" "prompt $i"; done
-run "$SMINOS" derive hu
-assert_contains "$OUT" "hu: not derived — its human named it" "a user-named session is never derived"
+tx "$TXD/$HU.jsonl" tool u9000001 10
+run "$SMINOS" list --json
+assert_equals "$(json_row hu charge)|$(json_row hu charge_source)" "hu|name" "an owner-named member with no derived line has its name as its line"
+STUB_FORK_RESULT=$'Owns the user-named fixture.\nname: user-fixture-owner' run "$SMINOS" derive hu
+assert_contains "$OUT" "hu: Owns the user-named fixture." "a user-named session is derived"
+assert_equals "$(cat "$STUB_STATE/log/fork-prompt.txt")" "In one line: what is this session in charge of in this project — its standing responsibility, not its latest step? Answer with the line only." \
+  "with today's question, verbatim"
+assert_not_contains "$OUT" "hu: name" "and no name proposed"
+assert_not_contains "$OUT" "no name" "nor anything said of one"
+assert_not_contains "$(grep '"in-charge"' "$HPLOG/testhost.$HU.jsonl")" '"name"' "its derived line carries none"
+assert_file_absent "$SMINOS_HOME/names/$HU.json" "nor is a name pending for it"
+assert_equals "$(json_row hu charge)|$(json_row hu charge_source)" "Owns the user-named fixture.|derived" "after its first derive, its line is the derived one"
 run "$SMINOS" derive --all
-assert_contains "$OUT" "hu: not derived — its human named it" "nor by --all"
-assert_not_contains "$(cat "$HPLOG/testhost.$HU.jsonl")" "in-charge" "and holds no line"
+assert_contains "$OUT" "hu: not derived — derived" "--all leaves it to the six-hour spacing like any member"
 # A fork that fails prints its stderr's tail and writes nothing.
 HE=6a000007-0000-4000-8000-00000000006a
 TE="$TXD/$HE.jsonl"
 hp_peer he "$HE" derived interactive
-for i in 1 2 3 4 5 6 7 8 9 10; do tx "$TE" prompt "g0000$i" "prompt $i"; done
+tx "$TE" tool g0000001 10
 TX_BEFORE="$(find "$HOME/.claude/projects" -name '*.jsonl' | wc -l | tr -d ' ')"
 STUB_FORK_FAIL=1 run "$SMINOS" derive he
 assert_rc 1 "$RC" "a failed fork exits 1"
@@ -5419,6 +5487,23 @@ STUB_FORK_CRASH=1 run "$SMINOS" derive he
 assert_rc 1 "$RC" "a fork that crashes without printing anything exits 1"
 assert_not_contains "$(cat "$HPLOG/testhost.$HE.jsonl")" "in-charge" "writing nothing"
 assert_equals "$(find "$HOME/.claude/projects" -name '*.jsonl' | wc -l | tr -d ' ')" "$TX_BEFORE" "and leaves no transcript: its id was pinned before it started"
+# A failed fork holds its member out of --all (the daemon's, every five
+# minutes) for an hour; a derive that names it tries at once; a success clears it.
+he_forks() { grep -c -- "--resume $HE --fork-session" "$STUB_STATE/log/calls.log" || true; }
+assert_file_exists "$SMINOS_HOME/derive-failed/$HE" "a failed fork leaves a stamp"
+HE_FORKS="$(he_forks)"
+run "$SMINOS" derive --all
+assert_contains "$OUT" "he: not derived — its last fork failed" "--all does not fork it again within the hour"
+assert_equals "$(he_forks)" "$HE_FORKS" "(no fork was started for it)"
+python3 -c 'import os, sys, time; t = time.time() - 3601; os.utime(sys.argv[1], (t, t))' "$SMINOS_HOME/derive-failed/$HE" 2>/dev/null || true
+STUB_FORK_FAIL=1 run "$SMINOS" derive --all
+assert_equals "$(he_forks)" "$((HE_FORKS + 1))" "an hour after the failure, --all tries it again"
+run "$SMINOS" derive --all
+assert_contains "$OUT" "he: not derived — its last fork failed" "and, failing again, holds it out for another hour"
+run "$SMINOS" derive he
+assert_rc 0 "$RC" "a derive that names the member does not wait for the hour"
+assert_contains "$OUT" "he: owns the stub tool" "and records its line"
+assert_file_absent "$SMINOS_HOME/derive-failed/$HE" "a derive that succeeds clears the stamp"
 # A headless or SDK run registers as interactive with an sdk-* entrypoint: no
 # member, whatever its kind — neither reconciliation nor the hook joins it.
 HH=6b000008-0000-4000-8000-00000000006b
@@ -5521,6 +5606,526 @@ SMNS_MEMBER="$MARK" hook_run Stop "$HR" "$R3" "$TXD/$HR.jsonl"
 assert_equals "$(hp_events "$HR")" "joined message:r1000002#0 " "and its Stop exports what it sent its human since"
 cd "$WORK"
 rm -f "$HOME/.claude/sessions/hp-"*.json
+
+# ---- charge names ----------------------------------------------------------------
+# derive names a session whose name the engine made up after what it is in
+# charge of, hands the name to the session through a pending file that
+# `name-due` checks, and reads every name it proposed as its own (spec
+# 2026-10-20-sminos-charge-names, M1).
+echo "charge names:"
+export SMINOS_HOME="$TEST_ROOT/cn-registry"
+mkdir -m 700 "$SMINOS_HOME"
+rm -f "$HOME/.claude/sessions/"*.json
+R4="$TEST_ROOT/cn-repo"
+mkdir -p "$R4" "$TEST_ROOT/cn-nowhere"
+gitq init -q "$R4"
+(cd "$R4" && "$SMINOS" project init --name cndemo >/dev/null)
+CNP="$(smns_id "$R4")"
+CNLOG="$SMINOS_HOME/projects/$CNP/log"
+CTX="$HOME/.claude/projects/cn-proj"
+mkdir -p "$CTX"
+cd "$R4"
+FORK_PROMPT="$STUB_STATE/log/fork-prompt.txt"
+DERIVE_PROMPT_TODAY="In one line: what is this session in charge of in this project — its standing responsibility, not its latest step? Answer with the line only."
+cn_record() { printf '%s' "$HOME/.claude/sessions/cn-${1:0:8}.json"; }
+cn_peer() { # name session nameSource [cwd] — the session's running engine record, one file per session
+  printf '{"pid":%s,"sessionId":"%s","name":"%s","nameSource":"%s","kind":"interactive","status":"idle","cwd":"%s"}\n' \
+    "$SOCK_PID" "$2" "$1" "$3" "${4:-$R4}" > "$(cn_record "$2")"
+}
+cn_member() { # name session nameSource — a running session whose model made ten tool calls
+  cn_peer "$1" "$2" "$3"
+  tx "$CTX/$2.jsonl" tool "${2:0:4}0001" 10
+}
+cn_charge() { # session → its latest in-charge event as "source|text|name"
+  python3 -c 'import json, sys
+rows = [json.loads(l) for l in open(sys.argv[1]) if "\"in-charge\"" in l]
+e = rows[-1] if rows else {}
+print("%s|%s|%s" % (e.get("source", ""), e.get("text", ""), e.get("name", "<none>")))' "$CNLOG/testhost.$1.jsonl" 2>/dev/null || true
+}
+cn_age() { # session → its in-charge events dated long ago: a derive is due again
+  [ -f "$CNLOG/testhost.$1.jsonl" ] || return 0
+  python3 - "$CNLOG/testhost.$1.jsonl" <<'PY'
+import json, sys
+rows = [json.loads(l) for l in open(sys.argv[1])]
+for e in rows:
+    if e.get("kind") == "in-charge":
+        e["ts"] = "2000-01-01T00:00:00.000Z"
+open(sys.argv[1], "w").write("".join(json.dumps(e, ensure_ascii=False) + "\n" for e in rows))
+PY
+}
+pending() { # session field → that field of the session's pending name, or <none>
+  python3 -c 'import json, sys
+try:
+    print(json.load(open(sys.argv[1])).get(sys.argv[2], ""))
+except FileNotFoundError:
+    print("<none>")' "$SMINOS_HOME/names/$1.json" "$2"
+}
+write_pending() { # session name from — a pending name, as derive writes one
+  [ -d "$SMINOS_HOME/names" ] || mkdir -m 700 "$SMINOS_HOME/names"
+  python3 -c 'import json, sys
+json.dump({"session": sys.argv[2], "name": sys.argv[3], "from": sys.argv[4], "line": "a line", "ts": "2026-10-20T00:00:00Z"},
+          open(sys.argv[1], "w"))' "$SMINOS_HOME/names/$1.json" "$1" "$2" "$3"
+}
+renamed_to() { # session alias → how many of its renamed events name that alias, as "<count> <name_source>…"
+  python3 -c 'import json, sys
+rows = [json.loads(l) for l in open(sys.argv[1]) if "\"renamed\"" in l]
+hits = [e.get("name_source", "") for e in rows if e.get("alias") == sys.argv[2]]
+print(" ".join([str(len(hits))] + hits))' "$CNLOG/testhost.$1.jsonl" "$2" 2>/dev/null || true
+}
+last_joined_source() { # session → the name_source of its latest joined event
+  grep '"joined"' "$CNLOG/testhost.$1.jsonl" | tail -1 | python3 -c 'import json, sys; print(json.loads(sys.stdin.read())["name_source"])'
+}
+# Another machine reading the same log: its own HOME (none of this machine's
+# engine records), its own name; the log, the project and the registry shared.
+CN_OTHER_HOME="$TEST_ROOT/cn-other"
+mkdir -p "$CN_OTHER_HOME/.claude/sessions"
+other_row() { # alias field → that field of the alias's row in list --json, as the other machine reads it
+  HOME="$CN_OTHER_HOME" DAEMON_HOST=othermachine "$SMINOS" list --json | python3 -c 'import json, sys
+rows = [d for d in json.load(sys.stdin) if d["alias"] == sys.argv[1]]
+v = rows[0].get(sys.argv[2]) if rows else "<no row>"
+print(v if isinstance(v, str) else json.dumps(v))' "$1" "$2"
+}
+
+# Acceptance 1: a member under a name the engine made up is named after its line.
+CA=0c000001-0000-4000-8000-0000000000c1
+CB=0c000002-0000-4000-8000-0000000000c2
+CE=0c00000e-0000-4000-8000-0000000000ce
+cn_member cnrepo-a1 "$CA" derived
+cn_member cnrepo-b2 "$CB" derived
+cn_peer elsewhere-session "$CE" derived "$TEST_ROOT/cn-nowhere"   # this machine's, in no project
+STUB_FORK_RESULT=$'Owns the desk\'s uplink.\nname: desk-uplink-owner' run "$SMINOS" derive cnrepo-a1
+assert_rc 0 "$RC" "derive names a member whose name the engine made up"
+assert_contains "$OUT" "cnrepo-a1: Owns the desk's uplink." "printing its line"
+assert_contains "$OUT" "cnrepo-a1: name desk-uplink-owner" "then the name, on a line of its own"
+assert_equals "$(cn_charge "$CA")" "derived|Owns the desk's uplink.|desk-uplink-owner" "the derived in-charge event carries the name"
+assert_equals "$(pending "$CA" name)|$(pending "$CA" from)" "desk-uplink-owner|cnrepo-a1" "a pending file hands the name over, from the engine name it replaces"
+assert_equals "$(pending "$CA" session)|$(pending "$CA" line)" "$CA|Owns the desk's uplink." "naming the session and its line"
+assert_equals "$(mode_of "$SMINOS_HOME/names")|$(mode_of "$SMINOS_HOME/names/$CA.json")" "0700|0600" "kept private"
+assert_contains "$(cat "$FORK_PROMPT")" 'On a second line, name the session after that responsibility: `name: ` followed by 2 to 4 lowercase English words joined by hyphens' "the fork is asked for a name"
+assert_contains "$(cat "$FORK_PROMPT")" "Taken by other sessions: cnrepo-b2, elsewhere-session." "told the names the project's other members and this machine's other sessions hold"
+assert_not_contains "$(cat "$FORK_PROMPT")" "Its current name is" "with no name proposed yet, none to keep"
+assert_contains "$(cat "$FORK_PROMPT")" $'\nAnswer with the two lines only.' "and asked for two lines"
+
+# Acceptance 7, then 5: name-due, and the name applied, read as the engine
+# reads it (user), its line still the derived one.
+run "$SMINOS" name-due --session "$CA"
+assert_equals "$RC|$OUT" "0|desk-uplink-owner" "name-due prints the pending name while the engine holds the name it replaces"
+run "$SMINOS" name-due --session "$CB"
+assert_equals "$RC|$OUT" "0|" "nothing for a session with no pending name"
+cn_peer desk-uplink-owner "$CA" user   # the mod's /rename: the engine registers it as any /rename
+run "$SMINOS" name-due --session "$CA"
+assert_equals "$RC|$OUT" "0|" "nothing once the engine holds the name"
+assert_equals "$(json_row desk-uplink-owner name_source)" "user" "the member lists under its charge name, source user, as the engine says"
+assert_equals "$(json_row desk-uplink-owner charge)|$(json_row desk-uplink-owner charge_source)" "Owns the desk's uplink.|derived" \
+  "its in-charge line the derived one: a derived line outranks the name"
+run "$SMINOS" daemon tick
+run "$SMINOS" daemon tick
+assert_equals "$(renamed_to "$CA" desk-uplink-owner)" "1 user" "the daemon's tick publishes the rename once, source user"
+assert_equals "$(other_row desk-uplink-owner machine)|$(other_row desk-uplink-owner local)" "testhost|false" "(the other machine reads the member as testhost's)"
+assert_equals "$(other_row desk-uplink-owner name_source)|$(other_row desk-uplink-owner charge_source)" "user|derived" \
+  "another machine reads the same label and the same line"
+rm -f "$(cn_record "$CA")"
+run "$SMINOS" list   # the session ends: retired
+cn_peer desk-uplink-owner "$CA" user   # and is resumed under the name it restored
+run "$SMINOS" list
+assert_equals "$(last_joined_source "$CA")" "user" "a resumed session joins again under the engine's label"
+
+# Acceptance 3: the name holds from one derive to the next.
+cn_age "$CA"
+STUB_FORK_RESULT=$'Owns the desk\'s uplink.\nname: desk-uplink-owner' run "$SMINOS" derive desk-uplink-owner
+assert_not_contains "$OUT" "its human named it" "derive does not take the resumed name for its human's"
+assert_contains "$(cat "$FORK_PROMPT")" 'Its current name is `desk-uplink-owner`: keep it unless it no longer describes the standing responsibility well, because the responsibility changed or became clearer than when the name was chosen.' \
+  "the fork is told to keep the name it holds, unless the responsibility changed or became clearer"
+assert_contains "$OUT" "desk-uplink-owner: name desk-uplink-owner" "and keeps it"
+assert_equals "$(pending "$CA" name)" "<none>" "no pending file remains: the engine holds the name already"
+cn_age "$CA"
+STUB_FORK_RESULT=$'Owns the desk\'s uplink and its retries.\nname: desk-uplink-steward' run "$SMINOS" derive desk-uplink-owner
+assert_equals "$(pending "$CA" name)|$(pending "$CA" from)" "desk-uplink-steward|desk-uplink-owner" "a new name is pending, from the name the engine holds"
+# Acceptance 5's sequence: the new name is taken before it applies.
+cn_peer desk-uplink-steward "$CB" user
+run "$SMINOS" name-due --session "$CA"
+assert_equals "$RC|$OUT" "0|" "a pending name another session came to hold is not due"
+assert_equals "$(json_row desk-uplink-owner name_source)" "user" "the session still lists under its applied name"
+cn_age "$CA"
+STUB_FORK_RESULT=$'Owns the desk\'s uplink and its retries.\nname: desk-uplink-keeper' run "$SMINOS" derive desk-uplink-owner
+assert_not_contains "$OUT" "not derived" "its next derive runs"
+assert_contains "$(cat "$FORK_PROMPT")" "Taken by other sessions: desk-uplink-steward, elsewhere-session." "told the name it proposed is taken"
+assert_contains "$(cat "$FORK_PROMPT")" 'Its current name is `desk-uplink-owner`' "and to keep the name it holds"
+assert_equals "$(pending "$CA" name)|$(pending "$CA" from)" "desk-uplink-keeper|desk-uplink-owner" "its new proposal is pending"
+run "$SMINOS" name-due --session "$CA"
+assert_equals "$OUT" "desk-uplink-keeper" "and due"
+cn_peer desk-uplink-keeper "$CA" user
+assert_equals "$(json_row desk-uplink-keeper name_source)" "user" "applied, it lists under it"
+# The owner renames it to a name sminos never proposed: their name stays, and
+# derive goes on deriving its line alone.
+cn_peer my-own-desk "$CA" user
+run "$SMINOS" name-due --session "$CA"
+assert_equals "$RC|$OUT" "0|" "a pending name is not due once the engine holds neither name"
+assert_equals "$(json_row my-own-desk name_source)" "user" "the owner's name lists as user too"
+cn_age "$CA"
+STUB_FORK_RESULT=$'Owns the desk\'s uplink.\nname: desk-uplink-renamer' run "$SMINOS" derive my-own-desk
+assert_not_contains "$OUT" "not derived" "its next derive runs"
+assert_equals "$(cat "$FORK_PROMPT")" "$DERIVE_PROMPT_TODAY" "with today's question, verbatim"
+assert_equals "$(cn_charge "$CA")" "derived|Owns the desk's uplink.|<none>" "its line recorded with no name"
+assert_equals "$(pending "$CA" name)" "desk-uplink-keeper" "and no new name handed over"
+run "$SMINOS" name-due --session "$CA"
+assert_equals "$RC|$OUT" "0|" "nor is any due"
+assert_equals "$(json_row my-own-desk charge)" "Owns the desk's uplink." "its line is the derived one"
+# sminos has no name source of its own.
+assert_equals "$(cat "$CNLOG"/*.jsonl | grep -c '"name_source": "charge"' || true)" "0" "no log event carries a charge source"
+run "$SMINOS" list --json
+assert_not_contains "$OUT" '"name_source": "charge"' "nor does any member row"
+
+# Acceptance 4: a bad name is dropped, the line kept.
+CD=0c000004-0000-4000-8000-0000000000c4
+cn_member cnrepo-d4 "$CD" derived
+LONG_NAME="$(printf 'a%.0s' $(seq 1 30))-$(printf 'b%.0s' $(seq 1 29))"
+bad_name() { # answer's name line, the reason it gives, label
+  cn_age "$CD"
+  STUB_FORK_RESULT="Watches the parser's fixtures.${1:+$'\n'$1}" run "$SMINOS" derive cnrepo-d4
+  assert_equals "$(cn_charge "$CD")" "derived|Watches the parser's fixtures.|<none>" "$3: the line is recorded with no name"
+  assert_contains "$OUT" "cnrepo-d4: no name: $2" "$3: and derive says why"
+  assert_equals "$(pending "$CD" name)" "<none>" "$3: no pending file is written"
+}
+bad_name "name: Desk Uplink" "'desk uplink' is not 2 to 4 lowercase words joined by hyphens" "spaces"
+bad_name "name: one-two-three-four-five" "'one-two-three-four-five' is not 2 to 4" "five words"
+bad_name "name: $LONG_NAME" "'$LONG_NAME' is longer than 48 characters" "60 characters"
+bad_name "name: desk-uplink-steward" "'desk-uplink-steward' is taken by another session" "a taken name"
+bad_name "" "the answer has no name line" "no name line"
+cn_age "$CD"
+STUB_FORK_RESULT=$'<message>name: `Parser-Fixture-Watch`.\nWatches the parser\'s fixtures.</message>' run "$SMINOS" derive cnrepo-d4
+assert_equals "$(cn_charge "$CD")" "derived|Watches the parser's fixtures.|parser-fixture-watch" \
+  "a name line is found anywhere in the answer's mark, lowercased, its quotes and trailing period trimmed"
+
+# Acceptance 2: names sminos must not touch.
+not_named() { # alias session label — its derive asks today's question and names nothing
+  STUB_FORK_RESULT=$'Runs the thing.\nname: some-fresh-name' run "$SMINOS" derive "$1"
+  assert_not_contains "$OUT" "not derived" "$3: derive runs"
+  assert_equals "$(cat "$FORK_PROMPT")" "$DERIVE_PROMPT_TODAY" "$3: the fork is asked today's question, verbatim"
+  assert_equals "$(cn_charge "$2")" "derived|Runs the thing.|<none>" "$3: the line is recorded with no name"
+  assert_not_contains "$OUT" "no name" "$3: with nothing to say of a name"
+  assert_equals "$(pending "$2" name)" "<none>" "$3: and no pending file"
+}
+CP=0c000005-0000-4000-8000-0000000000c5
+CC=0c000006-0000-4000-8000-0000000000c6
+CH=0c000007-0000-4000-8000-0000000000c7
+CU=0c000013-0000-4000-8000-0000000000d3
+cn_member host-given "$CP" peer
+cn_member cnrepo-c6-2 "$CC" collision
+cn_member hook-given-name "$CH" hook
+cn_member owner-given-name "$CU" user
+not_named owner-given-name "$CU" "a name its owner gave (user), derived all the same"
+not_named host-given "$CP" "a name a host gave (peer)"
+not_named cnrepo-c6-2 "$CC" "a collision name"
+not_named hook-given-name "$CH" "a hook's name sminos never proposed"
+# Renamed by its owner after it joined under a generated alias, its row still
+# lists that alias: the engine record decides.
+CG=0c000008-0000-4000-8000-0000000000c8
+CS=0c000009-0000-4000-8000-0000000000c9
+cn_member cnrepo-g8 "$CG" derived
+cn_member cnrepo-s9 "$CS" derived
+run "$SMINOS" list
+cn_peer owners-pick "$CG" collision   # the owner's /rename collided
+cn_peer cnrepo-d4 "$CS" user   # the owner's /rename shadows another member's alias
+assert_equals "$(json_row cnrepo-g8 name_source)|$(json_row cnrepo-s9 name_source)" "derived|derived" "(both rows still list the old generated alias)"
+not_named cnrepo-g8 "$CG" "an owner's rename that collided"
+not_named cnrepo-s9 "$CS" "an owner's rename that shadows another member"
+# A seat with no set line.
+CT=0c00000a-0000-4000-8000-0000000000ca
+cn_member cnseat-engine "$CT" derived
+"$SMINOS" seat add cn-repo cnseat --session "$CT" >/dev/null
+not_named cnseat "$CT" "a seat"
+# A member that stopped after its row was read.
+CZ=0c00000b-0000-4000-8000-0000000000cb
+cn_member cnrepo-z0 "$CZ" derived
+run "$SMINOS" list
+set +e
+OUT="$(STUB_FORK_RESULT=$'Runs the thing.\nname: some-fresh-name' python3 - "$SMINOS_PY" "$CNP" "$CZ" "$(cn_record "$CZ")" 2>&1 <<'PY'
+import importlib.util, os, sys
+spec = importlib.util.spec_from_file_location("sminos", sys.argv[1]); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+p = mod.find_project(sys.argv[2])
+m = next(x for x in mod.members(p) if x.session == sys.argv[3])
+os.unlink(sys.argv[4])
+mod.derive_member(p, m)
+PY
+)"
+set -e
+assert_equals "$(cat "$FORK_PROMPT")" "$DERIVE_PROMPT_TODAY" "a stopped member: the fork is asked today's question, verbatim"
+assert_equals "$(cn_charge "$CZ")" "derived|Runs the thing.|<none>" "a stopped member: the line is recorded with no name"
+assert_equals "$(pending "$CZ" name)" "<none>" "a stopped member: and no pending file"
+# The owner renames the session while its fork runs.
+CR=0c00000c-0000-4000-8000-0000000000cc
+cn_member cnrepo-r1 "$CR" derived
+STUB_FORK_RENAME="$(cn_record "$CR")=owners-late-name" STUB_FORK_RESULT=$'Guards the race.\nname: race-guard-owner' \
+  run "$SMINOS" derive cnrepo-r1
+assert_contains "$OUT" "cnrepo-r1: no name: renamed during derive" "a rename during the fork discards the name"
+assert_equals "$(cn_charge "$CR")" "derived|Guards the race.|<none>" "the line is recorded with no name"
+assert_equals "$(pending "$CR" name)" "<none>" "no pending file is written"
+run "$SMINOS" name-due --session "$CR"
+assert_equals "$RC|$OUT" "0|" "and name-due prints nothing"
+
+# Acceptance 7: when a pending name is not due.
+CF=0c00000d-0000-4000-8000-0000000000cd
+cn_peer cnrepo-f6 "$CF" derived
+write_pending "$CF" remote-held-name cnrepo-f6
+run "$SMINOS" name-due --session "$CF"
+assert_equals "$RC|$OUT" "0|remote-held-name" "(a pending name, free, is due)"
+CFR=0d00000f-0000-4000-8000-0000000000df
+python3 - "$SMINOS_PY" "$CNP" "$CFR" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("sminos", sys.argv[1]); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+p, sid = mod.find_project(sys.argv[2]), sys.argv[3]
+mod._append(p, "elsewhere/" + sid, [
+    {"kind": "joined", "session": sid, "alias": "remote-held-name", "name_source": "user", "machine": "elsewhere",
+     "cwd": "/srv/x", "worktree": "", "role": "", "seat": "", "by": "", "session_kind": "interactive",
+     "repo": "x", "branch": "main"}])
+PY
+run "$SMINOS" name-due --session "$CF"
+assert_equals "$RC|$OUT" "0|" "not once another machine's member of the project holds it"
+write_pending "$CF" elsewhere-session cnrepo-f6
+run "$SMINOS" name-due --session "$CF"
+assert_equals "$RC|$OUT" "0|" "nor while another running session of this machine holds it as its engine name"
+write_pending "$CF" fresh-free-name cnrepo-f6
+rm -f "$(cn_record "$CF")"
+run "$SMINOS" name-due --session "$CF"
+assert_equals "$RC|$OUT" "0|" "nor when no record of the session runs"
+run "$SMINOS" name-due
+assert_rc 2 "$RC" "name-due without --session is a usage error"
+
+# name-due judges the session as derive does, as it stands now: an owner's
+# /rename to the very name it had, or a seat it took since, ends the naming.
+CO=0c000010-0000-4000-8000-0000000000d0
+cn_member cnrepo-o5 "$CO" derived
+STUB_FORK_RESULT=$'Owns the owner race.\nname: owner-race-name' run "$SMINOS" derive cnrepo-o5
+run "$SMINOS" name-due --session "$CO"
+assert_equals "$RC|$OUT" "0|owner-race-name" "(a proposal for a generated name is due)"
+cn_peer cnrepo-o5 "$CO" user   # the owner /renames it to the name it already had
+run "$SMINOS" name-due --session "$CO"
+assert_equals "$RC|$OUT" "0|" "not once the owner gave the session the very name it had"
+CQ=0c000011-0000-4000-8000-0000000000d1
+cn_member cnrepo-q7 "$CQ" derived
+STUB_FORK_RESULT=$'Owns the seated work.\nname: seated-later-name' run "$SMINOS" derive cnrepo-q7
+run "$SMINOS" name-due --session "$CQ"
+assert_equals "$RC|$OUT" "0|seated-later-name" "(a proposal for a seat-less session is due)"
+"$SMINOS" seat add cn-repo cnseatq --session "$CQ" >/dev/null
+run "$SMINOS" name-due --session "$CQ"
+assert_equals "$RC|$OUT" "0|" "nor once the session took a seat"
+
+# A name the session held before a seat took it binds that session, as its
+# short does, so a refill between the lookup and the lock is refused
+# (locked_fresh) rather than acted on.
+CW=0c000012-0000-4000-8000-0000000000d2
+cn_member cnrepo-w1 "$CW" derived
+run "$SMINOS" list
+"$SMINOS" seat add cn-repo cnseatw --session "$CW" >/dev/null
+bound_by() { # name → find_target's kind and the session it binds
+  python3 - "$SMINOS_PY" "$1" 2>/dev/null <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("sminos", sys.argv[1]); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+t = mod.find_target(sys.argv[2])
+print("%s %s" % (t[0], t[2]))
+PY
+}
+assert_equals "$(bound_by cnrepo-w1)" "seat $CW" "a seat found by an alias its session held before binds that session"
+assert_equals "$(bound_by cnseatw)" "seat " "while the seat's own name binds the seat"
+
+# derive --all sweeps pending names a week old.
+write_pending "$CB" stale-old-name desk-uplink-steward
+write_pending "$CS" fresh-new-name desk-uplink-steward
+python3 -c 'import os, sys, time; t = time.time() - 8 * 86400; os.utime(sys.argv[1], (t, t))' "$SMINOS_HOME/names/$CB.json"
+run "$SMINOS" derive --all
+assert_file_absent "$SMINOS_HOME/names/$CB.json" "derive --all removes a pending name older than a week"
+assert_file_exists "$SMINOS_HOME/names/$CS.json" "and keeps a newer one"
+
+# derive --all forks one member after another, each fork up to two minutes:
+# members with no line go first, and the daemon's --refreshes caps the members
+# with a line it forks, oldest line first, so a first line never waits long.
+# Its own HOME and registry, so only these members are known.
+SCH="$TEST_ROOT/sched"
+SCH_ENV=(HOME="$SCH/home" SMINOS_HOME="$SCH/registry")
+mkdir -p "$SCH/home/.claude/sessions" "$SCH/home/.claude/projects/sched" "$SCH/repo"
+mkdir -m 700 "$SCH/registry"
+gitq init -q "$SCH/repo"
+(cd "$SCH/repo" && env "${SCH_ENV[@]}" "$SMINOS" project init --name sched >/dev/null)
+SCHP="$(smns_id "$SCH/repo")"
+sch_member() { # name session — a running session of the project whose model made ten tool calls
+  printf '{"pid":%s,"sessionId":"%s","name":"%s","nameSource":"derived","kind":"interactive","status":"idle","cwd":"%s"}\n' \
+    "$SOCK_PID" "$2" "$1" "$SCH/repo" > "$SCH/home/.claude/sessions/$1.json"
+  tx "$SCH/home/.claude/projects/sched/$2.jsonl" tool "${2:0:8}" 10
+  (cd "$SCH/repo" && env "${SCH_ENV[@]}" "$SMINOS" list >/dev/null)
+}
+sch_line() { # session ts — a derived line dated ts
+  (cd "$SCH/repo" && env "${SCH_ENV[@]}" python3 - "$SMINOS_PY" "$SCHP" "$1" "$2" <<'PY'
+import importlib.util, json, os, sys
+spec = importlib.util.spec_from_file_location("sminos", sys.argv[1]); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+p = mod.find_project(sys.argv[2])
+mod.lifecycle(p, sys.argv[3], "in-charge", text="an old line", source="derived")
+path = os.path.join(os.environ["SMINOS_HOME"], "projects", sys.argv[2], "log", "testhost.%s.jsonl" % sys.argv[3])
+rows = [json.loads(l) for l in open(path)]
+for e in rows:
+    if e.get("kind") == "in-charge":
+        e["ts"] = sys.argv[4]
+open(path, "w").write("".join(json.dumps(e, ensure_ascii=False) + "\n" for e in rows))
+PY
+  )
+}
+SF=0e000001-0000-4000-8000-0000000000e1
+sch_member sched-first "$SF"   # joined first: listed last, behind every refresh
+for i in 1 2 3 4 5; do
+  sch_member "sched-old$i" "0e00001$i-0000-4000-8000-0000000000f$i"
+done
+sch_line 0e000011-0000-4000-8000-0000000000f1 "2000-01-03T00:00:00.000Z"
+sch_line 0e000012-0000-4000-8000-0000000000f2 "2000-01-01T00:00:00.000Z"   # the oldest line
+sch_line 0e000013-0000-4000-8000-0000000000f3 "2000-01-04T00:00:00.000Z"
+sch_line 0e000014-0000-4000-8000-0000000000f4 "2000-01-02T00:00:00.000Z"
+sch_line 0e000015-0000-4000-8000-0000000000f5 "1999-12-31T00:00:00.000Z"   # older still, but idle since
+python3 -c 'import os, sys; t = 946512000; os.utime(sys.argv[1], (t, t))' "$SCH/home/.claude/projects/sched/0e000015-0000-4000-8000-0000000000f5.jsonl"
+sch_forks() { # → the sessions the forks since line $1 of calls.log resumed, in order
+  tail -n +"$(( $1 + 1 ))" "$STUB_STATE/log/calls.log" | sed -n 's/.*--resume \([0-9a-f-]*\) --fork-session.*/\1/p' | tr '\n' ' '
+}
+CALLS_AT="$(wc -l < "$STUB_STATE/log/calls.log" | tr -d ' ')"
+STUB_FORK_SLEEP=1 run env "${SCH_ENV[@]}" "$SMINOS" derive --all --refreshes 2
+assert_rc 0 "$RC" "a capped derive --all exits 0"
+assert_equals "$(sch_forks "$CALLS_AT")" "$SF 0e000012-0000-4000-8000-0000000000f2 0e000014-0000-4000-8000-0000000000f4 " \
+  "the member with no line is forked first, then only two refreshes, the oldest lines first"
+assert_contains "$OUT" "sched-old1: not derived — left to the next run, which refreshes at most 2" "the other refreshes are left to the next run"
+assert_contains "$OUT" "sched-old3: not derived — left to the next run, which refreshes at most 2" "both of them"
+assert_contains "$OUT" "sched-old5: not derived — no activity since its last line" \
+  "a member idle since its line is refused, taking no refresh, though its line is the oldest"
+CALLS_AT="$(wc -l < "$STUB_STATE/log/calls.log" | tr -d ' ')"
+run env "${SCH_ENV[@]}" "$SMINOS" derive --all
+assert_equals "$(sch_forks "$CALLS_AT")" "0e000011-0000-4000-8000-0000000000f1 0e000013-0000-4000-8000-0000000000f3 " \
+  "a derive --all with no cap forks every member it finds due"
+run env "${SCH_ENV[@]}" "$SMINOS" derive "sched-first" --refreshes 2
+assert_rc 2 "$RC" "--refreshes goes with --all only"
+
+# Acceptance 8: an alias a member held before still reaches it, behind every
+# current alias, and the sender is told the name it goes by now (§4).
+echo "former aliases:"
+FAR="$TEST_ROOT/fa-repo"
+FAO="$TEST_ROOT/fa-other"
+mkdir -p "$FAR" "$FAO"
+gitq init -q "$FAR"
+gitq init -q "$FAO"
+(cd "$FAR" && "$SMINOS" project init --name fademo >/dev/null)
+(cd "$FAO" && "$SMINOS" project init --name faother >/dev/null)
+FAP="$(smns_id "$FAR")"
+FALOG="$SMINOS_HOME/projects/$FAP/log"
+fa_peer() { # name session cwd inbox — a running session its owner named, with an inbox of its own
+  [ -S "$TEST_ROOT/in-$4.sock" ] || start_inbox "$4"
+  printf '{"pid":%s,"sessionId":"%s","name":"%s","nameSource":"user","kind":"interactive","status":"idle","cwd":"%s","messagingSocketPath":"%s"}\n' \
+    "$SOCK_PID" "$2" "$1" "$3" "$TEST_ROOT/in-$4.sock" > "$HOME/.claude/sessions/fa-$4.json"
+}
+FS=0fa00001-0000-4000-8000-0000000000f1
+FT=0fa00002-0000-4000-8000-0000000000f2
+FX=0fa00003-0000-4000-8000-0000000000f3
+FU=0fa00004-0000-4000-8000-0000000000f4
+cd "$FAR"
+fa_peer fa-sender "$FS" "$FAR" fa-s
+fa_peer oldname "$FT" "$FAR" fa-t
+fa_peer fa-outsider "$FX" "$FAO" fa-x
+run "$SMINOS" list
+fa_peer newname "$FT" "$FAR" fa-t   # its owner renames it
+run "$SMINOS" daemon tick
+assert_contains "$(grep '"renamed"' "$FALOG/testhost.$FT.jsonl")" '"alias": "newname"' "(the rename is in the log)"
+CLAUDE_CODE_SESSION_ID="$FS" run "$SMINOS" say "@oldname still there?"
+assert_rc 0 "$RC" "a tag of an alias the member held before is accepted"
+assert_contains "$OUT" "note: @oldname is now @newname#${FT:0:8}" "and the sender is told the name it goes by now"
+assert_contains "$(inbox fa-t)" "still there?" "the message reaches the renamed member"
+assert_contains "$(tail -1 "$FALOG/testhost.$FS.jsonl")" "\"session\": \"$FT\", \"alias\": \"newname\"" "recorded to it under its alias now"
+FA_STDOUT="$(CLAUDE_CODE_SESSION_ID="$FS" "$SMINOS" say "@oldname once more" 2>/dev/null || true)"
+assert_not_contains "$FA_STDOUT" "note:" "the note is on stderr: stdout is unchanged"
+CLAUDE_CODE_SESSION_ID="$FX" run_in "$FAO" "$SMINOS" say "@oldname#${FT:0:6} from another project"
+assert_rc 0 "$RC" "@old#short reaches it from another project"
+assert_contains "$OUT" "note: @oldname is now @fademo/newname#${FT:0:8}" "the note naming it with its project"
+assert_contains "$(inbox fa-t)" "from another project" "and the message arrives"
+CLAUDE_CODE_SESSION_ID="$FX" run_in "$FAO" "$SMINOS" say "@oldname bare"
+assert_rc 4 "$RC" "a bare former alias still reaches only the sender's project"
+run "$SMINOS" status oldname "reading the rename"
+assert_rc 0 "$RC" "a member verb (find_target) reaches it by its former alias"
+assert_contains "$OUT" "note: @oldname is now @newname#${FT:0:8}" "with the note"
+assert_contains "$(tail -1 "$FALOG/testhost.$FT.jsonl")" '"kind": "status", "session": "'"$FT"'", "text": "reading the rename"' "on the renamed member"
+run "$SMINOS" steer oldname "keep going"
+assert_contains "$OUT" "note: @oldname is now @newname#${FT:0:8}" "steer, a member verb, says so too"
+run "$SMINOS" status fademo/oldname "qualified"
+assert_rc 0 "$RC" "<project>/<old> reaches it"
+assert_contains "$OUT" "note: @oldname is now @newname#${FT:0:8}" "with the note"
+# A current alias always wins.
+fa_peer oldname "$FU" "$FAR" fa-u
+run "$SMINOS" list
+assert_equals "$(json_row oldname session)" "$FU" "(another session now goes by the name)"
+: > "$TEST_ROOT/in-fa-t.received"
+CLAUDE_CODE_SESSION_ID="$FS" run "$SMINOS" say "@oldname to the holder"
+assert_rc 0 "$RC" "a tag of a name a member holds now"
+assert_not_contains "$OUT" "note:" "prints no note"
+assert_contains "$(inbox fa-u)" "to the holder" "and reaches the member that holds it now"
+assert_equals "$(inbox fa-t)" "" "not the one that held it before"
+run "$SMINOS" status oldname "the holder"
+assert_contains "$(tail -1 "$FALOG/testhost.$FU.jsonl")" '"text": "the holder"' "find_target too takes the current holder"
+rm -f "$HOME/.claude/sessions/fa-fa-u.json"
+run "$SMINOS" list   # it ends: retired
+# Two members held a name before: the more recent holder gets it.
+FV=0fa00005-0000-4000-8000-0000000000f5
+FW=0fa00006-0000-4000-8000-0000000000f6
+FY=0fa00007-0000-4000-8000-0000000000f7
+FZ=0fa00008-0000-4000-8000-0000000000f8
+python3 - "$SMINOS_PY" "$FAP" "$FV" "$FW" "$FY" "$FZ" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("sminos", sys.argv[1]); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+p = mod.find_project(sys.argv[2])
+
+def event(sid, kind, alias, ts):
+    mod.now = lambda ms=False: ts
+    fields = {"session": sid, "alias": alias, "name_source": "user"}
+    if kind == "joined":
+        fields.update({"machine": "elsewhere", "cwd": "/srv/x", "worktree": "", "role": "", "seat": "", "by": "",
+                       "session_kind": "interactive", "repo": "x", "branch": "main"})
+    mod._append(p, "elsewhere/" + sid, [{"kind": kind, **fields}])
+
+v, w, y, z = sys.argv[3:7]
+event(v, "joined", "twice-held", "2026-10-01T00:00:00.000Z")
+event(v, "renamed", "vee-now", "2026-10-02T00:00:00.000Z")
+event(w, "joined", "twice-held", "2026-10-03T00:00:00.000Z")
+event(w, "renamed", "wee-now", "2026-10-04T00:00:00.000Z")
+event(y, "joined", "tie-held", "2026-10-05T00:00:00.000Z")
+event(y, "renamed", "why-now", "2026-10-06T00:00:00.000Z")
+event(z, "joined", "tie-held", "2026-10-05T00:00:00.000Z")
+event(z, "renamed", "zed-now", "2026-10-06T00:00:00.000Z")
+PY
+CLAUDE_CODE_SESSION_ID="$FS" run "$SMINOS" say "@twice-held which of you"
+assert_rc 0 "$RC" "a name two members held before"
+assert_contains "$(tail -1 "$FALOG/testhost.$FS.jsonl")" "\"session\": \"$FW\", \"alias\": \"wee-now\"" "reaches the one that held it last"
+assert_contains "$OUT" "note: @twice-held is now @wee-now#${FW:0:8}" "naming it"
+CLAUDE_CODE_SESSION_ID="$FS" run "$SMINOS" say "@tie-held which of you"
+assert_rc 4 "$RC" "two members that last held it at the same time are refused as ambiguous"
+assert_contains "$OUT" "why-now#${FY:0:8}" "naming the one"
+assert_contains "$OUT" "zed-now#${FZ:0:8}" "and the other"
+# A retired member's former alias reaches nothing.
+rm -f "$HOME/.claude/sessions/fa-fa-t.json"
+run "$SMINOS" list   # it ends: retired
+CLAUDE_CODE_SESSION_ID="$FS" run "$SMINOS" say "@oldname are you there"
+assert_rc 4 "$RC" "a retired member's former alias reaches nothing"
+assert_not_contains "$OUT" "note:" "and tells of no rename"
+# Nor does a retired seat's: a seat-less member put into a seat of another
+# name, then retired, is still a row find_target reads (by its seat's name).
+FQ=0fa00009-0000-4000-8000-0000000000f9
+fa_peer seatless-old "$FQ" "$FAR" fa-q
+run "$SMINOS" list
+"$SMINOS" seat add fa-repo fa-seat --session "$FQ" >/dev/null
+run "$SMINOS" status seatless-old "seated"
+assert_contains "$OUT" "note: @seatless-old is now @fa-seat#${FQ:0:8}" "(seated, its alias before the seat's reaches it)"
+run "$SMINOS" retire fa-seat
+assert_rc 0 "$RC" "(the seat is retired)"
+run "$SMINOS" status seatless-old "retired"
+assert_rc 4 "$RC" "a retired seat's former alias reaches nothing through find_target"
+assert_not_contains "$OUT" "note:" "and tells of no rename"
+assert_not_contains "$(cat "$FALOG/testhost.$FQ.jsonl")" '"text": "retired"' "nothing is recorded on it"
+run "$SMINOS" status fa-seat "by its name"
+assert_rc 0 "$RC" "the retired seat is still found by its own name"
+rm -f "$HOME/.claude/sessions/fa-"*.json
+cd "$WORK"
+rm -f "$HOME/.claude/sessions/cn-"*.json
+export SMINOS_HOME="$TEST_ROOT/hp-registry"
 
 # ---- the mirror and the daemon ----------------------------------------------------
 # A project whose .smns names a remote mirrors its log through it; one daemon
@@ -5981,7 +6586,8 @@ assert_contains "$OUT" "y: failed" "another event to y is owed"
 SL=5c000005-0000-4000-8000-00000000005c
 SLX="$MD/solo/.claude/projects/sl/$SL.jsonl"
 mkdir -p "$(dirname "$SLX")"
-for i in 1 2 3 4 5 6 7 8 9 10; do tx "$SLX" prompt "5d0000$i" "prompt $i"; tx "$SLX" asst "5e0000$i" "answer $i"; done
+tx "$SLX" prompt 5d000001 "prompt 1"
+tx "$SLX" tool 5e000001 10
 md_peer solo sleeper "$SL" idle interactive "$LR2"
 env "${SOLO[@]}" STUB_FAIL_BG=1 SMINOS_DERIVE_EVERY=1 STUB_FORK_SLEEP=10 STUB_FORK_RESULT="watches the sleepy fixture" \
   "$SMINOS" daemon run --interval 1 > "$MD/run-solo.out" 2>&1 & RUNS=$!
@@ -6048,6 +6654,43 @@ except ChildProcessError:
 print(running, ended, reaped)
 PY_ORPHAN
 )" "True False True" "a derivation from before a restart in place reads as running, then is reaped once it ends"
+for _ in $(seq 1 200); do [ -z "$(find "$MD/solo/sminos/internal" -type f 2>/dev/null)" ] && break; sleep 0.05; done
+# The daemon's own cadence (no SMINOS_DERIVE_EVERY): derive --all every five
+# minutes, so a member that reaches ten tool calls is first derived within
+# about that.
+FR=5f000010-0000-4000-8000-000000000060
+tx "$MD/solo/.claude/projects/sl/$FR.jsonl" tool 5f100001 9
+md_peer solo fresh "$FR" idle interactive "$LR2"
+derive_started_ago() { # seconds → the machine's last derivation started that long ago
+  python3 - "$MD/solo/sminos/daemon/state.json" "$1" <<'PY_AGO'
+import json, sys, time
+d = json.load(open(sys.argv[1])); d["derive"]["started"] = time.time() - float(sys.argv[2]); json.dump(d, open(sys.argv[1], "w"))
+PY_AGO
+}
+derive_starts() { grep -c 'derive --all started' "$MD/solo/sminos/daemon.log" || true; }
+fresh_refused() { grep -q 'fresh: not derived — 9 tool calls, needs 10' "$MD/solo/sminos/daemon.log"; }
+fresh_derived() { grep -q '"source": "derived"' "$MD/solo/sminos/projects/$SOLOP/log/solo.$FR.jsonl" 2>/dev/null; }
+derive_child_gone() {
+  ! kill -0 "$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["derive"]["pid"])' "$MD/solo/sminos/daemon/state.json")" 2>/dev/null
+}
+wait_until derive_child_gone || true
+STARTS_BEFORE="$(derive_starts)"
+derive_started_ago 301
+env -u SMINOS_DERIVE_EVERY "${SOLO[@]}" "$SMINOS" daemon tick > /dev/null 2>&1
+assert_equals "$(( $(derive_starts) - STARTS_BEFORE ))" 1 "five minutes after the last derivation, a tick starts one"
+wait_until fresh_refused || true
+assert_contains "$(cat "$MD/solo/sminos/daemon.log")" "fresh: not derived — 9 tool calls, needs 10" "which refuses a member below the threshold"
+wait_until derive_child_gone || true
+tx "$MD/solo/.claude/projects/sl/$FR.jsonl" tool 5f100002
+derive_started_ago 290
+env -u SMINOS_DERIVE_EVERY "${SOLO[@]}" "$SMINOS" daemon tick > /dev/null 2>&1
+assert_equals "$(( $(derive_starts) - STARTS_BEFORE ))" 1 "within five minutes of it, no tick starts another"
+derive_started_ago 301
+env -u SMINOS_DERIVE_EVERY "${SOLO[@]}" "$SMINOS" daemon tick > /dev/null 2>&1
+assert_equals "$(( $(derive_starts) - STARTS_BEFORE ))" 2 "five minutes on, the next starts"
+wait_until fresh_derived || true
+assert_contains "$(cat "$MD/solo/sminos/projects/$SOLOP/log/solo.$FR.jsonl" 2>/dev/null)" '"source": "derived"' \
+  "and derives the member that reached ten tool calls since"
 for _ in $(seq 1 200); do [ -z "$(find "$MD/solo/sminos/internal" -type f 2>/dev/null)" ] && break; sleep 0.05; done
 # A harness rename is recorded in a project with no remote too: the only
 # record of a name change.

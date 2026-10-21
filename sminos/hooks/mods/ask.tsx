@@ -993,6 +993,8 @@ let held: Delivery[] = []
 let undelivered = new Map<string, Delivery>()
 /** Asks whose dialog is raised (open, or queued behind another), until its answer is the ask's. */
 let raisedAsks = new Set<string>()
+/** An ask's dialog is up, read synchronously (the name mod's last check before its /rename); the snapshot's `isDialogUp`. */
+export const isAskDialogUp = () => raisedAsks.size > 0
 /** A main-conversation turn is running: an answer now is held, not submitted. */
 let isTurnRunning = false
 
