@@ -1,7 +1,7 @@
 import { describe, expect, test, tier } from 'claude-code/testing'
-import type { AttributionTextInput, EngineInterface } from 'claude-code'
+import type { AttributionTextInput, EngineInterface, On } from 'claude-code'
 
-import { ADDRESS_TTL_MS, addressText, resetAddress, withAddress } from '../../hooks/mods/address'
+import { ADDRESS_RETRY_MS, ADDRESS_TTL_MS, addressText, registerAddress, resetAddress, withAddress } from '../../hooks/mods/address'
 
 tier('user')
 
@@ -33,9 +33,17 @@ describe('withAddress', () => {
   })
 })
 
-/** An engine of plain records: the CLI's answers in turn, the session id and the env as set here. */
-function harness(options: { answers?: Array<{ exitCode: number; stdout: string } | Error>; env?: Record<string, string> } = {}) {
+type Answer = { exitCode: number; stdout: string } | Error
+type Handler = (...args: unknown[]) => Promise<unknown>
+
+/**
+ * An engine of plain records: the CLI's answers in turn (each held until
+ * `answer()` when `held`), the session id and the env as set here; and the
+ * mod's hooks as registered, for a compaction.
+ */
+function harness(options: { answers?: Answer[]; env?: Record<string, string>; held?: boolean } = {}) {
   const runs: string[][] = []
+  const waiting: Array<() => void> = []
   const state = { session: '1a000001-0000-4000-8000-000000000001', clock: 1_000_000 }
   const answers = [...(options.answers ?? [{ exitCode: 0, stdout: `${LINE}\n` }])]
   const $ = {
@@ -45,6 +53,9 @@ function harness(options: { answers?: Array<{ exitCode: number; stdout: string }
     process: {
       run: async (argv: string[]) => {
         runs.push(argv)
+        if (options.held) {
+          await new Promise<void>((resolve) => waiting.push(resolve))
+        }
         const a = answers.length > 1 ? answers.shift() : answers[0]
         if (a instanceof Error) {
           throw a
@@ -53,47 +64,151 @@ function harness(options: { answers?: Array<{ exitCode: number; stdout: string }
       },
     },
   }
+  const hooks: { event: string; matcher: Record<string, RegExp>; handler: Handler }[] = []
+  const on = ((event: string, matcher: Record<string, RegExp>, handler: Handler) => {
+    hooks.push({ event, matcher, handler })
+    return { catch: () => undefined }
+  }) as unknown as On
   resetAddress()
+  registerAddress(on)
   const engine = $ as unknown as EngineInterface
+  // Microtask turns, so an ask the hook let run in the background settles.
+  const settle = async () => {
+    for (let i = 0; i < 50; i++) {
+      await Promise.resolve()
+    }
+  }
   const ask = (kind: AttributionTextInput['kind'], text = '') =>
     addressText(engine, { kind, text }, async (e) => ({ text: e.text }), () => state.clock).then((r) => r.text)
-  return { runs, state, ask }
+  /** A compaction by `trigger`, standing or skipped, through the hooks the engine would run for it. */
+  const compact = async (trigger: string, result: { messages: [] } | { skip: string }) => {
+    for (const h of hooks.filter((x) => x.event === 'session.compact' && x.matcher.trigger?.test(trigger))) {
+      await h.handler(engine, { trigger, messages: [] }, async () => result)
+    }
+  }
+  /** Lets every held CLI call answer (once a request in flight has reached its call), and what waits on it settle. */
+  const answer = async () => {
+    await settle()
+    waiting.splice(0).forEach((resolve) => resolve())
+    await settle()
+  }
+  return { runs, state, ask, compact, answer, settle }
 }
 
 describe('addressText', () => {
-  test('adds the CLI\'s line, asked once for the commit and the PR of one request', async () => {
+  test("adds the CLI's line, asked once for the commit and the PR of one request", async () => {
     const h = harness()
     expect(await h.ask('commit')).toBe(LINE)
     expect(await h.ask('pr', 'Generated')).toBe(`Generated\n\n${LINE}`)
     expect(h.runs).toEqual([['/plugin/skills/sminos/scripts/sminos', 'who', '--session', '1a000001-0000-4000-8000-000000000001']])
   })
 
-  test('asks again once the line is a minute old, and for a new session id at once', async () => {
+  test('asks nothing while the line could not have changed, a minute on and up to its ten', async () => {
+    const h = harness()
+    expect(await h.ask('commit')).toBe(LINE)
+    h.state.clock += 61_000
+    expect(await h.ask('commit')).toBe(LINE)
+    h.state.clock += 5 * 60_000
+    expect(await h.ask('pr')).toBe(LINE)
+    h.state.clock = 1_000_000 + ADDRESS_TTL_MS - 1
+    expect(await h.ask('commit')).toBe(LINE)
+    expect(h.runs.length).toBe(1)
+  })
+
+  test('a line come due is used at once while the CLI is asked in the background; the next request has its answer', async () => {
+    const renamed = 'Sminos-Session: fixer2#1a000001 (teamproj on alpha)'
+    const h = harness({ answers: [{ exitCode: 0, stdout: LINE }, { exitCode: 0, stdout: renamed }], held: true })
+    const first = h.ask('commit')
+    await h.answer()
+    expect(await first).toBe(LINE)
+    h.state.clock += ADDRESS_TTL_MS
+    expect(await h.ask('commit')).toBe(LINE)
+    expect(await h.ask('pr')).toBe(LINE)
+    expect(h.runs.length).toBe(2)
+    await h.answer()
+    expect(await h.ask('commit')).toBe(renamed)
+    expect(h.runs.length).toBe(2)
+  })
+
+  test('a new session id asks at once, and its request waits for the answer', async () => {
+    const moved = 'Sminos-Session: fixer2#3c000003 (teamproj on alpha)'
+    const h = harness({ answers: [{ exitCode: 0, stdout: LINE }, { exitCode: 0, stdout: moved }] })
+    expect(await h.ask('commit')).toBe(LINE)
+    h.state.clock += 1000
+    h.state.session = '3c000003-0000-4000-8000-000000000003'
+    expect(await h.ask('commit')).toBe(moved)
+    expect(h.runs.map((r) => r[3])).toEqual(['1a000001-0000-4000-8000-000000000001', '3c000003-0000-4000-8000-000000000003'])
+  })
+
+  test("a new session id asks for itself while the old one's refresh is in flight, and the old answer does not overwrite it", async () => {
     const renamed = 'Sminos-Session: fixer2#1a000001 (teamproj on alpha)'
     const moved = 'Sminos-Session: fixer2#3c000003 (teamproj on alpha)'
-    const h = harness({ answers: [{ exitCode: 0, stdout: LINE }, { exitCode: 0, stdout: renamed }, { exitCode: 0, stdout: moved }] })
+    const h = harness({ answers: [{ exitCode: 0, stdout: LINE }, { exitCode: 0, stdout: renamed }, { exitCode: 0, stdout: moved }], held: true })
+    const first = h.ask('commit')
+    await h.answer()
+    expect(await first).toBe(LINE)
+    h.state.clock += ADDRESS_TTL_MS
     expect(await h.ask('commit')).toBe(LINE)
-    h.state.clock += ADDRESS_TTL_MS - 1
-    expect(await h.ask('commit')).toBe(LINE)
-    h.state.clock += 1
-    expect(await h.ask('commit')).toBe(renamed)
     h.state.session = '3c000003-0000-4000-8000-000000000003'
+    const second = h.ask('commit')
+    await h.settle()
+    expect(h.runs.map((r) => r[3])).toEqual([
+      '1a000001-0000-4000-8000-000000000001',
+      '1a000001-0000-4000-8000-000000000001',
+      '3c000003-0000-4000-8000-000000000003',
+    ])
+    await h.answer()
+    expect(await second).toBe(moved)
     expect(await h.ask('commit')).toBe(moved)
     expect(h.runs.length).toBe(3)
   })
 
-  test('a session with no address gets the composed text unchanged', async () => {
-    const h = harness({ answers: [{ exitCode: 0, stdout: '' }] })
-    expect(await h.ask('commit', 'Co-Authored-By: C <c@x>')).toBe('Co-Authored-By: C <c@x>')
+  test('a compaction that stood asks again at the next request; a skipped one, or a precompute, does not', async () => {
+    const renamed = 'Sminos-Session: fixer2#1a000001 (teamproj on alpha)'
+    const h = harness({ answers: [{ exitCode: 0, stdout: LINE }, { exitCode: 0, stdout: renamed }] })
+    expect(await h.ask('commit')).toBe(LINE)
+    await h.compact('precompute', { messages: [] })
+    await h.compact('auto', { skip: 'blocked' })
+    expect(await h.ask('commit')).toBe(LINE)
+    expect(h.runs.length).toBe(1)
+    await h.compact('auto', { messages: [] })
+    expect(await h.ask('commit')).toBe(LINE)
+    expect(h.runs.length).toBe(2)
+    await h.settle()
+    expect(await h.ask('commit')).toBe(renamed)
+    expect(h.runs.length).toBe(2)
   })
 
-  test('a CLI that fails keeps the line it had, and a first failure adds nothing', async () => {
-    const h = harness({ answers: [new Error('spawn failed'), { exitCode: 0, stdout: LINE }, { exitCode: 1, stdout: '' }] })
+  test('a session with no address gets the composed text unchanged, and is asked again a minute on', async () => {
+    const h = harness({ answers: [{ exitCode: 0, stdout: '' }, { exitCode: 0, stdout: LINE }] })
+    expect(await h.ask('commit', 'Co-Authored-By: C <c@x>')).toBe('Co-Authored-By: C <c@x>')
+    h.state.clock += ADDRESS_RETRY_MS - 1
     expect(await h.ask('commit')).toBe('')
-    h.state.clock += ADDRESS_TTL_MS
+    expect(h.runs.length).toBe(1)
+    h.state.clock += 1
+    expect(await h.ask('commit')).toBe('')
+    await h.settle()
+    expect(await h.ask('commit')).toBe(LINE)
+    expect(h.runs.length).toBe(2)
+  })
+
+  test('a CLI that fails keeps the line it had and is asked again a minute on; a first failure adds nothing', async () => {
+    const h = harness({ answers: [new Error('spawn failed'), { exitCode: 0, stdout: LINE }, { exitCode: 1, stdout: '' }, { exitCode: 0, stdout: LINE }] })
+    expect(await h.ask('commit')).toBe('')
+    h.state.clock += ADDRESS_RETRY_MS
+    expect(await h.ask('commit')).toBe('')
+    await h.settle()
     expect(await h.ask('commit')).toBe(LINE)
     h.state.clock += ADDRESS_TTL_MS
     expect(await h.ask('commit')).toBe(LINE)
+    await h.settle()
+    expect(h.runs.length).toBe(3)
+    h.state.clock += ADDRESS_RETRY_MS - 1
+    expect(await h.ask('commit')).toBe(LINE)
+    expect(h.runs.length).toBe(3)
+    h.state.clock += 1
+    expect(await h.ask('commit')).toBe(LINE)
+    expect(h.runs.length).toBe(4)
   })
 
   test('an internal fork is left alone and asks nothing', async () => {
