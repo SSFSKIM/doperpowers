@@ -31,7 +31,7 @@ always loaded, not deferred), after weighing the cost below.
   consumers mapped across doperpowers, MAWS and the desk; MAWS architect and
   desk orchestrator briefed.
 - [x] (2026-10-20) Spec reviewed (adversarial design review, buildability review); findings applied in abf65e9e.
-- [x] (2026-10-20) M1 — the tool, the view and the notification (to-human plugin): 4101d65d, reviewed clean
+- [x] (2026-10-20) M1 — the tool, the view and the notification (to-human plugin): 4101d65d, with the copy and style-gate wave 356ac1cc, reviewed clean
 - [ ] M2 — the export (sminos)
 - [ ] M3 — the style, the evals, the docs, acceptance
 
@@ -583,6 +583,27 @@ sminos carries both message-tool names as its own constant, beside
   `last_assistant_message` was not added: it would add up to 2 s to every
   Stop after an Esc (M2's executor).
 
+- Observation: the mod reads the active output style cleanly. `$.config.list()`
+  has an `outputStyle` row (kind `choice`, provider engine/core) whose
+  `value` is `doperpowers:to-human` under the plugin's style and `default`
+  with none set. Its `options` list leaves out plugin styles. So the tool is
+  registered only under the style (`TO_HUMAN_STYLE` in `message.tsx`), read
+  once at `session.start`.
+  Evidence: a live probe with no model calls, and on 2.1.306 the debug line
+  `mcp__to-human__message visible after 101ms` under the style and no
+  register line under `default` (M1's follow-up).
+- Observation: MAWS's side landed on MAWS master as 82a0967ff (P4-R7, entry
+  48 in its P4 Decision Log).
+  - `mcp__maws__message` answers an accepted call with `sent`, and is always
+    loaded and allowed at launch.
+  - Every MAWS reader takes either tool name.
+  - MAWS's full contract is 7, and its supplement sits beside every
+    message-tool style except 7.
+  - The desk's `landed-message.ts` case is with smns-erb-71 (b4948247).
+  Evidence: MAWS's eval on its own wire (claude-opus-5-5, high effort) lost 4
+  of 11 mid-turn messages before, all four asking the owner to act, and 0 of
+  11 after. Relayed by doperpowers-88.
+
 ## Decision Log
 
 - Decision: Verification. One independent spec review by
@@ -702,6 +723,14 @@ sminos carries both message-tool names as its own constant, beside
   Rationale: A session with the plugin but under another style would
   otherwise see a tool whose description gives no rule.
   Date/Author: 2026-10-20, the human, recorded by the plan-executor.
+
+- Decision: the live export's hold works on whole rows (M2's second review).
+  A row holding message calls waits until every call in it has its result,
+  then goes out once with all of them, so `[A, B, span C]` reaches the log
+  as A, B, C in either result order. A row given up at the `PAIRS_KEPT`
+  bound goes out with the results it has. Dedup cannot move an event already
+  appended, so per-call exports of a shared row were unsafe.
+  Date/Author: 2026-10-20, M2's executor, folded by the plan-executor.
 
 ## Outcomes & Retrospective
 
