@@ -5321,15 +5321,17 @@ _PSTART = {}
 def read_proc_start(pid):
     """The live process's start time as `ps -o lstart=` prints it, whitespace
     normalised; "" when ps cannot tell. Asked afresh, no cache: what a
-    thread beside the one owning the invocation's caches reads. On macOS it
-    is read where ps reads it, the kernel's process table, without running
-    ps: a long-lived reader of every live session (the uplink) asked this
-    about each of them, a fork and an exec apiece."""
+    thread beside the one owning the invocation's caches reads. It is read
+    where ps reads it, without running ps — the kernel's process table on
+    macOS, /proc on Linux: a long-lived reader of every live session (the
+    uplink) asked this about each of them, a fork and an exec apiece, which
+    on a loaded Linux host held its tick, and every subscribe behind it,
+    for tens of seconds."""
     try:
         pid = int(pid)
     except (TypeError, ValueError):
         return ""
-    started = _darwin_start(pid) if sys.platform == "darwin" else None
+    started = _darwin_start(pid) if sys.platform == "darwin" else _linux_start(pid)
     if started is not None:
         return _lstart_text(started) if started else ""
     try:
@@ -5393,6 +5395,14 @@ def _lstart_text(epoch):
 PROC = "/proc"  # Linux's process table (tests point it at a stand-in)
 
 
+def _start_ticks(pid):
+    """A process's start, in clock ticks since boot, from /proc/<pid>/stat."""
+    with open(os.path.join(PROC, str(int(pid)), "stat")) as f:
+        # The command name, in parentheses, may hold spaces and
+        # parentheses: the fields are counted after the last ")".
+        return int(f.read().rsplit(")", 1)[1].split()[19])
+
+
 def proc_started_at(pid):
     """When a live process started, in epoch seconds to the clock tick, read
     off /proc on Linux; None elsewhere, or when it cannot tell. `ps -o
@@ -5401,15 +5411,34 @@ def proc_started_at(pid):
     the process began; here the boot instant is now less the uptime, and the
     reading is within a tick of the true start."""
     try:
-        with open(os.path.join(PROC, str(int(pid)), "stat")) as f:
-            # The command name, in parentheses, may hold spaces and
-            # parentheses: the fields are counted after the last ")".
-            ticks = int(f.read().rsplit(")", 1)[1].split()[19])
+        ticks = _start_ticks(pid)
         with open(os.path.join(PROC, "uptime")) as f:
             uptime = float(f.read().split()[0])
         return time.time() - uptime + ticks / os.sysconf("SC_CLK_TCK")
     except (OSError, ValueError, IndexError, TypeError):
         return None
+
+
+def _linux_start(pid):
+    """A process's start, in whole epoch seconds, as Linux's ps reckons it
+    (procps's pr_lstart): /proc/stat's boot time, a whole second, plus the
+    start's offset in whole seconds. Its text is then ps's own, the same on
+    every read: a record of it is compared as text (derive_running), and the
+    harness records ps's reading (same_process). proc_started_at's truer
+    instant can fall in the second after. 0 when there is no such process;
+    None when /proc cannot tell (no Linux /proc), for ps to answer."""
+    try:
+        with open(os.path.join(PROC, "stat")) as f:
+            boot = next(int(line.split()[1]) for line in f if line.startswith("btime "))
+    except (OSError, ValueError, IndexError, StopIteration):
+        return None
+    try:
+        ticks = _start_ticks(pid)
+    except (FileNotFoundError, ProcessLookupError):
+        return 0
+    except (OSError, ValueError, IndexError):
+        return None
+    return boot + ticks // os.sysconf("SC_CLK_TCK")
 
 
 def proc_start(pid):
