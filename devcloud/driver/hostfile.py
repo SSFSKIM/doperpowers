@@ -125,5 +125,5 @@ def governing(ctx, projects):
             ctx.warn(f"devcloud vm up: {error} (ignored: the first project's file governs)")
             continue
         if other is not None:
-            ctx.say(f"host.toml {project}'s is ignored: the first project's governs")
+            ctx.say(f"host.toml of {project} is ignored: the first project's governs")
     return wanted

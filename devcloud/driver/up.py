@@ -58,7 +58,7 @@ def resolve(ctx, opts, wanted=None):
     account = profile.account(opts.account or wanted.account or profile.default_account)
     bound = account.name == (wanted.account or profile.default_account)
     if not bound and any(v is not None for v in (wanted.type, wanted.location, wanted.spot)):
-        ctx.say(f"host.toml {wanted.project}'s type, location and spot are ignored: they are for account "
+        ctx.say(f"host.toml of {wanted.project}: its type, location and spot are ignored: they are for account "
                 f"{wanted.account or profile.default_account}, and --account names {account.name}")
     if not bound:
         wanted = dataclasses.replace(wanted, type=None, location=None, spot=None)
@@ -113,7 +113,7 @@ def run(ctx, opts):
     # A project's file is checked before anything runs: a bad one is exit 2 with nothing done.
     wanted = hostfile.governing(ctx, list(opts.project or []))
     if wanted is not None:
-        ctx.say(f"host.toml {wanted.project}'s, from {wanted.source}")
+        ctx.say(f"host.toml of {wanted.project}, read from {wanted.source}")
     if not opts.dry_run:
         try:
             reaper.run(ctx, bounded=True)
