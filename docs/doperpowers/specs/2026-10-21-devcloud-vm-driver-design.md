@@ -147,8 +147,8 @@ are reported "blocked on the desk", never passed (Constraints).
    up, a fourth `devcloud vm up` exits 4 and its message names the cap and `--confirmed`;
    `devcloud vm up --ttl 100h --dry-run` exits 4 naming the lifetime cap;
    `devcloud vm up --type <a 16-vCPU type> --dry-run` exits 4 naming the size cap;
-   `devcloud vm up --type <a type of at most 8 vCPU> --disk 500 --dry-run` exits 4 naming the disk
-   cap; `--keep --dry-run` and `adopt --dry-run` without `--confirmed` exit 4. The fourth `up` with
+   `devcloud vm up --type <a type of at most 8 vCPU, its own disk under 500 GB> --disk 500 --dry-run`
+   exits 4 naming the disk cap; `--keep --dry-run` and `adopt --dry-run` without `--confirmed` exit 4. The fourth `up` with
    `--confirmed` creates the VM, labeled `devcloud-confirmed=1`, and `devcloud vm ls` still counts
    three of three throwaway VMs (then deleted).
 5. **A lease ends cleanly.** In `<n>`'s project checkout an unpushed commit is made; then
@@ -251,7 +251,7 @@ these values the person chose:
 | Unconfirmed throwaway VMs alive at once, all accounts together | 3 | `--confirmed` |
 | Lease at creation, and total lifetime through `lease` | default 12 h, at most 72 h | `--confirmed` (no upper bound) |
 | Size | at most 8 vCPU | `--confirmed` |
-| Disk | at most 200 GB | `--confirmed` |
+| Disk requested beyond the type's own | at most 200 GB | `--confirmed` |
 | Lifetime `keep` | — | always `--confirmed` |
 | `adopt` (sends a key to a machine the driver did not make) | — | always `--confirmed` |
 
@@ -260,10 +260,14 @@ the session, stated in the skill: ask through the ask tool with the specificatio
 and pass the flag only for what was approved. The alternative, requiring a terminal the person
 types into, was rejected: sessions run without one, and the person approves from the desk or a
 phone as often as from a terminal. The caps are the enforcement for everything a session does
-alone; they bound the worst case to three 8-vCPU machines with 200 GB disks for 72 hours.
+alone; they bound the worst case to three 8-vCPU machines, each with its type's own disk or at most
+200 GB, for 72 hours.
 
-The disk a request asks for is `--disk`, else `host.toml`'s `disk_gb`, else the type's `disk_gb` as
-the provider's `types` reports it; it is checked with the other caps, before anything is created.
+The disk cap bounds only a disk the request adds: `--disk`, else `host.toml`'s `disk_gb`, when it
+is larger than the type's own disk (the `disk_gb` the provider's `types` reports). A type's own disk
+is priced with the type, which the size cap already bounds, so a request needs `--confirmed` only
+when its requested disk is above both the type's disk and `max_disk_gb`. It is checked with the
+other caps, before anything is created.
 
 A VM created with `--confirmed` carries `devcloud-confirmed=1` and does not count toward the
 throwaway cap: it is an extra the person approved, and counting it would let the person's yes use up
@@ -365,9 +369,16 @@ alive:
    5 minutes, while the network and the credentials are still intact.
 3. `sminos hub leave` as the user (exit 0 or 1 both proceed; on 1 the desk's offline revoke removes
    the machine later, §4.4).
-4. `tailscale logout`.
+4. `tailscale logout`, after printing one flushed line on stdout, `devcloud-depart: ready-to-logout`.
 5. Stop devcloud's services.
 6. Power off, unless `--no-poweroff` (the reaper's and `down`'s path, which delete right after).
+
+The reaper and `down` run `depart` over an SSH connection through the tailnet, which step 4 cuts, so
+its exit code after step 4 never reaches them. Every refusal (lease not over) and the hold are
+decided before step 4, so their exit codes do reach the driver; once the driver has read
+`devcloud-depart: ready-to-logout`, the connection dropping afterwards is success. A connection
+that drops before that line leaves the outcome unknown: the reaper skips the VM this run without
+deleting it, and `down` exits 1 saying so.
 
 If the ship fails, the departure stops there — no leave, no logout, no power-off — records `held
 (ship failed)` and exits 4. The transcripts are the one thing a deleted VM must not lose, and a host
@@ -389,18 +400,25 @@ comes from the descriptor because the driver knows it for certain; the metadata 
 
 - **Expired VMs**: every VM labeled devcloud whose label's lease ended more than 15 minutes ago.
   - Reachable over the tailnet within 10 seconds: `devcloud depart --no-poweroff` (6 minutes at most).
-    Exit 0: delete. Exit 3, "lease not over": the label was stale (a lease write reached the host but
-    not the label), so the reaper sets the label to the host's value and skips the VM. Exit 4, held:
+    Exit 0, or the connection dropping after `devcloud-depart: ready-to-logout` (§4.2): delete. A
+    drop before that line: the outcome is unknown, and the VM is skipped this run. Exit 3, "lease
+    not over": the label was stale (a lease write reached the host but not the label), so the reaper
+    sets the label to the host's value and skips the VM. Exit 4, held:
     it labels the VM `devcloud-held=1` and leaves it, until 24 hours past its lease end; then it
     deletes it, with a `reap.log` line naming the unshipped loss.
   - Unreachable: `get` immediately before the delete, which proceeds only if `devcloud-expires` still
     equals the value the reaper decided on and that value is more than 15 minutes past (24 hours for a
     VM labeled `devcloud-held=1`). A lease extended between the reaper's `list` and its delete
     changed the label, so the delete does not happen.
+  - Known limit: a crash between the host's write and the label's write while a lease is being
+    shortened leaves the label later than the host's lease. The host departs and powers off at its
+    own end, and the reaper, unable to reach it, deletes it only at the old label end plus 15
+    minutes; a powered-off server bills until then at most, which the lifetime cap bounds.
 - **Excess**: unconfirmed throwaway VMs above the cap, newest first, departed (`--force`) when
   reachable and deleted, until three remain (§2).
-- **Leftovers**: builders (§7) and `provider test` servers (§6.2) older than 2 hours; images beyond
-  the newest two per account.
+- **Leftovers**: builders (§7) and `provider test` servers (§6.2) of usable accounts older than 2
+  hours; images beyond the newest two per account. The reaper never runs an unregistered or stale
+  provider, so a leftover of one is `provider test`'s to report (§6.2).
 
 It never touches a resource without the devcloud label, and before every delete it calls `get` and
 refuses unless the label is still there (ci-kit's rule: the project holds other work's resources).
@@ -475,8 +493,13 @@ test of the exact executable, and the person's one registration.
 account's default location; `create` the smallest available type, labeled `devcloud=test` and
 `devcloud-test=<run id>`; `list` contains it; `get` returns its labels verbatim; `set-labels`
 round-trips; the image operations round-trip when the provider has `images`; `delete`; then `get`
-returns null and `list` lacks it within 10 minutes. A pass is recorded in
-`~/.local/state/devcloud/providers/<account>.json` with the executable's sha256. `devcloud vm provider
+returns null and `list` lacks it within 10 minutes. The test deletes its own server in a finally
+block, whatever failed before; if that delete fails, it prints the leftover's id and exits 1. The
+reaper never runs an unregistered or stale provider, so it cannot clean up after one, and the
+leftover is the test's to report. A pass is recorded in the profile, next to the account's
+configuration: `<profile>/providers/<account>.pass.json`, with the executable's sha256. The profile
+syncs between the Macs, so one pass serves every driver, the always-on Mac's reaper included.
+`devcloud vm provider
 register <account> --confirmed` is the person's one confirmation: it writes `registered = true` on
 the account in `driver.toml`, and only while a current pass exists.
 
@@ -527,7 +550,8 @@ incomplete adoption with its phase. This is the one piece of lifecycle state the
 locally: an adopted machine has no provider label to carry it.
 
 Adopt checks the OS; records the machine's state before changing it, copying root's and the login
-user's `authorized_keys` to `/var/lib/devcloud/adopt/`; streams the plugin's `devcloud/` to the
+user's `authorized_keys` to `/var/lib/devcloud-adopt/` (outside `/var/lib/devcloud`, whose existence
+`setup.sh`'s final check refuses); streams the plugin's `devcloud/` to the
 machine and runs `setup.sh` (which renames the machine to the `dc-` name and creates the user);
 delivers the seed; writes the descriptor with `DEVCLOUD_ADOPTED=1`; and starts the boot. Lifetime
 defaults to `keep`; `--ttl` gives it a lease. `devcloud vm lease` on an adopted machine writes
@@ -541,7 +565,7 @@ The release (`devcloud release`, root, under the lifecycle lock), in order:
 1. End the sessions and ship, as the departure's steps 1–2 (§4.2), holding on a failed ship.
 2. `sminos hub leave`.
 3. Delete the `inet devcloud` nftables table and remove `devcloud-inbound.service`.
-4. Restore the saved `authorized_keys`.
+4. Restore the saved `authorized_keys` from `/var/lib/devcloud-adopt/`, then remove that directory.
 5. `tailscale logout`.
 6. Stop devcloud's services and remove its units.
 7. Remove every credential the ledger lists, then the ledger.
@@ -581,7 +605,7 @@ location creates servers in another is M1's question; if not, images are per loc
 
 **8.1 Configuration**: the profile's `devcloud/` directory, `~/.claude/devcloud/` (`DEVCLOUD_PROFILE`
 overrides it, for tests and for trying a provider in a temporary profile): `driver.toml` (I10) and
-`providers/`, synced to every Mac like the rest of `~/.claude`; personal values live only there.
+`providers/` (the profile providers and every account's conformance pass), synced to every Mac like the rest of `~/.claude`; personal values live only there.
 
 **8.2 Credentials**: the seed key file — `$DEVCLOUD_SEED_FILE`, else `~/.config/devcloud/seed.json`
 (0600; on the MacBook a link to the existing key, on the always-on Mac a copy made for the driver
@@ -859,13 +883,15 @@ Does not touch: the driver (`devcloud/driver/`), any provider, the guard mods.
 Proves (tests pin each): a leased descriptor joins ephemeral and an unleased one does not; the warning
 fires once per lease value and names dirty and unpushed checkouts; departure order and bounds — the
 daemon stopped and the user's `claude` processes ended before the ship, and a hung step does not stop
-the next; a failed ship holds (no leave, no logout, no power-off, status `held (ship failed)`, exit 4)
+the next; `devcloud-depart: ready-to-logout` printed and flushed just before the logout, after
+every refusal and the hold are decided; a failed ship holds (no leave, no logout, no power-off, status `held (ship failed)`, exit 4)
 and a later run resumes at the ship; `depart` without `--force` refuses with exit 3 while the lease
 is not over; the lease service racing a lease write (the lock serializes them, and the departure
 reads the value the write left); `lease set` refused once the departure started; the ledger: release
 after a `secrets.toml` target was renamed or removed still removes the old target, the root gcloud
 store `/var/lib/devcloud/gcloud` is gone, and the ledger is removed only after every removal
-succeeded; release's order, the saved `authorized_keys` restored and only the `inet devcloud` table
+succeeded; release's order, the saved `authorized_keys` restored from `/var/lib/devcloud-adopt/` and that
+directory removed, and only the `inet devcloud` table
 removed; release leaves the user and non-devcloud files; the `hub check` table (0 skip, 1 enroll, 3
 enroll with `--replace`, 4 defer: no enroll, the daemon still starts, and `devcloud enroll` acts on a
 later 1 or 3 and does nothing after a 0; 2 fail) and the enroll exit table (0, 1 with each retryable
@@ -900,7 +926,7 @@ Interfaces: produces I10, I13, I14, I16 (the `vm` commands); consumes I12 and th
 Decisions:
 - One process per command, no daemon. Lifecycle state lives at the providers (labels), on the hosts
   (the authoritative lease) and in the profile; the local files are the SSH key, `known_hosts`, the
-  reap log, the provider test records, the gce provider's private gcloud configuration (M5), and the
+  reap log, the gce provider's private gcloud configuration (M5), and the
   adoption records (M5), the one piece of lifecycle state kept locally.
 - `ls` merges every usable account's labeled VMs, the adoption records and the tailnet's
   `tag:devcloud` nodes; columns: name, provider/account, lifetime, lease end (relative), state (with
@@ -909,8 +935,10 @@ Decisions:
 - `ssh` uses the tailnet name and the user by default (`--root` for root); it passes a command
   through quoted as given.
 - `down` runs the down guard (acceptance 9) over SSH, then `depart --force --no-poweroff` (with
-  `--no-hold` when given `--force`), then deletes after the `get` recheck; a held departure → exit 1
-  naming the hold and `--force`; unreachable → asks for `--force`, which skips straight to deletion.
+  `--no-hold` when given `--force`), then deletes after the `get` recheck — on exit 0 or a drop after
+  `devcloud-depart: ready-to-logout` (§4.2); a drop before that line → exit 1, outcome unknown, the VM
+  kept; a held departure → exit 1 naming the hold and `--force`; unreachable → asks for `--force`,
+  which skips straight to deletion.
 - `lease <name> <duration>` sets the lease end to now + duration (shorter is always allowed; longer is
   checked against the lifetime cap from the VM's creation time). It writes the host first, over the
   tailnet (`devcloud lease set` under the host's lock), then the label (`set-labels`). A host that
@@ -926,24 +954,31 @@ Does not touch: images (M4 — `up` takes only the slow path here), the gce prov
 the skill (M6).
 
 Proves: the cap table of §2 (each cap, the `--confirmed` bypass, a confirmed VM not counted, an
-otherwise-valid low-vCPU request with too large a disk refused with exit 4 before any create); the
+otherwise-valid low-vCPU request whose requested disk exceeds both its type's disk and the cap
+refused with exit 4 before any create, and a type whose own disk exceeds the cap accepted without
+`--confirmed`); the
 post-create recount deleting its own VM when racing; a driver killed right after create leaves 4
 unconfirmed throwaway VMs and the next reaper run brings them back to 3, confirmed ones untouched;
 names never collide with the fake's servers or tailnet nodes; user-data holds no value from the fake
 seed or the fake Secret Manager (scan it); a first creation with no image stages the descriptor, runs
 `setup.sh`, checks its exit, and only then installs `boot.env` (the order pinned), and the seed waits
 for cloud-init's end; the labels are in the `create` request, not a later call; the reaper's
-decision table (expired past grace, expired within grace, reachable and departed → delete, reachable
+decision table (expired past grace, expired within grace, reachable and departed → delete, the
+connection dropping after `devcloud-depart: ready-to-logout` → delete, dropping before it → skipped
+and kept, reachable
 and "lease not over" → label repaired and skipped, reachable and held → `devcloud-held=1` and kept
 until 24 h past the lease end, then deleted with the loss line, unreachable with the decided value
 still in the label → delete, unlabeled, builders, test servers, image retention, excess); lease
 fencing — a crash between the descriptor write and the label write leaves a stale label that the
 reaper repairs without deleting, and an extension interleaving with a reaper run that had already
-listed the VM stops its delete; the protocol client (exit 3 with each kind → driver exit 3, another
+listed the VM stops its delete; `down` deleting on a drop after the ready line and exiting 1 with the
+VM kept on a drop before it; the protocol client (exit 3 with each kind → driver exit 3, another
 exit or unparsable stdout → 1, each timeout, credential values in the child's environment only and
 scrubbed from the stderr shown); the conformance test passes on the fake and fails on a fake that
 alters a label, lists an unlabeled server, or still lists a deleted one; `provider register` refused
-without a current pass; exit 7 for an unregistered profile provider and for one whose sha256 changed,
+without a current pass; the pass record written in the profile, so a pass on one driver serves
+another; `provider test` deleting its server in a finally block and, when that delete fails,
+printing the leftover's id and exiting 1; exit 7 for an unregistered profile provider and for one whose sha256 changed,
 and usable again after `provider test` with no new registration; a profile provider under a shipped
 name refused; `--spot` on a provider without `spot` → exit 3; `vm` refused on a host; exit codes
 (I16).
@@ -1084,7 +1119,7 @@ private):
     lease_default = "12h"
     lease_max = "72h"        # lifetime from creation, through `lease` too
     vcpu_max = 8
-    max_disk_gb = 200
+    max_disk_gb = 200        # a requested disk beyond the type's own; the type's own is never capped
 
     [defaults]
     account = "<account name>"
@@ -1128,7 +1163,8 @@ private):
 `DEVCLOUD_SEED_FILE`, the seed key file's path, to the shipped `gce` provider's environment only.
 M5 of the parent composed the `[host]` fields by hand from the person's gcloud configuration and
 config repository; `[host]` makes them the profile's. Unknown keys are refused. Profile providers live
-beside this file, in `providers/<name>`.
+beside this file, in `providers/<name>`, and each account's conformance pass in
+`providers/<account>.pass.json` (§6.2).
 
 **I11 — `devenv/host.toml`** (a repository's, committed; every key optional):
 
@@ -1274,7 +1310,8 @@ commit 5168e433 on its branch, 2026-10-21):
   exists, so nothing may write either before it runs on a fresh machine.
   Evidence: `devcloud/image/setup.sh`, the loop under "What the image never carries" (2026-10-21).
 - Observation: The installed sminos CLI has only `hub enroll` and `hub show`; `hub check` exits 2.
-  Evidence: the independent reviews of this spec (2026-10-21).
+  Evidence: `sminos/skills/sminos/scripts/sminos_hub.py` dispatches only `enroll` and `show` (around
+  line 426), checked 2026-10-21.
 
 ## Decision Log
 
@@ -1309,9 +1346,15 @@ commit 5168e433 on its branch, 2026-10-21):
   Rationale: a cloud the plugin does not ship can be added without a plugin release, while every
   invariant (caps, labels, lease, reaper, recheck) stays in one core implementation; the test makes
   the core's trust in a provider earned, and the one confirmation keeps a session from billing the
-  person through code it wrote. Rejected: in-process adapters (only a plugin change adds a cloud);
-  a confirmation on every script change (the profile is the person's and the test proves each
-  version); no confirmation (a session could spend the person's money through its own provider).
+  person through code it wrote. The pass record lives in the profile,
+  `~/.claude/devcloud/providers/<account>.pass.json`, so one pass serves every driver Mac, the
+  always-on Mac's reaper included; `provider test` deletes its own server in a finally block and, if
+  that fails, prints the leftover's id and exits 1, since the reaper never runs an unregistered or
+  stale provider and so cannot clean up after one. Rejected: in-process adapters (only a plugin
+  change adds a cloud); a confirmation on every script change (the profile is the person's and the
+  test proves each version); no confirmation (a session could spend the person's money through its
+  own provider); a pass record per machine under `~/.local/state/`, the first form of this decision,
+  which left the always-on Mac's reaper blind to a provider tested only on the other Mac.
   Date/Author: 2026-10-21, the person, through the design session.
 - Decision: The desk's sminos release carrying I15 is an external readiness dependency
   (Constraints): the executor verifies `hub check` is accepted before any enrolling check and records
@@ -1326,11 +1369,15 @@ commit 5168e433 on its branch, 2026-10-21):
   renamed or dropped a target since. Rejected: release reading the same profile as the boot.
   Date/Author: 2026-10-21, design session.
 - Decision: Release restores access before leaving the tailnet (§6.5): adopt saves root's and
-  the login user's `authorized_keys` first; release removes devcloud's nftables table and inbound
-  service, restores the keys, and only then logs out. Rationale: the first order logged out with the
+  the login user's `authorized_keys` first, to `/var/lib/devcloud-adopt/`; release removes devcloud's
+  nftables table and inbound service, restores the keys from that directory and removes it, and only
+  then logs out. The backup lives outside `/var/lib/devcloud` because `setup.sh`, which adopt runs
+  after the backup, fails when that directory exists. Rationale: the first order logged out with the
   public port still closed and root's keys replaced by the driver keys, leaving the person no way back
   into their own machine. Rejected: flushing all firewall rules (devcloud must not touch rules it did
-  not create); counting a surviving connection as proof (it says nothing about new ones).
+  not create); counting a surviving connection as proof (it says nothing about new ones); a backup
+  under `/var/lib/devcloud/adopt/`, the first form of this decision, which made every adoption fail
+  at `setup.sh`'s final check.
   Date/Author: 2026-10-21, design session.
 - Decision: Adopt's contract (§6.5): the target from the command line only, an adoption record
   written before the seed with a phase that `adopt` resumes from and `ls` shows, `down` releasing over
@@ -1350,9 +1397,19 @@ commit 5168e433 on its branch, 2026-10-21):
   cache; a lifecycle lock serializes lease writes, the lease service and departure; `vm lease`
   writes the host first, then the label; `depart` refuses "lease not over" without `--force`; the
   reaper departs reachable hosts and repairs stale labels, and deletes unreachable ones only if the
-  label still holds the value it decided on. Rationale: with two copies of the lease and no fence, an
-  extension racing the reaper or the lease service could delete a VM its session had just kept.
-  Rejected: the label as the authority (the host, which ends its own sessions, could not trust it).
+  label still holds the value it decided on. `depart`'s outcome survives the tailnet logout that cuts
+  the SSH connection carrying it: every refusal and the hold are decided before the logout, so their
+  exit codes reach the driver, and `depart` prints the flushed line `devcloud-depart: ready-to-logout`
+  just before it logs out; the reaper and `down` treat a drop after that line as success, and a drop
+  before it as unknown, which the reaper skips without deleting. Rationale: with two copies of the
+  lease and no fence, an extension racing the reaper or the lease service could delete a VM its
+  session had just kept; and without the line, a departure that succeeded would read as a lost
+  connection. Rejected: the label as the authority (the host, which ends its own sessions, could not
+  trust it); running `depart` detached and polling its status (a second channel for one bit). Known
+  limit: a crash between the descriptor write and the label write while shortening a lease leaves the
+  label later than the host's lease; the host departs and powers off at its own end, and the reaper,
+  unable to reach it, deletes it only at the old label end plus 15 minutes, so a powered-off server
+  bills until then at most (§4.3).
   Date/Author: 2026-10-21, design session.
 - Decision: Departure ends the sessions before the final ship and holds on a failed ship
   (§4.2): the daemon stopped and `claude` processes ended first; the ship while the network and
@@ -1383,9 +1440,14 @@ commit 5168e433 on its branch, 2026-10-21):
   killed between create and recount left an excess nothing removed. Rejected: counting confirmed VMs
   (the person's yes would block sessions' work); relying on the recount alone.
   Date/Author: 2026-10-21, design session.
-- Decision: A disk cap, `[caps] max_disk_gb = 200`, enforced before create; beyond it needs
-  `--confirmed`, else exit 4. Rationale: the caps bounded time, count and vCPU but not disk, which a
-  low-vCPU request could make large and costly. Rejected: leaving disk to the provider's billing.
+- Decision: A disk cap, `[caps] max_disk_gb = 200`, enforced before create on a requested disk
+  (`--disk`, or `host.toml`'s `disk_gb`) larger than the type's own disk; one above both the type's
+  `disk_gb` and the cap needs `--confirmed`, else exit 4. A type's own disk is never capped.
+  Rationale: the caps bounded time, count and vCPU but not an added disk, which a low-vCPU request
+  could make large and costly; a type's own disk is priced with the type, which the size cap already
+  bounds, and capping it would put types within the size cap whose own disk exceeds 200 GB behind
+  `--confirmed`. Rejected: leaving disk to the provider's billing; capping the effective disk
+  including the type's own, the first form of this decision.
   Date/Author: 2026-10-21, design session.
 - Decision: Drivers are the Macs (Terms, §8.3, §8.4): a driver's profile is a configuration
   checkout that pushes, so its SSH key reaches the profile; on a host (`/etc/devcloud/boot.env`
