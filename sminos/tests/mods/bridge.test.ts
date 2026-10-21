@@ -4081,6 +4081,19 @@ describe('the export to the host', () => {
     expect(h.ofType('export').map((e) => (e.records as { uuid: string }[])[0]!.uuid).at(-1)).toBe('r-later')
   })
 
+  test('a message call whose result the bridge never sees, followed only by message calls, holds at most the bound, then the queue flows in order', async () => {
+    const h = harness()
+    await h.ready()
+    await h.responseRow(messageUse('toolu_missed', MESSAGE_TOOL, 'its result was refused beneath'), { uuid: 'r-missed' })
+    for (let i = 0; i < 60; i++) {
+      await h.responseRow(messageUse(`toolu_m${i}`, i % 2 === 0 ? MESSAGE_TOOL : MAWS_MESSAGE_TOOL, `message ${i}`), { uuid: `r-m${i}` })
+      await keepMessageResult(h, `toolu_m${i}`, `r-m${i}res`, i % 2 === 0 ? MESSAGE_TOOL : MAWS_MESSAGE_TOOL)
+    }
+    const uuids = h.ofType('export').map((e) => (e.records as { uuid: string }[]).map((r) => r.uuid))
+    expect(uuids).toEqual([['r-missed'], ...Array.from({ length: 60 }, (_, i) => [`r-m${i}`, `r-m${i}res`])])
+    expect(h.logs.some((l) => l.includes('r-missed') && l.includes('toolu_missed') && l.includes('Stop hook'))).toBe(true)
+  })
+
   test("a message past the events' cap holds nothing after it: it is the Stop hook's, the exception the design allows", async () => {
     const h = harness()
     await h.ready()

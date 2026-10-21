@@ -225,6 +225,13 @@ ROWS = {
             {"type": "text", "text": "<message>after both calls</message>"}]}},
         result("o7-" + tag, "toolu_ex_y_" + tag, "sent"), result("o8-" + tag, "toolu_ex_x_" + tag, "sent")]
        for tag, name in (("plugin", MESSAGE_TOOL), ("maws", MAWS_MESSAGE_TOOL))},
+    # A call whose result the bridge missed, as the mod posts it once it gives
+    # the call up (its row, no result), and two later calls with theirs; the
+    # transcript holds the missed result, which the Stop hook reads.
+    "missed-row": [message("q1", "toolu_ex_missed", "its result never reached the bridge")],
+    "missed-result": [result("q2", "toolu_ex_missed", "sent")],
+    "after-missed": [message("q3", "toolu_ex_later1", "later, one"), result("q4", "toolu_ex_later1", "sent")],
+    "after-missed-2": [message("q5", "toolu_ex_later2", "later, two", MAWS_MESSAGE_TOOL), result("q6", "toolu_ex_later2", "sent")],
     "refused-message": [message("m5", "toolu_ex_msg_refused", "from a subagent"),
                         result("m6", "toolu_ex_msg_refused", "message is for the main conversation", True)],
     # The human's mid-turn message quoting a steer, which the mod hands over whole.
@@ -450,6 +457,25 @@ for tag in plugin maws; do
   hook Stop "$SO" "$TO"
   assert_equals "$(events_of "$SO")" "$ORDER" "$tag's message tool: the Stop hook's export over the same rows reads the same order, and appends nothing"
 done
+
+# A call whose result the bridge missed: the mod gives it up at its bound and
+# the calls after it flow; the Stop hook's export writes the missed call.
+SL=5b000001-0000-4000-8000-0000000000fc
+TL="$HOME/.claude/projects/x/$SL.jsonl"
+peer "$SL" exmissed interactive cli
+start_child "$SL"
+ctl post "$SMINOS_HOME/bridge/$SL.sock" "[{\"type\":\"session\",\"phase\":\"start\",\"session\":\"$SL\",\"cwd\":\"$REPO\",\"t\":1}]" >/dev/null
+for part in missed-row after-missed after-missed-2; do
+  ctl post "$SMINOS_HOME/bridge/$SL.sock" "$(rows export "$part")" >/dev/null
+done
+until_true 100 has "$SL" "message:toolu_ex_later2" || true
+assert_equals "$(events_of "$SL")" "joined message:toolu_ex_later1 message:toolu_ex_later2" \
+  "a given-up call's row, sent without its result, logs nothing; the calls after it log in order"
+hook SessionStart "$SL" "$TL"
+rows transcript "$TL" prompt missed-row missed-result after-missed after-missed-2
+hook Stop "$SL" "$TL"
+assert_equals "$(events_of "$SL")" "joined message:toolu_ex_later1 message:toolu_ex_later2 message:toolu_ex_missed" \
+  "the Stop hook's export writes the missed call once, its result on disk, and nothing else again"
 
 echo "a recovery resync (the first post lost):"
 # The mod's first post, [session start, resync], never reached the child; its

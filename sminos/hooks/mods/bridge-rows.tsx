@@ -314,6 +314,7 @@ export function exportRow(door: string, message: { name?: string; content?: unkn
     if (calls.length > 0 && !isLong(row)) {
       state.exportHold.push({ row, calls: new Set(calls.map((b) => String(b.id))), results: [] })
       calls.forEach((b) => keepPair(String(b.id), { use: row }))
+      boundHold()
     } else if (texts.some((b) => MAY_MARK.test(b.text))) {
       exportRecord(uuid, texts, { type: 'assistant', uuid, message: { content: texts } })
     }
@@ -350,10 +351,7 @@ function exportRecord(uuid: string, texts: { text: string }[], record: Transcrip
 /**
  * An export, in the transcript's order: while a row holding a message call
  * waits for its calls' results (a HeldRow in `state.exportHold`), it waits
- * behind it. A result the bridge never sees (kept while it was down, or
- * refused beneath) holds at most PAIRS_KEPT exports: past that the row is
- * given up, exported with the results it has, and the Stop hook exports the
- * calls it lacks.
+ * behind it.
  */
 function exportInOrder(records: TranscriptRecord[]) {
   if (state.exportHold.length === 0) {
@@ -361,11 +359,20 @@ function exportInOrder(records: TranscriptRecord[]) {
     return
   }
   state.exportHold.push(records)
-  const waiting = state.exportHold[0]
-  if (state.exportHold.length > PAIRS_KEPT && waiting !== undefined && !Array.isArray(waiting)) {
-    state.log?.(`bridge: row ${waiting.row.uuid}: no result for ${[...waiting.calls].join(', ')} after ${PAIRS_KEPT} exports; the Stop hook exports them`)
-    waiting.calls.forEach((id) => state.pairs.delete(id))
-    waiting.calls.clear()
+  boundHold()
+}
+
+/**
+ * A result the bridge never sees (kept while it was down, or refused beneath)
+ * holds at most PAIRS_KEPT exports, held rows of later message calls among
+ * them: past that the waiting row at the head is given up, exported with the
+ * results it has, and the Stop hook exports the calls it lacks.
+ */
+function boundHold() {
+  for (let head = state.exportHold[0]; state.exportHold.length > PAIRS_KEPT && head !== undefined && !Array.isArray(head); head = state.exportHold[0]) {
+    state.log?.(`bridge: row ${head.row.uuid}: no result for ${[...head.calls].join(', ')} after ${PAIRS_KEPT} exports; the Stop hook exports them`)
+    head.calls.forEach((id) => state.pairs.delete(id))
+    head.calls.clear()
     releaseHeld()
   }
 }
