@@ -106,7 +106,7 @@ transcript.
   `mcp__maws__ask` in place of the sminos ask. A non-interactive session (`claude -p`)
   has no tool; nobody reads its report.
 - **Always loaded**: the `tool.describe` hook returns `isDeferred: false`
-  for it (the ask's and compact's pattern). A deferred tool would cost a
+  for it (the ask's pattern; compact's too until 2026-10-20). A deferred tool would cost a
   ToolSearch before the first message, and its definition would land in
   context anyway.
 - **A subagent's call is refused**: `{ deny: … }` when `e.agentId` is set,
