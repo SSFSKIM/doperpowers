@@ -924,9 +924,10 @@ describe("a reload's rows", () => {
       hooks.push({ event, matcher, handler })
     }) as unknown as On)
     const logged: unknown[][] = []
+    const toasted: unknown[][] = []
     const $ = {
       plugin: { name: 'doperpowers' },
-      ui: { log: (...args: unknown[]) => logged.push(args) },
+      ui: { log: (...args: unknown[]) => logged.push(args), toast: (...args: unknown[]) => toasted.push(args) },
     }
     const hook = hooks.find((h) => h.event === 'session.append')!
     expect(hook.matcher).toEqual({ door: 'command' })
@@ -934,10 +935,10 @@ describe("a reload's rows", () => {
     const append = async (message: Record<string, unknown>, origin: unknown) => {
       await hook.handler($, { message, door: 'command', origin, uuid: 'u' }, async (e: { message: unknown }) => (stored.push(e.message), { message: e.message, uuid: 'u' }))
     }
-    return { append, stored, logged }
+    return { append, stored, logged, toasted }
   }
 
-  test("each row of this plugin's reload is kept empty, and the output reaches the person as the plugin's line", async () => {
+  test("each row of this plugin's reload is kept empty, and a reload that went through reaches the person as a toast", async () => {
     const h = rowsHarness()
     await h.append(CAVEAT, SELF)
     await h.append(COMMAND, SELF)
@@ -947,7 +948,18 @@ describe("a reload's rows", () => {
       { ...COMMAND, content: [] },
       { ...OUTPUT, content: [] },
     ])
-    expect(h.logged).toEqual([['/reload-plugins: Reloaded: 10 plugins · 24 skills']])
+    expect(h.toasted).toEqual([['/reload-plugins: Reloaded: 10 plugins · 24 skills', { timeoutMs: 8000 }]])
+    expect(h.logged).toEqual([])
+  })
+
+  test('a reload whose output says more, or that failed, stays as the plugin\'s transcript line', async () => {
+    for (const text of ['Reloaded: 10 plugins · 24 skills\n1 error during load. Run /plugin for details.', 'Failed to reload plugins: ENOENT']) {
+      const h = rowsHarness()
+      await h.append(COMMAND, SELF)
+      await h.append({ ...OUTPUT, content: [{ type: 'text', text: `<local-command-stdout>${text}</local-command-stdout>` }] }, ENGINE)
+      expect(h.logged).toEqual([[`/reload-plugins: ${text}`]])
+      expect(h.toasted).toEqual([])
+    }
   })
 
   test("the person's own reload passes whole, its output too", async () => {

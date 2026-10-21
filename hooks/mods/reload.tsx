@@ -811,10 +811,13 @@ export function registerReload(on: On) {
 
   // The reload's rows, emptied: none can be refused, and each is kept and
   // sent as `(no content)`, which the screen does not draw. The output's
-  // text goes to the person as this plugin's transcript line, a notice no
-  // request carries: a system row `$.session.append` makes is drawn only in
-  // the transcript view (its level is `info`), a `$.ui.log` line on the
-  // main screen too (live, 2.1.303).
+  // text goes to the person outside every request: a reload that says no
+  // more than `Reloaded: …` as a toast (the debug log keeps it), anything
+  // more (load errors, an unreachable marketplace, an update not applied) as
+  // this plugin's transcript line. A transcript line is a system row the
+  // engine draws through no render hook, so no view can fold it once drawn,
+  // and a resume draws it again; a system row `$.session.append` makes is
+  // drawn only in the transcript view (its level is `info`).
   let isOutputDue = false
   on('session.append', { door: 'command' }, async ($, e, next) => {
     const row = reloadRow(e.message, e.origin, $.plugin.name, isOutputDue)
@@ -824,7 +827,12 @@ export function registerReload(on: On) {
     }
     const stored = await next({ ...e, message: { ...e.message, content: [] } })
     if (row === 'output') {
-      $.ui.log(`/reload-plugins: ${outputText(e.message.content)}`)
+      const text = `/reload-plugins: ${outputText(e.message.content)}`
+      if (/^\/reload-plugins: Reloaded: [^\n]*$/.test(text)) {
+        $.ui.toast(text, { timeoutMs: 8000 })
+      } else {
+        $.ui.log(text)
+      }
     }
     return stored
   })

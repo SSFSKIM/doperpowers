@@ -563,13 +563,18 @@ door `command` empties the three instead: the caveat and the command line
 known by this plugin's origin, the output as the `local_command` row after
 that command line. An emptied row is kept and sent as `(no content)`, which
 no screen draws, so the model reads three `(no content)` lines per reload in
-place of the run. The output's text reaches the person as this plugin's
-transcript line (`$.ui.log`: `doperpowers: /reload-plugins: Reloaded: N
-plugins · …`), a notice no request carries; a system row through
-`$.session.append` would be drawn only in the transcript view, its level
-being `info`. The to-human view keeps a successful reload's line out of its
-report (its `ui.log` hook sends the line to the debug log while the report
-folds); its full transcript draws it. This holds when the reload replaces doperpowers itself: the
+place of the run. The output's text reaches the person outside every
+request. A reload that says no more than `Reloaded: N plugins · …` is a
+toast (`doperpowers: /reload-plugins: Reloaded: …`), which the debug log
+keeps too. One that says more (load errors, an unreachable marketplace, an
+update not applied) is this plugin's transcript line (`$.ui.log`). A
+transcript line is a system row the engine draws through no render hook, so
+no view can fold it once drawn and a resume draws it again: the to-human
+view once kept the success line out of its report by sending it to the
+debug log as it was logged, but a line logged while the full transcript
+showed, or one the hook missed, stayed for good (10-21: 39 of 164 reloads
+in this machine's sessions). A system row through `$.session.append` would
+be drawn only in the transcript view, its level being `info`. This holds when the reload replaces doperpowers itself: the
 engine writes the rows once the new module is loaded, and its hook knows
 them by origin. A `/reload-plugins` the person types passes whole.
 `tests/mods/live-reload-rows-check.py` pins all of it against a real
