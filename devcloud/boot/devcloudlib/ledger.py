@@ -70,12 +70,15 @@ def remove_all(user, as_user, path=None, last=()):
     still has it to resume from). Returns (removed, failures), each failure
     `<path> (<reason>)`; with any failure the ledger stays."""
     removed, failures = [], []
-    home = str(user.home).rstrip("/") + "/"
+    home = os.path.abspath(str(user.home)) + "/"
     last = {os.path.abspath(str(p)) for p in last}
     listed = entries(path)
     for target in [t for t in listed if t not in last] + [t for t in listed if t in last]:
         if target in last and failures:
             break
+        if target + "/" == home or target == "/":
+            failures.append(f"{target} (the home itself, or the root, is never removed)")
+            continue
         try:
             if target.startswith(home):
                 as_user(user, lambda target=target: remove_one(target))

@@ -60,6 +60,14 @@ class ParseTest(unittest.TestCase):
             with self.subTest(word=word), self.assertRaisesRegex(secrets.ProfileError, word):
                 secrets.parse(body)
 
+    def test_a_file_that_leaves_the_home_or_is_the_home_is_refused(self):
+        """`~//etc/passwd` starts with ~/ and holds no `..`, but joined to the
+        home it is /etc/passwd: listed in the ledger, the release would
+        remove it as root. The home itself is no file either."""
+        for file in ("~//etc/passwd", "~/", "~/.", "~/./", "~/a/../../x"):
+            with self.subTest(file=file), self.assertRaisesRegex(secrets.ProfileError, "inside the home"):
+                secrets.parse(f'[[secret]]\nname = "a"\nfile = "{file}"\n')
+
     def test_an_empty_or_absent_list_is_nothing_to_do(self):
         self.assertEqual(secrets.parse(""), [])
 
@@ -131,6 +139,18 @@ class MaterializeTest(unittest.TestCase):
         self.assertEqual(out.state, "failed")
         self.assertIn("api-key (", out.detail)
         self.assertNotIn("line one", out.detail)
+
+    def test_an_entry_outside_the_home_is_never_ledgered_nor_written(self):
+        """An entry made without parse (a later caller) is held to the same
+        boundary before the ledger hears of it."""
+        listed = []
+        outside = pathlib.Path(tempfile.mkdtemp()) / "outside"
+        entry = secrets.Entry(name="pgpass", file="~/" + str(outside))
+        out = secrets.materialize([entry], lambda name: b"made-up\n", self.home, before_write=listed.append)
+        self.assertEqual(out.state, "failed")
+        self.assertIn("inside the home", out.detail)
+        self.assertEqual(listed, [])
+        self.assertFalse(outside.exists())
 
 
 if __name__ == "__main__":
