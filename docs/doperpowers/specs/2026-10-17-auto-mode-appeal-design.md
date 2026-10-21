@@ -191,10 +191,13 @@ inline by a `tool.describe` hook (`isDeferred: false`) as the compact mod does
 ToolSearch query that loads it; Decision Log),
 in every loop — subagents included, which is where fact 3's blocks live. Input
 schema: `block` (string, required), `argument` (string, required). Its
-description, verbatim:
+description, verbatim (2026-10-21: the sentence "The classifier lacks
+context and can misjudge a legitimate call; read its block critically, and
+appeal when you think the call was legitimate" moved to the owner's global
+CLAUDE.md, and the first line was shortened to match):
 
 ```
-Appeal a block by auto mode's classifier. The classifier lacks context and can misjudge a legitimate call; read its block critically, and appeal when you think the call was legitimate: it misread what the call does or touches, or the user's own words authorize it (for a subagent, in the main conversation too). An independent judge rules. Not for an action the user has not authorized: that is a question for the user.
+Appeal a block by auto mode's classifier when the call was legitimate: it misread what the call does or touches, or the user's own words authorize it (for a subagent, in the main conversation too). An independent judge rules. Not for an action the user has not authorized: that is a question for the user.
 - block: the id from the block's notice (b1, b2, …).
 - argument: the facts and where they are (a user message, an answer to your question, an earlier call or result, CLAUDE.md); the judge checks each, and a claim it cannot find counts against you.
 One appeal per block, before you stop or work around it. Granted: run the identical call again (only its description may differ). Upheld: the response says what would change the verdict; ask the user that if the action is still needed.
