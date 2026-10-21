@@ -133,8 +133,9 @@ session store). New here:
 
 Run from a session on the MacBook unless a check names the always-on Mac. `<n>` is the name `up`
 prints. Every VM created is deleted the same day and its deletion recorded in Progress. The desk
-parts of checks 1, 3, 5 and 7 need the sminos release that carries I15; until it is installed they
-are reported "blocked on the desk", never passed (Constraints).
+parts of checks 1, 3, 5 and 7 need sminos 1.4.1 or later on the VM and the desk's provisioning key
+(H4); until the key exists they run with a one-time code or are reported pending, never passed
+(Constraints).
 
 1. **A ready host from one command.** `devcloud vm up --label acc --project <owner/repo>` (a
    repository with a `devenv/`; the profile naming the desk's provisioning key, H4 — M6 says what
@@ -863,11 +864,11 @@ with doperpowers:writing-skills and sanity-tested in a session before it ships.
 - The desk's interface (I15) is owned by the desk; a change there reaches this work through the
   desk session (sminos `smns-erb-71`, the desk orchestrator). Code against I15 as written; when the
   desk's final shapes differ, the desk session says so and the Decision Log records it.
-- The live checks that enroll at the desk need the sminos release that carries I15; today's installed
-  CLI has only `hub enroll` and `hub show`, so `hub check` exits 2. Before any such check the executor
-  verifies that the installed sminos accepts `hub check` and records its version. Until the desk
-  ships that release, the desk parts of those checks are reported "blocked on the desk", never
-  passed, and everything else proceeds: a VM whose descriptor has no `DEVCLOUD_SMINOS_SECRET` and no
+- The live checks that enroll at the desk need the sminos release that carries I15. It shipped on
+  2026-10-21 as sminos 1.4.1 (I15's version floor). Before any such check the executor verifies, on
+  the VM itself, that its sminos is at least 1.4.1 and accepts `hub check`, and records the version.
+  The desk parts run once the provisioning key exists (H4); until then a check that needs the desk
+  earlier enrolls with a one-time code. Everything else proceeds regardless: a VM whose descriptor has no `DEVCLOUD_SMINOS_SECRET` and no
   code file skips step 11's enrollment. The one-time-code path (`--enroll-code -`) stands in for the
   provisioning key only, not for the CLI.
 - `devcloud/hooks/mods/secrets*.tsx` is not touched by this work (cua vendors it).
@@ -1418,9 +1419,14 @@ commit 5168e433 on its branch, 2026-10-21):
 - Per key, the desk revokes a machine offline longer than the key's `offline_revoke_s` (never, or
   1 h to 30 d). The key for leased VMs uses 24 h (H4). A machine enrolled by a one-time code has no
   offline revoke.
-- Version floor: the sminos release that ships `hub check` and the provisioning keys; an older one
-  exits 2 on `hub check` and on a provisioning key. The desk has not yet sent the version number; it
-  is recorded here when it does.
+- Version floor: sminos 1.4.1 (doperpowers PR #313, merged as acdb9148; the hub is deployed at MAWS
+  4326f0a9). An older sminos exits 2 on `hub check` and on a provisioning key.
+- Final-review hardenings (the desk session, 2026-10-21):
+  - `check` and `leave` decide only on the hub's complete response body. A truncated answer gives
+    `check` exit 4, and `leave` exit 1 with the credential kept.
+  - A revocation the hub has started always completes, even if the machine reconnects partway.
+  - Past the 600 s grace, a 401 counts as rejected only if a recheck 90 s later is still 401.
+  - `leave` exits 1 when another enrollment has replaced the machine.
 
 **I16 — Command surface and exit codes:**
 
@@ -1914,6 +1920,14 @@ commit 5168e433 on its branch, 2026-10-21):
   provider with exit 3, and acceptance runs on the default type. Rationale: the default type fits
   four VMs, a builder and a test server within the quotas, and the person chose not to raise them
   for now. Date/Author: 2026-10-21, the person, through the design session.
+
+- Decision: The desk's floor shipped. I15 records sminos 1.4.1 as its version floor, and its
+  final-review hardenings: a decision only on a complete response body, revocations that always
+  complete, the 90 s recheck of a 401 past the grace, and `leave` exiting 1 when the machine was
+  replaced. These change no exit code devcloud acts on. The desk parts of acceptance run once H4's
+  key exists (its Secret Manager id goes in `driver.toml`'s `[desk]`), and earlier checks enroll
+  with a one-time code. Date/Author: 2026-10-21, the desk session (smns-erb-71) through the design
+  session.
 
 ## Outcomes & Retrospective
 
