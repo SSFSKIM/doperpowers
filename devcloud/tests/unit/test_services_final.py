@@ -124,7 +124,7 @@ class NeedsABootTest(unittest.TestCase):
         marker = pathlib.Path(tempfile.mkdtemp()) / "booted"
         marker.write_text("")   # a previous boot's
 
-        def run_steps(steps_, r, done=None):
+        def run_steps(steps_, r, done=None, guard=None):
             self.assertFalse(marker.exists(), "the marker outlived the start of a boot")
             if steps_ is steps.BOOT:
                 return 1 if outcome == "host failed" else 0
@@ -197,7 +197,7 @@ class OwedRestartTest(unittest.TestCase):
         with contextlib.ExitStack() as stack:
             stack.enter_context(mock.patch.object(steps, "_locked", contextlib.nullcontext))
             stack.enter_context(mock.patch.object(steps.status, "reset", lambda: None))
-            stack.enter_context(mock.patch.object(steps, "_run", lambda steps_, r, done=None: 0))
+            stack.enter_context(mock.patch.object(steps, "_run", lambda steps_, r, done=None, guard=None: 0))
             stack.enter_context(mock.patch.object(steps, "Run", lambda kind: mock.Mock(user=self.user)))
             stack.enter_context(mock.patch.object(services, "systemd_is_init", lambda: True))
             stack.enter_context(mock.patch.object(services, "start_gated", lambda user, **_: calls.append(
