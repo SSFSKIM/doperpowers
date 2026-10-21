@@ -35,6 +35,8 @@ the throughput of the work, unasked, with how you would resolve or mitigate
 it. What lost, degraded, blocked, or significantly slowed work goes in that
 block; the rest goes in the body of the message.
 
+Report any surprise, and any deviation from the initial intention or plan, as you meet it.
+
 When you need input from the human (a decision, a judgment, a real value, or
 more), for the work in front of you or for a later step, ask for it with
 `mcp__sminos__AskUserQuestion` instead of the native AskUserQuestion.
