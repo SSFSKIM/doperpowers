@@ -33,7 +33,7 @@ always loaded, not deferred), after weighing the cost below.
 - [x] (2026-10-20) Spec reviewed (adversarial design review, buildability review); findings applied in abf65e9e.
 - [x] (2026-10-20) M1 — the tool, the view and the notification (to-human plugin): 4101d65d, with the copy and style-gate wave 356ac1cc, reviewed clean
 - [x] (2026-10-20) M2 — the export (sminos): 5f708d8f, fixes e8a7aea3 and a825d3fd, reviewed clean
-- [ ] M3 — the style, the evals, the docs, acceptance
+- [x] (2026-10-20) M3 — the style, the evals, the docs, acceptance: 67d6e871..571c866b, the eval-logic fix 6c7d80c3 reviewed clean before the paid runs; the whole-branch review's one finding fixed in 7c620c4d
 
 ## The loss, measured
 
@@ -741,6 +741,82 @@ sminos carries both message-tool names as its own constant, beside
   appended, so per-call exports of a shared row were unsafe.
   Date/Author: 2026-10-20, M2's executor, folded by the plan-executor.
 
+- Decision: M3's gaps, resolved by its executor and the phase A review.
+  - `tests/output-styles/mid_turn.py` holds what both evals count with: the
+    tool definition read from `message.tsx` (so an eval cannot drift from
+    what ships), the judge prompt word for word, and the per-message
+    counting. `tests/output-styles/test-eval-logic.py` is its offline dry
+    run.
+  - A final message is a span in the response that ends the turn, or a
+    message-tool call alone in its response when the next response ends the
+    turn. A lone call the run cuts off counts as `cut_off_tool`, neither mid-turn
+    nor final. In the fan-out, which ends on a launch, such a call gets up to 2
+    settling responses (`SETTLE`).
+  - A span after a response's last tool call counts as delivered mid-turn,
+    since the turn goes on past it and it came back as text. It is also counted
+    on its own (`mid_span_trailing`). Spans are read with `sminos_marks.parse`,
+    so a mark in code stays literal.
+  - In the agent-step eval, Bash answers as a working shell: git log and status
+    follow the scenario, plus gh pr and file reads, and anything else reads
+    `(Bash completed with no output)`. The keep-working scenario's clock comes
+    before its approval window. The fan-out keeps its `(ok)`, so its earlier
+    rounds stay comparable.
+  - Without `--history`, each agent-step scenario runs on its own history
+    (milestone3 on silent2, complete on reported3, the rest on short).
+  - The live check loads doperpowers as a minimal directory holding only the
+    worktree's style, so none of doperpowers' other mods load.
+  Date/Author: 2026-10-20, M3's executor, folded by the plan-executor.
+- Decision: the export hold's `PAIRS_KEPT` bound runs after every push onto
+  the hold (`boundHold`), not only in `exportInOrder`. Past 50 held entries,
+  the row at the head is given up and exported with the results it has.
+  Rationale: The whole-branch review found that a run of message-only rows
+  after a missed result held every later export (one missing result and 100
+  calls gave 0 exports).
+  Date/Author: 2026-10-20, the whole-branch review (reviewer-high), fixed by
+  M2's executor.
+
 ## Outcomes & Retrospective
 
-Pending — written at finish.
+(2026-10-20, the plan-executor.) The three milestones shipped as designed,
+and the contract table did not move. MAWS's side (82a0967ff) and the desk's
+(MAWS #94) landed against it while this branch was being built.
+
+- **What exists.** The to-human plugin registers `mcp__to-human__message`
+  in an interactive session under the `doperpowers:to-human` style, and
+  keeps it always loaded. It refuses a subagent's call (#310 is the ticket for
+  lifting that) and a blank one. The view draws the call as a message row, and
+  draws nothing for its result. The notification fires from the accepted
+  call. sminos exports an accepted call of either message tool as
+  `{"kind": "message", "src": <tool-use id>}` through both paths, in
+  transcript order. The style names both forms and declares contract 6.
+  Every repo agent withholds the tool.
+- **Acceptance.** 1–5 PASS in the live check: 17 haiku calls on Claude Code
+  2.1.306, run with `to-human/tests/mods/live-message-check.py`. 6 is met (the
+  numbers are in each eval's docstring):
+  - agent-step: lost mid-turn messages 1 of 5 (20%) under main's style
+    and 0 of 8 under the branch's; final messages that stay spans 28/28 and
+    27/27.
+  - fan-out: 0 of 8 lost in both arms.
+  - Spend: 209 turn calls on opus-5-5 high, about 17 judge calls.
+  7 is in the PR.
+- **What the evals do and do not show.** Both arms list the tool, as M3
+  decided, and the old style uses it unprompted: 8 of 8 fan-out announcements,
+  and 4 of 5 agent-step mid-turn messages. So the measured gap between the
+  arms is small, and most of the effect is the tool being present. The loss
+  without a tool is the earlier fan-out round's: 12 of 12 announcements came
+  back as progress notes. The samples are small (5 and 8 mid-turn messages in
+  agent-step). Progress notes nearly vanished: 1 in 209 responses.
+- **What review caught.** Each catch below was found by review, not by the
+  executors' own tests:
+  - the live export reordered a span written after a pending call (twice:
+    across rows, then within a multi-call row);
+  - the hold's bound was bypassed by message-only rows;
+  - the fan-out eval censored final tool messages;
+  - the keep-working scenario's clock read past its own window.
+  Reviewing the eval logic before the paid runs is what kept those runs worth
+  their spend.
+- **Left behind.**
+  - An async ask's pair still does not hold the exports after it, as before
+    this work.
+  - The Stop path's flush wait misses a call whose row is not yet on disk.
+  - The fake shell in the agent-step eval does not expand `$?`.
