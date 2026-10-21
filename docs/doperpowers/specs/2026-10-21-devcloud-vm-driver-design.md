@@ -71,7 +71,7 @@ refused or it needs a browser or their judgment.
 | H5 | A tailnet ACL rule letting the Macs reach `tag:devcloud` on port 22 | the person | not needed: M1 found it open |
 | H6 | Removing the parent's leftover test machine `devcloud-m5` from the desk's Machines | the person | an M6 step; evidence: `sminos machines` no longer lists it |
 | H8 | The Hetzner limits (6 primary IPs, 16 shared vCPU) | the person | answered at M1: GCE becomes the default account, no limit request (Decision Log) |
-| H9 | Optional: raising the GCE project's E2 vCPU quotas in us-west1 (E2 24 → 48, all regions 32 → 48), so the caps' worst case fits | the person | asked at M2; until then the provider's exit 3 refuses what does not fit |
+| H9 | Optional: raising the GCE project's E2 vCPU quotas in us-west1 (E2 24 → 48, all regions 32 → 48), so the caps' worst case fits | the person | declined (2026-10-21): requests over the quota are refused with exit 3 |
 | H7 | Approving M5's test provider before it first runs with a credential (`provider register --confirmed`) | the person | M5 |
 
 ## Terms
@@ -1890,6 +1890,12 @@ commit 5168e433 on its branch, 2026-10-21):
   and a test server fit. us-west1 is as close to both Macs as hil (Surprises), and GCE brings the
   keyless host identity. Rejected: asking Hetzner to raise the limits (H8 as first prepared);
   IPv4-only Hetzner servers. Date/Author: 2026-10-21, the person, through the design session.
+
+- Decision: The GCE project's quotas stay as they are (H9 declined). A request beyond them, as the
+  caps' worst case of four 8-vCPU VMs with a builder and a test server would be, is refused by the
+  provider with exit 3, and acceptance runs on the default type. Rationale: the default type fits
+  four VMs, a builder and a test server within the quotas, and the person chose not to raise them
+  for now. Date/Author: 2026-10-21, the person, through the design session.
 
 ## Outcomes & Retrospective
 
