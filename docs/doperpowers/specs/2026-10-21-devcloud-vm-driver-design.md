@@ -70,7 +70,8 @@ refused or it needs a browser or their judgment.
 | H4 | A desk provisioning key, `offline_revoke_s` 24 h, into Secret Manager | the person, once the desk ships keys | M6 verifies its policy value |
 | H5 | A tailnet ACL rule letting the Macs reach `tag:devcloud` on port 22 | the person | not needed: M1 found it open |
 | H6 | Removing the parent's leftover test machine `devcloud-m5` from the desk's Machines | the person | an M6 step; evidence: `sminos machines` no longer lists it |
-| H8 | Raising the devcloud Hetzner project's limits (6 primary IPs → 12, 16 shared vCPU → 32) | the person | asked at M1; until granted, the provider's exit 3 refuses what does not fit (Decision Log) |
+| H8 | The Hetzner limits (6 primary IPs, 16 shared vCPU) | the person | answered at M1: GCE becomes the default account, no limit request (Decision Log) |
+| H9 | Optional: raising the GCE project's E2 vCPU quotas in us-west1 (E2 24 → 48, all regions 32 → 48), so the caps' worst case fits | the person | asked at M2; until then the provider's exit 3 refuses what does not fit |
 | H7 | Approving M5's test provider before it first runs with a credential (`provider register --confirmed`) | the person | M5 |
 
 ## Terms
@@ -1226,7 +1227,8 @@ Decisions:
   given a request beyond a cap, asks before passing `--confirmed`; and, given a project on a cloud
   no provider covers, writes a provider, asks the person to register it, and then runs `provider
   test` until it passes.
-- The full cap proof (three unconfirmed VMs plus a confirmed fourth) reuses acceptance 1's and 6's
+- The full cap proof (three unconfirmed VMs plus a confirmed fourth) runs on the GCE default account
+  (Decision Log, H8), and reuses acceptance 1's and 6's
   VMs where they are alive at the time.
 - The provisioning-key path of acceptance 1 needs H4; if the desk has not shipped keys by then,
   acceptance 1 runs with `--enroll-code -` (the person pastes a one-time code) and the key path's
@@ -1568,6 +1570,17 @@ commit 5168e433 on its branch, 2026-10-21):
 - Observation (M2): On Ubuntu 24.04, `cloud-final.service` runs after `multi-user.target`, so a boot
   unit wanted by multi-user and ordered after cloud-final forms an ordering cycle. The boot unit is
   ordered after `cloud-config.service` instead, which still follows cloud-init's user-data writes.
+- Observation (2026-10-21, after M1): GCE `us-west1` is as close to the Macs as Hetzner's hil. The
+  median ping is 45 ms from the MacBook (hil 57 ms) and 67 ms from the always-on Mac (hil 93 ms),
+  30 samples each, measured at the same time. The custom type `e2-custom-4-8192` (4 vCPU, 8 GB) is
+  offered in us-west1-b. At list prices (E2 in us-west1: $0.021811 per vCPU-hour, $0.002923 per
+  GB-hour) it costs about $0.111/h, against $0.134/h for e2-standard-4 (16 GB). The project's
+  us-west1 quotas are E2 24 vCPU, 100 CPUs, 8 in-use IPv4 addresses and 4096 GB of disk, with 32 CPUs
+  across all regions (4 of them used by an unrelated instance). Four default-type VMs, a builder and
+  a test server fit (20 vCPU, 6 addresses). Four VMs at the 8-vCPU cap plus a builder and a test
+  server (36 vCPU) do not.
+  Evidence: `dc-lat-0001` (e2-custom-4-8192, us-west1-b, created 05:25Z, deleted 05:39Z); `ping`
+  from both Macs; `gcloud compute regions describe us-west1`, `project-info describe`.
 
 ## Decision Log
 
@@ -1864,6 +1877,19 @@ commit 5168e433 on its branch, 2026-10-21):
     missing or not executable is a failed ship, so the departure holds (review finding).
   Rationale: each follows the spec's intent where it was silent; the reasons are in the M2 report.
   Date/Author: 2026-10-21, M2's executor, folded by the controller.
+
+- Decision: The default account is GCE in `us-west1` instead of Hetzner in hil. The person chose it
+  on 2026-10-21, after M1 measured the devcloud Hetzner project's limits (6 primary IPs, 16 shared
+  vCPU). The default type is `e2-custom-4-8192`, the 4 vCPU / 8 GB the person chose, at about
+  $0.111/h; the zone is the account's (us-west1-b). Hetzner stays a registered account that a
+  request reaches only through `--account` or `host.toml`. Nothing falls back from one account to
+  another: a refusal stays exit 3. The caps keep their values. Acceptance 4's full cap proof and
+  M6's acceptance run on GCE, while M3's partial smoke stays on Hetzner, which one or two VMs fit.
+  This supersedes the cap-proof sentence of the entry above about mixing accounts. Rationale: three
+  dual-stack servers fill the Hetzner project, so the default must live where four VMs, a builder
+  and a test server fit. us-west1 is as close to both Macs as hil (Surprises), and GCE brings the
+  keyless host identity. Rejected: asking Hetzner to raise the limits (H8 as first prepared);
+  IPv4-only Hetzner servers. Date/Author: 2026-10-21, the person, through the design session.
 
 ## Outcomes & Retrospective
 
