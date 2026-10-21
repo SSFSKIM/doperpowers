@@ -678,8 +678,9 @@ class Entry:
     """Wire lines queued on a lane — on the session lane, of one project,
     and either all `renewed` or none — and the `send` they came from: `join`
     is [its entries not yet taken into a body, its continuation, {id(frame):
-    reason} of its frames the hub refused whole], the continuation due with
-    the body that takes the last entry. `ends` holds, beside each line, the
+    reason} of its frames the hub refused whole, its frames], the
+    continuation due with the body that takes the last entry. `ends` holds,
+    beside each line, the
     frame it ends (its last wire line), else None. `at`: when it was queued
     (monotonic, the plane's clock)."""
 
@@ -696,10 +697,6 @@ class Entry:
             self.lines.append(line)
             self.ends.append(frame if i == len(lines) - 1 else None)
             self.size += len(line) + 1
-
-    def frames(self):
-        """The frames whose last line is still here."""
-        return [f for f in self.ends if f is not None]
 
 
 class Dial:
@@ -781,7 +778,7 @@ class Sender(threading.Thread):
         once all of them were answered 200 ({id(frame): reason} of those
         refused whole), never when the lane fails first. Dropped once the
         lane is closed. NotDelivered past SEND_QUEUE_MAX."""
-        join, entries = [0, then, {}], []
+        join, entries = [0, then, {}, list(frames)], []
         for frame in frames:
             pid, again = (project_of(frame), renewed(frame)) if self.lane == "session" else (None, False)
             if not entries or (entries[-1].project, entries[-1].renewed) != (pid, again):
@@ -827,25 +824,29 @@ class Sender(threading.Thread):
         ahead of those that follow, until the next `release` — except what
         that hello's re-open sends anew (`renewed`), which is dropped, so
         nothing posted after the hello contradicts it. A dropped entry's
-        continuation never runs; its frames are returned, for their owners
-        to owe as they stand. Also returned: when a body carrying the project
-        is out now, which the hub may apply after the hello (`Link.open`
-        heals that), when the oldest of its lines of the project was queued;
-        else None. (flying, the frames dropped)"""
+        `send` never completes, so its continuation never runs: every frame
+        of that send is returned — an earlier body's too, the send cut short
+        — for their owners to owe as they stand. Also returned: when a body
+        carrying the project is out now, which the hub may apply after the
+        hello (`Link.open` heals that), when the oldest of its lines of the
+        project was queued; else None. (flying, the frames dropped)"""
         with self.cv:
             flying = self.flying.get(project)
             self.released.discard(project)
             mine = [e for e in itertools.chain(self.entries, self.aside.pop(project, ())) if e.project == project]
             self.entries = collections.deque(e for e in self.entries if e.project != project)
-            dropped = []
+            dropped, cut = [], set()
             for e in mine:
                 if e.renewed:
                     self.unsent -= sum(len(line) + 1 for line in e.lines)
-                    dropped += e.frames()
+                    if id(e.join) not in cut:
+                        cut.add(id(e.join))
+                        dropped += e.join[3]
             kept = [e for e in mine if not e.renewed]
             if kept:
                 self.aside[project] = kept
-        return flying, dropped
+            waiting = {id(f) for e in kept for f in e.ends if f is not None}   # still to go, behind the hello
+        return flying, [f for f in dropped if id(f) not in waiting]
 
     def posting(self):
         return self.state == "posting"

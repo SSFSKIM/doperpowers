@@ -1522,6 +1522,38 @@ class RelayedOnLanes(unittest.TestCase):
         self.answered(link, items)
         self.assertTrue(self.relayed(rids[1]), "and is relayed once that is answered")
 
+    def test_a_relay_cut_short_by_the_reopen_its_refusal_brings_owes_all_of_it_again(self):
+        """A relay too large for one POST goes as several. The POST carrying
+        the first settlement is answered naming it refused `not-open` while
+        the next is held at the hub and the rest still waits on the lane:
+        the re-open drops that rest (its hello sends it anew), and the
+        relay's continuation with it, so both settlements — the one an
+        earlier POST carried too — go behind the hello."""
+        rids = ["toolu_cut_0", "toolu_cut_1"]
+        r = self.requests()
+        link, items, _ = self.stream(1, r)
+        for rid in rids:
+            self.settle(link, rid)
+        frames = r.due({self.pid})
+        at = [i for i, f in enumerate(frames) if messages([f], "settled")]
+        self.assertEqual(len(at), 2)
+        self.assertGreater(at[1], at[0] + 1, "a frame between them: the second settlement still waits on the lane")
+        n = len(self.hub.posts)
+        self.hub.script = [200] * at[0] + [("refuse", [(0, "not-open")]), "hold"]
+        with mock.patch.object(self.uplink, "POST_LIMIT", 1):   # one frame a POST
+            link.relay_requests()
+            self.assertTrue(wait_for(lambda: len(self.hub.posts) >= n + at[0] + 2), "the POST after the refused one held")
+        self.assertTrue(self.settled_in(self.hub.bodies()[n + at[0]], rids[0]), "the refused POST carried the first")
+        self.answered(link, items)      # its answer: the project opened again, the rest of the relay dropped
+        self.assertTrue(wait_for(lambda: len(self.hub.posts) > n + at[0] + 2), "the hello opening it again went")
+        hello = self.hub.bodies()[n + at[0] + 2]
+        self.assertEqual(hello[0]["t"], "hello")
+        self.assertEqual(sorted(m["body"]["request"] for m in messages(hello, "settled")), rids,
+                         "both settlements go behind the hello: %s" % hello)
+        self.answered(link, items)
+        self.assertTrue(self.relayed(rids[0]) and self.relayed(rids[1]), "and are relayed once it is answered")
+        self.hub.release.set()
+
     def test_the_streams_own_refusal_after_an_answer_that_took_the_settlement_changes_nothing(self):
         """The hub's `refused` down the stream copies what a POST's answer
         already named; one that comes for a project whose frames the hub
