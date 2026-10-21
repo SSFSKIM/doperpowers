@@ -122,7 +122,7 @@ class SecretManager:
             request = urllib.request.Request(seed["token_uri"], data=body,
                                              headers={"Content-Type": "application/x-www-form-urlencoded"})
             try:
-                with urllib.request.urlopen(request, timeout=60) as response:
+                with urllib.request.urlopen(request, timeout=30) as response:
                     self._token = json.load(response).get("access_token")
             except urllib.error.HTTPError as error:
                 raise DriverError(FAILED, f"the seed's token exchange was refused (HTTP {error.code})") from None
@@ -138,7 +138,7 @@ class SecretManager:
                f"/secrets/{urllib.parse.quote(secret_id, safe='')}/versions/latest:access")
         request = urllib.request.Request(url, headers={"Authorization": f"Bearer {self.token()}"})
         try:
-            with urllib.request.urlopen(request, timeout=60) as response:
+            with urllib.request.urlopen(request, timeout=30) as response:
                 body = json.load(response)
         except urllib.error.HTTPError as error:
             raise DriverError(FAILED, f"Secret Manager refused {secret_id} (HTTP {error.code})") from None

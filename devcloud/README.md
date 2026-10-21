@@ -420,6 +420,110 @@ what keeps a value out of a log.
     devcloud refresh-secrets   # the refresh job, by hand
     devcloud refresh-mirrors   # the mirror job, by hand
 
+## The VM driver (`driver/`, `bin/devcloud`)
+
+`devcloud vm` creates cloud machines that boot into hosts, lists them, reaches
+them, leases them and deletes them, from a session on the person's Macs
+(design: `docs/doperpowers/specs/2026-10-21-devcloud-vm-driver-design.md`).
+The plugin's `bin/devcloud` is on a session's `PATH`; it runs
+`boot/devcloud` with a Python 3.11+ from `PATH`, which hands `vm` to the
+driver with the caller's `PATH` (hcloud and gcloud live under Homebrew and
+the user's SDK). On a host (`/etc/devcloud/boot.env` exists) `devcloud vm`
+refuses with exit 6: hosts never drive.
+
+    devcloud vm up [--label L] [--project owner/repo[@ref]]... [--account A] [--type T] [--location L]
+                   [--disk GB] [--ttl D | --keep] [--spot] [--enroll-code -] [--confirmed] [--dry-run]
+    devcloud vm ls [--json]
+    devcloud vm ssh <name> [--root] [-- command...]
+    devcloud vm lease <name> <duration> [--confirmed]
+    devcloud vm down <name> [--force]
+    devcloud vm reap [--install]
+    devcloud vm provider register <account> --confirmed | provider test <account>
+
+Exit codes: 0 ok, 1 failed, 2 usage, 3 the provider refused (or a capability
+the request needs is missing), 4 over a cap (needs `--confirmed`), 5 the down
+guard (unpushed work), 6 not a driver here (no seed key, or a devcloud host),
+7 the account's provider is not usable (not registered, or no passing copy).
+
+**What it needs.** The profile's `driver.toml` (beside the host profile in
+`~/.claude/devcloud/`, or `$DEVCLOUD_PROFILE`): the caps, the default
+account, the descriptor fields every host gets (`[host]`), the desk's
+provisioning key (`[desk]`), and the accounts, each a provider with the
+Secret Manager ids of its credentials (`env`) and its settings (`vars`);
+never a value, and unknown keys are refused. The seed key file,
+`$DEVCLOUD_SEED_FILE` or `~/.config/devcloud/seed.json`: the driver signs
+its own token request with it (RS256 in the standard library; no gcloud
+configuration is touched) and reads each credential from Secret Manager on
+every provider call. Without a seed every command exits 6.
+
+**Caps.** A session may create a throwaway VM (a lease) within the profile's
+caps without asking anyone: at most three unconfirmed throwaway VMs alive
+across accounts, a lease of at most 72 h from creation (12 h by default), at
+most 8 vCPU, and no disk added beyond the type's own above 200 GB. Anything
+beyond, `--keep`, and registering a provider need the person's yes for that
+request, passed as `--confirmed`; a VM so made carries `devcloud-confirmed=1`
+and is not counted.
+
+**`up`** checks the caps (`--dry-run` stops there, printing the request,
+each cap's verdict and the hourly price), names the VM `dc-<label>-<4 hex>`
+(no live server, tailnet node or desk machine of that name), composes the
+boot descriptor (ids, never values) and user-data that stages it at
+`/var/lib/devcloud-stage/boot.env` and authorizes every driver key for root,
+and creates the server with its labels in the create call itself. It counts
+again (two drivers racing past the cap: the newest goes), then, at the
+public address, streams the plugin's `image/` and `boot/` and runs
+`setup.sh`, delivers the seed (its path in the host's credential ledger
+first, the key on ssh's stdin), installs `/etc/devcloud/boot.env` and starts
+the boot, and waits for every step, over the tailnet once the tailnet attach
+step is `ok` (the boot closes the public port right after it). A failed step
+prints `devcloud status` and exits 1, keeping the VM for inspection.
+`--enroll-code -` reads a one-time desk code from stdin and, after the boot,
+writes it to the host and reconciles, for when the profile has no
+provisioning key.
+
+**`ssh`** reaches the host's user over the tailnet (`--root` for root); one
+argument after `--` is a shell line as given, several are an argument list,
+each quoted. A host whose departure has started is refused except to root.
+**`lease`** writes the host's lease first (`devcloud lease set`, under its
+lock), then the provider label with the value the host printed. **`down`**
+refuses unpushed or uncommitted work under the user's `~/Developer/GitHub`
+(exit 5; `--force` proceeds), departs the host (`devcloud depart --force
+--no-poweroff`, `--no-hold` with `--force`) and deletes it after rechecking
+its labels; the connection dropping after `devcloud-depart: ready-to-logout`
+is success, before it the outcome is unknown and the VM is kept.
+
+**The reaper**, `devcloud vm reap`, deletes what outlived its lease (a
+reachable host departs first; a label older than the host's lease is
+repaired, not acted on; a running host that does not answer gets 6 hours; a
+held departure 24 hours, logged as unshipped loss), unconfirmed throwaway
+VMs above the cap (newest first), builders and `provider test` servers older
+than 2 hours, and images beyond the newest two. It never touches a resource
+without the `devcloud` label and rechecks it, and the lease it decided on,
+with a `get` right before each delete. Each deletion is a line in
+`~/.local/state/devcloud/reap.log`. `up` and `ls` run it bounded first (no
+departures); `reap --install` writes a launchd agent that runs it every 10
+minutes, on the always-on Mac.
+
+**Providers** are executables speaking one JSON request on stdin and one JSON
+answer on stdout per operation (`info`, `types`, `create`, `list`, `get`,
+`set-labels`, `delete`, and with images `image-create`, `images`,
+`image-delete`); exit 3 is a refusal (`{"error", "kind"}`), any other
+non-zero exit a failure. The driver gives a provider its account's
+credentials in its environment only and scrubs them from its stderr.
+`driver/providers/hetzner` ships here (it drives `hcloud` under a private,
+empty configuration). A provider of the person's own lives in the profile's
+`providers/<name>`: the person registers it once (`provider register
+<account> --confirmed` records its sha256 in `driver.toml`), and `provider
+test <account>` runs it through the conformance sequence on a real server; a
+pass copies the exact bytes tested to `providers/.pass/<account>` with a
+record of their sha256, and every call runs that copy, so an edit is in use
+only once it has passed.
+
+**Local state** is `~/.local/state/devcloud/`: the driver Mac's SSH key (its
+public half written to the profile's `driver-keys/<machine>.pub`, which the
+configuration sync pushes and every host authorizes), a `known_hosts` keyed
+by the server rather than its address, and the reap log.
+
 ## Developing
 
     devcloud/tests/run.sh                                      # the host: unit tests, the image, containers

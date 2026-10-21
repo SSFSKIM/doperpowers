@@ -193,6 +193,13 @@ class CreateTest(UpBase):
         self.assertIn("secrets", self.err.getvalue() + self.out.getvalue())
         self.assertIn("dc-vm-7f3a", self.servers())
 
+    def test_a_boot_unit_that_failed_without_a_failed_step_is_exit_1(self):
+        self.remote.rules = [r for r in self.remote.rules if "status.json" not in r["needle"]]
+        self.remote.on("status.json", out=status_json(steps_ok=3) + "\nfailed")
+        code, message = self.refused()
+        self.assertEqual(code, 1)
+        self.assertIn("devcloud-boot.service failed", message)
+
     def test_a_boot_that_never_finishes_times_out_at_15_minutes(self):
         self.remote.rules = [r for r in self.remote.rules if "status.json" not in r["needle"]]
         self.remote.on("status.json", out='{"steps": []}\nactivating')

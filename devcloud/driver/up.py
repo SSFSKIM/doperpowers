@@ -221,6 +221,9 @@ def wait_boot(ctx, host, address, deadline):
                     raise DriverError(FAILED, f"the boot failed at step {failed[0]['name']} ({failed[0]['detail']}); "
                                               f"the VM {host.name} is kept for inspection, its lease bounds it")
                 return data
+            if unit == "failed":
+                raise DriverError(FAILED, f"devcloud-boot.service failed on {host.name} with no step recorded as "
+                                          "failed (journalctl -u devcloud-boot there); the VM is kept for inspection")
         if ctx.clock() >= deadline:
             raise DriverError(FAILED, f"the boot of {host.name} did not finish within 15 minutes; the VM is kept "
                                       "for inspection, its lease bounds it")
