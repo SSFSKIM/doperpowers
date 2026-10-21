@@ -1635,6 +1635,19 @@ commit 5168e433 on its branch, 2026-10-21):
   zsh alias, which only an interactive shell loads. `devcloud vm ssh <n> -- sminos …` (acceptance 3)
   therefore failed with "command not found", while `claude`, `devcloud` and `devenv`, which
   `setup.sh` links into /usr/local/bin, were found.
+- Observation (M5, 2026-10-21): On GCE `e2-custom-4-8192` in us-west1, the boot reached
+  `configuration ok` 226 s after `up` started on the slow path and 88 s from an image. Building the
+  image took 765 s. A Hetzner cpx31 adoption reached `configuration` in 107 s.
+- Observation (M5): us-west1-b had no E2 capacity at test time, so the GCE account's zone is
+  us-west1-a. This is a profile value.
+- Observation (M5): GCE's cheapest predefined types (shared-core, and Arm such as t2a and c4a) made
+  `provider test`'s smallest pick fail, since the image is x86. The custom default type is in no
+  predefined list.
+- Observation (M5): A released adoption keeps `/var/lib/devcloud` (`identity.env`, `status.json`),
+  so `setup.sh`'s final check refuses to adopt it again. systemd also keeps a `not-found failed`
+  record of a failed boot unit until a reboot or `reset-failed`.
+- Observation (M5): When the hosts' gateway machine is offline, every boot stops at `tailnet-check`
+  after about 85 s, on every provider. Leases and `down` still work over the tailnet.
 
 ## Decision Log
 
@@ -2075,6 +2088,36 @@ commit 5168e433 on its branch, 2026-10-21):
   shell, which does not help because the profile defines `sminos` as an alias; `zsh -ic`, whose
   interactive rc can print, prompt or hang. Date/Author: 2026-10-21, executor (controller), from
   M4's finding.
+
+- Decision: How M5 settled the GCE provider, adopt, and the open path:
+  - **GCE `types`:** excludes shared-core, accelerator and Arm types, and anything under 2 vCPU or
+    2 GB. An account adds custom types by name through `GCE_CUSTOM_TYPES`.
+  - **GCE disk:** every type reports `GCE_DISK_GB` (default 50), and `create` uses the larger of
+    that and the request, on pd-balanced (hyperdisk-balanced where a family needs it).
+  - **GCE prices:** read from the Cloud Billing catalog (the family's on-demand core and RAM rates,
+    in USD, cached 7 days per region). Custom types outside E2 are priced null, and a spot request
+    shows the on-demand rate (residue).
+  - **GCE ids:** a VM's id is its numeric instance id, and an image's id is its name. Only
+    `devcloud=image` images join the family.
+  - **The gce provider's gcloud:** it runs under a private `CLOUDSDK_CONFIG` in the driver's state
+    directory, with the seed activated once per seed hash under a lock.
+  - **GCE's first boot:** a cloud-init script carrying the recipe as a gzip tarball in user-data
+    (85 KB, refused above GCE's 256 KiB). Its log is `/var/log/devcloud-first-boot.log`, which
+    `up`'s timeout message names.
+  - **Adopt's record:** each phase is written before the step it names, and a rerun resumes from the
+    phase. A record in phase `released` refuses `adopt`, and `down` finishes it.
+  - **Adopt's first contact:** root with the driver key, else the login user with the person's own
+    SSH configuration and `sudo -n`.
+  - **Adopt's name and dry run:** the name is drawn before any contact, and a dry run contacts
+    nothing. Adopt still needs `--confirmed` with `--dry-run`.
+  - **Adopt's `down`:** it removes the record only after a root check at the public address finds no
+    descriptor, ledger, devcloud unit or unit file, and no `inet devcloud` table.
+  - **An adopted machine's lease cap** counts from the adoption.
+  - **The driver key check:** it applies only when the profile's checkout is the configuration
+    repository (its origin equals `[host].config_repo`); a temporary profile elsewhere gets a
+    warning.
+  - **`provider test`:** it also compares the labels `list` returns with the created set.
+  Date/Author: 2026-10-21, M5's executor, folded by the controller.
 
 ## Outcomes & Retrospective
 
