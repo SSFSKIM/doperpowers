@@ -310,7 +310,7 @@ The kinds, and the fields each carries beyond `ts`, `writer`, `seq`:
 | `answered` | `from` alias, `src` the call id, `text` the engine's result text | the hook, from the delivery row quoting `The human responded to your async AskUserQuestion (call <id>)` |
 | `joined` | `session` uuid, `alias`, `name_source` `user`/`derived`/`seat`, `machine`, `cwd`, `worktree`, `role`, `seat` seat id or `""`, `by` alias or `""` | `spawn` (with `by`), `fill`/`resume` of a retired seat, the hook on session start, reconciliation, `seat add` |
 | `retired` | `session`, `by`, `reason` `retire`/`replaced`/`ended` | `sminos retire`, `remove`; `spawn`/`fill` into an occupied seat; reconciliation, for a seat-less session no longer live (`ended`) |
-| `in-charge` | `session`, `text`, `source` `set` or `derived` | `sminos charge`, `spawn --brief`, `sminos derive` |
+| `in-charge` | `session`, `text`, `source` `set` or `derived`, and on a `derived` line of a session sminos may name, `name` the charge name proposed with it | `sminos charge`, `spawn --brief`, `sminos derive` |
 | `status` | `session`, `text` | `sminos status` |
 | `renamed` | `session`, `alias`, `name_source` | the daemon, on a harness name change, into the session's file |
 | `state` | `session`, `state` word, `machine` | the daemon, on a liveness transition (§8), into the session's file |
@@ -522,6 +522,12 @@ source 1–2 line, at least 10 human prompts in its transcript, and no
 member. The daemon runs `derive --all` hourly (§8). The cost is one model
 call that reads the parent's prompt cache when the session was active
 within the cache's hour, and rebuilds it otherwise.
+
+For a session whose name the engine made up, the same fork also proposes a
+name after the line (the event's `name`), which the sminos plugin's name mod
+applies at the session's next prompt; an alias a member held before keeps
+reaching it behind every current alias, with a note naming it now
+(`docs/doperpowers/specs/2026-10-20-sminos-charge-names-design.md`).
 
 ## 6. Spawning siblings; retiring
 

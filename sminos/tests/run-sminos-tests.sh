@@ -5691,6 +5691,115 @@ python3 -c 'import os, sys, time; t = time.time() - 8 * 86400; os.utime(sys.argv
 run "$SMINOS" derive --all
 assert_file_absent "$SMINOS_HOME/names/$CB.json" "derive --all removes a pending name older than a week"
 assert_file_exists "$SMINOS_HOME/names/$CS.json" "and keeps a newer one"
+
+# Acceptance 8: an alias a member held before still reaches it, behind every
+# current alias, and the sender is told the name it goes by now (§4).
+echo "former aliases:"
+FAR="$TEST_ROOT/fa-repo"
+FAO="$TEST_ROOT/fa-other"
+mkdir -p "$FAR" "$FAO"
+gitq init -q "$FAR"
+gitq init -q "$FAO"
+(cd "$FAR" && "$SMINOS" project init --name fademo >/dev/null)
+(cd "$FAO" && "$SMINOS" project init --name faother >/dev/null)
+FAP="$(smns_id "$FAR")"
+FALOG="$SMINOS_HOME/projects/$FAP/log"
+fa_peer() { # name session cwd inbox — a running session its owner named, with an inbox of its own
+  [ -S "$TEST_ROOT/in-$4.sock" ] || start_inbox "$4"
+  printf '{"pid":%s,"sessionId":"%s","name":"%s","nameSource":"user","kind":"interactive","status":"idle","cwd":"%s","messagingSocketPath":"%s"}\n' \
+    "$SOCK_PID" "$2" "$1" "$3" "$TEST_ROOT/in-$4.sock" > "$HOME/.claude/sessions/fa-$4.json"
+}
+FS=0fa00001-0000-4000-8000-0000000000f1
+FT=0fa00002-0000-4000-8000-0000000000f2
+FX=0fa00003-0000-4000-8000-0000000000f3
+FU=0fa00004-0000-4000-8000-0000000000f4
+cd "$FAR"
+fa_peer fa-sender "$FS" "$FAR" fa-s
+fa_peer oldname "$FT" "$FAR" fa-t
+fa_peer fa-outsider "$FX" "$FAO" fa-x
+run "$SMINOS" list
+fa_peer newname "$FT" "$FAR" fa-t   # its owner renames it
+run "$SMINOS" daemon tick
+assert_contains "$(grep '"renamed"' "$FALOG/testhost.$FT.jsonl")" '"alias": "newname"' "(the rename is in the log)"
+CLAUDE_CODE_SESSION_ID="$FS" run "$SMINOS" say "@oldname still there?"
+assert_rc 0 "$RC" "a tag of an alias the member held before is accepted"
+assert_contains "$OUT" "note: @oldname is now @newname#${FT:0:8}" "and the sender is told the name it goes by now"
+assert_contains "$(inbox fa-t)" "still there?" "the message reaches the renamed member"
+assert_contains "$(tail -1 "$FALOG/testhost.$FS.jsonl")" "\"session\": \"$FT\", \"alias\": \"newname\"" "recorded to it under its alias now"
+FA_STDOUT="$(CLAUDE_CODE_SESSION_ID="$FS" "$SMINOS" say "@oldname once more" 2>/dev/null || true)"
+assert_not_contains "$FA_STDOUT" "note:" "the note is on stderr: stdout is unchanged"
+CLAUDE_CODE_SESSION_ID="$FX" run_in "$FAO" "$SMINOS" say "@oldname#${FT:0:6} from another project"
+assert_rc 0 "$RC" "@old#short reaches it from another project"
+assert_contains "$OUT" "note: @oldname is now @fademo/newname#${FT:0:8}" "the note naming it with its project"
+assert_contains "$(inbox fa-t)" "from another project" "and the message arrives"
+CLAUDE_CODE_SESSION_ID="$FX" run_in "$FAO" "$SMINOS" say "@oldname bare"
+assert_rc 4 "$RC" "a bare former alias still reaches only the sender's project"
+run "$SMINOS" status oldname "reading the rename"
+assert_rc 0 "$RC" "a member verb (find_target) reaches it by its former alias"
+assert_contains "$OUT" "note: @oldname is now @newname#${FT:0:8}" "with the note"
+assert_contains "$(tail -1 "$FALOG/testhost.$FT.jsonl")" '"kind": "status", "session": "'"$FT"'", "text": "reading the rename"' "on the renamed member"
+run "$SMINOS" steer oldname "keep going"
+assert_contains "$OUT" "note: @oldname is now @newname#${FT:0:8}" "steer, a member verb, says so too"
+run "$SMINOS" status fademo/oldname "qualified"
+assert_rc 0 "$RC" "<project>/<old> reaches it"
+assert_contains "$OUT" "note: @oldname is now @newname#${FT:0:8}" "with the note"
+# A current alias always wins.
+fa_peer oldname "$FU" "$FAR" fa-u
+run "$SMINOS" list
+assert_equals "$(json_row oldname session)" "$FU" "(another session now goes by the name)"
+: > "$TEST_ROOT/in-fa-t.received"
+CLAUDE_CODE_SESSION_ID="$FS" run "$SMINOS" say "@oldname to the holder"
+assert_rc 0 "$RC" "a tag of a name a member holds now"
+assert_not_contains "$OUT" "note:" "prints no note"
+assert_contains "$(inbox fa-u)" "to the holder" "and reaches the member that holds it now"
+assert_equals "$(inbox fa-t)" "" "not the one that held it before"
+run "$SMINOS" status oldname "the holder"
+assert_contains "$(tail -1 "$FALOG/testhost.$FU.jsonl")" '"text": "the holder"' "find_target too takes the current holder"
+rm -f "$HOME/.claude/sessions/fa-fa-u.json"
+run "$SMINOS" list   # it ends: retired
+# Two members held a name before: the more recent holder gets it.
+FV=0fa00005-0000-4000-8000-0000000000f5
+FW=0fa00006-0000-4000-8000-0000000000f6
+FY=0fa00007-0000-4000-8000-0000000000f7
+FZ=0fa00008-0000-4000-8000-0000000000f8
+python3 - "$SMINOS_PY" "$FAP" "$FV" "$FW" "$FY" "$FZ" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("sminos", sys.argv[1]); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+p = mod.find_project(sys.argv[2])
+
+def event(sid, kind, alias, ts):
+    mod.now = lambda ms=False: ts
+    fields = {"session": sid, "alias": alias, "name_source": "user"}
+    if kind == "joined":
+        fields.update({"machine": "elsewhere", "cwd": "/srv/x", "worktree": "", "role": "", "seat": "", "by": "",
+                       "session_kind": "interactive", "repo": "x", "branch": "main"})
+    mod._append(p, "elsewhere/" + sid, [{"kind": kind, **fields}])
+
+v, w, y, z = sys.argv[3:7]
+event(v, "joined", "twice-held", "2026-10-01T00:00:00.000Z")
+event(v, "renamed", "vee-now", "2026-10-02T00:00:00.000Z")
+event(w, "joined", "twice-held", "2026-10-03T00:00:00.000Z")
+event(w, "renamed", "wee-now", "2026-10-04T00:00:00.000Z")
+event(y, "joined", "tie-held", "2026-10-05T00:00:00.000Z")
+event(y, "renamed", "why-now", "2026-10-06T00:00:00.000Z")
+event(z, "joined", "tie-held", "2026-10-05T00:00:00.000Z")
+event(z, "renamed", "zed-now", "2026-10-06T00:00:00.000Z")
+PY
+CLAUDE_CODE_SESSION_ID="$FS" run "$SMINOS" say "@twice-held which of you"
+assert_rc 0 "$RC" "a name two members held before"
+assert_contains "$(tail -1 "$FALOG/testhost.$FS.jsonl")" "\"session\": \"$FW\", \"alias\": \"wee-now\"" "reaches the one that held it last"
+assert_contains "$OUT" "note: @twice-held is now @wee-now#${FW:0:8}" "naming it"
+CLAUDE_CODE_SESSION_ID="$FS" run "$SMINOS" say "@tie-held which of you"
+assert_rc 4 "$RC" "two members that last held it at the same time are refused as ambiguous"
+assert_contains "$OUT" "why-now#${FY:0:8}" "naming the one"
+assert_contains "$OUT" "zed-now#${FZ:0:8}" "and the other"
+# A retired member's former alias reaches nothing.
+rm -f "$HOME/.claude/sessions/fa-fa-t.json"
+run "$SMINOS" list   # it ends: retired
+CLAUDE_CODE_SESSION_ID="$FS" run "$SMINOS" say "@oldname are you there"
+assert_rc 4 "$RC" "a retired member's former alias reaches nothing"
+assert_not_contains "$OUT" "note:" "and tells of no rename"
+rm -f "$HOME/.claude/sessions/fa-"*.json
 cd "$WORK"
 rm -f "$HOME/.claude/sessions/cn-"*.json
 export SMINOS_HOME="$TEST_ROOT/hp-registry"

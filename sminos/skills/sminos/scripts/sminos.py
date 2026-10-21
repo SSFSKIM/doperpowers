@@ -269,6 +269,12 @@ def warn(msg):
     sys.stderr.write("sminos: warning: %s\n" % msg)
 
 
+def note(msg):
+    """Something the caller should know that is not a fault: stderr, so a
+    stdout contract (--json) is unchanged."""
+    sys.stderr.write("sminos: note: %s\n" % msg)
+
+
 def valid_name(n):
     # '.' and '..' are path segments, not names: they would resolve to the
     # registry root itself. Names that merely contain dots (v1.2) are fine.
@@ -2025,7 +2031,8 @@ class Member(NamedTuple):
     worktree: str
     seat: dict | None     # the seat record this session fills, when it is a seat on this machine
     former: tuple = ()    # the sessions it continues (lineage), newest first
-    kind: str = ""        # interactive | bg | seat (a joined's session_kind); "" when nothing says
+    former_aliases: tuple = ()  # (alias, ts): aliases it or they held before its alias now, each at its latest event
+    kind: str = ""      # interactive | bg | seat (a joined's session_kind); "" when nothing says
     cwd: str = ""         # where it works: its latest joined's cwd, else its seat's, else its record's
     repo: str = ""        # the owning repository's basename ("" outside one)
     branch: str = ""      # the branch checked out there ("" when detached or none)
@@ -2766,12 +2773,16 @@ def _projection(events):
     session it continues in (the latest `retired` reason `continued` of its
     own, unless it joined again since: a session resumed after it was handed
     off is its own member, and the job keeps what its own events hold), and
-    `continues`, the session that names it so (lineage)."""
+    `continues`, the session that names it so (lineage). `aliases`: every
+    alias its own joined and renamed events carried, each with the latest ts
+    among them (the former aliases a name still reaches it by, §4 of the
+    charge names design)."""
     info = {}
 
     def row(sid):
         return info.setdefault(sid, {"latest": None, "joined": None, "by": "", "renamed": None, "state": None,
-                                     "titled": None, "in_charge": [], "status": [], "to": "", "continues": ""})
+                                     "titled": None, "in_charge": [], "status": [], "to": "", "continues": "",
+                                     "aliases": {}})
 
     for e in events:
         sid, kind = e.get("session"), e["kind"]
@@ -2782,6 +2793,9 @@ def _projection(events):
         if kind in MEMBERSHIP or kind in ("renamed", "state", "titled"):
             if not own:
                 continue
+            if kind in ("joined", "renamed") and e.get("alias"):
+                held, ts = str(e["alias"]), str(e.get("ts") or "")
+                r["aliases"][held] = max(r["aliases"].get(held, ""), ts)
             if kind in MEMBERSHIP:
                 r["latest"] = e
                 if kind == "joined":
@@ -2960,13 +2974,19 @@ def _member(sid, r, seat, peer, local, title=True, info=None, shadowed=None):
     status = max((x["status"] for x in chain if x["status"]), key=lambda e: e["ts"], default=None)
     worktree = next((str((x["joined"] or {}).get("worktree") or "") for x in chain
                      if (x["joined"] or {}).get("worktree")), "")
+    held = {}
+    for x in chain:
+        for a, ts in x["aliases"].items():
+            held[a] = max(held.get(a, ""), ts)
+    for current in (alias or sid[:8],) + tuple(s[:8] for s in (sid,) + former):
+        held.pop(current, None)
     m = Member(
         session=sid, short=sid[:8], alias=alias or sid[:8], name_source=name_source,
         machine=host_name() if local else machine, local=local, state=state_word, state_age=age,
         charge="", charge_source="",
         status=str(status.get("text") or "") if status else (seat["now"] if seat else ""),
         by=next((x["by"] for x in chain if x["by"]), ""), worktree=seat["worktree"] if seat else worktree,
-        seat=seat, former=former, kind=kind, cwd=cwd, repo=repo, branch=branch, active_age=active,
+        seat=seat, former=former, former_aliases=tuple(sorted(held.items())), kind=kind, cwd=cwd, repo=repo, branch=branch, active_age=active,
         title="" if local else published_title(r))
     charge, source, ts = charge_of(m, in_charge, title, published_title(r))
     return m._replace(charge=charge, charge_source=source, charge_age=ts_age(ts) if ts else None)
@@ -3256,26 +3276,69 @@ def is_all(tag):
     return tag["name"] == "all" and not tag["project"] and not tag["short"]
 
 
+def alias_reach(m, name, short=""):
+    """How `name` reaches member `m` by alias, the one rule every name lookup
+    shares (§4 of the charge names design): "alias" when it is the member's
+    alias, "former" when it is an alias the member held before
+    (former_aliases), "" when neither. With `short` (`name#short`), only a
+    member the short of whose session, or of one it continues, starts so."""
+    if short and not any(s and s[:8].startswith(short) for s in (m.session,) + m.former):
+        return ""
+    if name == m.alias:
+        return "alias"
+    return "former" if any(a == name for a, _ in m.former_aliases) else ""
+
+
+def current_first(hits, name):
+    """A lookup pass's (project, member) pairs from its (project, member, how)
+    `hits`: those a current alias or id reached, when any did; else those that
+    held `name` before, narrowed to its latest holder — the latest ts of a
+    joined or renamed carrying it — every holder tied at that ts kept, for the
+    caller to refuse as ambiguous."""
+    current = [(p, m) for p, m, how in hits if how != "former"]
+    if current or not hits:
+        return current
+
+    def held_at(m):
+        return max(ts for a, ts in m.former_aliases if a == name)
+
+    latest = max(held_at(m) for _, m, _ in hits)
+    return [(p, m) for p, m, _ in hits if held_at(m) == latest]
+
+
+def note_former(name, short, p, m, home):
+    """Tell the caller, on stderr, that `name` reached member `m` (of project
+    `p`) by an alias it held before, naming it as it goes now — behind its
+    project when that is not the caller's `home`. Nothing when the name is its
+    alias or id."""
+    if alias_reach(m, name, short) == "former":
+        qualify = home is None or p.id != home.id
+        # candidate_labels puts the `at` before a project; a bare label takes it here.
+        note("@%s is now %s%s" % (name, "" if qualify else "@", candidate_labels([(p, m)], qualify, "@")))
+
+
 def match_members(name, short, projects, alias=True, ids=True):
     """The (project, member) pairs a tag's name answers to among the projects'
     members: their alias (with `short`, an alias whose short starts so), their
     short (`@short`), or their session id — a session they continue (`former`)
-    answering as theirs does. With alias=False a bare name is matched against
-    shorts and ids alone, with ids=False against aliases alone. A retired
-    member answers to nothing."""
-    found = []
+    answering as theirs does; and, when none of those answers, an alias a
+    member held before (current_first). With alias=False a bare name is
+    matched against shorts and ids alone, with ids=False against aliases
+    alone. A retired member answers to nothing."""
+    hits = []
     for p in projects:
         for m in members(p):
             if m.state == "retired":
                 continue
-            sessions = (m.session,) + m.former
             if short:
-                hit = m.alias == name and any(s[:8].startswith(short) for s in sessions)
+                how = alias_reach(m, name, short)
+            elif ids and any(name in (s, s[:8]) for s in (m.session,) + m.former):
+                how = "id"
             else:
-                hit = (alias and name == m.alias) or (ids and any(name in (s, s[:8]) for s in sessions))
-            if hit:
-                found.append((p, m))
-    return found
+                how = alias_reach(m, name) if alias else ""
+            if how:
+                hits.append((p, m, how))
+    return current_first(hits, name)
 
 
 def one_per_session(found, key=lambda m: m.session):
@@ -3351,8 +3414,18 @@ def one_member(raw, found, qualify):
 
 
 def resolve_tag(project, t):
+    """The (project, member) one tag reaches (_resolve_tag), the sender told
+    when it reached it by an alias the member held before (note_former)."""
+    p, m = _resolve_tag(project, t)
+    note_former(t["name"], t["short"], p, m, project)
+    return p, m
+
+
+def _resolve_tag(project, t):
     """The (project, member) one tag reaches, `project` the sender's (§5 of
-    the org directory design), or exit 4 saying why not:
+    the org directory design), or exit 4 saying why not. In each scope below
+    an alias a member held before answers only when no current alias or id
+    does (match_members):
 
     - `@<p>/<alias>`: in the projects `p` names (project_tiers), the next one
       read only when the one before has no such member — so a project named
@@ -5324,23 +5397,24 @@ def find_target(q):
         return group_seat(proj, name) or ("none",)
 
     def matches(projects, by_short):
-        found = []
+        hits = []
         for p in projects:
             ms, rows = project_view(p)
             for m in ms + rows:
                 ids = (m.session,) + m.former if m.session else ()
                 if short:
-                    hit = m.alias == name and any(s[:8].startswith(short) for s in ids)
+                    how = alias_reach(m, name, short)
                 elif by_short:
-                    hit = any(name == s[:8] for s in ids)
+                    how = "id" if any(name == s[:8] for s in ids) else ""
                 else:
-                    hit = name == m.alias or name in ids
-                if hit:
-                    found.append((p, m))
+                    how = "id" if name in ids else alias_reach(m, name)
+                if how:
+                    hits.append((p, m, how))
+        # A current alias or id before an alias held before (match_members).
         # One seat is one target, though its session joined one project and
         # its record now resolves to another (a cwd that moved); one session
         # two logs hold at once is the member where it joined last.
-        return one_per_session(found, lambda m: m.seat["seat_id"] if m.seat else m.session)
+        return one_per_session(current_first(hits, name), lambda m: m.seat["seat_id"] if m.seat else m.session)
 
     # Where the name is looked up, in order, the first pass with a match
     # deciding (§5 of the org directory design, as a tag is resolved): a full
@@ -5375,6 +5449,7 @@ def find_target(q):
     if not found:
         return (proj and not short and group_seat(proj, name)) or ("none",)
     project, m = found[0]
+    note_former(name, short, project, m, scope)
     return ("seat", m.seat, m.session if short or name in (m.session,) + m.former else "") if m.seat else ("member", project, m)
 
 
