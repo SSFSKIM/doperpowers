@@ -441,7 +441,7 @@ class Walk(LR.Requests):
 
     def answer_check(self, who, stream, endpoint, prompt, label):
         t = time.time()
-        prompt("Ask me with your question tool (not async) which option I pick, with exactly three options "
+        prompt("Ask me with your question tool, async false, which option I pick, with exactly three options "
                "labelled A, B and C. Then tell me my choice in one sentence, naming its label.")
         at, raised = self.raised(stream, t, lambda e: "questions" in json.dumps(e.get("input")), "the question", seconds=120)
         rid = raised["request"]

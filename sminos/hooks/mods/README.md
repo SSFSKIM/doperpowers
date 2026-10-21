@@ -25,14 +25,17 @@ doperpowers' appeal and reload read and observe.
 ## ask (`ask.tsx`)
 
 The model asks the human through one tool, `mcp__sminos__AskUserQuestion`:
-the built-in AskUserQuestion's input plus `async`. A blocking ask (`async`
-false or absent) is AskUserQuestion: Claude Code's own dialog opens at once,
+the built-in AskUserQuestion's questions plus `async`, which is true unless
+the call says false (the built-in's `metadata`, an analytics field, is no
+parameter of it: a call that passes it is refused as one with any other
+unknown key is). A blocking ask (`async` false) is AskUserQuestion: Claude
+Code's own dialog opens at once,
 with the tab bar across the questions, previews, notes with `n`, "Type
 something", "Chat about this" and the review page, and the call returns the
 engine's own answer text, byte for byte what the built-in returns for the same
 answers. The built-in is withdrawn while the tool exists: it waits behind tool
 search, its name alone in the model's view, and a call of it is refused with a
-sentence naming the new tool. An async ask (`async` true) returns at once and
+sentence naming the new tool. An async ask (`async` true or absent) returns at once and
 the model works on; the questions wait in the transcript behind an `[ answer ]`
 button, and pressing it opens the same dialog.
 
@@ -49,8 +52,10 @@ from the model, or a stray one from this plugin, is refused; another plugin's
 own `$.ui.ask` passes.
 
 The tool's description is the built-in's own, as the engine computes it for
-its `tool.describe` while the session starts, followed by one paragraph on
-`async`; `$.tool.list()` gives only a tool's first 300 characters, which
+its `tool.describe` while the session starts, less its "Plan mode note:"
+paragraph (through the next blank line; a text without one is left as it
+is); what `async` does is the parameter's own description, which says when to
+set it false. `$.tool.list()` gives only a tool's first 300 characters, which
 stand in should the built-in not have been described yet. The tool is
 registered at `session.start` of an interactive session and kept inline with a
 `tool.describe` answer of `isDeferred: false`; the built-in's `tool.describe`
@@ -171,8 +176,12 @@ back from its leaf parent by parent, across a compaction by the boundary's
 logical parent, with the rows the engine restores beside that chain (the
 results of a response's earlier calls, parented to their own call, and the
 attachments under them); a branch the human rewound past, which stays in the
-file, is left out. Every call of the tool with `async` true whose
-result is the async one and whose input is valid is an ask; it reads answered
+file, is left out. Every call of the tool with `async` not false whose
+result is the async one and whose input is valid (a `metadata` it carries,
+taken until the tool dropped it, aside) is an ask. The result is what tells
+an async call from a blocking one: a call written before `async` defaulted to
+true carries no key whether it blocked or not, and a blocking call's result
+is the engine's answer or its refusal. An ask reads answered
 when a row the model read names its call in a delivery (a context attachment,
 a prompt the plugin submitted, known by the engine's framing; never the
 human's own prompt quoting one), else open. A transcript over the 4 MiB a

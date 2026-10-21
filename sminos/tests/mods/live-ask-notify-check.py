@@ -52,7 +52,7 @@ wait_for = LB.wait_for
 
 ASYNC = ("Ask me with your question tool (mcp__sminos__AskUserQuestion), async true, which fruit I prefer, "
          "header Fruit, options Apple and Pear. Then reply with the single word done.")
-BLOCKING = ("Ask me with your question tool (mcp__sminos__AskUserQuestion), not async, which color I prefer, "
+BLOCKING = ("Ask me with your question tool (mcp__sminos__AskUserQuestion), async false, which color I prefer, "
             "header Color, options Red and Blue. Then reply with the single word done.")
 DIALOG = lambda pane: "Enter to select" in pane and "Blue" in pane  # noqa: E731
 REMINDER_WAIT = 20  # s the dialog stays up: past the engine's delay before its reminder

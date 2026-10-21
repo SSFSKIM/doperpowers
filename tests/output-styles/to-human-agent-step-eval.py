@@ -231,7 +231,7 @@ TOOLS = [
           "run_in_background": {"type": "boolean"}}, ["description", "prompt"]),
     tool("SendMessage", "Send a message to a running or finished subagent by its id; it resumes with the message.",
          {"to": {"type": "string"}, "message": {"type": "string"}}, ["to", "message"]),
-    tool("mcp__sminos__AskUserQuestion", "Ask the human one to four questions. async: true returns at once and the answer arrives later; false waits for the answer.",
+    tool("mcp__sminos__AskUserQuestion", "Ask the human one to four questions. async (default true) returns at once and the answer arrives later; false waits for the answer.",
          {"questions": {"type": "array", "items": {"type": "object", "properties": {
              "question": {"type": "string"}, "header": {"type": "string"},
              "options": {"type": "array", "items": {"type": "object", "properties": {"label": {"type": "string"}, "description": {"type": "string"}}, "required": ["label", "description"]}},
@@ -459,7 +459,7 @@ def canned(block, scenario):
     if name == "Agent":
         return "Async agent launched successfully. agentId: b7d0e5f2c1. The agent is working in the background."
     if name == "mcp__sminos__AskUserQuestion":
-        if inp.get("async"):
+        if inp.get("async") is not False:
             return "Questions queued for the human; their answer will arrive later."
         return "The human answered: " + "; ".join(q["options"][0]["label"] for q in inp.get("questions", []) if q.get("options"))
     if name == "Bash":
