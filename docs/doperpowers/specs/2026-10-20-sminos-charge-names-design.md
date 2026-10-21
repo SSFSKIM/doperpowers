@@ -16,7 +16,8 @@ Terms are those of the project log design (`docs/doperpowers/specs/2026-10-13-sm
 - [x] (2026-10-20) M3 — former aliases still reach, with a note; docs, version, acceptance (4c8176ae, fix 2240f707; task review clean; full ci-gate GREEN on 4c8176ae, sminos gate on 2240f707)
 - [x] (2026-10-21) Branch review (reviewer-medium): three P2 findings. name-due's eligibility recheck and the former-alias session binding are fixed (b1169e2d, d9dbbdb0). The cross-project `charge` provenance is dropped along with the `charge` source (Decision Log).
 - [x] (2026-10-21) M4 — derive for every member, from 10 tool calls, soon; no `charge` source (412f4690, 89aa7a11; fixes 35121486, b6378732; task review clean)
-- [ ] (2026-10-21) M5 — the mod renames through the engine's `/rename` between turns (0524dcc0; fix b308a87c, a second fix in progress). Then the branch review again at medium.
+- [x] (2026-10-21) M5 — the mod renames through the engine's `/rename` between turns (0524dcc0; fixes b308a87c, fda1210d; task review clean; full ci-gate GREEN on 0524dcc0, live check 6/6)
+- [ ] (2026-10-21) Branch review again at medium.
 
 ## 1. Where the name comes from
 
