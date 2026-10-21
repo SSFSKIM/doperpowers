@@ -305,7 +305,7 @@ class Requests(LC.Control):
 
     def question(self, term):
         t = time.time()
-        self.prompt("Ask me with your question tool (not async) which fruit I prefer, options Apple and Mango. "
+        self.prompt("Ask me with your question tool, async false, which fruit I prefer, options Apple and Mango. "
                     "Then tell me my choice in one sentence.")
         at, raised = self.raised(term, t, lambda e: "questions" in json.dumps(e.get("input")), "the question")
         rid = raised["request"]

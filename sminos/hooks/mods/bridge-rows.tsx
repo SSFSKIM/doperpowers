@@ -56,9 +56,14 @@ const MAY_MARK = /<(?:message|to-human|essential|need-input|insight)>|\x1b\[1;/
 const PAIRS_KEPT = 50
 /** MAWS's ask tool, which a session under MAWS asks through instead of the plugin's (sminos.MAWS_ASK_TOOL). */
 const MAWS_ASK_TOOL = 'mcp__maws__ask'
-/** A call of an ask tool that does not wait for its answer: the plugin's with `async` true, MAWS's with `blocking` false. */
+/**
+ * A call of an ask tool that may not wait for its answer: the plugin's unless
+ * `async` is false (a call written before the default was true has no key,
+ * blocking or not; the child reads which from its result), MAWS's with
+ * `blocking` false.
+ */
 const isAsyncAsk = (name: unknown, input: Record<string, unknown>) =>
-  (name === ASK_TOOL && input.async === true) || (name === MAWS_ASK_TOOL && input.blocking === false)
+  (name === ASK_TOOL && input.async !== false) || (name === MAWS_ASK_TOOL && input.blocking === false)
 /**
  * The message tools a transcript may hold (sminos.MESSAGE_TOOLS): the to-human
  * plugin's, and MAWS's own, which a MAWS launch registers in its place. sminos
