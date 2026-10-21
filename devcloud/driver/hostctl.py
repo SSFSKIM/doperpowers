@@ -232,7 +232,9 @@ def unpushed(ctx, host, target=None, login=None):
 DONE, AFTER_READY, UNKNOWN, NOT_OVER, HELD, FAILED_RUN, UNREACHABLE = (
     "departed", "dropped after ready", "dropped before ready", "lease not over", "held", "failed", "unreachable")
 # The departure's leave step as it prints it when the desk no longer holds the machine.
-LEFT_DESK = re.compile(r"^devcloud (depart|release): leave: ok — (left the desk|not enrolled)$", re.M)
+# A resumed release repeats the line of a leave an earlier run made.
+LEFT_DESK = re.compile(r"^devcloud (depart|release): leave: ok — (left the desk|not enrolled)( \(an earlier run\))?$",
+                       re.M)
 
 
 class Outcome(str):

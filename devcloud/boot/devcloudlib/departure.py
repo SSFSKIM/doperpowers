@@ -597,6 +597,11 @@ def release(host, force=False, no_hold=False):
                                 ("remove-units", lambda: remove_units(run), True),
                                 ("remove-credentials", lambda: remove_credentials(run), True)):
             if name in done:
+                # Its line again, marked: the driver reads the leave's outcome
+                # from the output (whether the desk confirmed it).
+                earlier = next(s for s in reversed(run.steps) if s["name"] == name and s["state"] == "ok")
+                host.say(f"devcloud release: {name}: ok" + (f" — {earlier['detail']}" if earlier["detail"] else "")
+                         + " (an earlier run)")
                 continue
             if not run.step(name, fn) and stops:
                 status.set_lifecycle("release", "departing", f"{name} failed: run it again to resume",

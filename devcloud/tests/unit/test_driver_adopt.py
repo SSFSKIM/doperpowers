@@ -74,6 +74,12 @@ class Target(FakeRemote):
             self.test.assertIn("preflight dev 1001 /Users/dev", command, "the profile's build.env")
             m["preflights"] = m.get("preflights", 0) + 1
             return Result(0, json.dumps({"problems": m.get("account_problems", [])}), "")
+        if "python3 - rollback" in command:
+            self._phase("rollback")
+            if m.get("rollback_fails"):
+                return Result(1, "", "rollback: the ledger lists /home/x, which only `devcloud release` removes")
+            m.update(released=True, keys_saved=False, seeded=0, staged=None)
+            return Result(0, "rolled back", "")
         if "python3 - save-keys" in command:
             self._phase("save-keys")
             m["keys_saved"] = True
@@ -131,8 +137,11 @@ class Target(FakeRemote):
             return Result(1, hostctl_ready(), "", True)
         if self.m["release_code"] is not None:
             return Result(self.m["release_code"], "", "", False)
+        if self.m["descriptor"] is None:
+            # No boot ever installed it: `devcloud release` has nothing to load.
+            return Result(1, "devcloud release: /etc/devcloud/boot.env: not found\n", "", False)
         self.m.update(released=True, tailnet=False, public=True, descriptor=None)
-        return Result(255, hostctl_ready(), "", True)
+        return Result(255, self.m.get("release_out", "") + hostctl_ready(), "", True)
 
     def targets_of(self, needle):
         return [c["target"] for c in self.calls if needle in c["command"]]
@@ -501,6 +510,57 @@ class DownTest(AdoptBase):
                 self.assertIn("devcloud release --force", release["command"])
                 self.assertIsNone(self.record())
 
+    def test_an_adoption_interrupted_before_its_boot_is_rolled_back(self):
+        """The seed and the ledger delivered, the boot never started: there is
+        no descriptor for `devcloud release` to load, so down gives back what
+        was delivered itself, and never records `released` before that is
+        verified."""
+        for phase in ("preparing", "seeded", "booted", "released"):
+            with self.subTest(phase=phase):
+                self.remote = Target(self)
+                self.ctx = self.make_ctx(token_hex=lambda: "7f3a")
+                self.write_record(phase)
+                self.remote.m.update(keys_saved=True, authorized=True, seeded=1, descriptor=None)
+                self.assertEqual(ops.down(self.ctx, NAME, force=True), 0)
+                self.assertEqual(self.remote.phases["rollback"], phase, "the phase moved before the rollback")
+                self.assertEqual([c for c in self.remote.calls if c["kind"] == "stream"], [], "no release ran")
+                self.assertEqual(self.remote.commands("devcloud unpushed"), [], "no session ever ran there")
+                self.assertTrue(self.remote.m["released"])
+                self.assertIsNone(self.record())
+                self.assertIn("rolled back", self.out.getvalue())
+
+    def test_a_rollback_that_fails_keeps_the_record_at_its_phase(self):
+        self.write_record("seeded")
+        self.remote.m.update(keys_saved=True, authorized=True, seeded=1, descriptor=None, rollback_fails=True)
+        with self.assertRaises(DriverError) as caught:
+            ops.down(self.ctx, NAME, force=True)
+        self.assertIn("only `devcloud release` removes", str(caught.exception))
+        self.assertEqual(self.record()["phase"], "seeded")
+        self.remote.m["rollback_fails"] = False
+        self.assertEqual(ops.down(self.ctx, NAME, force=True), 0, "down again finishes it")
+        self.assertIsNone(self.record())
+
+    def test_a_leave_the_release_did_not_confirm_is_named_before_the_record_goes(self):
+        self.adopted()
+        self.write_record("booted", ready=NOW - 60, enroll="key")
+        self.assertEqual(ops.down(self.ctx, NAME, force=False), 0)
+        self.assertIsNone(self.record())
+        line = next(l for l in self.out.getvalue().splitlines() if "released" in l)
+        self.assertIn("may still be in the desk's Machines: remove it by hand if so", line)
+
+    def test_a_confirmed_leave_or_an_unenrolled_machine_needs_no_note(self):
+        for enroll, out in (("key", "devcloud release: leave: ok — left the desk\n"),
+                            ("key", "devcloud release: leave: ok — left the desk (an earlier run)\n"),
+                            (None, "")):
+            with self.subTest(enroll=enroll, out=out):
+                self.out.truncate(0)
+                self.out.seek(0)
+                self.adopted()
+                self.write_record("booted", ready=NOW - 60, enroll=enroll)
+                self.remote.m.update(released=False, release_out=out)
+                self.assertEqual(ops.down(self.ctx, NAME, force=False), 0)
+                self.assertNotIn("desk", self.out.getvalue())
+
     def test_unreachable_and_not_released_keeps_the_record(self):
         self.adopted()
         self.remote.m.update(tailnet=False, public=False)
@@ -592,6 +652,58 @@ class HostScriptTest(AdoptBase):
         self.assertIn("1002", self.preflight(uid="1002")[0], "a profile changed since asks again")
         adopt_host.save_keys("ubuntu", root=self.root, passwd=self.passwd)
         self.assertTrue((self.root / "var/lib/devcloud-adopt/keys.json").exists())
+
+    def rollback_machine(self):
+        """An adoption that delivered its seed and stopped before its boot."""
+        import os
+
+        class Pw:
+            def __init__(self, home):
+                self.pw_dir, self.pw_uid, self.pw_gid = home, os.getuid(), os.getgid()
+        self.passwd = lambda user: Pw({"root": "/root", "ubuntu": "/home/ubuntu"}[user])
+        adopt_host.save_keys("ubuntu", root=self.root, passwd=self.passwd)
+        adopt_host.authorize([KEY], root=self.root, passwd=self.passwd)
+        (self.root / "home/ubuntu/.ssh").mkdir(parents=True)
+        (self.root / "home/ubuntu/.ssh/authorized_keys").write_text(f"{KEY}\n")   # none before adopt
+        for path in ("etc/devcloud/seed/seed.json", "var/lib/devcloud-stage/boot.env", "etc/devcloud/image.env",
+                     "usr/local/lib/devcloud/devcloud"):
+            (self.root / path).parent.mkdir(parents=True, exist_ok=True)
+            (self.root / path).write_text("made-up")
+        (self.root / "var/lib/devcloud").mkdir(parents=True)
+        (self.root / "var/lib/devcloud/credentials.ledger").write_text(
+            "/etc/devcloud/seed/seed.json\n/etc/devcloud/boot.env\n")
+        units = self.root / "etc/systemd/system"
+        units.mkdir(parents=True)
+        for name in ("devcloud-boot.service", "devcloud-spot.service", "sshd.service"):
+            (units / name).write_text("")
+        self.systemctl = []
+        return lambda: adopt_host.rollback(root=self.root, passwd=self.passwd,
+                                           systemctl=lambda *a: self.systemctl.append(list(a)))
+
+    def test_rollback_gives_back_what_the_adoption_delivered(self):
+        rollback = self.rollback_machine()
+        rollback()
+        for gone in ("etc/devcloud/seed/seed.json", "var/lib/devcloud-stage", "var/lib/devcloud",
+                     "var/lib/devcloud-adopt", "etc/systemd/system/devcloud-boot.service",
+                     "etc/systemd/system/devcloud-spot.service", "home/ubuntu/.ssh/authorized_keys"):
+            self.assertFalse((self.root / gone).exists(), f"{gone} survived the rollback")
+        self.assertEqual((self.root / "root/.ssh/authorized_keys").read_text(), "ssh-ed25519 AAAAperson person@laptop\n")
+        self.assertTrue((self.root / "etc/systemd/system/sshd.service").exists())
+        self.assertTrue((self.root / "usr/local/lib/devcloud/devcloud").exists(), "the tools stay, as a release's do")
+        self.assertEqual(self.systemctl, [["disable", "--now", "devcloud-boot.service", "devcloud-spot.service"],
+                                          ["daemon-reload"]])
+        self.assertIn("nothing saved", rollback(), "run again, it has nothing left to do")
+
+    def test_rollback_never_removes_as_root_what_only_a_release_removes(self):
+        rollback = self.rollback_machine()
+        (self.root / "home/ubuntu/.pgpass").write_text("made-up")
+        with open(self.root / "var/lib/devcloud/credentials.ledger", "a") as f:
+            f.write("/home/ubuntu/.pgpass\n")
+        with self.assertRaises(adopt_host.Refused) as caught:
+            rollback()
+        self.assertIn("/home/ubuntu/.pgpass", str(caught.exception))
+        self.assertTrue((self.root / "etc/devcloud/seed/seed.json").exists(), "a refusal removes nothing")
+        self.assertIn(KEY, (self.root / "root/.ssh/authorized_keys").read_text())
 
     def test_the_streamed_form(self):
         import subprocess

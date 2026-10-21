@@ -669,6 +669,19 @@ class ReleaseTest(DepartureBase):
         self.assertEqual(logout["state"], "ok")
         self.assertIn("NeedsLogin", logout["detail"])
 
+    def test_a_resumed_release_repeats_what_its_earlier_run_did(self):
+        """The driver reads the leave's outcome from the release's output (§4.4's
+        desk note): a resumed release, which skips the leave it made, repeats
+        its line."""
+        self.world.failing[("systemctl", "disable", "--now", "devcloud-boot.service")] = "systemctl exited 1"
+        self.assertEqual(departure.release(self.host()), departure.FAILED)
+        del self.world.failing[("systemctl", "disable", "--now", "devcloud-boot.service")]
+        self.world.events.clear()
+        self.assertEqual(departure.release(self.host()), departure.DONE)
+        said = [e[1] for e in self.world.events if e[0] == "say"]
+        self.assertIn("devcloud release: leave: ok — left the desk (an earlier run)", said)
+        self.assertFalse(any(r[-2:] == ["hub", "leave"] for r in self.world.runs()), "left the desk twice")
+
     def test_a_held_release_removes_nothing(self):
         self.world.ships = [False]
         self.assert_held(departure.release(self.host()), "ship failed")

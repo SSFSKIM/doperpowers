@@ -22,6 +22,15 @@ streamed there as `python3 - <command> ...` (standard library only, Python
                       resumed adoption never saves the keys devcloud wrote.
   authorize <b64>     the driver keys (base64 of their lines) added to
                       root's authorized_keys, so the driver reaches root
+  rollback            an adoption that never booted (no descriptor
+                      installed) given back: every path the credential
+                      ledger lists (the seed; refused, removing nothing, when
+                      one that exists lies outside /etc/devcloud and
+                      /var/lib/devcloud, which only `devcloud release`
+                      removes), the staged descriptor, devcloud's units, the
+                      saved authorized_keys restored, then the backup and
+                      /var/lib/devcloud. The tools and the user setup.sh
+                      made stay, as after a release.
 
 The backup lives outside /var/lib/devcloud, whose existence setup.sh
 refuses."""
@@ -31,10 +40,23 @@ import json
 import os
 import pathlib
 import pwd
+import shutil
+import subprocess
 import sys
 
 ADOPT_DIR = "/var/lib/devcloud-adopt"
 BOOT_ENV = "/etc/devcloud/boot.env"
+STATE_DIR = "/var/lib/devcloud"
+LEDGER = "/var/lib/devcloud/credentials.ledger"
+STAGE_DIR = "/var/lib/devcloud-stage"
+UNIT_DIR = "/etc/systemd/system"
+# What an adoption writes as root before its boot; anything else the ledger
+# lists is a boot's, in the user's home, which only the release removes (as the user).
+ROLLBACK_SCOPE = ("/etc/devcloud/", "/var/lib/devcloud/")
+
+
+class Refused(Exception):
+    pass
 
 
 def _under(root, path):
@@ -140,6 +162,77 @@ def authorize(keys, root="/", passwd=pwd.getpwnam):
     return f"authorized {len(missing)} key(s)"
 
 
+def _remove(path):
+    if not os.path.lexists(path):
+        return
+    if os.path.isdir(path) and not os.path.islink(path):
+        shutil.rmtree(path)
+    else:
+        os.unlink(path)
+
+
+def _systemctl(*args):
+    subprocess.run(["systemctl", *args], check=True, capture_output=True, timeout=180)
+
+
+def rollback(root="/", passwd=pwd.getpwnam, systemctl=_systemctl):
+    """Gives back an adoption that never booted; returns what it did."""
+    ledger = _under(root, LEDGER)
+    listed = [line for line in ledger.read_text().splitlines() if line.startswith("/")] if ledger.exists() else []
+    foreign = [path for path in listed if not path.startswith(ROLLBACK_SCOPE) and os.path.lexists(_under(root, path))]
+    if foreign:
+        raise Refused(f"the ledger lists {', '.join(foreign)}, which only `devcloud release` removes: this "
+                      "machine booted as a host")
+    for path in listed:
+        _remove(_under(root, path))
+    _remove(_under(root, STAGE_DIR))
+    unit_dir = _under(root, UNIT_DIR)
+    units = sorted(p.name for p in unit_dir.glob("devcloud-*") if p.suffix in (".service", ".timer"))
+    if units:
+        systemctl("disable", "--now", *units)
+        for name in units:
+            _remove(unit_dir / name)
+            _remove(unit_dir / f"{name}.d")
+        systemctl("daemon-reload")
+    keys = _restore_keys(root, passwd)
+    _remove(_under(root, STATE_DIR))
+    return (f"removed {len(listed)} ledgered path(s), the staged descriptor and {', '.join(units) or 'no unit'}; "
+            f"{keys}")
+
+
+def _restore_keys(root, passwd):
+    """Each saved authorized_keys back where save-keys found it (one it did not
+    find removed), owned by its owner, then the backup."""
+    adopt = _under(root, ADOPT_DIR)
+    manifest = adopt / "keys.json"
+    if not manifest.exists():
+        _remove(adopt)      # at most the preflight's verdict: no key was saved, so none was changed
+        return "nothing saved, nothing to restore"
+    restored = []
+    for entry in json.loads(manifest.read_text())["keys"]:
+        target = _under(root, entry["path"])
+        if entry.get("saved") is None:
+            _remove(target)
+            restored.append(f"{entry['path']} removed (there was none)")
+            continue
+        owner = passwd(entry["owner"])
+        data = (adopt / entry["saved"]).read_bytes()
+        if not target.parent.is_dir():
+            target.parent.mkdir(mode=0o700, parents=True)
+            os.chown(target.parent, owner.pw_uid, owner.pw_gid)
+        _remove(target)
+        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        try:
+            os.write(fd, data)
+            os.fchown(fd, owner.pw_uid, owner.pw_gid)
+            os.fchmod(fd, 0o600)
+        finally:
+            os.close(fd)
+        restored.append(f"{entry['path']} restored")
+    _remove(adopt)
+    return "; ".join(restored)
+
+
 def main(argv):
     if argv[:1] == ["inspect"]:
         print(json.dumps(inspect()))
@@ -149,9 +242,15 @@ def main(argv):
         print(save_keys(argv[1]))
     elif argv[:1] == ["authorize"] and len(argv) == 2:
         print(authorize(base64.b64decode(argv[1]).decode().splitlines()))
+    elif argv == ["rollback"]:
+        try:
+            print(rollback())
+        except (Refused, OSError, subprocess.SubprocessError) as error:
+            print(f"rollback: {error}", file=sys.stderr)
+            return 1
     else:
-        print("usage: python3 - inspect | preflight <user> <uid> <home> | save-keys <login> | authorize <base64 keys>",
-              file=sys.stderr)
+        print("usage: python3 - inspect | preflight <user> <uid> <home> | save-keys <login> | authorize <base64 keys>"
+              " | rollback", file=sys.stderr)
         return 2
     return 0
 

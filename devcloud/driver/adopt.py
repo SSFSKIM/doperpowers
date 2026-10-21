@@ -24,7 +24,7 @@ import pathlib
 import re
 import shlex
 
-from . import compose, hostctl, names
+from . import compose, hostctl, names, reaper
 from .errors import CAP, FAILED, USAGE, DriverError
 from .hostctl import Host
 from .profile import duration, format_duration
@@ -59,6 +59,7 @@ class Record:
     created: int
     ready: int | None = None
     creator: str | None = None  # the creating session's short id
+    enroll: str | None = None   # "key" when its boot enrolls at the desk with the provisioning key
 
     @property
     def host(self):
@@ -174,7 +175,8 @@ def run(ctx, opts):
         now = int(ctx.clock())
         record = Record(name=names.draw(label, ctx.taken_names(servers), ctx.token_hex), address=address, user=user,
                         lifetime="ttl" if lease else "keep", expires=now + lease if lease else None,
-                        projects=list(opts.project or []), phase="preparing", created=now, creator=short)
+                        projects=list(opts.project or []), phase="preparing", created=now, creator=short,
+                        enroll="key" if ctx.profile.desk_secret else None)
     elif record.phase == "released":
         raise DriverError(FAILED, f"{record.name} ({user}@{address}) is being released: devcloud vm down "
                                   f"{record.name} finishes that, and a later adopt starts afresh")
@@ -321,7 +323,10 @@ def down(ctx, record, force):
     address, else as the original login user there (a release that stopped
     after it gave the keys back: the driver's key is gone, the descriptor
     stays for the retry); the record removed once the release is verified
-    there, as the original login user with the person's own key."""
+    there, as the original login user with the person's own key. A machine
+    with no descriptor installed never booted (or its release removed it,
+    last of everything): there is nothing for `devcloud release` to load, so
+    the driver rolls back what the adoption delivered itself."""
     host = record.host
     login = None
     if hostctl.reachable(ctx, host):
@@ -329,14 +334,20 @@ def down(ctx, record, force):
     elif _answers(ctx, record.address, host):
         target = record.address
     elif _released(ctx, record, wait=0):
+        note = _desk_note(ctx, record, left_desk=False)
         remove(ctx, record)
-        ctx.say(f"{record.name}: already released (it keeps running at {record.address}); its record is removed")
+        ctx.say(f"{record.name}: already released (it keeps running at {record.address}); its record is "
+                f"removed{note}")
         return 0
     elif _as_login(ctx, record, "true", timeout=CONTACT_TIMEOUT, connect_timeout=15).code == 0:
         target, login = record.address, record.user
     else:
         raise DriverError(FAILED, f"{record.name} answers neither over the tailnet nor at {record.address} (as root, "
                                   f"or as {record.user} with your own key): the adoption record stays")
+    chan = _at(ctx, record, target, login)
+    found = json.loads(_script(ctx, chan, "inspect", "inspecting the machine").strip().splitlines()[-1])
+    if found.get("descriptor") is None:
+        return _roll_back(ctx, record, chan)
     if not force:
         dirty = hostctl.unpushed(ctx, host, target=target, login=login)
         if dirty:
@@ -357,10 +368,47 @@ def down(ctx, record, force):
     if not _released(ctx, record, wait=VERIFY_WAIT):
         raise DriverError(FAILED, f"{record.name} was released, but a check as {record.user}@{record.address} did "
                                   "not confirm it: the adoption record stays; down again once it answers")
+    note = _desk_note(ctx, record, outcome.left_desk)
     remove(ctx, record)
     ctx.say(f"{record.name}: released; the machine keeps running at {record.address} ({record.user} reaches it "
+            f"as before){note}")
+    return 0
+
+
+def _at(ctx, record, target, login):
+    """Root commands at `target` (the tailnet name or the public address), as
+    root with the driver's key, or through `login` with the person's own."""
+    def chan(command, **kw):
+        return ctx.remote.run(target, record.name, hostctl.as_root(login or "root", command),
+                              **({"user": login, "person": True} if login else {}), **kw)
+    return chan
+
+
+def _roll_back(ctx, record, chan):
+    """An adoption with no descriptor installed, given back: the ledgered
+    paths (the seed), the staged descriptor, the units setup.sh installed,
+    the saved keys restored (adopt_host's `rollback`); then verified as a
+    release is before the record goes. Its phase is left as it was until
+    then: a rollback that stopped part way is down's to run again."""
+    ctx.say(f"{record.name}: its adoption never booted (phase {record.phase}); rolling back what it delivered")
+    _script(ctx, chan, "rollback", "rolling back the adoption")
+    if not _released(ctx, record, wait=VERIFY_WAIT):
+        raise DriverError(FAILED, f"{record.name} was rolled back, but a check as {record.user}@{record.address} did "
+                                  "not confirm it: the adoption record stays; down again once it answers")
+    remove(ctx, record)
+    ctx.say(f"{record.name}: rolled back; the machine keeps running at {record.address} ({record.user} reaches it "
             "as before)")
     return 0
+
+
+def _desk_note(ctx, record, left_desk):
+    """What the release leaves at the desk, as for a deleted VM (the reaper's
+    note): an adoption enrolled with the provisioning key whose leave was
+    not confirmed may stay in the desk's Machines until removed by hand."""
+    labels = {"devcloud-enroll": record.enroll} if record.enroll else {}
+    if record.expires is not None:
+        labels["devcloud-expires"] = str(record.expires)
+    return reaper.desk_note(ctx, {"name": record.name, "labels": labels}, left_desk)
 
 
 def _released(ctx, record, wait):
