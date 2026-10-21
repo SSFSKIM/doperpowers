@@ -282,6 +282,12 @@ export type BridgeState = {
   record?: string
   /** The main loop's async asks and message calls, their call and result rows by call, until both are kept (`export`). */
   pairs: Map<string, { use?: TranscriptRecord; result?: TranscriptRecord }>
+  /**
+   * The exports waiting behind a message call kept before its result, in the
+   * transcript's order: a waiting call by its id, an export by its records.
+   * Empty while no call waits.
+   */
+  exportHold: (string | TranscriptRecord[])[]
   /** Requests raised and not yet settled, by id; and the last settlements, oldest first. */
   requests: Map<string, Request>
   settled: Record<string, unknown>[]
@@ -334,6 +340,7 @@ const fresh = (): BridgeState => ({
   freshLoops: new Set(),
   isTurnUnknown: false,
   pairs: new Map(),
+  exportHold: [],
   requests: new Map(),
   settled: [],
   minted: 0,

@@ -5168,15 +5168,74 @@ for MT in mcp__to-human__message mcp__maws__message; do
   hook_stop_last "$HB" "$R3" "$TB" "" & LATE=$!
   sleep 0.4
   tx "$TB" result "b3-$tag-3" "toolu_flush_$tag" sent
-  T0="$(python3 -c 'import time; print(time.time())')"
   wait "$LATE"
-  TOOK="$(python3 -c 'import sys, time; print("%.2f" % (time.time() - float(sys.argv[1])))' "$T0")"
   assert_equals "$(grep -c '"src": "toolu_flush_'"$tag"'"' "$HPLOG/testhost.$HB.jsonl" || true)" "1" \
-    "$MT: a Stop whose transcript ends on the call, its result landing after the hook started, waits for the result and exports the message"
-  if python3 -c 'import sys; sys.exit(not float(sys.argv[1]) < 1.0)' "$TOOK"; then
-    pass "$MT: the wait ends as the result lands (${TOOK}s after it)"
-  else fail "$MT: the wait ends as the result lands"; echo "    took ${TOOK}s after it"; fi
+    "$MT: a Stop whose transcript ends on the call, its result landing after the hook started, exports the message"
 done
+# The wait itself, driven step by step (the hook above may start after the
+# result is down on a slow runner): await_flush is seen holding on the open
+# call before its result is written, and ends once it is. (Written to a file
+# first: bash 3.2 misparses a heredoc inside a process substitution.)
+cat > "$TEST_ROOT/flush-wait.py" <<'PY_WAIT'
+import importlib.util, json, sys, threading, time
+spec = importlib.util.spec_from_file_location("sminos", sys.argv[1]); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+path = sys.argv[2]
+
+def row(f, r):
+    f.write(json.dumps({"isSidechain": False, **r}) + "\n")
+
+def call(name, call_id, uuid):
+    return {"type": "assistant", "uuid": uuid, "message": {"id": "msg_" + uuid, "role": "assistant", "content": [
+        {"type": "tool_use", "id": call_id, "name": name, "input": {"text": "waiting on " + call_id}}]}}
+
+def result(call_id, uuid):
+    return {"type": "user", "uuid": uuid, "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": call_id, "content": "sent"}]}}
+
+def check(ok, what):
+    print(("ok " if ok else "FAIL ") + what)
+
+real, seen = mod._message_call_open, threading.Event()
+def spy(t):
+    is_open = real(t)
+    if is_open:
+        seen.set()
+    return is_open
+mod._message_call_open = spy
+for name in mod.MESSAGE_TOOLS:
+    seen.clear()
+    with open(path, "w") as f:
+        row(f, {"type": "user", "uuid": "p", "message": {"role": "user", "content": "go"}})
+        row(f, call(name, "toolu_w", "w1"))
+    out = {}
+    waiter = threading.Thread(target=lambda: out.setdefault("done", mod.await_flush(path, "", time.time() + 10)))
+    waiter.start()
+    entered = seen.wait(5)
+    time.sleep(0.3)
+    held = waiter.is_alive()
+    with open(path, "a") as f:
+        row(f, result("toolu_w", "w2"))
+    waiter.join(5)
+    check(entered and held, "%s: with an empty last message, the wait holds on an open call at the tail" % name)
+    check(not waiter.is_alive() and out.get("done") is True, "%s: and ends, True, once its result is written" % name)
+    # A result that never comes: at the deadline the export takes what is there.
+    with open(path, "w") as f:
+        row(f, call(name, "toolu_never", "n1"))
+    t0 = time.time()
+    done = mod.await_flush(path, "", t0 + 0.4)
+    check(done is False and 0.3 <= time.time() - t0 < 2, "%s: a result that never lands ends the wait at the deadline, False" % name)
+# What holds no wait: a call answered, then a response after it; a call of another tool.
+with open(path, "w") as f:
+    row(f, call(mod.MESSAGE_TOOLS[0], "toolu_a", "a1"))
+    row(f, result("toolu_a", "a2"))
+    row(f, {"type": "assistant", "uuid": "a3", "message": {"id": "msg_a3", "role": "assistant", "content": [{"type": "text", "text": "Done."}]}})
+check(real(path) is False, "an answered call with a response after it holds no wait")
+with open(path, "w") as f:
+    row(f, call("Bash", "toolu_b", "b1"))
+check(real(path) is False, "another tool's open call holds no wait")
+PY_WAIT
+while IFS= read -r line; do
+  case "$line" in "ok "*) pass "flush wait: ${line#ok }" ;; *) fail "flush wait: ${line#FAIL }" ;; esac
+done < <(python3 "$TEST_ROOT/flush-wait.py" "$SMINOS_PY" "$TEST_ROOT/flush-wait.jsonl" 2>&1)
 # The window is chosen before grouping: an answer given now to a question
 # asked long ago shows, its question beneath it, by default and since today.
 HQ=6f00000a-0000-4000-8000-00000000006f

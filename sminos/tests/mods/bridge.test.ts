@@ -4008,6 +4008,69 @@ describe('the export to the host', () => {
     ])
   })
 
+  for (const tool of [MESSAGE_TOOL, MAWS_MESSAGE_TOOL]) {
+  test(`${tool}: what the main loop keeps after a message call waits for the call's result, so the log keeps the transcript's order`, async () => {
+    const h = harness()
+    await h.ready()
+    const span = (uuid: string, text: string) => ({ type: 'assistant', uuid, message: { content: [{ type: 'text', text }] } })
+    const use = (id: string, text: string, uuid: string) => ({ type: 'assistant', uuid, message: { content: [messageUse(id, tool, text)] } })
+    const result = (id: string, uuid: string, isError = false) => ({ type: 'user', uuid, message: { content: [messageResult(id, isError)] } })
+    await h.responseRow({ type: 'text', text: '<message>before</message>' }, { uuid: 'r-0' })
+    await h.responseRow(messageUse('toolu_a', tool, 'A'), { uuid: 'r-a' })
+    await h.responseRow({ type: 'text', text: '<message>B</message>' }, { uuid: 'r-b' })
+    await h.responseRow(messageUse('toolu_c', tool, 'C'), { uuid: 'r-c' })
+    await h.responseRow({ type: 'text', text: '<message>D</message>' }, { uuid: 'r-d' })
+    expect(h.ofType('export').map((e) => e.records)).toEqual([[span('r-0', '<message>before</message>')]])
+    // C's result first: it waits behind A, as do B and D.
+    await keepMessageResult(h, 'toolu_c', 'r-cres', tool)
+    expect(h.ofType('export').map((e) => e.records)).toHaveLength(1)
+    // A refused: its pair goes (the child logs nothing for it), and the rest after it, in order.
+    await keepMessageResult(h, 'toolu_a', 'r-ares', tool, true)
+    await h.responseRow({ type: 'text', text: '<message>E</message>' }, { uuid: 'r-e' })
+    expect(h.ofType('export').map((e) => e.records)).toEqual([
+      [span('r-0', '<message>before</message>')],
+      [use('toolu_a', 'A', 'r-a'), result('toolu_a', 'r-ares', true)],
+      [span('r-b', '<message>B</message>')],
+      [use('toolu_c', 'C', 'r-c'), result('toolu_c', 'r-cres')],
+      [span('r-d', '<message>D</message>')],
+      [span('r-e', '<message>E</message>')],
+    ])
+  })
+
+  test(`${tool}: a row holding a message call and a mark goes whole with the call's result, so the child reads its blocks in order`, async () => {
+    const h = harness()
+    await h.ready()
+    const blocks = [{ type: 'text', text: '<message>first</message>' }, messageUse('toolu_r', tool, 'R'), { type: 'text', text: '<message>after</message>' }]
+    await h.append('response', { type: 'assistant', role: 'assistant', content: blocks }, { uuid: 'r-row', origin: { kind: 'model', model: 'm' } })
+    expect(h.ofType('export')).toEqual([])
+    await keepMessageResult(h, 'toolu_r', 'r-rres', tool)
+    expect(h.ofType('export').map((e) => e.records)).toEqual([
+      [{ type: 'assistant', uuid: 'r-row', message: { content: blocks } }, { type: 'user', uuid: 'r-rres', message: { content: [messageResult('toolu_r')] } }],
+    ])
+  })
+  }
+
+  test('a message call whose result the bridge never sees holds a bounded number of exports, then lets them go in order', async () => {
+    const h = harness()
+    await h.ready()
+    await h.responseRow(messageUse('toolu_lost', MESSAGE_TOOL, 'its result was refused beneath'), { uuid: 'r-lost' })
+    for (let i = 0; i < 51; i++) {
+      await h.responseRow({ type: 'text', text: `<message>${i}</message>` }, { uuid: `r-${i}` })
+    }
+    expect(h.ofType('export').map((e) => (e.records as { uuid: string }[])[0]!.uuid)).toEqual(Array.from({ length: 51 }, (_, i) => `r-${i}`))
+    expect(h.logs.some((l) => l.includes('toolu_lost') && l.includes('Stop hook'))).toBe(true)
+    await h.responseRow({ type: 'text', text: '<message>later</message>' }, { uuid: 'r-later' })
+    expect(h.ofType('export').map((e) => (e.records as { uuid: string }[])[0]!.uuid).at(-1)).toBe('r-later')
+  })
+
+  test("a message past the events' cap holds nothing after it: it is the Stop hook's, the exception the design allows", async () => {
+    const h = harness()
+    await h.ready()
+    await h.responseRow(messageUse('toolu_big', MESSAGE_TOOL, 'x'.repeat(TEXT_CAP + 1)), { uuid: 'r-big' })
+    await h.responseRow({ type: 'text', text: '<message>after the long one</message>' }, { uuid: 'r-next' })
+    expect(h.ofType('export').map((e) => (e.records as { uuid: string }[])[0]!.uuid)).toEqual(['r-next'])
+  })
+
   test("a message past the events' cap is left to the Stop hook's export, in either row order, and said so in the debug log", async () => {
     const h = harness()
     await h.ready()

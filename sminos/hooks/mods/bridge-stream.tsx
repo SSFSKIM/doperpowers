@@ -294,6 +294,7 @@ export function forgetLive() {
   // A /clear comes between turns: the new session's main loop is idle.
   state.isTurnUnknown = false
   state.pairs.clear()
+  state.exportHold = []
   state.requests.clear()
   state.settled = []
 }

@@ -154,8 +154,10 @@ def result(uuid, call, t=ASYNC_RESULT, is_error=False):
 # The message tools: the to-human plugin's, and MAWS's in a MAWS launch.
 MESSAGE_TOOL, MAWS_MESSAGE_TOOL = "mcp__to-human__message", "mcp__maws__message"
 
-def message(uuid, call, t, name=MESSAGE_TOOL):
-    return {"type": "assistant", "uuid": uuid, "message": {"content": [{"type": "tool_use", "id": call, "name": name, "input": {"text": t}}]}}
+def message(uuid, call, t, name=MESSAGE_TOOL, before=None, after=None):
+    content = [{"type": "tool_use", "id": call, "name": name, "input": {"text": t}}]
+    content = ([{"type": "text", "text": before}] if before else []) + content + ([{"type": "text", "text": after}] if after else [])
+    return {"type": "assistant", "uuid": uuid, "message": {"content": content}}
 
 PLUGIN_PROMPT = "The doperpowers plugin sent a message:\n"
 # The tool and its framing under the plugin the ask moves to.
@@ -205,6 +207,16 @@ ROWS = {
     # one export as the mod posts it; and a refused call.
     "message": [message("m1", "toolu_ex_msg", "Approve the dialog at 07:15, please."), result("m2", "toolu_ex_msg", "sent")],
     "maws-message": [message("m3", "toolu_ex_maws_msg", "Built; deploying next.", MAWS_MESSAGE_TOOL), result("m4", "toolu_ex_maws_msg", "sent")],
+    # A call followed by a span, under each name, as the mod posts them: the
+    # pair once the result is in, then the span that waited behind it; and a
+    # row holding a span, a call and a span, posted whole with the call's result.
+    **{"call-then-span-" + tag: [message("o1-" + tag, "toolu_ex_first_" + tag, "A, sent first", name), result("o2-" + tag, "toolu_ex_first_" + tag, "sent")]
+       for tag, name in (("plugin", MESSAGE_TOOL), ("maws", MAWS_MESSAGE_TOOL))},
+    **{"span-after-" + tag: [text("o3-" + tag, "<message>B, written after the call</message>")]
+       for tag in ("plugin", "maws")},
+    **{"one-row-" + tag: [message("o4-" + tag, "toolu_ex_row_" + tag, "the call", name, "<message>ahead of the call</message>", "<message>after the call</message>"),
+                          result("o5-" + tag, "toolu_ex_row_" + tag, "sent")]
+       for tag, name in (("plugin", MESSAGE_TOOL), ("maws", MAWS_MESSAGE_TOOL))},
     "refused-message": [message("m5", "toolu_ex_msg_refused", "from a subagent"),
                         result("m6", "toolu_ex_msg_refused", "message is for the main conversation", True)],
     # The human's mid-turn message quoting a steer, which the mod hands over whole.
@@ -409,6 +421,26 @@ hook Stop "$SH" "$TH"
 assert_equals "$(events_of "$SH")" "$MSGS" "the Stop hook's export over the same rows appends no second copy"
 "$SMINOS" chat exdemo --host > "$T/host" 2>&1 || true
 assert_contains "$(cat "$T/host")" "exmsg: Built; deploying next." "chat --host prints a message sent through MAWS's tool"
+# Order: a call followed by a span, and a row holding a span, a call and a
+# span, reach the log in the transcript's order, as the Stop hook reads it.
+for tag in plugin maws; do
+  case "$tag" in plugin) SO=5b000001-0000-4000-8000-0000000000fa ;; *) SO=5b000001-0000-4000-8000-0000000000fb ;; esac
+  TO="$HOME/.claude/projects/x/$SO.jsonl"
+  peer "$SO" "exorder$tag" interactive cli
+  start_child "$SO"
+  ctl post "$SMINOS_HOME/bridge/$SO.sock" "[{\"type\":\"session\",\"phase\":\"start\",\"session\":\"$SO\",\"cwd\":\"$REPO\",\"t\":1}]" >/dev/null
+  for part in "call-then-span-$tag" "span-after-$tag" "one-row-$tag"; do
+    ctl post "$SMINOS_HOME/bridge/$SO.sock" "$(rows export "$part")" >/dev/null
+  done
+  until_true 100 has "$SO" "message:o4-$tag#1" || true
+  ORDER="joined message:toolu_ex_first_$tag message:o3-$tag#0 message:o4-$tag#0 message:toolu_ex_row_$tag message:o4-$tag#1"
+  assert_equals "$(events_of "$SO")" "$ORDER" \
+    "$tag's message tool: a call, the span after it, and a row's span, call and span reach the log in the transcript's order"
+  hook SessionStart "$SO" "$TO"
+  rows transcript "$TO" prompt "call-then-span-$tag" "span-after-$tag" "one-row-$tag"
+  hook Stop "$SO" "$TO"
+  assert_equals "$(events_of "$SO")" "$ORDER" "$tag's message tool: the Stop hook's export over the same rows reads the same order, and appends nothing"
+done
 
 echo "a recovery resync (the first post lost):"
 # The mod's first post, [session start, resync], never reached the child; its

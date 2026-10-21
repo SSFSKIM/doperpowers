@@ -65,9 +65,15 @@ const isAsyncAsk = (name: unknown, input: Record<string, unknown>) =>
  * declares no dependency on either, so it knows them by name.
  */
 const MESSAGE_TOOLS: readonly string[] = ['mcp__to-human__message', 'mcp__maws__message']
-/** A message tool's call whose text is past TEXT_CAP. */
-const isLongMessage = (block: Record<string, unknown>) =>
-  MESSAGE_TOOLS.includes(String(block.name)) && isRecord(block.input) && typeof block.input.text === 'string' && block.input.text.length > TEXT_CAP
+/** A call of a message tool. */
+const isMessageCall = (b: Record<string, unknown>) => b.type === 'tool_use' && typeof b.id === 'string' && MESSAGE_TOOLS.includes(String(b.name))
+/** A record holding a text past TEXT_CAP, a message call's or a text block's: the Stop hook's to export. */
+const isLong = (record: TranscriptRecord) =>
+  'message' in record &&
+  record.message.content.some((b) => {
+    const text = b.type === 'text' ? b.text : isMessageCall(b) && isRecord(b.input) ? b.input.text : undefined
+    return typeof text === 'string' && text.length > TEXT_CAP
+  })
 /** The tag a MAWS steer opens with (sminos.MAWS_STEER_RE). */
 const MAWS_STEER = '[MAWS ask '
 /** A text that may answer an async ask: the ask mod's delivery, or a MAWS steer. The child's parser decides. */
@@ -290,16 +296,27 @@ export function observeRow(door: string, message: { name?: string; content?: unk
  * answer an ask (answerRecord). A text past TEXT_CAP, a message call's
  * included, is left to the Stop hook's export, which reads the transcript
  * whole and appends it under the same keys.
+ *
+ * The log keeps events in the order they are appended, so the exports keep
+ * the transcript's (exportInOrder): what the main loop keeps after a message
+ * call waits until the call's result is in. A row holding a message call
+ * goes with the call, its texts with it, so the child reads its blocks in
+ * order (a span's src counts the row's spans).
  */
 export function exportRow(door: string, message: { name?: string; content?: unknown }, uuid: string, origin: unknown) {
   const content = Array.isArray(message.content) ? message.content.filter(isRecord) : []
   if (door === 'response') {
     const texts = textBlocks(content)
-    if (texts.some((b) => MAY_MARK.test(b.text))) {
+    const sent = content.filter((b) => b.type === 'text' || isMessageCall(b))
+    const row: TranscriptRecord = { type: 'assistant', uuid, message: { content: sent } }
+    const calls = content.filter(isMessageCall)
+    if (calls.length > 0 && !isLong(row)) {
+      calls.forEach((b) => keepPair(String(b.id), { use: row }))
+    } else if (texts.some((b) => MAY_MARK.test(b.text))) {
       exportRecord(uuid, texts, { type: 'assistant', uuid, message: { content: texts } })
     }
     for (const b of content) {
-      if (b.type === 'tool_use' && typeof b.id === 'string' && isRecord(b.input) && (isAsyncAsk(b.name, b.input) || MESSAGE_TOOLS.includes(String(b.name)))) {
+      if (b.type === 'tool_use' && typeof b.id === 'string' && isRecord(b.input) && (isAsyncAsk(b.name, b.input) || (isMessageCall(b) && isLong(row)))) {
         keepPair(b.id, { use: { type: 'assistant', uuid, message: { content: [b] } } })
       }
     }
@@ -325,7 +342,41 @@ function exportRecord(uuid: string, texts: { text: string }[], record: Transcrip
     state.log?.(`bridge: row ${uuid}: a text past ${TEXT_CAP} characters; the Stop hook exports it`)
     return
   }
-  emit({ type: 'export', records: [record] })
+  exportInOrder([record])
+}
+
+/**
+ * An export, in the transcript's order: while a message call waits for its
+ * result (its id holds a place in `state.exportHold`), it waits behind it. A
+ * result the bridge never sees (kept while it was down, or refused beneath)
+ * holds at most PAIRS_KEPT exports: past that its call is given up, and the
+ * Stop hook exports it.
+ */
+function exportInOrder(records: TranscriptRecord[]) {
+  if (state.exportHold.length === 0) {
+    emit({ type: 'export', records })
+    return
+  }
+  state.exportHold.push(records)
+  const waiting = state.exportHold[0]
+  if (state.exportHold.length > PAIRS_KEPT && typeof waiting === 'string') {
+    state.log?.(`bridge: message call ${waiting}: no result after ${PAIRS_KEPT} exports; the Stop hook exports it`)
+    state.pairs.delete(waiting)
+    settleHold(waiting)
+  }
+}
+
+/** A waiting call's place filled with its pair (or given up, with none), and the exports it held released, up to the next call still waiting. */
+function settleHold(id: string, records?: TranscriptRecord[]): boolean {
+  const at = state.exportHold.indexOf(id)
+  if (at === -1) {
+    return false
+  }
+  state.exportHold.splice(at, 1, ...(records === undefined ? [] : [records]))
+  while (state.exportHold.length > 0 && typeof state.exportHold[0] !== 'string') {
+    emit({ type: 'export', records: state.exportHold.shift() as TranscriptRecord[] })
+  }
+  return true
 }
 
 /**
@@ -406,22 +457,33 @@ export function enteredRow(door: string, message: { content?: unknown }, uuid: s
 /**
  * One row of a paired call (an async ask, a message tool's); once its call and
  * its result are both kept, the pair is exported, unless the call is a message
- * past TEXT_CAP: that pair is the Stop hook's, said in the debug log.
+ * past TEXT_CAP: that pair is the Stop hook's, said in the debug log, and
+ * holds nothing after it (the one exception to the order, the design's). A
+ * message call kept before its result holds its place in the exports.
  */
 function keepPair(id: string, row: { use?: TranscriptRecord; result?: TranscriptRecord }) {
   const pair = { ...state.pairs.get(id), ...row }
   if (pair.use !== undefined && pair.result !== undefined) {
     state.pairs.delete(id)
-    if ('message' in pair.use && pair.use.message.content.some(isLongMessage)) {
+    if (isLong(pair.use)) {
       state.log?.(`bridge: row ${pair.use.uuid}: a message past ${TEXT_CAP} characters; the Stop hook exports it`)
+      settleHold(id)
       return
     }
-    emit({ type: 'export', records: [pair.use, pair.result] })
+    if (!settleHold(id, [pair.use, pair.result])) {
+      exportInOrder([pair.use, pair.result])
+    }
     return
+  }
+  if (row.use !== undefined && !isLong(row.use) && 'message' in row.use && row.use.message.content.some((b) => isMessageCall(b) && b.id === id)) {
+    state.exportHold.push(id)
   }
   state.pairs.set(id, pair)
   if (state.pairs.size > PAIRS_KEPT) {
-    state.pairs.delete(state.pairs.keys().next().value as string)
+    // A call whose other row never came: what waits behind it goes on (the Stop hook exports the call).
+    const oldest = state.pairs.keys().next().value as string
+    state.pairs.delete(oldest)
+    settleHold(oldest)
   }
 }
 
