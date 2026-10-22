@@ -399,6 +399,12 @@ These separate tickets are already registered. The integrating session carries t
 - Observation: The installed host CLI uses a flat boot-directory layout rather than the repository's layout.
   Evidence: M1's copied-CLI regression follows the real exec boundary to the helper in the existing host marketplace; the checkout-relative helper alone was insufficient. This requires no new privileged installation work.
 
+- Observation: The first real implementation rebuild recovered broad index coverage after bounding checkout detection.
+  Evidence: `guard index --fetch` after `0a257fc7` published 88,238 npm files across 1,621 packages and 19,104 gcloud files across five components. This measures index coverage, not two-pass generic preservation. npm skipped one excluded path, 1,525 nested members, one oversized file, 982 unavailable files and 36 unsafe-archive cases; gcloud skipped eight oversized files and 14 unavailable-evidence cases. These categories mix evidence-level and file-level counts and must not be summed as a file denominator.
+
+- Observation: Remaining public-artifact losses include archive layout and installed/public component-version differences.
+  Evidence: Aggregate diagnosis of the 36 npm unsafe-archive cases identified 29 distinct artifacts: 19 use an alternative top-level directory and ten contain dot path segments. Of 14 gcloud unavailable-evidence cases, ten have component-version mismatches and four lack checksummed entries in the selected public release document. No trust rule was widened; M3 measures their actual impact on the generic-match corpus.
+
 ## Decision Log
 
 - Decision: Verification consists of one independent adversarial spec review covering the design and all milestones, followed after implementation by doperpowers:review-code at the high rung on the entire branch, plus the committed gates and native acceptance described above.
