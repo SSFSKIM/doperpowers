@@ -3,15 +3,19 @@
 #   docker build -t devcloud -f devcloud/image/Dockerfile \
 #     --build-arg DEVCLOUD_USER=<user> --build-arg DEVCLOUD_UID=<uid> --build-arg DEVCLOUD_HOME=<home> .
 #
-# Its one build step is image/setup.sh, the same recipe a VM builder runs.
+# Two build steps, the recipe a VM builder runs as one (image/setup.sh): the
+# packages (image/packages.sh), a layer whose cache key is that file alone, so
+# a change anywhere else in devcloud/ reuses it; then the rest of setup.sh.
 # Run it with the boot descriptor and the seed mounted and --hostname set to
 # DEVCLOUD_NAME (devcloud/README.md, "The host"); the entrypoint boots, then
 # supervises the host's services in the foreground.
 FROM ubuntu:24.04
+RUN --mount=type=bind,source=devcloud/image/packages.sh,target=/tmp/packages.sh bash /tmp/packages.sh
+# The build inputs after the package layer: a RUN after an ARG is keyed on its value.
 ARG DEVCLOUD_USER
 ARG DEVCLOUD_UID
 ARG DEVCLOUD_HOME
-RUN --mount=type=bind,source=devcloud,target=/tmp/devcloud bash /tmp/devcloud/image/setup.sh
+RUN --mount=type=bind,source=devcloud,target=/tmp/devcloud DEVCLOUD_PACKAGES=installed bash /tmp/devcloud/image/setup.sh
 STOPSIGNAL SIGTERM
 # The services start after a boot that made the host: exit 0, or 3 when only
 # step 12 (projects) failed.

@@ -4,7 +4,7 @@ A path here is named from `devcloud/` when it is the plugin's own file; `docs/`,
 
 A second plugin in this marketplace (its entry found by name, versioned on its own: `scripts/bump-version.sh --plugin devcloud`), opt-in, design in `docs/doperpowers/specs/2026-10-15-devcloud-design.md`.
 
-The host: `image/` (`setup.sh`, the `Dockerfile` whose one step it is) and `boot/` (`devcloud-boot`, steps 1–12 in `devcloudlib/steps.py`, step 12's projects and mirror cache in `devcloudlib/projects.py`, step 11's sminos daemon on an enrolled persistent host in `devcloudlib/sminos_host.py`, the tailnet join with the Tailscale OAuth client in step 4; `devcloud` for status and the jobs; `devcloud-services`, the supervisor where PID 1 is not systemd), tested in containers by `devcloud/tests/run.sh` (the `devcloud-*` gates, one part each: `DEVCLOUD_PART`, the integration parts in `tests/integration.py`'s `PARTS`).
+The host: `image/` (`setup.sh`, which runs `packages.sh` first; the `Dockerfile`, which runs the two as separate layers so the package layer is keyed on `packages.sh` alone) and `boot/` (`devcloud-boot`, steps 1–12 in `devcloudlib/steps.py`, step 12's projects and mirror cache in `devcloudlib/projects.py`, step 11's sminos daemon on an enrolled persistent host in `devcloudlib/sminos_host.py`, the tailnet join with the Tailscale OAuth client in step 4; `devcloud` for status and the jobs; `devcloud-services`, the supervisor where PID 1 is not systemd), tested in containers by `devcloud/tests/run.sh` (the `devcloud-*` gates, one part each: `DEVCLOUD_PART`, the integration parts in `tests/integration.py`'s `PARTS`).
 
 `skills/devenv/` writes a repository's `devenv/` from its CI, manifests and README and proves it with `devenv up`.
 
