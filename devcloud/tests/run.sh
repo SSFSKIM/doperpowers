@@ -30,14 +30,18 @@ trap 'docker rmi -f "$image" >/dev/null 2>&1 || true; rm -f "$log"' EXIT
 # In a CI gate with ci-kit's build_cache, the layers come from the GitHub
 # Actions cache, a scope per ISO week: packages.sh installs the latest releases,
 # so a cache keyed on the files alone would never refresh them. Only a run on
-# the default branch writes it (ci-kit sets CI_KIT_BUILD_CACHE_WRITE there; the
-# weekly schedule in ci.yml seeds each week's scope). The layers are zstd, which
-# the runner's daemon exports and unpacks faster than gzip.
+# the default branch writes it (ci-kit sets CI_KIT_BUILD_CACHE_WRITE there: the
+# weekly schedule in ci.yml seeds each week's scope, and a merge to main that
+# changes the gates' paths seeds it again). Of the three gates that share the
+# scope, only the image part writes it: the package layer does not build byte
+# for byte the same, so each writer would upload its own copy, three per seed,
+# into the repository's 10 GB. host and systemd read what it wrote. The layers
+# are zstd, which the runner's daemon exports and unpacks faster than gzip.
 cache=()
 if [ "${CI_KIT_BUILD_CACHE:-}" = gha ]; then
   scope="devcloud-image-$(date -u +%G-W%V)"
   cache=(--output "type=image,compression=zstd,oci-mediatypes=true" --cache-from "type=gha,scope=$scope")
-  if [ -n "${CI_KIT_BUILD_CACHE_WRITE:-}" ]; then
+  if [ -n "${CI_KIT_BUILD_CACHE_WRITE:-}" ] && { [ "$DEVCLOUD_PART" = image ] || [ "$DEVCLOUD_PART" = all ]; }; then
     cache+=(--cache-to "type=gha,mode=min,scope=$scope,compression=zstd,ignore-error=true")
   fi
 fi
