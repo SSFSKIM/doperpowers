@@ -15,7 +15,7 @@ This is board ticket #124, following #87 and PR #349. It changes neither the det
 - [x] (2026-10-22 11:51Z) Folded the settled review decisions into the specification: public-artifact evidence for npm/gcloud, dpkg deferred, one whole-stage deadline, unchanged-result pagination preservation, and manual-only refresh. No implementation has begun.
 - [x] (2026-10-22 12:28Z) M1 — Built and independently reviewed the original-content index and local verifier. Both committed gates passed on `99bb0be3`; two non-blocking diagnostic/test findings are recorded in `tech-debt-tracker.md`.
 - [x] (2026-10-22 13:04Z) M2 — Applied whole-stage bounded verification through both scrubbing passes, including stalled preflight fallback and unchanged-result `ref` preservation. Frontier review is clean after two type corrections; both committed gates passed on `0b5afcd3`, including the M1 checkout-boundary fix. Actual native behavior remains M3.
-- [x] (2026-10-22 13:52Z) M3 — Native macOS acceptance, corpus measurement, documentation and devcloud 0.10.0 release changes passed frontier review and committed gates. Rebased cleanly onto current main; 0.10.0 remains above main's 0.9.4. Whole-branch high review and final integration gates follow; cua resync registration remains post-merge with the integrating session. Board tickets 125 and 126 remain separate residue.
+- [x] (2026-10-22 13:52Z) M3 — Native macOS acceptance, corpus measurement, documentation and devcloud 0.10.0 release changes passed frontier review and committed gates. Rebased cleanly onto current main; 0.10.0 remains above main's 0.9.4. Whole-branch high review found no material findings and the rebased commit's gates passed; cua resync registration remains post-merge with the integrating session. Board tickets 125 and 126 remain separate residue.
 
 ## Acceptance
 
@@ -492,4 +492,12 @@ Focused Python tests: 37 passed. M2 focused two-pass tests: 52 passed. Committed
 
 ## Outcomes & Retrospective
 
-Pending — written after final review.
+Implemented all three milestones for board ticket 124. Explicit indexing establishes public-distribution byte equality; bounded local verification and one-use receipts preserve only generic assignments in the exact verified Read content. Stored values, credential-file values, provider-shaped tokens and private-key blocks remain guarded. Unknown evidence uses ordinary detection without refusing a successful Read.
+
+The unchanged census reached 1,473 preserved generic matches out of 1,518 (97.04%), above the 95% target, with full original-byte index coverage of those matches. Native macOS engine 2.1.308 acceptance proved both stored representations, partial and automatically paginated Reads, unchanged pagination companions and actual verifier child cleanup on timeout/interrupt. Linux native behavior was not tested and is not claimed.
+
+The high-rung whole-branch review of `6d75245c..320d46a8` returned **correct**, with no material findings, including the gcloud public-component and member-level archive changes. Both committed gates passed on the rebased head ([run 39790937593](https://github.com/SSFSKIM/doperpowers/actions/runs/39790937593)). The final record-only commit does not change runtime or acceptance code. The two non-blocking M1 diagnostic/test findings remain in `tech-debt-tracker.md` and will be disclosed in the PR.
+
+The important corrections came from measuring real installation semantics rather than broadening authority: Git-installed runtime managers are not project source, component snapshot build stamps are not public artifact identities, and unrelated archive links need not invalidate unique regular members. Each correction retained public checksum and current-byte proof and gained synthetic regressions. Report accounting also needed full-file match identities so partial slices through multi-line rules could not invent preservation credit.
+
+The branch is prepared for review and merge, not merged. Post-merge integration must name the actual merged commit in the cua resync ticket and carry board tickets 125 and 126 forward. No cua files, automatic indexing services or historical transcript rewriting were added.
