@@ -184,10 +184,11 @@ tool that fails rather than list differences — fails the check.
     python3 devcloud/tests/check_image.py <image> --home <home> --store <secret store dir> --values - < values.json
 A VM builder runs `setup.sh` and snapshots, and its `devcloud-boot.service`
 runs the boot at every start. `setup.sh` starts with `image/packages.sh`,
-the packages and tools, which takes no input; `image/Dockerfile` runs that
-as a layer of its own, keyed on `packages.sh` alone so that a change anywhere
-else in `devcloud/` reuses it from a build cache, and then the rest of
-`setup.sh` (`DEVCLOUD_PACKAGES=installed`).
+the packages and tools, which takes no input; `image/Dockerfile` runs its
+three parts (apt, gcloud, tools) as a layer each, keyed on `packages.sh` alone
+so that a change anywhere else in `devcloud/` reuses them from a build cache,
+whose layers a warm build pulls side by side, and then the rest of `setup.sh`
+(`DEVCLOUD_PACKAGES=installed`).
 
     docker build -t devcloud -f devcloud/image/Dockerfile \
       --build-arg DEVCLOUD_USER=<user> --build-arg DEVCLOUD_UID=<uid> --build-arg DEVCLOUD_HOME=<home> .

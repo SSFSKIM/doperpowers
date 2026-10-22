@@ -8,7 +8,7 @@
 # The three inputs are the person's Mac account (the profile's build.env):
 # the same home path lets a session started on a Mac resume on a host. A VM
 # builder runs this and snapshots; image/Dockerfile runs it as its last step,
-# after image/packages.sh as a layer of its own.
+# after image/packages.sh's parts as layers of their own.
 set -euo pipefail
 
 : "${DEVCLOUD_USER:?set DEVCLOUD_USER, from the profile build.env}"
@@ -31,7 +31,7 @@ fi
 
 plugin="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-# The packages (image/packages.sh): image/Dockerfile runs them as a layer of
+# The packages (image/packages.sh): image/Dockerfile runs them as layers of
 # their own and says so; everywhere else they are this run's first step.
 [[ "${DEVCLOUD_PACKAGES:-}" == installed ]] || bash "$plugin/image/packages.sh"
 
@@ -64,11 +64,21 @@ visudo -c >/dev/null
 
 # Claude Code, the native installer, as the user; on every PATH through a link.
 # Its own temporary directory, removed after: the installer leaves a socket behind.
+# claude.ai's downloads fail in bursts (HTTP 429, a reset HTTP/2 stream), some
+# outlasting two minutes, so a failed install, the fetch or the installer's
+# own download, is tried again over almost four minutes, then fails the run
+# rather than leaving a host without claude.
 scratch="$(runuser -u "$DEVCLOUD_USER" -- mktemp -d)"
-runuser -u "$DEVCLOUD_USER" -- env HOME="$DEVCLOUD_HOME" TMPDIR="$scratch" \
-  bash -c 'curl -fsSL https://claude.ai/install.sh | bash'
+for delay in 15 30 60 120 stop; do
+  runuser -u "$DEVCLOUD_USER" -- env HOME="$DEVCLOUD_HOME" TMPDIR="$scratch" \
+    bash -c 'set -o pipefail; curl -fsSL https://claude.ai/install.sh | bash' && break
+  [[ $delay != stop ]] || { echo "Claude Code's install failed 5 times" >&2; exit 1; }
+  echo "Claude Code's install failed; again in $delay s" >&2
+  sleep "$delay"
+done
 rm -rf "$scratch"
 ln -sfn "$DEVCLOUD_HOME/.local/bin/claude" /usr/local/bin/claude
+[[ -x /usr/local/bin/claude ]] || { echo "Claude Code is not installed" >&2; exit 1; }
 
 # devcloud itself: the boot program, the service runner, the CLI.
 install -d -m 0755 /usr/local/lib/devcloud /etc/devcloud
