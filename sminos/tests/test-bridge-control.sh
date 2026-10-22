@@ -492,6 +492,16 @@ assert_equals "$(field_of "$LAST_END" readback.how)/$(field_of "$LAST_END" rpc)"
 OUTR="$(ctl command "$SOCK" '{"op":"command","name":"config","rpc":"nonce-r1"}')"
 assert_equals "$(field_of "${OUTR#* }" code)" "panel" "a refusal's code is in the child's answer"
 assert_equals "$(field_of "$(kept_rpc nonce-r1)" code)" "panel" "and in the answer kept under the nonce"
+# A reload's start names the child that relays it, the one the reload replaces:
+# the daemon finishes the op by another answering (from the CLI too, no nonce).
+ctl post "$SOCK" '[{"type":"run","phase":"start","id":"rl-1","name":"reload-plugins","args":""}]' >/dev/null
+until_true 100 has_event "$WATCHD" run start rl-1 || true
+STATUS="$(ctl get "$SOCK" /status)"
+WANT="[$(python3 -c 'import os, sys; print(os.stat(sys.argv[1]).st_ino)' "$SOCK"), $(field_of "${STATUS#* }" pid)]"
+assert_equals "$(field_of "$(event_of "$WATCHD" run start rl-1)" child)" "$WANT" "a reload's start carries the relaying child: its socket's inode and its pid"
+ctl post "$SOCK" '[{"type":"run","phase":"start","id":"rn-1","name":"rename","args":"x"}]' >/dev/null
+until_true 100 has_event "$WATCHD" run start rn-1 || true
+assert_equals "$(field_of "$(event_of "$WATCHD" run start rn-1)" child)" "null" "another command's does not"
 
 echo "the control verbs, no bridge:"
 NOB=5c000002-0000-4000-8000-0000000000c2

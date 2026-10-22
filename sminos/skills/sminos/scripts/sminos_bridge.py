@@ -59,6 +59,9 @@ outcome follows on the stream (a desk `command` answered `queued`, DX5) keeps
 its nonce here past that answer, until its `run` end: every `run` event of
 it is relayed carrying `rpc`, and the end is kept beside the answer (`end`,
 its texts cut to END_TEXT_KEPT), for a daemon that was stopped when it came.
+A `/reload-plugins` run's start is relayed naming this child (`child`: its
+socket's inode and its pid), the one the reload replaces: the daemon finishes
+the op by the session's bridge answering from another.
 A delivery the engine dropped after the mod answered `submitted` is kept
 there with its key and reason (`refused`, the last REFUSED_KEPT), which the
 daemon's delivery pass reports as a `failed` outcome
@@ -583,6 +586,7 @@ class Bridge:
         self.agents = {}         # agentId → what its spawn said, and whether it runs
         self.session_info = None
         self.capabilities = None  # what the loaded mod can do (DX5), as its last resync said
+        self.child = None        # [its socket's inode, its pid]: this child, as a reload's start names it
         self.usage = None
         self.mod_events = 0
         self.mod_last = None
@@ -840,6 +844,8 @@ class Bridge:
                 w[1] = e
                 w[0].set()
         elif kind == "run":
+            if phase == "start" and e.get("name") == "reload-plugins" and self.child is not None:
+                e["child"] = list(self.child)
             rpc = self.rpc_of.get(e.get("id"))
             if rpc is not None:
                 e["rpc"] = rpc   # relayed with it: the daemon names the op's outcome by it
@@ -1361,6 +1367,7 @@ def serve(session):
     mine = os.lstat(tmp).st_ino
     os.replace(tmp, path)
     bridge = server.bridge = Bridge(session, path)
+    bridge.child = [mine, os.getpid()]
     parent = os.getppid()
     bridge.presence = presence_path(parent)
 

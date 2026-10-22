@@ -165,6 +165,7 @@ function track(e: BridgeEvent) {
 
 /** The refusals a post the child answered carried, in its own events or a resync's: the child keeps them. */
 function acknowledge(batch: BridgeEvent[]) {
+  settleTaken(batch, true)
   const name = (k: Refusal['key']) => `${k.project ?? ''}|${k.writer}:${k.seq}`
   const carried = new Set(
     batch.flatMap((e) =>
@@ -382,6 +383,7 @@ export function adoptKept(kept: unknown) {
  * event lost and every one queued behind them.
  */
 function lose(events: BridgeEvent[]) {
+  settleTaken(events, false)
   const dropped = events.reduce((n, e) => n + (e.type === 'gap' ? Number(e.dropped) : e.type === 'resync' || isHold(e) || aheadOfResync.has(e) ? 0 : 1), 0)
   requeue([{ type: 'gap', dropped, t: Date.now() }, ...resyncEvents()])
 }
@@ -393,7 +395,30 @@ function lose(events: BridgeEvent[]) {
  * the cut, the resync's cut covers its rows: it goes.
  */
 export function requeue(events: BridgeEvent[]) {
-  state.queue = [...events, ...state.queue.filter((e) => isHold(e) && state.cut.get(e.loop) === e.after)]
+  const kept = state.queue.filter((e) => isHold(e) && state.cut.get(e.loop) === e.after)
+  settleTaken(state.queue.filter((e) => !kept.includes(e)), false)
+  state.queue = [...events, ...kept]
+}
+
+/** Callers waiting on these events (emitTaken) told whether the child took them. */
+function settleTaken(events: BridgeEvent[], isTaken: boolean) {
+  for (const e of events) {
+    state.taking.get(e)?.(isTaken)
+    state.taking.delete(e)
+  }
+}
+
+/**
+ * Emits an event and tells when it reached the child: true once a post the
+ * child answered carried it, false once it was lost (a failed post, a fenced
+ * one) or never queued (no child, the bridge off).
+ */
+export function emitTaken(event: BridgeEvent): Promise<boolean> {
+  const queued = emit(event)
+  if (queued === undefined) {
+    return Promise.resolve(false)
+  }
+  return new Promise((resolve) => state.taking.set(queued, resolve))
 }
 
 /** Places a hold (Hold) at the queue's end. */
@@ -405,23 +430,25 @@ export function hold(h: Hold) {
   pump()
 }
 
-export function emit(event: BridgeEvent) {
+/** Queues an event for the child; the queued copy, or undefined when none is queued. */
+export function emit(event: BridgeEvent): BridgeEvent | undefined {
   // Nothing is kept for a session with no bridge (an internal fork, a start that failed).
   if (state.post === undefined) {
-    return
+    return undefined
   }
   const stamped = { ...event, t: Date.now() }
   track(stamped)
   // A bridge that is off has no child to post to: the live state it keeps
   // reaches the child a later safe verdict starts, as that child's resync.
   if (state.isEnding || state.place === 'off') {
-    return
+    return undefined
   }
   state.queue.push(stamped)
   if (state.queue.length > QUEUE_MAX) {
     lose(state.queue)
   }
   pump()
+  return stamped
 }
 
 /** Wakes the poster, which posts what is queued. */
@@ -468,6 +495,7 @@ export async function poster() {
     state.isPosting = true
     const lost = (why: string) => {
       failed = true
+      settleTaken(batch, false)
       state.log?.(`bridge: ${batch.length} events not delivered: ${why}`)
       // A child replaced meanwhile gets its resync at its hello; one being
       // retired after a /clear gets nothing more.
@@ -493,6 +521,7 @@ export async function poster() {
     )
     state.isPosting = false
     if (isFenced) {
+      settleTaken(batch, false)
       retire()
       return
     }
@@ -519,6 +548,7 @@ export async function poster() {
 function retire() {
   state.log?.('bridge: the child serves another module instance now; this one stops')
   state.post = undefined
+  settleTaken(state.queue, false)
   state.queue = []
   state.heartbeat?.cancel()
   state.heartbeat = undefined

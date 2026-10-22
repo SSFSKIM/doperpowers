@@ -7,7 +7,7 @@ import { OFF_LINE, ON_LINE, isCuaEnabled, isLiveMarker, verdictOf } from './brid
 import type { Guard, Place, Verdict } from './bridge-place'
 import { EFFORTS, RESPAWN_FIRST_MS, RESPAWN_STEP_MS, capped, isEffort, loopKey, message, parsed, state } from './bridge-state'
 import type { Answer, Capabilities, Command, Decision, DeliveryKey, DeskRun, Override, Readback, Request, Steer, Stops, Wake } from './bridge-state'
-import { adoptKept, adoptSeed, emit, endStep, forgetLive, poster, pump, releaseStepEnd, requeue, resyncEvents, stopChild } from './bridge-stream'
+import { adoptKept, adoptSeed, emit, emitTaken, endStep, forgetLive, poster, pump, releaseStepEnd, requeue, resyncEvents, stopChild } from './bridge-stream'
 import {
   CHECKS_KEPT,
   askCallFor,
@@ -256,6 +256,14 @@ export const CAPABILITIES_PROTOCOL = 2
 export const STOPPED_WAIT_MS = 250
 /** The engine's refusal of a plugin's run or prompt after an Esc, until the person sends input (2.1.300 `k_e`). */
 const STOPPED_REFUSAL = 'the session was stopped and nobody has sent input since'
+/** The command that replaces this module: nothing of the desk's runs through it after one. */
+const RELOAD = 'reload-plugins'
+/** A desk command sent while a reload is queued or running: the module it would run in is going. */
+export const RELOADING_REASON = 'the plugins are reloading: send it again once the session answers from its reloaded bridge'
+/** How long a reload this module outlived holds the desk's commands back (the daemon's own bound on it). */
+export const RELOAD_HOLD_MS = 60_000
+/** How long a reload waits for its start to reach the child before it is not run (the daemon waits as long for the answer). */
+export const RELOAD_TAKEN_WAIT_MS = 10_000
 
 /**
  * Whether the main turn's state is still unknown, the session's engine record
@@ -401,11 +409,17 @@ async function deskCommand($: EngineInterface, command: Command): Promise<Answer
   }
   const run: DeskRun = { id: command.id, name, args: (args ?? '').trim() }
   const queued: Answered = { ok: true, result: { queued: true, route: routed.route.class, id: command.id } }
+  if (state.deskRun?.name === RELOAD || state.deskQueue.some((r) => r.name === RELOAD)) {
+    return { ok: false, error: RELOADING_REASON }
+  }
   if (state.deskRun !== undefined) {
     state.deskQueue.push(run)
     return queued
   }
   state.deskRun = run
+  if (run.name === RELOAD) {
+    return { ...queued, after: () => void reloadPlugins($, run) }
+  }
   const settled = callRun($, run)
   let waited: { cancel: () => void } | undefined
   const early = await Promise.race([settled, new Promise<undefined>((resolve) => (waited = $.clock.after(STOPPED_WAIT_MS, () => resolve(undefined))))])
@@ -434,21 +448,45 @@ function callRun($: EngineInterface, run: DeskRun): Promise<Settled> {
 
 /**
  * A desk command's run on the stream, after its answer: `run` start, then,
- * once it settled and was read back, its end. A `/reload-plugins` reloads
- * this module, which never posts that end (its posts are fenced off): the
- * daemon finishes the op by the bridge answering again, and nothing here
- * waits for it.
+ * once it settled and was read back, its end.
  */
 async function followRun($: EngineInterface, run: DeskRun, settled: Promise<Settled>) {
   emit({ type: 'run', phase: 'start', id: run.id, name: run.name, args: run.args })
-  if (run.name === 'reload-plugins') {
-    releaseDeskRun($, run)
-    return
-  }
   const outcome = await settled
   const readback: Readback = !outcome.ok ? { how: 'none' } : outcome.text !== undefined ? { how: 'text', text: outcome.text } : await readBack(run.name, run.args)
   emit({ type: 'run', phase: 'end', id: run.id, name: run.name, args: run.args, settled: outcome, readback })
   releaseDeskRun($, run)
+}
+
+/**
+ * A `/reload-plugins` from the desk replaces this module, whose posts are
+ * fenced from then on: it is called only once its answer and its run's start
+ * have reached the child, and no desk command runs through this instance
+ * after it (one sent meanwhile is refused, RELOADING_REASON). The daemon
+ * finishes the op by the bridge answering from another child. Refused at once
+ * (an Esc), it ends here; a reload this module outlives holds the desk back
+ * for RELOAD_HOLD_MS.
+ */
+async function reloadPlugins($: EngineInterface, run: DeskRun) {
+  const end = (settled: Settled) => emit({ type: 'run', phase: 'end', id: run.id, name: run.name, args: run.args, settled, readback: { how: 'none' } })
+  let waited: { cancel: () => void } | undefined
+  const isTaken = await Promise.race([
+    emitTaken({ type: 'run', phase: 'start', id: run.id, name: run.name, args: run.args }),
+    new Promise<boolean>((resolve) => (waited = $.clock.after(RELOAD_TAKEN_WAIT_MS, () => resolve(false)))),
+  ])
+  waited?.cancel()
+  if (!isTaken) {
+    end({ ok: false, error: 'its start did not reach the bridge: it was not run' })
+    releaseDeskRun($, run)
+    return
+  }
+  const outcome = await callRun($, run)
+  if (!outcome.ok) {
+    end(outcome)
+    releaseDeskRun($, run)
+    return
+  }
+  $.clock.after(RELOAD_HOLD_MS, () => releaseDeskRun($, run))
 }
 
 /** A desk command done with: the next waiting is called. */
@@ -458,7 +496,9 @@ function releaseDeskRun($: EngineInterface, run: DeskRun) {
   }
   const next = state.deskQueue.shift()
   state.deskRun = next
-  if (next !== undefined) {
+  if (next?.name === RELOAD) {
+    void reloadPlugins($, next)
+  } else if (next !== undefined) {
     void followRun($, next, callRun($, next))
   }
 }

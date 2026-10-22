@@ -91,8 +91,20 @@ function formMiss(name: string, route: Route, args: string): { reason: string; i
   return undefined
 }
 
-/** A route's refusal, or undefined for one the bridge runs. */
+/**
+ * A route's refusal, or undefined for one the bridge runs. The forms are
+ * checked first, whatever the class: arguments a command does not take are
+ * `bad-args` (a pattern's miss takes `otherwise` when the route has one),
+ * and only a well-formed command is refused for its class.
+ */
 function refusalOf(name: string, route: Route, args: string): Refusal | undefined {
+  const miss = formMiss(name, route, args)
+  if (miss !== undefined) {
+    if (miss.isPatternMiss && route.otherwise !== undefined) {
+      return refusalOf(name, route.otherwise, args)
+    }
+    return { code: 'bad-args', reason: miss.reason }
+  }
   switch (route.class) {
     case 'panel':
       return { code: 'panel', reason: PANEL_REASON }
@@ -104,13 +116,6 @@ function refusalOf(name: string, route: Route, args: string): Refusal | undefine
       return { code: 'local', reason: LOCAL_REASON }
     case 'follow':
       return { code: 'follow', reason: FOLLOW_REASON }
-  }
-  const miss = formMiss(name, route, args)
-  if (miss !== undefined) {
-    if (miss.isPatternMiss && route.otherwise !== undefined) {
-      return refusalOf(name, route.otherwise, args)
-    }
-    return { code: 'bad-args', reason: miss.reason }
   }
   return route.enabled ? undefined : { code: 'disabled', reason: route.reason ?? 'not offered from the desk yet' }
 }

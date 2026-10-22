@@ -91,13 +91,18 @@ A desk command's outcome reaches browsers the same way, as DX4 `op` (the desk
 control surface, §3): the bridge answers the command `queued` at once, and
 its run's `run` events — each carrying the RPC's nonce, which the bridge's
 child keeps until the run's end — become `op` messages, owed as compactions
-are. The command's id is kept on the claim until the end (`op_id`), so an
-end the stream did not bring (it came while the daemon was stopped, or
-between two of its readers) is read from the child's kept file, where the
-end is kept beside the command's answer. A `/reload-plugins` reloads the
-bridge mod, whose successor says nothing of the run: it ends when the
-session's bridge answers from another child (`effect`), or fails at
-RELOAD_WAIT_S. A hub whose welcome does not list `op` is sent none.
+are. The command's name and arguments are kept on the claim before it goes
+(`op_name`, `op_args`, and for a reload the child that takes it,
+`op_child`), and its id once the bridge answered (`op_id`), until the end;
+a claim the daemon stopped between the two is reconciled from the child's
+kept answer, and its id kept then. So an end the stream did not bring (it
+came while the daemon was stopped, or between two of its readers) is read
+from the child's kept file, where the end is kept beside the command's
+answer. A `/reload-plugins` reloads the bridge mod, whose successor says
+nothing of the run: it ends when the session's bridge answers from another
+child than the one its start names (`effect`), or fails at RELOAD_WAIT_S —
+one from `sminos command` too, which carries no nonce, tracked by its start.
+A hub whose welcome does not list `op` is sent none.
 
 Checks 1-6 and the ledger's lookup run on the uplink's main thread, which
 alone may call sminos (its caches are module globals); the digest, the kind,
@@ -648,14 +653,20 @@ class Rpcs:
                 child = [os.stat(path).st_ino, status.get("pid")]
             except OSError:
                 pass
+        try:
+            # Before it goes: a restart that finds the claim answered by the
+            # child knows what ran, and which child a reload replaces.
+            self.note(nonce, {"op_name": name, "op_args": text, **({"op_child": child} if child else {})})
+        except OSError as e:
+            log("command %s: what it runs could not be kept in the ledger (%s)" % (nonce, e))
         out, cid = command(path, {"op": "command", "name": name, "args": text, "rpc": nonce, "from": "desk"})
         outcome = commanded(out)
         if outcome["state"] != "done":
+            self.forget(nonce, ("op_name", "op_args", "op_child"), "command")   # nothing ran: nothing follows
             return outcome
         oid = outcome["result"]["id"] or cid
-        fields = {"op_id": oid, "op_name": name, "op_args": text, **({"op_child": child} if child else {})}
         try:
-            self.note(nonce, fields)
+            self.note(nonce, {"op_id": oid})
         except OSError as e:
             log("command %s: its id %s could not be kept in the ledger (%s): an end a restart misses is not "
                 "sent" % (nonce, oid, e))
@@ -764,6 +775,16 @@ class Rpcs:
         oid = e.get("id")
         held = self.op_ids.get(oid)
         nonce = e.get("rpc") if isinstance(e.get("rpc"), str) else held["nonce"] if held else None
+        child = e.get("child") if isinstance(e.get("child"), list) else None
+        if e.get("phase") == "start" and e.get("name") == RELOAD and isinstance(oid, str):
+            # A reload is finished by its effect, whoever sent it (`sminos
+            # command` sends no nonce): tracked from its start, which names
+            # the child it replaces.
+            if held is None:
+                held = self.op_ids[oid] = {"project": pid, "session": sid, "nonce": nonce, "at": self.clock(),
+                                           "name": RELOAD, "args": e.get("args") or "", "child": child}
+            elif held["child"] is None:
+                held["child"] = child
         if nonce is not None and nonce in self.ops_ended:
             return   # its end went up already: this is another copy of it, or a start come after it
         body = {"rpc": nonce, "op": OP_OF[e["type"]], **{k: v for k, v in e.items() if k not in ("type", "rpc", "n")}}
@@ -815,6 +836,31 @@ class Rpcs:
         for oid in [o for o, op in self.op_ids.items() if now - op["at"] >= KEPT_S]:
             del self.op_ids[oid]
 
+    def rearm(self, nonce):
+        """A command claim reconciled `done` from the child's kept answer
+        (the daemon stopped after the bridge answered it and before its id
+        was kept): its id kept on the claim now, and its run followed as one
+        this daemon saw answered — its end, if the child kept it meanwhile,
+        sent at once (recover_ops)."""
+        with self.ledger.lock:
+            e = self.ledger.entries.get(nonce)
+            if e is None or not e.get("session"):
+                return
+            answered = (bridge.load_kept(e["session"]).get("rpcs") or {}).get(nonce) or {}
+            oid = (answered.get("result") or {}).get("id")
+            if not isinstance(oid, str) or not oid:
+                return
+            end = answered["end"] if isinstance(answered.get("end"), dict) else {}
+            e = {**e, "op_id": oid, "op_name": e.get("op_name") or end.get("name"),
+                 "op_args": e["op_args"] if "op_args" in e else end.get("args") or ""}
+            try:
+                self.ledger.change(nonce, e)
+            except OSError as err:
+                log("command %s, reconciled: its id %s could not be kept in the ledger (%s)" % (nonce, oid, err))
+        child = e.get("op_child")
+        self.op_ids[oid] = {"project": e.get("project"), "session": e["session"], "nonce": nonce, "at": e["at"],
+                            "name": e["op_name"], "args": e["op_args"], "child": child if isinstance(child, list) else None}
+
     def restore_ops(self):
         """The commands this daemon issued whose end has not gone up, as
         their claims keep them (`op_id`): what a restart relays under their
@@ -831,12 +877,12 @@ class Rpcs:
         """Outcomes whose ledger write failed, written again; then claims no
         worker holds: answered from their trace, or `interrupted` once no
         trace can come any more (main thread: it reads the seats and the
-        bridges' kept files). A claimed Resume whose job is kept, and does
+        bridges' kept files); a command so answered is followed to its end
+        (rearm, recover_ops). A claimed Resume whose job is kept, and does
         not hold the session, has the harness asked once, on a worker,
         whether that job is a copy (check_copy)."""
         now = self.clock()
         self.next_reconcile = now + RECONCILE_EVERY
-        self.recover_ops()
         for nonce, outcome in list(self.unwritten.items()):
             try:
                 self.ledger.answer(nonce, outcome)
@@ -867,6 +913,9 @@ class Rpcs:
                 self.unwritten[nonce] = outcome
                 continue
             log("%s %s, claimed before a stop, reconciled: %s" % (e.get("rpc"), nonce, outcome["state"]))
+            if e.get("rpc") == "command" and outcome["state"] == "done":
+                self.rearm(nonce)
+        self.recover_ops()
 
     def check_copy(self, nonce, e):
         """A claimed Resume's kept job, asked of the harness (a worker: it

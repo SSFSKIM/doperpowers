@@ -44,6 +44,7 @@ import test_policy_requests as tpr  # noqa: E402
 import sminos  # noqa: E402
 import sminos_bridge as bridgemod  # noqa: E402
 import sminos_codes as codes  # noqa: E402
+import sminos_plane as plane  # noqa: E402
 import sminos_policy as policy  # noqa: E402
 import sminos_requests as requests  # noqa: E402
 import sminos_rpc as rpcs  # noqa: E402
@@ -915,6 +916,78 @@ class Checks(unittest.TestCase):
                          [(asked["nonce"], "end", "while-down")])
         self.assertNotIn("op_id", self.ledger()[asked["nonce"]], "forgotten once it went")
         self.assertEqual(self.op_messages(), got, "and sent once")
+
+    def test_l_a_command_claimed_before_a_stop_is_reconciled_and_its_end_still_goes_up(self):
+        """A8, the narrowest window: the daemon stops after the bridge
+        answered the command and before its id was kept on the claim. The
+        restart reconciles the claim from the child's kept answer, keeps the
+        command's id on it, and sends the end the child kept meanwhile."""
+        self.following()
+        self.mod.hold_runs = True
+        asked = self.send("command", {"session": self.bridged.sid, "name": "rename", "args": "in-the-gap"})
+        self.assertEqual(self.outcome(asked)["state"], "done")
+        cid = self.mod.ops("command")[-1]["id"]
+        path = os.path.join(os.environ["SMINOS_HOME"], "daemon", rpcs.LEDGER_FILE)
+        entries = self.ledger()
+        e = entries[asked["nonce"]]
+        self.assertEqual((e.get("op_name"), e.get("op_args")), ("rename", "in-the-gap"), "kept before the command went")
+        entries[asked["nonce"]] = {k: v for k, v in e.items()
+                                   if k not in ("op_id", "outcome", "done_at", "acked")}   # the claim the stop left
+        sminos.write_json(path, entries)
+        self.mod.post(*self.mod.held_runs)
+        kept = lambda: ((bridgemod.load_kept(self.bridged.sid).get("rpcs") or {}).get(asked["nonce"]) or {}).get("end")
+        self.assertTrue(wait_for(kept), "the child kept the end beside the answer")
+        self.r = rpcs.Rpcs(KEY, "testhost", clock=lambda: self.clock[0])   # the restart reconciles the claim
+        self.r.kinds = frozenset({"op"})
+        self.frames = []
+        self.assertEqual(self.outcome(asked), {"state": "done", "result": {"queued": True, "route": "run", "id": cid}})
+        got = wait_for(lambda: self.op_messages())
+        self.assertTrue(got, "the end, read from the bridge's file")
+        self.assertEqual([(m["body"]["rpc"], m["body"]["phase"], m["body"]["id"]) for m in got],
+                         [(asked["nonce"], "end", cid)])
+        self.assertNotIn("op_id", self.ledger()[asked["nonce"]], "and forgotten once it went")
+
+    def test_l_a_reload_from_the_cli_is_finished_by_the_child_that_replaces_its_bridge(self):
+        """`sminos command <member> reload-plugins` sends no nonce: its start,
+        relayed by the child it replaces and naming it, is tracked by session,
+        and its end is the effect — the session's bridge answering from the
+        child that replaced that one (here a real one: the child stopped, a
+        new one spawned, as a module reload does)."""
+        session = tpr.Session(self.root)
+        mod = Mod(session.sid)
+        self.addCleanup(session.end)
+        sminos.forget_caches()
+        reqs = requests.Requests(KEY, "testhost")
+        reqs.follow({session.sid: self.pid})
+        self.addCleanup(reqs.close)
+        self.assertTrue(wait_for(lambda: reqs.take() or session.sid in reqs.synced))
+        self.r.kinds = frozenset({"op"})
+        status, out = bridgemod.request(mod.sock, "POST", "/command?wait=5000", {"op": "command", "name": "reload-plugins"})
+        self.assertEqual((status, out["ok"]), (200, True))
+        starts = wait_for(lambda: [m for m in self.op_messages(reqs) if m["body"]["phase"] == "start"])
+        self.assertTrue(starts, "its start, relayed")
+        old = starts[0]["body"]["child"]
+        self.assertEqual(starts[0]["body"]["rpc"], None)
+        bridges = plane.Bridges()
+        now = [0.0]
+
+        def answering():
+            now[0] += plane.BRIDGE_RECHECK
+            bridges.answers(session.sid, now[0])
+            return bridges.answering(session.sid)
+
+        self.assertTrue(wait_for(lambda: answering() == old), "the plane finds the child that took it answering")
+        self.r.effects(bridges.answering)
+        self.assertEqual([m["body"]["phase"] for m in self.op_messages()], ["start"], "not done while it answers")
+        mod.stop()
+        mod = Mod(session.sid)    # the reloaded module's child
+        self.addCleanup(mod.stop)
+        self.assertTrue(wait_for(lambda: answering() not in (None, old)), "another child answers")
+        self.r.effects(bridges.answering)
+        end = self.op_messages()[-1]["body"]
+        self.assertEqual({k: end[k] for k in ("rpc", "phase", "id", "name", "settled", "readback")},
+                         {"rpc": None, "phase": "end", "id": starts[0]["body"]["id"], "name": "reload-plugins",
+                          "settled": {"ok": True}, "readback": {"how": "effect"}})
 
     def test_l_reload_plugins_is_done_by_another_child_answering_or_fails_at_its_bound(self):
         reqs = self.following()

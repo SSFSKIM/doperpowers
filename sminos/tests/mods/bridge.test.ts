@@ -10,6 +10,9 @@ import {
   PANEL_REASON,
   READBACK_WAIT_MS,
   READBACK_WINDOW_MS,
+  RELOAD_HOLD_MS,
+  RELOAD_TAKEN_WAIT_MS,
+  RELOADING_REASON,
   SELF_REASON,
   STOPPED_WAIT_MS,
   UNKNOWN_REASON,
@@ -5458,6 +5461,11 @@ describe('the desk: routes (the 2.1.307 table)', () => {
     expect(route('mcp', 'enable a b')).toMatchObject({ refusal: { code: 'bad-args' } })
   })
 
+  test('the forms come before the class: arguments a refusing route does not take are bad-args, and a pattern miss still takes `otherwise`', async () => {
+    expect(route('clear', 'extra')).toEqual({ refusal: { code: 'bad-args', reason: '/clear takes no arguments' } })
+    expect(route('goal', 'the tests pass')).toEqual({ refusal: { code: 'disabled', reason: 'comes with M1' } })
+  })
+
   test("every other class is refused with its reason (A4's words), and what M1 and later bring is disabled", async () => {
     expect(route('usage')).toEqual({ refusal: { code: 'panel', reason: PANEL_REASON } })
     expect(PANEL_REASON).toBe("opens a panel in the terminal; it would hold the session's queue")
@@ -5487,7 +5495,10 @@ describe('the desk: routes (the 2.1.307 table)', () => {
         [e.bare, ''],
         [e.withArgs, 'x'],
       ] as const) {
-        if (r !== undefined && refusing.has(r.class) && (r.forms === undefined || r.forms.args !== 'required' || args !== '')) {
+        const takes = (f: NonNullable<typeof r>['forms']) =>
+          f === undefined ||
+          ((f.args !== 'required' || args !== '') && (f.args !== 'none' || args === '') && (f.pattern === undefined || args === '' || new RegExp(`^(?:${f.pattern})$`).test(args)))
+        if (r !== undefined && refusing.has(r.class) && takes(r.forms)) {
           expect(route(e.name, args)).toMatchObject({ refusal: { code: r.class } })
           seen++
         }
@@ -5722,16 +5733,101 @@ describe('the desk: command', () => {
     expect(answerOf(h, next)).toMatchObject({ code: 'stopped' })
   })
 
-  test('a reload-plugins run says its start and nothing more, and holds no desk command behind it', async () => {
-    const h = await desk()
-    const id = await queued(h, { name: 'reload-plugins' })
-    expect(answerOf(h, id)).toMatchObject({ ok: true, result: { queued: true, route: 'run' } })
-    const next = await queued(h, { name: 'color', args: 'red' })
-    expect(h.runs.map((r) => r.args.command)).toEqual(['reload-plugins', 'color'])
-    expect(answerOf(h, next)).toMatchObject({ ok: true })
+  /** Releases every post, those the releases bring on included. */
+  const releaseAll = async (h: Awaited<ReturnType<typeof desk>>) => {
+    for (let i = 0; i < h.posts.length; i++) {
+      h.posts[i]!.release()
+      await h.settle()
+    }
+  }
+
+  test("a reload-plugins is called only once its answer and its run's start have reached the child; the module it replaces says nothing more (A9)", async () => {
+    const h = harness({ version: V307, commands: COMMANDS, hold: true })
+    await h.ready()
+    await releaseAll(h)
+    const id = send(h, { name: 'reload-plugins' })
+    await h.settle()
+    expect(h.runs).toEqual([])
+    await releaseAll(h)
+    expect(lifecycle(h, id)).toEqual(['result:ok', 'run:start'])
+    expect(h.runs.map((r) => r.args.command)).toEqual(['reload-plugins'])
+    // The engine replaces the module: the child answers this instance's posts 409, and it stops.
     h.runs[0]!.resolve({})
     await h.settle()
-    expect(h.ofType('run').filter((e) => e.id === id).map((e) => e.phase)).toEqual(['start'])
+    const rename = send(h, { name: 'rename', args: 'x' })
+    await h.settle()
+    h.posts.at(-1)!.refuse()
+    await h.settle()
+    expect(h.runs.map((r) => r.args.command)).toEqual(['reload-plugins'])
+    expect(h.events().filter((e) => e.id === rename && e.type === 'run')).toEqual([])
+    expect(lifecycle(h, id)).toEqual(['result:ok', 'run:start'])
+  })
+
+  test('a reload whose start did not reach the child is not run, and the desk goes on', async () => {
+    const h = harness({ version: V307, commands: COMMANDS, hold: true })
+    await h.ready()
+    await releaseAll(h)
+    const id = send(h, { name: 'reload-plugins' })
+    await h.settle()
+    // The post carrying its answer and its start is lost.
+    const carrying = h.posts.at(-1)!
+    expect(carrying.events.filter((e) => e.id === id).map((e) => e.type)).toEqual(['result', 'run'])
+    carrying.fail()
+    await h.settle()
+    expect(h.runs).toEqual([])
+    send(h, { name: 'color', args: 'red' })
+    await h.settle()
+    expect(h.runs.map((r) => r.args.command)).toEqual(['color'])
+  })
+
+  test('a reload whose start the child has not taken within its wait is not run either', async () => {
+    const h = harness({ version: V307, commands: COMMANDS, hold: true })
+    await h.ready()
+    await releaseAll(h)
+    send(h, { name: 'reload-plugins' })
+    await h.settle()
+    await h.fire(RELOAD_TAKEN_WAIT_MS)
+    expect(h.runs).toEqual([])
+    send(h, { name: 'color', args: 'red' })
+    await h.settle()
+    expect(h.runs.map((r) => r.args.command)).toEqual(['color'])
+  })
+
+  test('a desk command sent while a reload is queued or running is refused, never run through the module the reload replaces', async () => {
+    const h = await desk()
+    await queued(h, { name: 'color', args: 'red' })
+    const reload = await queued(h, { name: 'reload-plugins' })
+    expect(answerOf(h, reload)).toMatchObject({ ok: true, result: { queued: true, route: 'run', id: reload } })
+    const behind = await h.command({ op: 'command', name: 'rename', args: 'x' })
+    expect(behind).toMatchObject({ ok: false, error: RELOADING_REASON })
+    expect(behind.code).toBeUndefined()
+    h.runs[0]!.resolve({})
+    await h.settle()
+    await h.fire(READBACK_WAIT_MS)
+    expect(h.runs.map((r) => r.args.command)).toEqual(['color', 'reload-plugins'])
+    expect(await h.command({ op: 'command', name: 'rename', args: 'y' })).toMatchObject({ ok: false, error: RELOADING_REASON })
+    h.runs[1]!.resolve({})
+    await h.settle()
+    expect(h.ofType('run').filter((e) => e.id === reload).map((e) => e.phase)).toEqual(['start'])
+    // The engine kept this module after all: the desk is held back RELOAD_HOLD_MS, then goes on.
+    await h.fire(RELOAD_HOLD_MS)
+    await queued(h, { name: 'rename', args: 'z' })
+    expect(h.runs.map((r) => r.args.command)).toEqual(['color', 'reload-plugins', 'rename'])
+  })
+
+  test("an Esc's refusal of a reload ends its run, stopped, and frees the desk", async () => {
+    const h = await desk()
+    const id = await queued(h, { name: 'reload-plugins' })
+    h.runs[0]!.reject(new Error('the session was stopped and nobody has sent input since'))
+    await h.settle()
+    expect(h.ofType('run').filter((e) => e.id === id).at(-1)).toMatchObject({
+      phase: 'end',
+      settled: { ok: false, error: 'the session was stopped and nobody has sent input since', code: 'stopped' },
+      readback: { how: 'none' },
+    })
+    const next = await queued(h, { name: 'color', args: 'red' })
+    expect(answerOf(h, next)).toMatchObject({ ok: true })
+    expect(h.runs.map((r) => r.args.command)).toEqual(['reload-plugins', 'color'])
   })
 
   test('a refused command runs nothing and posts no run event: a panel, a routed command, an unknown name, a malformed op (A4)', async () => {

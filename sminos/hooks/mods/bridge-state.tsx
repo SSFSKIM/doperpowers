@@ -353,6 +353,8 @@ export type BridgeState = {
   deskQueue: DeskRun[]
   /** The readback looked for now, if any. */
   readback?: ReadbackWatch
+  /** Events a caller waits to see posted (bridge-stream, emitTaken): settled true once the child took one, false once it is lost. */
+  taking: Map<BridgeEvent, (isTaken: boolean) => void>
 }
 
 const fresh = (): BridgeState => ({
@@ -385,6 +387,7 @@ const fresh = (): BridgeState => ({
   deliveredRows: [],
   refusals: [],
   deskQueue: [],
+  taking: new Map(),
   transitions: 0,
   isUnreadSaid: false,
   generation: 0,
