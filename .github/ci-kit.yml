@@ -142,6 +142,7 @@ gates:
     paths: ["devcloud/**", "devenv/**", ".github/**"]
 
   - name: devcloud-image
+    build_cache: gha
     run: |
       for i in 1 2 3; do
         timeout 300 npm i -g bun && break
@@ -152,11 +153,13 @@ gates:
     paths: ["devcloud/**", "devenv/**", ".github/**"]
 
   - name: devcloud-host
+    build_cache: gha
     run: DEVCLOUD_PART=host bash devcloud/tests/run.sh
     timeout: 30
     paths: ["devcloud/**", "devenv/**", ".github/**"]
 
   - name: devcloud-systemd
+    build_cache: gha
     run: DEVCLOUD_PART=systemd bash devcloud/tests/run.sh
     timeout: 30
     paths: ["devcloud/**", "devenv/**", ".github/**"]
