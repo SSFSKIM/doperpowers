@@ -130,6 +130,18 @@ class SecretManagerTest(unittest.TestCase):
         self.assertEqual(len(self.assertions), 1)
         self.assertEqual(self.gets, [], "the secret request never started")
 
+    def test_a_response_that_closes_before_its_length_is_a_driver_error(self):
+        import http.client
+        response = mock.MagicMock()
+        response.__enter__.return_value.read.side_effect = http.client.IncompleteRead(b"{", 100)
+        with mock.patch.object(gsm.urllib.request, "urlopen", return_value=response):
+            with self.assertRaisesRegex(DriverError, "token exchange failed .*IncompleteRead"):
+                gsm.SecretManager(self.seed, "example-project").access("hcloud-token")
+            sm = gsm.SecretManager(self.seed, "example-project")
+            sm._token = "made-up"
+            with self.assertRaisesRegex(DriverError, "did not answer for hcloud-token .*IncompleteRead"):
+                sm.access("hcloud-token")
+
     def test_a_missing_secret_is_a_failure_naming_it(self):
         with self.assertRaises(DriverError) as caught:
             gsm.SecretManager(self.seed, "example-project").access("missing-one")

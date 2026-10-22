@@ -198,10 +198,14 @@ def seed(r):
 
 
 def _fetch_text(r, name):
+    return fetch_text(r.tokens, name)
+
+
+def fetch_text(tokens, name):
     """Secret `name`'s latest value as text, one trailing newline dropped,
     known to every log from here on."""
     try:
-        value = r.tokens.access(name)
+        value = tokens.access(name)
     except AccessError as error:
         raise StepError(f"{name}: {error}") from None
     if value is None:
@@ -341,28 +345,40 @@ def _leave_for_rejoin(r, ephemeral):
 
 def _remove_old_nodes(r, tok=None, sleep=time.sleep):
     """The old nodes a logout left listed, removed through the API before an
-    `up` that would otherwise be given `<name>-1`. One removed, or found
-    gone, is forgotten; one that is not stays recorded for a later run, and
-    the join goes ahead all the same. Returns what became of them, or None
-    when none waits."""
-    waiting = nodekind.pending()
+    `up` that would otherwise be given `<name>-1` (`remove_pending`). Returns
+    what became of them, or None when none waits."""
+    if not nodekind.pending():
+        return None
+    status_ = _status()
+    held = None if status_ is None else (status_.get("Self") or {}).get("ID") or ""
+    return remove_pending(lambda: tok or tsapi.token(r.ts_secret), held, sleep=sleep)
+
+
+def remove_pending(token, held, path=None, sleep=time.sleep):
+    """Every node id the record holds as pending removal, removed through the
+    API: the rejoin's old nodes, and the departure's and the release's own
+    node after their logout (§4.2, §6.5). One removed, or found gone, is
+    forgotten; one that is not stays recorded for a later run. `token` gives
+    the API token, asked only when a node waits; `held` is the id of the node
+    the daemon holds ("" for none), None when the status could not be read.
+    Never the node held: a leave whose logout failed may have left its id
+    here, and the lease since turned back to its kind; and nothing is removed
+    while the node held is unknown. Returns what became of them, or None when
+    none waits."""
+    waiting = nodekind.pending(path)
     if not waiting:
         return None
-    # Never the node held: a leave whose logout failed may have left its id
-    # here, and the lease since turned back to its kind.
-    status_ = _status()
-    if status_ is None:
+    if held is None:
         return f"the removal of {', '.join(waiting)} waits: tailscale status cannot be read to name the node held"
-    held = (status_.get("Self") or {}).get("ID")
     cancelled = []
     if held in waiting:
-        nodekind.removed(held)
+        nodekind.removed(held, path)
         waiting.remove(held)
         cancelled.append(f"the removal of {held} is cancelled: it is the node held, kept")
     if not waiting:
         return cancelled[0]
     try:
-        tok = tok or tsapi.token(r.ts_secret)
+        tok = token()
         if not tok.can_delete:
             raise StepError("the Tailscale OAuth client may not remove nodes (it lacks the devices:core scope)")
     except StepError as error:
@@ -372,7 +388,7 @@ def _remove_old_nodes(r, tok=None, sleep=time.sleep):
         for attempt in range(1, DELETE_TRIES + 1):
             try:
                 said.append(f"the old node {old} {tsapi.delete_node(tok, old)} through the API")
-                nodekind.removed(old)
+                nodekind.removed(old, path)
                 break
             except StepError as error:
                 if attempt == DELETE_TRIES:

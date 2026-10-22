@@ -16,7 +16,7 @@ from driver import adopt, adopt_host, compose, ops, reaper
 from driver.errors import DriverError
 from driver.ssh import Result
 
-from driver_fixtures import KEY, NOW, DriverBase, FakeRemote, status_json
+from driver_fixtures import KEY, NOW, DriverBase, FakeRemote, status_json, ts_device
 
 ADDRESS = "203.0.113.50"
 NAME = "dc-adp-7f3a"
@@ -599,6 +599,37 @@ class DownTest(AdoptBase):
         with self.assertRaises(DriverError):
             ops.down(self.ctx, NAME, force=True)
         self.assertIsNotNone(self.record())
+
+
+class ReleaseRemovesTheNodeTest(AdoptBase):
+    """What the tailnet still lists of an adopted machine goes once its
+    release is verified (board #118): its own removal after the logout may
+    have failed, and a release at the lease end has no driver."""
+
+    def setUp(self):
+        super().setUp()
+        self.tailnet_api.devices_listed = [ts_device(NAME, "nAdopted1CNTRL"), ts_device(NAME, "nMine1CNTRL", tags=())]
+
+    adopted = DownTest.adopted
+
+    def test_a_verified_release_removes_the_node_and_names_it(self):
+        self.adopted()
+        self.assertEqual(ops.down(self.ctx, NAME, force=False), 0)
+        self.assertEqual(self.tailnet_api.deleted(), ["nAdopted1CNTRL"])
+        self.assertIn("its tailnet node nAdopted1CNTRL removed through the Tailscale API", self.out.getvalue())
+
+    def test_a_machine_its_own_lease_released_has_its_node_removed_too(self):
+        self.adopted()
+        self.remote.m.update(released=True, tailnet=False, public=True, descriptor=None)
+        self.assertEqual(ops.down(self.ctx, NAME, force=False), 0)
+        self.assertEqual(self.tailnet_api.deleted(), ["nAdopted1CNTRL"])
+
+    def test_a_release_not_verified_removes_no_node(self):
+        self.adopted()
+        self.remote.m["release_code"] = 4
+        with self.assertRaises(DriverError):
+            ops.down(self.ctx, NAME, force=False)
+        self.assertEqual(self.tailnet_api.calls, [])
 
 
 class ReaperTest(AdoptBase):

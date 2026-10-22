@@ -17,6 +17,7 @@ FIXTURES = _path.DEVCLOUD / "tests" / "fixtures"
 FAKE_PROVIDER = FIXTURES / "provider"
 NOW = 1_792_000_000
 TOKEN = "made-up-provider-token-Zq81Lr5Tx0Kp"
+TS_CLIENT = "tskey-client-kmadeup-" + "made-up" * 3
 KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMadeUpDriverKeyForTestsOnly000000000000 devcloud-testmac"
 
 DRIVER_TOML = """\
@@ -61,6 +62,49 @@ class FakeSecrets:
             from driver.errors import DriverError
             raise DriverError(1, f"Secret Manager has no secret {secret_id}")
         return self.values[secret_id]
+
+
+class FakeTailnetApi:
+    """The Tailscale API as the driver's tailnet.remove sees it: the devices
+    it lists, and each call in order."""
+
+    def __init__(self, devices=None, scopes=("auth_keys", "devices:core")):
+        self.devices_listed = list(devices or [])
+        self.scopes = list(scopes)
+        self.calls = []
+        self.fail = {}              # "token" | "devices" | a node id -> the StepError message
+
+    def _maybe_fail(self, what):
+        if what in self.fail:
+            from devcloudlib.proc import StepError
+            raise StepError(self.fail[what])
+
+    def token(self, secret, timeout):
+        self.calls.append(("token", secret))
+        self._maybe_fail("token")
+        from devcloudlib import tsapi
+        return tsapi.Token("made-up-access-token", self.scopes)
+
+    def devices(self, tok, timeout):
+        self.calls.append(("devices",))
+        self._maybe_fail("devices")
+        return [dict(d) for d in self.devices_listed]
+
+    def delete_node(self, tok, node_id, timeout):
+        self.calls.append(("delete", node_id))
+        self._maybe_fail(node_id)
+        before = len(self.devices_listed)
+        self.devices_listed = [d for d in self.devices_listed if d.get("nodeId") != node_id]
+        return "removed" if len(self.devices_listed) < before else "already gone"
+
+    def deleted(self):
+        return [c[1] for c in self.calls if c[0] == "delete"]
+
+
+def ts_device(name, node_id, tags=("tag:devcloud",), hostname=None):
+    """A device as the API lists it."""
+    return {"nodeId": node_id, "hostname": hostname or name, "name": f"{name}.example-tailnet.ts.net",
+            "tags": list(tags)}
 
 
 class FakeRemote:
@@ -146,7 +190,8 @@ class DriverBase(unittest.TestCase):
         self.seed.write_text('{"type": "service_account"}')
         self.state_dir = self.tmp / "state"
         self.paths = context.Paths(profile=self.profile_dir, state=self.state_dir, seed=self.seed)
-        self.secrets = FakeSecrets()
+        self.secrets = FakeSecrets(dict(FakeSecrets().values, **{"ts-oauth": TS_CLIENT + "\n"}))
+        self.tailnet_api = FakeTailnetApi()
         self.remote = FakeRemote()
         self.clock = Clock()
         self.tailnet_nodes = []
@@ -178,7 +223,8 @@ class DriverBase(unittest.TestCase):
                         sleep=self.clock.sleep, out=self.out, err=self.err, machine="testmac",
                         tailnet=lambda: list(self.tailnet_nodes), sminos_machines=self.sminos_machines,
                         creator=lambda: ("@abcd1234", "abcd1234"), env={"PATH": os.environ["PATH"]},
-                        key_pushed=lambda: True, host_file=lambda project: (None, "no devenv/host.toml here"))
+                        key_pushed=lambda: True, host_file=lambda project: (None, "no devenv/host.toml here"),
+                        tailnet_api=self.tailnet_api)
         defaults.update(kw)
         return context.Context(**defaults)
 

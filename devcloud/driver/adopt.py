@@ -24,7 +24,7 @@ import pathlib
 import re
 import shlex
 
-from . import compose, hostctl, names, reaper
+from . import compose, hostctl, names, reaper, tailnet
 from .errors import CAP, FAILED, USAGE, DriverError
 from .hostctl import Host
 from .profile import duration, format_duration
@@ -336,7 +336,7 @@ def down(ctx, record, force):
     elif _answers(ctx, record.address, host):
         target = record.address
     elif _released(ctx, record, wait=0):
-        note = _desk_note(ctx, record, left_desk=False)
+        note = _desk_note(ctx, record, left_desk=False) + tailnet.remove(ctx, record.name)
         remove(ctx, record)
         ctx.say(f"{record.name}: already released (it keeps running at {record.address}); its record is "
                 f"removed{note}")
@@ -370,7 +370,9 @@ def down(ctx, record, force):
     if not _released(ctx, record, wait=VERIFY_WAIT):
         raise DriverError(FAILED, f"{record.name} was released, but a check as {record.user}@{record.address} did "
                                   "not confirm it: the adoption record stays; down again once it answers")
-    note = _desk_note(ctx, record, outcome.left_desk)
+    # Released and verified: what the tailnet still lists of it goes (its own
+    # removal, after the logout, may have failed; board #118).
+    note = _desk_note(ctx, record, outcome.left_desk) + tailnet.remove(ctx, record.name)
     remove(ctx, record)
     ctx.say(f"{record.name}: released; the machine keeps running at {record.address} ({record.user} reaches it "
             f"as before){note}")

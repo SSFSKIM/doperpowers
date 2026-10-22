@@ -11,6 +11,7 @@ reads at a stand-in, as on hosts."""
 
 import base64
 import hashlib
+import http.client
 import json
 import os
 import pathlib
@@ -146,7 +147,7 @@ class SecretManager:
             except urllib.error.HTTPError as error:
                 error.close()
                 raise DriverError(FAILED, f"the seed's token exchange was refused (HTTP {error.code})") from None
-            except (urllib.error.URLError, OSError, ValueError) as error:
+            except (urllib.error.URLError, http.client.HTTPException, OSError, ValueError) as error:
                 raise DriverError(FAILED, f"the seed's token exchange failed ({type(error).__name__})") from None
             if not self._token:
                 raise DriverError(FAILED, "the seed's token exchange returned no token")
@@ -165,7 +166,7 @@ class SecretManager:
         except urllib.error.HTTPError as error:
             error.close()
             raise DriverError(FAILED, f"Secret Manager refused {secret_id} (HTTP {error.code})") from None
-        except (urllib.error.URLError, OSError, ValueError) as error:
+        except (urllib.error.URLError, http.client.HTTPException, OSError, ValueError) as error:
             raise DriverError(FAILED, f"Secret Manager did not answer for {secret_id} ({type(error).__name__})") from None
         try:
             return base64.b64decode(body["payload"]["data"], validate=True).decode()

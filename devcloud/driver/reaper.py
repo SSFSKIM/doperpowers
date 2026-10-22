@@ -25,7 +25,7 @@ import plistlib
 import subprocess
 import sys
 
-from . import caps, compose, hostctl, images as images_mod
+from . import caps, compose, hostctl, images as images_mod, tailnet
 from .errors import FAILED, DriverError, NotOwned, Spent
 
 GRACE = 15 * 60                 # past the label's lease before anything is done
@@ -166,12 +166,15 @@ def desk_note(ctx, vm, left_desk):
 
 
 def _delete(ctx, entry, reason, left_desk, decided=True, bounded=False):
+    """The fenced delete; for a VM, then whatever the tailnet still lists of
+    its host (board #118), each node id removed named in the log line."""
     vm = entry.vm
     if not ctx.delete(entry, decided_expires=vm["labels"].get("devcloud-expires") if decided else None,
                       decided_state=vm["state"] if decided else None):
         return False
-    log(ctx, f"deleted {vm['name']} ({entry.account.name}, id {vm['id']}): {reason}" + desk_note(ctx, vm, left_desk),
-        bounded)
+    nodes = tailnet.remove(ctx, vm["name"]) if vm["labels"].get("devcloud") == "vm" else ""
+    log(ctx, f"deleted {vm['name']} ({entry.account.name}, id {vm['id']}): {reason}" + desk_note(ctx, vm, left_desk)
+        + nodes, bounded)
     return True
 
 
