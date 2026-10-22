@@ -35,12 +35,15 @@
   devcloud ledger add <path>...
                              list credential paths before writing them (a driver's)
   devcloud vm ...            the VM driver, on a Mac (devcloud vm --help)
+  devcloud guard index [--fetch] | guard status --json
+                             build/inspect public-package evidence as the caller
   devcloud run-scrubbed -- <command>...
                              run a command with its output scrubbed of the host's values
                              (a systemd unit's ExecStart; runs as any user)
 
-Every command but status and unpushed runs as root. The jobs, lease set,
-rejoin, depart and release take the lifecycle lock (/run/devcloud/lifecycle.lock);
+Host jobs and lifecycle commands require root; guard, vm and run-scrubbed
+run as the caller. The jobs, lease set, rejoin, depart and release take the
+lifecycle lock (/run/devcloud/lifecycle.lock);
 the jobs do nothing once a departure has started."""
 import os
 import sys
@@ -61,6 +64,18 @@ if sys.argv[1:2] == ["vm"]:
         print("devcloud vm: this copy of devcloud has no driver (a host's); drive from a Mac", file=sys.stderr)
         sys.exit(6)
     sys.exit(cli.command_line(sys.argv[2:]))
+if sys.argv[1:2] == ["guard"]:
+    # User-local evidence commands also run on Macs. Preserve the caller's PATH
+    # for npm discovery and do not import the host libraries or require root.
+    helper = os.path.join(os.path.dirname(HERE), "hooks", "mods", "secrets-provenance.py")
+    if not os.path.isfile(helper):
+        # image/setup.sh installs boot/ flat. The host's existing marketplace
+        # copy supplies the helper; guard never installs or refreshes it.
+        helper = "/var/lib/devcloud/marketplaces/doperpowers/devcloud/hooks/mods/secrets-provenance.py"
+    if not os.path.isfile(helper):
+        print("devcloud guard: provenance helper is unavailable in this installation", file=sys.stderr)
+        sys.exit(1)
+    os.execv(sys.executable, [sys.executable, "-I", helper, *sys.argv[2:]])
 # The caller's PATH, for a command run-scrubbed runs as the unit gave it.
 CALLER_PATH = os.environ.get("PATH", "")
 # Root runs only system binaries: the user can write to their own PATH entries.

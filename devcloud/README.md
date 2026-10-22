@@ -46,6 +46,59 @@ in its output.
   `process.env.API_KEY`, a digit-free identifier, a call or an index). Bare hex or base64 is never a token: commit hashes and checksums
   stay readable.
 
+### Keep installed-package source readable
+
+Build an original-content index explicitly after installing or updating global
+npm packages or the gcloud SDK:
+
+```sh
+devcloud guard index --fetch
+devcloud guard status --json
+```
+
+`--fetch` downloads public exact-version checksum metadata and artifacts.
+Without it, `devcloud guard index` rebuilds offline from cached evidence. The
+command runs as your ordinary user on macOS and Linux; it installs no daemon,
+timer or automatic refresh. Status reports verified coverage and skipped-reason
+counts, not source values. Missing evidence is a coverage loss, not an error in
+your installation.
+
+For a supported native text **Read**, the guard compares the current file with
+its publicly distributed bytes and binds that evidence to this call's source
+slice. Generic secret-named constants then stay readable in both the tool
+result and its transcript row. Stored values, credential-file values,
+provider-shaped tokens and private keys are still redacted. Partial Reads are
+supported. Automatic pagination retains its companion notice when the result
+needs no redaction; rewritten Reads retain the existing notice-loss limitation.
+
+This is not a package-directory allowlist. Modified or newly generated files,
+project dependencies, caches, linked checkouts, unpublished packages and native
+binaries receive full detection. Reindexing does not adopt local changes as
+original contents. Missing/stale evidence, unsupported text, files above 16 MiB,
+a missing Python interpreter, verification timeout or saturation all fall back
+to normal scrubbing without refusing a successful Read. Verification is local,
+shares a 1.5-second deadline, and never fetches or unpacks an artifact in a hook.
+
+The exemption expires with its one matching appended result; it does not follow
+text into Bash, notes, assistant prose, compaction or a resumed session. The
+index stores metadata and digests in `$XDG_CACHE_HOME/devcloud/guard-provenance/v1`
+when an absolute XDG override is set, otherwise the ordinary user cache area.
+Python 3.9+ suffices for the standalone helper at
+`hooks/mods/secrets-provenance.py`; the devcloud CLI retains its own Python
+requirement.
+
+For an aggregate utility report (Bun required), run
+`devcloud guard index --fetch --report-corpus`, or
+`devcloud guard report-corpus` to measure the existing index without rebuilding.
+It reports detector matches, indexed original-byte equality, and preservation
+through the production tool/append hooks separately. It reads no credential
+sources and prints no paths or matched values. Its supported offset/limit
+pages are at most 64 KiB; overlong lines and other fallbacks remain in the loss
+counts. Credential protection is tested separately. The offline native probe,
+`python3 -I devcloud/tests/mods/provenance_probe.py --engine /path/to/claude`,
+uses synthetic fixtures and loopback-only networking; currently its OS network
+sandbox requires macOS. Linux native acceptance is not claimed.
+
 **Handles.** Each distinct redacted byte string gets its own:
 
     [secret:KEY]                  a stored value (the project's, where both tiers hold KEY)

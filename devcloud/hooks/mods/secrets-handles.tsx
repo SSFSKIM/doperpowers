@@ -1,4 +1,5 @@
 import { detect, keepFirst } from './secrets-detect'
+import type { CharacterRange } from './secrets-detect'
 import { isInert, isPlainCommand, isPlainPosition } from './secrets-shell'
 
 /**
@@ -149,7 +150,7 @@ export class Handles {
    * replaced by its handle, in one pass: a handle already in the text is kept
    * as it is, and nothing the pass wrote is read again.
    */
-  scrub(text: string): string {
+  scrub(text: string, genericExceptions: readonly CharacterRange[] = []): string {
     const candidates: Candidate[] = []
     for (const m of text.matchAll(HANDLE)) candidates.push({ start: m.index ?? 0, end: (m.index ?? 0) + m[0].length, rank: 0 })
     // `indexOf` per spelling: far quicker over a long output than one
@@ -159,7 +160,7 @@ export class Handles {
         candidates.push({ start: at, end: at + spelling.length, rank: 1, replace: handle })
       }
     }
-    for (const span of detect(text)) candidates.push({ ...span, rank: 2 })
+    for (const span of detect(text, genericExceptions)) candidates.push({ ...span, rank: 2 })
     if (candidates.every((c) => c.rank === 0)) return text
 
     // A handle in the text first, then known values (the longest where two
