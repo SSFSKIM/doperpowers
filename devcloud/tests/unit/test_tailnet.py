@@ -390,6 +390,18 @@ class RejoinRunTest(NodeKindBase):
         self.assertEqual(self.verbs().count("logout"), 1, "a node that had left logged out again")
         self.assertEqual(nodekind.recorded()["state"], nodekind.FAILED)
 
+    def test_an_oauth_client_that_cannot_be_fetched_is_recorded_for_the_driver(self):
+        self.joined_as(False)
+
+        def unreachable(r, name):
+            raise StepError("Secret Manager: HTTP 503")
+        with mock.patch.object(steps, "_fetch_text", unreachable):
+            self.assertEqual(self.rejoin(), 1)
+        kind = nodekind.recorded()
+        self.assertEqual((kind["ephemeral"], kind["wanted"], kind["state"], kind["name"]),
+                         (False, True, nodekind.FAILED, "devbox-a"))
+        self.assertNotIn("logout", self.verbs())
+
     def test_a_refusal_before_any_change_fails_without_trying_again(self):
         self.api.scopes = ["auth_keys"]
         self.joined_as(False)

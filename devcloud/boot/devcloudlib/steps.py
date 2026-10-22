@@ -335,7 +335,8 @@ def _rejoin_once(r, joined, sleep=time.sleep):
         if not (joined and _joined()):
             raise
         detail = proc.KNOWN.scrub(str(error))
-        nodekind.record(nodekind.recorded().get("ephemeral"), nodekind.wanted(r.desc), nodekind.FAILED, detail)
+        was = nodekind.recorded()
+        nodekind.record(was.get("ephemeral"), nodekind.wanted(r.desc), nodekind.FAILED, detail, name=was.get("name"))
         return f"already joined; not rejoined as {nodekind.name(nodekind.wanted(r.desc))}: {detail}"
 
 
@@ -897,7 +898,12 @@ def rejoin(sleep=time.sleep):
                     return 0
                 r.ts_secret = _fetch_text(r, r.desc.ts_secret)
             except (StepError, DescriptorError) as error:
-                _say(f"rejoin: failed — {proc.KNOWN.scrub(str(error))}")
+                detail = proc.KNOWN.scrub(str(error))
+                if r.desc is not None:
+                    # Nothing changed; the driver waiting on the record reads why.
+                    nodekind.record(nodekind.recorded().get("ephemeral"), nodekind.wanted(r.desc), nodekind.FAILED,
+                                    detail, name=nodekind.recorded().get("name"))
+                _say(f"rejoin: failed — {detail}")
                 return 1
             for attempt in range(1, REJOIN_TRIES + 1):
                 try:
