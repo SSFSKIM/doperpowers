@@ -187,8 +187,20 @@ runs the boot at every start. `setup.sh` starts with `image/packages.sh`,
 the packages and tools, which takes no input; `image/Dockerfile` runs its
 three parts (apt, gcloud, tools) as a layer each, keyed on `packages.sh` alone
 so that a change anywhere else in `devcloud/` reuses them from a build cache,
-whose layers a warm build pulls side by side, and then the rest of `setup.sh`
-(`DEVCLOUD_PACKAGES=installed`).
+whose layers a warm build pulls side by side. `image/fetch-claude.sh` gets its
+own script-only layer: it downloads the native release for the image's
+architecture from Anthropic's release service and verifies its SHA256 against
+`manifest.json`. Then `setup.sh` runs with no network (`DEVCLOUD_PACKAGES=installed`).
+It seeds the verified binary in the user's native versions directory and runs
+that binary's `install VERSION`; the native installer owns the launcher and
+configuration, and the user's updater remains enabled. VM bakes and adopt run
+the same fetch before setup; a failed fetch or checksum fails the recipe.
+
+The weekly CI cache refreshes the release alongside the packages. During a
+release-service outage, a warm build reuses the download layer even when other
+`devcloud/` files change; a cold build still needs the release service and fails
+loudly if it cannot fetch. `DEVCLOUD_CLAUDE_RELEASE_URL` overrides the release
+base URL when running `fetch-claude.sh` (for example, a refusing test endpoint).
 
     docker build -t devcloud -f devcloud/image/Dockerfile \
       --build-arg DEVCLOUD_USER=<user> --build-arg DEVCLOUD_UID=<uid> --build-arg DEVCLOUD_HOME=<home> .

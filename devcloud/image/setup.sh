@@ -31,9 +31,12 @@ fi
 
 plugin="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-# The packages (image/packages.sh): image/Dockerfile runs them as layers of
-# their own and says so; everywhere else they are this run's first step.
-[[ "${DEVCLOUD_PACKAGES:-}" == installed ]] || bash "$plugin/image/packages.sh"
+# Docker runs the packages and native release fetch as separate cached layers.
+# VM bake/adopt use the same recipe, fetching before the user-local install.
+if [[ "${DEVCLOUD_PACKAGES:-}" != installed ]]; then
+  bash "$plugin/image/packages.sh"
+  bash "$plugin/image/fetch-claude.sh"
+fi
 
 # The user: the Mac's name, uid and home, zsh as the login shell. Ubuntu's
 # image ships an `ubuntu` user at uid 1000, which gives way when it is in the
@@ -62,21 +65,24 @@ install -m 0440 -o root -g root "$sudoers" /etc/sudoers.d/devcloud-user
 rm -f "$sudoers"
 visudo -c >/dev/null
 
-# Claude Code, the native installer, as the user; on every PATH through a link.
-# Its own temporary directory, removed after: the installer leaves a socket behind.
-# claude.ai's downloads fail in bursts (HTTP 429, a reset HTTP/2 stream), some
-# outlasting two minutes, so a failed install, the fetch or the installer's
-# own download, is tried again over almost four minutes, then fails the run
-# rather than leaving a host without claude.
+# Seed the verified release at the documented native versions path. With that
+# exact version present, `install VERSION` needs no network: the native installer
+# creates the launcher and configuration itself, as the user who will update it.
+# Docker enforces this with --network=none. Keep its sockets in a disposable tmp.
 scratch="$(runuser -u "$DEVCLOUD_USER" -- mktemp -d)"
-for delay in 15 30 60 120 stop; do
-  runuser -u "$DEVCLOUD_USER" -- env HOME="$DEVCLOUD_HOME" TMPDIR="$scratch" \
-    bash -c 'set -o pipefail; curl -fsSL https://claude.ai/install.sh | bash' && break
-  [[ $delay != stop ]] || { echo "Claude Code's install failed 5 times" >&2; exit 1; }
-  echo "Claude Code's install failed; again in $delay s" >&2
-  sleep "$delay"
-done
-rm -rf "$scratch"
+trap 'rm -rf "$scratch"' EXIT
+runuser -u "$DEVCLOUD_USER" -- env HOME="$DEVCLOUD_HOME" TMPDIR="$scratch" \
+  PATH="$DEVCLOUD_HOME/.local/bin:$PATH" bash -euc '
+    cache=/usr/local/lib/claude-code
+    version="$(cat "$cache/version")"
+    mkdir -p "$HOME/.local/share/claude/versions"
+    binary="$HOME/.local/share/claude/versions/$version"
+    cp "$cache/claude" "$binary"
+    "$binary" install "$version"
+    "$HOME/.local/bin/claude" --version
+  '
+rm -rf "$scratch" /usr/local/lib/claude-code
+trap - EXIT
 ln -sfn "$DEVCLOUD_HOME/.local/bin/claude" /usr/local/bin/claude
 [[ -x /usr/local/bin/claude ]] || { echo "Claude Code is not installed" >&2; exit 1; }
 
