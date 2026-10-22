@@ -6,6 +6,9 @@ on:
   workflow_dispatch:
     inputs:
       gates: {description: 'comma list of gate names; empty = all', required: false, default: ''}
+  # ci-kit's build cache seed: the build_cache gates on main, just after the ISO week turns.
+  schedule:
+    - cron: '10 0 * * 1'
 jobs:
   ci:
     uses: SSFSKIM/ci-kit/.github/workflows/gates.yml@v1
