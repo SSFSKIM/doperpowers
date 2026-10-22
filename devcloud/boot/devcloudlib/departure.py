@@ -304,7 +304,7 @@ def sessions_and_ship(run, no_hold, grace=SESSION_GRACE, rounds=ROUNDS, ship_tim
     host = run.host
     for number in range(1, rounds + 1):
         run.step("end-sessions", lambda: end_sessions(run, grace))
-        if number == 1:
+        if number == 1 and host.installed(SHIPPER_UNIT):
             run.step("stop-shipper", lambda: host.run(
                 ["systemctl", "stop", SHIPPER_UNIT], log="lifecycle",
                 timeout=run.bound(60)) or f"{SHIPPER_UNIT} stopped")

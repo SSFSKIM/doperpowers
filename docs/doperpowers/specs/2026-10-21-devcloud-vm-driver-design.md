@@ -531,7 +531,14 @@ its exit code after step 4 never reaches them. Every refusal (lease not over) an
 decided before step 4, so their exit codes do reach the driver; once the driver has read
 `devcloud-depart: ready-to-logout`, the connection dropping afterwards is success. A connection
 that drops before that line leaves the outcome unknown: the reaper skips the VM this run without
-deleting it, and `down` exits 1 saying so.
+deleting it, and plain `down` exits 1 naming the missing logout confirmation and the last step it
+received. A flush on the host does not prove delivery before logout cuts the transport. `down
+--force` may delete without that confirmation, as it may delete an unreachable host: unshipped
+transcripts can be lost and desk enrollment can remain. Both the unknown-outcome and unreachable
+messages name those consequences and the checks afterwards (`sminos machines` for the desk,
+`devcloud vm ls` for tailnet residue). The driver's existing post-delete tailnet removal still runs.
+A partially booted host skips stopping a shipper unit that was never installed, but still ships
+through a configured shipper and preserves the ship-failure hold.
 
 If the ship fails, or sessions still exist after the third round, the departure stops there — no
 leave, no logout, no power-off — records `held (ship failed)` or `held (sessions keep starting)`, and

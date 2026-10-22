@@ -310,9 +310,10 @@ class Outcome(str):
     for being offline, so a machine it was not confirmed to leave stays in
     the desk's Machines until someone removes it."""
 
-    def __new__(cls, value, left_desk=False):
+    def __new__(cls, value, left_desk=False, last_step=None):
         made = super().__new__(cls, value)
         made.left_desk = left_desk
+        made.last_step = last_step
         return made
 
 
@@ -346,5 +347,10 @@ def _outcome(result):
     if result.code == 4:
         return Outcome(HELD, left)
     if result.code == 255 or result.code is None or result.code < 0:
-        return Outcome(AFTER_READY if result.marker else UNKNOWN, left)
+        # A flushed line can still be lost when logout cuts SSH. Retain only
+        # the last delivered step's name/state, not arbitrary child output.
+        steps = re.findall(r"^devcloud (?:depart|release): ([a-z-]+): (ok|failed)(?: —[^\n]*)?$",
+                           result.out or "", re.M)
+        last = f"{steps[-1][0]} ({steps[-1][1]})" if steps else None
+        return Outcome(AFTER_READY if result.marker else UNKNOWN, left, last)
     return Outcome(FAILED_RUN, left)
