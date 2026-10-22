@@ -8,6 +8,7 @@ service's output is scrubbed of every value the host holds before it is passed
 on: the supervisor scrubs what it forwards, and every unit runs its command
 through `devcloud run-scrubbed`, so journald gets the same."""
 
+import ctypes
 import dataclasses
 import hashlib
 import json
@@ -254,11 +255,31 @@ def run_scrubbed(argv, known, signature=None, out=None, env=None):
     out = out or sys.stdout.buffer
     following = redact.Following(known, signature)
     following.refresh()
+    bind_parent = None
+    if sys.platform == "linux":
+        # run-scrubbed is a single-threaded CLI: the main thread spawns and
+        # waits for the command. PDEATHSIG watches that spawning thread, not
+        # the whole process. Keep setup before exec so even an early wrapper
+        # death is covered. The setting survives exec but not fork, leaving
+        # independent sessions alone (unlike killing the unit's whole cgroup).
+        parent = os.getpid()
+        libc = ctypes.CDLL(None, use_errno=True)
+        prctl = libc.prctl
+        prctl.argtypes = [ctypes.c_int, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong]
+
+        def bind_parent():
+            if prctl(1, signal.SIGKILL, 0, 0, 0) != 0:  # PR_SET_PDEATHSIG
+                error = ctypes.get_errno()
+                raise OSError(error, os.strerror(error))
+            if os.getppid() != parent:  # the wrapper died before the signal was armed
+                os.kill(os.getpid(), signal.SIGKILL)
+
     try:
         child = subprocess.Popen(list(argv), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                 stderr=subprocess.STDOUT, env=env)
-    except OSError as error:
-        out.write(f"devcloud run-scrubbed: cannot start {argv[0]} ({error.strerror})\n".encode())
+                                 stderr=subprocess.STDOUT, env=env, preexec_fn=bind_parent)
+    except (OSError, subprocess.SubprocessError) as error:
+        reason = error.strerror if isinstance(error, OSError) else "child setup failed"
+        out.write(f"devcloud run-scrubbed: cannot start {argv[0]} ({reason})\n".encode())
         out.flush()
         return 127
 

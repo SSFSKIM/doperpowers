@@ -34,7 +34,7 @@
     {
       "name": "devcloud",
       "description": "The secrets guard: stored values, credential files and token-shaped strings become handles in what the model reads and the transcript keeps, restored to their bytes on write. And the host image and boot program that make any Linux userland work like your Mac. And the devenv skill, which writes a repository's devenv/ (its setup, services and checks) from its CI, manifests and README. And `devcloud vm`, which creates cloud machines (Hetzner Cloud, Google Compute Engine, or a provider you add) that boot into such hosts within your caps and delete themselves when their lease ends, and the vm skill that tells a session when and how",
-      "version": "0.9.3",
+      "version": "0.9.4",
       "source": "./devcloud",
       "author": {
         "name": "SSFSKIM",

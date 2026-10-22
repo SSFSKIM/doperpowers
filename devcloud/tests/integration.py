@@ -287,12 +287,14 @@ def stand_ins():
            "-v", f"{HERE / 'fixtures'}:/fixtures:ro", "-v", f"{REPO}:/repo:ro",
            "--entrypoint", "python3", IMAGE, "/fixtures/fakes.py")
     sh(FX, "bash /fixtures/make-repo.sh")
-    put_secrets(SECRETS)
     end = time.monotonic() + 30
     while sh(FX, "python3 -c 'import urllib.request as u; u.urlopen(\"http://localhost:8084/\")'",
              check_rc=False).returncode != 0:
         check(time.monotonic() < end, "the fakes never answered")
         time.sleep(0.5)
+    # After the fakes answer: they make /srv/fakes as they start, and read
+    # secrets.json on each request, none of which comes before a host boots.
+    put_secrets(SECRETS)
 
 
 # --- acceptance 3: one boot, a working host -----------------------------------------
@@ -717,6 +719,79 @@ def enrolled_daemon():
     again = sh(VM, RECONCILE_WITH_STAND_INS, check_rc=False, timeout=600)
     check(again.returncode == 0 and "sminos-daemon.service enabled and running" in steps(VM)["services"]["detail"],
           "a second reconcile restarted an unchanged daemon: " + steps(VM)["services"]["detail"])
+
+
+@case("the sminos daemon's stdout and stderr are scrubbed before daemon.out or journald", "systemd")
+def daemon_output_scrubbed():
+    end = time.monotonic() + 30
+    while True:
+        output = out(VM, f"cat {HOME}/.claude/sminos/daemon.out")
+        if "daemon stdout value [secret]" in output and "daemon stderr value [secret]" in output:
+            break
+        check(time.monotonic() < end, "the daemon's scrubbed stdout and stderr never reached daemon.out")
+        time.sleep(0.5)
+    journal = out(VM, f"XDG_RUNTIME_DIR=/run/user/{UID} journalctl --user -u sminos-daemon.service "
+                      "-o cat --no-pager", user=USER)
+    for name, value in SECRETS.items():
+        check(value.strip() not in output, f"{name}'s value is in daemon.out")
+        check(value.strip() not in journal, f"{name}'s value is in the daemon's journal")
+    # KillMode=process sends SIGTERM to the wrapper alone. It must forward it
+    # to the actual daemon, which exits and records the stop before restart.
+    pid = json.loads(out(VM, f"cat {STATE}/sminos.json"))["pid"]
+    sh(VM, f"XDG_RUNTIME_DIR=/run/user/{UID} systemctl --user stop sminos-daemon.service", user=USER)
+    check(f"stop {pid}" in out(VM, f"cat {STATE}/sminos-daemon.log"), "the wrapper did not forward SIGTERM")
+    check(sh(VM, f"kill -0 {pid}", check_rc=False).returncode != 0, "the daemon survived the unit stop")
+    sh(VM, f"XDG_RUNTIME_DIR=/run/user/{UID} systemctl --user start sminos-daemon.service", user=USER)
+
+
+@case("a forced stop or dead scrubber leaves no sminos daemon, but independent sessions survive", "systemd")
+def daemon_dies_with_wrapper():
+    ctl = f"XDG_RUNTIME_DIR=/run/user/{UID} systemctl --user"
+    unit = "sminos-daemon.service"
+    dropin = f"{SMINOS_UNIT}.d/zz-lifetime-test.conf"
+    scripts = f"{MARKETPLACE}/sminos/skills/sminos/scripts"
+    docker("cp", str(HERE / "fixtures/claude"), f"{VM}:{scripts}/claude")
+    sh(VM, f"chmod 755 {scripts}/claude")
+    spawned = out(VM, f"python3 {scripts}/sminos.py spawn independent 'made-up session'", user=USER)
+    session = int(re.search(r"pid (\d+)", spawned)[1])
+    pids = []
+    try:
+        sh(VM, f"{ctl} stop {unit}", user=USER)
+        sh(VM, f"printf '[Service]\\nRestart=no\\nTimeoutStopSec=1\\n' > {dropin}", user=USER)
+        sh(VM, f"{ctl} daemon-reload", user=USER)
+        check(out(VM, f"{ctl} show {unit} -p KillMode --value", user=USER).strip() == "process",
+              "the installed daemon's kill policy changed")
+        for failure in ("timeout", "wrapper death"):
+            sh(VM, f"rm -f {STATE}/sminos.json; touch {STATE}/sminos-ignore-term", user=USER)
+            sh(VM, f"{ctl} reset-failed {unit}; {ctl} start {unit}", user=USER)
+            end = time.monotonic() + 15
+            while sh(VM, f"test -s {STATE}/sminos.json", check_rc=False).returncode != 0:
+                check(time.monotonic() < end, "the daemon could not start (old daemon still holds its lock)")
+                time.sleep(0.1)
+            pid = json.loads(out(VM, f"cat {STATE}/sminos.json"))["pid"]
+            pids.append(pid)
+            wrapper = int(out(VM, f"{ctl} show {unit} -p MainPID --value", user=USER))
+            check(wrapper != pid, "the daemon is not wrapped")
+            if failure == "timeout":
+                sh(VM, f"{ctl} stop {unit}", user=USER, check_rc=False, timeout=15)
+                check(out(VM, f"{ctl} show {unit} -p Result --value", user=USER).strip() == "timeout",
+                      "the fixture did not force TimeoutStopSec's SIGKILL")
+            else:
+                sh(VM, f"kill -KILL {wrapper}", user=USER)
+            end = time.monotonic() + 10
+            while sh(VM, f"kill -0 {pid}", check_rc=False).returncode == 0:
+                check(time.monotonic() < end, f"the daemon survived {failure}")
+                time.sleep(0.1)
+            check(sh(VM, f"kill -0 {session}", check_rc=False).returncode == 0,
+                  f"the independent session was killed by {failure}")
+    finally:
+        # Leave the shared host ready for the subsequent reboot/lease cases,
+        # even when this regression catches an orphan in an unfixed build.
+        for pid in pids:
+            sh(VM, f"kill -KILL {pid}", check_rc=False)
+        sh(VM, f"kill -TERM {session}", check_rc=False)
+        sh(VM, f"rm -f {dropin} {STATE}/sminos-ignore-term", user=USER)
+        sh(VM, f"{ctl} daemon-reload; {ctl} reset-failed {unit}; {ctl} start {unit}", user=USER)
 
 
 @case("a persistent host keeps a mirror of its projects' repositories and refreshes it (Design §7)", "systemd")

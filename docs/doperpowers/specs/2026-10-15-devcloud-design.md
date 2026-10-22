@@ -1032,6 +1032,50 @@ or how it is answered reaches `cua` as a ticket before it ships.
   With no runtime change or version bump here, no cua resync is owed for this experiment.
   Date/Author: 2026-10-22, guard executor and design session (board #87).
 
+- Decision: Retired secret targets are removed during materialization only while
+  their filesystem identity and change metadata still match an actual devcloud
+  write (board #89, closing M2's removed-entry residue). A path's `lstat` identity
+  decides ownership: the final target must still be that regular file, regardless
+  of the parent route. This supports existing symlinked directories without
+  parent-route records. Cleanup runs as the user; same-user races are not a
+  privilege boundary to defend here. Root-owned ownership metadata beside status
+  contains paths and file stat metadata, never secret values. Missing, unreadable
+  or invalid ownership metadata means no files are owned; the step reports that
+  condition without stopping secret materialization.
+  The lifecycle credential ledger remains separate: it records paths before a
+  write, including directories and other credential sources, and deliberately
+  cannot prove which file now belongs to the materializer. It is insufficient
+  to authorize removal of a retired target that a person may have replaced.
+  Hosts without ownership metadata do not adopt unchanged pre-existing files;
+  such files remain untouched until devcloud actually rewrites them. The current
+  profile still determines the environment afresh on each reconciliation.
+  Rationale: withdrawing a declaration must remove managed credentials without
+  deleting user-created replacements or guessing ownership on upgrade.
+  Date/Author: 2026-10-22, host-secrets executor after checking the existing ledger;
+  simplified before merge at the design session's direction to use file identity
+  alone and keep bookkeeping failures from blocking credentials.
+
+- Decision: Devcloud owns the persistent host's sminos output scrubber (board #91,
+  option A). Step 11's existing user-unit drop-in resets `ExecStart` and wraps the
+  command written by `sminos daemon install` in `devcloud run-scrubbed`, rather than
+  copying sminos's unit. The wrapper reads the host's user-readable secret store,
+  profile targets and environment, as for other devcloud services. Sminos retains
+  its output destinations, restart policy and lifecycle directives; standalone
+  sminos hosts and Macs are unchanged.
+  Correction to the ticket's premise: the current unit appends stdout and stderr
+  to `daemon.out`, not journald. The wrapper scrubs before either destination;
+  the systemd-container proof checks made-up values in both `daemon.out` and the
+  user unit's journal, and verifies SIGTERM reaches the daemon through the wrapper.
+  The daemon child arms Linux's parent-death SIGKILL before exec, with a parent-PID
+  recheck covering death before arming. Thus sminos's `KillMode=process` still stops
+  the daemon when systemd force-kills the wrapper, without killing independent
+  sessions; the setting is not inherited by forked descendants. The systemd proof
+  covers timeout escalation and direct wrapper death as well as a graceful stop.
+  Rationale: output filtering belongs to the host that knows its secret values;
+  preserving the installed unit's behavior keeps the documented diagnostic path.
+  Date/Author: 2026-10-22, the design session's ownership decision and premise
+  correction, implemented by the host-secrets executor.
+
 - Decision: Verification. One independent spec review by the `doperpowers:adversarial-reviewer`
   agent (technical-heavy spec) plus its buildability review of this five-milestone execution
   section, in the same round. Whole-branch review at the **high** rung of doperpowers:review-code
