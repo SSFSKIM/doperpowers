@@ -4,7 +4,8 @@ and for `up --auth-key=file:<path>` that file's mode, owner, its directory's
 mode, the attributes the key carries after `?`, and the digest of what comes
 before it — never the key itself.
 `status --json` reports $FAKE_TS_STATE (default NeedsLogin), or fails with
-$FAKE_TS_STATUS_EXIT; `up` exits $FAKE_TS_EXIT (default 0); `logout` exits
+$FAKE_TS_STATUS_EXIT, or fails once while the file $FAKE_TS_STATUS_FAIL_ONCE
+exists (it is deleted); `up` exits $FAKE_TS_EXIT (default 0); `logout` exits
 $FAKE_TS_LOGOUT_EXIT (default 0), and with $FAKE_TS_LOGOUT_EFFECT takes
 effect all the same. With $FAKE_TS_NODE (a file) the node is stateful: `up`
 resumes a node that has an id (any state: a test may set it Stopped) and
@@ -54,6 +55,10 @@ elif command == ["logout"]:
         node = {"state": "NeedsLogin", "joins": node.get("joins", 0)}
 elif command == ["status"]:
     code = int(os.environ.get("FAKE_TS_STATUS_EXIT", "0"))
+    once = os.environ.get("FAKE_TS_STATUS_FAIL_ONCE")
+    if once and os.path.exists(once):
+        os.unlink(once)
+        code = 1
     if code:
         pass
     elif node_file:

@@ -289,8 +289,8 @@ class NodeKindTest(NodeKindBase):
         old = self.joined_as(False)
         detail = self.attach("1792000000")
         self.assertEqual(self.api.calls, [("token", True), ("delete", old)])
-        self.assertEqual(self.verbs(), ["status", "status", "logout", "up", "status"])
-        self.assertEqual(self.calls()[3]["key_attributes"], "ephemeral=true&preauthorized=true")
+        self.assertEqual(self.verbs(), ["status", "status", "logout", "status", "up", "status"])
+        self.assertEqual(self.calls()[4]["key_attributes"], "ephemeral=true&preauthorized=true")
         kind = nodekind.recorded()
         self.assertEqual((kind["ephemeral"], kind["state"], kind["name"]), (True, nodekind.JOINED, "devbox-a"))
         self.assertIn("rejoined", detail)
@@ -421,7 +421,7 @@ class NodeKindTest(NodeKindBase):
         old = self.joined_as(False)
         self.node_state("Stopped")
         self.attach("1792000000")
-        self.assertEqual(self.verbs(), ["status", "status", "logout", "up", "status"])
+        self.assertEqual(self.verbs(), ["status", "status", "logout", "status", "up", "status"])
         self.assertEqual(self.api.calls, [("token", True), ("delete", old)])
         node = json.loads(self.node.read_text())
         self.assertNotEqual(node["id"], old)
@@ -438,11 +438,60 @@ class NodeKindTest(NodeKindBase):
         self.assertEqual(json.loads(self.node.read_text())["id"], old)
         self.assertEqual(nodekind.recorded()["state"], nodekind.FAILED)
 
-    def test_a_boot_whose_status_cannot_be_read_still_joins(self):
+    def test_a_boot_whose_status_cannot_be_read_still_joins_as_a_kind_it_does_not_claim(self):
         with mock.patch.dict(os.environ, {"FAKE_TS_STATUS_EXIT": "1"}):
             self.attach(None)
         self.assertIn("up", self.verbs())
-        self.assertEqual(nodekind.recorded()["state"], nodekind.JOINED)
+        kind = nodekind.recorded()
+        self.assertEqual((kind["state"], kind["ephemeral"]), (nodekind.JOINED, None))
+        self.assertTrue(nodekind.behind(desc()), "the lease service would not settle the kind")
+
+    def test_a_held_node_of_the_other_kind_resumed_through_an_unreadable_status_is_not_recorded_as_wanted(self):
+        old = self.joined_as(False)
+        once = self.tmp / "status-fails-once"
+        once.touch()
+        with mock.patch.dict(os.environ, {"FAKE_TS_STATUS_FAIL_ONCE": str(once)}):
+            detail = self.attach("1792000000")     # the boot step does not fail
+        self.assertEqual(json.loads(self.node.read_text())["id"], old, "up resumed the node held")
+        kind = nodekind.recorded()
+        self.assertEqual((kind["ephemeral"], kind["state"], kind["name"]), (None, nodekind.JOINED, "devbox-a"))
+        self.assertTrue(nodekind.behind(desc(DEVCLOUD_EXPIRES="1792000000")))
+        self.assertIn("unknown", detail)
+        # Once the status reads, the rejoin settles it.
+        self.attach("1792000000")
+        self.assertEqual(self.api.calls[-1], ("delete", old))
+        self.assertTrue(json.loads(self.node.read_text())["ephemeral"])
+        self.assertTrue(nodekind.recorded()["ephemeral"])
+
+    def test_a_logout_that_fails_without_effect_and_a_reversed_lease_keep_the_node(self):
+        old = self.joined_as(False)
+        with mock.patch.dict(os.environ, {"FAKE_TS_LOGOUT_EXIT": "1"}):
+            self.attach("1792000000")          # refused: the node stays as it was
+        self.assertEqual(nodekind.recorded()["remove"], [], "the node held is down for removal")
+        self.attach(None)                      # the lease change reversed
+        self.assertEqual([c for c in self.api.calls if c[0] == "delete"], [])
+        node = json.loads(self.node.read_text())
+        self.assertEqual((node["id"], node["state"]), (old, "Running"))
+        kind = nodekind.recorded()
+        self.assertEqual((kind["ephemeral"], kind["state"], kind["remove"]), (False, nodekind.JOINED, []))
+
+    def test_a_pending_id_of_the_node_held_is_dropped_without_a_removal(self):
+        old = self.joined_as(False)
+        nodekind.record(False, False, nodekind.FAILED, "the logout failed", name="devbox-a", remove=[old])
+        detail = self.attach(None)
+        self.assertEqual(self.api.calls, [])
+        self.assertEqual(json.loads(self.node.read_text())["id"], old)
+        kind = nodekind.recorded()
+        self.assertEqual((kind["state"], kind["remove"]), (nodekind.JOINED, []))
+        self.assertIn("cancelled", detail)
+
+    def test_a_pending_removal_waits_while_the_node_held_cannot_be_read(self):
+        old = self.joined_as(False)
+        nodekind.record(None, True, nodekind.REJOINING, "logged out", remove=[old])
+        with mock.patch.dict(os.environ, {"FAKE_TS_STATUS_EXIT": "1"}):
+            self.attach("1792000000")
+        self.assertEqual([c for c in self.api.calls if c[0] == "delete"], [])
+        self.assertEqual(nodekind.recorded()["remove"], [old])
 
     def test_a_join_that_fails_after_the_logout_records_the_node_gone(self):
         self.joined_as(True)
