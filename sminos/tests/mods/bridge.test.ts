@@ -179,6 +179,7 @@ function harness(
     commands?: Record<string, unknown>[]
     models?: string[]
     configFails?: boolean
+    configWait?: Promise<void>
     /** What `$.session.repo()` answers. */
     repo?: { root: string; remote: string | null; internal: boolean; name: string | null } | null
   } = {},
@@ -335,6 +336,7 @@ function harness(
     },
     config: { list: async () => {
       if (options.configFails) throw new Error('config unavailable')
+      await options.configWait
       return [{ key: 'model', label: 'Model', kind: 'choice', value: 'default', provider: { kind: 'engine' }, isLocked: false, options: options.models ?? ['default', 'sonnet', 'opus'] }]
     } },
     command: {
@@ -5995,5 +5997,77 @@ describe('the desk: plugin-panel exceptions without an engine table', () => {
     expect(await h.command({ op: 'read', what: 'catalog' })).toMatchObject({ ok: true, result: { commands: [
       { name: 'mcp', withArgs: { forms: { hint: 'enable|disable|reconnect <server>' } } },
     ] } })
+  })
+})
+
+
+describe('the desk: catalog belongs to the bound child, not merely a stable engine id', () => {
+  test('a predecessor child cannot read the successor catalog before the bridge follows', async () => {
+    const options = { version: { version: '2.1.307' }, commands: [{ name: 'old-only', source: 'custom', description: 'Old' }] }
+    const h = harness(options)
+    await h.ready()
+    h.setSession('5b000002-0000-4000-8000-00000000005b')
+    options.commands = [{ name: 'new-only', source: 'custom', description: 'New' }]
+    const answer = await h.command({ op: 'read', what: 'catalog' })
+    expect(answer.ok).toBe(false)
+    expect(JSON.stringify(answer).includes('new-only')).toBe(false)
+  })
+
+  test('a heartbeat awaiting predecessor posts sends no successor catalog there and refreshes after following', async () => {
+    const options = { version: { version: '2.1.307' }, hold: false, commands: [{ name: 'old-only', source: 'custom', description: 'Old' }] }
+    const h = harness(options)
+    await h.ready()
+    options.hold = true
+    await h.append('prompt', { type: 'user', content: [{ type: 'text', text: 'pending' }] })
+    const held = h.posts.at(-1)!
+    const NEW = '5b000002-0000-4000-8000-00000000005b'
+    const NEWSOCK = '/tmp/s/new-catalog.sock'
+    h.setSession(NEW)
+    options.commands = [{ name: 'new-only', source: 'custom', description: 'New' }]
+    h.timers.find((t) => t.kind === 'every' && t.ms === HEARTBEAT_MS)!.fn()
+    await h.settle()
+    options.hold = false
+    held.release()
+    await h.settle()
+    const from = (socket: string) => h.posts.filter((p) => p.socketPath === socket).flatMap((p) => p.events)
+    expect(from(SOCK).filter((e) => e.type === 'catalog' && JSON.stringify(e).includes('new-only'))).toHaveLength(0)
+    await h.fire(100)
+    expect(h.children).toHaveLength(2)
+    h.children[1]!.write(hello(NEW, NEWSOCK))
+    await h.settle()
+    h.timers.find((t) => t.kind === 'every' && t.ms === HEARTBEAT_MS)!.fn()
+    await h.settle()
+    expect(from(NEWSOCK).filter((e) => e.type === 'catalog').at(-1)).toMatchObject({ commands: [{ name: 'new-only' }] })
+    expect(from(SOCK).some((e) => JSON.stringify(e).includes('new-only'))).toBe(false)
+  })
+
+  test('startup catalog and same-session respawn survive, but an old generation publishes neither its pending catalog nor read answer', async () => {
+    const options: { version: { version: string }; commands: Record<string, unknown>[]; configWait?: Promise<void> } = {
+      version: { version: '2.1.307' }, commands: [{ name: 'initial', source: 'custom', description: 'Initial' }],
+    }
+    const h = harness(options)
+    await h.ready()
+    expect(h.ofType('resync')[0]!.catalog).toMatchObject({ commands: [{ name: 'initial' }] })
+    let release: () => void = () => undefined
+    options.configWait = new Promise<void>((resolve) => (release = resolve))
+    options.commands = [{ name: 'obsolete-in-flight', source: 'custom', description: 'Obsolete' }]
+    h.children[0]!.write(line({ id: 'old-read', op: 'read', what: 'catalog' }))
+    await h.settle()
+    h.children[0]!.write(line({ id: 'old-queued', op: 'read', what: 'catalog' }))
+    await h.settle()
+    h.children[0]!.end()
+    await h.settle()
+    await h.fire(0)
+    expect(h.children).toHaveLength(2)
+    h.children[1]!.write(hello(SID, SOCK, undefined, 'replacement'))
+    await h.settle()
+    expect(h.ofType('resync').at(-1)!.catalog).toMatchObject({ commands: [{ name: 'initial' }] })
+    release()
+    options.configWait = undefined
+    await h.settle()
+    expect(h.ofType('catalog').some((e) => JSON.stringify(e).includes('obsolete-in-flight'))).toBe(false)
+    expect(h.ofType('result').some((e) => e.id === 'old-read' || e.id === 'old-queued')).toBe(false)
+    options.commands = [{ name: 'current', source: 'custom', description: 'Current' }]
+    expect(await h.command({ op: 'read', what: 'catalog' }, 1)).toMatchObject({ ok: true, result: { commands: [{ name: 'current' }] } })
   })
 })

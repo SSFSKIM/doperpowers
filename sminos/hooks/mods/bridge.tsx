@@ -287,15 +287,32 @@ async function isTurnStillUnknown(): Promise<boolean> {
 /** An op's answer, and what it leaves for after the answer is posted (a desk command's run, whose events follow its answer). */
 type Answered = Answer & { after?: () => void }
 
+/** Catalog data belongs to a bridge session and child, even while the engine has moved ahead. */
+type CatalogOwner = { session: string | undefined; generation: number }
+const CATALOG_MOVED = 'the session or bridge child changed while its catalog was read'
+async function catalogStillOwned($: EngineInterface, owner: CatalogOwner): Promise<boolean> {
+  const session = await $.session.id()
+  return owner.session !== undefined && session === owner.session && state.session === owner.session && state.generation === owner.generation
+}
+
 /** Answers one command line with a `result` event, then does what the answer left for after it. */
 async function runCommand($: EngineInterface, command: Command) {
+  const catalogOwner = command.op === 'read' && command.what === 'catalog' ? { session: state.session, generation: state.generation } : undefined
   let answer: Answered
   try {
     // A false idle would be a lie: interrupt saying there is nothing to stop,
     // a compaction run at once, while a turn the module did not see runs.
     answer = TURN_OPS.has(command.op) && (await isTurnStillUnknown()) ? { ok: false, error: TURN_UNKNOWN, code: 'turn-unknown' } : await commandAnswer($, command)
+    if (catalogOwner !== undefined && !await catalogStillOwned($, catalogOwner)) {
+      answer = { ok: false, error: CATALOG_MOVED }
+    }
   } catch (error) {
     answer = { ok: false, error: message(error) }
+  }
+  // A replaced child cannot take this answer. Never send its read id through
+  // the successor's socket, even when the successor serves the same session.
+  if (catalogOwner !== undefined && (catalogOwner.session !== state.session || catalogOwner.generation !== state.generation)) {
+    return
   }
   const { after, ...result } = answer
   emit({ type: 'result', id: command.id, op: command.op, ...result })
@@ -1304,6 +1321,9 @@ function onLine($: EngineInterface, generation: number, line: string) {
  * ran STABLE_MS (by the engine's clock) is followed at once again.
  */
 function startChild($: EngineInterface, session: string) {
+  if (state.session !== session) {
+    state.catalog = undefined
+  }
   state.session = session
   // An off bridge has no child: only a safe dispatch starts one again
   // (judgePlace), never a /clear's restart, a respawn or a session start.
@@ -1586,14 +1606,22 @@ export async function bridgeStart($: EngineInterface, e: SessionStartInput) {
   }
   // What this module can do, said in every resync, so the child answers it at once.
   state.capabilities = await capabilitiesOf($, engineOf(version))
+  // The initial catalog is assembled before the first child starts, so bind
+  // it now. Later refreshes follow the binding, never merely the engine id.
+  state.session ??= await $.session.id()
   // Serialize refreshes so a slower older list never replaces a newer one.
   let refresh = Promise.resolve()
   state.refreshCatalog = () => {
+    // Capture before joining the queue: a predecessor's pending read cannot
+    // become a successor's merely because it starts after the switch.
+    const owner = { session: state.session, generation: state.generation }
     const next = refresh.then(async () => {
-      const session = await $.session.id()
+      if (!await catalogStillOwned($, owner)) {
+        throw new Error(CATALOG_MOVED)
+      }
       const catalog = await catalogNow($, engineOf(version))
-      if (session !== await $.session.id()) {
-        throw new Error('the session changed while its catalog was read')
+      if (!await catalogStillOwned($, owner)) {
+        throw new Error(CATALOG_MOVED)
       }
       if (catalog.fingerprint !== state.catalog?.fingerprint) {
         state.catalog = catalog
