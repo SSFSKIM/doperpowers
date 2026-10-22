@@ -801,15 +801,20 @@ class Rpcs:
         """The ops this daemon finishes itself, by their effect: a
         `/reload-plugins` reloads the bridge mod, whose successor says nothing
         of the run (§2), so it is done once `answering(session)` — the child
-        the plane's probe last found answering, (socket inode, pid) — is
-        another than the one that took it; failed when none has by
-        RELOAD_WAIT_S after its claim."""
+        the plane's probe last found answering, (socket inode, pid), that
+        probe's number, and how many have begun — is another than the one that
+        took it; failed when none has by RELOAD_WAIT_S after its claim. Only a
+        probe begun after the op was first looked at here counts: the plane
+        may still hold a child that was replaced before the reload was sent."""
         now = self.clock()
         for oid, op in list(self.op_ids.items()):
             if op["name"] != RELOAD:
                 continue
-            child = answering(op["session"])
-            if child is not None and op["child"] is not None and list(child) != list(op["child"]):
+            child, probe, begun = answering(op["session"])
+            if "probes" not in op:
+                op["probes"] = begun   # the probes begun when it was first looked at: none of them counts
+            if child is not None and probe > op["probes"] and op["child"] is not None \
+                    and list(child) != list(op["child"]):
                 end = {"settled": {"ok": True}, "readback": {"how": "effect"}}
             elif now - op["at"] >= RELOAD_WAIT_S:
                 end = {"settled": {"ok": False, "error": "the session's bridge did not answer from a reloaded "
@@ -825,9 +830,11 @@ class Rpcs:
         """The ends of ops this daemon issued that no stream brought (they
         came while it was stopped, or between two of a bridge's readers),
         read from the bridge's kept file, where its child keeps a run's end
-        beside the command's answer."""
+        beside the command's answer — a reload's too, when the module that
+        took it ended it (the engine refused it); a reload that ran has none,
+        its module gone, and is finished by its effect (`effects`)."""
         for oid, op in list(self.op_ids.items()):
-            if op["name"] == RELOAD or not op["session"]:
+            if not op["session"] or op["nonce"] is None:
                 continue
             end = ((bridge.load_kept(op["session"]).get("rpcs") or {}).get(op["nonce"]) or {}).get("end")
             if isinstance(end, dict) and end.get("id") == oid and end.get("phase") == "end":

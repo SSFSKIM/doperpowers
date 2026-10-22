@@ -2185,7 +2185,7 @@ class Desk(unittest.TestCase):
         self.fake.start_bridge()
         self.assertTrue(self.probed(lambda: self.bridges.known(self.sid)))
         self.assertEqual(self.bridges.capabilities(self.sid), CAPS)
-        first = self.bridges.answering(self.sid)
+        first, _, begun = self.bridges.answering(self.sid)
         self.assertIsNotNone(first, "the child it answered from")
         p = plane.Plane("testhost", lambda: None, self.bridges)
         self.assertEqual(p.presence_of(self.sid, self.now), {"record": None, "bridge": True, "capabilities": CAPS},
@@ -2194,8 +2194,9 @@ class Desk(unittest.TestCase):
         self.fake.capabilities = None
         self.fake.kill_child()
         self.fake.respawn_child()
-        self.assertTrue(self.probed(lambda: self.bridges.answering(self.sid) not in (None, first)),
+        self.assertTrue(self.probed(lambda: self.bridges.answering(self.sid)[0] not in (None, first)),
                         "another child answers now, and the probe says so")
+        self.assertGreater(self.bridges.answering(self.sid)[1], begun, "from a probe begun since")
         self.assertIsNone(self.bridges.capabilities(self.sid))
         self.assertEqual(p.presence_of(self.sid, self.now), {"record": None, "bridge": True})
 
@@ -2205,7 +2206,7 @@ class Desk(unittest.TestCase):
         self.assertTrue(self.probed(lambda: self.bridges.known(self.sid)))
         self.fake.stop_bridge()
         self.assertTrue(self.probed(lambda: not self.bridges.known(self.sid)))
-        self.assertIsNone(self.bridges.answering(self.sid))
+        self.assertIsNone(self.bridges.answering(self.sid)[0])
         self.assertIsNone(self.bridges.capabilities(self.sid))
 
 

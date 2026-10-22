@@ -204,7 +204,9 @@ class Mod(tpr.Bridge):
     is answered `queued` at once, then its run's start and end posted, as
     bridge.tsx's `after` does (`refuse_commands`: name → (code, reason) the
     route check refuses; `hold_runs`: the end waits in `held_runs`, as a run
-    queued behind a turn; a `/reload-plugins` posts its start alone)."""
+    queued behind a turn; a `/reload-plugins` posts its start alone, or,
+    with `refuse_reload` the engine's refusal, its end failed after it, as
+    bridge.tsx's reloadPlugins does)."""
 
     def __init__(self, sid):
         self.commands = []
@@ -216,6 +218,7 @@ class Mod(tpr.Bridge):
         self.refuse_commands = {}
         self.hold_runs = False
         self.held_runs = []
+        self.refuse_reload = None
         self.rows = []
         super().__init__(sid)
 
@@ -289,6 +292,9 @@ class Mod(tpr.Bridge):
                 end = {**run, "phase": "end", "settled": {"ok": True},
                        "readback": {"how": "row", "text": "Session renamed to: %s" % args, "uuid": "row-r1"}}
                 if name == "reload-plugins":
+                    end = self.refuse_reload and {**run, "phase": "end", "settled": {"ok": False, "error": self.refuse_reload},
+                                                  "readback": {"how": "none"}}
+                if not end:
                     pass
                 elif self.hold_runs:
                     self.held_runs.append(end)
@@ -301,6 +307,25 @@ class Mod(tpr.Bridge):
         self.post({"type": "result", "id": cmd["id"], "op": op, **res})
         for e in after[1:]:
             self.post(e)
+
+
+def held_child(bridges, sid):
+    """The child the plane's last probe found answering for the session."""
+    return bridges.answering(sid)[0]
+
+
+class Probes:
+    """The plane's probe as `effects` reads it: each `answer` a probe begun
+    and answered by that child, for every session."""
+
+    def __init__(self):
+        self.child, self.begun = None, 0
+
+    def answer(self, child):
+        self.child, self.begun = child, self.begun + 1
+
+    def answering(self, _sid):
+        return self.child, self.begun, self.begun
 
 
 class Here:
@@ -372,6 +397,7 @@ class Checks(unittest.TestCase):
         self.mod.refuse_commands = {}
         self.mod.hold_runs = False
         self.mod.held_runs = []
+        self.mod.refuse_reload = None
         self.mod.commands.clear()
         self.clock = [time.time()]
         self.r = rpcs.Rpcs(KEY, "testhost", clock=lambda: self.clock[0])
@@ -1027,7 +1053,7 @@ class Checks(unittest.TestCase):
         def answering():
             now[0] += plane.BRIDGE_RECHECK
             bridges.answers(session.sid, now[0])
-            return bridges.answering(session.sid)
+            return held_child(bridges, session.sid)
 
         self.assertTrue(wait_for(lambda: answering() == old), "the plane finds the child that took it answering")
         self.r.effects(bridges.answering)
@@ -1050,10 +1076,15 @@ class Checks(unittest.TestCase):
         self.assertEqual(self.outcome(reload)["state"], "done")
         cid = self.mod.ops("command")[-1]["id"]
         self.assertTrue(wait_for(lambda: self.op_messages(reqs)), "its start")
-        self.r.effects(lambda sid: same)
+        probes = Probes()
+        probes.answer(same)
+        self.r.effects(probes.answering)
+        probes.answer(same)
+        self.r.effects(probes.answering)
         self.assertEqual([m["body"]["phase"] for m in self.op_messages(reqs)], ["start"],
                          "the child that took it answers still: not done")
-        self.r.effects(lambda sid: [same[0] + 1, same[1] + 1])
+        probes.answer([same[0] + 1, same[1] + 1])
+        self.r.effects(probes.answering)
         end = self.op_messages()[-1]["body"]
         self.assertEqual({k: end[k] for k in ("rpc", "phase", "id", "name", "settled", "readback")},
                          {"rpc": reload["nonce"], "phase": "end", "id": cid, "name": "reload-plugins",
@@ -1064,13 +1095,102 @@ class Checks(unittest.TestCase):
         self.r = rpcs.Rpcs(KEY, "testhost", clock=lambda: self.clock[0])
         self.r.kinds = frozenset({"op"})
         self.frames = []
-        self.r.effects(lambda sid: same)
+        probes.answer(same)
+        self.r.effects(probes.answering)
         self.assertEqual(self.op_messages(), [], "within its bound, nothing")
         self.clock[0] += rpcs.RELOAD_WAIT_S
-        self.r.effects(lambda sid: same)
+        self.r.effects(probes.answering)
         end = self.op_messages()[-1]["body"]
         self.assertEqual((end["rpc"], end["settled"]["ok"], end["readback"]), (again["nonce"], False, {"how": "none"}))
         self.assertTrue(end["settled"]["error"])
+
+    def test_l_a_reload_is_not_done_by_the_child_the_plane_held_before_its_own(self):
+        """The plane answers from its last probe: a child replaced just
+        before a reload is sent can still be the one it holds, and that is
+        not the reload's effect. Only a probe begun after the reload was
+        first looked at is evidence."""
+        session = tpr.Session(self.root)
+        self.addCleanup(session.end)
+        mod = Mod(session.sid)
+        self.here.sessions.add(session.sid)
+        self.here.live[session.sid] = {"pid": session.holder.pid, "kind": "interactive", "status": "busy"}
+        self.r.kinds = frozenset({"op"})
+        bridges, now = plane.Bridges(), [0.0]
+
+        def probed(child):
+            """Whether the plane holds `child`; else another probe begun, so
+            none is in flight once it does."""
+            if held_child(bridges, session.sid) == child:
+                return True
+            now[0] += plane.BRIDGE_RECHECK
+            bridges.answers(session.sid, now[0])
+            return False
+
+        first = [os.stat(mod.sock).st_ino, mod.proc.pid]
+        self.assertTrue(wait_for(lambda: probed(first)), "the plane holds the first child")
+        mod.stop()
+        mod = Mod(session.sid)   # its successor, which the plane has not probed yet
+        self.addCleanup(mod.stop)
+        second = [os.stat(mod.sock).st_ino, mod.proc.pid]
+        reload = self.send("command", {"session": session.sid, "name": "reload-plugins"})
+        self.assertEqual(self.outcome(reload)["state"], "done")
+        self.r.take()
+        ends = lambda: [f["message"]["body"] for f in self.r.messages
+                        if f["message"]["kind"] == "op" and f["message"]["body"]["phase"] == "end"]
+        self.r.effects(bridges.answering)
+        self.assertEqual(ends(), [], "the predecessor the plane still held is not the reload's effect")
+        self.assertTrue(wait_for(lambda: probed(second)), "the plane finds the child that took it")
+        self.r.effects(bridges.answering)
+        self.assertEqual(ends(), [], "the child that took it answers still: not done")
+
+    def test_l_a_reload_refused_while_the_daemon_was_stopped_ends_as_its_child_kept_it(self):
+        """A reload the engine refused is ended by the module that took it,
+        and its child keeps that end beside the answer: a daemon stopped
+        when it came sends it on its restart, rather than the bound's
+        failure, or another child's answer read as the reload's effect."""
+        why = "the plugins could not be reloaded: a plugin failed to load"
+        self.mod.refuse_reload = why
+        self.mod.hold_runs = True
+        reload = self.send("command", {"session": self.bridged.sid, "name": "reload-plugins"})
+        self.assertEqual(self.outcome(reload)["state"], "done")
+        cid = self.mod.ops("command")[-1]["id"]
+        self.mod.post(*self.mod.held_runs)   # the daemon is stopped: no stream reads it
+        kept = lambda: ((bridgemod.load_kept(self.bridged.sid).get("rpcs") or {}).get(reload["nonce"]) or {}).get("end")
+        self.assertTrue(wait_for(kept), "the child kept the end beside the answer")
+        self.r = rpcs.Rpcs(KEY, "testhost", clock=lambda: self.clock[0])   # the restart
+        self.r.kinds = frozenset({"op"})
+        ends = lambda: [f["message"]["body"] for f in self.r.messages
+                        if f["message"]["kind"] == "op" and f["message"]["body"]["phase"] == "end"]
+        self.assertEqual([(b["rpc"], b["id"], b["name"], b["settled"], b["readback"]) for b in ends()],
+                         [(reload["nonce"], cid, "reload-plugins", {"ok": False, "error": why}, {"how": "none"})])
+        probes = Probes()
+        self.r.effects(probes.answering)
+        probes.answer([os.stat(self.mod.sock).st_ino + 1, self.mod.proc.pid + 1])
+        self.clock[0] += rpcs.RELOAD_WAIT_S
+        self.r.effects(probes.answering)
+        self.assertEqual(len(ends()), 1, "ended once: neither the bound nor another child ends it again")
+
+    def test_l_a_command_running_when_its_child_is_replaced_keeps_its_end(self):
+        """A child replaced while a desk command it carried still runs in
+        the mod (it crashed, and the module spawned another): the new child
+        knows the command's nonce from the answer the old one kept, so the
+        run's end carries it and is kept beside that answer."""
+        session = tpr.Session(self.root)
+        self.addCleanup(session.end)
+        mod = Mod(session.sid)
+        mod.hold_runs = True
+        status, out = bridgemod.request(mod.sock, "POST", "/command?wait=5000",
+                                        {"op": "command", "name": "rename", "args": "across", "rpc": "nonce-across"})
+        self.assertEqual((status, out["ok"]), (200, True))
+        self.assertTrue(wait_for(lambda: mod.held_runs), "its run's end, held in the mod")
+        held = list(mod.held_runs)
+        mod.stop()
+        mod = Mod(session.sid)   # the respawned child
+        self.addCleanup(mod.stop)
+        mod.post(*held)
+        kept = lambda: ((bridgemod.load_kept(session.sid).get("rpcs") or {}).get("nonce-across") or {}).get("end")
+        self.assertTrue(wait_for(kept, 5.0), "the new child kept the end under its nonce")
+        self.assertEqual((kept()["id"], kept()["rpc"], kept()["settled"]), (out["result"]["id"], "nonce-across", {"ok": True}))
 
     def test_g_spawn_and_retire_through_sminos(self):
         tpr.set_policy({"read_only": False, "ceiling": "acceptEdits"})

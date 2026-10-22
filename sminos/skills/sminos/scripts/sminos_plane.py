@@ -2290,13 +2290,15 @@ class Bridges:
     known at once and starts a probe when the socket changed or the answer is
     BRIDGE_RECHECK old, one at a time per session, each on a thread of its
     own; a probe whose answer differs wakes the uplink. A bridge that listens
-    and never answers holds only its own probe. Kept across streams."""
+    and never answers holds only its own probe. Kept across streams. Probes
+    are numbered, across sessions, in the order they begin (`answering`)."""
 
     def __init__(self):
         self.lock = threading.Lock()
         # session → [socket inode, answered, probed at, probing, the child that answered (inode, pid), its
-        # capabilities]
+        # capabilities, the number of the probe that answered]
         self.held = {}
+        self.probes = 0   # probes begun
         self.wake = lambda: None
 
     def answers(self, sid, now, socks=None):
@@ -2312,14 +2314,15 @@ class Bridges:
                 self.held.pop(sid, None)
             return False
         with self.lock:
-            h = self.held.setdefault(sid, [ino, False, None, False, None, None])
+            h = self.held.setdefault(sid, [ino, False, None, False, None, None, 0])
             if not h[3] and (h[0] != ino or h[2] is None or now - h[2] >= BRIDGE_RECHECK):
                 h[3] = True
-                threading.Thread(target=self.probe, args=(sid, path, ino, now), name="plane-probe",
+                self.probes += 1
+                threading.Thread(target=self.probe, args=(sid, path, ino, now, self.probes), name="plane-probe",
                                  daemon=True).start()
             return h[1]
 
-    def probe(self, sid, path, ino, now):
+    def probe(self, sid, path, ino, now, number):
         answered, child, caps = False, None, None
         try:
             status, body = bridge.request(path, "GET", "/status", timeout=PROBE_TIMEOUT)
@@ -2334,7 +2337,7 @@ class Bridges:
             if h is None:
                 return
             changed = h[1] != answered or h[5] != caps
-            h[:] = [ino, answered, now, False, child, caps]
+            h[:] = [ino, answered, now, False, child, caps, number]
         if changed:
             self.wake()
 
@@ -2344,12 +2347,15 @@ class Bridges:
             return bool(h and h[1])
 
     def answering(self, sid):
-        """The child the last probe found answering for the session, as
+        """(The child the last probe found answering for the session, as
         [socket inode, pid] (a module reload's successor is another), or
-        None."""
+        None; that probe's number; how many probes have begun.) What the last
+        probe found may be older than a moment, and is evidence of what
+        followed it only if that probe's number is above the count begun at
+        that moment."""
         with self.lock:
             h = self.held.get(sid)
-            return h[4] if h and h[1] else None
+            return (h[4] if h and h[1] else None), (h[6] if h else 0), self.probes
 
     def capabilities(self, sid):
         """What the session's bridge said it can do (DX5), when it answered and said."""

@@ -595,6 +595,12 @@ class Bridge:
         self.closing = threading.Event()
         self.kept = load_kept(session)
         self.saved = self.kept    # what the file holds: kept is written until it is
+        # A command a child before this one carried, answered `queued` and
+        # not ended, still runs in the mod (that child crashed, and the module
+        # spawned this one): its end carries its nonce, and is kept, here too.
+        self.rpc_of = {a["result"]["id"]: n for n, a in self.kept.get("rpcs", {}).items()
+                       if a.get("op") == "command" and a.get("ok") is True and "end" not in a
+                       and isinstance(a.get("result"), dict) and isinstance(a["result"].get("id"), str)}
         # Minted for this child and said only in its hello, which only the
         # module that spawned it reads: every post of the mod's carries it, so
         # an older module instance still posting to the path (a reload keeps
