@@ -401,6 +401,10 @@ run_suites() {
   while IFS= read -r line; do
     case "$line" in "ok "*) pass "jobs parity: ${line#ok }" ;; *) fail "jobs parity: ${line#FAIL }" ;; esac
   done < <(python3 "$SCRIPT_DIR/jobs_parity.py" "$PLUGIN_ROOT/skills/sminos/scripts" "$SCRIPT_DIR/dx4-jobs.json" 2>&1)
+  # The desk's route table, the fixture the bridge loads and MAWS vendors: its shape, and what M0 enables.
+  while IFS= read -r line; do
+    case "$line" in "ok "*) pass "route fixture: ${line#ok }" ;; *) fail "route fixture: ${line#FAIL }" ;; esac
+  done < <(python3 "$SCRIPT_DIR/routes_check.py" "$SCRIPT_DIR/routes-2.1.307.json" 2>&1)
   if python3 "$SCRIPT_DIR/test_jobs.py"; then pass "the jobs ledger: rows in any batches, copies (test_jobs.py)"; else
     fail "the jobs ledger: rows in any batches, copies (test_jobs.py)"; fi
 }

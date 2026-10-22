@@ -6,6 +6,17 @@ import {
   AGENTS_REFRESH_MS,
   BACKGROUND_WINDOW_MS,
   BLOCK_TAIL,
+  FOLLOW_REASON,
+  PANEL_REASON,
+  READBACK_WAIT_MS,
+  READBACK_WINDOW_MS,
+  RELOAD_HOLD_MS,
+  RELOAD_TAKEN_WAIT_MS,
+  RELOADING_REASON,
+  SELF_REASON,
+  STOPPED_WAIT_MS,
+  UNKNOWN_REASON,
+  UNMEASURED_REASON,
   HEARTBEAT_MS,
   INTERRUPT_HOLD_MS,
   OFF_LINE,
@@ -20,13 +31,17 @@ import {
   TRANSCRIPT_RETRY_MS,
   TEXT_CAP,
   compacted,
+  measuredFor,
   onAskNote,
   registerBridge,
   resetBridge,
+  routeOf,
   splitLines,
   stopNote,
   wakeText,
+  withoutUserinfo,
 } from '../../hooks/mods/bridge'
+import { ROUTE_TABLES } from '../../hooks/mods/bridge-routes'
 
 tier('user')
 
@@ -158,6 +173,12 @@ function harness(
     cua?: boolean
     /** `$.state.get` rejects. */
     stateFails?: boolean
+    /** What `$.session.version()` answers; by default 2.1.300's release, with no base. */
+    version?: { version: string; base?: string; builtAt?: string }
+    /** What `$.command.list()` answers. */
+    commands?: Record<string, unknown>[]
+    /** What `$.session.repo()` answers. */
+    repo?: { root: string; remote: string | null; internal: boolean; name: string | null } | null
   } = {},
 ) {
   const hooks: { event: string; matcher: Matcher; handler: Handler }[] = []
@@ -209,8 +230,10 @@ function harness(
   const aborted = new Set<string>()
   /** The calls `called` keeps running, each ended by the test or by an abort. */
   const running: ((result: Record<string, unknown>) => void)[] = []
-  /** Files `$.fs.read` reads (the session's transcripts). */
-  const files: Record<string, string> = {}
+  /** Files `$.fs.read` reads (the session's transcripts; the plugin's manifest). */
+  const files: Record<string, string> = { '/plug/.claude-plugin/plugin.json': JSON.stringify({ name: 'sminos', version: '1.7.0' }) }
+  /** Each `$.command.run`, held until the test settles it. */
+  const runs: { args: { command: string; args?: string }; resolve: (r: Record<string, unknown>) => void; reject: (e: Error) => void }[] = []
   /** Each loop's rows on disk, as the child's GET /rows reads them; and the reads made. */
   const disk: Record<string, string[]> = {}
   const rowReads: { loop: string | null; after: string | null; socketPath?: string }[] = []
@@ -229,7 +252,11 @@ function harness(
     session: {
       id: async () => session,
       model: async () => 'claude-haiku',
-      version: async () => ({ version: '2.1.300' }),
+      version: async () => options.version ?? { version: '2.1.300' },
+      cwd: async () => '/w',
+      root: async () => '/w',
+      repo: async () => (options.repo === undefined ? null : options.repo),
+      surfaces: async () => ['terminal'],
       // As the requests read it (`as: "api"`): the mod's appended rows, unless a test rewound it.
       messages: async (args?: { as?: string }) => {
         if (args?.as !== 'api') {
@@ -302,6 +329,13 @@ function harness(
       list: async () => {
         agentLists++
         return listedAgents.map((a) => ({ ...a }))
+      },
+    },
+    command: {
+      list: async () => (options.commands ?? []).map((c) => ({ ...c })),
+      run: (args: { command: string; args?: string }) => {
+        calls.push({ op: 'command.run', args })
+        return new Promise((resolve, reject) => runs.push({ args, resolve, reject }))
       },
     },
     process: {
@@ -578,6 +612,7 @@ function harness(
     children,
     calls,
     compactions,
+    runs,
     appends,
     submits,
     conversation,
@@ -5394,5 +5429,415 @@ describe("the bridge's place among the secrets guards (next.trace)", () => {
     expect(h.toasts).toHaveLength(1)
     expect(h.toasts[0]).toContain('cannot read which secrets guard is loaded')
     expect(h.toasts[0]).toContain('$.state.get: the host did not answer')
+  })
+})
+
+describe('the desk: routes (the 2.1.307 table)', () => {
+  const ENGINE = '2.1.307'
+  const builtin = (name: string) => ({ name, source: 'builtin' })
+  const route = (name: string, args = '', listed: { name: string; source: string; plugin?: string } | undefined = builtin(name), engine = ENGINE) =>
+    routeOf(engine, listed, name, args, 'sminos')
+
+  test("M0's five run rows run, each in its measured form", async () => {
+    for (const [name, args] of [
+      ['rename', 'desk-m0'],
+      ['color', 'red'],
+      ['reload-plugins', ''],
+      ['reload-skills', '  '],
+      ['mcp', 'disable probe'],
+      ['mcp', 'enable probe'],
+      ['mcp', 'reconnect probe'],
+    ] as const) {
+      expect(route(name, args)).toMatchObject({ route: { class: 'run', enabled: true } })
+    }
+    expect(route('mcp', 'disable probe')).toMatchObject({ route: { outlives: 'saved for this project on <machine>: .claude.json' } })
+  })
+
+  test('a form the route does not take is bad-args, in its own words where the table has them', async () => {
+    expect(route('rename')).toEqual({ refusal: { code: 'bad-args', reason: 'a name is needed' } })
+    expect(route('color', 'Red')).toEqual({ refusal: { code: 'bad-args', reason: '/color does not take these arguments: Red' } })
+    expect(route('reload-plugins', 'now')).toEqual({ refusal: { code: 'bad-args', reason: '/reload-plugins takes no arguments' } })
+    expect(route('mcp', 'remove probe')).toMatchObject({ refusal: { code: 'bad-args' } })
+    expect(route('mcp', 'enable a b')).toMatchObject({ refusal: { code: 'bad-args' } })
+  })
+
+  test('the forms come before the class: arguments a refusing route does not take are bad-args, and a pattern miss still takes `otherwise`', async () => {
+    expect(route('clear', 'extra')).toEqual({ refusal: { code: 'bad-args', reason: '/clear takes no arguments' } })
+    expect(route('goal', 'the tests pass')).toEqual({ refusal: { code: 'disabled', reason: 'comes with M1' } })
+  })
+
+  test("every other class is refused with its reason (A4's words), and what M1 and later bring is disabled", async () => {
+    expect(route('usage')).toEqual({ refusal: { code: 'panel', reason: PANEL_REASON } })
+    expect(PANEL_REASON).toBe("opens a panel in the terminal; it would hold the session's queue")
+    expect(route('mcp')).toEqual({ refusal: { code: 'panel', reason: PANEL_REASON } })
+    expect(route('model', 'sonnet')).toEqual({ refusal: { code: 'routed', reason: 'use Model instead: /model saves a default for new sessions' } })
+    expect(route('effort', 'high')).toEqual({ refusal: { code: 'routed', reason: 'use Model instead: /effort saves a default for new sessions' } })
+    expect(route('context')).toMatchObject({ refusal: { code: 'routed' } })
+    expect(route('clear')).toEqual({ refusal: { code: 'follow', reason: FOLLOW_REASON } })
+    expect(route('resume', 'abc')).toEqual({ refusal: { code: 'follow', reason: FOLLOW_REASON } })
+    expect(route('recap')).toEqual({ refusal: { code: 'drop', reason: 'not from the desk: it refuses any run a plugin starts' } })
+    expect(route('config', 'theme=dark')).toEqual({ refusal: { code: 'drop', reason: 'not from the desk: saves a default on <machine>; terminal only' } })
+    expect(route('copy')).toMatchObject({ refusal: { code: 'local' } })
+    expect(route('goal')).toEqual({ refusal: { code: 'panel', reason: PANEL_REASON } })
+    expect(route('goal', 'clear')).toEqual({ refusal: { code: 'disabled', reason: 'comes with M1' } })
+    expect(route('goal', 'the tests pass')).toEqual({ refusal: { code: 'disabled', reason: 'comes with M1' } })
+    expect(route('exit')).toEqual({ refusal: { code: 'disabled', reason: 'comes with M1' } })
+    expect(route('fast', 'on')).toEqual({ refusal: { code: 'disabled', reason: 'not settled: fast mode was disabled where it was measured' } })
+    expect(route('plan')).toMatchObject({ refusal: { code: 'routed' } })
+  })
+
+  test('every route of the fixture whose class refuses is refused with that class as its code', async () => {
+    const refusing = new Set(['panel', 'routed', 'drop', 'local', 'follow'])
+    const table = ROUTE_TABLES[0]!
+    let seen = 0
+    for (const e of table.entries) {
+      for (const [r, args] of [
+        [e.bare, ''],
+        [e.withArgs, 'x'],
+      ] as const) {
+        const takes = (f: NonNullable<typeof r>['forms']) =>
+          f === undefined ||
+          ((f.args !== 'required' || args !== '') && (f.args !== 'none' || args === '') && (f.pattern === undefined || args === '' || new RegExp(`^(?:${f.pattern})$`).test(args)))
+        if (r !== undefined && refusing.has(r.class) && takes(r.forms)) {
+          expect(route(e.name, args)).toMatchObject({ refusal: { code: r.class } })
+          seen++
+        }
+      }
+    }
+    expect(seen).toBeGreaterThan(50)
+  })
+
+  test("a name this session does not list and the table does not hold is unknown; a built-in the table does not hold is unmeasured, never tried", async () => {
+    expect(routeOf(ENGINE, undefined, 'foo', '', 'sminos')).toEqual({ refusal: { code: 'unknown-builtin', reason: UNKNOWN_REASON } })
+    expect(UNKNOWN_REASON).toBe('not a command this session knows')
+    expect(route('brand-new')).toEqual({ refusal: { code: 'unknown-builtin', reason: UNMEASURED_REASON } })
+    // A built-in the table holds that this session does not list is routed by the table all the same.
+    expect(routeOf(ENGINE, undefined, 'rename', 'x', 'sminos')).toMatchObject({ route: { class: 'run' } })
+  })
+
+  test("a command that is no built-in is a turn's prompt, from M1; a plugin exception takes its own route; this plugin's own is refused", async () => {
+    expect(route('doperpowers:execspec', 'go', { name: 'doperpowers:execspec', source: 'plugin', plugin: 'doperpowers' })).toEqual({ refusal: { code: 'disabled', reason: 'comes with M1' } })
+    expect(route('probe:probe-prompt (MCP)', 'EPS', { name: 'probe:probe-prompt (MCP)', source: 'mcp' })).toEqual({ refusal: { code: 'disabled', reason: 'comes with M1' } })
+    expect(route('diff', '', { name: 'diff', source: 'plugin', plugin: 'cc-plugin-diff' })).toMatchObject({ refusal: { code: 'panel' } })
+    expect(route('diff', '', { name: 'diff', source: 'plugin', plugin: 'another' })).toMatchObject({ refusal: { code: 'disabled' } })
+    expect(route('hello', '', { name: 'hello', source: 'plugin', plugin: 'sminos' })).toEqual({ refusal: { code: 'self', reason: SELF_REASON } })
+  })
+
+  test('a session routes by the newest table at or below its engine; one older than every table has none, and every built-in is unmeasured', async () => {
+    expect(measuredFor('2.1.307')).toBe('2.1.307')
+    expect(measuredFor('2.1.307-dev')).toBe('2.1.307')
+    expect(measuredFor('2.1.312')).toBe('2.1.307')
+    expect(measuredFor('2.1.300')).toBe('none')
+    expect(measuredFor('a build')).toBe('none')
+    expect(route('rename', 'x', builtin('rename'), '2.1.300')).toEqual({ refusal: { code: 'unknown-builtin', reason: UNMEASURED_REASON } })
+  })
+})
+
+describe('the desk: capabilities and read', () => {
+  test("every resync carries what the module can do: its plugin's version, the engine, its ops and reads, the table it routes by", async () => {
+    const h = harness({ version: { version: '2.1.307', base: '2.1.307' } })
+    await h.ready()
+    expect(h.ofType('resync')[0]!.capabilities).toEqual({
+      sminos: '1.7.0',
+      protocol: 2,
+      engine: '2.1.307',
+      ops: ['ping', 'steer', 'interrupt', 'stop', 'model', 'compact', 'deliver', 'answer', 'read', 'command'],
+      reads: ['status'],
+      routes: { measured: '2.1.307' },
+    })
+    h.children[0]!.write(hello())
+    await h.settle()
+    expect(h.ofType('resync').at(-1)!.capabilities).toMatchObject({ sminos: '1.7.0' })
+  })
+
+  test('an engine older than every table is said so; a manifest it cannot read leaves the version unknown, said in the debug log', async () => {
+    const h = harness()
+    delete h.files['/plug/.claude-plugin/plugin.json']
+    await h.ready()
+    expect(h.ofType('resync')[0]!.capabilities).toMatchObject({ sminos: 'unknown', engine: '2.1.300', routes: { measured: 'none' } })
+    expect(h.logs.some((l) => l.startsWith("bridge: the plugin's version was not read"))).toBe(true)
+  })
+
+  test("read status answers from the engine: the version, model, directories, repository (no userinfo), surfaces and the desk's model choice", async () => {
+    const h = harness({ version: { version: '2.1.307', base: '2.1.307', builtAt: '2026-10-20T00:00:00Z' }, repo: { root: '/w', remote: 'https://me:tok3n@github.com/o/r.git', internal: false, name: null } })
+    await h.ready()
+    expect(await h.command({ op: 'read', what: 'status' })).toMatchObject({
+      ok: true,
+      result: {
+        version: { version: '2.1.307', base: '2.1.307', builtAt: '2026-10-20T00:00:00Z' },
+        model: 'claude-haiku',
+        cwd: '/w',
+        root: '/w',
+        repo: { remote: 'https://github.com/o/r.git' },
+        surfaces: ['terminal'],
+        override: null,
+      },
+    })
+    expect(await h.command({ op: 'read', what: 'usage' })).toMatchObject({ ok: false, error: 'no read usage' })
+  })
+
+  test('a remote loses only its userinfo; a scp-like address is left as it is', async () => {
+    expect(withoutUserinfo('https://x-access-token:abc@github.com/o/r')).toBe('https://github.com/o/r')
+    expect(withoutUserinfo('ssh://git@github.com/o/r.git')).toBe('ssh://github.com/o/r.git')
+    expect(withoutUserinfo('https://github.com/o/r@v1')).toBe('https://github.com/o/r@v1')
+    expect(withoutUserinfo('git@github.com:o/r.git')).toBe('git@github.com:o/r.git')
+  })
+
+  test("a session with no repository reads null; the turn-unknown refusal carries its code", async () => {
+    const h = harness({ messages: [{ role: 'user', text: 'earlier' }] })
+    await h.ready()
+    expect(await h.command({ op: 'read', what: 'status' })).toMatchObject({ ok: true, result: { repo: null } })
+    expect(await h.command({ op: 'steer', text: 'x' })).toMatchObject({ ok: false, code: 'turn-unknown' })
+  })
+})
+
+describe('the desk: command', () => {
+  const V307 = { version: '2.1.307', base: '2.1.307' }
+  const COMMANDS = ['rename', 'color', 'reload-plugins', 'reload-skills', 'mcp', 'usage'].map((name) => ({ name, description: '', source: 'builtin' }))
+  const desk = async () => {
+    const h = harness({ version: V307, commands: COMMANDS })
+    await h.ready()
+    return h
+  }
+  let sent = 0
+  /** A command line from the child, not waited on; its id. */
+  const send = (h: Awaited<ReturnType<typeof desk>>, body: Record<string, unknown>) => {
+    const id = `d${++sent}`
+    h.children[0]!.write(line({ id, op: 'command', from: 'desk', ...body }))
+    return id
+  }
+  const answerOf = (h: Awaited<ReturnType<typeof desk>>, id: string) => h.events().find((e) => e.type === 'result' && e.id === id)
+  /** The events of one op on the stream: its answer, its run's start and end. */
+  const lifecycle = (h: Awaited<ReturnType<typeof desk>>, id: string) =>
+    h
+      .events()
+      .filter((e) => e.id === id && (e.type === 'result' || e.type === 'run'))
+      .map((e) => (e.type === 'result' ? `result:${e.ok ? 'ok' : e.code}` : `run:${e.phase}`))
+  /** A command's two rows as the engine keeps them, through the session.append hooks. */
+  const commandRows = async (h: Awaited<ReturnType<typeof desk>>, name: string, args: string, output: string, uuid?: string) => {
+    await h.append('command', { type: 'system', name: 'local_command', content: [{ type: 'text', text: `<command-name>/${name}</command-name>\n            <command-message>${name}</command-message>\n            <command-args>${args}</command-args>` }] })
+    await h.append('command', { type: 'system', name: 'local_command', content: [{ type: 'text', text: `<local-command-stdout>${output}</local-command-stdout>` }] }, { uuid })
+  }
+  /** Sends a command and lets the engine take it: the answer, after the Esc window. */
+  const queued = async (h: Awaited<ReturnType<typeof desk>>, body: Record<string, unknown>) => {
+    const id = send(h, body)
+    await h.settle()
+    await h.fire(STOPPED_WAIT_MS)
+    return id
+  }
+
+  test('answers queued at once with its route, then reports the run: start, and an end read back from its rows (A2)', async () => {
+    const h = await desk()
+    const id = await queued(h, { name: 'rename', args: ' desk-m0 ' })
+    expect(answerOf(h, id)).toMatchObject({ op: 'command', ok: true, result: { queued: true, route: 'run', id } })
+    expect(h.calls.filter((c) => c.op === 'command.run')).toEqual([{ op: 'command.run', args: { command: 'rename', args: 'desk-m0' } }])
+    expect(h.ofType('run')).toEqual([expect.objectContaining({ phase: 'start', id, name: 'rename', args: 'desk-m0' })])
+    h.runs[0]!.resolve({})
+    await h.settle()
+    await commandRows(h, 'rename', 'desk-m0', 'Session renamed to: desk-m0', 'out-1')
+    expect(h.ofType('run')).toHaveLength(1)
+    await h.fire(READBACK_WINDOW_MS)
+    expect(h.ofType('run')[1]).toMatchObject({ phase: 'end', id, name: 'rename', args: 'desk-m0', settled: { ok: true }, readback: { how: 'row', text: 'Session renamed to: desk-m0', uuid: 'out-1' } })
+    expect(lifecycle(h, id)).toEqual(['result:ok', 'run:start', 'run:end'])
+  })
+
+  test("a run that settles within the Esc window is still answered queued first, its run's events after", async () => {
+    const h = await desk()
+    const id = send(h, { name: 'reload-skills' })
+    await h.settle()
+    h.runs[0]!.resolve({ text: 'Reloaded skills: 15 skills available (none added or removed).' })
+    await h.settle()
+    expect(lifecycle(h, id)).toEqual(['result:ok', 'run:start', 'run:end'])
+    expect(h.ofType('run')[1]).toMatchObject({ settled: { ok: true, text: 'Reloaded skills: 15 skills available (none added or removed).' }, readback: { how: 'text', text: 'Reloaded skills: 15 skills available (none added or removed).' } })
+  })
+
+  test("a command row that is not the run's before its own is passed over; one between the run's row and its output makes it unconfirmed", async () => {
+    const h = await desk()
+    const id = await queued(h, { name: 'color', args: 'green' })
+    h.runs[0]!.resolve({})
+    await h.settle()
+    await commandRows(h, 'color', 'yellow', 'Session color set to: yellow')
+    await commandRows(h, 'color', 'green', 'Session color set to: green', 'mine')
+    await h.fire(READBACK_WINDOW_MS)
+    expect(h.ofType('run').find((e) => e.phase === 'end' && e.id === id)).toMatchObject({ readback: { how: 'row', text: 'Session color set to: green', uuid: 'mine' } })
+    const again = await queued(h, { name: 'color', args: 'blue' })
+    h.runs[1]!.resolve({})
+    await h.settle()
+    await h.append('command', { type: 'system', content: [{ type: 'text', text: '<command-name>/color</command-name><command-args>blue</command-args>' }] })
+    await h.append('command', { type: 'system', content: [{ type: 'text', text: '<command-name>/rename</command-name><command-args>by-the-name-mod</command-args>' }] })
+    await h.append('command', { type: 'system', content: [{ type: 'text', text: '<local-command-stdout>Session renamed to: by-the-name-mod</local-command-stdout>' }] })
+    expect(h.ofType('run').find((e) => e.phase === 'end' && e.id === again)).toMatchObject({ readback: { how: 'none' } })
+  })
+
+  test('the same command typed at the terminal in the window makes it unconfirmed, never a neighbour\'s line (S7.2)', async () => {
+    const h = await desk()
+    const id = await queued(h, { name: 'color', args: 'green' })
+    h.runs[0]!.resolve({})
+    await h.settle()
+    await commandRows(h, 'color', 'green', 'Session color set to: green')
+    await commandRows(h, 'color', 'green', 'Session color set to: green')
+    expect(h.ofType('run').find((e) => e.phase === 'end' && e.id === id)).toMatchObject({ readback: { how: 'none' } })
+  })
+
+  test('no row of the run within the wait: ran, unconfirmed; a refusal after the call is the end\'s error', async () => {
+    const h = await desk()
+    const id = await queued(h, { name: 'mcp', args: 'disable probe' })
+    h.runs[0]!.resolve({})
+    await h.settle()
+    await h.fire(READBACK_WAIT_MS)
+    expect(h.ofType('run').find((e) => e.phase === 'end' && e.id === id)).toMatchObject({ readback: { how: 'none' } })
+    const failed = await queued(h, { name: 'mcp', args: 'reconnect gone' })
+    h.runs[1]!.reject(new Error('no MCP server named gone'))
+    await h.settle()
+    expect(h.ofType('run').find((e) => e.phase === 'end' && e.id === failed)).toMatchObject({ settled: { ok: false, error: 'no MCP server named gone' }, readback: { how: 'none' } })
+  })
+
+  test('desk commands run one at a time: the next is called once the last is read back, each answered at once', async () => {
+    const h = await desk()
+    const first = await queued(h, { name: 'color', args: 'red' })
+    const second = send(h, { name: 'color', args: 'blue' })
+    await h.settle()
+    expect(answerOf(h, second)).toMatchObject({ ok: true, result: { queued: true, route: 'run', id: second } })
+    expect(h.runs).toHaveLength(1)
+    h.runs[0]!.resolve({})
+    await h.settle()
+    expect(h.runs).toHaveLength(1)
+    await commandRows(h, 'color', 'red', 'Session color set to: red')
+    await h.fire(READBACK_WINDOW_MS)
+    expect(h.runs.map((r) => r.args)).toEqual([
+      { command: 'color', args: 'red' },
+      { command: 'color', args: 'blue' },
+    ])
+    expect(h.ofType('run').map((e) => `${e.id}:${e.phase}`)).toEqual([`${first}:start`, `${first}:end`, `${second}:start`])
+    h.runs[1]!.resolve({})
+    await h.settle()
+    await commandRows(h, 'color', 'blue', 'Session color set to: blue')
+    await h.fire(READBACK_WINDOW_MS)
+    expect(h.ofType('run').find((e) => e.phase === 'end' && e.id === second)).toMatchObject({ readback: { how: 'row', text: 'Session color set to: blue' } })
+  })
+
+  test("after an Esc the engine's refusal is the answer, coded stopped: nothing ran, no run event (H-esc)", async () => {
+    const h = await desk()
+    const id = send(h, { name: 'rename', args: 'x' })
+    await h.settle()
+    h.runs[0]!.reject(new Error('the session was stopped and nobody has sent input since'))
+    await h.settle()
+    expect(answerOf(h, id)).toMatchObject({ ok: false, code: 'stopped', error: 'the session was stopped and nobody has sent input since' })
+    expect(h.ofType('run')).toEqual([])
+    // The next is called at once: nothing is held for the refused one.
+    const next = send(h, { name: 'rename', args: 'y' })
+    await h.settle()
+    expect(h.runs).toHaveLength(2)
+    h.runs[1]!.reject(new Error('the session was stopped and nobody has sent input since'))
+    await h.settle()
+    expect(answerOf(h, next)).toMatchObject({ code: 'stopped' })
+  })
+
+  /** Releases every post, those the releases bring on included. */
+  const releaseAll = async (h: Awaited<ReturnType<typeof desk>>) => {
+    for (let i = 0; i < h.posts.length; i++) {
+      h.posts[i]!.release()
+      await h.settle()
+    }
+  }
+
+  test("a reload-plugins is called only once its answer and its run's start have reached the child; the module it replaces says nothing more (A9)", async () => {
+    const h = harness({ version: V307, commands: COMMANDS, hold: true })
+    await h.ready()
+    await releaseAll(h)
+    const id = send(h, { name: 'reload-plugins' })
+    await h.settle()
+    expect(h.runs).toEqual([])
+    await releaseAll(h)
+    expect(lifecycle(h, id)).toEqual(['result:ok', 'run:start'])
+    expect(h.runs.map((r) => r.args.command)).toEqual(['reload-plugins'])
+    // The engine replaces the module: the child answers this instance's posts 409, and it stops.
+    h.runs[0]!.resolve({})
+    await h.settle()
+    const rename = send(h, { name: 'rename', args: 'x' })
+    await h.settle()
+    h.posts.at(-1)!.refuse()
+    await h.settle()
+    expect(h.runs.map((r) => r.args.command)).toEqual(['reload-plugins'])
+    expect(h.events().filter((e) => e.id === rename && e.type === 'run')).toEqual([])
+    expect(lifecycle(h, id)).toEqual(['result:ok', 'run:start'])
+  })
+
+  test('a reload whose start did not reach the child is not run, and the desk goes on', async () => {
+    const h = harness({ version: V307, commands: COMMANDS, hold: true })
+    await h.ready()
+    await releaseAll(h)
+    const id = send(h, { name: 'reload-plugins' })
+    await h.settle()
+    // The post carrying its answer and its start is lost.
+    const carrying = h.posts.at(-1)!
+    expect(carrying.events.filter((e) => e.id === id).map((e) => e.type)).toEqual(['result', 'run'])
+    carrying.fail()
+    await h.settle()
+    expect(h.runs).toEqual([])
+    send(h, { name: 'color', args: 'red' })
+    await h.settle()
+    expect(h.runs.map((r) => r.args.command)).toEqual(['color'])
+  })
+
+  test('a reload whose start the child has not taken within its wait is not run either', async () => {
+    const h = harness({ version: V307, commands: COMMANDS, hold: true })
+    await h.ready()
+    await releaseAll(h)
+    send(h, { name: 'reload-plugins' })
+    await h.settle()
+    await h.fire(RELOAD_TAKEN_WAIT_MS)
+    expect(h.runs).toEqual([])
+    send(h, { name: 'color', args: 'red' })
+    await h.settle()
+    expect(h.runs.map((r) => r.args.command)).toEqual(['color'])
+  })
+
+  test('a desk command sent while a reload is queued or running is refused, never run through the module the reload replaces', async () => {
+    const h = await desk()
+    await queued(h, { name: 'color', args: 'red' })
+    const reload = await queued(h, { name: 'reload-plugins' })
+    expect(answerOf(h, reload)).toMatchObject({ ok: true, result: { queued: true, route: 'run', id: reload } })
+    const behind = await h.command({ op: 'command', name: 'rename', args: 'x' })
+    expect(behind).toMatchObject({ ok: false, error: RELOADING_REASON })
+    expect(behind.code).toBeUndefined()
+    h.runs[0]!.resolve({})
+    await h.settle()
+    await h.fire(READBACK_WAIT_MS)
+    expect(h.runs.map((r) => r.args.command)).toEqual(['color', 'reload-plugins'])
+    expect(await h.command({ op: 'command', name: 'rename', args: 'y' })).toMatchObject({ ok: false, error: RELOADING_REASON })
+    h.runs[1]!.resolve({})
+    await h.settle()
+    expect(h.ofType('run').filter((e) => e.id === reload).map((e) => e.phase)).toEqual(['start'])
+    // The engine kept this module after all: the desk is held back RELOAD_HOLD_MS, then goes on.
+    await h.fire(RELOAD_HOLD_MS)
+    await queued(h, { name: 'rename', args: 'z' })
+    expect(h.runs.map((r) => r.args.command)).toEqual(['color', 'reload-plugins', 'rename'])
+  })
+
+  test("an Esc's refusal of a reload ends its run, stopped, and frees the desk", async () => {
+    const h = await desk()
+    const id = await queued(h, { name: 'reload-plugins' })
+    h.runs[0]!.reject(new Error('the session was stopped and nobody has sent input since'))
+    await h.settle()
+    expect(h.ofType('run').filter((e) => e.id === id).at(-1)).toMatchObject({
+      phase: 'end',
+      settled: { ok: false, error: 'the session was stopped and nobody has sent input since', code: 'stopped' },
+      readback: { how: 'none' },
+    })
+    const next = await queued(h, { name: 'color', args: 'red' })
+    expect(answerOf(h, next)).toMatchObject({ ok: true })
+    expect(h.runs.map((r) => r.args.command)).toEqual(['reload-plugins', 'color'])
+  })
+
+  test('a refused command runs nothing and posts no run event: a panel, a routed command, an unknown name, a malformed op (A4)', async () => {
+    const h = await desk()
+    expect(await h.command({ op: 'command', name: 'usage' })).toMatchObject({ ok: false, code: 'panel', error: PANEL_REASON })
+    expect(await h.command({ op: 'command', name: 'model', args: 'sonnet' })).toMatchObject({ ok: false, code: 'routed', error: 'use Model instead: /model saves a default for new sessions' })
+    expect(await h.command({ op: 'command', name: 'foo' })).toMatchObject({ ok: false, code: 'unknown-builtin', error: 'not a command this session knows' })
+    expect(await h.command({ op: 'command', name: 'rename' })).toMatchObject({ ok: false, code: 'bad-args', error: 'a name is needed' })
+    expect(await h.command({ op: 'command', args: 'x' })).toMatchObject({ ok: false, error: 'a command is its name, and its args as text' })
+    expect(h.calls.filter((c) => c.op === 'command.run')).toEqual([])
+    expect(h.ofType('run')).toEqual([])
   })
 })

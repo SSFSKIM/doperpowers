@@ -2151,6 +2151,65 @@ class RealChildJobs(Jobs):
         self.fake.child_env = {"SMINOS_BRIDGE_READY_WAIT": str(fake_session.READY_HOLD)}
 
 
+# What a bridge at the desk control surface's M0 says it can do (DX5 `capabilities`).
+CAPS = {"sminos": "1.7.0", "protocol": 2, "engine": "2.1.307", "ops": ["ping", "read", "command"],
+        "reads": ["status"], "routes": {"measured": "2.1.307"}}
+
+
+class Desk(unittest.TestCase):
+    """What the plane learns of a session's bridge for the desk (the desk
+    control surface's M0): what it can do, and which child answered."""
+
+    def setUp(self):
+        self.sid = new_session()
+        self.fake = fake_session.FakeSession(os.environ["HOME"], os.environ["SMINOS_HOME"], self.sid)
+        self.bridges = plane.Bridges()
+        self.now = 0.0
+
+    def tearDown(self):
+        self.fake.stop_bridge()
+
+    def probed(self, until):
+        """The bridge asked again, a probe each time, until `until()` holds."""
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            self.now += plane.BRIDGE_RECHECK
+            self.bridges.answers(self.sid, self.now)
+            if until():
+                return True
+            time.sleep(0.02)
+        return False
+
+    def test_a_probe_keeps_what_the_bridge_can_do_and_the_child_that_answered(self):
+        self.fake.capabilities = CAPS
+        self.fake.start_bridge()
+        self.assertTrue(self.probed(lambda: self.bridges.known(self.sid)))
+        self.assertEqual(self.bridges.capabilities(self.sid), CAPS)
+        first, _, begun = self.bridges.answering(self.sid)
+        self.assertIsNotNone(first, "the child it answered from")
+        p = plane.Plane("testhost", lambda: None, self.bridges)
+        self.assertEqual(p.presence_of(self.sid, self.now), {"record": None, "bridge": True, "capabilities": CAPS},
+                         "the session's presence carries them")
+        # The module reloads: its successor, a mod from before M0, says nothing of what it can do.
+        self.fake.capabilities = None
+        self.fake.kill_child()
+        self.fake.respawn_child()
+        self.assertTrue(self.probed(lambda: self.bridges.answering(self.sid)[0] not in (None, first)),
+                        "another child answers now, and the probe says so")
+        self.assertGreater(self.bridges.answering(self.sid)[1], begun, "from a probe begun since")
+        self.assertIsNone(self.bridges.capabilities(self.sid))
+        self.assertEqual(p.presence_of(self.sid, self.now), {"record": None, "bridge": True})
+
+    def test_a_bridge_gone_answers_nothing(self):
+        self.fake.capabilities = CAPS
+        self.fake.start_bridge()
+        self.assertTrue(self.probed(lambda: self.bridges.known(self.sid)))
+        self.fake.stop_bridge()
+        self.assertTrue(self.probed(lambda: not self.bridges.known(self.sid)))
+        self.assertIsNone(self.bridges.answering(self.sid)[0])
+        self.assertIsNone(self.bridges.capabilities(self.sid))
+
+
 class Roots(unittest.TestCase):
     """`output`'s canonical roots, derived from the machine's own state (DC8's
     Decision Log): one per slug, under the engine's per-uid temp root."""
@@ -5717,6 +5776,69 @@ class Uplink(unittest.TestCase):
                                                        line) for line in said) if m]
         self.assertTrue(closed and closed[-1][1] >= 5, "the idle close says its POSTs: %s" % closed)
         self.assertGreater(dialled[-1], closed[-1][0], "and the next POST's connection is a new dial")
+
+
+    def test_j_what_the_desk_can_do_here_and_a_read_through_the_hub(self):
+        """The desk control surface's M0 on the stream: the machine presence's
+        `desk`, a bridged session's presence with its capabilities, and DX2's
+        `read` down, DX4 `read` up on the sub that asked: the bridge's answer,
+        a kind it does not serve, the machine's wait run out, more than four in
+        flight, a malformed frame passed by, a session with no bridge."""
+        import sminos_rpc
+        ms = self.hub.messages()
+        with open(os.path.join(PLUGIN_ROOT, ".claude-plugin", "plugin.json")) as f:
+            version = json.load(f)["version"]
+        machine = [m for m in ms if m["kind"] == "machine"]
+        self.assertEqual(machine[-1]["body"]["desk"], {"sminos": version, "rpcs": list(sminos_rpc.RPC_NAMES),
+                                                       "reads": []})
+
+        def read(b, frame):
+            self.hub.send({"t": "read", "project": self.project, "session": self.sid, "agentId": None, "sub": b.sub,
+                           **frame})
+
+        def answers(b, k):
+            self.assertTrue(self.feed(b, lambda: len(b.reads) >= k), "%d reads answered: %s" % (k, b.reads))
+            return {r["id"]: r for r in b.reads}
+
+        # No bridge: the transcript's subscription answers that there is none to ask.
+        b = self.subscribe()
+        self.assertTrue(self.feed(b, lambda: b.snapshot is not None))
+        read(b, {"id": "r0", "what": "status"})
+        got = answers(b, 1)["r0"]
+        self.assertEqual((got["what"], got["error"]["code"]), ("status", "no-bridge"))
+        self.assertTrue(got["error"]["message"])
+        self.hub.send({"t": "unsubscribe", "project": self.project, "sub": b.sub})
+
+        count = len(self.hub.messages())
+        self.fake.capabilities = CAPS
+        self.addCleanup(setattr, self.fake, "capabilities", None)
+        self.fake.start_bridge()
+        got = self.hub.wait(lambda ms: any(p.get("capabilities") == CAPS for p in self.presences(ms[count:])),
+                            timeout=5)
+        self.assertIsNotNone(got, "the bridge's capabilities are in the session's presence")
+        b = self.subscribe()
+        self.assertTrue(self.feed(b, lambda: b.snapshot is not None))
+        read(b, {"id": "r1", "what": "status"})
+        read(b, {"id": "r2", "what": "usage"})
+        read(b, {"id": "r3", "what": "silent"})
+        read(b, {"id": "bad", "what": "Not A Kind!"})
+        read(b, {"id": "r4", "what": "status", "args": "not an object"})
+        got = answers(b, 3)
+        self.assertEqual(got["r1"], {"id": "r1", "what": "status", "result": fake_session.STATUS})
+        self.assertEqual(got["r2"]["error"]["code"], "unsupported")
+        self.assertIn("no read usage", got["r2"]["error"]["message"])
+        self.assertEqual(got["r3"]["error"]["code"], "timeout")
+        self.fake.endpoint.hold = 1.0
+        for i in range(5):
+            read(b, {"id": "s%d" % i, "what": "slow"})
+        got = answers(b, 8)
+        slow = [got[k] for k in got if k.startswith("s")]
+        self.assertEqual([r["error"]["code"] for r in slow if "error" in r], ["busy"],
+                         "four in flight on a sub; the fifth is answered busy at once")
+        self.assertEqual([r["result"] for r in slow if "result" in r], [{"slow": True}] * 4)
+        self.assertFalse({"bad", "r4"} & set(got), "a malformed frame is passed by")
+        self.assertEqual(b.errors, [])
+        self.hub.send({"t": "unsubscribe", "project": self.project, "sub": b.sub})
 
 
 if __name__ == "__main__":

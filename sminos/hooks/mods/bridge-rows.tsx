@@ -1,8 +1,8 @@
 import type { SessionMessage } from 'claude-code'
 
 import { ASK_TOOL, DELIVERY_HEAD, PLUGIN } from './ask'
-import { TEXT_CAP, isRecord, loopKey, state } from './bridge-state'
-import type { BridgeEvent, HeldRow, TranscriptRecord } from './bridge-state'
+import { TEXT_CAP, capped, isRecord, loopKey, state } from './bridge-state'
+import type { BridgeEvent, HeldRow, Readback, ReadbackWatch, TranscriptRecord } from './bridge-state'
 import { emit, hold, isHold, releaseStepEnd } from './bridge-stream'
 import type { Hold } from './bridge-stream'
 import { callEnded } from './bridge-requests'
@@ -42,6 +42,13 @@ import { callEnded } from './bridge-requests'
  *
  * A delivery's row (DC8.G6): the prompt row a delivery submitted becomes is
  * named once it is kept (`delivered` `entered`, enteredRow).
+ *
+ * A desk command's readback (the desk control surface spec, §6): the line a
+ * built-in prints exists only as a transcript row, never in what its run
+ * settles to, and `$.session.messages()` never shows the `system` ones; this
+ * hook sees every one, the bridge's own runs' included, 5-22 ms after the run
+ * settles (S7). The rows carry no id of the run, so they are linked by the
+ * command row's own name and arguments (readBack, commandRow).
  */
 
 /** A response row's block, as its chunks name its kind. */
@@ -130,6 +137,80 @@ const NAMED_KEPT = 200
  */
 export const ROWS_POLL_MS = 50
 export const ROWS_POLLS = 30
+
+/** After a desk run settles, how long its command row is looked for; and after that row, its output row (§6). */
+export const READBACK_WAIT_MS = 2_000
+export const READBACK_WINDOW_MS = 100
+const COMMAND_NAME = /<command-name>([\s\S]*?)<\/command-name>/
+const COMMAND_ARGS = /<command-args>([\s\S]*?)<\/command-args>/
+const COMMAND_OUTPUT = /<local-command-(stdout|stderr)>([\s\S]*?)<\/local-command-\1>/
+
+/**
+ * The line a desk run printed, read back from its rows once its promise
+ * settled with no text: the first main-loop command row whose name and
+ * arguments are the run's, then the output row after it within
+ * READBACK_WINDOW_MS. `none` (ran, unconfirmed) when no such command row
+ * comes within READBACK_WAIT_MS, when another command's row comes between
+ * the two (one typed at the terminal), or when a second row of this same
+ * command comes within the window (the person typed it too: the engine
+ * writes both runs' rows at once, S7.2) — never a neighbour's line.
+ */
+export function readBack(name: string, args: string): Promise<Readback> {
+  const after = state.after
+  if (after === undefined) {
+    return Promise.resolve({ how: 'none' })
+  }
+  return new Promise((resolve) => {
+    const watch: ReadbackWatch = {
+      name,
+      args,
+      phase: 'command',
+      done: (readback) => {
+        if (state.readback === watch) {
+          state.readback = undefined
+          resolve(readback)
+        }
+      },
+    }
+    state.readback = watch
+    after(READBACK_WAIT_MS, () => {
+      if (watch.phase === 'command') {
+        watch.done({ how: 'none' })
+      }
+    })
+  })
+}
+
+/** A main-loop row the session kept, read for the readback looked for now (readBack). */
+export function commandRow(door: string, message: { content?: unknown }, uuid: string) {
+  const watch = state.readback
+  if (watch === undefined || door !== 'command') {
+    return
+  }
+  const text = textBlocks(message.content)
+    .map((b) => b.text)
+    .join('\n')
+  const named = COMMAND_NAME.exec(text)?.[1]?.trim()
+  if (named !== undefined) {
+    const isRun = named === `/${watch.name}` && (COMMAND_ARGS.exec(text)?.[1] ?? '').trim() === watch.args
+    if (watch.phase === 'command') {
+      if (isRun) {
+        watch.phase = 'output'
+        state.after?.(READBACK_WINDOW_MS, () => watch.done(watch.output === undefined ? { how: 'none' } : { how: 'row', ...watch.output }))
+      }
+      return
+    }
+    // Another command's row before the output, or this command's again in the window.
+    if (watch.output === undefined || isRun) {
+      watch.done({ how: 'none' })
+    }
+    return
+  }
+  const output = COMMAND_OUTPUT.exec(text)
+  if (watch.phase === 'output' && watch.output === undefined && output !== null) {
+    watch.output = { text: capped(output[2]!.trim()).value as string, uuid }
+  }
+}
 
 /** A result's text: a string, or its text blocks joined. */
 function resultText(content: unknown): string {

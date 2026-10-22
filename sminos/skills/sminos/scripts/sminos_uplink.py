@@ -1259,7 +1259,8 @@ class Link:
         self.handlers = {"welcome": self.on_welcome, "hb": self.on_hb, "have": self.on_have,
                          "events": self.on_events, "resend": self.on_resend, "refused": self.on_refused,
                          "part": self.on_part, "subscribe": self.on_subscribe, "unsubscribe": self.on_unsubscribe,
-                         "rows": self.on_rows, "diff": self.on_diff, "output": self.on_output, "rpc": self.on_rpc,
+                         "rows": self.on_rows, "diff": self.on_diff, "output": self.on_output, "read": self.on_read,
+                         "rpc": self.on_rpc,
                          "rpc-ack": self.on_rpc_ack, "org": self.on_org}
 
     def post_session(self, messages):
@@ -1327,6 +1328,12 @@ class Link:
     def on_welcome(self, frame, stream):
         generation = frame.get("generation")
         self.generation = generation if type(generation) is int else None
+        # The session kinds this hub relays (DX2 `welcome.kinds`): a kind added
+        # since (`read`, `op`) goes only to a hub that lists it, which one
+        # from before the list does not.
+        kinds = frame.get("kinds")
+        kinds = frozenset(k for k in kinds if isinstance(k, str)) if isinstance(kinds, list) else frozenset()
+        self.plane.kinds = self.rpcs.kinds = kinds
         self.opened.clear()
         self.machine_sent.clear()
         self.follows.clear()
@@ -1458,6 +1465,10 @@ class Link:
     def on_output(self, frame, _stream):
         if self.opened_project(frame) is not None:
             self.post_session(self.plane.output(frame))
+
+    def on_read(self, frame, _stream):
+        if self.opened_project(frame) is not None:
+            self.post_session(self.plane.read(frame))
 
     def on_rpc(self, frame, _stream):
         self.rpcs.receive(frame.get("rpc"), Here(self), self.received)
@@ -1732,10 +1743,14 @@ class Link:
             self.session_lane.send(frames, then=lambda refused, f=frames: self.requests.delivered(f, refused))
 
     def relay_rpcs(self):
-        """The RPCs' results and their compactions' progress, up, one entry
-        per project: a result goes again on every stream until `rpc-ack`; a
-        compact message is owed as a settlement is (sminos_owed)."""
+        """The RPCs' results, their compactions' progress and their desk
+        commands' runs, up, one entry per project: a result goes again on
+        every stream until `rpc-ack`; a compact or op message is owed as a
+        settlement is (sminos_owed). A `/reload-plugins` is finished by the
+        plane's probe seeing its bridge answer from another child."""
         self.rpcs.compacted(self.requests.take_compacts())
+        self.rpcs.ops(self.requests.take_ops())
+        self.rpcs.effects(self.plane.bridges.answering)
         for frames in by_project(self.rpcs.due(self.opened)):
             self.rpcs.sending(frames)
             self.session_lane.send(frames, then=lambda refused, f=frames: self.rpcs.delivered(f, refused))

@@ -182,6 +182,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PORT_FILE, CLIENT_ID, CLIENT_SECRET = sys.argv[1:4]
 HEARTBEAT_MS = int(sys.argv[4]) if len(sys.argv) > 4 else 15000
+# The session kinds the welcome lists (DX2 `welcome.kinds`): a hub at the desk
+# control surface's M0, which relays `read` and `op` too.
+KINDS = ["presence", "machine", "compact", "op", "raised", "settled", "delivery", "snapshot", "chunk", "block-row",
+         "step-end", "row", "rows", "end", "subagents", "output", "usage", "diff", "read", "catalog"]
 LEASE = 3 * HEARTBEAT_MS / 1000  # DX2's LEASE_PERIODS of the heartbeat, in seconds
 WAIT = 20
 ORG = "org-1"
@@ -984,7 +988,7 @@ class Handler(BaseHTTPRequestHandler):
             state["generations"][machine] = generation
             mine = state["streams"][machine] = state["last"] = Stream(generation, machine)
             mine.put([{"t": "welcome", "org": ORG, "machine": machine, "generation": generation,
-                       "heartbeat_ms": HEARTBEAT_MS}, org_frame()])
+                       "heartbeat_ms": HEARTBEAT_MS, "kinds": KINDS}, org_frame()])
             state["orgs"][machine] = state["orgs"].get(machine, 0) + 1
             refresh_online()   # the old stream's lease ended with it
             lock.notify_all()

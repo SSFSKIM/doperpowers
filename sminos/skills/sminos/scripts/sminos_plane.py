@@ -149,6 +149,15 @@ again (Resume) among them. A session with no process is served the same way,
 a snapshot from disk, then pages. Only a subscription to a session with no
 process whose transcript this machine does not hold ends `session-ended`, at
 `n` 0. An idle subscription answers `output` too.
+
+What the desk can do with a session (the desk control surface's M0): its
+presence carries the `capabilities` its bridge's status says (absent from a
+bridge that says none: one from before sminos 1.7.0), and a `read` frame is
+the bridge's answer to the read, asked on a thread of its own (at most
+READS_IN_FLIGHT per subscription; the rest answered `busy`), answered on the
+sub as DX4 `read` — after its snapshot, if it came before — or as why there
+is none (`no-bridge`, `unsupported`, `timeout`, `busy`, `failed`). `read` goes
+only to a hub whose welcome lists it (`kinds`).
 """
 
 import collections
@@ -171,6 +180,7 @@ import zlib
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import sminos  # noqa: E402
 import sminos_bridge as bridge  # noqa: E402
+import sminos_control as control  # noqa: E402
 import sminos_jobs as jobs  # noqa: E402
 
 UNNAMED_WAIT = 2.0        # s: a row past the cut that no notice named is drawn after this
@@ -215,6 +225,10 @@ RECORD_FIELDS = ("status", "waitingFor", "needs")
 AGENT_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 TASK_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")   # DX3 `output`'s taskId, as the engine spells task ids
 OUTPUT_TAIL_MAX = 524288  # bytes an `output` may ask for: the answer fits one frame (DX3)
+READ_ID_MAX = 64          # DX3 `read`: its id's characters
+READ_WHAT = re.compile(r"^[a-z-]{1,32}$")
+READ_ARGS_MAX = 4096      # bytes of a read's args, as JSON
+READS_IN_FLIGHT = 4       # reads one subscription waits on at once
 DISK_KEEP = 4096          # files whose facts the disk cache keeps (metas, agent transcripts, parent loops)
 STAMP_BLOCK = 64 << 10    # bytes read at a time looking backward for an agent transcript's last row
 SLUG_MAX = 200            # UTF-16 units of the engine's slug before it is cut and hashed (2.1.300 `xge`)
@@ -1518,6 +1532,7 @@ class Subscription:
         self.tail = Tail()
         self.source = None            # the Transcript whose worker reads this one's bulk, once asked
         self.answers = queue.Queue()  # the worker's answers, in the order asked
+        self.reads = []               # DX4 `read` bodies answered before the snapshot went: sent after it
         self.building = False         # an open's build is asked and not answered yet
         self.over = False             # the session ended and what it flushed is drawn: transcript-only, idle
         self.emitted = {}             # uuid → "history" | "named" | "unnamed"
@@ -2080,6 +2095,8 @@ class Subscription:
         looks at the disk; a transcript replaced under a page is a
         discontinuity. A page's rows are marked off the chain here, from this
         subscription's chain, in the order its messages go."""
+        while self.reads and not self.ended:
+            out.append(self.message("read", self.reads.pop(0)))
         while not self.ended:
             try:
                 kind, value = self.answers.get_nowait()
@@ -2124,6 +2141,40 @@ class Subscription:
         if self.ended or self.n is None:
             return []
         return [self.message("diff", body)]
+
+    def read_answered(self, body):
+        """DX4 `read`: now, or once the snapshot went."""
+        if self.ended:
+            return []
+        if self.n is None:
+            self.reads.append(body)
+            return []
+        return [self.message("read", body)]
+
+
+def read_answer(path, rid, what, args):
+    """DX4 `read`'s body: the session's bridge's answer to the read (DX5),
+    or why there is none."""
+    def error(code, message):
+        return {"id": rid, "what": what, "error": {"code": code, "message": message}}
+
+    try:
+        r = control.post_command(path, {"op": "read", "what": what, **({"args": args} if args is not None else {})})
+    except control.Unanswered as e:
+        return error("failed", "the bridge took the read and gave no answer (%s)" % e)
+    if r is None:
+        return error("no-bridge", "the session has no bridge on this machine")
+    status, out = r
+    out = out if isinstance(out, dict) else {}
+    if status == 504:
+        return error("timeout", "the session did not answer within %d s" % (control.COMMAND_WAIT_MS // 1000))
+    if status != 200:
+        return error("failed", "the bridge answered %d: %s" % (status, out.get("error")))
+    if out.get("ok"):
+        return {"id": rid, "what": what, "result": out.get("result")}
+    why = str(out.get("error") or "the session refused the read")
+    # A kind the mod does not serve, or a mod from before reads.
+    return error("unsupported" if why.startswith(("no read ", "unknown op")) else "failed", why)
 
 
 def block_row(e):
@@ -2239,11 +2290,15 @@ class Bridges:
     known at once and starts a probe when the socket changed or the answer is
     BRIDGE_RECHECK old, one at a time per session, each on a thread of its
     own; a probe whose answer differs wakes the uplink. A bridge that listens
-    and never answers holds only its own probe. Kept across streams."""
+    and never answers holds only its own probe. Kept across streams. Probes
+    are numbered, across sessions, in the order they begin (`answering`)."""
 
     def __init__(self):
         self.lock = threading.Lock()
-        self.held = {}            # session → [socket inode, answered, probed at, probing]
+        # session → [socket inode, answered, probed at, probing, the child that answered (inode, pid), its
+        # capabilities, the number of the probe that answered]
+        self.held = {}
+        self.probes = 0   # probes begun
         self.wake = lambda: None
 
     def answers(self, sid, now, socks=None):
@@ -2259,26 +2314,30 @@ class Bridges:
                 self.held.pop(sid, None)
             return False
         with self.lock:
-            h = self.held.setdefault(sid, [ino, False, None, False])
+            h = self.held.setdefault(sid, [ino, False, None, False, None, None, 0])
             if not h[3] and (h[0] != ino or h[2] is None or now - h[2] >= BRIDGE_RECHECK):
                 h[3] = True
-                threading.Thread(target=self.probe, args=(sid, path, ino, now), name="plane-probe",
+                self.probes += 1
+                threading.Thread(target=self.probe, args=(sid, path, ino, now, self.probes), name="plane-probe",
                                  daemon=True).start()
             return h[1]
 
-    def probe(self, sid, path, ino, now):
-        answered = False
+    def probe(self, sid, path, ino, now, number):
+        answered, child, caps = False, None, None
         try:
             status, body = bridge.request(path, "GET", "/status", timeout=PROBE_TIMEOUT)
             answered = status == 200 and isinstance(body, dict) and body.get("session") == sid
+            if answered:
+                child = [ino, body.get("pid")]
+                caps = body["capabilities"] if isinstance(body.get("capabilities"), dict) else None
         except (OSError, ValueError, http.client.HTTPException):
             pass
         with self.lock:
             h = self.held.get(sid)
             if h is None:
                 return
-            changed = h[1] != answered
-            h[:] = [ino, answered, now, False]
+            changed = h[1] != answered or h[5] != caps
+            h[:] = [ino, answered, now, False, child, caps, number]
         if changed:
             self.wake()
 
@@ -2286,6 +2345,23 @@ class Bridges:
         with self.lock:
             h = self.held.get(sid)
             return bool(h and h[1])
+
+    def answering(self, sid):
+        """(The child the last probe found answering for the session, as
+        [socket inode, pid] (a module reload's successor is another), or
+        None; that probe's number; how many probes have begun.) What the last
+        probe found may be older than a moment, and is evidence of what
+        followed it only if that probe's number is above the count begun at
+        that moment."""
+        with self.lock:
+            h = self.held.get(sid)
+            return (h[4] if h and h[1] else None), (h[6] if h else 0), self.probes
+
+    def capabilities(self, sid):
+        """What the session's bridge said it can do (DX5), when it answered and said."""
+        with self.lock:
+            h = self.held.get(sid)
+            return h[5] if h and h[1] else None
 
 
 def bridge_socks():
@@ -2346,6 +2422,9 @@ class Plane:
         self.gone = {}            # project id → {session: when first said not running}, not seen back (GONE_KEEP)
         self.subs = {}            # sub → Subscription
         self.diffs = queue.Queue()
+        self.read_answers = queue.Queue()   # (sub, DX4 read body) from the reads' threads
+        self.reading = collections.Counter()   # sub → its reads not answered yet
+        self.kinds = frozenset()  # the session kinds the stream's welcome listed (DX2): `read` goes only if listed
         self.read_for = None      # the running sessions the members were last read for
         self.next_members = 0.0
 
@@ -2377,7 +2456,11 @@ class Plane:
     # ---------------------------------------------------- presence
 
     def presence_of(self, sid, now, socks=None):
-        return {"record": record_body(self.live.get(sid)), "bridge": self.bridges.answers(sid, now, socks)}
+        body = {"record": record_body(self.live.get(sid)), "bridge": self.bridges.answers(sid, now, socks)}
+        caps = self.bridges.capabilities(sid) if body["bridge"] else None
+        if caps is not None:
+            body["capabilities"] = caps
+        return body
 
     def presence(self, pid, force=False, now=None, socks=None):
         """DX4 presence for the project's sessions whose presence changed
@@ -2562,6 +2645,33 @@ class Plane:
         threading.Thread(target=run, name="plane-diff", daemon=True).start()
         return []
 
+    def read(self, frame_):
+        """DX2 `read`: the session's bridge asked on a thread of its own,
+        answered on the sub as DX4 `read`. A frame out of DX3's form, or on a
+        sub this stream does not serve, is passed by, as the hub refuses it;
+        so is every one while the hub lists no `read`."""
+        s = self.subs.get(frame_.get("sub"))
+        rid, what, args = frame_.get("id"), frame_.get("what"), frame_.get("args")
+        if s is None or "read" not in self.kinds or not (isinstance(rid, str) and 1 <= len(rid) <= READ_ID_MAX) \
+                or not (isinstance(what, str) and READ_WHAT.match(what)) \
+                or not (args is None or (isinstance(args, dict) and len(json.dumps(args)) <= READ_ARGS_MAX)):
+            return []
+        if s.agent is not None:
+            return s.read_answered({"id": rid, "what": what, "error": {
+                "code": "unsupported", "message": "a read is the session's: ask it on the main loop's subscription"}})
+        if self.reading[s.sub] >= READS_IN_FLIGHT:
+            return s.read_answered({"id": rid, "what": what, "error": {
+                "code": "busy", "message": "%d reads of this subscription are not answered yet" % READS_IN_FLIGHT}})
+        self.reading[s.sub] += 1
+        path = bridge.endpoint(s.session)
+
+        def run(sub=s.sub):
+            self.read_answers.put((sub, read_answer(path, rid, what, args)))
+            self.wake()
+
+        threading.Thread(target=run, name="plane-read", daemon=True).start()
+        return []
+
     # ---------------------------------------------------- between frames
 
     def pump_one(self, sub):
@@ -2576,7 +2686,7 @@ class Plane:
     def tick(self, projects):
         """Everything now due for the projects open on the stream ({id:
         project}): presence that changed, each subscription's messages,
-        finished diffs. Envelopes, in the order to post them. The members are
+        finished diffs and reads. Envelopes, in the order to post them. The members are
         read again — a reconciling read of each log, which reads the start
         time of every live session — when a session came or went, and every
         MEMBERS_EVERY for what only the log changes (a seat retired). The
@@ -2615,4 +2725,15 @@ class Plane:
             s = self.subs.get(sub)
             if s is not None:
                 out += s.diffed(body)
+        while True:
+            try:
+                sub, body = self.read_answers.get_nowait()
+            except queue.Empty:
+                break
+            self.reading[sub] -= 1
+            if self.reading[sub] <= 0:
+                del self.reading[sub]
+            s = self.subs.get(sub)
+            if s is not None:
+                out += s.read_answered(body)
         return out

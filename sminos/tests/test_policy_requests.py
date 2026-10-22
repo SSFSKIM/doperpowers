@@ -1309,7 +1309,7 @@ class Owed(unittest.TestCase):
         rpc_path = os.path.join(os.environ["SMINOS_HOME"], "daemon", rpc.OWED_FILE)
         sminos.write_json(rpc_path, {"version": 2, "owed": [{**frame, "message": {**frame["message"],
                                                                                   "kind": "compact", "body": {}}}]})
-        self.assertEqual(rpc.Rpcs(KEY, "testhost").compact_out, [], "nor a compaction message")
+        self.assertEqual(rpc.Rpcs(KEY, "testhost").messages, [], "nor a compaction message")
 
 
 class RelayedOnLanes(unittest.TestCase):
@@ -1690,7 +1690,7 @@ class RelayedOnLanes(unittest.TestCase):
         lost = self.lose(link, items, link.relay_rpcs, "503")
         self.assertTrue(result_in(lost) and compact_in(lost), "both were in the POST lost: %s" % lost)
         rp = rpc.Rpcs(KEY, "testhost")   # the uplink restarts
-        self.assertEqual([m["message"]["body"]["rpc"] for m in rp.compact_out], [nonce], "owed, from disk")
+        self.assertEqual([m["message"]["body"]["rpc"] for m in rp.messages], [nonce], "owed, from disk")
         link, items, hello = self.stream(2, r, rp)
         self.assertTrue(result_in(hello), "the result follows the next hello (until rpc-ack)")
         n = len(self.hub.posts)
@@ -1701,9 +1701,9 @@ class RelayedOnLanes(unittest.TestCase):
             return any(compact_in(b) for b in self.hub.bodies()[n:])
 
         self.assertTrue(wait_for(relayed), "the compaction's message goes again")
-        self.assertTrue(wait_for(lambda: self.drain(link, items) or rp.compact_out == []), "answered: owed no more")
+        self.assertTrue(wait_for(lambda: self.drain(link, items) or rp.messages == []), "answered: owed no more")
         self.assertEqual(rp.due({self.pid}), [], "neither is due again on this stream")
-        self.assertEqual(rpc.Rpcs(KEY, "testhost").compact_out, [], "nor owed on disk")
+        self.assertEqual(rpc.Rpcs(KEY, "testhost").messages, [], "nor owed on disk")
         after = self.refuse_not_open(link, items)
         self.assertTrue(result_in(self.hub.bodies()[after]), "a re-open's hello carries the result")
         link.relay_rpcs()
@@ -1718,7 +1718,7 @@ class RelayedOnLanes(unittest.TestCase):
         link.relay_rpcs()
         self.assertTrue(wait_for(lambda: len(self.hub.posts) > n))
         self.answered(link, items)        # refused: owed, and the project opened again
-        self.assertEqual(len(rp.compact_out), 1, "refused `not-open`: still owed")
+        self.assertEqual(len(rp.messages), 1, "refused `not-open`: still owed")
         self.assertTrue(wait_for(lambda: len(self.hub.posts) > n + 1), "the hello opening it again went")
         link.relay_rpcs()
         time.sleep(0.3)
@@ -1728,7 +1728,7 @@ class RelayedOnLanes(unittest.TestCase):
         self.assertTrue(wait_for(lambda: self.drain(link, items) or any(
             m["body"]["phase"] == "start" for b in self.hub.bodies()[n + 2:] for m in messages(b, "compact"))),
             "it goes after the hello")
-        self.assertTrue(wait_for(lambda: self.drain(link, items) or rp.compact_out == []), "and is owed no more")
+        self.assertTrue(wait_for(lambda: self.drain(link, items) or rp.messages == []), "and is owed no more")
 
 
 class Uplink(unittest.TestCase):
