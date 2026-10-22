@@ -459,7 +459,7 @@ These separate tickets are already registered. The integrating session carries t
   Rationale: M3 identified 330 generic matches lost because installed snapshots carry the core build number, not the public component's original version object, despite byte-identical artifact members. This metadata difference does not weaken checksum-based publication proof. Review the adapter delta explicitly at the high rung with the whole branch.
   Date/Author: 2026-10-22, confirmed by the coordinating session during M3.
 
-- Decision: Accept the measured 45 npm generic-match losses caused by the bounded source slice and unsupported archive layouts rather than expanding their support in this initiative.
+- Decision: Accept the measured 45 npm generic-match losses caused by the bounded source slice and unsupported text forms rather than expanding their support in this initiative.
   Rationale: These losses use ordinary detection and remain within the agreed utility target once gcloud's evidence-selection defect is corrected. Preserve the 64 KiB slice bound and conservative layout handling; record exact final counts separately from index coverage.
   Date/Author: 2026-10-22, confirmed by the coordinating session during M3.
 
@@ -467,6 +467,29 @@ These separate tickets are already registered. The integrating session carries t
   Rationale: M3 found 155 platform-component generic matches lost due to six unrelated symlinks in one public component and eleven duplicate member names in another. No archive is extracted or executed, so unrelated unique regular members retain independently checked bytes without inheriting link/duplicate ambiguity. Synthetic tests must prove ordering-independent exclusion, including link descendants and every occurrence of a duplicate. Include this adapter delta explicitly in the high whole-branch review.
   Date/Author: 2026-10-22, confirmed by the coordinating session during M3.
 
+- Decision: Provide an additional read-only `guard report-corpus` command alongside `index --report-corpus` and ship its out-of-band TypeScript-runtime reporter with the standalone helper.
+  Rationale: Repeating a preservation measurement need not rediscover or rebuild evidence. Both modes use the production detector and registered tool/append pipeline; neither adds work to the runtime hook.
+  Date/Author: 2026-10-22, M3 execution.
+
+## Implementation verification record
+
+On engine 2.1.308, the isolated macOS native probe passed eight Read cases, repeated verifier-timeout cleanup and interruption of a live verifier while the engine stayed alive. It uses the real mapper, hooks and transcript with a loopback model endpoint, synthetic files and an OS network sandbox. The unchanged pagination assertion requires the native companion attachment paired to its call id. Linux native acceptance has not been run; the driver fails rather than claiming equivalent isolation on an unsupported platform.
+
+The final census reproduced the original denominator exactly. The corpus reporter uses the production hooks with native-characterized slices; this is a separate measurement from the native probe, not a claim that every corpus file was read in a native session.
+
+| Corpus | Files | All detector matches | Generic matches | Indexed original-byte equality | Preserved through both passes |
+|---|---:|---:|---:|---:|---:|
+| npm | 58,463 | 1,124 | 1,094 | 1,094 | 1,049 (95.89%) |
+| gcloud library | 23,324 | 284 | 269 | 269 | 269 (100%) |
+| gcloud platform | 2,885 | 197 | 155 | 155 | 155 (100%) |
+| Total | 84,672 | 1,605 | 1,518 | 1,518 | 1,473 (97.04%) |
+
+All 45 preservation losses are npm: 43 matches on lines exceeding the report's 64 KiB supported-slice policy and two in unsupported control-byte files. Three further control-byte matches overlap the 43 overlong-line losses and are not counted twice. Archive-layout skips remain in overall index reporting but do not lose any of these 1,518 generic-hit matches. These counts describe detector matches, not verified harmlessness.
+
+The final index covers 88,238 npm files across 1,621 packages and 28,106 gcloud files across twelve components. gcloud reports seventeen excluded archive members, eight oversized files and four components without available evidence. npm's overall skip counts are unchanged from the earlier index record. None of those mixed-scope counts is a file denominator.
+
+Focused Python tests: 37 passed. M2 focused two-pass tests: 52 passed. Committed `devcloud-mods` and `mods-types` gates passed on `cc65a838` ([run 39788634046](https://github.com/SSFSKIM/doperpowers/actions/runs/39788634046)). The release bump is devcloud 0.10.0, subject to checking main again before integration.
+
 ## Outcomes & Retrospective
 
-Pending — written at finish.
+Pending — written after final review.
