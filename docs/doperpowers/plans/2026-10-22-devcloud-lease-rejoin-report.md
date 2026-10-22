@@ -11,7 +11,7 @@
 
 Done. Every success criterion of the ticket was shown live on GCE, and the board #115 entries are
 in the spec. The high-rung review took three rounds and the last was clean. Every resource this
-work made is deleted. The PR is open against main, not merged.
+work made is deleted. The PR, https://github.com/SSFSKIM/doperpowers/pull/337, is open against main and not merged. Board #115 is in-review with it.
 
 | Criterion | Evidence |
 |---|---|
@@ -160,7 +160,8 @@ The ci-kit gates on GitHub Actions:
 - 275f8fc2 and 0020899c were GREEN.
 - 5321a4e8 and d5e5a2ab passed every gate but `mods-types`, which was cancelled both times. That
   gate's `npm i -g @anthropic-ai/claude-code` step hung until its timeout. This change touches no
-  mods code. The result on the final head is in the PR.
+  mods code. The final head, f95aeb13, gave the same result: every gate passed but the cancelled
+  `mods-types`.
 
 ## Decisions and deviations
 
