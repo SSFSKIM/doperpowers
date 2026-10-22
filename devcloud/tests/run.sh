@@ -52,10 +52,14 @@ if ! docker build --progress=plain ${cache[@]+"${cache[@]}"} -t "$image" -f devc
   exit 1
 fi
 echo "ok the image builds ($(docker image inspect -f '{{.Size}}' "$image" | awk '{printf "%.1f GB", $1 / 1e9}'))"
-if [ -n "${scope:-}" ]; then
-  echo "  build cache $scope:"
-  awk '/^#[0-9]+ \[/ { step[$1] = $0 } /^#[0-9]+ CACHED$/ { print "    " step[$1] " CACHED" }' "$log"
-fi
+echo "  build steps${scope:+ (cache $scope)}:"
+awk '
+  /^#[0-9]+ \[/ { step[$1] = $0 }
+  /^#[0-9]+ (CACHED|DONE)( |$)/ {
+    id = $1
+    if (id in step) { sub(/^#[0-9]+ /, ""); print "    " step[id] " " $0 }
+  }
+' "$log"
 
 echo "== integration"
 python3 devcloud/tests/integration.py "$image"

@@ -258,6 +258,25 @@ def image_is_clean():
     check(found["pattern"] == [], "(c) detections outside package-owned trees:\n  " + "\n  ".join(found["pattern"][:60]))
 
 
+@case("Claude is a user-owned native install with its updater enabled, offline", "image")
+def claude_native_install():
+    result = docker("run", "--rm", "--network", "none", "--user", USER,
+                    "-e", f"HOME={HOME}", "--entrypoint", "bash", IMAGE, "-euc", r'''
+      launcher="$HOME/.local/bin/claude"
+      binary="$(readlink -f "$launcher")"
+      case "$binary" in "$HOME/.local/share/claude/versions/"*) ;; *) exit 1 ;; esac
+      test -O "$binary" && test -w "$binary"
+      test -w "$HOME/.local/bin" && test -w "$HOME/.local/share/claude/versions"
+      test "$(jq -r .installMethod "$HOME/.claude.json")" = native
+      "$launcher" --version
+      "$launcher" doctor
+    ''')
+    check("Running: native" in result.stdout, result.stdout)
+    check("Config install method: native" in result.stdout, result.stdout)
+    check("Auto-updates: enabled" in result.stdout, result.stdout)
+    print("  " + result.stdout.splitlines()[0])
+
+
 # --- the stand-ins -----------------------------------------------------------------
 
 def stand_ins():
