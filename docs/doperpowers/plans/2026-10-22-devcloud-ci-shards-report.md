@@ -41,9 +41,20 @@ The parts: `image` alone (104 s), `host` = host + one-shot (about 99 s), `system
 | devcloud-host | 4m30s | 6 s | – | 153 s | 101 s |
 | devcloud-systemd | 4m25s | 11 s | – | 148 s | 101 s |
 
-Wall time for the devcloud gate set went from 8m38s to 4m30s. The PR body carries the times from the PR's own first green run.
+Wall time for the devcloud gate set went from 8m38s to 4m30s. The PR body carries the times from the PR's own first green run (below).
 
 **Every case still runs exactly once.** The unsharded gate printed 44 case lines and the three parts together printed 45. The one extra line is "the stand-ins start", setup that runs in each part that boots containers (host and systemd). Without that line, the two lists hold the same 43 cases, sorted equal, with no duplicate and no failure. The unsharded run's sequence is also identical, line for line, to main's reference run (`diff` empty). Locally, before CI, an import of `integration.py` confirmed that the parts partition the 43 registered cases.
+
+## The PR's first green run (39704697659, PR #336)
+
+| gate | job | build | integration | cases |
+|---|---|---|---|---|
+| devcloud-unit | 1m24s | – | – (75 s unit, 615 tests) | – |
+| devcloud-image | 4m21s | 144 s | 96 s | 3 |
+| devcloud-host | 4m50s | 164 s | 108 s | 29 |
+| devcloud-systemd | 3m39s | 122 s | 88 s | 11 |
+
+The devcloud set's wall time was 4m50s, against 8m38s–8m40s serial. Image build time varied from 122 s to 164 s between runners, so the slowest part changes from run to run, and the build's variance now outweighs the imbalance between parts.
 
 ## Decisions
 
