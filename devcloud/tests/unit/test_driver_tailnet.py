@@ -126,6 +126,42 @@ class ReaperRemovesTheNodeTest(DriverBase):
         self.assertEqual(self.tailnet_api.calls, [])
         self.assertEqual(self.secrets.reads, [])
 
+    def test_a_bounded_run_whose_time_runs_out_mid_removal_starts_no_deletion_after_it(self):
+        now = [1000.0]
+        ctx = self.make_ctx(monotonic=lambda: now[0])
+        self.tailnet_api.devices_listed = [ts_device("dc-a-0001", "nA1CNTRL"), ts_device("dc-a-0001", "nA2CNTRL")]
+        devices = self.tailnet_api.devices
+
+        def slow(tok, timeout):
+            listed = devices(tok, timeout)
+            now[0] += 100       # the listing used up the bounded run's time
+            return listed
+
+        self.tailnet_api.devices = slow
+        with ctx.bounded(60):
+            note = tailnet.remove(ctx, "dc-a-0001")
+        self.assertEqual(self.tailnet_api.deleted(), [])
+        self.assertIn("nA1CNTRL", note)
+        self.assertIn("nA2CNTRL", note)
+        self.assertIn("the bounded run's time is spent", note)
+
+    def test_a_bounded_run_whose_time_runs_out_between_deletions_leaves_the_rest_named(self):
+        now = [1000.0]
+        ctx = self.make_ctx(monotonic=lambda: now[0])
+        self.tailnet_api.devices_listed = [ts_device("dc-a-0001", "nA1CNTRL"), ts_device("dc-a-0001", "nA2CNTRL")]
+        delete = self.tailnet_api.delete_node
+
+        def slow(tok, node_id, timeout):
+            now[0] += 100
+            return delete(tok, node_id, timeout)
+
+        self.tailnet_api.delete_node = slow
+        with ctx.bounded(60):
+            note = tailnet.remove(ctx, "dc-a-0001")
+        self.assertEqual(self.tailnet_api.deleted(), ["nA1CNTRL"])
+        self.assertIn("nA1CNTRL removed", note)
+        self.assertIn("nA2CNTRL not removed: the bounded run's time is spent", note)
+
 
 if __name__ == "__main__":
     unittest.main()

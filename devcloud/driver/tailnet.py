@@ -19,6 +19,7 @@ from .errors import DriverError
 
 TAG = "tag:devcloud"
 MIN_LEFT = 2            # a bounded run with less left asks the API nothing
+TIME_SPENT = "the bounded run's time is spent"
 HINT = "remove it in the Tailscale admin console if it is listed"
 
 
@@ -58,21 +59,33 @@ def remove(ctx, name):
         left = ctx.remaining()
         return tsapi.TIMEOUT if left is None else max(1, min(tsapi.TIMEOUT, left))
 
-    left = ctx.remaining()
-    if left is not None and left < MIN_LEFT:
-        return f"; its tailnet node was not looked for: the bounded run's time is spent ({HINT})"
+    def spent():
+        left = ctx.remaining()
+        return left is not None and left < MIN_LEFT
+
+    def request(call):
+        """One API request, asked only while the bounded run has time left."""
+        if spent():
+            raise StepError(TIME_SPENT)
+        return call()
+
+    if spent():
+        return f"; its tailnet node was not looked for: {TIME_SPENT} ({HINT})"
     api = ctx.tailnet_api
     try:
-        secret = ctx.secrets.access(ctx.profile.host.tailscale_secret, timeout=timeout()).strip()
-        tok = api.token(secret, timeout())
+        secret = request(lambda: ctx.secrets.access(ctx.profile.host.tailscale_secret, timeout=timeout())).strip()
+        tok = request(lambda: api.token(secret, timeout()))
         if not tok.can_delete:
             raise StepError("the Tailscale OAuth client may not remove nodes (it lacks the devices:core scope)")
-        found = nodes_of(api.devices(tok, timeout()), name)
+        found = nodes_of(request(lambda: api.devices(tok, timeout())), name)
     except (DriverError, StepError) as error:
         return f"; its tailnet node was not removed ({error}): {HINT}"
-    said, failed = [], []
+    said, failed, skipped = [], [], []
     for node in found:
         node_id = node.get("nodeId") or node.get("id")
+        if spent():
+            skipped.append(node_id)
+            continue
         try:
             said.append(f"{node_id} {api.delete_node(tok, node_id, timeout())}")
         except StepError as error:
@@ -82,4 +95,7 @@ def remove(ctx, name):
         note += f"; its tailnet node{'s' if len(said) > 1 else ''} {', '.join(said)} through the Tailscale API"
     if failed:
         note += f"; its tailnet node{'s' if len(failed) > 1 else ''} {', '.join(failed)} not removed: {HINT}"
+    if skipped:
+        note += (f"; its tailnet node{'s' if len(skipped) > 1 else ''} {', '.join(skipped)} not removed: "
+                 f"{TIME_SPENT} ({HINT})")
     return note
