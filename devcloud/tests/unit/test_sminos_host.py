@@ -8,6 +8,7 @@ import json
 import os
 import pathlib
 import pwd
+import shutil
 import tempfile
 import unittest
 
@@ -204,6 +205,54 @@ class SminosHostTest(unittest.TestCase):
         self.assertFalse((self.home / "elsewhere/systemd").exists())
         for call in recorder.calls:
             self.assertNotIn("XDG_CONFIG_HOME", call["env"])
+
+
+
+class LinkTest(unittest.TestCase):
+    """The sminos launcher on every shell's PATH (/usr/local/bin/sminos): a
+    non-login `vm ssh` command finds it, root and the user alike."""
+
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="devcloud-sminos-link-"))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        me = pwd.getpwuid(os.getuid())
+        self.home = self.tmp / "home"
+        (self.home / ".claude/plugins").mkdir(parents=True)
+        self.user = User(name=me.pw_name, uid=me.pw_uid, gid=me.pw_gid, home=self.home)
+        self.link = self.tmp / "bin/sminos"
+        self.link.parent.mkdir()
+
+    def clone(self, where):
+        scripts = self.tmp / where / "sminos/skills/sminos/scripts"
+        scripts.mkdir(parents=True, exist_ok=True)
+        (scripts / "sminos.py").write_text("")
+        (scripts / "sminos").write_text("#!/usr/bin/env bash\n")
+        (self.home / ".claude/plugins/known_marketplaces.json").write_text(
+            json.dumps({"doperpowers": {"installLocation": str(self.tmp / where)}}))
+        return scripts / "sminos"
+
+    def test_links_the_launcher_beside_the_cli_and_again_unchanged(self):
+        launcher = self.clone("clone-a")
+        self.assertEqual(sminos_host.link_cli(self.user, link=self.link), launcher)
+        self.assertEqual(os.readlink(self.link), str(launcher))
+        self.assertEqual(sminos_host.link_cli(self.user, link=self.link), launcher)
+        self.assertEqual(os.readlink(self.link), str(launcher))
+        self.assertEqual(sorted(p.name for p in self.link.parent.iterdir()), ["sminos"], "no temporary left")
+
+    def test_a_moved_cli_moves_the_link(self):
+        self.clone("clone-a")
+        sminos_host.link_cli(self.user, link=self.link)
+        moved = self.clone("clone-b")
+        sminos_host.link_cli(self.user, link=self.link)
+        self.assertEqual(os.readlink(self.link), str(moved))
+
+    def test_no_cli_links_nothing(self):
+        self.assertIsNone(sminos_host.link_cli(self.user, link=self.link))
+        self.assertFalse(os.path.lexists(self.link))
+        launcher = self.clone("clone-a")
+        launcher.unlink()          # a clone with sminos.py but no launcher
+        self.assertIsNone(sminos_host.link_cli(self.user, link=self.link))
+        self.assertFalse(os.path.lexists(self.link))
 
 
 if __name__ == "__main__":

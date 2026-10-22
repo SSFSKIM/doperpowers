@@ -45,6 +45,45 @@ sys.exit(1)
 PY
 }
 variant apply-leaks leak_apply
+# The synced settings of the Macs, in brief: the doperpowers marketplace declared
+# (here the checkout under test, served as example/doperpowers), the function
+# hooks on, devcloud enabled; and an apply step that adds the marketplace from
+# the declared source and installs its plugins, as the real one does.
+plugins_profile() {
+  python3 - <<'PY'
+import json
+settings = json.load(open("settings.json"))
+settings["env"]["CLAUDE_CODE_ENABLE_FUNCTION_HOOKS"] = "1"
+settings["enabledPlugins"] = {"devcloud@doperpowers": True}
+settings["extraKnownMarketplaces"] = {"doperpowers": {"source": {
+    "source": "git", "url": "http://fixtures:8083/example/doperpowers.git"}}}
+json.dump(settings, open("settings.json", "w"), indent=2)
+PY
+  cat >> sync/apply.py <<'PY'
+import json
+import subprocess
+plugins_dir = pathlib.Path.home() / ".claude/plugins"
+def known(name):
+    try:
+        return json.loads((plugins_dir / name).read_text())
+    except (OSError, ValueError):
+        return {}
+declared = json.loads((pathlib.Path.home() / ".claude/settings.json").read_text())["extraKnownMarketplaces"]
+with open(state / "apply.log", "a") as log:
+    if "doperpowers" not in known("known_marketplaces.json"):
+        add = subprocess.run(["claude", "plugin", "marketplace", "add", declared["doperpowers"]["source"]["url"]],
+                             capture_output=True, text=True, timeout=300)
+        log.write(f"marketplace add exited {add.returncode}\n")
+    if "doperpowers" in known("known_marketplaces.json"):
+        installed = known("installed_plugins.json").get("plugins", {})
+        for plugin in ("to-human", "sminos", "doperpowers", "devcloud"):
+            if f"{plugin}@doperpowers" not in installed:
+                done = subprocess.run(["claude", "plugin", "install", f"{plugin}@doperpowers", "--scope", "user", "-y"],
+                                      capture_output=True, text=True, timeout=300)
+                log.write(f"install {plugin} exited {done.returncode}\n")
+PY
+}
+variant plugins plugins_profile
 
 # --- the project repositories ---------------------------------------------------
 app=/srv/app-work

@@ -124,7 +124,7 @@ class NeedsABootTest(unittest.TestCase):
         marker = pathlib.Path(tempfile.mkdtemp()) / "booted"
         marker.write_text("")   # a previous boot's
 
-        def run_steps(steps_, r, done=None):
+        def run_steps(steps_, r, done=None, guard=None):
             self.assertFalse(marker.exists(), "the marker outlived the start of a boot")
             if steps_ is steps.BOOT:
                 return 1 if outcome == "host failed" else 0
@@ -170,9 +170,10 @@ class OwedRestartTest(unittest.TestCase):
         self.pending = tmp / "pending"
         self.booted = tmp / "booted"
         self.booted.write_text("")             # a boot made this host
-        patcher = mock.patch.object(services, "BOOTED", self.booted)
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        for patcher in (mock.patch.object(services, "BOOTED", self.booted),
+                        mock.patch.object(services, "SHIPPER_SEEN", tmp / "shipper-configured")):
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
     def apply(self, env_changed, run):
         return services.apply_systemd(self.user, env_changed, run=run, unit_dir=self.units, pending_dir=self.pending)
@@ -196,7 +197,7 @@ class OwedRestartTest(unittest.TestCase):
         with contextlib.ExitStack() as stack:
             stack.enter_context(mock.patch.object(steps, "_locked", contextlib.nullcontext))
             stack.enter_context(mock.patch.object(steps.status, "reset", lambda: None))
-            stack.enter_context(mock.patch.object(steps, "_run", lambda steps_, r, done=None: 0))
+            stack.enter_context(mock.patch.object(steps, "_run", lambda steps_, r, done=None, guard=None: 0))
             stack.enter_context(mock.patch.object(steps, "Run", lambda kind: mock.Mock(user=self.user)))
             stack.enter_context(mock.patch.object(services, "systemd_is_init", lambda: True))
             stack.enter_context(mock.patch.object(services, "start_gated", lambda user, **_: calls.append(
@@ -239,6 +240,10 @@ class OwedRestartTest(unittest.TestCase):
         r.user = self.user
         seen = []
         with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch.object(steps.lease, "LOCK", pathlib.Path(tempfile.mkdtemp()) / "lock"))
+            stack.enter_context(mock.patch.object(steps.status, "lifecycle", lambda: None))
+            stack.enter_context(mock.patch.object(steps, "_enroll", lambda r, env: steps.sminos_host.Enrollment(
+                "none", "")))
             stack.enter_context(mock.patch.object(steps, "_read_env", lambda path: {}))
             stack.enter_context(mock.patch.object(steps.sminos_host, "check_role", lambda *a: None))
             stack.enter_context(mock.patch.object(steps, "_devcloud_services", mock.Mock(

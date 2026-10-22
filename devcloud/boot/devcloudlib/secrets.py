@@ -88,8 +88,7 @@ def parse(text):
         if file:
             if not file.startswith("~/"):
                 raise ProfileError(f"{where}: file must start with ~/ (a path in the user's home)")
-            if ".." in pathlib.PurePosixPath(file[2:]).parts:
-                raise ProfileError(f"{where}: file must stay inside the home")
+            _in_home(file, where)
         if template is not None and not file:
             raise ProfileError(f"{where}: a template needs a file")
         mode = raw.get("mode", "0600")
@@ -101,6 +100,17 @@ def parse(text):
         entries.append(Entry(name=name, store=store, env=env, file=file, template=template,
                              mode=int(mode, 8), optional=optional))
     return entries
+
+
+def _in_home(file, where):
+    """`file`'s path under the home: refused when it is absolute (`~//etc/x`
+    joins to /etc/x), climbs out, or names the home itself. Each path an entry
+    writes is listed in the ledger, and the release removes a listed path
+    outside the home as root (§6.5)."""
+    suffix = pathlib.PurePosixPath(file[2:])
+    if suffix.is_absolute() or ".." in suffix.parts or not suffix.parts:
+        raise ProfileError(f"{where}: file must name a path inside the home")
+    return suffix
 
 
 @dataclasses.dataclass
@@ -133,12 +143,22 @@ def _write(entry, payload, data, home):
         write_file(store / entry.store, payload)
         os.chmod(store, 0o700)
     if entry.file:
-        write_file(home / entry.file[2:], data, mode=entry.mode)
+        write_file(home / _in_home(entry.file, entry.name), data, mode=entry.mode)
 
 
-def materialize(entries, fetch, home, as_user=None):
+def targets(entry, home):
+    """The paths an entry writes: its store file and its file, each inside
+    `home` (ProfileError otherwise)."""
+    home = pathlib.Path(home)
+    return (([home / STORE / entry.store] if entry.store else [])
+            + ([home / _in_home(entry.file, f"secrets.toml entry {entry.name!r}")] if entry.file else []))
+
+
+def materialize(entries, fetch, home, as_user=None, before_write=None):
     """Fetches each entry with `fetch(name)` (bytes, or None when absent) and
-    writes its targets in `home`, through `as_user(fn)` when given."""
+    writes its targets in `home`, through `as_user(fn)` when given;
+    `before_write(path)` is called for each target first, in this process
+    (the credential ledger's entry, Design §6.5)."""
     home = pathlib.Path(home)
     run_as = as_user or (lambda fn: fn())
     written, missing, failed = 0, [], []
@@ -158,7 +178,12 @@ def materialize(entries, fetch, home, as_user=None):
         try:
             env_value, data = _targets(entry, payload)
             if entry.store or entry.file:
+                for path in targets(entry, home):
+                    (before_write or (lambda path: None))(path)
                 run_as(lambda: _write(entry, payload, data, home))
+        except ProfileError as error:
+            failed.append(f"{entry.name} ({error})")
+            continue
         except UnicodeDecodeError:
             failed.append(f"{entry.name} (not UTF-8 text, which a template or env target needs)")
             continue

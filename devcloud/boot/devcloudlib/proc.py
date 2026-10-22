@@ -22,6 +22,15 @@ SYSTEM_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 KNOWN = redact.Known()
 
 
+def know_host(user, seed_path=None, env_path="/etc/devcloud/env"):
+    """Every secret value already on this host made known, before a process
+    runs any child whose output it logs: the boot and the jobs on loading,
+    each lifecycle command (a process of its own) before its first step."""
+    KNOWN.update(redact.host_values(user, env_path=env_path))
+    if seed_path:
+        KNOWN.update(redact.seed_values(seed_path))
+
+
 class StepError(Exception):
     """A step's failure; the message is its status detail, so it names no value."""
 
@@ -141,6 +150,32 @@ def run(argv, *, user=None, env=None, log=None, input=None, capture=False, timeo
     if result.returncode != 0:
         raise StepError(f"{label} exited {result.returncode}{where}")
     return result.stdout.decode() if capture else None
+
+
+def call(argv, *, user=None, env=None, log=None, input=None, timeout=600, cwd=None):
+    """Runs `argv` as `run` does, but returns its exit status rather than
+    raising on one: (exit, stdout, stderr's last line), both scrubbed. A
+    timeout is exit 124, a missing command 127."""
+    kwargs = {}
+    if _drops(user):
+        kwargs.update(user=user.uid, group=user.gid, extra_groups=[])
+    try:
+        result = subprocess.run(
+            argv, env=env, cwd=cwd, timeout=timeout,
+            input=input.encode() if isinstance(input, str) else input,
+            stdin=None if input is not None else subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, **kwargs,
+        )
+    except FileNotFoundError:
+        return 127, "", "command not found"
+    except subprocess.TimeoutExpired as expired:
+        if log:
+            _write_log(log, argv, (expired.stdout or b"") + (expired.stderr or b""))
+        return 124, "", f"timed out after {timeout}s"
+    if log:
+        _write_log(log, argv, (result.stdout or b"") + (result.stderr or b""))
+    err = [line for line in KNOWN.scrub(result.stderr or b"").decode(errors="replace").splitlines() if line.strip()]
+    return result.returncode, KNOWN.scrub(result.stdout or b"").decode(errors="replace"), err[-1] if err else ""
 
 
 def write_file(path, data, mode=0o600, dir_mode=0o700):

@@ -1,0 +1,188 @@
+#!/usr/bin/env python3
+"""The stand-in `gcloud` for the gce provider's tests: state in the JSON file $FAKE_GCLOUD_STATE
+(instances, images, machine_types {zone: [...]}, custom_types {name: {...}}, activated, next_id,
+calls, fail). Every invocation's argv is appended to `calls`, with the CLOUDSDK_* environment it
+saw. It exits 99 unless CLOUDSDK_CONFIG names a directory other than the person's default
+(~/.config/gcloud), so a provider that would use the person's own gcloud identity fails loudly.
+`fail["<group> <command>"] = {"code", "stderr"}` (e.g. "instances create") makes that command fail.
+Output is shaped like gcloud 580's JSON, reduced to the fields devcloud reads; flags are taken in
+the `--flag=value` form the provider uses, and `--quiet`, `--force` and `--no-standard-images` as
+booleans."""
+import json
+import os
+import pathlib
+import sys
+
+ARGV = sys.argv[1:]
+STATE_PATH = os.environ["FAKE_GCLOUD_STATE"]
+with open(STATE_PATH) as f:
+    state = json.load(f)
+state.setdefault("calls", []).append(
+    {"argv": ARGV, "env": {k: v for k, v in os.environ.items() if k.startswith("CLOUDSDK_")}})
+
+
+def save():
+    with open(STATE_PATH, "w") as f:
+        json.dump(state, f, indent=1)
+
+
+def die(code, message):
+    save()
+    sys.stderr.write(message.rstrip("\n") + "\n")
+    sys.exit(code)
+
+
+def out(value):
+    save()
+    print(json.dumps(value, indent=2))
+    sys.exit(0)
+
+
+config = os.environ.get("CLOUDSDK_CONFIG")
+if not config or pathlib.Path(config).expanduser().resolve() == (pathlib.Path.home() / ".config/gcloud").resolve():
+    die(99, "fake gcloud: CLOUDSDK_CONFIG must name a private configuration")
+
+BOOLEAN = {"--quiet", "--force", "--no-standard-images"}
+words, flags = [], {}
+for a in ARGV:
+    if a.startswith("--"):
+        name, eq, value = a.partition("=")
+        if not eq and name not in BOOLEAN:
+            die(2, f"fake gcloud: flag {name} needs =value")
+        flags.setdefault(name, []).append(value if eq else True)
+    else:
+        words.append(a)
+
+
+def flag(name, default=None):
+    return flags.get(name, [default])[-1]
+
+
+group = " ".join(words[1:3]) if words[:1] == ["compute"] else " ".join(words[:2])
+rest = words[3:] if words[:1] == ["compute"] else words[2:]
+if group in state.get("fail", {}):
+    failure = state["fail"][group]
+    die(failure.get("code", 1), failure["stderr"])
+
+NOW = "2026-10-21T05:00:00.000-07:00"
+URL = "https://www.googleapis.com/compute/v1/projects/{project}/zones/{zone}"
+
+
+def project():
+    p = os.environ.get("CLOUDSDK_CORE_PROJECT")
+    if not p:
+        die(1, "ERROR: (gcloud) The required property [project] is not currently set.")
+    return p
+
+
+def new_id():
+    n = state.get("next_id", 7000000000000000000)
+    state["next_id"] = n + 1
+    return n
+
+
+def labels_of(text):
+    return dict(pair.split("=", 1) for pair in text.split(",") if pair) if text else {}
+
+
+def not_found(kind, name):
+    die(1, f"ERROR: (gcloud.compute.{kind}) Could not fetch resource:\n - The resource "
+           f"'projects/{project()}/{kind}/{name}' was not found")
+
+
+def keep(item, expr):
+    """The two filters the provider uses: `labels.devcloud:*` and `id=<n>`."""
+    if not expr:
+        return True
+    if expr == "labels.devcloud:*":
+        return "devcloud" in (item.get("labels") or {})
+    if expr.startswith("id="):
+        return str(item["id"]) == expr[3:]
+    die(1, f"fake gcloud: unsupported filter {expr}")
+
+
+def instance(name, zone):
+    for item in state["instances"]:
+        if item["name"] == name and item["zone"].rsplit("/", 1)[-1] == zone:
+            return item
+    not_found("instances", name)
+
+
+if group == "auth activate-service-account":
+    state.setdefault("activated", []).append(flag("--key-file"))
+    save()
+    sys.stderr.write("Activated service account credentials\n")
+elif group == "auth print-access-token":
+    die(1, "fake gcloud: no token here (the price catalog is not fetched in tests)")
+elif group == "machine-types list":
+    out(state["machine_types"].get(flag("--zones"), []))
+elif group == "machine-types describe":
+    zone, name = flag("--zone"), rest[0]
+    found = [t for t in state["machine_types"].get(zone, []) if t["name"] == name]
+    if not found and name in state.get("custom_types", {}):
+        found = [dict(state["custom_types"][name], name=name, zone=zone)]
+    if not found:
+        not_found("machineTypes", name)
+    out(found[0])
+elif group == "instances create":
+    name, zone = rest[0], flag("--zone")
+    if any(i["name"] == name for i in state["instances"]):
+        die(1, f"ERROR: (gcloud.compute.instances.create) The resource '{name}' already exists")
+    metadata = [{"key": k, "value": v} for item in flags.get("--metadata", [])
+                for k, v in [item.split("=", 1)]]
+    for item in flags.get("--metadata-from-file", []):
+        key, path = item.split("=", 1)
+        metadata.append({"key": key, "value": pathlib.Path(path).read_text()})
+    iid = new_id()
+    made = {
+        "id": str(iid), "name": name, "zone": URL.format(project=project(), zone=zone),
+        "machineType": URL.format(project=project(), zone=zone) + "/machineTypes/" + flag("--machine-type"),
+        "status": "RUNNING", "creationTimestamp": NOW, "labels": labels_of(flag("--labels")),
+        "networkInterfaces": [{"accessConfigs": [{"natIP": f"198.51.100.{iid % 256}"}]}],
+        "disks": [{"boot": True, "source": URL.format(project=project(), zone=zone) + "/disks/" + name}],
+        "metadata": {"items": metadata},
+        "_flags": {k: v for k, v in flags.items()},
+    }
+    state["instances"].append(made)
+    out([made])
+elif group == "instances list":
+    out([i for i in state["instances"] if keep(i, flag("--filter"))])
+elif group == "instances describe":
+    out(instance(rest[0], flag("--zone")))
+elif group == "instances update":
+    item = instance(rest[0], flag("--zone"))
+    for key in (flag("--remove-labels") or "").split(","):
+        if key:
+            item["labels"].pop(key, None)
+    item["labels"].update(labels_of(flag("--update-labels")))
+    out(item)
+elif group == "instances delete":
+    item = instance(rest[0], flag("--zone"))
+    state["instances"].remove(item)
+    save()
+    sys.stderr.write(f"Deleted [{item['name']}].\n")
+elif group == "images create":
+    name = rest[0]
+    disk = flag("--source-disk")
+    if not any(i["disks"][0]["source"].endswith("/disks/" + disk) for i in state["instances"]):
+        not_found("disks", disk)
+    made = {"id": str(new_id()), "name": name, "creationTimestamp": NOW, "labels": labels_of(flag("--labels")),
+            "family": flag("--family"), "sourceDisk": disk, "_force": flag("--force", False), "status": "READY"}
+    state["images"].append(made)
+    out([made])
+elif group == "images list":
+    out([i for i in state["images"] if keep(i, flag("--filter"))])
+elif group == "images describe":
+    found = [i for i in state["images"] if i["name"] == rest[0]]
+    if not found:
+        not_found("images", rest[0])
+    out(found[0])
+elif group == "images delete":
+    found = [i for i in state["images"] if i["name"] == rest[0]]
+    if not found:
+        not_found("images", rest[0])
+    state["images"].remove(found[0])
+    save()
+    sys.stderr.write(f"Deleted [{rest[0]}].\n")
+else:
+    die(1, f"fake gcloud: unsupported command: {' '.join(words)}")

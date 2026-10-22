@@ -27,6 +27,11 @@ UNIT_DIR = pathlib.Path("/etc/systemd/system")
 PIDFILE = pathlib.Path("/run/devcloud/services.pid")
 DEVCLOUD = "/usr/local/bin/devcloud"
 INTERVAL = 1800
+# The lease and enroll services' interval (Design §4.1, §10): fixed, whatever
+# the jobs' interval.
+LIFECYCLE_INTERVAL = 300
+# Shipped disabled by the image; the boot enables it only on a spot VM (§4.2).
+SPOT_UNIT = "devcloud-spot.service"
 # Written by a boot that made the host (exit 0, or 3 when only projects
 # failed), removed when a boot starts: a continuous unit runs only on a host
 # a boot made. Under /run, so a reboot starts without it.
@@ -35,6 +40,10 @@ BOOTED = pathlib.Path("/run/devcloud/booted")
 # before the run that owes it tries and removed once it succeeded, so a failed
 # run leaves it for the next.
 PENDING_DIR = pathlib.Path("/var/lib/devcloud/pending")
+# Written the first time the services step finds a shipper, never removed by
+# a later one: the departure's evidence that this host's configuration ships
+# its sessions, kept after the shipper went and the step removed its unit.
+SHIPPER_SEEN = pathlib.Path("/var/lib/devcloud/shipper-configured")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -46,7 +55,15 @@ class Service:
     description: str
 
 
-def service_list(user, interval=INTERVAL):
+def service_list(user, interval=INTERVAL, persistent=False):
+    """The host's services; a persistent host (systemd, its own machine
+    identity) also runs the lease service and the deferred enrollment's."""
+    lifecycle = [
+        Service("lease", (DEVCLOUD, "lease", "tick"), False, LIFECYCLE_INTERVAL,
+                "devcloud: the lease: warn its creator, depart at its end"),
+        Service("enroll", (DEVCLOUD, "enroll"), False, LIFECYCLE_INTERVAL,
+                "devcloud: finish an enrollment the desk left undecided"),
+    ] if persistent else []
     return [
         Service("pull-config", (DEVCLOUD, "pull-config"), False, interval,
                 "devcloud: receive the configuration repository; reconcile on a new commit"),
@@ -56,7 +73,7 @@ def service_list(user, interval=INTERVAL):
                 "devcloud: fetch the repository mirrors sandboxes clone from (persistent hosts)"),
         Service("session-mirror", (f"{user.home}/.claude/tools/session-mirror", "ship"), True, None,
                 "devcloud: ship this host's sessions to the session store"),
-    ]
+    ] + lifecycle
 
 
 def available(service):
@@ -104,15 +121,33 @@ def units(listed, user):
     return out
 
 
-def apply_systemd(user, env_changed, run=run, unit_dir=UNIT_DIR, pending_dir=PENDING_DIR):
+def admission(lifecycle):
+    """What the services step may start, from the persisted lifecycle (§4.2's
+    second guard): `open`; `closed` while a departure is under way or held
+    (the lease service alone of the periodic ones, whose next run retries
+    it); `over` once it is done (nothing)."""
+    state = (lifecycle or {}).get("state")
+    return "over" if state == "departed" else "closed" if state in ("departing", "held") else "open"
+
+
+def apply_systemd(user, env_changed, run=run, unit_dir=UNIT_DIR, pending_dir=PENDING_DIR, persistent=False,
+                  lifecycle=None, spot=False):
     """Writes the units, reloads systemd when one changed, enables and starts
     them, and restarts a continuous service whose unit or environment changed.
     What a changed file owes — the reload, a restart — is recorded before the
     first systemctl call and cleared only once done, so a run that fails
     leaves it for the next one, which would otherwise see nothing changed.
-    Returns a status detail."""
+    Once a departure has started (`lifecycle`), it enables and starts no
+    periodic service but the lease's, and once it is over none at all; what
+    the departure disabled stays disabled. The spot unit is enabled on a spot
+    VM only. Returns a status detail."""
     unit_dir, pending_dir = pathlib.Path(unit_dir), pathlib.Path(pending_dir)
-    listed = [s for s in service_list(user) if s.every is not None or available(s)]
+    gate = admission(lifecycle)
+    every = service_list(user, persistent=persistent)
+    listed = [s for s in every if s.every is not None or available(s)]
+    if any(s.name == "session-mirror" for s in listed):
+        SHIPPER_SEEN.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+        SHIPPER_SEEN.touch()
     wanted = units(listed, user)
     owed = set()
     for name, text in wanted.items():
@@ -120,7 +155,7 @@ def apply_systemd(user, env_changed, run=run, unit_dir=UNIT_DIR, pending_dir=PEN
         if not path.exists() or path.read_text() != text:
             path.write_text(text)
             owed |= {"daemon-reload", name}
-    gone = [s for s in service_list(user) if s not in listed]
+    gone = [s for s in every if s not in listed]
     for s in gone:
         if (unit_dir / f"devcloud-{s.name}.service").exists():
             owed.add("daemon-reload")
@@ -145,9 +180,12 @@ def apply_systemd(user, env_changed, run=run, unit_dir=UNIT_DIR, pending_dir=PEN
     if due("daemon-reload"):
         run(["systemctl", "daemon-reload"], log="services", timeout=60)
         done("daemon-reload")
-    started = []
+    started, held_back = [], []
     for s in listed:
         unit = f"devcloud-{s.name}"
+        if gate == "over" or (gate == "closed" and s.every is not None and s.name != "lease"):
+            held_back.append(s.name)
+            continue
         if s.every is not None:
             run(["systemctl", "enable", "--now", f"{unit}.timer"], log="services", timeout=60)
             if due(f"{unit}.timer"):
@@ -157,9 +195,19 @@ def apply_systemd(user, env_changed, run=run, unit_dir=UNIT_DIR, pending_dir=PEN
         else:
             run(["systemctl", "enable", f"{unit}.service"], log="services", timeout=60)
         started.append(s.name)
+    if persistent and (unit_dir / SPOT_UNIT).exists():
+        # Its start queued, not awaited: the unit is ordered after the boot
+        # unit this runs in, so a start waited for here would never end.
+        run(["systemctl", "enable", "--now", "--no-block", SPOT_UNIT] if spot
+            else ["systemctl", "disable", SPOT_UNIT], log="services", timeout=60)
     if BOOTED.exists():
-        start_gated(user, run=run, pending_dir=pending_dir)
-    detail = "systemd: " + ", ".join(started)
+        start_gated(user, run=run, pending_dir=pending_dir, lifecycle=lifecycle)
+    detail = "systemd: " + (", ".join(started) or "nothing")
+    if held_back:
+        detail += (f"; the departure has {'ended' if gate == 'over' else 'started'}: "
+                   f"{', '.join(held_back)} not started")
+    if persistent and spot:
+        detail += f"; {SPOT_UNIT} enabled"
     if not BOOTED.exists():
         detail += f" ({', '.join(s.name for s in listed if s.every is None)} once the boot has made the host)"
     if gone:
@@ -167,13 +215,15 @@ def apply_systemd(user, env_changed, run=run, unit_dir=UNIT_DIR, pending_dir=PEN
     return detail
 
 
-def start_gated(user, run=run, pending_dir=PENDING_DIR):
+def start_gated(user, run=run, pending_dir=PENDING_DIR, lifecycle=None):
     """Queues the start of each continuous unit — a restart where one is owed,
     whose flag is cleared once it is queued. Only once the boot's marker
     exists: the units are conditioned on it, and a start queued before it is
     written is skipped by systemd (a boot run by hand has no unit job for the
     start to wait behind). Queued, not awaited: from inside the boot unit the
-    start waits for the boot to end."""
+    start waits for the boot to end. Nothing once the departure is over."""
+    if admission(lifecycle) == "over":
+        return
     pending_dir = pathlib.Path(pending_dir)
     for s in service_list(user):
         if s.every is not None or not available(s):

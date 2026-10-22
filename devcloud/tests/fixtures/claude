@@ -1,0 +1,9 @@
+#!/bin/sh
+# The stand-in `claude` process a spawn launches (fixtures/sminos.py) or a test
+# starts: a session that runs until it is ended. Its command name is `claude`,
+# as the real one's is; it records its start and its SIGTERM.
+state="${FAKE_SMINOS_STATE:-$HOME/.local/state/devcloud-test}"
+mkdir -p "$state"
+echo "start $$" >> "$state/claude.log"
+trap 'echo "term $$" >> "$state/claude.log"; exit 0' TERM
+while :; do sleep 0.2; done

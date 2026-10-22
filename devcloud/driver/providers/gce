@@ -1,0 +1,411 @@
+#!/usr/bin/env python3
+"""devcloud's shipped Google Compute Engine provider (the VM driver's Design §6.4; the protocol is I13).
+
+    gce <op>    one JSON object on stdin, one JSON value on stdout
+    exit 0 ok; exit 3 refused ({"error", "kind"} on stdout); exit 1 failure; exit 2 usage
+
+Its environment (the account's vars, and the driver's DEVCLOUD_SEED_FILE):
+    GCE_PROJECT          the project the instances and images live in
+    GCE_SERVICE_ACCOUNT  the host account every instance runs as (the seed: DEVCLOUD_SEED=gce-metadata)
+    GCE_IMAGE_FAMILY     the family devcloud's images join (default devcloud)
+    GCE_DISK_GB          every instance's boot disk unless a request asks for more (default 50)
+    GCE_CUSTOM_TYPES     custom machine types to offer besides the zone's predefined ones, e.g.
+                         "e2-custom-4-8192" (a zone lists no custom type)
+
+It runs gcloud under its own CLOUDSDK_CONFIG ($HOME/.local/state/devcloud/gce/gcloud) with the seed
+activated there, so the Mac's own gcloud identity is never read or changed; the seed's key is read
+by gcloud from its path, never printed. A VM's id is the instance's numeric id, an image's its name."""
+import datetime
+import fcntl
+import hashlib
+import json
+import os
+import pathlib
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.request
+
+UBUNTU = ("ubuntu-2404-lts-amd64", "ubuntu-os-cloud")
+DISK_GB = 50
+METADATA_MAX = 256 * 1024           # GCE's limit on one metadata value
+HYPERDISK = ("c4", "c4a", "c4d", "c4n", "n4", "n4a", "n4d", "m4", "m4n", "z4m", "x4", "a4")
+# Arm families: the recipe and Ubuntu's image family here are x86-64.
+ARM = ("t2a", "c4a", "n4a")
+PRICE_TTL = 7 * 86400
+COMPUTE_SERVICE = "6F81-5844-456A"   # Compute Engine in the Cloud Billing catalog
+QUOTA = ("QUOTA_EXCEEDED", "Quota '")
+UNAVAILABLE = ("ZONE_RESOURCE_POOL_EXHAUSTED", "does not have enough resources", "is not available in zone",
+               "Invalid value for field 'resource.machineType'", "not supported in zone")
+
+
+class Refused(Exception):
+    def __init__(self, kind, error):
+        super().__init__(error)
+        self.kind = kind
+
+
+class Failed(Exception):
+    pass
+
+
+class Usage(Exception):
+    pass
+
+
+class GcloudError(Exception):
+    def __init__(self, stderr):
+        # gcloud wraps one error over several lines; the last is rarely the whole of it.
+        start = max((i for i, line in enumerate(stderr.splitlines()) if line.startswith("ERROR:")), default=0)
+        text = " ".join(line.strip() for line in stderr.splitlines()[start:] if line.strip())
+        super().__init__(text[:400] or "gcloud failed with no message")
+        self.stderr = stderr
+
+    @property
+    def not_found(self):
+        return "was not found" in self.stderr or "notFound" in self.stderr
+
+
+def need(name):
+    value = os.environ.get(name)
+    if not value:
+        raise Failed(f"{name} is not set")
+    return value
+
+
+class Gcloud:
+    """gcloud under the provider's private configuration, the seed activated there once."""
+
+    def __init__(self):
+        self.project = need("GCE_PROJECT")
+        seed = pathlib.Path(need("DEVCLOUD_SEED_FILE"))
+        self.state = pathlib.Path(need("HOME")) / ".local/state/devcloud/gce"
+        self.exe = shutil.which("gcloud")
+        if not self.exe:
+            raise Failed("gcloud is not on PATH")
+        try:
+            data = seed.read_bytes()
+            account = json.loads(data)["client_email"]
+        except (OSError, ValueError, KeyError, TypeError):
+            raise Failed(f"the seed key file at {seed} is not a service account key") from None
+        config = self.state / "gcloud"
+        config.mkdir(parents=True, exist_ok=True, mode=0o700)
+        self.env = {k: v for k, v in os.environ.items() if not k.startswith("CLOUDSDK_")}
+        self.env.update(CLOUDSDK_CONFIG=str(config), CLOUDSDK_CORE_PROJECT=self.project,
+                        CLOUDSDK_CORE_ACCOUNT=account, CLOUDSDK_CORE_DISABLE_PROMPTS="1",
+                        CLOUDSDK_COMPONENT_MANAGER_DISABLE_UPDATE_CHECK="1")
+        self._activate(seed, hashlib.sha256(data).hexdigest())
+
+    def _activate(self, seed, digest):
+        marker = self.state / "activated"
+        with open(self.state / "activate.lock", "w") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            if marker.exists() and marker.read_text().strip() == digest:
+                return
+            self.run("auth", "activate-service-account", f"--key-file={seed}", as_json=False)
+            marker.write_text(digest + "\n")
+
+    def run(self, *args, as_json=True):
+        argv = [self.exe, *args] + (["--format=json"] if as_json else [])
+        r = subprocess.run(argv, env=self.env, stdin=subprocess.DEVNULL, capture_output=True, text=True)
+        if r.returncode != 0:
+            raise GcloudError(r.stderr)
+        if not as_json:
+            return r.stdout
+        try:
+            return json.loads(r.stdout or "null")
+        except json.JSONDecodeError:
+            raise Failed(f"gcloud {' '.join(args[:3])} printed output that is not JSON") from None
+
+
+def unix_seconds(text):
+    return int(datetime.datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp())
+
+
+def basename(url):
+    return url.rsplit("/", 1)[-1]
+
+
+def labels_arg(labels):
+    return ",".join(f"{k}={v}" for k, v in labels.items())
+
+
+def vm(inst):
+    configs = [c for nic in inst.get("networkInterfaces") or [] for c in nic.get("accessConfigs") or []]
+    status = inst["status"]
+    return {
+        "id": str(inst["id"]), "name": inst["name"], "location": basename(inst["zone"]),
+        "type": basename(inst["machineType"]), "labels": inst.get("labels") or {},
+        "public_ipv4": next((c["natIP"] for c in configs if c.get("natIP")), None),
+        "state": "running" if status == "RUNNING" else status.lower(),
+        "created": unix_seconds(inst["creationTimestamp"]),
+    }
+
+
+IMAGE_STATES = {"READY": "ready", "PENDING": "pending"}
+
+
+def image(img):
+    status = img.get("status") or "unknown"
+    return {"id": img["name"], "name": img["name"], "labels": img.get("labels") or {},
+            "created": unix_seconds(img["creationTimestamp"]), "state": IMAGE_STATES.get(status, status.lower())}
+
+
+def disk_gb():
+    try:
+        return int(os.environ.get("GCE_DISK_GB") or DISK_GB)
+    except ValueError:
+        raise Failed("GCE_DISK_GB is not a whole number") from None
+
+
+def family(type_name):
+    return type_name.split("-", 1)[0]
+
+
+# --- prices, from the Cloud Billing catalog, cached a week ---------------------------------
+
+_RATE = re.compile(r"(?P<family>[A-Z][A-Z0-9]*)(?: AMD| Arm| Intel)?(?: Predefined)? Instance (?P<what>Core|Ram) "
+                   r"running in ")
+
+
+def rates_from(skus, region):
+    """{family: {"core": per vCPU-hour, "ram": per GiB-hour}}, on demand, in `region`."""
+    rates = {}
+    for sku in skus:
+        category = sku.get("category") or {}
+        if category.get("resourceFamily") != "Compute" or category.get("usageType") != "OnDemand":
+            continue
+        if region not in (sku.get("serviceRegions") or []):
+            continue
+        match = _RATE.match(sku.get("description", ""))
+        if not match:
+            continue
+        try:
+            unit = sku["pricingInfo"][0]["pricingExpression"]["tieredRates"][-1]["unitPrice"]
+        except (KeyError, IndexError):
+            continue
+        value = int(unit.get("units") or 0) + unit.get("nanos", 0) / 1e9
+        rates.setdefault(match["family"].lower(), {})["core" if match["what"] == "Core" else "ram"] = round(value, 9)
+    return rates
+
+
+def price(type_name, vcpus, memory_gb, rates):
+    """The hourly on-demand price, or None where the catalog's rates do not price the type: a custom
+    type outside E2 is priced apart, and a family needs both its rates."""
+    fam = family(type_name)
+    if "custom" in type_name and fam != "e2":
+        return None
+    rate = rates.get(fam) or {}
+    if "core" not in rate or "ram" not in rate:
+        return None
+    return round(vcpus * rate["core"] + memory_gb * rate["ram"], 6)
+
+
+def load_rates(gc, region):
+    """The region's rates: the cache when under a week old, else the catalog; {} when neither answers
+    (a type then shows no price, which never fails `types`)."""
+    cache = gc.state / f"prices-{region}.json"
+    try:
+        cached = json.loads(cache.read_text())
+        if time.time() - cached["fetched"] < PRICE_TTL:
+            return cached["rates"]
+    except (OSError, ValueError, KeyError, TypeError):
+        cached = None
+    try:
+        token = gc.run("auth", "print-access-token", as_json=False).strip()
+        skus, page = [], ""
+        while True:
+            url = (f"https://cloudbilling.googleapis.com/v1/services/{COMPUTE_SERVICE}/skus?pageSize=5000"
+                   f"&currencyCode=USD" + (f"&pageToken={page}" if page else ""))
+            request = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+            with urllib.request.urlopen(request, timeout=30) as response:
+                data = json.load(response)
+            skus += data.get("skus", [])
+            page = data.get("nextPageToken")
+            if not page:
+                break
+    except (GcloudError, OSError, ValueError):
+        return cached["rates"] if cached else {}
+    rates = rates_from(skus, region)
+    cache.write_text(json.dumps({"fetched": int(time.time()), "rates": rates}, indent=1, sort_keys=True))
+    return rates
+
+
+# --- the operations -----------------------------------------------------------------------
+
+def op_info(req):
+    return {"protocol": 1, "capabilities": ["user_data", "images", "spot", "metadata_seed"]}
+
+
+def op_types(gc, req):
+    """The zone's predefined types a host can use — x86-64, at least 2 dedicated vCPUs and 2 GB, no
+    accelerator (the recipe is x86-64, a smaller or shared-core type cannot hold the sessions, and a
+    GPU is a cost class the caps do not weigh) — and the custom types the account names. Every
+    type's disk is the account's default boot disk."""
+    zone = req["location"]
+    found = [t for t in gc.run("compute", "machine-types", "list", f"--zones={zone}")
+             if not t.get("isSharedCpu") and not t.get("accelerators") and family(t["name"]) not in ARM
+             and t["guestCpus"] >= 2 and t["memoryMb"] >= 2048]
+    for name in (os.environ.get("GCE_CUSTOM_TYPES") or "").replace(",", " ").split():
+        try:
+            found.append(gc.run("compute", "machine-types", "describe", name, f"--zone={zone}"))
+        except GcloudError as e:
+            if not e.not_found:
+                raise
+    rates = load_rates(gc, zone.rsplit("-", 1)[0])
+    disk = disk_gb()
+    out = []
+    for t in found:
+        memory = round(t["memoryMb"] / 1024, 2)
+        out.append({"type": t["name"], "vcpus": t["guestCpus"], "memory_gb": memory, "disk_gb": disk,
+                    "available": not t.get("deprecated"), "hourly_price": price(t["name"], t["guestCpus"], memory, rates),
+                    "currency": "USD", "architecture": "x86"})
+    return out
+
+
+def op_create(gc, req):
+    user_data = req.get("user_data")
+    if user_data is not None and len(user_data.encode()) > METADATA_MAX:
+        raise Refused("other", f"user-data is {len(user_data.encode())} bytes, over GCE's {METADATA_MAX} per "
+                               "metadata value")
+    zone, type_name = req["location"], req["type"]
+    argv = ["compute", "instances", "create", req["name"], f"--zone={zone}", f"--machine-type={type_name}",
+            f"--service-account={need('GCE_SERVICE_ACCOUNT')}", "--scopes=cloud-platform",
+            f"--labels={labels_arg(req['labels'])}", "--metadata=block-project-ssh-keys=TRUE",
+            f"--boot-disk-size={max(disk_gb(), req.get('disk_gb') or 0)}GB",
+            f"--boot-disk-type={'hyperdisk-balanced' if family(type_name) in HYPERDISK else 'pd-balanced'}"]
+    if req.get("image"):
+        argv += [f"--image={req['image']}", f"--image-project={gc.project}"]
+    else:
+        argv += [f"--image-family={UBUNTU[0]}", f"--image-project={UBUNTU[1]}"]
+    if req.get("spot"):
+        argv += ["--provisioning-model=SPOT", "--instance-termination-action=DELETE"]
+    with tempfile.TemporaryDirectory(prefix="devcloud-gce-") as tmp:
+        if user_data is not None:
+            path = pathlib.Path(tmp) / "user-data"
+            path.write_text(user_data)
+            argv.append(f"--metadata-from-file=user-data={path}")
+        try:
+            made = gc.run(*argv)
+        except GcloudError as e:
+            if any(word in e.stderr for word in QUOTA):
+                raise Refused("quota", str(e)) from None
+            if any(word in e.stderr for word in UNAVAILABLE):
+                raise Refused("unavailable", str(e)) from None
+            raise
+    return vm(made[0] if isinstance(made, list) else made)
+
+
+def instance(gc, iid):
+    """The raw instance with this numeric id, in any zone, or None."""
+    if not re.fullmatch(r"[0-9]{1,24}", str(iid)):
+        raise Usage(f"an instance id is a number: {str(iid)[:40]!r}")
+    found = gc.run("compute", "instances", "list", f"--filter=id={iid}")
+    return found[0] if found else None
+
+
+def op_list(gc, req):
+    return [vm(i) for i in gc.run("compute", "instances", "list", "--filter=labels.devcloud:*")]
+
+
+def op_get(gc, req):
+    inst = instance(gc, req["id"])
+    return vm(inst) if inst is not None else None
+
+
+def op_set_labels(gc, req):
+    inst = instance(gc, req["id"])
+    if inst is None:
+        raise Failed(f"instance {req['id']} not found")
+    labels = req["labels"]
+    argv = ["compute", "instances", "update", inst["name"], f"--zone={basename(inst['zone'])}",
+            f"--update-labels={labels_arg(labels)}"]
+    gone = [k for k in inst.get("labels") or {} if k not in labels]
+    if gone:
+        argv.append(f"--remove-labels={','.join(gone)}")
+    gc.run(*argv)
+    return vm(gc.run("compute", "instances", "describe", inst["name"], f"--zone={basename(inst['zone'])}"))
+
+
+def op_delete(gc, req):
+    inst = instance(gc, req["id"])
+    if inst is not None:
+        try:
+            gc.run("compute", "instances", "delete", inst["name"], f"--zone={basename(inst['zone'])}", "--quiet",
+                   as_json=False)
+        except GcloudError as e:
+            if not e.not_found:
+                raise
+    return {}
+
+
+def op_image_create(gc, req):
+    inst = instance(gc, req["id"])
+    if inst is None:
+        raise Failed(f"instance {req['id']} not found")
+    boot = next((d for d in inst.get("disks") or [] if d.get("boot")), None)
+    if boot is None:
+        raise Failed(f"instance {inst['name']} has no boot disk")
+    argv = ["compute", "images", "create", req["name"], f"--source-disk={basename(boot['source'])}",
+            f"--source-disk-zone={basename(inst['zone'])}", f"--labels={labels_arg(req['labels'])}", "--force"]
+    if req["labels"].get("devcloud") == "image":
+        argv.append(f"--family={os.environ.get('GCE_IMAGE_FAMILY') or 'devcloud'}")
+    made = gc.run(*argv)
+    return image(made[0] if isinstance(made, list) else made)
+
+
+def op_images(gc, req):
+    """Every devcloud image, whatever its state: the listing is also the fence
+    for deleting one, so a failed image must stay in it."""
+    return [image(i) for i in gc.run("compute", "images", "list", "--no-standard-images",
+                                     "--filter=labels.devcloud:*")]
+
+
+def op_image_delete(gc, req):
+    try:
+        gc.run("compute", "images", "delete", str(req["id"]), "--quiet", as_json=False)
+    except GcloudError as e:
+        if not e.not_found:
+            raise
+    return {}
+
+
+OPS = {"types": op_types, "create": op_create, "list": op_list, "get": op_get, "set-labels": op_set_labels,
+       "delete": op_delete, "image-create": op_image_create, "images": op_images, "image-delete": op_image_delete}
+
+
+def main(argv):
+    try:
+        if len(argv) != 1 or (argv[0] not in OPS and argv[0] != "info"):
+            raise Usage(f"usage: gce <op> with one JSON object on stdin; ops: info, {', '.join(OPS)}")
+        try:
+            req = json.loads(sys.stdin.read())
+        except json.JSONDecodeError:
+            raise Usage("stdin is not JSON") from None
+        if not isinstance(req, dict):
+            raise Usage("stdin is not a JSON object")
+        result = op_info(req) if argv[0] == "info" else OPS[argv[0]](Gcloud(), req)
+    except Usage as e:
+        print(f"gce: {e}", file=sys.stderr)
+        return 2
+    except Refused as e:
+        print(json.dumps({"error": str(e), "kind": e.kind}))
+        return 3
+    except (Failed, GcloudError) as e:
+        print(f"gce: {e}", file=sys.stderr)
+        return 1
+    except KeyError as e:
+        print(f"gce: missing field {e}", file=sys.stderr)
+        return 1
+    except Exception as e:  # one line, never a traceback that could carry the environment
+        print(f"gce: {type(e).__name__}: {e}".splitlines()[0], file=sys.stderr)
+        return 1
+    print(json.dumps(result))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

@@ -1,0 +1,296 @@
+#!/usr/bin/env python3
+"""devcloud's shipped Hetzner Cloud provider (the VM driver's Design §6.3; the protocol is I13).
+
+    hetzner <op>    one JSON object on stdin, one JSON value on stdout
+    exit 0 ok; exit 3 refused ({"error", "kind"} on stdout); exit 1 failure; exit 2 usage
+
+It drives `hcloud` with HCLOUD_TOKEN from its environment and a private, empty config, so the
+person's own hcloud contexts are never read; the token never reaches an argument list or output."""
+import datetime
+import hashlib
+import json
+import os
+import pathlib
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+
+DEFAULT_IMAGE = "ubuntu-24.04"
+LIMIT_CODES = ("resource_limit_exceeded",)
+UNAVAILABLE_CODES = ("resource_unavailable", "server_type_unavailable", "location_unavailable",
+                     "unsupported_location_for_server_type", "placement_error")
+
+
+class Refused(Exception):
+    def __init__(self, kind, error):
+        super().__init__(error)
+        self.kind = kind
+
+
+class Failed(Exception):
+    pass
+
+
+class Usage(Exception):
+    pass
+
+
+class HcloudError(Exception):
+    def __init__(self, stderr):
+        lines = [line.strip() for line in stderr.strip().splitlines() if line.strip()]
+        super().__init__(lines[-1] if lines else "hcloud failed with no message")
+        self.stderr = stderr
+
+    @property
+    def not_found(self):
+        return "not found" in self.stderr.lower()
+
+
+class Hcloud:
+    """Runs hcloud under a private config directory with the person's context unset."""
+
+    def __init__(self, workdir):
+        self.workdir = pathlib.Path(workdir)
+        self.exe = shutil.which("hcloud")
+        if not self.exe:
+            raise Failed("hcloud is not on PATH")
+        self.env = {k: v for k, v in os.environ.items() if k != "HCLOUD_CONTEXT"}
+
+    def run(self, *args, as_json=True):
+        argv = [self.exe, "--config", str(self.workdir / "cli.toml"), *args]
+        if as_json:
+            argv += ["-o", "json"]
+        r = subprocess.run(argv, env=self.env, stdin=subprocess.DEVNULL, capture_output=True, text=True)
+        if r.returncode != 0:
+            raise HcloudError(r.stderr)
+        if not as_json:
+            return r.stdout
+        try:
+            return json.loads(r.stdout)
+        except json.JSONDecodeError:
+            raise Failed(f"hcloud {' '.join(args[:2])} printed output that is not JSON") from None
+
+
+def unix_seconds(text):
+    return int(datetime.datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp())
+
+
+def unwrap(value, key):
+    return value[key] if isinstance(value, dict) and isinstance(value.get(key), dict) else value
+
+
+def label_args(labels):
+    return [f"{k}={v}" for k, v in labels.items()]
+
+
+def vm(server):
+    ipv4 = (server.get("public_net") or {}).get("ipv4") or {}
+    return {
+        "id": str(server["id"]),
+        "name": server["name"],
+        # The API names the location at the top level; `datacenter`, which once carried it, is gone (live,
+        # 2026-10-21). Either is read.
+        "location": (server.get("location") or (server.get("datacenter") or {}).get("location") or {})["name"],
+        "type": server["server_type"]["name"],
+        "labels": server.get("labels") or {},
+        "public_ipv4": ipv4.get("ip") or None,
+        "state": server["status"],
+        "created": unix_seconds(server["created"]),
+    }
+
+
+IMAGE_STATES = {"available": "ready", "creating": "pending"}
+
+
+def image(img):
+    status = img.get("status") or "unknown"
+    return {"id": str(img["id"]), "name": img.get("description"), "labels": img.get("labels") or {},
+            "created": unix_seconds(img["created"]), "state": IMAGE_STATES.get(status, status)}
+
+
+def describe_server(hc, sid):
+    """The raw server, or None when Hetzner has no such server."""
+    try:
+        return hc.run("server", "describe", str(sid))
+    except HcloudError as e:
+        if e.not_found:
+            return None
+        raise
+
+
+def key_body(public_key):
+    parts = public_key.split()
+    if len(parts) < 2:
+        raise Usage(f"not an SSH public key: {public_key[:40]!r}")
+    return " ".join(parts[:2])
+
+
+def ssh_key_ids(hc, public_keys):
+    existing = {}
+    for key in hc.run("ssh-key", "list"):
+        try:
+            existing.setdefault(key_body(key.get("public_key", "")), key["id"])
+        except Usage:
+            continue
+    ids = []
+    for public_key in public_keys:
+        body = key_body(public_key)
+        if body not in existing:
+            name = "devcloud-" + hashlib.sha256(body.encode()).hexdigest()[:12]
+            made = unwrap(hc.run("ssh-key", "create", "--name", name, "--public-key", public_key,
+                                 "--label", "devcloud=sshkey"), "ssh_key")
+            existing[body] = made["id"]
+        ids.append(str(existing[body]))
+    return ids
+
+
+def op_info(hc, req):
+    return {"protocol": 1, "capabilities": ["user_data", "images"]}
+
+
+def op_types(hc, req):
+    location = req["location"]
+    out = []
+    for t in hc.run("server-type", "list"):
+        entry = next((loc for loc in t.get("locations") or [] if loc.get("name") == location), None)
+        if entry is None:
+            continue
+        price = next((p for p in t.get("prices") or [] if p.get("location") == location), None)
+        out.append({
+            "type": t["name"], "vcpus": t["cores"], "memory_gb": t["memory"], "disk_gb": t["disk"],
+            "available": bool(entry.get("available")) and not t.get("deprecated"),
+            "hourly_price": float(price["price_hourly"]["gross"]) if price else None,
+            "currency": "EUR", "architecture": t.get("architecture"),
+        })
+    return out
+
+
+def op_create(hc, req):
+    if req.get("spot"):
+        raise Refused("unavailable", "Hetzner Cloud has no spot servers")
+    if req.get("disk_gb") is not None:
+        own = hc.run("server-type", "describe", req["type"])["disk"]
+        if req["disk_gb"] > own:
+            raise Refused("unavailable", f"Hetzner gives only a type's own disk: {req['type']} has {own} GB, "
+                                         f"{req['disk_gb']} GB asked")
+    argv = ["server", "create", "--name", req["name"], "--type", req["type"], "--location", req["location"],
+            "--image", str(req["image"]) if req.get("image") is not None else DEFAULT_IMAGE]
+    for kid in ssh_key_ids(hc, req.get("ssh_public_keys") or []):
+        argv += ["--ssh-key", kid]
+    for pair in label_args(req.get("labels") or {}):
+        argv += ["--label", pair]
+    if req.get("user_data") is not None:
+        path = hc.workdir / "user-data"
+        path.write_text(req["user_data"])
+        argv += ["--user-data-from-file", str(path)]
+    try:
+        made = unwrap(hc.run(*argv), "server")
+    except HcloudError as e:
+        if any(code in e.stderr for code in LIMIT_CODES):
+            raise Refused("limit", str(e)) from None
+        if any(code in e.stderr for code in UNAVAILABLE_CODES):
+            raise Refused("unavailable", str(e)) from None
+        raise
+    return vm(hc.run("server", "describe", str(made["id"])))
+
+
+def op_list(hc, req):
+    return [vm(s) for s in hc.run("server", "list", "-l", "devcloud")]
+
+
+def op_get(hc, req):
+    server = describe_server(hc, req["id"])
+    return vm(server) if server is not None else None
+
+
+def op_set_labels(hc, req):
+    sid, labels = str(req["id"]), req["labels"]
+    server = describe_server(hc, sid)
+    if server is None:
+        raise Failed(f"server {sid} not found")
+    gone = [k for k in server.get("labels") or {} if k not in labels]
+    if gone:
+        hc.run("server", "remove-label", sid, *gone, as_json=False)
+    if labels:
+        hc.run("server", "add-label", "--overwrite", sid, *label_args(labels), as_json=False)
+    return vm(hc.run("server", "describe", sid))
+
+
+def op_delete(hc, req):
+    try:
+        hc.run("server", "delete", str(req["id"]), as_json=False)
+    except HcloudError as e:
+        if not e.not_found:
+            raise
+    return {}
+
+
+def op_image_create(hc, req):
+    argv = ["server", "create-image", "--type", "snapshot", "--description", req["name"]]
+    for pair in label_args(req.get("labels") or {}):
+        argv += ["--label", pair]
+    # create-image takes no -o in hcloud 1.69; it prints "Image <id> created from Server <id>".
+    text = hc.run(*argv, str(req["id"]), as_json=False)
+    found = re.search(r"Image (\d+) created", text)
+    if not found:
+        raise Failed("hcloud server create-image did not name the image it made")
+    return image(hc.run("image", "describe", found.group(1)))
+
+
+def op_images(hc, req):
+    """Every devcloud snapshot, whatever its state (the delete fence lists them)."""
+    return [image(i) for i in hc.run("image", "list", "-t", "snapshot", "-l", "devcloud")]
+
+
+def op_image_delete(hc, req):
+    try:
+        hc.run("image", "delete", str(req["id"]), as_json=False)
+    except HcloudError as e:
+        if not e.not_found:
+            raise
+    return {}
+
+
+OPS = {"info": op_info, "types": op_types, "create": op_create, "list": op_list, "get": op_get,
+       "set-labels": op_set_labels, "delete": op_delete, "image-create": op_image_create,
+       "images": op_images, "image-delete": op_image_delete}
+
+
+def main(argv):
+    try:
+        if len(argv) != 1 or argv[0] not in OPS:
+            raise Usage(f"usage: hetzner <op> with one JSON object on stdin; ops: {', '.join(OPS)}")
+        try:
+            req = json.loads(sys.stdin.read())
+        except json.JSONDecodeError:
+            raise Usage("stdin is not JSON") from None
+        if not isinstance(req, dict):
+            raise Usage("stdin is not a JSON object")
+        if not os.environ.get("HCLOUD_TOKEN"):
+            raise Failed("HCLOUD_TOKEN is not set")
+        with tempfile.TemporaryDirectory(prefix="devcloud-hetzner-") as workdir:
+            os.chmod(workdir, 0o700)
+            result = OPS[argv[0]](Hcloud(workdir), req)
+    except Usage as e:
+        print(f"hetzner: {e}", file=sys.stderr)
+        return 2
+    except Refused as e:
+        print(json.dumps({"error": str(e), "kind": e.kind}))
+        return 3
+    except (Failed, HcloudError) as e:
+        print(f"hetzner: {e}", file=sys.stderr)
+        return 1
+    except KeyError as e:
+        print(f"hetzner: missing field {e}", file=sys.stderr)
+        return 1
+    except Exception as e:  # one line, never a traceback that could carry the environment
+        print(f"hetzner: {type(e).__name__}: {e}".splitlines()[0], file=sys.stderr)
+        return 1
+    print(json.dumps(result))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

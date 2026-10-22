@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# devcloud's entry point on a session's PATH (a plugin's bin/): runs the
+# plugin's boot/devcloud with a Python 3.11+ from PATH, since the Macs'
+# /usr/bin/python3 is 3.9. `devcloud vm ...` is the VM driver; the host
+# commands (status, the jobs, the lifecycle) keep their root-only behavior.
+# Builtins only until Python is found.
+here="$(cd "${BASH_SOURCE[0]%/*}" && pwd -P)" || exit 1
+for py in python3.14 python3.13 python3.12 python3.11 python3; do
+  if command -v "$py" >/dev/null 2>&1 && "$py" -c 'import sys; sys.exit(sys.version_info < (3, 11))' 2>/dev/null; then
+    DEVCLOUD_BIN="$here/devcloud" exec "$py" "$here/../boot/devcloud" "$@"
+  fi
+done
+echo "devcloud: needs Python 3.11 or later on PATH (tried python3.14 down to python3)" >&2
+exit 1

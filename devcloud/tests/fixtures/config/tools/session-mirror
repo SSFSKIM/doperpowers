@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
-"""The stand-in session store shipper: records the environment it started
-with, then waits; on SIGTERM it records its final pass and exits."""
+"""The stand-in session store shipper. `ship` records the environment it
+started with, then waits; on SIGTERM it records its final pass and exits.
+`ship --once` records one pass and exits: 1 while the state directory holds
+`ship-fail` (a ship that cannot reach the store)."""
 import json
 import os
 import pathlib
@@ -10,8 +12,13 @@ import time
 
 state = pathlib.Path.home() / ".local/state/devcloud-test"
 state.mkdir(parents=True, exist_ok=True)
+if sys.argv[1:] == ["ship", "--once"]:
+    failing = (state / "ship-fail").exists()
+    with open(state / "ship.log", "a") as log:
+        log.write(f"once {os.getpid()} {'failed' if failing else 'ok'}\n")
+    sys.exit(1 if failing else 0)
 if sys.argv[1:] != ["ship"]:
-    sys.exit("usage: session-mirror ship")
+    sys.exit("usage: session-mirror ship [--once]")
 
 
 def final_pass(*_):

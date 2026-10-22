@@ -140,6 +140,20 @@ def _read(path):
         return None
 
 
+def seed_values(path):
+    """A seed key file's secret fields (its private key whole and line by line)."""
+    try:
+        key = json.loads(pathlib.Path(path).read_text())
+    except (OSError, ValueError):
+        return set()
+    if not isinstance(key, dict):
+        return set()
+    values = {str(key[f]) for f in ("private_key", "private_key_id") if key.get(f)}
+    if isinstance(key.get("private_key"), str):
+        values.update(line for line in key["private_key"].splitlines() if len(line) >= 40)
+    return values
+
+
 def host_values(user, env_path="/etc/devcloud/env"):
     """The secret values already on this host: the store's files (both tiers),
     and each secrets.toml entry's env value and file target (the template's

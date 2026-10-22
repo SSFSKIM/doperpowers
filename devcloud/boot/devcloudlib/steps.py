@@ -3,7 +3,11 @@ reconcile (5-11), the config pull job (5, then 6-11 when the commit moved),
 the secrets refresh (7, 10, 11) and the mirror refresh (no step of its own).
 Each step is recorded in the status file; a failed step stops the run, and the
 next run retries from its top. Runs hold one lock, so a job never interleaves
-with a boot."""
+with a boot. Every job also takes the lifecycle lock shared and does nothing
+once a departure has started (Design §4.1); on an adopted machine the boot
+takes it for each step and configures nothing once a release has started
+(§6.5). Every credential a
+step writes is listed in the credential ledger first (§6.5)."""
 
 import contextlib
 import fcntl
@@ -11,14 +15,15 @@ import hashlib
 import json
 import os
 import pathlib
+import pwd
 import socket
 import time
 import urllib.error
 import urllib.request
 import uuid
 
-from . import descriptor, envfile, proc, profile as profile_mod, projects as projects_mod, redact, secrets, \
-    services, sminos_host, status
+from . import descriptor, envfile, inbound, lease, ledger, plugins, proc, profile as profile_mod, \
+    projects as projects_mod, secrets, services, sminos_host, status
 from .descriptor import DescriptorError
 from .proc import StepError, User, as_user, run, write_file
 from .secretmanager import AccessError, Tokens
@@ -43,6 +48,10 @@ class Stop(Exception):
     """A step failed; the run ends."""
 
 
+class ReleaseStarted(Exception):
+    """A release has started; the boot configures nothing more."""
+
+
 class Run:
     def __init__(self, kind):
         self.kind = kind
@@ -61,9 +70,8 @@ class Run:
             self.desc = descriptor.load(allow_http=os.environ.get("DEVCLOUD_ALLOW_HTTP") == "1")
             self.user = User.from_image()
             self.tokens = Tokens(self.desc)
-            proc.KNOWN.update(redact.host_values(self.user, env_path=ENV_PATH))
-            if self.desc.seed_kind == "file":
-                _know_seed(self.desc.seed_path)
+            proc.know_host(self.user, self.desc.seed_path if self.desc.seed_kind == "file" else None,
+                           env_path=ENV_PATH)
 
     @property
     def claude_dir(self):
@@ -73,18 +81,6 @@ class Run:
         """What profile.env's references expand against: the user's login
         environment and the host's identity."""
         return self.user.env(_read_env(IDENTITY_ENV))
-
-
-def _know_seed(path):
-    """The seed key's secret fields, so no log can hold them."""
-    try:
-        key = json.loads(pathlib.Path(path).read_text())
-    except (OSError, ValueError):
-        return
-    if isinstance(key, dict):
-        proc.KNOWN.update(str(key[f]) for f in ("private_key", "private_key_id") if key.get(f))
-        if isinstance(key.get("private_key"), str):
-            proc.KNOWN.update(line for line in key["private_key"].splitlines() if len(line) >= 40)
 
 
 def _read_env(path):
@@ -129,6 +125,7 @@ def _boot_id(name):
 def _write_env_file(pairs, gid):
     """/etc/devcloud/env: root's, readable by the user's group (it may hold
     secrets.toml's env values). Returns whether its content changed."""
+    ledger.add(ENV_PATH)
     changed = write_file(ENV_PATH, ENV_HEADER + envfile.format(pairs), mode=0o640, dir_mode=0o755)
     os.chown(ENV_PATH, 0, gid)
     return changed
@@ -145,6 +142,7 @@ def identity(r):
         raise StepError(f"DEVCLOUD_ROLE=persistent needs systemd as PID 1; PID 1 here is {init}")
     for path, mode in ((STATE_DIR, 0o755), (RUN_DIR, 0o711)):
         path.mkdir(mode=mode, parents=True, exist_ok=True)
+    ledger.add(descriptor.PATH)
     current = socket.gethostname()
     if d.kind == "container":
         if current != d.name:
@@ -180,11 +178,19 @@ def _hosts_entry(name):
 # --- 2-4. seed, bootstrap secrets, tailnet ---------------------------------------
 
 TS_TAG = "tag:devcloud"
-# The OAuth client's node: tagged, kept across reboots, admitted at once.
-TS_CLIENT_ATTRIBUTES = "?ephemeral=false&preauthorized=true"
+
+
+def ts_client_attributes(d):
+    """The OAuth client's node: tagged and admitted at once; ephemeral when
+    the host is leased, so a VM that dies without departing still leaves the
+    tailnet (the coordination server removes it 30-60 minutes after it went
+    offline, and at once on logout); kept across reboots otherwise."""
+    return f"?ephemeral={'true' if d.leased else 'false'}&preauthorized=true"
 
 
 def seed(r):
+    if r.desc.seed_kind == "file":
+        ledger.add(r.desc.seed_path)
     r.tokens.activate()
     r.tokens.token()
     return "key file activated (root-private gcloud configuration)" if r.desc.seed_kind == "file" \
@@ -237,6 +243,16 @@ def tailnet_attach(r):
         return "through the host's tailnet" if d.tailscale == "host" else "no tailnet"
     if services.systemd_is_init():
         run(["systemctl", "enable", "--now", "tailscaled"], log="tailnet", timeout=120)
+    detail = _join(r)
+    if d.inbound == "tailnet" and d.kind != "container":
+        # Right after the join, so the driver's first contact over the public
+        # address ends here; a connection already open stays (established).
+        detail += "; " + inbound.apply()
+    return detail
+
+
+def _join(r):
+    d = r.desc
     key = pathlib.Path(d.ts_authkey_file) if d.ts_authkey_file else None
     if _joined():
         if key:
@@ -246,9 +262,10 @@ def tailnet_attach(r):
     if d.ts_secret:
         # The client secret reaches tailscale as a file's path, never in an
         # argument list another process can read.
-        with _secret_file("tailscale-auth", r.ts_secret + TS_CLIENT_ATTRIBUTES) as path:
+        with _secret_file("tailscale-auth", r.ts_secret + ts_client_attributes(d)) as path:
             run(up + [f"--auth-key=file:{path}", f"--advertise-tags={TS_TAG}"], log="tailnet", timeout=180)
-        return f"joined with the OAuth client {d.ts_secret} as {TS_TAG}"
+        return (f"joined with the OAuth client {d.ts_secret} as {TS_TAG}"
+                + (", ephemeral (leased)" if d.leased else ""))
     if not key.exists():
         raise StepError(f"not joined, and no auth key at {key}")
     try:
@@ -348,7 +365,8 @@ def secrets_step(r):
         if value:
             proc.KNOWN.add(value)
         return value
-    out = secrets.materialize(r.profile.secrets, fetch, r.user.home, as_user=lambda fn: as_user(r.user, fn))
+    out = secrets.materialize(r.profile.secrets, fetch, r.user.home, as_user=lambda fn: as_user(r.user, fn),
+                              before_write=ledger.add)
     r.secret_env = out.env
     return (out.state, out.detail)
 
@@ -367,6 +385,10 @@ def home(r):
                 write_file(u.home / path.relative_to(src), path.read_bytes(), mode=mode, dir_mode=0o755)
         as_user(u, copy)
         parts.append(f"{len(files)} home files")
+    # The user's gcloud and gh configuration hold credentials (ADC, the
+    # active account's tokens, gh's): listed whole before anything writes them.
+    for config in (".config/gcloud", ".config/gh"):
+        ledger.add(u.home / config)
     if r.desc.seed_kind == "file":
         key = pathlib.Path(r.desc.seed_path).read_bytes()
         adc = u.home / ".config/gcloud/application_default_credentials.json"
@@ -383,7 +405,28 @@ def home(r):
         parts.append("gh setup-git")
     else:
         parts.append("gh not configured (no ~/.config/gh/hosts.yml)")
+    parts.append(authorized_keys(r))
     return "; ".join(parts)
+
+
+AUTHORIZED_KEYS_HEADER = ("# Written by devcloud (boot step 8) from the profile's driver-keys/: the driver\n"
+                          "# Macs' keys. Edits here are lost at the next reconcile.\n")
+
+
+def authorized_keys(r, root_home=None):
+    """Root's and the user's authorized_keys kept equal to the profile's
+    driver-keys/ (Design §8.3), so a VM one Mac made is reachable from the
+    other, the always-on Mac's reaper included. Without a key there, both
+    are left as they are."""
+    keys, skipped = r.profile.driver_keys()
+    note = f" ({skipped} lines that are not keys skipped)" if skipped else ""
+    if not keys:
+        return "authorized_keys left as they are (no driver keys)" + note
+    text = AUTHORIZED_KEYS_HEADER + "".join(key + "\n" for key in keys)
+    root = pathlib.Path(root_home or pwd.getpwuid(0).pw_dir)
+    write_file(root / ".ssh/authorized_keys", text, mode=0o600, dir_mode=0o700)
+    as_user(r.user, lambda: write_file(r.user.home / ".ssh/authorized_keys", text, mode=0o600, dir_mode=0o700))
+    return f"authorized_keys: {len(keys)} driver keys for root and {r.user.name}" + note
 
 
 def apply(r):
@@ -417,9 +460,23 @@ def host_env(identity, profile_env, secret_env):
 
 def settings_and_env(r):
     p = r.profile
-    settings_changed = write_file(MANAGED_SETTINGS, p.host_settings, mode=0o644, dir_mode=0o755)
+    copy, state, seating = _marketplace(r)
+    ledger.add(MANAGED_SETTINGS)
+    settings_changed = write_file(MANAGED_SETTINGS, p.host_settings(copy), mode=0o644, dir_mode=0o755)
     pairs, ignored = host_env(_read_env(IDENTITY_ENV), p.env, r.secret_env)
     r.env_changed = _write_env_file(pairs.items(), r.user.gid)
+    if copy is not None:
+        # The record moves after the managed declaration names the copy: the
+        # engine adds a marketplace the synced settings declare only from the
+        # source the settings it reads declare.
+        try:
+            seating += "; " + plugins.record(r.user, r.user.env(pairs))
+        except StepError as error:
+            # A managed declaration the user's record does not match loads none
+            # of the marketplace's plugins, the guard among them: back to the
+            # user tier, which keeps the guard and turns the bridge off.
+            write_file(MANAGED_SETTINGS, p.host_settings(None), mode=0o644, dir_mode=0o755)
+            state, seating = "missing", f"plugins in the user tier: the marketplace's record failed ({error})"
     tz = p.env.get("TZ")
     if tz:
         zone = pathlib.Path("/usr/share/zoneinfo") / tz
@@ -433,31 +490,87 @@ def settings_and_env(r):
             os.replace(tmp, localtime)
         write_file("/etc/timezone", tz + "\n", mode=0o644)
     note = f"; the profile's {', '.join(ignored)} ignored (a per-host identity)" if ignored else ""
-    return (f"managed settings {'updated' if settings_changed else 'unchanged'}; "
-            f"{len(pairs)} variables in {ENV_PATH} ({'changed' if r.env_changed else 'unchanged'}){note}")
+    return (state, f"managed settings {'updated' if settings_changed else 'unchanged'}; "
+            f"{len(pairs)} variables in {ENV_PATH} ({'changed' if r.env_changed else 'unchanged'}){note}; {seating}")
+
+
+def _marketplace(r):
+    """The marketplace copy to seat the plugins from (Design §10), refreshed:
+    (copy, state, detail). No copy: (None, "ok") when the synced settings
+    declare no marketplace, (None, "missing") when the declared one could
+    not be had — the guard stays active either way, the bridge off."""
+    try:
+        commit, note = plugins.refresh(r.claude_dir)
+    except plugins.NotDeclared as error:
+        return None, "ok", f"plugins in the user tier: {error}"
+    except plugins.Unavailable as error:
+        return None, "missing", f"plugins in the user tier: {error}"
+    return (plugins.COPY, "ok",
+            f"plugins seated from {plugins.COPY} at {commit[:12]}" + (f" ({note})" if note else ""))
 
 
 def services_step(r):
-    """The devcloud services, then sminos's part — each tried even when the
-    other failed, so a failure in one never costs the other a restart it owes
-    (each records its own, to be made by a later run)."""
+    """`sminos` linked onto every shell's PATH, the devcloud services, then
+    sminos's part — the desk's enrollment
+    (§10), then the daemon — each tried even when another failed, so a
+    failure in one never costs another a restart it owes (each records its
+    own, to be made by a later run). Under the lifecycle lock, shared: once a
+    departure has started, the services that could reopen admission stay
+    stopped (§4.2's second guard), and a departure never starts between the
+    read of its state and a start here. An enrollment the desk left
+    undecided makes the step `deferred`, which counts as done."""
     env = _read_env(ENV_PATH)
     sminos_host.check_role(r.user, r.desc.role, env)
-    parts, failures = [], []
-    for part in (lambda: _devcloud_services(r),
-                 lambda: sminos_host.converge(r.user, r.desc.role, env, r.env_changed)):
+    parts, failures, state = [], [], "ok"
+    try:
+        sminos_host.link_cli(r.user)
+    except OSError as error:
+        failures.append(f"linking {sminos_host.LINK}: {error}")
+    with lease.locked(shared=True):
+        record = status.lifecycle()
         try:
-            parts.append(part())
+            parts.append(_devcloud_services(r, record))
         except StepError as error:
             failures.append(str(error))
+        if services.admission(record) != "open":
+            parts.append("sminos: the departure has started; the daemon stays stopped")
+        else:
+            try:
+                enrolled = _enroll(r, env)
+                if enrolled.detail:
+                    parts.append(f"sminos: {enrolled.detail}")
+                if enrolled.state == "deferred":
+                    state = "deferred"
+            except StepError as error:
+                failures.append(str(error))
+            try:
+                parts.append(sminos_host.converge(r.user, r.desc.role, env, r.env_changed))
+            except StepError as error:
+                failures.append(str(error))
     if failures:
         raise StepError("; ".join(failures))
-    return "; ".join(parts)
+    return (state, "; ".join(parts))
 
 
-def _devcloud_services(r):
+def _enroll(r, env):
+    """Step 11's enrollment at the desk, its deferral kept in the status."""
+    if sminos_host.CODE_FILE.exists():
+        ledger.add(sminos_host.CODE_FILE)
+    result = sminos_host.enroll(r.user, r.desc, env, fetch_key=lambda name: _fetch_text(r, name),
+                                ledger_add=ledger.add)
+    if result.state == "deferred":
+        status.set_enroll_deferred(True)
+    elif result.state in ("accepted", "enrolled"):
+        status.set_enroll_deferred(False)
+    if result.state == "enrolled":
+        sminos_host.owe_restart()
+    return result
+
+
+def _devcloud_services(r, lifecycle=None):
     if services.systemd_is_init():
-        return services.apply_systemd(r.user, r.env_changed)
+        return services.apply_systemd(r.user, r.env_changed, persistent=r.desc.role == "persistent",
+                                      lifecycle=lifecycle, spot=r.desc.spot)
     names = services.desired_names(r.user)
     services.write_desired(names)
     absent = [s for s in services.service_list(r.user) if s.name not in names]
@@ -494,10 +607,11 @@ RECONCILE = (("tailnet-check", tailnet_check), ("secrets", secrets_step), ("home
              ("settings-and-env", settings_and_env), ("services", services_step))
 
 
-def _run(steps, r, done=None):
+def _run(steps, r, done=None, guard=contextlib.nullcontext):
     try:
         for name, fn in steps:
-            step(r, name, fn)
+            with guard():
+                step(r, name, fn)
     except Stop:
         return 1
     if done:
@@ -515,23 +629,49 @@ BOOT = (("identity", identity), ("seed", seed), ("bootstrap-secrets", bootstrap_
         ("tailnet-attach", tailnet_attach), ("configuration", configuration)) + RECONCILE
 
 
+@contextlib.contextmanager
+def _unless_released(r):
+    """One boot step of an adopted machine under the lifecycle lock, shared,
+    and only while no release has started (§6.5): a release takes the lock
+    between two steps, and the boot stops at the next. A VM is never
+    released, and its departure must not wait on a long step (§4.2)."""
+    if r.desc is not None and not r.desc.adopted:
+        yield
+        return
+    with lease.locked(shared=True):
+        if status.release_started():
+            raise ReleaseStarted
+        yield
+
+
+RELEASE_NOTE = "the release has started: the boot configures nothing (`devcloud release` resumes it)"
+
+
 def boot():
     with _locked():
+        if status.release_started():
+            _say(RELEASE_NOTE)
+            return 0
         status.reset()
         services.mark_booted(False)
         r = Run("boot")
-        code = _run(BOOT, r, done=lambda: _mark_applied(r))
-        if code == 0 and _run((("projects", projects),), r):
-            # The host works without a project: the failure is recorded, and
-            # its own exit status lets the services start all the same.
-            code = PROJECTS_FAILED
+        try:
+            guard = lambda: _unless_released(r)  # noqa: E731
+            code = _run(BOOT, r, done=lambda: _mark_applied(r), guard=guard)
+            if code == 0 and _run((("projects", projects),), r, guard=guard):
+                # The host works without a project: the failure is recorded, and
+                # its own exit status lets the services start all the same.
+                code = PROJECTS_FAILED
+        except ReleaseStarted:
+            _say(RELEASE_NOTE)
+            return 0
         made = code in (0, PROJECTS_FAILED)
         services.mark_booted(made)
         if made and services.systemd_is_init():
             # Step 11 left the continuous units for now: their condition is the
             # marker just written.
             try:
-                services.start_gated(r.user)
+                services.start_gated(r.user, lifecycle=status.lifecycle())
             except StepError as error:
                 status.record("services", "failed", proc.KNOWN.scrub(f"starting the services: {error}"))
                 _say(f"services: failed — {proc.KNOWN.scrub(str(error))}")
@@ -539,27 +679,52 @@ def boot():
         return code
 
 
+@contextlib.contextmanager
+def _job(name):
+    """A job's admission and the run lock: whether it may run (not once a
+    departure has started: each job can restart the sminos daemon)."""
+    with lease.admitted(name, say=_say) as admitted, _locked():
+        yield admitted
+
+
 def reconcile():
-    with _locked():
+    with _job("reconcile") as admitted:
+        if not admitted:
+            return 0
         r = Run("reconcile")
         return _run((("configuration", configuration),) + RECONCILE, r, done=lambda: _mark_applied(r))
 
 
 def pull_config():
-    with _locked():
+    with _job("pull-config") as admitted:
+        if not admitted:
+            return 0
         r = Run("pull-config")
         if _run((("configuration", configuration),), r):
             return 1
         if r.commit == _applied():
             _say(f"configuration unchanged at {r.commit[:12]}; nothing to reconcile")
+            _refresh_marketplace(r)
             return 0
         return _run(RECONCILE, r, done=lambda: _mark_applied(r))
+
+
+def _refresh_marketplace(r):
+    """The marketplace copy kept at its source's head between reconciles (a
+    pull with no new configuration commit runs no settings step)."""
+    if plugins.recorded(r.user):
+        try:
+            plugins.refresh(r.claude_dir)
+        except plugins.Unavailable as error:
+            _say(f"marketplace: {proc.KNOWN.scrub(str(error))}")
 
 
 def refresh_mirrors():
     """Fetches the mirrors a persistent host keeps for its sandboxes; nothing
     on a sandbox. Exit 1 when a mirror's fetch failed (its log: projects)."""
-    with _locked():
+    with _job("refresh-mirrors") as admitted:
+        if not admitted:
+            return 0
         r = Run("refresh-mirrors")
         try:
             r.load()
@@ -576,7 +741,9 @@ def refresh_mirrors():
 
 
 def refresh_secrets():
-    with _locked():
+    with _job("refresh-secrets") as admitted:
+        if not admitted:
+            return 0
         r = Run("refresh-secrets")
 
         def secrets_from_clone(r):
@@ -584,3 +751,22 @@ def refresh_secrets():
             return secrets_step(r)
         return _run((("secrets", secrets_from_clone), ("settings-and-env", settings_and_env),
                      ("services", services_step)), r)
+
+
+def enroll():
+    """The `devcloud-enroll` service's run (§10): nothing unless step 11's
+    enrollment was deferred; then the desk asked again, and on its 0, 1 or 3
+    the step finished as step 11 would, the daemon (re)started."""
+    with _job("enroll") as admitted:
+        if not admitted or not status.enroll_deferred():
+            return 0
+        r = Run("enroll")
+
+        def finish(r):
+            r.load()
+            env = _read_env(ENV_PATH)
+            result = _enroll(r, env)
+            if result.state == "deferred":
+                return ("deferred", f"sminos: {result.detail}")
+            return f"sminos: {result.detail}; {sminos_host.converge(r.user, r.desc.role, env, False)}"
+        return _run((("services", finish),), r)
