@@ -287,12 +287,14 @@ def stand_ins():
            "-v", f"{HERE / 'fixtures'}:/fixtures:ro", "-v", f"{REPO}:/repo:ro",
            "--entrypoint", "python3", IMAGE, "/fixtures/fakes.py")
     sh(FX, "bash /fixtures/make-repo.sh")
-    put_secrets(SECRETS)
     end = time.monotonic() + 30
     while sh(FX, "python3 -c 'import urllib.request as u; u.urlopen(\"http://localhost:8084/\")'",
              check_rc=False).returncode != 0:
         check(time.monotonic() < end, "the fakes never answered")
         time.sleep(0.5)
+    # After the fakes answer: they make /srv/fakes as they start, and read
+    # secrets.json on each request, none of which comes before a host boots.
+    put_secrets(SECRETS)
 
 
 # --- acceptance 3: one boot, a working host -----------------------------------------
