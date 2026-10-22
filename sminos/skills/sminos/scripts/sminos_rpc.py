@@ -98,10 +98,10 @@ a claim the daemon stopped between the two is reconciled from the child's
 kept answer, and its id kept then. So an end the stream did not bring (it
 came while the daemon was stopped, or between two of its readers) is read
 from the child's kept file, where the end is kept beside the command's
-answer. A `/reload-plugins` reloads the bridge mod, whose successor says
-nothing of the run: it ends when the session's bridge answers from another
-child than the one its start names (`effect`), or fails at RELOAD_WAIT_S —
-one from `sminos command` too, which carries no nonce, tracked by its start.
+answer. A `/reload-plugins` ends by returned text if its module survives,
+otherwise when another child answers (`effect`); neither within
+RELOAD_WAIT_S is a timeout. The first end wins, including for `sminos
+command`, which carries no nonce and is tracked by its start.
 A hub whose welcome does not list `op` is sent none.
 
 Checks 1-6 and the ledger's lookup run on the uplink's main thread, which
@@ -380,7 +380,7 @@ class Rpcs:
         self.locks_lock = threading.Lock()
         self.op_ids = {}          # a bridge's command id → the op this daemon issued ({project, session, nonce, at,
         #                           name, args, child}), until its end
-        self.ops_ended = collections.OrderedDict()   # nonce → None: ops whose end went up, the last OPS_ENDED_KEPT
+        self.ops_ended = collections.OrderedDict()   # (session, id) → None: ended ops, including CLI runs without a nonce
         self.kinds = frozenset()  # the session kinds the stream's welcome listed (DX2): `op` goes only where listed
         self.flying = {}          # id(frame) → frame: compact and op messages on a lane, their POST not yet answered
         self.kept = owed.Kept(OWED_FILE, log)
@@ -771,13 +771,16 @@ class Rpcs:
             if isinstance(e, dict) and pid and e.get("type") in OP_OF:
                 self.op_event(sid, pid, e)
 
-    def op_event(self, sid, pid, e):
+    def op_event(self, sid, pid, e, ended_by=None):
         oid = e.get("id")
+        key = (sid, oid)
+        if key in self.ops_ended:
+            return   # an end already won: neither a late end nor a replayed start re-arms it
         held = self.op_ids.get(oid)
         nonce = e.get("rpc") if isinstance(e.get("rpc"), str) else held["nonce"] if held else None
         child = e.get("child") if isinstance(e.get("child"), list) else None
         if e.get("phase") == "start" and e.get("name") == RELOAD and isinstance(oid, str):
-            # A reload is finished by its effect, whoever sent it (`sminos
+            # A reload can be finished by its effect, whoever sent it (`sminos
             # command` sends no nonce): tracked from its start, which names
             # the child it replaces.
             if held is None:
@@ -785,17 +788,18 @@ class Rpcs:
                                            "name": RELOAD, "args": e.get("args") or "", "child": child}
             elif held["child"] is None:
                 held["child"] = child
-        if nonce is not None and nonce in self.ops_ended:
-            return   # its end went up already: this is another copy of it, or a start come after it
         body = {"rpc": nonce, "op": OP_OF[e["type"]], **{k: v for k, v in e.items() if k not in ("type", "rpc", "n")}}
         self.owe(held["project"] if held else pid, held["session"] if held else sid, "op", body)
         if e.get("phase") == "end":
             if self.op_ids.pop(oid, None) is not None:
                 self.forget(nonce, ("op_id", "op_name", "op_args", "op_child"), "command")
-            if nonce is not None:
-                self.ops_ended[nonce] = None
-                while len(self.ops_ended) > OPS_ENDED_KEPT:
-                    self.ops_ended.popitem(last=False)
+            self.ops_ended[key] = None
+            while len(self.ops_ended) > OPS_ENDED_KEPT:
+                self.ops_ended.popitem(last=False)
+            if e.get("name") == RELOAD:
+                how = ended_by or (e.get("readback") or {}).get("how", "none")
+                log("reload-plugins end id=%s session=%s how=%s ok=%s" %
+                    (oid, sid, how, (e.get("settled") or {}).get("ok")))
 
     def effects(self, answering):
         """The ops this daemon finishes itself, by their effect: a
@@ -824,15 +828,16 @@ class Rpcs:
                 continue
             self.op_event(op["session"], op["project"], {"type": "run", "phase": "end", "id": oid, "rpc": op["nonce"],
                                                          "name": op["name"], "args": op["args"], **end,
-                                                         "t": int(now * 1000)})
+                                                         "t": int(now * 1000)},
+                          ended_by="effect" if end["settled"]["ok"] else "timeout")
 
     def recover_ops(self):
         """The ends of ops this daemon issued that no stream brought (they
         came while it was stopped, or between two of a bridge's readers),
         read from the bridge's kept file, where its child keeps a run's end
         beside the command's answer — a reload's too, when the module that
-        took it ended it (the engine refused it); a reload that ran has none,
-        its module gone, and is finished by its effect (`effects`)."""
+        took it survived or the engine refused it. A replaced module leaves no
+        end, so its reload is finished by its effect (`effects`)."""
         for oid, op in list(self.op_ids.items()):
             if not op["session"] or op["nonce"] is None:
                 continue

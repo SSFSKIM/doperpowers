@@ -5763,6 +5763,21 @@ describe('the desk: command', () => {
     expect(lifecycle(h, id)).toEqual(['result:ok', 'run:start'])
   })
 
+  test('a reload that keeps this module ends once by its returned text and frees the desk immediately', async () => {
+    const h = await desk()
+    const id = await queued(h, { name: 'reload-plugins' })
+    const text = 'Reloaded: 10 plugins · 23 skills · 17 agents · 13 hooks · 2 plugin MCP servers · 0 plugin LSP servers'
+    h.runs[0]!.resolve({ text })
+    await h.settle()
+    expect(lifecycle(h, id)).toEqual(['result:ok', 'run:start', 'run:end'])
+    expect(h.ofType('run').at(-1)).toMatchObject({ id, phase: 'end', settled: { ok: true, text }, readback: { how: 'text', text } })
+    const next = await queued(h, { name: 'rename', args: 'after-reload' })
+    expect(answerOf(h, next)).toMatchObject({ ok: true })
+    expect(h.runs.map((r) => r.args.command)).toEqual(['reload-plugins', 'rename'])
+    await h.fire(RELOAD_HOLD_MS)
+    expect(lifecycle(h, id)).toEqual(['result:ok', 'run:start', 'run:end'])
+  })
+
   test('a reload whose start did not reach the child is not run, and the desk goes on', async () => {
     const h = harness({ version: V307, commands: COMMANDS, hold: true })
     await h.ready()

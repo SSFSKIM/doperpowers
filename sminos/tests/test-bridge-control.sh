@@ -273,6 +273,10 @@ elif op == "fakemod":       # sminos session lines-file mode-file
                     later = [{**run, "phase": "start"},
                              {**run, "phase": "end", "settled": {"ok": True},
                               "readback": {"how": "row", "text": "Session renamed to: %s" % args, "uuid": "row-r1"}}]
+                    if name == "reload-plugins":
+                        text = "Reloaded: 10 plugins · 23 skills · 17 agents · 13 hooks"
+                        later[-1] = {**run, "phase": "end", "settled": {"ok": True, "text": text},
+                                     "readback": {"how": "text", "text": text}}
                     threading.Timer(0.3, post, (sock, later)).start()
             else:
                 result = {"ok": False, "error": "unknown op: %s" % o}
@@ -499,6 +503,16 @@ until_true 100 has_event "$WATCHD" run start rl-1 || true
 STATUS="$(ctl get "$SOCK" /status)"
 WANT="[$(python3 -c 'import os, sys; print(os.stat(sys.argv[1]).st_ino)' "$SOCK"), $(field_of "${STATUS#* }" pid)]"
 assert_equals "$(field_of "$(event_of "$WATCHD" run start rl-1)" child)" "$WANT" "a reload's start carries the relaying child: its socket's inode and its pid"
+# A surviving module returns text: the same child relays and keeps its end.
+OUTC="$(ctl command "$SOCK" '{"op":"command","name":"reload-plugins","rpc":"nonce-reload-text"}')"
+CID="$(field_of "${OUTC#* }" id)"
+until_true 100 has_event "$WATCHD" run end "$CID" || true
+assert_equals "$(field_of "$(event_of "$WATCHD" run start "$CID")" child)" "$WANT" "the surviving reload uses the same child"
+assert_equals "$(field_of "$(event_of "$WATCHD" run end "$CID")" rpc)" "nonce-reload-text" "the reload's text end carries its nonce"
+KR="$(kept_rpc nonce-reload-text)"
+assert_equals "$(field_of "$KR" end.readback.how)/$(field_of "$KR" end.settled.ok)" "text/true" "the surviving reload's text is kept for daemon recovery"
+assert_contains "$(field_of "$KR" end.readback.text)" "Reloaded: 10 plugins" "the engine's line is kept verbatim"
+assert_equals "$(count_event "$WATCHD" run end "$CID")" "1" "the child relayed one reload end"
 ctl post "$SOCK" '[{"type":"run","phase":"start","id":"rn-1","name":"rename","args":"x"}]' >/dev/null
 until_true 100 has_event "$WATCHD" run start rn-1 || true
 assert_equals "$(field_of "$(event_of "$WATCHD" run start rn-1)" child)" "null" "another command's does not"
