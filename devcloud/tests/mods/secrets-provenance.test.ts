@@ -47,9 +47,9 @@ async function start($: Engine, on: On, source = SOURCE, options: {
   let stamp = 1
   on('fs.list', (_, e) => ({ value: [...files].filter(([p]) => p.startsWith(`${e.path}/`) && !p.slice(e.path.length + 1).includes('/')).map(([p, text]) => ({ name: p.slice(e.path.length + 1), kind: 'file' as const, size: text.length, mtimeMs: stamp, isLink: false })) }))
   on('fs.stat', async (_, e) => {
-    if (e.path === ROOTS) return { value: options.rootsStat ? await options.rootsStat() as never : { kind: 'file', size: 150, mtimeMs: 1, isLink: false } }
+    if (e.path === ROOTS) return { value: options.rootsStat ? await options.rootsStat() as never : { kind: 'file' as const, size: 150, mtimeMs: 1, isLink: false } }
     const text = files.get(e.path)
-    return text === undefined ? { deny: 'missing' } : { value: { kind: 'file', size: text.length, mtimeMs: stamp, isLink: false } }
+    return text === undefined ? { deny: 'missing' } : { value: { kind: 'file' as const, size: text.length, mtimeMs: stamp, isLink: false } }
   })
   on('fs.read', async (_, e) => {
     if (e.path === ROOTS) return { value: options.rootsRead ? await options.rootsRead() : JSON.stringify({ schemaVersion: 1, policyVersion: 1, generation: 'fixture-generation', roots: [ROOT] }) }
@@ -61,7 +61,8 @@ async function start($: Engine, on: On, source = SOURCE, options: {
     if (e.argv[0] === 'git') return ok('/work/project/.git\n/work/project\n')
     expect(e.argv.slice(0, 2)).toEqual(['python3', '-I'])
     expect(e.argv[2]?.endsWith('/hooks/mods/secrets-provenance.py')).toBe(true)
-    expect(e.argv[3]).toBe('verify')
+    expect(e.argv.slice(3)).toEqual(['verify', '--timeout-ms', String(e.init?.timeoutMs)])
+    expect(e.init?.stdin).not.toContain(GENERIC)
     const request = JSON.parse(e.init?.stdin ?? '{}')
     requests.push(request)
     timeouts.push(e.init?.timeoutMs ?? 0)
@@ -171,7 +172,7 @@ describe('bounded verification and one-use receipt lifecycle', () => {
       expect(s.timeouts[0]! > 0 && s.timeouts[0]! <= 1500).toBe(true)
       pending.resolve(ok(JSON.stringify(await verified(s.requests[0]!))))
     } else if (stalled === 'roots-read') pending.resolve(JSON.stringify({ schemaVersion: 1, policyVersion: 1, generation: 'fixture-generation', roots: [ROOT] }))
-    else pending.resolve({ kind: 'file', size: 150, mtimeMs: 1, isLink: false })
+    else pending.resolve({ kind: 'file' as const, size: 150, mtimeMs: 1, isLink: false })
     await s.clock.settle()
     expect(s.requests.length).toBe(stalled === 'process' ? 1 : 0)
     expect(JSON.stringify(await s.append([block('call', numbered(SOURCE))]))).not.toContain(GENERIC)
@@ -310,7 +311,7 @@ describe('unknown and unsupported forms remain fully guarded', () => {
       const s = await start($, on, SOURCE, {
         ...(mode === 'missing-roots' ? { rootsRead: async () => { throw new Error('missing') } } : {}),
         ...(mode === 'bad-roots' ? { rootsRead: async () => '{' } : {}),
-        ...(mode === 'oversized-roots' ? { rootsStat: async () => ({ kind: 'file', size: 40_000, mtimeMs: 1, isLink: false }) } : {}),
+        ...(mode === 'oversized-roots' ? { rootsStat: async () => ({ kind: 'file' as const, size: 40_000, mtimeMs: 1, isLink: false }) } : {}),
         process: async request => {
           if (mode === 'missing-python') throw new Error('ENOENT')
           const answer = ok(mode === 'invalid-json' ? '{' : JSON.stringify(await verified(request)))
@@ -353,4 +354,58 @@ describe('unknown and unsupported forms remain fully guarded', () => {
     const scrubbed = handles.scrub(text, full)
     for (const value of [GENERIC, provider, key]) expect(scrubbed).not.toContain(value)
   })
+})
+
+test('a singleton text block grants no exemption to its other fields', async ($, on) => {
+  const s = await start($, on)
+  await s.read()
+  const row = await s.append([block('call', [{ type: 'text', text: numbered(SOURCE), note: SOURCE }])])
+  expect((row[0] as any).content[0].text).toContain(GENERIC)
+  expect((row[0] as any).content[0].note).not.toContain(GENERIC)
+})
+
+test('a second simultaneous append cannot use a receipt while the first awaits hashing', async ($, on) => {
+  const s = await start($, on)
+  await s.read()
+  await Promise.all([s.append([block('call', numbered(SOURCE))]), s.append([block('call', numbered(SOURCE))])])
+  const rows = s.session.appended().map(row => JSON.stringify(row.message.content))
+  expect(rows.filter(row => row.includes(GENERIC))).toHaveLength(1)
+  expect(rows.filter(row => row.includes('[redacted:assignment#'))).toHaveLength(1)
+})
+
+test('roots are reread only after stat changes, and a new screen never inherits old coverage', async ($, on) => {
+  let reads = 0, stamp = 1, root = ROOT
+  const s = await start($, on, SOURCE, {
+    rootsStat: async () => ({ kind: 'file' as const, size: 150, mtimeMs: stamp, isLink: false }),
+    rootsRead: async () => { reads++; return JSON.stringify({ schemaVersion: 1, policyVersion: 1, generation: 'fixture-generation', roots: [root] }) },
+  })
+  await s.read('one')
+  await s.read('two')
+  expect(reads).toBe(1)
+  stamp++
+  root = '/opt/another-installation'
+  const ran = await s.read('changed')
+  expect(reads).toBe(2)
+  expect(s.requests).toHaveLength(2)
+  expect(JSON.stringify(ran.result)).not.toContain(GENERIC)
+})
+
+test('multibyte source uses UTF-8 digest lengths and character-based rendering ranges', async ($, on) => {
+  const source = `// λ and a supplementary character: \u{10400}\n${SOURCE}`
+  const s = await start($, on, source)
+  const ran = await s.read()
+  expect((ran.result as any).file.content).toBe(source)
+  expect(s.requests[0]!.contentBytes).toBe(new TextEncoder().encode(source).length)
+  expect(JSON.stringify(await s.append([block('call', numbered(source))]))).toContain(GENERIC)
+})
+
+test('oversized source and Reads without generic detections never start verification', async ($, on) => {
+  const s = await start($, on)
+  s.setAnswer(native('ordinary code'), numbered('ordinary code'))
+  expect((await s.read()).ref).toBe(71)
+  const large = SOURCE + '\n' + 'x'.repeat(16 * 1024 * 1024)
+  s.setAnswer(native(large), numbered(large))
+  const ran = await s.read('large')
+  expect((ran.result as any).file.content).not.toContain(GENERIC)
+  expect(s.requests).toHaveLength(0)
 })

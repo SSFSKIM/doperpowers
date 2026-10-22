@@ -382,7 +382,7 @@ export function registerSecrets(on: On) {
     const duplicates = new Set<string>()
     const taken = new Map<string, ReturnType<ReadReceipts['take']>>()
     for (const block of e.message.content) {
-      if (block.type !== 'tool_result') continue
+      if (block.type !== 'tool_result' || typeof block.tool_use_id !== 'string') continue
       if (ids.has(block.tool_use_id)) duplicates.add(block.tool_use_id)
       ids.add(block.tool_use_id)
       const receipt = receipts.take({ agentId: e.agentId, tool_use_id: block.tool_use_id })
@@ -392,7 +392,7 @@ export function registerSecrets(on: On) {
     const ranges = new Map<string, Awaited<ReturnType<typeof receiptRanges>>>()
     if (e.door === 'tool-result' && e.origin.kind === 'tool' && e.origin.tool === 'Read') {
       for (const block of e.message.content) {
-        if (block.type !== 'tool_result' || block.is_error || duplicates.has(block.tool_use_id)) continue
+        if (block.type !== 'tool_result' || typeof block.tool_use_id !== 'string' || block.is_error || duplicates.has(block.tool_use_id)) continue
         ranges.set(block.tool_use_id, await receiptRanges(taken.get(block.tool_use_id), resultText(block.content)))
       }
     }
@@ -405,12 +405,15 @@ export function registerSecrets(on: On) {
         return { ...block, text }
       }
       if (block.type === 'tool_result') {
-        const allowed = ranges.get(block.tool_use_id)
-        const text = resultText(block.content)
-        const scrubbed = allowed && text !== undefined ? handles.scrub(text, allowed) : undefined
-        const inner = scrubbed === undefined ? handles.scrubRecord(block.content) :
-          typeof block.content === 'string' ? scrubbed :
-          scrubbed === text ? block.content : [{ ...block.content![0] as object, text: scrubbed }]
+        const allowed = typeof block.tool_use_id === 'string' ? ranges.get(block.tool_use_id) : undefined
+        let inner = block.content
+        if (allowed && typeof inner === 'string') inner = handles.scrub(inner, allowed)
+        else if (allowed && Array.isArray(inner) && inner.length === 1 && inner[0]?.type === 'text' && typeof inner[0].text === 'string') {
+          const { text, ...metadata } = inner[0]
+          const scrubbed = handles.scrub(text, allowed)
+          const scrubbedMetadata = handles.scrubRecord(metadata)
+          if (scrubbed !== text || scrubbedMetadata !== metadata) inner = [{ ...scrubbedMetadata, text: scrubbed }]
+        } else inner = handles.scrubRecord(inner)
         if (inner === block.content) return block
         isChanged = true
         return { ...block, content: inner }
