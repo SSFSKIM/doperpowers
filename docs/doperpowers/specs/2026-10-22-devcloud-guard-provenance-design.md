@@ -396,6 +396,9 @@ These separate tickets are already registered. The integrating session carries t
 - Observation: Automatic pagination’s notice is not part of the text bound by the receipt.
   Evidence: the reviewed native result contract places the notice outside `ran.text` as a companion message; replacing a result without `ref` drops it, as today’s guard already does on rewritten Reads.
 
+- Observation: The installed host CLI uses a flat boot-directory layout rather than the repository's layout.
+  Evidence: M1's copied-CLI regression follows the real exec boundary to the helper in the existing host marketplace; the checkout-relative helper alone was insufficient. This requires no new privileged installation work.
+
 ## Decision Log
 
 - Decision: Verification consists of one independent adversarial spec review covering the design and all milestones, followed after implementation by doperpowers:review-code at the high rung on the entire branch, plus the committed gates and native acceptance described above.
@@ -425,6 +428,14 @@ These separate tickets are already registered. The integrating session carries t
 - Decision: Drive native acceptance with a deterministic loopback Messages endpoint and disable outbound engine services, rather than live inference.
   Rationale: The acceptance checks the actual engine lifecycle, Read mapper and stored transcript, not model judgment. Answering every request, including side requests, makes the proof reproducible without sending data or consuming inference quota.
   Date/Author: 2026-10-22, confirmed by the coordinating session.
+
+- Decision: Locate reusable npm artifact bytes directly by the public integrity digest in the content-addressed cache; still require an exact-version public registry document before using them.
+  Rationale: A tarball URL cache key or installed lockfile adds no publication evidence. The published checksum supplies both lookup identity and the comparison that accepts the bytes.
+  Date/Author: 2026-10-22, M1 execution.
+
+- Decision: Nested npm packages require their own package boundary and evidence; a parent's archive members under `node_modules/` do not borrow the parent's marker.
+  Rationale: Each installed dependency has its own mutable manifest and ownership. Unpublished bundled children conservatively lose coverage rather than inherit unrelated metadata authority; M3 measures this loss separately.
+  Date/Author: 2026-10-22, M1 execution.
 
 ## Outcomes & Retrospective
 
