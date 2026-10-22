@@ -15,7 +15,7 @@ This is board ticket #124, following #87 and PR #349. It changes neither the det
 - [x] (2026-10-22 11:51Z) Folded the settled review decisions into the specification: public-artifact evidence for npm/gcloud, dpkg deferred, one whole-stage deadline, unchanged-result pagination preservation, and manual-only refresh. No implementation has begun.
 - [x] (2026-10-22 12:28Z) M1 — Built and independently reviewed the original-content index and local verifier. Both committed gates passed on `99bb0be3`; two non-blocking diagnostic/test findings are recorded in `tech-debt-tracker.md`.
 - [x] (2026-10-22 13:04Z) M2 — Applied whole-stage bounded verification through both scrubbing passes, including stalled preflight fallback and unchanged-result `ref` preservation. Frontier review is clean after two type corrections; both committed gates passed on `0b5afcd3`, including the M1 checkout-boundary fix. Actual native behavior remains M3.
-- [ ] M3 — Prove native behavior including the unchanged paginated Read notice, measure npm/gcloud improvement, review and release; register the cua resync at integration. Residue is already tracked in board tickets 125 and 126.
+- [x] (2026-10-22 13:52Z) M3 — Native macOS acceptance, corpus measurement, documentation and devcloud 0.10.0 release changes passed frontier review and committed gates. Rebased cleanly onto current main; 0.10.0 remains above main's 0.9.4. Whole-branch high review and final integration gates follow; cua resync registration remains post-merge with the integrating session. Board tickets 125 and 126 remain separate residue.
 
 ## Acceptance
 
@@ -357,7 +357,7 @@ Character ranges refer to the string being scrubbed, not UTF-8 byte offsets. The
 
 cua vendors the guard under `hooks/mods/guard/`; its `VENDORED.md` is the adaptation contract. A runtime merge of this work requires a resync ticket in cua naming the actual doperpowers merge commit and release version.
 
-The ticket must include the new TypeScript provenance module, standalone Python helper, shared protocol/schema expectations and relevant tests, not only edits to existing `secrets*.tsx`. Update the vendoring table and source headers for the new file types. cua must be able to perform local verification without a devcloud plugin installation; the index is shared user-local data, while the verifier ships with each guard. Document the standalone helper’s indexing invocation for cua-only users instead of making their guard depend on `devcloud` being on PATH.
+The ticket must include the new TypeScript provenance module (`secrets-provenance.tsx`), standalone Python helper (`secrets-provenance.py`), out-of-band corpus reporter (`secrets-provenance-corpus.mjs`), shared protocol/schema expectations and relevant tests, not only edits to existing `secrets*.tsx`. Update the vendoring table and source headers for the new file types. cua must be able to perform local verification without a devcloud plugin installation; the index is shared user-local data, while the verifier ships with each guard. Document the standalone helper’s indexing invocation for cua-only users instead of making their guard depend on `devcloud` being on PATH.
 
 Preserve cua’s existing adaptations: it neither answers nor writes devcloud’s guard marker; its hooks and error handler stand down while the live devcloud marker is present; its prompt section id remains cua’s; and its hook registration remains compatible with cua’s own registrations. The helper path is relative to the owning plugin. Do not change the marker’s meaning or persist provenance in it.
 
