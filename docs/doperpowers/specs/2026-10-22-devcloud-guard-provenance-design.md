@@ -441,6 +441,14 @@ These separate tickets are already registered. The integrating session carries t
   Rationale: The first real build indexed no npm files because a version manager was itself a Git checkout. Public artifact equality is the proof; checkout exclusion is defense in depth for project or linked source, not a prohibition on ordinary Git-installed runtime managers. Add a regression with a checkout marker above a managed global prefix.
   Date/Author: 2026-10-22, confirmed by the coordinating session.
 
+- Decision: Without an absolute XDG cache override, the hook's non-authoritative roots screen checks both ordinary platform cache locations under HOME; the Python helper alone selects the authoritative platform cache.
+  Rationale: The hook API exposes no platform noun. Checking two bounded screen locations avoids another discovery subprocess without granting either screen authority.
+  Date/Author: 2026-10-22, M2 execution.
+
+- Decision: Give both `process.run` and the helper only the remaining stage timeout; retain a process concurrency slot until its promise settles, even after the stage abandons it.
+  Rationale: `process.run` inherits hook abort and has no per-call signal option. The stage race bounds hook latency independently; retaining the slot prevents unsettled processes from creating an unbounded replacement stream. Native lifecycle acceptance remains necessary beyond mocked interleavings.
+  Date/Author: 2026-10-22, M2 execution.
+
 ## Outcomes & Retrospective
 
 Pending — written at finish.
