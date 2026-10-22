@@ -1255,8 +1255,8 @@ assert_contains "$OUT" "branch worktree-feat-x" "retiring a worktree'd seat note
 echo "status / meta / attach:"
 run "$SMINOS" status plainworker "drafting the outline"
 assert_equals "$(field "$P_UUID" now)" "drafting the outline" "status writes the now line"
-run "$SMINOS" list work
-assert_contains "$OUT" "drafting the outline" "list shows the now line"
+run "$SMINOS" list work --stopped
+assert_contains "$OUT" "drafting the outline" "list --stopped shows the stopped seat's now line"
 run "$SMINOS" meta get plainworker now
 assert_equals "$OUT" "drafting the outline" "meta get reads a field"
 run "$SMINOS" meta set plainworker lane implement
@@ -3425,8 +3425,8 @@ printf '{"uuid":"%s","current":"%s","alias":"oldtimer","group":"pf-repo","status
   "$OLDS" "$OLDS" "$R" > "$SMINOS_HOME/$OLDS.json"
 chmod 600 "$SMINOS_HOME/$OLDS.json"
 printf '{"type":"user"}\n' > "$HOME/.claude/projects/pl-proj/$OLDS.jsonl"   # stopped: its transcript is here
-run "$SMINOS" list
-assert_contains "$OUT" "oldtimer" "a seat that predates the log lists"
+run "$SMINOS" list --stopped
+assert_contains "$OUT" "oldtimer" "a stopped seat that predates the log lists with --stopped"
 assert_equals "$(events_of "$OLDS")" "joined " "and is joined on the first list"
 assert_contains "$(cat "$PFLOG/testhost.$OLDS.jsonl")" "\"role\": \"keeper\", \"seat\": \"$OLDS\", \"by\": \"\"" "with its seat and role"
 
@@ -3566,8 +3566,8 @@ run "$SMINOS" fill pc "continue" --resume
 assert_rc 0 "$RC" "fill --resume of the retired seat"
 assert_equals "$(field "$PC" current)" "$PC2" "keeps its session"
 assert_equals "$(events_of "$PC2")" "joined in-charge retired:retire joined " "and re-joins it under the same uuid"
-run "$SMINOS" list
-assert_contains "$OUT" "pc" "the revived seat lists again"
+run "$SMINOS" list --stopped
+assert_contains "$OUT" "pc" "the revived seat lists again with --stopped (the stub has no live peer)"
 # seat add records joined; remove records retired.
 SAS=2a000007-0000-4000-8000-00000000002a
 run "$SMINOS" seat add pf-repo added --session "$SAS"
