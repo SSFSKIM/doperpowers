@@ -226,6 +226,31 @@ describe('redact, never refuse', () => {
     expect((call.result as { stdout: string }).stdout).toMatch(/^token: \[redacted:github-pat#[a-z2-7]{4}\.\d+\]$/)
   })
 
+  test('data punctuation and leading equals stay protected in tool output and appended rows', async ($, on) => {
+    const dotted = 'Ab7cD9ef.G1h2I3jk+L4m5N6op'
+    const leadingEquals = `=${chars(32, 87)}`
+    const lines = [`{password: ${dotted}}`, `user=sample,password=${dotted}`, `PASSWORD=${leadingEquals}`, `export PASSWORD=${leadingEquals}`]
+    const source = lines.join('\n')
+    const ran = tool(on, (e) => e.tool === 'Bash' ? bash(source) : { type: 'create', filePath: e.file_path, content: e.content, structuredPatch: [] })
+    const session = mock.session(on)
+    await start($, on, {})
+    // Append raw output first: protection must not depend on a preceding tool call.
+    await $.session.append({
+      message: { type: 'user', role: 'user', content: [{ type: 'tool_result', tool_use_id: 'data-1', content: source }] },
+      door: 'tool-result', origin: { kind: 'tool', tool: 'Bash' }, uuid: 'data-row',
+    } as never).catch(() => undefined)
+    const content = session.appended()[0]?.message.content as { content: string }[]
+    const printed = (await $.tool.call({ tool: 'Bash', command: 'env' })).result as { stdout: string }
+    for (const text of [content[0]!.content, printed.stdout]) {
+      expect(text.replace(/\[redacted:assignment#[a-z2-7]{4}\.\d+\]/g, '<hidden>')).toBe(
+        '{password: <hidden>}\nuser=sample,password=<hidden>\nPASSWORD=<hidden>\nexport PASSWORD=<hidden>',
+      )
+      // The handle must restore the entire credential, including its leading equals.
+      await $.tool.call({ tool: 'Write', file_path: '/work/repo/roundtrip.txt', content: text })
+      expect(ran.at(-1)?.content).toBe(source)
+    }
+  })
+
   test("a credential file's value is redacted to a handle naming its file and field", async ($, on) => {
     tool(on, () => bash(`oauth_token: ${githubPat(53)}`))
     await start($, on, { [`${HOME}/.config/gh/hosts.yml`]: `github.com:\n    oauth_token: ${githubPat(53)}\n` })
@@ -300,20 +325,20 @@ describe('a manual compaction', () => {
   })
 })
 
-describe('package code remains readable without trusting its path', () => {
-  test('Read and Bash cat preserve references but redact stored, credential-file and prefixed values everywhere', async ($, on) => {
+describe('package paths do not exempt credential literals', () => {
+  test('Read and Bash cat redact stored, credential-file, prefixed and generic values everywhere', async ($, on) => {
     const stored = 'config.browser?.isolatedToken'
-    const credential = 'oauth2_parameters.credentials'
+    const credential = chars(32, 88)
     const pat = githubPat(83)
+    const generic = chars(32, 89)
     const source = [
-      'const tokenInput = model_types_1.TokenInput',
-      '{cacheReadInputTokens:e.cache_read_input_tokens??0}',
       `stored: ${stored}`,
       `fromFile: ${credential}`,
       `literal: ${pat}`,
+      `password: "${generic}"`,
     ].join('\n')
     tool(on, (e) => e.tool === 'Bash' ? bash(source) : {
-      type: 'text', file: { filePath: e.file_path, content: source, numLines: 5, startLine: 1, totalLines: 5 },
+      type: 'text', file: { filePath: e.file_path, content: source, numLines: 4, startLine: 1, totalLines: 4 },
     })
     await start($, on, {
       [`${STORE}/SAMPLE`]: stored,
@@ -324,11 +349,11 @@ describe('package code remains readable without trusting its path', () => {
       const read = (await $.tool.call({ tool: 'Read', file_path: path })).result as { file: { content: string } }
       const cat = (await $.tool.call({ tool: 'Bash', command: `cat ${path}` })).result as { stdout: string }
       for (const text of [read.file.content, cat.stdout]) {
-        expect(text).toContain('const tokenInput = model_types_1.TokenInput\n{cacheReadInputTokens:e.cache_read_input_tokens??0}')
         expect(text).toContain('stored: [secret:SAMPLE]')
         expect(text).toContain('fromFile: [secret:hosts.yml:github.com.oauth_token]')
         expect(text).toContain('literal: [redacted:github-pat#')
-        for (const value of [stored, credential, pat]) expect(text).not.toContain(value)
+        expect(text).toContain('password: "[redacted:assignment#')
+        for (const value of [stored, credential, pat, generic]) expect(text).not.toContain(value)
       }
     }
   })

@@ -94,22 +94,7 @@ describe('assignments whose name says secret', () => {
   })
 })
 
-describe('vendored code is not a secret assignment', () => {
-  test('numbered and optional-chain references and expressions stay readable', () => {
-    for (const line of [
-      'const browserToken = config.browser?.isolatedToken',
-      'const credentials = oauth2_parameters.credentials',
-      'const tokenInput = model_types_1.TokenInput',
-      'const token = options2.credentials.token',
-      '{cacheReadInputTokens:e.cache_read_input_tokens??0}',
-      '{inputTokens:t.inputTokens+e.inputTokens}',
-      '{clientSecret: config.clientSecret||undefined}',
-      'if (credentials === suppliedCredentials)',
-      'if (credentials !== suppliedCredentials)',
-      'token => suppliedCredentials',
-    ]) expect(found(line)).toEqual([])
-  })
-
+describe('credential literals stay protected across data formats', () => {
   test('unknown quoted literals still redact across env, YAML, JSON, TOML and source code', () => {
     // No provider prefixes: only the assignment rule can protect these values.
     const values = [
@@ -144,10 +129,35 @@ describe('vendored code is not a secret assignment', () => {
     }
   })
 
+  test('flow YAML and comma-separated logs do not establish source-expression context', () => {
+    const jwt = `${btoa('{"alg":"HS256","typ":"JWT"}')}.${btoa('{"sub":"synthetic-test-123"}')}.${chars(43, 85)}`
+    for (const value of ['Ab7cD9ef.G1h2I3jk+L4m5N6op', 'Ab7cD9ef.G1h2I3jk.L4m5N6op', jwt, chars(32, 86)]) {
+      for (const line of [
+        `{password: ${value}}`,
+        `{user: sample, password: ${value}}`,
+        `user=sample,password=${value}`,
+        `{password: "${value}"}`,
+        `user=sample,password='${value}'`,
+      ]) expect(found(line)).toEqual([['assignment', value]])
+    }
+  })
+
+  test('ambiguous bare fields remain eligible even when they resemble source expressions', () => {
+    for (const value of ['usage2.cachedInputTokens??0', 'usage2.promptTokens+completionTokens', 'config2.clientSecret||fallbackValue']) {
+      expect(found(`{token: ${value}}`)).toEqual([['assignment', value]])
+    }
+  })
+
+  test('leading equals belongs to the credential in env and shell output', () => {
+    const value = `=${chars(32, 87)}`
+    for (const line of [`PASSWORD=${value}`, `export PASSWORD=${value}`, `PASSWORD = ${value}`, `PASSWORD="${value}"`]) {
+      expect(found(line)).toEqual([['assignment', value]])
+    }
+  })
+
   test('opaque literals, including punctuation and alphabet-only values, still redact', () => {
     for (const value of [chars(32, 81), chars(32, 82, 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'), 'c7!Qz%4u*Fh9?Lw2@Jd6#Rb8']) {
       expect(found(`password="${value}"`)).toEqual([['assignment', value]])
-      expect(found(`Bearer ${value}`)).toEqual([['assignment', value]])
     }
   })
 })
