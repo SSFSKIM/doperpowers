@@ -195,14 +195,20 @@ def lease_set(ctx, host, unix, cap=None):
         raise DriverError(FAILED, f"{host.name}'s departure has started; its lease stays as it is")
     if result.code == OVER_CAP and cap is not None:
         raise DriverError(CAP, f"{host.name}'s lease would end past the lifetime cap, later than the lease in force")
-    if result.code != 0:
-        raise DriverError(FAILED, f"{host.name} did not set the lease (exit {result.code}); its label is untouched")
-    lines = result.out.strip().splitlines()
+    lines = (result.out or "").strip().splitlines()
     rejoin = next((line.split(" ", 1)[1] for line in lines[:-1] if line.startswith("rejoin ")), None)
     try:
-        return LeaseSet(None if lines[-1] == "keep" else int(lines[-1]), rejoin)
+        done = LeaseSet(None if lines[-1] == "keep" else int(lines[-1]), rejoin)
     except (ValueError, IndexError):
-        raise DriverError(FAILED, f"{host.name}'s `lease set` printed no lease") from None
+        done = None
+    # The rejoin it started can log the node out before SSH delivers the exit
+    # status: a complete answer, its rejoin line and then the lease, stands.
+    lost = result.code is None or result.code == 255 or result.code < 0
+    if result.code != 0 and not (lost and done is not None and rejoin is not None):
+        raise DriverError(FAILED, f"{host.name} did not set the lease (exit {result.code}); its label is untouched")
+    if done is None:
+        raise DriverError(FAILED, f"{host.name}'s `lease set` printed no lease")
+    return done
 
 
 REJOIN_WAIT = 10 * 60

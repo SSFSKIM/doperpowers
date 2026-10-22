@@ -242,6 +242,26 @@ class LeaseKeepAndRejoinTest(OpsBase):
         self.assertEqual({c["target"] for c in self.remote.calls}, {"dc-a-0001"}, "reached it by another name")
         self.assertIn("back on the tailnet as a non-ephemeral node, under the same name", self.out.getvalue())
 
+    def test_a_complete_answer_cut_off_by_the_rejoin_is_honored(self):
+        # The rejoin can log the node out after `lease set` released the lock, before SSH delivered its exit.
+        for code in (255, None, -1):
+            with self.subTest(code=code):
+                self.remote.rules = []
+                state = self.state()
+                state["servers"][0]["labels"] = vm_labels(expires=NOW + HOUR)
+                self.state_file.write_text(json.dumps(state))
+                self.remote.on("devcloud lease set", code=code, out="rejoin non-ephemeral\nkeep\n")
+                self.remote.on("tailnet.json", out=kind(False))
+                self.assertEqual(ops.lease(self.ctx, "dc-a-0001", "keep", confirmed=True), 0)
+                labels = self.servers()["dc-a-0001"]["labels"]
+                self.assertEqual((labels["devcloud-lifetime"], labels.get("devcloud-expires")), ("keep", None))
+                self.assertIn("back on the tailnet as a non-ephemeral node", self.out.getvalue())
+
+    def test_a_cut_off_answer_without_a_rejoin_line_is_still_a_failure(self):
+        self.remote.on("devcloud lease set", code=255, out=f"{NOW + 2 * HOUR}\n")
+        self.assertEqual(self.fails(lambda: ops.lease(self.ctx, "dc-a-0001", "2h", confirmed=False))[0], 1)
+        self.assertEqual(self.servers()["dc-a-0001"]["labels"]["devcloud-expires"], str(NOW + HOUR))
+
     def test_a_kept_host_given_a_lease_rejoins_as_ephemeral(self):
         self.remote.on("devcloud lease set", out=f"rejoin ephemeral\n{NOW + 2 * HOUR}\n")
         self.remote.on("tailnet.json", out=kind(True))
