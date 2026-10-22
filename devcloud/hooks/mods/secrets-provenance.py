@@ -312,11 +312,8 @@ def npm_cache_entries(root):
     return result
 
 
-def cached_npm_bytes(root, entries, url, limit):
-    item = entries.get(url)
-    if item is None:
-        raise EvidenceError('unavailable_evidence')
-    for algorithm, digest in integrity_tokens(item['integrity']):
+def cached_npm_blob(root, integrity, limit):
+    for algorithm, digest in integrity_tokens(integrity):
         hexed = digest.hex()
         path = root / '_cacache/content-v2' / algorithm / hexed[:2] / hexed[2:4] / hexed[4:]
         try:
@@ -326,6 +323,13 @@ def cached_npm_bytes(root, entries, url, limit):
         except OSError:
             pass
     raise EvidenceError('unavailable_evidence')
+
+
+def cached_npm_bytes(root, entries, url, limit):
+    item = entries.get(url)
+    if item is None:
+        raise EvidenceError('unavailable_evidence')
+    return cached_npm_blob(root, item['integrity'], limit)
 
 
 class EvidenceStore:
@@ -377,9 +381,9 @@ class EvidenceStore:
         data = None
         if evidence['source'] == 'npm' and self.npm_cache:
             try:
-                data = cached_npm_bytes(self.npm_cache, self.npm_entries, evidence['artifactUrl'], MAX_ARCHIVE_BYTES)
-                if not checksum_matches(data, evidence['integrity']):
-                    data = None
+                # The public checksum itself addresses cacache's content blob;
+                # a lockfile or tarball URL key adds no evidence of publication.
+                data = cached_npm_blob(self.npm_cache, evidence['integrity'], MAX_ARCHIVE_BYTES)
             except (OSError, EvidenceError):
                 pass
         if data is None:
@@ -534,6 +538,11 @@ class Builder:
         entries = []
         for relative in (inventory if inventory is not None else digests):
             clean_relative(relative)
+            if source == 'npm' and relative.startswith('node_modules/'):
+                # Nested dependencies have their own package/version and marker,
+                # even when the parent's tarball bundles their original bytes.
+                self.skip(source, 'nested_package')
+                continue
             expected = digests.get(relative)
             if expected is None:
                 self.skip(source, 'nonmember')
@@ -575,18 +584,24 @@ class Builder:
         self.sources[source]['verifiedPackages'] += 1
         self.roots.add(str(root))
 
+    def excluded_root(self, root):
+        caches = [cache_dir().resolve()]
+        if self.store.npm_cache:
+            caches.append(self.store.npm_cache.resolve())
+        return within(root, self.project) or checkout(root) or any(within(root, cache) for cache in caches)
+
     def npm(self, root):
         if root is None:
             self.skip('npm', 'installation_not_found')
             return
         root = Path(root).resolve()
-        if within(root, self.project) or checkout(root):
+        if self.excluded_root(root):
             self.skip('npm', 'excluded_path')
             return
         for package in npm_packages(root):
             try:
                 canonical = package.resolve(strict=True)
-                if canonical != package or not within(canonical, root) or checkout(canonical):
+                if canonical != package or not within(canonical, root) or self.excluded_root(canonical):
                     raise EvidenceError('excluded_path')
                 manifest = package / 'package.json'
                 before = marker(manifest)
@@ -606,7 +621,7 @@ class Builder:
             self.skip('gcloud', 'installation_not_found')
             return
         root = Path(root).resolve()
-        if within(root, self.project) or checkout(root):
+        if self.excluded_root(root):
             self.skip('gcloud', 'excluded_path')
             return
         for manifest in sorted((root / '.install').glob('*.manifest')):

@@ -5,6 +5,7 @@ import importlib.util
 import io
 import json
 import os
+import runpy
 from pathlib import Path
 import sqlite3
 import subprocess
@@ -124,6 +125,10 @@ class IndexTests(unittest.TestCase):
         self.build()
         self.assertEqual(self.verify(file=self.root / 'linked/index.js')['status'], 'unknown')
         (self.root.parent / '.git').mkdir()
+        self.assertEqual(self.build()['sources']['npm']['verifiedFiles'], 0)
+
+    def test_invoking_project_package_is_not_indexed(self):
+        self.project = self.pkg
         self.assertEqual(self.build()['sources']['npm']['verifiedFiles'], 0)
 
     def test_manifest_inside_examples_does_not_create_package_boundary(self):
@@ -251,10 +256,30 @@ class IndexTests(unittest.TestCase):
             self.assertEqual(self.build(fetch=False)['sources']['npm']['verifiedFiles'], 2)
         self.assertEqual(self.verify()['status'], 'verified')
 
+    def test_public_integrity_can_locate_cached_blob_without_tarball_url_key(self):
+        self.cache_npm(self.url, json.dumps(self.doc).encode())
+        self.cache_npm('https://registry.npmjs.org/cache-alias', self.tar)
+        self.assertEqual(self.build(fetch=False)['sources']['npm']['verifiedFiles'], 2)
+
+    def test_package_cache_cannot_become_an_eligible_installation(self):
+        self.npm_cache = self.root.parent
+        self.assertEqual(self.build()['sources']['npm']['verifiedFiles'], 0)
+
+    def test_fifo_substitution_does_not_block_verification(self):
+        self.build()
+        source = self.pkg / 'index.js'
+        source.unlink()
+        os.mkfifo(source)
+        run = subprocess.run([sys.executable, '-I', str(HELPER), 'verify'],
+                             input=json.dumps(self.request()), text=True, capture_output=True, timeout=3)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(json.loads(run.stdout)['reason'], 'nonregular_file')
+
     def test_private_cached_document_and_local_only_artifact_are_unknown(self):
         self.cache_npm('https://private.example/fixture', json.dumps(self.doc).encode())
         self.cache_npm(self.tar_url, self.tar)
         self.assertEqual(self.build(fetch=False)['sources']['npm']['verifiedFiles'], 0)
+        self.npm_cache = self.base / 'local-only-cache'
         self.cache_npm(self.url, json.dumps(self.doc).encode())
         self.cache_npm(self.tar_url, archive([('package/index.js', b'locally packed')]))
         self.assertEqual(self.build(fetch=False)['sources']['npm']['verifiedFiles'], 0)
@@ -277,6 +302,22 @@ class IndexTests(unittest.TestCase):
         (nested / 'package.json').write_bytes(manifest + b'\n')
         self.assertEqual(self.verify(file=nested / 'index.js')['reason'], 'stale_metadata')
         self.assertEqual(self.verify()['status'], 'verified')
+
+    def test_bundled_child_cannot_borrow_parent_manifest_ownership(self):
+        nested = self.pkg / 'node_modules/child'
+        nested.mkdir(parents=True)
+        manifest = b'{"name":"unpublished-child","version":"2.0.0"}'
+        (nested / 'package.json').write_bytes(manifest)
+        (nested / 'index.js').write_bytes(self.content)
+        tar = archive([('package/package.json', self.manifest), ('package/index.js', self.content),
+                       ('package/node_modules/child/package.json', manifest),
+                       ('package/node_modules/child/index.js', self.content)])
+        doc = dict(self.doc, dist=dict(self.doc['dist'],
+                   integrity='sha512-' + base64.b64encode(hashlib.sha512(tar).digest()).decode()))
+        self.responses[self.url] = json.dumps(doc).encode()
+        self.responses[self.tar_url] = tar
+        self.assertEqual(self.build()['sources']['npm']['verifiedFiles'], 2)
+        self.assertEqual(self.verify(file=nested / 'index.js')['status'], 'unknown')
 
     def test_project_symlink_cannot_borrow_global_membership(self):
         self.build()
@@ -343,6 +384,7 @@ class IndexTests(unittest.TestCase):
         with patch.object(p.Builder, 'add_package', changing):
             self.assertEqual(self.build()['sources']['npm']['verifiedFiles'], 0)
 
+    @unittest.skipIf(sys.version_info < (3, 11), 'public CLI requires Python 3.11; standalone helper supports 3.9')
     def test_cli_offline_index_uses_caller_path_without_host_imports(self):
         self.cache_npm(self.url, json.dumps(self.doc).encode())
         self.cache_npm(self.tar_url, self.tar)
@@ -359,6 +401,25 @@ class IndexTests(unittest.TestCase):
                              capture_output=True, text=True, timeout=10)
         self.assertEqual(run.returncode, 0, run.stderr)
         self.assertEqual(json.loads(run.stdout)['sources']['npm']['verifiedFiles'], 2)
+
+    def test_flat_installed_host_cli_uses_existing_marketplace_helper(self):
+        installed = self.base / 'host-lib/devcloud'
+        installed.parent.mkdir()
+        installed.write_bytes((HELPER.parents[2] / 'boot/devcloud').read_bytes())
+        host_helper = '/var/lib/devcloud/marketplaces/doperpowers/devcloud/hooks/mods/secrets-provenance.py'
+        class ExecBoundary(Exception):
+            pass
+        # A host's marketplace is root-owned in production. Intercept only the
+        # exec boundary and file presence here; don't require privilege to test
+        # the actual flat-installed entry point and its argument routing.
+        with patch.object(sys, 'argv', [str(installed), 'guard', 'index', '--fetch']), \
+             patch.object(sys, 'path', list(sys.path)), \
+             patch.object(os.path, 'isfile', side_effect=lambda path: path == host_helper), \
+             patch.object(os, 'execv', side_effect=ExecBoundary) as execute:
+            with self.assertRaises(ExecBoundary):
+                runpy.run_path(str(installed), run_name='__main__')
+            execute.assert_called_once_with(sys.executable,
+                [sys.executable, '-I', host_helper, 'index', '--fetch'])
 
     def test_cli_status_is_user_level_and_does_not_need_host_libraries(self):
         self.build()
