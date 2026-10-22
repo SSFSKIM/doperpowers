@@ -674,7 +674,6 @@ Residue of bounding the start-up read (`started`, `begin` and `startUp` in to-hu
 
 This is what the devcloud VM driver left behind (`docs/doperpowers/specs/2026-10-21-devcloud-vm-driver-design.md`, branch `devcloud-vm`).
 
-- **Moving a kept host onto a lease leaves its tailnet node non-ephemeral.** `lease set` on a `keep` VM or an adopted machine only changes the descriptor, and `_join()` returns early for a node that is already joined. A crash or forced delete after the conversion therefore leaves a tailnet node that nothing expires. The fix is either to rejoin as ephemeral during the conversion, or to refuse it; that choice is the person's. Found by the whole-branch review. T2. Trigger: the first keep→ttl conversion in use, or a stale `dc-` node seen on the tailnet.
 - **A trickling HTTP response can outlast the reaper's 60 s bound.** urllib's timeout applies to each socket operation, not to the whole response. Accepted at M3 as best-effort. T3. Trigger: an `up` or `ls` seen waiting on the reaper for more than 60 s.
 - **Nothing retires Hetzner `devcloud=sshkey` resources.** Each driver machine registers its key once (the MacBook's, then the always-on Mac's on 2026-10-21), and the key stays registered after that machine is gone. T3. Trigger: a driver machine retired, or its key rotated.
 - **Every Secret Manager read is a fresh call; there is no cache.** On a network that blackholes IPv6, each read waits out the IPv6 attempt, which made commands take minutes before the LAN was fixed. T3. Trigger: a slow `up` or `ls` traced to secret reads.
