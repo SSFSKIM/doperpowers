@@ -56,7 +56,7 @@ The native Read mapper in the inspected 2.1.308 bundle renders text from `file.c
 
 ### Measurements on the author’s Mac
 
-The corpus traversal did not follow symlinks and used the preceding report’s source/text extensions. It reproduced that report exactly.
+The corpus traversal did not follow symlinks and used the preceding report’s source/text extensions: `.js`, `.mjs`, `.cjs`, `.ts`, `.tsx`, `.jsx`, `.json`, `.py`, `.txt`, `.md`, `.yaml`, and `.yml`. It reproduced that report exactly. This census extension set is independent of the indexer's package-boundary rules; a nested example's manifest does not establish an installed package boundary.
 
 | Corpus | Files examined | All detector matches | Generic-rule matches |
 |---|---:|---:|---:|
