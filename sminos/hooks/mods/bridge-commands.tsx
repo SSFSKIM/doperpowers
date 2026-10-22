@@ -4,7 +4,7 @@ import type { Route, RouteEntry, RouteTable } from './bridge-routes'
 /**
  * Which slash commands the desk may run, and how (the desk control surface's
  * route table, spec 2026-10-22, §2): every (command, form) is in one class,
- * and only a measured `run` route that is enabled is ever run. A bare panel
+ * and only enabled `run` and `run-prompt` routes are ever run. A bare panel
  * form is never run: `$.command.run` of one holds the session's whole input
  * queue until someone presses keys in the terminal (H-panel).
  *
@@ -35,7 +35,7 @@ export const UNMEASURED_REASON = 'not measured on this engine'
 export const SELF_REASON = 'the sminos plugin serves it, and a plugin cannot run its own command: run it from the terminal'
 const LOCAL_REASON = "the desk's own: the browser does it"
 /** A command no table lists that is no built-in: a turn's prompt, run from M1. */
-const RUN_PROMPT: Route = { class: 'run-prompt', reason: 'comes with M1', enabled: false, measured: 'M' }
+const RUN_PROMPT: Route = { class: 'run-prompt', enabled: true, measured: 'M' }
 
 /** An engine release's numbers (`2.1.307`, from a version or a base such as `2.1.307-dev`), or undefined. */
 function release(engine: string): number[] | undefined {
@@ -149,4 +149,20 @@ export function routeOf(engine: string, listed: Listed | undefined, name: string
   const route = trimmed !== '' && entry.withArgs !== undefined ? entry.withArgs : entry.bare
   const refusal = refusalOf(name, route, trimmed)
   return refusal === undefined ? { route: taken(name, route, trimmed) } : { refusal }
+}
+
+/** Both forms for the palette; the bridge still checks each op with routeOf. */
+export function catalogRoutes(engine: string, listed: Listed, self: string): { route: Route; withArgs?: Route } {
+  const drop = (reason: string): { route: Route } => ({ route: { class: 'drop', reason, enabled: true, measured: 'I' } })
+  if (listed.plugin === self) {
+    return drop(SELF_REASON)
+  }
+  const table = tableFor(engine)
+  const entry = listed.source === 'builtin'
+    ? table?.entries.find((e) => e.name === listed.name)
+    : table?.pluginExceptions.find((e) => e.name === listed.name && e.plugin === listed.plugin)
+  if (entry === undefined) {
+    return listed.source === 'builtin' ? drop(UNMEASURED_REASON) : { route: RUN_PROMPT }
+  }
+  return { route: entry.bare, ...(entry.withArgs !== undefined && { withArgs: entry.withArgs }) }
 }

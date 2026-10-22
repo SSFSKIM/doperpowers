@@ -1494,10 +1494,12 @@ class Subscription:
     without a bridge). `pump` returns the DX4 messages now due, in order."""
 
     def __init__(self, project, machine, session, agent, sub, locate, reader, presence, alive,
-                 clock=time.monotonic, transcripts=None, wake=lambda: None, disk=None, received=None, wall=time.time):
+                 clock=time.monotonic, transcripts=None, wake=lambda: None, disk=None, received=None, wall=time.time,
+                 catalog_allowed=lambda: False):
         self.project, self.machine, self.session, self.agent, self.sub = project, machine, session, agent, sub
         self.locate = locate          # () → the session's main transcript path, "" while there is none
         self.reader = reader
+        self.catalog_allowed = catalog_allowed  # the current stream negotiated DX4 catalog
         self.presence = presence      # () → DX4 presence body
         self.alive = alive            # () → whether the session's process runs
         self.clock = clock
@@ -1828,6 +1830,8 @@ class Subscription:
                 "streaming": streaming}
         if self.agent is None:
             body["usage"] = usage_of(self.snap.get("usage")) if self.bridged else None
+            if self.bridged and isinstance(self.snap.get("catalog"), dict):
+                body["catalog"] = self.snap["catalog"]
         out.append(self.message("snapshot", body))
         self.noted("bridge snapshot" if self.bridged else "transcript-only (%s)" % self.no_bridge)
         self.n = 1
@@ -1898,6 +1902,9 @@ class Subscription:
                 self.steps.discard(key)
                 out.append(self.message("step-end", {"turnId": key[0], "agentId": key[1], "step": key[2]}))
             self.falls_due(now, lambda k: k[0] == e.get("turnId"))
+        elif kind == "catalog":
+            if self.agent is None and self.catalog_allowed():
+                out.append(self.message("catalog", {k: e[k] for k in ("fingerprint", "commands", "models", "measured") if k in e}))
         elif kind == "usage":
             if self.agent is None:
                 out.append(self.message("usage", usage_of(e)))
@@ -2591,7 +2598,8 @@ class Plane:
             project.id, self.machine, sid, agent, sub, reader=reader,
             locate=lambda: sminos.transcript_now(sid),   # asked until found, every LOCATE_EVERY
             presence=lambda: self.presence_of(sid, time.monotonic()), alive=lambda: self.running(sid),
-            transcripts=self.transcripts, wake=self.wake, disk=self.disk, received=received)
+            transcripts=self.transcripts, wake=self.wake, disk=self.disk, received=received,
+            catalog_allowed=lambda: "catalog" in self.kinds)
         return out + self.pump_one(sub)
 
     def running(self, sid):

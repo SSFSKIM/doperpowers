@@ -585,6 +585,7 @@ class Bridge:
         self.turns = {}          # turnId → the open turn
         self.agents = {}         # agentId → what its spawn said, and whether it runs
         self.session_info = None
+        self.catalog = None       # the latest live commands/models (DX5 M1)
         self.capabilities = None  # what the loaded mod can do (DX5), as its last resync said
         self.child = None        # [its socket's inode, its pid]: this child, as a reload's start names it
         self.usage = None
@@ -722,6 +723,8 @@ class Bridge:
                 self.pending.pop(rid, None)
                 self._remember(rid, {k: v for k, v in e.items() if k not in ("type", "n")})
                 self.changed.notify_all()
+        elif kind == "catalog":
+            self.catalog = {k: e[k] for k in ("fingerprint", "commands", "models", "measured") if k in e}
         elif kind == "resync":
             # The mod's own copy of the live state, whole: it replaces this one,
             # and what is kept for the session with it. Its sessionInfo is what
@@ -732,6 +735,7 @@ class Bridge:
                 self.session_info = {**e["sessionInfo"], **({"ended": ended} if ended is not None else {})}
             # What the mod can do: none from a mod that does not say (one
             # from before sminos 1.7.0), since a resync is its whole state.
+            self.catalog = e["catalog"] if isinstance(e.get("catalog"), dict) else None
             self.capabilities = e["capabilities"] if isinstance(e.get("capabilities"), dict) else None
             self.turns = {t.get("turnId"): dict(t) for t in e.get("turns") or []}
             streaming = {}
@@ -985,6 +989,7 @@ class Bridge:
                 "agents": list(self.agents.values()), "usage": self.usage,
                 "override": self.kept["override"],
                 "capabilities": self.capabilities,
+                **({"catalog": self.catalog} if self.catalog is not None else {}),
                 # Per loop, the last row whose notice is applied: every row up
                 # to it is the transcript's (on disk, or due at its step's
                 # end), none of them still streaming unnamed.

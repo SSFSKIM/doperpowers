@@ -863,6 +863,22 @@ class Checks(unittest.TestCase):
         self.assertTrue(wait_for(lambda: reqs.take() or self.bridged.sid in reqs.synced))
         return reqs
 
+    def test_m1_cd_refuses_unknown_relative_and_subdirectories_before_forwarding(self):
+        for path in (self.other_root, ".", self.root + "/.git", self.root + "/missing"):
+            self.refused(self.send("command", {"session": self.bridged.sid, "name": "cd", "args": path}),
+                         "unknown-checkout")
+        self.assertEqual(self.mod.ops("command"), [])
+
+    def test_m1_cd_forwards_only_the_canonical_known_checkout_and_stays_read_only(self):
+        args = {"session": self.bridged.sid, "name": "cd", "args": "  " + self.root + "/./  "}
+        asked = self.send("command", args)
+        self.assertEqual(self.outcome(asked)["state"], "done")
+        self.assertEqual(self.mod.ops("command")[-1]["args"], os.path.realpath(self.root))
+        self.mod.commands.clear()
+        policy.write({"read_only": True, "ceiling": "auto"})
+        self.refused(self.send("command", args), "read-only")
+        self.assertEqual(self.mod.ops("command"), [])
+
     def test_l_a_commands_shape(self):
         for args in ({"name": ""}, {"name": "x" * 129}, {"name": "re\nname"}, {"name": 5}, {},
                      {"name": "rename", "args": "x" * 4097}, {"name": "rename", "args": ["x"]}):

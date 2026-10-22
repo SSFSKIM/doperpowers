@@ -1,6 +1,6 @@
 """Shape of the route fixture (routes-2.1.307.json): the desk control surface's route table, which the bridge
 loads and MAWS vendors. Checks that it parses, that every entry and route has the Entry/Route/Forms shape of the
-spec's Interfaces, what M0 enables (the five measured `run` rows alone), and that the bridge's copy of it,
+spec's Interfaces, what M1 enables (the measured commands and prompt routes), and that the bridge's copy of it,
 hooks/mods/bridge-routes.tsx, is the fixture: a mod loads TypeScript modules alone, so the table reaches the
 bridge as a module written from the fixture (`--write` writes it).
 Prints one `ok <name>` or `FAIL <name>` line per check, for run-sminos-tests.sh to count.
@@ -57,8 +57,10 @@ CLASSES = {"run", "run-prompt", "routed", "follow", "panel", "local", "drop"}
 ROUTE_KEYS = {"class", "to", "reason", "forms", "outlives", "confirm", "enabled", "measured", "otherwise"}
 FORMS_KEYS = {"args", "pattern", "hint"}
 ENTRY_KEYS = {"name", "bare", "withArgs", "plugin"}
-M0_ENABLED = {("rename", "bare"), ("color", "bare"), ("reload-plugins", "bare"), ("reload-skills", "bare"),
-              ("mcp", "withArgs")}
+M1_ENABLED = {("rename", "bare"), ("color", "bare"), ("reload-plugins", "bare"), ("reload-skills", "bare"),
+              ("mcp", "withArgs"), ("cd", "bare"), ("goal", "withArgs"), ("plan", "withArgs"),
+              ("init", "bare"), ("security-review", "bare"), ("insights", "bare"),
+              ("team-onboarding", "bare"), ("list-agents", "bare")}
 
 FAILED = []
 
@@ -154,15 +156,15 @@ for e in entries:
             if r["class"] in ("run", "run-prompt") and r["enabled"]:
                 enabled_runs.add((e["name"], which))
             r = r.get("otherwise")
-check("M0 enables the five measured run rows and no other run or run-prompt route",
-      enabled_runs == M0_ENABLED, str(sorted(enabled_runs ^ M0_ENABLED)))
+check("M1 enables measured commands and prompts, not future or unmeasured runs",
+      enabled_runs == M1_ENABLED, str(sorted(enabled_runs ^ M1_ENABLED)))
 
 by_name = {e["name"]: e for e in entries}
-check("exit is run with a confirm, disabled until M1",
+check("exit stays measured with a confirm but no complete safety observation",
       by_name["exit"]["bare"]["class"] == "run" and by_name["exit"]["bare"].get("confirm") is True
-      and by_name["exit"]["bare"]["enabled"] is False and by_name["exit"]["bare"]["reason"] == "comes with M1")
+      and by_name["exit"]["bare"]["enabled"] is False and by_name["exit"]["bare"]["reason"] == "can't tell whether work is running here: exit there")
 check("every disabled run or run-prompt route says which milestone brings it, or why not",
-      all(r["reason"].startswith("comes with M") or r["reason"].startswith("not settled")
+      all(r["reason"].startswith("comes with M") or r["reason"].startswith("not settled") or r["reason"].startswith("can't tell")
           for e in entries for r in (e.get("bare"), e.get("withArgs")) if r and r["class"] in ("run", "run-prompt")
           and not r["enabled"]))
 check("fast carries its own not-settled reason and is unmeasured",
@@ -200,4 +202,17 @@ except OSError as e:
 check("the bridge's route module is this fixture, as --write writes it", written == module_text(doc),
       "run: python3 routes_check.py --write " + sys.argv[-1])
 
+catalog = doc.get("catalog", {})
+commands = catalog.get("commands", [])
+check("catalog carries both forms exactly from the canonical routes",
+      all(c.get("route") == by_name[c["name"]]["bare"] and c.get("withArgs") == by_name[c["name"]].get("withArgs")
+          for c in commands if c.get("source") == "builtin"))
+check("catalog keeps the MCP name verbatim and the plugin origin",
+      any(c["name"] == "probe:probe-prompt (MCP)" and c["source"] == "mcp" for c in commands)
+      and any(c.get("plugin") == "doperpowers" for c in commands))
+body = {k: v for k, v in catalog.items() if k != "fingerprint"}
+h = 0xcbf29ce484222325
+for byte in json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode():
+    h = ((h ^ byte) * 0x100000001b3) & ((1 << 64) - 1)
+check("catalog fingerprint covers all routes, origins and model ids", catalog.get("fingerprint") == f"{h:016x}")
 sys.exit(1 if FAILED else 0)

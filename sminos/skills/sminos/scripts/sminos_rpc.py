@@ -465,6 +465,14 @@ class Rpcs:
         if name == "spawn":
             admit_spawn(args, p["ceiling"], here.checkouts(project))
         shape(name, args, rpc.get("member"))
+        if name == "command" and args["name"] == "cd":
+            # Resolve no relative path against the daemon's cwd (nor a stale
+            # joined cwd): only a literal absolute checkout is unambiguous.
+            target = args.get("args", "").strip()
+            known = {os.path.realpath(c["path"]) for c in here.checkouts(project)}
+            if not os.path.isabs(target) or os.path.realpath(target) not in known:
+                raise Refused("unknown-checkout", "cd needs the absolute path of a known checkout of this project")
+            args["args"] = os.path.realpath(target)
 
     def refuse_loose(self, rpc, code, message):
         """A refusal before the ledger: up while its project is open, else

@@ -26,6 +26,7 @@ import {
 import { announceRow, commandRow, compacted, enteredRow, exportRow, noticeRow, observeRow, readBack } from './bridge-rows'
 import { claimAgent, forgetAgents, refreshAgents, watchAgents } from './bridge-agents'
 import { measuredFor, routeOf } from './bridge-commands'
+import { catalogNow } from './bridge-catalog'
 
 export { OFF_LINE, ON_LINE } from './bridge-place'
 export { BLOCK_TAIL, TEXT_CAP, capped, resetBridge } from './bridge-state'
@@ -244,7 +245,7 @@ export const TURN_UNKNOWN = 'turn state unknown since the bridge reloaded; retry
 const TURN_OPS = new Set(['steer', 'interrupt', 'compact'])
 /** The ops this bridge answers (DX5 `capabilities.ops`), and the reads (`read`'s kinds). */
 export const OPS = ['ping', 'steer', 'interrupt', 'stop', 'model', 'compact', 'deliver', 'answer', 'read', 'command']
-export const READS = ['status']
+export const READS = ['status', 'catalog']
 /** The DX5 protocol the capabilities speak: 2 is the desk's control surface (capabilities, `read`, `command`). */
 export const CAPABILITIES_PROTOCOL = 2
 /**
@@ -357,6 +358,9 @@ async function capabilitiesOf($: EngineInterface, engine: string): Promise<Capab
 
 /** DX5 `read`: what the desk shows of the session, answered from `$` (spec §5; `status` alone at M0). */
 async function read($: EngineInterface, what: unknown): Promise<Answer> {
+  if (what === 'catalog') {
+    return { ok: true, result: await state.refreshCatalog!() }
+  }
   if (what !== 'status') {
     return { ok: false, error: `no read ${String(what)}` }
   }
@@ -407,7 +411,7 @@ async function deskCommand($: EngineInterface, command: Command): Promise<Answer
   if ('refusal' in routed) {
     return { ok: false, error: routed.refusal.reason, code: routed.refusal.code }
   }
-  const run: DeskRun = { id: command.id, name, args: (args ?? '').trim() }
+  const run: DeskRun = { id: command.id, name, args: (args ?? '').trim(), prompt: routed.route.class === 'run-prompt' }
   const queued: Answered = { ok: true, result: { queued: true, route: routed.route.class, id: command.id } }
   if (state.deskRun?.name === RELOAD || state.deskQueue.some((r) => r.name === RELOAD)) {
     return { ok: false, error: RELOADING_REASON }
@@ -453,7 +457,7 @@ function callRun($: EngineInterface, run: DeskRun): Promise<Settled> {
 async function followRun($: EngineInterface, run: DeskRun, settled: Promise<Settled>) {
   emit({ type: 'run', phase: 'start', id: run.id, name: run.name, args: run.args })
   const outcome = await settled
-  const readback: Readback = !outcome.ok ? { how: 'none' } : outcome.text !== undefined ? { how: 'text', text: outcome.text } : await readBack(run.name, run.args)
+  const readback: Readback = !outcome.ok ? { how: 'none' } : outcome.text !== undefined ? { how: 'text', text: outcome.text } : run.prompt ? { how: 'none' } : await readBack(run.name, run.args)
   emit({ type: 'run', phase: 'end', id: run.id, name: run.name, args: run.args, settled: outcome, readback })
   releaseDeskRun($, run)
 }
@@ -1374,6 +1378,7 @@ function switchSession(session: string, tries = 0) {
   }
   state.isEnding = false
   state.queue = []
+  state.catalog = undefined
   state.restart?.(session)
 }
 
@@ -1419,6 +1424,7 @@ async function beat($: EngineInterface) {
   await isTurnStillUnknown()
   emit({ type: 'heartbeat', state: turnState() })
   await refreshAgents()
+  await state.refreshCatalog?.().catch((error: unknown) => $.ui.log(`bridge: catalog refresh failed: ${message(error)}`, { to: 'debug' }))
 }
 
 /**
@@ -1580,6 +1586,25 @@ export async function bridgeStart($: EngineInterface, e: SessionStartInput) {
   }
   // What this module can do, said in every resync, so the child answers it at once.
   state.capabilities = await capabilitiesOf($, engineOf(version))
+  // Serialize refreshes so a slower older list never replaces a newer one.
+  let refresh = Promise.resolve()
+  state.refreshCatalog = () => {
+    const next = refresh.then(async () => {
+      const session = await $.session.id()
+      const catalog = await catalogNow($, engineOf(version))
+      if (session !== await $.session.id()) {
+        throw new Error('the session changed while its catalog was read')
+      }
+      if (catalog.fingerprint !== state.catalog?.fingerprint) {
+        state.catalog = catalog
+        emit({ type: 'catalog', ...catalog })
+      }
+      return catalog
+    })
+    refresh = next.then(() => undefined, () => undefined)
+    return next
+  }
+  await state.refreshCatalog().catch((error: unknown) => $.ui.log(`bridge: catalog refresh failed: ${message(error)}`, { to: 'debug' }))
   // The agents running already, or over, learned before the first hello: its resync carries them.
   await refreshAgents()
   // So do the async asks open already, which the ask mod told of before
@@ -1987,6 +2012,9 @@ export function registerBridge(on: On) {
         enteredRow(e.door, stored.message, stored.uuid, e.origin)
         // As the engine wrote it: a hook beneath may empty a command's rows (doperpowers' reload).
         commandRow(e.door, e.message, stored.uuid)
+        if (e.door === 'command' && /<command-name>\/(reload-plugins|reload-skills|mcp)<\/command-name>/.test(JSON.stringify(e.message))) {
+          void state.refreshCatalog?.().catch((error: unknown) => $.ui.log(`bridge: catalog refresh failed: ${message(error)}`, { to: 'debug' }))
+        }
       }
     }
     await judgePlace($, next, transitionsAt)
