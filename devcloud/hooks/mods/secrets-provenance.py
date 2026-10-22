@@ -237,10 +237,15 @@ class ExpandedReader:
 
 
 def archive_digests(data, source):
-    """Inspect, never extract. Reject the whole artifact on ambiguous membership."""
+    """Inspect without extracting; only unique regular, non-link paths qualify.
+
+    A link or duplicate poisons its own name, and a link poisons descendants,
+    independent of member order. Escaping/ambiguous path syntax and resource
+    bounds reject the whole archive. Neither links nor duplicate bytes resolve.
+    """
     if len(data) > MAX_ARCHIVE_BYTES:
         raise EvidenceError('evidence_limit')
-    result, seen = {}, set()
+    result, seen, links = {}, Counter(), set()
     expanded = 0
     try:
         # Stream decompression, including headers/padding, is bounded independently
@@ -251,23 +256,20 @@ def archive_digests(data, source):
                 if count > MAX_ARCHIVE_ENTRIES:
                     raise EvidenceError('evidence_limit')
                 name = clean_relative(member.name.rstrip('/') if member.isdir() else member.name)
-                if name in seen:
-                    raise EvidenceError('unsafe_archive')
-                seen.add(name)
-                if not (member.isdir() or member.isreg()) or member.issparse():
-                    raise EvidenceError('unsafe_archive')
                 if member.size < 0:
                     raise EvidenceError('unsafe_archive')
                 expanded += member.size
                 if expanded > MAX_EXPANDED_BYTES:
                     raise EvidenceError('evidence_limit')
-                if source == 'npm':
-                    if name == 'package' and member.isdir():
-                        continue
-                    if not name.startswith('package/'):
-                        raise EvidenceError('unsafe_archive')
-                    name = name[len('package/'):]
+                if source == 'npm' and name != 'package' and not name.startswith('package/'):
+                    raise EvidenceError('unsafe_archive')
+                seen[name] += 1
+                if member.issym() or member.islnk():
+                    links.add(name)
                 if member.isdir():
+                    continue
+                if not member.isreg() or member.issparse():
+                    result[name] = {'size': member.size, 'sha256': None, 'reason': 'excluded_archive_member'}
                     continue
                 if member.size > MAX_FILE_BYTES:
                     # Retain size-only metadata so coverage reports this loss.
@@ -283,6 +285,12 @@ def archive_digests(data, source):
                 result[name] = {'size': len(content), 'sha256': sha256(content)}
     except (tarfile.TarError, EOFError, OSError, ValueError) as exc:
         raise EvidenceError('unsafe_archive') from exc
+    for name, entry in result.items():
+        parts = name.split('/')
+        if seen[name] > 1 or any('/'.join(parts[:end]) in links for end in range(1, len(parts) + 1)):
+            entry.update(sha256=None, reason='excluded_archive_member')
+    if source == 'npm':
+        return {name[len('package/'):]: entry for name, entry in result.items() if name.startswith('package/')}
     return result
 
 
@@ -504,7 +512,11 @@ def gcloud_evidence(store, snapshot, component):
 
     doc = store.document(url, 'gcloud', normalize)
     candidates = [item for item in doc['components'] if item['id'] == component['id']]
-    if len(candidates) != 1 or candidates[0]['version'] != component['version']:
+    # Snapshots may stamp the SDK build over components whose public archives
+    # retain older component versions. The exact public SDK release and id
+    # select the evidence; checksum/member equality prove origin. The local
+    # snapshot is still fingerprinted as a freshness marker by the builder.
+    if len(candidates) != 1:
         raise EvidenceError('unavailable_evidence')
     data = candidates[0]['data']
     checksum = data['checksum']
@@ -514,7 +526,7 @@ def gcloud_evidence(store, snapshot, component):
     if not public_url(artifact_url, 'gcloud'):
         raise EvidenceError('nonpublic_source')
     return {'source': 'gcloud', 'documentUrl': url, 'version': release, 'component': component['id'],
-            'componentVersion': component['version'], 'artifactUrl': artifact_url,
+            'componentVersion': candidates[0]['version'], 'artifactUrl': artifact_url,
             'integrity': 'sha256-' + base64.b64encode(bytes.fromhex(checksum)).decode()}
 
 
@@ -548,6 +560,9 @@ class Builder:
             expected = digests.get(relative)
             if expected is None:
                 self.skip(source, 'nonmember')
+                continue
+            if expected.get('reason') == 'excluded_archive_member':
+                self.skip(source, 'excluded_archive_member')
                 continue
             if expected['size'] > MAX_FILE_BYTES or expected['sha256'] is None:
                 self.skip(source, 'oversized_file')
@@ -868,11 +883,42 @@ def verify_stdin(timeout_ms):
         signal.setitimer(signal.ITIMER_REAL, 0)
 
 
+def corpus_report():
+    """Read-only, out-of-band detector census; never invoked by verify mode.
+
+    Bun runs the existing TypeScript hooks, detector and receipt implementation.
+    Only path/digest metadata crosses stdin; only aggregates cross stdout. The
+    report deliberately reads no credential sources or personal transcripts.
+    """
+    runtime = shutil.which('bun')
+    driver = Path(__file__).with_name('secrets-provenance-corpus.mjs')
+    if not runtime or not driver.is_file():
+        raise EvidenceError('corpus_runtime_unavailable')
+    found = discover()
+    roots = {}
+    if found.get('npmRoot'):
+        roots['npm'] = str(Path(found['npmRoot']).resolve())
+    if found.get('gcloudRoot'):
+        for part in ('lib', 'platform'):
+            roots['gcloud_' + part] = str(Path(found['gcloudRoot']).resolve() / part)
+    database = cache_dir() / 'index.sqlite3'
+    with closing(sqlite3.connect(database.as_uri() + '?mode=ro', uri=True)) as conn:
+        indexed = list(conn.execute('SELECT path, sha256, size FROM files'))
+    request = {'roots': roots, 'indexed': indexed, 'cacheHome': str(cache_dir().parents[2])}
+    result = subprocess.run([runtime, str(driver)], input=encoded(request), capture_output=True,
+                            cwd=driver.parent, timeout=600)
+    if result.returncode != 0:
+        raise EvidenceError('corpus_pipeline_failed')
+    return json.loads(result.stdout)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     commands = parser.add_subparsers(dest='command', required=True)
     index = commands.add_parser('index', help='rebuild from public evidence; offline unless --fetch')
     index.add_argument('--fetch', action='store_true')
+    index.add_argument('--report-corpus', action='store_true', help='also measure detector and two-pass coverage (requires Bun)')
+    commands.add_parser('report-corpus', help='read-only coverage measurement using the existing index (requires Bun)')
     status = commands.add_parser('status', help='inspect coverage without file contents')
     status.add_argument('--json', action='store_true')
     verifier = commands.add_parser('verify', help='bounded local verification, JSON stdin/stdout')
@@ -887,9 +933,15 @@ def main(argv=None):
         answer = status_report()
     else:
         try:
-            answer = build_index(fetch=args.fetch)
-        except (OSError, ValueError, sqlite3.Error, EvidenceError):
-            print(json.dumps(unknown('build_failed')))
+            if args.command == 'report-corpus':
+                answer = corpus_report()
+            else:
+                answer = build_index(fetch=args.fetch)
+                if args.report_corpus:
+                    answer['corpus'] = corpus_report()
+        except (OSError, ValueError, sqlite3.Error, EvidenceError, subprocess.SubprocessError) as exc:
+            reason = exc.reason if isinstance(exc, EvidenceError) else 'report_failed' if args.command == 'report-corpus' else 'build_failed'
+            print(json.dumps(unknown(reason)))
             return 1
     print(json.dumps(answer, sort_keys=True))
     return 0

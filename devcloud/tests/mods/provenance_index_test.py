@@ -30,9 +30,9 @@ def archive(members):
     with tarfile.open(fileobj=buf, mode='w:gz') as out:
         for name, data in members:
             info = tarfile.TarInfo(name)
-            if isinstance(data, str):
-                info.type = tarfile.SYMTYPE
-                info.linkname = data
+            if isinstance(data, (str, tuple)):
+                info.type = tarfile.SYMTYPE if isinstance(data, str) else tarfile.LNKTYPE
+                info.linkname = data if isinstance(data, str) else data[0]
                 out.addfile(info)
             else:
                 info.size = len(data)
@@ -85,6 +85,64 @@ class IndexTests(unittest.TestCase):
 
     def verify(self, **kwargs):
         return p.verify(self.request(**kwargs))
+
+    def test_corpus_report_counts_original_and_both_passes_without_values(self):
+        self.build()
+        found = {'npmRoot': str(self.root), 'npmCache': str(self.npm_cache), 'gcloudRoot': None}
+        with patch.object(p, 'discover', return_value=found):
+            report = p.corpus_report()
+        npm = report['corpora']['npm']
+        self.assertEqual(npm['genericMatches'], 1)
+        self.assertEqual(npm['originalContentMatches'], 1)
+        self.assertEqual(npm['preservedBothPasses'], 1)
+        # A generated file has the same detector match, but no publication
+        # evidence. Neither corpus denominator nor preservation may hide it.
+        (self.pkg / 'generated.js').write_bytes(self.content)
+        with patch.object(p, 'discover', return_value=found):
+            report = p.corpus_report()
+        npm = report['corpora']['npm']
+        self.assertEqual(npm['genericMatches'], 2)
+        self.assertEqual(npm['originalContentMatches'], 1)
+        self.assertEqual(npm['preservedBothPasses'], 1)
+        self.assertEqual(npm['losses']['not_indexed'], 1)
+        rendered = json.dumps(report)
+        self.assertNotIn(str(self.base), rendered)
+        self.assertNotIn(self.content.decode(), rendered)
+        (self.pkg / 'index.js').write_bytes(self.content + b'// locally changed\n')
+        with patch.object(p, 'discover', return_value=found):
+            changed = p.corpus_report()['corpora']['npm']
+        self.assertEqual(changed['originalContentMatches'], 0)
+        self.assertEqual(changed['preservedBothPasses'], 0)
+        self.assertEqual(changed['losses']['changed_bytes'], 1)
+
+    def test_corpus_report_keeps_unsupported_reads_in_the_denominator(self):
+        self.content = self.content.split(b'\n')[0] + b' ' + b'x' * 70000
+        (self.pkg / 'index.js').write_bytes(self.content)
+        self.tar = archive([('package/package.json', self.manifest), ('package/index.js', self.content)])
+        self.doc['dist']['integrity'] = 'sha512-' + base64.b64encode(hashlib.sha512(self.tar).digest()).decode()
+        self.responses[self.url] = json.dumps(self.doc).encode()
+        self.responses[self.tar_url] = self.tar
+        self.build()
+        with patch.object(p, 'discover', return_value={'npmRoot': str(self.root)}):
+            npm = p.corpus_report()['corpora']['npm']
+        self.assertEqual(npm['genericMatches'], 1)
+        self.assertEqual(npm['originalContentMatches'], 1)
+        self.assertEqual(npm['preservedBothPasses'], 0)
+        self.assertEqual(npm['losses']['read_slice_byte_limit'], 1)
+
+    def test_corpus_pages_do_not_invent_generic_matches_inside_multiline_rules(self):
+        self.content += (b'-----BEGIN PRIVATE KEY-----\n' + b'padding\n' * 9000 +
+                         self.content + b'-----END PRIVATE KEY-----\n')
+        (self.pkg / 'index.js').write_bytes(self.content)
+        self.tar = archive([('package/package.json', self.manifest), ('package/index.js', self.content)])
+        self.doc['dist']['integrity'] = 'sha512-' + base64.b64encode(hashlib.sha512(self.tar).digest()).decode()
+        self.responses[self.url] = json.dumps(self.doc).encode()
+        self.responses[self.tar_url] = self.tar
+        self.build()
+        with patch.object(p, 'discover', return_value={'npmRoot': str(self.root)}):
+            npm = p.corpus_report()['corpora']['npm']
+        self.assertEqual(npm['genericMatches'], 1)
+        self.assertEqual(npm['preservedBothPasses'], 1)
 
     def test_public_distribution_and_partial_slice(self):
         result = self.build()
@@ -169,14 +227,41 @@ class IndexTests(unittest.TestCase):
                 self.responses[self.url] = json.dumps(doc).encode()
                 self.assertEqual(self.build()['sources']['npm']['verifiedFiles'], 0)
 
-    def test_archive_ambiguity_links_and_traversal_reject_evidence(self):
-        bad = [ [('package/index.js', b'a'), ('package/index.js', b'b')],
-                [('package/../escape', b'a')], [('package/index.js', '../outside')],
+    def test_archive_member_ambiguity_does_not_discard_regular_neighbors(self):
+        (self.pkg / 'duplicate.js').write_bytes(self.content)
+        (self.pkg / 'link').mkdir()
+        (self.pkg / 'link/child.js').write_bytes(self.content)
+        (self.pkg / 'alias.js').write_bytes(self.content)
+        # Descendants occur both before and after their archive link ancestor;
+        # neither traversal order nor matching one duplicate can grant authority.
+        self.tar = archive([
+            ('package/package.json', self.manifest), ('package/index.js', self.content),
+            ('package/link/child.js', self.content), ('package/link', '../outside'),
+            ('package/link/later.js', self.content), ('package/alias.js', 'index.js'),
+            ('package/duplicate.js', self.content), ('package/duplicate.js', b'other'),
+            ('package/hardlink', ('package/index.js',)), ('package/hardlink/child.js', self.content),
+        ])
+        self.doc['dist']['integrity'] = 'sha512-' + base64.b64encode(hashlib.sha512(self.tar).digest()).decode()
+        self.responses[self.url] = json.dumps(self.doc).encode()
+        self.responses[self.tar_url] = self.tar
+        built = self.build()
+        self.assertEqual(built['sources']['npm']['verifiedFiles'], 2)
+        self.assertEqual(self.verify()['status'], 'verified')
+        for name in ('duplicate.js', 'link/child.js', 'link/later.js', 'alias.js'):
+            with self.subTest(name=name):
+                self.assertEqual(self.verify(file=self.pkg / name)['status'], 'unknown')
+        members = p.archive_digests(self.tar, 'npm')
+        self.assertEqual(members['index.js']['sha256'], sha(self.content))
+        self.assertTrue(all(members[name]['sha256'] is None for name in
+                            ('duplicate.js', 'link', 'link/child.js', 'link/later.js', 'alias.js', 'hardlink', 'hardlink/child.js')))
+
+    def test_archive_traversal_rejects_all_evidence(self):
+        bad = [ [('package/../escape', b'a')],
                 [('/package/index.js', b'a')], [('package/./index.js', b'a')]]
         for members in bad:
             with self.subTest(members=members):
                 with self.assertRaises(p.EvidenceError):
-                    p.archive_digests(archive(members), 'npm')
+                    p.archive_digests(archive([('package/safe.js', self.content), *members]), 'npm')
 
     def test_archive_and_file_bounds(self):
         with patch.object(p, 'MAX_ARCHIVE_BYTES', 10):
@@ -461,6 +546,10 @@ class IndexTests(unittest.TestCase):
         url = 'https://dl.google.com/dl/cloudsdk/channels/rapid/components-v999.0.0.json'
         tar_url = 'https://dl.google.com/dl/cloudsdk/channels/rapid/components/core.tar.gz'
         public = json.loads(json.dumps(snapshot))
+        # Installed snapshots can stamp the SDK build across all components;
+        # public archives retain their own build/date. Exact release + component
+        # + public checksum + matching member bytes establish origin instead.
+        public['components'][0]['version'] = {'version_string': '998', 'build_number': 2}
         public['components'][0]['data'] = {'checksum': sha(tar), 'source': 'components/core.tar.gz',
                                           'size': len(tar), 'type': 'tar'}
         self.responses[url] = json.dumps(public).encode()
@@ -468,6 +557,14 @@ class IndexTests(unittest.TestCase):
         self.assertEqual(self.build(gcloud=sdk)['sources']['gcloud']['verifiedFiles'], 1)
         self.assertEqual(self.verify(file=sdk / 'lib/source.py')['status'], 'verified')
         self.assertEqual(self.verify(file=sdk / 'lib/generated.pyc')['reason'], 'nonmember')
+        snapshot['components'][0]['version']['build_number'] = 3
+        (install / 'core.snapshot.json').write_text(json.dumps(snapshot))
+        self.assertEqual(self.verify(file=sdk / 'lib/source.py')['reason'], 'stale_metadata')
+        self.assertEqual(self.build(gcloud=sdk)['sources']['gcloud']['verifiedFiles'], 1)
+        (sdk / 'lib/source.py').write_bytes(self.content + b'// local state\n')
+        self.assertEqual(self.build(gcloud=sdk)['sources']['gcloud']['verifiedFiles'], 0)
+        (sdk / 'lib/source.py').write_bytes(self.content)
+        self.assertEqual(self.build(gcloud=sdk)['sources']['gcloud']['verifiedFiles'], 1)
         (install / 'core.manifest').write_text('lib/source.py\nlib/generated.pyc\n')
         self.assertEqual(self.verify(file=sdk / 'lib/source.py')['reason'], 'stale_metadata')
 
