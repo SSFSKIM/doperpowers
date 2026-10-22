@@ -1,6 +1,6 @@
 # Preserve installed-package constants without exposing local state
 
-When Claude reads an installed library, the secrets guard should preserve the library’s original constants instead of turning them into redaction handles. The exemption must not extend to credentials or runtime state subsequently written into that installation. This change establishes that distinction by comparing a file with its package’s original contents, then binds the exception to that particular Read and its recorded result.
+When Claude reads an installed library, the secrets guard should preserve the library’s original constants instead of turning them into redaction handles. The exemption must not extend to credentials or runtime state subsequently written into that installation. This change establishes that distinction by comparing a file with its package’s publicly published contents, then binds the exception to that particular Read and its recorded result.
 
 The person enables coverage by running `devcloud guard index --fetch` outside a Claude function hook. Subsequent supported Reads of indexed, unchanged files preserve generic-only constants in both the tool result and its transcript row. Stored values, credential-file values, provider-shaped tokens and private-key blocks remain redacted. Missing evidence means ordinary detection, not refusal.
 
@@ -11,32 +11,31 @@ This is board ticket #124, following #87 and PR #349. It changes neither the det
 - [x] (2026-10-22 11:32Z) Read #124, the preceding design decisions and measurements, guard implementation, engine API references, native Read mapper, and cua’s vendoring contract.
 - [x] (2026-10-22 11:32Z) Reproduced the npm and gcloud corpus counts; measured ownership, modes, metadata, timestamp candidates, local npm cache availability, and original-artifact equality.
 - [x] (2026-10-22 11:32Z) Chose out-of-band indexing, bounded local verification, and call-bound, one-use append receipts.
-- [ ] Commit this specification and complete one adversarial review of its design and execution section.
+- [x] (2026-10-22 11:51Z) Committed the initial specification and received the adversarial review of its design and execution section.
+- [x] (2026-10-22 11:51Z) Folded the settled review decisions into the specification: public-artifact evidence for npm/gcloud, dpkg deferred, one whole-stage deadline, unchanged-result pagination preservation, and manual-only refresh. No implementation has begun.
 - [ ] M1 — Build and inspect the original-content index outside hooks.
-- [ ] M2 — Apply bounded verification through both scrubbing passes.
-- [ ] M3 — Prove native behavior, measure improvement, review and release; register the cua resync against the merged commit.
+- [ ] M2 — Apply whole-stage bounded verification through both scrubbing passes, including stalled preflight fallback and unchanged-result `ref` preservation.
+- [ ] M3 — Prove native behavior including the unchanged paginated Read notice, measure npm/gcloud improvement, review and release; register the cua resync at integration. Residue is already tracked in board tickets 125 and 126.
 
 ## Acceptance
 
-1. **An unchanged distribution file stays intelligible.** After indexing, a native text Read of an eligible installed-package file containing a synthetic generic-only assignment preserves that assignment in the immediate result, the transcript’s structured `toolUseResult`, and its matching `tool_result` content. The same holds for a supported offset/limit Read and a supported automatically paginated Read.
+1. **An unchanged distribution file stays intelligible.** After indexing, a native text Read of an eligible installed-package file containing a synthetic generic-only assignment preserves that assignment in the immediate result, the transcript’s structured `toolUseResult`, and its matching `tool_result` content. The same holds for a supported offset/limit Read and a supported automatically paginated Read. When no other redaction changes the structured result, the original result and its `ref` are retained, and the native pagination companion notice survives. Notice preservation is not promised when stronger detections force a rewrite; that path behaves as today.
 
 2. **The stronger protections still win.** In the same verified file, synthetic stored values, credential-file values, provider-shaped tokens and PEM private-key blocks become handles in both passes. Tests establish this with distribution fixtures containing those values from the outset, not by modifying a file after indexing and accidentally testing only the fallback.
 
-3. **Local state is not distribution content.** A file added after installation, a modified distributed file, generated state, local build output, a package-cache file, a project’s `node_modules`, an ordinary project file, and a global-package symlink resolving into a checkout all receive full detection. Rebuilding the index does not adopt modified installed contents as a new baseline.
+3. **Local state is not distribution content.** A file added after installation, a modified distributed file, generated state, local build output, a package-cache file, a project’s `node_modules`, an ordinary project file, and a global-package symlink resolving into a checkout all receive full detection. Rebuilding the index does not adopt modified installed contents as a new baseline. A locally packed npm package under a public name@version but with different contents, and a local-only package, remain unknown even when their cached tarballs are internally consistent. Only an artifact matching the public distribution’s checksum for that exact version can supply evidence.
 
 4. **An exception belongs to one result.** The same generic-looking string is redacted in Bash output, a different Read, unrelated text in the same row, an appended note, or a later assistant message. A wrong call id, wrong agent, wrong origin, duplicate result, altered rendering, expired receipt or absent receipt receives full detection.
 
 5. **Reload and persistence do not retain authority.** Reloading between Read and append loses the receipt, so append uses full detection. Restart, resume, compaction and index replacement do not reconstruct call receipts from transcript text or persistent state. Already stored rows remain as stored; this feature does not rewrite historical transcripts.
 
-6. **Verification failure does not refuse a successful Read.** With a missing, unreadable, malformed, incompatible or stale index, a changed ownership marker, a file over the cap, an unsupported format, a missing interpreter, or a verifier timeout, the call runs and its output receives full detection. An error in the existing scrubber retains the guard’s existing failure behavior; provenance failure must not enter that error path.
+6. **Verification failure does not refuse a successful Read.** With a missing, unreadable, malformed, incompatible or stale index, a changed ownership marker, a file over the cap, an unsupported format, a missing interpreter, or a provenance-stage timeout (including a preflight filesystem call that never settles), the call runs and its output receives full detection. An error in the existing scrubber retains the guard’s existing failure behavior; provenance failure must not enter that error path.
 
-7. **Hot-path work is bounded and local.** Tests prohibit network access, archive processing, package-manager invocation and cache traversal from the verifier. The verifier reads at most one eligible file of at most 16 MiB, performs indexed lookup and a bounded number of metadata checks, and has a 1.5-second process deadline. Saturation of its concurrency limit uses full detection rather than a queue. Timeout/abort tests show no surviving verification process or repeated hook overrun.
+7. **Hot-path work is bounded and local.** Tests prohibit network access, archive processing, package-manager invocation and cache traversal from the verifier. The verifier reads at most one eligible file of at most 16 MiB, performs indexed lookup and a bounded number of metadata checks, and shares one 1.5-second deadline with all provenance work the hook awaits: roots-file loading, stat/resolve calls, canonicalization and the verifier process. A `$` call that never settles is abandoned at that deadline and the Read receives full detection; the engine’s 10-second budget excludes in-flight `$` calls and is not a backstop. Saturation of the concurrency limit uses full detection rather than a queue. Timeout/abort tests show no surviving verification process, late exemption or repeated hook overrun.
 
-8. **Linux ownership is checked rather than inferred.** For a dpkg fixture, a listed regular file with matching installed-package MD5 evidence can be indexed; a conffile, diversion, missing digest, unlisted file, changed file or ambiguous owner cannot. A Linux acceptance run exercises actual dpkg metadata as well as the fixtures. The authoring measurements did not include a live Linux dpkg database.
+8. **Utility and protection are reported separately.** On the unchanged authoring corpus, original-artifact comparison covers 1,094 npm and 424 gcloud generic matches. The implementation reports index coverage and actual preservation through both passes separately, including losses to format, size or other fallback conditions. Its target is at least 95% preservation of those eligible generic matches through both passes, with every credential regression passing. If it misses that target, report the cause before widening the trust rule. These are detector matches, not a claim that every match is a harmless constant.
 
-9. **Utility and protection are reported separately.** On the unchanged authoring corpus, original-artifact comparison covers 1,094 npm and 424 gcloud generic matches. The implementation reports index coverage and actual preservation through both passes separately, including losses to format, size or other fallback conditions. Its target is at least 95% preservation of those eligible generic matches through both passes, with every credential regression passing. If it misses that target, report the cause before widening the trust rule. These are detector matches, not a claim that every match is a harmless constant.
-
-10. **The shipped copies remain coordinated.** The devcloud release is version-bumped and passes `devcloud-mods` and `mods-types`, including the new Python helper tests. After merge, a cua resync ticket names the actual merged commit, all new vendored files and the existing one-guard adaptations.
+9. **The shipped copies remain coordinated.** The devcloud release is version-bumped and passes `devcloud-mods` and `mods-types`, including the new Python helper tests. After merge, a cua resync ticket names the actual merged commit, all new vendored files and the existing one-guard adaptations.
 
 ## Context and evidence
 
@@ -53,7 +52,7 @@ The engine’s plugin-authoring reference, “The rows a conversation keeps: ses
 - Appends are not transcript loads. Resume does not run old rows through this hook.
 - `$.fs.stat(path, { resolve: true })` resolves symlinks but explicitly does not hold the file the tool subsequently opens. Its public result does not supply owner, mode, ctime or file identity.
 
-The native Read mapper in the inspected 2.1.308 bundle renders text from `file.content` and `startLine`, adds line numbers, strips a trailing carriage return from each displayed line, and can use a colon rather than a tab separator for tab-leading source. Pagination banners and other messages sit outside that numbered body. The implementation must bind to supported renderings, not assume that the displayed text is the raw file.
+The native Read mapper in the inspected 2.1.308 bundle renders text from `file.content` and `startLine`, adds line numbers, strips a trailing carriage return from each displayed line, and can use a colon rather than a tab separator for tab-leading source. Automatic pagination’s banner is a companion message outside `ran.text`, not a prefix or suffix the rendering adapter can copy. Returning a replacement result without `ref` drops that companion; today’s guard already does so when rewriting a paginated Read. Other surrounding text remains outside the numbered source body. The implementation must bind to supported renderings, not assume that the displayed text is the raw file.
 
 ### Measurements on the author’s Mac
 
@@ -82,34 +81,33 @@ Exact artifact comparison produced a substantially stronger result:
 | npm package versions | 367 | 48 | 1,094 / 1,094 | 69,031,269 |
 | gcloud components | 159 | 4 | 424 / 424 | 59,984,007 |
 
-The npm comparisons used the exact published package versions and verified the downloaded artifacts against registry integrity metadata. The gcloud comparisons used the installed SDK release’s component manifest and archive checksums. Archive members were read as data without extracting or executing their contents. Every compared installed file matched its corresponding archive member byte-for-byte; none was missing or different.
+The npm comparisons used the exact published package versions and verified the downloaded artifacts against registry integrity metadata. The gcloud comparisons used archive checksums from the installed SDK release’s public component metadata, not local snapshots. Archive members were read as data without extracting or executing their contents. Every compared installed file matched its corresponding archive member byte-for-byte; none was missing or different.
 
-The local npm cache already had tarball keys for 46 of those 48 package versions, covering 1,091 of the 1,094 matches. That measures cache-key availability, not a second verification of every cached blob. The indexer must verify cached artifact bytes before using them.
+The local npm cache already had tarball keys for 46 of those 48 package versions, covering 1,091 of the 1,094 matches. That measures cache-key availability, not a second verification of every cached blob. The indexer must verify cached artifact bytes against that exact name@version’s public registry `dist.integrity` before using them; cache self-consistency alone does not establish publication.
 
 A 4 MiB eligible-file cap would cover 1,514 of the 1,518 generic matches; 8 MiB covers 1,516; 16 MiB covers all 1,518. The largest generic-hit text file was about 8.72 MiB. This supports a bounded 16 MiB cap, not unlimited file hashing.
 
-### Native Claude Code and dpkg
+### Native Claude Code
 
 The native executable passed strict platform code-signature verification. That is useful evidence of distribution origin, but the executable was binary and approximately 262 MiB. The preceding report’s 301 matches came from extracted printable strings, not a demonstrated ordinary text Read. A limited Read of the executable returned binary-decoded text, not a source-file representation. This design excludes native binaries and removes those 301 matches from its Read utility denominator. It does not claim to fix `strings` output through Bash.
-
-Neither dpkg nor its installed metadata database was present on the author’s Mac. The Linux adapter is consequently grounded in the documented metadata contract and must be verified on Linux during execution. A dpkg file list establishes claimed membership; an available per-file MD5 establishes equality to the package’s recorded contents. `dpkg --verify` alone is insufficient: it skips files lacking hashes and does not provide complete ownership/mode verification. Debian explicitly describes it as an integrity check, not security verification. That limitation is compatible with this feature’s accidental-state threat model, but does not justify treating unverified or configurable files as original contents.
 
 Relevant references:
 
 - `docs/doperpowers/plans/2026-10-22-devcloud-guard-shapes-report.md`
 - Decision Log of `docs/doperpowers/specs/2026-10-15-devcloud-design.md`
 - [npm package-lock documentation](https://docs.npmjs.com/cli/v11/configuring-npm/package-lock-json): integrity identifies the unpacked artifact; hidden-lockfile timestamp checks can miss direct file edits.
-- [dpkg manual](https://manpages.debian.org/unstable/dpkg/dpkg.1.en.html): verification coverage and limitations.
 - [The measured SDK release’s component metadata](https://dl.google.com/dl/cloudsdk/channels/rapid/components-v580.0.0.json).
 
 ## Design
 
 ### 1. Verify original bytes, not the appearance of a package path
 
+“Original” means publicly published, for every source. An index entry’s original artifact must match a checksum the public distribution published for that exact version. Local install metadata, a local cache’s self-consistency, or an artifact with no public record is never evidence of publication: each can describe local build output containing credentials.
+
 A file is eligible only when all of these are true:
 
 1. Its resolved path belongs to a supported installation discovered by the indexer and is not excluded project, cache or generated state.
-2. Its exact package-relative path is a regular file in the package’s distribution evidence.
+2. Its exact package-relative path is a regular file in an artifact verified against that exact version’s public distribution checksum.
 3. The indexer compared the installed file with that evidence before issuing its index entry.
 4. The current ownership markers still match that entry.
 5. A bounded local read now hashes to the indexed SHA-256.
@@ -117,14 +115,14 @@ A file is eligible only when all of these are true:
 
 The hash comparison is necessary even for a root-owned file. It is sufficient despite ordinary owner writability when the other conditions hold: the current bytes are distribution bytes, not later local state. Modes and ownership are diagnostic information, not an allowlist.
 
-The strongest simpler alternative was membership plus installation timestamps. It lost both on evidence and on semantics: it discards much of the measured benefit, gcloud’s ordering defeats it outright, and a mutable directory timestamp cannot prove that an existing file was unchanged. Authenticated per-file vendor receipts were also considered; they impose a tamper-resistance requirement outside the guard’s contract and are unnecessary for distinguishing original distribution contents from accidental local modifications.
+The strongest simpler alternative was membership plus installation timestamps. It lost both on evidence and on semantics: it discards much of the measured benefit, gcloud’s ordering defeats it outright, and a mutable directory timestamp cannot prove that an existing file was unchanged. Authenticated per-file vendor receipts were also considered; they add a per-file receipt mechanism where a public artifact checksum and regular-member comparison suffice. Rejecting that mechanism does not relax the requirement for a public record of the artifact itself.
 
 ### 2. Build the index explicitly, outside hooks
 
 Add these user-level commands:
 
 - `devcloud guard index` rebuilds from locally available distribution evidence without network access.
-- `devcloud guard index --fetch` may fetch missing public artifacts before rebuilding.
+- `devcloud guard index --fetch` may fetch missing public checksum metadata and artifacts before rebuilding.
 - `devcloud guard status --json` reports index schema/generation, build time, source coverage and skipped-reason counts, without file contents or credential data.
 
 These commands run on Macs and Linux hosts without the host-management CLI’s root requirement or host-only PATH rewriting. The initial trigger is the person or an authorized session invoking the command. Run it after installing/updating relevant packages, or when status reports stale entries. Do not add a daemon, timer, session-start rebuild, implicit installation hook or Read-triggered refresh in this initiative.
@@ -135,7 +133,7 @@ Store the index in the user cache area, under the feature’s own versioned name
 
 Use a read-only-queryable SQLite index, available in Python’s standard library, rather than loading an installation-wide JSON map during a Read. Build a new database beside the old one, validate it, and publish it by atomic replacement. A failed build does not publish a half-built index. A completed build may omit unavailable packages, but its summary must distinguish verified coverage from each skipped reason. Never silently populate an omitted package from its current installed contents.
 
-Cache reusable original-artifact digests by artifact identity. A rebuild may reuse verified distribution evidence; it still compares the current installed file before issuing an entry. Downloads, npm-cache traversal, archive decompression and package discovery occur only in `index` mode. Artifacts are data: do not execute lifecycle scripts or installed package code. Inspect regular archive members without extracting them; reject ambiguous member paths, duplicate members, links and paths escaping the archive root. Bound archive size, expanded bytes and entry count, reporting exceeded limits as skipped evidence.
+Cache reusable original-artifact digests by artifact identity, retaining the public metadata source, exact version and published checksum that establish their provenance. A rebuild may reuse verified distribution evidence; it still compares the current installed file before issuing an entry. Downloads, npm-cache traversal, archive decompression and package discovery occur only in `index` mode. Artifacts are data: do not execute lifecycle scripts or installed package code. Inspect regular archive members without extracting them; reject ambiguous member paths, duplicate members, links and paths escaping the archive root. Bound archive size, expanded bytes and entry count, reporting exceeded limits as skipped evidence.
 
 The strongest alternative was a lazy downloader in the Read hook. It would make first use convenient, but conflicts with the engine’s hook budget and makes network availability part of the secrets boundary. A daemon would avoid the hook but introduce another lifecycle solely to hide an explicit, infrequent operation. The command is the smallest complete trigger.
 
@@ -143,11 +141,9 @@ The strongest alternative was a lazy downloader in the Read hook. It would make 
 
 **Global npm.** Discover the actual global prefix through npm in index mode, resolve it, and enumerate installed package boundaries, including nested dependencies. Package boundaries follow `node_modules` placement and scoped-package layout, not the nearest arbitrary `package.json`: examples can contain their own manifests without being separately installed packages. Reject linked packages whose resolved roots leave the discovered global installation. Reject roots inside the invoking project or a detected source checkout. At runtime, the guard also excludes its session’s project root.
 
-Use package name/version and available lock metadata to locate original artifacts in the npm cache. Validate the cache’s artifact integrity before computing member hashes. `--fetch` can obtain missing exact-version artifacts from the public npm registry. Do not consult private registry credentials or execute npm package scripts; unsupported/private sources remain unknown. A `files` field, lockfile integrity value or cache key is discovery evidence, not proof of the installed file’s current contents.
+Use package name/version and available lock metadata to locate candidate artifacts in the npm cache. Accept a cached tarball only when its integrity equals the public registry’s `dist.integrity` for that exact name@version. Obtain that value from a cached registry document whose source is the public registry, or fetch that document with `--fetch`; verify the artifact bytes before computing member hashes. `--fetch` can also obtain missing exact-version artifacts from the public npm registry. Local, git, private-registry and unpublished packages remain unknown. Do not consult private registry credentials or execute npm package scripts. A `files` field, lockfile integrity value or cache key is discovery evidence, not proof of publication or of the installed file’s current contents.
 
-**gcloud SDK.** Discover the SDK installation, resolve it, and use component manifests to associate files with installed component snapshots. Obtain the matching release’s original component archives from a local artifact cache or, with `--fetch`, Google’s distribution service. Validate archive checksums from that release’s component metadata, then compare the relevant regular members. Do not interpret a component’s aggregate `contents_checksum` as a per-file digest. Files absent from the component inventory, including generated Python bytecode, receive no entry.
-
-**dpkg.** Read installed-package status, file lists, per-file MD5 evidence, conffile metadata and diversions. Only an unambiguously owned regular file with an available matching MD5 is eligible. Exclude conffiles, diversions, missing hashes and generated/unlisted files. After matching the original MD5 evidence, record the installed file’s SHA-256 for runtime use. Metadata and configuration classification must come from the database, not an assumption that everything under a system prefix is immutable.
+**gcloud SDK.** Discover the SDK installation, resolve it, and use component manifests to associate files with installed component snapshots. Obtain the matching release’s original component archives from a local artifact cache or, with `--fetch`, Google’s distribution service. Validate archive checksums from that release’s public component metadata, obtained with `--fetch` or from a cached copy of that public document, then compare the relevant regular members. Local snapshots never supply the archive’s trusted checksum. Do not interpret a component’s aggregate `contents_checksum` as a per-file digest. Files absent from the component inventory, including generated Python bytecode, receive no entry.
 
 **Native Claude Code.** Do not index the native executable or invent a native source-tree exemption. Its signature does not make binary decoding a supported source Read, and its measured strings corpus belongs to an explicitly excluded Bash transformation. A Claude package installed through a supported global npm installation can use the npm adapter like any other package.
 
@@ -157,7 +153,7 @@ The strongest alternative was one path-root adapter for all package managers. It
 
 ### 4. A bounded local verifier
 
-Most Reads never reach the verifier. The mod spawns it only for a Read that passes two checks. First, the full detector finds at least one generic `assignment` span in `file.content`. Second, the resolved path lies under an installation root the index publishes. The mod takes those roots from a small roots file written beside the index at publication, read once per module and read again only when its stat changes. Every other Read keeps today's path, with no subprocess.
+Most Reads never reach the verifier. The mod considers provenance only when the full detector finds at least one generic `assignment` span in `file.content`. It uses a small roots file written beside the index at publication for conservative candidate screening, read once per module and read again only when its stat changes. This screen grants no authority; the helper performs canonicalization and resolved-path containment, including the input path, returned path, project root and indexed roots. Move canonicalization into the helper rather than awaiting separate filesystem resolution in the mod where possible. Reads screened out keep today’s path, with no subprocess. Roots-file loading and every remaining preflight stat/resolve call are part of the same timed provenance stage, not untimed prerequisites.
 
 The hot path invokes only `verify` mode, through `$.process.run` with an argument vector, no shell, and an isolated Python invocation. Python 3.9 or later suffices for the standalone helper; the public devcloud CLI retains its existing interpreter requirement. Missing runtime support means full detection.
 
@@ -171,13 +167,13 @@ The verifier performs an indexed lookup for the resolved input path and checks:
 - SHA-256 of at most 16 MiB of current file bytes;
 - the native result’s declared source slice against those same verified bytes.
 
-Metadata fingerprints are fixed, bounded sets of stat facts: canonical path, device/inode where supplied by the platform, size, mtime and ctime. npm uses its owning package manifest; gcloud uses the component manifest and snapshot; dpkg uses the relevant ownership/checksum/configuration metadata. An index entry with a changed marker is stale even if a quick path check would still find the package. Index schema/policy mismatch is stale as well. Content hashes do not expire merely because time passed; current marker checks and per-Read hashing prevent stale installation observations from becoming exemptions.
+Metadata fingerprints are fixed, bounded sets of stat facts: canonical path, device/inode where supplied by the platform, size, mtime and ctime. npm uses its owning package manifest; gcloud uses the component manifest and snapshot. These markers detect installation changes; they do not replace the public checksum evidence used at indexing. An index entry with a changed marker is stale even if a quick path check would still find the package. Index schema/policy mismatch is stale as well. Content hashes do not expire merely because time passed; current marker checks and per-Read hashing prevent stale installation observations from becoming exemptions.
 
 The verifier returns digests and small metadata only, never file bytes. Its response binds the file digest, canonical path, index generation and exact source slice. The mod compares the returned slice digest with the native structured result’s `file.content`. Slice verification is positional, from the declared starting line and returned length; it must not search the file for a matching string. It accommodates only explicitly tested newline and truncation behavior. Unsupported encodings, binary content, altered long-line renderings and ambiguous slices fall back to full detection.
 
 This closes the gap between checking a path and using the tool’s earlier result. If the file changes between the tool read and verification, the current file must still match the distribution and the returned slice must still match those verified bytes. A changed or unrelated result cannot borrow a current file’s verification.
 
-Set a 1.5-second subprocess deadline and honor the hook’s abort signal. Allow at most four concurrent verifier processes per loaded module; additional candidates take the fully guarded path immediately. Do not queue them. A local verifier timeout, malformed answer or missing index is an ordinary negative result, handled before the existing outer tool-hook error handler.
+Start one 1.5-second deadline before any provenance-related work the hook awaits, including loading the roots file, stat/resolve calls, canonicalization and process verification. Pass only the remaining time to the verifier process; do not restart the clock at spawn. Honor the hook’s abort signal. Race the whole stage against the deadline: abandon an unsettled `$` call when time expires, cancel the verifier process if started, and continue with full detection without awaiting the abandoned call. Late completion cannot issue a receipt or change the returned result. The engine’s 10-second hook budget excludes in-flight `$` calls and cannot bound this work. Allow at most four concurrent verifier processes per loaded module; additional candidates take the fully guarded path immediately. Do not queue them. A stage timeout, malformed answer or missing index is an ordinary negative result, handled before the existing outer tool-hook error handler.
 
 The strongest alternative was caching successful verification by path, size and mtime. It would reduce hashing but turn mutable filesystem observations into continuing authority. The measured file sizes permit rehashing the specific file under a hard cap instead. Raising that cap or adding a positive file-verification cache requires new measurements, not a silent optimization.
 
@@ -185,7 +181,7 @@ The strongest alternative was caching successful verification by path, size and 
 
 Extend the detector/handles path with an internal option for ranges in which `assignment` detections may be omitted. The default remains the complete existing detector. The option does not suppress known-value matching, provider rules, PEM rules, handle protection or restoration.
 
-In a supported verified Read, apply that option only to `result.file.content`. Every other string in the structured result receives full detection. Do not set a package-wide mode on `scrubRecord`, exempt the whole tool result, or put a flag in model-visible text. If stronger protections rewrite the result, return a new structured result without reusing core’s `ref`, so the native mapper renders the scrubbed contents. Preserve the existing context-note and persisted-output behavior.
+In a supported verified Read, apply that option only to `result.file.content`. Every other string in the structured result receives full detection. Do not set a package-wide mode on `scrubRecord`, exempt the whole tool result, or put a flag in model-visible text. If the exemption leaves the structured result unchanged, return the original result with core’s `ref` retained, preserving native companion messages including the automatic-pagination notice. If stronger protections rewrite the result, return a new structured result without reusing core’s `ref`, so the native mapper renders the scrubbed contents. That rewrite path behaves as today, including the pre-existing loss of the pagination companion notice; fixing it is separate residue, not a promise of #124. Preserve the existing context-note and persisted-output behavior.
 
 Oversized persisted-output files remain on the existing full-detection path. This initiative does not grant them a file-wide exception. Media, notebooks, unchanged-file notices, error results and unsupported Read forms also retain full detection.
 
@@ -207,7 +203,7 @@ The receipt carries the index generation, a digest of the expected final renderi
 
 The rendering adapter first identifies the exact numbered source body in native `ran.text`, using the native structured content and starting line. It rejects unsupported or ambiguous formatting. From the scrubbed structured content it computes the corresponding expected body rendering, preserving the observed prefix and suffix as surrounding text. The final text digest binds the complete representation, not just a matching substring. Support only a string tool-result body or its equivalent singleton text block until another representation is separately proved.
 
-The adapter must reproduce the inspected mapper’s line numbering, carriage-return handling and tab-aware separator behavior. Pagination wrappers are not exempt. If the core mapper or another plugin changes the final representation unexpectedly, its digest will not match and append performs full detection. The decision to verify came from file bytes and the index; result-text comparison only establishes that the row is still the exact result to which that decision applied.
+The adapter must reproduce the inspected mapper’s line numbering, carriage-return handling and tab-aware separator behavior. Surrounding text is not exempt. The automatic-pagination companion notice is outside `ran.text` and outside the receipt; its survival on an unchanged result comes from retaining `ref`, not from reconstructing a wrapper. If the core mapper or another plugin changes the final representation unexpectedly, its digest will not match and append performs full detection. The decision to verify came from file bytes and the index; result-text comparison only establishes that the row is still the exact result to which that decision applied.
 
 At append, take and delete the matching receipt synchronously before the first await. Verify its expiry, pinned envelope and full rendered-text digest. Only then suppress generic spans wholly inside its verified source-body ranges. Apply known-value and provider/PEM detection across the entire current text again, including the verified ranges; values discovered after the first scrub must still be caught. All other blocks and surrounding text receive full detection. Duplicate ids within a row receive no exemption.
 
@@ -238,15 +234,15 @@ The strongest alternative was extending provenance to every subsequent copy of t
 
 ## Plan of Work
 
-All milestones retain “redact, never refuse,” the detector regressions from #349, the unmatched-hook requirement, resolved-path containment, and the bounded verifier contract. No source values or machine-identifying measurements enter committed documentation. Use synthetic test data. Commit meaningful increments; full gate verification runs on committed HEAD through GitHub Actions, not by running gate scripts locally.
+All milestones retain “redact, never refuse,” the detector regressions from #349, the unmatched-hook requirement, resolved-path containment, and the whole-stage provenance deadline and published-artifact contract. No source values or machine-identifying measurements enter committed documentation. Use synthetic test data. Commit meaningful increments; full gate verification runs on committed HEAD through GitHub Actions, not by running gate scripts locally.
 
 ### M1 — Build and inspect the original-content index outside hooks
 
 At this milestone’s end, `devcloud guard index`, `index --fetch` and `status --json` work on the caller’s machine, and the index distinguishes original files from changed or newly generated files without changing runtime redaction.
 
-Add the standalone index/verifier helper at `devcloud/hooks/mods/secrets-provenance.py`, its private cache layout and SQLite schema, and user-level dispatch in `devcloud/boot/devcloud`. Implement the npm, gcloud and dpkg evidence adapters, archive handling, atomic publication, coverage reporting and local-only verification protocol. Add Python tests under `devcloud/tests/mods/` and include them in `devcloud/tests/mods/run.sh` so they belong to `devcloud-mods`.
+Add the standalone index/verifier helper at `devcloud/hooks/mods/secrets-provenance.py`, its private cache layout and SQLite schema, and user-level dispatch in `devcloud/boot/devcloud`. Implement the npm and gcloud public-evidence adapters, archive handling, atomic publication, coverage reporting and local-only verification protocol. Add Python tests under `devcloud/tests/mods/` and include them in `devcloud/tests/mods/run.sh` so they belong to `devcloud-mods`.
 
-This milestone produces `IndexEntry`, `VerifyRequest` and `VerifyResult` as defined below. Its tests prove acceptance 3, 6, 7 and the metadata portion of 8: post-install additions and modifications, linked checkouts, duplicate/archive traversal entries, unavailable artifacts, malformed index data, stale markers, rebuild rejection of modified files, size bounds and timeout cleanup. It also verifies that `verify` mode cannot reach network, archive or discovery code.
+This milestone produces `IndexEntry`, `VerifyRequest` and `VerifyResult` as defined below. Its tests prove acceptance 3 and the helper portions of 6–7: post-install additions and modifications, linked checkouts, duplicate/archive traversal entries, unavailable artifacts, malformed index data, stale markers, rebuild rejection of modified files, rejection of a locally packed public name@version with different contents and a local-only package, missing or nonpublic registry documents, gcloud local snapshots without public archive-checksum evidence, size bounds and process timeout cleanup. It also verifies that `verify` mode cannot reach network, archive or discovery code.
 
 Do not add automatic refresh, a daemon, new privileged installation work, or a runtime exemption. Review the evidence-producing interface before M2 consumes it.
 
@@ -256,7 +252,7 @@ At this milestone’s end, synthetic verified native-text Read results preserve 
 
 Add `devcloud/hooks/mods/secrets-provenance.tsx`; change the detector/handles interface narrowly in `secrets-detect.tsx` and `secrets-handles.tsx`; integrate verification and receipts into `registerSecrets` in `secrets.tsx`. Keep both hooks registered without matchers. The implementation consumes M1’s verifier protocol and produces the one-use receipt and rendering adapter defined below.
 
-Tests in `devcloud/tests/mods/` must exercise both passes together, not just call the detector with a flag. Prove acceptance 1–7 with main/subagent concurrency, out-of-order completions, unknown and duplicate ids, exact envelope mismatches, rendering changes, new known values between passes, capacity eviction, expiry, reload loss, partial Reads, CRLF/tab-leading content, strong multi-line redaction and supported pagination. Unsupported transforms must be demonstrably fully guarded, not silently accepted.
+Tests in `devcloud/tests/mods/` must exercise both passes together, not just call the detector with a flag. Prove acceptance 1–7 with main/subagent concurrency, out-of-order completions, unknown and duplicate ids, exact envelope mismatches, rendering changes, new known values between passes, capacity eviction, expiry, reload loss, partial Reads, CRLF/tab-leading content, strong multi-line redaction and supported pagination. Prove unchanged structured results retain the original `ref` and stronger-redaction rewrites keep today’s behavior. Exercise a never-settling preflight roots-file/stat/resolve call as well as a verifier-process timeout: the single stage deadline must return full detection without waiting for it, and late completion must not issue a receipt. Unsupported transforms must be demonstrably fully guarded, not silently accepted.
 
 The engine test kit does not itself substitute for native Read’s mapper. Use its mocks for controlled interleavings and error paths; retain explicit native-format fixtures and complete the actual-engine proof in M3. Do not extend receipt authority to Bash, arbitrary plugin output, attachments, compaction or persisted-output files.
 
@@ -264,13 +260,13 @@ The engine test kit does not itself substitute for native Read’s mapper. Use i
 
 At this milestone’s end, a synthetic real-engine acceptance run and the committed gates prove the complete feature; the public documentation gives the person the indexing command and explains its fallback behavior.
 
-Add a reproducible acceptance driver at `devcloud/tests/mods/provenance_probe.py`. It creates an isolated cache and synthetic distribution/install fixtures, prepares an index using the same helper contract, and launches a native headless session with the development plugin. It verifies the resulting transcript’s structured record and tool-result text, including a supported partial Read and a stronger-secret case. It uses no personal package contents, real credentials or default transcript location. If the installed engine cannot supply the expected lifecycle or rendering, the probe fails with that boundary named; it must not replace the engine with a hand-written mapper and call the result native acceptance.
+Add a reproducible acceptance driver at `devcloud/tests/mods/provenance_probe.py`. It creates an isolated cache and synthetic distribution/install fixtures, prepares an index using the same helper contract, and launches a native headless session with the development plugin. It verifies the resulting transcript’s structured record and tool-result text, including a supported partial Read, a verified automatically paginated Read needing no other redaction whose native companion notice survives, and a stronger-secret case. The stronger-secret rewrite must match today’s behavior; it need not preserve the pagination notice. It uses no personal package contents, real credentials or default transcript location. If the installed engine cannot supply the expected lifecycle or rendering, the probe fails with that boundary named; it must not replace the engine with a hand-written mapper and call the result native acceptance.
 
-Add a corpus-report mode to the helper, invoked only out of band, for the same source/text extension set as the preceding report. It reports existing detector matches, verified original-content coverage, and preservation through the supported two-pass pipeline as distinct numbers. It may use the TypeScript detector through the repository’s existing test/runtime tooling rather than reimplementing the detection rules in Python. Record actual implementation results in this specification’s record, without local paths or matched values. Execute acceptance 1–10, including an actual Linux dpkg check; do not describe unrun platform evidence as passed.
+Add a corpus-report mode to the helper, invoked only out of band, for the same source/text extension set as the preceding report. It reports existing detector matches, verified original-content coverage, and preservation through the supported two-pass pipeline as distinct numbers. It may use the TypeScript detector through the repository’s existing test/runtime tooling rather than reimplementing the detection rules in Python. Record actual implementation results in this specification’s record, without local paths or matched values. Execute acceptance 1–9. The measured benefit is entirely npm and gcloud; no dpkg evidence is part of this initiative. Do not describe unrun platform evidence as passed.
 
 Update `devcloud/README.md` and `devcloud/hooks/mods/CLAUDE.md`. Use `scripts/bump-version.sh --plugin devcloud` for the runtime release. Run the committed `devcloud-mods` and `mods-types` gates, then doperpowers:review-code at the high rung on the entire branch. Resolve verified material findings through a bounded fix wave rather than broadening the design.
 
-After merge, the integrating session creates the cua resync ticket described below, naming the actual merged commit. That post-merge action is part of closing #124, not an inferred promise from a version bump. This milestone does not itself modify cua or add automatic indexing.
+After merge, the integrating session creates the cua resync ticket described below, naming the actual merged commit. That post-merge action is part of closing #124, not an inferred promise from a version bump. The integrating session carries forward the already registered board tickets 125 and 126 in Residue; it does not implement them here. This milestone does not itself modify cua or add automatic indexing.
 
 ## Concrete Steps
 
@@ -283,7 +279,7 @@ Commands below run from the doperpowers repository root unless stated otherwise.
    devcloud/bin/devcloud guard status --json
    ```
 
-   Expect a published generation and counts of verified files and skipped evidence. No secret values or file contents are printed. On a disconnected machine, run `devcloud/bin/devcloud guard index`; it uses local evidence and reports unavailable artifacts rather than fetching them.
+   Expect a published generation and counts of verified files and skipped evidence. No secret values or file contents are printed. On a disconnected machine, run `devcloud/bin/devcloud guard index`; it uses cached public checksum documents and matching artifacts, and reports unavailable evidence rather than fetching it. Refresh is manual; no daemon, timer or automatic trigger is installed.
 
 2. During M1 iteration, run the focused Python tests:
 
@@ -291,7 +287,7 @@ Commands below run from the doperpowers repository root unless stated otherwise.
    python3 -I -m unittest discover -s devcloud/tests/mods -p 'provenance_index_test.py'
    ```
 
-   Expect the synthetic inventory, modification, archive and bound cases to pass. This focused check does not replace the committed gate.
+   Expect the synthetic inventory, modification, public-checksum, archive and bound cases to pass, including rejection of a locally packed public name@version with different contents and a local-only package. This focused check does not replace the committed gate.
 
 3. After each relevant milestone is committed, run:
 
@@ -299,7 +295,7 @@ Commands below run from the doperpowers repository root unless stated otherwise.
    ci-gate --gates devcloud-mods,mods-types
    ```
 
-   Expect both gates to report `PASS`, followed by `GREEN`. `ci-gate` tests committed HEAD. Do not claim this verifies uncommitted changes or run the full gate commands on the Mac as an alternative.
+   Expect both gates to report `PASS`, followed by `GREEN`, including M2’s never-settling preflight filesystem call and verifier-process timeout cases. `ci-gate` tests committed HEAD. Do not claim this verifies uncommitted changes or run the full gate commands on the Mac as an alternative.
 
 4. For the real-engine acceptance proof after M2:
 
@@ -307,7 +303,7 @@ Commands below run from the doperpowers repository root unless stated otherwise.
    python3 -I devcloud/tests/mods/provenance_probe.py
    ```
 
-   Expect explicit PASS results for native Read, partial Read, structured persistence, appended text, strong-secret protection and unknown-provenance fallback. A missing native engine or inability to launch the isolated session is a reported blocker, not a pass. The driver owns cleanup of its synthetic fixtures and session artifacts.
+   Expect explicit PASS results for native Read, partial Read, unchanged automatically paginated Read with its companion notice, structured persistence, appended text, strong-secret protection and unknown-provenance fallback. Notice survival is asserted only when no redaction rewrites the structured result. A missing native engine or inability to launch the isolated session is a reported blocker, not a pass. The driver owns cleanup of its synthetic fixtures and session artifacts.
 
 5. Report corpus coverage, separately from credential tests:
 
@@ -317,9 +313,7 @@ Commands below run from the doperpowers repository root unless stated otherwise.
 
    On the unchanged authoring corpus, the original-content comparison should account for 1,094 npm and 424 gcloud generic matches. Changes in package versions or corpus contents require a newly stated denominator. The report must distinguish original-content equality from actual preservation through the supported rendering and both scrubs.
 
-6. On a Linux test host, run the indexing command and the helper’s dpkg acceptance cases through the same gate/test entry point. Include a real installed non-conffile with a digest and a real conffile in the evidence. Keep any modification test inside synthetic fixtures, not an operational system package.
-
-7. Before release, invoke doperpowers:review-code at the high rung on the whole committed branch, with this specification as the contract. After merge, verify the merged commit and register the cua resync against it.
+6. Before release, invoke doperpowers:review-code at the high rung on the whole committed branch, with this specification as the contract. After merge, verify the merged commit, register the cua resync against it, and carry forward the separate board tickets 125 and 126 in Residue.
 
 ## Interfaces and Dependencies
 
@@ -327,7 +321,7 @@ Commands below run from the doperpowers repository root unless stated otherwise.
 
 The SQLite schema has a versioned metadata row, installation/package records, and file entries indexed by canonical path. Its logical contracts are:
 
-- `IndexEntry`: schema/policy version; generation; source adapter; canonical installation root and package root; package/version or component identity; package-relative regular-file path; original-artifact identity; expected SHA-256 and byte size; bounded owner-marker fingerprints.
+- `IndexEntry`: schema/policy version; generation; source adapter; canonical installation root and package root; package/version or component identity; package-relative regular-file path; original-artifact identity and its exact-version public checksum evidence (public document source, version and checksum); expected SHA-256 and byte size; bounded owner-marker fingerprints.
 - `OwnerMarker`: canonical metadata path and its platform stat fingerprint. Each adapter declares a fixed set; there is no runtime metadata-tree search.
 - Build statistics: verified counts and skipped-reason counts by source. These are observability, not authority.
 
@@ -337,21 +331,21 @@ Use SQLite from Python’s standard library, platform filesystem primitives and 
 
 The helper’s `verify` mode takes a bounded JSON request on stdin and returns one bounded JSON object. Paths are data, never shell fragments.
 
-`VerifyRequest` contains the input path, returned file path, session project root, and native text slice coordinates/length needed to bind `file.content`. The index location is the helper’s own cache policy, not a path supplied by the tool call.
+`VerifyRequest` contains the input path, returned file path, session project root, and native text slice coordinates/length needed to bind `file.content`. The helper canonicalizes these paths; the hook need not resolve them before sending the request. The index location is the helper’s own cache policy, not a path supplied by the tool call.
 
 `VerifyResult` is one of:
 
 - `verified`: schema/policy version, generation, canonical file path, verified file SHA-256, byte size and source-slice digest/coordinates;
 - `unknown`: a fixed reason category such as missing index, stale metadata, nonmember, changed bytes, excluded path, oversized file, unsupported slice or unavailable evidence.
 
-Process errors, timeout, truncated output or invalid protocol also mean `unknown` to the mod. The protocol never returns file content or detected values.
+Process errors, expiry of the whole provenance-stage deadline, truncated output or invalid protocol also mean `unknown` to the mod. The process receives only the stage’s remaining time, not a fresh 1.5 seconds. The protocol never returns file content or detected values.
 
 ### Hook-side contracts
 
 `secrets-provenance.tsx` owns:
 
-- `verifyRead`: consumes the native Read envelope/result and M1’s local verifier; returns verified slice evidence or unknown without throwing for ordinary provenance failure.
-- `bindReadRendering`: consumes verified structured source content and native core text; returns an exact expected rendering digest and verified source-body ranges, or unknown.
+- `verifyRead`: consumes the native Read envelope/result and M1’s local verifier; owns the single 1.5-second deadline over roots-file loading, all preflight filesystem calls and the helper, and returns verified slice evidence or unknown without throwing for ordinary provenance failure. An unsettled `$` call is abandoned at expiry; late completion grants no authority.
+- `bindReadRendering`: consumes verified structured source content and native core text; returns an exact expected rendering digest and verified source-body ranges, or unknown. It does not reconstruct native companion messages. The tool-hook caller returns the original result with `ref` if unchanged, and a replacement without `ref` only when rewriting, as in §5.
 - `ReadReceipt`: loop/call key, index generation, expected-rendering digest, source-body ranges and monotonic expiry; module-local and one-use.
 - Receipt issue/take/reset operations implementing the state table. Taking a receipt deletes it before asynchronous work.
 
@@ -368,6 +362,13 @@ The ticket must include the new TypeScript provenance module, standalone Python 
 Preserve cua’s existing adaptations: it neither answers nor writes devcloud’s guard marker; its hooks and error handler stand down while the live devcloud marker is present; its prompt section id remains cua’s; and its hook registration remains compatible with cua’s own registrations. The helper path is relative to the owning plugin. Do not change the marker’s meaning or persist provenance in it.
 
 The resync tests must cover cua alone, devcloud outside cua, devcloud inside cua, and removal/reload of devcloud, including loss of outstanding receipts and continued full fallback. Run cua’s mod tests and update `VENDORED.md` to the exact source commit. This specification does not authorize silently editing cua while implementing devcloud.
+
+## Residue for the integrating session
+
+These separate tickets are already registered. The integrating session carries them forward when closing #124; neither is implementation scope here.
+
+- **dpkg provenance — board ticket 126.** Installed file lists and MD5 metadata come from whatever `.deb` was unpacked, including a local build, so they cannot establish publication. A sound adapter needs the public archive’s signed chain from Release to Packages to `.deb`, then regular-member comparison. dpkg files remain fully guarded in this initiative.
+- **Pagination notices on rewritten Reads — board ticket 125.** Today’s guard drops the native automatic-pagination companion notice when it returns a replacement without `ref`. This is a pre-existing defect, not introduced by #124. Board ticket 125 must preserve the notice while still remapping redacted content; this initiative guarantees notice survival only for unchanged results.
 
 ## Surprises & Discoveries
 
@@ -387,7 +388,13 @@ The resync tests must cover cua alone, devcloud outside cua, devcloud inside cua
   Evidence: `secrets.tsx` independently scrubs result records and appended blocks; the engine’s append contract leaves `toolUseResult` outside the hook input.
 
 - Observation: Hook overruns can unload the guard rather than merely delay a Read.
-  Evidence: the inspected 2.1.308 bundle retains a 10-second hook budget and unloads after two consecutive ignored-signal overruns. The current minified constants are `cye=1e4` and `dts=2`; friction tracker #304 records the behavior and its check. This is why index construction is never a hook operation.
+  Evidence: the inspected 2.1.308 bundle retains a 10-second hook budget and unloads after two consecutive ignored-signal overruns. The current minified constants are `cye=1e4` and `dts=2`; friction tracker #304 records the behavior and its check. The budget excludes in-flight `$` calls, so it cannot rescue a stalled preflight filesystem operation. This is why index construction is never a hook operation and the whole provenance stage needs its own deadline.
+
+- Observation: Installed metadata and cache integrity do not by themselves establish public distribution origin.
+  Evidence: the adversarial review identified dpkg metadata populated from locally built `.deb` files and npm cache artifacts from local packing, path/git dependencies and private registries. Public exact-version checksums are required for every source.
+
+- Observation: Automatic pagination’s notice is not part of the text bound by the receipt.
+  Evidence: the reviewed native result contract places the notice outside `ran.text` as a companion message; replacing a result without `ref` drops it, as today’s guard already does on rewritten Reads.
 
 ## Decision Log
 
@@ -395,9 +402,25 @@ The resync tests must cover cua alone, devcloud outside cua, devcloud inside cua
   Rationale: Installed-file ownership and cross-pass exemption authority change a security boundary. A narrower detector-only review would miss the principal failure modes. The adversarial review must test boundedness, byte/result binding, stale state, package metadata assumptions and cua’s reload behavior as well as buildability.
   Date/Author: 2026-10-22, provenance design session.
 
-- Decision: Spawn the verifier only for a Read with a generic match in its source content under a published installation root (§4).
+- Decision: Consider provenance only for a Read with a generic match in its source content; screen candidates against published installation roots, with canonical containment checked in the helper (§4).
   Rationale: Spawning a Python process on every Read would add latency to every file read. A Read with no generic match has nothing to preserve, and one outside every indexed root can't be verified. The alternative, keeping the verifier as a long-lived child process, would add a lifecycle the hook would have to manage across reloads.
   Date/Author: 2026-10-22, the coordinating session.
+
+- Decision: Require public exact-version artifact checksums for every source; npm cache artifacts must match public `dist.integrity`, gcloud archives must match public release metadata, and dpkg is deferred to board ticket 126.
+  Rationale: The rejected alternative trusted installed dpkg hashes or a cache’s self-consistency. Both can faithfully describe local build output containing credentials, so neither proves publication. A sound dpkg adapter needs the signed Release → Packages → `.deb` chain, beyond this initiative’s npm/gcloud scope.
+  Date/Author: 2026-10-22, settled review decision.
+
+- Decision: Apply one 1.5-second deadline to the whole awaited provenance stage, moving canonicalization into the helper where possible and abandoning unsettled `$` calls at expiry.
+  Rationale: The rejected alternative bounded only the verifier process and relied on the engine budget for preflight work. The 10-second engine budget excludes in-flight `$` calls, leaving roots loading and stat/resolve calls unbounded. Full detection must resume without waiting for those calls.
+  Date/Author: 2026-10-22, settled review decision.
+
+- Decision: Retain the original result and `ref` when the exemption leaves it unchanged; keep today’s rewrite behavior and record dropped pagination notices on rewritten Reads as separate residue in board ticket 125.
+  Rationale: The rejected alternative promised notice preservation by copying pagination text from `ran.text`. The notice is a native companion message outside that text. Retaining `ref` preserves it for unchanged results; repairing replacement-result companions is a pre-existing defect with its own ticket.
+  Date/Author: 2026-10-22, settled review decision.
+
+- Decision: Refresh the index only through the manual command chosen by the person.
+  Rationale: A daemon, timer or automatic refresh was the rejected alternative. The explicit command keeps discovery, fetching and rebuild lifecycle outside hooks without adding a background service or implicit trigger.
+  Date/Author: 2026-10-22, the person’s settled choice.
 
 ## Outcomes & Retrospective
 
