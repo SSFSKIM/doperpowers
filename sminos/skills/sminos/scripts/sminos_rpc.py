@@ -837,29 +837,35 @@ class Rpcs:
             del self.op_ids[oid]
 
     def rearm(self, nonce):
-        """A command claim reconciled `done` from the child's kept answer
-        (the daemon stopped after the bridge answered it and before its id
-        was kept): its id kept on the claim now, and its run followed as one
-        this daemon saw answered — its end, if the child kept it meanwhile,
-        sent at once (recover_ops)."""
+        """A command claim about to be reconciled `done` from the child's
+        kept answer (the daemon stopped after the bridge answered it and
+        before its id was kept): its id kept on the claim first, while the
+        claim is still open, so that a stop before its outcome is written
+        leaves a claim the next restart reconciles again; then its run
+        followed as one this daemon saw answered — its end, if the child
+        kept it meanwhile, sent at once (recover_ops). False when the id
+        could not be kept: the claim stays open, reconciled again."""
         with self.ledger.lock:
             e = self.ledger.entries.get(nonce)
             if e is None or not e.get("session"):
-                return
+                return True
             answered = (bridge.load_kept(e["session"]).get("rpcs") or {}).get(nonce) or {}
             oid = (answered.get("result") or {}).get("id")
             if not isinstance(oid, str) or not oid:
-                return
+                return True
             end = answered["end"] if isinstance(answered.get("end"), dict) else {}
             e = {**e, "op_id": oid, "op_name": e.get("op_name") or end.get("name"),
                  "op_args": e["op_args"] if "op_args" in e else end.get("args") or ""}
             try:
                 self.ledger.change(nonce, e)
             except OSError as err:
-                log("command %s, reconciled: its id %s could not be kept in the ledger (%s)" % (nonce, oid, err))
+                log("command %s, claimed before a stop: its id %s could not be kept (%s): it is reconciled again"
+                    % (nonce, oid, err))
+                return False
         child = e.get("op_child")
         self.op_ids[oid] = {"project": e.get("project"), "session": e["session"], "nonce": nonce, "at": e["at"],
                             "name": e["op_name"], "args": e["op_args"], "child": child if isinstance(child, list) else None}
+        return True
 
     def restore_ops(self):
         """The commands this daemon issued whose end has not gone up, as
@@ -877,8 +883,8 @@ class Rpcs:
         """Outcomes whose ledger write failed, written again; then claims no
         worker holds: answered from their trace, or `interrupted` once no
         trace can come any more (main thread: it reads the seats and the
-        bridges' kept files); a command so answered is followed to its end
-        (rearm, recover_ops). A claimed Resume whose job is kept, and does
+        bridges' kept files); a command so answered has its id kept before
+        its outcome and is followed to its end (rearm, recover_ops). A claimed Resume whose job is kept, and does
         not hold the session, has the harness asked once, on a worker,
         whether that job is a copy (check_copy)."""
         now = self.clock()
@@ -905,6 +911,8 @@ class Rpcs:
                 continue
             if outcome is None:
                 outcome = failed("interrupted", "the daemon stopped while it ran: it is not run again")
+            if e.get("rpc") == "command" and outcome["state"] == "done" and not self.rearm(nonce):
+                continue
             try:
                 self.ledger.answer(nonce, outcome)
             except OSError as err:
@@ -913,8 +921,6 @@ class Rpcs:
                 self.unwritten[nonce] = outcome
                 continue
             log("%s %s, claimed before a stop, reconciled: %s" % (e.get("rpc"), nonce, outcome["state"]))
-            if e.get("rpc") == "command" and outcome["state"] == "done":
-                self.rearm(nonce)
         self.recover_ops()
 
     def check_copy(self, nonce, e):

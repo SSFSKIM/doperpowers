@@ -917,11 +917,10 @@ class Checks(unittest.TestCase):
         self.assertNotIn("op_id", self.ledger()[asked["nonce"]], "forgotten once it went")
         self.assertEqual(self.op_messages(), got, "and sent once")
 
-    def test_l_a_command_claimed_before_a_stop_is_reconciled_and_its_end_still_goes_up(self):
-        """A8, the narrowest window: the daemon stops after the bridge
-        answered the command and before its id was kept on the claim. The
-        restart reconciles the claim from the child's kept answer, keeps the
-        command's id on it, and sends the end the child kept meanwhile."""
+    def claimed_before_a_stop(self):
+        """A rename the bridge answered, its claim as a stop between the
+        answer and the keeping of its id leaves it, and its end kept by the
+        child meanwhile: (the RPC, the command's id)."""
         self.following()
         self.mod.hold_runs = True
         asked = self.send("command", {"session": self.bridged.sid, "name": "rename", "args": "in-the-gap"})
@@ -937,6 +936,14 @@ class Checks(unittest.TestCase):
         self.mod.post(*self.mod.held_runs)
         kept = lambda: ((bridgemod.load_kept(self.bridged.sid).get("rpcs") or {}).get(asked["nonce"]) or {}).get("end")
         self.assertTrue(wait_for(kept), "the child kept the end beside the answer")
+        return asked, cid
+
+    def test_l_a_command_claimed_before_a_stop_is_reconciled_and_its_end_still_goes_up(self):
+        """A8, the narrowest window: the daemon stops after the bridge
+        answered the command and before its id was kept on the claim. The
+        restart reconciles the claim from the child's kept answer, keeps the
+        command's id on it, and sends the end the child kept meanwhile."""
+        asked, cid = self.claimed_before_a_stop()
         self.r = rpcs.Rpcs(KEY, "testhost", clock=lambda: self.clock[0])   # the restart reconciles the claim
         self.r.kinds = frozenset({"op"})
         self.frames = []
@@ -946,6 +953,52 @@ class Checks(unittest.TestCase):
         self.assertEqual([(m["body"]["rpc"], m["body"]["phase"], m["body"]["id"]) for m in got],
                          [(asked["nonce"], "end", cid)])
         self.assertNotIn("op_id", self.ledger()[asked["nonce"]], "and forgotten once it went")
+
+    def test_l_a_command_reconciled_by_a_restart_that_stops_again_still_sends_its_end(self):
+        """A8, the reconciling restart's own window: it stops again before
+        it writes the claim's outcome. The command's id is kept on the claim
+        before the claim is answered, so the claim stays open, and the next
+        restart reconciles it and sends the end."""
+        asked, cid = self.claimed_before_a_stop()
+        with mock.patch.object(rpcs.Ledger, "answer", side_effect=RuntimeError("a stop before the outcome is kept")):
+            with self.assertRaisesRegex(RuntimeError, "a stop"):
+                rpcs.Rpcs(KEY, "testhost", clock=lambda: self.clock[0])
+        e = self.ledger()[asked["nonce"]]
+        self.assertNotIn("outcome", e, "the claim is still open")
+        self.assertEqual((e.get("op_id"), e.get("op_name"), e.get("op_args")), (cid, "rename", "in-the-gap"),
+                         "the command's id kept before the claim was answered")
+        self.r = rpcs.Rpcs(KEY, "testhost", clock=lambda: self.clock[0])   # the second restart
+        self.r.kinds = frozenset({"op"})
+        self.frames = []
+        self.assertEqual(self.outcome(asked), {"state": "done", "result": {"queued": True, "route": "run", "id": cid}})
+        got = wait_for(lambda: self.op_messages())
+        self.assertTrue(got, "the end, read from the bridge's file")
+        self.assertEqual([(m["body"]["rpc"], m["body"]["phase"], m["body"]["id"]) for m in got],
+                         [(asked["nonce"], "end", cid)])
+
+    def test_l_a_command_whose_id_cannot_be_kept_is_not_answered_until_it_is(self):
+        """A reconciling restart that cannot keep the command's id leaves
+        the claim open rather than answer it with nothing left to follow its
+        run; once the ledger can be written, the claim is answered and the
+        end goes up."""
+        asked, cid = self.claimed_before_a_stop()
+        real = rpcs.Ledger.change
+        def refused(ledger, nonce, entry):
+            if "op_id" in entry and "outcome" not in entry:
+                raise OSError("disk full")
+            return real(ledger, nonce, entry)
+        with mock.patch.object(rpcs.Ledger, "change", refused):
+            self.r = rpcs.Rpcs(KEY, "testhost", clock=lambda: self.clock[0])
+        self.r.kinds = frozenset({"op"})
+        e = self.ledger()[asked["nonce"]]
+        self.assertNotIn("outcome", e, "not answered while its id is not kept")
+        self.assertNotIn("op_id", e)
+        self.clock[0] += rpcs.RECONCILE_EVERY + 1
+        self.frames = []
+        self.assertEqual(self.outcome(asked), {"state": "done", "result": {"queued": True, "route": "run", "id": cid}})
+        got = wait_for(lambda: self.op_messages())
+        self.assertEqual([(m["body"]["rpc"], m["body"]["phase"], m["body"]["id"]) for m in got],
+                         [(asked["nonce"], "end", cid)])
 
     def test_l_a_reload_from_the_cli_is_finished_by_the_child_that_replaces_its_bridge(self):
         """`sminos command <member> reload-plugins` sends no nonce: its start,
