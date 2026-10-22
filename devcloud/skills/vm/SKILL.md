@@ -72,7 +72,10 @@ A VM is deleted at its lease end with everything on it. Thirty minutes
 before, the session that created it gets a sminos message naming the
 repositories with unpushed work. `devcloud vm lease <name> <duration>`
 sets the end to now plus the duration (past the 72 h lifetime only with
-the person's yes). When the work is done, push it and `devcloud vm down
+the person's yes); `lease <name> keep --confirmed` removes the lease, with
+the person's yes as for `--keep`. A change between kept and leased makes
+the host rejoin the tailnet under the same name, and `lease` waits until
+it is back. When the work is done, push it and `devcloud vm down
 <name>`: it refuses (exit 5) while a checkout under `~/Developer/GitHub`
 has unpushed or uncommitted work, and `--force` discards that work, so
 use it only for work nobody needs. `devcloud vm ls` shows every VM, its

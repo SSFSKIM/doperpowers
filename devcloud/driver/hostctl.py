@@ -172,31 +172,97 @@ def lifecycle(ctx, host, user="root"):
 
 
 OVER_CAP = 4    # `lease set --cap`'s refusal (M2's host command, I16)
+KIND = "/var/lib/devcloud/tailnet.json"     # the node's kind as the host joined it (§4.1)
+
+
+@dataclasses.dataclass(frozen=True)
+class LeaseSet:
+    expires: int | None     # the lease in force; None: kept
+    rejoin: str | None      # the kind the node is rejoining as, when the lease changed it
 
 
 def lease_set(ctx, host, unix, cap=None):
-    """`devcloud lease set` under the host's lock; the lease it printed, which
-    is the one in force (§4.1). With `cap` the host itself refuses, under the
-    same lock as the write, a lease past the cap that is later than the one
-    in force: the check cannot be overtaken by another Mac's write."""
-    command = f"devcloud lease set {int(unix)}" + (f" --cap {int(cap)}" if cap is not None else "")
+    """`devcloud lease set` under the host's lock (`keep` for `unix` None);
+    the lease it printed, which is the one in force (§4.1), and the kind its
+    tailnet node is rejoining as when the write changed it. With `cap` the
+    host itself refuses, under the same lock as the write, a lease past the
+    cap that is later than the one in force: the check cannot be overtaken by
+    another Mac's write."""
+    command = f"devcloud lease set {'keep' if unix is None else int(unix)}" + (
+        f" --cap {int(cap)}" if cap is not None else "")
     result = ctx.remote.run(host.name, host.alias, command, timeout=60)
     if result.code == 3:
         raise DriverError(FAILED, f"{host.name}'s departure has started; its lease stays as it is")
     if result.code == OVER_CAP and cap is not None:
         raise DriverError(CAP, f"{host.name}'s lease would end past the lifetime cap, later than the lease in force")
-    if result.code != 0:
-        raise DriverError(FAILED, f"{host.name} did not set the lease (exit {result.code}); its label is untouched")
+    lines = (result.out or "").strip().splitlines()
+    rejoin = next((line.split(" ", 1)[1] for line in lines[:-1] if line.startswith("rejoin ")), None)
     try:
-        return int(result.out.strip().splitlines()[-1])
+        done = LeaseSet(None if lines[-1] == "keep" else int(lines[-1]), rejoin)
     except (ValueError, IndexError):
-        raise DriverError(FAILED, f"{host.name}'s `lease set` printed no lease") from None
+        done = None
+    # The rejoin it started can log the node out before SSH delivers the exit
+    # status: a complete answer, its rejoin line and then the lease, stands.
+    lost = result.code is None or result.code == 255 or result.code < 0
+    if result.code != 0 and not (lost and done is not None and rejoin is not None):
+        raise DriverError(FAILED, f"{host.name} did not set the lease (exit {result.code}); its label is untouched")
+    if done is None:
+        raise DriverError(FAILED, f"{host.name}'s `lease set` printed no lease")
+    return done
+
+
+REJOIN_WAIT = 10 * 60
+
+
+def a_node(kind):
+    """`an ephemeral node`, `a non-ephemeral node`."""
+    return f"{'an' if kind[:1] in 'aeiou' else 'a'} {kind} node"
+
+
+def wait_rejoin(ctx, host, kind, timeout=REJOIN_WAIT):
+    """The host back on the tailnet under its own name as a `kind` node,
+    after the rejoin its lease write started (§4.1): read over SSH by name
+    from the host's record of its join, so an answer is itself the proof that
+    the name reaches it. The rejoin cuts the connections it finds, so this
+    only reads."""
+    ephemeral = kind == "ephemeral"
+    deadline = ctx.clock() + timeout
+    while True:
+        result = ctx.remote.run(host.name, host.alias, f"cat {KIND} 2>/dev/null || echo '{{}}'", timeout=30)
+        try:
+            record = json.loads(result.out) if result.code == 0 else {}
+        except ValueError:
+            record = {}
+        if record.get("wanted") is ephemeral and record.get("state") == "failed":
+            raise DriverError(FAILED, f"{host.name} did not rejoin the tailnet as {a_node(kind)}: "
+                                      f"{record.get('detail') or 'no detail'}; its lease service tries again every "
+                                      "5 minutes")
+        if record.get("state") == "joined" and record.get("ephemeral") is ephemeral:
+            if record.get("name") not in (None, host.name):
+                raise DriverError(FAILED, f"{host.name} rejoined the tailnet as {a_node(kind)}, but under the name "
+                                          f"{record['name']}: {record.get('detail')}")
+            return record
+        if ctx.clock() >= deadline:
+            raise DriverError(FAILED, f"{host.name} did not come back on the tailnet as {a_node(kind)} within "
+                                      f"{timeout // 60} minutes; `devcloud status` and the devcloud-rejoin unit's "
+                                      "journal on it say why")
+        ctx.sleep(5)
+
+
+KEPT = "keep"     # host_expires of a host whose descriptor has no lease
 
 
 def host_expires(ctx, host):
+    """The lease in the host's descriptor; KEPT when it has none (`up --keep`
+    or `lease keep`, both confirmed); None when it could not be read."""
     result = ctx.remote.run(host.name, host.alias, f"sed -n 's/^DEVCLOUD_EXPIRES=//p' {BOOT_ENV}", timeout=30)
+    if result.code != 0:
+        return None
+    value = result.out.strip().strip('"')
+    if not value:
+        return KEPT
     try:
-        return int(result.out.strip().strip('"')) if result.code == 0 else None
+        return int(value)
     except ValueError:
         return None
 

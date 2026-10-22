@@ -50,6 +50,13 @@ class DecisionTest(unittest.TestCase):
         self.assertEqual(action.kind, "label")
         self.assertEqual(action.labels["devcloud-expires"], str(NOW + 5 * HOUR))
 
+    def test_lease_not_over_on_a_host_kept_since_relabels_it_kept(self):
+        # `lease keep --confirmed` removed the host's lease, but its label write failed.
+        action = self.decide(vm(NOW - 16 * MIN), hostctl.NOT_OVER, host_expires=hostctl.KEPT)
+        self.assertEqual(action.kind, "label")
+        self.assertEqual(action.labels, {"devcloud-lifetime": "keep", "devcloud-confirmed": "1"})
+        self.assertEqual(action.drop, ("devcloud-expires",))
+
     def test_held_is_labeled_and_kept_until_24h_then_deleted_naming_the_loss(self):
         action = self.decide(vm(NOW - HOUR), hostctl.HELD)
         self.assertEqual((action.kind, action.labels.get("devcloud-held")), ("label", "1"))
@@ -149,6 +156,21 @@ class RunTest(DriverBase):
         self.run_reaper()
         server = self.servers()["dc-a-0001"]
         self.assertEqual(server["labels"]["devcloud-expires"], str(NOW + 5 * HOUR), "label repaired")
+        self.assertNotIn("delete", self.ops())
+
+    def test_a_host_kept_since_is_relabeled_kept_and_a_failed_read_changes_nothing(self):
+        # `lease keep --confirmed` removed the host's lease; the label write after it failed.
+        self.add_server("dc-a-0001", vm_labels(expires=NOW - 20 * MIN))
+        self.depart_answers(code=3)
+        self.remote.on("DEVCLOUD_EXPIRES", code=255, times=1)
+        self.run_reaper()
+        self.assertEqual(self.servers()["dc-a-0001"]["labels"]["devcloud-expires"], str(NOW - 20 * MIN),
+                         "a lease that could not be read is not taken for none")
+        self.remote.on("DEVCLOUD_EXPIRES", out="")
+        self.run_reaper()
+        labels = self.servers()["dc-a-0001"]["labels"]
+        self.assertEqual((labels["devcloud-lifetime"], labels["devcloud-confirmed"]), ("keep", "1"))
+        self.assertNotIn("devcloud-expires", labels)
         self.assertNotIn("delete", self.ops())
 
     def test_fencing_an_extension_between_the_list_and_the_delete(self):

@@ -231,7 +231,7 @@ boot with the step named, and the next run starts again from the top:
 | 1 | `identity` | refuses `persistent` without systemd as PID 1; sets the host name (VM) or checks it (container); writes `SESSION_MIRROR_HOST`, and for a container a `DAEMON_BOOT_ID` of its own, fresh at each container start |
 | 2 | `seed` | activates the seed and takes an access token |
 | 3 | `bootstrap-secrets` | reads the GitHub token `DEVCLOUD_CONFIG_TOKEN_SECRET` names, and the Tailscale OAuth client `DEVCLOUD_TS_SECRET` names |
-| 4 | `tailnet-attach` | `join`, unless the node is already joined: `tailscale up --advertise-tags=tag:devcloud` with the OAuth client as its auth key (tagged, non-ephemeral, pre-authorized), handed over as `--auth-key=file:<root-only file>` and deleted after, never in an argument list; or, the fallback, with the auth key file, which is deleted |
+| 4 | `tailnet-attach` | `join`, unless the node is already joined: `tailscale up --advertise-tags=tag:devcloud` with the OAuth client as its auth key (tagged, pre-authorized; ephemeral while the host has a lease, and rejoined as the other kind when the lease changes, the VM driver's §4.1), handed over as `--auth-key=file:<root-only file>` and deleted after, never in an argument list; or, the fallback, with the auth key file, which is deleted |
 | 5 | `configuration` | as the user, clones or fetches and resets `~/.claude`; the token reaches git through a credential helper reading a root-owned file the user's group can read, deleted after the fetch — never a URL or `.git/config`; then reads the profile |
 | 6 | `tailnet-check` | the gateway named in the profile's managed settings answers |
 | 7 | `secrets` | materializes `secrets.toml` |
@@ -445,7 +445,7 @@ refuses with exit 6: hosts never drive. A session learns it from
     devcloud vm adopt <user@address> [--label L] [--project …]... [--ttl D] [--confirmed] [--dry-run]
     devcloud vm ls [--json]
     devcloud vm ssh <name> [--root] [-- command...]
-    devcloud vm lease <name> <duration> [--confirmed]
+    devcloud vm lease <name> <duration|keep> [--confirmed]
     devcloud vm down <name> [--force]
     devcloud vm reap [--install]
     devcloud vm provider register <account> --confirmed | provider test <account>
@@ -521,7 +521,12 @@ each quoted. A host whose departure has started is refused except to root.
 lock), then the provider label with the value the host printed; past the
 lifetime cap it needs `--confirmed` unless it shortens the lease the host
 itself holds, which the host decides under its lock with the write
-(`devcloud lease set <unix> --cap <unix>`, exit 4). **`down`**
+(`devcloud lease set <unix> --cap <unix>`, exit 4). `lease <name> keep
+--confirmed` removes the lease. A change between kept and leased makes the
+host's tailnet node rejoin as the other kind, ephemeral while leased, under
+the same name (`devcloud-rejoin`; a non-ephemeral node is removed through the
+Tailscale API, so the OAuth client needs the `devices:core` scope), and
+`lease` waits for it to come back. **`down`**
 refuses unpushed or uncommitted work under the user's `~/Developer/GitHub`
 (exit 5; `--force` proceeds), departs the host (`devcloud depart --force
 --no-poweroff`, `--no-hold` with `--force`) and deletes it after rechecking

@@ -105,26 +105,35 @@ def ssh(ctx, name, root, command):
 
 
 def lease(ctx, name, text, confirmed):
-    """The lease end set to now + duration: the host first (under its lock),
-    then the label with the lease the host printed back (§4.1)."""
+    """The lease end set to now + duration, or removed (`keep`, only with the
+    person's yes): the host first (under its lock), then the label with the
+    lease the host printed back (§4.1). When that changed the kind of the
+    host's tailnet node, the host rejoins as the other kind under the same
+    name, and the driver waits for it to come back."""
+    keep = text == "keep"
+    if keep and not confirmed:
+        raise DriverError(CAP, f"keeping {name} without a lease needs the person's yes: ask them, then pass "
+                               "--confirmed")
     try:
-        seconds = duration(text)
+        seconds = None if keep else duration(text)
     except ValueError as error:
         raise DriverError(USAGE, str(error)) from None
     now = int(ctx.clock())
-    wanted = now + seconds
+    wanted = None if keep else now + seconds
     lease_max = ctx.profile.caps.lease_max
     record = adopt.load(ctx, name)
     if record is not None:
         try:
-            printed = adopt.lease(ctx, record, wanted, confirmed)
+            done = adopt.lease(ctx, record, wanted, confirmed)
         except DriverError as error:
             if error.code != CAP:
                 raise
             raise DriverError(CAP, f"{name} would stay adopted {format_duration(wanted - record.created)}, over the "
                                    f"lifetime cap ({format_duration(lease_max)}), and its lease in force ends sooner: "
                                    "ask the person, then pass --confirmed") from None
-        ctx.say(f"{name} lease ends {iso(printed)} ({_relative(printed, now)}); then it releases itself")
+        ctx.say(f"{name} is kept, without a lease" if done.expires is None else
+                f"{name} lease ends {iso(done.expires)} ({_relative(done.expires, now)}); then it releases itself")
+        _follow(ctx, record.host, done)
         return 0
     entry = ctx.find(name)
     vm = entry.vm
@@ -133,16 +142,33 @@ def lease(ctx, name, text, confirmed):
     # the write, so nothing read here can be overtaken.
     cap = None if confirmed else vm["created"] + lease_max
     try:
-        printed = hostctl.lease_set(ctx, entry.host, wanted, cap=cap)
+        done = hostctl.lease_set(ctx, entry.host, wanted, cap=cap)
     except DriverError as error:
         if error.code != CAP:
             raise
         raise DriverError(CAP, f"{name} would live {format_duration(wanted - vm['created'])} from its creation, over "
                                f"the lifetime cap ({format_duration(lease_max)}), and its lease in force ends "
                                "sooner: ask the person, then pass --confirmed") from None
-    entry.client.set_labels(vm["id"], {"devcloud-expires": str(printed), "devcloud-lifetime": "ttl"}, merge=True)
-    ctx.say(f"{name} lease ends {iso(printed)} ({_relative(printed, now)})")
+    if done.expires is None:
+        # Kept with the person's yes, as `up --keep --confirmed` labels it.
+        entry.client.set_labels(vm["id"], {"devcloud-lifetime": "keep", "devcloud-confirmed": "1"}, merge=True,
+                                drop=("devcloud-expires",))
+        ctx.say(f"{name} is kept, without a lease")
+    else:
+        entry.client.set_labels(vm["id"], {"devcloud-expires": str(done.expires), "devcloud-lifetime": "ttl"},
+                                merge=True)
+        ctx.say(f"{name} lease ends {iso(done.expires)} ({_relative(done.expires, now)})")
+    _follow(ctx, entry.host, done)
     return 0
+
+
+def _follow(ctx, host, done):
+    """The wait for a rejoin the lease write started (§4.1)."""
+    if done.rejoin is None:
+        return
+    ctx.say(f"{host.name} is rejoining the tailnet as {hostctl.a_node(done.rejoin)}; waiting for it")
+    hostctl.wait_rejoin(ctx, host, done.rejoin)
+    ctx.say(f"{host.name} is back on the tailnet as {hostctl.a_node(done.rejoin)}, under the same name")
 
 
 def down(ctx, name, force):

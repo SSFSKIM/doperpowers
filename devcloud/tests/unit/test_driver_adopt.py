@@ -117,8 +117,16 @@ class Target(FakeRemote):
         if "devcloud unpushed" in command:
             return Result(5, "repo\tahead 1\n", "") if m["unpushed"] else Result(0, "", "")
         if "devcloud lease set" in command:
-            m["lease"] = int(command.split()[3])
-            return Result(0, f"{m['lease']}\n", "")
+            value = command.split()[3]
+            m["lease"] = None if value == "keep" else int(value)
+            # The node's kind follows the lease (§4.1): a change rejoins it, which the host names first.
+            rejoin = m.get("ephemeral") is not None and m["ephemeral"] != (m["lease"] is not None)
+            m["ephemeral"] = m["lease"] is not None if m.get("ephemeral") is not None else None
+            said = f"rejoin {'ephemeral' if m['ephemeral'] else 'non-ephemeral'}\n" if rejoin else ""
+            return Result(0, said + f"{value}\n", "")
+        if "tailnet.json" in command:
+            return Result(0, json.dumps({"ephemeral": m.get("ephemeral"), "wanted": m.get("ephemeral"),
+                                         "state": "joined", "name": NAME}), "")
         if "credentials.ledger" in command:
             return Result(0 if m["released"] else 1, "", "")
         return Result(0, "", "")
@@ -408,6 +416,29 @@ class LsLeaseTest(AdoptBase):
         record = self.record()
         self.assertEqual((record["expires"], record["lifetime"]), (NOW + 3 * 3600, "ttl"))
         self.assertEqual(self.ops(), [], "no provider call, no label")
+
+    def test_a_kept_adoption_given_a_lease_waits_for_its_ephemeral_rejoin(self):
+        self.write_record("booted", ready=NOW - 60, lifetime="keep", expires=None)
+        self.remote.m.update(tailnet=True, ephemeral=False)
+        self.assertEqual(ops.lease(self.ctx, NAME, "3h", confirmed=False), 0)
+        self.assertTrue(self.remote.m["ephemeral"])
+        self.assertEqual(self.remote.targets_of("tailnet.json"), [NAME])
+        self.assertIn("back on the tailnet as an ephemeral node", self.out.getvalue())
+        self.assertEqual(self.record()["lifetime"], "ttl")
+
+    def test_keep_on_an_adoption_needs_the_persons_yes_and_rejoins_non_ephemeral(self):
+        self.write_record("booted", ready=NOW - 60, lifetime="ttl", expires=NOW + 3600)
+        self.remote.m.update(tailnet=True, ephemeral=True, lease=NOW + 3600)
+        with self.assertRaises(DriverError) as caught:
+            ops.lease(self.ctx, NAME, "keep", confirmed=False)
+        self.assertEqual(caught.exception.code, 4)
+        self.assertEqual(self.remote.commands("lease set"), [])
+        self.assertEqual(ops.lease(self.ctx, NAME, "keep", confirmed=True), 0)
+        self.assertEqual(self.remote.commands("lease set"), ["devcloud lease set keep"])
+        record = self.record()
+        self.assertEqual((record["expires"], record["lifetime"]), (None, "keep"))
+        self.assertFalse(self.remote.m["ephemeral"])
+        self.assertIn("back on the tailnet as a non-ephemeral node", self.out.getvalue())
 
     def test_ssh_reaches_an_adopted_machine_over_the_tailnet(self):
         self.write_record("booted", ready=NOW - 60)

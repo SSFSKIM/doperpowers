@@ -202,6 +202,14 @@ class GateTest(DriverBase):
         labels = self.servers()["dc-a-0001"]["labels"]
         self.assertEqual((labels["devcloud-expires"], labels["devcloud-held"]), ("5", "1"))
 
+    def test_merge_drops_the_keys_named(self):
+        sid = self.add_server("dc-a-0001", vm_labels(expires=1))
+        self.client().set_labels(sid, {"devcloud-lifetime": "keep"}, merge=True, drop=("devcloud-expires",))
+        labels = self.servers()["dc-a-0001"]["labels"]
+        self.assertEqual(labels["devcloud-lifetime"], "keep")
+        self.assertNotIn("devcloud-expires", labels)
+        self.assertEqual(labels["devcloud"], "vm")
+
     def test_delete_refuses_an_unlabeled_target_and_one_its_fence_rejects(self):
         sid = self.add_server("dc-a-0001", vm_labels(expires=1))
         with self.assertRaises(NotOwned):

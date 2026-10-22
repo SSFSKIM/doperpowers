@@ -92,6 +92,14 @@ class SetExpiresTest(unittest.TestCase):
         self.assertEqual(after.count("DEVCLOUD_EXPIRES"), 1)
         self.assertEqual(descriptor.parse(after).expires, 3)
 
+    def test_none_removes_the_lease_and_keeps_every_other_line(self):
+        before = "# made by the driver\n" + text(DEVCLOUD_EXPIRES="1792000000") + "export DEVCLOUD_EXPIRES=2\n"
+        after = descriptor.set_expires(before, None)
+        self.assertNotIn("DEVCLOUD_EXPIRES", after)
+        self.assertEqual(after, "# made by the driver\n" + text())
+        self.assertFalse(descriptor.parse(after).leased)
+        self.assertEqual(descriptor.set_expires(text(), None), text())
+
 
 if __name__ == "__main__":
     unittest.main()

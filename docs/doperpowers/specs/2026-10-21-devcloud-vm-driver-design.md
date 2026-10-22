@@ -89,6 +89,15 @@ desk no longer counts it.
   - One finding is deferred (keep→ttl tailnet identity; Decision Log).
   - CI was green on bb8e39bf.
   - H6 was still open at 22:02Z.
+- [x] (2026-10-22 02:17Z) Board #115, the deferred finding: the node's kind follows the lease
+  (§4.1). Worked in order on branch `devcloud-lease-rejoin`. Steps:
+  - The logout measurement (Surprises).
+  - The fork (Decision Log). The person chose option A, and the main session replaced the OAuth
+    client.
+  - The build: 4fd49632..0020899c, then the review's fix wave.
+  - Live on GCE: the approved keep VM through keep→lease→keep→lease and `down`, and the approved
+    adoption through keep→lease and its timed release, with acceptance 7's checks.
+  - Report: `docs/doperpowers/plans/2026-10-22-devcloud-lease-rejoin-report.md`.
 
 Human steps this initiative needs. The executor prepares each (the exact command, the page, what to
 check) and escalates it at the milestone named; the person runs it when an automated attempt is
@@ -105,6 +114,8 @@ refused or it needs a browser or their judgment.
 | H8 | The Hetzner limits (6 primary IPs, 16 shared vCPU) | the person | answered at M1: GCE becomes the default account, no limit request (Decision Log) |
 | H9 | Optional: raising the GCE project's E2 vCPU quotas in us-west1 (E2 24 → 48, all regions 32 → 48), so the caps' worst case fits | the person | declined (2026-10-21): requests over the quota are refused with exit 3 |
 | H7 | Approving the test provider before it first runs with a credential (`provider register --confirmed`) | the person | M5, and again for M6's acceptance 13: approved by the person through the main session (2026-10-21) |
+| H10 | Board #115's live test: one `up --keep --confirmed` GCE VM (about $0.11/h), and one adoption of a hand-made e2-small with `adopt --confirmed`, released by its lease service; both deleted the same day | the person | approved by the person through the main session, 2026-10-22 ("Approve (Recommended)", each); used once each, deleted 01:50Z and 02:16Z |
+| H11 | A Tailscale OAuth client with `auth_keys` and `devices:core` on `tag:devcloud` (§4.1's node removal), as a new version of the hosts' Secret Manager secret; the old, broader client revoked | the person, carried out by the main session | done 2026-10-22 |
 
 ## Terms
 
@@ -410,6 +421,48 @@ A descriptor with `DEVCLOUD_EXPIRES` makes the boot do three more things:
   server removes an ephemeral node about an hour after it goes offline (70 minutes measured, M1), and at once on `tailscale
   logout`, so a VM that dies without departing still leaves the tailnet (board #90). Without a lease
   the node is non-ephemeral, as the parent built it.
+
+  **The node's kind follows the lease at every change**, not only at the first join (board #115, the
+  person's decision, Decision Log 2026-10-22). A node's kind is fixed when it joins, so a change of
+  kind is a new node. The new node keeps the host's name only if the old node is gone first:
+  Tailscale names a new node `<name>-1` while another node of that name is listed. A logout removes
+  an ephemeral node at once. It leaves a non-ephemeral one listed, offline and expired, under its
+  name, and nothing removes it after that (measured 2026-10-22). So that node is removed through the
+  Tailscale API with the same OAuth client, which must hold the `devices:core` scope; the tailnet IP
+  may change, and nothing depends on it. No status field shows a node's kind, so the join records
+  the kind it asked for in `/var/lib/devcloud/tailnet.json`, with the name the tailnet gave the node.
+
+  - A lease write (`devcloud lease set <unix>`, or `lease set keep`, which removes the lease) that
+    leaves the recorded kind behind the lease records the rejoin. Then it starts `devcloud rejoin`
+    as the transient unit `devcloud-rejoin`, since the rejoin cuts the SSH connection that asked for
+    the write, and prints `rejoin <kind>` before the lease. The unit waits for the write's lock.
+  - `devcloud rejoin` holds the lifecycle lock. It refuses once the departure has started (exit 3),
+    and leaves the kind to a boot that is under way. It fetches the OAuth client. For a node that
+    is not ephemeral it checks the API token's scope before anything changes, and a refusal there
+    leaves the node as it was. The rejoin then runs in order:
+    1. Record the old node's id as pending removal.
+    2. Log out.
+    3. Remove every pending node through the API. A node already gone counts as removed.
+    4. `tailscale up` as the wanted kind.
+
+    The pending ids stay in the record until their removal succeeds, so a run stopped between the
+    logout and the removal leaves the removal to the next join. Any `up` with the OAuth client
+    removes the pending nodes first. A join that fails after the logout is tried three times. A
+    removal that keeps failing still joins, as `<name>-1`, records that name and keeps the id, so
+    the host stays reachable and the cause is named. "A node" is any node the daemon holds, Running
+    or not: a Stopped node of the other kind leaves too, and a status that cannot be read refuses
+    the rejoin.
+  - The lease service, on every persistent host and not only on a leased one, starts the rejoin
+    again while the recorded kind is behind (a unit that did not start, a failed or refused rejoin).
+    The boot's tailnet attach rejoins a joined node whose kind is behind in the same way, and a
+    refusal there does not fail the boot.
+  - The driver's `devcloud vm lease`, on a `rejoin` line, waits up to 10 minutes. It reads the
+    record over SSH by the host's name until the node is joined as the wanted kind. The reading
+    itself shows that the name reaches the host. A recorded failure, or another name, is exit 1.
+    The lease and its label stay set, and the lease service tries again.
+
+  A node joined with the fallback auth key file has no kind to follow: the file is deleted once
+  used.
 - **Run the lease service**, `devcloud-lease` (a timer every 5 minutes, in the parent's service list,
   I7): at 30 minutes before the lease end (or at once, when less remains when the lease is set) it
   sends one warning; at the lease end it starts the departure (the release, on an adopted machine);
@@ -489,7 +542,9 @@ comes from the descriptor because the driver knows it for certain; the metadata 
     Exit 0, or the connection dropping after `devcloud-depart: ready-to-logout` (§4.2): delete. A
     drop before that line: the outcome is unknown, and the VM is skipped this run. Exit 3, "lease
     not over": the label was stale (a lease write reached the host but not the label), so the reaper
-    sets the label to the host's value and skips the VM. Exit 4, held:
+    sets the label to the host's value and skips the VM. A host with no lease at all (kept by
+    `lease <n> keep --confirmed`, board #115) is relabeled kept instead: `devcloud-lifetime=keep`
+    and `devcloud-confirmed=1`, with `devcloud-expires` dropped. Exit 4, held:
     it labels the VM `devcloud-held=1` and leaves it, until 24 hours past its lease end; then it
     deletes it, with a `reap.log` line naming the unshipped loss.
   - Unreachable: the label can trail the host's lease — two Macs renewing at once whose label
@@ -665,7 +720,9 @@ user's `authorized_keys` to `/var/lib/devcloud-adopt/` (outside `/var/lib/devclo
 machine and runs `setup.sh` (which renames the machine to the `dc-` name and creates the user);
 delivers the seed; writes the descriptor with `DEVCLOUD_ADOPTED=1`; and starts the boot. Lifetime
 defaults to `keep`; `--ttl` gives it a lease. `devcloud vm lease` on an adopted machine writes
-`DEVCLOUD_EXPIRES` on the host only (under its lock; there are no labels) and updates the record;
+`DEVCLOUD_EXPIRES` on the host only (under its lock; there are no labels) and updates the record, and
+`lease <name> keep --confirmed` removes it; either way the node rejoins as the kind its lease wants
+(§4.1);
 at the lease end the host's lease service runs the release. `devcloud vm down <name>` runs the
 release over the tailnet when the machine is reachable, else over the recorded public address; the
 record is removed once the release is verified, over the public address as the original login user.
@@ -910,9 +967,14 @@ with doperpowers:writing-skills and sanity-tested in a session before it ships.
 - Sandbox containers created by the driver on a host (the parent's sandbox role); `adopt` and VMs
   only. Sandboxes never enroll at the desk, which is where this initiative's value lies.
 - A budget in money: the caps bound time, count, size and disk; the provider's billing is the record.
-- Removing kept tailnet nodes or desk machines from outside the machine: the Tailscale OAuth client
-  has only the auth-keys scope, and the desk offers no browserless admin revoke; ephemeral nodes cover
-  throwaway machines on the tailnet; at the desk, `hub leave` is the only clean removal (§10).
+- Removing tailnet nodes or desk machines from outside the machine. The host's own rejoin removes its
+  old node through the Tailscale API (§4.1, board #115), but nothing removes the node of a kept host
+  that is gone, and the desk offers no browserless admin revoke. Ephemeral nodes cover throwaway
+  machines on the tailnet; at the desk, `hub leave` is the only clean removal (§10).
+- The OAuth client's scopes. Since 2026-10-22 the client holds `auth_keys` and `devices:core`, both on
+  `tag:devcloud`, and nothing else (Decision Log). This line first said the client had only the
+  auth-keys scope, but a token read on 2026-10-22 showed `devices:core:read devices:posture_attributes
+  policy_file dns auth_keys users`. That client was revoked the same day.
 - Workload identity federation for Hetzner hosts (a keyless seed off GCE), deferred by the parent.
 
 ## Execution
@@ -1155,7 +1217,9 @@ Decisions:
   checked against the lifetime cap from the VM's creation time). It writes the host first, over the
   tailnet (`devcloud lease set` under the host's lock), then the label (`set-labels`) with the lease
   `lease set` printed back, not the one requested. A host that refuses (departure started) or does
-  not answer → exit 1, label untouched.
+  not answer → exit 1, label untouched. `lease <name> keep` (board #115) needs `--confirmed`, as
+  `--keep` does, and relabels the VM `keep` and confirmed, its `devcloud-expires` dropped. When the
+  host printed `rejoin <kind>`, the driver waits for the rejoin (§4.1).
 - The reaper's decisions are a pure function of (resources with labels and states, the hosts'
   answers, now) →
   actions, table-tested; the side effects are a thin layer over the protocol client.
@@ -1516,7 +1580,7 @@ commit 5168e433 on its branch, 2026-10-21):
     devcloud vm adopt <user@address> [--label L] [--project …]... [--ttl D] [--confirmed] [--dry-run]
     devcloud vm ls [--json]
     devcloud vm ssh <name> [--root] [-- command...]      # refused (exit 1) once the host's departure started, unless --root
-    devcloud vm lease <name> <duration> [--confirmed]
+    devcloud vm lease <name> <duration|keep> [--confirmed]      # keep: always --confirmed; waits for a rejoin (§4.1)
     devcloud vm down <name> [--force]
     devcloud vm image build [--account A] | image ls
     devcloud vm reap [--install]
@@ -1532,9 +1596,12 @@ commit 5168e433 on its branch, 2026-10-21):
                                                                         # on a host, root, under the lifecycle lock
     depart, release: 0 done (or already done) · 1 failed · 2 usage · 3 lease not over (without --force)
                      4 held (ship failed, or sessions kept starting) · stdout `devcloud-depart: ready-to-logout` before the logout
-    lease set <unix> [--cap <unix>]: 0 set, the resulting lease printed · 1 failed · 2 usage · 3 the departure has started
+    lease set <unix> [--cap <unix>] | lease set keep: 0 set, the resulting lease printed (`keep` for none), after
+                     `rejoin <kind>` when the node's kind must change · 1 failed · 2 usage · 3 the departure has started
                      4 over the cap: the value is past --cap and later than the lease in force (decided under the lock)
-    the lease service starts depart and release as transient units (`devcloud-depart`, `devcloud-release`, --collect)
+    rejoin: 0 rejoined, or nothing to do · 1 failed (recorded in /var/lib/devcloud/tailnet.json) · 3 the departure has started
+    the lease service starts depart and release as transient units (`devcloud-depart`, `devcloud-release`, --collect),
+    and the rejoin as `devcloud-rejoin` while the node's kind is behind its lease
 
 ## Surprises & Discoveries
 
@@ -1760,6 +1827,32 @@ commit 5168e433 on its branch, 2026-10-21):
   - The peak E2 use was 22 of the quota's 24 vCPU.
   - Everything was deleted by 19:40:45Z.
   Evidence: the M6 report's acceptance table and deletion list.
+- Observation (board #115, 2026-10-22): `tailscale logout` does not remove a non-ephemeral tagged
+  node. On a throwaway GCE VM, joined first as ephemeral:
+  - An ephemeral logout followed by a non-ephemeral `up` gave a new node under the same name, as in M1.
+  - The non-ephemeral node's logout left it in every peer's status, offline and `Expired`, under its
+    name; the API still listed it.
+  - The next `up` (ephemeral) joined as `<name>-1`.
+  - `tailscale up --force-reauth` with a key of the other kind also makes a new node (`<name>-2`) and
+    leaves the old one listed: a node's kind cannot change in place.
+  - The API's device record has `isEphemeral: true` for an ephemeral node and omits it otherwise; it
+    is the one place a node's kind shows.
+  - The OAuth client's token reported the scopes `devices:core:read devices:posture_attributes
+    policy_file dns auth_keys users`: it could read the devices but not remove one, and it could
+    rewrite the tailnet's policy (§ Out of scope).
+  Evidence: the #115 report's measurement log (01:08–01:14Z), the MacBook's `tailscale status --json`
+  each 10 s, and the API's device list read from the VM.
+- Observation (board #115, live, 2026-10-22): with the new client, every conversion kept the name.
+  - The kept VM: keep→2h rejoined ephemeral in 15 s, the old node removed by the host through the
+    API. `keep --confirmed` rejoined non-ephemeral in 15 s, and `keep` without it exited 4. 2h
+    again, then `down`: the ephemeral node left at the departure's logout.
+  - The adoption: keep→20m rejoined ephemeral in 8 s, and the creator's warning arrived. The lease
+    service released it at the lease end, and its node left the tailnet at once. Acceptance 7's
+    give-back checks passed, including a new login as the original user after a reset.
+  - After every rejoin, `devcloud vm ssh <n> -- true` worked by name, and the API's `isEphemeral`
+    matched the lease.
+  - A host now joins only through the new client: the API's `oauthClientId` named it on both.
+  Evidence: the #115 report's live table.
 
 ## Decision Log
 
@@ -2320,6 +2413,73 @@ commit 5168e433 on its branch, 2026-10-21):
   product choice (PR, Unresolved Review Findings).
   Date/Author: 2026-10-21, the fix wave and the controller, after the review at the high rung.
 
+- Decision (board #115): a host's tailnet node kind follows its lease at every change. When a kept
+  machine is given a lease, it rejoins the tailnet as an ephemeral node; when a leased one is kept
+  (`lease <n> keep --confirmed`, new), it rejoins as a non-ephemeral one. Both keep the name (§4.1).
+  - The direction is the person's decision (2026-10-21). They rejected refusing the conversion and
+    leaving the node as it was.
+  - Rationale: a crash or a forced delete after a keep→lease conversion left an offline node that
+    nothing expired. The reverse left a long-lived host on an ephemeral node, removed by an outage.
+  Date/Author: 2026-10-21, the person; carried out 2026-10-22 by the #115 executor.
+- Decision (board #115): the old non-ephemeral node is removed through the Tailscale API by the host
+  itself, with the OAuth client it joins with. The client needs the `devices:core` scope. A logout
+  does not remove such a node (Surprises, 2026-10-22), and the new node is named `<name>-1` while
+  the old one is listed.
+  - Rationale: the host holds the client and knows its own node id. The removal comes after the
+    logout, so `tailscale up` starts from a clean local state. The token's scope is checked before
+    the logout, so a client that may not remove nodes leaves the host joined as it was, rather than
+    off the tailnet or renamed.
+  - Rejected:
+    - Renaming the old node aside before its logout: it strands an expired node forever, which is
+      the defect itself.
+    - The driver removing the node: a lease-service retry has no driver.
+    - Every node ephemeral, kept hosts too: no deletion would be needed, but it contradicts the
+      person's design of non-ephemeral kept nodes, and a kept host would lose its node after an hour
+      offline.
+  - The person chose this (2026-10-22, through the main session). They knew that a `devices:core`
+    credential can probably remove any device in the tailnet, not only `tag:devcloud` ones: the
+    scope's tag selection bounds what it may tag, and the API's device removal names no tag limit.
+    Their guard for agents is a soft-deny auto mode rule in the profile: no tailnet device is
+    deleted without the user's authorization of that device. A host removing its own previous node
+    is the host's code, not an agent's action.
+  - The client was replaced the same day by one with `auth_keys` and `devices:core` on
+    `tag:devcloud` alone, as version 2 of the same Secret Manager secret. The old, broader client
+    (policy file, DNS, users) was revoked, and version 1 disabled.
+  Date/Author: 2026-10-22, the #115 executor proposed it; the person chose it through the main session.
+- Decision (board #115): the host records the kind it joined as (`/var/lib/devcloud/tailnet.json`),
+  because no status field shows it.
+  - An unrecorded kind counts as behind. On the first change it is removed like a non-ephemeral
+    node, which is safe for either kind.
+  - A rejoin under another name (a removal that kept failing) records the kind as followed, so the
+    lease service does not make one more node on every run; the driver names it as a failure. The
+    old node's id stays pending, and later runs retry only its removal, without leaving the node
+    of the right kind. The node keeps `<name>-1` once its removal succeeds; reclaiming the name
+    would take one more rejoin (residue).
+  - The old node's id is recorded before the logout and removed before the next `up`, by any run,
+    not held in the rejoin's memory. From the first review at the high rung: a run stopped between
+    the logout and the removal stranded the node under the name, and gave the new one `<name>-1`.
+  - Two more from the same review:
+    - The driver accepts a `lease set` answer that holds a `rejoin` line and the lease even when
+      the connection dropped before the exit status: the rejoin may cut it that early.
+    - The reaper relabels kept a VM whose host has no lease. A failed label write after
+      `lease keep` would otherwise leave stale `ttl` labels, which the reaper never repairs, and
+      the kept VM would be deleted later.
+  - Two from the second round:
+    - A removal never touches the node the daemon holds. A pending id equal to the held node is
+      dropped without a delete, and nothing is removed while the status cannot be read. Otherwise
+      a logout that failed without effect, followed by a reversed lease, deleted the live node.
+    - A boot that could not read the status before its `up` records the kind as unknown, so it
+      stays behind until a rejoin settles it. Otherwise an `up` that resumed a held node of the
+      other kind was recorded as the wanted kind, and nothing corrected it.
+    - Live, a logged-out daemon reports an empty `Self.ID`, so the guard does not cancel a
+      removal after a successful logout.
+  - `lease set` records `rejoining` before it starts the unit, so the driver never reads an earlier
+    rejoin's end as this one's.
+  - The rejoin takes the lifecycle lock, then the run lock without waiting: a boot that holds the
+    run lock rejoins in its own tailnet attach, and waiting there could deadlock with an adopted
+    machine's boot, which takes the lifecycle lock inside the run lock.
+  Date/Author: 2026-10-22, the #115 executor.
+
 ## Outcomes & Retrospective
 
 **Against the purpose.** The purpose holds as written: a session can now get a cloud machine with
@@ -2366,6 +2526,15 @@ its project already prepared, put work on it, and have it go away on time. It wa
 - **Human steps cost the most wall-clock time.** Most delays were the gateway outage, the network
   fix, and approvals relayed through the design session. Asking for them before the milestone
   reached them (H6, H7) kept the build moving.
+
+**Board #115 (2026-10-22).** The deferred keep→ttl finding is closed: a host's node kind now follows
+its lease both ways, under the same name, and it was shown live on a kept VM and on an adoption.
+Measuring first changed the design: `tailscale logout` leaves a non-ephemeral node listed. A
+rejoin therefore has to remove that node through the API, and the remover is the host itself,
+which needed a client with `devices:core`. The measurement also showed the old client was far
+broader than the spec said; it was replaced and revoked. The lesson generalizes: a design that leans
+on a third-party behavior ("logout removes the node") holds only for the case that was measured.
+M1 measured it for ephemeral nodes alone.
 
 **Left open:** H6 (the parent's `devcloud-m5` at the desk) is the person's step. The deferred items
 and residue are in `docs/doperpowers/TECH-DEBT.md`, under "the devcloud VM driver". After merge, the

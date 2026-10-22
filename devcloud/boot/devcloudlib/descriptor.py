@@ -183,9 +183,10 @@ def _lifecycle(values, role, tailscale):
 
 def set_expires(text, expires):
     """The descriptor's text with DEVCLOUD_EXPIRES set to `expires`, every
-    other line as it was; the line is added when the descriptor had none."""
+    other line as it was; the line is added when the descriptor had none.
+    `expires` None removes the lease (the host is kept)."""
     lines = text.splitlines(keepends=True)
-    line = f"DEVCLOUD_EXPIRES={int(expires)}\n"
+    line = f"DEVCLOUD_EXPIRES={int(expires)}\n" if expires is not None else ""
     out, done = [], False
     for each in lines:
         if re.match(r"\s*(?:export\s+)?DEVCLOUD_EXPIRES=", each):
@@ -194,7 +195,7 @@ def set_expires(text, expires):
                 done = True
             continue
         out.append(each)
-    if not done:
+    if not done and line:
         if out and not out[-1].endswith("\n"):
             out[-1] += "\n"
         out.append(line)

@@ -20,7 +20,7 @@ import subprocess
 import sys
 import time
 
-from . import descriptor, envfile, proc, sminos_host, status
+from . import descriptor, envfile, nodekind, proc, sminos_host, status
 from .proc import StepError
 
 LOCK = pathlib.Path("/run/devcloud/lifecycle.lock")
@@ -90,7 +90,10 @@ OVER_CAP = 4    # `lease set --cap`: past the cap and later than the lease in fo
 
 def parse_set(args):
     """`lease set`'s arguments: `<unix> [--cap <unix>]` → (value, cap), or
-    None when they are not that."""
+    `keep` → (None, None) (no lease: the driver passes it only with the
+    person's yes, so it takes no cap); None when they are not that."""
+    if args == ["keep"]:
+        return None, None
     if len(args) not in (1, 3) or not all(a.isdigit() for a in args[::2]):
         return None
     if len(args) == 3 and args[1] != "--cap":
@@ -99,9 +102,12 @@ def parse_set(args):
 
 
 def set_lease(value, cap=None, desc_path=descriptor.PATH, lock_path=None, status_path=None, out=_stderr,
-              allow_http=False):
-    """`devcloud lease set <unix> [--cap <unix>]`: rewrites DEVCLOUD_EXPIRES
-    under the lock and prints the lease read back under it. Exit 3 once the
+              allow_http=False, kind_path=None, start=None):
+    """`devcloud lease set <unix|keep> [--cap <unix>]`: rewrites
+    DEVCLOUD_EXPIRES (`keep`, None: removes it) under the lock and prints the
+    lease read back under it, `keep` for none. When the tailnet node's kind
+    no longer follows the lease, it starts the rejoin as a transient unit,
+    which waits for this lock, and first prints `rejoin <kind>` (§4.1). Exit 3 once the
     departure has started (its sessions are already ended); 1 when the
     descriptor cannot be read or would not parse. `--cap` is the driver's
     lifetime cap for a request the person did not confirm: past it, the
@@ -123,14 +129,26 @@ def set_lease(value, cap=None, desc_path=descriptor.PATH, lock_path=None, status
         except (OSError, descriptor.DescriptorError) as error:
             out(f"devcloud lease set: {error}")
             return 1
-        if cap is not None and value > cap and (current is None or value > current):
+        if cap is not None and value is not None and value > cap and (current is None or value > current):
             in_force = iso(current) if current is not None else "none (keep)"
             out(f"devcloud lease set: {iso(value)} is past the lifetime cap ({iso(cap)}) and later than the lease "
                 f"in force ({in_force}); the lease stays as it is")
             return OVER_CAP
         mode = path.stat().st_mode & 0o7777
         proc.write_file(path, new, mode=mode, dir_mode=0o755)
-        print(descriptor.load(path, allow_http=allow_http).expires, flush=True)
+        d = descriptor.load(path, allow_http=allow_http)
+        if nodekind.behind(d, kind_path):
+            # Said before the unit runs, so a reader never takes an earlier rejoin's end for this one's.
+            was = nodekind.recorded(kind_path)
+            nodekind.record(was.get("ephemeral"), nodekind.wanted(d), nodekind.REJOINING,
+                            f"the lease changed; {nodekind.UNIT} rejoins as {nodekind.name(nodekind.wanted(d))}",
+                            name=was.get("name"), path=kind_path)
+            try:
+                (start or start_transient)(nodekind.UNIT, [DEVCLOUD, "rejoin"], what="so the tailnet node follows its lease")
+            except StepError as error:
+                out(f"devcloud lease set: the rejoin did not start ({error}); the lease service starts it")
+            print(f"rejoin {nodekind.name(nodekind.wanted(d))}", flush=True)
+        print(d.expires if d.leased else "keep", flush=True)
         return 0
 
 
@@ -157,20 +175,24 @@ def unit_active(unit, run=subprocess.run):
 PASSED_ENV = ("DEVCLOUD_ALLOW_HTTP", "DEVCLOUD_SM_ENDPOINT", "GCE_METADATA_HOST")
 
 
-def start_transient(unit, argv, run=proc.run, environ=os.environ):
-    """The departure or release as its own transient unit, collected when it
-    ends: stopping devcloud's services stops the lease service, not it."""
+def start_transient(unit, argv, run=proc.run, environ=os.environ, what="at the lease end"):
+    """The departure, the release or the rejoin as its own transient unit,
+    collected when it ends: stopping devcloud's services stops the lease
+    service, not it, and a rejoin cuts the connection that asked for it."""
     passed = [f"--setenv={name}={environ[name]}" for name in PASSED_ENV if environ.get(name)]
     run(["systemd-run", "--unit", unit, "--collect", "--description",
-         f"devcloud: {argv[-1]} at the lease end (Design §4.2)", *passed, *argv], log="lease", timeout=60)
+         f"devcloud: {argv[-1]} {what} (Design §4)", *passed, *argv], log="lease", timeout=60)
 
 
 def tick(user, desc_path=descriptor.PATH, lock_path=None, status_path=None, state_path=None, now=time.time,
-         active=unit_active, start=start_transient, warn=None, allow_http=False, say=_stderr):
+         active=unit_active, start=start_transient, warn=None, allow_http=False, say=_stderr, kind_path=None):
     """One run of the lease service: at the lease end (and at every later run
     while a departure is held or was cut short) it starts the departure, or
     the release, as a transient unit — unless one is already under way; 30
-    minutes before the end it warns the creator, once per lease value."""
+    minutes before the end it warns the creator, once per lease value. On a
+    kept host as on a leased one, while the tailnet node's kind does not
+    follow the lease (a rejoin that failed, or never started), it starts the
+    rejoin again."""
     status_kw = {"path": status_path} if status_path else {}
     state_path = state_path or STATE
     with locked(path=lock_path):
@@ -179,6 +201,14 @@ def tick(user, desc_path=descriptor.PATH, lock_path=None, status_path=None, stat
         except descriptor.DescriptorError as error:
             say(f"devcloud lease: {error}")
             return 1
+        if nodekind.behind(d, kind_path) and not status.departure_started(**status_kw) \
+                and not active(nodekind.UNIT):
+            try:
+                start(nodekind.UNIT, [DEVCLOUD, "rejoin"], what="so the tailnet node follows its lease")
+                say(f"devcloud lease: the tailnet node is not {nodekind.name(nodekind.wanted(d))}; "
+                    f"{nodekind.UNIT} started")
+            except StepError as error:     # never in the way of the departure below
+                say(f"devcloud lease: {nodekind.UNIT} did not start ({error})")
         if not d.leased:
             return 0
         # A process of its own: the host's secrets known before any child runs.

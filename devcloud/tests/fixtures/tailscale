@@ -3,8 +3,15 @@
 and for `up --auth-key=file:<path>` that file's mode, owner, its directory's
 mode, the attributes the key carries after `?`, and the digest of what comes
 before it — never the key itself.
-`status --json` reports $FAKE_TS_STATE (default NeedsLogin); `up` exits
-$FAKE_TS_EXIT (default 0); `logout` exits 0."""
+`status --json` reports $FAKE_TS_STATE (default NeedsLogin), or fails with
+$FAKE_TS_STATUS_EXIT, or fails once while the file $FAKE_TS_STATUS_FAIL_ONCE
+exists (it is deleted); `up` exits $FAKE_TS_EXIT (default 0); `logout` exits
+$FAKE_TS_LOGOUT_EXIT (default 0), and with $FAKE_TS_LOGOUT_EFFECT takes
+effect all the same. With $FAKE_TS_NODE (a file) the node is stateful: `up`
+resumes a node that has an id (any state: a test may set it Stopped) and
+otherwise joins a new one, named after --hostname unless
+$FAKE_TS_NAME_TAKEN gives it `<name>-1`; `logout` leaves it; `status --json`
+then reports the node it holds as Self."""
 import hashlib
 import json
 import os
@@ -24,6 +31,42 @@ for arg in sys.argv[1:]:
         call["key_sha256"] = hashlib.sha256(secret.encode()).hexdigest()
 with open(os.environ.get("FAKE_TS_LOG", "/tmp/fake-tailscale.jsonl"), "a") as f:
     f.write(json.dumps(call) + "\n")
-if sys.argv[1:2] == ["status"]:
-    print(json.dumps({"BackendState": os.environ.get("FAKE_TS_STATE", "NeedsLogin")}))
-sys.exit(int(os.environ.get("FAKE_TS_EXIT", "0")) if sys.argv[1:2] == ["up"] else 0)
+
+node_file = os.environ.get("FAKE_TS_NODE")
+node = {}
+if node_file and os.path.exists(node_file):
+    with open(node_file) as f:
+        node = json.load(f)
+command = sys.argv[1:2]
+code = 0
+if command == ["up"]:
+    code = int(os.environ.get("FAKE_TS_EXIT", "0"))
+    if node_file and code == 0 and node.get("id"):
+        node["state"] = "Running"       # the node it holds, its kind unchanged; the key is not used
+    elif node_file and code == 0:
+        name = next(a.split("=", 1)[1] for a in sys.argv if a.startswith("--hostname="))
+        count = node.get("joins", 0) + 1
+        label = f"{name}-1" if os.environ.get("FAKE_TS_NAME_TAKEN") else name
+        node = {"state": "Running", "id": f"nNode{count}CNTRL", "dns": f"{label}.example-tailnet.ts.net.",
+                "joins": count, "ephemeral": call.get("key_attributes", "").startswith("ephemeral=true")}
+elif command == ["logout"]:
+    code = int(os.environ.get("FAKE_TS_LOGOUT_EXIT", "0"))
+    if node_file and (code == 0 or os.environ.get("FAKE_TS_LOGOUT_EFFECT")):
+        node = {"state": "NeedsLogin", "joins": node.get("joins", 0)}
+elif command == ["status"]:
+    code = int(os.environ.get("FAKE_TS_STATUS_EXIT", "0"))
+    once = os.environ.get("FAKE_TS_STATUS_FAIL_ONCE")
+    if once and os.path.exists(once):
+        os.unlink(once)
+        code = 1
+    if code:
+        pass
+    elif node_file:
+        me = {"ID": node["id"], "DNSName": node["dns"]} if node.get("id") else {}
+        print(json.dumps({"BackendState": node.get("state", "NeedsLogin"), "Self": me}))
+    else:
+        print(json.dumps({"BackendState": os.environ.get("FAKE_TS_STATE", "NeedsLogin")}))
+if node_file:
+    with open(node_file, "w") as f:
+        json.dump(node, f)
+sys.exit(code)

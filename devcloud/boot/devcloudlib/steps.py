@@ -22,8 +22,8 @@ import urllib.error
 import urllib.request
 import uuid
 
-from . import descriptor, envfile, inbound, lease, ledger, plugins, proc, profile as profile_mod, \
-    projects as projects_mod, secrets, services, sminos_host, status
+from . import descriptor, envfile, inbound, lease, ledger, nodekind, plugins, proc, profile as profile_mod, \
+    projects as projects_mod, secrets, services, sminos_host, status, tsapi
 from .descriptor import DescriptorError
 from .proc import StepError, User, as_user, run, write_file
 from .secretmanager import AccessError, Tokens
@@ -229,12 +229,42 @@ def bootstrap_secrets(r):
     return ", ".join(names)
 
 
-def _joined():
+def _status():
+    """`tailscale status --json`, or None when it cannot be read."""
     try:
-        out = run(["tailscale", "status", "--json"], log="tailnet", capture=True, timeout=30)
-        return json.loads(out).get("BackendState") == "Running"
-    except (StepError, ValueError, AttributeError):
-        return False
+        status_ = json.loads(run(["tailscale", "status", "--json"], log="tailnet", capture=True, timeout=30))
+    except (StepError, ValueError):
+        return None
+    return status_ if isinstance(status_, dict) else None
+
+
+# The backend states of a tailscaled that holds no node.
+NO_IDENTITY = ("NeedsLogin", "NoState", "NeedsMachineAuth")
+RUNNING, HELD, NO_NODE = "running", "held", "no node"
+
+
+def _node():
+    """The node tailscaled holds: RUNNING; HELD, one with its identity whose
+    backend is not Running (Stopped, Starting), which `up` resumes as the
+    kind it was joined as, whatever the key now says; NO_NODE; or None when
+    the status cannot be read."""
+    status_ = _status()
+    if status_ is None:
+        return None
+    if status_.get("BackendState") == "Running":
+        return RUNNING
+    if (status_.get("Self") or {}).get("ID") or status_.get("BackendState") not in NO_IDENTITY:
+        return HELD
+    return NO_NODE
+
+
+def _self():
+    return (_status() or {}).get("Self") or {}
+
+
+def _dns_label():
+    """The first label of the node's MagicDNS name, as the tailnet gave it."""
+    return (_self().get("DNSName") or "").split(".")[0] or None
 
 
 def tailnet_attach(r):
@@ -254,25 +284,175 @@ def tailnet_attach(r):
 def _join(r):
     d = r.desc
     key = pathlib.Path(d.ts_authkey_file) if d.ts_authkey_file else None
-    if _joined():
+    node = _node()
+    if node == RUNNING and not nodekind.behind(d):
         if key:
             key.unlink(missing_ok=True)
         return "already joined"
-    up = ["tailscale", "up", f"--hostname={d.name}"]
     if d.ts_secret:
-        # The client secret reaches tailscale as a file's path, never in an
-        # argument list another process can read.
-        with _secret_file("tailscale-auth", r.ts_secret + ts_client_attributes(d)) as path:
-            run(up + [f"--auth-key=file:{path}", f"--advertise-tags={TS_TAG}"], log="tailnet", timeout=180)
-        return (f"joined with the OAuth client {d.ts_secret} as {TS_TAG}"
-                + (", ephemeral (leased)" if d.leased else ""))
+        # A status that cannot be read does not keep a fresh host off the
+        # tailnet: `up` then fails, or joins, as a kind left unknown.
+        return _join_with_client(r, node) if node in (None, NO_NODE) else _rejoin_once(r, node)
     if not key.exists():
         raise StepError(f"not joined, and no auth key at {key}")
     try:
-        run(up + [f"--auth-key=file:{key}"], log="tailnet", timeout=180)
+        run(["tailscale", "up", f"--hostname={d.name}", f"--auth-key=file:{key}"], log="tailnet", timeout=180)
     finally:
         key.unlink(missing_ok=True)
     return "joined with the auth key file; the file is deleted"
+
+
+DELETE_TRIES, DELETE_PAUSE = 3, 5
+
+
+def _leave_for_rejoin(r, ephemeral):
+    """The node joined as the other kind leaves, so that the next join keeps
+    the host's name: a logout removes an ephemeral node at once, but leaves a
+    non-ephemeral one listed, expired, under the name (measured 2026-10-22),
+    so that one's id is recorded before the logout, for its removal through
+    the API by this run or, should it stop, a later one. The API's token and
+    its scope are checked before anything changes: a client that may not
+    remove nodes leaves the node as it was. Returns the token when an old
+    node waits for its removal, else None."""
+    was = nodekind.recorded().get("ephemeral")
+    kind = nodekind.name(ephemeral)
+    tok = None
+    remove = nodekind.pending()
+    if was is not True:     # non-ephemeral, or not recorded: a logout would leave it listed
+        tok = tsapi.token(r.ts_secret)
+        if not tok.can_delete:
+            raise StepError("the Tailscale OAuth client may not remove nodes (it lacks the devices:core scope), so "
+                            f"the old node would keep the name {r.desc.name}; the node stays as it is")
+        old = _self().get("ID")
+        if not old:
+            raise StepError("tailscale status names no node id to remove; the node stays as it is")
+        if old not in remove:
+            remove.append(old)
+    nodekind.record(was, ephemeral, nodekind.REJOINING, f"rejoining as {kind}", remove=remove)
+    try:
+        run(["tailscale", "logout"], log="tailnet", timeout=60)
+    except StepError:
+        if tok is not None and _self().get("ID") == old:
+            nodekind.removed(old)       # still the node held: it stays
+        raise
+    nodekind.record(None, ephemeral, nodekind.REJOINING, f"logged out; joining as {kind}")
+    return tok
+
+
+def _remove_old_nodes(r, tok=None, sleep=time.sleep):
+    """The old nodes a logout left listed, removed through the API before an
+    `up` that would otherwise be given `<name>-1`. One removed, or found
+    gone, is forgotten; one that is not stays recorded for a later run, and
+    the join goes ahead all the same. Returns what became of them, or None
+    when none waits."""
+    waiting = nodekind.pending()
+    if not waiting:
+        return None
+    # Never the node held: a leave whose logout failed may have left its id
+    # here, and the lease since turned back to its kind.
+    status_ = _status()
+    if status_ is None:
+        return f"the removal of {', '.join(waiting)} waits: tailscale status cannot be read to name the node held"
+    held = (status_.get("Self") or {}).get("ID")
+    cancelled = []
+    if held in waiting:
+        nodekind.removed(held)
+        waiting.remove(held)
+        cancelled.append(f"the removal of {held} is cancelled: it is the node held, kept")
+    if not waiting:
+        return cancelled[0]
+    try:
+        tok = tok or tsapi.token(r.ts_secret)
+        if not tok.can_delete:
+            raise StepError("the Tailscale OAuth client may not remove nodes (it lacks the devices:core scope)")
+    except StepError as error:
+        return "; ".join(cancelled + [f"the old node {old} was not removed ({error})" for old in waiting])
+    said = cancelled
+    for old in waiting:
+        for attempt in range(1, DELETE_TRIES + 1):
+            try:
+                said.append(f"the old node {old} {tsapi.delete_node(tok, old)} through the API")
+                nodekind.removed(old)
+                break
+            except StepError as error:
+                if attempt == DELETE_TRIES:
+                    said.append(f"the old node {old} was not removed ({error})")
+                else:
+                    sleep(DELETE_PAUSE)
+    return "; ".join(said)
+
+
+def _kind_failed(r, detail):
+    """A rejoin that changed nothing, recorded so that the driver waiting on
+    the record reads why, and the lease service tries again."""
+    was = nodekind.recorded()
+    nodekind.record(was.get("ephemeral"), nodekind.wanted(r.desc), nodekind.FAILED, detail, name=was.get("name"))
+
+
+def _rejoin_once(r, node, sleep=time.sleep):
+    """A node tailscaled holds, joined as the kind its lease wants. Refused
+    before anything changed (the client's scope, its token), the node stays
+    as it was: that is recorded and said, not a failure of the host, and the
+    lease service tries again."""
+    try:
+        return _join_with_client(r, node, sleep=sleep)
+    except StepError as error:
+        # Still holding a node of the other kind: its leave stopped before the logout.
+        if node == NO_NODE or _node() in (None, NO_NODE) \
+                or nodekind.recorded().get("ephemeral") is nodekind.wanted(r.desc):
+            raise
+        detail = proc.KNOWN.scrub(str(error))
+        _kind_failed(r, detail)
+        return f"already joined; not rejoined as {nodekind.name(nodekind.wanted(r.desc))}: {detail}"
+
+
+def _join_with_client(r, node, sleep=time.sleep):
+    """The OAuth client's join, as the kind the lease wants (§4.1). A node
+    held as the other kind, or as a kind not recorded, leaves first, so the
+    new node keeps the host's name; one held as the right kind is resumed by
+    a plain `up`, or left as it is when running. Old nodes a logout left
+    listed are removed before the `up`. The kind is recorded once joined,
+    with the name the tailnet gave, which the driver checks; `node` None (the
+    status could not be read) joins all the same, but `up` may have resumed
+    a node of the other kind, so the kind is recorded unknown and the lease
+    service's rejoin settles it."""
+    d = r.desc
+    ephemeral = nodekind.wanted(d)
+    kind = nodekind.name(ephemeral)
+    leaves = node not in (None, NO_NODE) and nodekind.recorded().get("ephemeral") is not ephemeral
+    tok = _leave_for_rejoin(r, ephemeral) if leaves else None
+    notes = [note for note in ("the ephemeral node left at its logout" if leaves and tok is None else None,
+                               _remove_old_nodes(r, tok, sleep=sleep)) if note]
+    if node == RUNNING and not leaves:
+        did = "already joined"
+    else:
+        up = ["tailscale", "up", f"--hostname={d.name}", f"--advertise-tags={TS_TAG}"]
+        try:
+            # The client secret reaches tailscale as a file's path, never in an
+            # argument list another process can read.
+            with _secret_file("tailscale-auth", r.ts_secret + ts_client_attributes(d)) as path:
+                run(up + [f"--auth-key=file:{path}"], log="tailnet", timeout=180)
+        except StepError as error:
+            nodekind.record(None if leaves else nodekind.recorded().get("ephemeral"), ephemeral, nodekind.FAILED,
+                            proc.KNOWN.scrub(str(error)))
+            raise
+        did = "rejoined" if leaves else "resumed" if node == HELD else "joined"
+    known = _dns_label()
+    label = known or d.name
+    if node is None:
+        notes.append("the status could not be read before the join, so the node's kind is unknown")
+    left = "".join(f"; {note}" for note in notes)
+    detail = f"{did} as {kind}{left}"
+    if label != d.name:
+        detail += (f"; joined as {label}, not {d.name}: an older node holds the name; remove it in the Tailscale "
+                   "admin console")
+    if node is None:
+        nodekind.record(None, ephemeral, nodekind.JOINED, detail, name=known)
+    else:
+        nodekind.record(ephemeral, ephemeral, nodekind.JOINED, detail, name=label)
+    return (f"{did} with the OAuth client {d.ts_secret} as {TS_TAG}, {kind}"
+            + (" (leased)" if ephemeral else " (kept)") + left
+            + (f"; named {label}, not {d.name}" if label != d.name else ""))
 
 
 @contextlib.contextmanager
@@ -770,3 +950,62 @@ def enroll():
                 return ("deferred", f"sminos: {result.detail}")
             return f"sminos: {result.detail}; {sminos_host.converge(r.user, r.desc.role, env, False)}"
         return _run((("services", finish),), r)
+
+
+REJOIN_TRIES, REJOIN_PAUSE = 3, 20
+
+
+def rejoin(sleep=time.sleep):
+    """`devcloud rejoin`, the `devcloud-rejoin` transient unit's run (§4.1):
+    the node rejoined as the kind its lease wants, when it is behind. Under
+    the lifecycle lock, so it never races a lease write or the departure,
+    which it refuses to follow (exit 3); a boot under way sets the kind
+    itself, so the run lock busy means nothing to do. The OAuth client is
+    fetched before the logout, so a fetch that fails leaves the node joined;
+    a join that fails after it is tried again, then left to the lease
+    service's next run. Exit 0 rejoined or nothing to do, 1 failed."""
+    with lease.locked():
+        if status.departure_started():
+            _say("rejoin: the departure has started; the node stays as it is")
+            return 3
+        RUN_DIR.mkdir(mode=0o711, parents=True, exist_ok=True)
+        with open(RUN_DIR / "lock", "w") as run_lock:
+            try:
+                fcntl.flock(run_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                _say("rejoin: a boot is under way; its tailnet attach sets the node's kind")
+                return 0
+            r = Run("rejoin")
+            try:
+                r.load()
+                if not nodekind.behind(r.desc):
+                    _say(f"rejoin: the node is already {nodekind.name(nodekind.wanted(r.desc))}")
+                    return 0
+                r.ts_secret = _fetch_text(r, r.desc.ts_secret)
+            except (StepError, DescriptorError) as error:
+                detail = proc.KNOWN.scrub(str(error))
+                if r.desc is not None:
+                    _kind_failed(r, detail)
+                _say(f"rejoin: failed — {detail}")
+                return 1
+            for attempt in range(1, REJOIN_TRIES + 1):
+                try:
+                    node = _node()
+                    if node is None:
+                        # Not taken for no node: a join then would resume a node held as the other kind.
+                        raise StepError("tailscale status cannot be read, so whether it holds a node is unknown; "
+                                        "the node stays as it is")
+                    detail = _rejoin_once(r, node, sleep=sleep)
+                except StepError as error:
+                    # Logged out and the join failed, the host is off the tailnet until one succeeds.
+                    detail = proc.KNOWN.scrub(str(error))
+                    _say(f"rejoin: try {attempt} failed — {detail}")
+                    if attempt == REJOIN_TRIES:
+                        if nodekind.recorded().get("state") != nodekind.FAILED:
+                            _kind_failed(r, detail)
+                        return 1
+                    sleep(REJOIN_PAUSE)
+                    continue
+                _say(f"rejoin: {detail}")
+                return 1 if nodekind.recorded().get("state") == nodekind.FAILED else 0
+            return 1
