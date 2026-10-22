@@ -1,14 +1,57 @@
 """Shape of the route fixture (routes-2.1.307.json): the desk control surface's route table, which the bridge
 loads and MAWS vendors. Checks that it parses, that every entry and route has the Entry/Route/Forms shape of the
-spec's Interfaces, and what M0 enables: the five measured `run` rows alone.
+spec's Interfaces, what M0 enables (the five measured `run` rows alone), and that the bridge's copy of it,
+hooks/mods/bridge-routes.tsx, is the fixture: a mod loads TypeScript modules alone, so the table reaches the
+bridge as a module written from the fixture (`--write` writes it).
 Prints one `ok <name>` or `FAIL <name>` line per check, for run-sminos-tests.sh to count.
 
     python3 routes_check.py <routes-2.1.307.json>
+    python3 routes_check.py --write <routes-2.1.307.json>
 """
 
 import json
+import os
 import re
 import sys
+
+MODULE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "hooks", "mods", "bridge-routes.tsx")
+HEADER = """// Written from sminos/tests/routes-2.1.307.json by `python3 sminos/tests/routes_check.py --write
+// sminos/tests/routes-2.1.307.json`: edit the fixture and write this again, never this by hand; the route
+// check in run-sminos-tests.sh fails while the two differ. A mod loads TypeScript modules alone, so the
+// fixture reaches the bridge as this module. The shapes are the spec's Interfaces, "The route table".
+
+/** What the desk does with one (command, form): the spec's seven classes. */
+export type RouteClass = 'run' | 'run-prompt' | 'routed' | 'follow' | 'panel' | 'local' | 'drop'
+/** The arguments a route takes: whether, and which (a JS RegExp source matched whole against the trimmed args). */
+export type RouteForms = { args: 'none' | 'required' | 'optional'; pattern?: string; hint?: string }
+/** One route; `otherwise` is the route that args missing `forms.pattern` take, instead of being bad-args. */
+export type Route = {
+  class: RouteClass
+  to?: string
+  reason?: string
+  forms?: RouteForms
+  outlives?: string
+  confirm?: true
+  enabled: boolean
+  measured: 'M' | 'I'
+  otherwise?: Route
+}
+/** A command's routes: `withArgs` when the trimmed args are not empty, else (or with none) `bare`. */
+export type RouteEntry = { name: string; bare: Route; withArgs?: Route; plugin?: string }
+/** One measured engine's table: its built-ins, and the non-built-ins with a fixed route (by name and plugin). */
+export type RouteTable = { engine: string; entries: readonly RouteEntry[]; pluginExceptions: readonly RouteEntry[] }
+
+"""
+
+
+def module_text(doc):
+    """The bridge's route module for the fixture `doc`: its table, one entry a line, as JSON."""
+    def rows(entries):
+        return "".join("      %s,\n" % json.dumps(e, ensure_ascii=False) for e in entries)
+    return (HEADER + "export const ROUTE_TABLES: readonly RouteTable[] = [\n  {\n"
+            + "    engine: %s,\n" % json.dumps(doc["engine"])
+            + "    entries: [\n" + rows(doc["entries"]) + "    ],\n"
+            + "    pluginExceptions: [\n" + rows(doc["pluginExceptions"]) + "    ],\n  },\n]\n")
 
 CLASSES = {"run", "run-prompt", "routed", "follow", "panel", "local", "drop"}
 ROUTE_KEYS = {"class", "to", "reason", "forms", "outlives", "confirm", "enabled", "measured", "otherwise"}
@@ -72,7 +115,13 @@ def route_problems(r, where):
     return bad
 
 
-doc = json.load(open(sys.argv[1], encoding="utf-8"))
+WRITE = sys.argv[1:2] == ["--write"]
+doc = json.load(open(sys.argv[-1], encoding="utf-8"))
+if WRITE:
+    with open(MODULE, "w", encoding="utf-8") as f:
+        f.write(module_text(doc))
+    print("wrote " + os.path.normpath(MODULE))
+    sys.exit(0)
 check("the fixture parses and is for 2.1.307", isinstance(doc, dict) and doc.get("engine") == "2.1.307")
 entries = doc.get("entries", [])
 exceptions = doc.get("pluginExceptions", [])
@@ -142,5 +191,13 @@ check("goal: clear is a run, any other condition a run-prompt, the bare form a p
       goal["class"] == "run" and whole(goal["forms"]["pattern"], "clear")
       and not whole(goal["forms"]["pattern"], "clear it") and goal["otherwise"]["class"] == "run-prompt"
       and by_name["goal"]["bare"]["class"] == "panel")
+
+try:
+    with open(MODULE, encoding="utf-8") as f:
+        written = f.read()
+except OSError as e:
+    written = str(e)
+check("the bridge's route module is this fixture, as --write writes it", written == module_text(doc),
+      "run: python3 routes_check.py --write " + sys.argv[-1])
 
 sys.exit(1 if FAILED else 0)

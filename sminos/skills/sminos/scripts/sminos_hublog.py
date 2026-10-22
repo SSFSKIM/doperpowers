@@ -58,6 +58,7 @@ import sminos  # noqa: E402
 import sminos_codes as codes  # noqa: E402
 import sminos_daemon as daemon  # noqa: E402
 import sminos_policy as policy  # noqa: E402
+import sminos_rpc as rpc  # noqa: E402
 
 NONCE_DOMAIN = "smns-hub-nonce-v1"
 STATE_FILE = sminos.UPLINK_STATE
@@ -215,6 +216,23 @@ def writer_and_last(path):
     return "", 0
 
 
+PLUGIN_MANIFEST = os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "..", "..", ".claude-plugin",
+                               "plugin.json")
+
+
+def desk():
+    """What this machine's daemon can do itself for the desk (DX4
+    `machine.desk`, the desk control surface's M0): the sminos version it
+    runs from, the RPCs it executes, and the reads it answers without a
+    bridge (none yet)."""
+    try:
+        with open(PLUGIN_MANIFEST) as f:
+            version = json.load(f).get("version")
+    except (OSError, ValueError, AttributeError):
+        version = None
+    return {"sminos": version if isinstance(version, str) else "unknown", "rpcs": list(rpc.RPC_NAMES), "reads": []}
+
+
 def machine_policy():
     """The machine's policy as DX4's `machine` presence carries it (DX6's,
     which DC7 owns: sminos_policy, read at every use)."""
@@ -329,7 +347,8 @@ class HubLog:
 
     def presence(self):
         """DX4's `machine` message for this project: online (the hub's word,
-        from the lease), the policy, and the project's known checkouts here."""
+        from the lease), the policy, the project's known checkouts here, and
+        what this machine's daemon can do itself (`desk`)."""
         try:
             checkouts = policy.known_checkouts(self.project)
         except (OSError, SystemExit) as e:
@@ -339,7 +358,7 @@ class HubLog:
         return {"t": "session", "message": {
             "project": self.project.id, "machine": self.machine, "session": None, "kind": "machine",
             "sub": None, "n": None,
-            "body": {"online": True, "policy": machine_policy(), "checkouts": checkouts}}}
+            "body": {"online": True, "policy": machine_policy(), "checkouts": checkouts, "desk": desk()}}}
 
     def unreported(self):
         raw = self.state().get("unreported")

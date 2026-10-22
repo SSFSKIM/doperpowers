@@ -53,7 +53,8 @@ words sent another way — for as long as that trace may still appear, then
 answered `failed` `interrupted`.
 
 Execution (§5) goes through the session's bridge (DC2's DX5): steer,
-interrupt, stop, model, and compact as commands; an answer or a decision as the
+interrupt, stop, model, compact, and a slash command (`command`, the desk
+control surface's DX6) as commands; an answer or a decision as the
 request's decision, by the member. A steer to a live session without a
 bridge takes `sminos steer`'s own fallbacks (the supervisor's `reply`, the
 inbox frame), so its result names no row. Spawn and retire run `sminos spawn`
@@ -86,6 +87,18 @@ end that runs after a restart still carries the nonce. The messages are owed
 as a settlement is (sminos_owed): until a POST's answer takes them, kept in
 `daemon/rpcs-owed.json` across restarts.
 
+A desk command's outcome reaches browsers the same way, as DX4 `op` (the desk
+control surface, §3): the bridge answers the command `queued` at once, and
+its run's `run` events — each carrying the RPC's nonce, which the bridge's
+child keeps until the run's end — become `op` messages, owed as compactions
+are. The command's id is kept on the claim until the end (`op_id`), so an
+end the stream did not bring (it came while the daemon was stopped, or
+between two of its readers) is read from the child's kept file, where the
+end is kept beside the command's answer. A `/reload-plugins` reloads the
+bridge mod, whose successor says nothing of the run: it ends when the
+session's bridge answers from another child (`effect`), or fails at
+RELOAD_WAIT_S. A hub whose welcome does not list `op` is sent none.
+
 Checks 1-6 and the ledger's lookup run on the uplink's main thread, which
 alone may call sminos (its caches are module globals); the digest, the kind,
 the claim, and the execution run on a worker of their own, since a bridge
@@ -94,6 +107,7 @@ queued, and the main thread posts it.
 """
 
 import calendar
+import collections
 import glob
 import hashlib
 import http.client
@@ -117,7 +131,7 @@ import sminos_owed as owed  # noqa: E402
 import sminos_policy as policy  # noqa: E402
 
 LEDGER_FILE = "rpcs.json"
-OWED_FILE = "rpcs-owed.json"  # daemon/: the compaction messages not yet the hub's (sminos_owed)
+OWED_FILE = "rpcs-owed.json"  # daemon/: the compaction and op messages not yet the hub's (sminos_owed)
 FRESH_S = 60              # an RPC older (or younger) than this by the machine's clock is stale
 KEPT_S = 86400            # the ledger keeps an entry a day
 LOOSE_S = 600             # a refusal kept out of the ledger waits this long for its project to open
@@ -127,14 +141,22 @@ RESUME_TRACE_S = 420      # a claimed Resume's job: the same launch and poll
 RESUME_HELD_S = 30        # how long a Resume waits for its job's process to hold the session
 LAUNCH_TIMEOUT = 300      # `claude --bg` hands the launch to the harness's supervisor
 COMPACT_HELD_S = 60       # a `compact` event waits at most this long for its command's result to name it
+RELOAD_WAIT_S = 60        # a `/reload-plugins` is done once its bridge answers from another child within this
+OPS_ENDED_KEPT = 1000     # nonces of ops whose end went up, kept so another copy of that end is passed by
+NAME_MAX = 128            # DX6 `command`: a name as $.command.list() spells it
+ARGS_MAX = 4096           # and its arguments' text
+RELOAD = "reload-plugins"
 RECONCILE_EVERY = 1.0     # how often claims left by a stop are looked at again
 SPAWN_TIMEOUT = 600
 VERB_TIMEOUT = 120
 SNAPSHOT_TIMEOUT = 8      # the bridge holds its stream up to 5 s until the mod's first resync
 DECISION_TIMEOUT = 15     # an async question's answer is relayed to the mod, which waits 5 s
 SPAWN_TASK = "Begin with your brief."
-RPC_NAMES = ("steer", "interrupt", "answer", "decide", "model", "compact", "spawn", "retire", "resume", "stop")
+RPC_NAMES = ("steer", "interrupt", "answer", "decide", "model", "compact", "spawn", "retire", "resume", "stop",
+             "command")
 TASK_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")   # DX6 `stop`'s taskId, as the engine spells task ids
+CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
+OP_OF = {"run": "command"}  # a bridge's event → the DX4 `op` it reports
 MODEL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/@\[\]-]{0,199}")
 WORKTREE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}")
 CREATED_RE = re.compile(r"([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})(\.[0-9]{1,9})?Z")
@@ -351,13 +373,18 @@ class Rpcs:
         self.model_locks = {}     # session → the lock its model and effort are read and changed under
         self.resume_locks = {}    # session → the lock a Resume of it runs under
         self.locks_lock = threading.Lock()
-        self.flying = {}          # id(frame) → frame: compact messages on a lane, their POST not yet answered
+        self.op_ids = {}          # a bridge's command id → the op this daemon issued ({project, session, nonce, at,
+        #                           name, args, child}), until its end
+        self.ops_ended = collections.OrderedDict()   # nonce → None: ops whose end went up, the last OPS_ENDED_KEPT
+        self.kinds = frozenset()  # the session kinds the stream's welcome listed (DX2): `op` goes only where listed
+        self.flying = {}          # id(frame) → frame: compact and op messages on a lane, their POST not yet answered
         self.kept = owed.Kept(OWED_FILE, log)
-        self.compact_out = [f for f in self.kept.load() if is_compact(f)]   # DX4 compact messages owed, as frames
+        self.messages = [f for f in self.kept.load() if is_owed(f)]   # DX4 compact and op messages owed, as frames
         self.unwritten = {}       # nonce → its outcome, whose ledger write failed: never sent until it is kept
         self.copies_asked = set()  # claimed Resumes whose kept job the harness was asked about (check_copy)
         self.next_reconcile = 0.0
         self.restore_compacts()
+        self.restore_ops()
         self.reconcile()
 
     # ---------------------------------------------------- frames down
@@ -557,6 +584,8 @@ class Rpcs:
                 return lambda: model(path, sid, args, self.lock_of(self.model_locks, sid))
             if name == "compact":
                 return lambda: self.compact(path, rpc, sid)
+            if name == "command":
+                return lambda: self.desk_command(path, rpc, sid, status)
             if name in ("answer", "decide"):
                 return lambda: decide(path, args["digest"]["request"], decision)
             if name == "stop":
@@ -604,6 +633,35 @@ class Rpcs:
         r = result.get("result") or {}
         return done({"at": "turn-end" if r.get("queued") else "now"})
 
+    def desk_command(self, path, rpc, sid, status):
+        """A slash command run in the session by its bridge (DX5 `command`),
+        which routes it and answers at once; its run's outcome follows on the
+        stream (`ops`). The bridge's refusal is the RPC's failure, its code
+        the message's first word. Its id is kept on the claim until its end;
+        a `/reload-plugins` also keeps the child that answered before it, by
+        whose replacement it is done (`effects`)."""
+        args, nonce = rpc["args"], rpc["nonce"]
+        name, text = args["name"], args.get("args") or ""
+        child = None
+        if name == RELOAD:
+            try:
+                child = [os.stat(path).st_ino, status.get("pid")]
+            except OSError:
+                pass
+        out, cid = command(path, {"op": "command", "name": name, "args": text, "rpc": nonce, "from": "desk"})
+        outcome = commanded(out)
+        if outcome["state"] != "done":
+            return outcome
+        oid = outcome["result"]["id"] or cid
+        fields = {"op_id": oid, "op_name": name, "op_args": text, **({"op_child": child} if child else {})}
+        try:
+            self.note(nonce, fields)
+        except OSError as e:
+            log("command %s: its id %s could not be kept in the ledger (%s): an end a restart misses is not "
+                "sent" % (nonce, oid, e))
+        self.finished.put(("op", (oid, rpc["project"], sid, nonce, name, text, child)))
+        return done({**outcome["result"], "id": oid})
+
     # ---------------------------------------------------- frames up
 
     def take(self):
@@ -624,6 +682,10 @@ class Rpcs:
             elif kind == "compact":
                 cid, pid, sid, nonce = data
                 self.compact_ids[cid] = (pid, sid, nonce, self.clock())
+            elif kind == "op":
+                oid, pid, sid, nonce, name, text, child = data
+                self.op_ids[oid] = {"project": pid, "session": sid, "nonce": nonce, "at": self.clock(), "name": name,
+                                    "args": text, "child": child}
 
     def compacted(self, items):
         """The bridges' `compact` events (session, project id, event): every
@@ -648,10 +710,7 @@ class Rpcs:
             for k in ("tokensBefore", "tokensAfter", "skip", "error"):
                 if k in e:
                     body[k] = e[k]
-            self.compact_out.append({"t": "session", "message": {
-                "project": named[0] if named else pid, "machine": self.machine, "session": named[1] if named else sid,
-                "kind": "compact", "sub": None, "n": None, "body": body}})
-            self.kept.save(self.compact_out)
+            self.owe(named[0] if named else pid, named[1] if named else sid, "compact", body)
             if e.get("phase") == "end" and self.compact_ids.pop(cid, None) is not None:
                 self.forget_compact(named[2])
         self.compact_ids = {c: v for c, v in self.compact_ids.items() if now - v[3] < KEPT_S}
@@ -667,15 +726,106 @@ class Rpcs:
 
     def forget_compact(self, nonce):
         """A compaction ended: its command is no longer kept on the claim."""
+        self.forget(nonce, ("compact_id",), "compact")
+
+    def forget(self, nonce, fields, what):
+        """`fields` of a claim no longer kept: what they named has ended."""
         with self.ledger.lock:
             e = self.ledger.entries.get(nonce)
-            if e is None or e.pop("compact_id", None) is None:
+            if e is None or not any(f in e for f in fields):
                 return
+            for f in fields:
+                e.pop(f, None)
             try:
                 self.ledger.save()
             except OSError as err:
-                log("the ledger could not be written (%s): compact %s's command is kept until the entry goes"
-                    % (err, nonce))
+                log("the ledger could not be written (%s): %s %s's command is kept until the entry goes"
+                    % (err, what, nonce))
+
+    def owe(self, pid, sid, kind, body):
+        """A DX4 session-wide message, owed until the hub takes it."""
+        self.messages.append({"t": "session", "message": {
+            "project": pid, "machine": self.machine, "session": sid, "kind": kind, "sub": None, "n": None,
+            "body": body}})
+        self.kept.save(self.messages)
+
+    def ops(self, items):
+        """The bridges' `run` events (session, project id, event): each run
+        of a desk command becomes DX4 `op` (the desk control surface, §3),
+        carrying the nonce of the DX6 `command` that asked for it — the
+        event's own (the bridge's child names it), else the one this daemon
+        kept for the command — or null for one nobody here asked for."""
+        self.take()
+        for sid, pid, e in items:
+            if isinstance(e, dict) and pid and e.get("type") in OP_OF:
+                self.op_event(sid, pid, e)
+
+    def op_event(self, sid, pid, e):
+        oid = e.get("id")
+        held = self.op_ids.get(oid)
+        nonce = e.get("rpc") if isinstance(e.get("rpc"), str) else held["nonce"] if held else None
+        if nonce is not None and nonce in self.ops_ended:
+            return   # its end went up already: this is another copy of it, or a start come after it
+        body = {"rpc": nonce, "op": OP_OF[e["type"]], **{k: v for k, v in e.items() if k not in ("type", "rpc", "n")}}
+        self.owe(held["project"] if held else pid, held["session"] if held else sid, "op", body)
+        if e.get("phase") == "end":
+            if self.op_ids.pop(oid, None) is not None:
+                self.forget(nonce, ("op_id", "op_name", "op_args", "op_child"), "command")
+            if nonce is not None:
+                self.ops_ended[nonce] = None
+                while len(self.ops_ended) > OPS_ENDED_KEPT:
+                    self.ops_ended.popitem(last=False)
+
+    def effects(self, answering):
+        """The ops this daemon finishes itself, by their effect: a
+        `/reload-plugins` reloads the bridge mod, whose successor says nothing
+        of the run (§2), so it is done once `answering(session)` — the child
+        the plane's probe last found answering, (socket inode, pid) — is
+        another than the one that took it; failed when none has by
+        RELOAD_WAIT_S after its claim."""
+        now = self.clock()
+        for oid, op in list(self.op_ids.items()):
+            if op["name"] != RELOAD:
+                continue
+            child = answering(op["session"])
+            if child is not None and op["child"] is not None and list(child) != list(op["child"]):
+                end = {"settled": {"ok": True}, "readback": {"how": "effect"}}
+            elif now - op["at"] >= RELOAD_WAIT_S:
+                end = {"settled": {"ok": False, "error": "the session's bridge did not answer from a reloaded "
+                                                         "module within %d s" % RELOAD_WAIT_S},
+                       "readback": {"how": "none"}}
+            else:
+                continue
+            self.op_event(op["session"], op["project"], {"type": "run", "phase": "end", "id": oid, "rpc": op["nonce"],
+                                                         "name": op["name"], "args": op["args"], **end,
+                                                         "t": int(now * 1000)})
+
+    def recover_ops(self):
+        """The ends of ops this daemon issued that no stream brought (they
+        came while it was stopped, or between two of a bridge's readers),
+        read from the bridge's kept file, where its child keeps a run's end
+        beside the command's answer."""
+        for oid, op in list(self.op_ids.items()):
+            if op["name"] == RELOAD or not op["session"]:
+                continue
+            end = ((bridge.load_kept(op["session"]).get("rpcs") or {}).get(op["nonce"]) or {}).get("end")
+            if isinstance(end, dict) and end.get("id") == oid and end.get("phase") == "end":
+                self.op_event(op["session"], op["project"], {**end, "type": "run", "rpc": op["nonce"]})
+        now = self.clock()
+        for oid in [o for o, op in self.op_ids.items() if now - op["at"] >= KEPT_S]:
+            del self.op_ids[oid]
+
+    def restore_ops(self):
+        """The commands this daemon issued whose end has not gone up, as
+        their claims keep them (`op_id`): what a restart relays under their
+        nonce, and finishes by effect."""
+        for nonce, e in self.ledger.items():
+            oid = e.get("op_id")
+            if isinstance(oid, str) and oid and isinstance(e.get("at"), (int, float)):
+                child = e.get("op_child")
+                self.op_ids[oid] = {"project": e.get("project"), "session": e.get("session"), "nonce": nonce,
+                                    "at": e["at"], "name": e.get("op_name"), "args": e.get("op_args") or "",
+                                    "child": child if isinstance(child, list) else None}
 
     def reconcile(self):
         """Outcomes whose ledger write failed, written again; then claims no
@@ -686,6 +836,7 @@ class Rpcs:
         whether that job is a copy (check_copy)."""
         now = self.clock()
         self.next_reconcile = now + RECONCILE_EVERY
+        self.recover_ops()
         for nonce, outcome in list(self.unwritten.items()):
             try:
                 self.ledger.answer(nonce, outcome)
@@ -749,12 +900,20 @@ class Rpcs:
 
     def due(self, opened):
         """What goes up now for the projects open on the stream: new
-        results, then DX4 compact messages. Not taken until `sending`."""
+        results, then DX4 compact and op messages. Not taken until
+        `sending`. An op message a hub that does not list `op` would refuse
+        is dropped here, said."""
         self.take()
         if self.clock() >= self.next_reconcile:
             self.reconcile()
-        compacts = [f for f in self.compact_out if f["message"]["project"] in opened and id(f) not in self.flying]
-        return self.results(set(opened), False) + compacts
+        if "op" not in self.kinds:
+            unlisted = [f for f in self.messages if f["message"]["kind"] == "op"]
+            if unlisted:
+                log("the hub lists no `op` messages: %d of them dropped" % len(unlisted))
+                self.messages = [f for f in self.messages if f["message"]["kind"] != "op"]
+                self.kept.save(self.messages)
+        owed_now = [f for f in self.messages if f["message"]["project"] in opened and id(f) not in self.flying]
+        return self.results(set(opened), False) + owed_now
 
     def opening(self, pid):
         """What follows a project's `hello` on a new stream: every result of
@@ -765,7 +924,7 @@ class Rpcs:
     def sending(self, frames):
         """`frames` were queued on a lane. A result is taken as sent on this
         stream now (every connect sends it again until `rpc-ack`, and so does
-        every re-open); a compact message, which nothing rebuilds, is in
+        every re-open); a compact or op message, which nothing rebuilds, is in
         flight until `delivered`, `unsent`, or the next stream's `reset`."""
         for f in frames:
             if f.get("t") == "rpc-result":
@@ -775,8 +934,8 @@ class Rpcs:
 
     def delivered(self, frames, refused):
         """The POST carrying `frames` was answered 200, `refused` naming
-        ({id(frame): reason}) those the hub refused whole: a compact message
-        it took leaves `compact_out`; one refused `not-open` stays owed (its
+        ({id(frame): reason}) those the hub refused whole: a compact or op
+        message it took leaves `messages`; one refused `not-open` stays owed (its
         project is opened again), and a result so refused goes again; one
         refused otherwise would be refused again, and leaves, said."""
         took = set()
@@ -788,11 +947,11 @@ class Rpcs:
             elif self.flying.pop(id(f), None) is not None and reason != "not-open":
                 took.add(id(f))
                 if reason is not None:
-                    log("the hub refused a compact message of %s (%s): not sent again" % (
-                        f["message"]["session"], reason))
+                    log("the hub refused a %s message of %s (%s): not sent again" % (
+                        f["message"]["kind"], f["message"]["session"], reason))
         if took:
-            self.compact_out = [f for f in self.compact_out if id(f) not in took]
-            self.kept.save(self.compact_out)
+            self.messages = [f for f in self.messages if id(f) not in took]
+            self.kept.save(self.messages)
 
     def unsent(self, frames):
         """Frames dropped from a lane before any POST carried them (a
@@ -815,10 +974,10 @@ class Rpcs:
         self.flying.clear()
 
 
-def is_compact(frame):
-    """Whether a kept item is a DX4 compact message as `compacted` makes it."""
+def is_owed(frame):
+    """Whether a kept item is a DX4 compact or op message as `owe` makes it."""
     m = frame.get("message") if isinstance(frame, dict) else None
-    return isinstance(m, dict) and frame.get("t") == "session" and m.get("kind") == "compact" \
+    return isinstance(m, dict) and frame.get("t") == "session" and m.get("kind") in ("compact", "op") \
         and isinstance(m.get("project"), str) and isinstance(m.get("body"), dict)
 
 
@@ -880,6 +1039,12 @@ def shape(name, args, member):
     elif name == "stop":
         need(isinstance(args.get("taskId"), str) and TASK_RE.fullmatch(args["taskId"]),
              "taskId is a background task's id")
+    elif name == "command":
+        n, a = args.get("name"), args.get("args")
+        need(isinstance(n, str) and 1 <= len(n) <= NAME_MAX and not CONTROL_RE.search(n),
+             "name is a command's name as the session lists it (1-%d characters, none a control)" % NAME_MAX)
+        need(a is None or (isinstance(a, str) and len(a) <= ARGS_MAX),
+             "args is text of at most %d characters" % ARGS_MAX)
     elif name == "spawn":
         need(is_text(args.get("brief")), "brief is the session's brief")
         wt, m, e = args.get("worktree"), args.get("model"), args.get("effort")
@@ -970,6 +1135,16 @@ def steered(out):
     if IDLE in str(out.get("error") or ""):
         return failed("idle", "no turn is running to steer: send it instead")
     return failed("failed", refusal(out))
+
+
+def commanded(out):
+    """A desk command's outcome from the bridge's answer to it (DX6): queued,
+    or the bridge's refusal, its code the message's first word."""
+    if out.get("ok"):
+        r = out.get("result") or {}
+        return done({"queued": r.get("queued") is True, "route": r.get("route"), "id": r.get("id")})
+    code = out.get("code")
+    return failed("failed", "%s: %s" % (code, refusal(out)) if isinstance(code, str) and code else refusal(out))
 
 
 def interrupt(path):
@@ -1315,9 +1490,10 @@ def trace(nonce, e, others=()):
     a trace may still appear). `others`: the ledger's other entries."""
     if e.get("rpc") == "spawn":
         return spawned(nonce), SPAWN_TRACE_S
-    if e.get("rpc") == "steer" and e.get("session"):
+    if e.get("rpc") in ("steer", "command") and e.get("session"):
         answered = (bridge.load_kept(e["session"]).get("rpcs") or {}).get(nonce)
-        return (steered(answered) if isinstance(answered, dict) else None), STEER_TRACE_S
+        outcome = (steered if e["rpc"] == "steer" else commanded)(answered) if isinstance(answered, dict) else None
+        return outcome, STEER_TRACE_S
     if e.get("rpc") == "resume" and e.get("session"):
         launched, job = e.get("launched_at"), kept_job(e)
         if not isinstance(launched, (int, float)) or isinstance(launched, bool):

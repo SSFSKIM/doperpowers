@@ -21,8 +21,8 @@ export type Effort = (typeof EFFORTS)[number]
 
 export type BridgeEvent = Record<string, unknown> & { type: string }
 export type Command = Record<string, unknown> & { id: string; op: string }
-/** A command's answer: the `result` event's fields. */
-export type Answer = { ok: true; result: Record<string, unknown> } | { ok: false; error: string }
+/** A command's answer: the `result` event's fields; a refusal's `code` names its kind where DX5 gives one. */
+export type Answer = { ok: true; result: Record<string, unknown> } | { ok: false; error: string; code?: string }
 /** The model and effort chosen for this session through the bridge; null keeps the session's own. */
 export type Override = { model: string | null; effort: Effort | null }
 /** A value as an event carries it (`capped`): every string held to TEXT_CAP, and whether any was. */
@@ -147,6 +147,24 @@ export type Submission = { key: DeliveryKey; text: string }
 export type DeliveredRow = { key: DeliveryKey; text: string; turnId?: string }
 /** A delivery the engine dropped after it was submitted, as `delivered {outcome: "refused"}` reports it. */
 export type Refusal = { key: DeliveryKey; reason: string }
+/** What the bridge can do, as `GET /status` and the plane's presence carry it (DX5 `capabilities`). */
+export type Capabilities = { sminos: string; protocol: number; engine: string; ops: string[]; reads: string[]; routes: { measured: string } }
+/** A desk command (DX5 op `command`) the bridge runs: its op id, the command and its trimmed args. */
+export type DeskRun = { id: string; name: string; args: string }
+/** How a command's outcome was read back (DX5 `run` end): the settled text, its output row, or nothing sure. */
+export type Readback = { how: 'text' | 'row' | 'effect' | 'none'; text?: string; uuid?: string }
+/**
+ * The readback of the desk run that settled last, while its rows are looked
+ * for in the `session.append` hook (bridge-rows.tsx): its command row, then
+ * the output row after it; `output` once seen, until its window closes.
+ */
+export type ReadbackWatch = {
+  name: string
+  args: string
+  phase: 'command' | 'output'
+  output?: { text: string; uuid: string }
+  done: (readback: Readback) => void
+}
 
 export type BridgeState = {
   /**
@@ -327,6 +345,14 @@ export type BridgeState = {
    * resync carries them, so one whose post was lost still reaches the child.
    */
   refusals: Refusal[]
+  /** What this module can do, assembled at its session start; every resync carries it to the child. */
+  capabilities?: Capabilities
+  /** The desk command called and not yet read back: the next waits for it (one at a time, spec §6). */
+  deskRun?: DeskRun
+  /** Desk commands waiting for the one before them, oldest first. */
+  deskQueue: DeskRun[]
+  /** The readback looked for now, if any. */
+  readback?: ReadbackWatch
 }
 
 const fresh = (): BridgeState => ({
@@ -358,6 +384,7 @@ const fresh = (): BridgeState => ({
   submissions: [],
   deliveredRows: [],
   refusals: [],
+  deskQueue: [],
   transitions: 0,
   isUnreadSaid: false,
   generation: 0,

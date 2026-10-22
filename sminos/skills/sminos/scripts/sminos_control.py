@@ -1,11 +1,13 @@
 """The control verbs and a delivery's last hop (DC2 M2, contract DX5).
 
-`sminos steer|interrupt|stop|model|compact <member>` act on a session through its
-bridge: a command on the session's endpoint (sminos_bridge), answered by the
-bridge mod. A session with no bridge falls back as the desk's design (§5) has
-it: a steer to a --bg job goes through the engine supervisor's `reply`, to a
-terminal session as a cross-session frame on its inbox; interrupt, stop, model
-and compact need the bridge and are refused, saying so.
+`sminos steer|interrupt|stop|model|compact|read|command <member>` act on a
+session through its bridge: a command on the session's endpoint
+(sminos_bridge), answered by the bridge mod. A session with no bridge falls
+back as the desk's design (§5) has it: a steer to a --bg job goes through the
+engine supervisor's `reply`, to a terminal session as a cross-session frame on
+its inbox; the others need the bridge and are refused, saying so. `read` and
+`command` are the desk's ops (the desk control surface, DX5) from a shell, so
+they can be driven without the hub.
 
 `push_live` is a delivery's last hop to a live session, for the log's
 delivery and `send` alike. A peer's event (any but the owner's, S.owner_event)
@@ -35,6 +37,7 @@ import sminos_bridge as B
 
 COMMAND_WAIT_MS = 10000     # the mod answers these at once; this bounds a session gone quiet
 COMPACT_WAIT_S = 300        # an idle compaction runs about 20 s; its outcome is waited for this long
+RAN_WAIT_S = 300            # a command queued behind a turn runs when it ends; its outcome is waited for this long
 SETTLE_WAIT_S = 30          # a decision taken is settled within seconds (a background window's at its deadline)
 FIRST_WAIT_S = 8            # a subscription's snapshot: the child holds it up to 5 s for the mod's first resync
 SUPERVISOR_TIMEOUT = 5      # the engine's own control client waits 5 s
@@ -225,7 +228,8 @@ def bridged(member, verb, body, wait_ms=COMMAND_WAIT_MS):
     if status != 200:
         S.die("%s: %s's bridge answered %d: %s" % (verb, member, status, out.get("error")), 1)
     if not out.get("ok"):
-        S.die("%s: %s refused: %s" % (verb, member, out.get("error")), 1)
+        code = " (%s)" % out["code"] if out.get("code") else ""
+        S.die("%s: %s refused%s: %s" % (verb, member, code, out.get("error")), 1)
     return session, dict(out.get("result") or {}, id=out.get("id"))
 
 
@@ -292,22 +296,74 @@ def cmd_model(a):
         a.member, result.get("model") or "its own model", result.get("effort") or "its own"))
 
 
-def cmd_compact(a):
-    """Asked during a turn, the compaction runs when the turn ends; asked
-    idle, it runs at once and this waits for its outcome, on the stream
-    subscribed before the command went."""
-    session = B.watch_session(a.member)
+def streamed(member, verb):
+    """The member's stream, its snapshot read: a command whose outcome
+    follows on the stream subscribes before it goes."""
+    session = B.watch_session(member)
     path = B.endpoint(session)
     if B.probe(path) is None:
         B.remove_stale(path)
-        no_bridge(a.member, "compact")
+        no_bridge(member, verb)
     events = follow_stream(path)
     try:
         first = events.get(timeout=FIRST_WAIT_S)
     except queue.Empty:
         first = None
     if not first or first.get("type") != "snapshot":
-        S.die("compact: %s's bridge did not stream" % a.member, 1)
+        S.die("%s: %s's bridge did not stream" % (verb, member), 1)
+    return events
+
+
+def cmd_read(a):
+    """One of the session's reads (DX5 `read`), as the mod answers it: JSON."""
+    _, result = bridged(a.member, "read", {"op": "read", "what": a.what})
+    if result is None:
+        no_bridge(a.member, "read")
+    result.pop("id", None)   # the command's, which bridged adds: no field of the read's
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+
+
+CONFIRMED = {"row": "by its row", "text": "by its text", "effect": "by its effect"}
+
+
+def cmd_command(a):
+    """A slash command run in the session as the desk runs one (DX5
+    `command`): the bridge routes it and answers at once, and this follows
+    its run to its end on the stream subscribed before it went, printing the
+    line read back. A `/reload-plugins` reloads the bridge mod itself, whose
+    successor says nothing of it: queued is all this prints."""
+    events = streamed(a.member, "command")
+    _, result = bridged(a.member, "command", {"op": "command", "name": a.name, "args": " ".join(a.args),
+                                              "from": "cli"})
+    if result is None:
+        no_bridge(a.member, "command")
+    print("queued (%s) id=%s" % (result.get("route"), result.get("id")), flush=True)
+    if a.name == "reload-plugins":
+        return
+    deadline = time.monotonic() + RAN_WAIT_S
+    while True:
+        try:
+            e = events.get(timeout=max(0.0, deadline - time.monotonic()))
+        except queue.Empty:
+            S.die("command: /%s did not run within %d s (it may still)" % (a.name, RAN_WAIT_S), 1)
+        if e is None:
+            S.die("command: %s's bridge ended before /%s ran" % (a.member, a.name), 1)
+        if e.get("type") == "run" and e.get("phase") == "end" and e.get("id") == result.get("id"):
+            break
+    settled, readback = e.get("settled") or {}, e.get("readback") or {}
+    if not settled.get("ok"):
+        S.die("command: /%s failed: %s" % (a.name, settled.get("error")), 1)
+    if readback.get("how") in CONFIRMED:
+        print("ran: %s (confirmed %s)" % (readback.get("text") or "", CONFIRMED[readback["how"]]))
+    else:
+        print("ran, unconfirmed: no line of it was read back")
+
+
+def cmd_compact(a):
+    """Asked during a turn, the compaction runs when the turn ends; asked
+    idle, it runs at once and this waits for its outcome, on the stream
+    subscribed before the command went."""
+    events = streamed(a.member, "compact")
     body = {"op": "compact"}
     if a.instructions:
         body["instructions"] = a.instructions

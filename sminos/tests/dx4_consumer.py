@@ -319,6 +319,7 @@ class Consumer:
         self.step_ends = []
         self.pages = []
         self.outputs = []
+        self.reads = []
         self.usage = []
         self.diff = None
         self.subagents = None
@@ -480,6 +481,8 @@ class Consumer:
             self.changes.append((time.monotonic(), body))
         elif kind == "output":
             self.outputs.append(body)
+        elif kind == "read":
+            self.reads.append(body)
         elif kind == "usage":
             self.usage.append(body)
         elif kind == "diff":

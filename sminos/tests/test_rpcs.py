@@ -42,6 +42,7 @@ import test_session_plane as tsp  # noqa: E402 — first: it makes this run's HO
 import test_policy_requests as tpr  # noqa: E402
 
 import sminos  # noqa: E402
+import sminos_bridge as bridgemod  # noqa: E402
 import sminos_codes as codes  # noqa: E402
 import sminos_policy as policy  # noqa: E402
 import sminos_requests as requests  # noqa: E402
@@ -198,7 +199,11 @@ class Mod(tpr.Bridge):
     """DC2's bridge child with this test as its mod: each command answered
     as bridge.tsx answers it. `turn` is the main turn running (None: idle);
     `hold` delays each answer; a steer's row is written to the transcript
-    before its answer, as the engine writes an appended row."""
+    before its answer, as the engine writes an appended row. A desk command
+    is answered `queued` at once, then its run's start and end posted, as
+    bridge.tsx's `after` does (`refuse_commands`: name → (code, reason) the
+    route check refuses; `hold_runs`: the end waits in `held_runs`, as a run
+    queued behind a turn; a `/reload-plugins` posts its start alone)."""
 
     def __init__(self, sid):
         self.commands = []
@@ -207,6 +212,9 @@ class Mod(tpr.Bridge):
         self.answer_steer = True  # False: the row is written, the answer never comes
         self.unknown = False      # True: loaded into a conversation, its turn state not known yet (DC2 27c46947)
         self.stop_fails = {}      # task id → the engine's error for its TaskStop
+        self.refuse_commands = {}
+        self.hold_runs = False
+        self.held_runs = []
         self.rows = []
         super().__init__(sid)
 
@@ -268,6 +276,23 @@ class Mod(tpr.Bridge):
             self.delivered.append(cmd["text"])
             self.post({"type": "delivered", "key": cmd["key"], "outcome": "submitted"})
             res = {"ok": True, "result": {"submitted": True}}
+        elif op == "command":
+            name, args = cmd.get("name"), cmd.get("args") or ""
+            if name in self.refuse_commands:
+                code, why = self.refuse_commands[name]
+                res = {"ok": False, "error": why, "code": code}
+            else:
+                res = {"ok": True, "result": {"queued": True, "route": "run", "id": cmd["id"]}}
+                run = {"type": "run", "id": cmd["id"], "name": name, "args": args, "t": 0}
+                after = [None, {**run, "phase": "start"}]
+                end = {**run, "phase": "end", "settled": {"ok": True},
+                       "readback": {"how": "row", "text": "Session renamed to: %s" % args, "uuid": "row-r1"}}
+                if name == "reload-plugins":
+                    pass
+                elif self.hold_runs:
+                    self.held_runs.append(end)
+                else:
+                    after.append(end)
         else:
             res = {"ok": False, "error": "unknown op: %s" % op}
         if op == "compact" and after:
@@ -343,6 +368,9 @@ class Checks(unittest.TestCase):
         self.mod.answer_steer = True
         self.mod.unknown = False
         self.mod.stop_fails = {}
+        self.mod.refuse_commands = {}
+        self.mod.hold_runs = False
+        self.mod.held_runs = []
         self.mod.commands.clear()
         self.clock = [time.time()]
         self.r = rpcs.Rpcs(KEY, "testhost", clock=lambda: self.clock[0])
@@ -485,7 +513,8 @@ class Checks(unittest.TestCase):
                            ("spawn", {"checkout": self.root, "brief": "b"}),
                            ("retire", {"session": self.plain.sid}),
                            ("resume", {"session": self.ended}),
-                           ("stop", {"session": self.bridged.sid, "taskId": "bro1"})):
+                           ("stop", {"session": self.bridged.sid, "taskId": "bro1"}),
+                           ("command", {"session": self.bridged.sid, "name": "rename", "args": "x"})):
             self.refused(self.send(name, args), "read-only")
         self.assertEqual(self.mod.commands, [], "nothing reached the bridge")
         self.assertEqual(launches(self.claude), [], "nothing launched")
@@ -637,7 +666,9 @@ class Checks(unittest.TestCase):
                            ("steer", {"session": self.ended, "text": "x"}),
                            ("interrupt", {"session": self.ended}),
                            ("stop", {"session": self.plain.sid, "taskId": "bplain1"}),
-                           ("stop", {"session": self.ended, "taskId": "bended1"})):
+                           ("stop", {"session": self.ended, "taskId": "bended1"}),
+                           ("command", {"session": self.plain.sid, "name": "rename", "args": "x"}),
+                           ("command", {"session": self.ended, "name": "rename", "args": "x"})):
             self.refused(self.send(name, args), "unsupported")
         self.assertEqual(self.mod.commands, [], "nothing reached a bridge")
 
@@ -788,6 +819,132 @@ class Checks(unittest.TestCase):
                              (self.pid, "testhost", self.bridged.sid, None, None))
         finally:
             reqs.close()
+
+    # ------------------------------------------------ a desk command (the desk control surface's M0)
+
+    def op_messages(self, reqs=None):
+        """The DX4 `op` messages gone up so far, the bridge's `run` events read first."""
+        if reqs is not None:
+            reqs.take()
+            self.r.ops(reqs.take_ops())
+        return [f["message"] for f in self.collect() if f.get("t") == "session" and f["message"]["kind"] == "op"]
+
+    def following(self):
+        reqs = requests.Requests(KEY, "testhost")
+        reqs.follow({self.bridged.sid: self.pid})
+        self.addCleanup(reqs.close)
+        self.assertTrue(wait_for(lambda: reqs.take() or self.bridged.sid in reqs.synced))
+        return reqs
+
+    def test_l_a_commands_shape(self):
+        for args in ({"name": ""}, {"name": "x" * 129}, {"name": "re\nname"}, {"name": 5}, {},
+                     {"name": "rename", "args": "x" * 4097}, {"name": "rename", "args": ["x"]}):
+            self.refused(self.send("command", {"session": self.bridged.sid, **args}), "bad-shape")
+        self.assertEqual(self.mod.ops("command"), [], "nothing reached the bridge")
+
+    def test_l_a_command_answers_at_once_and_its_run_follows_as_op_carrying_the_nonce(self):
+        reqs = self.following()
+        self.r.kinds = frozenset({"op"})
+        asked = self.send("command", {"session": self.bridged.sid, "name": "rename", "args": "desk-m0"})
+        o = self.outcome(asked)
+        cmd = self.mod.ops("command")[-1]
+        self.assertEqual(o, {"state": "done", "result": {"queued": True, "route": "run", "id": cmd["id"]}})
+        self.assertEqual((cmd["name"], cmd["args"], cmd["rpc"], cmd["from"]),
+                         ("rename", "desk-m0", asked["nonce"], "desk"))
+        got = wait_for(lambda: len(self.op_messages(reqs)) >= 2 and self.op_messages())
+        self.assertTrue(got, "the run's start and end, as DX4 op")
+        head = {"rpc": asked["nonce"], "op": "command", "id": cmd["id"], "name": "rename", "args": "desk-m0", "t": 0}
+        self.assertEqual([m["body"] for m in got],
+                         [{**head, "phase": "start"},
+                          {**head, "phase": "end", "settled": {"ok": True},
+                           "readback": {"how": "row", "text": "Session renamed to: desk-m0", "uuid": "row-r1"}}])
+        m = got[0]
+        self.assertEqual((m["project"], m["machine"], m["session"], m["sub"], m["n"]),
+                         (self.pid, "testhost", self.bridged.sid, None, None), "session-wide: no sub is needed")
+        self.assertNotIn("op_id", self.ledger()[asked["nonce"]], "the command is not kept once its run ended")
+
+    def test_l_a_refused_command_fails_with_the_bridges_code_first(self):
+        self.mod.refuse_commands = {"usage": ("panel", "opens a panel in the terminal; it would hold the session's "
+                                                       "queue")}
+        asked = self.send("command", {"session": self.bridged.sid, "name": "usage"})
+        o = self.refused(asked, "failed")
+        self.assertEqual(o["error"]["message"],
+                         "panel: opens a panel in the terminal; it would hold the session's queue")
+        self.assertNotIn("op_id", self.ledger()[asked["nonce"]], "nothing ran: nothing is kept for its run")
+
+    def test_l_a_hub_that_lists_no_op_is_sent_none(self):
+        reqs = self.following()
+        asked = self.send("command", {"session": self.bridged.sid, "name": "rename", "args": "x"})
+        self.assertEqual(self.outcome(asked)["state"], "done")
+        self.assertTrue(wait_for(lambda: reqs.take() or any(e.get("phase") == "end" for _, _, e in reqs.ops)),
+                        "the run's end was read")
+        self.assertEqual(self.op_messages(reqs), [], "none goes up")
+        self.assertEqual(self.r.messages, [], "and none is owed")
+
+    def test_l_a_restart_between_queued_and_ran_keeps_the_nonce(self):
+        """A8: the daemon restarts while the command waits for its turn; its
+        run's end still goes up under the RPC's nonce, read from the stream."""
+        reqs = self.following()
+        self.mod.hold_runs = True
+        asked = self.send("command", {"session": self.bridged.sid, "name": "rename", "args": "after"})
+        self.assertEqual(self.outcome(asked)["state"], "done")
+        self.assertEqual(self.ledger()[asked["nonce"]]["op_id"], self.mod.ops("command")[-1]["id"], "kept on the claim")
+        self.r = rpcs.Rpcs(KEY, "testhost", clock=lambda: self.clock[0])   # the daemon restarted
+        self.r.kinds = frozenset({"op"})
+        self.frames = []
+        self.mod.post(*self.mod.held_runs)
+        got = wait_for(lambda: [m for m in self.op_messages(reqs) if m["body"]["phase"] == "end"])
+        self.assertTrue(got, "the end, relayed after the restart")
+        self.assertEqual((got[0]["body"]["rpc"], got[0]["body"]["readback"]["how"]), (asked["nonce"], "row"))
+
+    def test_l_an_end_that_came_while_the_daemon_was_stopped_goes_up_from_the_bridges_file(self):
+        reqs = self.following()
+        self.mod.hold_runs = True
+        asked = self.send("command", {"session": self.bridged.sid, "name": "rename", "args": "while-down"})
+        self.assertEqual(self.outcome(asked)["state"], "done")
+        reqs.close()                                       # the daemon stops: nothing reads the stream
+        self.mod.post(*self.mod.held_runs)
+        kept = lambda: ((bridgemod.load_kept(self.bridged.sid).get("rpcs") or {}).get(asked["nonce"]) or {}).get("end")
+        self.assertTrue(wait_for(kept), "the child kept the end beside the answer")
+        self.r = rpcs.Rpcs(KEY, "testhost", clock=lambda: self.clock[0])   # and starts again
+        self.r.kinds = frozenset({"op"})
+        self.frames = []
+        got = wait_for(lambda: self.op_messages())
+        self.assertTrue(got, "the end, read from the bridge's file")
+        self.assertEqual([(m["body"]["rpc"], m["body"]["phase"], m["body"]["args"]) for m in got],
+                         [(asked["nonce"], "end", "while-down")])
+        self.assertNotIn("op_id", self.ledger()[asked["nonce"]], "forgotten once it went")
+        self.assertEqual(self.op_messages(), got, "and sent once")
+
+    def test_l_reload_plugins_is_done_by_another_child_answering_or_fails_at_its_bound(self):
+        reqs = self.following()
+        self.r.kinds = frozenset({"op"})
+        same = [os.stat(self.mod.sock).st_ino, self.mod.proc.pid]
+        reload = self.send("command", {"session": self.bridged.sid, "name": "reload-plugins"})
+        self.assertEqual(self.outcome(reload)["state"], "done")
+        cid = self.mod.ops("command")[-1]["id"]
+        self.assertTrue(wait_for(lambda: self.op_messages(reqs)), "its start")
+        self.r.effects(lambda sid: same)
+        self.assertEqual([m["body"]["phase"] for m in self.op_messages(reqs)], ["start"],
+                         "the child that took it answers still: not done")
+        self.r.effects(lambda sid: [same[0] + 1, same[1] + 1])
+        end = self.op_messages()[-1]["body"]
+        self.assertEqual({k: end[k] for k in ("rpc", "phase", "id", "name", "settled", "readback")},
+                         {"rpc": reload["nonce"], "phase": "end", "id": cid, "name": "reload-plugins",
+                          "settled": {"ok": True}, "readback": {"how": "effect"}})
+        # A second one, which no other child answers: failed at the bound, the claim kept across a restart.
+        again = self.send("command", {"session": self.bridged.sid, "name": "reload-plugins"})
+        self.assertEqual(self.outcome(again)["state"], "done")
+        self.r = rpcs.Rpcs(KEY, "testhost", clock=lambda: self.clock[0])
+        self.r.kinds = frozenset({"op"})
+        self.frames = []
+        self.r.effects(lambda sid: same)
+        self.assertEqual(self.op_messages(), [], "within its bound, nothing")
+        self.clock[0] += rpcs.RELOAD_WAIT_S
+        self.r.effects(lambda sid: same)
+        end = self.op_messages()[-1]["body"]
+        self.assertEqual((end["rpc"], end["settled"]["ok"], end["readback"]), (again["nonce"], False, {"how": "none"}))
+        self.assertTrue(end["settled"]["error"])
 
     def test_g_spawn_and_retire_through_sminos(self):
         tpr.set_policy({"read_only": False, "ceiling": "acceptEdits"})
@@ -1873,6 +2030,17 @@ class Uplink(unittest.TestCase):
                          [{"rpc": compact["nonce"], "phase": "start"},
                           {"rpc": compact["nonce"], "phase": "end", "tokensBefore": 9000, "tokensAfter": 1200}])
         self.ack(compact)
+
+    def test_h_a_desk_commands_run_reaches_the_browsers_as_dx4_op(self):
+        count = len(self.hub.messages())
+        asked = self.send(self.rpc("command", {"session": self.sid, "name": "rename", "args": "desk-m0"}))
+        o = self.outcome(asked)
+        self.assertEqual((o["state"], o["result"]["queued"], o["result"]["route"]), ("done", True, "run"))
+        ms = self.hub.wait(lambda ms: len([m for m in ms[count:] if m["kind"] == "op"]) >= 2 and ms, timeout=20)
+        self.assertIsNotNone(ms, "the run's start and end, relayed")
+        self.assertEqual([(m["body"]["rpc"], m["body"]["phase"]) for m in ms[count:] if m["kind"] == "op"],
+                         [(asked["nonce"], "start"), (asked["nonce"], "end")])
+        self.ack(asked)
 
     def human_from_outside(self, sid, alias, text):
         """A web `human` to the session: through a browser of the local hub,

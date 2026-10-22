@@ -23,7 +23,7 @@
     {"name": "list-agents", "bare": {"class": "run", "reason": "comes with M1", "forms": {"args": "none", "hint": "lists this machine's other Claude sessions too, outside this project"}, "enabled": false, "measured": "M"}},
     {"name": "subtask", "bare": {"class": "run", "reason": "comes with M4", "forms": {"args": "required"}, "enabled": false, "measured": "M"}},
     {"name": "model", "bare": {"class": "routed", "to": "model", "reason": "use Model instead: /model saves a default for new sessions", "enabled": true, "measured": "M"}},
-    {"name": "effort", "bare": {"class": "routed", "to": "model", "reason": "use Model instead: /model saves a default for new sessions", "enabled": true, "measured": "M"}},
+    {"name": "effort", "bare": {"class": "routed", "to": "model", "reason": "use Model instead: /effort saves a default for new sessions", "enabled": true, "measured": "M"}},
     {"name": "compact", "bare": {"class": "routed", "to": "compact", "enabled": true, "measured": "M"}},
     {"name": "btw", "bare": {"class": "routed", "to": "btw", "enabled": true, "measured": "I"}},
     {"name": "context", "bare": {"class": "routed", "to": "read usage", "enabled": true, "measured": "M"}},

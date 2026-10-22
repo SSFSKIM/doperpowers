@@ -28,7 +28,11 @@ extension in DC2's plan, reviewed clean at f0242560):
   mod named kept with its uuid, an unnamed copy of a settled one gone, the
   text so far of one still streaming kept);
 - `GET /status` says `ready` once the mod's first `resync` is applied, and
-  `GET /events` holds until then (at most 5 s, else 503);
+  `GET /events` holds until then (at most 5 s, else 503); it carries the
+  `capabilities` the last resync did (the desk control surface's DX5);
+- `POST /command` answers the desk's `read` as the mod does (`status`, and
+  "no read <what>" else); `silent` is a mod that never answered (504),
+  `slow` one that answers after `Endpoint.hold` seconds;
 - a later `resync`, or a subscriber BACKLOG events behind, ends a
   subscription.
 
@@ -58,6 +62,9 @@ import uuid as uuidlib
 from http.server import BaseHTTPRequestHandler
 
 READY_HOLD = 5.0
+# `read status`'s answer, as the mod's (DX5).
+STATUS = {"version": {"version": "2.1.307", "base": "2.1.307"}, "model": "claude-opus-5-5", "cwd": "/w", "root": "/w",
+          "repo": None, "surfaces": ["terminal"], "override": None}
 BACKLOG = 10000       # a subscriber this far behind is cut off, as the child cuts it off
 PLUGIN_ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 SMINOS = os.path.join(PLUGIN_ROOT, "skills", "sminos", "scripts", "sminos")
@@ -83,6 +90,8 @@ class Endpoint:
         self.ready = False
         self.resyncs = 0
         self.sent = 0         # events fanned out
+        self.capabilities = None   # the last resync's (DX5)
+        self.hold = 0.0       # s: how long a `slow` read is held
 
     def snapshot(self):
         return {"type": "snapshot", "session": self.session, "protocol": 1, "pid": os.getpid(),
@@ -105,6 +114,7 @@ class Endpoint:
         if kind == "resync":
             self.resyncs += 1
             self.ready = True
+            self.capabilities = e.get("capabilities") if isinstance(e.get("capabilities"), dict) else None
             self.cut = {k: v for k, v in (e.get("cut") or {}).items() if v}
             self.agents = {a.get("agentId"): dict(a) for a in e.get("agents") or []}
             self.named_blocks = e.get("namedBlocks") is True
@@ -182,6 +192,20 @@ class Endpoint:
             self.subscribers.append(q)
             return self.snapshot(), q
 
+    def command(self, body):
+        """POST /command: (status, answer), as the child answers for its mod."""
+        if body.get("op") != "read":
+            return 200, {"id": "c0", "ok": False, "error": "unknown op: %s" % body.get("op")}
+        what = body.get("what")
+        if what == "silent":
+            return 504, {"id": "c0", "error": "the session did not answer within 10000 ms"}
+        if what == "slow":
+            time.sleep(self.hold)
+            return 200, {"id": "c0", "ok": True, "result": {"slow": True}}
+        if what == "status":
+            return 200, {"id": "c0", "ok": True, "result": STATUS}
+        return 200, {"id": "c0", "ok": False, "error": "no read %s" % what}
+
     def end_all(self):
         with self.lock:
             for q in self.subscribers:
@@ -214,7 +238,8 @@ class _Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         ep = self.server.endpoint
         if self.path == "/status":
-            return self._send(200, {"session": ep.session, "pid": os.getpid(), "protocol": 1, "ready": ep.ready})
+            return self._send(200, {"session": ep.session, "pid": os.getpid(), "protocol": 1, "ready": ep.ready,
+                                    **({"capabilities": ep.capabilities} if ep.capabilities is not None else {})})
         if self.path != "/events":
             return self._send(404, {"error": "no route"})
         snap, q = ep.subscribe()
@@ -240,6 +265,13 @@ class _Handler(BaseHTTPRequestHandler):
                 if q in ep.subscribers:
                     ep.subscribers.remove(q)
             self.close_connection = True
+
+
+    def do_POST(self):
+        if not self.path.startswith("/command"):
+            return self._send(404, {"error": "no route"})
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
+        return self._send(*self.server.endpoint.command(body))
 
 
 class _Server(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
@@ -463,6 +495,7 @@ class FakeSession:
     # -------------------------------------------------- the endpoint
 
     real = False          # start_bridge spawns the real child, not the script
+    capabilities = None   # what the mod's resyncs say it can do (DX5): none, as a mod from before sminos 1.7.0
     legacy = False        # the mod (and the scripted child) from before the open-fast spec's M5: named blocks dropped, nothing declared
     child_env = None
 
@@ -568,7 +601,8 @@ class FakeSession:
         post): what still streams under this module, and its cut."""
         streaming = [m.entry() for m in self.messages if m.live()]
         self.post([{"type": "resync", "turns": [], "streaming": streaming, "agents": [dict(a) for a in self.agents],
-                    "cut": dict(self.cut), **({} if self.legacy else {"namedBlocks": True}), "t": 0}])
+                    "cut": dict(self.cut), **({} if self.legacy else {"namedBlocks": True}),
+                    **({"capabilities": self.capabilities} if self.capabilities is not None else {}), "t": 0}])
 
     def agent(self, phase, agent_id, **fields):
         """An `agent` spawn or stop event (DX5), as the mod posts it."""

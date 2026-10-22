@@ -297,6 +297,8 @@ function wholeResync(): BridgeEvent {
     // What the session started as: a child whose session start was lost (the
     // first post failed, and its recovery is this resync) still knows it.
     ...(state.info !== undefined && { sessionInfo: { session: state.session, ...state.info } }),
+    // What this module can do (DX5 `capabilities`): the child answers it in its status.
+    ...(state.capabilities !== undefined && { capabilities: state.capabilities }),
     t: Date.now(),
   }
 }

@@ -6,7 +6,7 @@ import { ASK_TOOL, PLUGIN, asyncAsks, observeAsks } from './ask'
 import { OFF_LINE, ON_LINE, isCuaEnabled, isLiveMarker, verdictOf } from './bridge-place'
 import type { Guard, Place, Verdict } from './bridge-place'
 import { EFFORTS, RESPAWN_FIRST_MS, RESPAWN_STEP_MS, capped, isEffort, loopKey, message, parsed, state } from './bridge-state'
-import type { Answer, Command, Decision, DeliveryKey, Override, Request, Steer, Stops, Wake } from './bridge-state'
+import type { Answer, Capabilities, Command, Decision, DeliveryKey, DeskRun, Override, Readback, Request, Steer, Stops, Wake } from './bridge-state'
 import { adoptKept, adoptSeed, emit, endStep, forgetLive, poster, pump, releaseStepEnd, requeue, resyncEvents, stopChild } from './bridge-stream'
 import {
   CHECKS_KEPT,
@@ -23,15 +23,17 @@ import {
   shownCall,
   withdrawAll,
 } from './bridge-requests'
-import { announceRow, compacted, enteredRow, exportRow, noticeRow, observeRow } from './bridge-rows'
+import { announceRow, commandRow, compacted, enteredRow, exportRow, noticeRow, observeRow, readBack } from './bridge-rows'
 import { claimAgent, forgetAgents, refreshAgents, watchAgents } from './bridge-agents'
+import { measuredFor, routeOf } from './bridge-commands'
 
 export { OFF_LINE, ON_LINE } from './bridge-place'
 export { BLOCK_TAIL, TEXT_CAP, capped, resetBridge } from './bridge-state'
 export { RESYNC_INPUT_CAP, RESYNC_MAX, STEP_END_WAIT_MS } from './bridge-stream'
 export { RECORD_WAIT_MS, TRANSCRIPT_RETRY_MS, onAskNote } from './bridge-requests'
-export { ROWS_POLLS, ROWS_POLL_MS, compacted } from './bridge-rows'
+export { READBACK_WAIT_MS, READBACK_WINDOW_MS, ROWS_POLLS, ROWS_POLL_MS, compacted } from './bridge-rows'
 export { AGENTS_REFRESH_MS } from './bridge-agents'
+export { FOLLOW_REASON, PANEL_REASON, SELF_REASON, UNKNOWN_REASON, UNMEASURED_REASON, measuredFor, routeOf, tableFor } from './bridge-commands'
 
 /**
  * The bridge (DC2): this session's live events go out, and commands come in,
@@ -88,7 +90,16 @@ export { AGENTS_REFRESH_MS } from './bridge-agents'
  *   read from the transcript), the rows exported as messages to the host,
  *   and the row a delivered prompt became;
  * - bridge-agents.tsx: the agents the module did not see spawn, learned from
- *   the engine's list.
+ *   the engine's list;
+ * - bridge-routes.tsx, bridge-commands.tsx: the desk's route table, written
+ *   from its fixture, and the rule that routes a command by it.
+ *
+ * The desk's ops (spec 2026-10-22-desk-control-surface-design.md): `read`
+ * answers from `$` at once (`status`); `command` runs one slash command the
+ * route table allows, answering `queued` at once and its outcome on the
+ * stream (`run` start and end, the end carrying what the command printed,
+ * read back from its rows), one desk command at a time. What the bridge can
+ * do (`capabilities`) every resync carries to the child.
  */
 
 export const HEARTBEAT_MS = 5_000
@@ -228,10 +239,23 @@ function recoverMainTurn(turnId: string) {
   emit({ type: 'turn', phase: 'start', turnId, agentId: null, text: null, recovered: true })
 }
 
-/** Answers one command line with a `result` event. M3 adds its ops here. */
 /** What a verb that needs the main turn's state says while it is unknown. */
 export const TURN_UNKNOWN = 'turn state unknown since the bridge reloaded; retry after the next model request'
 const TURN_OPS = new Set(['steer', 'interrupt', 'compact'])
+/** The ops this bridge answers (DX5 `capabilities.ops`), and the reads (`read`'s kinds). */
+export const OPS = ['ping', 'steer', 'interrupt', 'stop', 'model', 'compact', 'deliver', 'answer', 'read', 'command']
+export const READS = ['status']
+/** The DX5 protocol the capabilities speak: 2 is the desk's control surface (capabilities, `read`, `command`). */
+export const CAPABILITIES_PROTOCOL = 2
+/**
+ * How long a desk command's answer waits for the engine to refuse it at once:
+ * after an Esc the engine rejects `$.command.run` until the person types in
+ * the terminal (H-esc), and that refusal is the op's answer (`stopped`).
+ * Anything else, even a settle this soon, is answered `queued`.
+ */
+export const STOPPED_WAIT_MS = 250
+/** The engine's refusal of a plugin's run or prompt after an Esc, until the person sends input (2.1.300 `k_e`). */
+const STOPPED_REFUSAL = 'the session was stopped and nobody has sent input since'
 
 /**
  * Whether the main turn's state is still unknown, the session's engine record
@@ -251,19 +275,25 @@ async function isTurnStillUnknown(): Promise<boolean> {
   return state.isTurnUnknown
 }
 
+/** An op's answer, and what it leaves for after the answer is posted (a desk command's run, whose events follow its answer). */
+type Answered = Answer & { after?: () => void }
+
+/** Answers one command line with a `result` event, then does what the answer left for after it. */
 async function runCommand($: EngineInterface, command: Command) {
-  let answer: Answer
+  let answer: Answered
   try {
     // A false idle would be a lie: interrupt saying there is nothing to stop,
     // a compaction run at once, while a turn the module did not see runs.
-    answer = TURN_OPS.has(command.op) && (await isTurnStillUnknown()) ? { ok: false, error: TURN_UNKNOWN } : await commandAnswer($, command)
+    answer = TURN_OPS.has(command.op) && (await isTurnStillUnknown()) ? { ok: false, error: TURN_UNKNOWN, code: 'turn-unknown' } : await commandAnswer($, command)
   } catch (error) {
     answer = { ok: false, error: message(error) }
   }
-  emit({ type: 'result', id: command.id, op: command.op, ...answer })
+  const { after, ...result } = answer
+  emit({ type: 'result', id: command.id, op: command.op, ...result })
+  after?.()
 }
 
-function commandAnswer($: EngineInterface, command: Command): Answer | Promise<Answer> {
+function commandAnswer($: EngineInterface, command: Command): Answered | Promise<Answered> {
   switch (command.op) {
     case 'ping':
       return { ok: true, result: { pong: true, state: turnState() } }
@@ -281,8 +311,155 @@ function commandAnswer($: EngineInterface, command: Command): Answer | Promise<A
       return deliver($, command.key, command.text)
     case 'answer':
       return answerFromOutside(command)
+    case 'read':
+      return read($, command.what)
+    case 'command':
+      return deskCommand($, command)
     default:
       return { ok: false, error: `unknown op: ${command.op}` }
+  }
+}
+
+/** A remote's URL with any userinfo (`https://user:token@host/...`) taken out: a read leaves the machine uncoded. */
+export function withoutUserinfo(url: string): string {
+  return url.replace(/^([A-Za-z][A-Za-z0-9+.-]*:\/\/)[^@/]*@/, '$1')
+}
+
+/** The engine's release this session runs, as the route tables are keyed: its base, else its version. */
+const engineOf = (v: { version: string; base?: string }) => v.base ?? v.version
+
+/**
+ * What this module can do (DX5 `capabilities`): its own plugin's version
+ * (a session keeps the module it loaded, so a session that loaded before an
+ * update is told from a machine still behind), the engine and the table its
+ * commands route by.
+ */
+async function capabilitiesOf($: EngineInterface, engine: string): Promise<Capabilities> {
+  let sminos = 'unknown'
+  try {
+    const version = parsed(await $.fs.read(`${$.plugin.root}/.claude-plugin/plugin.json`))?.version
+    if (typeof version === 'string' && version !== '') {
+      sminos = version
+    }
+  } catch (error) {
+    $.ui.log(`bridge: the plugin's version was not read: ${message(error)}`, { to: 'debug' })
+  }
+  return { sminos, protocol: CAPABILITIES_PROTOCOL, engine, ops: [...OPS], reads: [...READS], routes: { measured: measuredFor(engine) } }
+}
+
+/** DX5 `read`: what the desk shows of the session, answered from `$` (spec §5; `status` alone at M0). */
+async function read($: EngineInterface, what: unknown): Promise<Answer> {
+  if (what !== 'status') {
+    return { ok: false, error: `no read ${String(what)}` }
+  }
+  const [version, model, cwd, root, repo, surfaces] = await Promise.all([
+    $.session.version(),
+    $.session.model(),
+    $.session.cwd(),
+    $.session.root(),
+    $.session.repo(),
+    $.session.surfaces(),
+  ])
+  return {
+    ok: true,
+    result: {
+      version: { version: version.version, ...(version.base !== undefined && { base: version.base }), ...(version.builtAt !== undefined && { builtAt: version.builtAt }) },
+      model,
+      cwd,
+      root,
+      repo: repo === null ? null : { ...(repo.remote !== null && { remote: withoutUserinfo(repo.remote) }) },
+      surfaces: [...surfaces],
+      override: state.override ?? null,
+    },
+  }
+}
+
+/** What a desk command's promise settled to, as its `run` end carries it; an Esc's refusal is `stopped`. */
+type Settled = { ok: true; text?: string; context?: string[] } | { ok: false; error: string; code?: 'stopped' }
+
+/**
+ * DX5 `command`: one slash command from the desk, routed by the table (an
+ * older or wrong client cannot run a panel: the route is checked here, on
+ * every op), then run with `$.command.run`, never awaited past the call: the
+ * answer is `queued` at once (mid-turn the engine queues even an `immediate`
+ * command, H-queue), and the outcome follows on the stream as `run` start and
+ * end. Desk commands run one at a time: the next is called once the last is
+ * read back (§6), so the rows of two are never confused. An Esc's refusal,
+ * which the engine gives at once, is the answer instead (`stopped`): nothing
+ * ran.
+ */
+async function deskCommand($: EngineInterface, command: Command): Promise<Answered> {
+  const { name, args } = command
+  if (typeof name !== 'string' || name === '' || (args !== undefined && typeof args !== 'string')) {
+    return { ok: false, error: 'a command is its name, and its args as text' }
+  }
+  const engine = state.capabilities?.engine ?? engineOf(await $.session.version())
+  const listed = (await $.command.list()).find((c) => c.name === name)
+  const routed = routeOf(engine, listed, name, args ?? '', $.plugin.name)
+  if ('refusal' in routed) {
+    return { ok: false, error: routed.refusal.reason, code: routed.refusal.code }
+  }
+  const run: DeskRun = { id: command.id, name, args: (args ?? '').trim() }
+  const queued: Answered = { ok: true, result: { queued: true, route: routed.route.class, id: command.id } }
+  if (state.deskRun !== undefined) {
+    state.deskQueue.push(run)
+    return queued
+  }
+  state.deskRun = run
+  const settled = callRun($, run)
+  let waited: { cancel: () => void } | undefined
+  const early = await Promise.race([settled, new Promise<undefined>((resolve) => (waited = $.clock.after(STOPPED_WAIT_MS, () => resolve(undefined))))])
+  waited?.cancel()
+  if (early !== undefined && !early.ok && early.code === 'stopped') {
+    releaseDeskRun($, run)
+    return { ok: false, error: early.error, code: 'stopped' }
+  }
+  return { ...queued, after: () => void followRun($, run, settled) }
+}
+
+/** The run of a desk command, settled as its `run` end carries it: never rejected. */
+function callRun($: EngineInterface, run: DeskRun): Promise<Settled> {
+  return $.command.run({ command: run.name, args: run.args }).then(
+    (r): Settled => ({
+      ok: true,
+      ...(r.text !== undefined && { text: capped(r.text).value as string }),
+      ...(r.context !== undefined && { context: capped([...r.context]).value as string[] }),
+    }),
+    (error: unknown): Settled => {
+      const why = message(error)
+      return { ok: false, error: why, ...(why.includes(STOPPED_REFUSAL) && { code: 'stopped' as const }) }
+    },
+  )
+}
+
+/**
+ * A desk command's run on the stream, after its answer: `run` start, then,
+ * once it settled and was read back, its end. A `/reload-plugins` reloads
+ * this module, which never posts that end (its posts are fenced off): the
+ * daemon finishes the op by the bridge answering again, and nothing here
+ * waits for it.
+ */
+async function followRun($: EngineInterface, run: DeskRun, settled: Promise<Settled>) {
+  emit({ type: 'run', phase: 'start', id: run.id, name: run.name, args: run.args })
+  if (run.name === 'reload-plugins') {
+    releaseDeskRun($, run)
+    return
+  }
+  const outcome = await settled
+  const readback: Readback = !outcome.ok ? { how: 'none' } : outcome.text !== undefined ? { how: 'text', text: outcome.text } : await readBack(run.name, run.args)
+  emit({ type: 'run', phase: 'end', id: run.id, name: run.name, args: run.args, settled: outcome, readback })
+  releaseDeskRun($, run)
+}
+
+/** A desk command done with: the next waiting is called. */
+function releaseDeskRun($: EngineInterface, run: DeskRun) {
+  if (state.deskRun !== run) {
+    return
+  }
+  const next = state.deskQueue.shift()
+  state.deskRun = next
+  if (next !== undefined) {
+    void followRun($, next, callRun($, next))
   }
 }
 
@@ -1349,13 +1526,16 @@ export async function bridgeStart($: EngineInterface, e: SessionStartInput) {
   if (!state.isSeeded) {
     state.isTurnUnknown = !state.freshLoops.has('main')
   }
+  const version = await $.session.version()
   state.info = {
     cwd: e.cwd,
     surface: e.surface,
     isInteractive: e.isInteractive,
     model: await $.session.model(),
-    version: (await $.session.version()).version,
+    version: version.version,
   }
+  // What this module can do, said in every resync, so the child answers it at once.
+  state.capabilities = await capabilitiesOf($, engineOf(version))
   // The agents running already, or over, learned before the first hello: its resync carries them.
   await refreshAgents()
   // So do the async asks open already, which the ask mod told of before
@@ -1761,6 +1941,8 @@ export function registerBridge(on: On) {
       if (agentId === null) {
         exportRow(e.door, stored.message, stored.uuid, e.origin)
         enteredRow(e.door, stored.message, stored.uuid, e.origin)
+        // As the engine wrote it: a hook beneath may empty a command's rows (doperpowers' reload).
+        commandRow(e.door, e.message, stored.uuid)
       }
     }
     await judgePlace($, next, transitionsAt)

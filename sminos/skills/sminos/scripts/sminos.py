@@ -66,6 +66,9 @@ member too, seat-less, from the first call that reads its project.
                    requests; the user's settings untouched (needs the bridge)
     sminos compact  <member> [instructions]               # compact now, or when the running turn ends
                    (needs the bridge)
+    sminos command  <member> <name> [args...]             # a slash command run in it as the desk runs one:
+                   routed by the bridge, queued, then the line it printed (needs the bridge)
+    sminos read     <member> <what>                       # one of its bridge's reads, as JSON (`status`)
     sminos decide   <member> <request> allow|deny [--message M]   # a permission prompt the session raised
                    (`watch` prints its id; a unique prefix will do), racing the terminal's own dialog
     sminos answer   <member> <request> <answer>...        # a question it asked, one answer per question
@@ -9498,6 +9501,14 @@ def cmd_compact(a):
     control_module().cmd_compact(a)
 
 
+def cmd_command(a):
+    control_module().cmd_command(a)
+
+
+def cmd_read(a):
+    control_module().cmd_read(a)
+
+
 def cmd_decide(a):
     control_module().cmd_decide(a)
 
@@ -9773,6 +9784,17 @@ def build_parser():
     co.add_argument("member")
     co.add_argument("instructions", nargs="?", default="")
     co.set_defaults(fn=cmd_compact)
+
+    cm = sub.add_parser("command", add_help=False)
+    cm.add_argument("member")
+    cm.add_argument("name")
+    cm.add_argument("args", nargs="*")
+    cm.set_defaults(fn=cmd_command)
+
+    rd = sub.add_parser("read", add_help=False)
+    rd.add_argument("member")
+    rd.add_argument("what")
+    rd.set_defaults(fn=cmd_read)
 
     de = sub.add_parser("decide", add_help=False)
     de.add_argument("member")

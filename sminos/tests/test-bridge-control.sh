@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 #
 # The bridge's control verbs and delivery (DC2 M2, DX5): `sminos steer`,
-# `interrupt`, `model`, `compact` through a session's endpoint, what the child
+# `interrupt`, `model`, `compact`, `read`, `command` through a session's
+# endpoint, the desk's ops as the child relays them, what the child
 # keeps across a module reload, and a delivery's last hop — for the owner's
 # event the bridge, keyed by the log event, then the engine supervisor's
 # `reply` for a --bg job with no bridge; for a peer's, and else, the inbox
@@ -69,6 +70,32 @@ last_op() { # lines-file op → the last command line of that op
 hits = [l for l in open(sys.argv[1]) if json.loads(l).get("op") == sys.argv[2]]
 print(hits[-1].strip() if hits else "")' "$1" "$2"
 }
+event_of() { # events-file type phase id → the first such event, or {}
+  python3 -c 'import json, sys
+for line in open(sys.argv[1]):
+    try:
+        e = json.loads(line)
+    except ValueError:
+        continue
+    if isinstance(e, dict) and (e.get("type"), e.get("phase"), e.get("id")) == tuple(sys.argv[2:5]):
+        print(json.dumps(e))
+        break
+else:
+    print("{}")' "$@"
+}
+has_event() { [ "$(event_of "$@")" != "{}" ]; }
+count_event() { # events-file type phase id → how many
+  python3 -c 'import json, sys
+n = 0
+for line in open(sys.argv[1]):
+    try:
+        e = json.loads(line)
+    except ValueError:
+        continue
+    n += isinstance(e, dict) and (e.get("type"), e.get("phase"), e.get("id")) == tuple(sys.argv[2:5])
+print(n)' "$@"
+}
+kept_rpc() { python3 -c 'import json, sys; print(json.dumps(json.load(open(sys.argv[1]))["rpcs"].get(sys.argv[2])))' "$KEPT" "$1"; }
 count_op() { python3 -c 'import json, sys; print(sum(1 for l in open(sys.argv[1]) if json.loads(l).get("op") == sys.argv[2]))' "$1" "$2"; }
 
 unset CLAUDE_CODE_SESSION_ID SMNS_INTERNAL DAEMON_HOME AGORA_HOME CLAUDE_CONFIG_DIR
@@ -151,6 +178,9 @@ if op == "post":            # sock events-json
 elif op == "get":           # sock url
     status, text = request(sys.argv[2], "GET", sys.argv[3])
     print(status, text)
+elif op == "command":       # sock body-json → the child's answer to a command, as the daemon posts one
+    status, text = request(sys.argv[2], "POST", "/command?wait=5000", sys.argv[3])
+    print(status, text)
 elif op == "inbox":         # path out — a session's inbox socket
     serve_lines(sys.argv[2], sys.argv[3], lambda line: None)
 elif op == "supervisor":    # path out mode — the engine supervisor's control.sock: `reply` answered ok, or refused
@@ -169,6 +199,8 @@ elif op == "fakemod":       # sminos session lines-file mode-file
     # mod would; mode-file says whether a turn is running ("busy"), the
     # session is idle ("idle"), or deliveries are refused ("refuse").
     sminos, session, out, modefile = sys.argv[2:6]
+    CAPS = {"sminos": "1.7.0", "protocol": 2, "engine": "2.1.307", "ops": ["ping", "read", "command"],
+            "reads": ["status"], "routes": {"measured": "2.1.307"}}
     # The child's stderr is the mod's debug log: kept beside the lines.
     child = subprocess.Popen([sminos, "bridge", "--session", session], stdout=subprocess.PIPE,
                              stderr=open(out + ".err", "a"), text=True)
@@ -183,7 +215,7 @@ elif op == "fakemod":       # sminos session lines-file mode-file
                 sock = msg["socket"]
                 keep_nonce(msg)
                 delivered = dict((msg.get("kept") or {}).get("delivered") or {})
-                post(sock, [{"type": "resync", "turns": [], "streaming": [], "agents": []}])
+                post(sock, [{"type": "resync", "turns": [], "streaming": [], "agents": [], "capabilities": CAPS}])
                 continue
             mode = open(modefile).read().strip() if os.path.exists(modefile) else "busy"
             cid, o = msg["id"], msg["op"]
@@ -225,6 +257,23 @@ elif op == "fakemod":       # sminos session lines-file mode-file
                     delivered[mark] = key["seq"]
                     events.append({"type": "delivered", "key": key, "outcome": "submitted"})
                     result = {"ok": True, "result": {"submitted": True}}
+            elif o == "read":
+                result = {"ok": True, "result": {"version": {"version": "2.1.307"}, "cwd": "/w"}} \
+                    if msg.get("what") == "status" else {"ok": False, "error": "no read %s" % msg.get("what")}
+            elif o == "command":
+                # As the bridge answers a desk command: at once, the run's
+                # start and end following on the stream (none for a panel).
+                name, args = msg.get("name"), msg.get("args") or ""
+                if name == "config":
+                    result = {"ok": False, "error": "opens a panel in the terminal; it would hold the session's queue",
+                              "code": "panel"}
+                else:
+                    result = {"ok": True, "result": {"queued": True, "route": "run", "id": cid}}
+                    run = {"type": "run", "id": cid, "name": name, "args": args}
+                    later = [{**run, "phase": "start"},
+                             {**run, "phase": "end", "settled": {"ok": True},
+                              "readback": {"how": "row", "text": "Session renamed to: %s" % args, "uuid": "row-r1"}}]
+                    threading.Timer(0.3, post, (sock, later)).start()
             else:
                 result = {"ok": False, "error": "unknown op: %s" % o}
             post(sock, events + [{"type": "result", "id": cid, "op": o, **result}])
@@ -382,11 +431,75 @@ assert_rc 0 "$RC" "compact on an idle session exits 0"
 assert_contains "$OUT" "900 → 100" "once it has run, with the counts"
 assert_equals "$(field_of "$(last_op "$T/lines-b" compact)" instructions)" "keep the plan" "its instructions reached the mod"
 
+echo "the desk's ops, bridged:"
+# The mod's resync carries what it can do; the child answers it as its own.
+ctl post "$SOCK" '[{"type":"resync","turns":[],"streaming":[],"agents":[],"override":{"model":"opus","effort":null},
+ "delivered":{"testhost/human":3,"other/x":1},
+ "capabilities":{"sminos":"1.7.0","protocol":2,"engine":"2.1.307","ops":["ping","read","command"],"reads":["status"],
+                 "routes":{"measured":"2.1.307"}}}]' >/dev/null
+STATUS="$(ctl get "$SOCK" /status)"
+assert_equals "$(field_of "${STATUS#* }" capabilities.engine)" "2.1.307" "the child's status carries the capabilities the mod's resync posted"
+assert_equals "$(field_of "$(snapshot "$SOCK")" capabilities.routes.measured)" "2.1.307" "and so does its snapshot"
+ctl post "$SOCK" '[{"type":"resync","turns":[],"streaming":[],"agents":[],"override":{"model":"opus","effort":null},
+ "delivered":{"testhost/human":3,"other/x":1}}]' >/dev/null
+STATUS="$(ctl get "$SOCK" /status)"
+assert_equals "$(field_of "${STATUS#* }" capabilities)" "null" "a resync without them (a mod from before) leaves none: the resync is the mod's whole state"
+ctl post "$SOCK" '[{"type":"resync","turns":[],"streaming":[],"agents":[],"override":{"model":"opus","effort":null},
+ "delivered":{"testhost/human":3,"other/x":1},
+ "capabilities":{"sminos":"1.7.0","protocol":2,"engine":"2.1.307","ops":["ping","read","command"],"reads":["status"],
+                 "routes":{"measured":"2.1.307"}}}]' >/dev/null
+run "$SMINOS" read "$SID" status
+assert_rc 0 "$RC" "read status exits 0"
+assert_equals "$(field_of "$OUT" version.version)" "2.1.307" "printing the mod's answer as JSON"
+assert_equals "$(field_of "$(last_op "$T/lines-b" read)" what)" "status" "the read reached the mod"
+run "$SMINOS" read "$SID" usage
+assert_rc 1 "$RC" "a read the mod does not serve exits 1"
+assert_contains "$OUT" "no read usage" "in the mod's words"
+WATCHD="$T/wd"
+"$SMINOS" watch "$SID" --json > "$WATCHD" 2>&1 &
+PIDS+=("$!")
+until_true 100 test -s "$WATCHD" || true
+run "$SMINOS" command "$SID" rename desk-m0
+assert_rc 0 "$RC" "command exits 0"
+assert_contains "$OUT" "queued (run)" "saying the bridge queued it, and its route"
+assert_contains "$OUT" "Session renamed to: desk-m0" "then the line read back once it ran"
+assert_contains "$OUT" "by its row" "and how it was confirmed"
+L="$(last_op "$T/lines-b" command)"
+assert_equals "$(field_of "$L" name)/$(field_of "$L" args)" "rename/desk-m0" "the name and arguments reached the mod"
+run "$SMINOS" command "$SID" config
+assert_rc 1 "$RC" "a command the bridge refuses exits 1"
+assert_contains "$OUT" "(panel)" "naming the refusal's code"
+assert_contains "$OUT" "hold the session's queue" "and its reason"
+# A desk RPC's command: its nonce is kept past the queued answer, on every
+# run event of that command, until its end; the end is kept beside the answer.
+OUTC="$(ctl command "$SOCK" '{"op":"command","name":"rename","args":"desk-m1","rpc":"nonce-q1"}')"
+CID="$(field_of "${OUTC#* }" id)"
+assert_equals "$(field_of "${OUTC#* }" result.queued)" "true" "the child answers a queued command at once"
+until_true 100 has_event "$WATCHD" run end "$CID" || true
+assert_equals "$(field_of "$(event_of "$WATCHD" run start "$CID")" rpc)" "nonce-q1" "its run's start, relayed, carries the RPC's nonce"
+assert_equals "$(field_of "$(event_of "$WATCHD" run end "$CID")" rpc)" "nonce-q1" "and so does its end"
+KR="$(kept_rpc nonce-q1)"
+assert_equals "$(field_of "$KR" ok)/$(field_of "$KR" result.queued)/$(field_of "$KR" end.readback.how)" "true/true/row" \
+  "the answer kept under the nonce, and the end beside it once it came"
+ctl post "$SOCK" "[{\"type\":\"run\",\"phase\":\"end\",\"id\":\"$CID\",\"name\":\"rename\",\"args\":\"desk-m1\",
+ \"settled\":{\"ok\":true},\"readback\":{\"how\":\"none\"}}]" >/dev/null
+two_ends() { [ "$(count_event "$WATCHD" run end "$CID")" -ge 2 ]; }
+until_true 100 two_ends || true
+LAST_END="$(python3 -c 'import json, sys
+hits = [json.loads(l) for l in open(sys.argv[1]) if l.startswith("{") and json.loads(l).get("type") == "run" and json.loads(l).get("phase") == "end" and json.loads(l).get("id") == sys.argv[2]]
+print(json.dumps(hits[-1]) if len(hits) > 1 else "{}")' "$WATCHD" "$CID")"
+assert_equals "$(field_of "$LAST_END" readback.how)/$(field_of "$LAST_END" rpc)" "none/null" "after its end the command's nonce is let go"
+OUTR="$(ctl command "$SOCK" '{"op":"command","name":"config","rpc":"nonce-r1"}')"
+assert_equals "$(field_of "${OUTR#* }" code)" "panel" "a refusal's code is in the child's answer"
+assert_equals "$(field_of "$(kept_rpc nonce-r1)" code)" "panel" "and in the answer kept under the nonce"
+
 echo "the control verbs, no bridge:"
 NOB=5c000002-0000-4000-8000-0000000000c2
-for verb in interrupt stop model compact; do
+for verb in interrupt stop model compact read command; do
   if [ "$verb" = model ]; then run "$SMINOS" model "$NOB" sonnet
   elif [ "$verb" = stop ]; then run "$SMINOS" stop "$NOB" bsrv0001
+  elif [ "$verb" = read ]; then run "$SMINOS" read "$NOB" status
+  elif [ "$verb" = command ]; then run "$SMINOS" command "$NOB" rename x
   else run "$SMINOS" "$verb" "$NOB"; fi
   assert_rc 4 "$RC" "$verb with no bridge exits 4"
   assert_contains "$OUT" "no bridge" "saying so"

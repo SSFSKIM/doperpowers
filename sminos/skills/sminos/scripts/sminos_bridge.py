@@ -54,10 +54,15 @@ hello. The file outlives the process too, so a session resumed under its id
 (a seat's `--resume`) goes on with both. A command that carries a desk RPC's
 nonce (`rpc`) has the mod's answer kept there under it (`rpcs`, the last
 RPCS_KEPT): what the daemon reads after a stop between sending the command
-and reading its answer (sminos_rpc's trace). A delivery the engine dropped
-after the mod answered `submitted` is kept there with its key and reason
-(`refused`, the last REFUSED_KEPT), which the daemon's delivery pass reports
-as a `failed` outcome (sminos_outcomes.report_refused).
+and reading its answer (sminos_rpc's trace). An op answered at once whose
+outcome follows on the stream (a desk `command` answered `queued`, DX5) keeps
+its nonce here past that answer, until its `run` end: every `run` event of
+it is relayed carrying `rpc`, and the end is kept beside the answer (`end`,
+its texts cut to END_TEXT_KEPT), for a daemon that was stopped when it came.
+A delivery the engine dropped after the mod answered `submitted` is kept
+there with its key and reason (`refused`, the last REFUSED_KEPT), which the
+daemon's delivery pass reports as a `failed` outcome
+(sminos_outcomes.report_refused).
 
 The mod's `inbox` event asks the child for a frame on the session's own
 inbox socket (the engine's messaging socket): after an Esc the engine refuses
@@ -107,6 +112,7 @@ SUBSCRIBER_BACKLOG = 10000     # a subscriber this far behind is cut off and res
 COMMAND_WAIT_MAX = 25000       # ms: under the 30 s an engine fetch waits
 AGENTS_KEPT = 200
 RPCS_KEPT = 100                # the mod's answers to commands a desk RPC sent, kept by its nonce
+END_TEXT_KEPT = 4096           # characters of a kept run end's texts (its readback's, its settled's)
 REFUSED_KEPT = 100             # deliveries the engine dropped after `submitted`, kept for the daemon to report
 REASON_MAX = 1000              # characters of a refusal's reason kept
 WATCHDOG_EVERY = 0.5
@@ -160,7 +166,8 @@ def load_kept(session):
     """What a child kept for the session: {"override": {model, effort} | None,
     "delivered": {mark: seq}}, a mark as _mark gives it, and, once a command
     sent for a desk RPC was answered, "rpcs": {nonce: the answer's op, ok,
-    result, error}; once the engine dropped a delivery the mod had submitted,
+    result, error, code, and, for a command, its run's end once it came};
+    once the engine dropped a delivery the mod had submitted,
     "refused": [{"key": {project?, writer, seq}, "reason"}], oldest first, the
     last REFUSED_KEPT, which the daemon reports
     (sminos_outcomes.report_refused); nothing kept reads as none."""
@@ -190,6 +197,20 @@ def _refusal(r):
     key = r.get("key") if isinstance(r, dict) else None
     return isinstance(key, dict) and isinstance(key.get("writer"), str) and type(key.get("seq")) is int \
         and isinstance(key.get("project", ""), str) and isinstance(r.get("reason"), str)
+
+
+def _kept_end(e):
+    """A run's end as the child keeps it beside its RPC's answer: its fields
+    but the stream's own, its texts cut, a settled run's context left out."""
+    end = {k: v for k, v in e.items() if k not in ("type", "n")}
+    for k in ("settled", "readback"):
+        if isinstance(end.get(k), dict):
+            part = {f: v for f, v in end[k].items() if f != "context"}
+            for f in ("text", "error"):
+                if isinstance(part.get(f), str) and len(part[f]) > END_TEXT_KEPT:
+                    part[f] = part[f][:END_TEXT_KEPT]
+            end[k] = part
+    return end
 
 
 def _mark(key):
@@ -561,11 +582,12 @@ class Bridge:
         self.turns = {}          # turnId → the open turn
         self.agents = {}         # agentId → what its spawn said, and whether it runs
         self.session_info = None
+        self.capabilities = None  # what the loaded mod can do (DX5), as its last resync said
         self.usage = None
         self.mod_events = 0
         self.mod_last = None
         self.waiters = {}        # command id → [threading.Event, result event]
-        self.rpc_of = {}         # command id → the nonce of the desk RPC it carries (`rpc`), until answered
+        self.rpc_of = {}         # command id → the nonce of the desk RPC it carries (`rpc`), until answered or ended
         self.closing = threading.Event()
         self.kept = load_kept(session)
         self.saved = self.kept    # what the file holds: kept is written until it is
@@ -698,6 +720,9 @@ class Bridge:
             if isinstance(e.get("sessionInfo"), dict):
                 ended = (self.session_info or {}).get("ended")
                 self.session_info = {**e["sessionInfo"], **({"ended": ended} if ended is not None else {})}
+            # What the mod can do: none from a mod that does not say (one
+            # from before sminos 1.7.0), since a resync is its whole state.
+            self.capabilities = e["capabilities"] if isinstance(e.get("capabilities"), dict) else None
             self.turns = {t.get("turnId"): dict(t) for t in e.get("turns") or []}
             streaming = {}
             for entry in e.get("streaming") or []:
@@ -799,17 +824,31 @@ class Bridge:
         elif kind == "usage":
             self.usage = dict(e)
         elif kind == "result":
-            rpc = self.rpc_of.pop(e.get("id"), None)
+            r = e.get("result") if isinstance(e.get("result"), dict) else {}
+            # An op answered at once, its outcome to follow, keeps its nonce
+            # until that outcome's end (DX5: `run`).
+            follows = e.get("ok") is True and (r.get("queued") is True or r.get("started") is True)
+            rpc = self.rpc_of.get(e.get("id")) if follows else self.rpc_of.pop(e.get("id"), None)
             if rpc is not None:
                 # Kept by the RPC's nonce, written with this batch: the trace
                 # a daemon that stopped before it read the answer finds.
                 answers = {n: a for n, a in (self.kept.get("rpcs") or {}).items() if n != rpc}
-                answers[rpc] = {k: e[k] for k in ("op", "ok", "result", "error") if k in e}
+                answers[rpc] = {k: e[k] for k in ("op", "ok", "result", "error", "code") if k in e}
                 self._keep({**self.kept, "rpcs": dict(list(answers.items())[-RPCS_KEPT:])})
             w = self.waiters.get(e.get("id"))
             if w is not None:
                 w[1] = e
                 w[0].set()
+        elif kind == "run":
+            rpc = self.rpc_of.get(e.get("id"))
+            if rpc is not None:
+                e["rpc"] = rpc   # relayed with it: the daemon names the op's outcome by it
+                if phase == "end":
+                    del self.rpc_of[e["id"]]
+                    answers = dict(self.kept.get("rpcs") or {})
+                    if rpc in answers:
+                        answers[rpc] = {**answers[rpc], "end": _kept_end(e)}
+                        self._keep({**self.kept, "rpcs": answers})
 
     def _export(self, e):
         """Rows the mod hands over for the project's log (DC2 G4): queued for
@@ -933,6 +972,7 @@ class Bridge:
                 "streaming": [_shown(m) for m in self.streaming.values()],
                 "agents": list(self.agents.values()), "usage": self.usage,
                 "override": self.kept["override"],
+                "capabilities": self.capabilities,
                 # Per loop, the last row whose notice is applied: every row up
                 # to it is the transcript's (on disk, or due at its step's
                 # end), none of them still streaming unnamed.
@@ -1095,7 +1135,8 @@ class Bridge:
         with self.lock:
             return {"session": self.session, "pid": os.getpid(), "protocol": PROTOCOL, "socket": self.socket,
                     "started": self.started, "ready": self.ready, "subscribers": len(self.subscribers),
-                    "mod": {"events": self.mod_events, "last": self.mod_last}}
+                    "mod": {"events": self.mod_events, "last": self.mod_last},
+                    **({"capabilities": self.capabilities} if self.capabilities is not None else {})}
 
     def agents_now(self):
         """GET /agents: the session's subagents as this child keeps them —
@@ -1139,7 +1180,7 @@ class Bridge:
                 return 504, {"id": cid, "error": "the session did not answer within %d ms" % wait_ms}
             r = w[1]
             out = {"id": cid, "ok": bool(r.get("ok"))}
-            for k in ("result", "error"):
+            for k in ("result", "error", "code"):
                 if k in r:
                     out[k] = r[k]
             return 200, out
