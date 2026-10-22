@@ -64,11 +64,17 @@ visudo -c >/dev/null
 
 # Claude Code, the native installer, as the user; on every PATH through a link.
 # Its own temporary directory, removed after: the installer leaves a socket behind.
-# A refused download (an HTTP 429) fails the run, rather than piping nothing
-# to bash and leaving a host without claude.
+# claude.ai refuses downloads in bursts (HTTP 429), so a failed install is
+# tried again over about a minute and a half, then fails the run rather than
+# leaving a host without claude.
 scratch="$(runuser -u "$DEVCLOUD_USER" -- mktemp -d)"
-runuser -u "$DEVCLOUD_USER" -- env HOME="$DEVCLOUD_HOME" TMPDIR="$scratch" \
-  bash -c 'set -o pipefail; curl -fsSL https://claude.ai/install.sh | bash'
+for try in 1 2 3 4; do
+  runuser -u "$DEVCLOUD_USER" -- env HOME="$DEVCLOUD_HOME" TMPDIR="$scratch" \
+    bash -c 'set -o pipefail; curl -fsSL https://claude.ai/install.sh | bash' && break
+  [[ $try -lt 4 ]] || { echo "Claude Code's install failed $try times" >&2; exit 1; }
+  echo "Claude Code's install failed; again in $((try * 15)) s" >&2
+  sleep $((try * 15))
+done
 rm -rf "$scratch"
 ln -sfn "$DEVCLOUD_HOME/.local/bin/claude" /usr/local/bin/claude
 [[ -x /usr/local/bin/claude ]] || { echo "Claude Code is not installed" >&2; exit 1; }
