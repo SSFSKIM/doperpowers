@@ -224,10 +224,12 @@ class TailnetTest(TailnetBase):
 class FakeApi:
     """The Tailscale API's token and node removal, as tsapi's callers see them."""
 
-    def __init__(self, scopes=("auth_keys", "devices:core"), delete_fails=0):
+    def __init__(self, scopes=("auth_keys", "devices:core"), delete_fails=0, node=None):
         self.scopes = list(scopes)
         self.delete_fails = delete_fails
         self.calls = []
+        self.node = node
+        self.joins_at_delete = []       # how many joins the stand-in tailscale had made at each removal
 
     def token(self, secret):
         self.calls.append(("token", secret == CLIENT))
@@ -235,6 +237,8 @@ class FakeApi:
 
     def delete_node(self, tok, node_id):
         self.calls.append(("delete", node_id))
+        if self.node:
+            self.joins_at_delete.append(json.loads(self.node.read_text()).get("joins"))
         if self.delete_fails:
             self.delete_fails -= 1
             raise StepError("HTTP 500")
@@ -250,7 +254,7 @@ class NodeKindBase(TailnetBase):
     def setUp(self):
         super().setUp()
         self.node = self.tmp / "node.json"
-        self.api = FakeApi()
+        self.api = FakeApi(node=self.node)
         for patch in (mock.patch.dict(os.environ, {"FAKE_TS_NODE": str(self.node)}),
                       mock.patch.object(steps.tsapi, "token", self.api.token),
                       mock.patch.object(steps.tsapi, "delete_node", self.api.delete_node)):
@@ -271,6 +275,13 @@ class NodeKindBase(TailnetBase):
 
     def verbs(self):
         return [c["argv"][0] for c in self.calls()]
+
+    def node_state(self, state):
+        """The node tailscaled holds, in backend state `state`."""
+        node = json.loads(self.node.read_text())
+        node["state"] = state
+        self.node.write_text(json.dumps(node))
+        return node
 
 
 class NodeKindTest(NodeKindBase):
@@ -322,8 +333,116 @@ class NodeKindTest(NodeKindBase):
         self.assertEqual((kind["ephemeral"], kind["state"], kind["name"]), (True, nodekind.JOINED, "devbox-a-1"))
         self.assertIn("not removed", kind["detail"])
         self.assertIn("named devbox-a-1, not devbox-a", detail)
-        self.assertFalse(nodekind.behind(desc(DEVCLOUD_EXPIRES="1792000000")),
-                         "a node of the right kind under another name would be rejoined again and again")
+        self.assertEqual(kind["remove"], [old], "the old node's id forgotten")
+        self.assertTrue(nodekind.behind(desc(DEVCLOUD_EXPIRES="1792000000")), "the lease service would not retry")
+
+    def test_a_pending_removal_is_retried_without_leaving_a_node_of_the_right_kind(self):
+        self.api.delete_fails = 3
+        old = self.joined_as(False)
+        with mock.patch.object(steps, "DELETE_PAUSE", 0), mock.patch.dict(os.environ, {"FAKE_TS_NAME_TAKEN": "1"}):
+            self.attach("1792000000")
+        current = json.loads(self.node.read_text())["id"]
+        self.log.unlink()
+        self.api.calls.clear()
+        detail = self.attach("1792000000")
+        self.assertEqual(self.api.calls, [("token", True), ("delete", old)])
+        self.assertNotIn("logout", self.verbs())
+        self.assertNotIn("up", self.verbs())
+        self.assertEqual(json.loads(self.node.read_text())["id"], current)
+        kind = nodekind.recorded()
+        self.assertEqual((kind["ephemeral"], kind["state"], kind["remove"]), (True, nodekind.JOINED, []))
+        self.assertFalse(nodekind.behind(desc(DEVCLOUD_EXPIRES="1792000000")))
+        self.assertIn(f"the old node {old} removed", detail)
+
+    def assert_the_next_join_removes(self, old):
+        """The old node, logged out and not yet removed, is remembered, and the
+        next join removes it through the API before its `up`."""
+        self.assertEqual(nodekind.recorded()["remove"], [old])
+        self.assertTrue(nodekind.behind(desc(DEVCLOUD_EXPIRES="1792000000")), "the lease service would not retry")
+        joins = json.loads(self.node.read_text())["joins"]
+        self.log.unlink(missing_ok=True)
+        self.api.calls.clear()
+        self.api.joins_at_delete.clear()
+        detail = self.attach("1792000000")
+        self.assertEqual(self.api.calls, [("token", True), ("delete", old)])
+        self.assertEqual(self.api.joins_at_delete, [joins], "removed after the up, which got <name>-1")
+        self.assertNotIn("logout", self.verbs())
+        kind = nodekind.recorded()
+        self.assertEqual((kind["ephemeral"], kind["state"], kind["remove"]), (True, nodekind.JOINED, []))
+        self.assertFalse(nodekind.behind(desc(DEVCLOUD_EXPIRES="1792000000")))
+        self.assertIn(f"the old node {old} removed", detail)
+
+    def test_a_host_stopping_between_the_logout_and_the_removal_leaves_the_removal_to_the_next_join(self):
+        class HostStopped(Exception):
+            pass
+        old = self.joined_as(False)
+        with mock.patch.object(steps.tsapi, "delete_node", side_effect=HostStopped), \
+                self.assertRaises(HostStopped):
+            self.attach("1792000000")
+        self.assert_the_next_join_removes(old)
+
+    def test_a_logout_that_fails_after_taking_effect_leaves_the_removal_to_the_next_join(self):
+        old = self.joined_as(False)
+        with mock.patch.dict(os.environ, {"FAKE_TS_LOGOUT_EXIT": "1", "FAKE_TS_LOGOUT_EFFECT": "1"}), \
+                self.assertRaises(StepError):
+            self.attach("1792000000")
+        self.assert_the_next_join_removes(old)
+
+    def test_a_pending_removal_that_still_fails_joins_anyway_and_keeps_the_id(self):
+        old = self.joined_as(False)
+        with mock.patch.dict(os.environ, {"FAKE_TS_LOGOUT_EXIT": "1", "FAKE_TS_LOGOUT_EFFECT": "1"}), \
+                self.assertRaises(StepError):
+            self.attach("1792000000")
+        self.api.scopes = ["auth_keys"]
+        with mock.patch.dict(os.environ, {"FAKE_TS_NAME_TAKEN": "1"}):
+            self.attach("1792000000")
+        kind = nodekind.recorded()
+        self.assertEqual((kind["ephemeral"], kind["state"], kind["name"], kind["remove"]),
+                         (True, nodekind.JOINED, "devbox-a-1", [old]))
+        self.assertIn("not removed", kind["detail"])
+
+    def test_a_stopped_or_starting_node_of_the_right_kind_resumes_with_a_plain_up(self):
+        for state in ("Stopped", "Starting"):
+            with self.subTest(state=state):
+                self.node.unlink(missing_ok=True)
+                held = self.joined_as(True)
+                self.node_state(state)
+                detail = self.attach("1792000000")
+                self.assertEqual(self.verbs(), ["status", "up", "status"])
+                self.assertEqual(self.api.calls, [])
+                node = json.loads(self.node.read_text())
+                self.assertEqual((node["id"], node["state"]), (held, "Running"))
+                kind = nodekind.recorded()
+                self.assertEqual((kind["state"], kind["detail"]), (nodekind.JOINED, "resumed as ephemeral"))
+                self.assertTrue(detail.startswith("resumed"), detail)
+
+    def test_a_stopped_node_of_the_other_kind_leaves_first(self):
+        # `up` would resume it as it was joined: non-ephemeral, whatever its key now says.
+        old = self.joined_as(False)
+        self.node_state("Stopped")
+        self.attach("1792000000")
+        self.assertEqual(self.verbs(), ["status", "status", "logout", "up", "status"])
+        self.assertEqual(self.api.calls, [("token", True), ("delete", old)])
+        node = json.loads(self.node.read_text())
+        self.assertNotEqual(node["id"], old)
+        self.assertTrue(node["ephemeral"], "the old node resumed and was recorded as the kind wanted")
+        self.assertTrue(nodekind.recorded()["ephemeral"])
+
+    def test_a_stopped_node_whose_rejoin_is_refused_stays_as_it_was(self):
+        self.api.scopes = ["auth_keys"]
+        old = self.joined_as(False)
+        self.node_state("Stopped")
+        detail = self.attach("1792000000")
+        self.assertEqual(set(self.verbs()), {"status"}, "a logout or a join ran")
+        self.assertTrue(detail.startswith("already joined; not rejoined as ephemeral: "), detail)
+        self.assertEqual(json.loads(self.node.read_text())["id"], old)
+        self.assertEqual(nodekind.recorded()["state"], nodekind.FAILED)
+
+    def test_a_boot_whose_status_cannot_be_read_still_joins(self):
+        with mock.patch.dict(os.environ, {"FAKE_TS_STATUS_EXIT": "1"}):
+            self.attach(None)
+        self.assertIn("up", self.verbs())
+        self.assertEqual(nodekind.recorded()["state"], nodekind.JOINED)
 
     def test_a_join_that_fails_after_the_logout_records_the_node_gone(self):
         self.joined_as(True)
@@ -401,6 +520,29 @@ class RejoinRunTest(NodeKindBase):
         self.assertEqual((kind["ephemeral"], kind["wanted"], kind["state"], kind["name"]),
                          (False, True, nodekind.FAILED, "devbox-a"))
         self.assertNotIn("logout", self.verbs())
+
+    def test_a_status_that_cannot_be_read_refuses_the_rejoin_and_changes_nothing(self):
+        old = self.joined_as(False)
+        with mock.patch.dict(os.environ, {"FAKE_TS_STATUS_EXIT": "1"}):
+            self.assertEqual(self.rejoin(), 1)
+        self.assertEqual(set(self.verbs()), {"status"}, "a logout or a join ran")
+        self.assertEqual(self.api.calls, [])
+        self.assertEqual(json.loads(self.node.read_text())["id"], old)
+        kind = nodekind.recorded()
+        self.assertEqual((kind["ephemeral"], kind["wanted"], kind["state"]), (False, True, nodekind.FAILED))
+        self.assertIn("status", kind["detail"])
+
+    def test_a_pending_removal_is_retried_by_the_rejoin(self):
+        self.api.delete_fails = 3
+        old = self.joined_as(False)
+        with mock.patch.object(steps, "DELETE_PAUSE", 0):
+            self.assertEqual(self.rejoin(), 0)
+        self.assertEqual(nodekind.recorded()["remove"], [old])
+        self.log.unlink()
+        self.assertEqual(self.rejoin(), 0)
+        self.assertEqual(self.api.calls[-1], ("delete", old))
+        self.assertNotIn("logout", self.verbs())
+        self.assertEqual(nodekind.recorded()["remove"], [])
 
     def test_a_refusal_before_any_change_fails_without_trying_again(self):
         self.api.scopes = ["auth_keys"]

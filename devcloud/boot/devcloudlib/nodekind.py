@@ -35,10 +35,14 @@ def name(ephemeral):
 
 
 def recorded(path=None):
-    """{ephemeral, wanted, state, detail, name, at}, or {} before the first
-    join recorded one. `ephemeral` is the kind of the node last joined; None
-    once a rejoin logged it out and did not join again. `name` is the one the
-    tailnet gave the node, which is the host's unless an older node held it."""
+    """{ephemeral, wanted, state, detail, name, remove, at}, or {} before the
+    first join recorded one. `ephemeral` is the kind of the node last joined;
+    None once a rejoin logged it out and did not join again. `name` is the
+    one the tailnet gave the node, which is the host's unless an older node
+    held it. `remove` lists the ids of old non-ephemeral nodes a rejoin
+    logged out and has not yet removed through the API: a logout leaves such
+    a node listed under the name, and only its id, recorded before the
+    logout, lets a later run remove it."""
     try:
         data = json.loads(pathlib.Path(path or PATH).read_text())
     except (FileNotFoundError, ValueError):
@@ -46,16 +50,31 @@ def recorded(path=None):
     return data if isinstance(data, dict) else {}
 
 
-def record(ephemeral, wanted_kind, state, detail="", name=None, path=None, now=time.time):
+def pending(path=None):
+    """The ids of the old nodes still to remove."""
+    return list(recorded(path).get("remove") or [])
+
+
+def record(ephemeral, wanted_kind, state, detail="", name=None, path=None, now=time.time, remove=None):
+    """The record replaced; `remove` carries over from the one before unless
+    given, so no write forgets an old node still to remove."""
     data = {"ephemeral": ephemeral, "wanted": wanted_kind, "state": state, "detail": detail, "name": name,
-            "at": int(now())}
+            "remove": pending(path) if remove is None else list(remove), "at": int(now())}
+    proc.write_file(pathlib.Path(path or PATH), json.dumps(data) + "\n", mode=0o644, dir_mode=0o755)
+
+
+def removed(node_id, path=None):
+    """`node_id` no longer waits for its removal; the rest of the record stays."""
+    data = recorded(path)
+    data["remove"] = [old for old in data.get("remove") or [] if old != node_id]
     proc.write_file(pathlib.Path(path or PATH), json.dumps(data) + "\n", mode=0o644, dir_mode=0o755)
 
 
 def behind(d, path=None):
     """Whether `d`'s node must be rejoined: an OAuth node not recorded as
-    joined with the kind its lease wants (an unknown kind counts as behind)."""
+    joined with the kind its lease wants (an unknown kind counts as behind),
+    or one whose old node still waits for its removal."""
     if not applies(d):
         return False
     data = recorded(path)
-    return data.get("state") != JOINED or data.get("ephemeral") is not wanted(d)
+    return data.get("state") != JOINED or data.get("ephemeral") is not wanted(d) or bool(data.get("remove"))

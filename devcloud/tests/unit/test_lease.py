@@ -223,6 +223,16 @@ class NodeKindFollowsTheLeaseTest(LeaseBase):
         self.tick(NOW)
         self.assertEqual(len(self.started), 1, "a node that follows its lease was rejoined")
 
+    def test_the_lease_service_restarts_a_rejoin_while_an_old_node_waits_for_its_removal(self):
+        nodekind.record(False, False, nodekind.JOINED, remove=["nOld1CNTRL"], path=self.kind)
+        self.tick(NOW)
+        self.assertEqual(len(self.started), 1)
+        nodekind.record(False, False, nodekind.JOINED, path=self.kind)
+        self.assertEqual(nodekind.pending(self.kind), ["nOld1CNTRL"], "a later write forgot the old node")
+        nodekind.removed("nOld1CNTRL", path=self.kind)
+        self.tick(NOW)
+        self.assertEqual(len(self.started), 1, "a node that follows its lease was rejoined")
+
     def test_nor_while_one_is_under_way_or_the_departure_has_started(self):
         self.joined_as(True)
         self.tick(NOW, active=True)
