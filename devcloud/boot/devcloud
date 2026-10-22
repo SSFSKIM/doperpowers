@@ -35,6 +35,8 @@
   devcloud ledger add <path>...
                              list credential paths before writing them (a driver's)
   devcloud vm ...            the VM driver, on a Mac (devcloud vm --help)
+  devcloud guard index [--fetch] | guard status --json
+                             build/inspect public-package evidence as the caller
   devcloud run-scrubbed -- <command>...
                              run a command with its output scrubbed of the host's values
                              (a systemd unit's ExecStart; runs as any user)
@@ -61,6 +63,11 @@ if sys.argv[1:2] == ["vm"]:
         print("devcloud vm: this copy of devcloud has no driver (a host's); drive from a Mac", file=sys.stderr)
         sys.exit(6)
     sys.exit(cli.command_line(sys.argv[2:]))
+if sys.argv[1:2] == ["guard"]:
+    # User-local evidence commands also run on Macs. Preserve the caller's PATH
+    # for npm discovery and do not import the host libraries or require root.
+    helper = os.path.join(os.path.dirname(HERE), "hooks", "mods", "secrets-provenance.py")
+    os.execv(sys.executable, [sys.executable, "-I", helper, *sys.argv[2:]])
 # The caller's PATH, for a command run-scrubbed runs as the unit gave it.
 CALLER_PATH = os.environ.get("PATH", "")
 # Root runs only system binaries: the user can write to their own PATH entries.
