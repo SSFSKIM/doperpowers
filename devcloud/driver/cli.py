@@ -5,7 +5,7 @@
   devcloud vm adopt <user@address> [--label L] [--project …]... [--ttl D] [--confirmed] [--dry-run]
   devcloud vm ls [--json]
   devcloud vm ssh <name> [--root] [-- command...]
-  devcloud vm lease <name> <duration> [--confirmed]
+  devcloud vm lease <name> <duration|keep> [--confirmed]
   devcloud vm down <name> [--force]
   devcloud vm image build [--account A] | image ls
   devcloud vm reap [--install]
@@ -74,7 +74,7 @@ def parser():
                        description="One argument after -- is a shell line as given; several are quoted as words.")
     p.add_argument("name")
     p.add_argument("--root", action="store_true")
-    p = sub.add_parser("lease", help="set a host's lease end to now + duration")
+    p = sub.add_parser("lease", help="set a host's lease end to now + duration, or keep it (--confirmed)")
     p.add_argument("name")
     p.add_argument("duration")
     p.add_argument("--confirmed", action="store_true")

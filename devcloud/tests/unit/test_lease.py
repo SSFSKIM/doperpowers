@@ -16,7 +16,7 @@ import unittest
 from unittest import mock
 
 import _path  # noqa: F401
-from devcloudlib import departure, descriptor, lease, proc, redact, status
+from devcloudlib import departure, descriptor, lease, nodekind, proc, redact, status
 from devcloudlib.proc import User
 
 from test_departure import DepartureBase
@@ -110,6 +110,131 @@ class LeaseSetCapTest(LeaseBase):
                     ["123", "--confirmed"]):
             with self.subTest(args=bad):
                 self.assertIsNone(lease.parse_set(bad))
+
+
+class LeaseSetKeepTest(LeaseBase):
+    def test_keep_removes_the_lease_and_prints_keep(self):
+        code, printed = self.set_lease(None)
+        self.assertEqual((code, printed), (0, "keep\n"))
+        self.assertFalse(descriptor.load(self.desc).leased)
+
+    def test_the_command_line_takes_keep_alone(self):
+        self.assertEqual(lease.parse_set(["keep"]), (None, None))
+        for bad in (["keep", "--cap", "4"], ["keep", "keep"], ["Keep"]):
+            with self.subTest(args=bad):
+                self.assertIsNone(lease.parse_set(bad))
+
+    def test_keep_is_refused_once_the_departure_has_started(self):
+        status.set_lifecycle("depart", "held", "held", path=self.paths["status_path"])
+        self.assertEqual(self.set_lease(None), (3, ""))
+        self.assertTrue(descriptor.load(self.desc).leased)
+
+
+JOINED = BASE.replace("DEVCLOUD_TAILSCALE=none\n", "DEVCLOUD_TAILSCALE=join\nDEVCLOUD_TS_SECRET=tailscale-client\n")
+
+
+class NodeKindFollowsTheLeaseTest(LeaseBase):
+    """A lease write that changes the kind the tailnet node should be starts
+    the rejoin as a transient unit and says so before the lease (§4.1); the
+    lease service starts it again while the node stays behind."""
+
+    def setUp(self):
+        super().setUp()
+        self.kind = self.tmp / "tailnet.json"
+        self.started = []
+        self.write(None)
+
+    def write(self, expires, adopted=False):
+        text = JOINED + (f"DEVCLOUD_EXPIRES={expires}\n" if expires is not None else "")
+        self.desc.write_text(text + ("DEVCLOUD_ADOPTED=1\n" if adopted else ""))
+        self.desc.chmod(0o600)
+
+    def joined_as(self, ephemeral):
+        nodekind.record(ephemeral, ephemeral, nodekind.JOINED, path=self.kind)
+
+    def set_lease(self, value, **kw):
+        start = lambda unit, argv, what="": self.started.append((unit, argv))  # noqa: E731
+        return super().set_lease(value, kind_path=self.kind, start=start, **kw)
+
+    def test_a_kept_node_given_a_lease_rejoins_as_ephemeral(self):
+        self.joined_as(False)
+        code, printed = self.set_lease(NOW + 7200)
+        self.assertEqual((code, printed), (0, f"rejoin ephemeral\n{NOW + 7200}\n"))
+        self.assertEqual(self.started, [("devcloud-rejoin", ["/usr/local/bin/devcloud", "rejoin"])])
+        kind = nodekind.recorded(self.kind)
+        self.assertEqual((kind["ephemeral"], kind["wanted"], kind["state"]), (False, True, nodekind.REJOINING),
+                         "a reader could take the earlier join for this rejoin's end")
+
+    def test_a_leased_node_kept_rejoins_as_non_ephemeral(self):
+        self.write(NOW + 7200)
+        self.joined_as(True)
+        self.assertEqual(self.set_lease(None), (0, "rejoin non-ephemeral\nkeep\n"))
+        self.assertEqual(len(self.started), 1)
+
+    def test_a_lease_that_keeps_the_kind_starts_nothing(self):
+        self.write(NOW + 7200)
+        self.joined_as(True)
+        self.assertEqual(self.set_lease(NOW + 9000), (0, f"{NOW + 9000}\n"))
+        self.write(None)
+        self.joined_as(False)
+        self.assertEqual(self.set_lease(None), (0, "keep\n"))
+        self.assertEqual(self.started, [])
+
+    def test_an_unrecorded_kind_or_a_failed_rejoin_counts_as_behind(self):
+        self.assertEqual(self.set_lease(NOW + 7200)[1], f"rejoin ephemeral\n{NOW + 7200}\n")
+        nodekind.record(None, True, nodekind.FAILED, "up failed", path=self.kind)
+        self.assertEqual(self.set_lease(NOW + 9000)[1], f"rejoin ephemeral\n{NOW + 9000}\n")
+
+    def test_a_unit_that_did_not_start_still_names_the_rejoin_for_the_lease_service(self):
+        self.joined_as(False)
+
+        def fail(unit, argv, what=""):
+            raise lease.StepError("systemd-run failed")
+        code, printed = super().set_lease(NOW + 7200, kind_path=self.kind, start=fail)
+        self.assertEqual((code, printed), (0, f"rejoin ephemeral\n{NOW + 7200}\n"))
+        self.assertTrue(descriptor.load(self.desc).leased)
+
+    def test_a_refused_write_starts_nothing(self):
+        self.joined_as(False)
+        self.assertEqual(self.set_lease(NOW + 5 * 3600, cap=NOW + 3600)[0], lease.OVER_CAP)
+        status.set_lifecycle("depart", "held", "held", path=self.paths["status_path"])
+        self.assertEqual(self.set_lease(NOW + 600)[0], 3)
+        self.assertEqual(self.started, [])
+
+    def test_a_fallback_key_node_has_no_kind_to_follow(self):
+        self.desc.write_text(BASE.replace("DEVCLOUD_TAILSCALE=none\n",
+                                          "DEVCLOUD_TAILSCALE=join\nDEVCLOUD_TS_AUTHKEY_FILE=/etc/devcloud/ts.key\n"))
+        self.assertEqual(self.set_lease(NOW + 7200), (0, f"{NOW + 7200}\n"))
+
+    def tick(self, now, active=False):
+        said = []
+        code = lease.tick(self.user, state_path=self.tmp / "lease.json", now=lambda: now,
+                          active=lambda unit: active,
+                          start=lambda unit, argv, what="": self.started.append((unit, argv)),
+                          warn=lambda d: None, say=said.append, kind_path=self.kind, **self.paths)
+        self.assertEqual(code, 0)
+        return said
+
+    def test_the_lease_service_restarts_a_rejoin_while_the_node_is_behind_on_a_kept_host_too(self):
+        self.joined_as(True)                   # kept, but the node is still ephemeral
+        self.tick(NOW)
+        self.assertEqual(self.started, [("devcloud-rejoin", ["/usr/local/bin/devcloud", "rejoin"])])
+        self.joined_as(False)
+        self.tick(NOW)
+        self.assertEqual(len(self.started), 1, "a node that follows its lease was rejoined")
+
+    def test_nor_while_one_is_under_way_or_the_departure_has_started(self):
+        self.joined_as(True)
+        self.tick(NOW, active=True)
+        status.set_lifecycle("depart", "held", "held", path=self.paths["status_path"])
+        self.tick(NOW)
+        self.assertEqual(self.started, [])
+
+    def test_a_leased_host_behind_rejoins_before_its_lease_end_departs(self):
+        self.write(NOW)
+        self.joined_as(False)
+        self.tick(NOW)
+        self.assertEqual([unit for unit, _ in self.started], ["devcloud-rejoin", "devcloud-depart"])
 
 
 class TickTest(LeaseBase):
@@ -216,7 +341,8 @@ class PausedReleaseTest(DepartureBase):
     def test_a_lease_renewed_before_the_unit_runs_stops_the_release(self):
         self.write_descriptor(departure_now := 1_792_000_000)
         paths = dict(desc_path=self.tmp / "boot.env", lock_path=self.tmp / "lifecycle.lock",
-                     status_path=self.tmp / "status.json")
+                     status_path=self.tmp / "status.json", kind_path=self.tmp / "tailnet.json")
+        nodekind.record(True, True, nodekind.JOINED, path=paths["kind_path"])     # leased, and ephemeral
         started = []
         lease.tick(self.user, state_path=self.tmp / "lease.json", now=lambda: departure_now + 5,
                    active=lambda unit: False, start=lambda unit, argv: started.append(unit), say=lambda m: None,

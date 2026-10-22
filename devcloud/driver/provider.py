@@ -225,12 +225,12 @@ class Client:
             raise NotOwned(f"{current['name']} lost its devcloud label; not going to {what} it")
         return current
 
-    def set_labels(self, server_id, labels, merge=False):
+    def set_labels(self, server_id, labels, merge=False, drop=()):
         """`set-labels` after a `get` that still finds the devcloud label;
-        `merge` lays `labels` over the labels read then, else they are the
-        whole set."""
+        `merge` lays `labels` over the labels read then, less the keys in
+        `drop`, else they are the whole set."""
         current = self._owned(server_id, "relabel")
-        full = {**current["labels"], **labels} if merge else labels
+        full = {k: v for k, v in {**current["labels"], **labels}.items() if k not in drop} if merge else labels
         return _vm(self, self.call("set-labels", {"id": str(server_id), "labels": full}), "set-labels")
 
     def delete(self, server_id, fence=None):

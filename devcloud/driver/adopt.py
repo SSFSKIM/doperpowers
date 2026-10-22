@@ -311,12 +311,13 @@ def _finished(ctx, host):
 def lease(ctx, record, wanted, confirmed):
     """The lease on the host alone, under its lock, then the record: there
     are no labels (§6.5). Past the lifetime cap from the adoption, only with
-    the person's yes, as for a VM."""
-    cap = None if confirmed else record.created + ctx.profile.caps.lease_max
-    printed = hostctl.lease_set(ctx, record.host, wanted, cap=cap)
-    record.expires, record.lifetime = printed, "ttl"
+    the person's yes, as for a VM; `wanted` None keeps it (the caller holds
+    that yes). Returns the host's LeaseSet."""
+    cap = None if confirmed or wanted is None else record.created + ctx.profile.caps.lease_max
+    done = hostctl.lease_set(ctx, record.host, wanted, cap=cap)
+    record.expires, record.lifetime = done.expires, "keep" if done.expires is None else "ttl"
     save(ctx, record)
-    return printed
+    return done
 
 
 def down(ctx, record, force):

@@ -4,6 +4,7 @@ root-only file (never in an argument list), or with the fallback key file.
 A fake `tailscale` on PATH records every call. Every value is made up."""
 
 import hashlib
+import io
 import json
 import os
 import pathlib
@@ -12,7 +13,7 @@ import unittest
 from unittest import mock
 
 import _path  # noqa: F401
-from devcloudlib import descriptor, proc, services, status, steps
+from devcloudlib import descriptor, lease, nodekind, proc, services, status, steps, tsapi
 from devcloudlib.proc import StepError
 
 CLIENT = "tskey-client-madeupid-MadeUpClientSecret7Qx2"
@@ -52,7 +53,7 @@ class BootOrderTest(unittest.TestCase):
         self.assertEqual(status.STEPS, tuple(name for name, _ in steps.BOOT) + ("projects",))
 
 
-class TailnetTest(unittest.TestCase):
+class TailnetBase(unittest.TestCase):
     def setUp(self):
         self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="devcloud-tailnet-"))
         bin_dir = self.tmp / "bin"
@@ -60,7 +61,8 @@ class TailnetTest(unittest.TestCase):
         (bin_dir / "tailscale").symlink_to(FAKE_TAILSCALE)
         self.log = self.tmp / "calls.jsonl"
         self.run_dir = self.tmp / "run"
-        for patch in (mock.patch.dict(os.environ, {"PATH": f"{bin_dir}:{os.environ['PATH']}",
+        self.kind = self.tmp / "tailnet.json"
+        for patch in (mock.patch.object(nodekind, "PATH", self.kind),mock.patch.dict(os.environ, {"PATH": f"{bin_dir}:{os.environ['PATH']}",
                                                    "FAKE_TS_LOG": str(self.log)}),
                       mock.patch.object(steps, "RUN_DIR", self.run_dir),
                       mock.patch.object(proc, "LOG_DIR", self.tmp / "log"),
@@ -81,6 +83,8 @@ class TailnetTest(unittest.TestCase):
                                                                    "tailscale-client": CLIENT + "\n"})
         return r
 
+
+class TailnetTest(TailnetBase):
     def test_bootstrap_secrets_fetch_the_config_token_and_the_oauth_client(self):
         r = self.boot_run(desc())
         detail = steps.bootstrap_secrets(r)
@@ -104,7 +108,7 @@ class TailnetTest(unittest.TestCase):
         r = self.boot_run(desc())
         steps.bootstrap_secrets(r)
         detail = steps.tailnet_attach(r)
-        status, up = self.calls()
+        status, up = self.calls()[:2]
         self.assertEqual(status["argv"][:2], ["status", "--json"])
         self.assertEqual(up["argv"][0], "up")
         self.assertIn("--advertise-tags=tag:devcloud", up["argv"])
@@ -144,6 +148,7 @@ class TailnetTest(unittest.TestCase):
     def test_an_already_joined_node_skips_the_join_and_drops_a_leftover_key_file(self):
         key = self.tmp / "ts.key"
         key.write_text("tskey-auth-madeup-OneTimeKey5Hy6\n")
+        nodekind.record(False, False, nodekind.JOINED, path=self.kind)       # kept, and joined as such
         for d in (desc(), desc(DEVCLOUD_TS_SECRET=None, DEVCLOUD_TS_AUTHKEY_FILE=str(key))):
             with self.subTest(oauth=bool(d.ts_secret)), mock.patch.dict(os.environ, {"FAKE_TS_STATE": "Running"}):
                 self.log.unlink(missing_ok=True)
@@ -160,17 +165,21 @@ class TailnetTest(unittest.TestCase):
                 r = self.boot_run(desc(DEVCLOUD_EXPIRES=expires))
                 steps.bootstrap_secrets(r)
                 detail = steps.tailnet_attach(r)
-                self.assertEqual(self.calls()[-1]["key_attributes"], f"ephemeral={ephemeral}&preauthorized=true")
-                self.assertEqual("ephemeral" in detail, bool(expires))
+                up = [c for c in self.calls() if c["argv"][0] == "up"][-1]
+                self.assertEqual(up["key_attributes"], f"ephemeral={ephemeral}&preauthorized=true")
+                self.assertTrue(detail.endswith("ephemeral (leased)" if expires else "non-ephemeral (kept)"), detail)
 
-    def test_an_already_joined_node_keeps_what_it_was(self):
-        with mock.patch.dict(os.environ, {"FAKE_TS_STATE": "Running"}):
+    def test_a_join_records_the_kind_and_the_name_the_tailnet_gave(self):
+        node = self.tmp / "node.json"
+        with mock.patch.dict(os.environ, {"FAKE_TS_NODE": str(node)}):
             r = self.boot_run(desc(DEVCLOUD_EXPIRES="1792000000"))
             steps.bootstrap_secrets(r)
-            self.assertEqual(steps.tailnet_attach(r), "already joined")
-        self.assertEqual([c["argv"][0] for c in self.calls()], ["status"])
+            steps.tailnet_attach(r)
+        kind = nodekind.recorded()
+        self.assertEqual((kind["ephemeral"], kind["state"], kind["name"]), (True, nodekind.JOINED, "devbox-a"))
 
     def test_a_tailnet_only_inbound_closes_the_public_port_after_the_join(self):
+        nodekind.record(False, False, nodekind.JOINED, path=self.kind)
         order = []
         with mock.patch.object(steps.inbound, "apply", lambda: order.append("inbound") or "inbound closed"):
             for state in ("NeedsLogin", "Running"):
@@ -210,6 +219,236 @@ class TailnetTest(unittest.TestCase):
                                    DEVCLOUD_ROLE="sandbox"))
             steps.tailnet_attach(r)
         self.assertEqual(self.calls(), [])
+
+
+class FakeApi:
+    """The Tailscale API's token and node removal, as tsapi's callers see them."""
+
+    def __init__(self, scopes=("auth_keys", "devices:core"), delete_fails=0):
+        self.scopes = list(scopes)
+        self.delete_fails = delete_fails
+        self.calls = []
+
+    def token(self, secret):
+        self.calls.append(("token", secret == CLIENT))
+        return tsapi.Token("made-up-access-token", self.scopes)
+
+    def delete_node(self, tok, node_id):
+        self.calls.append(("delete", node_id))
+        if self.delete_fails:
+            self.delete_fails -= 1
+            raise StepError("HTTP 500")
+        return "removed"
+
+
+class NodeKindBase(TailnetBase):
+    """A joined node whose kind does not follow its lease rejoins as the kind
+    it wants, under the same name: an ephemeral node leaves at its logout; a
+    non-ephemeral one, which a logout leaves listed, is removed through the
+    API after it (§4.1, measured 2026-10-22)."""
+
+    def setUp(self):
+        super().setUp()
+        self.node = self.tmp / "node.json"
+        self.api = FakeApi()
+        for patch in (mock.patch.dict(os.environ, {"FAKE_TS_NODE": str(self.node)}),
+                      mock.patch.object(steps.tsapi, "token", self.api.token),
+                      mock.patch.object(steps.tsapi, "delete_node", self.api.delete_node)):
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def joined_as(self, ephemeral):
+        r = self.boot_run(desc(DEVCLOUD_EXPIRES="1792000000" if ephemeral else None))
+        steps.bootstrap_secrets(r)
+        steps.tailnet_attach(r)
+        self.log.unlink(missing_ok=True)
+        return json.loads(self.node.read_text())["id"]
+
+    def attach(self, expires):
+        r = self.boot_run(desc(DEVCLOUD_EXPIRES=expires))
+        steps.bootstrap_secrets(r)
+        return steps.tailnet_attach(r)
+
+    def verbs(self):
+        return [c["argv"][0] for c in self.calls()]
+
+
+class NodeKindTest(NodeKindBase):
+    def test_a_kept_node_given_a_lease_is_removed_after_its_logout_and_joins_ephemeral(self):
+        old = self.joined_as(False)
+        detail = self.attach("1792000000")
+        self.assertEqual(self.api.calls, [("token", True), ("delete", old)])
+        self.assertEqual(self.verbs(), ["status", "status", "logout", "up", "status"])
+        self.assertEqual(self.calls()[3]["key_attributes"], "ephemeral=true&preauthorized=true")
+        kind = nodekind.recorded()
+        self.assertEqual((kind["ephemeral"], kind["state"], kind["name"]), (True, nodekind.JOINED, "devbox-a"))
+        self.assertIn("rejoined", detail)
+        self.assertIn(f"the old node {old} removed", detail)
+
+    def test_a_leased_node_kept_leaves_at_its_logout_without_the_api(self):
+        self.joined_as(True)
+        detail = self.attach(None)
+        self.assertEqual(self.api.calls, [])
+        self.assertEqual(self.verbs(), ["status", "logout", "up", "status"])
+        self.assertEqual(self.calls()[2]["key_attributes"], "ephemeral=false&preauthorized=true")
+        self.assertEqual(nodekind.recorded()["ephemeral"], False)
+        self.assertIn("left at its logout", detail)
+
+    def test_a_node_of_no_recorded_kind_is_removed_too(self):
+        self.joined_as(True)
+        self.kind.unlink()
+        self.attach("1792000000")
+        self.assertEqual([c[0] for c in self.api.calls], ["token", "delete"])
+        self.assertTrue(nodekind.recorded()["ephemeral"])
+
+    def test_a_client_that_may_not_remove_nodes_changes_nothing_and_does_not_fail_the_boot(self):
+        self.api.scopes = ["auth_keys", "devices:core:read"]
+        self.joined_as(False)
+        detail = self.attach("1792000000")
+        self.assertEqual(set(self.verbs()), {"status"}, "a logout or a join ran")
+        self.assertTrue(detail.startswith("already joined; not rejoined as ephemeral: "), detail)
+        self.assertIn("devices:core", detail)
+        kind = nodekind.recorded()
+        self.assertEqual((kind["ephemeral"], kind["wanted"], kind["state"]), (False, True, nodekind.FAILED))
+        self.assertTrue(nodekind.behind(desc(DEVCLOUD_EXPIRES="1792000000")), "the lease service would not retry")
+
+    def test_a_removal_that_keeps_failing_still_joins_and_names_the_name_it_got(self):
+        self.api.delete_fails = 3
+        old = self.joined_as(False)
+        with mock.patch.object(steps, "DELETE_PAUSE", 0), mock.patch.dict(os.environ, {"FAKE_TS_NAME_TAKEN": "1"}):
+            detail = self.attach("1792000000")
+        self.assertEqual(self.api.calls[1:], [("delete", old)] * 3)
+        kind = nodekind.recorded()
+        self.assertEqual((kind["ephemeral"], kind["state"], kind["name"]), (True, nodekind.JOINED, "devbox-a-1"))
+        self.assertIn("not removed", kind["detail"])
+        self.assertIn("named devbox-a-1, not devbox-a", detail)
+        self.assertFalse(nodekind.behind(desc(DEVCLOUD_EXPIRES="1792000000")),
+                         "a node of the right kind under another name would be rejoined again and again")
+
+    def test_a_join_that_fails_after_the_logout_records_the_node_gone(self):
+        self.joined_as(True)
+        with mock.patch.dict(os.environ, {"FAKE_TS_EXIT": "1"}), self.assertRaises(StepError):
+            self.attach(None)
+        kind = nodekind.recorded()
+        self.assertEqual((kind["ephemeral"], kind["state"]), (None, nodekind.FAILED))
+        self.assertEqual(list(self.run_dir.glob("tailscale-auth-*")), [])
+
+
+class RejoinRunTest(NodeKindBase):
+    """`devcloud rejoin`, the devcloud-rejoin unit's run."""
+
+    def setUp(self):
+        super().setUp()
+        self.status = self.tmp / "status.json"
+        self.said = []
+        for patch in (mock.patch.object(status, "PATH", self.status),
+                      mock.patch.object(lease, "LOCK", self.tmp / "lifecycle.lock"),
+                      mock.patch.object(steps, "_say", self.said.append),
+                      mock.patch.object(steps, "_fetch_text", lambda r, name: CLIENT)):
+            patch.start()
+            self.addCleanup(patch.stop)
+        self.expires = "1792000000"
+
+    def rejoin(self):
+        def load(r):
+            r.desc = desc(DEVCLOUD_EXPIRES=self.expires)
+            r.tokens = FakeTokens({})
+        with mock.patch.object(steps.Run, "load", load):
+            return steps.rejoin(sleep=lambda seconds: None)
+
+    def test_rejoins_a_kept_node_given_a_lease(self):
+        self.joined_as(False)
+        self.assertEqual(self.rejoin(), 0)
+        self.assertTrue(nodekind.recorded()["ephemeral"])
+        self.assertIn("rejoin: rejoined", self.said[-1])
+
+    def test_nothing_to_do_for_a_node_that_follows_its_lease(self):
+        self.joined_as(True)
+        self.assertEqual(self.rejoin(), 0)
+        self.assertEqual(self.calls(), [])
+        self.assertIn("already ephemeral", self.said[-1])
+
+    def test_refused_once_the_departure_has_started(self):
+        self.joined_as(False)
+        status.set_lifecycle("depart", "departing", "departing")
+        self.assertEqual(self.rejoin(), 3)
+        self.assertEqual(self.calls(), [])
+
+    def test_a_boot_under_way_sets_the_kind_itself(self):
+        self.joined_as(False)
+        with steps._locked():
+            self.assertEqual(self.rejoin(), 0)
+        self.assertEqual(self.calls(), [])
+        self.assertIn("boot is under way", self.said[-1])
+
+    def test_a_join_failing_after_the_logout_is_tried_three_times(self):
+        self.joined_as(True)
+        self.expires = None
+        with mock.patch.dict(os.environ, {"FAKE_TS_EXIT": "1"}):
+            self.assertEqual(self.rejoin(), 1)
+        self.assertEqual(self.verbs().count("up"), 3)
+        self.assertEqual(self.verbs().count("logout"), 1, "a node that had left logged out again")
+        self.assertEqual(nodekind.recorded()["state"], nodekind.FAILED)
+
+    def test_a_refusal_before_any_change_fails_without_trying_again(self):
+        self.api.scopes = ["auth_keys"]
+        self.joined_as(False)
+        self.assertEqual(self.rejoin(), 1)
+        self.assertEqual(self.api.calls, [("token", True)])
+        self.assertNotIn("logout", self.verbs())
+
+
+class TsApiTest(unittest.TestCase):
+    """The Tailscale API's token and node removal, against a stand-in urlopen."""
+
+    SECRET = "tskey-client-kExample123-" + "madeup" * 4
+
+    def respond(self, status_code=200, body=b"{}"):
+        seen = []
+
+        def urlopen(request, timeout):
+            seen.append(request)
+            if status_code >= 400:
+                raise tsapi.urllib.error.HTTPError(request.full_url, status_code, "x", {}, None)
+            response = mock.MagicMock()
+            response.__enter__.return_value = io.BytesIO(body)
+            return response
+        return urlopen, seen
+
+    def test_the_token_names_the_client_and_its_scopes(self):
+        urlopen, seen = self.respond(body=b'{"access_token": "t", "scope": "auth_keys devices:core"}')
+        tok = tsapi.token(self.SECRET, urlopen=urlopen)
+        self.assertTrue(tok.can_delete)
+        self.assertIn("client_id=kExample123", seen[0].data.decode())
+        self.assertTrue(seen[0].full_url.endswith("/api/v2/oauth/token"))
+
+    def test_read_only_device_scopes_may_not_remove(self):
+        urlopen, _ = self.respond(body=b'{"access_token": "t", "scope": "auth_keys devices:core:read"}')
+        self.assertFalse(tsapi.token(self.SECRET, urlopen=urlopen).can_delete)
+
+    def test_a_refused_token_names_the_status_and_never_the_secret(self):
+        urlopen, _ = self.respond(401)
+        with self.assertRaises(StepError) as caught:
+            tsapi.token(self.SECRET, urlopen=urlopen)
+        self.assertIn("401", str(caught.exception))
+        self.assertNotIn("madeup", str(caught.exception))
+
+    def test_a_secret_that_is_not_a_client_secret_is_refused(self):
+        with self.assertRaises(StepError):
+            tsapi.client_id("tskey-auth-abc-def")
+
+    def test_removes_by_node_id_and_a_gone_node_counts(self):
+        tok = tsapi.Token("t", ["devices:core"])
+        urlopen, seen = self.respond()
+        self.assertEqual(tsapi.delete_node(tok, "nAbc123CNTRL", urlopen=urlopen), "removed")
+        self.assertEqual(seen[0].get_method(), "DELETE")
+        self.assertTrue(seen[0].full_url.endswith("/api/v2/device/nAbc123CNTRL"))
+        self.assertEqual(seen[0].get_header("Authorization"), "Bearer t")
+        urlopen, _ = self.respond(404)
+        self.assertEqual(tsapi.delete_node(tok, "nAbc123CNTRL", urlopen=urlopen), "already gone")
+        urlopen, _ = self.respond(403)
+        with self.assertRaisesRegex(StepError, "403"):
+            tsapi.delete_node(tok, "nAbc123CNTRL", urlopen=urlopen)
 
 
 if __name__ == "__main__":

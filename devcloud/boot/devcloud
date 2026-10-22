@@ -8,11 +8,18 @@
   devcloud refresh-secrets   materialize secrets.toml again (steps 7, 10, 11)
   devcloud refresh-mirrors   fetch the mirrors a persistent host keeps for its sandboxes
   devcloud enroll            finish an enrollment step 11 deferred (the devcloud-enroll service)
-  devcloud lease set <unix> [--cap <unix>]
-                             set the lease end; prints the lease now in force; 3 the
-                             departure has started, 4 past --cap and later than the
-                             lease in force (the driver's unconfirmed request)
-  devcloud lease tick        the lease service's run: warn before the end, depart at it
+  devcloud lease set <unix> [--cap <unix>] | lease set keep
+                             set the lease end, or remove it; prints `rejoin <kind>`
+                             when the tailnet node must change kind (the rejoin then
+                             runs as devcloud-rejoin), then the lease now in force
+                             (`keep` for none); 3 the departure has started, 4 past
+                             --cap and later than the lease in force (the driver's
+                             unconfirmed request)
+  devcloud lease tick        the lease service's run: warn before the end, depart at it;
+                             restart a rejoin while the node's kind is behind its lease
+  devcloud rejoin            rejoin the tailnet as the node kind the lease wants
+                             (ephemeral while leased), under the same name; run by the
+                             devcloud-rejoin unit, since it cuts the tailnet connection
   devcloud depart [--force] [--no-hold] [--no-poweroff]
                              end the sessions, ship them, leave the desk and the tailnet,
                              power off; 3 lease not over, 4 held (a failed ship, or
@@ -33,7 +40,7 @@
                              (a systemd unit's ExecStart; runs as any user)
 
 Every command but status and unpushed runs as root. The jobs, lease set,
-depart and release take the lifecycle lock (/run/devcloud/lifecycle.lock);
+rejoin, depart and release take the lifecycle lock (/run/devcloud/lifecycle.lock);
 the jobs do nothing once a departure has started."""
 import os
 import sys
@@ -152,7 +159,8 @@ def main(argv):
         return 0 if status.healthy(data) else 1
     if argv == ["unpushed"]:
         return unpushed()
-    known = argv[0] in ("lease", "depart", "release", "ledger") or (len(argv) == 1 and argv[0] in JOBS)
+    known = argv[0] in ("lease", "depart", "release", "ledger") or (len(argv) == 1 and argv[0] in JOBS) \
+        or argv == ["rejoin"]
     if not known:
         return usage()
     if not os.path.isdir("/etc/devcloud"):
@@ -166,6 +174,8 @@ def main(argv):
         return ledger_add(argv[2:]) if argv[1:2] == ["add"] else usage()
     if argv[0] in ("lease", "depart", "release"):
         return lifecycle(argv)
+    if argv == ["rejoin"]:
+        return steps.rejoin()
     return JOBS[argv[0]]()
 
 
