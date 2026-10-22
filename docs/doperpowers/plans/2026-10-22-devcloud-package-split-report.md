@@ -62,7 +62,7 @@ doperpowers:review-code, medium rung (reviewer-medium), two passes: cb208b8d, th
 - cb208b8d (run 39739620199): RED 2/8. devcloud-image failed on the installer's 429, and devcloud-host on the silent install (`claude: not found`). That is the bug fixed since. A re-run of the three image gates (39740786292) was GREEN.
 - fb73cbd6 (run 39742676183): GREEN.
 - 22de7103 (run 39742780145): RED 1/8. devcloud-systemd hit 429 on all four tries over 110 s, which led to the longer window.
-- 5d0ccc3a: see the PR.
+- 5d0ccc3a (run 39745378623): GREEN 8/8.
 
 ## Friction
 
