@@ -171,6 +171,11 @@ def _follow(ctx, host, done):
     ctx.say(f"{host.name} is back on the tailnet as {hostctl.a_node(done.rejoin)}, under the same name")
 
 
+FORCE_WITHOUT_DEPARTURE = (
+    "--force deletes without a confirmed departure (unshipped transcripts may be lost and desk enrollment may "
+    "remain); afterwards check `sminos machines` and `devcloud vm ls` for desk and tailnet residue")
+
+
 def down(ctx, name, force):
     """The down guard, the departure, then the delete after the label
     recheck. Unreachable: --force deletes without departing. An adopted
@@ -182,8 +187,8 @@ def down(ctx, name, force):
     host = entry.host
     if not hostctl.reachable(ctx, host):
         if not force:
-            raise DriverError(FAILED, f"{name} does not answer over the tailnet: pass --force to delete it "
-                                      "without its departure (its sessions' last lines are lost)")
+            raise DriverError(FAILED, f"{name}'s departure is unconfirmed (unreachable over the tailnet); "
+                                      f"the VM is kept; {FORCE_WITHOUT_DEPARTURE}")
         return _delete(ctx, entry, "deleted without its departure (unreachable)")
     if not force:
         dirty = hostctl.unpushed(ctx, host)
@@ -197,8 +202,12 @@ def down(ctx, name, force):
         raise DriverError(FAILED, f"{name}'s departure is held (its ship failed, or sessions keep starting); it is "
                                   "kept so its transcripts can still ship: fix it, or pass --force to delete anyway")
     if outcome == hostctl.UNKNOWN:
-        raise DriverError(FAILED, f"the connection to {name} dropped before its departure was ready to log out: "
-                                  "the outcome is unknown, and the VM is kept")
+        if force:
+            return _delete(ctx, entry, "deleted without departure confirmation (connection lost)",
+                           left_desk=outcome.left_desk)
+        last = f"last received step: {outcome.last_step}" if outcome.last_step else "no departure step received"
+        raise DriverError(FAILED, f"{name}'s logout confirmation was not received ({last}); "
+                                  f"the outcome is unknown and the VM is kept; {FORCE_WITHOUT_DEPARTURE}")
     if outcome == hostctl.UNREACHABLE and force:
         return _delete(ctx, entry, "deleted without its departure (unreachable)")
     if force:
