@@ -343,6 +343,8 @@ run() { # capture stdout+stderr and rc without aborting the suite
 SMINOS_PART="${SMINOS_PART:-all}"
 case "$SMINOS_PART" in all | core | suites) ;; *) echo "SMINOS_PART is all, core or suites" >&2; exit 2 ;; esac
 run_suites() {
+  if python3 "$SCRIPT_DIR/test_list_fold.py"; then pass "stopped members fold only in text views (test_list_fold.py)"; else
+    fail "stopped members fold only in text views (test_list_fold.py)"; fi
   # The bridge's session endpoint has a file of its own (short socket paths, a
   # stand-in for the mod); its assertions count here as one.
   echo
@@ -1895,24 +1897,30 @@ st_rows() { # label word rest ... → rows as list prints them (`alias [short]` 
 }
 # Members newest join first (the seats joined in the order they were added),
 # then the seats no member stands for: `alias [short]`, kind, word, machine,
-# then the in-charge line and `· now:` the status. Retired and gone fold into
+# then the in-charge line and `· now:` the status. Stopped, retired and gone fold into
 # a tail line, as chart and tui do; --all shows them in place; --json keeps them.
 EXPECTED_ST_ALL="$(printf 'st\n'; st_rows 's-ret [5a5a0007]' retired '' 's-gone [5a5a000a]' gone '' \
   's-stop [5a5a0006]' stopped '' 's-wait [5a5a0005]' waiting '' 's-idle [5a5a0004]' idle '' 's-bare [5a5a0003]' busy '' \
   's-shell [5a5a0002]' busy '' 's-busy [5a5a0001]' busy '· now: parsing the schema' s-vac vacant '')"
-EXPECTED_ST="$(printf 'st\n'; st_rows 's-stop [5a5a0006]' stopped '' 's-wait [5a5a0005]' waiting '' \
+EXPECTED_ST="$(printf 'st\n'; st_rows 's-wait [5a5a0005]' waiting '' \
   's-idle [5a5a0004]' idle '' 's-bare [5a5a0003]' busy '' 's-shell [5a5a0002]' busy '' \
   's-busy [5a5a0001]' busy '· now: parsing the schema' s-vac vacant ''
-  printf '+2 hidden (retired, gone) — sminos list --all')"
-assert_equals "$OUT" "$EXPECTED_ST" "list is the project heading, then alias [short], kind, state word, machine and the member's lines — no header or recorded status; retired and gone fold into the tail"
+  printf '+3 hidden (stopped, retired, gone) — sminos list --stopped shows stopped; --all shows all')"
+assert_equals "$OUT" "$EXPECTED_ST" "list is the project heading, then alias [short], kind, state word, machine and the member's lines — no header or recorded status; stopped, retired and gone fold into the tail"
 run "$SMINOS" list st --all
-assert_equals "$OUT" "$EXPECTED_ST_ALL" "--all shows the retired and gone rows in place and prints no tail"
+assert_equals "$OUT" "$EXPECTED_ST_ALL" "--all shows the stopped, retired and gone rows in place and prints no tail"
+run "$SMINOS" list st --stopped
+assert_contains "$OUT" "s-stop [5a5a0006]" "--stopped adds the stopped row"
+assert_not_contains "$OUT" "s-ret" "--stopped still folds retired"
+assert_not_contains "$OUT" "s-gone" "--stopped still folds gone"
+assert_contains "$OUT" "+2 hidden (retired, gone) — sminos list --all" "--stopped hints at the remaining fold"
 run "$SMINOS" list --json st
+assert_contains "$OUT" '"state": "stopped"' "--json keeps a stopped row"
 assert_contains "$OUT" '"state": "retired"' "--json keeps a retired row"
 assert_contains "$OUT" '"state": "gone"' "--json keeps a gone row"
 (cd "$TEST_ROOT/st4" && "$SMINOS" seat add st4 ghost --session 0e0e0e0e-0e0e-4000-8000-0e0e0e0e0e0e >/dev/null)
 run "$SMINOS" list st4
-assert_equals "$OUT" "$(printf '(no members)\n+1 hidden (retired, gone) — sminos list --all')" "a project of only folded members says so, then the count on its own line"
+assert_equals "$OUT" "$(printf '(no members)\n+1 hidden (stopped, retired, gone) — sminos list --stopped shows stopped; --all shows all')" "a project of only folded members says so, then the count on its own line"
 "$SMINOS" remove st4/ghost >/dev/null
 run "$SMINOS" list --all
 # From a directory of no project: every project, flat, each row with its project.
@@ -1923,6 +1931,8 @@ assert_not_contains "$(printf '%s\n' "$OUT" | grep -x 'st2' || true)" "st2" "wit
 assert_not_contains "$OUT" "ALIAS" "list prints no header line"
 run "$SMINOS" list st --state busy
 assert_equals "$(printf '%s\n' "$OUT" | sed 1d | awk '{print $1}' | tr '\n' ' ')" "s-bare s-shell s-busy " "--state keeps only the rows with that word"
+run "$SMINOS" list st --state stopped
+assert_equals "$OUT" "$(printf 'st\n  s-stop [5a5a0006]  seat  stopped  @testhost')" "--state stopped selects the stopped row"
 run "$SMINOS" list st --state gone
 assert_equals "$OUT" "$(printf 'st\n  s-gone [5a5a000a]  seat  gone  @testhost')" "--state gone keeps only the gone rows"
 run "$SMINOS" list st --state blocked
@@ -1942,15 +1952,19 @@ STUB_AGENTS_FAIL=1 run "$SMINOS" list st --all
 assert_rc 0 "$RC" "list is unaffected by a failing harness"
 assert_contains "$OUT" "s-idle [5a5a0004]   seat  idle" "and still reads the live word"
 assert_contains "$OUT" "s-gone [5a5a000a]   seat  gone" "and a gone member stays gone"
-# The chart's hide rule is the word: retired or gone.
+# The chart's hide rule is the word: stopped, retired or gone.
 run "$SMINOS" chart st --width 200
-assert_contains "$OUT" "■ stopped" "a stopped seat is charted with its glyph"
+assert_not_contains "$OUT" "s-stop" "a stopped seat is hidden by default"
 assert_contains "$OUT" "◐ waiting" "a waiting seat is charted with the half glyph"
 assert_not_contains "$OUT" "s-ret" "a retired seat is hidden by default"
 assert_not_contains "$OUT" "s-gone" "a gone seat is hidden by default"
-assert_contains "$OUT" "9 members · 5 live · 2 hidden" "live counts busy, idle and waiting; hidden counts retired and gone"
+assert_contains "$OUT" "9 members · 5 live · 3 hidden" "live counts busy, idle and waiting; hidden counts stopped, retired and gone"
 STUB_AGENTS_FAIL=1 run "$SMINOS" chart st --width 200
 assert_not_contains "$OUT" "s-gone" "a failing harness listing does not bring a gone seat back onto the chart"
+run "$SMINOS" chart st --stopped --width 200
+assert_contains "$OUT" "■ stopped" "--stopped charts a stopped seat with its glyph"
+assert_not_contains "$OUT" "s-gone" "--stopped still folds gone in the chart"
+assert_not_contains "$OUT" "s-ret" "--stopped still folds retired in the chart"
 run "$SMINOS" chart st --all --width 200
 assert_contains "$OUT" "⊘ retired" "--all shows the retired seat with its glyph"
 assert_contains "$OUT" "✕ gone" "--all shows the gone seat with its glyph"
@@ -2058,7 +2072,7 @@ assert_contains "$CHART" "◌ vacant" "vacant seat shows the dotted glyph"
 assert_not_contains "$CHART" "old-worker" "a retired seat is folded away by default"
 assert_contains "$CHART" "notes → board" "a member's status is drawn on its third line"
 assert_equals "$(printf '%s' "$CHART" | python3 -c 'import sys; print(any(c in sys.stdin.read() for c in "┬┼├┤┴"))')" "False" "no connector: the chart draws no tree"
-assert_contains "$CHART" "6 members · 4 live · 1 hidden (sminos chart org --all)" "summary counts members, live, hidden and points at --all"
+assert_contains "$CHART" "6 members · 4 live · 1 hidden (stopped, retired, gone) — sminos chart org --stopped shows stopped; --all shows all" "summary counts members, live, hidden and explains visibility options"
 assert_equals "$(printf '%s\n' "$CHART" | python3 "$TEST_ROOT/boxcheck.py" scout)" "aligned" "a Korean status line keeps the box borders aligned"
 assert_equals "$(printf '%s\n' "$CHART" | python3 "$TEST_ROOT/boxcheck.py" lead)" "aligned" "an ASCII box is aligned too"
 assert_contains "$CHART" "…" "an over-long status line is truncated with an ellipsis"
@@ -2164,7 +2178,7 @@ run $TUI --keys "b,tab,tab,down"
 assert_contains "$OUT" "--- focus: org/scribe" "tab again hands the keys back to the chart"
 run $TUI --keys "?"
 assert_contains "$OUT" "┃ keys" "? opens the help overlay"
-assert_contains "$OUT" "a — show / hide retired and gone members" "the help lists the keys"
+assert_contains "$OUT" "a — show / hide stopped, retired and gone members" "the help lists the keys"
 assert_contains "$OUT" "■ stopped · ✕ gone · ◌ vacant · ⊘ retired" "the help's glyph line names all seven words"
 run $TUI --keys "?,q,down"
 assert_contains "$OUT" "--- focus: org/scribe" "q inside the overlay only closes it"

@@ -41,7 +41,7 @@ HELP_LINES = [
     "s — type a message for the focused member; enter sends it (sminos send: a live member over its inbox socket, a stopped seat resumed), esc cancels",
     "b — toggle the bottom panel: member detail ↔ the focused project's chat",
     "tab — move the keys into the chat list (enter opens a message, tab back)",
-    "a — show / hide retired and gone members",
+    "a — show / hide stopped, retired and gone members",
     "r — refresh from the harness now (it also refreshes every few seconds)",
     "? — this help · q — quit (tmux windows opened by enter stay open)",
     "",
@@ -516,7 +516,7 @@ def detail_lines(state, node, w):
         if not state["loaded"]:
             return ["loading the fleet from the harness…"]
         if m["hidden"] and not state["show_all"]:
-            return ["nothing to show — %d member(s) are hidden (retired or gone)" % m["hidden"],
+            return ["nothing to show — %d member(s) are hidden (stopped, retired or gone)" % m["hidden"],
                     "press a to show them"]
         return ["no members yet — open a session in a project, or sminos spawn <alias> \"<task>\""]
     if node["kind"] == "project":
