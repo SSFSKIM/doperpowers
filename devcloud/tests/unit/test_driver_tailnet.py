@@ -66,6 +66,7 @@ class DownRemovesTheNodeTest(DriverBase):
     def test_a_removal_that_fails_is_named_and_the_deletion_stands(self):
         self.remote.on("true", code=255)
         for fail, needle in (({"devices": "the Tailscale API did not list the devices (HTTP 500)"}, "HTTP 500"),
+                             ({"devices": "listing the devices: IncompleteRead"}, "listing the devices: IncompleteRead"),
                              ({"nKept1CNTRL": "the Tailscale API did not remove node nKept1CNTRL (HTTP 403)"},
                               "nKept1CNTRL (the Tailscale API did not remove node nKept1CNTRL (HTTP 403)) not removed")):
             with self.subTest(fail=fail):

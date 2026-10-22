@@ -9,6 +9,7 @@ only a client with the `devices:core` scope may.
 `DEVCLOUD_TS_API` points it at a stand-in (the tests'); the default is
 https://api.tailscale.com. Messages name statuses, never a secret."""
 
+import http.client
 import json
 import os
 import urllib.error
@@ -53,7 +54,7 @@ def token(secret, urlopen=urllib.request.urlopen, timeout=TIMEOUT):
             data = json.load(response)
     except urllib.error.HTTPError as error:
         raise StepError(f"the Tailscale API refused the OAuth client's token (HTTP {error.code})") from None
-    except (urllib.error.URLError, OSError, ValueError) as error:
+    except (urllib.error.URLError, http.client.HTTPException, OSError, ValueError) as error:
         raise StepError(f"the Tailscale API's token: {type(error).__name__}") from None
     if not isinstance(data, dict) or not data.get("access_token"):
         raise StepError("the Tailscale API gave no token")
@@ -72,7 +73,7 @@ def devices(tok, urlopen=urllib.request.urlopen, timeout=TIMEOUT):
             data = json.load(response)
     except urllib.error.HTTPError as error:
         raise StepError(f"the Tailscale API did not list the devices (HTTP {error.code})") from None
-    except (urllib.error.URLError, OSError, ValueError) as error:
+    except (urllib.error.URLError, http.client.HTTPException, OSError, ValueError) as error:
         raise StepError(f"listing the devices: {type(error).__name__}") from None
     listed = data.get("devices") if isinstance(data, dict) else None
     if not isinstance(listed, list):
@@ -91,5 +92,5 @@ def delete_node(tok, node_id, urlopen=urllib.request.urlopen, timeout=TIMEOUT):
         if error.code == 404:
             return "already gone"
         raise StepError(f"the Tailscale API did not remove node {node_id} (HTTP {error.code})") from None
-    except (urllib.error.URLError, OSError) as error:
+    except (urllib.error.URLError, http.client.HTTPException, OSError) as error:
         raise StepError(f"removing node {node_id}: {type(error).__name__}") from None

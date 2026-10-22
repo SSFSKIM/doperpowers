@@ -653,6 +653,25 @@ class TsApiTest(unittest.TestCase):
         with self.assertRaisesRegex(StepError, "403"):
             tsapi.delete_node(tok, "nAbc123CNTRL", urlopen=urlopen)
 
+    def test_a_response_that_closes_before_its_length_is_a_step_error_not_a_raw_http_exception(self):
+        import http.client
+        tok = tsapi.Token("t", ["devices:core"])
+
+        def truncated(request, timeout):
+            response = mock.MagicMock()
+            response.__enter__.return_value.read.side_effect = http.client.IncompleteRead(b"{", 100)
+            return response
+
+        def dropped(request, timeout):
+            raise http.client.RemoteDisconnected("closed")
+
+        with self.assertRaisesRegex(StepError, "IncompleteRead"):
+            tsapi.token(self.SECRET, urlopen=truncated)
+        with self.assertRaisesRegex(StepError, "IncompleteRead"):
+            tsapi.devices(tok, urlopen=truncated)
+        with self.assertRaisesRegex(StepError, "RemoteDisconnected"):
+            tsapi.delete_node(tok, "nAbc123CNTRL", urlopen=dropped)
+
 
     def test_lists_the_tailnets_devices(self):
         tok = tsapi.Token("t", ["devices:core"])
