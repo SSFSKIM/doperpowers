@@ -144,7 +144,7 @@ def set_lease(value, cap=None, desc_path=descriptor.PATH, lock_path=None, status
                             f"the lease changed; {nodekind.UNIT} rejoins as {nodekind.name(nodekind.wanted(d))}",
                             name=was.get("name"), path=kind_path)
             try:
-                (start or start_transient)(nodekind.UNIT, [DEVCLOUD, "rejoin"], what="the tailnet node follows its lease")
+                (start or start_transient)(nodekind.UNIT, [DEVCLOUD, "rejoin"], what="so the tailnet node follows its lease")
             except StepError as error:
                 out(f"devcloud lease set: the rejoin did not start ({error}); the lease service starts it")
             print(f"rejoin {nodekind.name(nodekind.wanted(d))}", flush=True)
@@ -204,7 +204,7 @@ def tick(user, desc_path=descriptor.PATH, lock_path=None, status_path=None, stat
         if nodekind.behind(d, kind_path) and not status.departure_started(**status_kw) \
                 and not active(nodekind.UNIT):
             try:
-                start(nodekind.UNIT, [DEVCLOUD, "rejoin"], what="the tailnet node follows its lease")
+                start(nodekind.UNIT, [DEVCLOUD, "rejoin"], what="so the tailnet node follows its lease")
                 say(f"devcloud lease: the tailnet node is not {nodekind.name(nodekind.wanted(d))}; "
                     f"{nodekind.UNIT} started")
             except StepError as error:     # never in the way of the departure below

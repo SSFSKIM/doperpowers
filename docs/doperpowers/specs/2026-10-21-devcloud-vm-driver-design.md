@@ -948,9 +948,11 @@ with doperpowers:writing-skills and sanity-tested in a session before it ships.
 - Removing tailnet nodes or desk machines from outside the machine. The host's own rejoin removes its
   old node through the Tailscale API (§4.1, board #115), but nothing removes the node of a kept host
   that is gone, and the desk offers no browserless admin revoke. Ephemeral nodes cover throwaway
-  machines on the tailnet; at the desk, `hub leave` is the only clean removal (§10). This line first
-  said the OAuth client had only the auth-keys scope. A token read on 2026-10-22 showed it held
-  `devices:core:read devices:posture_attributes policy_file dns auth_keys users`.
+  machines on the tailnet; at the desk, `hub leave` is the only clean removal (§10).
+- The OAuth client's scopes. Since 2026-10-22 the client holds `auth_keys` and `devices:core`, both on
+  `tag:devcloud`, and nothing else (Decision Log). This line first said the client had only the
+  auth-keys scope, but a token read on 2026-10-22 showed `devices:core:read devices:posture_attributes
+  policy_file dns auth_keys users`. That client was revoked the same day.
 - Workload identity federation for Hetzner hosts (a keyless seed off GCE), deferred by the parent.
 
 ## Execution
@@ -2401,7 +2403,16 @@ commit 5168e433 on its branch, 2026-10-21):
     - Every node ephemeral, kept hosts too: no deletion would be needed, but it contradicts the
       person's design of non-ephemeral kept nodes, and a kept host would lose its node after an hour
       offline.
-  Date/Author: 2026-10-22, the #115 executor; option A, put to the person through the main session.
+  - The person chose this (2026-10-22, through the main session). They knew that a `devices:core`
+    credential can probably remove any device in the tailnet, not only `tag:devcloud` ones: the
+    scope's tag selection bounds what it may tag, and the API's device removal names no tag limit.
+    Their guard for agents is a soft-deny auto mode rule in the profile: no tailnet device is
+    deleted without the user's authorization of that device. A host removing its own previous node
+    is the host's code, not an agent's action.
+  - The client was replaced the same day by one with `auth_keys` and `devices:core` on
+    `tag:devcloud` alone, as version 2 of the same Secret Manager secret. The old, broader client
+    (policy file, DNS, users) was revoked, and version 1 disabled.
+  Date/Author: 2026-10-22, the #115 executor proposed it; the person chose it through the main session.
 - Decision (board #115): the host records the kind it joined as (`/var/lib/devcloud/tailnet.json`),
   because no status field shows it.
   - An unrecorded kind counts as behind. On the first change it is removed like a non-ephemeral
