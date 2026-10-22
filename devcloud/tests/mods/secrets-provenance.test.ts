@@ -71,7 +71,7 @@ async function start($: Engine, on: On, source = SOURCE, options: {
     return ok(JSON.stringify(answer))
   })
   on('session.start', (_, e) => ({ cwd: e.cwd }))
-  let answer = { result: options.result ?? native(source), text: options.text ?? numbered(source), ref: 71 }
+  let answer: { result: unknown; text: string; ref: number } = { result: options.result ?? native(source), text: options.text ?? numbered(source), ref: 71 }
   on('tool.call', async (engine, e) => options.probe && e.tool === 'Bash' ? { result: await options.probe(engine) as never } : answer as never)
   const session = mock.session(on)
   await $.session.start({ cwd: '/work/project', surface: null, isInteractive: false })

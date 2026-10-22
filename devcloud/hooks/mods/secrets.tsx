@@ -343,7 +343,7 @@ export function registerSecrets(on: On) {
       if (path !== undefined) await scrubPersisted($, path)
       const context = notes.length ? [...(ran.context ?? []), ...notes] : ran.context
       const read = e.tool === 'Read' && path === undefined && typeof ran.text === 'string' ? textRead(ran.result) : undefined
-      if (read && detect(read.file.content).some(span => span.kind === 'assignment')) {
+      if (e.tool === 'Read' && read && detect(read.file.content).some(span => span.kind === 'assignment')) {
         // Scrub every field normally except this one verified source candidate.
         // The candidate is not returned unless both byte and rendering binding
         // succeed; provenance failure falls through to the ordinary scrubber.
@@ -354,7 +354,7 @@ export function registerSecrets(on: On) {
         const scrubbedRest = handles.scrubRecord(rest)
         const result = scrubbedContent === content && scrubbedMetadata === metadata && scrubbedRest === rest ? read :
           { ...scrubbedRest, file: { ...scrubbedMetadata, content: scrubbedContent } }
-        const evidence = await verifyRead($, e.file_path as string, read, ran.text!, scrubbedContent, project, next.signal)
+        const evidence = await verifyRead($, e.file_path, read, ran.text!, scrubbedContent, project, next.signal)
         if (evidence) {
           receipts.issue(e, evidence)
           // Core's ref retains its companion pagination notice only when the
