@@ -203,9 +203,12 @@ def tick(user, desc_path=descriptor.PATH, lock_path=None, status_path=None, stat
             return 1
         if nodekind.behind(d, kind_path) and not status.departure_started(**status_kw) \
                 and not active(nodekind.UNIT):
-            start(nodekind.UNIT, [DEVCLOUD, "rejoin"], what="the tailnet node follows its lease")
-            say(f"devcloud lease: the tailnet node is not {nodekind.name(nodekind.wanted(d))}; "
-                f"{nodekind.UNIT} started")
+            try:
+                start(nodekind.UNIT, [DEVCLOUD, "rejoin"], what="the tailnet node follows its lease")
+                say(f"devcloud lease: the tailnet node is not {nodekind.name(nodekind.wanted(d))}; "
+                    f"{nodekind.UNIT} started")
+            except StepError as error:     # never in the way of the departure below
+                say(f"devcloud lease: {nodekind.UNIT} did not start ({error})")
         if not d.leased:
             return 0
         # A process of its own: the host's secrets known before any child runs.
