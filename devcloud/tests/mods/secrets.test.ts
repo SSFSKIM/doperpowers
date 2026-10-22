@@ -300,6 +300,40 @@ describe('a manual compaction', () => {
   })
 })
 
+describe('package code remains readable without trusting its path', () => {
+  test('Read and Bash cat preserve references but redact stored, credential-file and prefixed values everywhere', async ($, on) => {
+    const stored = 'config.browser?.isolatedToken'
+    const credential = 'oauth2_parameters.credentials'
+    const pat = githubPat(83)
+    const source = [
+      'const tokenInput = model_types_1.TokenInput',
+      '{cacheReadInputTokens:e.cache_read_input_tokens??0}',
+      `stored: ${stored}`,
+      `fromFile: ${credential}`,
+      `literal: ${pat}`,
+    ].join('\n')
+    tool(on, (e) => e.tool === 'Bash' ? bash(source) : {
+      type: 'text', file: { filePath: e.file_path, content: source, numLines: 5, startLine: 1, totalLines: 5 },
+    })
+    await start($, on, {
+      [`${STORE}/SAMPLE`]: stored,
+      [`${HOME}/.config/gh/hosts.yml`]: `github.com:\n    oauth_token: ${credential}\n`,
+    })
+    // Synthetic package locations and an ordinary user file receive identical protection.
+    for (const path of ['/work/repo/node_modules/example/index.js', '/opt/example/claude/cli.js', '/opt/example/google-cloud-sdk/lib/example.py', '/work/repo/src/example.ts']) {
+      const read = (await $.tool.call({ tool: 'Read', file_path: path })).result as { file: { content: string } }
+      const cat = (await $.tool.call({ tool: 'Bash', command: `cat ${path}` })).result as { stdout: string }
+      for (const text of [read.file.content, cat.stdout]) {
+        expect(text).toContain('const tokenInput = model_types_1.TokenInput\n{cacheReadInputTokens:e.cache_read_input_tokens??0}')
+        expect(text).toContain('stored: [secret:SAMPLE]')
+        expect(text).toContain('fromFile: [secret:hosts.yml:github.com.oauth_token]')
+        expect(text).toContain('literal: [redacted:github-pat#')
+        for (const value of [stored, credential, pat]) expect(text).not.toContain(value)
+      }
+    }
+  })
+})
+
 describe('handles restore exact bytes on write', () => {
   test('an Edit whose strings carry a handle runs with the value, and its record is kept with the handle', async ($, on) => {
     const ran = tool(on, (e) => ({ filePath: e.file_path, oldString: e.old_string, newString: e.new_string, originalFile: `A=${STORED}\n`, structuredPatch: [], userModified: false, replaceAll: false }))

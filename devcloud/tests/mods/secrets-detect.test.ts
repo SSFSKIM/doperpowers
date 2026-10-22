@@ -94,6 +94,64 @@ describe('assignments whose name says secret', () => {
   })
 })
 
+describe('vendored code is not a secret assignment', () => {
+  test('numbered and optional-chain references and expressions stay readable', () => {
+    for (const line of [
+      'const browserToken = config.browser?.isolatedToken',
+      'const credentials = oauth2_parameters.credentials',
+      'const tokenInput = model_types_1.TokenInput',
+      'const token = options2.credentials.token',
+      '{cacheReadInputTokens:e.cache_read_input_tokens??0}',
+      '{inputTokens:t.inputTokens+e.inputTokens}',
+      '{clientSecret: config.clientSecret||undefined}',
+      'if (credentials === suppliedCredentials)',
+      'if (credentials !== suppliedCredentials)',
+      'token => suppliedCredentials',
+    ]) expect(found(line)).toEqual([])
+  })
+
+  test('unknown quoted literals still redact across env, YAML, JSON, TOML and source code', () => {
+    // No provider prefixes: only the assignment rule can protect these values.
+    const values = [
+      chars(32, 81),
+      chars(32, 82, 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'),
+      'c7!Qz%4u*Fh9?Lw2@Jd6#Rb8',
+      'APPLICATION_DEFAULT_CREDENTIALS',
+      'oauth2_parameters.credentials',
+      'config.browser?.isolatedToken',
+    ]
+    for (const value of values) {
+      for (const line of [
+        `export SERVICE_TOKEN="${value}"`,
+        `password: '${value}'`,
+        `{"client_secret": "${value}"}`,
+        `api_key = '${value}'`,
+        `const apiKey = "${value}";`,
+      ]) expect(found(line)).toEqual([['assignment', value]])
+    }
+    for (let seed = 1; seed <= 100; seed++) {
+      const value = chars(32, seed)
+      expect(found(`SERVICE_TOKEN=${value}`)).toEqual([['assignment', value]])
+    }
+  })
+
+  test('unquoted dotted credentials are not mistaken for numbered code references', () => {
+    const jwt = `${btoa('{"alg":"HS256","typ":"JWT"}')}.${btoa('{"sub":"synthetic-test-123","iat":1234567890}')}.${chars(43, 84)}`
+    for (const value of [jwt, 'Ab7cD9ef.G1h2I3jk.L4m5N6op', 'oauth2_parameters.credentials', 'Ab7cD9ef.G1h2I3jk+L4m5N6op']) {
+      for (const line of [`SERVICE_TOKEN=${value}`, `password: ${value}`, `export API_KEY=${value}`]) {
+        expect(found(line)).toEqual([['assignment', value]])
+      }
+    }
+  })
+
+  test('opaque literals, including punctuation and alphabet-only values, still redact', () => {
+    for (const value of [chars(32, 81), chars(32, 82, 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'), 'c7!Qz%4u*Fh9?Lw2@Jd6#Rb8']) {
+      expect(found(`password="${value}"`)).toEqual([['assignment', value]])
+      expect(found(`Bearer ${value}`)).toEqual([['assignment', value]])
+    }
+  })
+})
+
 describe('what is not a secret', () => {
   test('a commit hash and a sha256 checksum are left', () => {
     const commit = chars(40, 31, '0123456789abcdef')

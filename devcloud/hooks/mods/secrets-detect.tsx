@@ -77,17 +77,24 @@ export function isSecretName(name: string): boolean {
 // value stops at whitespace, a quote, or punctuation no token carries. A name
 // right after `[` is a handle's (`[secret:…]`), never an assignment.
 const VALUE = `(["']?)([^\\s"'\`,;:{}()<>[\\]\\\\]+)`
-const ASSIGNMENT = new RegExp(`(?<![A-Za-z0-9_[])(["']?)([A-Za-z_][A-Za-z0-9_.-]*)\\1[ \\t]*(?::=|=|:)[ \\t]*${VALUE}`, 'g')
+const ASSIGNMENT = new RegExp(`(?<![A-Za-z0-9_[])(["']?)([A-Za-z_][A-Za-z0-9_.-]*)\\1[ \\t]*(?::=|=(?!=|>)|:)[ \\t]*${VALUE}`, 'g')
 const BEARER = new RegExp(`(?<![A-Za-z0-9_])(Bearer)[ \\t]+${VALUE}`, 'g')
 
 const VALUE_MIN = 16
 const ENTROPY_MIN = 3.5
 // A reference, a path or an address: what names a value rather than holds one.
 const NOT_A_VALUE = /^(?:\$|%|~|\.{0,2}\/|[a-z][a-z0-9+.-]*:\/\/)/i
-// Unquoted, an expression in code rather than a literal: a dotted name
-// (`process.env.API_KEY`, `credentials.password`) or a bare identifier with no
-// digit (`userSuppliedPassword`); a credential almost always carries a digit.
+// The existing alphabetic-reference heuristic. Numbered dotted names are more
+// ambiguous: an unquoted JWT also has identifier-shaped segments, so the broader
+// member grammar below needs a declaration context.
 const REFERENCE = /^[A-Za-z_$][A-Za-z_$]*(?:\.[A-Za-z_$][A-Za-z_$]*)*$/
+const IDENTIFIER = '[A-Za-z_$][A-Za-z0-9_$]*'
+const MEMBER = `${IDENTIFIER}(?:\\??\\.${IDENTIFIER})+`
+const MEMBER_REFERENCE = new RegExp(`^${MEMBER}$`)
+const DECLARATION = /\b(?:const|let|var)[ \t]+$/
+// Minified code has no spaces around operators. Require a member on the left
+// so an opaque value with punctuation (including base64's +) remains eligible.
+const EXPRESSION = new RegExp(`^${MEMBER}(?:\\?\\?|\\|\\||&&|[+*]|===?|!==?|\\?)(?:${IDENTIFIER}|[0-9])`)
 
 /** Shannon entropy of the string's characters, in bits per character. */
 export function entropy(text: string): number {
@@ -118,7 +125,14 @@ function assignments(text: string): Span[] {
           if (value.length < VALUE_MIN || NOT_A_VALUE.test(value) || entropy(value) < ENTROPY_MIN) continue
           // Unquoted and followed by a call or an index, or shaped as a name: code.
           const after = line[(m.index ?? 0) + m[0].length]
-          if (!m[valueAt - 1] && (after === '(' || after === '[' || REFERENCE.test(value))) continue
+          if (pattern === ASSIGNMENT && !m[valueAt - 1]) {
+            const before = line.slice(Math.max(0, (m.index ?? 0) - 32), m.index)
+            const declaration = DECLARATION.test(before)
+            const objectField = !m[1] && /[{,][ \t]*$/.test(before)
+            if (after === '(' || after === '[' || REFERENCE.test(value)) continue
+            if (declaration && MEMBER_REFERENCE.test(value)) continue
+            if ((declaration || objectField) && EXPRESSION.test(value)) continue
+          }
           const end = at + (m.index ?? 0) + m[0].length
           spans.push({ start: end - value.length, end, kind: 'assignment' })
         }

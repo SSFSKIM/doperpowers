@@ -1000,6 +1000,37 @@ or how it is answered reaches `cua` as a ticket before it ships.
 
 ## Decision Log
 
+- Decision: Narrow the generic assignment detector, not the provider-prefix or known-value
+  passes (board #87). Comparisons and arrow functions are not assignments; numbered and optional
+  member references need declaration context, and minified member expressions need declaration
+  or unquoted object-field context. Bearer values are data, never source references. Quoted
+  literals remain eligible, including alphabet-only values and symbolic-looking constants.
+  Rationale: a scan of installed global npm sources (58,463 files), the gcloud SDK library
+  (23,324 files) and platform tree (2,885 files), and printable strings in the installed Claude
+  Code executable found assignment-rule noise dominating every corpus. Total matches before →
+  after: npm 1,124 → 1,093; gcloud library 284 → 284; gcloud platform 197 → 197; executable
+  301 → 151. The scan read JS/TS, JSON, Python, text, Markdown and YAML files without following
+  symlinks; the executable scan read printable runs of at least 16 characters. Remaining generic
+  matches are npm 1,063, gcloud 424 and executable 151. These are match counts, not a claim that
+  every remaining match is a false positive. The conservative change primarily improves minified
+  JavaScript; gcloud's ambiguous constants remain guarded. Content narrowing helps both Read and
+  Bash output, without trusting project `node_modules` or removing
+  provider-prefix/PEM coverage. Synthetic tests preserve unknown credentials across env, YAML,
+  JSON, TOML, source literals and shell output, including unquoted JWTs and dotted values. Broader
+  numbered-reference and expression heuristics were rejected when these positive cases exposed
+  false negatives; the source-context restriction keeps them eligible.
+  Rejected: suppressing ambiguous quoted constants globally, which cannot distinguish a symbol
+  from a password chosen in that form. Also deferred: an additional Read-only exemption for
+  installed package roots. It could remove most remaining generic matches, but a global npm
+  installation contained a package symlink into a live development checkout: lexical containment
+  is not ownership. A safe exemption needs resolved-real-path containment and call provenance
+  through `session.append`, whose second scrub otherwise redacts the same text again. This is a
+  separate architectural change, shared with cua's vendored guard, not a path-only detector tweak.
+  Project package caches and build outputs remain fully guarded. Genuine credential-shaped
+  fixtures and ambiguous constants still redact; stored and credential-file values redact
+  everywhere, including package Read results and Bash `cat` output. No tool is refused.
+  Date/Author: 2026-10-22, guard executor and design session (board #87).
+
 - Decision: Verification. One independent spec review by the `doperpowers:adversarial-reviewer`
   agent (technical-heavy spec) plus its buildability review of this five-milestone execution
   section, in the same round. Whole-branch review at the **high** rung of doperpowers:review-code
