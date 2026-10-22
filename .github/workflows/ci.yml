@@ -2,7 +2,9 @@ name: ci
 on:
   pull_request:
   push:
-    branches: ['ci/**']
+    # main: ci-kit's build cache seed on a merge, the build_cache gates whose
+    # paths it changed, and nothing else.
+    branches: ['ci/**', main]
   workflow_dispatch:
     inputs:
       gates: {description: 'comma list of gate names; empty = all', required: false, default: ''}
