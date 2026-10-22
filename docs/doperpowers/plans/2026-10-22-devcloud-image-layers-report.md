@@ -46,6 +46,10 @@ Decision: E. Sharding would save about 5 s more, and it would add a second way f
 
 `image_is_clean` alone went from 96 s to 16 s. The devcloud set's wall time went from 4m50s (#336's PR run) to 3m55s. The slowest integration part is now host at 87 s, against 108 s before.
 
+## The PR's run
+
+PR #340, run (39719781323 on 2ed14dc1, all green): devcloud-unit 1m19s; devcloud-image 4m01s (build 146 s, integration 70 s, `image_is_clean` 16 s); devcloud-host 4m05s (build 138 s, integration 87 s); devcloud-systemd 3m12s (build 115 s, integration 67 s). The set's wall time was 4m05s, against 4m50s for #336's PR run. Build variance between runners (115–146 s) now sets the slowest gate, and the build is what the layer cache addresses.
+
 **Every case still runs exactly once.** The unsharded run printed 44 case lines and the three parts 46. Without "the stand-ins start", which each part that boots containers runs once (now all three), both lists hold the same 43 cases, sorted equal, with no duplicate and no failure. The one-shot cases now run without the host group before them, and pass.
 
 ## The layer cache (throwaway gate `devcloud-cache`, one runner, BuildKit's local cache)
@@ -70,6 +74,10 @@ The package layer's key is packages.sh: a change elsewhere in `devcloud/` reuses
 ## Review
 
 `doperpowers:reviewer-medium` reviewed 53b6587f..ed5e6fdf: no material findings, verdict correct. It checked that the package commands are unchanged, that all 43 cases are assigned exactly once, and how failures propagate through the export's shell. It could not run Docker; the CI runs above cover that. Later commits change only comments, timings and this report.
+
+## Ticket and handoff
+
+PR #340 (no `Closes`: the board is the api binding). The PR and its times went to CI-opt by `sminos say`. The board transition to in-review is the dispatching session's: this executor does not write the board.
 
 ## Residue
 
