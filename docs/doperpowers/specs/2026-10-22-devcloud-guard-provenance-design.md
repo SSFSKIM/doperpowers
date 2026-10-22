@@ -13,7 +13,7 @@ This is board ticket #124, following #87 and PR #349. It changes neither the det
 - [x] (2026-10-22 11:32Z) Chose out-of-band indexing, bounded local verification, and call-bound, one-use append receipts.
 - [x] (2026-10-22 11:51Z) Committed the initial specification and received the adversarial review of its design and execution section.
 - [x] (2026-10-22 11:51Z) Folded the settled review decisions into the specification: public-artifact evidence for npm/gcloud, dpkg deferred, one whole-stage deadline, unchanged-result pagination preservation, and manual-only refresh. No implementation has begun.
-- [ ] M1 — Build and inspect the original-content index outside hooks.
+- [x] (2026-10-22 12:28Z) M1 — Built and independently reviewed the original-content index and local verifier. Both committed gates passed on `99bb0be3`; two non-blocking diagnostic/test findings are recorded in `tech-debt-tracker.md`.
 - [ ] M2 — Apply whole-stage bounded verification through both scrubbing passes, including stalled preflight fallback and unchanged-result `ref` preservation.
 - [ ] M3 — Prove native behavior including the unchanged paginated Read notice, measure npm/gcloud improvement, review and release; register the cua resync at integration. Residue is already tracked in board tickets 125 and 126.
 
