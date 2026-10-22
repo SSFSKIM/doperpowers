@@ -70,9 +70,8 @@ def fit(s, n, collapse=True):
 
 
 def is_dead(st):
-    """Hidden by default (shown with --all): a retired or gone member — one
-    only a `fill` (or its human) can act on. The word decides; the hide rule
-    asks nothing more. `list` folds the same words (sminos.HIDDEN)."""
+    """Display-hidden and dimmed when shown, not ineligible for actions:
+    stopped members can resume. `list` folds the same words (sminos.HIDDEN)."""
     return st in sminos.HIDDEN
 
 
@@ -94,16 +93,16 @@ def member_node(project, m, label):
             "ref": seat["seat_id"] if seat else m.session}
 
 
-def project_members(project, show_all=False):
+def project_members(project, show_all=False, show_stopped=False):
     """One project's members as flat nodes, newest join first, after the hide
     rule: (nodes, hidden, n_members, n_live)."""
     rows = sminos.project_rows(project)
     nodes = [member_node(project, m, sminos.member_label(m, rows)) for m in rows]
-    kept = [n for n in nodes if show_all or not n["dead"]]
+    kept = [n for n in nodes if show_all or not n["dead"] or (show_stopped and n["state"] == "stopped")]
     return kept, len(nodes) - len(kept), len(nodes), sum(1 for n in nodes if n["state"] in sminos.FILLED)
 
 
-def snapshot(projects, show_all=False, boxed=True):
+def snapshot(projects, show_all=False, boxed=True, show_stopped=False):
     """(roots, meta). Unboxed: the projects' members, flat, as roots. Boxed:
     one rounded PROJECT node per project, its children its members; a project
     with nothing visible is dropped (counted in meta["hidden_projects"])
@@ -112,7 +111,7 @@ def snapshot(projects, show_all=False, boxed=True):
     roots, meta = [], {"projects": 0, "members": 0, "live": 0, "hidden": 0, "hidden_projects": 0}
     names = [p.name for p in projects]
     for p in projects:
-        nodes, hidden, n, live = project_members(p, show_all)
+        nodes, hidden, n, live = project_members(p, show_all, show_stopped)
         meta["projects"] += 1
         meta["members"] += n
         meta["live"] += live

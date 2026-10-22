@@ -41,7 +41,7 @@ HELP_LINES = [
     "s — type a message for the focused member; enter sends it (sminos send: a live member over its inbox socket, a stopped seat resumed), esc cancels",
     "b — toggle the bottom panel: member detail ↔ the focused project's chat",
     "tab — move the keys into the chat list (enter opens a message, tab back)",
-    "a — show / hide retired and gone members",
+    "a — show / hide stopped, retired and gone members",
     "r — refresh from the harness now (it also refreshes every few seconds)",
     "? — this help · q — quit (tmux windows opened by enter stay open)",
     "",
@@ -244,10 +244,15 @@ def handle_key(state, key, actions):
             # opened, never to whatever is focused now: a refresh that lands
             # while the operator is typing rebuilds the layout, and a target
             # that retired or went away moves the focus elsewhere.
-            text, (target, target_name) = state["input"].strip(), state["input_target"]
+            text, (target, target_name, project) = state["input"].strip(), state["input_target"]
             state["input"], state["input_target"] = None, None
             box = state["lay"]["by_id"].get(target)
             node = box["node"] if box else None
+            if node is None:
+                # Stopping folds a seat out of the display, not out of send:
+                # resolve its exact id again, never reuse a removed seat.
+                nodes, _, _, _ = chart.project_members(project, show_stopped=True)
+                node = next((n for n in nodes if n["id"] == target and n["state"] == "stopped"), None)
             if not text:
                 pass
             elif node is None or node["kind"] != "seat":
@@ -310,7 +315,7 @@ def handle_key(state, key, actions):
                 node["label"], node["state"], seat_name(node)))
         else:
             # A stopped seat too: the send resumes it.
-            state["input"], state["input_target"] = "", (node["id"], node["name"])
+            state["input"], state["input_target"] = "", (node["id"], node["name"], node["project"])
     elif key == "a":
         state["show_all"] = not state["show_all"]
         resnapshot(state)
@@ -516,7 +521,7 @@ def detail_lines(state, node, w):
         if not state["loaded"]:
             return ["loading the fleet from the harness…"]
         if m["hidden"] and not state["show_all"]:
-            return ["nothing to show — %d member(s) are hidden (retired or gone)" % m["hidden"],
+            return ["nothing to show — %d member(s) are hidden (stopped, retired or gone)" % m["hidden"],
                     "press a to show them"]
         return ["no members yet — open a session in a project, or sminos spawn <alias> \"<task>\""]
     if node["kind"] == "project":

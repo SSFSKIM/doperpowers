@@ -32,6 +32,7 @@ session sminos spawned fills; it outlives its process.
 ## Who is here
 
     sminos list                     # your project
+    sminos list --stopped           # also show stopped members, in the same scope
     sminos list --here              # this machine, every project (the harness's ListAgents, and more)
     sminos list --org               # every session in the org
     sminos find <words..>           # every session the words match: alias, short, project, repo, branch, in-charge line
@@ -40,9 +41,14 @@ session sminos spawned fills; it outlives its process.
     sminos projects | machines      # the org's projects and machines
 
 Each row names a session's machine, project, repository and branch, and
-what it is in charge of: choose whom to talk to by that. Inside a
-session `list` ends with your own subagents; `--all` unfolds finished
-ones and retired members. States: `busy` (its turn runs), `idle`,
+what it is in charge of: choose whom to talk to by that. Text views fold
+stopped, retired and gone members into a `+N hidden` tail. `list --stopped`
+adds stopped members without changing scope; `--all` unfolds all members;
+`--state stopped` selects only stopped members. `--json` keeps every
+matching member. `chart` also accepts `--stopped` and `--all`; in the TUI, `a`
+shows or hides all three states. Inside a session `list` ends with your
+own subagents; `--all` unfolds finished ones too.
+States: `busy` (its turn runs), `idle`,
 `waiting` (on a question or a permission prompt), `stopped` (no process;
 `send` resumes a seat), `gone` (no transcript here), `vacant` (a seat
 with no session), `retired`.
