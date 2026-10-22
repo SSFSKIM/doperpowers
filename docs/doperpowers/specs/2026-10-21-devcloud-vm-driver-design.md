@@ -102,8 +102,10 @@ desk no longer counts it.
   removed when it leaves for good (§4.2, §4.3, §6.5). Worked in order on branch
   `devcloud-node-removal`. Steps:
   - The build: 138bbfb6..46d05130.
-  - The review at the high rung, round 1: one P2 (the bounded reaper's deadline), fixed in
-    cc89c735.
+  - The review at the high rung, three rounds, one P2 each: the bounded reaper's deadline
+    (cc89c735), and a truncated HTTP response escaping the driver's removal, first through the
+    Tailscale API (7dbcdf4f), then through Secret Manager (236bb531, with the removal's no-raise
+    boundary made structural).
   - Live on GCE (H12): a kept VM through lease, keep and `down`; a second kept VM made unreachable,
     then `down --force`; an adoption released by `down`. Every node was gone from the API and every
     VM was deleted by 06:30Z.

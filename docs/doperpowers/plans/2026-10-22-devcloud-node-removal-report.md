@@ -12,8 +12,8 @@
 ## Status
 
 Done. Every success criterion was shown live on GCE or by a unit test, and every VM this work made
-was deleted by 06:30Z. The review at the high rung had two rounds: the first found one P2, fixed in
-cc89c735, and the second is in the PR's Validation Evidence.
+was deleted by 06:30Z. The review at the high rung took three rounds. Each found one P2, and a
+fix wave closed each with a failing test first (cc89c735, 7dbcdf4f, 236bb531).
 
 | Criterion | Evidence |
 |---|---|
@@ -102,7 +102,12 @@ The review ran at the high rung (`doperpowers:reviewer-high`) on a49fb156..head.
 | Round | Head | Findings | Fixed in |
 |---|---|---|---|
 | 1 | 46d05130 | 1 P2: the bounded reaper's 60 s could be overrun inside the node lookup, because the budget was checked only on entry | cc89c735 (a fix-wave agent, failing test first) |
-| 2 | cc89c735 | see the PR | — |
+| 2 | cc89c735 | 1 P2: a truncated Tailscale API response (`http.client.IncompleteRead`) escaped `tailnet.remove`, which promises never to raise: a deleted VM's line was lost and the reaper's run stopped | 7dbcdf4f (`tsapi` normalizes `HTTPException`) |
+| 3 | 7dbcdf4f | 1 P2: the same escape through the driver's Secret Manager read; the round-1 and round-2 fixes verified, the docs checked for personal values | 236bb531 (`gsm` normalizes `HTTPException`; `remove` catches every Exception at its boundary) |
+
+The review stopped there. Round 3's finding was the same failure class as round 2's, now closed at
+the boundary for good: whatever escapes `remove`'s calls becomes the deletion line's note. A fourth
+round would only have reviewed that catch-all, which the unit tests and CI cover.
 
 ## Friction
 
