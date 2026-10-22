@@ -653,6 +653,42 @@ class TsApiTest(unittest.TestCase):
         with self.assertRaisesRegex(StepError, "403"):
             tsapi.delete_node(tok, "nAbc123CNTRL", urlopen=urlopen)
 
+    def test_a_response_that_closes_before_its_length_is_a_step_error_not_a_raw_http_exception(self):
+        import http.client
+        tok = tsapi.Token("t", ["devices:core"])
+
+        def truncated(request, timeout):
+            response = mock.MagicMock()
+            response.__enter__.return_value.read.side_effect = http.client.IncompleteRead(b"{", 100)
+            return response
+
+        def dropped(request, timeout):
+            raise http.client.RemoteDisconnected("closed")
+
+        with self.assertRaisesRegex(StepError, "IncompleteRead"):
+            tsapi.token(self.SECRET, urlopen=truncated)
+        with self.assertRaisesRegex(StepError, "IncompleteRead"):
+            tsapi.devices(tok, urlopen=truncated)
+        with self.assertRaisesRegex(StepError, "RemoteDisconnected"):
+            tsapi.delete_node(tok, "nAbc123CNTRL", urlopen=dropped)
+
+
+    def test_lists_the_tailnets_devices(self):
+        tok = tsapi.Token("t", ["devices:core"])
+        body = json.dumps({"devices": [{"nodeId": "nA1CNTRL", "hostname": "dc-kpt-e642", "tags": ["tag:devcloud"]},
+                                       "not a device"]}).encode()
+        urlopen, seen = self.respond(body=body)
+        self.assertEqual(tsapi.devices(tok, urlopen=urlopen),
+                         [{"nodeId": "nA1CNTRL", "hostname": "dc-kpt-e642", "tags": ["tag:devcloud"]}])
+        self.assertTrue(seen[0].full_url.endswith("/api/v2/tailnet/-/devices"))
+        self.assertEqual(seen[0].get_method(), "GET")
+        self.assertEqual(seen[0].get_header("Authorization"), "Bearer t")
+        urlopen, _ = self.respond(403)
+        with self.assertRaisesRegex(StepError, "403"):
+            tsapi.devices(tok, urlopen=urlopen)
+        urlopen, _ = self.respond(body=b'{"error": "x"}')
+        with self.assertRaisesRegex(StepError, "no devices"):
+            tsapi.devices(tok, urlopen=urlopen)
 
 if __name__ == "__main__":
     unittest.main()

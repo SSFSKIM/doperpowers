@@ -27,13 +27,35 @@ echo "== image"
 image="devcloud-test:$$"
 log="$(mktemp)"
 trap 'docker rmi -f "$image" >/dev/null 2>&1 || true; rm -f "$log"' EXIT
-if ! docker build --progress=plain -t "$image" -f devcloud/image/Dockerfile \
+# In a CI gate with ci-kit's build_cache, the layers come from the GitHub
+# Actions cache, a scope per ISO week: packages.sh installs the latest releases,
+# so a cache keyed on the files alone would never refresh them. Only a run on
+# the default branch writes it (ci-kit sets CI_KIT_BUILD_CACHE_WRITE there: the
+# weekly schedule in ci.yml seeds each week's scope, and a merge to main that
+# changes the gates' paths seeds it again). Of the three gates that share the
+# scope, only the image part writes it: the package layer does not build byte
+# for byte the same, so each writer would upload its own copy, three per seed,
+# into the repository's 10 GB. host and systemd read what it wrote. The layers
+# are zstd, which the runner's daemon exports and unpacks faster than gzip.
+cache=()
+if [ "${CI_KIT_BUILD_CACHE:-}" = gha ]; then
+  scope="devcloud-image-$(date -u +%G-W%V)"
+  cache=(--output "type=image,compression=zstd,oci-mediatypes=true" --cache-from "type=gha,scope=$scope")
+  if [ -n "${CI_KIT_BUILD_CACHE_WRITE:-}" ] && { [ "$DEVCLOUD_PART" = image ] || [ "$DEVCLOUD_PART" = all ]; }; then
+    cache+=(--cache-to "type=gha,mode=min,scope=$scope,compression=zstd,ignore-error=true")
+  fi
+fi
+if ! docker build --progress=plain ${cache[@]+"${cache[@]}"} -t "$image" -f devcloud/image/Dockerfile \
      --build-arg DEVCLOUD_USER=dev --build-arg DEVCLOUD_UID=1001 --build-arg DEVCLOUD_HOME=/Users/dev . >"$log" 2>&1; then
   tail -n 80 "$log"
   echo "FAIL the image does not build"
   exit 1
 fi
 echo "ok the image builds ($(docker image inspect -f '{{.Size}}' "$image" | awk '{printf "%.1f GB", $1 / 1e9}'))"
+if [ -n "${scope:-}" ]; then
+  echo "  build cache $scope:"
+  awk '/^#[0-9]+ \[/ { step[$1] = $0 } /^#[0-9]+ CACHED$/ { print "    " step[$1] " CACHED" }' "$log"
+fi
 
 echo "== integration"
 python3 devcloud/tests/integration.py "$image"

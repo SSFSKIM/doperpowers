@@ -63,6 +63,17 @@ def record(ephemeral, wanted_kind, state, detail="", name=None, path=None, now=t
     proc.write_file(pathlib.Path(path or PATH), json.dumps(data) + "\n", mode=0o644, dir_mode=0o755)
 
 
+def pend(node_id, path=None):
+    """`node_id` added to the ids waiting for their removal, the rest of the
+    record kept: the departure's and the release's own node, read before
+    their logout (§4.2, §6.5)."""
+    data = recorded(path)
+    waiting = list(data.get("remove") or [])
+    if node_id not in waiting:
+        data["remove"] = waiting + [node_id]
+        proc.write_file(pathlib.Path(path or PATH), json.dumps(data) + "\n", mode=0o644, dir_mode=0o755)
+
+
 def removed(node_id, path=None):
     """`node_id` no longer waits for its removal; the rest of the record stays."""
     data = recorded(path)

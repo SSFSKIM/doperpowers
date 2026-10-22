@@ -98,6 +98,18 @@ desk no longer counts it.
   - Live on GCE: the approved keep VM through keep→lease→keep→lease and `down`, and the approved
     adoption through keep→lease and its timed release, with acceptance 7's checks.
   - Report: `docs/doperpowers/plans/2026-10-22-devcloud-lease-rejoin-report.md`.
+- [x] (2026-10-22 06:31Z) Board #118, #115's residue: a kept or adopted host's tailnet node is
+  removed when it leaves for good (§4.2, §4.3, §6.5). Worked in order on branch
+  `devcloud-node-removal`. Steps:
+  - The build: 138bbfb6..46d05130.
+  - The review at the high rung, three rounds, one P2 each: the bounded reaper's deadline
+    (cc89c735), and a truncated HTTP response escaping the driver's removal, first through the
+    Tailscale API (7dbcdf4f), then through Secret Manager (236bb531, with the removal's no-raise
+    boundary made structural).
+  - Live on GCE (H12): a kept VM through lease, keep and `down`; a second kept VM made unreachable,
+    then `down --force`; an adoption released by `down`. Every node was gone from the API and every
+    VM was deleted by 06:30Z.
+  - Report: `docs/doperpowers/plans/2026-10-22-devcloud-node-removal-report.md`.
 
 Human steps this initiative needs. The executor prepares each (the exact command, the page, what to
 check) and escalates it at the milestone named; the person runs it when an automated attempt is
@@ -116,6 +128,7 @@ refused or it needs a browser or their judgment.
 | H7 | Approving the test provider before it first runs with a credential (`provider register --confirmed`) | the person | M5, and again for M6's acceptance 13: approved by the person through the main session (2026-10-21) |
 | H10 | Board #115's live test: one `up --keep --confirmed` GCE VM (about $0.11/h), and one adoption of a hand-made e2-small with `adopt --confirmed`, released by its lease service; both deleted the same day | the person | approved by the person through the main session, 2026-10-22 ("Approve (Recommended)", each); used once each, deleted 01:50Z and 02:16Z |
 | H11 | A Tailscale OAuth client with `auth_keys` and `devices:core` on `tag:devcloud` (§4.1's node removal), as a new version of the hosts' Secret Manager secret; the old, broader client revoked | the person, carried out by the main session | done 2026-10-22 |
+| H12 | Board #118's live test: one `up --keep --confirmed` GCE VM, and one adoption of a hand-made plain Ubuntu 24.04 e2-small with `adopt --confirmed`; then a second kept VM for the unreachable `down --force` case; all deleted the same day | the person | approved by the person through the main session, 2026-10-22: the first two "Start, approve both (Recommended)", the second VM "Approve (Recommended)"; each used once, all deleted by 06:30Z |
 
 ## Terms
 
@@ -500,6 +513,16 @@ alive:
 3. `sminos hub leave` as the user (exit 0 or 1 both proceed; on 1 the machine stays in the desk's
    Machines, offline, until removed there by hand, §4.4).
 4. `tailscale logout`, after printing one flushed line on stdout, `devcloud-depart: ready-to-logout`.
+   Then the node's removal (board #118): a logout leaves a non-ephemeral node listed, offline and
+   expired, under the host's name, and nothing removes it after that (§4.1). Before the ready line
+   the departure reads the held node's id from `tailscale status` and records it as pending removal
+   in `/var/lib/devcloud/tailnet.json`, unless the recorded kind is ephemeral. An unrecorded kind
+   counts as non-ephemeral. Right after the logout, step `remove-node` removes every pending id
+   through the Tailscale API with the OAuth client, fetched from Secret Manager through the seed.
+   That covers ids an earlier rejoin left pending as well. It uses the rejoin's removal: three tries,
+   a node already gone counts, and never the node tailscaled still holds (a logout that failed).
+   A removal that fails is recorded as a failed step and the departure goes on. A node joined with
+   the fallback auth key file has no client to remove it with.
 5. Stop devcloud's services, but not the transient departure unit, which runs on to record the end.
 6. Power off, unless `--no-poweroff` (the reaper's and `down`'s path, which delete right after).
 
@@ -530,7 +553,8 @@ a completed one exits 0 doing nothing).
 A GCE spot VM can be reclaimed by the provider with about 30 seconds' notice. Its descriptor carries
 `DEVCLOUD_SPOT=1`, which the driver sets for a spot request, and the boot enables a shutdown unit
 only then. The unit reads the metadata server's `instance/preempted`; when it is `TRUE` it runs steps
-0–4 within 25 seconds, one round, the session wait shortened to fit, and nothing holds. This is best-effort:
+0–4 within 25 seconds, one round, the session wait shortened to fit, and nothing holds. A kept
+spot VM's node removal comes last, after the logout, and may not fit the window. This is best-effort:
 the provider does not guarantee the full window. An ordinary reboot runs none of this. The intent
 comes from the descriptor because the driver knows it for certain; the metadata key
 `instance/scheduling/provisioning-model` the first design read is not a documented one.
@@ -571,6 +595,23 @@ comes from the descriptor because the driver knows it for certain; the metadata 
 
 It never touches a resource without the devcloud label, and before every delete it calls `get` and
 refuses unless the label is still there (ci-kit's rule: the project holds other work's resources).
+
+**The deleted host's tailnet nodes** (board #118). After every VM delete that succeeded, the
+reaper's and `down`'s alike, the driver removes the nodes the Tailscale API still lists of that host.
+The same applies after an adopted machine's release is verified (§6.5). A host's own removal comes
+after its logout, which cuts the driver's connection, and the delete that follows can cut it short.
+A VM deleted unreachable never departs at all. The driver reads the hosts' OAuth client from Secret
+Manager (`[host].tailscale_secret`) and lists the devices. A device is the host's only when it is
+tagged `tag:devcloud` and the `hostname` it reported is exactly the host's name: the host joins
+with `--hostname=<name>`, so the match also finds an older node of the host that the tailnet
+renamed `<name>-1`. Nothing is matched by prefix or pattern, and no untagged device is touched. Each
+match is removed by its node id, which the deletion's line (and `reap.log`) names. A removal that
+fails, or a client that cannot be read, is named on that line with "remove it in the Tailscale
+admin console if it is listed", and the deletion stands. The bounded run gives the lookup what is
+left of its 60 seconds and skips it, saying so, when less than 2 remain. Node ids are not carried in
+provider labels: GCE label values are lowercase, node ids are not, and every rejoin changes the id.
+Nodes that match no live host are not swept (an open question, not approved: a deletion by
+inference).
 It never departs or deletes an adopted machine; the machine's own lease service releases it (§6.5).
 It runs from a scheduled job on the person's always-on Mac every 10 minutes (`devcloud vm reap
 --install` writes a launchd agent), and at the start of every `up` and `ls` on any driver, bounded to
@@ -584,10 +625,10 @@ the desk's Machines until someone removes it there (§10; no key has an offline 
 |---|---|---|---|---|
 | Lease ends, host healthy | sessions ended, then the departure ships; a failed ship holds the departure, retried | `hub leave` | `logout` | reaper deletes; a held VM 24 h past its lease end, logged as unshipped loss |
 | Host hung or crashed, then lease ends | lost since the last ship (seconds, the shipper is continuous) | stays in the desk's Machines, offline, until removed there by hand (no key has an offline revoke, H4); the reaper's log line for its deletion names it | ephemeral expiry, about an hour | reaper deletes 15 min past the label's lease when the provider reports it not running, 6 h past when it reports it running |
-| `devcloud vm down` | as a healthy lease end; held → `down` exits 1, `--force` proceeds | `hub leave` | `logout` | deleted at once |
+| `devcloud vm down` | as a healthy lease end; held → `down` exits 1, `--force` proceeds | `hub leave` | `logout`, then the node removed through the API by the host (a kept host's) and by the driver after the delete | deleted at once |
 | GCE spot reclaimed | best-effort fast departure, no hold | best-effort `hub leave`, else stays until removed by hand | best-effort `logout`, else ephemeral expiry | provider deletes |
-| `keep` VM | never departs | stays; if the desk revoked it meanwhile, re-enrolls at its next boot (`hub check` 3, `--replace`) | stays | only `down` |
-| Adopted machine, lease ends or `down` | the release ships, as a departure | `hub leave` | `logout` | keeps running, devcloud removed (§6.5) |
+| `keep` VM | never departs | stays; if the desk revoked it meanwhile, re-enrolls at its next boot (`hub check` 3, `--replace`) | stays; `down`, even `--force` on an unreachable VM, removes its node (board #118) | only `down` |
+| Adopted machine, lease ends or `down` | the release ships, as a departure | `hub leave` | `logout`, then the node removed through the API by the machine, and by the driver once `down` verified the release | keeps running, devcloud removed (§6.5) |
 
 ### 5. Exposure: the public port closes once the tailnet is up
 
@@ -737,7 +778,10 @@ adopted `keep` machine, having no lease, is released only that way). Then, in or
 2. `sminos hub leave`.
 3. Delete the `inet devcloud` nftables table and remove `devcloud-inbound.service`.
 4. Restore the saved `authorized_keys` from `/var/lib/devcloud-adopt/`, then remove that directory.
-5. `tailscale logout`.
+5. `tailscale logout`, then the node's removal through the API, as the departure's step 4 (§4.2,
+   board #118). It comes before step 7, which removes the seed that reads the OAuth client, and a
+   failed removal does not stop the release; `down` removes the node too once the release is
+   verified (§4.3).
 6. Stop devcloud's services and remove its units, but not the transient release unit, which runs on
    through step 7 and records the release's end.
 7. Remove every credential the ledger lists, then the ledger.
@@ -967,10 +1011,12 @@ with doperpowers:writing-skills and sanity-tested in a session before it ships.
 - Sandbox containers created by the driver on a host (the parent's sandbox role); `adopt` and VMs
   only. Sandboxes never enroll at the desk, which is where this initiative's value lies.
 - A budget in money: the caps bound time, count, size and disk; the provider's billing is the record.
-- Removing tailnet nodes or desk machines from outside the machine. The host's own rejoin removes its
-  old node through the Tailscale API (§4.1, board #115), but nothing removes the node of a kept host
-  that is gone, and the desk offers no browserless admin revoke. Ephemeral nodes cover throwaway
-  machines on the tailnet; at the desk, `hub leave` is the only clean removal (§10).
+- Removing desk machines from outside the machine: the desk offers no browserless admin revoke, and
+  `hub leave` is the only clean removal (§10). Tailnet nodes are removed through the Tailscale API
+  only by node id: the host removes its own old node at a rejoin (§4.1, board #115) and its own node
+  when it leaves for good (§4.2, §6.5), and the driver removes the nodes of a host it deleted or
+  whose release it verified (§4.3, board #118). A sweep of `tag:devcloud` nodes that match no live
+  host stays out: it would delete by inference, and the person has not approved one.
 - The OAuth client's scopes. Since 2026-10-22 the client holds `auth_keys` and `devices:core`, both on
   `tag:devcloud`, and nothing else (Decision Log). This line first said the client had only the
   auth-keys scope, but a token read on 2026-10-22 showed `devices:core:read devices:posture_attributes
@@ -1853,6 +1899,24 @@ commit 5168e433 on its branch, 2026-10-21):
     matched the lease.
   - A host now joins only through the new client: the API's `oauthClientId` named it on both.
   Evidence: the #115 report's live table.
+- Observation (board #118, live, 2026-10-22): the Tailscale API's device list, with its default
+  fields, carries `nodeId`, `hostname` and `name`, and `tags` only on a tagged device. The hosts'
+  client, scoped to `tag:devcloud`, lists every device of the tailnet, untagged ones too, so the
+  driver's tag check is what keeps it off the person's own machines. A host joined with
+  `--hostname=<name>` is listed with exactly that `hostname`.
+  Evidence: the device list read through `driver/tailnet.py`'s client path at 06:12Z and during
+  the live run.
+- Observation (board #118, live, 2026-10-22): a kept VM's departure removes its own node before the
+  driver's lookup. During `down`, polled every 3 s, `dc-nrm-09a9`'s node left the API at 06:19:15Z.
+  The VM was deleted at 06:20:30Z, and the driver's line named no node. An adopted machine's
+  release did the same (gone by 06:29:40Z). Its `lifecycle.log` shows a status read, the logout,
+  another status read, and the seed's token, which fetches the client, then the unit removal.
+  - A kept VM made unreachable (tailscaled stopped) and deleted with `down --force` had its node
+    removed by the driver, its node id named on the line.
+  - A hand-made GCE VM got an account named after the Mac's user from the project's ssh-keys
+    metadata, and adopt's account preflight refused it. `block-project-ssh-keys=TRUE` on the
+    instance avoids that (friction tracker).
+  Evidence: `docs/doperpowers/plans/2026-10-22-devcloud-node-removal-report.md`.
 
 ## Decision Log
 
@@ -2480,6 +2544,32 @@ commit 5168e433 on its branch, 2026-10-21):
     machine's boot, which takes the lifecycle lock inside the run lock.
   Date/Author: 2026-10-22, the #115 executor.
 
+- Decision (board #118): a host that leaves for good removes its own tailnet node, and the driver
+  removes the nodes of a host it is done with (§4.2, §4.3, §6.5). The ticket was #115's residue: a
+  logout leaves a non-ephemeral node listed, expired, and nothing removed it after a kept VM's
+  `down`, an adopted machine's release, or a kept VM deleted unreachable.
+  - The host reuses #115's removal. Before the logout, the departure and the release record the held
+    node's id as pending in `tailnet.json`; right after it, `remove-node` runs the rejoin's removal
+    loop (`steps.remove_pending`, factored out of the rejoin for this). That loop keeps its guards:
+    never the node held, nothing while the status cannot be read. An ephemeral node is left to its
+    logout, without the API. The release removes the node before the units and the credentials,
+    since the seed among them reads the client.
+  - A failed removal never stops a departure or a release: the transcripts and the give-back
+    matter more than a listed node, which the driver can still remove.
+  - The driver removes after every VM delete, not only an unreachable kept VM's. The host's own
+    removal comes after the logout has cut the driver's connection, and the delete that follows can
+    cut it short; one rule covers both cases. It removes ephemeral nodes too, which go at once instead
+    of an hour later; the main session agreed (2026-10-22).
+  - The match is exact: `tag:devcloud` and the API's `hostname` equal to the host's name, removed by
+    node id and named on the deletion's line, and only after the delete or the verified release
+    succeeded. The main session set this bound (2026-10-22): never a prefix or pattern, never an
+    untagged node.
+  - Rejected: the node id in a provider label. GCE label values are lowercase, node ids are not,
+    and every rejoin changes the id, so the lookup would be needed anyway.
+  - Out of scope, as the ticket's open question: sweeping `tag:devcloud` nodes that match no live
+    host. That is a deletion by inference, and the person has not approved one.
+  Date/Author: 2026-10-22, the #118 executor.
+
 ## Outcomes & Retrospective
 
 **Against the purpose.** The purpose holds as written: a session can now get a cloud machine with
@@ -2535,6 +2625,14 @@ which needed a client with `devices:core`. The measurement also showed the old c
 broader than the spec said; it was replaced and revoked. The lesson generalizes: a design that leans
 on a third-party behavior ("logout removes the node") holds only for the case that was measured.
 M1 measured it for ephemeral nodes alone.
+
+**Board #118 (2026-10-22).** #115's residue is closed: a host that leaves for good no longer leaves
+its node listed in the tailnet. The host removes its own node right after the logout, with the
+rejoin's code, and the driver removes what the API still lists of a host it has deleted or
+released. It matches exactly, by tag and hostname, and removes by node id. Live, the host's own
+removal finished before the driver looked, on a VM and on an adoption, and the driver covered the
+unreachable kept VM. The lesson: a step that runs after the connection drops can't report to the
+driver, so the driver checks the outcome itself instead of trusting a report it will never read.
 
 **Left open:** H6 (the parent's `devcloud-m5` at the desk) is the person's step. The deferred items
 and residue are in `docs/doperpowers/TECH-DEBT.md`, under "the devcloud VM driver". After merge, the

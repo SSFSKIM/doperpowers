@@ -2,10 +2,15 @@ name: ci
 on:
   pull_request:
   push:
-    branches: ['ci/**']
+    # main: ci-kit's build cache seed on a merge, the build_cache gates whose
+    # paths it changed, and nothing else.
+    branches: ['ci/**', main]
   workflow_dispatch:
     inputs:
       gates: {description: 'comma list of gate names; empty = all', required: false, default: ''}
+  # ci-kit's build cache seed: the build_cache gates on main, just after the ISO week turns.
+  schedule:
+    - cron: '10 0 * * 1'
 jobs:
   ci:
     uses: SSFSKIM/ci-kit/.github/workflows/gates.yml@v1

@@ -4,7 +4,7 @@ and, through `adopt`, for adopted machines."""
 import json
 import shlex
 
-from . import adopt, caps, hostctl, reaper
+from . import adopt, caps, hostctl, reaper, tailnet
 from .errors import CAP, FAILED, GUARD, USAGE, DriverError
 from .profile import duration, format_duration
 from .up import iso, price_text
@@ -208,7 +208,10 @@ def down(ctx, name, force):
 
 
 def _delete(ctx, entry, what, left_desk=False):
+    """The delete, then whatever the tailnet still lists of the host (a kept
+    VM's node, which a departure cut short or none ran for, board #118)."""
     if not ctx.delete(entry):
         raise DriverError(FAILED, f"{entry.vm['name']} was not deleted: its labels changed since it was read")
-    ctx.say(f"{entry.vm['name']}: {what}{reaper.desk_note(ctx, entry.vm, left_desk)}")
+    name = entry.vm["name"]
+    ctx.say(f"{name}: {what}{reaper.desk_note(ctx, entry.vm, left_desk)}{tailnet.remove(ctx, name)}")
     return 0

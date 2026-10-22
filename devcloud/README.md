@@ -536,6 +536,14 @@ refuses unpushed or uncommitted work under the user's `~/Developer/GitHub`
 --no-poweroff`, `--no-hold` with `--force`) and deletes it after rechecking
 its labels; the connection dropping after `devcloud-depart: ready-to-logout`
 is success, before it the outcome is unknown and the VM is kept.
+A host that leaves for good removes its own tailnet node through the
+Tailscale API right after its logout, unless the node is ephemeral (a
+logout removes those), and the release of an adopted machine does the
+same. After every VM delete, the reaper's too, and after an adopted
+machine's verified release, the driver removes what the API still lists
+of that host. A node counts as the host's only when it is tagged
+`tag:devcloud` and reports exactly the host's name as its hostname. Each
+node is removed by its id, and the deletion's line names that id.
 
 **The reaper**, `devcloud vm reap`, deletes what outlived its lease (a
 reachable host departs first; a label older than the host's lease is
