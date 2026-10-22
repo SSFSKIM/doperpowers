@@ -239,9 +239,12 @@ describe('redact, never refuse', () => {
       message: { type: 'user', role: 'user', content: [{ type: 'tool_result', tool_use_id: 'data-1', content: source }] },
       door: 'tool-result', origin: { kind: 'tool', tool: 'Bash' }, uuid: 'data-row',
     } as never).catch(() => undefined)
-    const content = session.appended()[0]?.message.content as { content: string }[]
+    const block = session.appended()[0]?.message.content?.[0]
+    if (!block || block.type !== 'tool_result' || !('content' in block) || typeof block.content !== 'string') {
+      throw new Error('Expected an appended tool_result block with string content')
+    }
     const printed = (await $.tool.call({ tool: 'Bash', command: 'env' })).result as { stdout: string }
-    for (const text of [content[0]!.content, printed.stdout]) {
+    for (const text of [block.content, printed.stdout]) {
       expect(text.replace(/\[redacted:assignment#[a-z2-7]{4}\.\d+\]/g, '<hidden>')).toBe(
         '{password: <hidden>}\nuser=sample,password=<hidden>\nPASSWORD=<hidden>\nexport PASSWORD=<hidden>',
       )
