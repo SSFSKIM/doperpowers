@@ -42,6 +42,11 @@ if [ "${1:-}" = --lay ]; then
   done
 fi
 
+# One tsc for the four plugins: TypeScript 5 on PATH (CI installs it with a bounded,
+# retried fetch), else npx's, whose unbounded first fetch once held the gate to
+# its 10-minute limit.
+if command -v tsc >/dev/null 2>&1 && tsc --version | grep -q '^Version 5\.'; then tsc=(tsc); else tsc=(npx -y -p typescript@5 tsc); fi
+
 fail=0
 for p in "${plugins[@]}"; do
   name="${p/#./doperpowers}"
@@ -52,6 +57,6 @@ for p in "${plugins[@]}"; do
     continue
   fi
   echo "== $name, against $(head -1 "$d" | sed 's#^// ##')"
-  npx -y -p typescript@5 tsc -p "$root/$p/hooks/mods/tsconfig.json" || fail=1
+  "${tsc[@]}" -p "$root/$p/hooks/mods/tsconfig.json" || fail=1
 done
 exit "$fail"

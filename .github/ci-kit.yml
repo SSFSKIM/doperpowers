@@ -118,7 +118,7 @@ gates:
   - name: mods-types
     run: |
       for i in 1 2 3; do
-        timeout 300 npm i -g @anthropic-ai/claude-code && break
+        timeout 120 npm i -g @anthropic-ai/claude-code typescript@5 && break
         [ "$i" = 3 ] && exit 1; sleep 10
       done
       bash tests/mods/typecheck.sh --lay
