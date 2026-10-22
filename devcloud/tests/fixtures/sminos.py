@@ -23,6 +23,7 @@ devcloud relies on, and nothing else (Python 3.9 compatible: a Mac's
 
 Every call is one JSON line in `calls.jsonl`. State lives in $FAKE_SMINOS_STATE,
 else ~/.local/state/devcloud-test."""
+import fcntl
 import hashlib
 import json
 import os
@@ -81,8 +82,13 @@ if args == ["daemon", "install"]:
     print(f"wrote {unit}")
 elif args == ["daemon", "run"]:
     state.mkdir(parents=True, exist_ok=True)
+    # A surviving daemon must block a replacement, just as the real lock does.
+    daemon_lock = open(state / "sminos-daemon.lock", "a")
+    fcntl.flock(daemon_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
     def stopped(*_):
+        if (state / "sminos-ignore-term").exists():
+            return
         with open(state / "sminos-daemon.log", "a") as log:
             log.write(f"stop {os.getpid()}\n")
         sys.exit(0)
