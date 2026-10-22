@@ -249,10 +249,20 @@ def wait_rejoin(ctx, host, kind, timeout=REJOIN_WAIT):
         ctx.sleep(5)
 
 
+KEPT = "keep"     # host_expires of a host whose descriptor has no lease
+
+
 def host_expires(ctx, host):
+    """The lease in the host's descriptor; KEPT when it has none (`up --keep`
+    or `lease keep`, both confirmed); None when it could not be read."""
     result = ctx.remote.run(host.name, host.alias, f"sed -n 's/^DEVCLOUD_EXPIRES=//p' {BOOT_ENV}", timeout=30)
+    if result.code != 0:
+        return None
+    value = result.out.strip().strip('"')
+    if not value:
+        return KEPT
     try:
-        return int(result.out.strip().strip('"')) if result.code == 0 else None
+        return int(value)
     except ValueError:
         return None
 

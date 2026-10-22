@@ -44,6 +44,7 @@ class Action:
     kind: str                     # keep | contact | delete | label
     reason: str
     labels: dict = dataclasses.field(default_factory=dict)   # for label: the changes
+    drop: tuple = ()              # for label: the keys removed
     loss: bool = False            # a delete that loses unshipped sessions
 
 
@@ -78,6 +79,10 @@ def decide(vm, now, answer=None, host_expires=None):
     if answer == hostctl.NOT_OVER:
         if host_expires is None:
             return Action("keep", "the host says its lease is not over, and gave no lease to repair the label with")
+        if host_expires == hostctl.KEPT:
+            # Only a confirmed `up --keep` or `lease keep` leaves a host without a lease.
+            return Action("label", "the host is kept without a lease: label repaired",
+                          {"devcloud-lifetime": "keep", "devcloud-confirmed": "1"}, drop=("devcloud-expires",))
         return Action("label", "the host's lease is later: label repaired", {"devcloud-expires": str(host_expires)})
     if answer == hostctl.HELD:
         if held:
@@ -185,7 +190,7 @@ def _expired(ctx, entry, bounded):
         left = action.reason == "departed" and getattr(answer, "left_desk", False)
         return _delete(ctx, entry, action.reason, left, bounded=bounded)
     if action.kind == "label":
-        entry.client.set_labels(vm["id"], action.labels, merge=True)
+        entry.client.set_labels(vm["id"], action.labels, merge=True, drop=action.drop)
         tell(ctx, bounded, f"{vm['name']}: {action.reason}")
     return False
 
