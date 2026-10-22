@@ -1000,6 +1000,38 @@ or how it is answered reaches `cua` as a ticket before it ships.
 
 ## Decision Log
 
+- Decision: Abandon content narrowing for package noise (board #87); leave the detector and
+  installed plugin unchanged, and retain the positive credential matrix and false-negative
+  regression cases as constraints on a future provenance-aware design.
+  Evidence: installed global npm sources (58,463 files) produced 1,124 matches, the gcloud SDK
+  library (23,324 files) 284, the SDK platform tree (2,885 files) 197, and printable strings in
+  the installed Claude Code executable 301. Of these, generic assignments account for npm
+  1,094, gcloud 424 and executable 301. The scan read JS/TS, JSON, Python, text, Markdown and
+  YAML files without following symlinks; the executable scan read printable runs of at least
+  16 characters. Counts describe matches, not a classification of every one as a false positive.
+  Rationale: content-only heuristics would help both Read and Bash `cat`, but the useful broad
+  rules also exempted unknown credentials. Numbered dotted references collided with JWTs;
+  member expressions collided with dotted opaque values; braces and commas occurred in flow
+  YAML and logs, not just code; excluding doubled equals signs lost passwords beginning with
+  `=`. The positive matrix and medium review exposed those failures. The final declaration-only
+  candidate removed just 25 of 1,906 matches (npm 1,124 → 1,099; both SDK trees and the executable
+  unchanged), a 1.3% reduction. That does not justify another heuristic in the guard. The design
+  session bounded the experiment to one review fix wave, then chose this fallback rather than
+  another attempt. The resulting tests cover quoted env/YAML/JSON/TOML/source literals,
+  unquoted JWTs and dotted values, flow YAML, comma logs, leading equals, tool output, appended
+  rows and exact restoration. They run against the original detector, not the rejected rules.
+  Rejected: suppressing ambiguous quoted constants globally (a symbol can also be a password),
+  and lexical package-root matching. An installed global npm package was a symlink into a live
+  development checkout, demonstrating a user-data path inside the apparent installation tree.
+  Deferred: the whole runtime noise fix to a provenance-aware installed-package design. It must
+  check containment on resolved real paths and carry each Read call's provenance through
+  `session.append`, whose second scrub otherwise redacts the text again. This is an architectural
+  change shared with cua, not a detector tweak. Project `node_modules`, caches and build outputs
+  stay fully guarded; stored and credential-file values, provider-prefixed tokens and PEM blocks
+  must redact everywhere. Bash output has no trusted file provenance and remains fully guarded.
+  With no runtime change or version bump here, no cua resync is owed for this experiment.
+  Date/Author: 2026-10-22, guard executor and design session (board #87).
+
 - Decision: Verification. One independent spec review by the `doperpowers:adversarial-reviewer`
   agent (technical-heavy spec) plus its buildability review of this five-milestone execution
   section, in the same round. Whole-branch review at the **high** rung of doperpowers:review-code
