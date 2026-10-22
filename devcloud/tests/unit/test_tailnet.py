@@ -654,5 +654,22 @@ class TsApiTest(unittest.TestCase):
             tsapi.delete_node(tok, "nAbc123CNTRL", urlopen=urlopen)
 
 
+    def test_lists_the_tailnets_devices(self):
+        tok = tsapi.Token("t", ["devices:core"])
+        body = json.dumps({"devices": [{"nodeId": "nA1CNTRL", "hostname": "dc-kpt-e642", "tags": ["tag:devcloud"]},
+                                       "not a device"]}).encode()
+        urlopen, seen = self.respond(body=body)
+        self.assertEqual(tsapi.devices(tok, urlopen=urlopen),
+                         [{"nodeId": "nA1CNTRL", "hostname": "dc-kpt-e642", "tags": ["tag:devcloud"]}])
+        self.assertTrue(seen[0].full_url.endswith("/api/v2/tailnet/-/devices"))
+        self.assertEqual(seen[0].get_method(), "GET")
+        self.assertEqual(seen[0].get_header("Authorization"), "Bearer t")
+        urlopen, _ = self.respond(403)
+        with self.assertRaisesRegex(StepError, "403"):
+            tsapi.devices(tok, urlopen=urlopen)
+        urlopen, _ = self.respond(body=b'{"error": "x"}')
+        with self.assertRaisesRegex(StepError, "no devices"):
+            tsapi.devices(tok, urlopen=urlopen)
+
 if __name__ == "__main__":
     unittest.main()

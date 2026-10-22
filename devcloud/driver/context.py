@@ -17,6 +17,7 @@ import time
 
 from . import hostfile
 from . import labels as label_rules
+from . import tailnet as tailnet_mod
 from . import profile as profile_mod
 from . import provider
 from .errors import FAILED, UNUSABLE, DriverError, NotOwned
@@ -75,7 +76,7 @@ class Context:
     def __init__(self, paths, env=None, secrets=None, remote=None, clock=time.time, sleep=time.sleep,
                  out=sys.stdout, err=sys.stderr, machine=None, tailnet=None, sminos_machines=None, creator=None,
                  timeouts=None, plugin=PLUGIN_DIR, key_pushed=None, token_hex=None, monotonic=time.monotonic,
-                 host_file=None):
+                 host_file=None, tailnet_api=None):
         self.paths = paths
         self.env = dict(os.environ if env is None else env)
         self.clock = clock
@@ -90,6 +91,8 @@ class Context:
         self._profile = None
         self._clients = {}
         self.tailnet = tailnet or tailnet_nodes
+        # The Tailscale API, for the nodes of a host the driver is done with (tailnet.remove).
+        self.tailnet_api = tailnet_api or tailnet_mod.Api()
         # `sminos machines`' stdout, or None when there is no answer; the argument is its timeout.
         self.sminos_machines = sminos_machines or (lambda timeout: run_sminos_machines(self.env, timeout))
         self.creator = creator or (lambda: session_creator(self.env))

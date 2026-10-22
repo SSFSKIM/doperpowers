@@ -13,10 +13,11 @@ import unittest
 from unittest import mock
 
 import _path  # noqa: F401
-from devcloudlib import departure, ledger, proc, redact, status
+from devcloudlib import departure, ledger, nodekind, proc, redact, status, tsapi
 from devcloudlib.proc import StepError, User
 
 NOW = 1_792_000_000
+CLIENT = "tskey-client-kmadeup1CNTRL-made-up-secret"
 EXPIRED, LATER = NOW - 60, NOW + 3600
 PERIODIC = ("pull-config", "refresh-secrets", "refresh-mirrors", "enroll")
 
@@ -33,6 +34,7 @@ class World:
         self.failing = {}           # an argv's first words -> message: `run` raises StepError
         self.clock = 0.0
         self.next_pid = 4000
+        self.node = None            # the node tailscaled holds, {"ID": …}, for a stateful `tailscale status`
 
     def spawn(self, stubborn=False):
         self.next_pid += 1
@@ -47,6 +49,8 @@ class World:
         for prefix, message in self.failing.items():
             if tuple(argv[:len(prefix)]) == prefix:
                 raise StepError(message)
+        if argv == ["tailscale", "logout"] and self.node is not None:
+            self.node = {}
         if argv[-2:] == ["ship", "--once"]:
             outcome = self.ships.pop(0) if self.ships else True
             if outcome == "spawn":
@@ -56,6 +60,8 @@ class World:
 
     def call(self, argv, *, user=None, log=None, timeout=None, **_):
         self.events.append(("call", list(argv), user.name if user else "root"))
+        if list(argv) == ["tailscale", "status", "--json"] and self.node is not None:
+            return 0, json.dumps({"BackendState": "Running" if self.node else "NeedsLogin", "Self": self.node}), ""
         return self.calls.get(argv[-1], (0, "", ""))
 
     def runs(self):
@@ -91,6 +97,33 @@ class StandIn(departure.Host):
     def preempted(self):
         return self.world.preempted
 
+    def ts_client(self, d):
+        self.world.events.append(("ts-client", d.ts_secret))
+        if self.world.client_fails:
+            raise StepError(f"{d.ts_secret}: HTTP 403")
+        return CLIENT
+
+
+class FakeApi:
+    """The Tailscale API as tsapi's callers see it; its calls go into the
+    world's events, in order with everything else."""
+
+    def __init__(self, world, scopes=("auth_keys", "devices:core")):
+        self.world = world
+        self.scopes = list(scopes)
+        self.delete_fails = 0
+
+    def token(self, secret):
+        self.world.events.append(("api", "token", secret == CLIENT))
+        return tsapi.Token("made-up-access-token", self.scopes)
+
+    def delete_node(self, tok, node_id):
+        self.world.events.append(("api", "delete", node_id))
+        if self.delete_fails:
+            self.delete_fails -= 1
+            raise StepError("HTTP 500")
+        return "removed"
+
 
 class DepartureBase(unittest.TestCase):
     adopted = False
@@ -102,6 +135,12 @@ class DepartureBase(unittest.TestCase):
         self.user = User(name=me.pw_name, uid=me.pw_uid, gid=me.pw_gid, home=self.home)
         self.world = World()
         self.world.preempted = False
+        self.world.client_fails = False
+        self.api = FakeApi(self.world)
+        for patch in (mock.patch.object(tsapi, "token", self.api.token),
+                      mock.patch.object(tsapi, "delete_node", self.api.delete_node)):
+            patch.start()
+            self.addCleanup(patch.stop)
         self.units = self.tmp / "units"
         self.units.mkdir()
         for name in ("pull-config", "refresh-secrets", "refresh-mirrors", "enroll", "lease"):
@@ -221,7 +260,7 @@ class DepartTest(DepartureBase):
         self.assertEqual(record["state"], "departed")
         self.assertEqual([s["name"] for s in record["steps"]],
                          ["close-admission", "end-sessions", "stop-shipper", "ship", "leave", "logout",
-                          "stop-services", "poweroff"])
+                          "remove-node", "stop-services", "poweroff"])
 
     def test_a_session_that_ignores_sigterm_is_killed_after_30_seconds(self):
         pid = self.world.spawn(stubborn=True)
@@ -689,6 +728,180 @@ class ReleaseTest(DepartureBase):
             self.assertTrue(path.exists())
         self.assertTrue(self.led.exists())
         self.assertFalse(any(r[:2] == ["nft", "delete"] for r in self.world.runs()))
+
+
+class NodeRemovalBase(DepartureBase):
+    """A host that leaves for good removes its own tailnet node when the
+    logout leaves it listed (board #118): a node not known to be ephemeral,
+    its id read before the logout, removed through the API right after it.
+    A removal that fails is recorded and the departure completes."""
+
+    NODE = "nHost7CNTRL"
+
+    def setUp(self):
+        super().setUp()
+        self.world.node = {"ID": self.NODE}
+        self.kind_path = self.tmp / "state" / "tailnet.json"
+
+    def joined(self, ephemeral, remove=()):
+        nodekind.record(ephemeral, ephemeral, nodekind.JOINED, "joined", name="dc-build-7f3a", path=self.kind_path,
+                        remove=list(remove))
+
+    def step(self, name):
+        return next(s for s in self.lifecycle()["steps"] if s["name"] == name)
+
+    def api_calls(self):
+        return [e[1:] for e in self.world.events if e[0] == "api"]
+
+
+class DepartNodeRemovalTest(NodeRemovalBase):
+    def depart(self):
+        self.write_descriptor(None)
+        return departure.depart(self.host(), force=True, no_poweroff=True)
+
+    def test_a_kept_hosts_node_is_removed_right_after_its_logout(self):
+        self.joined(False)
+        self.assertEqual(self.depart(), departure.DONE)
+        w = self.world
+        status_read = w.index(lambda e: e[0] == "call" and e[1] == ["tailscale", "status", "--json"])
+        ready = w.index(lambda e: e == ("say", departure.READY))
+        logout = w.index(lambda e: e[0] == "run" and e[1] == ["tailscale", "logout"])
+        delete = w.index(lambda e: e == ("api", "delete", self.NODE))
+        stop = w.index(lambda e: e[0] == "run" and e[1][:2] == ["systemctl", "stop"] and "devcloud-lease.timer" in e[1])
+        self.assertLess(status_read, ready, "the id is read before the ready line")
+        self.assertEqual(ready + 1, logout, "the ready line still comes just before the logout")
+        self.assertLess(logout, delete)
+        self.assertLess(delete, stop)
+        self.assertEqual(self.api_calls(), [("token", True), ("delete", self.NODE)])
+        self.assertEqual(self.step("remove-node")["state"], "ok")
+        self.assertIn(f"{self.NODE} removed through the API", self.step("remove-node")["detail"])
+        self.assertEqual(nodekind.pending(self.kind_path), [])
+        self.assertEqual(self.lifecycle()["state"], "departed")
+
+    def test_a_node_of_no_recorded_kind_is_removed_too(self):
+        self.assertEqual(self.depart(), departure.DONE)
+        self.assertEqual(self.api_calls(), [("token", True), ("delete", self.NODE)])
+
+    def test_an_ephemeral_node_leaves_at_its_logout_without_the_api(self):
+        self.joined(True)
+        self.assertEqual(self.depart(), departure.DONE)
+        self.assertEqual(self.api_calls(), [])
+        self.assertNotIn(("ts-client", "tailscale-client"), self.world.events, "fetched the client for nothing")
+        self.assertEqual(self.step("remove-node")["state"], "ok")
+        self.assertIn("ephemeral", self.step("remove-node")["detail"])
+
+    def test_an_old_node_a_rejoin_left_pending_is_removed_with_the_hosts_own(self):
+        self.joined(True, remove=["nOld3CNTRL"])
+        self.assertEqual(self.depart(), departure.DONE)
+        self.assertEqual(self.api_calls(), [("token", True), ("delete", "nOld3CNTRL")])
+
+    def test_a_removal_that_keeps_failing_is_recorded_and_the_departure_completes(self):
+        self.joined(False)
+        self.api_fails(3)
+        self.write_descriptor(None)
+        self.assertEqual(departure.depart(self.host(), force=True), departure.DONE)
+        self.assertEqual([e for e in self.api_calls() if e[0] == "delete"], [("delete", self.NODE)] * 3)
+        removal = self.step("remove-node")
+        self.assertEqual(removal["state"], "failed")
+        self.assertIn(f"the old node {self.NODE} was not removed (HTTP 500)", removal["detail"])
+        self.assertEqual(self.step("stop-services")["state"], "ok")
+        self.assertIn(["systemctl", "poweroff"], self.world.runs(), "a failed removal kept the VM up")
+        self.assertEqual(self.lifecycle()["state"], "departed")
+
+    def test_a_client_that_cannot_be_fetched_is_recorded_and_the_departure_completes(self):
+        self.joined(False)
+        self.world.client_fails = True
+        self.assertEqual(self.depart(), departure.DONE)
+        self.assertEqual(self.api_calls(), [])
+        removal = self.step("remove-node")
+        self.assertEqual(removal["state"], "failed")
+        self.assertIn("HTTP 403", removal["detail"])
+        self.assertEqual(self.lifecycle()["state"], "departed")
+
+    def test_a_client_without_the_devices_scope_removes_nothing_and_the_departure_completes(self):
+        self.joined(False)
+        self.api.scopes = ["auth_keys"]
+        self.assertEqual(self.depart(), departure.DONE)
+        self.assertEqual(self.api_calls(), [("token", True)])
+        self.assertIn("devices:core", self.step("remove-node")["detail"])
+        self.assertEqual(self.step("remove-node")["state"], "failed")
+
+    def test_a_logout_that_failed_leaves_the_node_held_untouched(self):
+        """The node is still the daemon's: never removed from under it. The
+        driver removes it once the VM is deleted."""
+        self.joined(False)
+        self.world.failing[("tailscale", "logout")] = "tailscale exited 1"
+        self.assertEqual(self.depart(), departure.DONE)
+        self.assertEqual(self.api_calls(), [])
+        removal = self.step("remove-node")
+        self.assertEqual(removal["state"], "failed")
+        self.assertIn("still holds that node", removal["detail"])
+        self.assertEqual(self.lifecycle()["state"], "departed")
+
+    def test_a_status_that_cannot_be_read_before_the_logout_is_named_and_nothing_is_removed(self):
+        self.joined(False)
+        self.world.node = None
+        self.world.calls["--json"] = (1, "", "tailscaled not running")
+        self.assertEqual(self.depart(), departure.DONE)
+        self.assertEqual(self.api_calls(), [])
+        self.assertIn("could not be read before the logout", self.step("logout")["detail"])
+        self.assertEqual(self.step("remove-node")["detail"], "no node id to remove")
+
+    def test_the_spot_reclaim_removes_a_kept_nodes_after_its_logout(self):
+        self.joined(False)
+        self.world.preempted = True
+        self.assertEqual(departure.depart_preempted(self.host()), departure.DONE)
+        self.assertEqual(self.api_calls(), [("token", True), ("delete", self.NODE)])
+        names = [s["name"] for s in self.lifecycle()["steps"]]
+        self.assertEqual(names[names.index("logout") + 1], "remove-node")
+
+    def api_fails(self, count):
+        self.api.delete_fails = count
+
+
+class ReleaseNodeRemovalTest(NodeRemovalBase):
+    adopted = True
+
+    def setUp(self):
+        super().setUp()
+        self.write_descriptor(EXPIRED)
+        self.joined(False)
+
+    def test_the_node_is_removed_after_the_logout_and_before_the_units_and_credentials(self):
+        seed = self.tmp / "seed.json"
+        seed.write_text("made-up")
+        ledger.add(seed, path=self.tmp / "credentials.ledger")
+        self.assertEqual(departure.release(self.host()), departure.DONE)
+        w = self.world
+        logout = w.index(lambda e: e[0] == "run" and e[1] == ["tailscale", "logout"])
+        client = w.index(lambda e: e[0] == "ts-client")
+        delete = w.index(lambda e: e == ("api", "delete", self.NODE))
+        units = w.index(lambda e: e[0] == "run" and e[1][:3] == ["systemctl", "disable", "--now"]
+                        and "devcloud-boot.service" in e[1])
+        self.assertLess(logout, client)
+        self.assertLess(client, delete)
+        self.assertLess(delete, units, "the credentials' removal comes after the node's")
+        self.assertFalse(seed.exists())
+        names = [s["name"] for s in self.lifecycle()["steps"]]
+        self.assertEqual(names[names.index("logout"):], ["logout", "remove-node", "remove-units",
+                                                          "remove-credentials"])
+
+    def test_a_failed_removal_does_not_stop_the_release(self):
+        self.api.delete_fails = 3
+        self.assertEqual(departure.release(self.host()), departure.DONE)
+        self.assertEqual(self.step("remove-node")["state"], "failed")
+        self.assertEqual(self.lifecycle()["state"], "departed")
+
+    def test_a_resumed_release_retries_a_removal_that_failed(self):
+        self.api.delete_fails = 3
+        self.world.failing[("systemctl", "disable", "--now", "devcloud-boot.service")] = "systemctl exited 1"
+        self.assertEqual(departure.release(self.host()), departure.FAILED)
+        self.assertEqual(nodekind.pending(self.kind_path), [self.NODE], "the id was lost")
+        del self.world.failing[("systemctl", "disable", "--now", "devcloud-boot.service")]
+        self.world.events.clear()
+        self.assertEqual(departure.release(self.host()), departure.DONE)
+        self.assertNotIn(["tailscale", "logout"], self.world.runs(), "logged out again")
+        self.assertEqual(self.api_calls(), [("token", True), ("delete", self.NODE)])
 
 
 if __name__ == "__main__":

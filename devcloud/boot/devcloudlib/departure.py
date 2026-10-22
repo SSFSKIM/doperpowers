@@ -6,15 +6,19 @@ host alive: 0 close admission (every periodic timer but the lease's, and the
 sminos daemon, stopped and disabled); 1 end the user's `claude` processes;
 2 stop the continuous shipper and ship once, then end and ship again while
 sessions keep appearing, three rounds at most; 3 `sminos hub leave`; 4 the
-flushed line `devcloud-depart: ready-to-logout`, then `tailscale logout`;
-5 stop devcloud's services (not the transient unit this runs in); 6 power off.
+flushed line `devcloud-depart: ready-to-logout`, then `tailscale logout`, and
+the node's removal through the Tailscale API when the logout leaves it listed
+(a node not known to be ephemeral: its id is read before the logout, board
+#118); 5 stop devcloud's services (not the transient unit this runs in);
+6 power off.
 A failed ship, or sessions still there after the third round, holds the
 departure before step 3 — no leave, no logout, no power-off — and exits 4; the
 lease service's next run starts again, step 0 re-applied first.
 
 `devcloud release`, on an adopted machine: steps 0-2 as the departure's, then
 the leave, the firewall table and its unit removed, the saved
-`authorized_keys` restored, the logout, devcloud's units stopped and removed,
+`authorized_keys` restored, the logout and the node's removal, devcloud's
+units stopped and removed,
 and every credential the ledger lists removed, the descriptor and then the
 ledger last. The machine keeps running. A failed firewall removal, key
 restore, logout (unless `tailscale status` shows the node logged out), unit
@@ -40,7 +44,8 @@ import sys
 import time
 import urllib.request
 
-from . import descriptor, envfile, ledger, lease, proc, services, sminos_host, status
+from . import descriptor, envfile, ledger, lease, nodekind, proc, secretmanager, services, sminos_host, status, \
+    steps, tsapi
 from .proc import StepError
 
 DONE, FAILED, USAGE, NOT_OVER, HELD = 0, 1, 2, 3, 4
@@ -117,6 +122,16 @@ class Host:
 
     def know_secrets(self, d):
         proc.know_host(self.user, d.seed_path if d.seed_kind == "file" else None, env_path=services.ENV_PATH)
+
+    def ts_client(self, d):
+        """The OAuth client the host joined with, from Secret Manager through
+        the seed, as the boot fetches it."""
+        return steps.fetch_text(secretmanager.Tokens(d), d.ts_secret)
+
+    @property
+    def node_path(self):
+        """The record of the host's tailnet node (nodekind's)."""
+        return self.state_dir / nodekind.PATH.name
 
 
 def claude_pids(uid):
@@ -329,32 +344,94 @@ def leave(run, timeout=LEAVE_TIMEOUT):
 
 
 def logout(run, d, confirm=False):
-    """Step 4: the line the driver reads as success once the logout cuts its
-    connection, flushed, then `tailscale logout`. With `confirm` (the
-    release's), a failed logout still counts when `tailscale status` shows the
-    node logged out (`NeedsLogin`): a command that timed out may have done its
-    work."""
+    """Step 4: the node's id recorded for its removal (`mark_node`), the line
+    the driver reads as success once the logout cuts its connection, flushed,
+    then `tailscale logout`. With `confirm` (the release's), a failed logout
+    still counts when `tailscale status` shows the node logged out
+    (`NeedsLogin`): a command that timed out may have done its work."""
+    note = mark_node(run, d) if d.tailscale == "join" else None
     run.host.say(READY)
     if d.tailscale != "join":
         return "not a tailnet node of its own"
+    note = f"; {note}" if note else ""
     try:
         run.host.run(["tailscale", "logout"], log="lifecycle", timeout=run.bound(60))
     except StepError as error:
         if not confirm:
-            raise
+            raise StepError(f"{error}{note}") from None
         state = _backend_state(run)
         if state != "NeedsLogin":
-            raise StepError(f"{error}; tailscale status shows {state or 'nothing readable'}, not NeedsLogin") from None
-        return f"tailscale logout failed ({error}), but tailscale status shows the node logged out (NeedsLogin)"
-    return "logged out of the tailnet"
+            raise StepError(f"{error}; tailscale status shows {state or 'nothing readable'}, not NeedsLogin{note}") \
+                from None
+        return f"tailscale logout failed ({error}), but tailscale status shows the node logged out (NeedsLogin){note}"
+    return f"logged out of the tailnet{note}"
+
+
+def _status(run):
+    """`tailscale status --json` as a dict, or None when it cannot be read."""
+    code, out, _ = run.host.call(["tailscale", "status", "--json"], log="lifecycle", timeout=run.bound(30))
+    try:
+        data = json.loads(out) if code == 0 else None
+    except ValueError:
+        return None
+    return data if isinstance(data, dict) else None
 
 
 def _backend_state(run):
-    code, out, _ = run.host.call(["tailscale", "status", "--json"], log="lifecycle", timeout=run.bound(30))
-    try:
-        return json.loads(out).get("BackendState") if code == 0 else None
-    except (ValueError, AttributeError):
+    return (_status(run) or {}).get("BackendState")
+
+
+def _held(run):
+    """The id of the node tailscaled holds: "" for none (a logged-out daemon
+    names no Self.ID), None when the status cannot be read."""
+    data = _status(run)
+    return None if data is None else (data.get("Self") or {}).get("ID") or ""
+
+
+def mark_node(run, d):
+    """Before the logout: the id of the node the logout would leave listed
+    recorded as pending removal (nodekind's record), where `remove_node`
+    finds it, and a resumed release too. A logout removes an ephemeral node
+    at once and leaves a non-ephemeral one listed, offline and expired
+    (measured 2026-10-22); a kind not recorded counts as non-ephemeral. A
+    node joined with the fallback auth key has no client to remove it with.
+    Returns a note when the id could not be read."""
+    path = run.host.node_path
+    if not nodekind.applies(d) or nodekind.recorded(path).get("ephemeral") is True:
         return None
+    held = _held(run)
+    if held:
+        nodekind.pend(held, path)
+        return None
+    if held is None:
+        return "its node's id could not be read before the logout, so the node stays listed until the driver removes it"
+    return None
+
+
+def remove_node(run, d):
+    """Step 4's second half, right after the logout (board #118): every node
+    id the record holds as pending removal — this host's own, read before the
+    logout, and an old node a rejoin left — removed through the Tailscale API
+    with the OAuth client, as the rejoin removes them (`steps.remove_pending`,
+    never the node held). A removal that fails is recorded and the run goes
+    on; the driver removes what a deleted host leaves listed."""
+    host = run.host
+    if d.tailscale != "join":
+        return "not a tailnet node of its own"
+    if not nodekind.pending(host.node_path):
+        if not nodekind.applies(d):
+            return "joined with an auth key file, not the OAuth client: nothing here can remove its node"
+        if nodekind.recorded(host.node_path).get("ephemeral") is True:
+            return "an ephemeral node, which left at its logout"
+        return "no node id to remove"
+    held = _held(run)
+    detail = steps.remove_pending(lambda: tsapi.token(host.ts_client(d)), held, path=host.node_path,
+                                  sleep=host.sleep)
+    if nodekind.pending(host.node_path):
+        raise StepError(detail)
+    if held:
+        raise StepError(f"{detail}; tailscale still holds that node after the logout, so it stays listed")
+    return detail
 
 
 def stop_services(run):
@@ -432,6 +509,7 @@ def depart(host, force=False, no_hold=False, no_poweroff=False):
             return HELD
         run.step("leave", lambda: leave(run))
         run.step("logout", lambda: logout(run, d))
+        run.step("remove-node", lambda: remove_node(run, d))
         run.step("stop-services", lambda: stop_services(run))
         if not no_poweroff:
             run.steps.append({"name": "poweroff", "state": "ok", "at": status.now(), "detail": "requested"})
@@ -471,6 +549,7 @@ def depart_preempted(host):
         sessions_and_ship(run, no_hold=True, grace=5, rounds=1, ship_timeout=max(1, PREEMPT_BUDGET - 15))
         run.step("leave", lambda: leave(run, timeout=5))
         run.step("logout", lambda: logout(run, d))
+        run.step("remove-node", lambda: remove_node(run, d))
         status.set_lifecycle("depart", "departed", "departed (reclaimed)", steps=run.steps, path=host.status_path)
         return DONE
     finally:
@@ -589,11 +668,15 @@ def release(host, force=False, no_hold=False):
         # keeps running and its node is not ephemeral, so a logout that did
         # not happen would leave it on the tailnet with nothing of devcloud
         # left to retry from; units left would rewrite the credentials;
-        # credentials left need the descriptor.
+        # credentials left need the descriptor. The node's removal needs the
+        # OAuth client, which the seed among the credentials reads, so it
+        # comes before them; it fails alone (the driver's `down` removes the
+        # node too).
         for name, fn, stops in (("leave", lambda: leave(run), False),
                                 ("firewall", lambda: remove_firewall(run), True),
                                 ("restore-keys", lambda: restore_keys(run), True),
                                 ("logout", lambda: logout(run, d, confirm=True), True),
+                                ("remove-node", lambda: remove_node(run, d), False),
                                 ("remove-units", lambda: remove_units(run), True),
                                 ("remove-credentials", lambda: remove_credentials(run), True)):
             if name in done:
