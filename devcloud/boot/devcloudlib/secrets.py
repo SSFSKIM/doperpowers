@@ -16,7 +16,6 @@ payload with one trailing newline dropped, the rule the store's readers apply.
 Every entry is tried; the step fails after the rest when one required entry
 could not be written. Status names secret ids, never a value."""
 
-import contextlib
 import dataclasses
 import errno
 import json
@@ -150,52 +149,9 @@ def _identity(st):
             st.st_size, st.st_mode, st.st_uid, st.st_gid]
 
 
-def _parent_identity(st):
-    # Directory contents may change without replacing the route. A symlink,
-    # unlike a directory, must itself remain unchanged as well as its target.
-    link = stat.S_ISLNK(st.st_mode)
-    return [st.st_dev, st.st_ino, stat.S_IFMT(st.st_mode),
-            st.st_ctime_ns if link else 0, st.st_mtime_ns if link else 0]
-
-
-@contextlib.contextmanager
-def _open_parent(home, name, expected=None):
-    """Pin each parent directory and record both the entry and where it leads.
-    Cleanup follows a symlink only when it is the one we wrote through, and
-    checks the opened directory too: an unchanged link can lead somewhere new.
-    """
-    parts = _in_home("~/" + name, "secrets ownership manifest").parts
-    fd, route = None, []
+def _file_identity(path):
     try:
-        for i, part in enumerate([str(home), *parts[:-1]]):
-            entry = _parent_identity(os.stat(part, dir_fd=fd, follow_symlinks=False))
-            if expected is not None and entry != expected[i][0]:
-                raise OSError(errno.ESTALE, "secret target parent replaced")
-            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY, dir_fd=fd)
-            try:
-                st = os.fstat(child)
-                directory = [st.st_dev, st.st_ino]
-                if (entry != _parent_identity(os.stat(part, dir_fd=fd, follow_symlinks=False))
-                        or (expected is not None and directory != expected[i][1])):
-                    raise OSError(errno.ESTALE, "secret target parent replaced")
-            except BaseException:
-                os.close(child)
-                raise
-            if fd is not None:
-                os.close(fd)
-            fd = child
-            route.append([entry, directory])
-        yield fd, route
-    finally:
-        if fd is not None:
-            os.close(fd)
-
-
-def _file_identity(home, path):
-    try:
-        with _open_parent(home, str(path.relative_to(home))) as (fd, route):
-            identity = _identity(os.stat(path.name, dir_fd=fd, follow_symlinks=False))
-            return {"file": identity, "parents": route} if identity is not None else None
+        return _identity(path.lstat())
     except FileNotFoundError:
         return None
 
@@ -208,9 +164,11 @@ def _load_owned(home):
     try:
         data = json.loads(MANIFEST.read_text())
     except FileNotFoundError:
-        return {}
-    except (ValueError, UnicodeError):
-        raise ProfileError("secrets ownership manifest is invalid") from None
+        return {}, "ownership manifest missing; no prior ownership"
+    except OSError as error:
+        return {}, f"ownership manifest unreadable ({type(error).__name__}); no prior ownership"
+    except ValueError:
+        return {}, "ownership manifest invalid; no prior ownership"
     try:
         if data["version"] != 1 or not isinstance(data["home"], str):
             raise ValueError
@@ -218,20 +176,15 @@ def _load_owned(home):
         if not isinstance(files, dict):
             raise ValueError
         for name, identity in files.items():
-            parts = _in_home("~/" + name, "secrets ownership manifest").parts
-            if not isinstance(identity, dict) or not _integers(identity["file"], 8):
+            _in_home("~/" + name, "secrets ownership manifest")
+            if not _integers(identity, 8):
                 raise ValueError
-            parents = identity["parents"]
-            if not isinstance(parents, list) or len(parents) != len(parts):
-                raise ValueError
-            for parent in parents:
-                if (not isinstance(parent, list) or len(parent) != 2
-                        or not _integers(parent[0], 5) or not _integers(parent[1], 2)):
-                    raise ValueError
     except (KeyError, TypeError, ValueError):
-        raise ProfileError("secrets ownership manifest is invalid") from None
+        return {}, "ownership manifest invalid; no prior ownership"
     # A different home is not evidence of ownership in this one.
-    return files if data["home"] == str(home) else {}
+    if data["home"] != str(home):
+        return {}, "ownership manifest belongs to another home; no prior ownership"
+    return files, None
 
 
 def _save_owned(home, owned):
@@ -239,16 +192,14 @@ def _save_owned(home, owned):
 
 
 def _remove_owned(home, name, identity):
-    """Unlink only the recorded regular file, never through a replaced parent.
+    """Unlink only the recorded regular file, regardless of its parent route.
     Runs with the same user privileges as materialization, not as root."""
-    leaf = _in_home("~/" + name, "secrets ownership manifest").name
+    path = home / _in_home("~/" + name, "secrets ownership manifest")
     try:
-        with _open_parent(home, name, expected=identity["parents"]) as (fd, _):
-            current = os.stat(leaf, dir_fd=fd, follow_symlinks=False)
-            if _identity(current) == identity["file"]:
-                os.unlink(leaf, dir_fd=fd)
+        if _file_identity(path) == identity:
+            path.unlink()
     except OSError as error:
-        if error.errno not in (errno.ENOENT, errno.ENOTDIR, errno.ELOOP, errno.ESTALE):
+        if error.errno not in (errno.ENOENT, errno.ENOTDIR, errno.ELOOP):
             raise
 
 
@@ -272,7 +223,20 @@ def materialize(entries, fetch, home, as_user=None, before_write=None):
     run_as = as_user or (lambda fn: fn())
     written, missing, failed = 0, [], []
     env = {}
-    owned = _load_owned(home)
+    owned, ownership_note = _load_owned(home)
+    save_error = None
+
+    def save_owned():
+        nonlocal save_error
+        try:
+            _save_owned(home, owned)
+        except OSError as error:
+            # Bookkeeping must not prevent credentials from materializing.
+            # Keep the in-memory identities for the next save attempt.
+            save_error = type(error).__name__
+        else:
+            save_error = None
+
     desired = set()
     for entry in entries:
         try:
@@ -288,11 +252,11 @@ def materialize(entries, fetch, home, as_user=None, before_write=None):
             failed.append(f"cleanup {name} ({type(error).__name__})")
         else:
             del owned[name]
-    _save_owned(home, owned)
+    save_owned()
 
     def write_target(path, content, mode):
         (before_write or (lambda path: None))(path)
-        before = _file_identity(home, path)
+        before = _file_identity(path)
 
         def write():
             if path.parent == home / STORE:
@@ -301,9 +265,9 @@ def materialize(entries, fetch, home, as_user=None, before_write=None):
             write_file(path, content, mode=mode)
 
         run_as(write)
-        after = _file_identity(home, path)
+        after = _file_identity(path)
         name = str(path.relative_to(home))
-        if after is not None and (before is None or after["file"] != before["file"] or owned.get(name) == after):
+        if after is not None and (after != before or owned.get(name) == after):
             owned[name] = after
         else:
             # write_file leaves identical content alone. Do not claim a user's
@@ -311,7 +275,7 @@ def materialize(entries, fetch, home, as_user=None, before_write=None):
             owned.pop(name, None)
         # Persist each target, including the first half of a failed entry.
         # run_as may fork, so bookkeeping belongs in this parent process.
-        _save_owned(home, owned)
+        save_owned()
 
     for entry in entries:
         try:
@@ -347,10 +311,17 @@ def materialize(entries, fetch, home, as_user=None, before_write=None):
         if env_value is not None:
             env[entry.env] = env_value
         written += 1
+    # Retry a failed final/partial-entry save even if no later target was written.
+    if save_error:
+        save_owned()
     parts = [f"{written} written"]
     if missing:
         parts.append("missing: " + ", ".join(missing))
     if failed:
         parts.append("failed: " + ", ".join(failed))
+    if ownership_note:
+        parts.append(ownership_note)
+    if save_error:
+        parts.append(f"ownership manifest save failed ({save_error}); cleanup ownership may be incomplete")
     state = "failed" if failed else "missing" if missing else "ok"
     return Outcome(state=state, detail="; ".join(parts), env=env)

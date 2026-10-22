@@ -1034,10 +1034,14 @@ or how it is answered reaches `cua` as a ticket before it ships.
 
 - Decision: Retired secret targets are removed during materialization only while
   their filesystem identity and change metadata still match an actual devcloud
-  write (board #89, closing M2's removed-entry residue). Parent routes are recorded
-  too: unchanged symlinked directories are supported, but a replaced link or
-  directory cannot authorize deleting a file through a new route. Root-owned ownership
-  metadata beside status contains paths and stat metadata, never secret values.
+  write (board #89, closing M2's removed-entry residue). A path's `lstat` identity
+  decides ownership: the final target must still be that regular file, regardless
+  of the parent route. This supports existing symlinked directories without
+  parent-route records. Cleanup runs as the user; same-user races are not a
+  privilege boundary to defend here. Root-owned ownership metadata beside status
+  contains paths and file stat metadata, never secret values. Missing, unreadable
+  or invalid ownership metadata means no files are owned; the step reports that
+  condition without stopping secret materialization.
   The lifecycle credential ledger remains separate: it records paths before a
   write, including directories and other credential sources, and deliberately
   cannot prove which file now belongs to the materializer. It is insufficient
@@ -1047,7 +1051,9 @@ or how it is answered reaches `cua` as a ticket before it ships.
   profile still determines the environment afresh on each reconciliation.
   Rationale: withdrawing a declaration must remove managed credentials without
   deleting user-created replacements or guessing ownership on upgrade.
-  Date/Author: 2026-10-22, host-secrets executor after checking the existing ledger.
+  Date/Author: 2026-10-22, host-secrets executor after checking the existing ledger;
+  simplified before merge at the design session's direction to use file identity
+  alone and keep bookkeeping failures from blocking credentials.
 
 - Decision: Devcloud owns the persistent host's sminos output scrubber (board #91,
   option A). Step 11's existing user-unit drop-in resets `ExecStart` and wraps the
