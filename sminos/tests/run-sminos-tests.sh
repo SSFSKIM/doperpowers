@@ -343,6 +343,8 @@ run() { # capture stdout+stderr and rc without aborting the suite
 SMINOS_PART="${SMINOS_PART:-all}"
 case "$SMINOS_PART" in all | core | suites) ;; *) echo "SMINOS_PART is all, core or suites" >&2; exit 2 ;; esac
 run_suites() {
+  if python3 "$SCRIPT_DIR/test_tui_pending_send.py"; then pass "pending TUI sends survive stopped folding (test_tui_pending_send.py)"; else
+    fail "pending TUI sends survive stopped folding (test_tui_pending_send.py)"; fi
   if python3 "$SCRIPT_DIR/test_list_fold.py"; then pass "stopped members fold only in text views (test_list_fold.py)"; else
     fail "stopped members fold only in text views (test_list_fold.py)"; fi
   # The bridge's session endpoint has a file of its own (short socket paths, a
