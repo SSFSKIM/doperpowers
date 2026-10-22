@@ -101,7 +101,7 @@ def out(container, script, user=None):
 # spot and adopted cases also boot; `projects` and `one-shot` each boot their
 # own container, run and gone. A part is a set of groups balanced for time, a
 # CI gate each (.github/ci-kit.yml). On a CI runner (board #116): image about
-# 30 s, host 56, systemd 67, projects 23, one-shot 42.
+# 25 s, one-shot 40, host 56, projects 23, systemd 65.
 PARTS = {"image": {"image", "one-shot"}, "host": {"host", "projects"}, "systemd": {"systemd"}}
 GROUPS = set().union(*PARTS.values())
 CASES = []  # (group, name, fn), in the order defined
