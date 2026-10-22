@@ -55,6 +55,13 @@ def remove(ctx, name):
     Returns the note the deletion's line ends with: each node id removed, or
     why none could be; "" when none is listed. Never raises: the deletion
     has happened, and a node left is named, not a failure of it."""
+    try:
+        return _remove(ctx, name)
+    except Exception as error:      # whatever the API or its data did that was not foreseen
+        return f"; its tailnet node was not removed ({type(error).__name__}): {HINT}"
+
+
+def _remove(ctx, name):
     def timeout():
         left = ctx.remaining()
         return tsapi.TIMEOUT if left is None else max(1, min(tsapi.TIMEOUT, left))

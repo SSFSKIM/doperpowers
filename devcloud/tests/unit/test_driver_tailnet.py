@@ -79,6 +79,19 @@ class DownRemovesTheNodeTest(DriverBase):
                 self.assertIn(needle, line)
                 self.assertIn("remove it in the Tailscale admin console if it is listed", line)
 
+    def test_an_unexpected_failure_in_the_removal_is_named_and_the_deletion_stands(self):
+        self.remote.on("true", code=255)
+
+        def broken(tok, timeout):
+            raise KeyError("hostname")
+
+        self.tailnet_api.devices = broken
+        self.assertEqual(ops.down(self.ctx, "dc-k-0001", force=True), 0)
+        self.assertNotIn("dc-k-0001", self.servers())
+        line = self.out.getvalue().splitlines()[-1]
+        self.assertIn("its tailnet node was not removed (KeyError)", line)
+        self.assertIn("remove it in the Tailscale admin console if it is listed", line)
+
     def test_an_unreadable_client_or_one_without_the_devices_scope_removes_nothing(self):
         self.remote.on("true", code=255)
         del self.secrets.values["ts-oauth"]
