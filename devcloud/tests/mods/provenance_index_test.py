@@ -124,8 +124,23 @@ class IndexTests(unittest.TestCase):
         (self.root / 'linked').symlink_to(outside, target_is_directory=True)
         self.build()
         self.assertEqual(self.verify(file=self.root / 'linked/index.js')['status'], 'unknown')
-        (self.root.parent / '.git').mkdir()
+        (self.root / '.git').mkdir()
         self.assertEqual(self.build()['sources']['npm']['verifiedFiles'], 0)
+
+    def test_version_manager_checkout_above_installation_does_not_exclude_packages(self):
+        (self.root.parent / '.git').mkdir()
+        self.assertEqual(self.build()['sources']['npm']['verifiedFiles'], 2)
+        self.assertEqual(self.verify()['status'], 'verified')
+        # Checkout boundaries within the managed installation still exclude
+        # source trees, including worktree-style .git files and Mercurial roots.
+        for boundary in (self.root, self.pkg):
+            for name in ('.git', '.hg'):
+                with self.subTest(boundary=boundary.name, marker=name):
+                    checkout_marker = boundary / name
+                    checkout_marker.write_text('synthetic checkout marker')
+                    self.assertEqual(self.build()['sources']['npm']['verifiedFiles'], 0)
+                    self.assertEqual(self.verify()['status'], 'unknown')
+                    checkout_marker.unlink()
 
     def test_invoking_project_package_is_not_indexed(self):
         self.project = self.pkg

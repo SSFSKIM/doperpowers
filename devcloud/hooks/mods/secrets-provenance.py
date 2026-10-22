@@ -144,9 +144,11 @@ def marker(path):
     return {'path': str(resolved), 'stat': stat_facts(info)}
 
 
-def checkout(path):
+def checkout(path, installation_root):
+    # Runtime managers can themselves be Git checkouts. Only boundaries inside
+    # the discovered installation describe source checkouts of its packages.
     return any((parent / '.git').exists() or (parent / '.hg').exists()
-               for parent in (path, *path.parents))
+               for parent in (path, *path.parents) if within(parent, installation_root))
 
 
 def clean_relative(name):
@@ -584,11 +586,12 @@ class Builder:
         self.sources[source]['verifiedPackages'] += 1
         self.roots.add(str(root))
 
-    def excluded_root(self, root):
+    def excluded_root(self, path, installation_root=None):
         caches = [cache_dir().resolve()]
         if self.store.npm_cache:
             caches.append(self.store.npm_cache.resolve())
-        return within(root, self.project) or checkout(root) or any(within(root, cache) for cache in caches)
+        return (within(path, self.project) or checkout(path, installation_root or path) or
+                any(within(path, cache) for cache in caches))
 
     def npm(self, root):
         if root is None:
@@ -601,7 +604,7 @@ class Builder:
         for package in npm_packages(root):
             try:
                 canonical = package.resolve(strict=True)
-                if canonical != package or not within(canonical, root) or self.excluded_root(canonical):
+                if canonical != package or not within(canonical, root) or self.excluded_root(canonical, root):
                     raise EvidenceError('excluded_path')
                 manifest = package / 'package.json'
                 before = marker(manifest)
