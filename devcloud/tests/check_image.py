@@ -27,12 +27,14 @@ itself could not run (an export, a scan that failed or read nothing).
 
 import argparse
 import json
+import os
 import pathlib
 import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import uuid
 
 HERE = pathlib.Path(__file__).resolve().parent
 SCANNER = ["bun", str(HERE / "scan-secrets.ts")]
@@ -44,21 +46,22 @@ class CheckError(Exception):
 
 def export(image, root):
     """The image's filesystem, as a container of it holds it before any boot,
-    unpacked into `root` and made readable to this user."""
-    exporter = subprocess.Popen(["docker", "run", "--rm", "--entrypoint", "tar", image, "-C", "/", "-cf", "-",
-                                 "--exclude=./proc", "--exclude=./sys", "--exclude=./dev", "."],
-                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    extractor = subprocess.run(["tar", "-xf", "-", "-C", str(root), "--no-same-owner", "--no-same-permissions"],
-                               stdin=exporter.stdout, capture_output=True)
-    exporter.stdout.close()
-    exported_err = exporter.stderr.read()
-    if exporter.wait() != 0:
-        raise CheckError(f"exporting {image} failed: {exported_err.decode(errors='replace')[-400:]}")
-    if extractor.returncode != 0:
-        raise CheckError(f"unpacking {image} failed: {extractor.stderr.decode(errors='replace')[-400:]}")
-    subprocess.run(["chmod", "-R", "u+rwX", str(root)], check=True)
+    unpacked into `root` and made readable to this user. The copy runs inside
+    a container of the image onto `root` mounted at a path no image holds:
+    streaming the same tar out through `docker run` took 80 s of the image
+    check, the copy takes 6 (board #116)."""
+    mount = f"/devcloud-export-{uuid.uuid4().hex}"
+    # Ownership goes back to this user even when the copy failed, so the work
+    # directory can always be removed; the copy's own status is the exit.
+    copy = (f"set -o pipefail; tar -C / -cf - --exclude=./proc --exclude=./sys --exclude=./dev --exclude=.{mount} . "
+            f"| tar -xf - -C {mount}; rc=$?; chown -R {os.getuid()}:{os.getgid()} {mount} && chmod -R u+rwX {mount} "
+            "|| rc=1; exit $rc")
+    copied = subprocess.run(["docker", "run", "--rm", "-v", f"{pathlib.Path(root).resolve()}:{mount}",
+                             "--entrypoint", "bash", image, "-c", copy], capture_output=True)
+    if copied.returncode != 0:
+        raise CheckError(f"exporting {image} failed: {copied.stderr.decode(errors='replace')[-400:]}")
     if not (root / "etc/passwd").is_file():
-        raise CheckError(f"the export of {image} holds no /etc/passwd")
+        raise CheckError(f"the export of {image} holds no /etc/passwd (is {root} shared with Docker's machine?)")
 
 
 def scanner_output(args, values_json, scanner=None):
