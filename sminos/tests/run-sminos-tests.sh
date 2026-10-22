@@ -1974,7 +1974,7 @@ $("$SMINOS" tui st --headless --all --width 140 --height 40)"
 for w in blocked unknown working "done" error failed; do
   assert_not_contains "$VIEWS" " $w" "no view draws the retired word '$w'"
 done
-run "$SMINOS" tui st --headless --width 140 --height 40 --keys "!focus:st/s-stop,s"
+run "$SMINOS" tui st --headless --width 140 --height 40 --keys "a,!focus:st/s-stop,s"
 assert_contains "$OUT" "send → st/s-stop ▏" "s on a stopped seat opens the send line (the send resumes it)"
 run "$SMINOS" send st/s-gone "hi"
 assert_rc 4 "$RC" "send to a gone seat is refused (exit 4)"
@@ -1983,7 +1983,7 @@ run "$SMINOS" send st/s-ret "hi"
 assert_rc 4 "$RC" "send to a retired seat is refused even while its session answers"
 assert_contains "$OUT" "sminos fill st/s-ret" "pointing at fill"
 nb=$(grep -c -- '^--bg --resume' "$STUB_STATE/log/calls.log" || true)
-run "$SMINOS" tui st --headless --width 140 --height 40 --keys "!focus:st/s-stop,s,text:back to work,enter"
+run "$SMINOS" tui st --headless --width 140 --height 40 --keys "a,!focus:st/s-stop,s,text:back to work,enter"
 assert_contains "$OUT" "send s-stop back to work → rc=0 sent to st/s-stop" "the TUI's send to a stopped seat resumes it"
 assert_equals "$(grep -c -- '^--bg --resume' "$STUB_STATE/log/calls.log" || true)" "$((nb + 1))" "through one --bg --resume"
 assert_contains "$(grep -- '^--bg --resume' "$STUB_STATE/log/calls.log" | tail -1)" "--bg --resume $ST_STOP [sminos message from human id=" "carrying the frame"

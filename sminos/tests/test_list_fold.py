@@ -131,6 +131,9 @@ class ListFold(unittest.TestCase):
         text = self.cli("tui", "fold", "--headless", "--width", "160", "--height", "50", "--keys", "a")
         for alias in ("stopped-seat", "gone-seat", "retired-seat", "vacant-seat"):
             self.assertIn(alias, text)
+        text = self.cli("tui", "fold", "--headless", "--width", "160", "--height", "50",
+                        "--keys", "a,!focus:fold/stopped-seat,s")
+        self.assertIn("send → fold/stopped-seat ▏", text)
 
 if __name__ == "__main__":
     unittest.main()
