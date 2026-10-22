@@ -88,14 +88,15 @@ member too, seat-less, from the first call that reads its project.
     sminos status   <member> <one line>                   # the member's own "now" line
     sminos retire   <member> [--purge]                    # stop; keep (or purge) a seat's record
     sminos remove   <seat>                                # stop and delete the record
-    sminos list     [project] [--project P,..] [--machine M,..] [--state W,..] [--org] [--here] [--all] [--json]
+    sminos list     [project] [--project P,..] [--machine M,..] [--state W,..] [--org] [--here] [--stopped] [--all] [--json]
                    [words..]  # the caller's project (a session's own, else the working directory's;
                    every project from none); any filter
                    widens to every project known here, then narrows: --machine by prefix, words (all of
                    them) in the alias, short, project, repo, branch, in-charge, now line or title; --org
                    every project; --here this machine, plus every running session in no project.
-                   W: busy idle waiting stopped gone vacant retired; retired and gone fold into a
-                   "+N hidden" tail until --all or --state names them. A row: alias [short], kind, state,
+                   W: busy idle waiting stopped gone vacant retired; stopped, retired and gone fold into a
+                   "+N hidden" tail; --stopped adds stopped, --all shows all, --state selects named states.
+                   A row: alias [short], kind, state,
                    @machine, (project,) repo@branch, in charge (age), · active <age>. Inside a session
                    it ends with the session's subagents (the ids SendMessage takes; --all: finished too)
     sminos find     <words..>                             # list --org <words>: every session they match
@@ -107,7 +108,7 @@ member too, seat-less, from the first call that reads its project.
                    local), live and waiting sessions, their machines; --all: a retired machine's too
     sminos machines                                       # every machine enrolled in the org: online or
                    last seen, its live sessions and their projects
-    sminos chart    [project] [--all] [--width N]        # the members as boxes, grouped by project
+    sminos chart    [project] [--stopped] [--all] [--width N]        # the members as boxes, grouped by project
     sminos tui      [project] [--all] [--no-tmux]        # the chart, interactive, inside tmux: arrows move, enter attaches
     sminos attach   <seat>                                # claude attach <short>
     sminos migrate  [--quiet]                             # (also runs implicitly)
@@ -223,9 +224,9 @@ UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]
 STATES = ("busy", "idle", "waiting", "stopped", "gone", "vacant", "retired")
 FILLED = ("busy", "idle", "waiting")
 REFILLABLE = ("vacant", "stopped", "gone")
-# HIDDEN: what list, chart, and tui fold by default — a seat only a `fill`
-# can act on. The word decides; the hide rule asks nothing more.
-HIDDEN = ("retired", "gone")
+# HIDDEN is display-only: list, chart, and tui fold these state words.
+# A stopped seat can still be resumed by sending to it.
+HIDDEN = ("stopped", "retired", "gone")
 TERMINAL = ("done", "done-blocked", "blocked", "failed", "stopped", "error")
 # Model-visible surfaces never carry a credential: the pipeline colonizes the
 # record with run_bearer and friends, and a seat's JSON is read by agents.
@@ -8712,11 +8713,13 @@ def cmd_list(a):
     """The members of the caller's project, or what the filters pick from
     every project known here (list_scope): one row each (row_cells), under
     the project's heading when one project shows, flat with the project
-    column when several do; --here adds `(no project)`. Retired and gone
-    fold into a tail line unless --all or --state names them. Inside a
-    session, the list ends with its subagents (subagent_lines)."""
+    column when several do; --here adds `(no project)`. Stopped, retired and
+    gone fold into a tail line; --stopped adds stopped, --all shows all, and
+    --state keeps the named states. Inside a session, the list ends with
+    its subagents (subagent_lines)."""
     projects, words, picked = list_scope(a)
     sections, out, hidden, members_known = [], [], 0, set()
+    folded = [word for word in HIDDEN if not (a.stopped and word == "stopped")]
     for p in projects:
         every = project_rows(p)
         members_known |= {m.session for m in every if m.session}
@@ -8724,12 +8727,11 @@ def cmd_list(a):
         if a.json:
             out += [member_json(m, p) for m in rows]
             continue
-        # The text view folds what only a `fill` (or the human) can act on,
-        # as chart and tui do, unless --all or --state names the word; the
-        # tail line says how many it folded. --json keeps every row.
+        # Visibility options only affect text; --json keeps every matching row.
+        # An explicit --state also reveals the words it selects.
         if not a.all:
-            hidden += sum(1 for m in rows if m.state in HIDDEN and m.state not in a.state)
-            rows = [m for m in rows if m.state not in HIDDEN or m.state in a.state]
+            hidden += sum(1 for m in rows if m.state in folded and m.state not in a.state)
+            rows = [m for m in rows if m.state not in folded or m.state in a.state]
         if rows:
             sections.append((p, rows))
     loose = []
@@ -8753,7 +8755,8 @@ def cmd_list(a):
         print("(no project)")
         print_rows([row_cells(m) for m in loose])
     if hidden:
-        print("+%d hidden (%s) — sminos list --all" % (hidden, ", ".join(HIDDEN)))
+        hint = "--all" if a.stopped else "--stopped shows stopped; --all shows all"
+        print("+%d hidden (%s) — sminos list %s" % (hidden, ", ".join(folded), hint))
     sid = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
     if sid and not a.find:
         for line in subagent_lines(subagent_entries(sid), a.all):
@@ -9531,10 +9534,14 @@ def cmd_hub(a):
 def cmd_chart(a):
     """The members as boxes, flat: one project's in a column, or — for every
     project — each project a rounded box with its members beside it; hidden
-    members folded into '+N hidden' unless --all; then one summary line."""
+    members folded into '+N hidden'; --stopped adds stopped and --all shows
+    all members; then one summary line."""
     projects, boxed = view_projects(a.project, a.all)
     chart = chart_module()
-    roots, meta = chart.snapshot(projects, a.all, boxed)
+    roots, meta = chart.snapshot(projects, a.all, boxed, show_stopped=a.stopped)
+    folded = [word for word in HIDDEN if not (a.stopped and word == "stopped")]
+    hint = "sminos chart%s %s" % ((" " + a.project) if a.project else "",
+                                "--all" if a.stopped else "--stopped shows stopped; --all shows all")
     lay = chart.layout(roots)
     width = a.width or (shutil.get_terminal_size((120, 40)).columns if sys.stdout.isatty() else 120)
     if lay["boxes"]:
@@ -9542,16 +9549,17 @@ def cmd_chart(a):
         chart.paint_chart(scr, lay)
         print(scr.text())
     else:
-        print("(no members to chart%s)" % ("" if a.all or not meta["hidden"] else " — all %d are hidden; sminos chart --all" % meta["hidden"]))
+        print("(no members to chart%s)" % ("" if not meta["hidden"] else
+              " — all %d are hidden (%s); %s" % (meta["hidden"], ", ".join(folded), hint)))
     bits = []
     if boxed:
         bits.append("%d projects" % meta["projects"])
     bits += ["%d members" % meta["members"], "%d live" % meta["live"]]
     if meta["hidden"]:
-        hid = "%d hidden" % meta["hidden"]
+        hid = "%d hidden (%s)" % (meta["hidden"], ", ".join(folded))
         if meta["hidden_projects"]:
             hid += " in %d project(s) folded away" % meta["hidden_projects"]
-        bits.append(hid + ("" if a.all else " (sminos chart%s --all)" % ((" " + a.project) if a.project else "")))
+        bits.append(hid + " — " + hint)
     if lay["width"] > width:
         bits.append("%d cells clipped on the right (--width %d)" % (lay["width"] - width, width))
     print(" · ".join(bits))
@@ -9814,6 +9822,7 @@ def build_parser():
         scope_flags(sp)
         sp.add_argument("--json", action="store_true")
         sp.add_argument("--all", action="store_true")
+        sp.add_argument("--stopped", action="store_true")
 
     ls = sub.add_parser("list", add_help=False)
     ls.add_argument("args", nargs="*")
@@ -9840,6 +9849,7 @@ def build_parser():
     ch = sub.add_parser("chart", add_help=False)
     ch.add_argument("project", nargs="?", default="")
     ch.add_argument("--all", action="store_true")
+    ch.add_argument("--stopped", action="store_true")
     ch.add_argument("--width", type=int, default=0)
     ch.set_defaults(fn=cmd_chart)
 
