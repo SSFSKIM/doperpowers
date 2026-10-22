@@ -724,7 +724,7 @@ class Bridge:
                 self._remember(rid, {k: v for k, v in e.items() if k not in ("type", "n")})
                 self.changed.notify_all()
         elif kind == "catalog":
-            self.catalog = {k: e[k] for k in ("fingerprint", "commands", "models", "measured") if k in e}
+            self.catalog = {k: e[k] for k in ("fingerprint", "commands", "skills", "models", "measured") if k in e}
         elif kind == "resync":
             # The mod's own copy of the live state, whole: it replaces this one,
             # and what is kept for the session with it. Its sessionInfo is what

@@ -44,3 +44,25 @@ describe('catalog skill membership from the engine', () => {
     expect(await catalogNow($, '2.1.308')).toMatchObject({ skills: [] })
   })
 })
+
+for (const [label, usage] of [
+  ['rejected', async () => { throw new Error('host not bound') }],
+  ['missing result', async () => undefined],
+  ['missing context', async () => ({})],
+  ['missing breakdown', async () => ({ context: {} })],
+  ['missing listing', async () => ({ context: { breakdown: {} } })],
+  ['malformed listing', async () => ({ context: { breakdown: { skills: { skillFrontmatter: {} } } } })],
+] as const) {
+  test(`an optional ${label} summary cannot suppress commands, models or aliases`, async () => {
+    const $ = { plugin: { name: 'sminos' },
+      command: { list: async () => [{ name: 'helper', description: 'User command', source: 'user' }] },
+      config: { list: async () => [{ key: 'model', options: ['default', 'sonnet'] }] },
+      env: { get: async (key: string) => key === 'ANTHROPIC_DEFAULT_SONNET_MODEL' ? 'my-sonnet' : undefined },
+      session: { usage },
+    } as unknown as EngineInterface
+    expect(await catalogNow($, '2.1.308')).toMatchObject({ skills: [],
+      commands: [{ name: 'helper', description: 'User command', source: 'user', route: { class: 'run-prompt', enabled: true } }],
+      models: { options: ['default', 'sonnet'], aliases: { sonnet: 'my-sonnet', opus: null, haiku: null } },
+    })
+  })
+}

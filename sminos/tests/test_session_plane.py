@@ -2216,17 +2216,20 @@ class Catalog(Session):
     def test_m1_real_child_keeps_catalog_on_resync_and_clears_an_older_mod(self):
         import sminos_bridge
         child = sminos_bridge.Bridge(self.sid, "/tmp/unused.sock")
-        cat = {"fingerprint": "one", "commands": [], "models": {"options": [], "aliases": {}}, "measured": "2.1.307"}
+        cat = {"fingerprint": "one", "commands": [], "skills": ["playwright-cli", "doperpowers:progress-report"], "models": {"options": [], "aliases": {}}, "measured": "2.1.307"}
         child.ingest([{"type": "resync", "catalog": cat}])
         self.assertEqual(child.snapshot().get("catalog"), cat)
-        changed = {**cat, "fingerprint": "two"}
+        changed = {**cat, "fingerprint": "two", "skills": ["playwright-cli"]}
         child.ingest([{"type": "catalog", **changed, "t": 123}])
         self.assertEqual(child.snapshot().get("catalog"), changed)
+        legacy = {k: v for k, v in cat.items() if k != "skills"}
+        child.ingest([{"type": "catalog", **legacy}])
+        self.assertEqual(child.snapshot().get("catalog"), legacy)
         child.ingest([{"type": "resync"}])
         self.assertIsNone(child.snapshot().get("catalog"))
 
     def test_m1_catalog_is_in_main_snapshot_and_changes_only_on_negotiated_main_sub(self):
-        cat = {"fingerprint": "one", "commands": [], "models": {"options": [], "aliases": {}}, "measured": "2.1.307"}
+        cat = {"fingerprint": "one", "commands": [], "skills": ["playwright-cli", "doperpowers:progress-report"], "models": {"options": [], "aliases": {}}, "measured": "2.1.307"}
         main, _ = self.subscribe(bridge=True)
         main.snap = {"catalog": cat}
         out = []
@@ -2236,6 +2239,14 @@ class Catalog(Session):
         out = []
         main.event({"type": "catalog", **cat, "n": 100, "t": 123}, self.clock(), out)
         self.assertEqual([(m["kind"], m["body"]) for m in out], [("catalog", cat)])
+        changed = {**cat, "fingerprint": "two", "skills": []}
+        out = []
+        main.event({"type": "catalog", **changed}, self.clock(), out)
+        self.assertEqual([(m["kind"], m["body"]) for m in out], [("catalog", changed)])
+        legacy = {k: v for k, v in cat.items() if k != "skills"}
+        out = []
+        main.event({"type": "catalog", **legacy}, self.clock(), out)
+        self.assertEqual(out[0]["body"], legacy)
         n = main.n
         main.catalog_allowed = lambda: False
         out = []
