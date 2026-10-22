@@ -63,6 +63,7 @@ doperpowers:review-code, medium rung (reviewer-medium), two passes: cb208b8d, th
 - fb73cbd6 (run 39742676183): GREEN.
 - 22de7103 (run 39742780145): RED 1/8. devcloud-systemd hit 429 on all four tries over 110 s, which led to the longer window.
 - 5d0ccc3a (run 39745378623): GREEN 8/8.
+- PR #344's own run on f45855e0 (run 39746212864): devcloud-host used all five tries over 4m17s (429, "Download failed" three times, 429) at about 08:20–08:25Z. devcloud-systemd passed after a 20-minute job. claude.ai refused GitHub runners on and off from about 07:20Z for more than an hour, longer than any retry window covers. The failed job was re-run.
 
 ## Friction
 
