@@ -1904,7 +1904,7 @@ class Subscription:
             self.falls_due(now, lambda k: k[0] == e.get("turnId"))
         elif kind == "catalog":
             if self.agent is None and self.catalog_allowed():
-                out.append(self.message("catalog", {k: e[k] for k in ("fingerprint", "commands", "models", "measured") if k in e}))
+                out.append(self.message("catalog", {k: e[k] for k in ("fingerprint", "commands", "skills", "models", "measured") if k in e}))
         elif kind == "usage":
             if self.agent is None:
                 out.append(self.message("usage", usage_of(e)))

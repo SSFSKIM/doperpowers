@@ -4,20 +4,34 @@ import type { Route } from './bridge-routes'
 
 export type Catalog = {
   fingerprint: string
+  skills: string[]
   commands: { name: string; description: string; source: string; plugin?: string; route: Route; withArgs?: Route }[]
   models: { options: string[]; aliases: Record<string, string | null> }
   measured: string
 }
 
+/** Optional enrichment: an unbound host or unavailable remote breakdown must not hide the command catalog. */
+async function skillNames($: EngineInterface): Promise<string[]> {
+  try {
+    const usage = await $.session.usage({ breakdown: 'summary' })
+    const entries = usage?.context?.breakdown?.skills?.skillFrontmatter
+    if (!Array.isArray(entries) || !entries.every((skill) => typeof skill?.name === 'string')) return []
+    return entries.map(({ name }) => name)
+  } catch { return [] }
+}
+
 /** A session's live listing, not a global cache: late skills and prompt-only MCP servers appear here too. */
 export async function catalogNow($: EngineInterface, engine: string): Promise<Catalog> {
-  const [listed, config, sonnet, opus, haiku] = await Promise.all([
-    $.command.list(), $.config.list(),
+  const [listed, config, skills, sonnet, opus, haiku] = await Promise.all([
+    $.command.list(), $.config.list(), skillNames($),
     $.env.get('ANTHROPIC_DEFAULT_SONNET_MODEL'),
     $.env.get('ANTHROPIC_DEFAULT_OPUS_MODEL'),
     $.env.get('ANTHROPIC_DEFAULT_HAIKU_MODEL'),
   ])
   const body = {
+    // CommandSource is provenance, not kind. The local (no token-count API) summary exposes the engine's
+    // skill listing, including fully qualified plugin names. Keep only names, never context contents or counts.
+    skills,
     commands: listed.map(({ name, description, source, plugin }) => ({
       name, description, source, ...(plugin !== undefined && { plugin }),
       ...catalogRoutes(engine, { name, source, plugin }, $.plugin.name),
