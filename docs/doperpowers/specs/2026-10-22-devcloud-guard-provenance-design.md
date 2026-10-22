@@ -139,7 +139,7 @@ The strongest alternative was a lazy downloader in the Read hook. It would make 
 
 ### 3. Installation adapters
 
-**Global npm.** Discover the actual global prefix through npm in index mode, resolve it, and enumerate installed package boundaries, including nested dependencies. Package boundaries follow `node_modules` placement and scoped-package layout, not the nearest arbitrary `package.json`: examples can contain their own manifests without being separately installed packages. Reject linked packages whose resolved roots leave the discovered global installation. Reject roots inside the invoking project or a detected source checkout. At runtime, the guard also excludes its session’s project root.
+**Global npm.** Discover the actual global prefix through npm in index mode, resolve it, and enumerate installed package boundaries, including nested dependencies. Package boundaries follow `node_modules` placement and scoped-package layout, not the nearest arbitrary `package.json`: examples can contain their own manifests without being separately installed packages. Reject linked packages whose resolved roots leave the discovered global installation. Reject roots inside the invoking project or a source checkout detected at the installation/package boundary. Do not search for checkout markers above the discovered installation root: a version manager may itself be installed from Git while its managed global packages remain ordinary distribution contents. At runtime, the guard also excludes its session’s project root.
 
 Use package name/version and available lock metadata to locate candidate artifacts in the npm cache. Accept a cached tarball only when its integrity equals the public registry’s `dist.integrity` for that exact name@version. Obtain that value from a cached registry document whose source is the public registry, or fetch that document with `--fetch`; verify the artifact bytes before computing member hashes. `--fetch` can also obtain missing exact-version artifacts from the public npm registry. Local, git, private-registry and unpublished packages remain unknown. Do not consult private registry credentials or execute npm package scripts. A `files` field, lockfile integrity value or cache key is discovery evidence, not proof of publication or of the installed file’s current contents.
 
@@ -436,6 +436,10 @@ These separate tickets are already registered. The integrating session carries t
 - Decision: Nested npm packages require their own package boundary and evidence; a parent's archive members under `node_modules/` do not borrow the parent's marker.
   Rationale: Each installed dependency has its own mutable manifest and ownership. Unpublished bundled children conservatively lose coverage rather than inherit unrelated metadata authority; M3 measures this loss separately.
   Date/Author: 2026-10-22, M1 execution.
+
+- Decision: Interpret “detected source checkout” at the discovered installation/package boundary, not by searching ancestors above the installation root. Preserve project containment and rejection of linked packages that escape it.
+  Rationale: The first real build indexed no npm files because a version manager was itself a Git checkout. Public artifact equality is the proof; checkout exclusion is defense in depth for project or linked source, not a prohibition on ordinary Git-installed runtime managers. Add a regression with a checkout marker above a managed global prefix.
+  Date/Author: 2026-10-22, confirmed by the coordinating session.
 
 ## Outcomes & Retrospective
 
