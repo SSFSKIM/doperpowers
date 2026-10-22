@@ -126,6 +126,17 @@ function taken(name: string, route: Route, args: string): Route {
   return miss?.isPatternMiss === true && route.otherwise !== undefined ? taken(name, route.otherwise, args) : route
 }
 
+/** Plugin-owned panels stay terminal-only even when this engine has no measured table. */
+function pluginException(table: RouteTable | undefined, listed: Listed): RouteEntry | undefined {
+  const matches = (entry: RouteEntry) => entry.name === listed.name && entry.plugin === listed.plugin
+  if (table !== undefined) {
+    return table.pluginExceptions.find(matches)
+  }
+  const knownPanel = ROUTE_TABLES.flatMap((t) => t.pluginExceptions).find((entry) => matches(entry) && entry.bare.class === 'panel')
+  // With no engine table we offer no argument-specific escape from a known panel.
+  return knownPanel === undefined ? undefined : { name: knownPanel.name, bare: knownPanel.bare }
+}
+
 /**
  * The route of `/name args` in a session of this engine, or its refusal.
  * `listed` is the session's own listing of the name (`$.command.list()`),
@@ -139,7 +150,7 @@ export function routeOf(engine: string, listed: Listed | undefined, name: string
   const table = tableFor(engine)
   let entry: RouteEntry | undefined
   if (listed !== undefined && listed.source !== 'builtin') {
-    entry = table?.pluginExceptions.find((e) => e.name === name && e.plugin === listed.plugin) ?? { name, bare: RUN_PROMPT }
+    entry = pluginException(table, listed) ?? { name, bare: RUN_PROMPT }
   } else {
     entry = table?.entries.find((e) => e.name === name)
     if (entry === undefined) {
@@ -160,7 +171,7 @@ export function catalogRoutes(engine: string, listed: Listed, self: string): { r
   const table = tableFor(engine)
   const entry = listed.source === 'builtin'
     ? table?.entries.find((e) => e.name === listed.name)
-    : table?.pluginExceptions.find((e) => e.name === listed.name && e.plugin === listed.plugin)
+    : pluginException(table, listed)
   if (entry === undefined) {
     return listed.source === 'builtin' ? drop(UNMEASURED_REASON) : { route: RUN_PROMPT }
   }

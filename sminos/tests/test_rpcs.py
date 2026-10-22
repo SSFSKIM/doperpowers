@@ -869,6 +869,32 @@ class Checks(unittest.TestCase):
                          "unknown-checkout")
         self.assertEqual(self.mod.ops("command"), [])
 
+    def test_m1_cd_optional_args_fail_under_the_nonce_and_leave_the_receiver_usable(self):
+        for optional in ({}, {"args": None}):
+            with self.subTest(optional=optional):
+                self.refused(self.send("command", {"session": self.bridged.sid, "name": "cd", **optional}),
+                             "unknown-checkout")
+        self.assertEqual(self.mod.ops("command"), [])
+        valid = self.send("command", {"session": self.bridged.sid, "name": "cd", "args": self.root})
+        self.assertEqual(self.outcome(valid)["state"], "done")
+        self.assertEqual(len(self.mod.ops("command")), 1)
+
+    def test_m1_cd_malformed_paths_fail_under_the_nonce_and_leave_the_receiver_usable(self):
+        for path in (self.root + "/\x00bad", self.root + "/없는-경로"):
+            with self.subTest(path=path):
+                self.refused(self.send("command", {"session": self.bridged.sid, "name": "cd", "args": path}),
+                             "unknown-checkout")
+        # Lone surrogates have no canonical signed representation: a wire
+        # request holding one is refused by the code check, before path APIs.
+        invalid = sign(KEY, "command", self.pid, {"session": self.bridged.sid, "name": "cd", "args": self.root})
+        invalid["args"]["args"] = self.root + "/\ud800"
+        self.r.receive(invalid, self.here)
+        self.refused(invalid, "bad-code")
+        self.assertEqual(self.mod.ops("command"), [])
+        valid = self.send("command", {"session": self.bridged.sid, "name": "cd", "args": self.root})
+        self.assertEqual(self.outcome(valid)["state"], "done")
+        self.assertEqual(len(self.mod.ops("command")), 1)
+
     def test_m1_cd_forwards_only_the_canonical_known_checkout_and_stays_read_only(self):
         args = {"session": self.bridged.sid, "name": "cd", "args": "  " + self.root + "/./  "}
         asked = self.send("command", args)

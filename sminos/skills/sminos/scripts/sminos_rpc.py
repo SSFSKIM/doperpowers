@@ -468,11 +468,18 @@ class Rpcs:
         if name == "command" and args["name"] == "cd":
             # Resolve no relative path against the daemon's cwd (nor a stale
             # joined cwd): only a literal absolute checkout is unambiguous.
-            target = args.get("args", "").strip()
-            known = {os.path.realpath(c["path"]) for c in here.checkouts(project)}
-            if not os.path.isabs(target) or os.path.realpath(target) not in known:
-                raise Refused("unknown-checkout", "cd needs the absolute path of a known checkout of this project")
-            args["args"] = os.path.realpath(target)
+            target = (args.get("args") or "").strip()  # shape admits absent/null optional args
+            reason = "cd needs the absolute path of a known checkout of this project"
+            if not os.path.isabs(target):
+                raise Refused("unknown-checkout", reason)
+            try:
+                target = os.path.realpath(target)
+                known = {os.path.realpath(c["path"]) for c in here.checkouts(project)}
+            except (ValueError, UnicodeError, OSError) as error:
+                raise Refused("unknown-checkout", reason) from error
+            if target not in known:
+                raise Refused("unknown-checkout", reason)
+            args["args"] = target
 
     def refuse_loose(self, rpc, code, message):
         """A refusal before the ledger: up while its project is open, else

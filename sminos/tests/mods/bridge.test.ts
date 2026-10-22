@@ -5964,3 +5964,36 @@ describe('the desk: catalog failures and session boundaries', () => {
     expect(h.ofType('resync').at(-1)!.catalog).toBeUndefined()
   })
 })
+
+
+describe('the desk: plugin-panel exceptions without an engine table', () => {
+  for (const engine of ['2.1.300', 'unknown']) {
+    test(`catalog and dispatch keep diff terminal-only on ${engine}, ordinary plugin prompts still run`, async () => {
+      const h = harness({ version: { version: engine }, commands: [
+        { name: 'diff', description: 'Terminal diff panel', source: 'plugin', plugin: 'cc-plugin-diff' },
+        { name: 'ordinary', description: 'Prompt', source: 'plugin', plugin: 'another' },
+      ] })
+      await h.ready()
+      expect(await h.command({ op: 'read', what: 'catalog' })).toMatchObject({ ok: true, result: { commands: [
+        { name: 'diff', route: { class: 'panel' } },
+        { name: 'ordinary', route: { class: 'run-prompt', enabled: true } },
+      ] } })
+      expect(await h.command({ op: 'command', name: 'diff' })).toMatchObject({ ok: false, code: 'panel', error: PANEL_REASON })
+      expect(h.runs).toHaveLength(0)
+      h.children[0]!.write(line({ id: 'ordinary', op: 'command', name: 'ordinary' }))
+      await h.settle()
+      expect(h.runs[0]!.args.command).toBe('ordinary')
+      h.runs[0]!.resolve({})
+      await h.settle()
+      expect(h.ofType('run').at(-1)).toMatchObject({ id: 'ordinary', phase: 'end', settled: { ok: true } })
+    })
+  }
+
+  test('the catalog teaches a table-free palette the measured MCP argument forms', async () => {
+    const h = harness({ version: { version: '2.1.307' }, commands: [{ name: 'mcp', description: 'MCP', source: 'builtin' }] })
+    await h.ready()
+    expect(await h.command({ op: 'read', what: 'catalog' })).toMatchObject({ ok: true, result: { commands: [
+      { name: 'mcp', withArgs: { forms: { hint: 'enable|disable|reconnect <server>' } } },
+    ] } })
+  })
+})
