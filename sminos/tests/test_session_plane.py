@@ -2210,6 +2210,49 @@ class Desk(unittest.TestCase):
         self.assertIsNone(self.bridges.capabilities(self.sid))
 
 
+class Catalog(Session):
+    """The child's catalog is pushed once at open, then on negotiated main subscriptions only."""
+
+    def test_m1_real_child_keeps_catalog_on_resync_and_clears_an_older_mod(self):
+        import sminos_bridge
+        child = sminos_bridge.Bridge(self.sid, "/tmp/unused.sock")
+        cat = {"fingerprint": "one", "commands": [], "models": {"options": [], "aliases": {}}, "measured": "2.1.307"}
+        child.ingest([{"type": "resync", "catalog": cat}])
+        self.assertEqual(child.snapshot().get("catalog"), cat)
+        changed = {**cat, "fingerprint": "two"}
+        child.ingest([{"type": "catalog", **changed, "t": 123}])
+        self.assertEqual(child.snapshot().get("catalog"), changed)
+        child.ingest([{"type": "resync"}])
+        self.assertIsNone(child.snapshot().get("catalog"))
+
+    def test_m1_catalog_is_in_main_snapshot_and_changes_only_on_negotiated_main_sub(self):
+        cat = {"fingerprint": "one", "commands": [], "models": {"options": [], "aliases": {}}, "measured": "2.1.307"}
+        main, _ = self.subscribe(bridge=True)
+        main.snap = {"catalog": cat}
+        out = []
+        main.snapshot(self.clock(), [], False, out)
+        self.assertEqual(out[0]["body"].get("catalog"), cat)
+        main.catalog_allowed = lambda: True
+        out = []
+        main.event({"type": "catalog", **cat, "n": 100, "t": 123}, self.clock(), out)
+        self.assertEqual([(m["kind"], m["body"]) for m in out], [("catalog", cat)])
+        n = main.n
+        main.catalog_allowed = lambda: False
+        out = []
+        main.event({"type": "catalog", **cat}, self.clock(), out)
+        self.assertEqual(out, [])
+        self.assertEqual(main.n, n, "unnegotiated kinds consume no sequence number")
+        agent, _ = self.subscribe(agent="agent1", bridge=True)
+        agent.snap = {"catalog": cat}
+        agent.catalog_allowed = lambda: True
+        out = []
+        agent.snapshot(self.clock(), [], False, out)
+        self.assertNotIn("catalog", out[0]["body"])
+        out = []
+        agent.event({"type": "catalog", **cat}, self.clock(), out)
+        self.assertEqual(out, [])
+
+
 class Roots(unittest.TestCase):
     """`output`'s canonical roots, derived from the machine's own state (DC8's
     Decision Log): one per slug, under the engine's per-uid temp root."""

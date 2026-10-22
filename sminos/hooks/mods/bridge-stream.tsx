@@ -300,6 +300,7 @@ function wholeResync(): BridgeEvent {
     ...(state.info !== undefined && { sessionInfo: { session: state.session, ...state.info } }),
     // What this module can do (DX5 `capabilities`): the child answers it in its status.
     ...(state.capabilities !== undefined && { capabilities: state.capabilities }),
+    ...(state.catalog !== undefined && { catalog: state.catalog }),
     t: Date.now(),
   }
 }

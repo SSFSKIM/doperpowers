@@ -1,6 +1,7 @@
 import type { HookStream, HttpResponse, ProcessSpawnChunk, ProcessSpawnResult, Timer } from 'claude-code'
 
 import type { Place } from './bridge-place'
+import type { Catalog } from './bridge-catalog'
 
 /**
  * The bridge's state: one object for the session, which each of the bridge's
@@ -150,7 +151,7 @@ export type Refusal = { key: DeliveryKey; reason: string }
 /** What the bridge can do, as `GET /status` and the plane's presence carry it (DX5 `capabilities`). */
 export type Capabilities = { sminos: string; protocol: number; engine: string; ops: string[]; reads: string[]; routes: { measured: string } }
 /** A desk command (DX5 op `command`) the bridge runs: its op id, the command and its trimmed args. */
-export type DeskRun = { id: string; name: string; args: string }
+export type DeskRun = { id: string; name: string; args: string; prompt?: boolean }
 /** How a command's outcome was read back (DX5 `run` end): the settled text, its output row, or nothing sure. */
 export type Readback = { how: 'text' | 'row' | 'effect' | 'none'; text?: string; uuid?: string }
 /**
@@ -347,6 +348,8 @@ export type BridgeState = {
   refusals: Refusal[]
   /** What this module can do, assembled at its session start; every resync carries it to the child. */
   capabilities?: Capabilities
+  catalog?: Catalog
+  refreshCatalog?: () => Promise<Catalog>
   /** The desk command called and not yet read back: the next waits for it (one at a time, spec §6). */
   deskRun?: DeskRun
   /** Desk commands waiting for the one before them, oldest first. */

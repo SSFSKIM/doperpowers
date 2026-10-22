@@ -177,6 +177,9 @@ function harness(
     version?: { version: string; base?: string; builtAt?: string }
     /** What `$.command.list()` answers. */
     commands?: Record<string, unknown>[]
+    models?: string[]
+    configFails?: boolean
+    configWait?: Promise<void>
     /** What `$.session.repo()` answers. */
     repo?: { root: string; remote: string | null; internal: boolean; name: string | null } | null
   } = {},
@@ -331,6 +334,11 @@ function harness(
         return listedAgents.map((a) => ({ ...a }))
       },
     },
+    config: { list: async () => {
+      if (options.configFails) throw new Error('config unavailable')
+      await options.configWait
+      return [{ key: 'model', label: 'Model', kind: 'choice', value: 'default', provider: { kind: 'engine' }, isLocked: false, options: options.models ?? ['default', 'sonnet', 'opus'] }]
+    } },
     command: {
       list: async () => (options.commands ?? []).map((c) => ({ ...c })),
       run: (args: { command: string; args?: string }) => {
@@ -5463,7 +5471,7 @@ describe('the desk: routes (the 2.1.307 table)', () => {
 
   test('the forms come before the class: arguments a refusing route does not take are bad-args, and a pattern miss still takes `otherwise`', async () => {
     expect(route('clear', 'extra')).toEqual({ refusal: { code: 'bad-args', reason: '/clear takes no arguments' } })
-    expect(route('goal', 'the tests pass')).toEqual({ refusal: { code: 'disabled', reason: 'comes with M1' } })
+    expect(route('goal', 'the tests pass')).toMatchObject({ route: { enabled: true } })
   })
 
   test("every other class is refused with its reason (A4's words), and what M1 and later bring is disabled", async () => {
@@ -5479,9 +5487,9 @@ describe('the desk: routes (the 2.1.307 table)', () => {
     expect(route('config', 'theme=dark')).toEqual({ refusal: { code: 'drop', reason: 'not from the desk: saves a default on <machine>; terminal only' } })
     expect(route('copy')).toMatchObject({ refusal: { code: 'local' } })
     expect(route('goal')).toEqual({ refusal: { code: 'panel', reason: PANEL_REASON } })
-    expect(route('goal', 'clear')).toEqual({ refusal: { code: 'disabled', reason: 'comes with M1' } })
-    expect(route('goal', 'the tests pass')).toEqual({ refusal: { code: 'disabled', reason: 'comes with M1' } })
-    expect(route('exit')).toEqual({ refusal: { code: 'disabled', reason: 'comes with M1' } })
+    expect(route('goal', 'clear')).toMatchObject({ route: { enabled: true } })
+    expect(route('goal', 'the tests pass')).toMatchObject({ route: { enabled: true } })
+    expect(route('exit')).toMatchObject({ refusal: { code: 'disabled' } })
     expect(route('fast', 'on')).toEqual({ refusal: { code: 'disabled', reason: 'not settled: fast mode was disabled where it was measured' } })
     expect(route('plan')).toMatchObject({ refusal: { code: 'routed' } })
   })
@@ -5516,10 +5524,10 @@ describe('the desk: routes (the 2.1.307 table)', () => {
   })
 
   test("a command that is no built-in is a turn's prompt, from M1; a plugin exception takes its own route; this plugin's own is refused", async () => {
-    expect(route('doperpowers:execspec', 'go', { name: 'doperpowers:execspec', source: 'plugin', plugin: 'doperpowers' })).toEqual({ refusal: { code: 'disabled', reason: 'comes with M1' } })
-    expect(route('probe:probe-prompt (MCP)', 'EPS', { name: 'probe:probe-prompt (MCP)', source: 'mcp' })).toEqual({ refusal: { code: 'disabled', reason: 'comes with M1' } })
+    expect(route('doperpowers:execspec', 'go', { name: 'doperpowers:execspec', source: 'plugin', plugin: 'doperpowers' })).toMatchObject({ route: { enabled: true } })
+    expect(route('probe:probe-prompt (MCP)', 'EPS', { name: 'probe:probe-prompt (MCP)', source: 'mcp' })).toMatchObject({ route: { enabled: true } })
     expect(route('diff', '', { name: 'diff', source: 'plugin', plugin: 'cc-plugin-diff' })).toMatchObject({ refusal: { code: 'panel' } })
-    expect(route('diff', '', { name: 'diff', source: 'plugin', plugin: 'another' })).toMatchObject({ refusal: { code: 'disabled' } })
+    expect(route('diff', '', { name: 'diff', source: 'plugin', plugin: 'another' })).toMatchObject({ route: { class: 'run-prompt' } })
     expect(route('hello', '', { name: 'hello', source: 'plugin', plugin: 'sminos' })).toEqual({ refusal: { code: 'self', reason: SELF_REASON } })
   })
 
@@ -5542,7 +5550,7 @@ describe('the desk: capabilities and read', () => {
       protocol: 2,
       engine: '2.1.307',
       ops: ['ping', 'steer', 'interrupt', 'stop', 'model', 'compact', 'deliver', 'answer', 'read', 'command'],
-      reads: ['status'],
+      reads: ['status', 'catalog'],
       routes: { measured: '2.1.307' },
     })
     h.children[0]!.write(hello())
@@ -5854,5 +5862,212 @@ describe('the desk: command', () => {
     expect(await h.command({ op: 'command', args: 'x' })).toMatchObject({ ok: false, error: 'a command is its name, and its args as text' })
     expect(h.calls.filter((c) => c.op === 'command.run')).toEqual([])
     expect(h.ofType('run')).toEqual([])
+  })
+})
+
+
+describe('the desk: M1 catalog and prompt routes', () => {
+  test('catalog carries both forms and verbatim origins, refreshes late commands without unchanged pushes, and survives child resync', async () => {
+    const commands = [
+      { name: 'mcp', description: 'Manage MCP', source: 'builtin' },
+      { name: 'goal', description: 'Run a goal', source: 'builtin' },
+      { name: 'probe:hello (MCP)', description: 'Say hello', source: 'mcp' },
+      { name: 'own', description: 'Own command', source: 'plugin', plugin: 'sminos' },
+      { name: 'unmeasured', description: 'New built-in', source: 'builtin' },
+    ]
+    const h = harness({ version: { version: '2.1.308' }, commands, env: { ANTHROPIC_DEFAULT_SONNET_MODEL: 'my-sonnet' } })
+    await h.ready()
+    const answer = await h.command({ op: 'read', what: 'catalog' })
+    expect(answer).toMatchObject({ ok: true, result: {
+      measured: '2.1.307', models: { options: ['default', 'sonnet', 'opus'], aliases: { sonnet: 'my-sonnet', opus: null, haiku: null } },
+      commands: [
+        { ...commands[0], route: { class: 'panel' }, withArgs: { class: 'run', enabled: true } },
+        { ...commands[1], route: { class: 'panel' }, withArgs: { class: 'run', otherwise: { class: 'run-prompt', enabled: true } } },
+        { ...commands[2], route: { class: 'run-prompt', enabled: true } },
+        { ...commands[3], route: { class: 'drop', reason: SELF_REASON } },
+        { ...commands[4], route: { class: 'drop', reason: UNMEASURED_REASON } },
+      ],
+    } })
+    const first = answer.result as Record<string, unknown>
+    expect(typeof first.fingerprint).toBe('string')
+    const count = h.ofType('catalog').length
+    h.timers.find((t) => t.kind === 'every' && t.ms === HEARTBEAT_MS)!.fn()
+    await h.settle()
+    expect(h.ofType('catalog')).toHaveLength(count)
+    commands.push({ name: 'late:prompt (MCP)', description: 'Late server', source: 'mcp' })
+    h.timers.find((t) => t.kind === 'every' && t.ms === HEARTBEAT_MS)!.fn()
+    await h.settle()
+    expect(h.ofType('catalog')).toHaveLength(count + 1)
+    expect(h.ofType('catalog').at(-1)!.fingerprint === first.fingerprint).toBe(false)
+    h.children[0]!.write(hello())
+    await h.settle()
+    expect(h.ofType('resync').at(-1)!.catalog).toMatchObject({ fingerprint: h.ofType('catalog').at(-1)!.fingerprint })
+    commands.push({ name: 'another', description: 'Skill added', source: 'custom' })
+    await h.append('command', { type: 'system', name: 'local_command', content: [{ type: 'text', text: '<command-name>/reload-skills</command-name><command-args></command-args>' }] })
+    await h.settle()
+    expect(h.ofType('catalog')).toHaveLength(count + 2)
+  })
+
+  test('prompt routes complete at turn start without waiting for matching command rows; other-plugin text is retained', async () => {
+    const h = harness({ version: { version: '2.1.307' }, commands: [
+      { name: 'probe:hello (MCP)', description: 'Prompt', source: 'mcp' },
+      { name: 'other:command', description: 'Mod', source: 'plugin', plugin: 'other' },
+    ] })
+    await h.ready()
+    h.children[0]!.write(line({ id: 'prompt1', op: 'command', name: 'probe:hello (MCP)', args: 'hello' }))
+    await h.settle()
+    h.runs[0]!.resolve({})
+    await h.settle()
+    expect(h.ofType('run').at(-1)).toMatchObject({ phase: 'end', id: 'prompt1', settled: { ok: true }, readback: { how: 'none' } })
+    h.children[0]!.write(line({ id: 'prompt2', op: 'command', name: 'other:command', args: 'beta' }))
+    await h.settle()
+    expect(h.runs).toHaveLength(2)
+    h.runs[1]!.resolve({ text: 'plugin answered beta' })
+    await h.settle()
+    expect(h.ofType('run').at(-1)).toMatchObject({ phase: 'end', id: 'prompt2', readback: { how: 'text', text: 'plugin answered beta' } })
+  })
+})
+
+
+describe('the desk: exit requires a complete safety observation', () => {
+  test('no task/worktree-state noun exists: catalog disables exit and a forged direct op cannot run it', async () => {
+    const h = harness({ version: { version: '2.1.307' }, commands: [{ name: 'exit', description: 'Exit', source: 'builtin' }] })
+    await h.ready()
+    expect(await h.command({ op: 'read', what: 'catalog' })).toMatchObject({ ok: true, result: { commands: [{ name: 'exit', route: { class: 'run', confirm: true, enabled: false, reason: "can't tell whether work is running here: exit there" } }] } })
+    expect(await h.command({ op: 'command', name: 'exit' })).toMatchObject({ ok: false, code: 'disabled', error: "can't tell whether work is running here: exit there" })
+    expect(h.runs).toHaveLength(0)
+    expect(h.ofType('run')).toHaveLength(0)
+  })
+})
+
+
+describe('the desk: catalog failures and session boundaries', () => {
+  test('a failed list never disables the session bridge; read reports the failure and the next refresh recovers', async () => {
+    const options = { version: { version: '2.1.307' }, configFails: true }
+    const h = harness(options)
+    await h.ready()
+    expect(await h.command({ op: 'ping' })).toMatchObject({ ok: true })
+    expect(await h.command({ op: 'read', what: 'catalog' })).toMatchObject({ ok: false, error: 'config unavailable' })
+    options.configFails = false
+    expect(await h.command({ op: 'read', what: 'catalog' })).toMatchObject({ ok: true })
+  })
+
+  test('an id change drops the old catalog before the new child can snapshot it', async () => {
+    const h = harness({ version: { version: '2.1.307' }, commands: [{ name: 'old:command', source: 'plugin', description: 'Old session' }] })
+    await h.ready()
+    const NEW = '5b000002-0000-4000-8000-00000000005b'
+    h.setSession(NEW)
+    await h.hook('session.end', {})(h.engine, { reason: 'clear' }, async () => ({}))
+    await h.settle()
+    await h.fire(100)
+    expect(h.children).toHaveLength(2)
+    h.children[1]!.write(hello(NEW, '/tmp/new.sock'))
+    await h.settle()
+    expect(h.ofType('resync').at(-1)!.catalog).toBeUndefined()
+  })
+})
+
+
+describe('the desk: plugin-panel exceptions without an engine table', () => {
+  for (const engine of ['2.1.300', 'unknown']) {
+    test(`catalog and dispatch keep diff terminal-only on ${engine}, ordinary plugin prompts still run`, async () => {
+      const h = harness({ version: { version: engine }, commands: [
+        { name: 'diff', description: 'Terminal diff panel', source: 'plugin', plugin: 'cc-plugin-diff' },
+        { name: 'ordinary', description: 'Prompt', source: 'plugin', plugin: 'another' },
+      ] })
+      await h.ready()
+      expect(await h.command({ op: 'read', what: 'catalog' })).toMatchObject({ ok: true, result: { commands: [
+        { name: 'diff', route: { class: 'panel' } },
+        { name: 'ordinary', route: { class: 'run-prompt', enabled: true } },
+      ] } })
+      expect(await h.command({ op: 'command', name: 'diff' })).toMatchObject({ ok: false, code: 'panel', error: PANEL_REASON })
+      expect(h.runs).toHaveLength(0)
+      h.children[0]!.write(line({ id: 'ordinary', op: 'command', name: 'ordinary' }))
+      await h.settle()
+      expect(h.runs[0]!.args.command).toBe('ordinary')
+      h.runs[0]!.resolve({})
+      await h.settle()
+      expect(h.ofType('run').at(-1)).toMatchObject({ id: 'ordinary', phase: 'end', settled: { ok: true } })
+    })
+  }
+
+  test('the catalog teaches a table-free palette the measured MCP argument forms', async () => {
+    const h = harness({ version: { version: '2.1.307' }, commands: [{ name: 'mcp', description: 'MCP', source: 'builtin' }] })
+    await h.ready()
+    expect(await h.command({ op: 'read', what: 'catalog' })).toMatchObject({ ok: true, result: { commands: [
+      { name: 'mcp', withArgs: { forms: { hint: 'enable|disable|reconnect <server>' } } },
+    ] } })
+  })
+})
+
+
+describe('the desk: catalog belongs to the bound child, not merely a stable engine id', () => {
+  test('a predecessor child cannot read the successor catalog before the bridge follows', async () => {
+    const options = { version: { version: '2.1.307' }, commands: [{ name: 'old-only', source: 'custom', description: 'Old' }] }
+    const h = harness(options)
+    await h.ready()
+    h.setSession('5b000002-0000-4000-8000-00000000005b')
+    options.commands = [{ name: 'new-only', source: 'custom', description: 'New' }]
+    const answer = await h.command({ op: 'read', what: 'catalog' })
+    expect(answer.ok).toBe(false)
+    expect(JSON.stringify(answer).includes('new-only')).toBe(false)
+  })
+
+  test('a heartbeat awaiting predecessor posts sends no successor catalog there and refreshes after following', async () => {
+    const options = { version: { version: '2.1.307' }, hold: false, commands: [{ name: 'old-only', source: 'custom', description: 'Old' }] }
+    const h = harness(options)
+    await h.ready()
+    options.hold = true
+    await h.append('prompt', { type: 'user', content: [{ type: 'text', text: 'pending' }] })
+    const held = h.posts.at(-1)!
+    const NEW = '5b000002-0000-4000-8000-00000000005b'
+    const NEWSOCK = '/tmp/s/new-catalog.sock'
+    h.setSession(NEW)
+    options.commands = [{ name: 'new-only', source: 'custom', description: 'New' }]
+    h.timers.find((t) => t.kind === 'every' && t.ms === HEARTBEAT_MS)!.fn()
+    await h.settle()
+    options.hold = false
+    held.release()
+    await h.settle()
+    const from = (socket: string) => h.posts.filter((p) => p.socketPath === socket).flatMap((p) => p.events)
+    expect(from(SOCK).filter((e) => e.type === 'catalog' && JSON.stringify(e).includes('new-only'))).toHaveLength(0)
+    await h.fire(100)
+    expect(h.children).toHaveLength(2)
+    h.children[1]!.write(hello(NEW, NEWSOCK))
+    await h.settle()
+    h.timers.find((t) => t.kind === 'every' && t.ms === HEARTBEAT_MS)!.fn()
+    await h.settle()
+    expect(from(NEWSOCK).filter((e) => e.type === 'catalog').at(-1)).toMatchObject({ commands: [{ name: 'new-only' }] })
+    expect(from(SOCK).some((e) => JSON.stringify(e).includes('new-only'))).toBe(false)
+  })
+
+  test('startup catalog and same-session respawn survive, but an old generation publishes neither its pending catalog nor read answer', async () => {
+    const options: { version: { version: string }; commands: Record<string, unknown>[]; configWait?: Promise<void> } = {
+      version: { version: '2.1.307' }, commands: [{ name: 'initial', source: 'custom', description: 'Initial' }],
+    }
+    const h = harness(options)
+    await h.ready()
+    expect(h.ofType('resync')[0]!.catalog).toMatchObject({ commands: [{ name: 'initial' }] })
+    let release: () => void = () => undefined
+    options.configWait = new Promise<void>((resolve) => (release = resolve))
+    options.commands = [{ name: 'obsolete-in-flight', source: 'custom', description: 'Obsolete' }]
+    h.children[0]!.write(line({ id: 'old-read', op: 'read', what: 'catalog' }))
+    await h.settle()
+    h.children[0]!.write(line({ id: 'old-queued', op: 'read', what: 'catalog' }))
+    await h.settle()
+    h.children[0]!.end()
+    await h.settle()
+    await h.fire(0)
+    expect(h.children).toHaveLength(2)
+    h.children[1]!.write(hello(SID, SOCK, undefined, 'replacement'))
+    await h.settle()
+    expect(h.ofType('resync').at(-1)!.catalog).toMatchObject({ commands: [{ name: 'initial' }] })
+    release()
+    options.configWait = undefined
+    await h.settle()
+    expect(h.ofType('catalog').some((e) => JSON.stringify(e).includes('obsolete-in-flight'))).toBe(false)
+    expect(h.ofType('result').some((e) => e.id === 'old-read' || e.id === 'old-queued')).toBe(false)
+    options.commands = [{ name: 'current', source: 'custom', description: 'Current' }]
+    expect(await h.command({ op: 'read', what: 'catalog' }, 1)).toMatchObject({ ok: true, result: { commands: [{ name: 'current' }] } })
   })
 })
