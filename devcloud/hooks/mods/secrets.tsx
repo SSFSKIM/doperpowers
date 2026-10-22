@@ -1,6 +1,8 @@
 import type { EngineInterface, Hook, On } from 'claude-code'
 
 import { Handles } from './secrets-handles'
+import { detect } from './secrets-detect'
+import { ReadReceipts, receiptRanges, resultText, textRead, verifyRead } from './secrets-provenance'
 import { PATTERN_READ, readNotice } from './secrets-reads'
 import type { Read } from './secrets-reads'
 import type { Known } from './secrets-handles'
@@ -61,6 +63,7 @@ function namespace(): string {
 }
 
 const handles = new Handles(namespace())
+const receipts = new ReadReceipts()
 
 // The session's project root, once resolved; $HOME; and each source file as
 // last read, so a file is read again only when it changed.
@@ -287,6 +290,7 @@ const MARKER_READ = { value: { value: { owner: 'devcloud', version: 1 }, version
 
 // Taken with both matchers: an event is registered without one once per module.
 const secretsStart: Hook<'session.start'> = async ($, e, next) => {
+  receipts.reset()
   project = undefined
   await projectOf($, e.cwd)
   await refresh($, true)
@@ -304,6 +308,8 @@ export function registerSecrets(on: On) {
   // inside this guard and turns off. A matcher here would turn every placed
   // machine's bridge off on the calls it leaves out.
   on('tool.call', async ($, e, next) => {
+    // A reused id never inherits authority, even when this call fails.
+    receipts.take(e)
     let input = e
     const notes: string[] = []
     if (RESTORED.has(e.tool)) {
@@ -335,8 +341,29 @@ export function registerSecrets(on: On) {
       }
       const path = persistedPath(ran.result)
       if (path !== undefined) await scrubPersisted($, path)
-      const result = handles.scrubRecord(ran.result)
       const context = notes.length ? [...(ran.context ?? []), ...notes] : ran.context
+      const read = e.tool === 'Read' && path === undefined && typeof ran.text === 'string' ? textRead(ran.result) : undefined
+      if (read && detect(read.file.content).some(span => span.kind === 'assignment')) {
+        // Scrub every field normally except this one verified source candidate.
+        // The candidate is not returned unless both byte and rendering binding
+        // succeed; provenance failure falls through to the ordinary scrubber.
+        const { file, ...rest } = read
+        const { content, ...metadata } = file
+        const scrubbedContent = handles.scrub(content, [{ start: 0, end: content.length }])
+        const scrubbedMetadata = handles.scrubRecord(metadata)
+        const scrubbedRest = handles.scrubRecord(rest)
+        const result = scrubbedContent === content && scrubbedMetadata === metadata && scrubbedRest === rest ? read :
+          { ...scrubbedRest, file: { ...scrubbedMetadata, content: scrubbedContent } }
+        const evidence = await verifyRead($, e.file_path as string, read, ran.text!, scrubbedContent, project, next.signal)
+        if (evidence) {
+          receipts.issue(e, evidence)
+          // Core's ref retains its companion pagination notice only when the
+          // structured result is unchanged. A rewrite must run the mapper again.
+          if (result === ran.result && context === ran.context) return ran
+          return { result, context }
+        }
+      }
+      const result = handles.scrubRecord(ran.result)
       if (result === ran.result && context === ran.context) return ran
       return { result, context }
     } catch {
@@ -350,7 +377,25 @@ export function registerSecrets(on: On) {
   // `next.trace` as from each call's (tool.call above): a matcher here would
   // turn a placed machine's bridge off on the rows it leaves out.
   on('session.append', async ($, e, next) => {
+    // Consume synchronously, before refresh or hashing can yield to another row.
+    const ids = new Set<string>()
+    const duplicates = new Set<string>()
+    const taken = new Map<string, ReturnType<ReadReceipts['take']>>()
+    for (const block of e.message.content) {
+      if (block.type !== 'tool_result') continue
+      if (ids.has(block.tool_use_id)) duplicates.add(block.tool_use_id)
+      ids.add(block.tool_use_id)
+      const receipt = receipts.take({ agentId: e.agentId, tool_use_id: block.tool_use_id })
+      if (receipt) taken.set(block.tool_use_id, receipt)
+    }
     await refresh($, false)
+    const ranges = new Map<string, Awaited<ReturnType<typeof receiptRanges>>>()
+    if (e.door === 'tool-result' && e.origin.kind === 'tool' && e.origin.tool === 'Read') {
+      for (const block of e.message.content) {
+        if (block.type !== 'tool_result' || block.is_error || duplicates.has(block.tool_use_id)) continue
+        ranges.set(block.tool_use_id, await receiptRanges(taken.get(block.tool_use_id), resultText(block.content)))
+      }
+    }
     let isChanged = false
     const content = e.message.content.map((block) => {
       if (block.type === 'text' && typeof block.text === 'string') {
@@ -360,7 +405,12 @@ export function registerSecrets(on: On) {
         return { ...block, text }
       }
       if (block.type === 'tool_result') {
-        const inner = handles.scrubRecord(block.content)
+        const allowed = ranges.get(block.tool_use_id)
+        const text = resultText(block.content)
+        const scrubbed = allowed && text !== undefined ? handles.scrub(text, allowed) : undefined
+        const inner = scrubbed === undefined ? handles.scrubRecord(block.content) :
+          typeof block.content === 'string' ? scrubbed :
+          scrubbed === text ? block.content : [{ ...block.content![0] as object, text: scrubbed }]
         if (inner === block.content) return block
         isChanged = true
         return { ...block, content: inner }

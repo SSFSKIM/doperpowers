@@ -6,7 +6,8 @@
  * would drown the transcript.
  */
 
-export type Span = { start: number; end: number; kind: string }
+export type CharacterRange = { start: number; end: number }
+export type Span = CharacterRange & { kind: string }
 
 /**
  * The spans, taken in the order given, each kept unless it overlaps one
@@ -133,7 +134,7 @@ function assignments(text: string): Span[] {
  * The token-shaped strings in `text`, in order and never overlapping: each
  * span the bytes a handle stands for, `kind` the rule that found it.
  */
-export function detect(text: string): Span[] {
+export function detect(text: string, genericExceptions: readonly CharacterRange[] = []): Span[] {
   const found: Span[] = []
   for (const { kind, pattern } of RULES) {
     for (const m of text.matchAll(pattern)) {
@@ -142,6 +143,8 @@ export function detect(text: string): Span[] {
       found.push({ start, end: start + m[0].length, kind })
     }
   }
-  found.push(...assignments(text))
+  // Strong rules still inspect the complete original string. Only a generic
+  // value wholly contained in a verified source range may be omitted.
+  found.push(...assignments(text).filter(span => !genericExceptions.some(range => range.start <= span.start && span.end <= range.end)))
   return keepFirst(found, text.length)
 }
