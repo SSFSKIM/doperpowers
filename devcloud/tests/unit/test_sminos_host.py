@@ -150,6 +150,34 @@ class SminosHostTest(unittest.TestCase):
         self.assertIn("EnvironmentFile=/etc/devcloud/env\n", self.dropin.read_text())
         self.assertIn("sminos daemon", detail)
 
+    def test_installed_command_is_wrapped_without_replacing_the_sminos_unit(self):
+        # The drop-in is a systemd API boundary: reset ExecStart, but preserve
+        # sminos's own output destinations and lifecycle directives.
+        self.enroll()
+        self.marketplace()
+        command = '"/opt/python$test/bin/python3" "/opt/clone with spaces/sminos.py" daemon run'
+        text = ('[Service]\nExecStart=' + command + '\nKillMode=process\n'
+                'StandardOutput=append:/tmp/daemon.out\nStandardError=append:/tmp/daemon.out\n')
+        self.converge(recorder=Recorder(self.unit, text))
+        self.assertEqual(self.unit.read_text(), text)
+        dropin = self.dropin.read_text()
+        starts = [line for line in dropin.splitlines() if line.startswith('ExecStart=')]
+        self.assertEqual(starts, ['ExecStart=', 'ExecStart=/usr/local/bin/devcloud run-scrubbed -- '
+                                 + command.replace('python$test', 'python$$test')])
+        self.assertNotIn('StandardOutput=', dropin)
+        self.assertNotIn('StandardError=', dropin)
+        self.assertNotIn('KillMode=', dropin)
+
+    def test_missing_or_multiple_installed_commands_never_start_unscrubbed(self):
+        self.enroll()
+        self.marketplace()
+        for text in ('[Service]\n', UNIT_TEXT + 'ExecStart=/bin/echo extra\n'):
+            with self.subTest(text=text):
+                recorder = Recorder(self.unit, text)
+                with self.assertRaisesRegex(StepError, 'ExecStart'):
+                    self.converge(recorder=recorder)
+                self.assertEqual(len(recorder.calls), 1)
+
     def test_the_cli_is_the_sminos_plugins_in_the_clone_then_the_retired_path(self):
         # From the move of sminos into a plugin of its own, the clone holds the
         # CLI in its sminos/ folder; a clone not yet moved holds it at the old

@@ -303,7 +303,8 @@ class LedgeredWritesTest(unittest.TestCase):
         def before(path):
             seen.append((str(path), path.exists()))
         entries = secrets.parse('[[secret]]\nname = "a"\nstore = "OLD"\nfile = "~/.pgpass"\n')
-        secrets.materialize(entries, lambda name: b"made-up", home, before_write=before)
+        with mock.patch.object(secrets, "MANIFEST", home / "state/secrets-manifest.json"):
+            secrets.materialize(entries, lambda name: b"made-up", home, before_write=before)
         self.assertEqual(seen, [(str(home / ".config/claude-secrets/OLD"), False), (str(home / ".pgpass"), False)])
 
 

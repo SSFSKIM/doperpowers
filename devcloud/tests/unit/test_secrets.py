@@ -1,7 +1,10 @@
+import json
+import os
 import pathlib
 import stat
 import tempfile
 import unittest
+from unittest import mock
 
 import _path  # noqa: F401
 from devcloudlib import secrets
@@ -80,7 +83,15 @@ class MaterializeTest(unittest.TestCase):
     }
 
     def setUp(self):
-        self.home = pathlib.Path(tempfile.mkdtemp())
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = pathlib.Path(tmp.name)
+        self.home = root / "home"
+        self.home.mkdir()
+        self.manifest = root / "state/secrets-manifest.json"
+        patch = mock.patch.object(secrets, "MANIFEST", self.manifest, create=True)
+        patch.start()
+        self.addCleanup(patch.stop)
 
     def run_with(self, values, toml=TOML):
         def fetch(name):
@@ -133,6 +144,160 @@ class MaterializeTest(unittest.TestCase):
         self.run_with(self.VALUES)
         self.assertEqual(victim.read_text(), "untouched")
         self.assertFalse((self.home / ".pgpass").is_symlink())
+
+    def test_removed_entries_delete_owned_files_and_drop_env_but_not_user_files(self):
+        self.run_with(self.VALUES)
+        user_file = self.home / ".config/claude-secrets/USER_KEY"
+        user_file.write_text("made-up-user-key")
+        out = self.run_with({}, toml="")
+        self.assertEqual((out.state, out.env), ("ok", {}))
+        for target in (".config/claude-secrets/GH_TOKEN", ".config/gh/hosts.yml", ".pgpass"):
+            self.assertFalse((self.home / target).exists(), target)
+        self.assertEqual(user_file.read_text(), "made-up-user-key")
+        self.assertEqual(self.run_with({}, toml="").state, "ok")
+
+    def test_renamed_targets_remove_old_files_and_keep_new_ones(self):
+        self.run_with(self.VALUES)
+        renamed = TOML.replace('store = "GH_TOKEN"', 'store = "NEW_TOKEN"').replace(
+            'file = "~/.config/gh/hosts.yml"', 'file = "~/.config/gh/new.yml"')
+        self.run_with(self.VALUES, toml=renamed)
+        self.assertFalse((self.home / ".config/claude-secrets/GH_TOKEN").exists())
+        self.assertFalse((self.home / ".config/gh/hosts.yml").exists())
+        self.assertEqual((self.home / ".config/claude-secrets/NEW_TOKEN").read_bytes(), self.VALUES["gh-token"])
+        self.assertTrue((self.home / ".config/gh/new.yml").exists())
+        self.assertTrue((self.home / ".pgpass").exists())
+
+    def test_user_edits_replacements_symlinks_and_directories_survive_removal(self):
+        for replacement in ("edit", "same-content", "symlink", "directory"):
+            with self.subTest(replacement=replacement):
+                self.run_with(self.VALUES)
+                path = self.home / ".pgpass"
+                if replacement == "edit":
+                    path.write_text("made-up-user-edit")
+                else:
+                    path.unlink()
+                    if replacement == "same-content":
+                        other = self.home / "replacement"
+                        other.write_bytes(self.VALUES["pgpass"])
+                        other.replace(path)
+                    elif replacement == "symlink":
+                        path.symlink_to("missing-user-target")
+                    else:
+                        path.mkdir()
+                        (path / "user-file").write_text("keep")
+                out = self.run_with({}, toml="")
+                self.assertEqual(out.state, "ok")
+                self.assertTrue(os.path.lexists(path))
+                if path.is_dir():
+                    (path / "user-file").unlink()
+                    path.rmdir()
+                else:
+                    path.unlink()
+
+    def test_replaced_parent_symlink_cannot_redirect_cleanup(self):
+        self.run_with(self.VALUES)
+        parent = self.home / ".config/gh"
+        moved = self.home / "user-gh"
+        parent.rename(moved)
+        parent.symlink_to(moved, target_is_directory=True)
+        self.run_with({}, toml="")
+        self.assertTrue((moved / "hosts.yml").exists())
+        self.assertTrue(parent.is_symlink())
+
+    def test_manifestless_host_does_not_claim_an_unchanged_existing_file(self):
+        path = self.home / ".pgpass"
+        path.write_bytes(self.VALUES["pgpass"])
+        path.chmod(0o600)
+        self.run_with(self.VALUES)
+        self.run_with({}, toml="")
+        self.assertEqual(path.read_bytes(), self.VALUES["pgpass"])
+        self.assertFalse((self.home / ".config/claude-secrets/GH_TOKEN").exists())
+
+    def test_unchanged_user_replacement_is_not_reclaimed_by_refresh(self):
+        self.run_with(self.VALUES)
+        path = self.home / ".pgpass"
+        other = self.home / "replacement"
+        other.write_bytes(path.read_bytes())
+        other.chmod(0o600)
+        other.replace(path)
+        self.run_with(self.VALUES)
+        self.run_with({}, toml="")
+        self.assertEqual(path.read_bytes(), self.VALUES["pgpass"])
+
+    def test_failed_fetch_keeps_current_files_and_their_cleanup_ownership(self):
+        self.run_with(self.VALUES)
+        out = self.run_with({"gh-token": AccessError("HTTP 403")})
+        self.assertEqual(out.state, "failed")
+        self.assertTrue((self.home / ".pgpass").exists())
+        self.run_with({}, toml="")
+        self.assertFalse((self.home / ".pgpass").exists())
+        self.assertFalse((self.home / ".config/claude-secrets/GH_TOKEN").exists())
+
+    def test_partial_entry_write_is_tracked_even_when_its_second_target_fails(self):
+        (self.home / "blocked").write_text("user-owned")
+        toml = '[[secret]]\nname = "a"\nstore = "FIRST"\nfile = "~/blocked/second"\n'
+        out = self.run_with({"a": b"made-up"}, toml=toml)
+        self.assertEqual(out.state, "failed")
+        self.assertTrue((self.home / ".config/claude-secrets/FIRST").exists())
+        self.run_with({}, toml="")
+        self.assertFalse((self.home / ".config/claude-secrets/FIRST").exists())
+        self.assertEqual((self.home / "blocked").read_text(), "user-owned")
+
+    def test_failed_cleanup_retries_without_forgetting_owned_file(self):
+        self.run_with(self.VALUES)
+        original = os.unlink
+
+        def deny_pgpass(path, *args, **kwargs):
+            if pathlib.Path(path).name == ".pgpass":
+                raise PermissionError("cleanup denied")
+            return original(path, *args, **kwargs)
+
+        with mock.patch.object(os, "unlink", side_effect=deny_pgpass):
+            out = self.run_with({}, toml="")
+        self.assertEqual(out.state, "failed")
+        self.assertTrue((self.home / ".pgpass").exists())
+        self.assertEqual(self.run_with({}, toml="").state, "ok")
+        self.assertFalse((self.home / ".pgpass").exists())
+
+    def test_bookkeeping_survives_a_forking_as_user_callback(self):
+        def as_user(fn):
+            pid = os.fork()
+            if pid == 0:
+                try:
+                    fn()
+                except BaseException:
+                    os._exit(1)
+                os._exit(0)
+            _, status = os.waitpid(pid, 0)
+            if os.waitstatus_to_exitcode(status) != 0:
+                raise RuntimeError("child failed")
+
+        entries = secrets.parse('[[secret]]\nname = "a"\nstore = "KEY"\n')
+        self.assertEqual(secrets.materialize(entries, lambda name: b"made-up", self.home, as_user=as_user).state, "ok")
+        self.assertTrue((self.home / ".config/claude-secrets/KEY").exists())
+        self.assertEqual(secrets.materialize([], lambda name: None, self.home, as_user=as_user).state, "ok")
+        self.assertFalse((self.home / ".config/claude-secrets/KEY").exists())
+
+    def test_invalid_manifest_cannot_authorize_deletion_or_new_writes(self):
+        self.run_with(self.VALUES)
+        data = json.loads(self.manifest.read_text())
+        identity = next(iter(data["files"].values()))
+        data["files"] = {"../outside": identity}
+        self.manifest.write_text(json.dumps(data))
+        with self.assertRaisesRegex(secrets.ProfileError, "manifest"):
+            self.run_with({}, toml="")
+        self.assertTrue((self.home / ".pgpass").exists())
+        self.manifest.write_text("not JSON")
+        with self.assertRaisesRegex(secrets.ProfileError, "manifest"):
+            self.run_with(self.VALUES)
+
+    def test_manifest_is_private_and_contains_no_payload(self):
+        self.run_with(self.VALUES)
+        self.assertEqual(stat.S_IMODE(self.manifest.stat().st_mode), 0o600)
+        text = self.manifest.read_text()
+        json.loads(text)
+        for payload in self.VALUES.values():
+            self.assertNotIn(payload.decode().strip(), text)
 
     def test_a_multi_line_value_cannot_be_an_env_target(self):
         out = self.run_with(dict(self.VALUES, **{"api-key": b"line one\nline two\n"}))

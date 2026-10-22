@@ -719,6 +719,29 @@ def enrolled_daemon():
           "a second reconcile restarted an unchanged daemon: " + steps(VM)["services"]["detail"])
 
 
+@case("the sminos daemon's stdout and stderr are scrubbed before daemon.out or journald", "systemd")
+def daemon_output_scrubbed():
+    end = time.monotonic() + 30
+    while True:
+        output = out(VM, f"cat {HOME}/.claude/sminos/daemon.out")
+        if "daemon stdout value [secret]" in output and "daemon stderr value [secret]" in output:
+            break
+        check(time.monotonic() < end, "the daemon's scrubbed stdout and stderr never reached daemon.out")
+        time.sleep(0.5)
+    journal = out(VM, f"XDG_RUNTIME_DIR=/run/user/{UID} journalctl --user -u sminos-daemon.service "
+                      "-o cat --no-pager", user=USER)
+    for name, value in SECRETS.items():
+        check(value.strip() not in output, f"{name}'s value is in daemon.out")
+        check(value.strip() not in journal, f"{name}'s value is in the daemon's journal")
+    # KillMode=process sends SIGTERM to the wrapper alone. It must forward it
+    # to the actual daemon, which exits and records the stop before restart.
+    pid = json.loads(out(VM, f"cat {STATE}/sminos.json"))["pid"]
+    sh(VM, f"XDG_RUNTIME_DIR=/run/user/{UID} systemctl --user stop sminos-daemon.service", user=USER)
+    check(f"stop {pid}" in out(VM, f"cat {STATE}/sminos-daemon.log"), "the wrapper did not forward SIGTERM")
+    check(sh(VM, f"kill -0 {pid}", check_rc=False).returncode != 0, "the daemon survived the unit stop")
+    sh(VM, f"XDG_RUNTIME_DIR=/run/user/{UID} systemctl --user start sminos-daemon.service", user=USER)
+
+
 @case("a persistent host keeps a mirror of its projects' repositories and refreshes it (Design §7)", "systemd")
 def mirror_cache():
     projects = steps(VM)["projects"]

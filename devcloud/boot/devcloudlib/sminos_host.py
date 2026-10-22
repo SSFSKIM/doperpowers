@@ -25,10 +25,12 @@ import dataclasses
 import json
 import os
 import pathlib
+import re
 import time
 
 from . import proc
 from .proc import StepError, as_user, write_file
+from .services import DEVCLOUD
 
 UNIT = "sminos-daemon.service"
 # What names a machine under $SMINOS_HOME/daemon/: the enrollment and the
@@ -40,10 +42,36 @@ ENV_PATH = "/etc/devcloud/env"
 # Set when the unit, its drop-in or the host environment changed and cleared
 # only once the daemon is restarted: a failed attempt leaves it for the next.
 PENDING = pathlib.Path("/var/lib/devcloud/sminos-restart-pending")
-DROPIN = ("# Written by devcloud (boot step 11): the host environment, as every devcloud\n"
-          "# service has it (Design §6).\n"
+DROPIN = ("# Written by devcloud (boot step 11): the host environment and output scrubber,\n"
+          "# as every devcloud service has them (Design §6).\n"
           "[Service]\n"
           f"EnvironmentFile={ENV_PATH}\n")
+
+
+def scrubbed_dropin(unit):
+    """Wrap the single-line ExecStart that `sminos daemon install` writes.
+
+    Keep its systemd quoting/specifiers, not shell-parse and re-quote it. Only
+    the executable moves from program position (no variable expansion) to
+    argument position, where a literal dollar must be doubled. The original
+    unit owns output destinations, restart policy and signal handling.
+    """
+    section, commands = "", []
+    for line in unit.splitlines():
+        line = line.strip()
+        if line.startswith("["):
+            section = line
+        elif section == "[Service]" and line.startswith("ExecStart="):
+            commands.append(line.removeprefix("ExecStart="))
+    if len(commands) != 1 or not commands[0]:
+        raise StepError("sminos daemon unit must have one nonempty ExecStart to scrub")
+    # sminos quotes its interpreter with unit_word; older installers wrote a
+    # bare absolute path. Refuse other command forms rather than run raw.
+    match = re.fullmatch(r'("/(?:[^"\\]|\\.)*"|/[^\s"\\]+)(\s+.+)', commands[0])
+    if not match:
+        raise StepError("sminos daemon unit has an unsupported ExecStart to scrub")
+    command = match[1].replace("$", "$$") + match[2]
+    return DROPIN + f"ExecStart=\nExecStart={DEVCLOUD} run-scrubbed -- {command}\n"
 
 
 def sminos_home(user, env):
@@ -230,9 +258,10 @@ def converge(user, role, env, env_changed, run=proc.run, pending=PENDING):
         write_file(pending, "", mode=0o644, dir_mode=0o755)
     before = (_read(unit), _read(dropin))
     run([PYTHON, str(program), "daemon", "install"], user=user, env=install_env, log="services", timeout=120)
-    as_user(user, lambda: write_file(dropin, DROPIN, mode=0o644, dir_mode=0o755))
     if _read(unit) is None:
         raise StepError(f"sminos daemon install wrote no {unit}")
+    wrapped = scrubbed_dropin(unit.read_text())
+    as_user(user, lambda: write_file(dropin, wrapped, mode=0o644, dir_mode=0o755))
     if (_read(unit), _read(dropin)) != before:
         write_file(pending, "", mode=0o644, dir_mode=0o755)
 

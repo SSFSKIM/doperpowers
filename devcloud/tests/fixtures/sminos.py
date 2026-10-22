@@ -70,8 +70,12 @@ if args == ["daemon", "install"]:
     config = os.environ.get("XDG_CONFIG_HOME") or str(home / ".config")
     unit = pathlib.Path(config) / "systemd/user/sminos-daemon.service"
     unit.parent.mkdir(parents=True, exist_ok=True)
+    sminos_home.mkdir(parents=True, exist_ok=True)
     unit.write_text("[Unit]\nDescription=stand-in sminos daemon\n\n[Service]\n"
-                    f"ExecStart={sys.executable} {os.path.realpath(__file__)} daemon run\nRestart=always\n"
+                    f'ExecStart="{sys.executable}" "{os.path.realpath(__file__)}" daemon run\nRestart=always\n'
+                    'KillMode=process\n'
+                    f'StandardOutput=append:{sminos_home}/daemon.out\n'
+                    f'StandardError=append:{sminos_home}/daemon.out\n'
                     f'Environment="PATH={os.environ.get("PATH", "")}"\n\n[Install]\nWantedBy=default.target\n')
     unit.chmod(0o600)
     print(f"wrote {unit}")
@@ -87,6 +91,12 @@ elif args == ["daemon", "run"]:
     (state / "sminos.json").write_text(json.dumps({**{k: os.environ.get(k) for k in keys}, "pid": os.getpid()}))
     with open(state / "sminos-daemon.log", "a") as log:
         log.write(f"start {os.getpid()}\n")
+    # Made-up host values: prove the real user-unit wrapper learns both the
+    # environment and file-only materializations before persisting output.
+    if os.environ.get("EXAMPLE_API_KEY"):
+        print("daemon stdout value", os.environ["EXAMPLE_API_KEY"], flush=True)
+    if (home / ".pgpass").is_file():
+        print("daemon stderr value", (home / ".pgpass").read_text().strip(), file=sys.stderr, flush=True)
     while True:
         time.sleep(60)
 elif args == ["hub", "check"]:

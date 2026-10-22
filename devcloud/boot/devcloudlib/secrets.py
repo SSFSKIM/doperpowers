@@ -17,9 +17,12 @@ Every entry is tried; the step fails after the rest when one required entry
 could not be written. Status names secret ids, never a value."""
 
 import dataclasses
+import errno
+import json
 import os
 import pathlib
 import re
+import stat
 import tomllib
 
 from . import envfile
@@ -27,6 +30,7 @@ from .proc import write_file
 from .secretmanager import AccessError
 
 STORE = ".config/claude-secrets"
+MANIFEST = pathlib.Path("/var/lib/devcloud/secrets-manifest.json")
 _KEY = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 _SECRET_ID = re.compile(r"[A-Za-z0-9_-]{1,255}\Z")
 _MODE = re.compile(r"0?[0-7]{3}\Z")
@@ -137,13 +141,68 @@ def _targets(entry, payload):
     return (text if entry.env else None), data
 
 
-def _write(entry, payload, data, home):
-    if entry.store:
-        store = home / STORE
-        write_file(store / entry.store, payload)
-        os.chmod(store, 0o700)
-    if entry.file:
-        write_file(home / _in_home(entry.file, entry.name), data, mode=entry.mode)
+def _identity(st):
+    """No values or value hashes: detect replacements and in-place edits."""
+    if not stat.S_ISREG(st.st_mode):
+        return None
+    return [st.st_dev, st.st_ino, st.st_ctime_ns, st.st_mtime_ns,
+            st.st_size, st.st_mode, st.st_uid, st.st_gid]
+
+
+def _file_identity(path):
+    try:
+        return _identity(path.lstat())
+    except FileNotFoundError:
+        return None
+
+
+def _load_owned(home):
+    try:
+        data = json.loads(MANIFEST.read_text())
+    except FileNotFoundError:
+        return {}
+    except (ValueError, UnicodeError):
+        raise ProfileError("secrets ownership manifest is invalid") from None
+    try:
+        if data["version"] != 1 or not isinstance(data["home"], str):
+            raise ValueError
+        files = data["files"]
+        if not isinstance(files, dict):
+            raise ValueError
+        for name, identity in files.items():
+            _in_home("~/" + name, "secrets ownership manifest")
+            if not isinstance(identity, list) or len(identity) != 8 or any(type(n) is not int for n in identity):
+                raise ValueError
+    except (KeyError, TypeError, ValueError):
+        raise ProfileError("secrets ownership manifest is invalid") from None
+    # A different home is not evidence of ownership in this one.
+    return files if data["home"] == str(home) else {}
+
+
+def _save_owned(home, owned):
+    write_file(MANIFEST, json.dumps({"version": 1, "home": str(home), "files": owned}) + "\n")
+
+
+def _remove_owned(home, name, identity):
+    """Unlink only the recorded regular file, never through a replaced parent.
+    Runs with the same user privileges as materialization, not as root."""
+    parts = _in_home("~/" + name, "secrets ownership manifest").parts
+    fd = None
+    try:
+        fd = os.open(home, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        for part in parts[:-1]:
+            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            os.close(fd)
+            fd = child
+        current = os.stat(parts[-1], dir_fd=fd, follow_symlinks=False)
+        if _identity(current) == identity:
+            os.unlink(parts[-1], dir_fd=fd)
+    except OSError as error:
+        if error.errno not in (errno.ENOENT, errno.ENOTDIR, errno.ELOOP):
+            raise
+    finally:
+        if fd is not None:
+            os.close(fd)
 
 
 def targets(entry, home):
@@ -158,11 +217,55 @@ def materialize(entries, fetch, home, as_user=None, before_write=None):
     """Fetches each entry with `fetch(name)` (bytes, or None when absent) and
     writes its targets in `home`, through `as_user(fn)` when given;
     `before_write(path)` is called for each target first, in this process
-    (the credential ledger's entry, Design §6.5)."""
-    home = pathlib.Path(home)
+    (the credential ledger's entry, Design §6.5). A private manifest tracks
+    actual writes, allowing removed targets to be pruned without deleting
+    user files. Still-declared targets survive transient fetch failures."""
+    home = pathlib.Path(home).absolute()
+    entries = list(entries)
     run_as = as_user or (lambda fn: fn())
     written, missing, failed = 0, [], []
     env = {}
+    owned = _load_owned(home)
+    desired = set()
+    for entry in entries:
+        try:
+            desired.update(str(path.relative_to(home)) for path in targets(entry, home))
+        except ProfileError:
+            pass  # Report this entry's invalid target below, as before.
+    for name, identity in list(owned.items()):
+        if name in desired:
+            continue
+        try:
+            run_as(lambda: _remove_owned(home, name, identity))
+        except Exception as error:  # noqa: BLE001 — retain ownership so cleanup can retry
+            failed.append(f"cleanup {name} ({type(error).__name__})")
+        else:
+            del owned[name]
+    _save_owned(home, owned)
+
+    def write_target(path, content, mode):
+        (before_write or (lambda path: None))(path)
+        before = _file_identity(path)
+
+        def write():
+            if path.parent == home / STORE:
+                path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                os.chmod(path.parent, 0o700)
+            write_file(path, content, mode=mode)
+
+        run_as(write)
+        after = _file_identity(path)
+        name = str(path.relative_to(home))
+        if after is not None and (after != before or owned.get(name) == after):
+            owned[name] = after
+        else:
+            # write_file leaves identical content alone. Do not claim a user's
+            # existing/replaced file merely because it has the desired bytes.
+            owned.pop(name, None)
+        # Persist each target, including the first half of a failed entry.
+        # run_as may fork, so bookkeeping belongs in this parent process.
+        _save_owned(home, owned)
+
     for entry in entries:
         try:
             payload = fetch(entry.name)
@@ -177,10 +280,11 @@ def materialize(entries, fetch, home, as_user=None, before_write=None):
             continue
         try:
             env_value, data = _targets(entry, payload)
-            if entry.store or entry.file:
-                for path in targets(entry, home):
-                    (before_write or (lambda path: None))(path)
-                run_as(lambda: _write(entry, payload, data, home))
+            paths = iter(targets(entry, home))  # Validate before ledgering either target.
+            if entry.store:
+                write_target(next(paths), payload, 0o600)
+            if entry.file:
+                write_target(next(paths), data, entry.mode)
         except ProfileError as error:
             failed.append(f"{entry.name} ({error})")
             continue
