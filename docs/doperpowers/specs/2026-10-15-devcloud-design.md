@@ -1034,7 +1034,9 @@ or how it is answered reaches `cua` as a ticket before it ships.
 
 - Decision: Retired secret targets are removed during materialization only while
   their filesystem identity and change metadata still match an actual devcloud
-  write (board #89, closing M2's removed-entry residue). Root-owned ownership
+  write (board #89, closing M2's removed-entry residue). Parent routes are recorded
+  too: unchanged symlinked directories are supported, but a replaced link or
+  directory cannot authorize deleting a file through a new route. Root-owned ownership
   metadata beside status contains paths and stat metadata, never secret values.
   The lifecycle credential ledger remains separate: it records paths before a
   write, including directories and other credential sources, and deliberately
@@ -1058,6 +1060,11 @@ or how it is answered reaches `cua` as a ticket before it ships.
   to `daemon.out`, not journald. The wrapper scrubs before either destination;
   the systemd-container proof checks made-up values in both `daemon.out` and the
   user unit's journal, and verifies SIGTERM reaches the daemon through the wrapper.
+  The daemon child arms Linux's parent-death SIGKILL before exec, with a parent-PID
+  recheck covering death before arming. Thus sminos's `KillMode=process` still stops
+  the daemon when systemd force-kills the wrapper, without killing independent
+  sessions; the setting is not inherited by forked descendants. The systemd proof
+  covers timeout escalation and direct wrapper death as well as a graceful stop.
   Rationale: output filtering belongs to the host that knows its secret values;
   preserving the installed unit's behavior keeps the documented diagnostic path.
   Date/Author: 2026-10-22, the design session's ownership decision and premise

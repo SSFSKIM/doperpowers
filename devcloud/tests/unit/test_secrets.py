@@ -204,6 +204,69 @@ class MaterializeTest(unittest.TestCase):
         self.assertTrue((moved / "hosts.yml").exists())
         self.assertTrue(parent.is_symlink())
 
+    def test_unchanged_symlinked_config_route_retires_actual_writes(self):
+        config = self.home / "config-files"
+        config.mkdir()
+        (self.home / ".config").symlink_to(config, target_is_directory=True)
+        self.run_with(self.VALUES)
+        # Unrelated directory changes and an identical refresh do not forfeit
+        # ownership of the files written through this pre-existing route.
+        (config / "user-file").write_text("keep")
+        self.run_with(self.VALUES)
+        self.assertEqual(self.run_with({}, toml="").state, "ok")
+        self.assertFalse((config / "claude-secrets/GH_TOKEN").exists())
+        self.assertFalse((config / "gh/hosts.yml").exists())
+        self.assertEqual((config / "user-file").read_text(), "keep")
+        self.assertTrue((self.home / ".config").is_symlink())
+
+    def test_replaced_symlink_route_is_not_reclaimed_even_by_identical_refresh(self):
+        config = self.home / "config-files"
+        config.mkdir()
+        link = self.home / ".config"
+        link.symlink_to(config, target_is_directory=True)
+        self.run_with(self.VALUES)
+        # Preserve the old link's inode so the replacement is unambiguous,
+        # even on filesystems that reuse a just-unlinked inode immediately.
+        link.rename(self.home / "old-config-link")
+        link.symlink_to(config, target_is_directory=True)
+        self.run_with(self.VALUES)
+        self.assertEqual(self.run_with({}, toml="").state, "ok")
+        self.assertEqual((config / "claude-secrets/GH_TOKEN").read_bytes(), self.VALUES["gh-token"])
+        self.assertTrue((config / "gh/hosts.yml").exists())
+
+    def test_route_change_during_identical_write_does_not_claim_user_route(self):
+        config = self.home / "config-files"
+        config.mkdir()
+        link = self.home / ".config"
+        link.symlink_to(config, target_is_directory=True)
+        entries = secrets.parse('[[secret]]\nname = "a"\nfile = "~/.config/credential"\n')
+        secrets.materialize(entries, lambda name: b"made-up", self.home)
+
+        def replace_route_then_write(fn):
+            link.rename(self.home / "old-config-link")
+            link.symlink_to(config, target_is_directory=True)
+            fn()  # identical content: no actual write to claim
+
+        out = secrets.materialize(entries, lambda name: b"made-up", self.home, as_user=replace_route_then_write)
+        self.assertEqual(out.state, "ok")
+        self.assertEqual(self.run_with({}, toml="").state, "ok")
+        self.assertEqual((config / "credential").read_bytes(), b"made-up")
+
+    def test_replaced_directory_behind_unchanged_symlink_preserves_moved_file(self):
+        config = self.home / "config-files"
+        config.mkdir()
+        (self.home / ".config").symlink_to(config, target_is_directory=True)
+        self.run_with(self.VALUES)
+        moved = self.home / "old-config"
+        config.rename(moved)
+        config.mkdir()
+        # Move the original file, preserving its identity, into a replacement
+        # parent. File identity alone must not authorize removing it there.
+        (moved / "gh").rename(config / "gh")
+        self.assertEqual(self.run_with({}, toml="").state, "ok")
+        self.assertTrue((config / "gh/hosts.yml").exists())
+        self.assertTrue((moved / "claude-secrets/GH_TOKEN").exists())
+
     def test_manifestless_host_does_not_claim_an_unchanged_existing_file(self):
         path = self.home / ".pgpass"
         path.write_bytes(self.VALUES["pgpass"])

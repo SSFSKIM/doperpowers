@@ -16,6 +16,7 @@ payload with one trailing newline dropped, the rule the store's readers apply.
 Every entry is tried; the step fails after the rest when one required entry
 could not be written. Status names secret ids, never a value."""
 
+import contextlib
 import dataclasses
 import errno
 import json
@@ -149,11 +150,58 @@ def _identity(st):
             st.st_size, st.st_mode, st.st_uid, st.st_gid]
 
 
-def _file_identity(path):
+def _parent_identity(st):
+    # Directory contents may change without replacing the route. A symlink,
+    # unlike a directory, must itself remain unchanged as well as its target.
+    link = stat.S_ISLNK(st.st_mode)
+    return [st.st_dev, st.st_ino, stat.S_IFMT(st.st_mode),
+            st.st_ctime_ns if link else 0, st.st_mtime_ns if link else 0]
+
+
+@contextlib.contextmanager
+def _open_parent(home, name, expected=None):
+    """Pin each parent directory and record both the entry and where it leads.
+    Cleanup follows a symlink only when it is the one we wrote through, and
+    checks the opened directory too: an unchanged link can lead somewhere new.
+    """
+    parts = _in_home("~/" + name, "secrets ownership manifest").parts
+    fd, route = None, []
     try:
-        return _identity(path.lstat())
+        for i, part in enumerate([str(home), *parts[:-1]]):
+            entry = _parent_identity(os.stat(part, dir_fd=fd, follow_symlinks=False))
+            if expected is not None and entry != expected[i][0]:
+                raise OSError(errno.ESTALE, "secret target parent replaced")
+            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY, dir_fd=fd)
+            try:
+                st = os.fstat(child)
+                directory = [st.st_dev, st.st_ino]
+                if (entry != _parent_identity(os.stat(part, dir_fd=fd, follow_symlinks=False))
+                        or (expected is not None and directory != expected[i][1])):
+                    raise OSError(errno.ESTALE, "secret target parent replaced")
+            except BaseException:
+                os.close(child)
+                raise
+            if fd is not None:
+                os.close(fd)
+            fd = child
+            route.append([entry, directory])
+        yield fd, route
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
+def _file_identity(home, path):
+    try:
+        with _open_parent(home, str(path.relative_to(home))) as (fd, route):
+            identity = _identity(os.stat(path.name, dir_fd=fd, follow_symlinks=False))
+            return {"file": identity, "parents": route} if identity is not None else None
     except FileNotFoundError:
         return None
+
+
+def _integers(value, count):
+    return isinstance(value, list) and len(value) == count and all(type(n) is int for n in value)
 
 
 def _load_owned(home):
@@ -170,9 +218,16 @@ def _load_owned(home):
         if not isinstance(files, dict):
             raise ValueError
         for name, identity in files.items():
-            _in_home("~/" + name, "secrets ownership manifest")
-            if not isinstance(identity, list) or len(identity) != 8 or any(type(n) is not int for n in identity):
+            parts = _in_home("~/" + name, "secrets ownership manifest").parts
+            if not isinstance(identity, dict) or not _integers(identity["file"], 8):
                 raise ValueError
+            parents = identity["parents"]
+            if not isinstance(parents, list) or len(parents) != len(parts):
+                raise ValueError
+            for parent in parents:
+                if (not isinstance(parent, list) or len(parent) != 2
+                        or not _integers(parent[0], 5) or not _integers(parent[1], 2)):
+                    raise ValueError
     except (KeyError, TypeError, ValueError):
         raise ProfileError("secrets ownership manifest is invalid") from None
     # A different home is not evidence of ownership in this one.
@@ -186,23 +241,15 @@ def _save_owned(home, owned):
 def _remove_owned(home, name, identity):
     """Unlink only the recorded regular file, never through a replaced parent.
     Runs with the same user privileges as materialization, not as root."""
-    parts = _in_home("~/" + name, "secrets ownership manifest").parts
-    fd = None
+    leaf = _in_home("~/" + name, "secrets ownership manifest").name
     try:
-        fd = os.open(home, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-        for part in parts[:-1]:
-            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
-            os.close(fd)
-            fd = child
-        current = os.stat(parts[-1], dir_fd=fd, follow_symlinks=False)
-        if _identity(current) == identity:
-            os.unlink(parts[-1], dir_fd=fd)
+        with _open_parent(home, name, expected=identity["parents"]) as (fd, _):
+            current = os.stat(leaf, dir_fd=fd, follow_symlinks=False)
+            if _identity(current) == identity["file"]:
+                os.unlink(leaf, dir_fd=fd)
     except OSError as error:
-        if error.errno not in (errno.ENOENT, errno.ENOTDIR, errno.ELOOP):
+        if error.errno not in (errno.ENOENT, errno.ENOTDIR, errno.ELOOP, errno.ESTALE):
             raise
-    finally:
-        if fd is not None:
-            os.close(fd)
 
 
 def targets(entry, home):
@@ -245,7 +292,7 @@ def materialize(entries, fetch, home, as_user=None, before_write=None):
 
     def write_target(path, content, mode):
         (before_write or (lambda path: None))(path)
-        before = _file_identity(path)
+        before = _file_identity(home, path)
 
         def write():
             if path.parent == home / STORE:
@@ -254,9 +301,9 @@ def materialize(entries, fetch, home, as_user=None, before_write=None):
             write_file(path, content, mode=mode)
 
         run_as(write)
-        after = _file_identity(path)
+        after = _file_identity(home, path)
         name = str(path.relative_to(home))
-        if after is not None and (after != before or owned.get(name) == after):
+        if after is not None and (before is None or after["file"] != before["file"] or owned.get(name) == after):
             owned[name] = after
         else:
             # write_file leaves identical content alone. Do not claim a user's
