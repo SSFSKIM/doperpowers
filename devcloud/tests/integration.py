@@ -15,7 +15,12 @@ the lease service as a transient unit, and setup.sh's refusal of a user made
 otherwise. Prints one line per case, "ok <case>" or "FAIL <case>: why";
 exits 1 when a case failed. Every secret here is made up.
 
-    python3 devcloud/tests/integration.py <image>
+    [DEVCLOUD_PART=image|host|systemd] python3 devcloud/tests/integration.py <image>
+
+Each case belongs to a group of cases that share a container (or, for
+`one-shot`, each boot their own); a part runs whole groups, so a CI gate can
+run one part (PARTS, below). With no part, every case runs, in the order they
+are defined.
 """
 
 import atexit
@@ -90,17 +95,35 @@ def out(container, script, user=None):
     return sh(container, script, user).stdout
 
 
-def case(name):
-    def run(fn):
-        try:
-            fn()
-            print(f"ok {name}", flush=True)
-        except Exception as error:  # noqa: BLE001 — every case reports, the run goes on
-            detail = str(error) if isinstance(error, Fail) else traceback.format_exc(limit=3)
-            print(f"FAIL {name}: {detail}", flush=True)
-            failures.append(name)
+# The groups, by the container their cases share: `image` boots none (the
+# image check); `host` is one container booted once, its cases in sequence;
+# `systemd` one systemd container (VM) and the image built for it, which the
+# spot and adopted cases also boot; `projects` and `one-shot` each boot their
+# own container, run and gone. A part is a set of groups balanced for time, a
+# CI gate each (.github/ci-kit.yml): the image scan alone is about 100 s.
+PARTS = {"image": {"image"}, "host": {"host", "one-shot"}, "systemd": {"systemd", "projects"}}
+GROUPS = set().union(*PARTS.values())
+CASES = []  # (group, name, fn), in the order defined
+
+
+def case(name, group):
+    if group not in GROUPS:
+        raise ValueError(f"case {name!r}: no group {group!r}")
+
+    def register(fn):
+        CASES.append((group, name, fn))
         return fn
-    return run
+    return register
+
+
+def run_case(name, fn):
+    try:
+        fn()
+        print(f"ok {name}", flush=True)
+    except Exception as error:  # noqa: BLE001 — every case reports, the run goes on
+        detail = str(error) if isinstance(error, Fail) else traceback.format_exc(limit=3)
+        print(f"FAIL {name}: {detail}", flush=True)
+        failures.append(name)
 
 
 def descriptor(name="sbx-test", branch="main", role="sandbox", token="config-token", projects="", mirror="",
@@ -182,7 +205,7 @@ PLANTED = f"{TAG}-planted"
 BROKEN_DPKG = f"{TAG}-broken-dpkg"
 
 
-@case("the image check catches a planted value, a credential file and a token (acceptance 6's own test)")
+@case("the image check catches a planted value, a credential file and a token (acceptance 6's own test)", "image")
 def image_check_catches():
     found = check_image.check(_planted_image(), "/root", values=list(SECRETS.values()))
     check(found["known"] == ["/opt/app/blob\tvalue#4", "/opt/app/config\tvalue#4", "docker history\tvalue#4"],
@@ -191,7 +214,7 @@ def image_check_catches():
     check(any(line.startswith("/opt/app/env\t") for line in found["pattern"]), f"pattern {found['pattern']}")
 
 
-@case("the image check fails closed: a scanner that fails or reads nothing, an export that fails")
+@case("the image check fails closed: a scanner that fails or reads nothing, an export that fails", "image")
 def image_check_fails_closed():
     for scanner in (["sh", "-c", "echo crashed >&2; exit 3", "scanner"],
                     ["sh", "-c", "echo 'scanned 0 files, 0 values' >&2", "scanner"]):
@@ -225,7 +248,7 @@ def image_check_fails_closed():
           "an unchanged package file is pristine and a planted one is not")
 
 
-@case("the image holds no secret (acceptance 6)")
+@case("the image holds no secret (acceptance 6)", "image")
 def image_is_clean():
     found = check_image.check(IMAGE, HOME, values=list(SECRETS.values()) + [ROTATED_GH])
     print(f"  ({found['allowed']} pattern detections inside package-owned trees)")
@@ -236,8 +259,9 @@ def image_is_clean():
 
 # --- the stand-ins -----------------------------------------------------------------
 
-@case("the stand-ins start")
-def fixtures():
+def stand_ins():
+    """Every group but `image` runs against them: started once per run, before
+    the first case that needs them."""
     docker("network", "create", NET)
     docker("run", "-d", "--name", FX, "--network", NET, "--network-alias", "fixtures",
            "-v", f"{HERE / 'fixtures'}:/fixtures:ro", "-v", f"{REPO}:/repo:ro",
@@ -253,7 +277,7 @@ def fixtures():
 
 # --- acceptance 3: one boot, a working host -----------------------------------------
 
-@case("a container boots to every step ok, projects skipped (acceptance 3)")
+@case("a container boots to every step ok, projects skipped (acceptance 3)", "host")
 def boot():
     docker("run", "-d", "--name", HOST, "--hostname", "sbx-test", "--network", NET, *ENV,
            "-e", "DEVCLOUD_JOB_INTERVAL=40", "-v", f"{descriptor()}:/etc/devcloud/boot.env:ro", IMAGE)
@@ -268,7 +292,7 @@ def boot():
     check(len(lines) == 12 and lines[0].startswith("identity"), "devcloud status prints a line per step")
 
 
-@case("identity and the environment file")
+@case("identity and the environment file", "host")
 def identity_and_env():
     check(out(HOST, "hostname").strip() == "sbx-test", "hostname")
     env = out(HOST, "cat /etc/devcloud/env")
@@ -283,7 +307,7 @@ def identity_and_env():
     check(out(HOST, "readlink /etc/localtime").strip().endswith("Europe/Berlin"), "TZ sets the system zone")
 
 
-@case("secrets materialized as the user, in place")
+@case("secrets materialized as the user, in place", "host")
 def secrets_on_disk():
     listing = out(HOST, f"stat -c '%n %a %U' {HOME}/.config/claude-secrets {HOME}/.config/claude-secrets/GH_TOKEN "
                         f"{HOME}/.config/gh/hosts.yml {HOME}/.pgpass").splitlines()
@@ -295,7 +319,7 @@ def secrets_on_disk():
     check(out(HOST, f"cat {HOME}/.pgpass") == SECRETS["pgpass"], ".pgpass is the payload byte for byte")
 
 
-@case("the user's shells read the environment; root's do not")
+@case("the user's shells read the environment; root's do not", "host")
 def shells():
     check(out(HOST, f"getent passwd {USER}").strip().endswith(":/usr/bin/zsh"), "zsh is the login shell")
     for shell in ("zsh -c", "zsh -lic", "bash -lc"):
@@ -305,7 +329,7 @@ def shells():
     check(out(HOST, "zsh -c 'command -v claude'", user=USER).strip() == f"{HOME}/.local/bin/claude", "claude on PATH")
 
 
-@case("~/.claude is a receive-only clone with no token in it")
+@case("~/.claude is a receive-only clone with no token in it", "host")
 def configuration():
     git = f"git -C {HOME}/.claude"
     check(out(HOST, f"{git} config --get remote.origin.url", user=USER).strip() == "http://fixtures:8083/config.git",
@@ -320,7 +344,7 @@ def configuration():
     check(not leaked, f"the bootstrap token is on disk: {leaked}")
 
 
-@case("home files, gcloud and gh's git helper")
+@case("home files, gcloud and gh's git helper", "host")
 def home_files():
     check(out(HOST, "git config --global user.email", user=USER).strip() == "devcloud-test@example.com", "identity")
     helpers = out(HOST, "git config --global --get-all credential.https://github.com.helper", user=USER)
@@ -331,7 +355,7 @@ def home_files():
     check(project == "devcloud-test-project", f"gcloud project {project!r}")
 
 
-@case("apply.py ran as the user; managed settings are the profile's, seating no security default")
+@case("apply.py ran as the user; managed settings are the profile's, seating no security default", "host")
 def apply_and_settings():
     check(out(HOST, f"cut -d' ' -f1 {STATE}/apply.log").split() == [UID], "apply.py ran once, as the user")
     managed = json.loads(out(HOST, "cat /etc/claude-code/managed-settings.json"))
@@ -339,7 +363,7 @@ def apply_and_settings():
     check(managed == {**fixture, "prependPlugins": []}, f"managed settings {managed!r}")
 
 
-@case("services run under devcloud-services as PID 1, with the host environment")
+@case("services run under devcloud-services as PID 1, with the host environment", "host")
 def services_running():
     check(out(HOST, "cat /run/devcloud/services.pid").strip() == "1", "the supervisor is PID 1")
     ship = json.loads(out(HOST, f"cat {STATE}/ship.json"))
@@ -350,7 +374,7 @@ def services_running():
           "a sandbox carries $SMINOS_HOME/daemon/ (acceptance 7)")
 
 
-@case("claude -p answers through the gateway, no security default seated; managed env merges key by key")
+@case("claude -p answers through the gateway, no security default seated; managed env merges key by key", "host")
 def claude_through_gateway():
     sh(FX, ": > /srv/fakes/gateway.jsonl")
     result = sh(HOST, f"cd {HOME} && claude -p 'reply ok' --allowedTools Bash --debug-file {STATE}/claude-debug.log",
@@ -367,7 +391,7 @@ def claude_through_gateway():
     check(all(entry["authorization"] == "Bearer marker" for entry in log), "the marker token was sent")
 
 
-@case("no secret value in logs, status or process lists")
+@case("no secret value in logs, status or process lists", "host")
 def nothing_printed():
     texts = {
         "host logs": (lambda r: r.stdout + r.stderr)(docker("logs", HOST)),
@@ -382,7 +406,7 @@ def nothing_printed():
           "the shipper's output was not forwarded, scrubbed, to the container log")
 
 
-@case("a second boot converges")
+@case("a second boot converges", "host")
 def idempotent():
     files = f"/etc/devcloud/env {HOME}/.gitconfig /etc/claude-code/managed-settings.json"
     before = out(HOST, f"sha256sum {files}")
@@ -394,7 +418,7 @@ def idempotent():
 
 # --- acceptance 5: receive-only configuration, reconciled ------------------------------
 
-@case("pull-config drops a local edit (acceptance 5)")
+@case("pull-config drops a local edit (acceptance 5)", "host")
 def pull_drops_edit():
     settings = f"{HOME}/.claude/settings.json"
     original = out(HOST, f"cat {settings}")
@@ -406,7 +430,7 @@ def pull_drops_edit():
           "a tracked change remains")
 
 
-@case("a profile change committed upstream reaches managed settings and the services (acceptance 5)")
+@case("a profile change committed upstream reaches managed settings and the services (acceptance 5)", "host")
 def pull_reconciles():
     old_pid = json.loads(out(HOST, f"cat {STATE}/ship.json"))["pid"]
     commit_profile("sed -i s/managed-1/managed-2/ devcloud/managed-settings.json && "
@@ -422,7 +446,7 @@ def pull_reconciles():
     check(f"term {old_pid}" in out(HOST, f"cat {STATE}/ship.log"), "the old shipper got SIGTERM")
 
 
-@case("refresh-secrets follows a rotation")
+@case("refresh-secrets follows a rotation", "host")
 def refresh_rotation():
     put_secrets(dict(SECRETS, **{"gh-token": ROTATED_GH}))
     refreshed = sh(HOST, "devcloud refresh-secrets", check_rc=False)
@@ -431,7 +455,7 @@ def refresh_rotation():
     check(ROTATED_GH in out(HOST, f"cat {HOME}/.config/gh/hosts.yml"), "hosts.yml not rotated")
 
 
-@case("the supervisor runs pull-config on its schedule")
+@case("the supervisor runs pull-config on its schedule", "host")
 def periodic_pull():
     commit_profile("sed -i s/profile-2/profile-3/ devcloud/profile.env", "scheduled change")
     end = time.monotonic() + 120
@@ -440,7 +464,7 @@ def periodic_pull():
         time.sleep(2)
 
 
-@case("step 11 stops a service whose program a pull removed, and starts it when a pull brings it back")
+@case("step 11 stops a service whose program a pull removed, and starts it when a pull brings it back", "host")
 def services_follow_the_configuration():
     def ship_log():
         return out(HOST, f"cat {STATE}/ship.log").split("\n")
@@ -463,7 +487,7 @@ def services_follow_the_configuration():
         time.sleep(0.5)
 
 
-@case("the tools the guard's notices suggest are on the user's PATH: python3 (3.11+), jq, perl, xxd, gh")
+@case("the tools the guard's notices suggest are on the user's PATH: python3 (3.11+), jq, perl, xxd, gh", "host")
 def guard_tools():
     for tool in ("python3", "jq", "perl", "xxd", "gh"):
         found = sh(HOST, f"zsh -c 'command -v {tool}'", user=USER, check_rc=False)
@@ -472,13 +496,13 @@ def guard_tools():
     check(version.strip() == "True", "python3 lacks 3.11's tomllib")
 
 
-@case("the image user has passwordless sudo, from a validated drop-in")
+@case("the image user has passwordless sudo, from a validated drop-in", "host")
 def sudo():
     check(sh(HOST, "sudo -n true", user=USER, check_rc=False).returncode == 0, "sudo -n true failed for the user")
     check(out(HOST, "stat -c '%a %U' /etc/sudoers.d/devcloud-user").split() == ["440", "root"], "drop-in mode")
 
 
-@case("docker stop forwards SIGTERM to the services; a restart boots again with a new boot id")
+@case("docker stop forwards SIGTERM to the services; a restart boots again with a new boot id", "host")
 def stop_and_restart():
     boot_id = out(HOST, "grep DAEMON_BOOT_ID /etc/devcloud/env")
     shipper = json.loads(out(HOST, f"cat {STATE}/ship.json"))["pid"]
@@ -493,7 +517,7 @@ def stop_and_restart():
 
 # --- acceptance 8, the host's half: projects ----------------------------------------------
 
-@case("step 12 runs devenv up per descriptor entry, as the user with the host's environment (acceptance 3, 8)")
+@case("step 12 runs devenv up per descriptor entry, as the user with the host's environment (acceptance 3, 8)", "projects")
 def projects_set_up():
     desc = descriptor("sbx-proj", projects="example/app example/doperpowers@under-test", mirror="/srv/host-mirrors")
     validate = f"runuser -l {USER} -c 'cd ~/src/doperpowers && bash devenv/validate.sh' >/tmp/validate.out 2>&1"
@@ -511,7 +535,7 @@ def projects_set_up():
     check(validated.startswith("rc=0"), f"doperpowers' devenv/validate.sh after its setup.sh:\n{validated[-2000:]}")
 
 
-@case("a project that fails is recorded failed; the boot exits 3 and the container's services start")
+@case("a project that fails is recorded failed; the boot exits 3 and the container's services start", "projects")
 def project_fails():
     rc, got, _, _ = boot_once("sbx-noproj", descriptor("sbx-noproj", projects="example/app example/missing"))
     projects = got.get("projects", {})
@@ -593,7 +617,7 @@ def _systemd_diagnostics():
               timeout=60).stdout[-4000:]
 
 
-@case("with systemd as PID 1, a persistent host boots from its unit and runs the services as units")
+@case("with systemd as PID 1, a persistent host boots from its unit and runs the services as units", "systemd")
 def under_systemd():
     docker("build", "-t", SYSTEMD_IMAGE, "-", input=SYSTEMD_DOCKERFILE, timeout=900)
     desc = TMP / "boot-vm.env"
@@ -637,7 +661,7 @@ def under_systemd():
     check(sh(VM, f"test -e {SMINOS_UNIT}", check_rc=False).returncode != 0, "a sminos unit on an unenrolled host")
 
 
-@case("once enrolled, a reconcile installs the sminos daemon as a lingering user unit (acceptance 7)")
+@case("once enrolled, a reconcile installs the sminos daemon as a lingering user unit (acceptance 7)", "systemd")
 def enrolled_daemon():
     # The clone's sminos CLI where the sminos plugin keeps it (its sminos/ folder).
     scripts = f"{MARKETPLACE}/sminos/skills/sminos/scripts"
@@ -675,7 +699,7 @@ def enrolled_daemon():
           "a second reconcile restarted an unchanged daemon: " + steps(VM)["services"]["detail"])
 
 
-@case("a persistent host keeps a mirror of its projects' repositories and refreshes it (Design §7)")
+@case("a persistent host keeps a mirror of its projects' repositories and refreshes it (Design §7)", "systemd")
 def mirror_cache():
     projects = steps(VM)["projects"]
     check(projects["state"] == "ok" and projects["detail"] == "example/app ok; mirrors: example/app", str(projects))
@@ -692,7 +716,7 @@ def mirror_cache():
     check(head == "two", f"the mirror was not refreshed (main is {head!r})")
 
 
-@case("after a restart, systemd boots the host again and the units come back (acceptance 4, in a container)")
+@case("after a restart, systemd boots the host again and the units come back (acceptance 4, in a container)", "systemd")
 def systemd_restart():
     docker("restart", "-t", "30", VM)
     time.sleep(3)
@@ -715,7 +739,7 @@ def wait_boot_state(wanted, timeout=300):
         time.sleep(2)
 
 
-@case("after a boot that failed, the shipper does not start; a boot that succeeds starts it again")
+@case("after a boot that failed, the shipper does not start; a boot that succeeds starts it again", "systemd")
 def failed_boot_keeps_services_down():
     # Secret Manager unreachable from the boot's unit: bootstrap-secrets fails, so step 11 never runs.
     sh(VM, f"printf '[Service]\\nEnvironment=DEVCLOUD_SM_ENDPOINT=http://fixtures:9\\n' > {FAIL_BOOT}")
@@ -733,7 +757,7 @@ def failed_boot_keeps_services_down():
     wait_active("devcloud-session-mirror.service")
 
 
-@case("devcloud-boot run by hand on a systemd host leaves the shipper running")
+@case("devcloud-boot run by hand on a systemd host leaves the shipper running", "systemd")
 def boot_run_by_hand():
     # No boot-unit job is pending, so the shipper's start from step 11 is not
     # ordered after anything: its condition is read while the boot still runs.
@@ -744,7 +768,7 @@ def boot_run_by_hand():
     wait_active("devcloud-session-mirror.service")
 
 
-@case("a held departure closes admission, and a reboot during it reopens none (the driver's §4.2)")
+@case("a held departure closes admission, and a reboot during it reopens none (the driver's §4.2)", "systemd")
 def held_departure_and_reboot():
     # The enrolled VM above: its daemon runs. The ship fails, so the departure holds.
     sh(VM, f"touch {STATE}/ship-fail && chown {USER}:{USER} {STATE}/ship-fail")
@@ -788,7 +812,7 @@ def held_departure_and_reboot():
     check(["hub", "leave"] in leave, f"no hub leave: {leave}")
 
 
-@case("a sandbox carrying a sminos machine identity fails services (acceptance 7)")
+@case("a sandbox carrying a sminos machine identity fails services (acceptance 7)", "one-shot")
 def sandbox_with_identity():
     plant = (f"mkdir -p {HOME}/.claude/sminos/daemon && echo '{{}}' > {HOME}/.claude/sminos/daemon/machine.json "
              f"&& chown -R {USER}:{USER} {HOME}/.claude")
@@ -805,7 +829,7 @@ SPOT = f"{TAG}-spot"
 MARKETPLACE_COPY = "/var/lib/devcloud/marketplaces/doperpowers"
 
 
-@case("a spot VM boots to its end and its reclaim unit starts after the boot (no wait on a unit ordered after it)")
+@case("a spot VM boots to its end and its reclaim unit starts after the boot (no wait on a unit ordered after it)", "systemd")
 def spot_vm_boots():
     desc = descriptor("dc-spot-5e6f", extra="DEVCLOUD_SPOT=1\n")
     desc.write_text(desc.read_text().replace("KIND=container", "KIND=vm").replace("ROLE=sandbox", "ROLE=persistent")
@@ -831,7 +855,7 @@ def spot_vm_boots():
     docker("rm", "-f", SPOT)
 
 
-@case("an adopted machine's lease end releases it through the lease service's transient unit (the driver's §6.5)")
+@case("an adopted machine's lease end releases it through the lease service's transient unit (the driver's §6.5)", "systemd")
 def release_through_the_lease_service():
     desc = descriptor("dc-adp-1a2b", projects="", extra="DEVCLOUD_ADOPTED=1\nDEVCLOUD_EXPIRES=4102444800\n")
     desc.write_text(desc.read_text().replace("KIND=container", "KIND=vm").replace("ROLE=sandbox", "ROLE=persistent")
@@ -898,7 +922,7 @@ def release_through_the_lease_service():
     docker("rm", "-f", ADOPTED)
 
 
-@case("plugins seated outside the guard: the bridge runs and the guard scrubs from the first session (the driver's §10)")
+@case("plugins seated outside the guard: the bridge runs and the guard scrubs from the first session (the driver's §10)", "one-shot")
 def plugins_seated():
     docker("run", "-d", "--name", SEATED, "--hostname", "sbx-seated", "--network", NET, *ENV,
            "-v", f"{descriptor('sbx-seated', branch='plugins')}:/etc/devcloud/boot.env:ro", IMAGE)
@@ -943,7 +967,7 @@ def plugins_seated():
     docker("rm", "-f", SEATED)
 
 
-@case("setup.sh refuses an existing user whose uid or home differs, naming both (M1's GCE finding)")
+@case("setup.sh refuses an existing user whose uid or home differs, naming both (M1's GCE finding)", "one-shot")
 def setup_refuses_another_user():
     result = docker("run", "--rm", "--entrypoint", "bash", "-v", f"{REPO / 'devcloud'}:/tmp/devcloud:ro", IMAGE, "-c",
                     "useradd -u 2345 -d /home/person -m person && DEVCLOUD_USER=person DEVCLOUD_UID=1001 "
@@ -956,27 +980,27 @@ def setup_refuses_another_user():
 
 # --- the boot's failure paths ------------------------------------------------------------
 
-@case("a persistent role without systemd fails identity (acceptance 7's last line)")
+@case("a persistent role without systemd fails identity (acceptance 7's last line)", "one-shot")
 def persistent_needs_systemd():
     rc, got, _, _ = boot_once("sbx-persist", descriptor("sbx-persist", role="persistent"))
     check(rc == 1 and got["identity"]["state"] == "failed" and "systemd" in got["identity"]["detail"], str(got))
     check(list(got) == ["identity"], "the boot went past identity")
 
 
-@case("a container started without --hostname fails identity")
+@case("a container started without --hostname fails identity", "one-shot")
 def hostname_mismatch():
     rc, got, _, _ = boot_once("sbx-named", descriptor("sbx-named"), hostname="sbx-other")
     check(rc == 1 and "--hostname sbx-named" in got["identity"]["detail"], str(got))
 
 
-@case("an optional secret absent reads missing and the boot goes on")
+@case("an optional secret absent reads missing and the boot goes on", "one-shot")
 def optional_missing():
     rc, got, _, _ = boot_once("sbx-opt", descriptor("sbx-opt", branch="optional-missing"))
     check(rc == 0 and got["secrets"]["state"] == "missing", str(got.get("secrets")))
     check("not-uploaded-yet" in got["secrets"]["detail"] and got["services"]["state"] == "ok", str(got))
 
 
-@case("a required secret absent fails the secrets step and stops the boot")
+@case("a required secret absent fails the secrets step and stops the boot", "one-shot")
 def required_missing():
     rc, got, _, _ = boot_once("sbx-req", descriptor("sbx-req", branch="required-missing"))
     check(rc == 1 and got["secrets"]["state"] == "failed" and "not-uploaded-yet" in got["secrets"]["detail"],
@@ -984,16 +1008,17 @@ def required_missing():
     check("home" not in got, "the boot went past the failed step")
 
 
-@case("a gateway that does not answer stops the boot before any secret is written")
+@case("a gateway that does not answer stops the boot before any secret is written", "one-shot")
 def gateway_down():
     rc, got, store, _ = boot_once("sbx-gw", descriptor("sbx-gw", branch="gateway-down"))
     check(rc == 1 and got["tailnet-check"]["state"] == "failed", str(got.get("tailnet-check")))
     check("secrets" not in got and store == "store-absent", "secrets were written past a failed gateway check")
 
 
-@case("a failing step whose command prints a secret leaves no value in any log")
+@case("a failing step whose command prints a secret leaves no value in any log", "one-shot")
 def leaking_apply_is_scrubbed():
-    value = SECRETS["gh-token"]
+    # The value the stand-in serves now: a `host` part run before this one rotates it.
+    value = json.loads(out(FX, "cat /srv/fakes/secrets.json"))["gh-token"]
     b64 = base64.b64encode(value.encode()).decode()
     rc, got, _, extra = boot_once("sbx-leak", descriptor("sbx-leak", branch="apply-leaks"), after=(
         f"cat /var/log/devcloud/apply.log; echo '--boot-output'; cat /tmp/boot.out; echo '--grep'; "
@@ -1006,14 +1031,27 @@ def leaking_apply_is_scrubbed():
     check(value not in got["apply"]["detail"] and value not in boot_output, "a value in the status or output")
 
 
-@case("a wrong repository token fails configuration")
+@case("a wrong repository token fails configuration", "one-shot")
 def wrong_token():
     rc, got, _, _ = boot_once("sbx-tok", descriptor("sbx-tok", token="wrong-token"))
     check(rc == 1 and got["configuration"]["state"] == "failed", str(got.get("configuration")))
 
 
 if __name__ == "__main__":
-    # The cases ran as they were defined, in order; atexit removes the containers.
+    part = os.environ.get("DEVCLOUD_PART") or "all"
+    if part != "all" and part not in PARTS:
+        sys.exit(f"DEVCLOUD_PART is all, {', '.join(PARTS)}")
+    started = False
+    for group, name, fn in CASES:
+        if part != "all" and group not in PARTS[part]:
+            continue
+        if group != "image" and not started:
+            started = True
+            run_case("the stand-ins start", stand_ins)
+            if failures and failures[-1] == "the stand-ins start":
+                break  # every case after it needs them
+        run_case(name, fn)
+    # atexit removes the containers.
     if failures:
         print(f"{len(failures)} case(s) failed: {', '.join(failures)}")
         sys.exit(1)

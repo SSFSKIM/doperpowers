@@ -125,18 +125,40 @@ gates:
     timeout: 10
     paths: [".claude-plugin/**", "hooks/**", "tests/mods/**", "sminos/.claude-plugin/**", "sminos/hooks/**", "sminos/types/**", "sminos/tests/mods/**", "to-human/.claude-plugin/**", "to-human/hooks/**", "to-human/tests/mods/**", "devcloud/.claude-plugin/**", "devcloud/hooks/**", "devcloud/types/**", "devcloud/tests/mods/**", ".github/**"]
 
-  # The devcloud host: unit tests, then the image built and booted in containers
-  # against stand-ins (hosted runner's Docker). bun runs the guard's detector
-  # over the image's filesystem.
-  - name: devcloud
+  # The devcloud host in four parts, run side by side (DEVCLOUD_PART in
+  # devcloud/tests/run.sh; about 8.5 min serial): the unit tests, and the
+  # integration cases in three parts (devcloud/tests/integration.py's PARTS),
+  # each building the image itself on its own runner (gates hand nothing on).
+  # bun runs the guard's detector: in the unit tests and the image scan.
+  # devenv/: the integration tests set up this checkout's own devenv/ on the image.
+  - name: devcloud-unit
     run: |
       for i in 1 2 3; do
         timeout 300 npm i -g bun && break
         [ "$i" = 3 ] && exit 1; sleep 10
       done
-      bash devcloud/tests/run.sh
-    timeout: 45
-    # devenv/: the integration tests set up this checkout's own devenv/ on the image.
+      DEVCLOUD_PART=unit bash devcloud/tests/run.sh
+    timeout: 15
+    paths: ["devcloud/**", "devenv/**", ".github/**"]
+
+  - name: devcloud-image
+    run: |
+      for i in 1 2 3; do
+        timeout 300 npm i -g bun && break
+        [ "$i" = 3 ] && exit 1; sleep 10
+      done
+      DEVCLOUD_PART=image bash devcloud/tests/run.sh
+    timeout: 30
+    paths: ["devcloud/**", "devenv/**", ".github/**"]
+
+  - name: devcloud-host
+    run: DEVCLOUD_PART=host bash devcloud/tests/run.sh
+    timeout: 30
+    paths: ["devcloud/**", "devenv/**", ".github/**"]
+
+  - name: devcloud-systemd
+    run: DEVCLOUD_PART=systemd bash devcloud/tests/run.sh
+    timeout: 30
     paths: ["devcloud/**", "devenv/**", ".github/**"]
 
   - name: triaging-feedback
