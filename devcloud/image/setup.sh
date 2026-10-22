@@ -7,7 +7,8 @@
 #
 # The three inputs are the person's Mac account (the profile's build.env):
 # the same home path lets a session started on a Mac resume on a host. A VM
-# builder runs this and snapshots; image/Dockerfile runs it as its one step.
+# builder runs this and snapshots; image/Dockerfile runs it as its last step,
+# after image/packages.sh as a layer of its own.
 set -euo pipefail
 
 : "${DEVCLOUD_USER:?set DEVCLOUD_USER, from the profile build.env}"
@@ -29,35 +30,10 @@ if existing="$(getent passwd "$DEVCLOUD_USER")"; then
 fi
 
 plugin="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-arch="$(dpkg --print-architecture)"
-export DEBIAN_FRONTEND=noninteractive
 
-apt-get update
-apt-get install -y --no-install-recommends \
-  ca-certificates curl gnupg git git-lfs build-essential python3 python3-venv jq ripgrep tmux mosh zsh \
-  unzip xz-utils tzdata locales procps iproute2 iputils-ping openssh-client less file sudo perl xxd nftables
-sed -i 's/^# *en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen
-locale-gen
-
-# Package repositories: GitHub CLI, Google Cloud CLI, Tailscale, Docker, Node LTS.
-install -d -m 0755 /etc/apt/keyrings
-curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /etc/apt/keyrings/githubcli.gpg
-echo "deb [arch=$arch signed-by=/etc/apt/keyrings/githubcli.gpg] https://cli.github.com/packages stable main" \
-  > /etc/apt/sources.list.d/github-cli.list
-curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | gpg --dearmor --yes -o /etc/apt/keyrings/cloud.google.gpg
-echo "deb [signed-by=/etc/apt/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" \
-  > /etc/apt/sources.list.d/google-cloud-sdk.list
-curl -fsSL https://pkgs.tailscale.com/stable/ubuntu/noble.noarmor.gpg -o /usr/share/keyrings/tailscale-archive-keyring.gpg
-curl -fsSL https://pkgs.tailscale.com/stable/ubuntu/noble.tailscale-keyring.list -o /etc/apt/sources.list.d/tailscale.list
-curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
-echo "deb [arch=$arch signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu noble stable" \
-  > /etc/apt/sources.list.d/docker.list
-curl -fsSL https://deb.nodesource.com/setup_lts.x | bash -
-apt-get install -y --no-install-recommends gh google-cloud-cli tailscale docker-ce-cli nodejs
-
-curl -LsSf https://astral.sh/uv/install.sh | env UV_UNMANAGED_INSTALL=/usr/local/bin sh
-curl -fsSL "https://github.com/hetznercloud/cli/releases/latest/download/hcloud-linux-$arch.tar.gz" \
-  | tar -xz -C /usr/local/bin hcloud
+# The packages (image/packages.sh): image/Dockerfile runs them as a layer of
+# their own and says so; everywhere else they are this run's first step.
+[[ "${DEVCLOUD_PACKAGES:-}" == installed ]] || bash "$plugin/image/packages.sh"
 
 # The user: the Mac's name, uid and home, zsh as the login shell. Ubuntu's
 # image ships an `ubuntu` user at uid 1000, which gives way when it is in the
@@ -177,8 +153,7 @@ TimeoutStopSec=28
 WantedBy=multi-user.target
 UNIT
 
-apt-get clean
-rm -rf /var/lib/apt/lists/* /root/.cache "$DEVCLOUD_HOME/.cache"
+rm -rf /root/.cache "$DEVCLOUD_HOME/.cache"
 
 # What the image never carries (acceptance 6): no descriptor, no credential, no checkout, no enrollment.
 for path in /etc/devcloud/boot.env /var/lib/devcloud "$DEVCLOUD_HOME/.claude/.git" \
