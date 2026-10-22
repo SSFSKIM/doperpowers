@@ -3311,6 +3311,19 @@ describe('requests from outside: a permission prompt', () => {
     expect(await answer).toEqual({ decision: { behavior: 'deny', message: 'The human denied this request.' } })
   })
 
+  test("an allow hands no input back, however long the call (the raise carried it cut): the engine runs its own", async () => {
+    const h = harness()
+    await h.ready()
+    await h.turn('t1')
+    const WRITE = { file_path: '/w/big.txt', content: 'x'.repeat(TEXT_CAP + 10) }
+    await h.called('toolu_w', 'Write', WRITE)
+    const answer = h.permission('Write', WRITE)
+    const poll = await h.nextPoll()
+    expect(h.ofType('raised')).toEqual([expect.objectContaining({ request: 'toolu_w', tool: 'Write', truncated: true })])
+    poll.respond(200, { decision: { behavior: 'allow' }, by: 'm-1' })
+    expect(await answer).toEqual({ decision: { behavior: 'allow' } })
+  })
+
   test("the person at the dialog deciding: the terminal's, with what they chose, even with a decision handed out (it lost the race)", async () => {
     const h = await handedOut({ behavior: 'allow' })
     await h.recorded('toolu_1', 'user_temporary')
@@ -3696,6 +3709,47 @@ describe('requests from outside: a secrets guard that restores handles in tool.c
     poll.respond(200, { decision: { behavior: 'allow' }, by: 'm-1' })
     await ran
     expect(h.ofType('tool').map((e) => e.input ?? e.text)).toEqual([RESTORED, `ran: ${RESTORED.command}`])
+  })
+})
+
+describe('requests from outside: a plan', () => {
+  /** ExitPlanMode's input as the engine hands it on, its plan (read from the plan file) past the cap a raise holds a string to. */
+  const PLAN = `# Plan\n\n${'- a step of the plan, long enough to count\n'.repeat(2_000)}`
+  const INPUT = { plan: PLAN, planFilePath: '/h/.claude/plans/p.md' }
+  /** A plan put to the dialog, the call as the bridge's tool.call hook saw it `shown`, the engine's `input`: the hook polling. */
+  const raised = async (shown: Record<string, unknown>, input: Record<string, unknown>) => {
+    const h = harness()
+    await h.ready()
+    await h.turn('t1')
+    await h.called('toolu_p', 'ExitPlanMode', shown, undefined, input)
+    const answer = h.permission('ExitPlanMode', input)
+    const poll = await h.nextPoll()
+    return { h, answer, poll }
+  }
+
+  test('allowed from outside: the allow carries the whole input, though the raise carried the plan cut (the engine drops a bare allow of ExitPlanMode, and the dialog stays)', async () => {
+    const { h, answer, poll } = await raised(INPUT, INPUT)
+    const r = h.ofType('raised')[0]
+    expect(r).toMatchObject({ request: 'toolu_p', tool: 'ExitPlanMode', truncated: true })
+    expect((r?.input as { plan: string }).plan).toBe(PLAN.slice(0, TEXT_CAP))
+    poll.respond(200, { decision: { behavior: 'allow' }, by: 'm-1' })
+    const decision = (await answer).decision as { updatedInput?: { plan?: string } }
+    expect(decision).toEqual({ behavior: 'allow', updatedInput: INPUT })
+    expect(decision.updatedInput?.plan?.length).toBe(PLAN.length)
+    await h.recorded('toolu_p', 'hook', 'accept', 'ExitPlanMode')
+    expect(h.ofType('settled')).toEqual([expect.objectContaining({ request: 'toolu_p', winner: 'web', outcome: 'allow', by: 'm-1' })])
+  })
+
+  test("the input handed back is the engine's, not the call the raise shows: what a hook beneath restored goes to the engine alone", async () => {
+    // Fake: never a real secret.
+    const SHOWN = { plan: 'Deploy with [secret:API_KEY].' }
+    const RESTORED = { plan: 'Deploy with sk-fake-0123456789abcdef.' }
+    const { h, answer, poll } = await raised(SHOWN, RESTORED)
+    expect(h.ofType('raised')).toEqual([expect.objectContaining({ request: 'toolu_p', input: SHOWN })])
+    poll.respond(200, { decision: { behavior: 'allow' }, by: 'm-1' })
+    expect(await answer).toEqual({ decision: { behavior: 'allow', updatedInput: RESTORED } })
+    await h.recorded('toolu_p', 'hook', 'accept', 'ExitPlanMode')
+    expect(JSON.stringify(h.posts.map((p) => p.events))).not.toContain('redacted')
   })
 })
 

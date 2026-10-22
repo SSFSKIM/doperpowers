@@ -1658,7 +1658,8 @@ export function registerBridge(on: On) {
   // it. The engine's check and this hook's input come after every tool.call
   // hook beneath, where a secrets guard restores its handles to the values
   // (devcloud's, or cua's copy, beneath the bridge where it must sit); that
-  // form stays on this machine, since an allow hands no input back. A
+  // form stays on this machine, since an allow hands an input back to the
+  // engine alone (a plan's, a question's: engineDecision). A
   // permission for a call this module did not see is the terminal's alone, as
   // is one before the bridge knows its place: the call it saw may already
   // hold what a guard outside it restored. While the bridge is off, every

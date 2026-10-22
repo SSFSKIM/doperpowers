@@ -342,14 +342,20 @@ rows read from the transcript, and the export to the host).
   A permission is raised with its call as the bridge's own `tool.call` hook
   was handed it, never the input the engine's check and dialog hold: those
   come after every `tool.call` hook beneath, where devcloud's secrets guard
-  restores its handles to the values, and an allow hands no input back, so
-  the values stay on the machine and the request's digest is over the handle
-  form end to end. That holds with sminos seated outside devcloud
-  (`prependPlugins`). Seated inside it, the bridge would be handed the
-  restored call, so the check above turns it off. A permission for a call
+  restores its handles to the values, and an allow hands an input back to
+  the engine alone, so the values stay on the machine and the request's
+  digest is over the handle form end to end. That holds with sminos seated
+  outside devcloud (`prependPlugins`). Seated inside it, the bridge would be
+  handed the restored call, so the check above turns it off. A permission for a call
   the bridge did not see stays the terminal's, as does one raised before the
   bridge knows its place. A question is raised as
   the engine gave it (the ask mod widens its dialog's beneath the bridge).
+  An allow carries an input only where the engine takes none without one:
+  a question's, its questions with the answers; `ExitPlanMode`'s, the
+  hook's own input, whole (the raised copy is capped, and a cut plan would
+  be approved and saved). Any other goes bare: an input, even the call's
+  own, has the engine check the call again first, and ask again one an ask
+  rule or a safety check put to the dialog.
 - **Messages to the host.** The main loop's rows that may carry one — a text
   row with a mark, an async ask with its result, a row that may answer one
   (the ask mod's delivery, as its prompt row or a context attachment; a MAWS
