@@ -630,7 +630,9 @@ variables point a host at such stand-ins and exist for that use:
 `DEVCLOUD_SM_ENDPOINT` (Secret Manager's base URL), `GCE_METADATA_HOST` (the
 variable Google's libraries read) and `DEVCLOUD_ALLOW_HTTP=1` (a plain-HTTP
 configuration repository); `DEVCLOUD_JOB_INTERVAL` shortens the jobs' period
-under `devcloud-services`. The ci-kit gate `devcloud` runs `tests/run.sh` on
-GitHub's hosted runner, which has Docker. Versions: `scripts/bump-version.sh --plugin
+under `devcloud-services`. The ci-kit gates `devcloud-unit`, `devcloud-image`,
+`devcloud-host` and `devcloud-systemd` run `tests/run.sh` one part each
+(`DEVCLOUD_PART`; unset, it runs everything) on GitHub's hosted runners,
+which have Docker; each integration part builds the image itself. Versions: `scripts/bump-version.sh --plugin
 devcloud <version>` moves devcloud's `plugin.json` and its marketplace entry,
 never doperpowers'.
