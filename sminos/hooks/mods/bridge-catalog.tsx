@@ -4,6 +4,7 @@ import type { Route } from './bridge-routes'
 
 export type Catalog = {
   fingerprint: string
+  skills: string[]
   commands: { name: string; description: string; source: string; plugin?: string; route: Route; withArgs?: Route }[]
   models: { options: string[]; aliases: Record<string, string | null> }
   measured: string
@@ -11,13 +12,16 @@ export type Catalog = {
 
 /** A session's live listing, not a global cache: late skills and prompt-only MCP servers appear here too. */
 export async function catalogNow($: EngineInterface, engine: string): Promise<Catalog> {
-  const [listed, config, sonnet, opus, haiku] = await Promise.all([
-    $.command.list(), $.config.list(),
+  const [listed, config, usage, sonnet, opus, haiku] = await Promise.all([
+    $.command.list(), $.config.list(), $.session.usage({ breakdown: 'summary' }),
     $.env.get('ANTHROPIC_DEFAULT_SONNET_MODEL'),
     $.env.get('ANTHROPIC_DEFAULT_OPUS_MODEL'),
     $.env.get('ANTHROPIC_DEFAULT_HAIKU_MODEL'),
   ])
   const body = {
+    // CommandSource is provenance, not kind. The local (no token-count API) summary exposes the engine's
+    // skill listing, including fully qualified plugin names. Keep only names, never context contents or counts.
+    skills: (usage.context.breakdown?.skills?.skillFrontmatter ?? []).map(({ name }) => name),
     commands: listed.map(({ name, description, source, plugin }) => ({
       name, description, source, ...(plugin !== undefined && { plugin }),
       ...catalogRoutes(engine, { name, source, plugin }, $.plugin.name),
