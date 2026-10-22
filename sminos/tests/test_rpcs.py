@@ -1068,6 +1068,56 @@ class Checks(unittest.TestCase):
                          {"rpc": None, "phase": "end", "id": starts[0]["body"]["id"], "name": "reload-plugins",
                           "settled": {"ok": True}, "readback": {"how": "effect"}})
 
+    def test_l_reload_text_and_effect_race_ends_once_with_or_without_rpc(self):
+        """The real child relays text; the daemon arbitrates it against a
+        fresh successor and the deadline. CLI ops have no nonce to dedupe by."""
+        reqs = self.following()
+        self.r.kinds = frozenset({"op"})
+        text = "Reloaded: 10 plugins · 23 skills · 17 agents · 13 hooks"
+        for rpc in (True, False):
+            for winner in ("text", "effect"):
+                with self.subTest(rpc=rpc, winner=winner):
+                    if rpc:
+                        asked = self.send("command", {"session": self.bridged.sid, "name": "reload-plugins"})
+                        self.assertEqual(self.outcome(asked)["state"], "done")
+                    else:
+                        status, answer = bridgemod.request(self.mod.sock, "POST", "/command?wait=5000",
+                                                          {"op": "command", "name": "reload-plugins"})
+                        self.assertEqual((status, answer["ok"]), (200, True))
+                    cid = self.mod.ops("command")[-1]["id"]
+                    starts = wait_for(lambda: [m["body"] for m in self.op_messages(reqs)
+                                             if m["body"]["id"] == cid and m["body"]["phase"] == "start"])
+                    self.assertTrue(starts)
+                    start = starts[0]
+                    probes = Probes()
+                    probes.answer(start["child"])
+                    self.r.effects(probes.answering)
+                    end = {"type": "run", "phase": "end", "id": cid, "name": "reload-plugins", "args": "",
+                           "settled": {"ok": True, "text": text}, "readback": {"how": "text", "text": text}}
+                    ends = lambda: [m["body"] for m in self.op_messages(reqs)
+                                    if m["body"]["id"] == cid and m["body"]["phase"] == "end"]
+                    logpath = os.path.join(os.environ["SMINOS_HOME"], "daemon.log")
+                    if winner == "effect":
+                        probes.answer([start["child"][0] + 1, start["child"][1] + 1])
+                        self.r.effects(probes.answering)
+                    self.mod.post(end)
+                    self.assertTrue(wait_for(ends))
+                    # Stream replay can bring its start and end again, with
+                    # no nonce after the child has released its mapping.
+                    self.mod.post({**start, "type": "run"}, end)
+                    self.assertTrue(wait_for(lambda: not self.r.op_ids.get(cid)))
+                    self.clock[0] += rpcs.RELOAD_WAIT_S
+                    self.r.effects(probes.answering)
+                    self.r.recover_ops()
+                    self.r.ops([(self.bridged.sid, self.pid, {**start, "type": "run"}),
+                                (self.bridged.sid, self.pid, end)])
+                    self.assertEqual(len(ends()), 1, "late text, a replayed start, and the deadline cannot end it twice")
+                    self.assertEqual(ends()[0]["readback"], {"how": "text", "text": text} if winner == "text" else {"how": "effect"})
+                    with open(logpath) as f:
+                        logged = [line for line in f if cid in line and "reload-plugins end" in line]
+                    self.assertEqual(len(logged), 1)
+                    self.assertIn("how=" + winner, logged[0])
+
     def test_l_reload_plugins_is_done_by_another_child_answering_or_fails_at_its_bound(self):
         reqs = self.following()
         self.r.kinds = frozenset({"op"})
@@ -1103,6 +1153,11 @@ class Checks(unittest.TestCase):
         end = self.op_messages()[-1]["body"]
         self.assertEqual((end["rpc"], end["settled"]["ok"], end["readback"]), (again["nonce"], False, {"how": "none"}))
         self.assertTrue(end["settled"]["error"])
+        self.r.effects(probes.answering)
+        with open(os.path.join(os.environ["SMINOS_HOME"], "daemon.log")) as f:
+            logged = [line for line in f if "id=" + end["id"] in line and "reload-plugins end" in line]
+        self.assertEqual(len(logged), 1)
+        self.assertIn("how=timeout", logged[0])
 
     def test_l_a_reload_is_not_done_by_the_child_the_plane_held_before_its_own(self):
         """The plane answers from its last probe: a child replaced just
@@ -1142,6 +1197,24 @@ class Checks(unittest.TestCase):
         self.assertTrue(wait_for(lambda: probed(second)), "the plane finds the child that took it")
         self.r.effects(bridges.answering)
         self.assertEqual(ends(), [], "the child that took it answers still: not done")
+
+    def test_l_surviving_reload_text_is_recovered_after_daemon_restart(self):
+        reload = self.send("command", {"session": self.bridged.sid, "name": "reload-plugins"})
+        self.assertEqual(self.outcome(reload)["state"], "done")
+        cid = self.mod.ops("command")[-1]["id"]
+        text = "Reloaded: 10 plugins"
+        self.mod.post({"type": "run", "phase": "end", "id": cid, "name": "reload-plugins", "args": "",
+                       "settled": {"ok": True, "text": text}, "readback": {"how": "text", "text": text}})
+        kept = lambda: ((bridgemod.load_kept(self.bridged.sid).get("rpcs") or {}).get(reload["nonce"]) or {}).get("end")
+        self.assertTrue(wait_for(kept))
+        self.r = rpcs.Rpcs(KEY, "testhost", clock=lambda: self.clock[0])
+        self.r.kinds = frozenset({"op"})
+        self.clock[0] += rpcs.RELOAD_WAIT_S
+        self.r.effects(Probes().answering)
+        self.r.recover_ops()
+        ends = [f["message"]["body"] for f in self.r.messages if f["message"]["kind"] == "op"]
+        self.assertEqual([(e["id"], e["rpc"], e["readback"]) for e in ends],
+                         [(cid, reload["nonce"], {"how": "text", "text": text})])
 
     def test_l_a_reload_refused_while_the_daemon_was_stopped_ends_as_its_child_kept_it(self):
         """A reload the engine refused is ended by the module that took it,

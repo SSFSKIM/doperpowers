@@ -459,16 +459,15 @@ async function followRun($: EngineInterface, run: DeskRun, settled: Promise<Sett
 }
 
 /**
- * A `/reload-plugins` from the desk replaces this module, whose posts are
- * fenced from then on: it is called only once its answer and its run's start
- * have reached the child, and no desk command runs through this instance
- * after it (one sent meanwhile is refused, RELOADING_REASON). The daemon
- * finishes the op by the bridge answering from another child. Refused at once
- * (an Esc), it ends here; a reload this module outlives holds the desk back
- * for RELOAD_HOLD_MS.
+ * A `/reload-plugins` may replace this module, fencing its posts: call it
+ * only once its answer and start reached the child. The daemon confirms a
+ * replacement by another child answering. If this module survives, report
+ * the returned text like reload-skills and free the desk; without text the
+ * daemon's effect check still owns the outcome. Commands sent meanwhile are
+ * refused (RELOADING_REASON).
  */
 async function reloadPlugins($: EngineInterface, run: DeskRun) {
-  const end = (settled: Settled) => emit({ type: 'run', phase: 'end', id: run.id, name: run.name, args: run.args, settled, readback: { how: 'none' } })
+  const end = (settled: Settled, readback: Readback = { how: 'none' }) => emit({ type: 'run', phase: 'end', id: run.id, name: run.name, args: run.args, settled, readback })
   let waited: { cancel: () => void } | undefined
   const isTaken = await Promise.race([
     emitTaken({ type: 'run', phase: 'start', id: run.id, name: run.name, args: run.args }),
@@ -483,6 +482,11 @@ async function reloadPlugins($: EngineInterface, run: DeskRun) {
   const outcome = await callRun($, run)
   if (!outcome.ok) {
     end(outcome)
+    releaseDeskRun($, run)
+    return
+  }
+  if (outcome.text !== undefined) {
+    end(outcome, { how: 'text', text: outcome.text })
     releaseDeskRun($, run)
     return
   }
