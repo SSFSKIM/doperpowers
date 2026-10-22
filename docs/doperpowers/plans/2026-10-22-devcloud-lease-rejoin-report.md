@@ -201,8 +201,8 @@ The ci-kit gates on GitHub Actions:
 
 - **Remove a kept host's tailnet node when it leaves for good.** A non-ephemeral node stays listed,
   expired, after a departure's or a release's logout. That covers `down` of a kept VM and the
-  release of a kept adoption; a kept VM deleted unreachable (`down --force`) leaves its node online
-  in the listing until it expires nowhere. The host now holds a `devices:core` client: the
+  release of a kept adoption. A kept VM deleted while unreachable (`down --force`) leaves its node
+  listed, offline, with nothing to remove it. The host now holds a `devices:core` client: the
   departure could remove its own node after the logout, and the driver could remove the node of a
   kept VM it deletes without a departure.
 - **Desk machine `dc-lgt-3d09`.** The measurement VM was deleted without its leave, so the desk still
