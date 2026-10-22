@@ -3,15 +3,19 @@
 #   docker build -t devcloud -f devcloud/image/Dockerfile \
 #     --build-arg DEVCLOUD_USER=<user> --build-arg DEVCLOUD_UID=<uid> --build-arg DEVCLOUD_HOME=<home> .
 #
-# Two build steps, the recipe a VM builder runs as one (image/setup.sh): the
-# packages (image/packages.sh), a layer whose cache key is that file alone, so
-# a change anywhere else in devcloud/ reuses it; then the rest of setup.sh.
+# The recipe a VM builder runs as one (image/setup.sh), in layers: the packages
+# (image/packages.sh), one layer per part, whose cache key is that file alone,
+# so a change anywhere else in devcloud/ reuses them, and a build cache's
+# layers are pulled side by side rather than as one stream; then the rest of
+# setup.sh.
 # Run it with the boot descriptor and the seed mounted and --hostname set to
 # DEVCLOUD_NAME (devcloud/README.md, "The host"); the entrypoint boots, then
 # supervises the host's services in the foreground.
 FROM ubuntu:24.04
-RUN --mount=type=bind,source=devcloud/image/packages.sh,target=/tmp/packages.sh bash /tmp/packages.sh
-# The build inputs after the package layer: a RUN after an ARG is keyed on its value.
+RUN --mount=type=bind,source=devcloud/image/packages.sh,target=/tmp/packages.sh bash /tmp/packages.sh apt
+RUN --mount=type=bind,source=devcloud/image/packages.sh,target=/tmp/packages.sh bash /tmp/packages.sh gcloud
+RUN --mount=type=bind,source=devcloud/image/packages.sh,target=/tmp/packages.sh bash /tmp/packages.sh tools
+# The build inputs after the package layers: a RUN after an ARG is keyed on its value.
 ARG DEVCLOUD_USER
 ARG DEVCLOUD_UID
 ARG DEVCLOUD_HOME

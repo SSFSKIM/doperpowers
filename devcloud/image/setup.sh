@@ -8,7 +8,7 @@
 # The three inputs are the person's Mac account (the profile's build.env):
 # the same home path lets a session started on a Mac resume on a host. A VM
 # builder runs this and snapshots; image/Dockerfile runs it as its last step,
-# after image/packages.sh as a layer of its own.
+# after image/packages.sh's parts as layers of their own.
 set -euo pipefail
 
 : "${DEVCLOUD_USER:?set DEVCLOUD_USER, from the profile build.env}"
@@ -31,7 +31,7 @@ fi
 
 plugin="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-# The packages (image/packages.sh): image/Dockerfile runs them as a layer of
+# The packages (image/packages.sh): image/Dockerfile runs them as layers of
 # their own and says so; everywhere else they are this run's first step.
 [[ "${DEVCLOUD_PACKAGES:-}" == installed ]] || bash "$plugin/image/packages.sh"
 
