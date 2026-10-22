@@ -98,6 +98,16 @@ desk no longer counts it.
   - Live on GCE: the approved keep VM through keep→lease→keep→lease and `down`, and the approved
     adoption through keep→lease and its timed release, with acceptance 7's checks.
   - Report: `docs/doperpowers/plans/2026-10-22-devcloud-lease-rejoin-report.md`.
+- [x] (2026-10-22 06:31Z) Board #118, #115's residue: a kept or adopted host's tailnet node is
+  removed when it leaves for good (§4.2, §4.3, §6.5). Worked in order on branch
+  `devcloud-node-removal`. Steps:
+  - The build: 138bbfb6..46d05130.
+  - The review at the high rung, round 1: one P2 (the bounded reaper's deadline), fixed in
+    cc89c735.
+  - Live on GCE (H12): a kept VM through lease, keep and `down`; a second kept VM made unreachable,
+    then `down --force`; an adoption released by `down`. Every node was gone from the API and every
+    VM was deleted by 06:30Z.
+  - Report: `docs/doperpowers/plans/2026-10-22-devcloud-node-removal-report.md`.
 
 Human steps this initiative needs. The executor prepares each (the exact command, the page, what to
 check) and escalates it at the milestone named; the person runs it when an automated attempt is
@@ -116,7 +126,7 @@ refused or it needs a browser or their judgment.
 | H7 | Approving the test provider before it first runs with a credential (`provider register --confirmed`) | the person | M5, and again for M6's acceptance 13: approved by the person through the main session (2026-10-21) |
 | H10 | Board #115's live test: one `up --keep --confirmed` GCE VM (about $0.11/h), and one adoption of a hand-made e2-small with `adopt --confirmed`, released by its lease service; both deleted the same day | the person | approved by the person through the main session, 2026-10-22 ("Approve (Recommended)", each); used once each, deleted 01:50Z and 02:16Z |
 | H11 | A Tailscale OAuth client with `auth_keys` and `devices:core` on `tag:devcloud` (§4.1's node removal), as a new version of the hosts' Secret Manager secret; the old, broader client revoked | the person, carried out by the main session | done 2026-10-22 |
-| H12 | Board #118's live test: one `up --keep --confirmed` GCE VM, and one adoption of a hand-made plain Ubuntu 24.04 e2-small with `adopt --confirmed`; both deleted the same day | the person | approved by the person through the main session, 2026-10-22 ("Start, approve both (Recommended)") |
+| H12 | Board #118's live test: one `up --keep --confirmed` GCE VM, and one adoption of a hand-made plain Ubuntu 24.04 e2-small with `adopt --confirmed`; then a second kept VM for the unreachable `down --force` case; all deleted the same day | the person | approved by the person through the main session, 2026-10-22: the first two "Start, approve both (Recommended)", the second VM "Approve (Recommended)"; each used once, all deleted by 06:30Z |
 
 ## Terms
 
@@ -1887,6 +1897,24 @@ commit 5168e433 on its branch, 2026-10-21):
     matched the lease.
   - A host now joins only through the new client: the API's `oauthClientId` named it on both.
   Evidence: the #115 report's live table.
+- Observation (board #118, live, 2026-10-22): the Tailscale API's device list, with its default
+  fields, carries `nodeId`, `hostname` and `name`, and `tags` only on a tagged device. The hosts'
+  client, scoped to `tag:devcloud`, lists every device of the tailnet, untagged ones too, so the
+  driver's tag check is what keeps it off the person's own machines. A host joined with
+  `--hostname=<name>` is listed with exactly that `hostname`.
+  Evidence: the device list read through `driver/tailnet.py`'s client path at 06:12Z and during
+  the live run.
+- Observation (board #118, live, 2026-10-22): a kept VM's departure removes its own node before the
+  driver's lookup. During `down`, polled every 3 s, `dc-nrm-09a9`'s node left the API at 06:19:15Z.
+  The VM was deleted at 06:20:30Z, and the driver's line named no node. An adopted machine's
+  release did the same (gone by 06:29:40Z). Its `lifecycle.log` shows a status read, the logout,
+  another status read, and the seed's token, which fetches the client, then the unit removal.
+  - A kept VM made unreachable (tailscaled stopped) and deleted with `down --force` had its node
+    removed by the driver, its node id named on the line.
+  - A hand-made GCE VM got an account named after the Mac's user from the project's ssh-keys
+    metadata, and adopt's account preflight refused it. `block-project-ssh-keys=TRUE` on the
+    instance avoids that (friction tracker).
+  Evidence: `docs/doperpowers/plans/2026-10-22-devcloud-node-removal-report.md`.
 
 ## Decision Log
 
@@ -2595,6 +2623,14 @@ which needed a client with `devices:core`. The measurement also showed the old c
 broader than the spec said; it was replaced and revoked. The lesson generalizes: a design that leans
 on a third-party behavior ("logout removes the node") holds only for the case that was measured.
 M1 measured it for ephemeral nodes alone.
+
+**Board #118 (2026-10-22).** #115's residue is closed: a host that leaves for good no longer leaves
+its node listed in the tailnet. The host removes its own node right after the logout, with the
+rejoin's code, and the driver removes what the API still lists of a host it has deleted or
+released. It matches exactly, by tag and hostname, and removes by node id. Live, the host's own
+removal finished before the driver looked, on a VM and on an adoption, and the driver covered the
+unreachable kept VM. The lesson: a step that runs after the connection drops can't report to the
+driver, so the driver checks the outcome itself instead of trusting a report it will never read.
 
 **Left open:** H6 (the parent's `devcloud-m5` at the desk) is the person's step. The deferred items
 and residue are in `docs/doperpowers/TECH-DEBT.md`, under "the devcloud VM driver". After merge, the
