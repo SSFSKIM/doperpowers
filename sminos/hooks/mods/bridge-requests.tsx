@@ -120,13 +120,34 @@ export function claimCheck(tool: string, agentId: string | null, input: unknown)
   return at < 0 ? undefined : take(state.checks, at, false)
 }
 
-/** The decision as the engine takes it: a question's allow carries the dialog's own questions with the answers. */
+/**
+ * The one tool besides a question whose allow must carry an input (2.1.307):
+ * the engine drops a hook's bare allow of a tool that requires the person,
+ * and the plan's dialog stays; of those tools, it takes an allow carrying
+ * one only for this and a question. Every other allow goes bare: an input,
+ * even the call's own, has the engine check the call again before taking
+ * the allow, and a call an ask rule or a safety check put to the dialog is
+ * then asked again, the allow unused.
+ */
+const PLAN_TOOL = 'ExitPlanMode'
+
+/**
+ * The decision as the engine takes it: a question's allow carries the
+ * dialog's own questions with the answers; a plan's, the call's own input,
+ * whole. That is `rawInput`, the hook's input as the engine handed it, which
+ * the engine finds unchanged and runs as it is. The raised `input` is the
+ * call before the hooks beneath, capped: in its place a long plan would
+ * reach the tool cut, and be approved and saved as the plan.
+ */
 export function engineDecision(r: Request, d: Decision): PermissionRequestDecision {
   if (d.behavior === 'deny') {
     return { behavior: 'deny', message: d.message ?? DENIED }
   }
   if (r.isQuestion) {
     return { behavior: 'allow', updatedInput: { ...(isRecord(r.rawInput) ? r.rawInput : {}), answers: d.updatedInput?.answers ?? {} } }
+  }
+  if (r.tool === PLAN_TOOL && isRecord(r.rawInput)) {
+    return { behavior: 'allow', updatedInput: r.rawInput }
   }
   return { behavior: 'allow' }
 }
