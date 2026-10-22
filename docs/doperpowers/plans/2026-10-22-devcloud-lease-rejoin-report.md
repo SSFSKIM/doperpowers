@@ -9,7 +9,18 @@
 
 ## Status
 
-STATUS_PLACEHOLDER
+Done. Every success criterion of the ticket was shown live on GCE, and the board #115 entries are
+in the spec. The high-rung review took three rounds and the last was clean. Every resource this
+work made is deleted. The PR is open against main, not merged.
+
+| Criterion | Evidence |
+|---|---|
+| `lease <n> 2h` on a keep VM makes the node ephemeral, same name, `vm ssh -- true` works | `dc-kpt-e642`, 01:47:44Z: API `isEphemeral`, name unchanged, ssh exit 0 (live table) |
+| the same on an adopted machine; its release at lease end passes acceptance 7's give-back checks | `dc-adp-c8b4`, 01:50:57Z, and the timed release at 02:14Z (live table) |
+| `lease <n> keep --confirmed` rejoins non-ephemeral | `dc-kpt-e642`, 01:48:22Z; unconfirmed `keep` exits 4 |
+| unit tests for the decision logic | `test_tailnet` (NodeKindTest, RejoinRunTest, TsApiTest), `test_lease` (keep, NodeKindFollowsTheLeaseTest), `test_driver_ops` (LeaseKeepAndRejoinTest, cut-off answers), `test_driver_adopt`, `test_driver_reaper`, `test_driver_provider`, `test_descriptor_lease`; the whole unit suite ran 677 tests OK |
+| one live GCE run, VM deleted the same day | the approved keep VM (deleted 01:50Z) and adoption (02:16Z), plus three throwaway VMs, all deleted |
+| the Decision Log gets the person's decision; the TECH-DEBT entry removed | spec Decision Log, board #115 entries; the entry is gone from `docs/doperpowers/TECH-DEBT.md` |
 
 ## The open question, answered first
 
@@ -117,3 +128,82 @@ these runs did not take; see the fix wave below.
 | `dc-lgt-3d09-1` (ephemeral) | the measurement | expired by itself (gone by 02:16Z) |
 | `dc-kpt-e642` (the approved keep VM) | 01:34Z | 01:50Z, `down` |
 | `adopt-plain-115` (the approved adoption's machine) | 01:33Z | 02:16Z, by hand |
+
+A third throwaway VM, `dc-rck-60ac` (02:32–02:49Z), re-checked the fix waves' code live. A record
+faked to claim a non-ephemeral node made `devcloud rejoin` log out and remove the old node: the API
+answered 404, already gone. It then rejoined ephemeral under the same name and left nothing
+pending. This ran twice, on 5321a4e8's code and on d5e5a2ab's, copied onto the host. A hard reset
+then booted with "already joined" and the same node id. A logged-out daemon reports an empty
+`Self.ID`, so the second round's guard does not cancel a removal after a real logout.
+
+## Review
+
+The review ran at the high rung (`doperpowers:reviewer-high`) on c3310869..head, in three rounds.
+Each round's fixes came from a fix-wave agent, with a failing test first.
+
+| Round | Head | Findings | Fixed in |
+|---|---|---|---|
+| 1 | 0020899c | 4 P2: the old node id lost between logout and removal; a Stopped or Starting backend taken for no node; a complete `lease set` answer dropped when the rejoin cut SSH; the reaper unable to relabel a host that became kept | a1bd8fd3, 72d10505, 5321a4e8 |
+| 2 | 5321a4e8 | 2 P2 in that fix: a pending removal could delete the node still held (a logout that failed without effect, then a reversed lease); a boot with an unreadable status recorded a kind it could not know | d5e5a2ab |
+| 3 | d5e5a2ab | none: "correct" | — |
+
+Some smaller points the fix wave raised were left as they are, each logged in
+`docs/doperpowers/TECH-DEBT.md` under the driver's section:
+- a `-1` name kept after a late removal;
+- a refused rejoin retried without backoff;
+- a Stopped node whose rejoin is refused stays Stopped;
+- two loose messages.
+
+## CI
+
+The ci-kit gates on GitHub Actions:
+- 275f8fc2 and 0020899c were GREEN.
+- 5321a4e8 and d5e5a2ab passed every gate but `mods-types`, which was cancelled both times. That
+  gate's `npm i -g @anthropic-ai/claude-code` step hung until its timeout. This change touches no
+  mods code. The result on the final head is in the PR.
+
+## Decisions and deviations
+
+- **The design changed after the measurement, through the person.** The ticket assumed a
+  logout could remove the old node. It cannot for a non-ephemeral node, so the host removes it
+  through the API. That needed the `devices:core` scope, and the person chose it (A) over making
+  every node ephemeral (B), knowing its reach.
+- **The kind is recorded, not read.** No status field shows it. An unrecorded or unknown kind
+  counts as behind; that is safe, because a removal never touches the node the daemon holds.
+- **The lease service converges every persistent host**, not only leased ones, so a rejoin that
+  failed or never started is retried, and a pending removal with it.
+- **The driver accepts a cut-off `lease set` answer** when it holds a `rejoin` line and the lease:
+  the rejoin can cut the SSH session that asked for it.
+- **Out of the ticket's scope, left as residue:** removing a kept host's non-ephemeral node when it
+  departs, is released, or is deleted unreachable. The main session suggested it "if small"; it
+  touches the departure's logout step and the reaper, and I left it for its own ticket.
+
+## Friction
+
+- **An auto mode block on an approved adoption.** `devcloud vm adopt … --confirmed` was blocked as
+  "[Real-World Transactions]", though the person's approval had been relayed. An appeal quoting the
+  relayed message was granted. I updated the matching row of the friction tracker (#304).
+- **`systemctl reboot` from a transient unit on a GCE VM did nothing.** The VM kept its uptime, and
+  `gcloud compute instances reset` did the reboot instead. Seen once; not tracked.
+- **The `mods-types` gate's `npm i -g` hung twice** (above).
+- **The secrets guard redacts made-up literals in test files when it shows them.** A heredoc edit
+  anchored on the shown text then fails to match; the Edit tool restores the values. Known
+  behavior; it cost one retry.
+
+## Board and repository writes outside the branch
+
+- The friction tracker issue #304: one row updated.
+- The person's profile repository (`~/.claude`): the client-id comment, committed locally and not
+  pushed. The main session asked for the edit, and its sync owns the pushes there.
+- Board #115 moved to in-review with the PR, as the brief asked.
+
+## Residue
+
+- **Remove a kept host's tailnet node when it leaves for good.** A non-ephemeral node stays listed,
+  expired, after a departure's or a release's logout. That covers `down` of a kept VM and the
+  release of a kept adoption; a kept VM deleted unreachable (`down --force`) leaves its node online
+  in the listing until it expires nowhere. The host now holds a `devices:core` client: the
+  departure could remove its own node after the logout, and the driver could remove the node of a
+  kept VM it deletes without a departure.
+- **Desk machine `dc-lgt-3d09`.** The measurement VM was deleted without its leave, so the desk still
+  lists it. The main session has asked the person to remove it by hand.
