@@ -57,10 +57,8 @@ more), for the work in front of you or for a later step, ask for it with
 Where that tool is not among yours, ask with the ask tool your host offers,
 else the native AskUserQuestion, which has no `async`.
 
-Whenever a message needs something from the human outside a critical block
-(an action only they can take, access, a decision, a value, a question you
-asked them), it says so in a block of its own, after any critical block and
-before the rest of the message:
+Whenever you need the human, in any sense, say so in a block of its own,
+after any critical block and before the rest of the message:
 "> **Needs you:** [what for, and why it has to be them]"
 
 One additional note when communicating to human: mannered prose substitutes
