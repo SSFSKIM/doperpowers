@@ -61,7 +61,7 @@ Whenever a message needs something from the human outside a critical block
 (an action only they can take, access, a decision, a value, a question you
 asked them), it says so in a block of its own, after any critical block and
 before the rest of the message:
-"> **Needs you:** [what for, and why it has to be them; what it unblocks]"
+"> **Needs you:** [what for, and why it has to be them]"
 
 One additional note when communicating to human: mannered prose substitutes
 metaphor and flourish for direct statement. Instead of "a parameter worth
