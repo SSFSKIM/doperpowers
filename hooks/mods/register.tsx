@@ -1,6 +1,5 @@
 import type { On } from 'claude-code'
 
-import { registerAgents } from './agents'
 import { registerAppeal } from './appeal'
 import { registerCompact } from './compact'
 import { registerInterim } from './interim'
@@ -19,9 +18,6 @@ import { registerReload } from './reload'
  */
 export function register(on: On) {
   registerAppeal(on)
-  // Before kairos: both draw in the footer's mode slot, and the agents button
-  // wraps what kairos drew there.
-  registerAgents(on)
   registerKairos(on)
   // Before compact: the reload's turn.complete wraps compact's, so the turn
   // it waits on lasts until the compaction the model asked for at its end

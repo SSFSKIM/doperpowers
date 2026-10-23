@@ -12,7 +12,7 @@ import { emit } from './bridge-stream'
  * The list is read at the module's load (before the first hello, so the
  * child's first snapshot has them), at each heartbeat, when a loop the
  * bridge does not know starts a turn, and every AGENTS_REFRESH_MS while any
- * agent runs, as doperpowers' agents pane (its hooks/mods/agents.tsx) reads it.
+ * agent runs.
  *
  * A seeded spawn carries what the list gives and nothing else: its id, its
  * parent, its type, its description, and its name when it has one. An agent

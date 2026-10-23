@@ -788,11 +788,11 @@ export function registerReload(on: On) {
     isDialogUp = dialogUpIn(e.value)
     return next(e)
   })
-  // The main turn, the engine's own (compact.tsx and agents.tsx hold the
-  // module's unmatched registrations; a turn's id is never empty). A
-  // subagent's run raises its own, with its agentId. Registered ahead of
-  // compact (register.tsx), so its end comes after the compaction compact
-  // runs at the turn's end.
+  // The main turn, the engine's own (compact.tsx holds the module's
+  // unmatched turn.start; a turn's id is never empty). A subagent's run
+  // raises its own, with its agentId. Registered ahead of compact
+  // (register.tsx), so its end comes after the compaction compact runs at
+  // the turn's end.
   on('turn.start', { turnId: /./ }, (_, e, next) => {
     if (e.agentId === undefined) {
       isTurnRunning = true
