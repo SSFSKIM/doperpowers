@@ -29,9 +29,14 @@ person's `devenv` runner reads it on their Macs and on devcloud hosts
   session `<name>`; `devenv stop` ends its process group.
 - **`validate.sh`** (optional): the quickest real check that the environment
   works — a lint, a fast test subset, a build — seconds, not the full suite.
-- **`env`** (optional): `KEY=value` lines and `secret:KEY=<Secret Manager id>`
-  lines. Values are literal — no `$VAR` expansion; one pair of surrounding
-  quotes is dropped. Names starting `DEVENV_` are the runner's.
+- **`env`** (optional): `KEY=value` lines, `secret:KEY=<Secret Manager id>`
+  lines and `path:<dir>` lines. Values are literal — no `$VAR` expansion; one
+  pair of surrounding quotes is dropped. Names starting `DEVENV_` are the
+  runner's. A `path:` line puts a directory relative to the repository root
+  first on PATH, for the scripts and for sessions in the checkout; several
+  keep their order. It is how a repository whose commands expect a project
+  environment (CI's `.venv/bin` first on PATH) gets it on a host, where
+  `python3` and the like are the system's.
 - **`host.toml`** (optional), only when the repository needs a different
   cloud machine than the person's default from `devcloud vm up --project
   <owner/repo>`: `account` (an account name from the person's

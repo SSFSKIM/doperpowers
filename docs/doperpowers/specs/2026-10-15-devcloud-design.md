@@ -357,7 +357,8 @@ Project-specific environment belongs to the project's `devenv/` (Design §7).
 A repository that wants to run on a host carries a `devenv/` directory at its root (contract in
 Interfaces I4): `setup.sh` installs its dependencies and is safe to re-run; `start.sh`, optional,
 runs its services; `validate.sh`, optional, checks the environment; `env`, optional, names its
-environment and the Secret Manager secrets it needs. Scripts replace the JSON manifest
+environment, the Secret Manager secrets it needs, and the directories of its own it puts first on
+PATH. Scripts replace the JSON manifest
 (`.devbox/environment.json`) the person's `devenv` tool reads today, which no repository's default
 branch adopted (it lives only on unmerged `devbox-manifest` / `project-env-manifest` branches);
 scripts won because a repository's owner can express any install in a script, while the manifest
@@ -873,8 +874,12 @@ that prints exactly its bytes in its place (§9.3); file tools get raw bytes.
 exit 0 on success; safe to re-run; leading comment lines `# devenv-inputs: <glob> ...` name the
 files whose change triggers a re-run), `devenv/start.sh` (optional; runs the project's services in
 the foreground; `devenv start` runs it in tmux session `<name>`), `devenv/validate.sh` (optional;
-`devenv validate` runs it), `devenv/env` (optional; `KEY=value` lines and
-`secret:KEY=<Secret Manager id>` lines). Generated state stays under `.devbox/`, gitignored.
+`devenv validate` runs it), `devenv/env` (optional; `KEY=value` lines,
+`secret:KEY=<Secret Manager id>` lines, and `path:<dir>` lines naming a directory relative to the
+repository root that goes first on PATH, in file order; `PATH` itself is never a value).
+Generated state stays under `.devbox/`, gitignored; a project with `path:` lines also gets one
+SessionStart hook in `.claude/settings.local.json` that hands `.devbox/env.sh` to the session's Bash
+commands through `$CLAUDE_ENV_FILE`.
 
 **I5 — Boot descriptor** `/etc/devcloud/boot.env`:
 
@@ -999,6 +1004,25 @@ or how it is answered reaches `cua` as a ticket before it ships.
   reads it: a link in a tier outside the reader never appears there (kit probe, 2.1.303).
 
 ## Decision Log
+
+- Decision: `devenv/env` gains `path:<dir>` lines (2026-10-22, after the first repository written
+  with the `devenv` skill): a directory relative to the repository root, put first on PATH by one
+  idempotent line at the end of `.devbox/env.sh`, which the scripts, `devenv` launches and the
+  shell-rc hook already source. A session not launched through `devenv` (a seat on a host, `claude`
+  started in the checkout) reads only `.claude/settings.local.json`, whose `env` values cannot
+  prepend, so for a project with `path:` lines the runner keeps one SessionStart hook there that
+  appends a line sourcing `.devbox/env.sh` to `$CLAUDE_ENV_FILE`, which Claude Code runs ahead of
+  every Bash command. A plain `PATH=` line is refused.
+  Rationale: that repository's CI runs its Python from `.venv` (first on PATH), and its commands
+  call `python3`; on a host `python3` is Ubuntu's, without the repository's packages, and literal
+  values could only replace PATH. Sourcing env.sh rather than copying it keeps a running session
+  current after a later `devenv up`.
+  Alternatives: values that expand `$PATH` (rejected: every value would become a shell expression,
+  and settings.local.json still could not carry one); linking a project's interpreter into
+  `~/.local/bin` from `setup.sh` (rejected: host-wide, so two projects collide); telling sessions in
+  the repository's CLAUDE.md to run `source .venv/bin/activate &&` first (what that repository did
+  at first; rejected as the standing answer: every Bash call pays it, and a session that misses it
+  runs the wrong interpreter).
 
 - Decision: Abandon content narrowing for package noise (board #87); leave the detector and
   installed plugin unchanged, and retain the positive credential matrix and false-negative

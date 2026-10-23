@@ -1,7 +1,7 @@
 {
   "name": "devcloud",
   "description": "Secrets stay out of what the model reads and what the transcript keeps: stored values, credential files and token-shaped strings are redacted to handles that restore to their exact bytes on write. And a host image and boot program that make any Linux userland work like your Mac: same home, configuration received from git, credentials from Secret Manager. And the devenv skill, which writes a repository's devenv/ (its setup, services and checks) from its CI, manifests and README. And `devcloud vm`, which creates cloud machines (Hetzner Cloud, Google Compute Engine, or a provider you add) that boot into such hosts within your caps and delete themselves when their lease ends, and the vm skill that tells a session when and how",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "author": {
     "name": "SSFSKIM",
     "email": "supremekim17@gmail.com"
