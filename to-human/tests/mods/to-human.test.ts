@@ -1127,7 +1127,7 @@ describe('surfaces', () => {
     expect(await marginTop(record)).toBe(1)
     expect((await band.findAll({ type: 'Box' })).some((box) => box.props.marginTop === 1 && box.text.includes('full transcript'))).toBe(true)
     // A mixed message's button stands a line below its body.
-    expect((await mixed.findAll({ type: 'Box' })).some((box) => box.props.marginTop === 1 && box.text === 'working record')).toBe(true)
+    expect((await mixed.findAll({ type: 'Box' })).some((box) => box.props.marginTop === 1 && box.text === '› working record')).toBe(true)
   })
 
   test('without MAWS, the report band and its press still switch the desktop transcript', async ($, on) => {

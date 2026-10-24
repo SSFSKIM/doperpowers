@@ -305,8 +305,8 @@ class Live:
         frame_one = frame_one[frame_one.find("and nothing else."):]
         at = frame_one.find(TEXT)
         label = frame_one.rfind(LABEL, 0, at) if at >= 0 else -1
-        before = frame_one.rfind("[ working record ]", 0, label) if label >= 0 else -1
-        after = frame_one.find("[ working record ]", at) if at >= 0 else -1
+        before = frame_one.rfind("› working record", 0, label) if label >= 0 else -1
+        after = frame_one.find("› working record", at) if at >= 0 else -1
         raw = re.search(r"to-human.{0,4}message|⎿\s+sent\s*$", frame_one, re.M)
         self.check("2 drawn as a message row between the tool calls",
                    label >= 0 and frame_one[label:at].count("\n") <= 2 and 0 <= before < label and after > at and not raw,

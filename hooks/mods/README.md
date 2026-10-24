@@ -39,10 +39,10 @@ a mark, so a session without the output style is left alone. From then on:
   span after the first label-only (2026-10-03) — and on the terminal the
   block carries the engine's row margin, a blank line between the label and
   the body (2026-10-14). The rows the view draws (a marked message, a
-  `[ working record ]` button, the band above the prompt) stand one line
+  `› working record` button, the band above the prompt) stand one line
   below the row above, as the engine's own rows do. A
   span still streaming shows `…` after its label. A message with an unmarked
-  working record beside its spans gets a dim `[ working record ]` button that
+  working record beside its spans gets a dim `› working record` button that
   unfolds the engine's drawing of the whole block, and the run of working
   record after that message opens and closes with it: the message is where
   the run starts, so two things the person reads have one button between
@@ -51,7 +51,7 @@ a mark, so a session without the output style is left alone. From then on:
   rows that are deliveries of the model's own business rather than the
   person's words (a background command's or a monitor's notification, a
   schedule firing) are working record, and a run of it draws one
-  `[ working record ]` button rather than one button per row: the run breaks
+  `› working record` button rather than one button per row: the run breaks
   at the person's own prompt, at a message that carries marks (one with
   record beside its marks starts the run itself), and at every row of the
   next two bullets, so what stands between two things they read opens and
@@ -61,7 +61,7 @@ a mark, so a session without the output style is left alone. From then on:
   (a group of reads keeps its count line: each call in its place would be
   the ctrl+o form, its whole output inline; where the engine expands the
   group itself, in the ctrl+o transcript and under `--verbose`, each call is
-  a row of its own in the group's run), with `[ fold to report ]` under the
+  a row of its own in the group's run), with `‹ fold to report` under the
   row the run ends at, where the person is when they finish reading, so as
   the run grows the button moves down with it.
 - The line that closes a turn (`Baked for 3s`, `Waiting for N background
@@ -89,9 +89,9 @@ a mark, so a session without the output style is left alone. From then on:
   row's props do not mark it an error; the mod learns its text from
   `turn.complete` (`reason: "error"`) and the transcript's last assistant
   message, and redraws.
-- Above the prompt, `to-human view · [ full transcript ]` switches the whole
+- Above the prompt, `to-human view · full transcript ›` switches the whole
   transcript to the engine's drawing; the same button then reads
-  `[ report only ]`.
+  `report only ›`.
 
 While a message streams, none of this is drawn yet: the engine mounts an
 `AssistantMessage` only once the block is whole, so a hook of that component
