@@ -773,6 +773,26 @@ describe('rows', () => {
     expect(await last.find({ type: 'Button', text: 'fold to report' })).toBeDefined()
   })
 
+  test('a run whose last call still runs draws its fold once the call is done, a line below the row above', async ($, on) => {
+    mock.env(on, {})
+    mock.store(on)
+    on('ui.render', (_, e) => ({ type: 'Text', children: [String((e.props as { text?: string }).text ?? e.component)] }))
+    await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AssistantMessage', requestId: 'm1', props: { text: '<message>Checking.</message>', isFirstOfReply: true } })
+    const first = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AssistantMessage', requestId: 'r1', props: { text: 'Working.', isFirstOfReply: true } })
+    const props = { tool_use_id: 'b1', tool: 'Bash', input: { command: 'sleep 9' }, isRunning: true, isErrored: false, isInterrupted: false }
+    const call = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'ToolUse', requestId: 'b1', props } as never)
+    await first.press({ key: 'to-human-toggle' })
+    expect(await call.find({ type: 'Button', text: 'fold to report' })).toBeUndefined()
+
+    await call.redraw({ ...props, isRunning: false, output: { stdout: '', stderr: '' } } as never)
+    const result = await $.ui.mount({
+      plugin: PLUGIN, surface: 'terminal', component: 'ToolResult', requestId: 'b1',
+      props: { tool_use_id: 'b1', tool: 'Bash', output: { stdout: '', stderr: '' }, isErrored: false },
+    } as never)
+    expect(await result.find({ type: 'Button', text: 'fold to report' })).toBeDefined()
+    expect((await result.findAll({ type: 'Box' })).some((box) => box.props.marginTop === 1 && box.text === '‹ fold to report')).toBe(true)
+  })
+
   test('another session\'s sminos message folds into the run; the person\'s own stays', async ($, on) => {
     mock.env(on, {})
     mock.store(on)

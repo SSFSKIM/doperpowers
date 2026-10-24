@@ -862,8 +862,9 @@ function toggle(view: View, id: string) {
  * A row of working record, drawn as its run is. Folded, the row the run
  * starts at draws the one `› working record` button and the rest draw
  * nothing. Unfolded, each row is the engine's own drawing, as the transcript
- * draws it, and the row the run ends at draws `‹ fold to report` under it,
- * where the person is when they finish reading.
+ * draws it, and the row the run ends at draws `‹ fold to report` a line
+ * under it, as the rows stand apart, where the person is when they finish
+ * reading.
  *
  * `id` names the row when it is not the request's (a group is known by its
  * first call's). A call's row and its result's share an id: `opens` is false
@@ -902,7 +903,7 @@ async function recordRow<E extends RenderInput>(
     <Box flexDirection="column">
       {await next(e)}
       {isEnd ? (
-        <Box paddingLeft={2}>{control($, e, { key: TOGGLE, label: 'fold to report', mark: FOLD, onPress: toggleRun })}</Box>
+        <Box paddingLeft={2} marginTop={1}>{control($, e, { key: TOGGLE, label: 'fold to report', mark: FOLD, onPress: toggleRun })}</Box>
       ) : null}
     </Box>
   )
@@ -1291,7 +1292,7 @@ export function registerToHuman(on: On) {
         <Box flexDirection="column">
           {await next(e)}
           {runEnd(view.order, view.rowOf, requestId) === requestId ? (
-            <Box paddingLeft={2}>{control($, e, { key: TOGGLE, label: 'fold to report', mark: FOLD, onPress: toggleThis })}</Box>
+            <Box paddingLeft={2} marginTop={1}>{control($, e, { key: TOGGLE, label: 'fold to report', mark: FOLD, onPress: toggleThis })}</Box>
           ) : null}
         </Box>
       )
@@ -1325,7 +1326,10 @@ export function registerToHuman(on: On) {
   // then (no output, and no abort, which leaves one) the call's row is the
   // last of the two. A row of a group the engine expanded draws its output
   // inline and is whole: it stands in the group's run, and the group's last
-  // call draws the run's end where the group would.
+  // call draws the run's end where the group would. A call still running,
+  // and a group still live, draw no end: the engine's own lines for it (a
+  // command's `ctrl+b to run in background`) follow its row, and the end
+  // would stand between them.
   on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
     if (await native($, e)) return next(e)
     await started($, view, next.signal, markSeen)
@@ -1365,9 +1369,9 @@ export function registerToHuman(on: On) {
       return next(e)
     }
     if (group !== undefined) {
-      return recordRow($, e, next, view, { id: group, opens: false, closes: lastOf.get(group) === e.requestId })
+      return recordRow($, e, next, view, { id: group, opens: false, closes: lastOf.get(group) === e.requestId && !e.props.isRunning })
     }
-    return recordRow($, e, next, view, { closes: e.props.output === undefined && !e.props.isInterrupted })
+    return recordRow($, e, next, view, { closes: e.props.output === undefined && !e.props.isInterrupted && !e.props.isRunning })
   })
 
   // A group's own id changes while it forms, so the row is known by its
@@ -1405,7 +1409,7 @@ export function registerToHuman(on: On) {
         $.ui.invalidate('ui.render')
       }
     }
-    return isFolding() ? recordRow($, e, next, view, { id, closes: !e.props.isExpanded }) : next(e)
+    return isFolding() ? recordRow($, e, next, view, { id, closes: !e.props.isExpanded && !e.props.isActive }) : next(e)
   })
 
   // The result row shares its call's id: folded, the call's row has drawn
