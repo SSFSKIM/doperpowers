@@ -23,7 +23,7 @@ working record unwrapped. The old `<to-human>`, `<essential>`,
 question's `<choice>` lines stay in its text, with no buttons); tags in inline code or fenced blocks stay literal. This mod
 makes the Claude Code terminal the consumer of those marks.
 
-Under MAWS (`MAWS_NATIVE_TO_HUMAN` set), MAWS draws the report itself; this view passes every drawing hook through on non-terminal surfaces, and the streaming hook draws nothing.
+Under MAWS (`MAWS_NATIVE_TO_HUMAN` set) this view draws on MAWS's surfaces as on any other: MAWS shows the mods' report and draws no message cards of its own. The flag still keeps the message tool unregistered (MAWS registers `mcp__maws__message`), and the streaming hook draws nothing.
 
 Nothing changes until the first assistant message of the session that carries
 a mark, so a session without the output style is left alone. From then on:

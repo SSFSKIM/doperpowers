@@ -6,9 +6,9 @@ import { registerToHuman } from '../../hooks/mods/to-human'
 tier('user')
 
 describe('MAWS native to-human', () => {
-  test('every hook passes through unchanged off-terminal, while the terminal still draws the report', async () => {
-    // Capture the registered handlers, as compact.test.ts does, so an event
-    // without a surface and next(e)'s identity can be checked too.
+  test('the report draws on every surface under MAWS as without it, and the view never reads the flag', async () => {
+    // Capture the registered handlers, as compact.test.ts does, so next(e)'s
+    // use can be checked on a surface the kit does not mount.
     type Event = Record<string, unknown>
     type Handler = (engine: EngineInterface, e: Event, next: (e: Event) => Promise<unknown>) => unknown
     const hooks: { event: string; matcher: Event; handler: Handler }[] = []
@@ -21,7 +21,8 @@ describe('MAWS native to-human', () => {
     }) as unknown as On
     registerToHuman(on)
 
-    const calls: string[] = []
+    // MAWS's launches set MAWS_NATIVE_TO_HUMAN for its own message and ask
+    // tools; the view is what MAWS shows, so it draws there as anywhere.
     const envReads: string[] = []
     const engine = {
       env: { get: async (name: string) => { envReads.push(name); return '1' } },
@@ -31,64 +32,28 @@ describe('MAWS native to-human', () => {
       clock: { after: () => ({ cancel: () => {} }), now: async () => 0 },
       ui: {
         resolve: () => ({ Box: 'Box', Text: 'Text', Button: 'Button', Markdown: 'Markdown' }),
-        invalidate: () => { calls.push('invalidate') },
-        toast: () => { calls.push('toast') },
+        invalidate: () => {},
+        toast: () => {},
       },
     } as unknown as EngineInterface
-    const text = '<message>One.</message>\n<need-input>Which branch?\n<choice>main</choice>\n</need-input>'
+    const text = '<message>One.</message>\nWorking notes.'
     const assistant = hooks.find((hook) => hook.matcher.component === 'AssistantMessage')!
-    const terminal: Event = {
-      surface: 'terminal', component: 'AssistantMessage', requestId: 'm1',
-      props: { text, isFirstOfReply: true },
+    for (const surface of ['terminal', 'desktop', 'vscode', 'mobile']) {
+      const bodies: unknown[] = []
+      const report = await assistant.handler(engine, {
+        surface, component: 'AssistantMessage', requestId: `m-${surface}`,
+        props: { text, isFirstOfReply: true },
+      }, Object.assign(async (e: Event) => {
+        bodies.push((e.props as { text: string }).text)
+        return { type: 'Text', children: [(e.props as { text: string }).text] }
+      }, { signal: new AbortController().signal }))
+      // Each surface draws the span's body as its own Markdown, the record
+      // behind its button; nothing is handed back to the engine.
+      expect(report).toMatchObject({ type: 'Box' })
+      expect(JSON.stringify(report)).toContain('"One."')
+      expect(JSON.stringify(report)).not.toContain('Working notes.')
+      expect(bodies).toEqual([])
     }
-    const bodies: unknown[] = []
-    // A next as the engine hands it: the chain beneath, and the dispatch's signal.
-    const report = await assistant.handler(engine, terminal, Object.assign(async (e: Event) => {
-      bodies.push((e.props as { text: string }).text)
-      return { type: 'Text', children: [(e.props as { text: string }).text] }
-    }, { signal: new AbortController().signal }))
-    expect(report).toMatchObject({ type: 'Box' })
-    // The terminal draws each body as its own Markdown; nothing is handed back.
-    expect(JSON.stringify(report)).toContain('"One."')
-    expect(bodies).toEqual([])
-
-    // A marked terminal row primes the folding state: otherwise a missing
-    // guard on AbovePrompt could look like a pass-through simply because
-    // there was nothing to do yet.
-    calls.length = 0
-    const gated = (event: string) => event === 'ui.render' || event === 'ui.press'
-    const drawing = hooks.filter((hook) => gated(hook.event))
-    for (const surface of ['desktop', 'vscode', 'mobile', undefined]) {
-      await Promise.all(drawing.map(async (hook) => {
-        const e: Event = {
-          ...(surface !== undefined && { surface }),
-          ...hook.matcher,
-          requestId: 'r1',
-          props: {
-            text, isFirstOfReply: true, hasSurvey: false,
-            origin: { kind: 'peer' }, tool: 'Bash',
-            calls: [{ tool_use_id: 't1', tool: 'Bash', input: {} }],
-            isExpanded: false,
-          },
-          ...(hook.event === 'ui.press' && { element: hook.matcher.element }),
-        }
-        const result = Object.freeze({ marker: 'next result' })
-        const received: Event[] = []
-        expect(await hook.handler(engine, e, async (input) => {
-          received.push(input)
-          return result
-        })).toBe(result)
-        expect(received.length).toBe(1)
-        expect(received[0]).toBe(e)
-      }))
-    }
-    expect(calls).toEqual([])
-    // Every hook but three draws, so every one is gated: none is left that
-    // answers a question or a prompt. The three draw nothing: they learn
-    // whether a mark was sent, where each row stands in the transcript and
-    // which rows are API errors (`session.start`, `classic.SessionStart`,
-    // `session.append`), for the terminal's report.
-    expect(hooks.map((hook) => hook.event).filter((event) => !gated(event))).toEqual(['session.start', 'classic.SessionStart', 'session.append'])
-    expect(envReads).toEqual(['MAWS_NATIVE_TO_HUMAN'])
+    expect(envReads).toEqual([])
   })
 })
