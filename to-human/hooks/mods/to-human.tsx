@@ -421,7 +421,7 @@ export function promptRow(props: PromptRowProps, spawns: ReadonlySet<string> = n
  * a message that carries marks. A mixed message, marks with unmarked text
  * beside them, is where the run after it starts: its own record and the run
  * open and close as one, under its one button, so two things the person
- * reads have one `[ working record ]` between them and not two. A run of
+ * reads have one `› working record` between them and not two. A run of
  * unmarked messages draws as one button rather than one button each, so the
  * report reads as a report; this names the row that draws it, and the rest
  * of the run draw nothing.
@@ -450,7 +450,7 @@ const inRun = (kind: RowKind | undefined) => kind === 'record' || kind === 'mixe
 /**
  * The last message of the run of working record `id` belongs to: walking
  * forward over the rows that are working record too. This is the row that
- * draws the run's `[ fold to report ]`, under itself, where the person is
+ * draws the run's `‹ fold to report`, under itself, where the person is
  * when they finish reading; as the run grows, the button moves down with it.
  */
 export function runEnd(
@@ -557,6 +557,42 @@ const STYLE: Record<Kind, { label: string; color: string }> = {
 
 const TOGGLE = 'to-human-toggle'
 const MODE = 'to-human-mode'
+
+/** What the view's controls lead with, as the engine's rows that unfold do (`› Message from …`). */
+const UNFOLD = '›' as const
+const FOLD = '‹' as const
+
+/**
+ * A control of the view drawn as the engine draws a row that unfolds: dim
+ * text that the pointer brightens anywhere on its row, where a Button alone
+ * is a bracketed label the pointer inverts. A Button's `hover` applies only
+ * inside a keyed Box, which is the row; the Button's own key is the press's
+ * address, its `label` what names it. The mark of which way it goes stands
+ * before the label, or after it (`isMarkLast`) where a caption leads, as on
+ * the band. `children` stand before it on the row (a bullet, a caption).
+ */
+function control<E extends RenderInput>(
+  $: EngineInterface,
+  e: E,
+  { key, label, mark, isMarkLast = false, onPress, children = null }: {
+    key: string
+    label: string
+    mark: typeof UNFOLD | typeof FOLD
+    isMarkLast?: boolean
+    onPress: () => void
+    children?: RenderElement | null
+  },
+): RenderElement {
+  const { Box, Button } = $.ui.resolve(e)
+  return (
+    <Box key={`${key}-row`}>
+      {children}
+      <Button key={key} label={label} plain dimColor hover={{ inverse: false, dimColor: false }} onPress={onPress}>
+        {isMarkLast ? `${label} ${mark}` : `${mark} ${label}`}
+      </Button>
+    </Box>
+  )
+}
 
 const isSpawn = (tool: string) => tool === 'Agent' || tool === 'Workflow'
 
@@ -785,8 +821,8 @@ function shapeOf(view: View, id: string | undefined): string {
  * Notes a row as it draws: its place among the rows drawn so far, and what it
  * is. A row that lands beside another, or turns into a kind that ends or joins
  * its run, can change what that neighbour draws (whether it opens its run and
- * draws `[ working record ]`, whether it ends an unfolded one and draws
- * `[ fold to report ]`), and the neighbour's drawing is cached as it was: the
+ * draws `› working record`, whether it ends an unfolded one and draws
+ * `‹ fold to report`), and the neighbour's drawing is cached as it was: the
  * rows are asked for again. So is a turn's closing line, which reads the row
  * before it, when a row lands among those already drawn while a run is open.
  */
@@ -824,9 +860,9 @@ function toggle(view: View, id: string) {
 
 /**
  * A row of working record, drawn as its run is. Folded, the row the run
- * starts at draws the one `[ working record ]` button and the rest draw
+ * starts at draws the one `› working record` button and the rest draw
  * nothing. Unfolded, each row is the engine's own drawing, as the transcript
- * draws it, and the row the run ends at draws `[ fold to report ]` under it,
+ * draws it, and the row the run ends at draws `‹ fold to report` under it,
  * where the person is when they finish reading.
  *
  * `id` names the row when it is not the request's (a group is known by its
@@ -847,15 +883,14 @@ async function recordRow<E extends RenderInput>(
     closes = true,
   }: { bullet?: string; id?: string; opens?: boolean; closes?: boolean } = {},
 ): Promise<RenderElement> {
-  const { Box, Text, Button } = $.ui.resolve(e)
+  const { Box, Text } = $.ui.resolve(e)
   const start = runStart(view.order, view.rowOf, id)
   const toggleRun = () => toggle(view, start)
 
   if (!view.unfolded.has(start)) {
     return opens && start === id ? (
       <Box marginTop={1}>
-        <Text dimColor>{bullet}</Text>
-        <Button key={TOGGLE} label="working record" dimColor onPress={toggleRun} />
+        {control($, e, { key: TOGGLE, label: 'working record', mark: UNFOLD, onPress: toggleRun, children: <Text dimColor>{bullet}</Text> })}
       </Box>
     ) : (
       <Box />
@@ -867,9 +902,7 @@ async function recordRow<E extends RenderInput>(
     <Box flexDirection="column">
       {await next(e)}
       {isEnd ? (
-        <Box paddingLeft={2}>
-          <Button key={TOGGLE} label="fold to report" dimColor onPress={toggleRun} />
-        </Box>
+        <Box paddingLeft={2}>{control($, e, { key: TOGGLE, label: 'fold to report', mark: FOLD, onPress: toggleRun })}</Box>
       ) : null}
     </Box>
   )
@@ -1247,7 +1280,7 @@ export function registerToHuman(on: On) {
       return recordRow($, e, next, view, { bullet })
     }
 
-    const { Box, Button } = $.ui.resolve(e)
+    const { Box } = $.ui.resolve(e)
     const requestId = e.requestId
     const toggleThis = () => toggle(view, requestId)
 
@@ -1258,9 +1291,7 @@ export function registerToHuman(on: On) {
         <Box flexDirection="column">
           {await next(e)}
           {runEnd(view.order, view.rowOf, requestId) === requestId ? (
-            <Box paddingLeft={2}>
-              <Button key={TOGGLE} label="fold to report" dimColor onPress={toggleThis} />
-            </Box>
+            <Box paddingLeft={2}>{control($, e, { key: TOGGLE, label: 'fold to report', mark: FOLD, onPress: toggleThis })}</Box>
           ) : null}
         </Box>
       )
@@ -1274,7 +1305,7 @@ export function registerToHuman(on: On) {
       parsed.hasRecord ? (
         // The one button of this message's record and of the run after it.
         <Box paddingLeft={2} marginTop={1}>
-          <Button key={TOGGLE} label="working record" dimColor onPress={toggleThis} />
+          {control($, e, { key: TOGGLE, label: 'working record', mark: UNFOLD, onPress: toggleThis })}
         </Box>
       ) : null,
     )
@@ -1408,21 +1439,22 @@ export function registerToHuman(on: On) {
     }
 
     const inner = await next(e)
-    const { Box, Text, Button } = $.ui.resolve(e)
+    const { Box, Text } = $.ui.resolve(e)
 
     return (
       <Box flexDirection="column">
         {inner}
         <Box marginTop={1}>
-          <Text dimColor>to-human view · </Text>
-          <Button
-            key={MODE}
-            label={isFullTranscript ? 'report only' : 'full transcript'}
-            dimColor
-            onPress={() => {
+          {control($, e, {
+            key: MODE,
+            label: isFullTranscript ? 'report only' : 'full transcript',
+            mark: UNFOLD,
+            isMarkLast: true,
+            onPress: () => {
               isFullTranscript = !isFullTranscript
-            }}
-          />
+            },
+            children: <Text dimColor>to-human view · </Text>,
+          })}
         </Box>
       </Box>
     )
@@ -1431,7 +1463,7 @@ export function registerToHuman(on: On) {
   // A press runs the button's own closure beneath this hook; the redraw
   // follows it so the transcript reflects the state the closure left. A fold
   // of a run whose first row has its top out of the window then brings that
-  // row into view. The person presses `[ fold to report ]` at the run's end,
+  // row into view. The person presses `‹ fold to report` at the run's end,
   // so the run's rows above the window fold while off it, where the
   // fullscreen transcript holds each at the height it had and lets go of it as
   // it scrolls back in at the window's top edge, the transcript jumping down
