@@ -1,5 +1,6 @@
 import type { ApiContentBlock, EngineInterface, On, PromptOrigin, RenderElement, RenderInput, SessionAppendInput, Timer } from 'claude-code'
 
+import { registerEdits } from './edits'
 import { MESSAGE_TOOL, readMessage } from './message'
 
 /**
@@ -1470,4 +1471,8 @@ export function registerToHuman(on: On) {
     }
     return next(e)
   })
+
+  // The summary lines of file changes, beneath every hook above, so they draw
+  // wherever the view hands a row on to be drawn as the engine would.
+  registerEdits(on, view, () => hasSeenMark)
 }
