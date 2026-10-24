@@ -26,10 +26,32 @@ const isRecord = (value: unknown): value is Record<string, unknown> => typeof va
 const text = (value: unknown) => (typeof value === 'string' ? value : undefined)
 
 /** The lines a text holds, a final newline ending its last line rather than opening one. */
-export function lineCount(value: string | undefined): number {
-  if (value === undefined || value === '') return 0
-  return value.split('\n').length - (value.endsWith('\n') ? 1 : 0)
+function linesOf(value: string | undefined): string[] {
+  if (value === undefined || value === '') return []
+  return (value.endsWith('\n') ? value.slice(0, -1) : value).split('\n')
 }
+
+export const lineCount = (value: string | undefined) => linesOf(value).length
+
+/**
+ * A notebook cell's change: a result carries the whole cell before and after,
+ * so a replace counts only the lines between those the two bodies share at
+ * their start and end; a delete's `new_source` is not drawn, so not counted.
+ */
+function cellCounts(mode: unknown, before: string | undefined, after: string | undefined): { added: number; removed: number } {
+  if (mode === 'insert') return { added: lineCount(after), removed: 0 }
+  if (mode === 'delete') return { added: 0, removed: lineCount(before) }
+  const old = linesOf(before)
+  const now = linesOf(after)
+  let head = 0
+  while (head < old.length && head < now.length && old[head] === now[head]) head += 1
+  let tail = 0
+  while (tail < old.length - head && tail < now.length - head && old[old.length - 1 - tail] === now[now.length - 1 - tail]) tail += 1
+  return { added: now.length - head - tail, removed: old.length - head - tail }
+}
+
+/** A result held for the person's review, not applied: the engine's row says so, and nothing changed to count. */
+const isStaged = (output: unknown) => isRecord(output) && output.staged === true
 
 /** The lines a `structuredPatch` adds and removes; undefined where there is none to read. */
 function patchCounts(patch: unknown): { added: number; removed: number } | undefined {
@@ -49,13 +71,14 @@ function patchCounts(patch: unknown): { added: number; removed: number } | undef
 
 /**
  * What a call of a file-changing tool did, read from its row's props; none
- * for any other tool, or for a call that errored, was refused or cut, whose
- * row stays as the engine draws it (its error is what there is to read).
+ * for any other tool, or for a call that errored, was refused, cut or staged,
+ * whose rows stay as the engine draws them (its error, or that it waits for
+ * the person's review, is what there is to read).
  * Counts come from the result's patch, which is the change as made; a new
  * file's from what was written.
  */
 export function changeOf(props: { tool: string; input: unknown; output?: unknown; isErrored: boolean; isInterrupted: boolean }): FileChange | undefined {
-  if (!EDIT_TOOLS.has(props.tool) || props.isErrored || props.isInterrupted) return undefined
+  if (!EDIT_TOOLS.has(props.tool) || props.isErrored || props.isInterrupted || isStaged(props.output)) return undefined
   const input = isRecord(props.input) ? props.input : {}
   const output = isRecord(props.output) ? props.output : undefined
   const path = text(input.file_path) ?? text(input.notebook_path) ?? text(output?.filePath) ?? text(output?.notebook_path)
@@ -63,7 +86,7 @@ export function changeOf(props: { tool: string; input: unknown; output?: unknown
   const isCreate = props.tool === 'Write' && output?.type === 'create'
   if (output === undefined) return { path, isCreate, added: 0, removed: 0, isDone: false }
   if (props.tool === 'NotebookEdit') {
-    return { path, isCreate, added: lineCount(text(output.new_source)), removed: lineCount(text(output.old_source)), isDone: true }
+    return { path, isCreate, ...cellCounts(output.edit_mode ?? input.edit_mode, text(output.old_source), text(output.new_source)), isDone: true }
   }
   const counts = patchCounts(output.structuredPatch)
   if (isCreate && (counts === undefined || counts.added === 0)) {
@@ -163,6 +186,9 @@ export function registerEdits(on: On, view: View, isOn: () => boolean) {
   const seen = new Map<string, string>()
   // The runs unfolded by a press, by their first call.
   const shown = new Set<string>()
+  // Results drawn in full before their call's row told what it changed (a window or a
+  // resume can draw a result first): the call redraws them once it is summarized.
+  const early = new Set<string>()
 
   on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
     if (e.surface !== 'terminal' || !EDIT_TOOLS.has(e.props.tool)) return next(e)
@@ -175,7 +201,7 @@ export function registerEdits(on: On, view: View, isOn: () => boolean) {
       else changes.set(id, change)
       const at = view.order.indexOf(id)
       const besideOne = at >= 0 && [view.order[at - 1], view.order[at + 1]].some((other) => other !== undefined && changes.has(other))
-      if (besideOne && isOn()) $.ui.invalidate('ui.render')
+      if ((besideOne || (change !== undefined && early.has(id))) && isOn()) $.ui.invalidate('ui.render')
     }
     if (!isOn() || e.props.isExpanded || change === undefined) return next(e)
 
@@ -211,7 +237,12 @@ export function registerEdits(on: On, view: View, isOn: () => boolean) {
 
   // The diff beneath a call is its result's row: drawn only while its run is unfolded.
   on('ui.render', { component: 'ToolResult' }, async ($, e, next) => {
-    if (e.surface !== 'terminal' || !isOn() || e.props.isExpanded || e.props.isErrored || !changes.has(e.requestId)) return next(e)
+    if (e.surface !== 'terminal' || !isOn() || e.props.isExpanded || e.props.isErrored || isStaged(e.props.output)) return next(e)
+    if (!changes.has(e.requestId)) {
+      if (EDIT_TOOLS.has(e.props.tool)) early.add(e.requestId)
+      return next(e)
+    }
+    early.delete(e.requestId)
     if (shown.has(runOf(view.order, changes, e.requestId)[0]!)) return next(e)
     const { Box } = $.ui.resolve(e)
     return <Box />

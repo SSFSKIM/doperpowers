@@ -27,6 +27,21 @@ describe('changes', () => {
     expect(changeOf({ ...call, tool: 'Bash', input: { command: 'ls' }, output: {} })).toBeUndefined()
   })
 
+  test('a change staged for review, not applied, is no change', async () => {
+    const patch = [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-a', '+b'] }]
+    expect(changeOf({ ...call, tool: 'Edit', input: { file_path: '/r/a.py' }, output: { filePath: '/r/a.py', structuredPatch: patch, staged: true } })).toBeUndefined()
+  })
+
+  test("a notebook cell counts by its edit's mode, a replace only the lines that differ", async () => {
+    const cell = (mode: string, old_source: string | undefined, new_source: string) =>
+      changeOf({ ...call, tool: 'NotebookEdit', input: { notebook_path: '/r/n.ipynb', new_source }, output: { notebook_path: '/r/n.ipynb', edit_mode: mode, old_source, new_source } })
+    const body = Array.from({ length: 100 }, (_, i) => `line ${i}`)
+    const changed = body.map((text, i) => (i === 50 ? 'new' : text))
+    expect(cell('replace', body.join('\n'), changed.join('\n'))).toMatchObject({ added: 1, removed: 1 })
+    expect(cell('insert', undefined, 'a\nb\n')).toMatchObject({ added: 2, removed: 0 })
+    expect(cell('delete', 'a\nb\nc', 'ignored')).toMatchObject({ added: 0, removed: 3 })
+  })
+
   test('the line names each file with its own counts, one entry per file', async () => {
     expect(line([change('/r/build.py', 3, 0), change('/r/x/to-human.tsx', 40, 12), change('/r/build.py', 1, 1)]))
       .toBe('Edited build.py +4 -1, to-human.tsx +40 -12')
@@ -90,6 +105,31 @@ describe('the summary line', () => {
 
     await first.use.press({ key: 'to-human-edits' })
     expect(await second.result.find({ type: 'Text', text: 'ToolResult' })).toBeUndefined()
+  })
+
+  test('a result drawn before its call is hidden once the call is summarized', async ($, on) => {
+    await setUp($, on)
+    const props = edit('e1', '/r/a.py', 3)
+    const result = await $.ui.mount({
+      plugin: PLUGIN, surface: 'terminal', component: 'ToolResult', requestId: 'e1',
+      props: { tool_use_id: 'e1', tool: 'Edit', output: props.output, isErrored: false, isExpanded: false },
+    } as never)
+    const use = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'ToolUse', requestId: 'e1', props: { ...props, isExpanded: false } } as never)
+    await use.press({ key: 'to-human-toggle' })
+
+    expect((await use.find({ type: 'Button', key: 'to-human-edits' }))?.text).toBe('Edited a.py +3 ›')
+    expect(await result.find({ type: 'Text', text: 'ToolResult' })).toBeUndefined()
+  })
+
+  test('a staged edit keeps both its rows as the engine draws them', async ($, on) => {
+    await setUp($, on)
+    const props = edit('e1', '/r/a.py', 3)
+    const { use, result } = await rows($, { ...props, output: { ...props.output, staged: true } } as never)
+    await use.press({ key: 'to-human-toggle' })
+
+    expect(await use.find({ type: 'Button', key: 'to-human-edits' })).toBeUndefined()
+    expect(await use.find({ type: 'Text', text: 'ToolUse' })).toBeDefined()
+    expect(await result.find({ type: 'Text', text: 'ToolResult' })).toBeDefined()
   })
 
   test('the ctrl+o transcript keeps every diff', async ($, on) => {
