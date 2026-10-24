@@ -167,13 +167,22 @@ export function runOf(order: readonly string[], changes: ReadonlyMap<string, Fil
 }
 
 const EDITS = 'to-human-edits'
+const EDITS_ROW = 'to-human-edits-row'
+/**
+ * An unfolded run's rows stand on the background the fullscreen transcript
+ * gives a row a click unfolded. A plugin cannot take a click on the engine's
+ * rows themselves (no Box is pressable, and a Button holds only text), so
+ * the run folds from its line, which heads the card.
+ */
+const CARD = 'userMessageBackgroundHover'
 
 /**
  * Folds the rows of file changes into the engine's summary style: a run of
  * edits and writes, with nothing between them, draws as one dim line
  * (`Edited build.py +3, to-human.tsx +40 -12`) where each would draw its
  * call and its whole diff; a press on the line unfolds the run's rows as
- * the engine draws them, and another folds them back. Registered beneath the
+ * the engine draws them, on a card under the line, and another folds them
+ * back. Registered beneath the
  * view's hooks, so it draws wherever the view shows a row as the engine
  * would: an unfolded run of working record, the full transcript. The ctrl+o
  * transcript and `--verbose` keep every diff, other surfaces draw their own
@@ -207,17 +216,18 @@ export function registerEdits(on: On, view: View, isOn: () => boolean) {
 
     const run = runOf(view.order, changes, id)
     const head = run[0]!
-    if (head !== id) {
-      const { Box } = $.ui.resolve(e)
-      return shown.has(head) ? next(e) : <Box />
-    }
     const { Box, Text, Button } = $.ui.resolve(e)
+    if (head !== id) {
+      return shown.has(head) ? <Box flexDirection="column" backgroundColor={CARD}>{await next(e)}</Box> : <Box />
+    }
     const isShown = shown.has(head)
     const parts = summaryParts(run.flatMap((call) => changes.get(call) ?? []))
+    // The pointer brightens the line as it does the engine's own count lines,
+    // instead of inverting it as it does any Button.
     const line = (
-      <Box marginTop={1}>
+      <Box key={EDITS_ROW}>
         <Text>{'  '}</Text>
-        <Button key={EDITS} plain dimColor onPress={() => {
+        <Button key={EDITS} plain dimColor hover={{ inverse: false, dimColor: false }} onPress={() => {
           if (!shown.delete(head)) shown.add(head)
         }}>
           {parts.map((part) => (part.bold || part.color ? <Text bold={part.bold} color={part.color}>{part.text}</Text> : part.text))}
@@ -226,12 +236,12 @@ export function registerEdits(on: On, view: View, isOn: () => boolean) {
       </Box>
     )
     return isShown ? (
-      <Box flexDirection="column">
+      <Box flexDirection="column" marginTop={1} backgroundColor={CARD}>
         {line}
         {await next(e)}
       </Box>
     ) : (
-      line
+      <Box marginTop={1}>{line}</Box>
     )
   })
 
@@ -243,9 +253,15 @@ export function registerEdits(on: On, view: View, isOn: () => boolean) {
       return next(e)
     }
     early.delete(e.requestId)
-    if (shown.has(runOf(view.order, changes, e.requestId)[0]!)) return next(e)
+    const run = runOf(view.order, changes, e.requestId)
     const { Box } = $.ui.resolve(e)
-    return <Box />
+    if (!shown.has(run[0]!)) return <Box />
+    // The card ends a line below its last diff, as the engine's unfolded rows do.
+    return (
+      <Box flexDirection="column" backgroundColor={CARD} paddingBottom={run.at(-1) === e.requestId ? 1 : 0}>
+        {await next(e)}
+      </Box>
+    )
   })
 
   // The line is the terminal's alone.
