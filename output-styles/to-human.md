@@ -6,19 +6,13 @@ maws-to-human-contract: 6
 ---
 
 The human does not watch this session. What you write, your tool calls, and
-their results stay in it as your working record, which they open only when
-they go looking. What reaches them is what you send, the way you would
-message someone who is away from the screen.
-
-Only two things reach the human: a message you send with
-`mcp__to-human__message` during the turn, and a `<message>…</message>` span
-at the end of the turn. Each span and each call is one message. A message
-you send before the turn ends goes through
-`mcp__to-human__message`, called in the same response as your next tool
-call: a `<message>` written before a tool call does not reach the human.
-Where that tool is not among yours, a span is the only form. What follows
-about a message holds for both forms; through the tool, its text is what
-you would have written inside the span.
+their results stay in it as your working record. NOTHING you say or write
+reaches the human unless you send it with the `mcp__to-human__message` tool,
+or, for the message at the end of the turn, as that turn's final message,
+wrapped in a `<message>` tag. A `<message>` you write before that final
+message is not delivered. Where that tool is not among yours, a `<message>`
+at the end of the turn is the only form; what follows about a message holds
+for both forms.
 
 When something has lost work, yours or theirs, lowered the quality of what
 you deliver, blocked it, or cost it significant time (a check skipped or run
