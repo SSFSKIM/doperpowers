@@ -1115,13 +1115,6 @@ function spanRows<E extends RenderInput>($: EngineInterface, e: E, spans: readon
   )
 }
 
-// MAWS draws this channel itself when it advertises native support; the
-// terminal keeps this view. Every hook awaits the same read for this worker.
-let maws: Promise<boolean> | undefined
-const native = async ($: EngineInterface, e: object) =>
-  (await (maws ??= $.env.get('MAWS_NATIVE_TO_HUMAN').then((value) => value !== undefined && value !== ''))) &&
-  (!('surface' in e) || e.surface !== 'terminal')
-
 /**
  * Registers the view. Nothing changes until the session's first marked
  * assistant message, whether the module finds it in the conversation when it
@@ -1220,7 +1213,6 @@ export function registerToHuman(on: On) {
   // after it are two, as the person reads them. Agent messages and background
   // deliveries are working record, and stand in the run they fall in.
   on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
-    if (await native($, e)) return next(e)
     await started($, view, next.signal, markSeen)
     const kind = promptRow(e.props, spawns)
     note(view, e.requestId, e.props)
@@ -1238,7 +1230,6 @@ export function registerToHuman(on: On) {
   // drawn last when it first drew.
   const before = new Map<string, string | undefined>()
   on('ui.render', { component: 'TurnDuration' }, async ($, e, next) => {
-    if (await native($, e)) return next(e)
     await started($, view, next.signal, markSeen)
     if (!before.has(e.requestId)) {
       before.set(e.requestId, view.order[view.order.length - 1])
@@ -1257,7 +1248,6 @@ export function registerToHuman(on: On) {
   })
 
   on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
-    if (await native($, e)) return next(e)
     await started($, view, next.signal, markSeen)
     const parsed = parse(e.props.text)
     const isError = view.errors.has(e.requestId)
@@ -1331,7 +1321,6 @@ export function registerToHuman(on: On) {
   // command's `ctrl+b to run in background`) follow its row, and the end
   // would stand between them.
   on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
-    if (await native($, e)) return next(e)
     await started($, view, next.signal, markSeen)
     if (isUnsent(e.props)) {
       unsent.add(e.props.tool_use_id)
@@ -1386,7 +1375,6 @@ export function registerToHuman(on: On) {
   // draws the run's end in the group's place, and when a call joins the
   // group the row that drew it is asked for again.
   on('ui.render', { component: 'ToolGroup' }, async ($, e, next) => {
-    if (await native($, e)) return next(e)
     await started($, view, next.signal, markSeen)
     const id = `${GROUP}${e.props.calls[0]?.tool_use_id ?? e.requestId}`
     view.requestIds.set(id, e.requestId)
@@ -1416,7 +1404,6 @@ export function registerToHuman(on: On) {
   // the run's button and this one draws nothing; unfolded, it is the last
   // of the two, and carries the run's end.
   on('ui.render', { component: 'ToolResult' }, async ($, e, next) => {
-    if (await native($, e)) return next(e)
     await started($, view, next.signal, markSeen)
     if (isUnsent(e.props)) {
       unsent.add(e.props.tool_use_id)
@@ -1436,7 +1423,6 @@ export function registerToHuman(on: On) {
   // what the hooks beneath draw there (the ask's open questions), which this
   // plugin's hooks sit outside of.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    if (await native($, e)) return next(e)
     await started($, view, next.signal, markSeen)
     if (!hasSeenMark || e.props.hasSurvey) {
       return next(e)
@@ -1476,7 +1462,6 @@ export function registerToHuman(on: On) {
   // window is left where it is: any reveal, even one that moves nothing, stops
   // the transcript following new output at its bottom.
   on('ui.press', { element: TOGGLE }, async ($, e, next) => {
-    if (await native($, e)) return next(e)
     view.folded = undefined
     const result = await next(e)
     $.ui.invalidate('ui.render')
@@ -1492,7 +1477,6 @@ export function registerToHuman(on: On) {
   })
 
   on('ui.press', { element: MODE }, async ($, e, next) => {
-    if (await native($, e)) return next(e)
     const result = await next(e)
     $.ui.invalidate('ui.render')
     return result
