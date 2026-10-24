@@ -8,12 +8,14 @@ const PREVIEW = 200
 /**
  * What a message's notification says, whether it was sent as a span or
  * through the message tool: the message as one line, the markup a banner
- * would show raw (backticks, emphasis, a link's target, the critical block's
- * rules) dropped, cut to a banner's length. Undefined when nothing is left.
+ * would show raw (backticks, emphasis, a link's target, a quote's markers,
+ * the rules of a critical block in the earlier form) dropped, cut to a
+ * banner's length. Undefined when nothing is left.
  */
 export function previewLine(text: string): string | undefined {
   const line = text
     .replace(/\[([^\]]*)\]\((?:[^()]|\([^()]*\))*\)/g, '$1')
+    .replace(/^[ \t]*>/gm, '')
     .replace(/`|\*\*|─+/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()

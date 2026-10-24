@@ -99,8 +99,10 @@ describe('previewOf', () => {
   const text = (t: string) => [{ type: 'text', text: t }]
 
   test('reads the first message that says something, as one line without markup', () => {
-    const critical = '<message>\n`⚠ Critical ────────`\nThe **build** broke in [the runner](/abs/ci.sh#L4).\n`──────`\n</message>'
-    expect(previewOf(text(critical))).toBe('⚠ Critical The build broke in the runner.')
+    const critical = '<message>\n> **⚠ Critical** The **build** broke in [the runner](/abs/ci.sh#L4).\n>\n> **Handled:** no.\n</message>'
+    expect(previewOf(text(critical))).toBe('⚠ Critical The build broke in the runner. Handled: no.')
+    const earlier = '<message>\n`⚠ Critical ────────`\nThe build broke.\n`──────`\n</message>'
+    expect(previewOf(text(earlier))).toBe('⚠ Critical The build broke.')
     expect(previewOf([{ type: 'tool_use' }, ...text('<message> </message><message>Next.</message>')])).toBe('Next.')
     expect(previewOf(text('No marks.'))).toBeUndefined()
   })
