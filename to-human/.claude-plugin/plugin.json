@@ -1,7 +1,7 @@
 {
   "name": "to-human",
   "description": "The report view of a session under the to-human output style: assistant messages fold to their <message> spans, and tool calls, unmarked text and deliveries from agents and other sessions fold behind [ working record ] buttons; the message tool (mcp__to-human__message) sends a message before another tool call word for word, drawn where the call sits; each message the model sends raises a native notification through the person's own channel, which their Notification hooks read as plugin_notification",
-  "version": "0.5.3",
+  "version": "0.6.0",
   "author": {
     "name": "SSFSKIM",
     "email": "supremekim17@gmail.com"
