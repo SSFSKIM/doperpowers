@@ -1211,6 +1211,7 @@ export function registerToHuman(on: On) {
   // run's end in the group's place.
   const groupOf = new Map<string, string>()
   const lastOf = new Map<string, string>()
+  const expanded = new Set<string>()
 
   // The ids of the Agent and Workflow calls the transcript drew, whose
   // failure notifications stay in the report as the spawns do.
@@ -1326,10 +1327,12 @@ export function registerToHuman(on: On) {
   // then (no output, and no abort, which leaves one) the call's row is the
   // last of the two. A row of a group the engine expanded draws its output
   // inline and is whole: it stands in the group's run, and the group's last
-  // call draws the run's end where the group would. A call still running,
-  // and a group still live, draw no end: the engine's own lines for it (a
-  // command's `ctrl+b to run in background`) follow its row, and the end
-  // would stand between them.
+  // call draws the run's end where the group would, live or not: its calls
+  // finish in any order, and the pill names the first one running. A
+  // standalone call still running, and a collapsed group still live, under
+  // the engine's pill (`ctrl+b to run in background`) leave the run's end to
+  // the pill, which draws it beneath itself: drawn by the row, the end would
+  // stand between the row and its pill.
   on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
     if (await native($, e)) return next(e)
     await started($, view, next.signal, markSeen)
@@ -1369,9 +1372,9 @@ export function registerToHuman(on: On) {
       return next(e)
     }
     if (group !== undefined) {
-      return recordRow($, e, next, view, { id: group, opens: false, closes: lastOf.get(group) === e.requestId && !e.props.isRunning })
+      return recordRow($, e, next, view, { id: group, opens: false, closes: lastOf.get(group) === e.requestId })
     }
-    return recordRow($, e, next, view, { closes: e.props.output === undefined && !e.props.isInterrupted && !e.props.isRunning })
+    return recordRow($, e, next, view, { closes: e.props.output === undefined && !e.props.isInterrupted && !(e.props.isRunning && pills.has(e.requestId)) })
   })
 
   // A group's own id changes while it forms, so the row is known by its
@@ -1390,6 +1393,11 @@ export function registerToHuman(on: On) {
     await started($, view, next.signal, markSeen)
     const id = `${GROUP}${e.props.calls[0]?.tool_use_id ?? e.requestId}`
     view.requestIds.set(id, e.requestId)
+    if (e.props.isExpanded) {
+      expanded.add(id)
+    } else {
+      expanded.delete(id)
+    }
     note(view, id, e.props)
     see($, view, id, 'record')
     let last: string | undefined
@@ -1409,7 +1417,42 @@ export function registerToHuman(on: On) {
         $.ui.invalidate('ui.render')
       }
     }
-    return isFolding() ? recordRow($, e, next, view, { id, closes: !e.props.isExpanded && !e.props.isActive }) : next(e)
+    return isFolding() ? recordRow($, e, next, view, { id, closes: !e.props.isExpanded && !(e.props.isActive && pills.has(id)) }) : next(e)
+  })
+
+  // The rows the engine's pill has drawn under, by the view's id for the row
+  // (a group's, for a call in one): while the row is live, the pill draws
+  // the run's end beneath itself, and a pill that first draws asks the row
+  // to draw again without it. An expanded group's last call draws its end.
+  const pills = new Set<string>()
+  on('ui.render', { component: 'ToolProgress' }, async ($, e, next) => {
+    if (await native($, e)) return next(e)
+    await started($, view, next.signal, markSeen)
+    const id = groupOf.get(e.props.tool_use_id) ?? e.props.tool_use_id
+    if (expanded.has(id)) {
+      return next(e)
+    }
+    if (!pills.has(id)) {
+      pills.add(id)
+      if (isFolding()) {
+        $.ui.invalidate('ui.render')
+      }
+    }
+    const drawn = await next(e)
+    if (!isFolding() || !inRun(view.rowOf.get(id))) {
+      return drawn
+    }
+    const start = runStart(view.order, view.rowOf, id)
+    if (!unfolded.has(start) || runEnd(view.order, view.rowOf, id) !== id) {
+      return drawn
+    }
+    const { Box } = $.ui.resolve(e)
+    return (
+      <Box flexDirection="column">
+        {drawn}
+        <Box paddingLeft={2} marginTop={1}>{control($, e, { key: TOGGLE, label: 'fold to report', mark: FOLD, onPress: () => toggle(view, start) })}</Box>
+      </Box>
+    )
   })
 
   // The result row shares its call's id: folded, the call's row has drawn
