@@ -773,16 +773,30 @@ describe('rows', () => {
     expect(await last.find({ type: 'Button', text: 'fold to report' })).toBeDefined()
   })
 
-  test('a run whose last call still runs draws its fold once the call is done, a line below the row above', async ($, on) => {
+  test('a run whose last call runs under the pill draws its fold under the pill, and under the row once the call is done', async ($, on) => {
     mock.env(on, {})
     mock.store(on)
-    on('ui.render', (_, e) => ({ type: 'Text', children: [String((e.props as { text?: string }).text ?? e.component)] }))
+    on('ui.render', (_, e) => ({ type: 'Text', children: [String((e.props as { text?: string; hint?: string }).text ?? (e.props as { hint?: string }).hint ?? e.component)] }))
     await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AssistantMessage', requestId: 'm1', props: { text: '<message>Checking.</message>', isFirstOfReply: true } })
     const first = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AssistantMessage', requestId: 'r1', props: { text: 'Working.', isFirstOfReply: true } })
     const props = { tool_use_id: 'b1', tool: 'Bash', input: { command: 'sleep 9' }, isRunning: true, isErrored: false, isInterrupted: false }
     const call = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'ToolUse', requestId: 'b1', props } as never)
     await first.press({ key: 'to-human-toggle' })
+    // Before the pill shows, the live row is the run's end.
+    expect(await call.find({ type: 'Button', text: 'fold to report' })).toBeDefined()
+
+    const pill = await $.ui.mount({
+      plugin: PLUGIN, surface: 'terminal', component: 'ToolProgress', requestId: 'b1',
+      props: { tool_use_id: 'b1', kind: 'background_hint', hint: '(ctrl+b to run in background)' },
+    } as never)
+    await call.redraw(props as never)
     expect(await call.find({ type: 'Button', text: 'fold to report' })).toBeUndefined()
+    expect(await pill.find({ type: 'Text', text: '(ctrl+b to run in background)' })).toBeDefined()
+    expect(await pill.find({ type: 'Button', text: 'fold to report' })).toBeDefined()
+    await pill.press({ key: 'to-human-toggle' })
+    expect(await first.find({ type: 'Button', text: 'working record' })).toBeDefined()
+    expect(await pill.find({ type: 'Button', text: 'fold to report' })).toBeUndefined()
+    await first.press({ key: 'to-human-toggle' })
 
     await call.redraw({ ...props, isRunning: false, output: { stdout: '', stderr: '' } } as never)
     const result = await $.ui.mount({
