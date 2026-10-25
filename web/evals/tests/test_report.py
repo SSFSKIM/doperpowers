@@ -252,6 +252,16 @@ class HardSet(unittest.TestCase):
         self.assertIn('| search-2 | search | 1/0/1 |', md)
         self.assertIn('- search-2 A rep 2: wrong', md)
 
+    def test_one_configurations_folders_taken_together_are_judged_over_the_whole_matrix(self):
+        ts = hard_tasks()
+        a_only = report.expected_runs(ts, 'final', 1, arms=['A'])
+        b_only = report.expected_runs(ts, 'final', 1, arms=['B'])
+        self.assertEqual(report.gate_matrix(ts, a_only), a_only)  # one configuration stays a screening round
+        both = report.gate_matrix(ts, a_only | b_only)
+        self.assertEqual(len(both), 15 * 2 * 4)
+        md = report.render(ts, runs_for(ts, {}, {}, reps=1), 'x', both)
+        self.assertIn('Overall: **INCOMPLETE**', md)
+
     def test_a_tasks_mechanism_gets_a_column(self):
         ts = [dict(t, mechanism='over-10mb' if t['category'] == 'long-pdf' else 'quote-limit') for t in hard_tasks()]
         rows = report._by_task(ts, runs_for(ts, {'long-pdf-1': 0}, {}), ['A', 'B'])

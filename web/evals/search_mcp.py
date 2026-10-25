@@ -13,6 +13,7 @@ each search's usage to $HOME/.cache/web-evals-search/usage.jsonl.
     python3 -I web/evals/search_mcp.py     # speaks MCP on stdin/stdout
 """
 
+import http.client
 import json
 import os
 import sys
@@ -95,6 +96,16 @@ def format_reply(query, content):
     return '\n'.join(parts)
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """A redirect would carry the gateway's token to wherever it points: it is an error instead."""
+
+    def redirect_request(self, *_):
+        return None
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
 def search(args, home):
     """(reply text, is_error)."""
     base, token, model = gateway(home)
@@ -103,12 +114,14 @@ def search(args, home):
         'content-type': 'application/json', 'anthropic-version': '2023-06-01', 'authorization': 'Bearer ' + token, **HEADERS})
     started = time.monotonic()
     try:
-        with urllib.request.urlopen(req, timeout=TIMEOUT_S) as res:
+        with _OPENER.open(req, timeout=TIMEOUT_S) as res:
             out = json.load(res)
     except urllib.error.HTTPError as e:
-        return f'Web search failed: HTTP {e.code}: {e.read()[:300].decode("utf-8", "replace")}', True
-    except (urllib.error.URLError, TimeoutError, ValueError) as e:
-        return f'Web search failed: {e}', True
+        with e:
+            return f'Web search failed: HTTP {e.code}: {e.read()[:300].decode("utf-8", "replace")}', True
+    # OSError covers a reset or refused connection and a timeout; HTTPException a body cut short.
+    except (urllib.error.URLError, OSError, http.client.HTTPException, ValueError) as e:
+        return f'Web search failed: {type(e).__name__}: {e}', True
     log_usage(home, {'query': args['query'], 'model': out.get('model', model), 'usage': out.get('usage') or {},
                      'durationMs': round((time.monotonic() - started) * 1000)})
     return format_reply(args['query'], out.get('content') or []), False
@@ -157,7 +170,11 @@ def main():
     out_lock = threading.Lock()
 
     def answer(msg):
-        res = handle(msg, home)
+        try:
+            res = handle(msg, home)
+        except Exception as e:  # every request gets an answer, or its caller waits out its limit
+            res = None if msg.get('id') is None else {'jsonrpc': '2.0', 'id': msg['id'],
+                                                     'error': {'code': -32603, 'message': f'{type(e).__name__}: {e}'}}
         if res is not None:
             with out_lock:
                 sys.stdout.write(json.dumps(res) + '\n')

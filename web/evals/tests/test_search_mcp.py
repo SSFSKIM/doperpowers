@@ -1,6 +1,8 @@
 import http.server
 import json
 import os
+import subprocess
+import sys
 import tempfile
 import threading
 import unittest
@@ -12,16 +14,22 @@ class FakeGateway(http.server.BaseHTTPRequestHandler):
     seen = []
     reply = {}
     status = 200
+    location = None   # a redirect's target
+    cut_short = False  # promise more body than is sent, then close
 
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers['content-length'])))
         FakeGateway.seen.append({'path': self.path, 'headers': {k.lower(): v for k, v in self.headers.items()}, 'body': body})
         data = json.dumps(FakeGateway.reply).encode()
         self.send_response(FakeGateway.status)
+        if FakeGateway.location:
+            self.send_header('location', FakeGateway.location)
         self.send_header('content-type', 'application/json')
-        self.send_header('content-length', str(len(data)))
+        self.send_header('content-length', str(len(data) + (1000 if FakeGateway.cut_short else 0)))
         self.end_headers()
         self.wfile.write(data)
+        if FakeGateway.cut_short:
+            self.close_connection = True
 
     def log_message(self, *_):
         pass
@@ -67,7 +75,7 @@ class Search(unittest.TestCase):
         with open(os.path.join(self.home, '.claude', 'settings.json'), 'w') as f:
             json.dump({'env': {'ANTHROPIC_BASE_URL': f'http://127.0.0.1:{self.server.server_port}/',
                                'ANTHROPIC_AUTH_TOKEN': 'tok', 'ANTHROPIC_DEFAULT_HAIKU_MODEL': 'claude-haiku-5-5[1m]'}}, f)
-        FakeGateway.seen, FakeGateway.status = [], 200
+        FakeGateway.seen, FakeGateway.status, FakeGateway.location, FakeGateway.cut_short = [], 200, None, False
         FakeGateway.reply = {'model': 'claude-haiku-5-5', 'usage': {'input_tokens': 12000, 'output_tokens': 300,
                                                                     'server_tool_use': {'web_search_requests': 1}},
                              'content': [results(('T', 'https://t.example/')), {'type': 'text', 'text': 'Summary.'}]}
@@ -101,6 +109,40 @@ class Search(unittest.TestCase):
     def test_a_query_too_short_never_reaches_the_gateway(self):
         self.assertTrue(self.call({'query': ' '})['result']['isError'])
         self.assertEqual(FakeGateway.seen, [])
+
+    def test_a_body_cut_short_is_an_error_result(self):
+        FakeGateway.cut_short = True
+        res = self.call({'query': 'x y'})
+        self.assertTrue(res['result']['isError'])
+        self.assertIn('IncompleteRead', res['result']['content'][0]['text'])
+
+    def test_a_redirect_is_not_followed_so_the_token_stays_home(self):
+        elsewhere = http.server.HTTPServer(('127.0.0.1', 0), FakeGateway)
+        threading.Thread(target=elsewhere.serve_forever, daemon=True).start()
+        try:
+            FakeGateway.status, FakeGateway.location = 307, f'http://127.0.0.1:{elsewhere.server_port}/v1/messages'
+            res = self.call({'query': 'x y'})
+        finally:
+            elsewhere.shutdown()
+            elsewhere.server_close()
+        self.assertTrue(res['result']['isError'])
+        self.assertIn('HTTP 307', res['result']['content'][0]['text'])
+        self.assertEqual(len(FakeGateway.seen), 1)  # the gateway's own request; none reached the redirect's target
+
+
+class Server(unittest.TestCase):
+    def test_a_call_that_raises_still_gets_an_answer(self):
+        # A HOME without the gateway's settings: the search raises before any request.
+        home = tempfile.mkdtemp()
+        msgs = [{'jsonrpc': '2.0', 'id': 1, 'method': 'initialize', 'params': {'protocolVersion': '2025-06-18'}},
+                {'jsonrpc': '2.0', 'method': 'notifications/initialized'},
+                {'jsonrpc': '2.0', 'id': 2, 'method': 'tools/call', 'params': {'name': 'web_search', 'arguments': {'query': 'x y'}}}]
+        p = subprocess.run([sys.executable, '-I', search_mcp.__file__], input=''.join(json.dumps(m) + '\n' for m in msgs),
+                           capture_output=True, text=True, env={'HOME': home, 'PATH': os.environ.get('PATH', '')}, timeout=60)
+        answers = {o['id']: o for o in map(json.loads, p.stdout.splitlines())}
+        self.assertEqual(sorted(answers), [1, 2])
+        self.assertEqual(answers[2]['error']['code'], -32603)
+        self.assertIn('FileNotFoundError', answers[2]['error']['message'])
 
 
 class Protocol(unittest.TestCase):

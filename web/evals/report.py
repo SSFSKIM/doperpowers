@@ -313,6 +313,18 @@ def _folder(path):
     return tasks, runs, expected
 
 
+def gate_matrix(tasks, expected):
+    """Folders taken together that hold both configurations are judged as a gate, over the design's
+    whole paired matrix of each set they cover; one configuration's folders stay a screening round."""
+    if len({arm for _, arm, _ in expected}) < 2:
+        return expected
+    set_of = {t['id']: t['set'] for t in tasks}
+    out = set(expected)
+    for s in {set_of[tid] for tid, _, _ in expected}:
+        out |= expected_runs(tasks, s, harness.REPS[s])
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('runs', nargs='+', help='the run folder judged (more than one: their runs together, as when reserve tasks are added)')
@@ -324,6 +336,7 @@ def main():
         tasks += [t for t in ts if t['id'] not in {x['id'] for x in tasks}]
         runs += rs
         expected |= exp
+    expected = gate_matrix(tasks, expected)
     dev = [(f'Round {i} ({os.path.basename(os.path.normpath(d))})', *_folder(d)) for i, d in enumerate(a.dev, 1)]
     title = ', '.join(os.path.basename(os.path.normpath(f)) for f in a.runs)
     sys.stdout.write(render(tasks, runs, title, expected, dev) + '\n')
