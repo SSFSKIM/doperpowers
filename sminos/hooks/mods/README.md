@@ -115,10 +115,20 @@ which the built-in never has, draws `⏺ Claude asked (answer when ready):`, one
 `· <header> — <question>` row per question and `[ answer ]`; once answered it
 draws the answers, with `not delivered yet` under them until the answer has
 reached the model. Above the prompt, while any ask is open, `2 open questions ·
-[ answer ]` opens the oldest, since the ask's own row scrolls away while the
-model works. That line is registered before the to-human view, whose band
+[ answer ] [ dismiss ]` acts on the oldest, since the ask's own row scrolls
+away while the model works. That line is registered before the to-human view, whose band
 draws without passing on, so it draws above it; the rows are registered after
 the view, which keeps a question in the report.
+
+`[ dismiss ]`, beside every open ask's `[ answer ]`, closes a question gone
+stale without a dialog: the row draws `⏺ User dismissed Claude's questions:`,
+and the model is told, in the delivery's form, that no answer will come
+(`DISMISSED`). That delivery is quiet: it wakes no idle session and never
+makes a turn's end submit a prompt, but rides the next route another opens
+(the model's next result, the human's next prompt, or a prompt an answer
+submits). Nothing for an ask whose dialog is up. The bridge settles the
+question withdrawn by `terminal`, and a resumed session reads the dismissal
+back from the delivery as it reads an answer.
 
 Answering an async ask runs the blocking path from the press: the dialog is
 raised inside the `ui.press` dispatch, as `$.ui.ask` requires, and queues

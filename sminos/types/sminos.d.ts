@@ -24,8 +24,8 @@ export type AskSnapshot = {
     status: 'open' | 'answered'
     answer?: string
   }[]
-  /** The answers that have not reached the model, in the order given: the call's id and the delivery text. */
-  undelivered: { id: string; text: string }[]
+  /** The answers that have not reached the model, in the order given: the call's id, the delivery text, and whether it waits for a route rather than waking the session (a dismissal). */
+  undelivered: { id: string; text: string; isQuiet?: boolean }[]
   isTurnRunning: boolean
   /** An ask's dialog is up: open, or queued behind another. A reload waits for it. */
   isDialogUp: boolean

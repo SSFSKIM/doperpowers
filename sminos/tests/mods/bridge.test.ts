@@ -3861,7 +3861,7 @@ describe('requests from outside: questions', () => {
     expect(h.ofType('settled')).toEqual([expect.objectContaining({ request: 'toolu_plugin_1', outcome: 'withdrawn', by: 'bridge' })])
   })
 
-  test('an async question: raised as it opens, answered through the ask mod, settled as it is answered, withdrawn when forgotten', async () => {
+  test('an async question: raised as it opens, answered through the ask mod, settled as it is answered, withdrawn when dismissed or forgotten', async () => {
     const h = harness()
     await h.ready()
     onAskNote({ kind: 'open', id: 'toolu_a1', questions: [FRUIT] })
@@ -3876,6 +3876,10 @@ describe('requests from outside: questions', () => {
     onAskNote({ kind: 'forgotten', ids: ['toolu_a2'] })
     await h.settle()
     expect(h.ofType('settled').at(-1)).toMatchObject({ request: 'toolu_a2', outcome: 'withdrawn', by: 'bridge' })
+    onAskNote({ kind: 'open', id: 'toolu_a4', questions: [FRUIT] })
+    onAskNote({ kind: 'dismissed', id: 'toolu_a4' })
+    await h.settle()
+    expect(h.ofType('settled').at(-1)).toMatchObject({ request: 'toolu_a4', outcome: 'withdrawn', by: 'terminal' })
     // An async question does not end with a turn.
     onAskNote({ kind: 'open', id: 'toolu_a3', questions: [FRUIT] })
     await h.turn('t9')

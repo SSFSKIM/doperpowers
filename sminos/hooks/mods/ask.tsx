@@ -464,13 +464,14 @@ let describedFrom: string | undefined
  * What the session's asks do, as an observer (the bridge) is told: an async
  * ask opened, was answered (`by` whoever answered it from outside, or
  * through the `dialog` a press opened, whose answer the bridge attributes),
- * or was forgotten (a new conversation); a dialog this mod raised settled,
+ * was dismissed unanswered, or was forgotten (a new conversation); a dialog this mod raised settled,
  * with what the engine returned for its call.
  */
 export type AskNote =
   | { kind: 'open'; id: string; questions: AskQuestion[] }
   | { kind: 'answered'; id: string; by: string }
   | { kind: 'answered'; id: string; dialog: string }
+  | { kind: 'dismissed'; id: string }
   | { kind: 'forgotten'; ids: string[] }
   | { kind: 'dialog'; toolUseId: string; isError: boolean; text: string }
 
@@ -644,6 +645,12 @@ export const PLUGIN_PROMPTS: readonly string[] = ['The sminos plugin sent a mess
 const isPluginPrompt = (text: string) => PLUGIN_PROMPTS.some((framing) => text.startsWith(framing))
 const DELIVERY = /The human responded to your async AskUserQuestion \(call ([^)\s]+)\): /g
 
+/**
+ * What a dismissed ask hands the model in place of an answer, after the
+ * delivery head: the human closed it unanswered, so nothing will come.
+ */
+export const DISMISSED = 'The human dismissed these questions without answering them; no answer will come. Do not wait for one.'
+
 /** The text a delivery carries: which call it answers, then what the blocking call would have returned. */
 export function deliveryText(toolUseId: string, engineText: string): string {
   return `${DELIVERY_HEAD} (call ${toolUseId}): ${engineText}`
@@ -746,6 +753,7 @@ export type AskRow =
   | { kind: 'open'; questions: AskQuestion[] } // an async ask waiting for the human
   | { kind: 'answered'; rows: [string, string][]; isDelivered: boolean }
   | { kind: 'declined'; questions: AskQuestion[]; isDelivered: boolean }
+  | { kind: 'dismissed'; questions: AskQuestion[]; isDelivered: boolean }
 
 /**
  * The row of a call of the tool, as the engine draws the built-in's: nothing
@@ -765,6 +773,9 @@ export function askRow(
       return { kind: 'open', questions: ask.questions }
     }
     const answer = ask.answer ?? ''
+    if (answer.startsWith(DISMISSED)) {
+      return { kind: 'dismissed', questions: ask.questions, isDelivered }
+    }
     return answer.startsWith(REFUSAL)
       ? { kind: 'declined', questions: ask.questions, isDelivered }
       : { kind: 'answered', rows: answerRows(ask.questions, answer), isDelivered }
@@ -982,8 +993,12 @@ function deliveryTexts(row: Record<string, unknown>): string[] {
   return texts.filter(isPluginPrompt)
 }
 
-/** An answer on its way to the model: its ask and the delivery text. */
-type Delivery = { id: string; text: string }
+/**
+ * An answer on its way to the model: its ask and the delivery text. A quiet
+ * one (a dismissal) wakes no idle session: it rides the next route another
+ * opens, the model's next result or the human's next prompt.
+ */
+type Delivery = { id: string; text: string; isQuiet?: boolean }
 
 /** The session's async asks, oldest first. */
 let asks: OpenAsk[] = []
@@ -1121,11 +1136,11 @@ async function submitDeliveries(out: Out, items: Delivery[]) {
   }
 }
 
-/** An ask answered: held while a turn runs, else submitted at once with whatever was held before it. */
+/** An ask answered: held while a turn runs, or when quiet, else submitted at once with whatever was held before it. */
 function deliver(out: Out, item: Delivery) {
   undelivered.set(item.id, item)
   save()
-  if (isTurnRunning) {
+  if (isTurnRunning || item.isQuiet === true) {
     held.push(item)
     return
   }
@@ -1183,6 +1198,23 @@ export function answerAsync(id: string, answers: Readonly<Record<string, string>
   external.invalidate()
   note({ kind: 'answered', id, by })
   return { ok: true }
+}
+
+/**
+ * A press on `[ dismiss ]`: the ask closes unanswered, and the model is told
+ * so quietly, never woken for it. Nothing for an ask that is not open, or
+ * whose dialog is up (its answer is the dialog's).
+ */
+function dismissAsk(out: Out, id: string) {
+  const ask = asks.find((candidate) => candidate.id === id)
+  if (ask === undefined || ask.status !== 'open' || raisedAsks.has(id)) {
+    return
+  }
+  ask.status = 'answered'
+  ask.answer = DISMISSED
+  deliver(out, { id, text: deliveryText(id, DISMISSED), isQuiet: true })
+  out.invalidate()
+  note({ kind: 'dismissed', id })
 }
 
 /** A press: opens the ask's dialog, and hands an answer, or "Chat about this", to the model. Esc leaves it open. */
@@ -1374,6 +1406,7 @@ async function historyAsks($: EngineInterface): Promise<OpenAsk[]> {
 }
 
 const ANSWER_KEY = 'ask-answer:'
+const DISMISS_KEY = 'ask-dismiss:'
 /** A button's own press does nothing: the `ui.press` hook answers it, where the engine can be reached. */
 const noop = () => {}
 
@@ -1385,7 +1418,7 @@ export function openCount(open: readonly OpenAsk[]): string {
 
 /**
  * The line above the prompt while an async ask is open: how many questions
- * wait, and `[ answer ]` for the oldest, since the ask's own row scrolls away
+ * wait, and `[ answer ]` and `[ dismiss ]` for the oldest, since the ask's own row scrolls away
  * while the model works. The to-human view (its own plugin, outside this
  * one) draws its line under this.
  */
@@ -1403,6 +1436,8 @@ export function registerAskBand(on: On) {
         <Box>
           <Text dimColor>{openCount(open)} · </Text>
           <Button key={`${ANSWER_KEY}${oldest.id}`} label="answer" onPress={noop} />
+          <Text> </Text>
+          <Button key={`${DISMISS_KEY}${oldest.id}`} label="dismiss" onPress={noop} />
         </Box>
         {inner}
       </Box>
@@ -1552,7 +1587,7 @@ export function registerAsk(on: On) {
     if (e.agentId === undefined) {
       isTurnRunning = false
       save()
-      if (e.reason === 'answer' && !isLatched && held.length > 0) {
+      if (e.reason === 'answer' && !isLatched && held.some((item) => item.isQuiet !== true)) {
         void submitDeliveries(outOf($), takeHeld())
       } else if (held.length > 0 || isLatched) {
         $.ui.log(`ask: the turn ended (${e.reason}${isLatched ? ', latched' : ''}); ${held.length} held for the next prompt`, { to: 'debug' })
@@ -1591,6 +1626,11 @@ export function registerAsk(on: On) {
     await answerAsk($, e.element.slice(ANSWER_KEY.length))
     return result
   })
+  on('ui.press', { element: /^ask-dismiss:/ }, async ($, e, next) => {
+    const result = await next(e)
+    dismissAsk(outOf($), e.element.slice(DISMISS_KEY.length))
+    return result
+  })
 
   // The tool's row draws what the engine draws for the built-in's, and an
   // open async ask with its `[ answer ]`; its result row draws nothing beside
@@ -1609,12 +1649,17 @@ export function registerAsk(on: On) {
       return <Box />
     }
     const lines =
-      row.kind === 'open'
+      row.kind === 'open' || row.kind === 'dismissed'
         ? row.questions.map((q) => `· ${q.header} — ${q.question}`)
         : row.kind === 'answered'
           ? row.rows.map(([question, answer]) => `· ${question} → ${answer}`)
           : row.questions.map((q) => `· ${q.question} (${q.options.map((o) => o.label).join(' / ')})`)
-    const title = row.kind === 'open' ? 'Claude asked (answer when ready):' : row.kind === 'answered' ? "User answered Claude's questions:" : 'User declined to answer questions'
+    const title = {
+      open: 'Claude asked (answer when ready):',
+      answered: "User answered Claude's questions:",
+      declined: 'User declined to answer questions',
+      dismissed: "User dismissed Claude's questions:",
+    }[row.kind]
     return (
       <Box flexDirection="column" marginTop={1}>
         <Text>⏺ {title}</Text>
@@ -1626,7 +1671,13 @@ export function registerAsk(on: On) {
                 {line}
               </Text>
             ))}
-            {row.kind === 'open' ? <Button key={`${ANSWER_KEY}${e.props.tool_use_id}`} label="answer" onPress={noop} /> : null}
+            {row.kind === 'open' ? (
+              <Box>
+                <Button key={`${ANSWER_KEY}${e.props.tool_use_id}`} label="answer" onPress={noop} />
+                <Text> </Text>
+                <Button key={`${DISMISS_KEY}${e.props.tool_use_id}`} label="dismiss" onPress={noop} />
+              </Box>
+            ) : null}
             {row.kind !== 'open' && !row.isDelivered ? <Text dimColor>not delivered yet</Text> : null}
           </Box>
         </Box>
