@@ -63,9 +63,10 @@ part_tools() {
 # decides instead (Docker's default seccomp profile refuses them).
 part_chromium() {
   apt-get update
-  apt-get install -y --no-install-recommends libasound2t64 libatk1.0-0t64 libatspi2.0-0t64 libdbus-1-3 libgbm1 \
-    libglib2.0-0t64 libnspr4 libnss3 libx11-6 libxcb1 libxcomposite1 libxdamage1 libxext6 libxfixes3 \
-    libxkbcommon0 libxrandr2
+  # The libraries the binary links (readelf's NEEDED; the x86_64 build adds atk-bridge).
+  apt-get install -y --no-install-recommends libasound2t64 libatk-bridge2.0-0t64 libatk1.0-0t64 libatspi2.0-0t64 \
+    libdbus-1-3 libgbm1 libglib2.0-0t64 libnspr4 libnss3 libx11-6 libxcb1 libxcomposite1 libxdamage1 libxext6 \
+    libxfixes3 libxkbcommon0 libxrandr2
   PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright npx --yes playwright-core@1.64.1 install --no-progress chromium-headless-shell
   local shell
   shell="$(ls -d /opt/ms-playwright/chromium_headless_shell-*/chrome-headless-shell-*/chrome-headless-shell | sort -V | tail -n 1)"
