@@ -123,6 +123,14 @@ def is_tool_caused(arm, text):
     return not re.search(r'status code \d{3}', text)
 
 
+_RUN_FILE = re.compile(r'^[\w-]+\.[AB]\.[\w-]+\.\d+\.json$')
+
+
+def run_files(folder):
+    """The I4 run files of a run folder, sorted (not the manifest, the projection, streams or failed runs)."""
+    return sorted(n for n in os.listdir(folder) if _RUN_FILE.match(n))
+
+
 def _text_of(content):
     if isinstance(content, str):
         return content

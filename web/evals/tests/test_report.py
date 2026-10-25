@@ -105,6 +105,19 @@ class Criteria(unittest.TestCase):
         self.assertAlmostEqual(c[0]['mean'], -1 / 24)
 
 
+class LoadRuns(unittest.TestCase):
+    def test_only_run_files_are_loaded(self):
+        import json
+        import os
+        import tempfile
+        d = tempfile.mkdtemp()
+        for name, obj in (('code-1.A.sol.1.json', {'task': 'code-1'}), ('code-1.B.sol.1.failed.json', {'rc': 1}),
+                          ('manifest.json', {}), ('projection.json', {}), ('code-1.A.sol.1.stream.jsonl', {})):
+            with open(os.path.join(d, name), 'w') as f:
+                json.dump(obj, f)
+        self.assertEqual(report.load_runs(d), [{'task': 'code-1'}])
+
+
 class Render(unittest.TestCase):
     def test_the_report_names_each_criterion_and_category(self):
         ts = tasks()

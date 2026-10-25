@@ -15,6 +15,9 @@ import random
 import statistics
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import harness  # noqa: E402
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 CATEGORIES = ('exact-detail', 'table', 'code', 'image', 'js', 'pdf', 'gist', 'synthesis')
 BOOTSTRAP_RESAMPLES = 10_000
@@ -152,10 +155,9 @@ def render(tasks, runs, title, dev_rounds=()):
 
 def load_runs(folder):
     runs = []
-    for name in sorted(os.listdir(folder)):
-        if name.endswith('.json') and name not in ('manifest.json', 'projection.json') and not name.endswith('.failed.json'):
-            with open(os.path.join(folder, name)) as f:
-                runs.append(json.load(f))
+    for name in harness.run_files(folder):
+        with open(os.path.join(folder, name)) as f:
+            runs.append(json.load(f))
     return runs
 
 

@@ -100,6 +100,8 @@ def grade(task, answer, workdir):
             for k, v in u.items():
                 if isinstance(v, (int, float)) and k not in ('contextWindow', 'maxOutputTokens'):
                     acc[k] = acc.get(k, 0) + v
+                elif k == 'costBasis':
+                    acc[k] = v  # 'list' when Claude Code knows the model's price, 'unknown' when it guessed
         usage['costUsd'] += res.get('total_cost_usd') or 0.0
         usage['durationMs'] += res.get('duration_ms') or 0
         g = parse_grade(res.get('result') or '', [f['id'] for f in task['facts']])
@@ -118,9 +120,14 @@ def main():
     with open(a.tasks) as f:
         tasks = {t['id']: t for t in json.load(f)}
     work = tempfile.mkdtemp(prefix='web-evals-grade-')
-    for name in sorted(os.listdir(a.runs)):
-        if not name.endswith('.json') or name == 'manifest.json':
-            continue
+    try:
+        _grade_folder(a, tasks, work)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def _grade_folder(a, tasks, work):
+    for name in harness.run_files(a.runs):
         path = os.path.join(a.runs, name)
         with open(path) as f:
             r = json.load(f)
