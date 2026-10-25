@@ -1,10 +1,10 @@
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
-import { writeFile, readdir, realpath } from 'node:fs/promises'
+import { writeFile, realpath } from 'node:fs/promises'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { startServer, tmpCache, send, fixture } from './helpers.ts'
+import { startServer, tmpCache, send, fixture, entryContents } from './helpers.ts'
 
 const CLI = join(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'cli.ts')
 let server: Awaited<ReturnType<typeof startServer>>
@@ -37,7 +37,7 @@ test('fetch prints exactly one JSON object and exits 0, for a page and for a fai
 
   const bad = await run(['fetch', `${server.origin}/missing`, '--cache-dir', cacheDir], env)
   assert.equal(bad.code, 0)
-  assert.deepEqual(Object.keys(JSON.parse(bad.stdout)).sort(), ['bodySnippet', 'error', 'ok', 'status', 'url'])
+  assert.deepEqual(Object.keys(JSON.parse(bad.stdout)).sort(), ['bodySnippet', 'error', 'ok', 'permanent', 'status', 'url'])
 })
 
 test('a host that does not resolve is a failure result with exit 0, not a crash', async () => {
@@ -48,7 +48,7 @@ test('a host that does not resolve is a failure result with exit 0, not a crash'
   const result = JSON.parse(r.stdout)
   assert.equal(result.ok, false)
   assert.match(result.error, /^network error: .*clipper-review-nxdomain\.invalid/)
-  assert.deepEqual(await readdir(cacheDir), [])
+  assert.deepEqual((await entryContents(cacheDir)).map(p => p.split('/')[1]), ['.failed.json'])
 })
 
 test('a relative --cache-dir still gives absolute paths', async () => {

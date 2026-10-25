@@ -56,6 +56,7 @@ export function pdf(over: Partial<ClipOk> = {}): ClipOk {
     contentType: 'application/pdf',
     title: undefined,
     site: undefined,
+    url: 'https://arxiv.org/pdf/1706.03762v7',
     finalUrl: 'https://arxiv.org/pdf/1706.03762v7',
     words: 6000,
     bytes: 2_200_000,

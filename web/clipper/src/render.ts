@@ -8,6 +8,7 @@ import { homedir, tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import { USER_AGENT } from './http.ts'
 import { startEgressProxy } from './proxy.ts'
+import type { Boundary } from './netguard.ts'
 
 export const RENDER_LIMITS = { timeoutMs: 30_000, virtualTimeBudgetMs: 10_000, maxBytes: 50 * 1048576 }
 
@@ -67,11 +68,11 @@ export type RenderResult = { html: string; document?: ServedDocument } | { note:
  * says it was served (absent when the log names none), or a note saying why
  * there is none. The DOM alone cannot tell a page from a denial page.
  */
-export async function renderDom(url: string, chrome: { path: string; headless: string }, timeoutMs: number, allow: Set<string>): Promise<RenderResult> {
+export async function renderDom(url: string, chrome: { path: string; headless: string }, timeoutMs: number, boundary: Boundary): Promise<RenderResult> {
   if (timeoutMs <= 0) return { note: 'rendering skipped: the time budget was spent; the plain fetch is kept' }
   let proxy
   try {
-    proxy = await startEgressProxy(allow)
+    proxy = await startEgressProxy(boundary)
   } catch (e) {
     return { note: `rendering skipped: its egress proxy could not start (${e instanceof Error ? e.message : e}); the plain fetch is kept` }
   }

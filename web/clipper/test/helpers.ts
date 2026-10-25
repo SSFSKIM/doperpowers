@@ -4,7 +4,7 @@ import { createServer } from 'node:http'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { createServer as createTcpServer } from 'node:net'
 import { createSocket } from 'node:dgram'
-import { mkdtemp, readFile } from 'node:fs/promises'
+import { mkdtemp, readFile, readdir } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
@@ -57,6 +57,12 @@ export async function startUdpTrap() {
 }
 
 export const tmpCache = () => mkdtemp(join(tmpdir(), 'clip-test-'))
+
+/** The cache's files and folders below its entries (host/entry/<name>), as `<entry>/<name>`: generations, .tmp- folders, failures. */
+export async function entryContents(root: string): Promise<string[]> {
+  const all = await readdir(root, { recursive: true })
+  return all.map(p => p.split('/')).filter(p => p.length === 3).map(p => `${p[1]}/${p[2]}`).sort()
+}
 
 export const send = (type: string, body: string | Buffer, status = 200, extra: Record<string, string> = {}): Handler =>
   (_req, res) => { res.writeHead(status, { 'content-type': type, ...extra }); res.end(body) }
