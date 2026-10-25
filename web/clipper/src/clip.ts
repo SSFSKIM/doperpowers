@@ -68,7 +68,11 @@ export type ClipResult = ClipOk | ClipError
 
 export type ClipOptions = { cacheDir: string; refresh?: boolean; env?: NodeJS.ProcessEnv; deadlineMs?: number }
 
-export const FETCH_LIMITS = { timeoutMs: 30_000, maxBytes: 50 * 1048576 }
+/**
+ * A page's fetch: its response's headers within `headersMs`, then its body for
+ * as long as bytes keep arriving (no gap of `stallMs`), up to the deadline.
+ */
+export const FETCH_LIMITS = { headersMs: 30_000, stallMs: 20_000, maxBytes: 50 * 1048576 }
 export const PDFTOTEXT_TIMEOUT_MS = 60_000
 export const RENDER_MIN_WORDS = 50
 
@@ -108,7 +112,8 @@ export async function clip(rawUrl: string, opts: ClipOptions): Promise<ClipResul
 
   // 1. Fetch.
   const get = (target: URL, accept: string) => request(target, {
-    headers: { accept, 'accept-language': 'en-US,en;q=0.9' }, timeoutMs: deadline.limit(FETCH_LIMITS.timeoutMs), maxBytes: FETCH_LIMITS.maxBytes, boundary,
+    headers: { accept, 'accept-language': 'en-US,en;q=0.9' }, boundary,
+    timeoutMs: deadline.remaining(), headersMs: FETCH_LIMITS.headersMs, stallMs: FETCH_LIMITS.stallMs, maxBytes: FETCH_LIMITS.maxBytes,
   })
   let res: HttpResponse
   let httpsFailed: string | undefined
@@ -119,7 +124,7 @@ export async function clip(rawUrl: string, opts: ClipOptions): Promise<ClipResul
       accept = ACCEPT
       const first = await get(target, accept)
       return first.status === 406 ? get(target, accept = BROWSER_ACCEPT) : first
-    }))
+    }, () => deadline.remaining()))
   } catch (e) {
     if (e instanceof RefusedError) return fail(e.message, { permanent: true })
     if (e instanceof HttpError) return failed(e.message)
@@ -337,9 +342,10 @@ export function httpsFirst(url: URL): URL | undefined {
  * fetched as given, and `httpsFailed` says why. A refusal falls back too: https
  * follows redirects, so it may concern where https led rather than the URL's
  * host, and the http attempt passes the same guard, so a host refused for
- * itself is refused again, at the cost of a lookup.
+ * itself is refused again, at the cost of a lookup. An https download that
+ * ran out the time left leaves none for http: its failure stands.
  */
-export async function fetchHttpsFirst(url: URL, get: (target: URL) => Promise<HttpResponse>): Promise<{ res: HttpResponse; target: URL; httpsFailed?: string }> {
+export async function fetchHttpsFirst(url: URL, get: (target: URL) => Promise<HttpResponse>, timeLeft: () => number = () => Infinity): Promise<{ res: HttpResponse; target: URL; httpsFailed?: string }> {
   const secure = httpsFirst(url)
   if (!secure) return { res: await get(url), target: url }
   let httpsFailed: string
@@ -349,6 +355,7 @@ export async function fetchHttpsFirst(url: URL, get: (target: URL) => Promise<Ht
     httpsFailed = statusLine(res)
   } catch (e) {
     if (!(e instanceof HttpError) && !(e instanceof RefusedError)) throw e
+    if (timeLeft() <= 0) throw e
     httpsFailed = e.message
   }
   return { res: await get(url), target: url, httpsFailed }
@@ -381,6 +388,8 @@ function pdfToText(pdf: string, txt: string, env: NodeJS.ProcessEnv, timeoutMs: 
   if (timeoutMs <= 0) return Promise.resolve('no text extracted: the time budget was spent')
   return new Promise(resolve => {
     execFile(bin, ['-layout', '-enc', 'UTF-8', pdf, txt], { timeout: timeoutMs }, async err => {
+      // A download that took most of the deadline leaves pdftotext only the rest.
+      if (err?.killed) { resolve(`no text extracted: pdftotext did not finish within ${Math.round(timeoutMs / 1000)} s`); return }
       if (err) { resolve(`no text extracted: pdftotext failed (${(err.message.split('\n')[0] ?? '').slice(0, 200)})`); return }
       const text = await readFile(txt, 'utf8').catch(() => '')
       if (text.replace(/\f/g, '').trim()) { resolve(true); return }
