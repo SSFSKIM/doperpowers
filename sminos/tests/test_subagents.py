@@ -186,7 +186,8 @@ class Derivation(unittest.TestCase):
         st = self.state("a1")
         self.assertEqual(st["state"], "waiting", "finished by its meta, its turn closed, its shell still runs")
         self.assertEqual([b["taskId"] for b in st["background"]], ["bs5pfwoe5"])
-        self.assertIn("waiting on background 9m (disk) · shell: run the tests", V.state_text(self.s.view().entry("a1")))
+        self.assertEqual(V.state_text(self.s.view().entry("a1")), "waiting on background 9m (disk)",
+                         "the row names the wait, not the jobs: those stay in --json")
 
     def test_the_notification_ends_the_wait(self):
         rows = [Rows.prompt(NOW - 600), *Rows.bg_bash(NOW - 590, "t1", "bs1"), Rows.reply(NOW - 580, "launched"),
