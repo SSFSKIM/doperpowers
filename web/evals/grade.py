@@ -34,6 +34,11 @@ Reply with one JSON object and nothing else:
 {"verdict": "correct" | "partial" | "wrong", "facts": {"<fact id>": true | false}, "note": "<one sentence on what was missing or wrong, or empty>"}
 "correct" means every fact is true, "partial" some, "wrong" none."""
 
+# A file URI whole, fragment (`#L12`) included, before the paths inside it are seen.
+_FILE_URI = re.compile(r'file:[^\s)\]>\'"`]*')
+# What is left of a cache path that is not absolute, and a generation folder's name anywhere.
+_CACHE = re.compile(r'[^\s()\[\]<>\'"`]*\.cache/claude-web[^\s)\]>\'"`,;]*|\b\d{8}T\d{9}Z-[0-9a-f]{4}\b')
+_LINE_ANCHOR = re.compile(r'#L\d+(?:\s*[–-]\s*L?\d+)?')
 # Absolute paths under the roots a run's files live in (a temporary HOME, the cache).
 _PATH = re.compile(r'(?<![\w.:/])(?:~|/private)?/(?:var|tmp|Users|home|private|opt)/[^\s)\]\'"`,;]*'
                    r'|(?<![\w.:/])~/[^\s)\]\'"`,;]*')
@@ -45,7 +50,10 @@ _FILES = re.compile(r'\bclaude-web\b|\bpage\.(?:md|txt|pdf|json)\b|\bassets/\d+\
 
 def mask(text):
     """The answer with what tells the configurations apart replaced."""
+    text = _FILE_URI.sub('<path>', text)
+    text = _CACHE.sub('<path>', text)
     text = _PATH.sub('<path>', text)
+    text = _LINE_ANCHOR.sub('', text)
     text = _TOOL.sub('<fetch tool>', text)
     text = _LINE_CITE.sub('[ref]', text)
     text = _LINE_REF.sub('<lines>', text)
@@ -86,7 +94,7 @@ def grade(task, answer, workdir):
         home = harness.make_home(workdir)
         cwd = tempfile.mkdtemp(prefix='grade-', dir=workdir)
         try:
-            out, err, rc, timed_out = harness.run_claude(args, cwd, harness.run_env(home), GRADER_TIMEOUT_S)
+            out, err, rc, timed_out, _ = harness.run_claude(args, cwd, harness.run_env(home), GRADER_TIMEOUT_S)
         finally:
             shutil.rmtree(home, ignore_errors=True)
             shutil.rmtree(cwd, ignore_errors=True)

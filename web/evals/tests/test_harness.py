@@ -51,10 +51,34 @@ class ParseStream(unittest.TestCase):
             s.init(),
             s.tool_use('t1', 'mcp__web__fetch', {'url': 'https://slow.example/'}),
         )
-        run = harness.parse_stream(text, 'B', timed_out=True)
+        run = harness.parse_stream(text, 'B', timed_out=True, wall_ms=600_412)
         self.assertEqual(run['finalText'], '')
-        self.assertEqual(run['mainTokens'], {'input': 0, 'output': 0, 'cacheRead': 0, 'cacheCreation': 0})
+        # Without a result line the usage cannot be known: unavailable, never zero.
+        self.assertIsNone(run['mainTokens'])
+        self.assertIsNone(run['usageByModel'])
+        self.assertIsNone(run['costUsd'])
+        self.assertEqual(run['durationMs'], 600_412)
+        self.assertEqual(run['turns'], 1)  # one assistant message; equal to num_turns in every pilot run
         self.assertEqual(run['fetchErrors'], [{'text': 'the run hit its time limit with a fetch call unanswered', 'toolCaused': True}])
+
+    def test_an_interrupted_run_keeps_the_usage_of_its_result_line(self):
+        # SIGINT at the limit makes `claude -p` write a result line (subtype error_during_execution) with its usage.
+        text = s.stream(
+            s.init(),
+            s.tool_use('t1', 'Read', {}),
+            s.tool_result('t1', 'x'),
+            s.text('partial notes'),
+            {**s.result('', {'sol': s.model_usage(12058, 997, 28416)}, turns=8, duration=39549, cost=0.07), 'subtype': 'error_during_execution', 'is_error': True},
+        )
+        run = harness.parse_stream(text, 'B', timed_out=True, wall_ms=600_100)
+        self.assertEqual(run['mainTokens'], {'input': 12058, 'output': 997, 'cacheRead': 28416, 'cacheCreation': 0})
+        self.assertEqual(run['costUsd'], 0.07)
+        self.assertEqual(run['durationMs'], 600_100)  # the wall time to the limit, not the engine's own figure
+        self.assertEqual(run['finalText'], 'partial notes')
+
+    def test_a_finished_run_keeps_the_engines_duration(self):
+        text = s.stream(s.result('ok', {'sol': s.model_usage(1, 2)}, duration=31000))
+        self.assertEqual(harness.parse_stream(text, 'B', wall_ms=33000)['durationMs'], 31000)
 
     def test_a_cut_off_run_without_a_pending_fetch_adds_no_tool_error(self):
         text = s.stream(s.init(), s.tool_use('t1', 'mcp__web__fetch', {}), s.tool_result('t1', 'Saved'), s.text('thinking aloud'))
@@ -65,6 +89,46 @@ class ParseStream(unittest.TestCase):
     def test_garbage_lines_are_skipped(self):
         text = 'not json\n' + s.stream(s.result('ok', {'sol': s.model_usage(1, 2)}))
         self.assertEqual(harness.parse_stream(text, 'B')['finalText'], 'ok')
+
+
+FAKE_CLAUDE = r'''
+import json, signal, sys, time
+def stop(*_):
+    print(json.dumps({"type": "result", "subtype": "error_during_execution", "result": "", "modelUsage": {"sol": {"inputTokens": 5}}}), flush=True)
+    sys.exit(0)
+signal.signal(signal.SIGINT, stop)
+print(json.dumps({"type": "system", "subtype": "init"}), flush=True)
+time.sleep(60)
+'''
+
+DEAF_CLAUDE = r'''
+import signal, time
+signal.signal(signal.SIGINT, signal.SIG_IGN)
+print("started", flush=True)
+time.sleep(60)
+'''
+
+
+class RunClaude(unittest.TestCase):
+    def test_the_limit_interrupts_so_the_result_line_is_written(self):
+        import sys
+        out, err, rc, timed_out, wall_ms = harness.run_claude([sys.executable, '-c', FAKE_CLAUDE], tempfile.gettempdir(), None, 1)
+        self.assertTrue(timed_out)
+        self.assertIn('"type": "result"', out)
+        self.assertGreaterEqual(wall_ms, 1000)
+        self.assertLess(wall_ms, 10_000)
+
+    def test_a_process_deaf_to_the_interrupt_is_killed(self):
+        import sys
+        out, err, rc, timed_out, wall_ms = harness.run_claude([sys.executable, '-c', DEAF_CLAUDE], tempfile.gettempdir(), None, 1, grace_s=1)
+        self.assertTrue(timed_out)
+        self.assertEqual(out, 'started\n')
+        self.assertLess(wall_ms, 10_000)
+
+    def test_a_run_inside_its_limit(self):
+        import sys
+        out, err, rc, timed_out, wall_ms = harness.run_claude([sys.executable, '-c', 'print("hi")'], tempfile.gettempdir(), None, 30)
+        self.assertEqual((out, rc, timed_out), ('hi\n', 0, False))
 
 
 class ClassifyFetchError(unittest.TestCase):

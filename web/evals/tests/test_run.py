@@ -86,6 +86,17 @@ class Projection(unittest.TestCase):
         self.assertAlmostEqual(p['final']['usdGrader'], 0.2 * 96 + 0.2 * 96)
         self.assertEqual(p['runs'], {'A': 2, 'B': 1})
 
+    def test_runs_with_unavailable_usage_are_left_out_of_the_means_and_counted(self):
+        runs = [
+            {'arm': 'B', 'costUsd': 2.0, 'usageByModel': {'sol': usage(200, 20)}, 'grade': {'costUsd': 0.2, 'usageByModel': {}}},
+            {'arm': 'B', 'costUsd': None, 'usageByModel': None, 'mainTokens': None, 'grade': {'costUsd': 0.4, 'usageByModel': {}}},
+        ]
+        p = run.projection(runs)
+        self.assertEqual(p['perRun']['B']['sol']['input'], 200)
+        self.assertEqual(p['perRun']['B']['usdRunner'], 2.0)
+        self.assertAlmostEqual(p['perRun']['B']['usdGrader'], 0.3)
+        self.assertEqual(p['unavailable'], {'B': 1})
+
 
 if __name__ == '__main__':
     unittest.main()

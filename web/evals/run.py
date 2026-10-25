@@ -29,7 +29,7 @@ import harness  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PILOT_TASKS = ('exact-detail-1', 'image-1', 'gist-2')
-REPS = {'dev': 2, 'final': 4}
+REPS = harness.REPS
 JOBS = 6
 RUN_TIMEOUT_S = 600
 ARMS = ('A', 'B')
@@ -94,31 +94,39 @@ def projection(runs):
         rs = [r for r in runs if r['arm'] == arm]
         if not rs:
             continue
-        tok = {m: _zero() for m in ('sol', 'haiku', 'opus')}
-        usd = {m: 0.0 for m in ('sol', 'haiku', 'opus')}
+        # A run's own usage (its sessions, B's summaries) averages over the runs that have it;
+        # the grader's over every graded run.
+        have = [r for r in rs if r.get('usageByModel') is not None]
+        n_have, n = max(len(have), 1), len(rs)
+        run_tok = {m: _zero() for m in ('sol', 'haiku')}
+        grade_tok = {'opus': _zero()}
+        run_usd, grade_usd = {'sol': 0.0, 'haiku': 0.0}, {'opus': 0.0}
         runner_usd = grader_usd = 0.0
-        for r in rs:
-            for model, u in (r.get('usageByModel') or {}).items():
+        for r in have:
+            for model, u in r['usageByModel'].items():
                 fam = _family(model)
-                _add(tok.setdefault(fam, _zero()), u)
-                usd[fam] = usd.get(fam, 0.0) + (u.get('costUSD') or 0.0)
+                _add(run_tok.setdefault(fam, _zero()), u)
+                run_usd[fam] = run_usd.get(fam, 0.0) + (u.get('costUSD') or 0.0)
             for line in r.get('haikuUsage') or []:
-                _add(tok['haiku'], line.get('usage') or {})
+                _add(run_tok['haiku'], line.get('usage') or {})
+            runner_usd += r.get('costUsd') or 0.0
+        for r in rs:
             g = r.get('grade') or {}
             for model, u in (g.get('usageByModel') or {}).items():
                 fam = _family(model)
-                _add(tok.setdefault(fam, _zero()), u)
-                usd[fam] = usd.get(fam, 0.0) + (u.get('costUSD') or 0.0)
-            runner_usd += r.get('costUsd') or 0.0
+                _add(grade_tok.setdefault(fam, _zero()), u)
+                grade_usd[fam] = grade_usd.get(fam, 0.0) + (u.get('costUSD') or 0.0)
             grader_usd += g.get('costUsd') or 0.0
-        n = len(rs)
-        mean = {m: {k: v / n for k, v in t.items()} for m, t in tok.items()}
+        mean = {m: {k: v / n_have for k, v in t.items()} for m, t in run_tok.items()}
+        mean.update({m: {k: v / n for k, v in t.items()} for m, t in grade_tok.items()})
         mean = {m: {k: (int(v) if float(v).is_integer() else v) for k, v in t.items()} for m, t in mean.items()}
-        mean['usdByModel'] = {m: v / n for m, v in usd.items()}
-        mean['usdRunner'] = runner_usd / n
+        mean['usdByModel'] = {**{m: v / n_have for m, v in run_usd.items()}, **{m: v / n for m, v in grade_usd.items()}}
+        mean['usdRunner'] = runner_usd / n_have
         mean['usdGrader'] = grader_usd / n
         per_arm[arm] = mean
-    out = {'perRun': per_arm, 'runs': {arm: len([r for r in runs if r['arm'] == arm]) for arm in ARMS if any(r['arm'] == arm for r in runs)}}
+    out = {'perRun': per_arm,
+           'runs': {arm: len([r for r in runs if r['arm'] == arm]) for arm in ARMS if any(r['arm'] == arm for r in runs)},
+           'unavailable': {arm: n for arm in ARMS if (n := sum(r['arm'] == arm and r.get('usageByModel') is None for r in runs))}}
     for name, n in ROUND_RUNS.items():
         total = {}
         for arm, mean in per_arm.items():
@@ -134,7 +142,7 @@ def projection(runs):
 
 
 def format_projection(p):
-    lines = [f"Pilot runs: {p['runs']}", '']
+    lines = [f"Pilot runs: {p['runs']}" + (f"; usage unavailable (left out of the means): {p['unavailable']}" if p['unavailable'] else ''), '']
     for scope, label in (('dev', f"one development round ({2 * ROUND_RUNS['dev']} runs)"),
                          ('final', f"the final run ({2 * ROUND_RUNS['final']} runs)")):
         t = p[scope]
@@ -177,13 +185,13 @@ def run_one(t, arm, rep, out, work):
     cwd = tempfile.mkdtemp(prefix='cwd-', dir=work)
     try:
         args = harness.runner_args(arm, harness.WEB_PLUGIN, t['question'])
-        stdout, stderr, rc, timed_out = harness.run_claude(args, cwd, harness.run_env(home), RUN_TIMEOUT_S)
+        stdout, stderr, rc, timed_out, wall_ms = harness.run_claude(args, cwd, harness.run_env(home), RUN_TIMEOUT_S)
         with open(os.path.join(out, name + '.stream.jsonl'), 'w') as f:
             f.write(stdout)
         if stderr.strip():
             with open(os.path.join(out, name + '.stderr.txt'), 'w') as f:
                 f.write(stderr)
-        m = harness.parse_stream(stdout, arm, timed_out=timed_out)
+        m = harness.parse_stream(stdout, arm, timed_out=timed_out, wall_ms=wall_ms)
         haiku = []
         usage_log = os.path.join(home, '.cache', 'claude-web', 'usage.jsonl')
         if os.path.exists(usage_log):
@@ -267,10 +275,11 @@ def main():
             line = f'{run_name(t["id"], arm, rep)}: FAILED outside the run (see .failed.json); a resume retries it'
         else:
             r = grade_one(t, arm, rep, out, work)
-            tok = r['mainTokens']
+            tok = sum(r['mainTokens'].values()) if r['mainTokens'] is not None else None
             line = (f"{run_name(t['id'], arm, rep)}: {r.get('verdict', 'UNGRADED')}  fetch {r['fetchCalls']}"
                     f"{' errors ' + str(len(r['fetchErrors'])) if r['fetchErrors'] else ''}  turns {r['turns']}  "
-                    f"sol tokens {sum(tok.values()):,}  {r['durationMs'] / 1000:.0f} s  ${r['costUsd']:.2f}"
+                    f"sol tokens {'n/a' if tok is None else format(tok, ',')}  {r['durationMs'] / 1000:.0f} s  "
+                    f"{'$n/a' if r['costUsd'] is None else '$' + format(r['costUsd'], '.2f')}"
                     f"{'  ' + r['runError'] if r.get('runError') else ''}")
         with lock:
             print(line, flush=True)

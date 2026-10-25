@@ -6,6 +6,11 @@
 The first folder is judged against the four pass criteria (the design's
 "The evals"); a development folder given there is judged the same way, which
 is how a round is checked against the freeze rule.
+
+A gate verdict is given only over the whole matrix its manifest's set calls
+for (every task of the set x both configurations x the design's runs per
+task), each run once and validly graded. Anything short of that is reported
+INCOMPLETE, with what is missing, and its statistics are labelled provisional.
 """
 
 import argparse
@@ -26,9 +31,42 @@ MARGIN = -0.05
 GIST_TOKEN_RATIO = 1.5
 
 
+VERDICTS = ('correct', 'partial', 'wrong')
+
+
 def main_tokens(r):
-    """The main model's tokens of a run: input, output, cache read and cache creation together."""
-    return sum((r.get('mainTokens') or {}).values())
+    """The main model's tokens of a run: input, output, cache read and cache creation together; None when unavailable."""
+    t = r.get('mainTokens')
+    return None if t is None else sum(t.values())
+
+
+def expected_runs(tasks, set_, reps):
+    """The (task, configuration, rep) matrix a set's gate is judged over."""
+    return {(t['id'], arm, rep) for t in tasks if t['set'] == set_ for arm in ('A', 'B') for rep in range(1, reps + 1)}
+
+
+def _validly_graded(task, r):
+    facts = r.get('facts')
+    return (r.get('verdict') in VERDICTS and isinstance(facts, dict)
+            and all(isinstance(facts.get(f['id']), bool) for f in task.get('facts', [])))
+
+
+def audit(tasks, runs, expected):
+    """What keeps a folder from a gate verdict: runs missing, not validly graded, duplicated, or not in the matrix."""
+    by_id = {t['id']: t for t in tasks}
+    seen = {}
+    for r in runs:
+        key = (r['task'], r['arm'], r['rep'])
+        seen[key] = seen.get(key, 0) + 1
+    out = {
+        'missing': sorted(expected - set(seen)),
+        'duplicates': sorted(k for k, n in seen.items() if n > 1),
+        'unexpected': sorted(k for k in seen if k not in expected),
+        'ungraded': sorted((r['task'], r['arm'], r['rep']) for r in runs
+                           if (r['task'], r['arm'], r['rep']) in expected and not _validly_graded(by_id[r['task']], r)),
+    }
+    out['complete'] = not any(out.values())
+    return out
 
 
 def bootstrap_mean(ds, resamples=BOOTSTRAP_RESAMPLES, seed=BOOTSTRAP_SEED):
@@ -73,35 +111,52 @@ def criteria(tasks, runs):
     errors = [(r['task'], r['rep'], e['text']) for r in runs if r['arm'] == 'B' for e in r.get('fetchErrors', []) if e.get('toolCaused')]
     c3 = {'n': 3, 'verdict': 'FAIL' if errors else 'PASS', 'errors': errors}
 
-    # 4. Gist: B's median main-model tokens at most 1.5x A's.
-    gist = {arm: [main_tokens(r) for r in runs if r['arm'] == arm and cat_of.get(r['task']) == 'gist'] for arm in ('A', 'B')}
+    # 4. Gist: B's median main-model tokens at most 1.5x A's. A run whose usage is
+    # unavailable is left out of the median, and the criterion cannot pass while one is.
+    gist_runs = [r for r in runs if cat_of.get(r['task']) == 'gist']
+    gist = {arm: [main_tokens(r) for r in gist_runs if r['arm'] == arm and main_tokens(r) is not None] for arm in ('A', 'B')}
+    excluded = sum(main_tokens(r) is None for r in gist_runs)
     if gist['A'] and gist['B']:
         ma, mb = statistics.median(gist['A']), statistics.median(gist['B'])
         ratio = mb / ma if ma else float('inf')
-        c4 = {'n': 4, 'verdict': 'PASS' if ratio <= GIST_TOKEN_RATIO else 'FAIL', 'ratio': ratio, 'medianA': ma, 'medianB': mb}
+        verdict = 'UNAVAILABLE' if excluded else 'PASS' if ratio <= GIST_TOKEN_RATIO else 'FAIL'
+        c4 = {'n': 4, 'verdict': verdict, 'ratio': ratio, 'medianA': ma, 'medianB': mb, 'excluded': excluded}
     else:
-        c4 = {'n': 4, 'verdict': 'N/A', 'ratio': None, 'medianA': None, 'medianB': None}
+        c4 = {'n': 4, 'verdict': 'UNAVAILABLE', 'ratio': None, 'medianA': None, 'medianB': None, 'excluded': excluded}
     return [c1, c2, c3, c4]
 
 
-def _criteria_lines(cs):
+def _criteria_lines(cs, final=True):
     c1, c2, c3, c4 = cs
+
+    def label(c):
+        return f"**{c['verdict']} {c['n']}**" if final else f"(provisional: {c['verdict'].lower()}) {c['n']}"
+
     lines = [
-        f"- **{c1['verdict']} 1** — B not worse overall: mean d {c1['mean']:+.3f}, 90% interval "
+        f"- {label(c1)} — B not worse overall: mean d {c1['mean']:+.3f}, 90% interval "
         f"[{c1['lo']:+.3f}, {c1['hi']:+.3f}] over {c1['tasks']} tasks ({BOOTSTRAP_RESAMPLES:,} resamples, seed {BOOTSTRAP_SEED}); "
         f"passes at a lower bound of {MARGIN:+.2f} or above.",
-        f"- **{c2['verdict']} 2** — category tripwire (B at most one correct run fewer than A): "
+        f"- {label(c2)} — category tripwire (B at most one correct run fewer than A): "
         + ', '.join(f"{c} {a}/{b}" for c, (a, b) in c2['byCategory'].items())
         + (f"; tripped: {', '.join(c2['tripped'])}" if c2['tripped'] else '') + ' (A/B correct runs).',
-        f"- **{c3['verdict']} 3** — no B tool error the tool caused: {len(c3['errors'])} found"
+        f"- {label(c3)} — no B tool error the tool caused: {len(c3['errors'])} found"
         + ''.join(f"\n  - {tid} rep {rep}: {text[:200]}" for tid, rep, text in c3['errors']),
     ]
+    left_out = f"; {c4['excluded']} gist run(s) left out, their usage unavailable" if c4['excluded'] else ''
     if c4['ratio'] is None:
-        lines.append(f"- **{c4['verdict']} 4** — gist tokens: no gist runs in both configurations.")
+        lines.append(f"- {label(c4)} — gist tokens: no gist runs with usage in both configurations{left_out}.")
     else:
-        lines.append(f"- **{c4['verdict']} 4** — gist median main-model tokens: B {c4['medianB']:,.0f} vs A {c4['medianA']:,.0f} "
-                     f"= {c4['ratio']:.2f}x (at most {GIST_TOKEN_RATIO}x).")
+        lines.append(f"- {label(c4)} — gist median main-model tokens: B {c4['medianB']:,.0f} vs A {c4['medianA']:,.0f} "
+                     f"= {c4['ratio']:.2f}x (at most {GIST_TOKEN_RATIO}x){left_out}.")
     return lines
+
+
+def _median(values, fmt):
+    """The median of the values that are available, with how many were not."""
+    have = [v for v in values if v is not None]
+    gone = len(values) - len(have)
+    text = format(statistics.median(have), fmt) if have else 'n/a'
+    return text + (f' ({gone} n/a)' if gone and have else '')
 
 
 def _table(tasks, runs):
@@ -114,9 +169,10 @@ def _table(tasks, runs):
             if not rs:
                 continue
             v = [r.get('verdict') for r in rs]
+            durations = [None if r.get('durationMs') is None else r['durationMs'] / 1000 for r in rs]
             rows.append(f"| {c} | {arm} | {v.count('correct')} | {v.count('partial')} | {len(rs) - v.count('correct') - v.count('partial')} | "
-                        f"{statistics.median(main_tokens(r) for r in rs):,.0f} | {statistics.median(r.get('costUsd', 0) for r in rs):.3f} | "
-                        f"{statistics.median(r.get('durationMs', 0) for r in rs) / 1000:.0f} | {statistics.mean(r.get('fetchCalls', 0) for r in rs):.1f} |")
+                        f"{_median([main_tokens(r) for r in rs], ',.0f')} | {_median([r.get('costUsd') for r in rs], '.3f')} | "
+                        f"{_median(durations, '.0f')} | {statistics.mean(r.get('fetchCalls', 0) for r in rs):.1f} |")
     return rows
 
 
@@ -130,26 +186,45 @@ def _failures(runs):
     return out or ['- none']
 
 
-def render(tasks, runs, title, dev_rounds=()):
+def _audit_lines(a):
+    lines = [f"{len(a['missing'])} missing, {len(a['ungraded'])} not validly graded, "
+             f"{len(a['duplicates'])} duplicated, {len(a['unexpected'])} not in the set's matrix."]
+    for name, keys in (('Missing', a['missing']), ('Not validly graded', a['ungraded']),
+                       ('Duplicated', a['duplicates']), ('Not in the matrix', a['unexpected'])):
+        if keys:
+            shown = ', '.join(f'{t} {arm} rep {rep}' for t, arm, rep in keys[:40])
+            lines.append(f"- {name}: {shown}{f' … and {len(keys) - 40} more' if len(keys) > 40 else ''}")
+    return lines
+
+
+def render(tasks, runs, title, expected, dev_rounds=()):
+    a = audit(tasks, runs, expected)
     cs = criteria(tasks, runs)
-    passed = all(c['verdict'] == 'PASS' for c in cs)
+    if not a['complete']:
+        overall = 'INCOMPLETE'
+    else:
+        overall = 'PASS' if all(c['verdict'] == 'PASS' for c in cs) else 'NOT PASSED'
     md = [f'# Web fetch eval report — {title}', '',
-          f"Overall: **{'PASS' if passed else 'NOT PASSED'}** "
-          f"({len(runs)} runs; A = WebFetch only, B = mcp__web__fetch only; sol at xhigh; graded by opus).", '',
-          '## Pass criteria', '', *_criteria_lines(cs), '',
-          '## By category', '', *_table(tasks, runs), '',
-          'Tokens are the main model\'s input, output, cache read and cache creation together. '
-          'Cost is what the run output reports (sol is priced by Claude Code as an unknown model, '
-          'and B\'s summary calls are outside it; see the usage notes in the design).', '',
-          '## Runs not fully correct', '', *_failures(runs), '']
+          f"Overall: **{overall}** "
+          f"({len(runs)} runs of {len(expected)} expected; A = WebFetch only, B = mcp__web__fetch only; sol at xhigh; graded by opus).", '']
+    if not a['complete']:
+        md += ['No gate verdict: the matrix is not complete and validly graded. '
+               'The figures below are provisional, over the runs there are.', '', '## Completeness', '', *_audit_lines(a), '']
+    md += ['## Pass criteria', '', *_criteria_lines(cs, a['complete']), '',
+           '## By category', '', *_table(tasks, runs), '',
+           'Tokens are the main model\'s input, output, cache read and cache creation together; '
+           '"n/a" counts runs whose usage is unavailable (killed at the limit before a result line). '
+           'Cost is what the run output reports (sol is priced by Claude Code as an unknown model, '
+           'and B\'s summary calls are outside it; see the usage notes in the design).', '',
+           '## Runs not fully correct', '', *_failures(runs), '']
     if dev_rounds:
         md += ['## Development rounds', '']
-        for label, ts, rs in dev_rounds:
-            dc = criteria(ts, rs)
-            md.append(f"### {label}")
-            md.append('')
-            md += _criteria_lines(dc)
-            md.append('')
+        for label, ts, rs, exp in dev_rounds:
+            da = audit(ts, rs, exp)
+            md += [f"### {label}", '']
+            if not da['complete']:
+                md += [f"Incomplete: {_audit_lines(da)[0]}", '']
+            md += [*_criteria_lines(criteria(ts, rs), da['complete']), '']
     return '\n'.join(md)
 
 
@@ -161,31 +236,32 @@ def load_runs(folder):
     return runs
 
 
-def _tasks_of(folder, default):
-    path = default
-    manifest = os.path.join(folder, 'manifest.json')
-    if os.path.exists(manifest):
-        with open(manifest) as f:
-            path = os.path.join(HERE, json.load(f)['tasksFile'])
-    with open(path) as f:
-        return json.load(f)
+def _folder(path):
+    """A run folder's tasks, runs and expected matrix, from its manifest."""
+    manifest = os.path.join(path, 'manifest.json')
+    if not os.path.exists(manifest):
+        sys.exit(f'report.py: {path} has no manifest.json (run.py writes one)')
+    with open(manifest) as f:
+        m = json.load(f)
+    with open(os.path.join(HERE, m['tasksFile'])) as f:
+        tasks = json.load(f)
+    return tasks, load_runs(path), expected_runs(tasks, m['set'], harness.REPS[m['set']])
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('runs', nargs='+', help='the run folder judged (more than one: their runs together, as when reserve tasks are added)')
     ap.add_argument('--dev', nargs='*', default=[])
-    ap.add_argument('--tasks', default=os.path.join(HERE, 'tasks.json'))
     a = ap.parse_args()
-    tasks, runs = [], []
-    for folder in a.runs:
-        for t in _tasks_of(folder, a.tasks):
-            if t['id'] not in {x['id'] for x in tasks}:
-                tasks.append(t)
-        runs += load_runs(folder)
-    dev = [(f'Round {i} ({os.path.basename(os.path.normpath(d))})', _tasks_of(d, a.tasks), load_runs(d)) for i, d in enumerate(a.dev, 1)]
+    tasks, runs, expected = [], [], set()
+    for path in a.runs:
+        ts, rs, exp = _folder(path)
+        tasks += [t for t in ts if t['id'] not in {x['id'] for x in tasks}]
+        runs += rs
+        expected |= exp
+    dev = [(f'Round {i} ({os.path.basename(os.path.normpath(d))})', *_folder(d)) for i, d in enumerate(a.dev, 1)]
     title = ', '.join(os.path.basename(os.path.normpath(f)) for f in a.runs)
-    sys.stdout.write(render(tasks, runs, title, dev) + '\n')
+    sys.stdout.write(render(tasks, runs, title, expected, dev) + '\n')
 
 
 if __name__ == '__main__':

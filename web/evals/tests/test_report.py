@@ -6,7 +6,7 @@ CATS = ['exact-detail', 'table', 'code', 'image', 'js', 'pdf', 'gist', 'synthesi
 
 
 def tasks(n_per_cat=3):
-    return [{'id': f'{c}-{i}', 'category': c, 'set': 'final'} for c in CATS for i in range(1, n_per_cat + 1)]
+    return [{'id': f'{c}-{i}', 'category': c, 'set': 'final', 'facts': [{'id': 'f1'}]} for c in CATS for i in range(1, n_per_cat + 1)]
 
 
 def runs_for(ts, a_correct, b_correct, reps=4, tokens=1000):
@@ -16,7 +16,7 @@ def runs_for(ts, a_correct, b_correct, reps=4, tokens=1000):
         for arm, table in (('A', a_correct), ('B', b_correct)):
             for rep in range(1, reps + 1):
                 ok = rep <= table.get(t['id'], reps)
-                out.append({'task': t['id'], 'arm': arm, 'rep': rep, 'verdict': 'correct' if ok else 'wrong',
+                out.append({'task': t['id'], 'arm': arm, 'rep': rep, 'verdict': 'correct' if ok else 'wrong', 'facts': {'f1': ok},
                             'mainTokens': {'input': tokens, 'output': 0, 'cacheRead': 0, 'cacheCreation': 0},
                             'fetchCalls': 1, 'fetchErrors': [], 'turns': 2, 'durationMs': 1000, 'costUsd': 0.1, 'finalText': '', 'note': ''})
     return out
@@ -118,12 +118,96 @@ class LoadRuns(unittest.TestCase):
         self.assertEqual(report.load_runs(d), [{'task': 'code-1'}])
 
 
-class Render(unittest.TestCase):
-    def test_the_report_names_each_criterion_and_category(self):
+class Completeness(unittest.TestCase):
+    def setUp(self):
+        self.ts = tasks()
+        self.expected = report.expected_runs(self.ts, 'final', 4)
+
+    def test_the_expected_matrix_is_task_by_arm_by_rep(self):
+        self.assertEqual(len(self.expected), 24 * 2 * 4)
+        self.assertIn(('code-1', 'B', 4), self.expected)
+        dev = [dict(t, set='dev') for t in tasks(2)]
+        self.assertEqual(len(report.expected_runs(dev + self.ts, 'dev', 2)), 16 * 2 * 2)
+
+    def test_a_full_graded_matrix_is_complete(self):
+        a = report.audit(self.ts, runs_for(self.ts, {}, {}), self.expected)
+        self.assertTrue(a['complete'])
+
+    def test_missing_runs_are_named(self):
+        pilot = [r for r in runs_for(self.ts, {}, {}, reps=1) if r['task'] in ('code-1', 'gist-1', 'pdf-1')]
+        a = report.audit(self.ts, pilot, self.expected)
+        self.assertFalse(a['complete'])
+        self.assertEqual(len(a['missing']), 192 - 6)
+
+    def test_ungraded_and_invalid_grades_are_named(self):
+        rs = runs_for(self.ts, {}, {})
+        for r in rs:
+            if r['arm'] == 'A':
+                r.pop('verdict')
+        rs[4]['facts'] = {}  # a B run (the first task's rep 1) whose grade does not cover the key
+        a = report.audit(self.ts, rs, self.expected)
+        self.assertFalse(a['complete'])
+        self.assertEqual(len(a['ungraded']), 96 + 1)
+
+    def test_duplicates_and_strays_are_named(self):
+        rs = runs_for(self.ts, {}, {})
+        rs.append(dict(rs[0]))
+        rs.append({**rs[0], 'task': 'nope-1'})
+        a = report.audit(self.ts, rs, self.expected)
+        self.assertFalse(a['complete'])
+        self.assertEqual(a['duplicates'], [(rs[0]['task'], rs[0]['arm'], rs[0]['rep'])])
+        self.assertEqual(a['unexpected'], [('nope-1', rs[0]['arm'], rs[0]['rep'])])
+
+
+class Unavailable(unittest.TestCase):
+    def test_criterion_4_does_not_pass_on_unavailable_tokens(self):
         ts = tasks()
-        md = report.render(ts, runs_for(ts, {}, {}), title='Final run', dev_rounds=[('round 1', ts, runs_for(ts, {}, {}, reps=2))])
-        for needle in ('PASS 1', 'PASS 2', 'PASS 3', 'PASS 4', '| gist |', 'round 1', 'mean d'):
+        rs = runs_for(ts, {}, {})
+        b_gist = [r for r in rs if r['task'].startswith('gist') and r['arm'] == 'B']
+        b_gist[0]['mainTokens'] = None
+        c4 = report.criteria(ts, rs)[3]
+        self.assertEqual(c4['verdict'], 'UNAVAILABLE')
+        self.assertEqual(c4['excluded'], 1)
+        self.assertEqual(c4['medianB'], 1000)  # over the runs that have usage
+
+    def test_tables_leave_unavailable_values_out_and_say_so(self):
+        ts = tasks()
+        rs = runs_for(ts, {}, {})
+        for r in rs:
+            if r['task'] == 'pdf-1' and r['arm'] == 'B' and r['rep'] == 1:
+                r['mainTokens'], r['costUsd'] = None, None
+        md = report.render(ts, rs, 'x', report.expected_runs(ts, 'final', 4))
+        self.assertIn('| pdf | B | 12 | 0 | 0 | 1,000 (1 n/a) | 0.100 (1 n/a) |', md)
+
+
+class Render(unittest.TestCase):
+    def test_a_complete_report_names_each_criterion_and_category(self):
+        ts = tasks()
+        dev_ts = [dict(t, set='dev') for t in ts]
+        md = report.render(ts, runs_for(ts, {}, {}), 'Final run', report.expected_runs(ts, 'final', 4),
+                           dev_rounds=[('round 1', dev_ts, runs_for(dev_ts, {}, {}, reps=2), report.expected_runs(dev_ts, 'dev', 2))])
+        for needle in ('Overall: **PASS**', 'PASS 1', 'PASS 2', 'PASS 3', 'PASS 4', '| gist |', 'round 1', 'mean d'):
             self.assertIn(needle, md)
+        self.assertNotIn('provisional', md)
+
+    def test_an_incomplete_folder_gets_no_gate_verdict(self):
+        ts = tasks()
+        pilot = [r for r in runs_for(ts, {}, {}, reps=1) if r['task'] in ('code-1', 'gist-1', 'pdf-1')]
+        md = report.render(ts, pilot, 'pilot', report.expected_runs(ts, 'final', 4))
+        self.assertIn('Overall: **INCOMPLETE**', md)
+        self.assertIn('provisional', md)
+        self.assertNotIn('**PASS', md)
+        self.assertIn('186 missing', md)
+
+    def test_removing_every_a_verdict_withholds_the_gate(self):
+        ts = tasks()
+        rs = runs_for(ts, {}, {})
+        for r in rs:
+            if r['arm'] == 'A':
+                r.pop('verdict')
+        md = report.render(ts, rs, 'x', report.expected_runs(ts, 'final', 4))
+        self.assertIn('Overall: **INCOMPLETE**', md)
+        self.assertIn('96 not validly graded', md)
 
 
 if __name__ == '__main__':

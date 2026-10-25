@@ -21,6 +21,16 @@ class Mask(unittest.TestCase):
         self.assertIn('65527', masked)
         self.assertIn('1200', masked)
 
+    def test_file_links_are_masked_whole(self):
+        answer = ('The default is 65527 ([page.md#L12](file:///var/folders/c1/T/web-evals-x/home-k4qz/.cache/claude-web/www.rfc-editor.org/rfc-rfc9000-html-46f5fb09/20261025T100131859Z-378b/page.md#L12)), '
+                  'see also <file:///private/var/folders/c1/T/home-ab/.cache/claude-web/x/page.md#L7-L9> and '
+                  '[the figure](file:///Users/new/.cache/claude-web/a/b/assets/01.png). Values below 1200 are invalid (page.md#L5).')
+        masked = grade.mask(answer)
+        for leak in ('file:', 'home-k4qz', 'claude-web', 'rfc-rfc9000-html-46f5fb09', '20261025T100131859Z', '#L12', '#L7', '#L5', 'assets/01.png', '/Users/new'):
+            self.assertNotIn(leak, masked, leak)
+        self.assertIn('65527', masked)
+        self.assertIn('1200', masked)
+
     def test_ordinary_text_is_untouched(self):
         answer = 'The crate lists 11K SLoC (10,663 lines of Rust code) and 75.8 KiB; use `a/b` paths like src/lib.rs.'
         self.assertEqual(grade.mask(answer), answer)
