@@ -6,7 +6,7 @@
  */
 
 export type OutlineEntry = { level: number; title: string; line: number; endLine: number; tokens: number; images: number }
-export type ImageEntry = { file?: string; url: string; alt: string; line: number; bytes?: number; error?: string }
+export type ImageEntry = { file?: string; url: string; alt: string; line: number; bytes?: number; error?: string; svg?: string; notDrawn?: string }
 
 export type ClipOk = {
   ok: true
@@ -29,6 +29,8 @@ export type ClipOk = {
   outline?: OutlineEntry[]
   outlineOmitted?: number
   images: ImageEntry[]
+  png?: string
+  notDrawn?: string
   notes: string[]
 }
 export type ClipError = {
@@ -155,7 +157,12 @@ function notAPage(r: ClipOk, context: ReplyContext): string {
     lines.push(`No text extracted here (${why}); Read the PDF by page: Read(file_path, pages: "1-5").`)
   } else if (r.kind === 'image') {
     if (context.isAsked) lines.push('A small model cannot read images.')
-    lines.push(...header(r, undefined, context.now), `Image saved: ${r.file}. Read it to see it.`)
+    lines.push(
+      ...header(r, undefined, context.now),
+      r.png !== undefined ? `Image saved: ${r.png}, drawn from the SVG ${r.file}. Read it to see it.`
+      : r.notDrawn !== undefined ? `Image saved: ${r.file} (${undrawn(r.notDrawn)}).`
+      : `Image saved: ${r.file}. Read it to see it.`,
+    )
   } else {
     const type = mediaType(r.contentType)
     if (context.isAsked) lines.push(`Cannot answer from ${/^[aeiou]/i.test(type) ? 'an' : 'a'} ${type} file.`)
@@ -243,12 +250,17 @@ function imageLines(r: ClipOk): string[] {
     'Images (Read one to see it):',
     ...r.images.map((image) => {
       const alt = image.alt.trim() === '' ? '' : `  "${cut(image.alt.trim().replace(/\s+/g, ' '), 100)}"`
+      const svg = image.svg !== undefined ? `  (an SVG drawn as PNG; its source: ${absolute(r, image.svg)})`
+        : image.notDrawn !== undefined ? `  (${undrawn(image.notDrawn)})` : ''
       return image.file !== undefined
-        ? `  ${absolute(r, image.file)}  L${image.line}${alt}`
+        ? `  ${absolute(r, image.file)}  L${image.line}${alt}${svg}`
         : `  ${image.url}  L${image.line}${alt}  not saved: ${image.error ?? 'unknown'}`
     }),
   ]
 }
+
+/** An SVG the clipper could not draw: Read shows it as text. */
+const undrawn = (why: string) => `an SVG: Read shows its source text, not the picture; not drawn: ${why}`
 
 /** The page with each saved image's link, on the line the clipper recorded, made absolute. */
 function absoluteImages(r: ClipOk, page: string): string {

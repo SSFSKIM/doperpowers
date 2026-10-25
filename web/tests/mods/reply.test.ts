@@ -91,6 +91,21 @@ describe('R1 or R2: the page whole or its outline', () => {
     expect(reply).toContain('~9.0k tokens · 0 images')
   })
 
+  test('R2 gives a drawn SVG as its PNG with its source, and says an SVG not drawn shows Read only its source text', async () => {
+    const reply = replyFor(
+      page({
+        tokens: 9000,
+        images: [
+          { file: 'assets/01.png', svg: 'assets/01.svg', url: 'https://example.com/chart.svg', alt: 'Cloud platforms', line: 22, bytes: 76147 },
+          { file: 'assets/02.svg', url: 'https://example.com/flow.svg', alt: '', line: 30, bytes: 5120, notDrawn: 'no Chromium found (set WEB_CHROME)' },
+        ],
+      }),
+      { now: NOW, isAsked: false },
+    )
+    expect(reply).toContain(`  ${DIR}/assets/01.png  L22  "Cloud platforms"  (an SVG drawn as PNG; its source: ${DIR}/assets/01.svg)`)
+    expect(reply).toContain(`  ${DIR}/assets/02.svg  L30  (an SVG: Read shows its source text, not the picture; not drawn: no Chromium found (set WEB_CHROME))`)
+  })
+
   test('a page with no images says so', async () => {
     expect(replyFor(page({ tokens: 9000, images: [] }), { now: NOW, isAsked: false })).toContain('Images (Read one to see it): none')
   })
@@ -230,6 +245,16 @@ describe('replies by kind', () => {
     const lines = ['example.com', 'Fetched now', `Image saved: ${DIR}/image.png. Read it to see it.`]
     expect(replyFor(image(), { now: NOW, isAsked: false })).toBe(lines.join('\n'))
     expect(replyFor(image(), { now: NOW, isAsked: true })).toBe(['A small model cannot read images.', ...lines].join('\n'))
+  })
+
+  const svg = (over: Parameters<typeof page>[0]) =>
+    page({ kind: 'image', file: `${DIR}/image.svg`, contentType: 'image/svg+xml', title: undefined, site: undefined, words: undefined, lines: undefined, tokens: undefined, outline: undefined, images: [], ...over })
+
+  test('an SVG: the PNG it was drawn as, to Read; not drawn, the SVG and what Read shows of it', async () => {
+    expect(replyFor(svg({ png: `${DIR}/image.png` }), { now: NOW, isAsked: false }))
+      .toBe(['example.com', 'Fetched now', `Image saved: ${DIR}/image.png, drawn from the SVG ${DIR}/image.svg. Read it to see it.`].join('\n'))
+    expect(replyFor(svg({ notDrawn: 'turned off by WEB_CHROME=none' }), { now: NOW, isAsked: false }))
+      .toBe(['example.com', 'Fetched now', `Image saved: ${DIR}/image.svg (an SVG: Read shows its source text, not the picture; not drawn: turned off by WEB_CHROME=none).`].join('\n'))
   })
 
   const binary = () =>
