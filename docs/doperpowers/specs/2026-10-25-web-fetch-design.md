@@ -1363,6 +1363,34 @@ type Run = {
     2026-10-25 and the work proceeded.
   Rationale: the spec's eval design, made runnable on 2.1.310.
   Date/Author: 2026-10-25, M3 executor, folded by the plan executor.
+- Decision: M3's suite after its review (`ad81851b`, `b2c3539f`).
+  - The report checks each run folder against the whole task × arm × rep
+    matrix of its set. A missing, ungraded, duplicate or unexpected run
+    makes it INCOMPLETE: no gate verdict, every criterion provisional.
+  - A run at its 10-minute limit gets SIGINT, which makes `claude -p`
+    write its result line with usage (SIGTERM does not), then SIGKILL 30 s
+    later. Usage without a result line is null, never zero; medians leave
+    nulls out and say how many, and criterion 4 reads UNAVAILABLE while a
+    gist run's usage is missing.
+  - The grader's masking hides whole `file://` URIs with their fragments.
+  - **The `js` category is selected independently of the tool.** A page
+    is eligible when a plain fetch gives status 200 and under 50 words, an
+    independent Playwright render in full Chromium shows the content, and
+    the page is stable (version-pinned, or its source unchanged for over a
+    year). The tasks were drawn from the 14 eligible candidates with a
+    seeded shuffle, one page per site. The first selection had required
+    the clipper's own render to succeed, which screened B's failures out
+    of the held-out comparison.
+  - Every key fact holds only what its question asks.
+  Rationale: M3 part 1's review: a gate that could pass on incomplete
+  data, and a category screened on the treatment's success.
+  Date/Author: 2026-10-25, M3 executor, folded by the plan executor.
+- Decision: the frozen tool is reviewed before the final run. M3's second
+  dispatch runs the development rounds and stops at the freeze; the
+  freeze's changes get a task review, and only then does the final run
+  spend. A defect found after the final run would void it, and the spec
+  forbids a second final run without the human.
+  Date/Author: 2026-10-25, plan executor.
 
 ## Outcomes & Retrospective
 
