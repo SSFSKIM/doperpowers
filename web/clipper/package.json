@@ -1,0 +1,21 @@
+{
+  "name": "web-clipper",
+  "private": true,
+  "type": "module",
+  "description": "Saves a web page as a clipper-shaped markdown file with its images, for the web plugin's mcp__web__fetch.",
+  "scripts": {
+    "build": "node build.mjs",
+    "typecheck": "tsc -p .",
+    "test": "tsc -p . && node --test --test-concurrency=1 'test/*.test.ts'"
+  },
+  "dependencies": {
+    "defuddle": "0.19.6",
+    "linkedom": "0.18.14"
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "esbuild": "0.28.2",
+    "typescript": "^5"
+  },
+  "engines": { "node": ">=20" }
+}
