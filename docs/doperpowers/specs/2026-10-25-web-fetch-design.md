@@ -1159,6 +1159,14 @@ type Run = {
   clipper 403 (curl with a browser UA gets 200), registry.terraform.io's
   render hitting 30 s, PubChem at 17 words with no note, and old-format
   RFC pages (text only in `<pre>`) extracting 0 words without a browser.
+- Observation: the development set saturates. All 128 development runs
+  over two rounds were correct in both configurations, so the development
+  rounds could not tell A from B; criterion 1 rests on the final set.
+  `sol` at `xhigh`, with the URL in the question, answers these tasks
+  either way.
+- Observation: registry.terraform.io hangs the headless renderer (only a
+  reserve task uses it), and deps.dev's page loses its "Published" header
+  in extraction. Both are left for the backlog.
 
 ## Decision Log
 
@@ -1391,6 +1399,31 @@ type Run = {
   spend. A defect found after the final run would void it, and the spec
   forbids a second final run without the human.
   Date/Author: 2026-10-25, plan executor.
+- Decision: the tool is frozen at `e5e41b92`, after two development rounds.
+  - Round 1 (at `11daced2`): every category 4 of 4 correct in both
+    configurations; mean d +0.000; criteria 2–4 met; gist main-model tokens
+    B/A 0.68×; about $3.66 reported. It met the freeze rule, but its
+    transcripts showed three clipper defects, so they were fixed and the
+    fixed commit was run as round 2.
+  - Round 2 (at `e5e41b92`): every category 4 of 4 in both; mean d +0.000;
+    criteria 2–4 met; gist 0.83×; no B fetch failure; about $3.53.
+  - The changes in `e5e41b92`, each with tests:
+    - each connection attempt gets 2.5 s before happy-eyeballs tries the
+      next address (Node's 250 ms lost archive.apache.org from this Mac,
+      its IPv6 unreachable), and a connection failure names each address
+      and code instead of an empty `network error:`;
+    - a 403 to the plain fetch is tried once through the render path (the
+      same proxy and flags), and a page it brings back is returned with a
+      note saying the site refused the plain fetch (techblog.woowahan.com);
+      401, 429 and 5xx are not retried;
+    - a `<noscript>` image is kept as content, unless the page already
+      shows it as a lazy image (the Rust survey's 19 charts had all been
+      lost).
+  - No agent-facing text changed: the transcripts showed B choosing its
+    mode well.
+  Rationale: the spec's freeze rule; round 1's defects were the tool's,
+  not the sites'.
+  Date/Author: 2026-10-25, M3 executor, folded by the plan executor.
 
 ## Outcomes & Retrospective
 
