@@ -913,6 +913,10 @@ fields more (I4): `search` and `mechanism`.
 - **Reading.** Criterion 1 also says whether B is better with confidence
   (the interval's lower bound above 0); criterion 4 applies only to a set
   with gist tasks.
+- **Result** (web 0.3.0): B better with confidence, d = +0.115, interval
+  [+0.031, +0.208], at a third of A's cost and time. The report and what
+  it can and cannot show are in
+  `docs/doperpowers/specs/2026-10-25-web-fetch-hard-eval-report.md`.
 
 ### The switch-over
 
@@ -1488,6 +1492,24 @@ type Run = {
   configuration A and nothing for `mcp__web__fetch` in B. A mod's
   `tool.call` handler sees both kinds of tool.
   Evidence: probes on `claude -p` at 2.1.310, 2026-10-25 (board #132).
+- Observation: the hard set's final round (web 0.3.0, 192 runs) found B
+  better, d = +0.115 [+0.031, +0.208].
+  - Its gain is mostly reach: three PDFs over WebFetch's 10 MB cap, mean
+    d +0.75. Two dense tables read wrong from page images add +0.25 each.
+    The other 19 tasks were level.
+  - B cost a third of A's median cost and time: $0.061 and 32 s against
+    $0.189 and 93 s.
+  - The round also found two B defects:
+    - Defuddle drops Tom's Hardware's benchmark chart gallery (318 words, 0
+      images), so image-h2 fails in both configurations.
+    - The clipper's fixed 30 s download limit ran out once on a 17.6 MB
+      PDF under load. That failed criterion 3; B refetched and answered.
+  Evidence: `docs/doperpowers/specs/2026-10-25-web-fetch-hard-eval-report.md`.
+- Observation: `sol` through the gateway cannot take a PDF document block.
+  A `Read` of a whole PDF (no `pages`) ends the run with `API Error: 400
+  Codex tool results cannot contain PDF/document files`. A `Read` with
+  `pages` gives page images, which pass.
+  Evidence: long-pdf-h1 A rep 2's first attempt, 2026-10-25.
 
 ## Decision Log
 

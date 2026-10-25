@@ -262,6 +262,15 @@ class HardSet(unittest.TestCase):
         md = report.render(ts, runs_for(ts, {}, {}, reps=1), 'x', both)
         self.assertIn('Overall: **INCOMPLETE**', md)
 
+    def test_a_set_with_mechanisms_is_summarized_by_them(self):
+        ts = [dict(t, mechanism='over-10mb' if t['category'] == 'long-pdf' else 'quote-limit') for t in hard_tasks()]
+        rows = report._by_mechanism(ts, runs_for(ts, {'long-pdf-1': 0, 'long-pdf-2': 2}, {}))
+        self.assertIn('| over-10mb | 3 | 6/12 | 12/12 | +0.50 |', rows)
+        self.assertIn('| quote-limit | 12 | 48/48 | 48/48 | +0.00 |', rows)
+        md = report.render(ts, runs_for(ts, {}, {}), 'x', report.expected_runs(ts, 'final', 4))
+        self.assertIn('## By mechanism', md)
+        self.assertEqual(report._by_mechanism(hard_tasks(), runs_for(hard_tasks(), {}, {})), [])
+
     def test_a_tasks_mechanism_gets_a_column(self):
         ts = [dict(t, mechanism='over-10mb' if t['category'] == 'long-pdf' else 'quote-limit') for t in hard_tasks()]
         rows = report._by_task(ts, runs_for(ts, {'long-pdf-1': 0}, {}), ['A', 'B'])

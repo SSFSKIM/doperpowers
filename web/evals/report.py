@@ -149,7 +149,7 @@ def _criteria_lines(cs, final=True):
         + ', '.join(f"{c} {a}/{b}" for c, (a, b) in c2['byCategory'].items())
         + (f"; tripped: {', '.join(c2['tripped'])}" if c2['tripped'] else '') + ' (A/B correct runs).',
         f"- {label(c3)} — no B tool error the tool caused: {len(c3['errors'])} found"
-        + ''.join(f"\n  - {tid} rep {rep}: {text[:200]}" for tid, rep, text in c3['errors']),
+        + ''.join(f"\n  - {tid} rep {rep}: {' / '.join(text.split(chr(10)))[:240]}" for tid, rep, text in c3['errors']),
     ]
     left_out = f"; {c4['excluded']} gist run(s) left out, their usage unavailable" if c4['excluded'] else ''
     if c4['verdict'] == 'N/A':
@@ -212,6 +212,25 @@ def _by_task(tasks, runs, arms):
             cells += [_median([main_tokens(r) for r in rs], ',.0f'), _median(durations, '.0f'),
                       f"{statistics.mean(r.get('fetchCalls', 0) for r in rs):.1f}"]
         rows.append(f"| {t['id']} | {t['category']} | " + (f"{t.get('mechanism', '')} | " if mech else '') + ' | '.join(cells) + ' |')
+    return rows
+
+
+def _by_mechanism(tasks, runs):
+    """For a set whose tasks name a mechanism: per mechanism, its tasks, each configuration's correct runs and the mean d."""
+    mechs = []
+    for t in tasks:
+        if t.get('mechanism') and t['mechanism'] not in mechs and any(r['task'] == t['id'] for r in runs):
+            mechs.append(t['mechanism'])
+    if not mechs:
+        return []
+    rows = ['| Mechanism | Tasks | A correct | B correct | Mean d (B − A) |', '|---|---|---|---|---|']
+    for m in mechs:
+        ids = [t['id'] for t in tasks if t.get('mechanism') == m and any(r['task'] == t['id'] for r in runs)]
+        by = {(tid, arm): [r for r in runs if r['task'] == tid and r['arm'] == arm] for tid in ids for arm in ('A', 'B')}
+        correct = {arm: sum(r.get('verdict') == 'correct' for tid in ids for r in by[(tid, arm)]) for arm in ('A', 'B')}
+        total = {arm: sum(len(by[(tid, arm)]) for tid in ids) for arm in ('A', 'B')}
+        d = statistics.mean(_correct_share(by[(tid, 'B')]) - _correct_share(by[(tid, 'A')]) for tid in ids)
+        rows.append(f"| {m} | {len(ids)} | {correct['A']}/{total['A']} | {correct['B']}/{total['B']} | {d:+.2f} |")
     return rows
 
 
@@ -278,8 +297,12 @@ def render(tasks, runs, title, expected, dev_rounds=()):
            '"n/a" counts runs whose usage is unavailable (killed at the limit before a result line). '
            'Cost is what the run output reports (sol is priced by Claude Code as an unknown model, '
            'and B\'s summary calls are outside it; see the usage notes in the design).', '',
-           '## By task', '', *_by_task(tasks, runs, ['A', 'B']), '',
-           '## Runs not fully correct', '', *_failures(runs), '']
+           '## By task', '', *_by_task(tasks, runs, ['A', 'B']), '']
+    mech = _by_mechanism(tasks, runs)
+    if mech:
+        md += ['## By mechanism', '', *mech, '',
+               'A mechanism is what the task was built to make `WebFetch` fail on (`tasks-hard.json`).', '']
+    md += ['## Runs not fully correct', '', *_failures(runs), '']
     if dev_rounds:
         md += ['## Development rounds', '']
         for label, ts, rs, exp in dev_rounds:
