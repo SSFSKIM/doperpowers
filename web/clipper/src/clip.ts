@@ -87,16 +87,31 @@ export async function clip(rawUrl: string, opts: ClipOptions): Promise<ClipResul
     if (e instanceof RefusedError || e instanceof HttpError) return fail(e.message)
     throw e
   }
-  if (res.status >= 400) {
+  // A 403 is often a bot wall that turns away a client that is not a browser and lets
+  // one through (techblog.woowahan.com: 403 to this client, the article to Chromium).
+  // When the render brings back a page, that is the page; when it does not, the 403 stands.
+  let walled: Awaited<ReturnType<typeof extractHtml>> | undefined
+  const siteFetch = guardedFetch(allow, () => deadline.remaining())
+  if (res.status === 403) {
+    const chrome = findChrome(env)
+    if (!('note' in chrome)) {
+      const out = await renderDom(url.href, chrome, deadline.limit(RENDER_LIMITS.timeoutMs), allow)
+      if (!('note' in out)) {
+        const ex = await extractHtml(out.html, url.href, siteFetch)
+        if (ex.words >= RENDER_MIN_WORDS) walled = ex
+      }
+    }
+  }
+  if (res.status >= 400 && !walled) {
     const snippet = snippetOf(res.body, res.headers['content-type'])
     return fail(`HTTP ${res.status}${res.statusText ? ' ' + res.statusText : ''}`, { status: res.status, ...(snippet ? { bodySnippet: snippet } : {}) })
   }
   const fetchedAt = new Date().toISOString()
   const finalUrl = res.url.href
-  const contentType = String(res.headers['content-type'] ?? '')
+  const contentType = walled ? 'text/html' : String(res.headers['content-type'] ?? '')
 
   // 2. Route. The page is in hand: from here on it is published.
-  const r = route(contentType, res.body)
+  const r = walled ? route('text/html', Buffer.alloc(0)) : route(contentType, res.body)
   const tmp = await beginBuild(entry)
   try {
     const notes: string[] = []
@@ -113,9 +128,11 @@ export async function clip(rawUrl: string, opts: ClipOptions): Promise<ClipResul
       let body: string
       if (r.kind === 'html') {
         // 3. Extract, and 4. render when the plain fetch found no content.
-        const siteFetch = guardedFetch(allow, () => deadline.remaining())
-        let ex = await extractHtml(decodeText(res.body, contentType, true), finalUrl, siteFetch)
-        if (ex.words < RENDER_MIN_WORDS) {
+        let ex = walled ?? await extractHtml(decodeText(res.body, contentType, true), finalUrl, siteFetch)
+        if (walled) {
+          rendered = true
+          notes.push(`the site refused a plain fetch (HTTP ${res.status}); this is the page as headless Chromium rendered it`)
+        } else if (ex.words < RENDER_MIN_WORDS) {
           const chrome = findChrome(env)
           if ('note' in chrome) notes.push(chrome.note)
           else {

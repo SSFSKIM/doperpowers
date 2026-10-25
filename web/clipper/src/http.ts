@@ -11,6 +11,26 @@ import type { Address } from './netguard.ts'
 
 export const USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36'
 export const MAX_REDIRECTS = 10
+/**
+ * How long one connection attempt may take before Node tries the host's next
+ * address. Node's default, 250 ms, drops a connection to a far host while it is
+ * still being made; with the other address family unreachable, every attempt
+ * then fails (archive.apache.org from Seoul: 4 of 12 downloads, 2026-10-25).
+ */
+export const CONNECT_ATTEMPT_MS = 2500
+
+/** A failure's text: an AggregateError (every address failed) names each address and its code. */
+export function networkErrorMessage(e: unknown): string {
+  if (e instanceof AggregateError && e.errors.length > 0) {
+    const each = e.errors.map(x => {
+      const { address, code } = x as { address?: string; code?: string }
+      return [address, code].filter(Boolean).join(' ') || String((x as Error)?.message ?? x)
+    })
+    return `could not connect: ${each.join(', ')}`
+  }
+  if (e instanceof Error) return e.message || String((e as { code?: string }).code ?? e.name)
+  return String(e)
+}
 
 /** A request that failed on the way: the network, a timeout, a size limit. */
 export class HttpError extends Error {
@@ -66,7 +86,7 @@ export async function request(start: URL, o: RequestOptions): Promise<HttpRespon
  */
 function asTransportError(e: unknown): Error {
   if (e instanceof RefusedError || e instanceof HttpError) return e
-  return new HttpError(`network error: ${e instanceof Error ? e.message : String(e)}`)
+  return new HttpError(`network error: ${networkErrorMessage(e)}`)
 }
 
 function withTimeout<T>(p: Promise<T>, ms: number, error: () => Error): Promise<T> {
@@ -86,10 +106,12 @@ function once(url: URL, addresses: Address[], o: RequestOptions & { method: stri
       method: o.method,
       headers: { 'user-agent': USER_AGENT, 'accept-encoding': 'gzip, deflate, br', ...o.headers },
       lookup: pinnedLookup(addresses),
+      // Passed through to the socket's connect (Node 20+); @types/node does not list it on a request.
+      ...({ autoSelectFamilyAttemptTimeout: CONNECT_ATTEMPT_MS } as object),
       agent: false,
     })
     const timer = setTimeout(() => req.destroy(timedOut()), ms)
-    const fail = (e: Error) => { clearTimeout(timer); reject(e instanceof HttpError ? e : new HttpError(`network error: ${e.message}`)) }
+    const fail = (e: Error) => { clearTimeout(timer); reject(e instanceof HttpError ? e : new HttpError(`network error: ${networkErrorMessage(e)}`)) }
     req.on('error', fail)
     req.on('response', res => {
       const done = (body: Buffer) => {
@@ -123,8 +145,8 @@ function readBody(res: IncomingMessage, maxBytes: number): Promise<Buffer> {
       chunks.push(chunk)
     })
     stream.on('end', () => resolve(Buffer.concat(chunks)))
-    stream.on('error', e => reject(new HttpError(`network error: ${e.message}`)))
-    res.on('error', e => reject(new HttpError(`network error: ${e.message}`)))
+    stream.on('error', e => reject(new HttpError(`network error: ${networkErrorMessage(e)}`)))
+    res.on('error', e => reject(new HttpError(`network error: ${networkErrorMessage(e)}`)))
     res.on('aborted', () => reject(new HttpError('network error: the response was cut off')))
   })
 }

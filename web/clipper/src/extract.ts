@@ -16,6 +16,7 @@ export async function extractHtml(html: string, url: string, siteFetch: typeof f
   if (loose.defaultView && !loose.defaultView.getComputedStyle) loose.defaultView.getComputedStyle = () => ({ display: '' })
   loose.URL = url
   markWrapperLanguages(doc as unknown as Document)
+  keepNoscriptImages(doc as unknown as Document)
   const r = await Defuddle(doc as unknown as Document, url, { markdown: true, fetch: siteFetch })
   const meta: PageMeta = {}
   for (const k of ['title', 'author', 'site', 'published', 'description', 'domain', 'language'] as const) {
@@ -47,6 +48,42 @@ function markWrapperLanguages(doc: Document): void {
       // of them its code-block selectors match as the block.
       if (!NOT_A_LANGUAGE.has(lang)) for (let at: Element | null = pre; at && at !== el.parentElement; at = at.parentElement) at.setAttribute('data-lang', lang)
       break
+    }
+  }
+}
+
+// A <noscript> image is the static fallback for something a script draws (a
+// chart, a lazy image), and an extraction runs no script, so that fallback is
+// the content: each <noscript> holding images gives way to them, in a <figure>. One without
+// an image ("enable JavaScript") is left to Defuddle, which drops it.
+function keepNoscriptImages(doc: Document): void {
+  // A lazy image's <noscript> twin is already on the page under data-src.
+  const shown = new Set<string>()
+  for (const img of Array.from(doc.querySelectorAll('img'))) {
+    if (img.closest('noscript')) continue
+    for (const a of ['src', 'data-src', 'data-lazy-src', 'data-original']) {
+      const v = img.getAttribute(a)
+      if (v) shown.add(v.trim())
+    }
+  }
+  for (const ns of Array.from(doc.querySelectorAll('noscript'))) {
+    let images = Array.from(ns.querySelectorAll('img'))
+    if (images.length === 0 && /<img\b/i.test(ns.textContent ?? '')) {
+      // A parser that keeps <noscript> as raw text: read its markup.
+      const holder = doc.createElement('div')
+      holder.innerHTML = ns.textContent ?? ''
+      images = Array.from(holder.querySelectorAll('img'))
+    }
+    if (images.length === 0) continue
+    images = images.filter(img => !shown.has((img.getAttribute('src') ?? '').trim()))
+    // In a <figure>: beside the chart's own download links, a bare image sits in a
+    // block that Defuddle drops as link-dense (the Rust survey's charts with three links).
+    // One whose every image is already on the page goes, or Defuddle shows it twice.
+    if (images.length === 0) ns.remove()
+    else {
+      const figure = doc.createElement('figure')
+      figure.append(...images)
+      ns.replaceWith(figure)
     }
   }
 }

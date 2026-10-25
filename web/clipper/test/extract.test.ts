@@ -37,6 +37,29 @@ test('a code block whose language sits on a wrapper (Sphinx, GitHub) keeps it as
   assert.match(body, /```\nplain words\n```/)
 })
 
+test("a script-drawn chart's <noscript> image is kept, and a <noscript> without an image stays out", async () => {
+  // The Rust blog's survey posts draw each chart with a script and put its PNG in <noscript>;
+  // an extraction that runs no script is the reader that fallback is for.
+  const words = '<p>' + 'Survey prose that frames the chart below and keeps the article long enough to extract. '.repeat(6) + '</p>'
+  const html = `<html><body><article><h1>Survey</h1>${words}
+    <div><div class="bar-chart" id="what-ide-do-you-use"><noscript>
+<img alt="what-ide-do-you-use" height="500" src="what-ide-do-you-use.png"/>
+</noscript></div>
+    <div style="display: flex;"><span>[<a href="what-ide-do-you-use.png">PNG</a>]</span>&nbsp;<span>[<a href="what-ide-do-you-use.svg">SVG</a>]</span>&nbsp;<span>[<a href="what-ide-do-you-use-wordcloud.png">Wordcloud of open answers</a>]</span></div></div>
+    <noscript><p>Please enable JavaScript to view the comments.</p></noscript>${words}</article></body></html>`
+  const ex = await extractHtml(html, 'https://blog.example/2024/survey/', fetch)
+  assert.match(ex.body, /!\[what-ide-do-you-use\]\(https:\/\/blog\.example\/2024\/survey\/what-ide-do-you-use\.png\)/)
+  assert.doesNotMatch(ex.body, /enable JavaScript/)
+})
+
+test('a <noscript> copy of a lazy image already on the page is not added twice', async () => {
+  const words = '<p>' + 'Prose around a lazily loaded photo, long enough for the extractor to keep the article. '.repeat(6) + '</p>'
+  const html = `<html><body><article><h1>Photo</h1>${words}
+    <img class="lazy" data-src="https://cdn.example/photo.jpg" alt="the photo"><noscript><img src="https://cdn.example/photo.jpg" alt="the photo"></noscript>${words}</article></body></html>`
+  const ex = await extractHtml(html, 'https://blog.example/post/', fetch)
+  assert.equal(ex.body.match(/photo\.jpg/g)?.length, 1, ex.body)
+})
+
 test('html frontmatter escapes quotes and backslashes and ends with fetched', () => {
   const fm = htmlFrontmatter({ title: 'A "quoted" \\ title', site: 'S' }, 12, 'https://x.test/', F)
   assert.equal(fm, `---\ntitle: "A \\"quoted\\" \\\\ title"\nsite: "S"\nsource: "https://x.test/"\nword_count: 12\nfetched: ${F}\n---\n\n`)

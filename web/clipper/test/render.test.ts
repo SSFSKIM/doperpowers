@@ -10,6 +10,9 @@ import { findChrome } from '../src/render.ts'
 import { startEgressProxy } from '../src/proxy.ts'
 import { startServer, startTrap, startUdpTrap, tmpCache, send, fixture, noChrome } from './helpers.ts'
 
+const WALLED_ARTICLE = '<html><head><title>Behind the wall</title></head><body><article><h1>Behind the wall</h1><p>'
+  + 'This article is served only to clients that look like a browser, as a bot wall would serve it. '.repeat(8) + '</p></article></body></html>'
+
 let server: Awaited<ReturnType<typeof startServer>>
 let trap: Awaited<ReturnType<typeof startTrap>>
 let udp: Awaited<ReturnType<typeof startUdpTrap>>
@@ -23,6 +26,11 @@ before(async () => {
     '/egress': send('text/html', egress),
     '/hello': send('text/plain', 'hello through the proxy'),
     '/slow': (_req, res) => { setTimeout(() => send('text/plain', 'ok')(_req, res), 2000) },
+    // A bot wall: 403 to a client that is not a browser (Node sends no Sec-Fetch-* headers), the article to one that is.
+    '/walled': (req, res) => req.headers['sec-fetch-mode']
+      ? send('text/html', WALLED_ARTICLE)(req, res)
+      : send('text/html', '<html><body><h1>Access denied</h1></body></html>', 403)(req, res),
+    '/forbidden': send('text/html', '<html><body><h1>Forbidden</h1><p>No.</p></body></html>', 403),
   })
 })
 
@@ -115,4 +123,30 @@ test('a rendered page reaches no trap through an image, a script fetch, a WebSoc
   await new Promise(res => setTimeout(res, 1500))
   assert.equal(trap.connections, 0, 'TCP trap (img, fetch, WebSocket)')
   assert.equal(udp.packets, 0, 'UDP trap (RTCPeerConnection)')
+})
+
+test('a page a site refuses to a plain fetch (403) but serves a browser is rendered, with a note', { skip: noChrome }, async () => {
+  const env: NodeJS.ProcessEnv = { ...process.env, WEB_ALLOW_HOSTS: `127.0.0.1:${server.port}` }
+  delete env.WEB_CHROME
+  const r = await clip(`${server.origin}/walled`, { cacheDir: await tmpCache(), env }) as ClipOk
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.equal(r.rendered, true)
+  assert.equal(r.kind, 'html')
+  assert.ok(r.notes.some(n => n.includes('HTTP 403')), r.notes.join('|'))
+  assert.match(await readFile(r.file, 'utf8'), /served only to clients that look like a browser/)
+})
+
+test('a 403 that the browser gets too stays the failure it was', { skip: noChrome }, async () => {
+  const env: NodeJS.ProcessEnv = { ...process.env, WEB_ALLOW_HOSTS: `127.0.0.1:${server.port}` }
+  delete env.WEB_CHROME
+  const r = await clip(`${server.origin}/forbidden`, { cacheDir: await tmpCache(), env })
+  assert.equal(r.ok, false)
+  assert.equal((r as { status?: number }).status, 403)
+})
+
+test('with rendering off, a 403 is the failure it was', async () => {
+  const env: NodeJS.ProcessEnv = { ...process.env, WEB_ALLOW_HOSTS: `127.0.0.1:${server.port}`, WEB_CHROME: 'none' }
+  const r = await clip(`${server.origin}/walled`, { cacheDir: await tmpCache(), env })
+  assert.equal(r.ok, false)
+  assert.equal((r as { status?: number }).status, 403)
 })
