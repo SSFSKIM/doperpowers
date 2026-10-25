@@ -94,6 +94,10 @@ session on the machine.
   settle; thin and capped renders say so (Decision Log). Terraform's vpc
   5.0.0 page renders its Requirements table; the other rendered pages
   keep their word counts.
+- [x] (2026-10-25) Board #142 (web 0.2.2, branch `web-bare-html`): a
+  document without `<html>`/`<body>` extracts with no browser; RFC 8439
+  gives 14,648 words under `WEB_CHROME=none`, where it gave 0 (Decision
+  Log).
 
 ## Acceptance
 
@@ -531,6 +535,12 @@ its own:
      keeps footnotes, math, code blocks and schema.org metadata
      consistently, and its output is the clipper format the human asked
      for.
+   - linkedom builds only the structure a document's tags spell out. A
+     document that leaves out `<html>` or `<body>`, as HTML allows, is
+     rebuilt with them: its leading head elements go in `<head>` and
+     the rest in `<body>`, as a browser does. rfc-editor's RFCs, which
+     start with a bare `<pre>`, are one example. A document whose content
+     is all in its `<body>` is parsed once, as before.
    - The frontmatter carries the fields Defuddle's `--frontmatter` mode
      writes (title, author, site, source, domain, language, description,
      published, word_count), plus `fetched`.
@@ -1868,6 +1878,35 @@ type Run = {
   - A second, longer render when the first is thin: it doubles the cost of
     every thin page and cannot help a page that is thin for good.
   Date/Author: 2026-10-25, web-render-driver session.
+- Decision: a document that leaves out `<html>` or `<body>` is rebuilt
+  with them before extraction (board #142). linkedom is not an HTML5
+  tree builder. Without an `<html>` tag, its root is the page's first
+  element and every later top-level element is a sibling of the root.
+  With `<html>` but no `<body>`, the content sits beside an empty body.
+  Defuddle copes with some of these shapes, but not with several
+  top-level blocks: rfc-editor's RFCs, a run of bare `<pre>` blocks, gave
+  0 words, so only Chromium recovered them, and a host without it got an
+  empty page. The rebuild walks the top-level nodes in order and moves
+  each parsed node (`importNode`) into a fresh document: leading head
+  elements into `<head>`, the rest into `<body>`. It keeps the `<html>`
+  and `<body>` attributes (the page's `lang`). This is what a browser's
+  parser does with omitted tags.
+  - Wrapping the source string in `<html><body>` was the alternative. It
+    would put `<title>` and `<meta>` in the body, and it would nest a
+    second `<html>` for a page that has one but no `<body>`.
+  - The branch's first cut wrote the nodes out and parsed them again.
+    The review found that lossy: linkedom writes a title's decoded text
+    and attribute values unescaped, so `<title>How &lt;/title&gt;&lt;script&gt;`
+    opened a script that swallowed the page (93 words became 0). Nodes
+    now move without being written out.
+  - A document is rebuilt only when its root is not `<html>`, or when
+    something other than a script, style, comment or whitespace sits
+    outside its `<head>` and `<body>`. So a page with a stray script after
+    `</html>` is parsed once, as before.
+  Evidence: across the 50 saved documents only RFC 8439 changed, from 0
+  words to 14,648, the render's count. Live, under `WEB_CHROME=none`, the
+  tool saves it with no render and no note.
+  Date/Author: 2026-10-25, web-clipper-fixes session.
 
 ## Outcomes & Retrospective
 
