@@ -46,8 +46,9 @@ session on the machine.
   `--dump-dom` on three JavaScript pages (Surprises & Discoveries).
 - [x] (2026-10-25) Spec review round 1 (adversarial design review and
   buildability review): 9 findings, all applied (Decision Log).
-- [ ] Spec review round 2 on the revisions; the human's answer on the eval
-  gate change.
+- [x] (2026-10-25) The human confirmed the stricter eval gate, with the
+  runs on `sol` at `xhigh` (Decision Log).
+- [ ] Spec review round 2 on the revisions.
 - [ ] M1 — the clipper.
 - [ ] M2 — the tool: the `web` plugin and its mod.
 - [ ] M3 — the evals, and acceptance 1–9.
@@ -580,24 +581,41 @@ agent chooses `prompt` or the file at the right times.
   - In both, `Read`, `Grep` and `Glob` are allowed, and `Bash`, `WebSearch`
     and `Agent` are not, so neither configuration can route around its
     fetch tool with `curl`.
-  - On the final set, each task runs 3 times per configuration on
-    `sonnet` (Sonnet 5.5) and once on `opus` (Opus 5.5): 24 × 2 × 4 = 192
-    runs.
-  - On the development set, a round is 2 `sonnet` runs per configuration:
+  - **The model:** every run uses `--model sol --effort xhigh`, the model
+    and effort of the person's `sol-xhigh` worker agents. The human chose
+    it on 2026-10-25, in place of the Sonnet and Opus runs first proposed.
+    The tool is judged on the model the person's agents use.
+  - On the final set, each task runs 4 times per configuration:
+    24 × 2 × 4 = 192 runs.
+  - On the development set, a round is 2 runs per configuration:
     16 × 2 × 2 = 64 runs.
   - Every run is `claude -p --output-format stream-json --verbose` in a
-    temporary `HOME` and working directory, so no user settings,
-    instructions, plugins or cache bleed in. It runs with
-    `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`, `--plugin-dir web`, and
-    `ANTHROPIC_API_KEY` from the person's stored secret. It also sets
-    `PLAYWRIGHT_BROWSERS_PATH` to the real Playwright cache, since the
-    temporary `HOME` hides it.
+    temporary `HOME` and working directory, so no user instructions,
+    plugins, hooks or cache bleed in. It runs with
+    `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` and `--plugin-dir web`.
+  - `sol` is served through the person's local model gateway, so the
+    temporary `HOME`'s `settings.json` gets the gateway's keys copied from
+    the `env` of the person's `~/.claude/settings.json`, and nothing else:
+    `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, the
+    `ANTHROPIC_DEFAULT_*_MODEL` mappings,
+    `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY`,
+    `CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING`, `ENABLE_TOOL_SEARCH`,
+    and the two stream idle timeouts. The token is copied file to file and
+    never printed.
+  - Both configurations' small model (`WebFetch`'s and the mod's `haiku`)
+    resolves through the same `ANTHROPIC_DEFAULT_HAIKU_MODEL` mapping, so
+    the summary model is the same in both.
+  - Each run also sets `PLAYWRIGHT_BROWSERS_PATH` to the real Playwright
+    cache, since the temporary `HOME` hides it.
   - Six runs go at once, each with a 10-minute limit.
 - **Grading.**
   - The grader sees the question, the answer key and the run's final text,
     with absolute paths and tool names masked so it cannot tell the
-    configurations apart. It runs as `claude -p` on `opus` with no tools and
-    returns `{ "verdict": "correct" | "partial" | "wrong", "facts": { "<id>": true | false }, "note": "…" }`.
+    configurations apart. It runs as `claude -p` on `opus`, through the
+    same gateway environment, with no tools, and returns
+    `{ "verdict": "correct" | "partial" | "wrong", "facts": { "<id>": true | false }, "note": "…" }`.
+    The grader is from a different model family than the runner, so no
+    model grades its own answers.
   - "Correct" means every key fact is present and right. "Partial" means
     some are.
 - **Measures**, per run, from the stream:
@@ -635,11 +653,18 @@ agent chooses `prompt` or the file at the right times.
 
   Cost and duration are reported per category and do not gate.
 - **The pilot first.** Before any full round, 3 development tasks × 2
-  configurations × 1 `sonnet` run project the cost of a development round
-  and of the final run. The projection goes up the dispatch chain to the
-  main session, which tells the human before the spend. Up to $150 for one
-  development round plus the final run, the work proceeds. Above that, it
-  waits for the human's answer.
+  configurations × 1 run project the cost of a development round and of
+  the final run.
+  - The projection covers tokens per model (the runner's `sol`, the
+    grader's `opus`, the summaries' `haiku`) and the USD that the run
+    output reports. `claude -p` may price a gateway model at nothing, so
+    the projection says which figures are real.
+  - It also confirms that `--model sol --effort xhigh` resolves in the
+    temporary `HOME`. If it does not, the work stops and says why.
+  - The projection goes up the dispatch chain to the main session, which
+    tells the human before the spend.
+  - Up to $150 of reported spend for one development round plus the final
+    run, the work proceeds. Above that, it waits for the human's answer.
 - **Development rounds.** Run a development round, read its transcripts,
   and fix what they show. The fix may touch the tool, its description or
   its constants (`INLINE_MAX_TOKENS`, the render threshold). Then run the
@@ -861,10 +886,12 @@ run as written.
     (The evals).
 - **Pitfalls:**
   - The temporary `HOME` hides the Playwright cache and the person's
-    gateway settings. Set `PLAYWRIGHT_BROWSERS_PATH`, and pass the API key
-    inside the command that uses it,
-    `ANTHROPIC_API_KEY="$(cat ~/.config/claude-secrets/ANTHROPIC_API_KEY)"`,
-    without ever printing it.
+    gateway settings. Set `PLAYWRIGHT_BROWSERS_PATH`, and write the gateway
+    keys listed under "Configurations and runs" into the temporary
+    `settings.json`. Never print `ANTHROPIC_AUTH_TOKEN`; copy it file to
+    file.
+  - The gateway listens on this Mac's loopback interface, so the suite
+    runs on this Mac.
   - The masked text the grader sees must not reveal the configuration
     through paths such as `.cache/claude-web`.
 - **Does not touch:** `~/.claude`.
@@ -1012,7 +1039,7 @@ type Task = {
 }
 // web/evals/runs/<stamp>/<task>.<arm A|B>.<model>.<rep>.json
 type Run = {
-  task: string; arm: 'A' | 'B'; model: 'sonnet' | 'opus'; rep: number
+  task: string; arm: 'A' | 'B'; model: 'sol'; effort: 'xhigh'; rep: number
   finalText: string; verdict?: 'correct' | 'partial' | 'wrong'; facts?: Record<string, boolean>; note?: string
   mainTokens: { input: number; output: number; cacheRead: number; cacheCreation: number }
   haikuUsage?: unknown[]          // B: the usage.jsonl lines of this run
@@ -1088,10 +1115,18 @@ type Run = {
   about 57.5% of the time when B is truly 10 points worse in a category
   (exact binomial, 12 runs, 90% vs 80%), and that fixing against the same
   tasks that gate selects for the suite. The alternative was the approved
-  rule unchanged: cheaper, and it cannot tell "as good" from noise. **This
-  changes a bar the human approved, so it is put to them; it binds only
-  once they confirm.** If they keep the original rule, revert to it here
-  before M3.
+  rule unchanged: cheaper, and it cannot tell "as good" from noise. The
+  human confirmed the stricter bar on 2026-10-25, adding that the runs use
+  `sol` at `xhigh` instead of Sonnet and Opus.
+  Date/Author: 2026-10-25, authoring session; confirmed by the human.
+- Decision: the eval runs go through the person's model gateway, with its
+  keys copied into the temporary `HOME`, instead of `ANTHROPIC_API_KEY`.
+  The grader stays `opus`.
+  Rationale: `sol` is served only through the gateway, which follows from
+  the human's choice of model. The grader is kept on another model family
+  so `sol` does not grade its own answers. That is a reading of "use
+  sol-xhigh as models" as the runs' model; if the human meant the grader
+  too, it changes here.
   Date/Author: 2026-10-25, authoring session.
 
 ## Outcomes & Retrospective
