@@ -1145,6 +1145,20 @@ type Run = {
   temporary `HOME`, so this does not touch M3.
 - Observation: R1 shows `---` twice in a row (the reply's separator, then
   `page.md`'s own frontmatter). Kept as drawn; M3's transcripts decide.
+- Observation: `WebFetch` in 2.1.310 is stronger than "Why the agent
+  should get the page" describes. It pages a long page's text in
+  100,000-character windows with an `offset`, and an agent that fetches an
+  image URL can `Read` the tool-result file Claude Code persisted and see
+  the image. Configuration A is a tougher baseline than designed; the gate
+  stands as written.
+  Evidence: M3 pilot, exact-detail-1 (A found the section at offset
+  300000) and image-1 (A answered from the persisted PNG).
+- Observation: 5 of 9 image downloads from archive.apache.org failed with
+  an empty `network error: `, the task's own figure among them. A lead for
+  the development rounds, with the authoring pass's: woowahan answering the
+  clipper 403 (curl with a browser UA gets 200), registry.terraform.io's
+  render hitting 30 s, PubChem at 17 words with no note, and old-format
+  RFC pages (text only in `<pre>`) extracting 0 words without a browser.
 
 ## Decision Log
 
@@ -1315,6 +1329,40 @@ type Run = {
   Rationale: the spec's M2 records, and its intent where it left the
   wording open.
   Date/Author: 2026-10-25, M2 executor, folded by the plan executor.
+- Decision: M3's suite, as built in its first part (`203fb098`,
+  `db5afc59`, `7526af9f`).
+  - Each configuration's tools are fixed with `--tools`: A
+    `Read,Grep,Glob,ToolSearch,WebFetch`, B the same with `mcp__web__fetch`
+    in place of `WebFetch`, each denying the other's fetch tool. In 2.1.310
+    Grep and Glob exist only when `--tools` names them, and `WebFetch` is
+    deferred behind `ToolSearch` there, as the person's agents meet it, so
+    `ToolSearch` stays in both.
+  - Each run's environment is built from nothing, so the parent session's
+    plugin, socket and token variables cannot leak in.
+  - Main-model tokens are `modelUsage["sol"]`, checked against real output;
+    criterion 4 counts input, output, cache read and cache creation
+    together. I4's run gains `usageByModel`, `initModel`, `runError` and
+    `grade` (the grader's usage and USD).
+  - The verdict is recomputed from the grader's per-fact booleans; the
+    grader runs at opus's default effort. Masking also hides `[L…]`
+    citations, `lines N–M`, `page.md` and its siblings, `assets/NN.*` and
+    `claude-web`.
+  - Criterion 3: a B error is the site's when it is an HTTP status, a
+    network error, `refused:`, a redirect or size limit, or a bad URL;
+    anything else is the tool's, the clipper's own timeout included.
+  - A run that fails outside the agent (no result line, an API error) is
+    written as `.failed.json`, so a resume retries it.
+  - The reserve finals are `web/evals/tasks-reserve.json`. The 40 tasks
+    were drafted by a separate authoring pass that checked every fact
+    against the page's source (167 anchors) and reviewed by M3's executor.
+  - The pilot (exact-detail-1, image-1, gist-2; 6 runs, all correct)
+    projected about $4.70 reported for a development round and $14.09 for
+    the final run, under the $150 rule; sol's reported USD is Claude Code's
+    default-rate guess (`costBasis: "unknown"`), and the token counts are
+    the real measure. The projection went up the dispatch chain on
+    2026-10-25 and the work proceeded.
+  Rationale: the spec's eval design, made runnable on 2.1.310.
+  Date/Author: 2026-10-25, M3 executor, folded by the plan executor.
 
 ## Outcomes & Retrospective
 
