@@ -1,0 +1,5 @@
+{
+  "name": "web-evals-deny-readers",
+  "description": "Eval-only, loaded by web/evals/harness.py into both configurations: a fetch through a third-party reader or proxy is refused (the hosts in web/evals/deny_readers.py)",
+  "version": "1.0.0"
+}

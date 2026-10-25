@@ -1,0 +1,6 @@
+{
+  "description": "mods (function hooks, under CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1): a WebFetch or mcp__web__fetch call whose URL goes through a third-party reader or proxy is denied, by the same check for both tools",
+  "modules": [
+    "./mods/register.tsx"
+  ]
+}

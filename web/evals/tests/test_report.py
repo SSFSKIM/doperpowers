@@ -210,5 +210,100 @@ class Render(unittest.TestCase):
         self.assertIn('96 not validly graded', md)
 
 
+HARD = ['verbatim', 'long-page', 'long-pdf', 'image', 'search']
+
+
+def hard_tasks():
+    return [{'id': f'{c}-{i}', 'category': c, 'set': 'final', 'facts': [{'id': 'f1'}]} for c in HARD for i in range(1, 4)]
+
+
+class HardSet(unittest.TestCase):
+    def test_without_gist_tasks_criterion_4_does_not_apply(self):
+        ts = hard_tasks()
+        c = report.criteria(ts, runs_for(ts, {}, {}))
+        self.assertEqual(c[3]['verdict'], 'N/A')
+        md = report.render(ts, runs_for(ts, {}, {}), 'hard', report.expected_runs(ts, 'final', 4))
+        self.assertIn('Overall: **PASS**', md)
+        self.assertIn('the set has no gist tasks', md)
+        self.assertIn('| long-pdf | A |', md)
+
+    def test_b_better_with_confidence_is_read_off_the_lower_bound(self):
+        ts = hard_tasks()
+        a = {t['id']: 1 for t in ts}  # A 1/4 everywhere, B 4/4
+        c1 = report.criteria(ts, runs_for(ts, a, {}))[0]
+        self.assertTrue(c1['better'])
+        self.assertAlmostEqual(c1['mean'], 0.75)
+        a = {t['id']: 3 for t in ts[:2]}  # B ahead on two tasks of fifteen only
+        a.update({t['id']: 4 for t in ts[2:]})
+        b = {ts[2]['id']: 3}
+        self.assertFalse(report.criteria(ts, runs_for(ts, a, b))[0]['better'])
+        md = report.render(ts, runs_for(ts, {t['id']: 1 for t in ts}, {}), 'hard', report.expected_runs(ts, 'final', 4))
+        self.assertIn('B better with confidence (lower bound above 0): yes', md)
+        self.assertIn('| verbatim-1 | verbatim | 1/0/3 | 4/0/0 | +0.75 |', md)
+
+    def test_a_screening_folder_reports_each_tasks_verdicts(self):
+        ts = hard_tasks()
+        expected = report.expected_runs(ts, 'final', 2, arms=['A'])
+        self.assertEqual(len(expected), 15 * 2)
+        rs = [r for r in runs_for(ts, {'search-2': 1}, {}, reps=2) if r['arm'] == 'A']
+        md = report.render(ts, rs, 'screen', expected)
+        self.assertIn('# Web fetch screening', md)
+        self.assertNotIn('Pass criteria', md)
+        self.assertIn('| search-2 | search | 1/0/1 |', md)
+        self.assertIn('- search-2 A rep 2: wrong', md)
+
+    def test_one_configurations_folders_taken_together_are_judged_over_the_whole_matrix(self):
+        ts = hard_tasks()
+        a_only = report.expected_runs(ts, 'final', 1, arms=['A'])
+        b_only = report.expected_runs(ts, 'final', 1, arms=['B'])
+        self.assertEqual(report.gate_matrix(ts, a_only), a_only)  # one configuration stays a screening round
+        both = report.gate_matrix(ts, a_only | b_only)
+        self.assertEqual(len(both), 15 * 2 * 4)
+        md = report.render(ts, runs_for(ts, {}, {}, reps=1), 'x', both)
+        self.assertIn('Overall: **INCOMPLETE**', md)
+
+    def test_a_run_the_harness_broke_withholds_the_gate(self):
+        import harness
+        ts = hard_tasks()
+        rs = runs_for(ts, {}, {})
+        rs[0]['fetchErrors'] = [{'text': f'{harness.HARNESS_ERROR} the reader check failed (exit 1): boom', 'toolCaused': False}]
+        a = report.audit(ts, rs, report.expected_runs(ts, 'final', 4))
+        self.assertFalse(a['complete'])
+        self.assertEqual(a['harness'], [(rs[0]['task'], rs[0]['arm'], rs[0]['rep'])])
+        self.assertIn('Overall: **INCOMPLETE**', report.render(ts, rs, 'x', report.expected_runs(ts, 'final', 4)))
+
+    def test_a_folder_graded_by_two_graders_withholds_the_gate(self):
+        ts = hard_tasks()
+        rs = runs_for(ts, {}, {})
+        for r in rs:
+            r['grade'] = {'model': 'sol', 'effort': 'xhigh'} if r['arm'] == 'A' else {'model': 'opus'}
+        a = report.audit(ts, rs, report.expected_runs(ts, 'final', 4))
+        self.assertEqual(a['graders'], ['opus', 'sol at xhigh'])
+        self.assertFalse(a['complete'])
+        for r in rs:
+            r['grade'] = {'model': 'sol', 'effort': 'xhigh'}
+        self.assertTrue(report.audit(ts, rs, report.expected_runs(ts, 'final', 4))['complete'])
+
+    def test_no_runs_no_verdict(self):
+        md = report.render(hard_tasks(), [], 'empty screening', set())
+        self.assertIn('No runs to judge, so no verdict.', md)
+        self.assertNotIn('PASS', md)
+
+    def test_a_set_with_mechanisms_is_summarized_by_them(self):
+        ts = [dict(t, mechanism='over-10mb' if t['category'] == 'long-pdf' else 'quote-limit') for t in hard_tasks()]
+        rows = report._by_mechanism(ts, runs_for(ts, {'long-pdf-1': 0, 'long-pdf-2': 2}, {}))
+        self.assertIn('| over-10mb | 3 | 6/12 | 12/12 | +0.50 |', rows)
+        self.assertIn('| quote-limit | 12 | 48/48 | 48/48 | +0.00 |', rows)
+        md = report.render(ts, runs_for(ts, {}, {}), 'x', report.expected_runs(ts, 'final', 4))
+        self.assertIn('## By mechanism', md)
+        self.assertEqual(report._by_mechanism(hard_tasks(), runs_for(hard_tasks(), {}, {})), [])
+
+    def test_a_tasks_mechanism_gets_a_column(self):
+        ts = [dict(t, mechanism='over-10mb' if t['category'] == 'long-pdf' else 'quote-limit') for t in hard_tasks()]
+        rows = report._by_task(ts, runs_for(ts, {'long-pdf-1': 0}, {}), ['A', 'B'])
+        self.assertEqual(rows[0], '| Task | Category | Mechanism | A correct/partial/wrong | B correct/partial/wrong | d (B − A) |')
+        self.assertIn('| long-pdf-1 | long-pdf | over-10mb | 0/0/4 | 4/0/0 | +1.00 |', rows)
+
+
 if __name__ == '__main__':
     unittest.main()

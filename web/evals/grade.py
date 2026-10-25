@@ -1,11 +1,14 @@
-"""The grader: `claude -p` on opus, with no tools, sees the question, the
-answer key and the run's final text with paths, tool names and line
+"""The grader: `claude -p` on sol at xhigh, with no tools, sees the question,
+the answer key and the run's final text with paths, tool names and line
 citations masked, so it cannot tell the configurations apart.
 
-    python3 -I web/evals/grade.py <runs dir> [--tasks <file>] [--regrade]
+    python3 -I web/evals/grade.py <runs dir> [--tasks <file>] [--regrade] [--grader opus]
 
 grades the run files there that have no verdict yet (all of them with
 --regrade). run.py grades each run as it finishes, through the same code.
+`--grader` names another model (opus, at its default effort, graded the
+first suite): a run file keeps its final text, so any folder can be graded
+again; copy the folder first to keep its current verdicts.
 """
 
 import argparse
@@ -19,15 +22,16 @@ import tempfile
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import harness  # noqa: E402
 
-GRADER_MODEL = 'opus'
+GRADER_MODEL = 'sol'
+GRADER_EFFORT = 'xhigh'  # sol's; another grader runs at its default effort unless given one
 GRADER_TIMEOUT_S = 300
 
 GRADER_SYSTEM = """You grade one answer an AI agent gave to a research question about a web page.
 You get the question, the answer key (numbered facts), and the agent's answer.
 For each fact, decide whether the answer states it correctly: the same value, name,
 number or code, allowing a different wording, order, formatting, units written another
-way, or extra correct detail. Code must match the key's text apart from whitespace
-and indentation, unless the fact says otherwise. A fact the answer leaves out, hedges
+way, or extra correct detail. Code, and any text a fact calls verbatim, must match the
+key's text apart from whitespace and indentation, unless the fact says otherwise. A fact the answer leaves out, hedges
 between alternatives, or gets wrong is false. Do not use your own knowledge of the page;
 grade against the key. Ignore citations, references and how the agent says it got the page.
 Reply with one JSON object and nothing else:
@@ -84,12 +88,24 @@ def parse_grade(text, fact_ids):
     return None
 
 
-def grade(task, answer, workdir):
+def grader_effort(model, effort=None):
+    return effort or (GRADER_EFFORT if model == GRADER_MODEL else None)
+
+
+def graded_by(r, model=GRADER_MODEL, effort=None):
+    """Whether a run holds a verdict from this grader: one folder is graded by one grader."""
+    g = r.get('grade') or {}
+    return 'verdict' in r and (g.get('model'), g.get('effort')) == (model, grader_effort(model, effort))
+
+
+def grade(task, answer, workdir, model=GRADER_MODEL, effort=None):
     """One grading call (retried once when its reply cannot be read). Returns (grade or None, usage record)."""
-    usage = {'model': GRADER_MODEL, 'usageByModel': {}, 'costUsd': 0.0, 'durationMs': 0, 'attempts': 0}
+    effort = grader_effort(model, effort)
+    usage = {'model': model, **({'effort': effort} if effort else {}),
+             'usageByModel': {}, 'costUsd': 0.0, 'durationMs': 0, 'attempts': 0}
     if not answer.strip():
         return {'verdict': 'wrong', 'facts': {f['id']: False for f in task['facts']}, 'note': 'no final answer'}, usage
-    args = ['claude', '-p', '--model', GRADER_MODEL, '--output-format', 'json',
+    args = ['claude', '-p', '--model', model, *(['--effort', effort] if effort else []), '--output-format', 'json',
             '--tools', '', '--strict-mcp-config', '--disable-slash-commands',
             '--system-prompt', GRADER_SYSTEM, '--', grader_prompt(task, answer)]
     for _ in range(2):
@@ -126,6 +142,8 @@ def main():
     ap.add_argument('runs')
     ap.add_argument('--tasks', default=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'tasks.json'))
     ap.add_argument('--regrade', action='store_true')
+    ap.add_argument('--grader', default=GRADER_MODEL, help=f'the grading model ({GRADER_MODEL} by default)')
+    ap.add_argument('--grader-effort', help=f'its effort ({GRADER_EFFORT} for {GRADER_MODEL}, else the model\'s default)')
     a = ap.parse_args()
     with open(a.tasks) as f:
         tasks = {t['id']: t for t in json.load(f)}
@@ -141,9 +159,10 @@ def _grade_folder(a, tasks, work):
         path = os.path.join(a.runs, name)
         with open(path) as f:
             r = json.load(f)
-        if 'verdict' in r and not a.regrade:
+        # Graded already by this grader (another grader's verdict is graded again), or a task since dropped from its file.
+        if (graded_by(r, a.grader, a.grader_effort) and not a.regrade) or r['task'] not in tasks:
             continue
-        g, usage = grade(tasks[r['task']], r.get('finalText', ''), work)
+        g, usage = grade(tasks[r['task']], r.get('finalText', ''), work, a.grader, a.grader_effort)
         r['grade'] = usage
         if g:
             r.update(g)

@@ -43,6 +43,18 @@ FETCH_TOOL = {'A': 'WebFetch', 'B': 'mcp__web__fetch'}
 # tool in these sessions, as in the person's); Bash, WebSearch and Agent are
 # left out of both, so neither can route around its fetch tool.
 BASE_TOOLS = ('Read', 'Grep', 'Glob', 'ToolSearch')
+# A task that names no URL (`"search": true`) gives both configurations the same
+# search tool: search_mcp.py, since the built-in WebSearch fails on sol through the gateway.
+SEARCH_SERVER = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'search_mcp.py')
+SEARCH_TOOL = 'mcp__search__web_search'
+SEARCH_USAGE = os.path.join('.cache', 'web-evals-search', 'usage.jsonl')
+# Both configurations' fetch tools refuse third-party readers and proxies: the deny-readers
+# plugin's mod asks deny_readers.py about every WebFetch and mcp__web__fetch call (a settings
+# hook would not do: the engine runs none for a mod's tool).
+DENY_READERS = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'deny_readers.py')
+DENY_PLUGIN = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'deny-readers')
+# A fetch error that opens this is the harness's own (the reader check failed): the run is invalid.
+HARNESS_ERROR = 'eval harness error:'
 
 
 def playwright_cache():
@@ -80,17 +92,23 @@ def run_env(home, parent=None):
     return env
 
 
-def runner_args(arm, plugin_dir, question):
-    """`claude -p` for one configuration: A has WebFetch only, B has mcp__web__fetch only."""
+def runner_args(arm, plugin_dir, question, search=False):
+    """`claude -p` for one configuration: A has WebFetch only, B has mcp__web__fetch only;
+    with `search`, both also have the search tool."""
     fetch, other = FETCH_TOOL[arm], FETCH_TOOL['B' if arm == 'A' else 'A']
     tools = list(BASE_TOOLS) + ([fetch] if arm == 'A' else [])
+    allowed = list(BASE_TOOLS) + [fetch] + ([SEARCH_TOOL] if search else [])
+    mcp = ['--mcp-config', json.dumps({'mcpServers': {'search': {'type': 'stdio', 'command': sys.executable,
+                                                                 'args': ['-I', SEARCH_SERVER]}}})] if search else []
     return [
         'claude', '-p',
         '--model', RUNNER_MODEL, '--effort', RUNNER_EFFORT,
         '--output-format', 'stream-json', '--verbose',
+        '--plugin-dir', DENY_PLUGIN,
         '--plugin-dir', plugin_dir,
+        *mcp,
         '--tools', ','.join(tools),
-        '--allowedTools', ','.join(list(BASE_TOOLS) + [fetch]),
+        '--allowedTools', ','.join(allowed),
         '--disallowedTools', other,
         '--permission-prompts', 'none',
         '--', question,
@@ -132,7 +150,10 @@ _SITE_REASON = re.compile(r'(HTTP \d{3}|network error|refused:|too many redirect
 
 
 def is_tool_caused(arm, text):
-    """Whether a fetch error is the tool's own (criterion 3) rather than the site's."""
+    """Whether a fetch error is the tool's own (criterion 3) rather than the site's, or the eval's
+    refusal of a third-party reader."""
+    if (text.startswith('Refused: ') and 'third-party reader or proxy' in text) or text.startswith(HARNESS_ERROR):
+        return False
     if arm == 'B':
         m = re.match(r'fetch failed: (?:\S+: )?(.*)', text, re.S)
         return not (m and _SITE_REASON.match(m.group(1)))
@@ -177,7 +198,7 @@ def parse_stream(text, arm, timed_out=False, wall_ms=None):
     input in the pilot's streams), so tokens and cost are None, unavailable.
     A run cut off at its limit takes its wall time as its duration."""
     fetch = FETCH_TOOL[arm]
-    fetch_ids, answered, errors, message_ids = [], set(), [], set()
+    fetch_ids, answered, errors, message_ids, searches = [], set(), [], set(), 0
     last_text, result, init_model = '', None, None
     for line in text.splitlines():
         try:
@@ -193,6 +214,8 @@ def parse_stream(text, arm, timed_out=False, wall_ms=None):
             for b in message.get('content', []) or []:
                 if b.get('type') == 'tool_use' and b.get('name') == fetch:
                     fetch_ids.append(b.get('id'))
+                elif b.get('type') == 'tool_use' and b.get('name') == SEARCH_TOOL:
+                    searches += 1
                 elif b.get('type') == 'text' and b.get('text', '').strip():
                     last_text = b['text']
         elif kind == 'user':
@@ -221,6 +244,7 @@ def parse_stream(text, arm, timed_out=False, wall_ms=None):
         'usageByModel': usage,
         'fetchCalls': len(fetch_ids),
         'fetchErrors': errors,
+        'searchCalls': searches,
         'turns': turns,
         'durationMs': duration,
         'costUsd': cost,
