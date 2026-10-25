@@ -35,7 +35,9 @@ Reply with one JSON object and nothing else:
 "correct" means every fact is true, "partial" some, "wrong" none."""
 
 # A file URI whole, fragment (`#L12`) included, before the paths inside it are seen.
-_FILE_URI = re.compile(r'file:[^\s)\]>\'"`]*')
+# Only real URI syntax: the scheme at a word boundary, then `//` and a path, so code or prose that
+# says "file:" (a log line's `Line from file: ${line}`) is left alone.
+_FILE_URI = re.compile(r'(?<![\w.+-])file://[^\s)\]>\'"`]*/[^\s)\]>\'"`]*')
 # What is left of a cache path that is not absolute, and a generation folder's name anywhere.
 _CACHE = re.compile(r'[^\s()\[\]<>\'"`]*\.cache/claude-web[^\s)\]>\'"`,;]*|\b\d{8}T\d{9}Z-[0-9a-f]{4}\b')
 _LINE_ANCHOR = re.compile(r'#L\d+(?:\s*[–-]\s*L?\d+)?')

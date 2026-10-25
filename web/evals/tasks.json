@@ -29,7 +29,7 @@
     "facts": [
       {
         "id": "f1",
-        "claim": "The connectionsCheckingInterval option of http.createServer() defaults to 30000.",
+        "claim": "The connectionsCheckingInterval option of http.createServer() defaults to 30000 (milliseconds).",
         "evidence": "source line 3389: \"<strong>Default:</strong> <code>30000</code>.\""
       },
       {

@@ -31,6 +31,21 @@ class Mask(unittest.TestCase):
         self.assertIn('65527', masked)
         self.assertIn('1200', masked)
 
+    def test_code_that_says_file_colon_is_not_a_file_uri(self):
+        import json
+        import os
+        here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(here, 'tasks-reserve.json')) as f:
+            key = next(t for t in json.load(f) if t['id'] == 'code-r2')['facts'][0]['claim']
+        code = key.split('\n', 1)[1]  # the key's code, as a perfect answer would quote it
+        self.assertIn('Line from file: ${line}', code)
+        self.assertEqual(grade.mask(code), code)
+        cited = code + '\n\nSource: [readline.md#L1337](file:///private/var/folders/c1/T/home-ab/.cache/claude-web/nodejs.org/x/page.md#L1337)'
+        masked = grade.mask(cited)
+        self.assertIn('Line from file: ${line}', masked)
+        for leak in ('file:///', 'home-ab', 'claude-web', '#L1337'):
+            self.assertNotIn(leak, masked, leak)
+
     def test_ordinary_text_is_untouched(self):
         answer = 'The crate lists 11K SLoC (10,663 lines of Rust code) and 75.8 KiB; use `a/b` paths like src/lib.rs.'
         self.assertEqual(grade.mask(answer), answer)
