@@ -409,15 +409,14 @@ own defaults (`steps.IMAGE_ENV`): `WEB_CHROME`, the headless Chromium the
 `WEB_CHROME=none` in `profile.env` turns rendering off.
 
 **Rendering and the Chromium sandbox.** The fetch tool launches Chromium
-with its sandbox, which needs unprivileged user namespaces. On a VM the
-image's AppArmor profile for the binary grants them (Ubuntu 24.04 grants them
-no unconfined program; `/etc/apparmor.d/devcloud-chrome-headless-shell`, as
-Ubuntu's own for Google Chrome). A container gets them only from its
-runtime: Docker's default seccomp profile refuses them, so in a container
-started as above the tool keeps the plain fetch with a note that rendering
-failed (`No usable sandbox!`); `--security-opt seccomp=unconfined` lets the
-sandbox start (Docker's AppArmor profile stays on), which `--privileged` does
-not (an unconfined process is under Ubuntu's restriction).
+with its sandbox, which needs unprivileged user namespaces. Ubuntu 24.04
+grants them a program only through an AppArmor profile naming it; the image
+carries one for its headless shell
+(`/etc/apparmor.d/devcloud-chrome-headless-shell`, like Ubuntu's own for
+Google Chrome), which a VM loads. In a container the runtime decides:
+Docker's default seccomp profile refuses them, so a container started as
+above keeps the plain fetch with a note that rendering failed (`No usable
+sandbox!`), and one started with `--security-opt seccomp=unconfined` renders.
 
 **Configuration is received, never sent.** `~/.claude` is a clone whose push
 URL is invalid, so a push fails loudly. The config pull job fetches and resets
