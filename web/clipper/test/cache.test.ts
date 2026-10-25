@@ -44,8 +44,8 @@ test('a published generation holds meta.json whose paths name it, and the build 
 
 test('a refresh publishes a new generation, and the older one stays readable at its path', async () => {
   const entry = join(await tmp(), 'h', 'e')
-  const first = await build(entry, new Date())
-  const second = await build(entry, new Date())
+  const first = await build(entry, new Date(), { now: () => new Date('2026-10-25T10:15:30.005Z') })
+  const second = await build(entry, new Date(), { now: () => new Date('2026-10-25T10:15:30.006Z') })
   assert.notEqual(first, second)
   assert.equal(currentGeneration(entry), second)
   assert.equal(await readFile(join(first, 'page.md'), 'utf8'), 'hello\n')
@@ -84,9 +84,13 @@ test('two concurrent publishes both complete, and the newer is current', async (
 test('reuse answers from a generation under 24 hours old, and not from an older one or a .tmp- folder', async () => {
   const entry = join(await tmp(), 'h', 'e')
   assert.equal(await readFresh(entry, 24 * 3600e3), null)
-  await build(entry, new Date(Date.now() - 25 * 3600e3))
+  // Each generation is named by its own fetch time: two builds published in the
+  // same millisecond would otherwise be ordered by their random suffixes.
+  const old = new Date(Date.now() - 25 * 3600e3)
+  await build(entry, old, { now: () => old })
   assert.equal(await readFresh(entry, 24 * 3600e3), null)
-  const dir = await build(entry, new Date(Date.now() - 3600e3))
+  const recent = new Date(Date.now() - 3600e3)
+  const dir = await build(entry, recent, { now: () => recent })
   // An interrupted build: a .tmp- folder newer than anything, with files in it.
   const t = await beginBuild(entry)
   await writeFile(join(t, 'page.md'), 'partial')
