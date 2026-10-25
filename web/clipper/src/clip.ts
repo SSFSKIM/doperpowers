@@ -136,7 +136,11 @@ export async function clip(rawUrl: string, opts: ClipOptions): Promise<ClipResul
         else {
           // Extracted, and later its images resolved, against the document the browser ended on.
           const again = await extractHtml(served.html, served.url, siteFetch)
-          if (again.words > ex.words) return { ex: again, url: served.url, rendered: true, notes }
+          const used = again.words > ex.words
+          // Either way the agent is told when what it gets may not be the whole page.
+          if (used && served.unsettled) notes.push(served.unsettled)
+          else if (Math.max(again.words, ex.words) < RENDER_MIN_WORDS) notes.push(`even rendered, the page holds only ${Math.max(again.words, ex.words)} words; its content may load later than the render waits, or come from an API the page calls`)
+          if (used) return { ex: again, url: served.url, rendered: true, notes }
         }
       }
     }
@@ -146,7 +150,7 @@ export async function clip(rawUrl: string, opts: ClipOptions): Promise<ClipResul
   // one through (techblog.woowahan.com: 403 to this client, the article to Chromium).
   // The page is the browser's only when the browser was served it with a 2xx, by its
   // own NetLog: a denial page renders to a DOM like any other. Otherwise the 403 stands.
-  let walled: { ex: Extracted; url: string } | undefined
+  let walled: { ex: Extracted; url: string; unsettled?: string } | undefined
   if (res.status === 403) {
     const chrome = findChrome(env)
     if (!('note' in chrome)) {
@@ -154,7 +158,7 @@ export async function clip(rawUrl: string, opts: ClipOptions): Promise<ClipResul
       const served = 'note' in out ? undefined : servedPage(out)
       if (served && 'url' in served) {
         const ex = await extractHtml(served.html, served.url, siteFetch)
-        if (ex.words >= RENDER_MIN_WORDS) walled = { ex, url: served.url }
+        if (ex.words >= RENDER_MIN_WORDS) walled = { ex, url: served.url, unsettled: served.unsettled }
       }
     }
   }
@@ -186,7 +190,10 @@ export async function clip(rawUrl: string, opts: ClipOptions): Promise<ClipResul
       let head = ''
       let body = ''
       let page: HtmlPage | undefined
-      if (walled) page = { ...walled, rendered: true, notes: [`the site refused a plain fetch (HTTP ${res.status}); this is the page as headless Chromium rendered it`] }
+      if (walled) {
+        const notes = [`the site refused a plain fetch (HTTP ${res.status}); this is the page as headless Chromium rendered it`]
+        page = { ex: walled.ex, url: walled.url, rendered: true, notes: walled.unsettled ? [...notes, walled.unsettled] : notes }
+      }
       else if (r.kind === 'html') page = await extractPage(decodeText(res.body, contentType, true), finalUrl)
       else {
         const md = markdownWithFrontmatter(decodeText(res.body, contentType, false), finalUrl, fetchedAt)
@@ -289,11 +296,11 @@ const bodyWords = (text: string) => countWords(text.replace(/^---\n[\s\S]*?\n---
  * last main-frame response could have become it). A DOM alone cannot tell a
  * page from a denial, an error page, or a navigation that failed.
  */
-function servedPage(out: { html: string; document?: ServedDocument }): { html: string; url: string } | { note: string } {
+function servedPage(out: { html: string; document?: ServedDocument; unsettled?: string }): { html: string; url: string; unsettled?: string } | { note: string } {
   const doc = out.document
   if (!doc) return { note: 'rendering not used: the browser was served no page it could show (a failed navigation, or no 2xx document); the plain fetch is kept' }
   if (doc.status < 200 || doc.status >= 300) return { note: `rendering not used: the browser was served HTTP ${doc.status}; the plain fetch is kept` }
-  return { html: out.html, url: doc.url }
+  return { html: out.html, url: doc.url, unsettled: out.unsettled }
 }
 
 /** The https: form of an http: URL on the default port; none for any other URL. */

@@ -89,6 +89,11 @@ session on the machine.
   failure memory, retry guidance, a redirect note, untrusted-content
   framing, HTTPS first, the `WEB_DENY_HOSTS` deny list); the owner kept
   the Chrome `User-Agent` (Decision Log).
+- [x] (2026-10-25) Board #130: the render drives Chromium over the
+  DevTools protocol, takes the DOM at a cap, and waits for the page to
+  settle; thin and capped renders say so (Decision Log). Terraform's vpc
+  5.0.0 page renders its Requirements table; the other rendered pages
+  keep their word counts.
 
 ## Acceptance
 
@@ -541,12 +546,22 @@ its own:
 4. **Render when the plain fetch found no content.** When the extracted
    body has fewer than 50 words, the page is rendered and extracted again,
    and the result with more words is kept.
-   - **How it renders:** the Chromium binary runs headless with `--dump-dom`
-     (it prints the page's DOM after its scripts ran), a fresh temporary
-     `--user-data-dir` (so a running Chrome's profile lock never matters),
-     `--virtual-time-budget=10000` and a 30-second timeout. It also gets
-     the proxy and egress flags from "The network boundary", without
-     which it does not run.
+   - **How it renders:** the Chromium binary runs headless with a fresh
+     temporary `--user-data-dir` (so a running Chrome's profile lock never
+     matters) and the proxy and egress flags from "The network boundary",
+     without which it does not run. The clipper drives it over the
+     DevTools protocol on `--remote-debugging-pipe`, which opens no port.
+     It navigates and waits for the load event, then for a 10-second
+     virtual-time budget (the page's clock stands still while a request is
+     pending and runs ahead when nothing is), then lets the page settle:
+     the clock runs on in 100 ms steps of real time while the DOM is
+     watched, and the DOM is taken once it has not changed for 500 ms, at
+     most 5 s after the budget. The render's limit is 30 seconds. A page
+     that has not settled 3 s before it (a request held open for good
+     stops its clock for good) is taken as it stands, with the note
+     `the page was still loading after 27 s; this is how headless Chromium had rendered it by then`.
+   - **A render that leaves the page thin** (under 50 words) adds the note
+     `even rendered, the page holds only N words; its content may load later than the render waits, or come from an API the page calls`.
    - **Finding the binary:** `$WEB_CHROME`, when set, is the only
      candidate. An explicit setting is authoritative: a path that does not
      exist, or the value `none`, turns rendering off, and the note names
@@ -559,8 +574,9 @@ its own:
    - With none found, the plain result stands, with the note
      `rendering unavailable on this machine: no Chromium found (set WEB_CHROME)`.
    - Driving the binary directly won over the Playwright library: it adds
-     no dependency, and the spike showed `--dump-dom` is enough
-     (Surprises & Discoveries).
+     no dependency. The first driver was `--dump-dom`, which the spike
+     showed enough; it cannot give the DOM at a cap and raced the page's
+     frames, so the protocol driver replaced it (Decision Log, board #130).
 5. **Images.**
    - **What is downloaded:** every image link in the extracted markdown,
      made absolute against the final URL, `data:` URIs included. Six at a
@@ -1305,6 +1321,58 @@ type Run = {
   `--dump-dom` with no note, which is why B's `js` runs made 3.8 fetch
   calls instead of 1. Evidence:
   `docs/doperpowers/specs/2026-10-25-web-fetch-code-comparison.md`.
+- Observation (board #130): once the page has loaded, `--dump-dom` with
+  `--virtual-time-budget` waits for the budget with nothing capping the
+  wait, and `--timeout` caps only the load. Chromium's harness for those
+  flags (`components/headless/command_handler/headless_command.js`) races
+  the load against `--timeout`; if the load wins it sets the
+  `pauseIfNetworkFetchesPending` policy and awaits
+  `virtualTimeBudgetExpired` alone. registry.terraform.io holds a
+  LaunchDarkly event stream open from 1.6 s, so the page's clock never
+  moves and nothing is printed.
+  Evidence: the exact `chromeArgs`, killed at 45 s with 0 bytes out, the
+  NetLog's one unfinished request the stream
+  (`clientstream.launchdarkly.com/eval/…`, 200); `--timeout=15000` and
+  `--timeout=3000` with the budget hung the same; without the budget the
+  DOM printed at the load event, 1.8–2.6 s, the Requirements table absent
+  in one run (51 KB) and present in another (205 KB).
+- Observation: a protocol reply and the event right after it can arrive in
+  one read of the pipe, and are dispatched before an `await` on the reply
+  resumes. A driver that starts listening for the `load` lifecycle event
+  or `virtualTimeBudgetExpired` only after the reply misses the event and
+  waits for its cap: excalidraw.com stalled so in 1 of 2 runs with nothing
+  pending.
+- Observation: the budget can run out before content is on the page.
+  It runs ahead the moment nothing is pending, while a framework draws in
+  animation frames, which run in real time: under CPU load (12 spinning
+  threads on this 10-core Mac) the `--dump-dom` clipper took
+  package.elm-lang.org's 12-word shell in 1 of 6 runs and in 6 of 10 of a
+  second batch, and a probe found the shell at expiry and the whole page
+  (108 KB) two frames later. A worker's request does not stop the page's
+  clock either: a test page whose worker fetches its words and whose timer
+  writes them is the shell at expiry every time, and stays the shell while
+  the clock is paused. npmgraph.js.org, also under load, was a 107-element
+  shell at expiry in 1 of 12 probe runs and whole about a second later
+  once its clock ran. With the settle (Decision Log, board #130) the
+  elm-lang page came back whole in 10 of 10 loaded runs; npmgraph still
+  came back at 49 words in 1 of 10, with the thin note: work that changes
+  neither the DOM nor the network for 500 ms (its graph layout) is
+  invisible to the settle.
+- Observation: after the budget, no virtual-time policy runs the page in
+  real time: `advance` fires a 100 ms interval about 474,000 times a
+  second, and `pause` (the state after expiry) and
+  `pauseIfNetworkFetchesPending` without a budget fire it none. Granting a
+  100 ms budget every 100 ms steps the clock at about real speed.
+- Observation: after `Browser.close` the headless shell closes its NetLog
+  within 20–100 ms, but the process can take 10 s more to exit (10.1–10.4
+  s in 6 of 7 runs one hour; none of 8 an hour earlier). It still closed
+  within 130 ms with 60 threads spinning on this 10-core Mac. Yet at a
+  load average near 200, from other sessions, the egress test once found
+  no served document after a 3 s wait for the close: CPU load alone does
+  not explain it, so the wait now runs to the render's limit.
+- Observation: crates.io's sidebar (license, 11K SLoC, 75.8 KiB, downloads)
+  is in the rendered DOM; Defuddle drops it as not the article, so the
+  page is 242 words either way. An extraction matter, not a render one.
 
 ## Decision Log
 
@@ -1751,6 +1819,55 @@ type Run = {
   Not measured here: the eval suite is these strings' pressure test once
   board #132's set runs.
   Date/Author: 2026-10-25, board #136 session.
+- Decision (board #130): the render drives Chromium over the DevTools
+  protocol on `--remote-debugging-pipe` instead of `--dump-dom` (step 4,
+  "How it renders"). It waits as before, for the load event and then the
+  10 s virtual-time budget, then lets the page settle: the clock stepped
+  at about real speed, the DOM taken once unchanged for 500 ms, at most
+  5 s after the budget. A page that has not settled 3 s inside the 30 s
+  limit is taken as it stands. The NetLog is read once Chromium has
+  closed it rather than when the process exits, waiting for that up to
+  the render's limit. Two notes are new
+  agent-facing text:
+  - `the page was still loading after N s; this is how headless Chromium had rendered it by then`,
+    on a DOM taken at the cap, since it may be partial;
+  - `even rendered, the page holds only N words; its content may load later than the render waits, or come from an API the page calls`,
+    on a render that leaves the page under 50 words. A thin render said
+    nothing before and read as the page: the eval's `js` runs in B made
+    3.8 fetch calls where the design expected 1. Like every rendering
+    note, it also rides on a markdown stub that stays because its HTML
+    page, rendered, is thin too (board #129's rule).
+
+  Unchanged: the proxy and egress flags, the proxy's `Boundary` (board
+  #136's deny list included), the fresh profile removed afterwards, the
+  NetLog evidence of the served document; the egress trap tests still
+  show 0 TCP connections and 0 UDP packets, and a rendered page requests
+  nothing from a denied host. Each render costs
+  about 0.5–1.5 s more (the settle); registry.terraform.io returns its
+  Requirements table at the cap, in 29 s.
+  Rationale: the diagnosis in Surprises & Discoveries: `--dump-dom` cannot
+  give the DOM at a cap, and the budget's end races the page's frames and
+  its workers. Rejected:
+  - `--timeout` alone: it caps only the load. With the budget the hang is
+    unchanged; without it the DOM is printed at the load event, before
+    scripts finish (terraform with its table in one run, without in
+    another).
+  - A WebSocket driver on `--remote-debugging-port`: it opens a loopback
+    port any local process can drive while a page renders, and Node 20
+    has no WebSocket client.
+  - The Playwright library: still a dependency for what about 200 lines
+    of protocol do.
+  - Unsticking the clock by closing long tunnels in the proxy, or by
+    failing event streams through the Fetch domain: the proxy cannot see a
+    request inside a tunnel, and a Fetch pattern on
+    `resourceType: 'EventSource'` paused terraform's API requests as well
+    in this Chromium, so every request would need a continue round trip.
+    The cap covers every cause of a stopped clock, at the cost of time.
+  - Network idle from the page's Network domain as the settle signal: it
+    does not see a worker's requests; DOM quiet sees their effect.
+  - A second, longer render when the first is thin: it doubles the cost of
+    every thin page and cannot help a page that is thin for good.
+  Date/Author: 2026-10-25, web-render-driver session.
 
 ## Outcomes & Retrospective
 
