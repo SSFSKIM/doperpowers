@@ -1157,6 +1157,23 @@ describe('a dismissed ask', () => {
       { type: 'attachment', uuid: 'c', parentUuid: 'b', attachment: { type: 'hook_additional_context', content: [deliveryText('t', DISMISSED)] } },
     ]
     expect(rebuildAsks(rows.map((row) => JSON.stringify(row)))).toEqual([ask])
+    // Held beside an answer and submitted together, the dismissal is the last delivery: the engine's framing trails it.
+    const framing = "This is how Claude Code surfaces a prompt a plugin submits between turns — it starts this turn in the user's place. Address the message above."
+    const both = [
+      { type: 'assistant', uuid: 'a', message: { content: [
+        { type: 'tool_use', id: 't1', name: ASK_TOOL, input: { questions: [FEATURES] } },
+        { type: 'tool_use', id: 't2', name: ASK_TOOL, input: { questions: [BACKEND] } },
+      ] } },
+      { type: 'user', uuid: 'b', parentUuid: 'a', message: { content: [
+        { type: 'tool_result', tool_use_id: 't1', content: ASYNC_RESULT },
+        { type: 'tool_result', tool_use_id: 't2', content: ASYNC_RESULT },
+      ] } },
+      { type: 'user', uuid: 'c', parentUuid: 'b', message: { role: 'user', content: `The sminos plugin sent a message:\n${deliveryText('t1', ANSWER)}\n\n${deliveryText('t2', DISMISSED)}\n\n${framing}` } },
+    ]
+    const restored = rebuildAsks(both.map((row) => JSON.stringify(row)))
+    const dismissed = restored.find((a) => a.id === 't2')
+    expect(dismissed?.status).toBe('answered')
+    expect(askRow({ input: { questions: [BACKEND] }, output: ASYNC_RESULT, isRunning: false, isErrored: false }, dismissed, true).kind).toBe('dismissed')
   })
 })
 

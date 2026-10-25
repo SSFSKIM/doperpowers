@@ -773,7 +773,7 @@ export function askRow(
       return { kind: 'open', questions: ask.questions }
     }
     const answer = ask.answer ?? ''
-    if (answer === DISMISSED) {
+    if (answer.startsWith(DISMISSED)) {
       return { kind: 'dismissed', questions: ask.questions, isDelivered }
     }
     return answer.startsWith(REFUSAL)
