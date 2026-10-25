@@ -182,7 +182,13 @@ the turn after the call is the one the module holds back: its
 prompt still being screened at the head of the queue keeps the engine from
 draining it, so the compaction runs first and the prompt is answered on the
 compacted conversation; a main turn that ends otherwise, or the next main
-turn's start, lets it go (live check `tests/mods/live-compact-race-check.py`). A
+turn's start, lets it go. The wait is the hook's own time, which the engine
+bounds (`HookBudget.ms`, 10 s; past it the hook is gone and its prompt
+passed on anyway), so the hook passes the prompt on itself just short of
+that (`HOLD_SPARE_MS`): a prompt sent longer than that before the turn ends
+can still begin its turn first, and the model is then told (live check
+`tests/mods/live-compact-race-check.py`; the budget under the engine's own
+dispatcher, `tests/mods/compact-hold.test.ts`). A
 request left by a turn that ended otherwise (an interruption, an API error)
 is dropped at the next `turn.start`, so a turn the person starts is not
 compacted behind them. Nothing is aborted: background shells, monitors, MCP

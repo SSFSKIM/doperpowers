@@ -50,6 +50,9 @@ export function offerDue(tokens: number | undefined, last: number, gate: OfferGa
 
 export const RESUME_DEFAULT = 'Continue from the summary.'
 
+/** What the hold on a prompt typed over a compacting turn leaves of its hook's budget, to pass the prompt on in. */
+export const HOLD_SPARE_MS = 500
+
 export type CompactRequest = {
   instructions?: string
   resume: string
@@ -581,12 +584,22 @@ export function registerCompact(on: On) {
   // turn begun and does not run; held at this hook, it heads the queue
   // unscreened, which the engine does not drain (2.1.310), so the turn's end
   // compacts first and the prompt is answered on the compacted conversation.
-  // One sent while no turn runs (no turnId) has already taken the session
-  // for its turn when it reaches this hook (the engine reserves it first),
-  // so holding it would only stall it.
-  on('prompt.submit', { origin: { kind: 'composer' } }, async (_, e, next) => {
-    if (e.turnId !== undefined) {
-      await held?.released
+  // The wait is the hook's own time, so it lasts no longer than the hook's
+  // budget allows (HookBudget.ms) and then passes the prompt on itself: one
+  // sent that long before the turn's end may begin its turn first, and the
+  // model is then told the compaction did not run. One sent while no turn
+  // runs (no turnId) has already taken the session for its turn when it
+  // reaches this hook (the engine reserves it first), so holding it would
+  // only stall it.
+  on('prompt.submit', { origin: { kind: 'composer' } }, async ($, e, next) => {
+    if (e.turnId !== undefined && held !== undefined) {
+      const left = next.budget.remainingMs - HOLD_SPARE_MS
+      let timer: { cancel: () => void } | undefined
+      await Promise.race([
+        held.released,
+        ...(Number.isFinite(left) ? [new Promise<void>((resolve) => (timer = $.clock.after(Math.max(0, left), resolve)))] : []),
+      ])
+      timer?.cancel()
     }
     return next(e)
   }).catch((_, e, next) => next(e))
