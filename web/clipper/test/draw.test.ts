@@ -1,13 +1,13 @@
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFile } from 'node:fs/promises'
+import { readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { clip } from '../src/clip.ts'
 import type { ClipOk } from '../src/clip.ts'
-import { viewBoxSize } from '../src/draw.ts'
+import { drawSvgs } from '../src/draw.ts'
 import { findChrome, renderDom } from '../src/render.ts'
 import { boundaryOf } from '../src/netguard.ts'
-import { startServer, send, tmpCache, noChrome, pngBytes } from './helpers.ts'
+import { startServer, send, tmpCache, noChrome, pngBytes, FIXTURES } from './helpers.ts'
 
 // Over 1 KiB, or the image step would take it for a tracking pixel.
 const PAD = '<!-- ' + 'Padding that carries the file over one kibibyte, as a real chart is. '.repeat(20) + '-->'
@@ -43,6 +43,17 @@ before(async () => {
     '/viewbox.svg': send(SVG, chart('viewBox="0 0 800 200"')),
     '/broken.svg': send(SVG, '<svg xmlns="http://www.w3.org/2000/svg"><rect ' + PAD),
     '/photo.png': send('image/png', pngBytes(3000, 9)),
+    '/roots': send('text/html', '<html><head><title>Roots</title></head><body><article><h1>Roots</h1>' + PROSE
+      + '<p><img src="commented.svg" alt="Commented"></p><p><img src="quoted.svg" alt="Quoted"></p>'
+      + '<p><img src="percent.svg" alt="Percent"></p><p><img src="sized.svg" alt="Sized"></p></article></body></html>'),
+    // Markup in a comment before the root, and a `>` inside a quoted attribute of the root, are not the root's.
+    '/commented.svg': send(SVG, '<?xml version="1.0"?>\n<!-- An example: <svg viewBox="0 0 10 10"> draws a square. -->\n' + chart('viewBox="0 0 800 200"')),
+    '/quoted.svg': send(SVG, chart('data-note="a>b" viewBox="0 0 800 200"')),
+    '/percent.svg': send(SVG, chart("width='100%' viewBox='0,0,640.5,480'")),
+    '/sized.svg': send(SVG, chart('width="400" viewBox="0 0 800 200"')),
+    '/odd-viewbox': send('text/html', '<html><head><title>Odd viewBox</title></head><body><article><h1>Odd viewBox</h1>' + PROSE
+      + '<p><img src="infinite.svg" alt="Infinite"></p><p><img src="chart.svg" alt="Ordinary"></p></article></body></html>'),
+    '/infinite.svg': send(SVG, chart('viewBox="0 0 1e999 100"')),
     '/trap-page': (req, res) => send('text/html', '<html><head><title>A trap</title></head><body><article><h1>A trap</h1>' + PROSE
       + `<p><img src="http://localhost:${server.port}/trap.svg" alt="Trap"></p></article></body></html>`)(req, res),
     '/trap.svg': (req, res) => send(SVG, trapSvg(server.port))(req, res),
@@ -57,15 +68,6 @@ const env = (chrome = true): NodeJS.ProcessEnv => {
   return e
 }
 const pngSize = (b: Buffer) => [b.readUInt32BE(16), b.readUInt32BE(20)]
-
-test('an SVG with no width of its own is drawn at its viewBox size; one with a width, at its natural size', () => {
-  assert.deepEqual(viewBoxSize('<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 200">'), [800, 200])
-  assert.deepEqual(viewBoxSize("<svg width='100%' viewBox='0,0,640.5,480'>"), [640.5, 480])
-  assert.equal(viewBoxSize('<svg width="400" viewBox="0 0 800 200">'), undefined)
-  assert.equal(viewBoxSize('<svg>'), undefined)
-  assert.equal(viewBoxSize('<svg viewBox="0 0 0 10">'), undefined)
-  assert.equal(viewBoxSize('<html><body></body></html>'), undefined)
-})
 
 test("a page's SVGs are drawn as PNGs beside them at twice their size, the long edge at most 2000 px, and its links name the PNGs", { skip: noChrome }, async () => {
   const r = await clip(`${server.origin}/charts`, { cacheDir: await tmpCache(), env: env() }) as ClipOk
@@ -87,6 +89,28 @@ test("a page's SVGs are drawn as PNGs beside them at twice their size, the long 
   assert.ok(!page.includes('(assets/01.svg)'))
   // A picture that is not an SVG is saved as before, with nothing added.
   assert.deepEqual(Object.keys(r.images[4]).sort(), ['alt', 'bytes', 'file', 'line', 'url'])
+})
+
+test("an SVG with no width of its own, or a percentage, is drawn at its viewBox size, read from its root as Chromium parses it", { skip: noChrome }, async () => {
+  const r = await clip(`${server.origin}/roots`, { cacheDir: await tmpCache(), env: env() }) as ClipOk
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.deepEqual(r.images.map(i => [i.file, i.svg, i.notDrawn]), ['01', '02', '03', '04'].map(n => [`assets/${n}.png`, `assets/${n}.svg`, undefined]))
+  const sizes = await Promise.all(['01', '02', '03', '04'].map(async n => pngSize(await readFile(join(r.dir, `assets/${n}.png`)))))
+  // Not the square in the comment before the root; not cut short at the '>' in a quoted attribute;
+  // a percentage width and a comma-separated viewBox; a width of its own, its natural size.
+  assert.deepEqual(sizes, [[1600, 400], [1600, 400], [1281, 960], [800, 200]])
+})
+
+test('an SVG whose viewBox is out of range is drawn at its natural size, and the SVGs after it are drawn', { skip: noChrome }, async () => {
+  const r = await clip(`${server.origin}/odd-viewbox`, { cacheDir: await tmpCache(), env: env() }) as ClipOk
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.deepEqual(r.images.map(i => [i.file, i.svg, i.notDrawn]), [
+    ['assets/01.png', 'assets/01.svg', undefined],
+    ['assets/02.png', 'assets/02.svg', undefined],
+  ])
+  // Chromium's default size for an SVG with no size of its own, 300 by 150, then the ordinary 400 by 200.
+  const sizes = await Promise.all(['01', '02'].map(async n => pngSize(await readFile(join(r.dir, `assets/${n}.png`)))))
+  assert.deepEqual(sizes, [[600, 300], [800, 400]])
 })
 
 test('an SVG drawn as an image loads nothing it names: the same SVG opened as a document does reach the server', { skip: noChrome }, async () => {
@@ -115,6 +139,28 @@ test('an SVG fetched by its own URL is drawn as image.png beside image.svg', { s
   assert.equal(r.file, join(r.dir, 'image.svg'))
   assert.equal(r.png, join(r.dir, 'image.png'))
   assert.deepEqual(pngSize(await readFile(r.png!)), [800, 400])
+})
+
+// The drawing against a stand-in browser (test/fixtures/fake-chrome.mjs), so it runs where Chromium does not.
+const fakeChrome = { path: join(FIXTURES, 'fake-chrome.mjs'), headless: '--headless' }
+const svgFiles = async (...bodies: string[]) => {
+  const dir = await tmpCache()
+  return Promise.all(bodies.map(async (body, n) => { const f = join(dir, `0${n + 1}.svg`); await writeFile(f, body); return f }))
+}
+
+test('an SVG Chromium refuses to draw is not drawn, with why, and the SVGs after it are drawn', async () => {
+  const [refused, ordinary] = await svgFiles('<svg>rejected</svg>', '<svg>ordinary</svg>')
+  const drawn = await drawSvgs([refused, ordinary], fakeChrome, 20_000, boundaryOf({}))
+  assert.deepEqual(drawn.get(refused), { error: 'Chromium could not draw it (Invalid parameters)' })
+  assert.deepEqual(drawn.get(ordinary), { png: ordinary.replace(/svg$/, 'png'), bytes: 9 })
+})
+
+test('a spent time budget ends the drawing: the SVG it caught and every one after it are not drawn', async () => {
+  const [hangs, ordinary] = await svgFiles('<svg>hangs</svg>', '<svg>ordinary</svg>')
+  const started = Date.now()
+  const drawn = await drawSvgs([hangs, ordinary], fakeChrome, 1000, boundaryOf({}))
+  assert.deepEqual([...drawn], [[hangs, { error: 'time budget' }], [ordinary, { error: 'time budget' }]])
+  assert.ok(Date.now() - started < 5000, `took ${Date.now() - started} ms`)
 })
 
 test('without Chromium an SVG stays the file its link names, with why it was not drawn', async () => {

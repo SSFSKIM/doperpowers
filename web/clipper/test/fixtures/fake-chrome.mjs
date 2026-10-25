@@ -1,12 +1,14 @@
 #!/usr/bin/env node
 // A stand-in for Chromium on --remote-debugging-pipe, for the driver's tests
 // on machines with no Chromium: it answers the commands a render sends, and
-// the navigated URL's path picks how the page behaves. Each reply goes out in
-// one write with the event that follows it, as Chromium's own often arrive.
+// the navigated URL's path picks how the page behaves, and a drawn SVG's text
+// how its drawing goes. Each reply goes out in one write with the event that
+// follows it, as Chromium's own often arrive.
 import { appendFileSync, createReadStream, writeFileSync, writeSync } from 'node:fs'
 
 const out = (...messages) => writeSync(4, messages.map(m => JSON.stringify(m) + '\0').join(''))
 let mode = ''
+let svg = ''
 let buf = ''
 createReadStream('', { fd: 3 }).on('data', chunk => {
   buf += chunk
@@ -25,7 +27,16 @@ createReadStream('', { fd: 3 }).on('data', chunk => {
       // A page that keeps a request open never spends its budget.
       if (mode === 'stalls') out(reply({ virtualTimeTicksBase: 1 }))
       else out(reply({ virtualTimeTicksBase: 1 }), event('Emulation.virtualTimeBudgetExpired', {}))
-    } else if (method === 'Runtime.evaluate') {
+    } else if (method === 'Page.getFrameTree') out(reply({ frameTree: { frame: { id: 'T1' } } }))
+    else if (method === 'Page.setDocumentContent') {
+      svg = Buffer.from(/base64,([^"]*)/.exec(params.html)[1], 'base64').toString()
+      out(reply({}))
+    } else if (method === 'Runtime.evaluate' && params.expression.includes('decode()')) {
+      if (!svg.includes('hangs')) out(reply({ result: { type: 'object', value: [100, 50] } }))
+    } else if (method === 'Emulation.setDeviceMetricsOverride' && svg.includes('rejected')) {
+      out({ id, error: { code: -32602, message: 'Invalid parameters' }, ...(sessionId ? { sessionId } : {}) })
+    } else if (method === 'Page.captureScreenshot') out(reply({ data: Buffer.from('a drawing').toString('base64') }))
+    else if (method === 'Runtime.evaluate') {
       out(reply({ result: { type: 'string', value: `<html><body><p>${mode} page</p></body></html>` } }))
     } else if (method === 'Browser.close') {
       out(reply({}))

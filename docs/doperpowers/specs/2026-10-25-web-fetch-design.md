@@ -615,10 +615,12 @@ its own:
        request. The proxy is a second wall.
      - **Size and limits:** twice the SVG's natural size, its long edge at
        most 2,000 px. An SVG that gives no width, or a percentage, is sized
-       by its viewBox. Every SVG of a page is drawn within 20 s and the
-       fetch's deadline.
+       by its viewBox when that has a finite, positive width and height,
+       its root read as Chromium parses it. Every SVG of a page is drawn
+       within 20 s and the fetch's deadline.
      - **When an SVG is not drawn** (no Chromium, a time budget spent, an
-       SVG that cannot be decoded), its link stays the `.svg`. The list
+       SVG that cannot be decoded, one Chromium fails to draw while the
+       rest are drawn), its link stays the `.svg`. The list
        then says
        `(an SVG: Read shows its source text, not the picture; not drawn: <why>)`.
      - **An SVG fetched by its own URL** is saved as `image.svg` and drawn
@@ -1940,8 +1942,12 @@ type Run = {
     its natural size, its long edge at most 2,000 px, on white, and
     screenshotted.
   - **Natural size:** an SVG with no width of its own (or a percentage)
-    takes its viewBox's size. Chromium's 300-pixel default for it would
-    draw an 800-unit chart at three-eighths scale.
+    takes its viewBox's size, when the viewBox has four finite numbers and
+    a positive width and height. Chromium's 300-pixel default for it would
+    draw an 800-unit chart at three-eighths scale. The root is read in the
+    drawing's page by a `DOMParser`, Chromium's own XML parser, whose
+    document runs no script and loads nothing; a regex on the source took
+    markup in a comment before the root for the root.
   - **What the agent sees:**
     - the markdown link names the PNG, and the `.svg` stays beside it;
     - the image list gives a drawn SVG's PNG with its source;
