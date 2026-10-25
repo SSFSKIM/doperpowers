@@ -1028,6 +1028,7 @@ type ClipResult =
       lines?: number
       tokens?: number        // the estimate: ceil(ASCII chars / 4) + non-ASCII chars
       outline?: OutlineEntry[]
+      outlineOmitted?: number // headings the 80-entry cap left out; absent when 0
       images: ImageEntry[]
       notes: string[]        // one human-readable line each
     }
@@ -1104,6 +1105,27 @@ type Run = {
   Chromium nor poppler, so rendering and PDF text extraction degrade there,
   with notes, until the image adds them.
   Evidence: `devcloud/image/packages.sh` installs `nodejs` and no browser or `poppler-utils`.
+- Observation: the R2 example's page is not what the spec drew.
+  docs.anthropic.com redirects to `platform.claude.com/docs/…` and, to the
+  clipper's `Accept`, serves `text/markdown` with its own frontmatter and
+  MDX components. The prompt-caching page is 3,330 lines (~40.6k tokens),
+  not 1,012, and its one image is an SVG. M2 and M3 expect that shape.
+  Evidence: M1's live acceptance run, 2026-10-25 (task-1 report).
+- Observation: the render egress proxy plus the WebRTC/QUIC flags hold.
+  Evidence: M1's trap test, 3 of 3 runs on the Playwright headless shell:
+  without the proxy, 5 TCP connections and UDP packets reached the traps;
+  with the proxy but without the flags, 1–3 UDP packets reached the UDP
+  trap; with the clipper's flags, 0 and 0. The UDP channel only shows when
+  the page holds the render open (the test keeps a 2 s held request).
+  Rendering ships on.
+- Observation: Defuddle logs with `console.log`, onto stdout, where I1's one
+  JSON object goes. The CLI routes `console.*` to stderr.
+- Observation: acceptance 3's "no Chromium" `--refresh` leaves the unrendered
+  copy current for 24 hours on a machine that can render. Harmless in use;
+  whoever reruns the acceptance refreshes afterwards.
+- Observation: npm on this Mac blocks dependency install scripts
+  (`esbuild` postinstall); esbuild still works, its platform binary arriving
+  as an optional dependency.
 
 ## Decision Log
 
@@ -1180,6 +1202,43 @@ type Run = {
   the evidence that rendering ships.
   Rationale: the spec's pilot rule and the CI runner's environment.
   Date/Author: 2026-10-25, plan executor.
+- Decision: M1's own decisions that later work reads (the full list of 26
+  is in M1's commit `d6b71b78` and its task report):
+  - Requests go through `node:http`/`https` with a pinned `lookup`, not the
+    global `fetch`, which takes a lookup only through the `undici` package.
+  - Defuddle's site extractors (YouTube transcripts and others) stay on,
+    fetching through the guarded client, so they stay inside the boundary.
+  - I1 gains `outlineOmitted` (headings the cap left out), which R2's
+    closing line needs.
+  - The cap drops the deepest level while more than one level remains;
+    a single level still over 80 keeps its first 80. Level-0 entries are
+    never dropped. A PDF of more than 80 pages therefore gets its first 80
+    pages and `outlineOmitted`, rather than "one entry per PDF page"
+    literally: an R2 of 300 page lines would defeat the outline's purpose.
+  - Level-0 entries are `(frontmatter)`, `(top)` (only when the text before
+    the first heading has a non-blank line) and `(body)`. `text` and `json`
+    files are never read for headings.
+  - Saved images are numbered contiguously by first appearance, so
+    `assets/01.*` is always the first saved image. An unsaved image's link
+    becomes its absolute URL. The image `Accept` leaves out AVIF, which
+    `Read` cannot show.
+  - Served markdown with its own frontmatter keeps that block and gains
+    `source` and `fetched` in it; its title comes from there, else the first
+    `#` heading outside code.
+  - A pre-pass copies fence languages from Sphinx/GitHub `highlight-*`
+    wrappers onto the code block, recovering most of what Defuddle drops.
+  - Text decodes by the declared charset (header, then `<meta>`), so EUC-KR
+    pages read correctly.
+  - A PDF whose text is only whitespace drops `page.txt`, with the note
+    `no text extracted: the PDF has no text layer`, so the mod's "pdf
+    without text" row applies.
+  - Tests run under `node --test` with Node's type stripping (Node ≥ 22.18
+    to run the tests; the bundle still targets Node 20), `tsc` as their
+    type gate. The bundle is minified for whitespace and syntax only
+    (2.1 MB), keeping identifiers readable in a stack.
+  Rationale: each follows the spec's intent where it did not reach; see the
+  task report for the alternatives.
+  Date/Author: 2026-10-25, M1 executor, folded by the plan executor.
 
 ## Outcomes & Retrospective
 
