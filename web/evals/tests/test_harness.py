@@ -220,6 +220,22 @@ class Arguments(unittest.TestCase):
         self.assertEqual(b[b.index('--disallowedTools') + 1], 'WebFetch')
         self.assertIn('mcp__web__fetch', b[b.index('--allowedTools') + 1])
         self.assertIn('WebFetch', a[a.index('--allowedTools') + 1])
+        self.assertNotIn('--mcp-config', a + b)
+
+    def test_a_search_task_gives_both_configurations_the_same_search_tool(self):
+        for arm in ('A', 'B'):
+            args = harness.runner_args(arm, '/w/web', 'Q?', search=True)
+            config = json.loads(args[args.index('--mcp-config') + 1])
+            self.assertEqual(config['mcpServers']['search']['args'], ['-I', harness.SEARCH_SERVER])
+            self.assertIn(harness.SEARCH_TOOL, args[args.index('--allowedTools') + 1].split(','))
+            self.assertNotIn('WebSearch', args[args.index('--tools') + 1])
+            self.assertEqual(args[-2:], ['--', 'Q?'])
+
+    def test_search_calls_are_counted(self):
+        text = s.stream(s.tool_use('t1', harness.SEARCH_TOOL, {'query': 'q'}), s.tool_result('t1', 'Links: []'),
+                        s.tool_use('t2', 'WebFetch', {'url': 'https://x.example/'}), s.result('x', {}))
+        run = harness.parse_stream(text, 'A')
+        self.assertEqual((run['searchCalls'], run['fetchCalls']), (1, 1))
 
 
 if __name__ == '__main__':

@@ -210,5 +210,48 @@ class Render(unittest.TestCase):
         self.assertIn('96 not validly graded', md)
 
 
+HARD = ['verbatim', 'long-page', 'long-pdf', 'image', 'search']
+
+
+def hard_tasks():
+    return [{'id': f'{c}-{i}', 'category': c, 'set': 'final', 'facts': [{'id': 'f1'}]} for c in HARD for i in range(1, 4)]
+
+
+class HardSet(unittest.TestCase):
+    def test_without_gist_tasks_criterion_4_does_not_apply(self):
+        ts = hard_tasks()
+        c = report.criteria(ts, runs_for(ts, {}, {}))
+        self.assertEqual(c[3]['verdict'], 'N/A')
+        md = report.render(ts, runs_for(ts, {}, {}), 'hard', report.expected_runs(ts, 'final', 4))
+        self.assertIn('Overall: **PASS**', md)
+        self.assertIn('the set has no gist tasks', md)
+        self.assertIn('| long-pdf | A |', md)
+
+    def test_b_better_with_confidence_is_read_off_the_lower_bound(self):
+        ts = hard_tasks()
+        a = {t['id']: 1 for t in ts}  # A 1/4 everywhere, B 4/4
+        c1 = report.criteria(ts, runs_for(ts, a, {}))[0]
+        self.assertTrue(c1['better'])
+        self.assertAlmostEqual(c1['mean'], 0.75)
+        a = {t['id']: 3 for t in ts[:2]}  # B ahead on two tasks of fifteen only
+        a.update({t['id']: 4 for t in ts[2:]})
+        b = {ts[2]['id']: 3}
+        self.assertFalse(report.criteria(ts, runs_for(ts, a, b))[0]['better'])
+        md = report.render(ts, runs_for(ts, {t['id']: 1 for t in ts}, {}), 'hard', report.expected_runs(ts, 'final', 4))
+        self.assertIn('B better with confidence (lower bound above 0): yes', md)
+        self.assertIn('| verbatim-1 | verbatim | 1/0/3 | 4/0/0 | +0.75 |', md)
+
+    def test_a_screening_folder_reports_each_tasks_verdicts(self):
+        ts = hard_tasks()
+        expected = report.expected_runs(ts, 'final', 2, arms=['A'])
+        self.assertEqual(len(expected), 15 * 2)
+        rs = [r for r in runs_for(ts, {'search-2': 1}, {}, reps=2) if r['arm'] == 'A']
+        md = report.render(ts, rs, 'screen', expected)
+        self.assertIn('# Web fetch screening', md)
+        self.assertNotIn('Pass criteria', md)
+        self.assertIn('| search-2 | search | 1/0/1 |', md)
+        self.assertIn('- search-2 A rep 2: wrong', md)
+
+
 if __name__ == '__main__':
     unittest.main()
