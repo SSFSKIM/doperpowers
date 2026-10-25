@@ -1468,6 +1468,35 @@ type Run = {
   Rationale: the freeze rule, and the decision that the freeze is reviewed
   before the final run.
   Date/Author: 2026-10-25, plan executor.
+- Decision: the branch review (doperpowers:review-code, high) found four
+  defects in the clipper after the final run, fixed in `55d814cb`:
+  - **Referrer leak.** Image requests sent the full page URL, query and
+    fragment included, as `Referer` to every image host, so a signed or
+    token-bearing page URL reached third parties. They now follow the
+    browsers' default `strict-origin-when-cross-origin`, recomputed at
+    every redirect hop: never a fragment or credentials, only the origin
+    across origins, nothing from HTTPS to HTTP.
+  - **Renders are held to their served document** on both render paths:
+    a render replaces the plain result only when Chromium's NetLog shows a
+    2xx document, else the plain result stays with a note naming the
+    browser's status; and an accepted render is extracted, its images
+    resolved and its `source` and `finalUrl` set, at the URL the browser
+    ended on.
+  - **The render proxy's `CONNECT`** tries every checked address in turn
+    (2.5 s an attempt), so an unreachable first address no longer fails
+    the tunnel.
+  The merged tool therefore differs from the evaluated `542ba02d` by these
+  fixes. They correct security and fidelity defects the eval's tasks never
+  reached and change no agent-facing text, so they are not tuning, and no
+  second final run is made. The clipper suite (104 tests, the Chromium
+  egress tests among them), the CI `web` gate and acceptance 1–3 were
+  re-run on `55d814cb`.
+  Three narrower findings stay as debt, listed in the pull request:
+  image notation in a code span that crosses a line break taken for an
+  image; R1 rewriting a same-line inline-code literal that names the same
+  asset; an adjacent wrapper holding one lazy image taken for a
+  `<noscript>` chart's twin.
+  Date/Author: 2026-10-25, plan executor.
 
 ## Outcomes & Retrospective
 
