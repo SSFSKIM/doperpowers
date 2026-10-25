@@ -1166,6 +1166,20 @@ type Run = {
   The alternative for WebRTC, removing `RTCPeerConnection` with an
   injected script, lost because a page's own script can run before it.
   Date/Author: 2026-10-25, authoring session.
+- Decision: execution pre-flight. M1 → M2 → M3 each consume the one
+  before, so each is reviewed clean before the next dispatches. M3 is
+  dispatched in two parts: the suite, the task authoring and the pilot,
+  returning with the projection; then, once the projection has gone up
+  the dispatch chain and the $150 rule allows it, the development rounds,
+  the freeze, the final run and acceptance 1–8. A milestone executor
+  cannot reach the main session itself, and the spec's pilot rule needs the
+  projection to travel before the spend. Tests that need Chromium or
+  `pdftotext` skip with a printed reason where those are absent (the CI
+  runner has neither); the rendering egress tests are run on this Mac,
+  where the Playwright headless shell is installed, and their output is
+  the evidence that rendering ships.
+  Rationale: the spec's pilot rule and the CI runner's environment.
+  Date/Author: 2026-10-25, plan executor.
 
 ## Outcomes & Retrospective
 
