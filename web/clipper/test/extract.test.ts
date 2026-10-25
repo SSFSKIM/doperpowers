@@ -111,6 +111,17 @@ test('a date labeled by its line ("Release date:") is kept, and an unlabeled byl
   assert.equal(post.meta.published, '2024-05-03')
 })
 
+test("a date beside the title stays Defuddle's, so it reaches published, and a hidden <time> goes with its text", async () => {
+  const prose = '<p>' + 'The notes below describe each fix in this release and the reasons behind it, one by one. '.repeat(4) + '</p>'
+  for (const lead of ['<p>Published: May 3, 2024</p>', '<h2>Published</h2><p>May 3, 2024</p>']) {
+    const ex = await extractHtml(`<html><body><article><h1>Release Notes</h1>${lead}${prose}${prose}</article></body></html>`, 'https://x.test/notes', fetch)
+    assert.equal(ex.meta.published, '2024-05-03T00:00:00+00:00', lead)
+  }
+  const para = '<p>This paragraph carries enough words of its own to be prose that the extractor keeps in the body.</p>'
+  const ex = await extractHtml(`<html><body><article><h1>Notes</h1>${para.repeat(4)}<p>The fix was released <time hidden datetime="2024-05-03">May 3, 2024</time><span>yesterday</span>, and it is live for every user.</p></article></body></html>`, 'https://x.test/notes', fetch)
+  assert.match(ex.body, /\nThe fix was released yesterday, and it is live for every user\.\n$/, ex.body)
+})
+
 test('html frontmatter escapes quotes and backslashes and ends with fetched', () => {
   const fm = htmlFrontmatter({ title: 'A "quoted" \\ title', site: 'S' }, 12, 'https://x.test/', F)
   assert.equal(fm, `---\ntitle: "A \\"quoted\\" \\\\ title"\nsite: "S"\nsource: "https://x.test/"\nword_count: 12\nfetched: ${F}\n---\n\n`)

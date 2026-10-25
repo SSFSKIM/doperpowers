@@ -469,8 +469,10 @@ its own:
      near the content's edges cuts a `<time>` out of its line. A date with
      a label of its own (a heading, `dt` or `th` just before it, or a short
      `Label:` opening its line) is hidden from Defuddle's date patterns,
-     and a `<time>` inside a longer line hands the line its text. An
-     unlabeled date on its own, the byline, is still dropped.
+     and a visible `<time>` inside a longer line hands the line its text.
+     An unlabeled date on its own, the byline, is still dropped, and dates
+     beside the title (the first h1 and three elements either side) are
+     left to Defuddle, which reads the page's `published` and author there.
 4. **Render when the plain fetch found no content.** When the extracted
    body has fewer than 50 words, the page is rendered and extracted again,
    and the result with more words is kept.
@@ -1588,8 +1590,17 @@ type Run = {
   documents, only those three pages changed, by exactly the restored
   dates; RFC 9000's Defuddle word count falls by 37 only because Defuddle
   counts the "." after a `</time>` as a word. Accepted cost: a blog whose
-  byline is labeled ("Published on: …", a `dl` under the title) now keeps
-  it; no page in the 50 has one.
+  labeled byline sits away from the title ("Published on: …" below a
+  hero image) now keeps it; no page in the 50 has one.
+  The branch review (doperpowers:reviewer-medium) found two defects in
+  the first cut, fixed before the merge. Shielding a date beside the title
+  hid it from Defuddle's `published`, which it reads from text there when
+  no tag carries the date (`<h1>…</h1><p>Published: May 3, 2024</p>` lost
+  it), so the title, the three elements either side of it, and their dates
+  are left to Defuddle. And moving a hidden `<time>`'s text out of it put
+  hidden text on the page (a machine timestamp behind "yesterday"), so a
+  `<time>` with any mark of hiding keeps its text, and only a `<time>` in
+  a line (a block of text and inline elements) gives its text up.
   Date/Author: 2026-10-25, web-clipper-fixes session.
 
 ## Outcomes & Retrospective
