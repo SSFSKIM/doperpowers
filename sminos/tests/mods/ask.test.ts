@@ -6,6 +6,7 @@ import {
   ASK_TOOL,
   ASK_TOOLS,
   DIALOG_REMINDER,
+  DISMISSED,
   DIALOG_SOURCE,
   PLUGIN,
   answerAsync,
@@ -1078,6 +1079,84 @@ describe('an async ask', () => {
     await h.settle()
     expect(h.submitted()).toEqual([deliveryText(id, `${text}\n[Image source: /private${FOLDER}/1.png]`)])
     expect(h.calls.some((c) => c.op === 'fs.read')).toBe(false)
+  })
+})
+
+describe('a dismissed ask', () => {
+  const opened = async () => {
+    const h = harness()
+    const notes: AskNote[] = []
+    observeAsks((note) => notes.push(note))
+    await h.start()
+    await h.call(ASK_TOOL, { questions: [BACKEND], async: true })
+    return { h, notes, id: asyncAsks().at(-1)?.id ?? '' }
+  }
+
+  test('closes the ask with no dialog, wakes no idle session, and rides the human\'s next prompt', async () => {
+    const { h, notes, id } = await opened()
+    await h.press(`ask-dismiss:${id}`)
+    await h.settle()
+    expect(h.raises).toEqual([])
+    expect(asyncAsks()[0]).toMatchObject({ status: 'answered', answer: DISMISSED })
+    expect(h.submitted()).toEqual([])
+    expect(notes.at(-1)).toEqual({ kind: 'dismissed', id })
+    expect((await h.prompt('go on')).context).toEqual([deliveryText(id, DISMISSED)])
+    expect((await h.prompt('again')).context).toBeUndefined()
+  })
+
+  test("while a turn runs it rides the model's next result; alone it never makes the turn's end submit", async () => {
+    const { h, id } = await opened()
+    await h.turnStart()
+    await h.press(`ask-dismiss:${id}`)
+    await h.settle()
+    await h.turnComplete('answer')
+    await h.settle()
+    expect(h.submitted()).toEqual([])
+    await h.turnStart()
+    expect((await h.call('Bash', { command: 'ls' })).result).toMatchObject({ context: [deliveryText(id, DISMISSED)] })
+  })
+
+  test('held beside an answer, it goes out with it', async () => {
+    const { h, id } = await opened()
+    await h.call(ASK_TOOL, { questions: [FEATURES], async: true })
+    const other = asyncAsks().at(-1)?.id ?? ''
+    await h.turnStart()
+    await h.press(`ask-dismiss:${id}`)
+    const pressed = h.press(`ask-answer:${other}`)
+    await h.settle()
+    await h.raise(0, answered(ANSWER))
+    await pressed
+    await h.turnComplete('answer')
+    await h.settle()
+    expect(h.submitted()).toEqual([`${deliveryText(id, DISMISSED)}\n\n${deliveryText(other, ANSWER)}`])
+  })
+
+  test('does nothing to an ask whose dialog is up, or that is answered', async () => {
+    const { h, id } = await opened()
+    const pressed = h.press(`ask-answer:${id}`)
+    await h.settle()
+    await h.press(`ask-dismiss:${id}`)
+    expect(asyncAsks()[0]?.status).toBe('open')
+    await h.raise(0, answered(ANSWER))
+    await pressed
+    await h.settle()
+    await h.press(`ask-dismiss:${id}`)
+    expect(asyncAsks()[0]?.answer).toBe(ANSWER)
+  })
+
+  test('draws as dismissed, and a resumed session reads it back so', async () => {
+    const ask = { id: 't', questions: [BACKEND], status: 'answered' as const, answer: DISMISSED }
+    expect(askRow({ input: { questions: [BACKEND] }, output: ASYNC_RESULT, isRunning: false, isErrored: false }, ask, false)).toEqual({
+      kind: 'dismissed',
+      questions: [BACKEND],
+      isDelivered: false,
+    })
+    const rows = [
+      { type: 'assistant', uuid: 'a', message: { content: [{ type: 'tool_use', id: 't', name: ASK_TOOL, input: { questions: [BACKEND] } }] } },
+      { type: 'user', uuid: 'b', parentUuid: 'a', message: { content: [{ type: 'tool_result', tool_use_id: 't', content: ASYNC_RESULT }] } },
+      { type: 'attachment', uuid: 'c', parentUuid: 'b', attachment: { type: 'hook_additional_context', content: [deliveryText('t', DISMISSED)] } },
+    ]
+    expect(rebuildAsks(rows.map((row) => JSON.stringify(row)))).toEqual([ask])
   })
 })
 

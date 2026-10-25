@@ -270,7 +270,7 @@ function answeredThrough(id: string, dialog: { outcome: string; by: string }) {
 
 /**
  * What the ask mod's asks do (its observer): an async question is raised as
- * it opens and settled as it is answered or forgotten; a dialog it raised
+ * it opens and settled as it is answered, dismissed or forgotten; a dialog it raised
  * that ended with no record of who decided it is withdrawn.
  */
 export function onAskNote(note: AskNote) {
@@ -302,6 +302,12 @@ export function onAskNote(note: AskNote) {
       answeredThrough(note.id, { outcome: 'answered', by: 'terminal' })
     } else {
       answeredThrough(note.id, { outcome: 'withdrawn', by: 'bridge' })
+    }
+  } else if (note.kind === 'dismissed') {
+    // The person closed it at the terminal unanswered: no answer will settle it.
+    const r = state.requests.get(note.id)
+    if (r?.isAsync) {
+      settle(r, 'withdrawn', 'terminal')
     }
   } else if (note.kind === 'forgotten') {
     for (const id of note.ids) {
