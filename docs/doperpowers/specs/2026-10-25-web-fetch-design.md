@@ -1424,6 +1424,30 @@ type Run = {
   Rationale: the spec's freeze rule; round 1's defects were the tool's,
   not the sites'.
   Date/Author: 2026-10-25, M3 executor, folded by the plan executor.
+- Decision: **the frozen tool is `542ba02d`**, after three development
+  rounds and the freeze review.
+  - The freeze review of `e5e41b92` found the 403 fallback publishing a
+    browser-denied page as a cached success, rendering against the
+    pre-redirect URL, and the `<noscript>` dedup dropping an article's only
+    chart. Fixed in `e0938c1a`: the fallback takes a render only when
+    Chromium's NetLog (written inside the render's temporary profile; no
+    new egress) shows the main-frame document answered 2xx, and it renders
+    and records the URL the document came from; a walled result keeps
+    `status: 403`.
+  - Round 3 ran on `e0938c1a`: every category 4 of 4 in both
+    configurations, mean d +0.000, criteria 2–4 met, gist 0.78×, about
+    $3.59. 192 of 192 development runs over three rounds were correct.
+  - The re-review found two narrower residues, fixed in `542ba02d`: a
+    last main-frame response that cannot become the document (204/205, an
+    attachment, a redirect, non-HTML) is no evidence, so the 403 stands;
+    a `<noscript>` image is dropped only beside an adjacent lazy twin.
+  - No round 4 ran on `542ba02d`. The spec allows three, the
+    development set never reaches these paths, and a correctness fix from
+    review is not tuning against the final set. The clipper suite (94
+    tests) and the CI `web` gate are green at `542ba02d`.
+  Rationale: the freeze rule, and the decision that the freeze is reviewed
+  before the final run.
+  Date/Author: 2026-10-25, plan executor.
 
 ## Outcomes & Retrospective
 
