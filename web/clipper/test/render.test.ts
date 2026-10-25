@@ -6,10 +6,10 @@ import { request } from 'node:http'
 import { connect } from 'node:net'
 import { clip } from '../src/clip.ts'
 import type { ClipOk } from '../src/clip.ts'
-import { findChrome, servedDocument } from '../src/render.ts'
+import { findChrome, renderDom, servedDocument } from '../src/render.ts'
 import { startEgressProxy } from '../src/proxy.ts'
 import { boundaryOf } from '../src/netguard.ts'
-import { startServer, startTrap, startUdpTrap, tmpCache, send, fixture, noChrome, pngBytes } from './helpers.ts'
+import { startServer, startTrap, startUdpTrap, tmpCache, send, fixture, noChrome, pngBytes, FIXTURES } from './helpers.ts'
 
 const WALLED_ARTICLE = '<html><head><title>Behind the wall</title></head><body><article><h1>Behind the wall</h1><p>'
   + 'This article is served only to clients that look like a browser, as a bot wall would serve it. '.repeat(8) + '</p></article></body></html>'
@@ -28,6 +28,18 @@ const MOVING_SHELL = '<html><head><title>Moving</title></head><body><p>Loadingâ€
 const NESTED_ARTICLE = MOVED_ARTICLE.replaceAll('Moved behind the wall', 'The nested article').replace('This article moved, and is served only to clients that look like a browser. ', 'This article sits one folder down, where the shell sent the browser. ')
 // A short 200 shell to a plain client; a long page with a failure status to a browser.
 const SHORT_SHELL = '<html><head><title>Shell</title></head><body><div id="app"></div></body></html>'
+// A shell whose script writes the article and opens an event stream the server never ends:
+// the open request stops the page's virtual time for good.
+const HELD_OPEN = '<html><head><title>Live</title></head><body><div id="app"></div><script>'
+  + 'const words = "This article was written by a script while the page kept an event stream open, as a live dashboard does. A browser that waits for every request to finish before reading the page waits forever. ";'
+  + 'document.getElementById("app").innerHTML = "<article><h1>Live</h1><p>" + words.repeat(3) + "</p></article>";'
+  + 'new EventSource("/events");</script></body></html>'
+// A shell whose words come from a worker's request and are written by a timer once they arrive:
+// virtual time waits for neither, so the budget is spent before they are on the page.
+const WORKER_WORDS = 'These words reached the page from a worker, which fetched them after the page loaded, and a timer wrote them in. '.repeat(4)
+const WORKER_PAGE = '<html><head><title>From a worker</title></head><body><div id="app">Loading</div><script>'
+  + 'new Worker("/worker.js").onmessage = e => setTimeout(() => { document.getElementById("app").innerHTML = "<article><h1>From a worker</h1><p>" + e.data + "</p></article>" }, 50)'
+  + '</script></body></html>'
 const browserOnly = (status: number, body: string) => (req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse) =>
   req.headers['sec-fetch-mode'] ? send('text/html', body, status)(req, res) : send('text/html', SHORT_SHELL)(req, res)
 
@@ -49,6 +61,15 @@ before(async () => {
       : send('text/html', await fixture('js-shell.html'))(req, res),
     '/egress': send('text/html', egress),
     '/hello': send('text/plain', 'hello through the proxy'),
+    '/held-open': send('text/html', HELD_OPEN),
+    '/worker-page': send('text/html', WORKER_PAGE),
+    '/worker.js': send('text/javascript', 'fetch("/worker-data").then(r => r.text()).then(t => postMessage(t))'),
+    '/worker-data': (req, res) => { setTimeout(() => send('text/plain', WORKER_WORDS)(req, res), 100) },
+    '/thin-shell': send('text/html', '<html><head><title>Thin</title></head><body><div id="app"></div><script>document.getElementById("app").textContent = "Only a handful of words appear here, even in a browser."</script></body></html>'),
+    // The shell, reaching for the same server under a name the test puts on the deny list.
+    '/deny-probe': async (req, res) => send('text/html', (await fixture('js-shell.html')).replace('</body>',
+      `<img src="http://localhost:${server.port}/denied.png"><script>fetch("http://localhost:${server.port}/denied-fetch").catch(() => {})</script></body>`))(req, res),
+    '/events': (_req, res) => { res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' }); res.write('data: open\n\n') },
     '/slow': (_req, res) => { setTimeout(() => send('text/plain', 'ok')(_req, res), 2000) },
     // A bot wall: 403 to a client that is not a browser (Node sends no Sec-Fetch-* headers), the article to one that is.
     '/walled': (req, res) => req.headers['sec-fetch-mode']
@@ -344,6 +365,73 @@ test('a render whose navigation fails is not taken for the page', { skip: noChro
   assert.equal(r.finalUrl, `${server.origin}/nav-refused`)
   assert.ok(r.notes.some(n => n.includes('plain fetch is kept')), r.notes.join('|'))
   assert.equal(trap.connections, 0)
+})
+
+test('a page that keeps a request open for good is taken as it stands at the cap, with a note saying so', { skip: noChrome }, async () => {
+  const r = await clip(`${server.origin}/held-open`, { cacheDir: await tmpCache(), env: renderEnv(), deadlineMs: 12_000 }) as ClipOk
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.equal(r.rendered, true, r.notes.join('|'))
+  assert.ok(r.notes.some(n => /^the page was still loading after \d+ s; this is how headless Chromium had rendered it by then$/.test(n)), r.notes.join('|'))
+  assert.match(await readFile(r.file, 'utf8'), /kept an event stream open/)
+})
+
+test('content a worker fetches and a timer writes after the budget is spent is waited for', { skip: noChrome }, async () => {
+  const r = await clip(`${server.origin}/worker-page`, { cacheDir: await tmpCache(), env: renderEnv() }) as ClipOk
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.equal(r.rendered, true, r.notes.join('|'))
+  assert.match(await readFile(r.file, 'utf8'), /reached the page from a worker/)
+  assert.deepEqual(r.notes, [])
+})
+
+test('a rendered page reaches no host on WEB_DENY_HOSTS, even one WEB_ALLOW_HOSTS exempts', { skip: noChrome }, async () => {
+  const env = { ...renderEnv(), WEB_ALLOW_HOSTS: `127.0.0.1:${server.port},localhost:${server.port}`, WEB_DENY_HOSTS: 'localhost' }
+  const hits = server.hits.length
+  const r = await clip(`${server.origin}/deny-probe`, { cacheDir: await tmpCache(), env }) as ClipOk
+  assert.equal(r.ok, true, JSON.stringify(r))
+  // The probe only means something if the page's scripts ran.
+  assert.equal(r.rendered, true, r.notes.join('|'))
+  const seen = server.hits.slice(hits)
+  assert.ok(!seen.includes('/denied.png') && !seen.includes('/denied-fetch'), seen.join(' '))
+})
+
+test('a page still thin once rendered says so', { skip: noChrome }, async () => {
+  const r = await clip(`${server.origin}/thin-shell`, { cacheDir: await tmpCache(), env: renderEnv() }) as ClipOk
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.equal(r.rendered, true, r.notes.join('|'))
+  assert.deepEqual(r.notes, [`even rendered, the page holds only ${r.words} words; its content may load later than the render waits, or come from an API the page calls`])
+})
+
+// The driver against a stand-in browser (test/fixtures/fake-chrome.mjs), so it runs where Chromium does not.
+const fakeChrome = { path: join(FIXTURES, 'fake-chrome.mjs'), headless: '--headless' }
+
+test('the driver takes the DOM once the page spent its budget, though each event arrives in one read with the reply before it', async () => {
+  const started = Date.now()
+  const out = await renderDom('http://fake.test/settles', fakeChrome, 20_000, boundaryOf({}))
+  assert.deepEqual(out, { html: '<html><body><p>settles page</p></body></html>' })
+  // A missed event would leave the driver waiting for the cap, 17 s away.
+  assert.ok(Date.now() - started < 5000, `took ${Date.now() - started} ms`)
+})
+
+test('the driver takes the DOM of a page that never spends its budget at the cap, a few seconds inside the limit', async () => {
+  const started = Date.now()
+  const out = await renderDom('http://fake.test/stalls', fakeChrome, 4000, boundaryOf({}))
+  assert.deepEqual(out, { html: '<html><body><p>stalls page</p></body></html>', unsettled: 'the page was still loading after 3 s; this is how headless Chromium had rendered it by then' })
+  assert.ok(Date.now() - started < 4000, `took ${Date.now() - started} ms`)
+})
+
+test('a NetLog the browser is slow to close is waited for, not taken half-written', async () => {
+  const out = await renderDom('http://fake.test/slowlog', fakeChrome, 20_000, boundaryOf({}))
+  assert.deepEqual(out, { html: '<html><body><p>slowlog page</p></body></html>', document: { url: 'http://fake.test/slowlog', status: 200 } })
+})
+
+test('a navigation the browser could not make is a failed render', async () => {
+  assert.deepEqual(await renderDom('http://fake.test/fails', fakeChrome, 10_000, boundaryOf({})),
+    { note: 'rendering failed: the browser could not load the page (net::ERR_TUNNEL_CONNECTION_FAILED); the plain fetch is kept' })
+})
+
+test('a browser that cannot start is a failed render', async () => {
+  const out = await renderDom('http://fake.test/settles', { path: join(FIXTURES, 'no-such-chrome'), headless: '--headless' }, 10_000, boundaryOf({}))
+  assert.ok('note' in out && /^rendering failed: spawn .*no-such-chrome ENOENT; the plain fetch is kept$/.test(out.note), JSON.stringify(out))
 })
 
 test('a CONNECT tunnel falls back from an unreachable first address to the next checked one', async () => {

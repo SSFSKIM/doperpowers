@@ -1,16 +1,26 @@
 // Rendering a page that only shows its content after its scripts run:
-// headless Chromium with --dump-dom, behind the filtering proxy, with the
-// traffic a proxy setting does not cover (WebRTC's UDP, QUIC) switched off.
-import { spawn } from 'node:child_process'
+// headless Chromium driven over the DevTools protocol on a pipe, behind the
+// filtering proxy, with the traffic a proxy setting does not cover (WebRTC's
+// UDP, QUIC) switched off.
 import { existsSync, readdirSync, statSync } from 'node:fs'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, open, readFile, rm } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
+import { launch, OVER_LIMIT } from './cdp.ts'
+import type { Browser } from './cdp.ts'
 import { USER_AGENT } from './http.ts'
 import { startEgressProxy } from './proxy.ts'
 import type { Boundary } from './netguard.ts'
 
-export const RENDER_LIMITS = { timeoutMs: 30_000, virtualTimeBudgetMs: 10_000, maxBytes: 50 * 1048576 }
+/**
+ * `closeReserveMs`: how far inside the limit the DOM is taken from a page still
+ * loading. `settleMs`, `quietMs`, `stepMs`: the watch after the virtual-time
+ * budget (see `settle`).
+ */
+export const RENDER_LIMITS = {
+  timeoutMs: 30_000, virtualTimeBudgetMs: 10_000, closeReserveMs: 3_000,
+  settleMs: 5_000, quietMs: 500, stepMs: 100, maxBytes: 50 * 1048576,
+}
 
 export type Chrome = { path: string; headless: string } | { note: string }
 
@@ -61,7 +71,8 @@ function safeList(dir: string): string[] {
 
 /** The document the browser was served: where it ended up and with what status. */
 export type ServedDocument = { url: string; status: number }
-export type RenderResult = { html: string; document?: ServedDocument } | { note: string }
+/** `unsettled`, beside a DOM, is the note saying the page was still loading when it was taken. */
+export type RenderResult = { html: string; document?: ServedDocument; unsettled?: string } | { note: string }
 
 /**
  * The page's DOM after its scripts ran, with the document Chromium's NetLog
@@ -78,10 +89,7 @@ export async function renderDom(url: string, chrome: { path: string; headless: s
   }
   const profile = await mkdtemp(join(tmpdir(), 'clip-chrome-'))
   try {
-    const out = await runChrome(chrome, url, profile, proxy.port, timeoutMs)
-    if ('note' in out) return out
-    const document = servedDocument(await readFile(netLogPath(profile), 'utf8').catch(() => ''))
-    return document ? { ...out, document } : out
+    return await drive(chrome, url, profile, proxy.port, timeoutMs)
   } finally {
     await proxy.close()
     await rm(profile, { recursive: true, force: true }).catch(() => {})
@@ -89,13 +97,11 @@ export async function renderDom(url: string, chrome: { path: string; headless: s
 }
 
 /** Without the proxy and egress flags Chromium does not run. */
-export function chromeArgs(headless: string, profile: string, proxyPort: number, url: string): string[] {
+export function chromeArgs(headless: string, profile: string, proxyPort: number): string[] {
   return [
     headless,
-    '--dump-dom',
     `--log-net-log=${netLogPath(profile)}`,
     `--user-data-dir=${profile}`,
-    `--virtual-time-budget=${RENDER_LIMITS.virtualTimeBudgetMs}`,
     `--proxy-server=http://127.0.0.1:${proxyPort}`,
     '--proxy-bypass-list=<-loopback>',
     '--force-webrtc-ip-handling-policy=disable_non_proxied_udp',
@@ -110,40 +116,160 @@ export function chromeArgs(headless: string, profile: string, proxyPort: number,
     '--disable-sync',
     '--mute-audio',
     '--hide-scrollbars',
-    url,
   ]
 }
 
-function runChrome(chrome: { path: string; headless: string }, url: string, profile: string, proxyPort: number, timeoutMs: number): Promise<RenderResult> {
-  return new Promise(resolve => {
-    const child = spawn(chrome.path, chromeArgs(chrome.headless, profile, proxyPort, url), { stdio: ['ignore', 'pipe', 'pipe'], detached: true })
-    const out: Buffer[] = []
-    let size = 0
-    let stderr = ''
-    let settled = false
-    const finish = (r: RenderResult) => {
-      if (settled) return
-      settled = true
-      clearTimeout(timer)
-      killGroup(child.pid)
-      resolve(r)
+/**
+ * One render, driven over the DevTools protocol. It waits as
+ * `--dump-dom --virtual-time-budget` did, for the load event and then for the
+ * virtual-time budget, during which the page's clock stands still while any
+ * request is pending, and then lets the page settle (see `settle`). A request
+ * held open for good (an event stream) stops that clock for good, and
+ * `--dump-dom` never printed; here the DOM is taken as it stands at the cap, a
+ * few seconds inside the render's limit so the browser can close its NetLog.
+ */
+async function drive(chrome: { path: string; headless: string }, url: string, profile: string, proxyPort: number, timeoutMs: number): Promise<RenderResult> {
+  const started = Date.now()
+  const endAt = started + timeoutMs
+  const capMs = timeoutMs - Math.min(RENDER_LIMITS.closeReserveMs, timeoutMs / 4)
+  const capAt = started + capMs
+  const browser = launch(chrome.path, chromeArgs(chrome.headless, profile, proxyPort), 2 * RENDER_LIMITS.maxBytes)
+  let timedOut = false
+  const timer = setTimeout(() => { timedOut = true; browser.kill() }, timeoutMs)
+  try {
+    let page
+    try {
+      page = await dumpPage(browser, url, capAt)
+    } catch (e) {
+      if (timedOut) return { note: `rendering stopped after ${Math.round(timeoutMs / 1000)} s; the plain fetch is kept` }
+      if (browser.failure() === OVER_LIMIT) return { note: TOO_BIG }
+      const why = e instanceof Error ? e.message : String(e)
+      const tail = why.startsWith('Chromium exited') && browser.stderr() ? ` (${lastLine(browser.stderr())})` : ''
+      return { note: `rendering failed: ${why}${tail}; the plain fetch is kept` }
     }
-    const timer = setTimeout(() => finish({ note: `rendering stopped after ${Math.round(timeoutMs / 1000)} s; the plain fetch is kept` }), timeoutMs)
-    child.stdout.on('data', (d: Buffer) => {
-      size += d.length
-      if (size > RENDER_LIMITS.maxBytes) finish({ note: 'rendering failed: the rendered page passed 50 MB; the plain fetch is kept' })
-      else out.push(d)
-    })
-    child.stderr.on('data', (d: Buffer) => { stderr = (stderr + d.toString()).slice(-400) })
-    child.on('error', e => finish({ note: `rendering failed: ${e.message}; the plain fetch is kept` }))
-    child.on('close', code => {
-      const html = Buffer.concat(out).toString('utf8')
-      if (code === 0 && html.trim()) finish({ html })
-      else finish({ note: `rendering failed: Chromium exited ${code}${stderr ? ` (${lastLine(stderr)})` : ''}; the plain fetch is kept` })
-    })
-  })
+    if (Buffer.byteLength(page.html) > RENDER_LIMITS.maxBytes) return { note: TOO_BIG }
+    browser.send('Browser.close').catch(() => {})
+    // A loaded machine can take seconds to close the log: the wait may run to the render's limit.
+    const document = servedDocument(await closedNetLog(netLogPath(profile), browser.exited, endAt))
+    return {
+      html: page.html,
+      ...(document ? { document } : {}),
+      ...(page.settled ? {} : { unsettled: `the page was still loading after ${Math.round(capMs / 1000)} s; this is how headless Chromium had rendered it by then` }),
+    }
+  } finally {
+    clearTimeout(timer)
+    browser.kill()
+  }
 }
 
+/**
+ * The NetLog once Chromium has closed it, which it does within a moment of
+ * Browser.close, though the process can take ten seconds more to exit; else
+ * as it stands when the process has gone or `by` has come.
+ */
+async function closedNetLog(path: string, exited: Promise<void>, by: number): Promise<string> {
+  let gone = false
+  void exited.then(() => { gone = true })
+  for (;;) {
+    // A closed log ends its JSON object; until then each event ends in a comma.
+    if (/\}\s*$/.test(await tail(path, 16))) {
+      const text = await readFile(path, 'utf8').catch(() => '')
+      try { JSON.parse(text); return text } catch {}
+    }
+    if (gone || Date.now() >= by) return readFile(path, 'utf8').catch(() => '')
+    await new Promise(resolve => setTimeout(resolve, 25))
+  }
+}
+
+async function tail(path: string, bytes: number): Promise<string> {
+  let file
+  try {
+    file = await open(path)
+    const { size } = await file.stat()
+    const buf = Buffer.alloc(Math.min(bytes, size))
+    await file.read(buf, 0, buf.length, size - buf.length)
+    return buf.toString('utf8')
+  } catch {
+    return ''
+  } finally {
+    await file?.close()
+  }
+}
+
+const TOO_BIG = 'rendering failed: the rendered page passed 50 MB; the plain fetch is kept'
+const DUMP = "(document.doctype ? new XMLSerializer().serializeToString(document.doctype) + '\\n' : '') + document.documentElement.outerHTML"
+
+/** The page's DOM, and whether it settled (loaded, spent its virtual-time budget, and settled) before `capAt`. */
+async function dumpPage(browser: Browser, url: string, capAt: number): Promise<{ html: string; settled: boolean }> {
+  const { targetId } = await browser.send('Target.createTarget', { url: 'about:blank' })
+  const { sessionId } = await browser.send('Target.attachToTarget', { targetId, flatten: true })
+  const send = (method: string, params?: object) => browser.send(method, params, sessionId)
+
+  // What the waits below wait for is recorded as it arrives, from before the
+  // command that causes it (see Browser.on).
+  let navigating = false
+  let budgetSpent = false
+  let gone = false
+  const loaded = new Set<string>()
+  let recheck = () => {}
+  browser.on('Page.lifecycleEvent', (p, sid) => {
+    if (sid === sessionId && navigating && p.name === 'load') { loaded.add(p.frameId); recheck() }
+  })
+  browser.on('Emulation.virtualTimeBudgetExpired', (_p, sid) => {
+    if (sid === sessionId) { budgetSpent = true; recheck() }
+  })
+  void browser.exited.then(() => { gone = true; recheck() })
+  const until = (done: () => boolean) => new Promise<boolean>(resolve => {
+    const finish = (v: boolean) => { clearTimeout(t); recheck = () => {}; resolve(v) }
+    const t = setTimeout(() => finish(false), Math.max(0, capAt - Date.now()))
+    recheck = () => { if (done() || gone) finish(!gone) }
+    recheck()
+  })
+
+  await send('Page.enable')
+  await send('Page.setLifecycleEventsEnabled', { enabled: true })
+  navigating = true
+  const nav = await send('Page.navigate', { url })
+  if (nav.errorText) throw new Error(`the browser could not load the page (${nav.errorText})`)
+  if (nav.isDownload) throw new Error('the browser took the page for a download')
+  let settled = await until(() => loaded.has(nav.frameId))
+  if (settled) {
+    await send('Emulation.setVirtualTimePolicy', {
+      policy: 'pauseIfNetworkFetchesPending', budget: RENDER_LIMITS.virtualTimeBudgetMs, maxVirtualTimeTaskStarvationCount: 9999,
+    })
+    settled = await until(() => budgetSpent) && await settle(send, capAt)
+  } else {
+    await send('Page.stopLoading')
+  }
+  const { result } = await send('Runtime.evaluate', { expression: DUMP, returnByValue: true })
+  return { html: typeof result?.value === 'string' ? result.value : '', settled }
+}
+
+// How much there is on the page: elements, and characters of text.
+const SHAPE = "document.getElementsByTagName('*').length + ':' + (document.body ? document.body.textContent.length : 0)"
+
+/**
+ * Content can still be on its way when the budget is spent, through what
+ * virtual time does not wait for: a worker's request, the animation frame a
+ * framework renders in, a timer it sets once data arrives. So the page's clock
+ * runs on in steps of real time while its DOM is watched, and the DOM is taken
+ * once it has not changed for `quietMs`, or `settleMs` after the budget (a page
+ * that never stops changing). False when the cap came first.
+ */
+async function settle(send: (method: string, params?: object) => Promise<any>, capAt: number): Promise<boolean> {
+  const { settleMs, quietMs, stepMs } = RENDER_LIMITS
+  const end = Math.min(capAt, Date.now() + settleMs)
+  let shape: unknown
+  let since = Date.now()
+  while (Date.now() < end) {
+    // A failed read (the page navigating) counts as a change.
+    const now = await send('Runtime.evaluate', { expression: SHAPE, returnByValue: true }).then(r => r?.result?.value, () => undefined)
+    if (now === undefined || now !== shape) { shape = now; since = Date.now() } else if (Date.now() - since >= quietMs) return true
+    await send('Emulation.setVirtualTimePolicy', { policy: 'pauseIfNetworkFetchesPending', budget: stepMs, maxVirtualTimeTaskStarvationCount: 9999 })
+    await new Promise(resolve => setTimeout(resolve, stepMs))
+  }
+  return end < capAt
+}
 const lastLine = (s: string) => s.trim().split('\n').pop()!.slice(0, 200)
 
 const netLogPath = (profile: string) => join(profile, 'netlog.json')
@@ -189,9 +315,4 @@ function canBeDocument(status: number, fields: string[]): boolean {
   // (package.elm-lang.org serves its pages so); an explicit type must be HTML.
   const type = field('content-type')
   return type === '' || /^(text\/html|application\/xhtml\+xml)\b/.test(type)
-}
-
-function killGroup(pid: number | undefined) {
-  if (!pid) return
-  try { process.kill(-pid, 'SIGKILL') } catch {}
 }
