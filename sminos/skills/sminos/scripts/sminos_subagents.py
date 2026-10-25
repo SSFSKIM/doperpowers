@@ -771,17 +771,14 @@ def ended_line(c):
 
 def state_text(e):
     """The lifecycle, how long, and where it came from; then what the agent is doing:
-    `running 14m (engine) · in Bash 3m`, `running 40m (engine) · no write 14m`, `waiting on background 5m (disk) ·
-    shell: run the tests`, `stopped 2h (disk) · by TaskStop`."""
+    `running 14m (engine) · in Bash 3m`, `running 40m (engine) · no write 14m`, `waiting on background 5m (disk)`,
+    `stopped 2h (disk) · by TaskStop`. The background jobs a wait is on are left to --json."""
     out = WORDS[e["state"]] + ("" if e["seconds"] is None else " " + short_age(e["seconds"])) + " (%s)" % e["source"]
     if e["tool"]:
         out += " · in %s%s" % (e["tool"]["name"], "" if e["tool"]["seconds"] is None
                                else " " + short_age(e["tool"]["seconds"]))
     elif e["quietSeconds"] is not None:
         out += " · no write " + short_age(e["quietSeconds"])
-    if e["background"]:
-        out += " · " + ", ".join("%s: %s" % (b["kind"], _cut(b["description"] or b.get("command") or b["taskId"], 32))
-                                 for b in e["background"])
     if e["stoppedBy"]:
         out += " · by " + e["stoppedBy"]
     if e.get("folded"):
