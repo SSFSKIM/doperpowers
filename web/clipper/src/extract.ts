@@ -57,15 +57,6 @@ function markWrapperLanguages(doc: Document): void {
 // the content: each <noscript> holding images gives way to them, in a <figure>. One without
 // an image ("enable JavaScript") is left to Defuddle, which drops it.
 function keepNoscriptImages(doc: Document): void {
-  // A lazy image's <noscript> twin is already on the page under data-src.
-  const shown = new Set<string>()
-  for (const img of Array.from(doc.querySelectorAll('img'))) {
-    if (img.closest('noscript')) continue
-    for (const a of ['src', 'data-src', 'data-lazy-src', 'data-original']) {
-      const v = img.getAttribute(a)
-      if (v) shown.add(v.trim())
-    }
-  }
   for (const ns of Array.from(doc.querySelectorAll('noscript'))) {
     let images = Array.from(ns.querySelectorAll('img'))
     if (images.length === 0 && /<img\b/i.test(ns.textContent ?? '')) {
@@ -75,7 +66,8 @@ function keepNoscriptImages(doc: Document): void {
       images = Array.from(holder.querySelectorAll('img'))
     }
     if (images.length === 0) continue
-    images = images.filter(img => !shown.has((img.getAttribute('src') ?? '').trim()))
+    const twins = lazyTwinSources(ns)
+    images = images.filter(img => !twins.has((img.getAttribute('src') ?? '').trim()))
     // In a <figure>: beside the chart's own download links, a bare image sits in a
     // block that Defuddle drops as link-dense (the Rust survey's charts with three links).
     // One whose every image is already on the page goes, or Defuddle shows it twice.
@@ -86,6 +78,20 @@ function keepNoscriptImages(doc: Document): void {
       ns.replaceWith(figure)
     }
   }
+}
+
+// The images a <noscript> stands in for: a lazy image sits beside it, under the same
+// parent. Only there, so the same picture elsewhere (a nav thumbnail) leaves it be.
+function lazyTwinSources(ns: Element): Set<string> {
+  const sources = new Set<string>()
+  for (const img of Array.from(ns.parentElement?.querySelectorAll('img') ?? [])) {
+    if (img.closest('noscript')) continue
+    for (const a of ['src', 'data-src', 'data-lazy-src', 'data-original']) {
+      const v = img.getAttribute(a)
+      if (v) sources.add(v.trim())
+    }
+  }
+  return sources
 }
 
 function tidyMarkdown(md: string): string {

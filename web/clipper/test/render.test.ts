@@ -6,12 +6,21 @@ import { request } from 'node:http'
 import { connect } from 'node:net'
 import { clip } from '../src/clip.ts'
 import type { ClipOk } from '../src/clip.ts'
-import { findChrome } from '../src/render.ts'
+import { findChrome, servedDocument } from '../src/render.ts'
 import { startEgressProxy } from '../src/proxy.ts'
-import { startServer, startTrap, startUdpTrap, tmpCache, send, fixture, noChrome } from './helpers.ts'
+import { startServer, startTrap, startUdpTrap, tmpCache, send, fixture, noChrome, pngBytes } from './helpers.ts'
 
 const WALLED_ARTICLE = '<html><head><title>Behind the wall</title></head><body><article><h1>Behind the wall</h1><p>'
   + 'This article is served only to clients that look like a browser, as a bot wall would serve it. '.repeat(8) + '</p></article></body></html>'
+
+// A denial long enough to pass for a page, served with 403 to every client, browser or not.
+const LONG_DENIAL = '<html><head><title>Access denied</title></head><body><main><h1>Access denied</h1><p>'
+  + 'Your request was blocked by the security policy of this site, and the reference below identifies it to support. '.repeat(10) + '</p></main></body></html>'
+
+// A walled article reached through a redirect, with a relative image and a relative link.
+const MOVED_ARTICLE = '<html><head><title>Moved behind the wall</title></head><body><article><h1>Moved behind the wall</h1><p>'
+  + 'This article moved, and is served only to clients that look like a browser. '.repeat(8)
+  + '</p><p><img src="chart.png" alt="the chart"></p><p>Read the <a href="details">details</a>.</p></article></body></html>'
 
 let server: Awaited<ReturnType<typeof startServer>>
 let trap: Awaited<ReturnType<typeof startTrap>>
@@ -30,6 +39,12 @@ before(async () => {
     '/walled': (req, res) => req.headers['sec-fetch-mode']
       ? send('text/html', WALLED_ARTICLE)(req, res)
       : send('text/html', '<html><body><h1>Access denied</h1></body></html>', 403)(req, res),
+    '/denied': send('text/html', LONG_DENIAL, 403),
+    '/old': send('text/html', '', 301, { location: '/articles/post' }),
+    '/articles/post': (req, res) => req.headers['sec-fetch-mode']
+      ? send('text/html', MOVED_ARTICLE)(req, res)
+      : send('text/html', '<html><body><h1>Access denied</h1></body></html>', 403)(req, res),
+    '/articles/chart.png': send('image/png', pngBytes(2048, 7)),
     '/forbidden': send('text/html', '<html><body><h1>Forbidden</h1><p>No.</p></body></html>', 403),
   })
 })
@@ -101,6 +116,48 @@ test('the egress proxy forwards to allowed hosts and refuses non-public ones, fo
   }
 })
 
+// A NetLog in Chromium's own shape: event types numbered in `constants`, each event on a source.
+function netLog(events: [number, string, Record<string, unknown>?][]): string {
+  const types = ['URL_REQUEST_START_JOB', 'HTTP_TRANSACTION_READ_RESPONSE_HEADERS', 'URL_REQUEST_REDIRECTED', 'SOCKET_BYTES_RECEIVED']
+  return JSON.stringify({
+    constants: { logEventTypes: Object.fromEntries(types.map((t, i) => [t, i + 1])) },
+    events: events.map(([source, type, params]) => ({ source: { id: source, type: 1 }, type: types.indexOf(type) + 1, ...(params ? { params } : {}) })),
+  })
+}
+const start = (url: string, request_type = 'main frame') => ({ url, method: 'GET', request_type })
+const headers = (status: string) => ({ headers: [status, 'content-type: text/html'] })
+
+test("the browser's served document is the last main-frame response, after its redirects", () => {
+  assert.deepEqual(servedDocument(netLog([
+    [11, 'URL_REQUEST_START_JOB', start('https://x.test/old')],
+    [11, 'HTTP_TRANSACTION_READ_RESPONSE_HEADERS', headers('HTTP/1.1 301 Moved Permanently')],
+    [11, 'URL_REQUEST_REDIRECTED', { location: 'https://x.test/articles/post' }],
+    [11, 'URL_REQUEST_START_JOB', start('https://x.test/articles/post')],
+    [11, 'URL_REQUEST_START_JOB'],
+    [11, 'HTTP_TRANSACTION_READ_RESPONSE_HEADERS', headers('HTTP/1.1 200')],
+    [20, 'URL_REQUEST_START_JOB', start('https://cdn.test/app.js', 'other')],
+    [20, 'HTTP_TRANSACTION_READ_RESPONSE_HEADERS', headers('HTTP/1.1 404 Not Found')],
+  ])), { url: 'https://x.test/articles/post', status: 200 })
+  // A challenge that reloads the page: the second navigation is the document the DOM holds.
+  assert.deepEqual(servedDocument(netLog([
+    [11, 'URL_REQUEST_START_JOB', start('https://x.test/a')],
+    [11, 'HTTP_TRANSACTION_READ_RESPONSE_HEADERS', headers('HTTP/2 403')],
+    [30, 'URL_REQUEST_START_JOB', start('https://x.test/a')],
+    [30, 'HTTP_TRANSACTION_READ_RESPONSE_HEADERS', headers('HTTP/2 200')],
+  ])), { url: 'https://x.test/a', status: 200 })
+  assert.deepEqual(servedDocument(netLog([
+    [11, 'URL_REQUEST_START_JOB', start('https://x.test/a')],
+    [11, 'HTTP_TRANSACTION_READ_RESPONSE_HEADERS', headers('HTTP/1.1 403')],
+  ])), { url: 'https://x.test/a', status: 403 })
+})
+
+test('a NetLog that names no answered main-frame request, or does not parse, gives no document', () => {
+  assert.equal(servedDocument(netLog([[11, 'URL_REQUEST_START_JOB', start('https://x.test/a')]])), undefined)
+  assert.equal(servedDocument(netLog([[20, 'URL_REQUEST_START_JOB', start('https://x.test/a.js', 'other')], [20, 'HTTP_TRANSACTION_READ_RESPONSE_HEADERS', headers('HTTP/1.1 200')]])), undefined)
+  assert.equal(servedDocument('{"constants": {"logEventTypes": {}}, "events": [{"type"'), undefined)
+  assert.equal(servedDocument(''), undefined)
+})
+
 test('a page that needs JavaScript is rendered in headless Chromium', { skip: noChrome }, async () => {
   const env: NodeJS.ProcessEnv = { ...process.env, WEB_ALLOW_HOSTS: `127.0.0.1:${server.port}` }
   delete env.WEB_CHROME
@@ -142,6 +199,32 @@ test('a 403 that the browser gets too stays the failure it was', { skip: noChrom
   const r = await clip(`${server.origin}/forbidden`, { cacheDir: await tmpCache(), env })
   assert.equal(r.ok, false)
   assert.equal((r as { status?: number }).status, 403)
+})
+
+test('a long denial the browser is served with 403 too stays a failure, and is not cached', { skip: noChrome }, async () => {
+  const env: NodeJS.ProcessEnv = { ...process.env, WEB_ALLOW_HOSTS: `127.0.0.1:${server.port}` }
+  delete env.WEB_CHROME
+  const cacheDir = await tmpCache()
+  const r = await clip(`${server.origin}/denied`, { cacheDir, env })
+  assert.equal(r.ok, false, JSON.stringify(r))
+  assert.equal((r as { status?: number }).status, 403)
+  const again = await clip(`${server.origin}/denied`, { cacheDir, env })
+  assert.equal(again.ok, false)
+  assert.equal((again as { cached?: boolean }).cached, undefined)
+})
+
+test('a walled page reached through a redirect resolves its images and links against where it was served', { skip: noChrome }, async () => {
+  const env: NodeJS.ProcessEnv = { ...process.env, WEB_ALLOW_HOSTS: `127.0.0.1:${server.port}` }
+  delete env.WEB_CHROME
+  const r = await clip(`${server.origin}/old`, { cacheDir: await tmpCache(), env }) as ClipOk
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.equal(r.rendered, true)
+  assert.equal(r.finalUrl, `${server.origin}/articles/post`)
+  assert.equal(r.images.length, 1, JSON.stringify(r.images))
+  assert.equal(r.images[0].file, 'assets/01.png')
+  const page = await readFile(r.file, 'utf8')
+  assert.ok(page.includes(`(${server.origin}/articles/details)`), page)
+  assert.ok(page.includes(`source: "${server.origin}/articles/post"`), page)
 })
 
 test('with rendering off, a 403 is the failure it was', async () => {

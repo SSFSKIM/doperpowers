@@ -60,6 +60,14 @@ test('a <noscript> copy of a lazy image already on the page is not added twice',
   assert.equal(ex.body.match(/photo\.jpg/g)?.length, 1, ex.body)
 })
 
+test("a <noscript> chart is kept when the same image shows elsewhere on the page, as a nav thumbnail", async () => {
+  const words = '<p>' + 'Prose about the chart below, long enough for the extractor to keep the article as the content. '.repeat(6) + '</p>'
+  const html = `<html><body><nav><a href="/posts/survey"><img src="https://blog.example/chart.png" alt="thumbnail"></a> <a href="/">Home</a></nav>
+    <article><h1>Survey</h1>${words}<div class="chart"><noscript><img src="https://blog.example/chart.png" alt="the chart"></noscript></div>${words}</article></body></html>`
+  const ex = await extractHtml(html, 'https://blog.example/posts/survey', fetch)
+  assert.match(ex.body, /!\[the chart\]\(https:\/\/blog\.example\/chart\.png\)/, ex.body)
+})
+
 test('html frontmatter escapes quotes and backslashes and ends with fetched', () => {
   const fm = htmlFrontmatter({ title: 'A "quoted" \\ title', site: 'S' }, 12, 'https://x.test/', F)
   assert.equal(fm, `---\ntitle: "A \\"quoted\\" \\\\ title"\nsite: "S"\nsource: "https://x.test/"\nword_count: 12\nfetched: ${F}\n---\n\n`)

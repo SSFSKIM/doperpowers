@@ -3,7 +3,7 @@
 // traffic a proxy setting does not cover (WebRTC's UDP, QUIC) switched off.
 import { spawn } from 'node:child_process'
 import { existsSync, readdirSync, statSync } from 'node:fs'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import { USER_AGENT } from './http.ts'
@@ -58,9 +58,15 @@ function safeList(dir: string): string[] {
   try { return existsSync(dir) ? readdirSync(dir) : [] } catch { return [] }
 }
 
-export type RenderResult = { html: string } | { note: string }
+/** The document the browser was served: where it ended up and with what status. */
+export type ServedDocument = { url: string; status: number }
+export type RenderResult = { html: string; document?: ServedDocument } | { note: string }
 
-/** The page's DOM after its scripts ran, or a note saying why there is none. */
+/**
+ * The page's DOM after its scripts ran, with the document Chromium's NetLog
+ * says it was served (absent when the log names none), or a note saying why
+ * there is none. The DOM alone cannot tell a page from a denial page.
+ */
 export async function renderDom(url: string, chrome: { path: string; headless: string }, timeoutMs: number, allow: Set<string>): Promise<RenderResult> {
   if (timeoutMs <= 0) return { note: 'rendering skipped: the time budget was spent; the plain fetch is kept' }
   let proxy
@@ -71,7 +77,10 @@ export async function renderDom(url: string, chrome: { path: string; headless: s
   }
   const profile = await mkdtemp(join(tmpdir(), 'clip-chrome-'))
   try {
-    return await runChrome(chrome, url, profile, proxy.port, timeoutMs)
+    const out = await runChrome(chrome, url, profile, proxy.port, timeoutMs)
+    if ('note' in out) return out
+    const document = servedDocument(await readFile(netLogPath(profile), 'utf8').catch(() => ''))
+    return document ? { ...out, document } : out
   } finally {
     await proxy.close()
     await rm(profile, { recursive: true, force: true }).catch(() => {})
@@ -83,6 +92,7 @@ export function chromeArgs(headless: string, profile: string, proxyPort: number,
   return [
     headless,
     '--dump-dom',
+    `--log-net-log=${netLogPath(profile)}`,
     `--user-data-dir=${profile}`,
     `--virtual-time-budget=${RENDER_LIMITS.virtualTimeBudgetMs}`,
     `--proxy-server=http://127.0.0.1:${proxyPort}`,
@@ -134,6 +144,36 @@ function runChrome(chrome: { path: string; headless: string }, url: string, prof
 }
 
 const lastLine = (s: string) => s.trim().split('\n').pop()!.slice(0, 200)
+
+const netLogPath = (profile: string) => join(profile, 'netlog.json')
+
+type NetLogEvent = { source?: { id?: number }; type?: number; params?: { url?: string; request_type?: string; headers?: string[] } }
+
+/**
+ * The main-frame document a NetLog records answering last: its URL after
+ * redirects and its HTTP status. A page that reloads itself (a challenge
+ * passed) is the later navigation, which is what the DOM holds.
+ */
+export function servedDocument(netLog: string): ServedDocument | undefined {
+  let log: { constants?: { logEventTypes?: Record<string, number> }; events?: NetLogEvent[] }
+  try { log = JSON.parse(netLog) } catch { return undefined }
+  const types = log.constants?.logEventTypes ?? {}
+  const startJob = types.URL_REQUEST_START_JOB
+  const responseHeaders = types.HTTP_TRANSACTION_READ_RESPONSE_HEADERS
+  const urlOf = new Map<number, string>() // main-frame request → its current URL
+  let served: ServedDocument | undefined
+  for (const e of log.events ?? []) {
+    const source = e.source?.id
+    if (source === undefined) continue
+    if (e.type === startJob && e.params?.url) {
+      if (e.params.request_type === 'main frame') urlOf.set(source, e.params.url)
+    } else if (e.type === responseHeaders && urlOf.has(source)) {
+      const status = Number(/^HTTP\/[\d.]+ (\d{3})/.exec(e.params?.headers?.[0] ?? '')?.[1])
+      if (status) served = { url: urlOf.get(source)!, status }
+    }
+  }
+  return served
+}
 
 function killGroup(pid: number | undefined) {
   if (!pid) return

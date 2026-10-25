@@ -1,6 +1,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { CONNECT_ATTEMPT_MS, networkErrorMessage } from '../src/http.ts'
+import http from 'node:http'
+import { CONNECT_ATTEMPT_MS, networkErrorMessage, request } from '../src/http.ts'
+import { startServer, send } from './helpers.ts'
 
 function connectError(code: string, address: string): Error {
   return Object.assign(new Error(`connect ${code} ${address}:443`), { code, address })
@@ -18,8 +20,17 @@ test('an ordinary error keeps its message, and an error without one gives its co
   assert.equal(networkErrorMessage('boom'), 'boom')
 })
 
-test('each connection attempt may take far longer than Node’s 250 ms default before the next address is tried', () => {
+test('each connection attempt may take far longer than Node’s 250 ms default before the next address is tried', async t => {
   // archive.apache.org from Seoul: a 250 ms attempt dropped the IPv4 connection while it was still
   // being made, and the IPv6 address was unreachable, so 4 of 12 image downloads failed (2026-10-25).
   assert.ok(CONNECT_ATTEMPT_MS >= 2000)
+  const server = await startServer({ '/': send('text/plain', 'ok') })
+  t.after(() => server.close())
+  const seen: unknown[] = []
+  const real = http.request
+  t.mock.method(http, 'request', (...args: Parameters<typeof http.request>) => { seen.push(args[0]); return real(...args) })
+  const res = await request(new URL(`${server.origin}/`), { headers: {}, timeoutMs: 5000, maxBytes: 1024, allow: new Set([`127.0.0.1:${server.port}`]) })
+  assert.equal(res.status, 200)
+  assert.equal(seen.length, 1)
+  assert.equal((seen[0] as { autoSelectFamilyAttemptTimeout?: number }).autoSelectFamilyAttemptTimeout, CONNECT_ATTEMPT_MS)
 })

@@ -89,16 +89,17 @@ export async function clip(rawUrl: string, opts: ClipOptions): Promise<ClipResul
   }
   // A 403 is often a bot wall that turns away a client that is not a browser and lets
   // one through (techblog.woowahan.com: 403 to this client, the article to Chromium).
-  // When the render brings back a page, that is the page; when it does not, the 403 stands.
-  let walled: Awaited<ReturnType<typeof extractHtml>> | undefined
+  // The page is the browser's only when the browser was served it with a 2xx, by its
+  // own NetLog: a denial page renders to a DOM like any other. Otherwise the 403 stands.
+  let walled: { ex: Awaited<ReturnType<typeof extractHtml>>; url: string } | undefined
   const siteFetch = guardedFetch(allow, () => deadline.remaining())
   if (res.status === 403) {
     const chrome = findChrome(env)
     if (!('note' in chrome)) {
-      const out = await renderDom(url.href, chrome, deadline.limit(RENDER_LIMITS.timeoutMs), allow)
-      if (!('note' in out)) {
-        const ex = await extractHtml(out.html, url.href, siteFetch)
-        if (ex.words >= RENDER_MIN_WORDS) walled = ex
+      const out = await renderDom(res.url.href, chrome, deadline.limit(RENDER_LIMITS.timeoutMs), allow)
+      if (!('note' in out) && out.document && out.document.status >= 200 && out.document.status < 300) {
+        const ex = await extractHtml(out.html, out.document.url, siteFetch)
+        if (ex.words >= RENDER_MIN_WORDS) walled = { ex, url: out.document.url }
       }
     }
   }
@@ -107,7 +108,7 @@ export async function clip(rawUrl: string, opts: ClipOptions): Promise<ClipResul
     return fail(`HTTP ${res.status}${res.statusText ? ' ' + res.statusText : ''}`, { status: res.status, ...(snippet ? { bodySnippet: snippet } : {}) })
   }
   const fetchedAt = new Date().toISOString()
-  const finalUrl = res.url.href
+  const finalUrl = walled?.url ?? res.url.href
   const contentType = walled ? 'text/html' : String(res.headers['content-type'] ?? '')
 
   // 2. Route. The page is in hand: from here on it is published.
@@ -128,7 +129,7 @@ export async function clip(rawUrl: string, opts: ClipOptions): Promise<ClipResul
       let body: string
       if (r.kind === 'html') {
         // 3. Extract, and 4. render when the plain fetch found no content.
-        let ex = walled ?? await extractHtml(decodeText(res.body, contentType, true), finalUrl, siteFetch)
+        let ex = walled?.ex ?? await extractHtml(decodeText(res.body, contentType, true), finalUrl, siteFetch)
         if (walled) {
           rendered = true
           notes.push(`the site refused a plain fetch (HTTP ${res.status}); this is the page as headless Chromium rendered it`)
