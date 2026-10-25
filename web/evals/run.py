@@ -82,7 +82,8 @@ def pending(plan, out):
             todo.append((t, arm, rep, 'run'))
             continue
         with open(path) as f:
-            if 'verdict' not in json.load(f):
+            # Not graded yet, or graded by another grader: a folder is graded by one.
+            if not grade.graded_by(json.load(f)):
                 todo.append((t, arm, rep, 'grade'))
     return todo
 

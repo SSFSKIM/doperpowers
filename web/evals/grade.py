@@ -92,6 +92,12 @@ def grader_effort(model, effort=None):
     return effort or (GRADER_EFFORT if model == GRADER_MODEL else None)
 
 
+def graded_by(r, model=GRADER_MODEL, effort=None):
+    """Whether a run holds a verdict from this grader: one folder is graded by one grader."""
+    g = r.get('grade') or {}
+    return 'verdict' in r and (g.get('model'), g.get('effort')) == (model, grader_effort(model, effort))
+
+
 def grade(task, answer, workdir, model=GRADER_MODEL, effort=None):
     """One grading call (retried once when its reply cannot be read). Returns (grade or None, usage record)."""
     effort = grader_effort(model, effort)
@@ -153,7 +159,8 @@ def _grade_folder(a, tasks, work):
         path = os.path.join(a.runs, name)
         with open(path) as f:
             r = json.load(f)
-        if ('verdict' in r and not a.regrade) or r['task'] not in tasks:  # a task since dropped from its file
+        # Graded already by this grader (another grader's verdict is graded again), or a task since dropped from its file.
+        if (graded_by(r, a.grader, a.grader_effort) and not a.regrade) or r['task'] not in tasks:
             continue
         g, usage = grade(tasks[r['task']], r.get('finalText', ''), work, a.grader, a.grader_effort)
         r['grade'] = usage

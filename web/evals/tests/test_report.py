@@ -262,6 +262,33 @@ class HardSet(unittest.TestCase):
         md = report.render(ts, runs_for(ts, {}, {}, reps=1), 'x', both)
         self.assertIn('Overall: **INCOMPLETE**', md)
 
+    def test_a_run_the_harness_broke_withholds_the_gate(self):
+        import harness
+        ts = hard_tasks()
+        rs = runs_for(ts, {}, {})
+        rs[0]['fetchErrors'] = [{'text': f'{harness.HARNESS_ERROR} the reader check failed (exit 1): boom', 'toolCaused': False}]
+        a = report.audit(ts, rs, report.expected_runs(ts, 'final', 4))
+        self.assertFalse(a['complete'])
+        self.assertEqual(a['harness'], [(rs[0]['task'], rs[0]['arm'], rs[0]['rep'])])
+        self.assertIn('Overall: **INCOMPLETE**', report.render(ts, rs, 'x', report.expected_runs(ts, 'final', 4)))
+
+    def test_a_folder_graded_by_two_graders_withholds_the_gate(self):
+        ts = hard_tasks()
+        rs = runs_for(ts, {}, {})
+        for r in rs:
+            r['grade'] = {'model': 'sol', 'effort': 'xhigh'} if r['arm'] == 'A' else {'model': 'opus'}
+        a = report.audit(ts, rs, report.expected_runs(ts, 'final', 4))
+        self.assertEqual(a['graders'], ['opus', 'sol at xhigh'])
+        self.assertFalse(a['complete'])
+        for r in rs:
+            r['grade'] = {'model': 'sol', 'effort': 'xhigh'}
+        self.assertTrue(report.audit(ts, rs, report.expected_runs(ts, 'final', 4))['complete'])
+
+    def test_no_runs_no_verdict(self):
+        md = report.render(hard_tasks(), [], 'empty screening', set())
+        self.assertIn('No runs to judge, so no verdict.', md)
+        self.assertNotIn('PASS', md)
+
     def test_a_set_with_mechanisms_is_summarized_by_them(self):
         ts = [dict(t, mechanism='over-10mb' if t['category'] == 'long-pdf' else 'quote-limit') for t in hard_tasks()]
         rows = report._by_mechanism(ts, runs_for(ts, {'long-pdf-1': 0, 'long-pdf-2': 2}, {}))

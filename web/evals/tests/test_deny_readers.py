@@ -58,6 +58,14 @@ class Hook(unittest.TestCase):
         self.assertIn('/../deny_readers.py', mod)
         self.assertEqual(os.path.realpath(os.path.join(harness.DENY_PLUGIN, '..', 'deny_readers.py')), os.path.realpath(harness.DENY_READERS))
 
+    def test_the_mod_lets_a_call_through_only_on_a_clean_pass(self):
+        import os
+        with open(os.path.join(harness.DENY_PLUGIN, 'hooks', 'mods', 'register.tsx')) as f:
+            mod = f.read()
+        self.assertIn('if (ran.exitCode === 0) return next(e)', mod)
+        self.assertIn(f"const HARNESS_ERROR = '{harness.HARNESS_ERROR}'", mod)
+        self.assertIn('.catch(', mod)
+
     def test_a_refusal_is_not_a_tool_error(self):
         _, err = hook({'tool_name': 'mcp__web__fetch', 'tool_input': {'url': 'https://wsrv.nl/?url=x'}})
         for arm in ('A', 'B'):

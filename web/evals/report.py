@@ -56,21 +56,31 @@ def _validly_graded(task, r):
             and all(isinstance(facts.get(f['id']), bool) for f in task.get('facts', [])))
 
 
+def _grader(r):
+    g = r.get('grade') or {}
+    return (g.get('model'), g.get('effort'))
+
+
 def audit(tasks, runs, expected):
-    """What keeps a folder from a gate verdict: runs missing, not validly graded, duplicated, or not in the matrix."""
+    """What keeps a folder from a gate verdict: runs missing, not validly graded, duplicated, or not in the
+    matrix; a run the harness broke (its reader check failed); and runs graded by more than one grader."""
     by_id = {t['id']: t for t in tasks}
     seen = {}
     for r in runs:
         key = (r['task'], r['arm'], r['rep'])
         seen[key] = seen.get(key, 0) + 1
+    in_matrix = [r for r in runs if (r['task'], r['arm'], r['rep']) in expected]
+    graders = {_grader(r) for r in in_matrix if (r.get('grade') or {}).get('model')}
     out = {
         'missing': sorted(expected - set(seen)),
         'duplicates': sorted(k for k, n in seen.items() if n > 1),
         'unexpected': sorted(k for k in seen if k not in expected),
-        'ungraded': sorted((r['task'], r['arm'], r['rep']) for r in runs
-                           if (r['task'], r['arm'], r['rep']) in expected and not _validly_graded(by_id[r['task']], r)),
+        'ungraded': sorted((r['task'], r['arm'], r['rep']) for r in in_matrix if not _validly_graded(by_id[r['task']], r)),
+        'harness': sorted((r['task'], r['arm'], r['rep']) for r in in_matrix
+                          if any(e.get('text', '').startswith(harness.HARNESS_ERROR) for e in r.get('fetchErrors', []))),
+        'graders': sorted(f'{m}' + (f' at {e}' if e else '') for m, e in graders) if len(graders) > 1 else [],
     }
-    out['complete'] = not any(out.values())
+    out['complete'] = bool(expected) and not any(out.values())
     return out
 
 
@@ -246,12 +256,17 @@ def _failures(runs):
 
 def _audit_lines(a):
     lines = [f"{len(a['missing'])} missing, {len(a['ungraded'])} not validly graded, "
-             f"{len(a['duplicates'])} duplicated, {len(a['unexpected'])} not in the set's matrix."]
+             f"{len(a['duplicates'])} duplicated, {len(a['unexpected'])} not in the set's matrix, "
+             f"{len(a.get('harness', []))} broken by the harness."]
     for name, keys in (('Missing', a['missing']), ('Not validly graded', a['ungraded']),
-                       ('Duplicated', a['duplicates']), ('Not in the matrix', a['unexpected'])):
+                       ('Duplicated', a['duplicates']), ('Not in the matrix', a['unexpected']),
+                       ('Broken by the harness (the reader check failed)', a.get('harness', []))):
         if keys:
             shown = ', '.join(f'{t} {arm} rep {rep}' for t, arm, rep in keys[:40])
             lines.append(f"- {name}: {shown}{f' … and {len(keys) - 40} more' if len(keys) > 40 else ''}")
+    if a.get('graders'):
+        lines.append(f"- Graded by more than one grader: {', '.join(a['graders'])}; grade the folder again with one "
+                     "(`grade.py --regrade`).")
     return lines
 
 
@@ -276,6 +291,8 @@ def render_screening(tasks, runs, title, expected, arm):
 
 
 def render(tasks, runs, title, expected, dev_rounds=()):
+    if not expected:
+        return f'# Web fetch eval report — {title}\n\nNo runs to judge, so no verdict.\n'
     arms = sorted({arm for _, arm, _ in expected})
     if len(arms) == 1:
         return render_screening(tasks, runs, title, expected, arms[0])

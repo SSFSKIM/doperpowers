@@ -53,6 +53,8 @@ SEARCH_USAGE = os.path.join('.cache', 'web-evals-search', 'usage.jsonl')
 # hook would not do: the engine runs none for a mod's tool).
 DENY_READERS = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'deny_readers.py')
 DENY_PLUGIN = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'deny-readers')
+# A fetch error that opens this is the harness's own (the reader check failed): the run is invalid.
+HARNESS_ERROR = 'eval harness error:'
 
 
 def playwright_cache():
@@ -150,7 +152,7 @@ _SITE_REASON = re.compile(r'(HTTP \d{3}|network error|refused:|too many redirect
 def is_tool_caused(arm, text):
     """Whether a fetch error is the tool's own (criterion 3) rather than the site's, or the eval's
     refusal of a third-party reader."""
-    if text.startswith('Refused: ') and 'third-party reader or proxy' in text:
+    if (text.startswith('Refused: ') and 'third-party reader or proxy' in text) or text.startswith(HARNESS_ERROR):
         return False
     if arm == 'B':
         m = re.match(r'fetch failed: (?:\S+: )?(.*)', text, re.S)

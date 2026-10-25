@@ -59,11 +59,18 @@ class Resume(unittest.TestCase):
         out = tempfile.mkdtemp()
         plan = run.plan_runs(TASKS, set_='dev', reps=1, ids=['code-1'])
         with open(os.path.join(out, 'code-1.A.sol.1.json'), 'w') as f:
-            json.dump({'task': 'code-1', 'verdict': 'correct'}, f)
+            json.dump({'task': 'code-1', 'verdict': 'correct', 'grade': {'model': 'sol', 'effort': 'xhigh'}}, f)
         with open(os.path.join(out, 'code-1.B.sol.1.json'), 'w') as f:
             json.dump({'task': 'code-1'}, f)  # ran, not yet graded
         todo = run.pending(plan, out)
         self.assertEqual([(t['id'], arm, need) for t, arm, _, need in todo], [('code-1', 'B', 'grade')])
+
+    def test_a_verdict_from_another_grader_is_graded_again(self):
+        out = tempfile.mkdtemp()
+        plan = run.plan_runs(TASKS, set_='dev', reps=1, ids=['code-1'], arms=['A'])
+        with open(os.path.join(out, 'code-1.A.sol.1.json'), 'w') as f:
+            json.dump({'task': 'code-1', 'verdict': 'correct', 'grade': {'model': 'opus'}}, f)
+        self.assertEqual([need for *_, need in run.pending(plan, out)], ['grade'])
 
     def test_runs_without_a_file_are_run(self):
         out = tempfile.mkdtemp()
