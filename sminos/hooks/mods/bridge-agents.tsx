@@ -15,7 +15,11 @@ import { emit } from './bridge-stream'
  * agent runs.
  *
  * A seeded spawn carries what the list gives and nothing else: its id, its
- * parent, its type, its description, and its name when it has one. An agent
+ * parent, its type, its description, its name when it has one, and the
+ * list's own word for it (`status`: running, idle, waiting, completed,
+ * failed, killed), which a stop the list says carries too, so a reader
+ * (`sminos list --subagents`) can tell a killed agent from a completed one;
+ * a stop SubagentStop says, or an agent's leaving the list, has no word. An agent
  * an `agent.spawn` hook reports is that hook's to report, with the spawn's
  * whole record; the list only ends it, when the list says it is over or it
  * has left the list (only a finished agent leaves it), and the engine's
@@ -56,15 +60,16 @@ export function learnAgents(listed: readonly ListedAgent[]) {
         subagentType: a.type,
         description: a.description,
         ...(a.name !== undefined && { name: a.name }),
+        status: a.status,
       })
       if (isOver) {
-        emit({ type: 'agent', phase: 'stop', agentId: a.id, agentType: a.type })
+        emit({ type: 'agent', phase: 'stop', agentId: a.id, agentType: a.type, status: a.status })
       }
       continue
     }
     state.listed.add(a.id)
     if (isRunning(known) && isOver) {
-      emit({ type: 'agent', phase: 'stop', agentId: a.id, agentType: a.type })
+      emit({ type: 'agent', phase: 'stop', agentId: a.id, agentType: a.type, status: a.status })
     }
   }
   for (const id of state.listed) {

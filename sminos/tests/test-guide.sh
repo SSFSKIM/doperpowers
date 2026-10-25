@@ -102,9 +102,11 @@ assert_equals "$(grep -cF "$SCRIPTS/sminos" <<<"$OUT")" "1" "the CLI's absolute 
 named="$(grep -A2 -F "not on PATH; run it as" <<<"$OUT")"
 assert_equals "$named" "${named%%$'\n'*}
   $SCRIPTS/sminos
-  sminos list            your project's sessions; --here this machine's, --org every session" \
+  sminos list            peer sessions in your project; --here sessions on this machine, --org every connected host and project" \
   "on its own line after the frame line, and the verb lines name it sminos"
-for verb in "list" "--here" "--org" "who <commit|PR>" 'say "..."' "wakes no one" "@<short>" "@<project>/<alias>" \
+assert_contains "$OUT" "  sminos list --subagents   your subagents (--done N: finished ones, resumed by SendMessage to the agentId); these two replace ListAgents: use them instead" \
+  "it names the subagent view, and says the two replace ListAgents"
+for verb in "list" "--here" "--org" "list --subagents" "--done N" "replace ListAgents" "who <commit|PR>" 'say "..."' "wakes no one" "@<short>" "@<project>/<alias>" \
     "say --org|--project P|--machine M|--here" "join <project>" "charge"; do
   assert_contains "$OUT" "$verb" "it names $verb"
 done

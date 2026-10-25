@@ -405,6 +405,9 @@ run_suites() {
   while IFS= read -r line; do
     case "$line" in "ok "*) pass "route fixture: ${line#ok }" ;; *) fail "route fixture: ${line#FAIL }" ;; esac
   done < <(python3 "$SCRIPT_DIR/routes_check.py" "$SCRIPT_DIR/routes-2.1.307.json" 2>&1)
+  if python3 "$SCRIPT_DIR/test_subagents.py"; then
+    pass "list --subagents: each agent's lifecycle from the engine or the disk, the tree, --done (test_subagents.py)"
+  else fail "list --subagents: each agent's lifecycle from the engine or the disk, the tree, --done (test_subagents.py)"; fi
   if python3 "$SCRIPT_DIR/test_jobs.py"; then pass "the jobs ledger: rows in any batches, copies (test_jobs.py)"; else
     fail "the jobs ledger: rows in any batches, copies (test_jobs.py)"; fi
 }
@@ -1926,7 +1929,7 @@ assert_contains "$OUT" '"state": "retired"' "--json keeps a retired row"
 assert_contains "$OUT" '"state": "gone"' "--json keeps a gone row"
 (cd "$TEST_ROOT/st4" && "$SMINOS" seat add st4 ghost --session 0e0e0e0e-0e0e-4000-8000-0e0e0e0e0e0e >/dev/null)
 run "$SMINOS" list st4
-assert_equals "$OUT" "$(printf '(no members)\n+1 hidden (stopped, retired, gone) — sminos list --stopped shows stopped; --all shows all')" "a project of only folded members says so, then the count on its own line"
+assert_equals "$OUT" "$(printf '(no members in st4)\n+1 hidden (stopped, retired, gone) — sminos list --stopped shows stopped; --all shows all')" "a project of only folded members says so, naming the project it read, then the count on its own line"
 "$SMINOS" remove st4/ghost >/dev/null
 run "$SMINOS" list --all
 # From a directory of no project: every project, flat, each row with its project.
@@ -4382,9 +4385,10 @@ assert_contains "$OUT" "quiet-seat" "and the members on this machine"
 run_in "$ODA" "$SMINOS" list --here
 assert_contains "$OUT" "home-session" "wherever it runs"
 
-# Inside a session, the list ends with its subagents: live ones nested under
-# their parents, finished ones folded; --all shows them with their ids. With
-# no bridge for the session, the transcript tells.
+# Inside a session, the list says which session the caller is, then ends with
+# its subagents (list --subagents' view): the counts, live ones nested under
+# their parents, ended ones folded into a count; --all shows them with their
+# ids. With no bridge for the session, the transcript tells, and a note says so.
 OD_AG="$ODTX/$OD_S1/subagents"
 mkdir -p "$OD_AG"
 python3 - "$ODTX/$OD_S1.jsonl" "$OD_AG" <<'PY'
@@ -4404,8 +4408,18 @@ with open(main, "a") as f:
                 call("toolu_B", "watch the build", True),
                 result("toolu_B", {"status": "async_launched", "agentId": "a2222222222222222"})):
         f.write(json.dumps(row) + "\n")
+with open(d + "/agent-a1111111111111111.jsonl", "w") as f:
+    for row in ({"type": "user", "uuid": "p-A", "timestamp": "2026-10-18T10:00:01.000Z",
+                 "message": {"role": "user", "content": "scan the repo"}},
+                {"type": "assistant", "uuid": "e-A", "timestamp": "2026-10-18T10:00:59.000Z",
+                 "message": {"id": "mA", "role": "assistant", "stop_reason": "end_turn",
+                             "content": [{"type": "text", "text": "scanned"}]}}):
+        f.write(json.dumps(row) + "\n")
 with open(d + "/agent-a2222222222222222.jsonl", "w") as f:
     f.write(json.dumps(call("toolu_C", "review the diff")) + "\n")
+with open(d + "/agent-a3333333333333333.jsonl", "w") as f:
+    f.write(json.dumps({"type": "user", "uuid": "p-C", "timestamp": "2026-10-18T10:00:02.000Z",
+                        "message": {"role": "user", "content": "review the diff"}}) + "\n")
 for name, meta in (("a1111111111111111", {"agentType": "Explore", "description": "scan the repo", "toolUseId": "toolu_A"}),
                    ("a2222222222222222", {"agentType": "general-purpose", "description": "watch the build",
                                           "toolUseId": "toolu_B", "requestShape": "background"}),
@@ -4414,12 +4428,20 @@ for name, meta in (("a1111111111111111", {"agentType": "Explore", "description":
     json.dump(meta, open("%s/agent-%s.meta.json" % (d, name), "w"))
 PY
 run_in "$ODA" env CLAUDE_CODE_SESSION_ID="$OD_S1" "$SMINOS" list
-TREE="$(sed -n '/^subagents:/,$p' <<<"$OUT")"
-assert_equals "$TREE" "$(printf 'subagents:\n  a2222222222222222  general-purpose  running\n    a3333333333333333  doperpowers:reviewer-low  running\n  +1 finished — sminos list --all')" \
-  "inside a session the list ends with its live subagents, nested under their parents, the finished folded behind a count"
+assert_contains "$OUT" "you: " "inside a session the list says who the caller is"
+assert_contains "$(grep '^you: ' <<<"$OUT")" "[0d000001]" "by its alias and short"
+TREE="$(sed -n '/^subagents /,$p' <<<"$OUT")"
+assert_equals "$(head -1 <<<"$TREE")" "subagents [2 running · 0 waiting on background · 0 stalled · 0 orphaned]" \
+  "and ends with its subagents' counts"
+assert_contains "$(sed -n 2p <<<"$TREE" | tr -s ' ')" " a2222222222222222 general-purpose watch the build running " "then its live subagents"
+assert_contains "$(sed -n 2p <<<"$TREE")" "(disk) · in Agent " "each with its lifecycle, its source and what it does"
+assert_contains "$(sed -n 3p <<<"$TREE")" "    a3333333333333333  " "nested under their parents"
+assert_contains "$(sed -n 3p <<<"$TREE" | tr -s ' ')" " a3333333333333333 doperpowers:reviewer-low review the diff running " "with its type and description"
+assert_equals "$(sed -n 4p <<<"$TREE")" "  +1 ended (1 completed) — sminos list --subagents --done 10" "the ended folded behind a count"
+assert_contains "$TREE" "note: no bridge runs in this session" "and a note says the lifecycle is the disk's"
 run_in "$ODA" env CLAUDE_CODE_SESSION_ID="$OD_S1" "$SMINOS" list --all
-assert_equals "$(sed -n '/^subagents:/,$p' <<<"$OUT")" "$(printf 'subagents:\n  a1111111111111111  Explore  completed\n  a2222222222222222  general-purpose  running\n    a3333333333333333  doperpowers:reviewer-low  running')" \
-  "--all shows the finished agent with its id"
+assert_contains "$(sed -n '/^subagents /,$p' <<<"$OUT" | tr -s ' ')" " a1111111111111111 Explore scan the repo completed " \
+  "--all shows the ended agent with its id"
 run_in "$ODA" "$SMINOS" list
 assert_not_contains "$OUT" "subagents" "outside a session there is no tree"
 run_in "$ODA" env CLAUDE_CODE_SESSION_ID="$OD_S1" "$SMINOS" list --json
@@ -5601,7 +5623,7 @@ assert_file_absent "$HPLOG/testhost.$HSX.jsonl" "nor does a marked session whose
 HI=6e00000e-0000-4000-8000-00000000006e
 sdk_peer mawsi "$HI"
 SMNS_MEMBER="$MARK" SMNS_INTERNAL=1 CLAUDE_CODE_SESSION_ID="$HI" run "$SMINOS" list --all
-assert_not_contains "$OUT" "mawsi" "a verb an internal fork runs, with the mark and its session id inherited, joins nothing"
+assert_not_contains "$(grep -v '^you: ' <<<"$OUT")" "mawsi" "a verb an internal fork runs, with the mark and its session id inherited, joins nothing"
 assert_file_absent "$HPLOG/testhost.$HI.jsonl" "and writes nothing for it"
 # MAWS resumed a marked session whose engine crashed: the dead engine's record
 # lingers beside the running one's, and the hook reads the running one. The
