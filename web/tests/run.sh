@@ -18,3 +18,6 @@ git -C "$web" diff --exit-code -- bin/clip.mjs
 
 echo "== the mod's tests"
 bash "$web/tests/mods/run.sh"
+
+echo "== the eval scripts' tests"
+python3 -I -m unittest discover -s "$web/evals/tests" -t "$web/evals"
