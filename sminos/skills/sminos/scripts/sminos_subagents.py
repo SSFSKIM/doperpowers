@@ -61,8 +61,6 @@ QUIET_SECONDS = 60   # an agent with nothing in flight and no write for this lon
 # A loop's transcript is read from this long before the time asked: rows are written about in time order, not
 # exactly (a row's own timestamp is its start).
 EVIDENCE_MARGIN = 120.0
-# How far after a TaskStop call its result is looked for.
-RESULT_REACH = 4 << 20
 # The bridge's notes that it stopped a task (sminos_jobs.STOP_NOTE, INTERRUPT_ORIGINS), found by these phrases.
 STOP_NOTE_PHRASES = (b"a background task, was stopped from", b"The interrupt came from")
 TASKSTOP_CALL = b'"name":"TaskStop"'
@@ -191,12 +189,13 @@ def _row(mm, span):
 
 
 def _stamp(mm, start):
-    """(the time of the row on the line starting at `start`, or None; the next line's start)."""
+    """(the time of the row on the line starting at `start`, its own top-level `timestamp` — a row's message,
+    written before it, may hold older ones — or None for a request record or a line with none; the next line's
+    start)."""
     end = mm.find(b"\n", start)
     end = len(mm) if end < 0 else end
-    i = mm.find(b'"timestamp":"', start, end)
-    t = _epoch(mm[i + 13:min(end, i + 13 + 40)].split(b'"', 1)[0].decode("ascii", "replace")) if i >= 0 else None
-    return t, end + 1
+    row = _row(mm, (start, end))
+    return (_epoch(row.get("timestamp")) if row else None), end + 1
 
 
 def offset_since(mm, t):
@@ -273,15 +272,24 @@ class LoopStops:
 
     @staticmethod
     def _succeeded(mm, call, after):
-        """Whether the call's result, written after it, is no error."""
+        """Whether the call's result, written after it, is no error: the first row after it naming the call as a
+        result, however far (a request record, which repeats the conversation, or any other line between is
+        passed over unparsed). False while no result is written yet."""
         needle = ('"tool_use_id":"%s"' % call).encode()
-        for span in _lines_holding(mm, needle, mm.rfind(b"\n", 0, after) + 1, min(len(mm), after + RESULT_REACH)):
-            row = _row(mm, span)
+        at = after
+        while True:
+            i = mm.find(needle, at)
+            if i < 0:
+                return False
+            s = mm.rfind(b"\n", 0, i) + 1
+            e = mm.find(b"\n", i)
+            e = len(mm) if e < 0 else e
+            row = _row(mm, (s, e))
             msg = row.get("message") if row else None
             for b in msg.get("content") or () if isinstance(msg, dict) and isinstance(msg.get("content"), list) else ():
                 if isinstance(b, dict) and b.get("type") == "tool_result" and b.get("tool_use_id") == call:
                     return b.get("is_error") is not True
-        return False
+            at = e + 1
 
     def ended(self, task):
         """Whether this loop's rows (as far as read) stop the task."""
@@ -486,7 +494,11 @@ class Subagents:
         """When the loop that ran this agent stopped it with TaskStop since its open turn began, or None."""
         if a.get("workflow"):
             return None
-        since = tail.get("openedAt") or a["born"] or 0
+        # The open turn began at its first row after the last that closed one; a TaskStop closes nothing, so after a
+        # stop and a revival that row may be an earlier revival's, and only the latest revival bounds the turn.
+        revived = a["meta"].get("revivedAt")
+        since = max(tail.get("openedAt") or a["born"] or 0,
+                    revived / 1000.0 if isinstance(revived, (int, float)) and not isinstance(revived, bool) else 0)
         stops = self.loop_stops(self.parent(a), since)
         made = [t for t in stops.stops.get(a["agentId"], ()) if t is not None and t >= since - 1]
         return max(made) if made else None

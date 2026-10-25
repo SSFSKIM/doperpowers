@@ -297,6 +297,55 @@ class Derivation(unittest.TestCase):
         self.s.append_main([Rows.call(NOW - 100, "ts2", "TaskStop", {"task_id": "a9"}, msg="m-ts2"),
                             Rows.result(NOW - 99, "ts2", "Error: no such task", tur={})])
 
+    def test_revived_stopped_and_revived_again_runs(self):
+        """A TaskStop leaves no row that closes a turn: after finished → revived → TaskStopped → revived again,
+        the open turn's first row is the first revival's, and only the latest revival (`revivedAt`) bounds what
+        a stop can say of the turn running now."""
+        first, second = NOW - 900, NOW - 300
+        rows = [Rows.prompt(NOW - 3000), *Rows.handback(NOW - 2900),
+                Rows.prompt(first, "go on", isMeta=True, origin={"kind": "human"}),
+                Rows.call(first + 5, "t8", "Bash", msg="m-1"),
+                Rows.prompt(second, "go on again", isMeta=True, origin={"kind": "human"}),
+                Rows.call(second + 5, "t9", "Grep", msg="m-2")]
+        self.s.agent("a1", rows, second + 5, meta={"finished": True, "revivedAt": int(second * 1000)})
+        self.s.append_main([Rows.call(first + 60, "ts1", "TaskStop", {"task_id": "a1"}, msg="m-ts1"),
+                            Rows.result(first + 61, "ts1", "stopped", tur={"task_id": "a1"})])
+        st = self.state("a1")
+        self.assertEqual((st["state"], st["tool"]["name"]), ("running", "Grep"))
+        self.assertEqual([e["agentId"] for e in self.s.view().tree()], ["a1"], "and it stays in the live tree")
+
+    def test_bisection_reads_each_rows_own_time_not_one_nested_in_its_message(self):
+        """A row's `message` comes before its own `timestamp`, and may hold an older one (a tool's input, a
+        quoted record): the bisection over the main loop must read the row's own, or it skips the stop."""
+        def row(t, i):
+            return {"type": "assistant", "uuid": "h-%d" % i,
+                    "message": {"id": "mh-%d" % i, "role": "assistant", "stop_reason": "tool_use",
+                                "content": [{"type": "tool_use", "id": "x%d" % i, "name": "mcp__log__write",
+                                             "input": {"timestamp": "2020-01-01T00:00:00.000Z", "text": "y" * 700}}]},
+                    "timestamp": ts(t)}
+        before = [row(NOW - 2000 + i * 0.25, i) for i in range(3000)]       # ~2.3 MB before the stop
+        after = [row(NOW - 1000 + i * 0.25, 10000 + i) for i in range(3000)]   # and as much after it
+        stop = [Rows.call(NOW - 1100, "ts1", "TaskStop", {"task_id": "a1"}, msg="m-ts1"),
+                Rows.result(NOW - 1099, "ts1", "stopped", tur={"task_id": "a1"})]
+        self.s.write(self.s.main, [Rows.prompt(STARTED)] + before + stop + after, NOW - 200)
+        self.s.agent("a1", [Rows.prompt(NOW - 1200), Rows.call(NOW - 1190, "t1", "Bash")], NOW - 1190)
+        mm_size = os.path.getsize(self.s.main)
+        self.assertGreater(mm_size, 4 << 20, "large enough for the bisection to run")
+        st = self.state("a1")
+        self.assertEqual((st["state"], st["stoppedBy"]), ("stopped", "TaskStop"))
+
+    def test_a_stops_result_beyond_a_large_record_still_counts(self):
+        """A multi-megabyte record between a TaskStop and its result (a request record, an image result) does
+        not hide the result."""
+        big = '{"type":"api-request","sessionId":"x","params":{"messages":"%s"}}' % ("z" * (6 << 20))
+        self.s.append_main([Rows.call(NOW - 500, "ts1", "TaskStop", {"task_id": "a1"}, msg="m-ts1")])
+        with open(self.s.main, "a") as f:
+            f.write(big + "\n")
+        self.s.append_main([Rows.result(NOW - 499, "ts1", "stopped", tur={"task_id": "a1"})])
+        self.s.agent("a1", [Rows.prompt(NOW - 900), Rows.call(NOW - 800, "t1", "Bash")], NOW - 800)
+        st = self.state("a1")
+        self.assertEqual((st["state"], st["stoppedBy"]), ("stopped", "TaskStop"))
+
     def test_a_failed_agent_stays_failed_once_its_process_ends(self):
         self.s.agent("f1", [Rows.prompt(NOW - 900), Rows.api_error(NOW - 850)], NOW - 850, meta={"finished": True})
         for live in (True, False):
