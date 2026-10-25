@@ -1,8 +1,12 @@
 import json
 import os
 import stat
+import subprocess
+import sys
 import tempfile
+import time
 import unittest
+from unittest import mock
 
 import harness
 from tests import streams as s
@@ -92,41 +96,66 @@ class ParseStream(unittest.TestCase):
 
 
 FAKE_CLAUDE = r'''
-import json, signal, sys, time
+import json, os, signal, sys, time
 def stop(*_):
     print(json.dumps({"type": "result", "subtype": "error_during_execution", "result": "", "modelUsage": {"sol": {"inputTokens": 5}}}), flush=True)
     sys.exit(0)
 signal.signal(signal.SIGINT, stop)
 print(json.dumps({"type": "system", "subtype": "init"}), flush=True)
+os.write(int(os.environ["READY_FD"]), b"r")
 time.sleep(60)
 '''
 
 DEAF_CLAUDE = r'''
-import signal, time
+import os, signal, time
 signal.signal(signal.SIGINT, signal.SIG_IGN)
 print("started", flush=True)
+os.write(int(os.environ["READY_FD"]), b"r")
 time.sleep(60)
 '''
 
 
+class ReadyPopen(subprocess.Popen):
+    """A Popen that returns once its fake `claude` writes to READY_FD, which it does when
+    its SIGINT handling is in place. The limit the harness counts from Popen then starts
+    there, however long a loaded machine takes to start the interpreter."""
+
+    def __init__(self, *args, **kwargs):
+        r, w = os.pipe()
+        kwargs['pass_fds'] = (w,)
+        kwargs['env'] = {**(kwargs.get('env') or os.environ), 'READY_FD': str(w)}
+        try:
+            super().__init__(*args, **kwargs)
+        finally:
+            os.close(w)
+        try:
+            os.read(r, 1)  # b'' if the child exits first
+        finally:
+            os.close(r)
+        ReadyPopen.ready_at = time.monotonic()
+
+
 class RunClaude(unittest.TestCase):
+    def run_ready(self, code, timeout_s, **kw):
+        """`run_claude` on a fake `claude`, and the seconds from its being ready to the call's return."""
+        with mock.patch.object(harness.subprocess, 'Popen', ReadyPopen):
+            out, err, rc, timed_out, wall_ms = harness.run_claude([sys.executable, '-c', code], tempfile.gettempdir(), None, timeout_s, **kw)
+        return out, timed_out, time.monotonic() - ReadyPopen.ready_at
+
     def test_the_limit_interrupts_so_the_result_line_is_written(self):
-        import sys
-        out, err, rc, timed_out, wall_ms = harness.run_claude([sys.executable, '-c', FAKE_CLAUDE], tempfile.gettempdir(), None, 1)
+        out, timed_out, took = self.run_ready(FAKE_CLAUDE, 1)
         self.assertTrue(timed_out)
         self.assertIn('"type": "result"', out)
-        self.assertGreaterEqual(wall_ms, 1000)
-        self.assertLess(wall_ms, 10_000)
+        self.assertGreaterEqual(took, 1)
+        self.assertLess(took, 10)
 
     def test_a_process_deaf_to_the_interrupt_is_killed(self):
-        import sys
-        out, err, rc, timed_out, wall_ms = harness.run_claude([sys.executable, '-c', DEAF_CLAUDE], tempfile.gettempdir(), None, 1, grace_s=1)
+        out, timed_out, took = self.run_ready(DEAF_CLAUDE, 1, grace_s=1)
         self.assertTrue(timed_out)
         self.assertEqual(out, 'started\n')
-        self.assertLess(wall_ms, 10_000)
+        self.assertLess(took, 10)  # killed at the grace's end, not after its 60 s sleep
 
     def test_a_run_inside_its_limit(self):
-        import sys
         out, err, rc, timed_out, wall_ms = harness.run_claude([sys.executable, '-c', 'print("hi")'], tempfile.gettempdir(), None, 30)
         self.assertEqual((out, rc, timed_out), ('hi\n', 0, False))
 

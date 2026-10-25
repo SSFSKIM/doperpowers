@@ -122,6 +122,26 @@ test("a date beside the title stays Defuddle's, so it reaches published, and a h
   assert.match(ex.body, /\nThe fix was released yesterday, and it is live for every user\.\n$/, ex.body)
 })
 
+test('a page that leaves out <html>, <head> or <body> extracts like the same page with them', async () => {
+  // Escaped markup in the title and an escaped entity in an attribute: the repair must not write them out and read them back.
+  const head = '<meta charset="utf-8"><title>Gardens &amp; Beds &lt;/title&gt;&lt;script&gt;</title><meta name="description" content="Beds &amp;copy; paths">'
+  const article = '<article><h1>Gardens &amp; Beds</h1><p>' + 'Raised beds drain well, warm early in spring, and keep the paths clear of mud for the gardener. '.repeat(5) + '</p><pre>a &lt; b</pre></article>'
+  const full = await extractHtml(`<!doctype html><html lang="en"><head>${head}</head><body>${article}</body></html>`, 'https://x.test/beds', fetch)
+  assert.ok(full.words > 50)
+  for (const page of [
+    `<!doctype html><html lang="en"><head>${head}</head>${article}</html>`, // no <body>
+    `<html lang="en">${head}${article}</html>`, // no <head> or <body>
+    `<!doctype html>${head}${article}`, // no tags at all, as HTML allows
+    `<head>${head}</head><body>${article}</body>`, // no <html>
+  ]) {
+    const ex = await extractHtml(page, 'https://x.test/beds', fetch)
+    assert.equal(ex.body, full.body, page.slice(0, 40))
+    assert.equal(ex.meta.title, 'Gardens & Beds </title><script>', page.slice(0, 40))
+    assert.equal(ex.meta.description, 'Beds &copy; paths', page.slice(0, 40))
+    if (page.includes('lang="en"')) assert.equal(ex.meta.language, 'en', page.slice(0, 40))
+  }
+})
+
 test('html frontmatter escapes quotes and backslashes and ends with fetched', () => {
   const fm = htmlFrontmatter({ title: 'A "quoted" \\ title', site: 'S' }, 12, 'https://x.test/', F)
   assert.equal(fm, `---\ntitle: "A \\"quoted\\" \\\\ title"\nsite: "S"\nsource: "https://x.test/"\nword_count: 12\nfetched: ${F}\n---\n\n`)

@@ -9,7 +9,7 @@ export type PageMeta = { title?: string; author?: string; site?: string; publish
 export type Extracted = { body: string; meta: PageMeta; words: number }
 
 export async function extractHtml(html: string, url: string, siteFetch: typeof fetch): Promise<Extracted> {
-  const doc = parseHTML(html).document
+  const doc = parseDocument(html)
   // The polyfills Defuddle applies to a linkedom document of its own.
   const loose = doc as unknown as { URL: string; styleSheets?: unknown; defaultView: { getComputedStyle?: unknown } | null }
   if (!loose.styleSheets) loose.styleSheets = []
@@ -25,6 +25,47 @@ export async function extractHtml(html: string, url: string, siteFetch: typeof f
     if (v) meta[k] = v
   }
   return { body: tidyMarkdown(unshield(r.content ?? '')), meta, words: r.wordCount ?? 0 }
+}
+
+// linkedom builds only the structure a document's tags spell out. HTML lets a page
+// leave out <html>, <head> and <body>: linkedom's root is then the page's first
+// element, with the rest of the page beside it, or the content sits beside an empty
+// body, where Defuddle can miss all of it (rfc-editor's RFCs, a run of bare <pre>
+// blocks, gave 0 words). Such a document is rebuilt with the tags a browser
+// supplies: its leading head elements in <head>, the rest in <body>. A document whose
+// content is all in its <body> is left as parsed, whatever scripts or styles it has
+// outside it.
+const HEAD_TAGS = new Set(['TITLE', 'META', 'LINK', 'BASE', 'STYLE', 'SCRIPT', 'NOSCRIPT', 'TEMPLATE'])
+
+function parseDocument(html: string) {
+  const doc = parseHTML(html).document
+  const root = doc.documentElement
+  const quiet = (n: Node) => n.nodeType === 8 || n.nodeType === 10 || n.nodeType === 3 && !(n.nodeValue ?? '').trim()
+  const inert = (n: Node) => quiet(n) || HEAD_TAGS.has(n.nodeName)
+  const whole = root?.tagName === 'HTML'
+    && Array.from(doc.childNodes).every(n => n === root || inert(n))
+    && Array.from(root.childNodes).every(n => inert(n) || n.nodeName === 'HEAD' || n.nodeName === 'BODY')
+  if (whole) return doc
+  // The parsed nodes move into a fresh document as they are: written out and parsed
+  // again, linkedom's serialization would turn a title's escaped "&lt;/title&gt;" into
+  // markup and unescape attribute values.
+  const fresh = parseHTML('<!doctype html><html><head></head><body></body></html>').document
+  let inBody = false
+  const place = (node: Node, inHead = false): void => {
+    const el = node.nodeType === 1 ? node as Element : undefined
+    if (el && (el.tagName === 'HTML' || el.tagName === 'HEAD' || el.tagName === 'BODY')) {
+      const into = el.tagName === 'HTML' ? fresh.documentElement : el.tagName === 'BODY' ? fresh.body : undefined
+      for (const a of into ? Array.from(el.attributes) : []) if (!into!.hasAttribute(a.name)) into!.setAttribute(a.name, a.value)
+      if (el.tagName === 'BODY') inBody = true
+      for (const child of Array.from(el.childNodes)) place(child, el.tagName === 'HEAD')
+    } else if (node.nodeType !== 10) { // the doctype is the fresh one's
+      const toHead = inHead || !inBody && (quiet(node) || !!el && HEAD_TAGS.has(el.tagName))
+      if (!toHead) inBody = true
+      ;(toHead ? fresh.head : fresh.body).appendChild(fresh.importNode(node, true))
+    }
+  }
+  for (const node of Array.from(doc.childNodes)) place(node)
+  return fresh
 }
 
 // Defuddle takes a short dated line near the top of the content for the article's

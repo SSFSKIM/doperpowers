@@ -1,0 +1,109 @@
+<!-- The opening of rfc-editor.org/rfc/rfc8439.html as served (2026-10-25): no <html>, <head> or <body>, only <pre> blocks. -->
+<pre>Internet Research Task Force (IRTF)                               Y. Nir
+Request for Comments: 8439                                      Dell EMC
+Obsoletes: <a href="./rfc7539">7539</a>                                               A. Langley
+Category: Informational                                     Google, Inc.
+ISSN: 2070-1721                                                June 2018
+
+
+                <span class="h1">ChaCha20 and Poly1305 for IETF Protocols</span>
+
+Abstract
+
+   This document defines the ChaCha20 stream cipher as well as the use
+   of the Poly1305 authenticator, both as stand-alone algorithms and as
+   a "combined mode", or Authenticated Encryption with Associated Data
+   (AEAD) algorithm.
+
+   <a href="./rfc7539">RFC 7539</a>, the predecessor of this document, was meant to serve as a
+   stable reference and an implementation guide.  It was a product of
+   the Crypto Forum Research Group (CFRG).  This document merges the
+   errata filed against <a href="./rfc7539">RFC 7539</a> and adds a little text to the Security
+   Considerations section.
+
+Status of This Memo
+
+   This document is not an Internet Standards Track specification; it is
+   published for informational purposes.
+
+   This document is a product of the Internet Research Task Force
+   (IRTF).  The IRTF publishes the results of Internet-related research
+   and development activities.  These results might not be suitable for
+   deployment.  This RFC represents the consensus of the Crypto Forum
+   Research Group of the Internet Research Task Force (IRTF).  Documents
+   approved for publication by the IRSG are not candidates for any level
+   of Internet Standard; see <a href="./rfc7841#section-2">Section&nbsp;2 of RFC 7841</a>.
+
+   Information about the current status of this document, any errata,
+   and how to provide feedback on it may be obtained at
+   <a href="https://www.rfc-editor.org/info/rfc8439">https://www.rfc-editor.org/info/rfc8439</a>.
+
+
+
+
+
+
+
+
+
+
+
+
+
+<span class="grey">Nir &amp; Langley                 Informational                     [Page 1]</span></pre>
+<hr class='noprint'/><!--NewPage--><pre class='newpage'><span id="page-2" ></span>
+<span class="grey"><a href="./rfc8439">RFC 8439</a>                   ChaCha20 &amp; Poly1305                 June 2018</span>
+
+
+Copyright Notice
+
+   Copyright (c) 2018 IETF Trust and the persons identified as the
+   document authors.  All rights reserved.
+
+   This document is subject to <a href="https://www.rfc-editor.org/bcp/bcp78">BCP 78</a> and the IETF Trust's Legal
+   Provisions Relating to IETF Documents
+   (<a href="https://trustee.ietf.org/license-info">https://trustee.ietf.org/license-info</a>) in effect on the date of
+   publication of this document.  Please review these documents
+   carefully, as they describe your rights and restrictions with respect
+   to this document.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<span class="grey">Nir &amp; Langley                 Informational                     [Page 2]</span></pre>

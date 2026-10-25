@@ -67,6 +67,7 @@ before(async () => {
       : send('text/html', '<!doctype html><html><head><title>Changelog</title></head><body><article><h1>Changelog</h1><p>Version 1.0.1 fixes the date parser.</p><p>Older versions are listed on the releases page.</p></article></body></html>')(req, res),
     '/trap-image': send('text/html', article.replace('/img/diagram.png', `http://127.0.0.1:${trap.port}/diagram.png`)),
     '/many': send('text/html', many.join('')),
+    '/rfc8439.html': send('text/html', await fixture('bare-pre.html')),
     '/thin': send('text/html', '<!doctype html><html><head><title>Thin</title></head><body><div id="root"></div></body></html>'),
     // A large inline script first, as Next.js error pages have: its text is not the body.
     '/gone': send('text/html', '<html><head><title>Gone</title><script>self.__next_f.push(' + '"x",'.repeat(40000) + ')</script></head><body><h1>Gone</h1><p>This page was removed in 2019 and will not be back.</p></body></html>', 410),
@@ -426,6 +427,18 @@ test('WEB_CHROME=none turns rendering off, with the note, when the page needs it
   assert.ok(missing.notes.some(n => n.startsWith('rendering unavailable on this machine: ') && n.includes('WEB_CHROME')), missing.notes.join('|'))
   const full = ok(await clip(`${server.origin}/article`, { cacheDir: await tmpCache(), env: { ...env, WEB_CHROME: 'none' } }))
   assert.deepEqual(full.notes, [])
+})
+
+test('a page with no <html> or <body>, only <pre> blocks, is extracted with no browser', async () => {
+  // rfc-editor's htmlized RFCs; this env has rendering off, so the plain extraction is all there is.
+  const r = ok(await clip(`${server.origin}/rfc8439.html`, { cacheDir: await tmpCache(), env }))
+  assert.equal(r.kind, 'html')
+  assert.equal(r.rendered, false)
+  assert.deepEqual(r.notes, [])
+  assert.ok(r.words! > 150, String(r.words))
+  const md = await readFile(r.file, 'utf8')
+  assert.match(md, /This document defines the ChaCha20 stream cipher/)
+  assert.match(md, /Copyright \(c\) 2018 IETF Trust/)
 })
 
 test('a page in a legacy charset is decoded by its declared charset', async () => {
