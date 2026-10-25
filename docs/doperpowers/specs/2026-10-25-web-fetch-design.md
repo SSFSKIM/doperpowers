@@ -58,7 +58,18 @@ session on the machine.
 - [x] (2026-10-25) M2 — the tool: the `web` plugin and its mod (`61db8306`,
   `9e010af2`, fix `0c83c23f`), reviewed clean: 48 mod tests, the `web`
   gate green in CI; acceptance 6–8 held live in `claude -p` sessions.
-- [ ] M3 — the evals, and acceptance 1–9.
+- [x] (2026-10-25) M3 — the evals, and acceptance 1–9. Suite and tasks
+  (`203fb098`–`11daced2`), reviewed clean; three development rounds and a
+  reviewed freeze at `542ba02d`; the final run passed all four criteria
+  (192 of 192 runs correct in both configurations; gist tokens B/A 0.67×),
+  report `eb3715ea`. Acceptance 1–8 then run as written, all held: the
+  building-effective-agents page saved with 8 images (`01.webp` showing
+  the augmented-LLM diagram), a cached repeat in 0.13 s, excalidraw
+  rendered at 51 words and plain with the `WEB_CHROME` note, the arXiv PDF
+  with 15 page entries, the 404 uncached, both private addresses refused;
+  in a `claude -p` session R1 with 8 absolute image paths, R2 whose 36
+  heading entries each open on their heading, R3 with every cited line
+  holding its value, and a subagent served the same.
 - [ ] Branch review (doperpowers:review-code, high), merge.
 - [ ] M4 — the switch-over, after the merge (acceptance 10).
 
@@ -1164,6 +1175,15 @@ type Run = {
   rounds could not tell A from B; criterion 1 rests on the final set.
   `sol` at `xhigh`, with the URL in the question, answers these tasks
   either way.
+- Observation: the final set saturated too: 192 of 192 runs correct in
+  both configurations, so criterion 1 passed at d = 0 with a zero-width
+  interval. The suite shows B is not worse at answering; it cannot show B
+  is better. B's measured gains are in cost and calls: PDFs at 1.1 fetch
+  calls and 26k median tokens against A's 15.9 and 67k (A pages through
+  `WebFetch`'s windows), gist 0.67× the tokens and half the time, images
+  in 12 s against 29 s. Code and synthesis cost B more tokens (16k against
+  10.6k), since B reads the saved file where A gets a summary.
+  Evidence: `docs/doperpowers/specs/2026-10-25-web-fetch-eval-report.md`.
 - Observation: registry.terraform.io hangs the headless renderer (only a
   reserve task uses it), and deps.dev's page loses its "Published" header
   in extraction. Both are left for the backlog.
