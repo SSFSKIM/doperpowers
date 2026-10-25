@@ -7,14 +7,14 @@ import { connect } from 'node:net'
 import type { Socket } from 'node:net'
 import { CONNECT_ATTEMPT_MS } from './http.ts'
 import { pinnedLookup, resolveChecked } from './netguard.ts'
-import type { ResolveOptions } from './netguard.ts'
+import type { Boundary, ResolveOptions } from './netguard.ts'
 
 export type EgressProxy = { port: number; close: () => Promise<void> }
 
 const HOP_HEADERS = ['proxy-connection', 'proxy-authorization', 'connection', 'keep-alive', 'transfer-encoding', 'te', 'trailer', 'upgrade']
 
 /** `resolve` is a test seam, as in `resolveChecked`. */
-export async function startEgressProxy(allow: Set<string>, opts: Pick<ResolveOptions, 'resolve'> = {}): Promise<EgressProxy> {
+export async function startEgressProxy(boundary: Boundary, opts: Pick<ResolveOptions, 'resolve'> = {}): Promise<EgressProxy> {
   const sockets = new Set<Socket>()
   const track = (s: Socket) => { sockets.add(s); s.on('close', () => sockets.delete(s)) }
 
@@ -30,7 +30,7 @@ export async function startEgressProxy(allow: Set<string>, opts: Pick<ResolveOpt
     const port = Number(url.port) || 80
     let addresses
     try {
-      addresses = await resolveChecked(url.hostname, port, { allow, resolve: opts.resolve })
+      addresses = await resolveChecked(url.hostname, port, { boundary, resolve: opts.resolve })
     } catch (e) {
       res.writeHead(403, { 'content-type': 'text/plain' }).end(e instanceof Error ? e.message : 'refused')
       return
@@ -56,7 +56,7 @@ export async function startEgressProxy(allow: Set<string>, opts: Pick<ResolveOpt
     const [, host, portText] = m
     let addresses
     try {
-      addresses = await resolveChecked(host, Number(portText), { allow, resolve: opts.resolve })
+      addresses = await resolveChecked(host, Number(portText), { boundary, resolve: opts.resolve })
     } catch {
       client.end('HTTP/1.1 403 Forbidden\r\n\r\n')
       return

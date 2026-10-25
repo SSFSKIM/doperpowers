@@ -1,10 +1,15 @@
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFile, readdir, stat } from 'node:fs/promises'
+import { readFile, readdir, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { clip } from '../src/clip.ts'
-import type { ClipResult, ClipOk } from '../src/clip.ts'
-import { startServer, startTrap, tmpCache, send, fixture, pngBytes, pdfBytes, PIXEL_GIF, noPdftotext } from './helpers.ts'
+import { clip, fetchHttpsFirst, httpsFirst } from '../src/clip.ts'
+import type { ClipResult, ClipOk, ClipError } from '../src/clip.ts'
+import { FAILURE_MEMORY_MS } from '../src/cache.ts'
+import { HttpError } from '../src/http.ts'
+import type { HttpResponse } from '../src/http.ts'
+import { entryDir } from '../src/key.ts'
+import { RefusedError } from '../src/netguard.ts'
+import { startServer, startTrap, tmpCache, send, fixture, pngBytes, pdfBytes, PIXEL_GIF, noPdftotext, entryContents } from './helpers.ts'
 
 let server: Awaited<ReturnType<typeof startServer>>
 let trap: Awaited<ReturnType<typeof startTrap>>
@@ -44,10 +49,22 @@ before(async () => {
     '/r2': (_q, res) => { res.writeHead(302, { location: `${server.origin}/article` }); res.end() },
     '/to-trap': (_q, res) => { res.writeHead(302, { location: `http://127.0.0.1:${trap.port}/x` }); res.end() },
     '/to-metadata': (_q, res) => { res.writeHead(302, { location: 'http://169.254.169.254/latest/meta-data/' }); res.end() },
+    '/to-localhost': (_q, res) => { res.writeHead(302, { location: `http://localhost:${server.port}/article` }); res.end() },
+    '/localhost-image': (req, res) => send('text/html', article.replaceAll('/img/diagram.png', `http://localhost:${server.port}/img/diagram.png`))(req, res),
+    '/busy': send('text/plain', 'Down for maintenance', 503),
+    '/slow-down': send('text/plain', 'Too many requests', 429),
     '/picky': (req, res) => {
       if ((req.headers.accept ?? '').startsWith('text/markdown')) { res.writeHead(406, { 'content-type': 'text/plain' }); res.end('Not Acceptable'); return }
       res.writeHead(200, { 'content-type': 'text/html' }); res.end(article)
     },
+    // A markdown stub to the markdown Accept, the article to a browser's.
+    '/stub': (req, res) => (req.headers.accept ?? '').startsWith('text/markdown')
+      ? send('text/markdown; charset=utf-8', '# react\n\n@18.2.0\n\n[View react on npm](https://npmjs.com/package/react)\n')(req, res)
+      : send('text/html; charset=utf-8', article)(req, res),
+    // A short page either way, its HTML a few words longer.
+    '/short': (req, res) => (req.headers.accept ?? '').startsWith('text/markdown')
+      ? send('text/markdown', '# Changelog\n\nVersion 1.0.1 fixes the date parser.\n')(req, res)
+      : send('text/html', '<!doctype html><html><head><title>Changelog</title></head><body><article><h1>Changelog</h1><p>Version 1.0.1 fixes the date parser.</p><p>Older versions are listed on the releases page.</p></article></body></html>')(req, res),
     '/trap-image': send('text/html', article.replace('/img/diagram.png', `http://127.0.0.1:${trap.port}/diagram.png`)),
     '/many': send('text/html', many.join('')),
     '/thin': send('text/html', '<!doctype html><html><head><title>Thin</title></head><body><div id="root"></div></body></html>'),
@@ -197,34 +214,164 @@ test('redirects are followed and the final URL recorded', async () => {
   assert.equal(r.finalUrl, `${server.origin}/article`)
 })
 
+test('a markdown stub gives way to the HTML page, and a page short either way stays the markdown served', async () => {
+  const hits = server.hits.length
+  const r = ok(await clip(`${server.origin}/stub`, { cacheDir: await tmpCache(), env }))
+  assert.equal(r.kind, 'html')
+  assert.equal(r.contentType, 'text/html; charset=utf-8')
+  assert.equal(r.title, 'Gardens of the Test Server')
+  const md = await readFile(r.file, 'utf8')
+  assert.ok(!md.includes('View react on npm'))
+  assert.match(md, /water the beans first/)
+  assert.deepEqual(server.hits.slice(hits).filter(h => h === '/stub'), ['/stub', '/stub'])
+
+  const short = ok(await clip(`${server.origin}/short`, { cacheDir: await tmpCache(), env }))
+  assert.equal(short.kind, 'markdown')
+  assert.equal(short.title, 'Changelog')
+  assert.match(await readFile(short.file, 'utf8'), /\n---\n\n# Changelog\n\nVersion 1\.0\.1 fixes the date parser\.\n$/)
+  // The HTML page was thin too, and this machine (WEB_CHROME=none) would not render it.
+  assert.deepEqual(short.notes, ['rendering unavailable on this machine: turned off by WEB_CHROME=none'])
+})
+
 test('a 406 is retried once with a browser Accept', async () => {
   const r = ok(await clip(`${server.origin}/picky`, { cacheDir: await tmpCache(), env }))
   assert.equal(r.kind, 'html')
 })
 
-test('a failure says what failed, carries the body, and leaves nothing in the cache', async () => {
+const failure = (r: ClipResult): ClipError => {
+  assert.equal(r.ok, false, JSON.stringify(r))
+  return r as ClipError
+}
+
+test('a failure says what failed, carries the body, and publishes nothing', async () => {
   const cacheDir = await tmpCache()
-  const r = await clip(`${server.origin}/gone`, { cacheDir, env })
-  assert.equal(r.ok, false)
-  if (r.ok) return
+  const r = failure(await clip(`${server.origin}/gone`, { cacheDir, env }))
   assert.equal(r.status, 410)
   assert.match(r.bodySnippet!, /^Gone Gone This page was removed in 2019/)
   assert.ok(r.bodySnippet!.length <= 300)
-  const notFound = await clip(`${server.origin}/nothing`, { cacheDir, env })
-  assert.equal(notFound.ok, false)
-  assert.equal(!notFound.ok && notFound.status, 404)
-  assert.deepEqual(await readdir(cacheDir), [])
+  const notFound = failure(await clip(`${server.origin}/nothing`, { cacheDir, env }))
+  assert.equal(notFound.status, 404)
+  // Each entry holds its failure, remembered, and no generation.
+  assert.deepEqual((await entryContents(cacheDir)).map(p => p.split('/')[1]), ['.failed.json', '.failed.json'])
 })
 
-test('an agent URL at a non-public address is refused without a request', async () => {
+test('a failure is remembered: the next call answers from it without a request, until refresh or FAILURE_MEMORY_MS', async () => {
+  const cacheDir = await tmpCache()
+  const url = `${server.origin}/nothing`
+  const first = failure(await clip(url, { cacheDir, env }))
+  assert.equal(first.failedAt, undefined)
+  const hits = server.hits.length
+  const again = failure(await clip(`${url}#part`, { cacheDir, env }))
+  assert.equal(server.hits.length, hits)
+  assert.deepEqual({ ...again, failedAt: undefined }, { ...first, url: `${url}#part`, failedAt: undefined })
+  assert.ok(Date.now() - Date.parse(again.failedAt!) < 5000, again.failedAt)
+
+  // refresh asks the site again.
+  failure(await clip(url, { cacheDir, env, refresh: true }))
+  assert.equal(server.hits.length, hits + 1)
+
+  // A memory older than FAILURE_MEMORY_MS is not used.
+  const file = join(entryDir(cacheDir, new URL(url)), '.failed.json')
+  const stale = { ...JSON.parse(await readFile(file, 'utf8')), failedAt: new Date(Date.now() - FAILURE_MEMORY_MS - 1000).toISOString() }
+  await writeFile(file, JSON.stringify(stale))
+  const later = failure(await clip(url, { cacheDir, env }))
+  assert.equal(server.hits.length, hits + 2)
+  assert.equal(later.failedAt, undefined)
+})
+
+test('a 4xx is permanent, except 408 and 429; a 5xx and a network error are not, and are remembered too', async () => {
+  const cacheDir = await tmpCache()
+  assert.equal(failure(await clip(`${server.origin}/nothing`, { cacheDir, env })).permanent, true)
+  assert.equal(failure(await clip(`${server.origin}/gone`, { cacheDir, env })).permanent, true)
+  assert.equal(failure(await clip(`${server.origin}/slow-down`, { cacheDir, env })).permanent, undefined)
+  const busy = failure(await clip(`${server.origin}/busy`, { cacheDir, env }))
+  assert.equal(busy.status, 503)
+  assert.equal(busy.permanent, undefined)
+  assert.ok(failure(await clip(`${server.origin}/busy`, { cacheDir, env })).failedAt)
+
+  // A closed port: nothing listens once the trap is gone, so the connection is refused.
+  const closed = await startTrap()
+  await closed.close()
+  const allowClosed = { ...env, WEB_ALLOW_HOSTS: `${env.WEB_ALLOW_HOSTS},127.0.0.1:${closed.port}` }
+  const down = failure(await clip(`http://127.0.0.1:${closed.port}/`, { cacheDir, env: allowClosed }))
+  assert.match(down.error, /^network error: /)
+  assert.equal(down.permanent, undefined)
+  assert.ok(failure(await clip(`http://127.0.0.1:${closed.port}/`, { cacheDir, env: allowClosed })).failedAt)
+})
+
+test('an agent URL at a non-public address is refused without a request, permanent, and not remembered', async () => {
   const cacheDir = await tmpCache()
   for (const url of [`http://127.0.0.1:${trap.port}/`, `http://localhost:${trap.port}/`, `http://[::1]:${trap.port}/`, `http://2130706433:${trap.port}/`]) {
-    const r = await clip(url, { cacheDir, env })
-    assert.equal(r.ok, false, url)
-    assert.match(!r.ok ? r.error : '', /^refused: /, url)
+    const r = failure(await clip(url, { cacheDir, env }))
+    assert.match(r.error, /^refused: /, url)
+    assert.equal(r.permanent, true, url)
   }
   assert.equal(trap.connections, 0)
   assert.deepEqual(await readdir(cacheDir), [])
+})
+
+test('a host on WEB_DENY_HOSTS is refused before any request and before its saved copy, as the agent URL or a redirect hop', async () => {
+  const cacheDir = await tmpCache()
+  const open = { ...env, WEB_ALLOW_HOSTS: `${env.WEB_ALLOW_HOSTS},localhost:${server.port}` }
+  ok(await clip(`http://localhost:${server.port}/article`, { cacheDir, env: open }))
+  const denied = { ...open, WEB_DENY_HOSTS: 'localhost' }
+  const hits = server.hits.length
+  const r = failure(await clip(`http://localhost:${server.port}/article`, { cacheDir, env: denied }))
+  assert.equal(r.error, 'refused: localhost is on the deny list (WEB_DENY_HOSTS)')
+  assert.equal(r.permanent, true)
+  assert.equal(server.hits.length, hits)
+
+  const hop = failure(await clip(`${server.origin}/to-localhost`, { cacheDir, env: denied }))
+  assert.equal(hop.error, 'refused: localhost is on the deny list (WEB_DENY_HOSTS)')
+  assert.deepEqual(server.hits.slice(hits), ['/to-localhost'])
+})
+
+test('a saved copy whose final URL is on a host denied since is refused, permanent, without a request', async () => {
+  const cacheDir = await tmpCache()
+  const open = { ...env, WEB_ALLOW_HOSTS: `${env.WEB_ALLOW_HOSTS},localhost:${server.port}` }
+  const saved = ok(await clip(`${server.origin}/to-localhost`, { cacheDir, env: open }))
+  assert.equal(saved.finalUrl, `http://localhost:${server.port}/article`)
+  const hits = server.hits.length
+  const r = failure(await clip(`${server.origin}/to-localhost`, { cacheDir, env: { ...open, WEB_DENY_HOSTS: 'localhost' } }))
+  assert.equal(r.error, 'refused: localhost is on the deny list (WEB_DENY_HOSTS)')
+  assert.equal(r.permanent, true)
+  assert.equal(server.hits.length, hits)
+})
+
+test('an image on a denied host keeps its remote link, refused, and is never requested', async () => {
+  const denied = { ...env, WEB_ALLOW_HOSTS: `${env.WEB_ALLOW_HOSTS},localhost:${server.port}`, WEB_DENY_HOSTS: 'localhost' }
+  const hits = server.hits.length
+  const r = ok(await clip(`${server.origin}/localhost-image`, { cacheDir: await tmpCache(), env: denied }))
+  const img = r.images.find(i => i.url.startsWith(`http://localhost:${server.port}/`))
+  assert.ok(img, JSON.stringify(r.images))
+  assert.equal(img.file, undefined)
+  assert.equal(img.error, 'refused: on the deny list')
+  assert.ok(!server.hits.slice(hits).includes('/img/diagram.png'), server.hits.slice(hits).join(' '))
+})
+
+test('an http: URL on the default port is tried over https first; any other URL as given', () => {
+  assert.equal(httpsFirst(new URL('http://example.com/a?b=1'))?.href, 'https://example.com/a?b=1')
+  assert.equal(httpsFirst(new URL('http://example.com:80/'))?.href, 'https://example.com/')
+  assert.equal(httpsFirst(new URL('http://example.com:8080/')), undefined)
+  assert.equal(httpsFirst(new URL('https://example.com/')), undefined)
+})
+
+test('https first falls back to the URL as given when https brings no page or is refused, saying why', async () => {
+  const response = (url: URL, status: number, statusText = ''): HttpResponse => ({ status, statusText, headers: {}, body: Buffer.alloc(0), url })
+  const run = async (https: (u: URL) => HttpResponse, http: (u: URL) => HttpResponse = u => response(u, 200)) => {
+    const asked: string[] = []
+    const out = await fetchHttpsFirst(new URL('http://example.com/a'), async u => { asked.push(u.href); return u.protocol === 'https:' ? https(u) : http(u) })
+    return { asked, final: out.res.url.href, httpsFailed: out.httpsFailed }
+  }
+  assert.deepEqual(await run(u => response(u, 200)), { asked: ['https://example.com/a'], final: 'https://example.com/a', httpsFailed: undefined })
+  assert.deepEqual(await run(u => response(u, 404, 'Not Found')), { asked: ['https://example.com/a', 'http://example.com/a'], final: 'http://example.com/a', httpsFailed: 'HTTP 404 Not Found' })
+  assert.deepEqual(await run(() => { throw new HttpError('network error: self-signed certificate') }), { asked: ['https://example.com/a', 'http://example.com/a'], final: 'http://example.com/a', httpsFailed: 'network error: self-signed certificate' })
+  // https may be refused for where it redirected, not for the URL's host: http is still read.
+  const hop = 'refused: tracker.test is on the deny list (WEB_DENY_HOSTS)'
+  assert.deepEqual(await run(() => { throw new RefusedError(hop) }), { asked: ['https://example.com/a', 'http://example.com/a'], final: 'http://example.com/a', httpsFailed: hop })
+  // A refusal of the http attempt too is the answer.
+  const own = 'refused: example.com resolves to a non-public address (10.0.0.7); for a local server use curl through Bash'
+  await assert.rejects(run(() => { throw new RefusedError(own) }, () => { throw new RefusedError(own) }), (e: unknown) => e instanceof RefusedError && e.message === own)
 })
 
 test('a redirect to a non-public address is refused, and the trap receives nothing', async () => {

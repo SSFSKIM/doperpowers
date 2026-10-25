@@ -7,6 +7,7 @@ import { mkdir, rename, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { request, HttpError, USER_AGENT } from './http.ts'
 import { RefusedError } from './netguard.ts'
+import type { Boundary } from './netguard.ts'
 import { imageExtension, mediaTypeOf, sniff } from './route.ts'
 import type { Deadline } from './deadline.ts'
 
@@ -103,7 +104,7 @@ export function findImageLinks(markdown: string): Link[] {
 type Download = { file?: string; part?: string; ext?: string; bytes?: number; error?: string }
 
 export async function downloadImages(
-  markdown: string, base: string, dir: string, deadline: Deadline, allow: Set<string>,
+  markdown: string, base: string, dir: string, deadline: Deadline, boundary: Boundary,
 ): Promise<{ markdown: string; images: ImageEntry[] }> {
   const links = findImageLinks(markdown)
   const unique: string[] = []
@@ -129,7 +130,7 @@ export async function downloadImages(
     while (next < queue.length && !deadline.expired()) {
       const k = next++
       const url = queue[k]
-      results.set(url, await downloadOne(url, join(assets, `.part-${k}`), base, deadline, allow, gate))
+      results.set(url, await downloadOne(url, join(assets, `.part-${k}`), base, deadline, boundary, gate))
     }
   }
   await Promise.race([Promise.all(Array.from({ length: IMAGE_LIMITS.concurrency }, worker)), budget])
@@ -164,7 +165,7 @@ export async function downloadImages(
   return { markdown: out, images }
 }
 
-async function downloadOne(url: string, part: string, page: string, deadline: Deadline, allow: Set<string>, gate: { closed: boolean }): Promise<Download> {
+async function downloadOne(url: string, part: string, page: string, deadline: Deadline, boundary: Boundary, gate: { closed: boolean }): Promise<Download> {
   let body: Buffer
   let mediaType: string
   try {
@@ -175,7 +176,7 @@ async function downloadOne(url: string, part: string, page: string, deadline: De
       const timeoutMs = deadline.limit(IMAGE_LIMITS.timeoutMs)
       if (timeoutMs <= 0) return { error: 'not downloaded: time budget' }
       const res = await request(parsed, {
-        headers: { accept: IMAGE_ACCEPT, 'user-agent': USER_AGENT }, referrer: page, timeoutMs, maxBytes: IMAGE_LIMITS.maxBytes, allow,
+        headers: { accept: IMAGE_ACCEPT, 'user-agent': USER_AGENT }, referrer: page, timeoutMs, maxBytes: IMAGE_LIMITS.maxBytes, boundary,
       })
       if (res.status >= 400) return { error: `HTTP ${res.status}` }
       mediaType = mediaTypeOf(res.headers['content-type'])
@@ -183,7 +184,7 @@ async function downloadOne(url: string, part: string, page: string, deadline: De
       if (!imageExtension(mediaType)) mediaType = sniff(body)
     }
   } catch (e) {
-    if (e instanceof RefusedError) return { error: 'refused: non-public address' }
+    if (e instanceof RefusedError) return { error: `refused: ${e.brief}` }
     if (e instanceof HttpError && e.timedOut && deadline.expired()) return { error: 'not downloaded: time budget' }
     return { error: e instanceof Error ? e.message : String(e) }
   }

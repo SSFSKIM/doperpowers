@@ -7,7 +7,7 @@ import type { IncomingHttpHeaders, IncomingMessage } from 'node:http'
 import { createBrotliDecompress, createGunzip, createInflate } from 'node:zlib'
 import type { Readable } from 'node:stream'
 import { pinnedLookup, RefusedError, resolveChecked } from './netguard.ts'
-import type { Address } from './netguard.ts'
+import type { Address, Boundary } from './netguard.ts'
 
 export const USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36'
 export const MAX_REDIRECTS = 10
@@ -19,7 +19,10 @@ export const MAX_REDIRECTS = 10
  */
 export const CONNECT_ATTEMPT_MS = 2500
 
-/** A failure's text: an AggregateError (every address failed) names each address and its code. */
+/**
+ * A failure's text: an AggregateError (every address failed) names each address
+ * and its code, and an OpenSSL error only its reason.
+ */
 export function networkErrorMessage(e: unknown): string {
   if (e instanceof AggregateError && e.errors.length > 0) {
     const each = e.errors.map(x => {
@@ -28,7 +31,12 @@ export function networkErrorMessage(e: unknown): string {
     })
     return `could not connect: ${each.join(', ')}`
   }
-  if (e instanceof Error) return e.message || String((e as { code?: string }).code ?? e.name)
+  if (e instanceof Error) {
+    // `write EPROTO 80A1…:error:0A000410:SSL routines:ssl3_read_bytes:ssl/tls alert handshake failure:../deps/…`
+    const tls = /error:[0-9A-F]+:[^:]*:[^:]*:([^:]+):/.exec(e.message)
+    if (tls) return `TLS failed: ${tls[1]}`
+    return e.message || String((e as { code?: string }).code ?? e.name)
+  }
   return String(e)
 }
 
@@ -51,7 +59,7 @@ export type RequestOptions = {
   body?: Buffer | string
   timeoutMs: number
   maxBytes: number
-  allow: Set<string>
+  boundary: Boundary
   /** The page the request is made for; each hop gets the Referer `referrerFor` allows. */
   referrer?: string
 }
@@ -90,7 +98,7 @@ export async function request(start: URL, o: RequestOptions): Promise<HttpRespon
   for (let hop = 0; ; hop++) {
     if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new HttpError(`unsupported scheme: ${url.protocol}`)
     const port = Number(url.port) || (url.protocol === 'https:' ? 443 : 80)
-    const addresses = await withTimeout(resolveChecked(url.hostname, port, { allow: o.allow }), timeLeft(), timedOut)
+    const addresses = await withTimeout(resolveChecked(url.hostname, port, { boundary: o.boundary }), timeLeft(), timedOut)
       .catch(e => { throw asTransportError(e) })
     const referer = referrer === undefined ? undefined : referrerFor(referrer, url)
     const res = await once(url, addresses, { ...o, headers: referer ? { ...headers, referer } : headers, method, body }, timeLeft(), timedOut)
@@ -181,13 +189,13 @@ function readBody(res: IncomingMessage, maxBytes: number): Promise<Buffer> {
  * A `fetch` for Defuddle's site extractors (YouTube transcripts, Reddit
  * comments, …), so their requests stay inside the boundary too.
  */
-export function guardedFetch(allow: Set<string>, timeLeft: () => number): typeof fetch {
+export function guardedFetch(boundary: Boundary, timeLeft: () => number): typeof fetch {
   return (async (input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url)
     const headers: Record<string, string> = {}
     new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined)).forEach((v, k) => { headers[k] = v })
     const body = typeof init?.body === 'string' ? init.body : undefined
-    const res = await request(url, { method: init?.method ?? 'GET', headers, body, timeoutMs: Math.min(15_000, timeLeft()), maxBytes: 10 * 1048576, allow })
+    const res = await request(url, { method: init?.method ?? 'GET', headers, body, timeoutMs: Math.min(15_000, timeLeft()), maxBytes: 10 * 1048576, boundary })
     const out = new Headers()
     for (const [k, v] of Object.entries(res.headers)) {
       if (v === undefined || k === 'content-encoding' || k === 'content-length') continue

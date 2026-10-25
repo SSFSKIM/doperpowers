@@ -277,6 +277,57 @@ def claude_native_install():
     print("  " + result.stdout.splitlines()[0])
 
 
+def _pdf(pages):
+    """A PDF of one line of text per page (web/clipper/test/helpers.ts's pdfBytes)."""
+    n = len(pages)
+    objs = {1: "<< /Type /Catalog /Pages 2 0 R >>",
+            2: f"<< /Type /Pages /Kids [{' '.join(f'{3 + 2 * i} 0 R' for i in range(n))}] /Count {n} >>"}
+    font = 3 + 2 * n
+    for i, text in enumerate(pages):
+        page, content = 3 + 2 * i, f"BT /F1 18 Tf 72 720 Td ({text}) Tj ET"
+        objs[page] = (f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents {page + 1} 0 R "
+                      f"/Resources << /Font << /F1 {font} 0 R >> >> >>")
+        objs[page + 1] = f"<< /Length {len(content)} >>\nstream\n{content}\nendstream"
+    objs[font] = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"
+    out, offsets = "%PDF-1.4\n", {}
+    for i in sorted(objs):
+        offsets[i] = len(out)
+        out += f"{i} 0 obj\n{objs[i]}\nendobj\n"
+    xref = len(out)
+    out += f"xref\n0 {font + 1}\n0000000000 65535 f \n" + "".join(f"{offsets[i]:010d} 00000 n \n" for i in sorted(objs))
+    return (out + f"trailer\n<< /Size {font + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n").encode("latin-1")
+
+
+@case("as the user, the web plugin's fetch renders a script-built page sandboxed and extracts a PDF's text", "image")
+def web_fetch_renders():
+    site = TMP / "web-site"
+    site.mkdir()
+    (site / "shell.html").write_text((REPO / "web/clipper/test/fixtures/js-shell.html").read_text())
+    (site / "paper.pdf").write_bytes(_pdf(["First page words", "Second page words", "Third page words"]))
+    # The clipper launches Chromium with its sandbox, which needs user namespaces:
+    # Docker's default seccomp profile refuses them, a VM's AppArmor profile from
+    # the image grants them (image/packages.sh, part chromium). This container
+    # stands in for the VM. WEB_CHROME is what the boot writes (steps.IMAGE_ENV).
+    result = docker("run", "--rm", "--network", "none", "--security-opt", "seccomp=unconfined", "--user", USER,
+                    "-e", f"HOME={HOME}", "-e", "WEB_CHROME=/usr/local/bin/chrome-headless-shell",
+                    "-v", f"{REPO / 'web'}:/web:ro", "-v", f"{site}:/site:ro", "--entrypoint", "bash", IMAGE, "-euc", r'''
+      cd /site && python3 -m http.server 8765 --bind 127.0.0.1 >/dev/null 2>&1 &
+      for _ in $(seq 100); do curl -fso /dev/null http://127.0.0.1:8765/shell.html && break; sleep 0.1; done
+      export WEB_ALLOW_HOSTS=127.0.0.1:8765 WEB_CACHE_DIR="$(mktemp -d)"
+      pdftotext -v 2>&1 | head -n 1 >&2
+      node /web/bin/clip.mjs fetch http://127.0.0.1:8765/shell.html
+      node /web/bin/clip.mjs fetch http://127.0.0.1:8765/paper.pdf
+    ''', timeout=180)
+    page, paper = (json.loads(line) for line in result.stdout.splitlines())
+    check(page.get("rendered") is True and page.get("words", 0) > 60 and page.get("notes") == [],
+          f"the page: rendered {page.get('rendered')}, {page.get('words')} words, notes {page.get('notes')}")
+    check(paper.get("kind") == "pdf" and paper.get("text") and [e["title"] for e in paper.get("outline", [])]
+          == ["page 1", "page 2", "page 3"], f"the PDF: {paper.get('kind')}, notes {paper.get('notes')}")
+    poppler = next((line for line in result.stderr.splitlines() if line.startswith("pdftotext version")), None)
+    check(poppler, "pdftotext -v printed no version")
+    print(f"  ({page['words']} words rendered; {poppler})")
+
+
 # --- the stand-ins -----------------------------------------------------------------
 
 def stand_ins():
@@ -349,6 +400,8 @@ def shells():
         check(value == [SECRETS["api-key"]], f"{shell} sees {value!r}")
     check(out(HOST, "zsh -c 'echo x$EXAMPLE_API_KEY'").strip() == "x", "root's zsh skips the env file")
     check(out(HOST, "zsh -c 'command -v claude'", user=USER).strip() == f"{HOME}/.local/bin/claude", "claude on PATH")
+    renderer = out(HOST, "zsh -c '\"$WEB_CHROME\" --version'", user=USER).strip()
+    check(renderer.startswith("Google Chrome for Testing"), f"the user's WEB_CHROME runs {renderer!r}")
 
 
 @case("~/.claude is a receive-only clone with no token in it", "host")

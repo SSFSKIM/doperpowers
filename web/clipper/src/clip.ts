@@ -1,22 +1,23 @@
 // One `fetch`: the cache, then fetch → route → extract → render → images →
 // measure → publish, all within one deadline. Once the page itself is in
-// hand, it is always published.
+// hand, it is always published; a failure is remembered for a few minutes.
 import { execFile } from 'node:child_process'
 import { statSync } from 'node:fs'
 import { readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { delimiter, join } from 'node:path'
-import { beginBuild, publish, readFresh, REUSE_MAX_AGE_MS } from './cache.ts'
+import { beginBuild, FAILURE_MEMORY_MS, publish, readFailure, readFresh, rememberFailure, REUSE_MAX_AGE_MS } from './cache.ts'
 import { CLIP_DEADLINE_MS, Deadline } from './deadline.ts'
 import { countWords, estimateTokens } from './estimate.ts'
 import { extractHtml, htmlFrontmatter, markdownWithFrontmatter } from './extract.ts'
-import type { PageMeta } from './extract.ts'
+import type { Extracted, PageMeta } from './extract.ts'
 import { guardedFetch, HttpError, request } from './http.ts'
+import type { HttpResponse } from './http.ts'
 import { downloadImages } from './images.ts'
 import type { ImageEntry } from './images.ts'
 import { entryDir } from './key.ts'
 import { buildOutline, splitLines } from './measure.ts'
 import type { OutlineEntry, OutlineMode } from './measure.ts'
-import { allowedHosts, RefusedError } from './netguard.ts'
+import { boundaryOf, deniedError, isDenied, RefusedError } from './netguard.ts'
 import { findChrome, renderDom, RENDER_LIMITS } from './render.ts'
 import type { ServedDocument } from './render.ts'
 import { decodeText, route } from './route.ts'
@@ -48,7 +49,17 @@ export type ClipOk = {
   images: ImageEntry[]
   notes: string[]
 }
-export type ClipError = { ok: false; url: string; status?: number; error: string; bodySnippet?: string }
+export type ClipError = {
+  ok: false
+  url: string
+  status?: number
+  error: string
+  bodySnippet?: string
+  /** A second fetch will fail the same way: an HTTP 4xx other than 408 and 429, or a refusal. */
+  permanent?: true
+  /** When the failure happened, on an answer from the failure memory rather than a request. */
+  failedAt?: string
+}
 export type ClipResult = ClipOk | ClipError
 
 export type ClipOptions = { cacheDir: string; refresh?: boolean; env?: NodeJS.ProcessEnv; deadlineMs?: number }
@@ -63,59 +74,107 @@ const BROWSER_ACCEPT = 'text/html,application/xhtml+xml,application/xml;q=0.9,im
 export async function clip(rawUrl: string, opts: ClipOptions): Promise<ClipResult> {
   const env = opts.env ?? process.env
   const deadline = new Deadline(opts.deadlineMs ?? CLIP_DEADLINE_MS)
-  const allow = allowedHosts(env)
+  const boundary = boundaryOf(env)
   const fail = (error: string, extra: Partial<ClipError> = {}): ClipError => ({ ok: false, url: rawUrl, ...extra, error })
 
   let url: URL
   try { url = new URL(rawUrl.trim()) } catch { return fail(`invalid URL: ${rawUrl}`) }
   if (url.protocol !== 'http:' && url.protocol !== 'https:') return fail(`unsupported scheme: ${url.protocol} (http and https only)`)
+  // Before the cache too: a denied host's saved copy is not handed out either.
+  if (isDenied(url.hostname, boundary.deny)) return fail(deniedError(url.hostname).message, { permanent: true })
   const entry = entryDir(opts.cacheDir, url)
 
   if (!opts.refresh) {
     const meta = await readFresh<ClipOk>(entry, REUSE_MAX_AGE_MS)
-    if (meta) return { ...meta, url: rawUrl, cached: true }
+    if (meta) {
+      // Nor a copy whose page was served from a host denied since it was saved.
+      const served = new URL(meta.finalUrl).hostname
+      if (isDenied(served, boundary.deny)) return fail(deniedError(served).message, { permanent: true })
+      return { ...meta, url: rawUrl, cached: true }
+    }
+    const failure = await readFailure<ClipError & { failedAt: string }>(entry, FAILURE_MEMORY_MS)
+    if (failure) return { ...failure, url: rawUrl }
+  }
+  // What the site or the network failed is remembered; a refusal is decided again each time, at no cost.
+  const failed = async (error: string, extra: Partial<ClipError> = {}): Promise<ClipError> => {
+    const result = fail(error, extra)
+    await rememberFailure(entry, { ...result, failedAt: new Date().toISOString() })
+    return result
   }
 
   // 1. Fetch.
-  let res
+  const get = (target: URL, accept: string) => request(target, {
+    headers: { accept, 'accept-language': 'en-US,en;q=0.9' }, timeoutMs: deadline.limit(FETCH_LIMITS.timeoutMs), maxBytes: FETCH_LIMITS.maxBytes, boundary,
+  })
+  let res: HttpResponse
+  let httpsFailed: string | undefined
+  let fetched = url // the URL the response was asked of: its https form when https first worked
+  let accept = ACCEPT
   try {
-    const get = (accept: string) => request(url, {
-      headers: { accept, 'accept-language': 'en-US,en;q=0.9' }, timeoutMs: deadline.limit(FETCH_LIMITS.timeoutMs), maxBytes: FETCH_LIMITS.maxBytes, allow,
-    })
-    res = await get(ACCEPT)
-    if (res.status === 406) res = await get(BROWSER_ACCEPT)
+    ;({ res, target: fetched, httpsFailed } = await fetchHttpsFirst(url, async target => {
+      accept = ACCEPT
+      const first = await get(target, accept)
+      return first.status === 406 ? get(target, accept = BROWSER_ACCEPT) : first
+    }))
   } catch (e) {
-    if (e instanceof RefusedError || e instanceof HttpError) return fail(e.message)
+    if (e instanceof RefusedError) return fail(e.message, { permanent: true })
+    if (e instanceof HttpError) return failed(e.message)
     throw e
+  }
+  const siteFetch = guardedFetch(boundary, () => deadline.remaining())
+  // 3. Extract, and 4. render when the plain fetch found no content: the result with more words.
+  const extractPage = async (html: string, at: string): Promise<HtmlPage> => {
+    const notes: string[] = []
+    const ex = await extractHtml(html, at, siteFetch)
+    if (ex.words < RENDER_MIN_WORDS) {
+      const chrome = findChrome(env)
+      if ('note' in chrome) notes.push(chrome.note)
+      else {
+        const out = await renderDom(at, chrome, deadline.limit(RENDER_LIMITS.timeoutMs), boundary)
+        const served = 'note' in out ? out : servedPage(out)
+        if ('note' in served) notes.push(served.note)
+        else {
+          // Extracted, and later its images resolved, against the document the browser ended on.
+          const again = await extractHtml(served.html, served.url, siteFetch)
+          const used = again.words > ex.words
+          // Either way the agent is told when what it gets may not be the whole page.
+          if (used && served.unsettled) notes.push(served.unsettled)
+          else if (Math.max(again.words, ex.words) < RENDER_MIN_WORDS) notes.push(`even rendered, the page holds only ${Math.max(again.words, ex.words)} words; its content may load later than the render waits, or come from an API the page calls`)
+          if (used) return { ex: again, url: served.url, rendered: true, notes }
+        }
+      }
+    }
+    return { ex, url: at, rendered: false, notes }
   }
   // A 403 is often a bot wall that turns away a client that is not a browser and lets
   // one through (techblog.woowahan.com: 403 to this client, the article to Chromium).
   // The page is the browser's only when the browser was served it with a 2xx, by its
   // own NetLog: a denial page renders to a DOM like any other. Otherwise the 403 stands.
-  let walled: { ex: Awaited<ReturnType<typeof extractHtml>>; url: string } | undefined
-  const siteFetch = guardedFetch(allow, () => deadline.remaining())
+  let walled: { ex: Extracted; url: string; unsettled?: string } | undefined
   if (res.status === 403) {
     const chrome = findChrome(env)
     if (!('note' in chrome)) {
-      const out = await renderDom(res.url.href, chrome, deadline.limit(RENDER_LIMITS.timeoutMs), allow)
+      const out = await renderDom(res.url.href, chrome, deadline.limit(RENDER_LIMITS.timeoutMs), boundary)
       const served = 'note' in out ? undefined : servedPage(out)
       if (served && 'url' in served) {
         const ex = await extractHtml(served.html, served.url, siteFetch)
-        if (ex.words >= RENDER_MIN_WORDS) walled = { ex, url: served.url }
+        if (ex.words >= RENDER_MIN_WORDS) walled = { ex, url: served.url, unsettled: served.unsettled }
       }
     }
   }
   if (res.status >= 400 && !walled) {
     const snippet = snippetOf(res.body, res.headers['content-type'])
-    return fail(`HTTP ${res.status}${res.statusText ? ' ' + res.statusText : ''}`, { status: res.status, ...(snippet ? { bodySnippet: snippet } : {}) })
+    const permanent = res.status < 500 && res.status !== 408 && res.status !== 429
+    return failed(statusLine(res), { status: res.status, ...(snippet ? { bodySnippet: snippet } : {}), ...(permanent ? { permanent: true } : {}) })
   }
   const fetchedAt = new Date().toISOString()
   // Where the page saved was served from; a render the browser navigated elsewhere moves it.
   let finalUrl = walled?.url ?? res.url.href
-  const contentType = walled ? 'text/html' : String(res.headers['content-type'] ?? '')
+  let contentType = walled ? 'text/html' : String(res.headers['content-type'] ?? '')
+  let status = res.status
 
   // 2. Route. The page is in hand: from here on it is published.
-  const r = walled ? route('text/html', Buffer.alloc(0)) : route(contentType, res.body)
+  let r = walled ? route('text/html', Buffer.alloc(0)) : route(contentType, res.body)
   const tmp = await beginBuild(entry)
   try {
     const notes: string[] = []
@@ -129,39 +188,46 @@ export async function clip(rawUrl: string, opts: ClipOptions): Promise<ClipResul
 
     if (r.kind === 'html' || r.kind === 'markdown') {
       let head = ''
-      let body: string
-      if (r.kind === 'html') {
-        // 3. Extract, and 4. render when the plain fetch found no content.
-        let ex = walled?.ex ?? await extractHtml(decodeText(res.body, contentType, true), finalUrl, siteFetch)
-        if (walled) {
-          rendered = true
-          notes.push(`the site refused a plain fetch (HTTP ${res.status}); this is the page as headless Chromium rendered it`)
-        } else if (ex.words < RENDER_MIN_WORDS) {
-          const chrome = findChrome(env)
-          if ('note' in chrome) notes.push(chrome.note)
-          else {
-            const out = await renderDom(finalUrl, chrome, deadline.limit(RENDER_LIMITS.timeoutMs), allow)
-            const served = 'note' in out ? out : servedPage(out)
-            if ('note' in served) notes.push(served.note)
-            else {
-              // Extracted, and later its images resolved, against the document the browser ended on.
-              const again = await extractHtml(served.html, served.url, siteFetch)
-              if (again.words > ex.words) { ex = again; rendered = true; finalUrl = served.url }
-            }
-          }
-        }
-        meta = ex.meta
-        words = ex.words
-        head = htmlFrontmatter(meta, words, finalUrl, fetchedAt)
-        body = ex.body
-      } else {
+      let body = ''
+      let page: HtmlPage | undefined
+      if (walled) {
+        const notes = [`the site refused a plain fetch (HTTP ${res.status}); this is the page as headless Chromium rendered it`]
+        page = { ex: walled.ex, url: walled.url, rendered: true, notes: walled.unsettled ? [...notes, walled.unsettled] : notes }
+      }
+      else if (r.kind === 'html') page = await extractPage(decodeText(res.body, contentType, true), finalUrl)
+      else {
         const md = markdownWithFrontmatter(decodeText(res.body, contentType, false), finalUrl, fetchedAt)
         if (md.title) meta.title = md.title
         body = md.text
+        // Markdown with no content can be a stub of a page a script draws (bundlephobia
+        // answers the markdown Accept with seven words). The HTML page then takes the
+        // HTML path, and replaces the stub when it finds over twice the words: one page
+        // in two formats counts about the same, a stub a fraction (Defuddle accepts its
+        // own retries by the same margin). A page short either way stays the markdown.
+        const mdWords = bodyWords(body)
+        if (accept === ACCEPT && mdWords < RENDER_MIN_WORDS) {
+          const html = await get(fetched, BROWSER_ACCEPT).catch(e => { if (e instanceof RefusedError || e instanceof HttpError) return undefined; throw e })
+          const type = String(html?.headers['content-type'] ?? '')
+          if (html && html.status < 400 && route(type, html.body).kind === 'html') {
+            const alt = await extractPage(decodeText(html.body, type, true), html.url.href)
+            if (alt.ex.words > 2 * mdWords) { page = alt; r = route(type, html.body); status = html.status; contentType = type }
+            else notes.push(...alt.notes)
+          }
+        }
+      }
+      if (page) {
+        // Extracted, and its images resolved, against where the page was served from.
+        finalUrl = page.url
+        rendered = page.rendered
+        notes.push(...page.notes)
+        meta = page.ex.meta
+        words = page.ex.words
+        head = htmlFrontmatter(meta, words, finalUrl, fetchedAt)
+        body = page.ex.body
       }
       // 5. Images. Their lines are counted in the text as written, frontmatter included.
       const text = head + body
-      const withImages = await downloadImages(text, finalUrl, tmp, deadline, allow)
+      const withImages = await downloadImages(text, finalUrl, tmp, deadline, boundary)
       images = withImages.images
       await writeFile(main, withImages.markdown)
       textFile = main
@@ -187,15 +253,18 @@ export async function clip(rawUrl: string, opts: ClipOptions): Promise<ClipResul
       await writeFile(main, res.body)
     }
 
+    // Said only when the page did come over plain http, not when http redirected back to https.
+    if (httpsFailed !== undefined && finalUrl.startsWith('http:')) notes.unshift(`fetched over plain http: https failed (${httpsFailed.slice(0, 160)})`)
+
     // 6. Measure, write meta.json, publish.
     const result = {
-      ok: true as const, kind: r.kind, url: rawUrl, finalUrl, status: res.status, contentType, fetchedAt, cached: false, rendered,
+      ok: true as const, kind: r.kind, url: rawUrl, finalUrl, status, contentType, fetchedAt, cached: false, rendered,
       ...pick(meta), bytes: (await stat(main)).size,
     }
     let measured = {}
     if (textFile) {
       const text = await readFile(textFile, 'utf8')
-      if (r.kind === 'markdown') words = countWords(text.replace(/^---\n[\s\S]*?\n---\n/, ''))
+      if (r.kind === 'markdown') words = bodyWords(text)
       else if (words === undefined) words = countWords(text)
       const { outline, omitted } = buildOutline(text, mode, images.map(i => i.line))
       measured = { words, lines: splitLines(text).length, tokens: estimateTokens(text), outline, ...(omitted ? { outlineOmitted: omitted } : {}) }
@@ -216,18 +285,57 @@ export async function clip(rawUrl: string, opts: ClipOptions): Promise<ClipResul
   }
 }
 
+type HtmlPage = { ex: Extracted; url: string; rendered: boolean; notes: string[] }
+
+/** The words of a markdown file under its frontmatter. */
+const bodyWords = (text: string) => countWords(text.replace(/^---\n[\s\S]*?\n---\n/, ''))
+
 /**
  * A render counts as the page only when Chromium's NetLog shows the browser was
  * served its document with a 2xx (`renderDom` gives a document only when the
  * last main-frame response could have become it). A DOM alone cannot tell a
  * page from a denial, an error page, or a navigation that failed.
  */
-function servedPage(out: { html: string; document?: ServedDocument }): { html: string; url: string } | { note: string } {
+function servedPage(out: { html: string; document?: ServedDocument; unsettled?: string }): { html: string; url: string; unsettled?: string } | { note: string } {
   const doc = out.document
   if (!doc) return { note: 'rendering not used: the browser was served no page it could show (a failed navigation, or no 2xx document); the plain fetch is kept' }
   if (doc.status < 200 || doc.status >= 300) return { note: `rendering not used: the browser was served HTTP ${doc.status}; the plain fetch is kept` }
-  return { html: out.html, url: doc.url }
+  return { html: out.html, url: doc.url, unsettled: out.unsettled }
 }
+
+/** The https: form of an http: URL on the default port; none for any other URL. */
+export function httpsFirst(url: URL): URL | undefined {
+  if (url.protocol !== 'http:' || url.port !== '') return undefined
+  const secure = new URL(url.href)
+  secure.protocol = 'https:'
+  return secure
+}
+
+/**
+ * The response to `url`, an http: URL on the default port tried over https
+ * first, and the URL it was asked of. When https brings no page (an error
+ * status, a connection or TLS failure, a timeout, a refusal), the URL is
+ * fetched as given, and `httpsFailed` says why. A refusal falls back too: https
+ * follows redirects, so it may concern where https led rather than the URL's
+ * host, and the http attempt passes the same guard, so a host refused for
+ * itself is refused again, at the cost of a lookup.
+ */
+export async function fetchHttpsFirst(url: URL, get: (target: URL) => Promise<HttpResponse>): Promise<{ res: HttpResponse; target: URL; httpsFailed?: string }> {
+  const secure = httpsFirst(url)
+  if (!secure) return { res: await get(url), target: url }
+  let httpsFailed: string
+  try {
+    const res = await get(secure)
+    if (res.status < 400) return { res, target: secure }
+    httpsFailed = statusLine(res)
+  } catch (e) {
+    if (!(e instanceof HttpError) && !(e instanceof RefusedError)) throw e
+    httpsFailed = e.message
+  }
+  return { res: await get(url), target: url, httpsFailed }
+}
+
+const statusLine = (res: HttpResponse) => `HTTP ${res.status}${res.statusText ? ' ' + res.statusText : ''}`
 
 function pick(meta: PageMeta) {
   const { title, site, author, published, description } = meta
