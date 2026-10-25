@@ -445,10 +445,17 @@ class Derivation(unittest.TestCase):
 
     # -- views
     def test_the_tree_by_parent_in_spawn_order_and_its_depth_limit(self):
-        for i, (agent, parent) in enumerate((("r1", None), ("c1", "r1"), ("g1", "c1"), ("r2", None))):
-            self.s.agent(agent, [Rows.prompt(NOW - 60), Rows.call(NOW - 50, "t1", "Bash")], NOW - 300 + i,
-                         parent=parent)
-        self.s.agent("g2", [Rows.prompt(NOW - 2000), Rows.result(NOW - 1900, "t0")], NOW - 1900, parent="c1")
+        # Spawn order is each transcript's first row, the prompt (never a file's birth time, which only some
+        # filesystems keep): r1, c1, g1, g2, r2, whatever order or times the files were written in.
+        spawned = {"r1": NOW - 2400, "c1": NOW - 2399, "g1": NOW - 2398, "g2": NOW - 2397, "r2": NOW - 2396}
+        for agent, parent in (("r2", None), ("g2", "c1"), ("g1", "c1"), ("c1", "r1"), ("r1", None)):
+            if agent == "g2":   # stalled: its last write long ago
+                rows = [Rows.prompt(spawned[agent]), Rows.result(NOW - 1900, "t0")]
+                at = NOW - 1900
+            else:
+                rows = [Rows.prompt(spawned[agent]), Rows.call(NOW - 50, "t1", "Bash")]
+                at = NOW - 50
+            self.s.agent(agent, rows, at, parent=parent)
         v = self.s.view()
         self.assertEqual([(e["agentId"], e["depth"]) for e in v.tree()],
                          [("r1", 0), ("c1", 1), ("g1", 2), ("g2", 2), ("r2", 0)])

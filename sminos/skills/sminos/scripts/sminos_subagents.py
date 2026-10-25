@@ -650,8 +650,20 @@ class Subagents:
             e["tool"] = {"name": t["name"], "since": _iso(t["at"]), "seconds": age(t["at"])}
         return e
 
+    def spawned(self, a):
+        """When the agent was spawned: its transcript's first row's time (the prompt it was given), the same on
+        every filesystem; else when its meta file was made (macOS) or last written."""
+        if "spawned" not in a:
+            mm = _open_map(a["path"]) if a["path"] else None
+            try:
+                a["spawned"] = (_first_stamp(mm) if mm is not None else None) or a["born"] or 0
+            finally:
+                if mm is not None:
+                    mm.close()
+        return a["spawned"]
+
     def _spawn_order(self, ids):
-        return sorted(ids, key=lambda i: (self.agents[i]["born"] or 0, i))
+        return sorted(ids, key=lambda i: (self.spawned(self.agents[i]), i))
 
     def tree(self, every=False, depth=None):
         """The agents in spawn order nested under their parents, [entry]; without `every` only the live ones (each
