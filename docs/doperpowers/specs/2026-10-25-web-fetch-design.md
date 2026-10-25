@@ -74,7 +74,14 @@ session on the machine.
   defects fixed after the final run (`55d814cb`, `199e5dfe`; Decision
   Log), then converged with the remaining findings logged as debt in the
   pull request. Pull request opened; the merge is the main session's.
-- [ ] M4 — the switch-over, after the merge (acceptance 10).
+- [x] (2026-10-25) Merged as #370 (`213d4bf4`). Before the merge, a
+  model-free clipper diff on all 40 eval URLs showed the post-eval review
+  fixes changed nothing the eval measured (Decision Log).
+- [x] (2026-10-25) M4 — the switch-over (acceptance 10). `web@doperpowers`
+  0.1.0 is installed on this Mac. `WebFetch` is denied and `mcp__web__fetch`
+  allowed in `~/.claude/settings.json`, and the CLAUDE.md research line
+  names the new tool. claude-config commit `d31a5ae` is pushed, so the
+  other machines receive it at their next pull.
 
 ## Acceptance
 
@@ -1568,3 +1575,14 @@ tool, SVG rasterizing, the logged-in mode).
 
 **For M4.** Use the `--allowedTools=` form in any `claude -p` check: the
 spaced form swallows the prompt.
+
+**M4, 2026-10-25.** The switch-over is done, and acceptance 10 held:
+- Denying `WebFetch` removed it from the live session's tools at once.
+- A fresh `claude -p` on this Mac lists `mcp__web__fetch` and no
+  `WebFetch`.
+- Asked to fetch `https://example.com` with no `--allowedTools`, the
+  session called the tool and got its R1 header back, so the allow rule
+  holds.
+- The Mac mini and the devcloud hosts get the deny rule, the allow rule
+  and the plugin from claude-config's next pull. Hosts without Chromium or
+  `pdftotext` fall back to plain fetches and untexted PDFs, with notes.
