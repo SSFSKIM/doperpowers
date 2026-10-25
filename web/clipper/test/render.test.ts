@@ -22,6 +22,14 @@ const MOVED_ARTICLE = '<html><head><title>Moved behind the wall</title></head><b
   + 'This article moved, and is served only to clients that look like a browser. '.repeat(8)
   + '</p><p><img src="chart.png" alt="the chart"></p><p>Read the <a href="details">details</a>.</p></article></body></html>'
 
+// A short shell (too few words) whose script moves the browser on to the article.
+const MOVING_SHELL = '<html><head><title>Moving</title></head><body><p>Loading…</p><script>location.href = "/nested/article"</script></body></html>'
+const NESTED_ARTICLE = MOVED_ARTICLE.replaceAll('Moved behind the wall', 'The nested article').replace('This article moved, and is served only to clients that look like a browser. ', 'This article sits one folder down, where the shell sent the browser. ')
+// A short 200 shell to a plain client; a long page with a failure status to a browser.
+const SHORT_SHELL = '<html><head><title>Shell</title></head><body><div id="app"></div></body></html>'
+const browserOnly = (status: number, body: string) => (req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse) =>
+  req.headers['sec-fetch-mode'] ? send('text/html', body, status)(req, res) : send('text/html', SHORT_SHELL)(req, res)
+
 let server: Awaited<ReturnType<typeof startServer>>
 let trap: Awaited<ReturnType<typeof startTrap>>
 let udp: Awaited<ReturnType<typeof startUdpTrap>>
@@ -49,6 +57,14 @@ before(async () => {
       : send('text/html', '<html><body><h1>Access denied</h1></body></html>', 403)(req, res),
     '/articles/chart.png': send('image/png', pngBytes(2048, 7)),
     '/forbidden': send('text/html', '<html><body><h1>Forbidden</h1><p>No.</p></body></html>', 403),
+    '/move': send('text/html', MOVING_SHELL),
+    '/nested/article': send('text/html', NESTED_ARTICLE),
+    '/nested/chart.png': send('image/png', pngBytes(2048, 8)),
+    '/browser-403': browserOnly(403, LONG_DENIAL),
+    '/browser-404': browserOnly(404, LONG_DENIAL.replaceAll('Access denied', 'Not found')),
+    '/browser-503': browserOnly(503, LONG_DENIAL.replaceAll('Access denied', 'Service unavailable')),
+    // The shell sends the browser to an address the boundary refuses: the navigation fails.
+    '/nav-refused': (req, res) => send('text/html', `<html><body><p>Loading…</p><script>location.href = "http://127.0.0.1:${trap.port}/elsewhere"</script></body></html>`)(req, res),
   })
 })
 
@@ -256,6 +272,92 @@ test('a walled page reached through a redirect resolves its images and links aga
   const page = await readFile(r.file, 'utf8')
   assert.ok(page.includes(`(${server.origin}/articles/details)`), page)
   assert.ok(page.includes(`source: "${server.origin}/articles/post"`), page)
+})
+
+const renderEnv = () => {
+  const env: NodeJS.ProcessEnv = { ...process.env, WEB_ALLOW_HOSTS: `127.0.0.1:${server.port}` }
+  delete env.WEB_CHROME
+  return env
+}
+
+test('a shell the browser leaves for another page is extracted, and its images and links resolved, where the browser ended up', { skip: noChrome }, async () => {
+  const r = await clip(`${server.origin}/move`, { cacheDir: await tmpCache(), env: renderEnv() }) as ClipOk
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.equal(r.rendered, true, r.notes.join('|'))
+  assert.equal(r.finalUrl, `${server.origin}/nested/article`)
+  assert.equal(r.images.length, 1, JSON.stringify(r.images))
+  assert.equal(r.images[0].url, `${server.origin}/nested/chart.png`)
+  assert.equal(r.images[0].file, 'assets/01.png')
+  const page = await readFile(r.file, 'utf8')
+  assert.ok(page.includes(`(${server.origin}/nested/details)`), page)
+  assert.ok(page.includes(`source: "${server.origin}/nested/article"`), page)
+})
+
+for (const status of [403, 404, 503]) {
+  test(`a long page the browser was served with ${status} does not replace a short 200 page`, { skip: noChrome }, async () => {
+    const cacheDir = await tmpCache()
+    const r = await clip(`${server.origin}/browser-${status}`, { cacheDir, env: renderEnv() }) as ClipOk
+    assert.equal(r.ok, true, JSON.stringify(r))
+    assert.equal(r.status, 200)
+    assert.equal(r.rendered, false)
+    assert.equal(r.finalUrl, `${server.origin}/browser-${status}`)
+    assert.ok(r.notes.some(n => n.includes(`HTTP ${status}`) && n.includes('plain fetch is kept')), r.notes.join('|'))
+    assert.doesNotMatch(await readFile(r.file, 'utf8'), /security policy of this site/)
+  })
+}
+
+test('a render whose navigation fails is not taken for the page', { skip: noChrome }, async () => {
+  const r = await clip(`${server.origin}/nav-refused`, { cacheDir: await tmpCache(), env: renderEnv() }) as ClipOk
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.equal(r.rendered, false)
+  assert.equal(r.finalUrl, `${server.origin}/nav-refused`)
+  assert.ok(r.notes.some(n => n.includes('plain fetch is kept')), r.notes.join('|'))
+  assert.equal(trap.connections, 0)
+})
+
+test('a CONNECT tunnel falls back from an unreachable first address to the next checked one', async () => {
+  // Only 127.0.0.1 listens: the first address, ::1 on this port, refuses the connection.
+  const resolve = async () => [{ address: '::1', family: 6 }, { address: '127.0.0.1', family: 4 }]
+  const proxy = await startEgressProxy(new Set([`fallback.test:${server.port}`]), { resolve })
+  try {
+    const reply = await new Promise<string>((done, fail) => {
+      const sock = connect(proxy.port, '127.0.0.1', () => sock.write(`CONNECT fallback.test:${server.port} HTTP/1.1\r\nHost: fallback.test\r\n\r\n`))
+      let got = ''
+      let sent = false
+      sock.on('data', d => {
+        got += d
+        if (!sent && got.includes('\r\n\r\n')) {
+          sent = true
+          if (!/ 200 /.test(got.split('\r\n')[0])) { sock.destroy(); done(got.split('\r\n')[0]); return }
+          got = ''
+          sock.write('GET /hello HTTP/1.1\r\nHost: fallback.test\r\nConnection: close\r\n\r\n')
+        }
+      })
+      sock.on('end', () => done(got))
+      sock.on('error', fail)
+    })
+    assert.match(reply, /hello through the proxy/)
+  } finally {
+    await proxy.close()
+  }
+})
+
+test('a CONNECT tunnel connects to no address the guard did not check', async () => {
+  const resolve = async () => [{ address: '::1', family: 6 }, { address: '127.0.0.1', family: 4 }]
+  // Not allowed, so the check refuses both loopback addresses: nothing is connected to.
+  const proxy = await startEgressProxy(new Set(), { resolve })
+  try {
+    const line = await new Promise<string>((done, fail) => {
+      const sock = connect(proxy.port, '127.0.0.1', () => sock.write(`CONNECT fallback.test:${trap.port} HTTP/1.1\r\n\r\n`))
+      let got = ''
+      sock.on('data', d => { got += d; if (got.includes('\r\n\r\n')) { sock.destroy(); done(got.split('\r\n')[0]) } })
+      sock.on('error', fail)
+    })
+    assert.match(line, / 403 /)
+    assert.equal(trap.connections, 0)
+  } finally {
+    await proxy.close()
+  }
 })
 
 test('with rendering off, a 403 is the failure it was', async () => {

@@ -5,13 +5,16 @@
 import http from 'node:http'
 import { connect } from 'node:net'
 import type { Socket } from 'node:net'
+import { CONNECT_ATTEMPT_MS } from './http.ts'
 import { pinnedLookup, resolveChecked } from './netguard.ts'
+import type { ResolveOptions } from './netguard.ts'
 
 export type EgressProxy = { port: number; close: () => Promise<void> }
 
 const HOP_HEADERS = ['proxy-connection', 'proxy-authorization', 'connection', 'keep-alive', 'transfer-encoding', 'te', 'trailer', 'upgrade']
 
-export async function startEgressProxy(allow: Set<string>): Promise<EgressProxy> {
+/** `resolve` is a test seam, as in `resolveChecked`. */
+export async function startEgressProxy(allow: Set<string>, opts: Pick<ResolveOptions, 'resolve'> = {}): Promise<EgressProxy> {
   const sockets = new Set<Socket>()
   const track = (s: Socket) => { sockets.add(s); s.on('close', () => sockets.delete(s)) }
 
@@ -27,7 +30,7 @@ export async function startEgressProxy(allow: Set<string>): Promise<EgressProxy>
     const port = Number(url.port) || 80
     let addresses
     try {
-      addresses = await resolveChecked(url.hostname, port, { allow })
+      addresses = await resolveChecked(url.hostname, port, { allow, resolve: opts.resolve })
     } catch (e) {
       res.writeHead(403, { 'content-type': 'text/plain' }).end(e instanceof Error ? e.message : 'refused')
       return
@@ -36,7 +39,7 @@ export async function startEgressProxy(allow: Set<string>): Promise<EgressProxy>
     for (const h of HOP_HEADERS) delete headers[h]
     const upstream = http.request({
       hostname: url.hostname.replace(/^\[|\]$/g, ''), port, path: url.pathname + url.search, method: req.method, headers,
-      lookup: pinnedLookup(addresses), agent: false,
+      lookup: pinnedLookup(addresses), agent: false, ...({ autoSelectFamilyAttemptTimeout: CONNECT_ATTEMPT_MS } as object),
     }, up => {
       res.writeHead(up.statusCode ?? 502, up.headers)
       up.pipe(res)
@@ -53,12 +56,18 @@ export async function startEgressProxy(allow: Set<string>): Promise<EgressProxy>
     const [, host, portText] = m
     let addresses
     try {
-      addresses = await resolveChecked(host, Number(portText), { allow })
+      addresses = await resolveChecked(host, Number(portText), { allow, resolve: opts.resolve })
     } catch {
       client.end('HTTP/1.1 403 Forbidden\r\n\r\n')
       return
     }
-    const upstream = connect({ host: addresses[0].address, port: Number(portText) })
+    // Every checked address in turn, each attempt bounded as the clipper's own
+    // requests are: an unreachable first address (IPv6 before a reachable IPv4)
+    // is not the end. The pinned lookup offers no address the check did not pass.
+    const upstream = connect({
+      host, port: Number(portText), lookup: pinnedLookup(addresses),
+      autoSelectFamily: true, autoSelectFamilyAttemptTimeout: CONNECT_ATTEMPT_MS,
+    })
     track(upstream)
     upstream.on('connect', () => {
       client.write('HTTP/1.1 200 Connection Established\r\n\r\n')

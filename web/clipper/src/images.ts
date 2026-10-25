@@ -164,7 +164,7 @@ export async function downloadImages(
   return { markdown: out, images }
 }
 
-async function downloadOne(url: string, part: string, referer: string, deadline: Deadline, allow: Set<string>, gate: { closed: boolean }): Promise<Download> {
+async function downloadOne(url: string, part: string, page: string, deadline: Deadline, allow: Set<string>, gate: { closed: boolean }): Promise<Download> {
   let body: Buffer
   let mediaType: string
   try {
@@ -175,7 +175,7 @@ async function downloadOne(url: string, part: string, referer: string, deadline:
       const timeoutMs = deadline.limit(IMAGE_LIMITS.timeoutMs)
       if (timeoutMs <= 0) return { error: 'not downloaded: time budget' }
       const res = await request(parsed, {
-        headers: { accept: IMAGE_ACCEPT, referer, 'user-agent': USER_AGENT }, timeoutMs, maxBytes: IMAGE_LIMITS.maxBytes, allow,
+        headers: { accept: IMAGE_ACCEPT, 'user-agent': USER_AGENT }, referrer: page, timeoutMs, maxBytes: IMAGE_LIMITS.maxBytes, allow,
       })
       if (res.status >= 400) return { error: `HTTP ${res.status}` }
       mediaType = mediaTypeOf(res.headers['content-type'])

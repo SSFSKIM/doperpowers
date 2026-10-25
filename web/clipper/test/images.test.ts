@@ -56,3 +56,22 @@ test('images are rewritten where they render, and code, escapes, definitions and
   assert.deepEqual((await readdir(join(dir, 'assets'))).sort(), ['01.png', '02.png'])
   assert.ok(!server.hits.includes('/img/c.png'), 'an image in code or escaped was fetched')
 })
+
+test("an image host on another origin sees neither the page's query nor its fragment", async t => {
+  const referers: Record<string, string | undefined> = {}
+  const host = await startServer({
+    '/x.png': (req, res) => { referers.cross = req.headers.referer; send('image/png', pngBytes(2000, 4))(req, res) },
+  })
+  t.after(() => host.close())
+  const site = await startServer({
+    '/own.png': (req, res) => { referers.same = req.headers.referer; send('image/png', pngBytes(2000, 5))(req, res) },
+  })
+  t.after(() => site.close())
+  const pageUrl = `${site.origin}/signed/page?token=s3cret&sig=abc#section-2`
+  const dir = await mkdtemp(join(tmpdir(), 'clip-images-'))
+  const md = `![cross](${host.origin}/x.png)\n\n![same](/own.png)\n`
+  const { images } = await downloadImages(md, pageUrl, dir, new Deadline(10_000), new Set([`127.0.0.1:${site.port}`, `127.0.0.1:${host.port}`]))
+  assert.deepEqual(images.map(i => i.file), ['assets/01.png', 'assets/02.png'])
+  assert.equal(referers.cross, `${site.origin}/`)
+  assert.equal(referers.same, `${site.origin}/signed/page?token=s3cret&sig=abc`)
+})

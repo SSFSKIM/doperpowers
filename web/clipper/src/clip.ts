@@ -18,6 +18,7 @@ import { buildOutline, splitLines } from './measure.ts'
 import type { OutlineEntry, OutlineMode } from './measure.ts'
 import { allowedHosts, RefusedError } from './netguard.ts'
 import { findChrome, renderDom, RENDER_LIMITS } from './render.ts'
+import type { ServedDocument } from './render.ts'
 import { decodeText, route } from './route.ts'
 import type { Kind } from './route.ts'
 
@@ -97,9 +98,10 @@ export async function clip(rawUrl: string, opts: ClipOptions): Promise<ClipResul
     const chrome = findChrome(env)
     if (!('note' in chrome)) {
       const out = await renderDom(res.url.href, chrome, deadline.limit(RENDER_LIMITS.timeoutMs), allow)
-      if (!('note' in out) && out.document && out.document.status >= 200 && out.document.status < 300) {
-        const ex = await extractHtml(out.html, out.document.url, siteFetch)
-        if (ex.words >= RENDER_MIN_WORDS) walled = { ex, url: out.document.url }
+      const served = 'note' in out ? undefined : servedPage(out)
+      if (served && 'url' in served) {
+        const ex = await extractHtml(served.html, served.url, siteFetch)
+        if (ex.words >= RENDER_MIN_WORDS) walled = { ex, url: served.url }
       }
     }
   }
@@ -108,7 +110,8 @@ export async function clip(rawUrl: string, opts: ClipOptions): Promise<ClipResul
     return fail(`HTTP ${res.status}${res.statusText ? ' ' + res.statusText : ''}`, { status: res.status, ...(snippet ? { bodySnippet: snippet } : {}) })
   }
   const fetchedAt = new Date().toISOString()
-  const finalUrl = walled?.url ?? res.url.href
+  // Where the page saved was served from; a render the browser navigated elsewhere moves it.
+  let finalUrl = walled?.url ?? res.url.href
   const contentType = walled ? 'text/html' : String(res.headers['content-type'] ?? '')
 
   // 2. Route. The page is in hand: from here on it is published.
@@ -138,10 +141,12 @@ export async function clip(rawUrl: string, opts: ClipOptions): Promise<ClipResul
           if ('note' in chrome) notes.push(chrome.note)
           else {
             const out = await renderDom(finalUrl, chrome, deadline.limit(RENDER_LIMITS.timeoutMs), allow)
-            if ('note' in out) notes.push(out.note)
+            const served = 'note' in out ? out : servedPage(out)
+            if ('note' in served) notes.push(served.note)
             else {
-              const again = await extractHtml(out.html, finalUrl, siteFetch)
-              if (again.words > ex.words) { ex = again; rendered = true }
+              // Extracted, and later its images resolved, against the document the browser ended on.
+              const again = await extractHtml(served.html, served.url, siteFetch)
+              if (again.words > ex.words) { ex = again; rendered = true; finalUrl = served.url }
             }
           }
         }
@@ -209,6 +214,19 @@ export async function clip(rawUrl: string, opts: ClipOptions): Promise<ClipResul
     await rm(tmp, { recursive: true, force: true }).catch(() => {})
     throw e
   }
+}
+
+/**
+ * A render counts as the page only when Chromium's NetLog shows the browser was
+ * served its document with a 2xx (`renderDom` gives a document only when the
+ * last main-frame response could have become it). A DOM alone cannot tell a
+ * page from a denial, an error page, or a navigation that failed.
+ */
+function servedPage(out: { html: string; document?: ServedDocument }): { html: string; url: string } | { note: string } {
+  const doc = out.document
+  if (!doc) return { note: 'rendering not used: the browser was served no page it could show (a failed navigation, or no 2xx document); the plain fetch is kept' }
+  if (doc.status < 200 || doc.status >= 300) return { note: `rendering not used: the browser was served HTTP ${doc.status}; the plain fetch is kept` }
+  return { html: out.html, url: doc.url }
 }
 
 function pick(meta: PageMeta) {

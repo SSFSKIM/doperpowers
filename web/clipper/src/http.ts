@@ -52,6 +52,25 @@ export type RequestOptions = {
   timeoutMs: number
   maxBytes: number
   allow: Set<string>
+  /** The page the request is made for; each hop gets the Referer `referrerFor` allows. */
+  referrer?: string
+}
+
+/**
+ * The Referer a browser's default policy (strict-origin-when-cross-origin)
+ * sends from `page` to `target`: the page's URL to its own origin, the bare
+ * origin to another, nothing from HTTPS to HTTP. Never a fragment or
+ * credentials. A page URL can carry a token, and image hosts are third parties.
+ */
+export function referrerFor(page: string, target: URL): string | undefined {
+  let from: URL
+  try { from = new URL(page) } catch { return undefined }
+  if (from.protocol !== 'http:' && from.protocol !== 'https:') return undefined
+  if (from.protocol === 'https:' && target.protocol !== 'https:') return undefined
+  from.hash = ''
+  from.username = ''
+  from.password = ''
+  return from.origin === target.origin ? from.href : from.origin + '/'
 }
 
 /** One request, following redirects (each hop checked), within one time limit. */
@@ -62,12 +81,19 @@ export async function request(start: URL, o: RequestOptions): Promise<HttpRespon
   let url = start
   let method = o.method ?? 'GET'
   let body = o.body
+  // A Referer given as a header is held to the same policy as `referrer`, hop by hop.
+  const headers = { ...o.headers }
+  let referrer = o.referrer
+  for (const name of Object.keys(headers)) {
+    if (name.toLowerCase() === 'referer') { referrer ??= headers[name]; delete headers[name] }
+  }
   for (let hop = 0; ; hop++) {
     if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new HttpError(`unsupported scheme: ${url.protocol}`)
     const port = Number(url.port) || (url.protocol === 'https:' ? 443 : 80)
     const addresses = await withTimeout(resolveChecked(url.hostname, port, { allow: o.allow }), timeLeft(), timedOut)
       .catch(e => { throw asTransportError(e) })
-    const res = await once(url, addresses, { ...o, method, body }, timeLeft(), timedOut)
+    const referer = referrer === undefined ? undefined : referrerFor(referrer, url)
+    const res = await once(url, addresses, { ...o, headers: referer ? { ...headers, referer } : headers, method, body }, timeLeft(), timedOut)
     const location = res.headers.location
     if ([301, 302, 303, 307, 308].includes(res.status) && location) {
       if (hop >= MAX_REDIRECTS) throw new HttpError(`too many redirects (more than ${MAX_REDIRECTS})`)
