@@ -51,7 +51,10 @@ session on the machine.
 - [x] (2026-10-25) Spec review round 2: 2 findings, both applied (WebRTC
   egress, generation ordering). Converged: the findings narrowed to
   mechanisms with tests, so no round 3.
-- [ ] M1 — the clipper.
+- [x] (2026-10-25) M1 — the clipper (`d6b71b78`, fix `40e1f6eb`), reviewed
+  clean: 77 tests; acceptance 1–5 held live on this Mac. One review
+  finding deferred as minor (image notation inside a code span that
+  crosses a line break is taken for an image).
 - [ ] M2 — the tool: the `web` plugin and its mod.
 - [ ] M3 — the evals, and acceptance 1–9.
 - [ ] Branch review (doperpowers:review-code, high), merge.
@@ -1228,6 +1231,12 @@ type Run = {
   - Served markdown with its own frontmatter keeps that block and gains
     `source` and `fetched` in it; its title comes from there, else the first
     `#` heading outside code.
+  - Reference-style images (`![a][ref]`) are found through their
+    definitions and rewritten in place as inline images, leaving the
+    definition alone (a link elsewhere may share it). Image notation in
+    fences, inline code and escapes is not an image.
+  - DNS and other connection failures are `ok: false` with
+    `network error: …`, exit 0. Cache roots resolve to absolute paths.
   - A pre-pass copies fence languages from Sphinx/GitHub `highlight-*`
     wrappers onto the code block, recovering most of what Defuddle drops.
   - Text decodes by the declared charset (header, then `<meta>`), so EUC-KR
