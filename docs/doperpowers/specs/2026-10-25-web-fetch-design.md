@@ -992,7 +992,10 @@ claude -p "List the names of your tools that fetch web pages, one per line."
   prints one JSON line, `{ "firstLine": 1, "lastLine": <n>, "totalLines": <m> }`,
   then the file's lines from the first, each prefixed `<number>| `, until
   the next line would push the estimate of what was printed plus
-  `--reserve` (the question's estimate) past `--max-tokens`.
+  `--reserve` (the question's estimate) past `--max-tokens`. When the first
+  line alone would pass it, that line is printed cut to fit and the JSON
+  line adds `"cut": true`, so a page of one huge line (minified XML, a
+  one-line text file) still gives the summary something to read.
 - `node web/bin/clip.mjs prune [--older-than-days 7] [--cache-dir <dir>]`
   prints `{ "removed": <n> }`, the number of generations and `.tmp-`
   folders it deleted.
@@ -1239,6 +1242,13 @@ type Run = {
   Rationale: each follows the spec's intent where it did not reach; see the
   task report for the alternatives.
   Date/Author: 2026-10-25, M1 executor, folded by the plan executor.
+- Decision: `numbered` cuts an over-long first line to fit rather than
+  printing nothing, and says so with `"cut": true` (I1). The whole-line rule
+  left a page of one huge line (minified XML, a feed) with an empty summary.
+  M2's R3 parenthesis names the cut (`line 1 cut short`).
+  Rationale: an answer from most of a line beats no answer; the flag keeps
+  it honest.
+  Date/Author: 2026-10-25, plan executor, from M1's executor concern.
 
 ## Outcomes & Retrospective
 
