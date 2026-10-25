@@ -966,7 +966,7 @@ node web/bin/clip.mjs fetch http://169.254.169.254/ | grep -o '"error": *"refuse
 # M2
 bash web/tests/run.sh                            # clipper tests, bundle check, claude plugin test web
 bash tests/mods/typecheck.sh --lay               # every plugin, web included
-CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude -p --plugin-dir web --allowedTools mcp__web__fetch \
+CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude -p --plugin-dir web --allowedTools=mcp__web__fetch \
   "Call mcp__web__fetch on https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching with no prompt and print its reply verbatim."
 #   Saved …/page.md, "Prompt caching" …, Outline (lines · ~tokens · images): …
 
@@ -1132,6 +1132,17 @@ type Run = {
 - Observation: npm on this Mac blocks dependency install scripts
   (`esbuild` postinstall); esbuild still works, its platform binary arriving
   as an optional dependency.
+- Observation: the size estimate can run low. On digit-dense ASCII (a
+  70,000-line file of row numbers and five-digit values) the API counted
+  202,984 input tokens where the estimate said under 150,000, about 1.35×.
+  Harmless with Haiku 5.5's 1M window; against a 200k model the half-cap
+  retry is the backstop.
+  Evidence: M2's live over-4 MiB summary run (task-2 report).
+- Observation: a generation published before a clipper fix stays current
+  for 24 hours. The eval runs each get their own cache through the
+  temporary `HOME`, so this does not touch M3.
+- Observation: R1 shows `---` twice in a row (the reply's separator, then
+  `page.md`'s own frontmatter). Kept as drawn; M3's transcripts decide.
 
 ## Decision Log
 
@@ -1258,6 +1269,47 @@ type Run = {
   Rationale: an answer from most of a line beats no answer; the flag keeps
   it honest.
   Date/Author: 2026-10-25, plan executor, from M1's executor concern.
+- Decision: M2's records and its own decisions.
+  - **R4 is `{ deny }`** with text opening `fetch failed:`. It reaches the
+    model as `is_error: true`, wrapped in `<tool_use_error>`, with no
+    permission wording. A throwing hook is not a mechanism: the engine
+    skips it and the call fails with the engine's text. The registration's
+    `.catch` turns any step that throws into the same deny.
+  - **`haiku` resolves to Haiku 5.5 with a 1M window** on this Mac
+    (`ANTHROPIC_DEFAULT_HAIKU_MODEL` = `claude-haiku-5-5[1m]`, through the
+    gateway); a live summary of 202,984 input tokens succeeded.
+    `SUMMARY_MAX_TOKENS` stays 150,000.
+  - **The mod loads under `claude -p --plugin-dir web`** (2.1.310): the
+    init line lists `web` and `mcp__web__fetch`, the model called it on
+    its first turn without `ToolSearch`, and all six live acceptance runs
+    were `-p` runs. The Concrete Steps' `--allowedTools` needs its `=`
+    form: spaced, it swallows the prompt (fixed above).
+  - The mod is `fetch.tsx` (everything that takes `$`), `reply.ts` (the
+    pure reply formatting) and `summary.ts` (the summary's text and pure
+    steps). Its tests are staged in their own folder, since `claude plugin
+    test web` would sweep the clipper's `node --test` files.
+    `web/tsconfig.json` is the engine's file and is gitignored, like the
+    other plugins'; the mod's own config is `web/hooks/mods/tsconfig.json`.
+  - The summary request's `prompt` is `<page>…</page>` then
+    `Question: …`; `--reserve` covers the system text, the frame and the
+    question. A prompt-too-long answer is a 400 `invalid_request` (the
+    engine passes no error text); the retry re-runs `numbered` at 75,000
+    and skips the second ask when the half cap gives the same lines.
+  - `usage.jsonl` gets one line per summary call, failed ones included,
+    appended by `node -e` with `O_APPEND` (`$.fs` has no append), carrying
+    `session` and, for a subagent, `agentId`.
+  - The reply wording the spec left open is pinned by exact-text tests
+    (task-2 report, decision 11); R3's cut case reads
+    `(line 1 cut short, of M: the rest was not read)`.
+  - **The CI `web` gate runs with `WEB_CHROME=none`**, so its Chromium
+    tests skip with their reason: a runner's own Chrome sandbox would make
+    the gate depend on the runner image, the shipping evidence comes from
+    the Playwright headless shell on the Macs (M1's trap tests, rerun in
+    M2's full local suite), and the render test once hit its 30 s limit
+    under heavy load.
+  Rationale: the spec's M2 records, and its intent where it left the
+  wording open.
+  Date/Author: 2026-10-25, M2 executor, folded by the plan executor.
 
 ## Outcomes & Retrospective
 
