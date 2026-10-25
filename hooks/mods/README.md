@@ -165,9 +165,30 @@ answered (`reason: "answer"`) the module calls `$.session.compact` (the
 `/compact` path, trigger `plugin`: one model call over the live conversation
 with the summary request appended, so the model that chose to compact
 writes the summary; the `PreCompact` shell hook's `compact-instructions.md`
-merges in) and then submits `resume` through `$.prompt.submit`, whatever the
-compaction's outcome (a `{ skip }` or a failure is toasted), so a session
-nobody watches never stalls on a turn the model ended to be compacted. A
+merges in) and then submits `resume` through `$.prompt.submit`. Where the
+compaction did not run (a `{ skip }`, a failure; each is toasted) it submits
+instead what says so, naming why and handing back the `instructions` and
+`resume` the model wrote, so the model compacts again or goes on rather than
+resuming from a summary that does not exist. Either way a session nobody
+watches never stalls on a turn the model ended to be compacted. The common
+reason is a race the module cannot win: the engine starts whatever waits in
+its queue (a peer's message, the human's words through the bridge, a task
+notification, the reload's `/reload-plugins`) the moment a turn ends, before
+that turn's `turn.complete` hooks run, so `$.session.compact` finds that
+turn begun ("a turn is in flight", 2.1.310). A prompt the person types over
+the turn after the call is the one the module holds back: its
+`prompt.submit` hook (origin `composer`, carrying the running turn's
+`turnId`) waits for the compaction's outcome before passing it on, and a
+prompt still being screened at the head of the queue keeps the engine from
+draining it, so the compaction runs first and the prompt is answered on the
+compacted conversation; a main turn that ends otherwise, or the next main
+turn's start, lets it go. The wait is the hook's own time, which the engine
+bounds (`HookBudget.ms`, 10 s; past it the hook is gone and its prompt
+passed on anyway), so the hook passes the prompt on itself just short of
+that (`HOLD_SPARE_MS`): a prompt sent longer than that before the turn ends
+can still begin its turn first, and the model is then told (live check
+`tests/mods/live-compact-race-check.py`; the budget under the engine's own
+dispatcher, `tests/mods/compact-hold.test.ts`). A
 request left by a turn that ended otherwise (an interruption, an API error)
 is dropped at the next `turn.start`, so a turn the person starts is not
 compacted behind them. Nothing is aborted: background shells, monitors, MCP
