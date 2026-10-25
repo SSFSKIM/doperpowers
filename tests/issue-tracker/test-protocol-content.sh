@@ -645,7 +645,7 @@ TASK_REVIEWER="$REPO_ROOT/agents/task-reviewer.md"
 [ -f "$TASK_REVIEWER" ] || { echo "missing $TASK_REVIEWER"; exit 1; }
 trev="$(cat "$TASK_REVIEWER")"
 assert_contains "$trev" "model: sol" "the task-reviewer stays on sol"
-assert_contains "$trev" "effort: xhigh" "...at xhigh effort, the low review rung's model and effort"
+assert_contains "$trev" "effort: xhigh" "...at xhigh effort, the medium review rung's model and effort"
 
 # The spec is written, reviewed, and executed through the execspec skill;
 # brainstorming closes the design and routes. The Architect names both, and

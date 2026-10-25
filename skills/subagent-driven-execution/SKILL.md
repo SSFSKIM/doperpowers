@@ -135,7 +135,7 @@ or brainstorm first.
 `doperpowers:task-executor` is pinned to opus at high reasoning effort;
 the milestone grain is calibrated to that tier, and fixes resume the same
 executor. `doperpowers:task-reviewer` is pinned to sol at xhigh effort —
-the low review rung's model and effort: the frontier review is a
+the medium review rung's model and effort: the frontier review is a
 task-scoped gate, and the whole-branch review at the spec's named rung is
 the deep read. A simple task — a doc update, a mechanical rename, a
 verification walk with every command given — can go to sonnet, the tier
