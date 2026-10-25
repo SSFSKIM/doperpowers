@@ -1,0 +1,73 @@
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import http from 'node:http'
+import { CONNECT_ATTEMPT_MS, networkErrorMessage, referrerFor, request } from '../src/http.ts'
+import { startServer, send } from './helpers.ts'
+
+function connectError(code: string, address: string): Error {
+  return Object.assign(new Error(`connect ${code} ${address}:443`), { code, address })
+}
+
+test("a failed connection to every address names each address and why, not an empty message", () => {
+  // What Node throws when its address-by-address connect gives up: an AggregateError whose message is empty.
+  const e = Object.assign(new AggregateError([connectError('ETIMEDOUT', '65.108.204.189'), connectError('EHOSTUNREACH', '2a01:4f9:1a:a084::2')], ''), { code: 'ETIMEDOUT' })
+  assert.equal(networkErrorMessage(e), 'could not connect: 65.108.204.189 ETIMEDOUT, 2a01:4f9:1a:a084::2 EHOSTUNREACH')
+})
+
+test('an ordinary error keeps its message, and an error without one gives its code', () => {
+  assert.equal(networkErrorMessage(new Error('socket hang up')), 'socket hang up')
+  assert.equal(networkErrorMessage(Object.assign(new Error(''), { code: 'ECONNRESET' })), 'ECONNRESET')
+  assert.equal(networkErrorMessage('boom'), 'boom')
+})
+
+test('each connection attempt may take far longer than Node’s 250 ms default before the next address is tried', async t => {
+  // archive.apache.org from Seoul: a 250 ms attempt dropped the IPv4 connection while it was still
+  // being made, and the IPv6 address was unreachable, so 4 of 12 image downloads failed (2026-10-25).
+  assert.ok(CONNECT_ATTEMPT_MS >= 2000)
+  const server = await startServer({ '/': send('text/plain', 'ok') })
+  t.after(() => server.close())
+  const seen: unknown[] = []
+  const real = http.request
+  t.mock.method(http, 'request', (...args: Parameters<typeof http.request>) => { seen.push(args[0]); return real(...args) })
+  const res = await request(new URL(`${server.origin}/`), { headers: {}, timeoutMs: 5000, maxBytes: 1024, allow: new Set([`127.0.0.1:${server.port}`]) })
+  assert.equal(res.status, 200)
+  assert.equal(seen.length, 1)
+  assert.equal((seen[0] as { autoSelectFamilyAttemptTimeout?: number }).autoSelectFamilyAttemptTimeout, CONNECT_ATTEMPT_MS)
+})
+
+test('the Referer follows strict-origin-when-cross-origin, and never carries a fragment or credentials', () => {
+  const page = 'https://user:pw@site.test/a/page?token=secret#frag'
+  // Same origin: the page's URL, without its fragment and credentials.
+  assert.equal(referrerFor(page, new URL('https://site.test/img/x.png')), 'https://site.test/a/page?token=secret')
+  // Another origin (host, port or scheme): the page's origin only.
+  assert.equal(referrerFor(page, new URL('https://cdn.test/x.png')), 'https://site.test/')
+  assert.equal(referrerFor(page, new URL('https://site.test:8443/x.png')), 'https://site.test/')
+  // HTTPS to HTTP: nothing.
+  assert.equal(referrerFor(page, new URL('http://site.test/x.png')), undefined)
+  assert.equal(referrerFor('http://site.test/p?q=1', new URL('https://cdn.test/x.png')), 'http://site.test/')
+  // A page that is not http(s) gives nothing.
+  assert.equal(referrerFor('data:text/html,hi', new URL('https://cdn.test/x.png')), undefined)
+})
+
+test('a referrer is worked out again at every redirect hop, so a hop to another origin sees only the origin', async t => {
+  const seen: Record<string, string | undefined> = {}
+  const record = (name: string) => (req: http.IncomingMessage, res: http.ServerResponse) => { seen[name] = req.headers.referer; send('image/png', 'x'.repeat(2000))(req, res) }
+  const other = await startServer({ '/img/y.png': record('other') })
+  t.after(() => other.close())
+  const site = await startServer({
+    '/img/same.png': record('same'),
+    '/hop': (req, res) => { seen.hop = req.headers.referer; res.writeHead(302, { location: `${other.origin}/img/y.png` }); res.end() },
+  })
+  t.after(() => site.close())
+  const allow = new Set([`127.0.0.1:${site.port}`, `127.0.0.1:${other.port}`])
+  const page = `${site.origin}/page?token=secret#frag`
+  await request(new URL(`${site.origin}/img/same.png`), { referrer: page, timeoutMs: 5000, maxBytes: 1e6, allow })
+  await request(new URL(`${site.origin}/hop`), { referrer: page, timeoutMs: 5000, maxBytes: 1e6, allow })
+  assert.equal(seen.same, `${site.origin}/page?token=secret`)
+  assert.equal(seen.hop, `${site.origin}/page?token=secret`)
+  assert.equal(seen.other, `${site.origin}/`)
+  // A Referer passed as a header is held to the same policy.
+  delete seen.other
+  await request(new URL(`${other.origin}/img/y.png`), { headers: { Referer: page }, timeoutMs: 5000, maxBytes: 1e6, allow })
+  assert.equal(seen.other, `${site.origin}/`)
+})

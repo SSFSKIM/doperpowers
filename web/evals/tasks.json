@@ -1,0 +1,877 @@
+[
+  {
+    "id": "exact-detail-1",
+    "set": "dev",
+    "category": "exact-detail",
+    "lang": "en",
+    "url": "https://www.rfc-editor.org/rfc/rfc9000.html",
+    "question": "Using RFC 9000 at https://www.rfc-editor.org/rfc/rfc9000.html, what default value applies to the max_udp_payload_size transport parameter, and below what value is the parameter invalid?",
+    "facts": [
+      {
+        "id": "f1",
+        "claim": "The default for max_udp_payload_size is 65527.",
+        "evidence": "source line 7613: \"The default for this parameter is the maximum permitted UDP payload of 65527.\""
+      },
+      {
+        "id": "f2",
+        "claim": "Values of max_udp_payload_size below 1200 are invalid.",
+        "evidence": "source line 7614: \"Values below 1200 are invalid.\""
+      }
+    ]
+  },
+  {
+    "id": "exact-detail-2",
+    "set": "dev",
+    "category": "exact-detail",
+    "lang": "en",
+    "url": "https://nodejs.org/docs/v20.11.0/api/http.html",
+    "question": "Using the Node.js v20.11.0 HTTP documentation at https://nodejs.org/docs/v20.11.0/api/http.html, what is the default value of the connectionsCheckingInterval option of http.createServer(), and what is the default of the max argument of http.setMaxIdleHTTPParsers()?",
+    "facts": [
+      {
+        "id": "f1",
+        "claim": "The connectionsCheckingInterval option of http.createServer() defaults to 30000 (milliseconds).",
+        "evidence": "source line 3389: \"<strong>Default:</strong> <code>30000</code>.\""
+      },
+      {
+        "id": "f2",
+        "claim": "The max argument of http.setMaxIdleHTTPParsers() defaults to 1000.",
+        "evidence": "source line 4038: \"<li><code>max</code> <a href=\"https://developer.mozilla.org/en-US/docs/Web/JavaScript/Data_structures#Number_type\" class=\"type\">&#x3C;number></a> <strong>Default:</strong> <code>1000</code>.\""
+      }
+    ]
+  },
+  {
+    "id": "exact-detail-3",
+    "set": "final",
+    "category": "exact-detail",
+    "lang": "en",
+    "url": "https://www.postgresql.org/docs/16/runtime-config-client.html",
+    "question": "Using the PostgreSQL 16 documentation page at https://www.postgresql.org/docs/16/runtime-config-client.html, what is the default value of vacuum_multixact_failsafe_age, and what lower bound does VACUUM silently apply to its effective value?",
+    "facts": [
+      {
+        "id": "f1",
+        "claim": "The default of vacuum_multixact_failsafe_age is 1.6 billion (1,600,000,000).",
+        "evidence": "source line 382: \"The default is 1.6 billion multixacts.\""
+      },
+      {
+        "id": "f2",
+        "claim": "VACUUM silently adjusts the effective value of vacuum_multixact_failsafe_age to no less than 105% of autovacuum_multixact_freeze_max_age.",
+        "evidence": "source line 382: \"no less than 105% of <a class=\"xref\" href=\"runtime-config-autovacuum.html#GUC-AUTOVACUUM-MULTIXACT-FREEZE-MAX-AGE\">autovacuum_multixact_freeze_max_age</a>\""
+      }
+    ]
+  },
+  {
+    "id": "exact-detail-4",
+    "set": "final",
+    "category": "exact-detail",
+    "lang": "ko",
+    "url": "https://docs.python.org/ko/3.12/library/sys.html",
+    "question": "https://docs.python.org/ko/3.12/library/sys.html 문서(파이썬 3.12 sys 모듈, 한국어판)에 따르면, sys.winver 값은 파이썬 DLL 안에 무엇으로 저장됩니까?",
+    "facts": [
+      {
+        "id": "f1",
+        "claim": "sys.winver 값은 파이썬 DLL에 문자열 리소스 1000으로 저장된다 (it is stored as string resource 1000).",
+        "evidence": "source line 1900: \"이것은 파이썬 DLL에서 문자열 리소스 1000으로 저장됩니다.\""
+      }
+    ]
+  },
+  {
+    "id": "exact-detail-5",
+    "set": "final",
+    "category": "exact-detail",
+    "lang": "en",
+    "url": "https://docs.djangoproject.com/en/4.2/ref/settings/",
+    "question": "Using the Django 4.2 settings reference at https://docs.djangoproject.com/en/4.2/ref/settings/, what are the default values of the MONTH_DAY_FORMAT and YEAR_MONTH_FORMAT settings?",
+    "facts": [
+      {
+        "id": "f1",
+        "claim": "The default of MONTH_DAY_FORMAT is 'F j'.",
+        "evidence": "source line 2086: \"<p>Default: <code class=\"docutils literal notranslate\"><span class=\"pre\">'F</span> <span class=\"pre\">j'</span></code></p>\""
+      },
+      {
+        "id": "f2",
+        "claim": "The default of YEAR_MONTH_FORMAT is 'F Y'.",
+        "evidence": "source line 2721: \"<p>Default: <code class=\"docutils literal notranslate\"><span class=\"pre\">'F</span> <span class=\"pre\">Y'</span></code></p>\""
+      }
+    ]
+  },
+  {
+    "id": "table-1",
+    "set": "dev",
+    "category": "table",
+    "lang": "en",
+    "url": "https://www.postgresql.org/docs/16/datatype-datetime.html",
+    "question": "Using the PostgreSQL 16 documentation page at https://www.postgresql.org/docs/16/datatype-datetime.html, look at the table of date/time types: what storage size and what high value does it list for `time with time zone`?",
+    "facts": [
+      {
+        "id": "f1",
+        "claim": "The storage size of `time [ (p) ] with time zone` is 12 bytes.",
+        "evidence": "source line 311: \"<td>12 bytes</td>\""
+      },
+      {
+        "id": "f2",
+        "claim": "The high value of `time with time zone` is 24:00:00-1559.",
+        "evidence": "source line 314: \"<td>24:00:00-1559</td>\""
+      }
+    ]
+  },
+  {
+    "id": "table-2",
+    "set": "dev",
+    "category": "table",
+    "lang": "en",
+    "url": "https://doc.rust-lang.org/1.75.0/rustc/platform-support.html",
+    "question": "Using the Rust 1.75.0 rustc book page at https://doc.rust-lang.org/1.75.0/rustc/platform-support.html, in which tier section is the target `loongarch64-unknown-linux-gnu` listed, and what minimum Linux kernel and glibc versions does its notes column give?",
+    "facts": [
+      {
+        "id": "f1",
+        "claim": "`loongarch64-unknown-linux-gnu` is listed under \"Tier 2 with Host Tools\".",
+        "evidence": "source line 228: \"<h2 id=\"tier-2-with-host-tools\"><a class=\"header\" href=\"#tier-2-with-host-tools\">Tier 2 with Host Tools</a></h2>\""
+      },
+      {
+        "id": "f2",
+        "claim": "Its notes give kernel 5.19 and glibc 2.36.",
+        "evidence": "source line 251: \"<code>loongarch64-unknown-linux-gnu</code></a></td><td>LoongArch64 Linux, LP64D ABI (kernel 5.19, glibc 2.36)</td>\""
+      }
+    ]
+  },
+  {
+    "id": "table-3",
+    "set": "final",
+    "category": "table",
+    "lang": "en",
+    "url": "https://docs.python.org/3.12/library/codecs.html",
+    "question": "Using the Python 3.12 `codecs` documentation at https://docs.python.org/3.12/library/codecs.html, which codec in the Standard Encodings table lists `strk1048_2002` among its aliases? What language does the table give for that codec, and in which Python version was it added?",
+    "facts": [
+      {
+        "id": "f1",
+        "claim": "The codec is `kz1048`.",
+        "evidence": "source line 1569: \"<td><p>kz_1048, strk1048_2002, rk1048</p></td>\""
+      },
+      {
+        "id": "f2",
+        "claim": "Its language is Kazakh.",
+        "evidence": "source line 1570: \"<td><p>Kazakh</p>\""
+      },
+      {
+        "id": "f3",
+        "claim": "It was added in Python 3.5.",
+        "evidence": "source line 1572: \"<p><span class=\"versionmodified added\">Added in version 3.5.</span></p>\""
+      }
+    ]
+  },
+  {
+    "id": "table-4",
+    "set": "final",
+    "category": "table",
+    "lang": "en",
+    "url": "https://www.rfc-editor.org/rfc/rfc9000.txt",
+    "question": "Using RFC 9000 at https://www.rfc-editor.org/rfc/rfc9000.txt, which frame types does Table 3 (Frame Types) mark with a Pkts value of exactly `___1` (permitted only in 1-RTT packets)? Give each one's name and type value.",
+    "facts": [
+      {
+        "id": "f1",
+        "claim": "NEW_TOKEN (0x07) has Pkts `___1`.",
+        "evidence": "source line 3900: \"| 0x07       | NEW_TOKEN            | Section 19.7  | ___1 |\""
+      },
+      {
+        "id": "f2",
+        "claim": "PATH_RESPONSE (0x1b) has Pkts `___1`.",
+        "evidence": "source line 3922: \"| 0x1b       | PATH_RESPONSE        | Section 19.18 | ___1 |\""
+      },
+      {
+        "id": "f3",
+        "claim": "HANDSHAKE_DONE (0x1e) has Pkts `___1`.",
+        "evidence": "source line 3926: \"| 0x1e       | HANDSHAKE_DONE       | Section 19.20 | ___1 |\""
+      },
+      {
+        "id": "f4",
+        "claim": "The answer names no other frame type as `___1` (PATH_CHALLENGE, 0x1a, for one, is `__01`).",
+        "evidence": "source line 3920: \"| 0x1a       | PATH_CHALLENGE       | Section 19.17 | __01 |\""
+      }
+    ]
+  },
+  {
+    "id": "table-5",
+    "set": "final",
+    "category": "table",
+    "lang": "ko",
+    "url": "https://ko.wikipedia.org/w/index.php?title=%EB%8C%80%ED%95%9C%EB%AF%BC%EA%B5%AD%EC%9D%98_%EA%B5%AD%EB%A6%BD%EA%B3%B5%EC%9B%90&oldid=42059072",
+    "question": "https://ko.wikipedia.org/w/index.php?title=%EB%8C%80%ED%95%9C%EB%AF%BC%EA%B5%AD%EC%9D%98_%EA%B5%AD%EB%A6%BD%EA%B3%B5%EC%9B%90&oldid=42059072 (위키백과 「대한민국의 국립공원」 문서의 고정 판)의 국립공원 목록 표에서 변산반도 국립공원의 지정일, 전체 면적(km²), 그리고 그중 해면 면적은 각각 얼마인가?",
+    "facts": [
+      {
+        "id": "f1",
+        "claim": "변산반도 국립공원의 지정일은 1988년 6월 11일이다.",
+        "evidence": "source line 711: \"<td id=\"mwAWY\">1988년 6월 11일</td>\""
+      },
+      {
+        "id": "f2",
+        "claim": "전체 면적은 154.650 km²이다.",
+        "evidence": "source line 711: \"<td align=\"right\" id=\"mwAWc\">154.650</td>\""
+      },
+      {
+        "id": "f3",
+        "claim": "해면 면적은 9.267 km²이다.",
+        "evidence": "source line 711: \"<b id=\"mwAWs\">해면:</b> 9.267</td>\""
+      }
+    ]
+  },
+  {
+    "id": "code-1",
+    "set": "dev",
+    "category": "code",
+    "lang": "en",
+    "url": "https://go.dev/blog/range-functions",
+    "question": "Using the Go blog post at https://go.dev/blog/range-functions (\"Range Over Function Types\", 20 August 2024), quote verbatim the `push` method from the \"Binary tree\" section, including its doc comment.",
+    "facts": [
+      {
+        "id": "f1",
+        "claim": "The `push` method, verbatim:\n// push pushes all elements to the yield function.\nfunc (t *Tree[E]) push(yield func(E) bool) bool {\n    if t == nil {\n        return true\n    }\n    return t.left.push(yield) &&\n        yield(t.val) &&\n        t.right.push(yield)\n}",
+        "evidence": "source line 953: \"// push pushes all elements to the yield function.\" (the block runs through line 961; lines 953-961 with tags stripped and entities decoded equal the quoted code exactly)"
+      }
+    ]
+  },
+  {
+    "id": "code-2",
+    "set": "dev",
+    "category": "code",
+    "lang": "en",
+    "url": "https://docs.djangoproject.com/en/5.0/ref/models/expressions/",
+    "question": "Using the Django 5.0 documentation page at https://docs.djangoproject.com/en/5.0/ref/models/expressions/, quote verbatim the code example in the section \"Adding support in third-party database backends\".",
+    "facts": [
+      {
+        "id": "f1",
+        "claim": "The example, verbatim (the number of blank lines between statements is not graded):\nfrom django.db.models.functions import Length\n\n\ndef sqlserver_length(self, compiler, connection):\n    return self.as_sql(compiler, connection, function=\"LEN\")\n\n\nLength.as_sqlserver = sqlserver_length",
+        "evidence": "source line 1771: \"<span class=\"nn\">django.db.models.functions</span>\" (the block runs through line 1778; lines 1771-1778 with tags stripped and entities decoded equal the quoted code exactly)"
+      }
+    ]
+  },
+  {
+    "id": "code-3",
+    "set": "final",
+    "category": "code",
+    "lang": "en",
+    "url": "https://www.rfc-editor.org/rfc/rfc8439.html",
+    "question": "Using RFC 8439 at https://www.rfc-editor.org/rfc/rfc8439.html, quote verbatim the `chacha20_block` pseudocode from Section 2.3.1 (\"The ChaCha20 Block Function in Pseudocode\") — the routine itself, not `inner_block`.",
+    "facts": [
+      {
+        "id": "f1",
+        "claim": "The `chacha20_block` pseudocode, verbatim (the common leading indentation is not graded):\n      chacha20_block(key, counter, nonce):\n         state = constants | key | counter | nonce\n         initial_state = state\n         for i=1 upto 10\n            inner_block(state)\n            end\n         state += initial_state\n         return serialize(state)\n         end",
+        "evidence": "source line 505: \"chacha20_block(key, counter, nonce):\" (the block runs through line 513; lines 505-513 with tags stripped and entities decoded equal the quoted code exactly)"
+      }
+    ]
+  },
+  {
+    "id": "code-4",
+    "set": "final",
+    "category": "code",
+    "lang": "en",
+    "url": "https://github.com/python/cpython/blob/d9b6c229f233eb26952d81381b375f9d6bb99c19/Lib/shlex.py",
+    "question": "Using the CPython source file at https://github.com/python/cpython/blob/d9b6c229f233eb26952d81381b375f9d6bb99c19/Lib/shlex.py, quote verbatim the module-level `_find_unsafe` assignment and the complete `quote` function (including its docstring and comments).",
+    "facts": [
+      {
+        "id": "f1",
+        "claim": "The `_find_unsafe` assignment, verbatim:\n_find_unsafe = re.compile(r'[^\\w@%+=:,./-]', re.ASCII).search",
+        "evidence": "source line 321: \"_find_unsafe = re.compile(r'[^\\w@%+=:,./-]', re.ASCII).search\" (the block runs through line 321; lines 321-321 with tags stripped and entities decoded equal the quoted code exactly)"
+      },
+      {
+        "id": "f2",
+        "claim": "The `quote` function, verbatim:\ndef quote(s):\n    \"\"\"Return a shell-escaped version of the string *s*.\"\"\"\n    if not s:\n        return \"''\"\n    if _find_unsafe(s) is None:\n        return s\n\n    # use single quotes, and put single quotes into double quotes\n    # the string $'b is then quoted as '$'\"'\"'b'\n    return \"'\" + s.replace(\"'\", \"'\\\"'\\\"'\") + \"'\"",
+        "evidence": "source line 323: \"def quote(s):\" (the block runs through line 332; lines 323-332 with tags stripped and entities decoded equal the quoted code exactly)"
+      }
+    ]
+  },
+  {
+    "id": "code-5",
+    "set": "final",
+    "category": "code",
+    "lang": "en",
+    "url": "https://www.postgresql.org/docs/16/queries-with.html",
+    "question": "Using the PostgreSQL 16 documentation page at https://www.postgresql.org/docs/16/queries-with.html, quote verbatim the first example query in section 7.8.4 (\"Data-Modifying Statements in WITH\") — the one that moves rows from `products` to `products_log`.",
+    "facts": [
+      {
+        "id": "f1",
+        "claim": "The example query, verbatim:\nWITH moved_rows AS (\n    DELETE FROM products\n    WHERE\n        \"date\" >= '2010-10-01' AND\n        \"date\" < '2010-11-01'\n    RETURNING *\n)\nINSERT INTO products_log\nSELECT * FROM moved_rows;",
+        "evidence": "source line 547: \"WITH moved_rows AS (\" (the block runs through line 555; lines 547-555 with tags stripped and entities decoded equal the quoted code exactly)"
+      }
+    ]
+  },
+  {
+    "id": "image-1",
+    "set": "dev",
+    "category": "image",
+    "lang": "en",
+    "url": "https://archive.apache.org/dist/spark/docs/3.5.0/structured-streaming-programming-guide.html",
+    "question": "Using the Spark 3.5.0 Structured Streaming Programming Guide at https://archive.apache.org/dist/spark/docs/3.5.0/structured-streaming-programming-guide.html: its figure illustrating windowed grouped aggregation (10-minute windows sliding every 5 minutes) shows an input stream of timestamped words and the result tables after each 5-minute trigger. In the result table at the 12:15 trigger, what is the count for the word \"owl\" in the window 12:05 - 12:15? And which words make up the input event at 12:07?",
+    "facts": [
+      {
+        "id": "f1",
+        "claim": "In the result table at the 12:15 trigger, the count for \"owl\" in the window 12:05 - 12:15 is 2.",
+        "evidence": "image https://archive.apache.org/dist/spark/docs/3.5.0/img/structured-streaming-window.png: the rightmost result table (under the 12:15 tick) has the row \"12:05 - 12:15 | owl | 2\""
+      },
+      {
+        "id": "f2",
+        "claim": "The input event at 12:07 contains the words \"owl cat\".",
+        "evidence": "image https://archive.apache.org/dist/spark/docs/3.5.0/img/structured-streaming-window.png: the input stream box labelled \"12:07 | owl cat\""
+      }
+    ]
+  },
+  {
+    "id": "image-2",
+    "set": "dev",
+    "category": "image",
+    "lang": "en",
+    "url": "https://blog.rust-lang.org/2024/02/19/2023-Rust-Annual-Survey-2023-results/",
+    "question": "Using the Rust blog post at https://blog.rust-lang.org/2024/02/19/2023-Rust-Annual-Survey-2023-results/: in its chart of which editor or IDE setups respondents use with Rust on a regular basis, what percentage of 2023 respondents used RustRover, and what percentage of 2023 respondents used Helix?",
+    "facts": [
+      {
+        "id": "f1",
+        "claim": "In 2023, 16.4% of respondents used RustRover (also written Rust Rover).",
+        "evidence": "image https://blog.rust-lang.org/2024/02/19/2023-Rust-Annual-Survey-2023-results/what-ide-do-you-use.png: bar chart \"Which editor or IDE setup do you use with Rust code on a regular basis?\"; the 2023 (blue) bar for \"Rust Rover (dedicated IntelliJ Rust IDE)\" is labelled 16.4% (2022: N/A)"
+      },
+      {
+        "id": "f2",
+        "claim": "In 2023, 8.9% of respondents used Helix.",
+        "evidence": "image https://blog.rust-lang.org/2024/02/19/2023-Rust-Annual-Survey-2023-results/what-ide-do-you-use.png: same chart; the 2023 (blue) bar for \"Helix\" is labelled 8.9% (2022: 4.2%)"
+      }
+    ]
+  },
+  {
+    "id": "image-3",
+    "set": "final",
+    "category": "image",
+    "lang": "en",
+    "url": "https://peps.python.org/pep-0480/",
+    "question": "Using PEP 480 at https://peps.python.org/pep-0480/: Figure 1 is a diagram of the metadata layout in the maximum security model. Which example projects does it show as roles signed by developer keys, and up to which bin number does the unclaimed role delegate (its first bin being \"bin 1\")?",
+    "facts": [
+      {
+        "id": "f1",
+        "claim": "The diagram shows Requests, NumPy and Django as the example roles signed by developer keys.",
+        "evidence": "image https://peps.python.org/_images/pep-0480-1.png: PNG (800x600, plain <img>, alt is only the file path); under the heading \"roles signed by developer keys\" the green boxes read \"Requests\", \"NumPy\", \"...\", \"Django\", reached by dotted delegation arrows from claimed and recently-claimed"
+      },
+      {
+        "id": "f2",
+        "claim": "The unclaimed role delegates to bins numbered bin 1 through bin 1024.",
+        "evidence": "image https://peps.python.org/_images/pep-0480-1.png: below \"unclaimed\", dotted arrows lead to red boxes \"bin 1\", \"...\", \"bin 1024\""
+      }
+    ]
+  },
+  {
+    "id": "image-4",
+    "set": "final",
+    "category": "image",
+    "lang": "en",
+    "url": "https://go.dev/blog/survey2024-h2-results",
+    "question": "Using the Go blog post at https://go.dev/blog/survey2024-h2-results: in the chart of cloud providers where respondents' teams deploy Go programs (\"Does your team at work deploy Go programs to any of the following?\"), what share of all respondents selected \"Bare Metal Servers\", and what share selected \"Microsoft Azure\"?",
+    "facts": [
+      {
+        "id": "f1",
+        "claim": "18% of respondents selected Bare Metal Servers.",
+        "evidence": "image https://go.dev/blog/survey2024h2/cloud_platform.svg: horizontal bar chart (n = 2,723); the \"Bare Metal Servers\" bar is labelled 18%"
+      },
+      {
+        "id": "f2",
+        "claim": "15% of respondents selected Microsoft Azure.",
+        "evidence": "image https://go.dev/blog/survey2024h2/cloud_platform.svg: same chart; the \"Microsoft Azure\" bar is labelled 15% (the text only gives Azure split by organization size: 25% large vs 12% small-to-medium)"
+      }
+    ]
+  },
+  {
+    "id": "image-5",
+    "set": "final",
+    "category": "image",
+    "lang": "en",
+    "url": "https://git-scm.com/book/en/v2/Git-Branching-Branches-in-a-Nutshell",
+    "question": "Using the Pro Git book page at https://git-scm.com/book/en/v2/Git-Branching-Branches-in-a-Nutshell: the figure titled \"A commit and its tree\" shows a commit object, its tree and three blobs, each labelled with an abbreviated hash. What abbreviated hash does the tree object have, and what abbreviated hash does the blob for the LICENSE file have?",
+    "facts": [
+      {
+        "id": "f1",
+        "claim": "The tree object's abbreviated hash is 92ec2.",
+        "evidence": "image https://git-scm.com/book/en/v2/images/commit-and-tree.png: the middle (teal) box is headed \"92ec2\" and the commit box (98ca9) lists \"tree 92ec2\""
+      },
+      {
+        "id": "f2",
+        "claim": "The LICENSE blob's abbreviated hash is 911e7.",
+        "evidence": "image https://git-scm.com/book/en/v2/images/commit-and-tree.png: the tree box lists \"blob 911e7 LICENSE\", and the blob box headed \"911e7\" holds \"The MIT License\""
+      }
+    ]
+  },
+  {
+    "id": "js-1",
+    "set": "dev",
+    "category": "js",
+    "lang": "en",
+    "url": "https://deps.dev/pypi/requests/2.31.0",
+    "question": "Using the deps.dev page at https://deps.dev/pypi/requests/2.31.0, on what date was requests 2.31.0 published, and how many dependencies and provided extras does the page's Requirements summary list?",
+    "facts": [
+      {
+        "id": "f1",
+        "claim": "requests 2.31.0 was published on May 22, 2023.",
+        "evidence": "rendered DOM (body.innerText): \"Published\\n\\nMay 22, 2023\"; api https://api.deps.dev/v3/systems/pypi/packages/requests/versions/2.31.0 line 1: \"\\\"publishedAt\\\":\\\"2023-05-22T15:12:42Z\\\"\"; independent render (Playwright, Chrome for Testing 1248, networkidle + 6 s), body.innerText line 90: \"May 22, 2023\""
+      },
+      {
+        "id": "f2",
+        "claim": "The Requirements summary lists 6 dependencies and 3 provided extras.",
+        "evidence": "rendered DOM (body.innerText): \"Dependencies\\n6\\nProvided Extras\\n3\"; api https://api.deps.dev/v3alpha/systems/pypi/packages/requests/versions/2.31.0:requirements line 1: \"\\\"providedExtras\\\":[{\\\"name\\\":\\\"security\\\"},{\\\"name\\\":\\\"socks\\\"},{\\\"name\\\":\\\"use_chardet_on_py3\\\"}]\"; independent render (Playwright, Chrome for Testing 1248, networkidle + 6 s), body.innerText lines 58–61: \"Dependencies\" \"6\" \"Provided Extras\" \"3\""
+      }
+    ]
+  },
+  {
+    "id": "js-2",
+    "set": "dev",
+    "category": "js",
+    "lang": "en",
+    "url": "https://artifacthub.io/packages/helm/bitnami/nginx/15.0.0",
+    "question": "Using the Artifact Hub page for the Bitnami nginx Helm chart version 15.0.0 at https://artifacthub.io/packages/helm/bitnami/nginx/15.0.0, what are the default values of the `image.tag` and `metrics.image.tag` parameters?",
+    "facts": [
+      {
+        "id": "f1",
+        "claim": "The default `image.tag` is 1.25.0-debian-11-r0.",
+        "evidence": "rendered DOM (page.content()): \"<td><code>image.tag</code></td><td>NGINX image tag (immutable tags are recommended)</td><td><code>1.25.0-debian-11-r0</code></td>\"; api https://artifacthub.io/api/v1/packages/helm/bitnami/nginx/15.0.0 line 1: \"| `image.tag`          | NGINX image tag (immutable tags are recommended)                                                      | `1.25.0-debian-11-r0`\"; independent render (Playwright, Chrome for Testing 1248, networkidle + 6 s), body.innerText line 101: \"docker.io/bitnami/nginx:1.25.0-debian-11-r0\""
+      },
+      {
+        "id": "f2",
+        "claim": "The default `metrics.image.tag` is 0.11.0-debian-11-r84.",
+        "evidence": "rendered DOM (page.content()): \"NGINX Prometheus exporter image tag (immutable tags are recommended)</td><td><code>0.11.0-debian-11-r84</code>\"; api https://artifacthub.io/api/v1/packages/helm/bitnami/nginx/15.0.0 line 1: \"`0.11.0-debian-11-r84`\"; independent render (Playwright, Chrome for Testing 1248, networkidle + 6 s), body.innerText line 365: \"metrics.image.tag … 0.11.0-debian-11-r84\""
+      }
+    ]
+  },
+  {
+    "id": "js-3",
+    "set": "final",
+    "category": "js",
+    "lang": "en",
+    "url": "https://npmgraph.js.org/?q=express@4.18.2",
+    "question": "Using the npmgraph page at https://npmgraph.js.org/?q=express@4.18.2, which versions of qs, path-to-regexp and body-parser does the dependency graph of express 4.18.2 show?",
+    "facts": [
+      {
+        "id": "f1",
+        "claim": "qs 6.11.0.",
+        "evidence": "independent render (Playwright, Chrome for Testing 1248, networkidle + 6 s), body.innerText line 32: \"qs@6.11.0\"; api https://registry.npmjs.org/express/4.18.2: \"dependencies\": {\"qs\": \"6.11.0\"}"
+      },
+      {
+        "id": "f2",
+        "claim": "path-to-regexp 0.1.7.",
+        "evidence": "independent render (Playwright, Chrome for Testing 1248, networkidle + 6 s), body.innerText line 30: \"path-to-regexp@0.1.7\"; api https://registry.npmjs.org/express/4.18.2: \"path-to-regexp\": \"0.1.7\""
+      },
+      {
+        "id": "f3",
+        "claim": "body-parser 1.20.1.",
+        "evidence": "independent render (Playwright, Chrome for Testing 1248, networkidle + 6 s), body.innerText line 13: \"body-parser@1.20.1\"; api https://registry.npmjs.org/express/4.18.2: \"body-parser\": \"1.20.1\""
+      }
+    ]
+  },
+  {
+    "id": "js-4",
+    "set": "final",
+    "category": "js",
+    "lang": "en",
+    "url": "https://crates.io/crates/serde/1.0.200",
+    "question": "Using the crates.io page for serde 1.0.200 at https://crates.io/crates/serde/1.0.200, what minimum Rust version, crate size, and lines-of-code (SLoC) figure does it list for this version?",
+    "facts": [
+      {
+        "id": "f1",
+        "claim": "The minimum Rust version listed is v1.31.0 (or 1.31).",
+        "evidence": "rendered DOM (page.content()): \"Minimum Rust version:</span> <span>v1.31.0\"; api https://crates.io/api/v1/crates/serde/1.0.200 line 1: \"\\\"rust_version\\\":\\\"1.31\\\"\"; independent render (Playwright, Chrome for Testing 1248, networkidle + 6 s), body.innerText line 64: \"v1.31.0\""
+      },
+      {
+        "id": "f2",
+        "claim": "The crate size listed is 75.8 KiB (or 77,611 bytes).",
+        "evidence": "rendered DOM (page.content()): \"75.8 KiB\"; api https://crates.io/api/v1/crates/serde/1.0.200 line 1: \"\\\"crate_size\\\":77611\"; independent render (Playwright, Chrome for Testing 1248, networkidle + 6 s), body.innerText line 69: \"75.8 KiB\""
+      },
+      {
+        "id": "f3",
+        "claim": "The page lists 11K SLoC (or 10,663 lines).",
+        "evidence": "rendered DOM (page.content()): \"11K SLoC\"; api https://crates.io/api/v1/crates/serde/1.0.200 line 1: \"\\\"total_code_lines\\\":10663\"; independent render (Playwright, Chrome for Testing 1248, networkidle + 6 s), body.innerText line 67: \"11K SLoC\""
+      }
+    ]
+  },
+  {
+    "id": "js-5",
+    "set": "final",
+    "category": "js",
+    "lang": "en",
+    "url": "https://package.elm-lang.org/packages/elm-community/list-extra/8.7.0/List-Extra",
+    "question": "Using the Elm package documentation page at https://package.elm-lang.org/packages/elm-community/list-extra/8.7.0/List-Extra, what are the type signatures of `stoppableFoldl` and `frequencies`?",
+    "facts": [
+      {
+        "id": "f1",
+        "claim": "stoppableFoldl : (a -> b -> Step b) -> b -> List a -> b (or with qualified names, e.g. List.Extra.Step b, List.List a).",
+        "evidence": "rendered DOM (body.innerText): \"stoppableFoldl : (a -> b -> Step b) -> b -> List a -> b\"; api https://package.elm-lang.org/packages/elm-community/list-extra/8.7.0/docs.json line 1: \"\\\"type\\\":\\\"(a -> b -> List.Extra.Step b) -> b -> List.List a -> b\\\"\"; independent render (Playwright, Chrome for Testing 1248, networkidle + 6 s), body.innerText line 385: \"stoppableFoldl : (a -> b -> Step b) -> b -> List a -> b\""
+      },
+      {
+        "id": "f2",
+        "claim": "frequencies : List comparable -> List ( comparable, Int ) (or with qualified names, e.g. List.List, Basics.Int).",
+        "evidence": "rendered DOM (body.innerText): \"frequencies : List comparable -> List ( comparable, Int )\"; api https://package.elm-lang.org/packages/elm-community/list-extra/8.7.0/docs.json line 1: \"\\\"type\\\":\\\"List.List comparable -> List.List ( comparable, Basics.Int )\\\"\"; independent render (Playwright, Chrome for Testing 1248, networkidle + 6 s), body.innerText line 742: \"frequencies : List comparable -> List ( comparable, Int )\""
+      }
+    ]
+  },
+  {
+    "id": "pdf-1",
+    "set": "dev",
+    "category": "pdf",
+    "lang": "en",
+    "url": "https://www.rfc-editor.org/rfc/rfc9562.pdf",
+    "question": "Using the RFC 9562 PDF at https://www.rfc-editor.org/rfc/rfc9562.pdf, what are the final values of the UUIDv1 and UUIDv7 example test vectors given in its test-vector appendix?",
+    "facts": [
+      {
+        "id": "f1",
+        "claim": "The UUIDv1 example test vector is C232AB00-9414-11EC-B3C8-9F6BDECED846.",
+        "evidence": "pdftotext page 40: \"final: C232AB00-9414-11EC-B3C8-9F6BDECED846\""
+      },
+      {
+        "id": "f2",
+        "claim": "The UUIDv7 example test vector is 017F22E2-79B0-7CC3-98C4-DC0C0C07398F.",
+        "evidence": "pdftotext page 43: \"final: 017F22E2-79B0-7CC3-98C4-DC0C0C07398F\""
+      }
+    ]
+  },
+  {
+    "id": "pdf-2",
+    "set": "dev",
+    "category": "pdf",
+    "lang": "en",
+    "url": "https://www.federalreserve.gov/monetarypolicy/files/fomcminutes20230201.pdf",
+    "question": "Using the FOMC minutes PDF at https://www.federalreserve.gov/monetarypolicy/files/fomcminutes20230201.pdf (the January 31–February 1, 2023 meeting), what did the staff forecast for total PCE price inflation and for core PCE inflation in 2023, on a four-quarter change basis?",
+    "facts": [
+      {
+        "id": "f1",
+        "claim": "The staff forecast total PCE price inflation of 2.8 percent in 2023.",
+        "evidence": "pdftotext page 8: \"was forecast to be 2.8 percent in 2023\""
+      },
+      {
+        "id": "f2",
+        "claim": "The staff forecast core PCE inflation of 3.2 percent in 2023.",
+        "evidence": "pdftotext page 8: \"was expected to be 3.2 percent\""
+      }
+    ]
+  },
+  {
+    "id": "pdf-3",
+    "set": "final",
+    "category": "pdf",
+    "lang": "en",
+    "url": "https://nvlpubs.nist.gov/nistpubs/FIPS/NIST.FIPS.203.pdf",
+    "question": "Using the FIPS 203 (ML-KEM) PDF at https://nvlpubs.nist.gov/nistpubs/FIPS/NIST.FIPS.203.pdf, what decapsulation failure rate does the standard list for ML-KEM-768, and what is the size in bytes of an ML-KEM-1024 decapsulation key?",
+    "facts": [
+      {
+        "id": "f1",
+        "claim": "The decapsulation failure rate for ML-KEM-768 is 2^-164.8.",
+        "evidence": "pdftotext page 24: \"2−164.8\""
+      },
+      {
+        "id": "f2",
+        "claim": "An ML-KEM-1024 decapsulation key is 3168 bytes.",
+        "evidence": "pdftotext page 48: \"3168\""
+      }
+    ]
+  },
+  {
+    "id": "pdf-4",
+    "set": "final",
+    "category": "pdf",
+    "lang": "en",
+    "url": "https://arxiv.org/pdf/2312.00752v2",
+    "question": "Using the Mamba paper PDF at https://arxiv.org/pdf/2312.00752v2, what sequence length, vocabulary size and number of training steps does the appendix give for the Selective Copying synthetic task?",
+    "facts": [
+      {
+        "id": "f1",
+        "claim": "Selective Copying uses sequences of length 4096.",
+        "evidence": "pdftotext page 29: \"Our setting is on sequences of length 4096\""
+      },
+      {
+        "id": "f2",
+        "claim": "The vocabulary size is 16.",
+        "evidence": "pdftotext page 29: \"with a vocab size of 16 possible tokens\""
+      },
+      {
+        "id": "f3",
+        "claim": "Models are trained for 400K steps.",
+        "evidence": "pdftotext page 29: \"Models are trained for 400K steps at a constant learning rate of 0.0001 with a batch size of 64.\""
+      }
+    ]
+  },
+  {
+    "id": "pdf-5",
+    "set": "final",
+    "category": "pdf",
+    "lang": "ko",
+    "url": "https://www.bok.or.kr/fileSrc/portal/1a17518b4e734c3b2c2a83118225c5d3/1/202308300939357060.pdf",
+    "question": "https://www.bok.or.kr/fileSrc/portal/1a17518b4e734c3b2c2a83118225c5d3/1/202308300939357060.pdf 에 있는 한국은행 경제전망보고서(2023년 8월) PDF에서, 전망의 주요 전제로 제시된 세계교역 신장률과 국제유가(브렌트유) 가정은 2023년과 2024년에 각각 얼마입니까?",
+    "facts": [
+      {
+        "id": "f1",
+        "claim": "세계교역 신장률 전제는 2023년 1.7%, 2024년 3.5%이다.",
+        "evidence": "pdftotext page 22: \"세계교역 신장률(%): 23년 1.7 → 24년 3.5\""
+      },
+      {
+        "id": "f2",
+        "claim": "국제유가(브렌트유) 전제는 2023년 배럴당 82달러, 2024년 배럴당 83달러이다.",
+        "evidence": "pdftotext page 22: \"국제유가(브렌트유, 달러/배럴): 23년 82 → 24년 83\""
+      }
+    ]
+  },
+  {
+    "id": "gist-1",
+    "set": "dev",
+    "category": "gist",
+    "lang": "en",
+    "url": "https://blog.rust-lang.org/2026/10/02/demoting-i686-windows-targets-to-std-only/",
+    "question": "Using the Rust blog post at https://blog.rust-lang.org/2026/10/02/demoting-i686-windows-targets-to-std-only/, summarize what is changing for 32-bit Windows targets, from which Rust release, what users must do instead, and why.",
+    "facts": [
+      {
+        "id": "f1",
+        "claim": "Starting with Rust 1.100.0, the i686 Windows targets (i686-pc-windows-msvc and i686-pc-windows-gnu) are demoted to tiers without host tools: the compiler and tools are no longer shipped for them.",
+        "evidence": "source line 90: \"With Rust 1.100.0, the following changes to 32-bit Windows targets will happen:\"; source line 92: \"Tier 1 <em>with</em> host tools target will be demoted to Tier 1 <em>without</em> host tools.\"; source line 93: \"Tier 2 <em>with</em> host tools target will be demoted to Tier 2 <em>without</em> host tools.\""
+      },
+      {
+        "id": "f2",
+        "claim": "The standard library is still shipped for these targets, so users build 32-bit Windows programs by cross-compiling from a supported host such as 64-bit Windows.",
+        "evidence": "source line 95: \"Builds of the standard library will continue to be distributed, but host tools such as the compiler will be no longer available.\"; source line 96: \"To build 32-bit Windows binaries, cross-compiling from a still-supported host toolchain (such as a 64-bit Windows ones) will be required from now on.\""
+      },
+      {
+        "id": "f3",
+        "claim": "Why: 32-bit Windows is obsolete (no 32-bit-only x86 CPUs sold for over 15 years, Windows 32-bit support ended in October 2025), and building the i686 Windows toolchains has been a source of problems (crashes, out-of-memory failures).",
+        "evidence": "source line 99: \"Desktop and Server 32-bit only x86 CPUs are no longer sold for over 15 years, and general 32-bit Windows support has ended in October 2025.\"; source line 100: \"We have encountered compiler binaries crashing when built with the i686 MSVC target, and the GNU C++ toolchain failing with OOMs during LLVM build.\""
+      }
+    ]
+  },
+  {
+    "id": "gist-2",
+    "set": "dev",
+    "category": "gist",
+    "lang": "ko",
+    "url": "https://toss.tech/article/nic-interrupt-bottleneck",
+    "question": "https://toss.tech/article/nic-interrupt-bottleneck 글의 요지를 요약해 주세요. 커밋 지연의 원인은 무엇이었고, 어떻게 해결했으며, 결과는 어땠나요?",
+    "facts": [
+      {
+        "id": "f1",
+        "claim": "Cause: NIC interrupts concentrated on one CPU socket competed for CPU with Oracle's log writer (LGWR), delaying redo-log writes and therefore commits.",
+        "evidence": "source line 282: \"원인은 CPU 소켓 하나에 몰려 있던 NIC 인터럽트였습니다\"; source line 282: \"NIC 인터럽트가 물리 코어 32개 중 8개에만 몰려 있었습니다\""
+      },
+      {
+        "id": "f2",
+        "claim": "Fix: the interconnect NICs were moved to slots on different CPU sockets and their bonding switched to Active-Active, spreading the interrupts across both sockets.",
+        "evidence": "source line 282: \"인터커넥트 NIC 2장을 서로 다른 소켓에 연결된 슬롯으로 옮기고, 본딩을 Active-Active로 바꿔 두 포트를 동시에 쓰는 겁니다\""
+      },
+      {
+        "id": "f3",
+        "claim": "Result: the 0.1 s+ commit waits largely went away, and CPU usage dropped.",
+        "evidence": "source line 282: \"0.1초 이상의 커밋 대기는 대부분 개선됐고\"; source line 282: \"36.6%에서 17.4%로\""
+      }
+    ]
+  },
+  {
+    "id": "gist-3",
+    "set": "final",
+    "category": "gist",
+    "lang": "en",
+    "url": "https://go.dev/blog/error-syntax",
+    "question": "Using the Go blog post at https://go.dev/blog/error-syntax, what has the Go team decided about error handling, and why?",
+    "facts": [
+      {
+        "id": "f1",
+        "claim": "For the foreseeable future, the Go team will stop pursuing syntactic language changes for error handling.",
+        "evidence": "source line 768: \"For the foreseeable future, the Go team will stop pursuing syntactic language changes\""
+      },
+      {
+        "id": "f2",
+        "claim": "The Go team will also close all open and incoming proposals that are primarily about error-handling syntax, without further investigation.",
+        "evidence": "source line 770: \"We will also close all open and incoming proposals that concern themselves primarily\""
+      },
+      {
+        "id": "f3",
+        "claim": "Why: years of proposals (three from the Go team, hundreds from the community) never reached anything close to a consensus.",
+        "evidence": "source line 594: \"with three full-fledged proposals by the Go team and\"; source line 618: \"None of the error handling proposals reached anything close to a consensus,\""
+      }
+    ]
+  },
+  {
+    "id": "gist-4",
+    "set": "final",
+    "category": "gist",
+    "lang": "ko",
+    "url": "https://tech.socar.kr/fe/2026/06/24/spa-cache-fallback-strategy-with-s3-cloudfront",
+    "question": "https://tech.socar.kr/fe/2026/06/24/spa-cache-fallback-strategy-with-s3-cloudfront 글의 핵심을 요약해 주세요. 어떤 문제가 계기였고, 캐시와 fallback을 어떻게 나누었으며, 인프라 설정으로 해결되지 않는 부분은 어떻게 보완했나요?",
+    "facts": [
+      {
+        "id": "f1",
+        "claim": "The trigger: after a deployment, webviews still running the old SPA failed to load its old hashed chunks (chunk load errors).",
+        "evidence": "source line 3: \"chunk load error를 계기로, 캐시 정책과 fallback 전략을 어떻게 분리했는지 정리합니다\"; source line 5: \"문제는 새 프론트 배포 이후 이미 열려 있던 웹뷰에서 route 이동을 할 때 발생했습니다.\""
+      },
+      {
+        "id": "f2",
+        "claim": "index.html and hashed assets must have separate cache policies.",
+        "evidence": "source line 19: \"과 hashed asset은 서로 다른 cache 정책을 가져야 한다.\""
+      },
+      {
+        "id": "f3",
+        "claim": "The SPA fallback was limited to route requests, so asset requests are no longer answered with index.html; it is done with a CloudFront Function rewrite instead of the Custom Error Response.",
+        "evidence": "source line 21: \"SPA fallback은 route 요청만 처리해야 하고, asset 요청까지 삼키면 안 된다.\"; source line 138: \"CloudFront Function으로 route-only rewrite 적용\""
+      },
+      {
+        "id": "f4",
+        "claim": "Because infrastructure settings cannot fully prevent dynamic-import failures in already-open old SPAs, the frontend adds a reload-once defense.",
+        "evidence": "source line 23: \"인프라 설정만으로 이미 열린 구버전 SPA의 dynamic import 실패를 완전히 없애기는 어렵다.\"; source line 24: \"남는 런타임 문제는 프론트에서 reload-once 방어로 보완해야 한다.\""
+      }
+    ]
+  },
+  {
+    "id": "gist-5",
+    "set": "final",
+    "category": "gist",
+    "lang": "en",
+    "url": "https://kubernetes.io/blog/2025/11/11/ingress-nginx-retirement/",
+    "question": "Using the Kubernetes blog post at https://kubernetes.io/blog/2025/11/11/ingress-nginx-retirement/, what is being announced, on what timeline, what happens to existing users, and what are they advised to do?",
+    "facts": [
+      {
+        "id": "f1",
+        "claim": "The Ingress NGINX controller is being retired.",
+        "evidence": "source line 816: \"Kubernetes SIG Network and the Security Response Committee are announcing the upcoming retirement of\""
+      },
+      {
+        "id": "f2",
+        "claim": "Best-effort maintenance continues until March 2026; after that there are no further releases or fixes, security fixes included.",
+        "evidence": "source line 816: \"Best-effort maintenance will continue until March 2026.\"; source line 816: \"Afterward, there will be no further releases, no bugfixes, and no updates to resolve any security vulnerabilities that may be discovered.\""
+      },
+      {
+        "id": "f3",
+        "claim": "Existing deployments keep working.",
+        "evidence": "source line 816: \"Existing deployments of Ingress NGINX will continue to function and installation artifacts will remain available.\""
+      },
+      {
+        "id": "f4",
+        "claim": "Users are advised to migrate, to Gateway API or to another Ingress controller.",
+        "evidence": "source line 816: \"migrating to Gateway API</a>, the modern replacement for Ingress\""
+      }
+    ]
+  },
+  {
+    "id": "synthesis-1",
+    "set": "dev",
+    "category": "synthesis",
+    "lang": "en",
+    "url": "https://docs.python.org/3.12/whatsnew/3.12.html",
+    "question": "Using What's New In Python 3.12 at https://docs.python.org/3.12/whatsnew/3.12.html: who is credited with adding experimental support for the BOLT binary optimizer, and who tuned it; who is credited with making ThinLTO the default link time optimization policy; and does any contributor appear in both credits?",
+    "facts": [
+      {
+        "id": "f1",
+        "claim": "Experimental BOLT support was contributed by Kevin Modzelewski and tuned by Donghee Na.",
+        "evidence": "source line 1277: \"(Contributed by Kevin Modzelewski in <a class=\"reference external\" href=\"https://github.com/python/cpython/issues/90536\">gh-90536</a> and tuned by Donghee Na in\""
+      },
+      {
+        "id": "f2",
+        "claim": "Making ThinLTO the default link time optimization policy was contributed by Donghee Na.",
+        "evidence": "source line 2425: \"(Contributed by Donghee Na in <a class=\"reference external\" href=\"https://github.com/python/cpython/issues/89536\">gh-89536</a>.)\""
+      },
+      {
+        "id": "f3",
+        "claim": "Yes: Donghee Na appears in both credits.",
+        "evidence": "source line 2423: \"CPython now uses the ThinLTO option as the default link time optimization policy\""
+      }
+    ]
+  },
+  {
+    "id": "synthesis-2",
+    "set": "dev",
+    "category": "synthesis",
+    "lang": "en",
+    "url": "https://go.dev/doc/go1.22",
+    "question": "Using the Go 1.22 release notes at https://go.dev/doc/go1.22, list every GOEXPERIMENT setting the notes mention and say what each one does.",
+    "facts": [
+      {
+        "id": "f1",
+        "claim": "GOEXPERIMENT=rangefunc enables a preview of range-over-function iterators.",
+        "evidence": "source line 504: \"Building with <code>GOEXPERIMENT=rangefunc</code> enables this feature.\""
+      },
+      {
+        "id": "f2",
+        "claim": "GOEXPERIMENT=noallocheaders turns off the runtime's new type-metadata (allocation header) layout, going back to the old one.",
+        "evidence": "source line 615: \"Such programs may be built with <code>GOEXPERIMENT=noallocheaders</code> to revert\""
+      },
+      {
+        "id": "f3",
+        "claim": "GOEXPERIMENT=newinliner enables the compiler's new call-site inlining heuristics.",
+        "evidence": "source line 635: \"Building with <code>GOEXPERIMENT=newinliner</code> enables the new call-site\""
+      },
+      {
+        "id": "f4",
+        "claim": "GOEXPERIMENT=noexectracer2 switches back to the old execution tracer implementation.",
+        "evidence": "source line 1198: \"old implementation by building your Go program with <code>GOEXPERIMENT=noexectracer2</code>.\""
+      }
+    ]
+  },
+  {
+    "id": "synthesis-3",
+    "set": "final",
+    "category": "synthesis",
+    "lang": "en",
+    "url": "https://www.postgresql.org/docs/16/release-16.html",
+    "question": "Using the PostgreSQL 16 release notes at https://www.postgresql.org/docs/16/release-16.html: what was the server variable force_parallel_mode renamed to, and what minimum versions of Perl and of Bison does building PostgreSQL 16 now require?",
+    "facts": [
+      {
+        "id": "f1",
+        "claim": "force_parallel_mode was renamed to debug_parallel_query.",
+        "evidence": "source line 219: \"Rename server variable <code class=\"varname\">force_parallel_mode</code> to <a class=\"link\" href=\"runtime-config-developer.html#GUC-DEBUG-PARALLEL-QUERY\"><code class=\"varname\">debug_parallel_query</code></a>\""
+      },
+      {
+        "id": "f2",
+        "claim": "Building PostgreSQL 16 requires Perl 5.14 or later.",
+        "evidence": "source line 1075: \"Require <span class=\"productname\">Perl</span> version 5.14 or later\""
+      },
+      {
+        "id": "f3",
+        "claim": "Building PostgreSQL 16 requires Bison 2.3 or later.",
+        "evidence": "source line 1078: \"Require <span class=\"productname\">Bison</span> version 2.3 or later\""
+      }
+    ]
+  },
+  {
+    "id": "synthesis-4",
+    "set": "final",
+    "category": "synthesis",
+    "lang": "ko",
+    "url": "https://ko.wikipedia.org/w/index.php?title=%EC%9D%B8%EC%B2%9C%EA%B5%AD%EC%A0%9C%EA%B3%B5%ED%95%AD&oldid=42702561",
+    "question": "https://ko.wikipedia.org/w/index.php?title=%EC%9D%B8%EC%B2%9C%EA%B5%AD%EC%A0%9C%EA%B3%B5%ED%95%AD&oldid=42702561 문서(인천국제공항, 이 판)를 근거로 답하세요. 인천국제공항의 제4활주로는 언제 개장했고 길이는 얼마입니까? 그리고 그 개장 연도에 인천국제공항의 연간 여객 수는 몇 명이었습니까?",
+    "facts": [
+      {
+        "id": "f1",
+        "claim": "제4활주로는 2021년 6월 17일에 개장했다 (17 June 2021).",
+        "evidence": "source line 1197: \"title=\"2021년\" id=\"mw-A\">2021년</a> <a rel=\"mw:WikiLink\" href=\"https://ko.wikipedia.org/wiki/6월_17일\" title=\"6월 17일\" id=\"mw-Q\">6월 17일</a>에 길이 3,750m의 제4활주로를 개장하였고\""
+      },
+      {
+        "id": "f2",
+        "claim": "제4활주로의 길이는 3,750m이다.",
+        "evidence": "source line 1197: \"에 길이 3,750m의 제4활주로를 개장하였고\""
+      },
+      {
+        "id": "f3",
+        "claim": "2021년 연간 여객 수는 3,198,909명이다.",
+        "evidence": "source line 1600: \"</span></span></span> 3,198,909</td>\""
+      }
+    ]
+  },
+  {
+    "id": "synthesis-5",
+    "set": "final",
+    "category": "synthesis",
+    "lang": "en",
+    "url": "https://blog.cloudflare.com/18-november-2025-outage/",
+    "question": "Using Cloudflare's post at https://blog.cloudflare.com/18-november-2025-outage/: at what time (UTC) did Cloudflare's network begin failing to deliver core traffic, at what time was the ClickHouse permissions change that set it off made, and what limit on the number of Bot Management features did the bad file exceed, compared with how many features were normally in use?",
+    "facts": [
+      {
+        "id": "f1",
+        "claim": "Cloudflare's network began failing at 11:20 UTC.",
+        "evidence": "source line 56: \"On 18 November 2025 at 11:20 UTC\""
+      },
+      {
+        "id": "f2",
+        "claim": "The ClickHouse permissions change was made at 11:05 UTC.",
+        "evidence": "source line 56: \"we made a change at 11:05\""
+      },
+      {
+        "id": "f3",
+        "claim": "The Bot Management feature limit was 200, against roughly 60 features in normal use.",
+        "evidence": "source line 62: \"Currently that limit is set to 200, well above our current use of ~60 features\""
+      }
+    ]
+  }
+]

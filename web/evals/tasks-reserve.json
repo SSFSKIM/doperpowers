@@ -1,0 +1,357 @@
+[
+  {
+    "id": "exact-detail-r1",
+    "set": "final",
+    "category": "exact-detail",
+    "lang": "en",
+    "url": "https://doc.rust-lang.org/1.80.0/reference/type-layout.html",
+    "question": "Using the Rust Reference for Rust 1.80.0 at https://doc.rust-lang.org/1.80.0/reference/type-layout.html, what is the largest alignment value allowed in #[repr(align(x))] or #[repr(packed(x))], and what alignment value does a bare #[repr(packed)] use?",
+    "facts": [
+      {
+        "id": "f1",
+        "claim": "The largest allowed alignment value is 2^29 (536,870,912).",
+        "evidence": "source line 651: \"power of two from 1 up to 2<sup>29</sup>.\""
+      },
+      {
+        "id": "f2",
+        "claim": "A bare #[repr(packed)] (no value given) uses the value 1.",
+        "evidence": "source line 652: \"as in <code>#[repr(packed)]</code>, then the value is 1.\""
+      }
+    ]
+  },
+  {
+    "id": "exact-detail-r2",
+    "set": "final",
+    "category": "exact-detail",
+    "lang": "en",
+    "url": "https://raw.githubusercontent.com/redis/redis/d2c8a4b91e8c0e6aefd1f5bc0bf582cddbe046b7/redis.conf",
+    "question": "Using the redis.conf at https://raw.githubusercontent.com/redis/redis/d2c8a4b91e8c0e6aefd1f5bc0bf582cddbe046b7/redis.conf, what is hll-sparse-max-bytes set to, and above what value does the file say this setting is totally useless?",
+    "facts": [
+      {
+        "id": "f1",
+        "claim": "hll-sparse-max-bytes is set to 3000.",
+        "evidence": "source line 1992: \"hll-sparse-max-bytes 3000\""
+      },
+      {
+        "id": "f2",
+        "claim": "The file says a value greater than 16000 is totally useless.",
+        "evidence": "source line 1984: \"# A value greater than 16000 is totally useless\""
+      }
+    ]
+  },
+  {
+    "id": "table-r1",
+    "set": "final",
+    "category": "table",
+    "lang": "en",
+    "url": "https://en.wikipedia.org/w/index.php?title=Comparison_of_file_systems&oldid=1380115533",
+    "question": "Using the Wikipedia revision at https://en.wikipedia.org/w/index.php?title=Comparison_of_file_systems&oldid=1380115533, what maximum file size and what maximum volume size does the \"Limits\" table list for F2FS?",
+    "facts": [
+      {
+        "id": "f1",
+        "claim": "F2FS maximum file size: 4,228,213,756 KiB, or 4.329 TB.",
+        "evidence": "source line 5313: \"4,228,213,756 <a rel=\"mw:WikiLink\" href=\"https://en.wikipedia.org/wiki/Kibibyte\"\""
+      },
+      {
+        "id": "f2",
+        "claim": "F2FS maximum volume size: 16 TiB, or 17.59 TB.",
+        "evidence": "source line 5314: \"<td data-sort-type=\"number\" data-sort-value=\"17592186044416\" id=\"mwGlw\">16\""
+      }
+    ]
+  },
+  {
+    "id": "table-r2",
+    "set": "final",
+    "category": "table",
+    "lang": "en",
+    "url": "https://github.com/nodejs/Release/blob/de0b20f409ba90dcde129b4bfb85b47c3c422ecb/README.md",
+    "question": "Using the Node.js release schedule file at https://github.com/nodejs/Release/blob/de0b20f409ba90dcde129b4bfb85b47c3c422ecb/README.md, what are the Active LTS Start and End-of-life dates listed for Node.js 26.x, and what Current Start date is listed for 27.x?",
+    "facts": [
+      {
+        "id": "f1",
+        "claim": "Node.js 26.x Active LTS Start: 2026-10-28.",
+        "evidence": "source line 9: \"| [26.x][] | **Current**         |              | 2026-05-05     | 2026-10-28 \""
+      },
+      {
+        "id": "f2",
+        "claim": "Node.js 26.x End-of-life: 2029-04-30.",
+        "evidence": "source line 9: \"| 2027-10-20        | 2029-04-30 \""
+      },
+      {
+        "id": "f3",
+        "claim": "Node.js 27.x Current Start: 2027-04-22.",
+        "evidence": "source line 13: \"| 27.x     | **Alpha**   |              | 2026-10-28  | 2027-04-22 \""
+      }
+    ]
+  },
+  {
+    "id": "code-r1",
+    "set": "final",
+    "category": "code",
+    "lang": "en",
+    "url": "https://blog.rust-lang.org/2024/07/25/Rust-1.80.0/",
+    "question": "Using the Rust blog post at https://blog.rust-lang.org/2024/07/25/Rust-1.80.0/ (\"Announcing Rust 1.80.0\"), quote verbatim the code example in the \"Exclusive ranges in patterns\" section.",
+    "facts": [
+      {
+        "id": "f1",
+        "claim": "The example, verbatim:\npub fn size_prefix(n: u32) -> &'static str {\n    const K: u32 = 10u32.pow(3);\n    const M: u32 = 10u32.pow(6);\n    const G: u32 = 10u32.pow(9);\n    match n {\n        ..K => \"\",\n        K..M => \"k\",\n        M..G => \"M\",\n        G.. => \"G\",\n    }\n}",
+        "evidence": "source line 148: \"<span class=\"z-l-4 z-d-16\"> size_prefix</span>\" (the block runs through line 158; lines 148-158 with tags stripped and entities decoded equal the quoted code exactly)"
+      }
+    ]
+  },
+  {
+    "id": "code-r2",
+    "set": "final",
+    "category": "code",
+    "lang": "en",
+    "url": "https://nodejs.org/docs/v20.11.0/api/readline.html",
+    "question": "Using the Node.js v20.11.0 `readline` documentation at https://nodejs.org/docs/v20.11.0/api/readline.html, in the section \"Example: Read file stream line-by-Line\", quote verbatim the alternative example that uses the `'line'` event (not the `for await...of` one and not the mixed one that uses `once`).",
+    "facts": [
+      {
+        "id": "f1",
+        "claim": "The example, verbatim:\nconst fs = require('node:fs');\nconst readline = require('node:readline');\n\nconst rl = readline.createInterface({\n  input: fs.createReadStream('sample.txt'),\n  crlfDelay: Infinity,\n});\n\nrl.on('line', (line) => {\n  console.log(`Line from file: ${line}`);\n});",
+        "evidence": "source line 1337: \"<span class=\"hljs-string\">'node:fs'</span>\" (the block runs through line 1347; lines 1337-1347 with tags stripped and entities decoded equal the quoted code exactly)"
+      }
+    ]
+  },
+  {
+    "id": "image-r1",
+    "set": "final",
+    "category": "image",
+    "lang": "en",
+    "url": "https://dropbox.tech/infrastructure/inside-the-magic-pocket",
+    "question": "Using the Dropbox tech blog post at https://dropbox.tech/infrastructure/inside-the-magic-pocket: its \"Erasure Coded Volume\" diagram shows a volume spread across numbered OSDs. In that diagram, how many OSDs hold data extents, how many hold parity extents, and which OSDs fall inside the red box marking the OSDs read to reconstruct Block A?",
+    "facts": [
+      {
+        "id": "f1",
+        "claim": "Six OSDs hold data extents.",
+        "evidence": "image https://dropbox.tech/cms/content/dam/dropbox/tech-blog/en-us/2016/05/encoding.png: nine OSD columns (OSD 1 .. OSD 9); the \"Data Extents\" bracket spans OSD 1 - OSD 6"
+      },
+      {
+        "id": "f2",
+        "claim": "Three OSDs hold parity extents.",
+        "evidence": "image https://dropbox.tech/cms/content/dam/dropbox/tech-blog/en-us/2016/05/encoding.png: the shaded columns OSD 7, OSD 8, OSD 9 sit under the \"Parity Extents\" bracket"
+      },
+      {
+        "id": "f3",
+        "claim": "The red box spans OSD 3 through OSD 8.",
+        "evidence": "image https://dropbox.tech/cms/content/dam/dropbox/tech-blog/en-us/2016/05/encoding.png: the red rectangle covers the columns OSD 3, 4, 5, 6, 7, 8 (Block A sits in OSD 1, boxed in green)"
+      }
+    ]
+  },
+  {
+    "id": "image-r2",
+    "set": "final",
+    "category": "image",
+    "lang": "en",
+    "url": "https://arxiv.org/html/2403.04132v1",
+    "question": "Using the arXiv HTML version of the Chatbot Arena paper at https://arxiv.org/html/2403.04132v1: Figure 2 shows a win-rate matrix (left) and a battle-count matrix (right) for a subset of models. According to the battle-count matrix, which pair of models has the most battles and how many, and how many battles are there between gpt-4-turbo and gpt-4-0613?",
+    "facts": [
+      {
+        "id": "f1",
+        "claim": "The pair with the most battles is gpt-4-turbo vs claude-2.1.",
+        "evidence": "image https://arxiv.org/html/2403.04132v1/battle_count.png: the brightest (yellow) cell is row gpt-4-turbo / column claude-2.1 (and its mirror), the matrix maximum"
+      },
+      {
+        "id": "f2",
+        "claim": "That pair has 3053 battles.",
+        "evidence": "image https://arxiv.org/html/2403.04132v1/battle_count.png: the gpt-4-turbo x claude-2.1 cell reads 3053"
+      },
+      {
+        "id": "f3",
+        "claim": "gpt-4-turbo and gpt-4-0613 have 2564 battles.",
+        "evidence": "image https://arxiv.org/html/2403.04132v1/battle_count.png: the gpt-4-turbo x gpt-4-0613 cell reads 2564"
+      }
+    ]
+  },
+  {
+    "id": "js-r1",
+    "set": "final",
+    "category": "js",
+    "lang": "en",
+    "url": "https://registry.terraform.io/modules/terraform-aws-modules/vpc/aws/5.0.0",
+    "question": "Using the Terraform Registry page for version 5.0.0 of the terraform-aws-modules/vpc/aws module at https://registry.terraform.io/modules/terraform-aws-modules/vpc/aws/5.0.0, what AWS provider version does the module require, and what are the default values of its `flow_log_max_aggregation_interval` and `flow_log_traffic_type` inputs?",
+    "facts": [
+      {
+        "id": "f1",
+        "claim": "The module requires the AWS provider at version >= 5.0.",
+        "evidence": "independent render (Playwright, Chrome for Testing 1248, networkidle + 6 s), body.innerText line 285: \"aws\\t>= 5.0\" (Requirements); source https://raw.githubusercontent.com/terraform-aws-modules/terraform-aws-vpc/v5.0.0/versions.tf line 7: \"version = \\\">= 5.0\\\"\""
+      },
+      {
+        "id": "f2",
+        "claim": "The default of flow_log_max_aggregation_interval is 600 (seconds).",
+        "evidence": "independent render (Playwright, Chrome for Testing 1248, networkidle + 6 s), body.innerText line 567: \"flow_log_max_aggregation_interval … number\\t600\\tno\"; source variables.tf at v5.0.0 line 1478: \"default     = 600\""
+      },
+      {
+        "id": "f3",
+        "claim": "The default of flow_log_traffic_type is \"ALL\".",
+        "evidence": "independent render (Playwright, Chrome for Testing 1248, networkidle + 6 s), body.innerText line 569: \"flow_log_traffic_type … string\\t\\\"ALL\\\"\\tno\"; source variables.tf at v5.0.0 line 1484: \"default     = \\\"ALL\\\"\""
+      }
+    ]
+  },
+  {
+    "id": "js-r2",
+    "set": "final",
+    "category": "js",
+    "lang": "en",
+    "url": "https://bundlephobia.com/package/react@18.2.0",
+    "question": "Using the Bundlephobia page for react 18.2.0 at https://bundlephobia.com/package/react@18.2.0, what minified and minified + gzipped bundle sizes does it give, and what download time over slow 3G?",
+    "facts": [
+      {
+        "id": "f1",
+        "claim": "Minified: 6.5 kB.",
+        "evidence": "independent render (Playwright, Chrome for Testing 1248, networkidle + 6 s), body.innerText lines 14–16: \"6.5\" \"kB\" \"MINIFIED\"; api https://bundlephobia.com/api/size?package=react@18.2.0: \"size\": 6618"
+      },
+      {
+        "id": "f2",
+        "claim": "Minified + gzipped: 2.5 kB.",
+        "evidence": "independent render (Playwright, Chrome for Testing 1248, networkidle + 6 s), body.innerText lines 17–19: \"2.5\" \"kB\" \"MINIFIED + GZIPPED\"; api: \"gzip\": 2608"
+      },
+      {
+        "id": "f3",
+        "claim": "Download time over slow 3G: 51 ms.",
+        "evidence": "independent render (Playwright, Chrome for Testing 1248, networkidle + 6 s), body.innerText lines 21–23: \"51\" \"ms\" \"SLOW 3G\" (computed in the page from the gzip size)"
+      }
+    ]
+  },
+  {
+    "id": "pdf-r1",
+    "set": "final",
+    "category": "pdf",
+    "lang": "en",
+    "url": "https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.pdf",
+    "question": "Using the glTF 2.0 specification PDF at https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.pdf, what are the minimum and maximum allowed values of `bufferView.byteStride` in its properties reference?",
+    "facts": [
+      {
+        "id": "f1",
+        "claim": "bufferView.byteStride has a minimum of 4 (>= 4).",
+        "evidence": "pdftotext page 96: \"• Minimum: >= 4\""
+      },
+      {
+        "id": "f2",
+        "claim": "bufferView.byteStride has a maximum of 252 (<= 252).",
+        "evidence": "pdftotext page 96: \"• Maximum: <= 252\""
+      }
+    ]
+  },
+  {
+    "id": "pdf-r2",
+    "set": "final",
+    "category": "pdf",
+    "lang": "en",
+    "url": "https://arxiv.org/pdf/2106.09685v2",
+    "question": "Using the LoRA paper PDF at https://arxiv.org/pdf/2106.09685v2, in the appendix that repeats the effect-of-rank experiment on GPT-2, how many training steps were used on the E2E NLG Challenge, and what range does the paper give for the optimal rank of GPT-2 Medium?",
+    "facts": [
+      {
+        "id": "f1",
+        "claim": "The GPT-2 rank experiment reports results after training for 26,000 steps.",
+        "evidence": "pdftotext page 24: \"after training for 26,000 steps\""
+      },
+      {
+        "id": "f2",
+        "claim": "The optimal rank for GPT-2 Medium is between 4 and 16, depending on the metric.",
+        "evidence": "pdftotext page 24: \"Medium is between 4 and 16 depending on the metric used\""
+      }
+    ]
+  },
+  {
+    "id": "gist-r1",
+    "set": "final",
+    "category": "gist",
+    "lang": "en",
+    "url": "https://letsencrypt.org/2024/12/05/ending-ocsp/",
+    "question": "Using the Let's Encrypt post at https://letsencrypt.org/2024/12/05/ending-ocsp/, what is Let's Encrypt ending, what replaces it, what are the key dates, and what is the main reason?",
+    "facts": [
+      {
+        "id": "f1",
+        "claim": "Let's Encrypt is ending OCSP support and will provide certificate revocation information only via CRLs.",
+        "evidence": "source line 686: \"ending support for providing certificate revocation information via the\""
+      },
+      {
+        "id": "f2",
+        "claim": "On May 7, 2025, OCSP URLs are removed from certificates (and requests with the OCSP Must-Staple extension fail).",
+        "evidence": "source line 693: \"<li>May 7, 2025\"; source line 696: \"On this date we will drop OCSP URLs from certificates\""
+      },
+      {
+        "id": "f3",
+        "claim": "On August 6, 2025, the OCSP responders are turned off.",
+        "evidence": "source line 700: \"<li>August 6, 2025\"; source line 702: \"On this date we will turn off our OCSP responders\""
+      },
+      {
+        "id": "f4",
+        "claim": "The main reason is privacy: OCSP lets the CA learn which sites a visitor's IP address is visiting.",
+        "evidence": "source line 709: \"We plan to end support for OCSP primarily because it represents a considerable risk to privacy on the Internet.\""
+      }
+    ]
+  },
+  {
+    "id": "gist-r2",
+    "set": "final",
+    "category": "gist",
+    "lang": "en",
+    "url": "https://blog.rust-lang.org/2026/04/04/docsrs-only-default-targets/",
+    "question": "Using the Rust blog post at https://blog.rust-lang.org/2026/04/04/docsrs-only-default-targets/, what change is docs.rs making and from when, which target is built by default, and what should a crate that needs documentation for more targets do?",
+    "facts": [
+      {
+        "id": "f1",
+        "claim": "Starting 2026-05-01, docs.rs builds documentation only for the default target (instead of five targets) when a crate does not list its targets.",
+        "evidence": "source line 92: \"docs.rs will make a <strong>breaking</strong> change to its build\"; source line 96: \"list of five targets.\"; source line 98: \"the default target unless additional targets are requested explicitly.\""
+      },
+      {
+        "id": "f2",
+        "claim": "Unless default-target is set, the default target is x86_64-unknown-linux-gnu.",
+        "evidence": "source line 112: \"servers: <code>x86_64-unknown-linux-gnu</code>.\""
+      },
+      {
+        "id": "f3",
+        "claim": "A crate that needs more targets must list them all explicitly with `targets` under [package.metadata.docs.rs] in Cargo.toml.",
+        "evidence": "source line 119: \"define the full list explicitly in your <code>Cargo.toml</code>\""
+      }
+    ]
+  },
+  {
+    "id": "synthesis-r1",
+    "set": "final",
+    "category": "synthesis",
+    "lang": "en",
+    "url": "https://aws.amazon.com/message/101925/",
+    "question": "Using AWS's post-event summary at https://aws.amazon.com/message/101925/: AWS STS had a second period of elevated API errors and latency caused by NLB health check failures. Between what times did it occur, and at what time did engineers disable automatic health check failovers for NLB?",
+    "facts": [
+      {
+        "id": "f1",
+        "claim": "STS's second period of elevated errors and latency ran from 8:31 AM to 9:59 AM.",
+        "evidence": "source line 1636: \"Between 8:31 AM and 9:59 AM, STS API error rates and latency increased again as a result of NLB health check failures\""
+      },
+      {
+        "id": "f2",
+        "claim": "Engineers disabled automatic health check failovers for NLB at 9:36 AM.",
+        "evidence": "source line 1631: \"At 9:36 AM, engineers disabled automatic health check failovers for NLB\""
+      }
+    ]
+  },
+  {
+    "id": "synthesis-r2",
+    "set": "final",
+    "category": "synthesis",
+    "lang": "ko",
+    "url": "https://ko.wikipedia.org/w/index.php?title=%EB%88%84%EB%A6%AC%ED%98%B8&oldid=42623725",
+    "question": "https://ko.wikipedia.org/w/index.php?title=%EB%88%84%EB%A6%AC%ED%98%B8&oldid=42623725 문서(누리호, 이 판)를 근거로 답하세요. 누리호 3단에 쓰이는 엔진은 몇 톤급이며 진공 비추력은 몇 초입니까? 그리고 1차 발사에서 이 3단 엔진은 계획보다 몇 초 일찍 연소를 마쳤습니까?",
+    "facts": [
+      {
+        "id": "f1",
+        "claim": "누리호 3단은 7톤급 엔진 1기를 사용한다.",
+        "evidence": "source line 862: \"3단에는 7톤급 엔진 1기를 사용한다\""
+      },
+      {
+        "id": "f2",
+        "claim": "7톤급 엔진의 진공 비추력은 325.1초이다.",
+        "evidence": "source line 862: \"7톤급 엔진은 94.5의 팽창비를 가지며 진공 비추력은 325.1초이다\""
+      },
+      {
+        "id": "f3",
+        "claim": "1차 발사에서 3단 엔진은 계획보다 46초 일찍 연소를 마쳤다 (46초 조기 종료).",
+        "evidence": "source line 938: \"3단 엔진이 46초 조기 종료되었다\""
+      }
+    ]
+  }
+]

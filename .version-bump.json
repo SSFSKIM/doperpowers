@@ -33,7 +33,8 @@
           ".worktrees",
           "devcloud",
           "to-human",
-          "sminos"
+          "sminos",
+          "web"
         ]
       }
     },
@@ -86,6 +87,25 @@
       "audit": {
         "root": "sminos",
         "exclude": []
+      }
+    },
+    {
+      "name": "web",
+      "files": [
+        {
+          "path": "web/.claude-plugin/plugin.json",
+          "field": "version"
+        },
+        {
+          "path": ".claude-plugin/marketplace.json",
+          "field": "plugins[name=web].version"
+        }
+      ],
+      "audit": {
+        "root": "web",
+        "exclude": [
+          "clipper"
+        ]
       }
     }
   ]

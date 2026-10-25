@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Egress Probe</title></head>
+<body>
+  <div id="app"></div>
+  <img src="http://127.0.0.1:{{TRAP}}/img.png" alt="">
+  <img src="http://localhost:{{TRAP}}/img2.png" alt="">
+  <script>
+    const trap = 'http://127.0.0.1:{{TRAP}}'
+    fetch(trap + '/fetch').catch(() => {})
+    fetch('http://localhost:{{TRAP}}/fetch2', { mode: 'no-cors' }).catch(() => {})
+    try { new WebSocket('ws://127.0.0.1:{{TRAP}}/ws') } catch (e) {}
+    try {
+      const pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:127.0.0.1:{{UDP}}' }, { urls: 'turn:127.0.0.1:{{UDP}}?transport=udp', username: 'u', credential: 'p' }] })
+      pc.createDataChannel('probe')
+      pc.createOffer().then(o => pc.setLocalDescription(o)).catch(() => {})
+    } catch (e) {}
+    // The content arrives only after a request the server holds for two seconds:
+    // a pending request stops virtual time, so the render lives long enough for
+    // ICE gathering to send its STUN packets before the DOM is dumped.
+    const words = 'This page tries every way a page can reach the network: an image, a script fetch, a web socket and a peer connection, each aimed at a trap on this machine that counts what reaches it. A render that keeps its boundary lets none of them through, and the text of the page still comes back whole.'
+    fetch('/slow').then(() => {
+      document.getElementById('app').innerHTML = '<article><h1>Egress Probe</h1><p>' + words + '</p><p>' + words + '</p></article>'
+    })
+  </script>
+</body>
+</html>

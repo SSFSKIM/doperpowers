@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Rendered Notes</title></head>
+<body>
+  <div id="app"></div>
+  <noscript>You need to enable JavaScript to run this app.</noscript>
+  <script>
+    const words = 'This paragraph was written by a script after the page loaded, so a plain fetch of the page finds an empty shell and nothing to read. Only a browser that runs the script sees these sentences, which describe a small notebook application with lists, tags, and a search box that remembers recent queries.'
+    document.getElementById('app').innerHTML =
+      '<article><h1>Rendered Notes</h1><p>' + words + '</p><p>' + words + '</p></article>'
+  </script>
+</body>
+</html>

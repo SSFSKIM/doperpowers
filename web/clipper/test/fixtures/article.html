@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Gardens of the Test Server | Fixture Weekly</title>
+  <meta property="og:title" content="Gardens of the Test Server">
+  <meta property="og:site_name" content="Fixture Weekly">
+  <meta name="author" content="Ada Fixture">
+  <meta name="description" content="A fixture article about gardens, with images of every kind the clipper handles.">
+</head>
+<body>
+  <header><nav><a href="/">Home</a> <a href="/about">About</a> <a href="/subscribe">Subscribe</a></nav></header>
+  <main>
+    <article>
+      <h1>Gardens of the Test Server</h1>
+      <p>The garden behind the test server has grown for many seasons. Every spring the gardener plants rows of beans, peas and tall sunflowers, and every autumn she writes down what grew well and what the slugs ate before anyone could pick it.</p>
+      <p><img src="/img/diagram.png" alt="A diagram of the beds"></p>
+      <p>This year the beds were laid out in a new pattern, drawn in the diagram above. The paths run north to south so the morning light reaches every row, and the compost sits in the corner nearest the kitchen door.</p>
+      <h2>Lazy pictures</h2>
+      <p><img class="lazyload" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7" data-src="/img/lazy.png" alt="The lazy bed"></p>
+      <p>Some pictures on this page load only when a reader scrolls to them, and the clipper has to find their real address in an attribute the browser would have read.</p>
+      <p><img src="/img/small.png" srcset="/img/small.png 400w, /img/large.png 1200w" alt="Responsive beds"></p>
+      <p><img src="/img/pixel.gif" alt=""></p>
+      <p><img src="/img/photo" alt="Photo with no extension"></p>
+      <p><img src="/img/diagram.png" alt="The same diagram again"></p>
+      <h2>Code in the shed</h2>
+      <p>The watering timer in the shed runs a short program every morning at six.</p>
+      <pre><code class="language-python"># water the beans first
+for bed in beds:
+    water(bed, minutes=4)
+</code></pre>
+      <p>When it rains, the timer skips the run and logs the skip in a notebook that nobody reads.</p>
+    </article>
+  </main>
+  <footer><p>Copyright Fixture Weekly. All rights reserved.</p></footer>
+</body>
+</html>

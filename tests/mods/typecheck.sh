@@ -16,7 +16,7 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-plugins=(. sminos to-human devcloud)
+plugins=(. sminos to-human devcloud web)
 declarations() { echo "$root/$1/.claude-plugin/types/claude-code/index.d.ts"; }
 
 if [ "${1:-}" = --lay ]; then
@@ -42,7 +42,7 @@ if [ "${1:-}" = --lay ]; then
   done
 fi
 
-# One tsc for the four plugins: TypeScript 5 on PATH (CI installs it with a bounded,
+# One tsc for the five plugins: TypeScript 5 on PATH (CI installs it with a bounded,
 # retried fetch), else npx's, whose unbounded first fetch once held the gate to
 # its 10-minute limit.
 if command -v tsc >/dev/null 2>&1 && tsc --version | grep -q '^Version 5\.'; then tsc=(tsc); else tsc=(npx -y -p typescript@5 tsc); fi
