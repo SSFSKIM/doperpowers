@@ -2543,7 +2543,7 @@ describe("a delivered prompt's row (G6)", () => {
 describe('agents the module did not see spawn ($.agent.list())', () => {
   const listed = (id: string, status: string, extra: Record<string, unknown> = {}) => ({ id, description: `task ${id}`, type: 'general-purpose', status, ...extra })
 
-  test('at load the agent state is seeded from the list, so the first resync carries every agent with what the list gives and no more', async () => {
+  test("at load the agent state is seeded from the list, so the first resync carries every agent with what the list gives and no more, the list's word (status) with it", async () => {
     const h = harness({
       messages: [{}],
       agents: [
@@ -2557,11 +2557,11 @@ describe('agents the module did not see spawn ($.agent.list())', () => {
     await h.ready()
     expect(h.events().map((e) => e.type)).toEqual(['session', 'resync'])
     expect(h.events()[1]!.agents).toEqual([
-      { agentId: 'a1', parentAgentId: null, subagentType: 'general-purpose', description: 'task a1', name: 'scout', running: true },
-      { agentId: 'a2', parentAgentId: null, subagentType: 'general-purpose', description: 'task a2', agentType: 'general-purpose', running: false },
-      { agentId: 'a3', parentAgentId: 'a1', subagentType: 'general-purpose', description: 'task a3', running: true },
-      { agentId: 'a4', parentAgentId: null, subagentType: 'general-purpose', description: 'task a4', agentType: 'general-purpose', running: false },
-      { agentId: 'a5', parentAgentId: null, subagentType: 'general-purpose', description: 'task a5', running: true },
+      { agentId: 'a1', parentAgentId: null, subagentType: 'general-purpose', description: 'task a1', name: 'scout', status: 'running', running: true },
+      { agentId: 'a2', parentAgentId: null, subagentType: 'general-purpose', description: 'task a2', status: 'completed', agentType: 'general-purpose', running: false },
+      { agentId: 'a3', parentAgentId: 'a1', subagentType: 'general-purpose', description: 'task a3', status: 'idle', running: true },
+      { agentId: 'a4', parentAgentId: null, subagentType: 'general-purpose', description: 'task a4', status: 'killed', agentType: 'general-purpose', running: false },
+      { agentId: 'a5', parentAgentId: null, subagentType: 'general-purpose', description: 'task a5', status: 'waiting', running: true },
     ])
   })
 
@@ -2574,7 +2574,7 @@ describe('agents the module did not see spawn ($.agent.list())', () => {
     expect(h.ofType('agent')).toEqual([expect.objectContaining({ phase: 'spawn', agentId: 'fork1', subagentType: 'fork', parentAgentId: null, description: 'task fork1' })])
     h.setAgents([listed('a1', 'completed'), listed('fork1', 'running', { type: 'fork' })])
     await h.fire(AGENTS_REFRESH_MS)
-    expect(h.ofType('agent').slice(1)).toEqual([expect.objectContaining({ phase: 'stop', agentId: 'a1', agentType: 'general-purpose' })])
+    expect(h.ofType('agent').slice(1)).toEqual([expect.objectContaining({ phase: 'stop', agentId: 'a1', agentType: 'general-purpose', status: 'completed' })])
     // Only a finished agent leaves the list.
     h.setAgents([listed('a1', 'completed')])
     await h.fire(AGENTS_REFRESH_MS)
@@ -2618,10 +2618,22 @@ describe('agents the module did not see spawn ($.agent.list())', () => {
     await h.fire(AGENTS_REFRESH_MS)
     await h.hook('classic.SubagentStop', { hook_event_name: 'SubagentStop' })(h.engine, { hook_event_name: 'SubagentStop', agent_id: 'a9', agent_type: 'Explore' }, async () => ({}))
     await h.settle()
-    expect(h.ofType('agent').map((e) => [e.phase, e.agentId])).toEqual([
-      ['spawn', 'a9'],
-      ['spawn', 'wf1'],
-      ['stop', 'a9'],
+    expect(h.ofType('agent').map((e) => [e.phase, e.agentId, e.status])).toEqual([
+      ['spawn', 'a9', undefined],
+      ['spawn', 'wf1', undefined],
+      ['stop', 'a9', 'failed'],
+    ])
+  })
+
+  test("a stop the list says carries the list's word, so a killed agent reads as killed; one that left the list has none", async () => {
+    const h = harness({ messages: [{}], agents: [listed('k1', 'running'), listed('k2', 'running')] })
+    await h.ready()
+    h.setAgents([listed('k1', 'killed')])
+    await h.fire(AGENTS_REFRESH_MS)
+    const stops = h.ofType('agent').filter((e) => e.phase === 'stop')
+    expect(stops.map((e) => [e.agentId, e.status])).toEqual([
+      ['k1', 'killed'],
+      ['k2', undefined],
     ])
   })
 

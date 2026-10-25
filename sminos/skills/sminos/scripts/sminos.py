@@ -101,7 +101,17 @@ member too, seat-less, from the first call that reads its project.
                    "+N hidden" tail; --stopped adds stopped, --all shows all, --state selects named states.
                    A row: alias [short], kind, state,
                    @machine, (project,) repo@branch, in charge (age), · active <age>. Inside a session
-                   it ends with the session's subagents (the ids SendMessage takes; --all: finished too)
+                   it says who you are and ends with how many of your subagents run (list --subagents
+                   for them); --here ends with the live sessions that are no member
+    sminos list     --subagents [member] [--done N] [--depth N] [--stall MIN] [--all] [--json]
+                   # your session's subagents (a member's on this machine: inspection only), in place of
+                   ListAgents: counts at every depth, the live ones as a tree, each with its lifecycle
+                   (running, waiting on background, stalled, orphaned; completed, failed, stopped), its
+                   source (the engine through the bridge, else the disk) and what it does (in Bash 12m,
+                   no write 14m); --done N the N ended last, newest first, with their outcome (SendMessage
+                   to an agentId resumes it); --depth N the top N levels, a row saying what it folds;
+                   --stall MIN (10) the quiet that makes an open turn stalled when only the disk speaks;
+                   --json {self, scope, counts, agents, notes}
     sminos find     <words..>                             # list --org <words>: every session they match
     sminos who      [<commit|PR>] [--session S]           # the session a commit (its Sminos-Session trailer)
                    or a PR (its body's last line, else its commits' trailers; a number or URL, through gh)
@@ -2067,6 +2077,8 @@ def member_json(m, project=None):
          "charge_source": m.charge_source, "charge_age": m.charge_age, "by": m.by, "status": m.status,
          "cwd": m.cwd, "repo": m.repo, "branch": m.branch, "worktree": m.worktree,
          "seat": public_seat(m.seat) if m.seat else None, "former": list(m.former)}
+    rec = session_running(m.session) if m.local and m.session else None
+    d["engine"] = engine_facts(rec) if rec else None
     if project is not None:
         d = {"project": project.name, "project_id": project.id, "project_kind": project_kind(project), **d}
     return d
@@ -5771,19 +5783,43 @@ def peer_records():
     """The harness's peer registry: one JSON per live-ish session under
     ~/.claude/sessions/<pid>.json. Records of dead sessions linger, so callers
     check the pid before trusting one."""
-    global _PEERS
+    global _PEERS, _PEERS_UNREAD
     if _PEERS is None:
-        recs = []
+        recs, unread = [], []
         for p in glob.glob(os.path.join(home_dir(), ".claude", "sessions", "*.json")):
             try:
                 with open(p) as f:
                     d = json.load(f)
+            except FileNotFoundError:
+                continue   # its session ended while the directory was read
             except Exception:
+                unread.append(os.path.basename(p))
                 continue
             if isinstance(d, dict):
                 recs.append(d)
-        _PEERS = recs
+            else:
+                unread.append(os.path.basename(p))
+        _PEERS, _PEERS_UNREAD = recs, unread
     return _PEERS
+
+
+_PEERS_UNREAD = []
+
+
+def peer_notes():
+    """What the engine's session records could not tell, for a view that
+    rests on them: [note], empty when every record was read."""
+    peer_records()
+    d = os.path.join(home_dir(), ".claude", "sessions")
+    if not os.path.isdir(d):
+        return ["no engine session records here (%s): no session reads as running" % d]
+    if _PEERS_UNREAD:
+        return ["%d engine session record%s could not be read (%s): %s session%s may be missing or read as not "
+                "running" % (len(_PEERS_UNREAD), "" if len(_PEERS_UNREAD) == 1 else "s",
+                             ", ".join(sorted(_PEERS_UNREAD)[:3]) + (", …" if len(_PEERS_UNREAD) > 3 else ""),
+                             "its" if len(_PEERS_UNREAD) == 1 else "their",
+                             "" if len(_PEERS_UNREAD) == 1 else "s")]
+    return []
 
 
 def pid_alive(pid):
@@ -8620,6 +8656,50 @@ def unprojected_rows(members_known):
     return out
 
 
+# What marks an engine process that serves no session yet: a spare launched
+# to be claimed later (`--await-claim`), parked until a host claims it. The
+# engine's own peer list leaves such endpoints out; the record's words are
+# matched since no field of its own is known to name them.
+UNCLAIMED_WORDS = ("spare", "parked")
+
+
+def engine_facts(rec):
+    """What the engine's record of a running session says beyond membership,
+    as list --json carries it: its raw status, kind and entrypoint, how long
+    since its process started, whether Claude Desktop hosts it, and the name
+    it went by last when it was renamed."""
+    started = rec.get("startedAt")
+    former = rec.get("formerNames")
+    last = former[-1] if isinstance(former, list) and former and isinstance(former[-1], dict) else {}
+    return {"status": rec.get("status") or None, "kind": rec.get("kind") or None,
+            "entrypoint": rec.get("entrypoint") or None,
+            "startedAge": max(0.0, time.time() - started / 1000.0)
+            if isinstance(started, (int, float)) and not isinstance(started, bool) else None,
+            "desktop": rec.get("entrypoint") == "claude-desktop" or bool(rec.get("hostSessionId")),
+            "formerName": last.get("name") if isinstance(last.get("name"), str) else None}
+
+
+def other_live_sessions(shown):
+    """--here's last tail: every session of this machine whose inbox listens
+    and that no row above shows — the engine's peers that are no member
+    (another tool's SDK run, a kind sminos does not join) — as the engine's
+    own peer list shows them, the caller, internal forks and unclaimed spares
+    left out. [{session, short, name, status, kind, entrypoint, startedAge}]."""
+    me, internal, out = os.environ.get("CLAUDE_CODE_SESSION_ID", ""), internal_pids(), []
+    for rec in peer_records():
+        sid = rec.get("sessionId")
+        if not (isinstance(sid, str) and UUID_RE.match(sid)) or sid in shown or sid == me:
+            continue
+        if str(rec.get("pid")) in internal or any(str(rec.get(k) or "") in UNCLAIMED_WORDS for k in ("kind", "status")):
+            continue
+        if not peer_live(rec):
+            continue
+        shown.add(sid)
+        out.append({"session": sid, "short": sid[:8], "name": str(rec.get("name") or "") or sid[:8],
+                    "member": False, **engine_facts(rec)})
+    return out
+
+
 def row_cells(m, project=None):
     """(columns, the rest) of a list row: `alias [short]`, kind, word,
     @machine, the project (a flat list only), repo@branch; then the
@@ -8627,7 +8707,9 @@ def row_cells(m, project=None):
     `· active` the age of its last activity."""
     label = "%s [%s]" % (m.alias, m.short) if m.short else m.alias
     where = (m.repo + ("@" + m.branch if m.branch else "")) if m.repo else ""
-    cells = [label, m.kind or "?", m.state or "?", "@" + m.machine] + ([project.name] if project else []) + [where]
+    rec = session_running(m.session) if m.local and m.session else None
+    kind = (m.kind or "?") + (" desktop" if rec and engine_facts(rec)["desktop"] else "")
+    cells = [label, kind, m.state or "?", "@" + m.machine] + ([project.name] if project else []) + [where]
     rest = []
     if charge_shown(m):
         rest.append("in charge: %s%s" % (charge_shown(m), " (%s)" % short_age(m.charge_age)
@@ -8641,6 +8723,13 @@ def row_cells(m, project=None):
     return cells, rest
 
 
+def print_table_rows(rows):
+    """Cells as aligned columns, two spaces in from the margin, as print_rows draws a list's rows."""
+    widths = [max(len(r[i]) for r in rows) for i in range(len(rows[0]) - 1)]
+    for r in rows:
+        print(("  " + "  ".join([c.ljust(w) for c, w in zip(r, widths)] + [r[-1]])).rstrip())
+
+
 def print_rows(rows):
     """Rows (row_cells) as aligned columns; a column empty on every row is left out."""
     widths = [max(len(cells[i]) for cells, _ in rows) for i in range(len(rows[0][0]))]
@@ -8650,66 +8739,179 @@ def print_rows(rows):
         print(("  " + "  ".join(parts + rest)).rstrip())
 
 
-def subagent_entries(session):
-    """The session's subagents, [{id, parent, type, status, live}] in spawn
-    order: from its bridge when one answers (the child keeps each agent's
-    spawn and whether it runs), else from its transcripts
-    (sminos_jobs.transcript_agents); [] with neither. Live is running, or
-    waiting on its own work: anything not ended."""
-    bridge = bridge_module()
-    try:
-        code, body = bridge.request(bridge.endpoint(session), "GET", "/agents", timeout=3)
-    except (OSError, http.client.HTTPException):
-        code, body = None, None
-    if code == 200 and isinstance(body, dict) and body.get("ready") and isinstance(body.get("agents"), list):
-        return [{"id": str(x.get("agentId")), "parent": x.get("parentAgentId") or None,
-                 "type": str(x.get("subagentType") or x.get("agentType") or "?"),
-                 "status": "running" if x.get("running") else "finished", "live": bool(x.get("running"))}
-                for x in body["agents"] if isinstance(x, dict) and x.get("agentId")]
+def subagents_module():
+    return sibling_module("sminos_subagents")
+
+
+def subagents_view(session, stall_minutes=None):
+    """(view, scope): a session's subagents (sminos_subagents.Subagents) with
+    the engine's word from its bridge when one answers, and the scope the
+    view read — its transcript, whether its process runs, where the
+    lifecycle came from (`engine` with a bridge, else `disk`). The view's
+    notes say what could not be read."""
+    V = subagents_module()
+    rec = session_running(session)
     tpath = transcript_path(session)
+    started = rec.get("startedAt") if rec else None
+    started = started / 1000.0 if isinstance(started, (int, float)) and not isinstance(started, bool) else None
+    bridge, said, notes = None, "none", []
+    if rec is not None:
+        b = bridge_module()
+        sock = b.endpoint(session)
+        if os.path.exists(sock):
+            try:
+                code, body = b.request(sock, "GET", "/agents", timeout=3)
+            except (OSError, http.client.HTTPException) as e:
+                code, body = None, str(e)
+            if code == 200 and isinstance(body, dict) and body.get("ready") and isinstance(body.get("agents"), list):
+                bridge, said = body["agents"], "answered"
+            else:
+                said = "unreachable"
+                notes.append("the session's bridge did not answer (%s): lifecycle is inferred from its transcripts, "
+                             "so an agent in a long inference may read as stalled" % (
+                                 "HTTP %s" % code if code else body or "no answer"))
+        else:
+            notes.append("no bridge runs in this session: lifecycle is inferred from its transcripts")
     if not tpath:
-        return []
-    jobs = sibling_module("sminos_jobs")
-    out = []
-    for x in jobs.transcript_agents(tpath, session_running(session) is not None):
-        # No word that it ended, while the session runs: running, as far as its rows can tell.
-        status = "running" if x["status"] == "unknown" else x["status"]
-        out.append({"id": x["agentId"], "parent": x["parentAgentId"], "type": x["type"], "status": status,
-                    "live": status not in jobs.ENDED})
-    return out
+        notes.append("no transcript of session %s on this machine (%s): %s" % (
+            session[:8], os.path.join(home_dir(), ".claude", "projects"),
+            "only the agents its bridge holds are listed" if bridge is not None else "no subagent can be read"))
+    notes += peer_notes()
+    stall = V.STALL_SECONDS if stall_minutes is None else stall_minutes * 60
+    view = V.Subagents(tpath or "", live=rec is not None, started=started, bridge=bridge, stall=stall)
+    view.notes[:0] = notes
+    scope = {"session": session, "short": session[:8], "transcript": tpath or None,
+             "subagentsDir": view.dir, "live": rec is not None, "bridge": said}
+    return view, scope
 
 
-def subagent_lines(entries, every):
-    """The tree `list` ends with inside a session: live agents nested under
-    their parents (under the nearest one shown, when a parent is folded),
-    the ids SendMessage takes; finished ones folded into `+N finished`,
-    shown by --all (SendMessage to a finished agent's id resumes it)."""
-    if not entries:
-        return []
-    shown = [e for e in entries if every or e["live"]]
-    ids, by_id = {e["id"] for e in shown}, {e["id"]: e for e in entries}
+def self_identity():
+    """The calling session as `list` names it, or None outside a session:
+    {session, short, alias}."""
+    sid = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+    if not sid:
+        return None
+    return {"session": sid, "short": sid[:8], "alias": caller_alias() or sid[:8]}
 
-    def anchor(e):
-        p, seen = e["parent"], set()
-        while p and p not in ids and p in by_id and p not in seen:
-            seen.add(p)
-            p = by_id[p]["parent"]
-        return p if p in ids else None
 
-    children = {}
-    for e in shown:
-        children.setdefault(anchor(e), []).append(e)
-    out = ["subagents:"]
+def self_line(me):
+    return "you: %s [%s]" % (me["alias"], me["short"])
 
-    def walk(parent, depth):
-        for e in children.get(parent, ()):
-            out.append("%s%s  %s  %s" % ("  " * depth, e["id"], e["type"], e["status"]))
-            walk(e["id"], depth + 1)
 
-    walk(None, 1)
-    if len(entries) > len(shown):
-        out.append("  +%d finished — sminos list --all" % (len(entries) - len(shown)))
-    return out
+def subagents_session(q):
+    """The session `--subagents <member>` names on this machine, or exit 4
+    saying why not (a member on another machine keeps its subagents
+    there)."""
+    if UUID_RE.match(q):
+        return q
+    target = find_target(q)
+    if target[0] == "none":
+        # A running session of this machine that is no member: by the engine's name for it, or its short.
+        hits = {r["sessionId"] for r in peer_records()
+                if isinstance(r.get("sessionId"), str) and UUID_RE.match(r["sessionId"]) and peer_running(r)
+                and (r.get("name") == q or r["sessionId"].startswith(q.lower()) and len(q) >= 4)}
+        if len(hits) == 1:
+            return hits.pop()
+        die("no member matching '%s'" % q if not hits else
+            "'%s' names %d running sessions here: give its session id" % (q, len(hits)), EXIT_UNKNOWN)
+    if target[0] == "seat":
+        s = target[1]
+        session = target[2] or s.get("current") or ""
+        if not session:
+            die("%s/%s holds no session" % (s["group"], s["alias"]), EXIT_UNKNOWN)
+        return session
+    m = target[2]
+    if not m.local:
+        die("%s runs on %s: its subagents are on that machine's disk (run sminos list --subagents there)" % (
+            q, m.machine or "another machine"), EXIT_UNKNOWN)
+    return m.session
+
+
+def subagent_summary_line(session):
+    """The one line `list` ends with inside a session that has subagents:
+    how many run, cheaply — the bridge's live list, else the turns its
+    transcripts leave open in the running process — and where the whole
+    view is (`list --subagents`); "" with none."""
+    view, scope = subagents_view(session)
+    if not view.agents:
+        return ""
+    c = view.live_summary()
+    if c["source"] == "engine":
+        said = "%d running" % c["running"] if c["running"] else "none running"
+    else:
+        said = ("%d with a turn open (read from transcripts)" % c["open"] if c["open"]
+                else "none with a turn open (read from transcripts)" if scope["live"] else "none running: the session "
+                "runs no process")
+    return "subagents: %s — sminos list --subagents" % said
+
+
+def cmd_subagents(a):
+    """`list --subagents [member] [--done N] [--depth N] [--all] [--stall MIN]
+    [--json]`: the caller's own session's subagents, or (inspection only)
+    another session's on this machine. Text: who you are, the counts at every
+    depth, then the live agents as a tree (--all: the ended too; --depth:
+    the top levels, a row saying what it folds), and the count of those
+    ended; --done N: the N ended last, newest first, each with its outcome.
+    --json: {self, scope, counts, agents, notes}, every agent of the tree
+    (or the --done list), whatever its state."""
+    V = subagents_module()
+    me = self_identity()
+    member = a.subagents or ""
+    if member:
+        session = subagents_session(member)
+    elif me:
+        session = me["session"]
+    else:
+        die("outside a session, name whose subagents: sminos list --subagents <member>")
+    inspection = me is None or session != me["session"]
+    if a.depth is not None and a.depth < 1:
+        die("--depth is 1 or more")
+    if a.done is not None and a.done < 1:
+        die("--done is 1 or more")
+    view, scope = subagents_view(session, a.stall)
+    scope.update(member=member or None, inspectionOnly=inspection, depth=a.depth, all=a.all, done=a.done,
+                 machine=host_name())
+    counts = view.counts()
+    if a.done is not None:
+        agents = view.done(a.done)
+    else:
+        agents = view.tree(every=a.all or a.json, depth=a.depth)
+    if inspection:
+        for e in agents:
+            e["inspectionOnly"] = True
+    if a.json:
+        print(json.dumps({"self": me, "scope": scope, "counts": counts, "agents": agents, "notes": view.notes},
+                         indent=2))
+        return
+    if me:
+        print(self_line(me))
+    whose = "subagents" if not inspection else "subagents of %s [%s]" % (member or session[:8], session[:8])
+    if inspection:
+        print("%s — inspection only: SendMessage reaches only your own session's subagents; reach this session "
+              "with sminos send" % whose)
+        whose = "  "
+    if a.done is not None:
+        print("%s, the %d ended last, newest first:" % (
+            "ended subagents" if not inspection else "  ended subagents", a.done))
+        lines = V.done_lines(agents)
+        print("\n".join(lines) if lines else "  (none has ended)")
+        if lines and not inspection:
+            print("SendMessage to an agentId resumes that agent, when its work should go on")
+    else:
+        print((whose + " " if not inspection else "  ") + V.counts_line(counts)
+              + ("" if scope["live"] else " — the session runs no process"))
+        lines = V.tree_lines(agents)
+        if lines:
+            print("\n".join(lines))
+        elif not view.agents:
+            print("  (no subagents in session %s: %s)" % (session[:8], view.dir or "no transcript"))
+        else:
+            print("  (none is live)")
+        ended = V.ended_line(counts)
+        if ended and not a.all:
+            print("  %s — sminos list --subagents%s --done 10" % (ended, " " + member if member else ""))
+    for n in view.notes:
+        print("note: " + n)
 
 
 def cmd_list(a):
@@ -8718,8 +8920,14 @@ def cmd_list(a):
     the project's heading when one project shows, flat with the project
     column when several do; --here adds `(no project)`. Stopped, retired and
     gone fold into a tail line; --stopped adds stopped, --all shows all, and
-    --state keeps the named states. Inside a session, the list ends with
-    its subagents (subagent_lines)."""
+    --state keeps the named states; --here ends with the live sessions that
+    are no member (other_live_sessions). Inside a session, the list says who
+    the caller is and ends with one cheap line on its subagents
+    (subagent_summary_line); with --subagents or --done it is the subagent
+    view alone (cmd_subagents)."""
+    if a.subagents is not None or a.done is not None:
+        cmd_subagents(a)
+        return
     projects, words, picked = list_scope(a)
     sections, out, hidden, members_known = [], [], 0, set()
     folded = [word for word in HIDDEN if not (a.stopped and word == "stopped")]
@@ -8743,12 +8951,24 @@ def cmd_list(a):
             if p.id not in {q.id for q in projects}:
                 members_known |= {m.session for m in project_rows(p) if m.session}
         loose = [m for m in unprojected_rows(members_known) if row_matches(m, None, a, words)]
+    others = []
+    if a.here and not picked and not words and not a.state and not a.machine:
+        others = other_live_sessions(members_known | {m.session for m in loose})
+    notes = peer_notes() if (a.here or a.org or not projects) else []
     if a.json:
         out += [{"project": None, "project_id": None, "project_kind": None, **member_json(m)} for m in loose]
+        out += [{"project": None, "project_id": None, "project_kind": None, "alias": o["name"],
+                 "session": o["session"], "short": o["short"], "machine": host_name(), "local": True,
+                 "member": False, "state": None, "engine": {k: o[k] for k in
+                                                            ("status", "kind", "entrypoint", "startedAge", "desktop",
+                                                             "formerName")}}
+                for o in others]
         print(json.dumps(out, indent=2))
+        for n in notes:
+            print("note: " + n, file=sys.stderr)
         return
     if not sections and not loose:
-        print("(no members)")
+        print("(no members in %s)" % (", ".join(p.name for p in projects) if projects else "any project known here"))
     if len(sections) == 1:
         print(sections[0][0].name)
         print_rows([row_cells(m) for m in sections[0][1]])
@@ -8757,12 +8977,22 @@ def cmd_list(a):
     if loose:
         print("(no project)")
         print_rows([row_cells(m) for m in loose])
+    if others:
+        print("other live sessions (not members)")
+        print_table_rows([["%s [%s]" % (o["name"], o["short"]), o["kind"] or "?", o["status"] or "?",
+                           o["entrypoint"] or "?",
+                           "started " + short_age(o["startedAge"]) if o["startedAge"] is not None else ""]
+                          for o in others])
     if hidden:
         hint = "--all" if a.stopped else "--stopped shows stopped; --all shows all"
         print("+%d hidden (%s) — sminos list %s" % (hidden, ", ".join(folded), hint))
-    sid = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
-    if sid and not a.find:
-        for line in subagent_lines(subagent_entries(sid), a.all):
+    for n in notes:
+        print("note: " + n)
+    me = self_identity()
+    if me and not a.find:
+        print(self_line(me))
+        line = subagent_summary_line(me["session"])
+        if line:
             print(line)
 
 
@@ -9011,7 +9241,10 @@ def guide_text(session, launch, source="", title=""):
         "Other Claude sessions work in this org, on every enrolled machine and in every repository. "
         "To find one or tell it something, use sminos. It is not on PATH; run it as",
         "  %s" % path,
-        "  %s list            your project's sessions; --here this machine's, --org every session" % cli,
+        "  %s list            peer sessions in your project; --here sessions on this machine, --org every connected"
+        " host and project" % cli,
+        "  %s list --subagents   your subagents (--done N: finished ones, resumed by SendMessage to the agentId);"
+        " these two replace ListAgents: use them instead" % cli,
         "  %s who <commit|PR> the session a commit or PR names in its Sminos-Session line, and how to reach it" % cli,
         '  %s say "..."       recorded in your project\'s log, read at its sessions\' next chat; wakes no one:'
         " status nobody must act on goes here" % cli,
@@ -9849,12 +10082,16 @@ def build_parser():
     ls = sub.add_parser("list", add_help=False)
     ls.add_argument("args", nargs="*")
     list_flags(ls)
+    ls.add_argument("--subagents", nargs="?", const="", default=None)
+    ls.add_argument("--done", type=int, default=None)
+    ls.add_argument("--depth", type=int, default=None)
+    ls.add_argument("--stall", type=float, default=None)
     ls.set_defaults(fn=cmd_list, find=False)
 
     fd = sub.add_parser("find", add_help=False)
     fd.add_argument("args", nargs="+")
     list_flags(fd)
-    fd.set_defaults(fn=cmd_find, find=True)
+    fd.set_defaults(fn=cmd_find, find=True, subagents=None, done=None)
 
     wh = sub.add_parser("who", add_help=False)
     wh.add_argument("target", nargs="?", default="")
