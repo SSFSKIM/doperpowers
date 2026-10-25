@@ -40,6 +40,9 @@ before(async () => {
       ? send('text/html', WALLED_ARTICLE)(req, res)
       : send('text/html', '<html><body><h1>Access denied</h1></body></html>', 403)(req, res),
     '/denied': send('text/html', LONG_DENIAL, 403),
+    // The denial navigates on to a 204, which leaves the denial on screen: Chromium keeps the document.
+    '/denied-then-empty': send('text/html', LONG_DENIAL.replace('</body>', '<script>setTimeout(() => { location.href = "/empty" }, 50)</script></body>'), 403),
+    '/empty': send('text/html', '', 204),
     '/old': send('text/html', '', 301, { location: '/articles/post' }),
     '/articles/post': (req, res) => req.headers['sec-fetch-mode']
       ? send('text/html', MOVED_ARTICLE)(req, res)
@@ -151,6 +154,26 @@ test("the browser's served document is the last main-frame response, after its r
   ])), { url: 'https://x.test/a', status: 403 })
 })
 
+test('a last main-frame response that cannot replace the document gives no document: 204, 205, an attachment, not HTML', () => {
+  const denialThen = (status: string, ...more: string[]) => servedDocument(netLog([
+    [11, 'URL_REQUEST_START_JOB', start('https://x.test/a')],
+    [11, 'HTTP_TRANSACTION_READ_RESPONSE_HEADERS', headers('HTTP/1.1 403')],
+    [20, 'URL_REQUEST_START_JOB', start('https://x.test/next')],
+    [20, 'HTTP_TRANSACTION_READ_RESPONSE_HEADERS', { headers: [status, ...more] }],
+  ]))
+  assert.equal(denialThen('HTTP/1.1 204 No Content'), undefined)
+  assert.equal(denialThen('HTTP/1.1 205 Reset Content'), undefined)
+  assert.equal(denialThen('HTTP/1.1 200 OK', 'content-type: text/html', 'Content-Disposition: attachment; filename="a.html"'), undefined)
+  assert.equal(denialThen('HTTP/1.1 200 OK', 'content-type: application/pdf'), undefined)
+  assert.equal(denialThen('HTTP/1.1 200 OK'), undefined)
+  assert.deepEqual(denialThen('HTTP/1.1 200 OK', 'Content-Type: application/xhtml+xml; charset=utf-8'), { url: 'https://x.test/next', status: 200 })
+  // A redirect the log never saw answered leaves nothing committed after it.
+  assert.equal(servedDocument(netLog([
+    [11, 'URL_REQUEST_START_JOB', start('https://x.test/a')],
+    [11, 'HTTP_TRANSACTION_READ_RESPONSE_HEADERS', headers('HTTP/1.1 302 Found')],
+  ])), undefined)
+})
+
 test('a NetLog that names no answered main-frame request, or does not parse, gives no document', () => {
   assert.equal(servedDocument(netLog([[11, 'URL_REQUEST_START_JOB', start('https://x.test/a')]])), undefined)
   assert.equal(servedDocument(netLog([[20, 'URL_REQUEST_START_JOB', start('https://x.test/a.js', 'other')], [20, 'HTTP_TRANSACTION_READ_RESPONSE_HEADERS', headers('HTTP/1.1 200')]])), undefined)
@@ -211,6 +234,14 @@ test('a long denial the browser is served with 403 too stays a failure, and is n
   const again = await clip(`${server.origin}/denied`, { cacheDir, env })
   assert.equal(again.ok, false)
   assert.equal((again as { cached?: boolean }).cached, undefined)
+})
+
+test('a denial whose script navigates on to a 204 stays the 403 failure: the 204 replaced nothing', { skip: noChrome }, async () => {
+  const env: NodeJS.ProcessEnv = { ...process.env, WEB_ALLOW_HOSTS: `127.0.0.1:${server.port}` }
+  delete env.WEB_CHROME
+  const r = await clip(`${server.origin}/denied-then-empty`, { cacheDir: await tmpCache(), env })
+  assert.equal(r.ok, false, JSON.stringify(r))
+  assert.equal((r as { status?: number }).status, 403)
 })
 
 test('a walled page reached through a redirect resolves its images and links against where it was served', { skip: noChrome }, async () => {

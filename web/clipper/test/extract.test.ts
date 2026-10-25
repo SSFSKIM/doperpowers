@@ -68,6 +68,25 @@ test("a <noscript> chart is kept when the same image shows elsewhere on the page
   assert.match(ex.body, /!\[the chart\]\(https:\/\/blog\.example\/chart\.png\)/, ex.body)
 })
 
+test("a direct-child <noscript> chart is kept beside a nested nav thumbnail of the same image, in an article or the body", async () => {
+  const words = '<p>' + 'Prose about the chart below, long enough for the extractor to keep the article as the content. '.repeat(6) + '</p>'
+  const nav = '<nav><a href="/posts/survey"><img src="https://blog.example/chart.png" alt="thumbnail"></a> <a href="/">Home</a></nav>'
+  const inArticle = `<html><body><article>${nav}<h1>Survey</h1>${words}<noscript><img src="https://blog.example/chart.png" alt="the chart"></noscript>${words}</article></body></html>`
+  const inBody = `<html><body>${nav}<h1>Survey</h1>${words}<noscript><img src="https://blog.example/chart.png" alt="the chart"></noscript>${words}</body></html>`
+  for (const html of [inArticle, inBody]) {
+    const ex = await extractHtml(html, 'https://blog.example/posts/survey', fetch)
+    assert.match(ex.body, /!\[the chart\]\(https:\/\/blog\.example\/chart\.png\)/, ex.body)
+  }
+})
+
+test('a lazy image wrapped alone beside its <noscript> copy is shown once', async () => {
+  const words = '<p>' + 'Prose around a lazily loaded photo, long enough for the extractor to keep the article. '.repeat(6) + '</p>'
+  const html = `<html><body><article><h1>Photo</h1>${words}
+    <span class="lazy-wrap"><img loading="lazy" src="https://cdn.example/photo.jpg" alt="the photo"></span><noscript><img src="https://cdn.example/photo.jpg" alt="the photo"></noscript>${words}</article></body></html>`
+  const ex = await extractHtml(html, 'https://blog.example/post/', fetch)
+  assert.equal(ex.body.match(/photo\.jpg/g)?.length, 1, ex.body)
+})
+
 test('html frontmatter escapes quotes and backslashes and ends with fetched', () => {
   const fm = htmlFrontmatter({ title: 'A "quoted" \\ title', site: 'S' }, 12, 'https://x.test/', F)
   assert.equal(fm, `---\ntitle: "A \\"quoted\\" \\\\ title"\nsite: "S"\nsource: "https://x.test/"\nword_count: 12\nfetched: ${F}\n---\n\n`)

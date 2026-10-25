@@ -80,19 +80,25 @@ function keepNoscriptImages(doc: Document): void {
   }
 }
 
-// The images a <noscript> stands in for: a lazy image sits beside it, under the same
-// parent. Only there, so the same picture elsewhere (a nav thumbnail) leaves it be.
+// The sources of the lazy image a <noscript> stands in for: its element sibling just
+// before or after, that image or a wrapper holding it alone. Nothing else counts, so
+// the same picture anywhere else (a nav thumbnail) leaves the <noscript> image be.
 function lazyTwinSources(ns: Element): Set<string> {
   const sources = new Set<string>()
-  for (const img of Array.from(ns.parentElement?.querySelectorAll('img') ?? [])) {
-    if (img.closest('noscript')) continue
-    for (const a of ['src', 'data-src', 'data-lazy-src', 'data-original']) {
-      const v = img.getAttribute(a)
-      if (v) sources.add(v.trim())
+  for (const sibling of [ns.previousElementSibling, ns.nextElementSibling]) {
+    if (!sibling) continue
+    const imgs = sibling.tagName === 'IMG' ? [sibling] : Array.from(sibling.querySelectorAll('img'))
+    const img = imgs.length === 1 ? imgs[0] : undefined
+    if (!img || !LAZY_ATTRIBUTES.some(a => img.hasAttribute(a)) && img.getAttribute('loading') !== 'lazy') continue
+    for (const a of ['src', ...LAZY_ATTRIBUTES]) {
+      // A srcset's first candidate URL; any other attribute is one URL.
+      const v = img.getAttribute(a)?.trim().split(/\s+/)[0]
+      if (v) sources.add(v)
     }
   }
   return sources
 }
+const LAZY_ATTRIBUTES = ['data-src', 'data-srcset', 'data-lazy-src', 'data-original']
 
 function tidyMarkdown(md: string): string {
   return md.replace(/\r\n?/g, '\n').replace(/\n{3,}/g, '\n\n').trim() + '\n'

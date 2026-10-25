@@ -152,7 +152,10 @@ type NetLogEvent = { source?: { id?: number }; type?: number; params?: { url?: s
 /**
  * The main-frame document a NetLog records answering last: its URL after
  * redirects and its HTTP status. A page that reloads itself (a challenge
- * passed) is the later navigation, which is what the DOM holds.
+ * passed) is the later navigation, which is what the DOM holds. The log does
+ * not say whether a response became the document, so one that could not have
+ * (a redirect, 204/205, an attachment, anything but HTML) gives none: the DOM
+ * is then some earlier document, of no known status.
  */
 export function servedDocument(netLog: string): ServedDocument | undefined {
   let log: { constants?: { logEventTypes?: Record<string, number> }; events?: NetLogEvent[] }
@@ -168,11 +171,19 @@ export function servedDocument(netLog: string): ServedDocument | undefined {
     if (e.type === startJob && e.params?.url) {
       if (e.params.request_type === 'main frame') urlOf.set(source, e.params.url)
     } else if (e.type === responseHeaders && urlOf.has(source)) {
-      const status = Number(/^HTTP\/[\d.]+ (\d{3})/.exec(e.params?.headers?.[0] ?? '')?.[1])
-      if (status) served = { url: urlOf.get(source)!, status }
+      const [statusLine = '', ...fields] = e.params?.headers ?? []
+      const status = Number(/^HTTP\/[\d.]+ (\d{3})/.exec(statusLine)?.[1])
+      if (status) served = canBeDocument(status, fields) ? { url: urlOf.get(source)!, status } : undefined
     }
   }
   return served
+}
+
+function canBeDocument(status: number, fields: string[]): boolean {
+  if (status < 200 || (status >= 300 && status < 400) || status === 204 || status === 205) return false
+  const field = (name: string) => fields.find(f => f.toLowerCase().startsWith(name + ':'))?.slice(name.length + 1).trim().toLowerCase() ?? ''
+  if (/^attachment\b/.test(field('content-disposition'))) return false
+  return /^(text\/html|application\/xhtml\+xml)\b/.test(field('content-type'))
 }
 
 function killGroup(pid: number | undefined) {
