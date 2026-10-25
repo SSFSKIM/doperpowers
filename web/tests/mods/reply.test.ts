@@ -29,6 +29,29 @@ describe('R1 or R2: the page whole or its outline', () => {
     expect(body!.split('\n')).toHaveLength(40)
   })
 
+  test('R1 makes a saved image\'s destination absolute whatever follows it: a title, spacing, angle brackets', async () => {
+    const lines = Array.from({ length: 40 }, (_, i) => `line ${i + 1}`)
+    lines[21] = [
+      '![A diagram](assets/01.png "A title")',
+      "![A diagram](assets/01.png 'single')",
+      '![A diagram]( assets/01.png )',
+      '![A diagram](<assets/01.png>)',
+      '![A diagram](assets/01.png)',
+      'and [a link](assets/01.pngx) stays',
+    ].join(' ')
+    const body = replyFor(page(), { now: NOW, isAsked: false, page: lines.join('\n') }).split('\n---\n')[1]!
+    expect(body.split('\n')[21]).toBe(
+      [
+        `![A diagram](${DIR}/assets/01.png "A title")`,
+        `![A diagram](${DIR}/assets/01.png 'single')`,
+        `![A diagram]( ${DIR}/assets/01.png )`,
+        `![A diagram](${DIR}/assets/01.png)`,
+        `![A diagram](${DIR}/assets/01.png)`,
+        'and [a link](assets/01.pngx) stays',
+      ].join(' '),
+    )
+  })
+
   test('R2 lists each section by its range, indented by level, with its size and images, then the images by absolute path', async () => {
     const reply = replyFor(page({ tokens: 13_000, words: 5701, lines: 1012 }), { now: NOW, isAsked: false })
     expect(reply).toBe(

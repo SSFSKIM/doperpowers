@@ -216,7 +216,9 @@ function absoluteImages(r: ClipOk, page: string): string {
     if (line === undefined) continue
     const target = absolute(r, image.file!)
     const shown = /[\s()<>]/.test(target) ? `<${target}>` : target
-    lines[at] = line.split(`](${image.file})`).join(`](${shown})`)
+    // The destination alone, bare or in angle brackets; a title or spacing after it stays.
+    const file = image.file!.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    lines[at] = line.replace(new RegExp(`(\\]\\(\\s*)(?:<${file}>|${file}(?=\\s|\\)))`, 'g'), (_, opening: string) => opening + shown)
   }
   return lines.join('\n')
 }

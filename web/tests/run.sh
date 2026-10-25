@@ -8,7 +8,9 @@ set -euo pipefail
 web="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 echo "== the clipper's tests"
-(cd "$web/clipper" && npm ci --no-audit --no-fund && npm test)
+# No dependency needs its install script: esbuild's only one (postinstall)
+# checks a platform binary that arrives as an optional dependency anyway.
+(cd "$web/clipper" && npm ci --ignore-scripts --no-audit --no-fund && npm test)
 
 echo "== the bundle matches its source"
 (cd "$web/clipper" && npm run build)

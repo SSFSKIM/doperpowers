@@ -1,7 +1,7 @@
 import type { On } from 'claude-code'
 
 import { failureReply, isWhole, replyFor, textFileOf } from './reply'
-import type { ClipOk, ClipResult, NumberedHeader, Summary } from './reply'
+import type { ClipOk, ClipResult, Summary } from './reply'
 import {
   SUMMARY_MAX_OUTPUT_TOKENS,
   SUMMARY_MAX_TOKENS,
@@ -152,7 +152,7 @@ export function registerFetch(on: On) {
     async function summarize(r: ClipOk, file: string, ask: string): Promise<Summary> {
       const reserve = summaryReserve(ask)
       let cap = SUMMARY_MAX_TOKENS
-      let previous: NumberedHeader | undefined
+      let previous: string | undefined
       let why = 'no attempt'
       for (let attempt = 0; attempt < 2; attempt++) {
         let numbered
@@ -163,17 +163,24 @@ export function registerFetch(on: On) {
         } catch (error) {
           return { isAnswered: false, why: `the page's text could not be numbered: ${message(error)}` }
         }
-        // A half cap that keeps the same lines would ask the same question again.
-        if (previous !== undefined && previous.lastLine === numbered.header.lastLine && previous.cut === numbered.header.cut) break
+        // A half cap that keeps the same text would ask the same question again.
+        if (previous !== undefined && previous === numbered.body) break
 
         const asked = await $.clock.now()
-        const reply = await $.model.complete({
-          model: SUMMARY_MODEL,
-          system: SUMMARY_SYSTEM,
-          prompt: summaryPrompt(numbered.body, ask),
-          maxTokens: SUMMARY_MAX_OUTPUT_TOKENS,
-          timeoutMs: SUMMARY_TIMEOUT_MS,
-        })
+        let reply
+        try {
+          reply = await $.model.complete({
+            model: SUMMARY_MODEL,
+            system: SUMMARY_SYSTEM,
+            prompt: summaryPrompt(numbered.body, ask),
+            maxTokens: SUMMARY_MAX_OUTPUT_TOKENS,
+            timeoutMs: SUMMARY_TIMEOUT_MS,
+          })
+        } catch (error) {
+          // A request the engine refuses to send (a blocked model, a bad cap): a failed summary, and the page still comes back.
+          await logUsage(r, { isAnswered: false, reason: 'request-failed', usage: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } })
+          return { isAnswered: false, why: `the summary request failed: ${message(error)}` }
+        }
         const elapsed = (await $.clock.now()) - asked
         await logUsage(r, reply)
         const outcome = reply as CompletionOutcome
@@ -182,7 +189,7 @@ export function registerFetch(on: On) {
         }
         why = whyUnanswered(outcome, elapsed)
         if (!isPromptTooLong(outcome)) break
-        previous = numbered.header
+        previous = numbered.body
         cap = SUMMARY_MAX_TOKENS / 2
       }
       return { isAnswered: false, why }
@@ -213,7 +220,7 @@ export function registerFetch(on: On) {
       }
     }
   }).catch((_, e, next) => {
-    // A step that threw (a refused model request, say) still answers the call, as its error.
+    // A step that threw before the page was in hand still answers the call, as its error.
     const { url } = e as { url?: unknown }
     return { deny: `fetch failed: ${String(url)}: the web plugin failed (${next.error.kind}${next.error.message ? `: ${next.error.message}` : ''})` }
   })

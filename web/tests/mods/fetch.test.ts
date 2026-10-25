@@ -28,7 +28,12 @@ function numbered(text: string, maxTokens: number, reserve: number): string {
   let ascii = 0 // the lines here are ASCII: the estimate is a token per four characters
   for (const [i, line] of lines.entries()) {
     const next = `${i + 1}| ${line}\n`
-    if (Math.ceil((ascii + next.length) / 4) + reserve > maxTokens) break
+    if (Math.ceil((ascii + next.length) / 4) + reserve > maxTokens) {
+      if (i > 0) break
+      // A first line that alone passes the cap is cut to fit, and the header says so.
+      const cut = `1| ${line.slice(0, Math.max(0, (maxTokens - reserve) * 4 - 4))}\n`
+      return `${JSON.stringify({ firstLine: 1, lastLine: 1, totalLines: lines.length, cut: true })}\n${cut}`
+    }
     printed.push(next)
     ascii += next.length
   }
@@ -344,11 +349,38 @@ describe('the summary (R3)', () => {
     expect(reply).toContain('\n---\nline 1\n')
   })
 
-  test('a model request the engine refuses is still the call\'s answer, as its error', async ($, on) => {
-    engine(on, { files: { [`${DIR}/page.md`]: pageText() }, complete: async () => ({ deny: 'model not allowed' }) })
+  test('a summary request that throws is a failed summary: the page still comes back, opening with why', async ($, on) => {
+    const { usage } = engine(on, { files: { [`${DIR}/page.md`]: pageText() }, complete: async () => ({ deny: 'model not allowed' }) })
     await start($)
-    const result = await $.tool.call(call({ url: 'https://example.com/docs/guide', prompt: question }))
-    expect(result.deny).toStartWith('fetch failed: https://example.com/docs/guide: the web plugin failed (throw')
+    const reply = textOf(await $.tool.call(call({ url: 'https://example.com/docs/guide', prompt: question })))
+    expect(reply.split('\n')[0]).toStartWith('The answer could not be made (the summary request failed: ')
+    expect(reply.split('\n')[0]).toContain('model not allowed')
+    expect(reply).toContain('\n---\nline 1\n')
+    expect(usage).toEqual([expect.objectContaining({ isAnswered: false, reason: 'request-failed' })])
+  })
+
+  test('a step that throws before the page is in hand is the call\'s error', async ($, on) => {
+    engine(on, { clip: async () => { throw new Error('the clipper hook broke') } })
+    await start($)
+    const result = await $.tool.call(call({ url: 'https://example.com/docs/guide' }))
+    expect(result.deny).toStartWith('fetch failed: https://example.com/docs/guide:')
+  })
+
+  test('a cut first line too long for the model is asked again over the shorter cut at half the cap', async ($, on) => {
+    const file = `${DIR}/page.txt`
+    const one = 'z'.repeat(2_400_000)
+    const { runs, completions } = engine(on, {
+      files: { [file]: one },
+      clip: page({ kind: 'text', file, tokens: one.length / 4, lines: 1, images: [], outline: [{ level: 0, title: '(body)', line: 1, endLine: 1, tokens: one.length / 4, images: 0 }] }),
+      completions: [{ isAnswered: false, reason: 'api-error', status: 400, error: 'invalid_request', usage: ZERO }, answer('Zs [L1].')],
+    })
+    await start($)
+    const reply = textOf(await $.tool.call(call({ url: 'https://example.com/one-line.txt', prompt: question })))
+    expect(numberings(runs).map((run) => flag(run.argv, '--max-tokens'))).toEqual(['150000', '75000'])
+    expect(completions).toHaveLength(2)
+    expect(String(completions[1]!.prompt).length).toBeLessThan(String(completions[0]!.prompt).length * 0.6)
+    expect(reply).toStartWith('Zs [L1].')
+    expect(reply).toContain('(line 1 cut short, of 1: the rest was not read)')
   })
 
   test('each summary call appends one line to usage.jsonl at the cache root', async ($, on) => {
