@@ -21,20 +21,26 @@ row says whether the turn is open (a tool in flight, or the model at work)
 or closed (an `end_turn` reply, or a result that ends the turn, as a
 handback's does). A closed turn whose shells, monitors or background child
 agents still run is waiting on them; whether a task still runs is what the
-desk's ledger says from every row naming it (sminos_jobs: its start, a
-notification, a `task_status`, a TaskStop, a bridge's stop note, which
-leaves no notification), the main loop's rows on it included, never the
-absence of a notification alone. An open turn whose agent was stopped by its
-parent (TaskStop) leaves no word in its own rows: the parent loop's rows on
-it (sminos_jobs.rows_naming, Ledger.agent_outcome) say so.
+desk's ledger says from every row of the loop's own naming it (sminos_jobs:
+its start, a notification, a `task_status`, a TaskStop), and then the main
+loop's TaskStops and the bridge's stop notes (which leave no notification),
+never the absence of a notification alone. An open turn whose agent was
+stopped by its parent (TaskStop) leaves no word in its own rows: the parent
+loop's TaskStops on it, made since that turn began, say so. A revival
+(`revivedAt`, a SendMessage to an ended agent) opens a turn again; the
+bridge, which learns an agent's end but no revival, is then not believed
+over the rows.
 
 A loop runs only inside the session's process, so an agent whose transcript
 was last written before the running process started (or whose session runs
 no process) is past: ended if its turn closed or its parent's rows end it,
-orphaned if it was cut off. Those finished by their meta cost a stat; the
-rest read their transcript's tail backwards (mmap, the engine's request
-records skipped unparsed), the open turns of the running process back to
-where the turn began.
+orphaned if it was cut off. Each agent reads its transcript's tail backwards
+(mmap, the engine's request records skipped unparsed) to its last
+conversation row, an open turn back to where it began. The main loop's
+transcript, often hundreds of megabytes, is read only from where its rows
+reach the time asked (found by bisection on the rows' timestamps): its
+TaskStops back to the earliest open turn asking, its stop notes back to
+the running process's start; each byte at most once a view.
 
 Lifecycle: running, waiting (on background), stalled (disk only: open,
 nothing in flight, no write for `stall` seconds), orphaned, and the ended
@@ -52,9 +58,14 @@ import sminos_jobs as jobs
 
 STALL_SECONDS = 600
 QUIET_SECONDS = 60   # an agent with nothing in flight and no write for this long says so (`no write 3m`)
-# How much later than the engine's word that an agent ended its transcript may be written (the end's own last rows)
-# before the word is taken as older than a revival.
-REVIVAL_SLACK = 5.0
+# A loop's transcript is read from this long before the time asked: rows are written about in time order, not
+# exactly (a row's own timestamp is its start).
+EVIDENCE_MARGIN = 120.0
+# How far after a TaskStop call its result is looked for.
+RESULT_REACH = 4 << 20
+# The bridge's notes that it stopped a task (sminos_jobs.STOP_NOTE, INTERRUPT_ORIGINS), found by these phrases.
+STOP_NOTE_PHRASES = (b"a background task, was stopped from", b"The interrupt came from")
+TASKSTOP_CALL = b'"name":"TaskStop"'
 LIVE = ("running", "waiting", "stalled", "orphaned")
 ENDED = ("completed", "failed", "stopped")
 WORDS = {"running": "running", "waiting": "waiting on background", "stalled": "stalled", "orphaned": "orphaned",
@@ -152,6 +163,131 @@ def _closes(row, msg):
     return msg.get("stop_reason") in CLOSING_STOPS
 
 
+def _lines_holding(mm, needle, start=0, end=None):
+    """The (start, end) of each line of `mm` from `start` (a line's start) up to `end` holding `needle`, in order."""
+    end = len(mm) if end is None else end
+    out, at = [], start
+    while True:
+        i = mm.find(needle, at, end)
+        if i < 0:
+            return out
+        s = mm.rfind(b"\n", 0, i) + 1
+        e = mm.find(b"\n", i)
+        e = len(mm) if e < 0 else e
+        out.append((s, e))
+        at = e + 1
+
+
+def _row(mm, span):
+    """The row on a line, None for a request record or no row."""
+    line = mm[span[0]:span[1]]
+    if line.startswith(jobs.REQUEST_RECORD):
+        return None
+    try:
+        row = json.loads(line)
+    except ValueError:
+        return None
+    return row if isinstance(row, dict) and _str(row.get("uuid")) else None
+
+
+def _stamp(mm, start):
+    """(the time of the row on the line starting at `start`, or None; the next line's start)."""
+    end = mm.find(b"\n", start)
+    end = len(mm) if end < 0 else end
+    i = mm.find(b'"timestamp":"', start, end)
+    t = _epoch(mm[i + 13:min(end, i + 13 + 40)].split(b'"', 1)[0].decode("ascii", "replace")) if i >= 0 else None
+    return t, end + 1
+
+
+def offset_since(mm, t):
+    """The start of a line at or before the first row written at `t` or later, by bisection on the rows'
+    timestamps (to within a megabyte); 0 when they cannot tell."""
+    lo, hi = 0, len(mm)
+    while hi - lo > 1 << 20:
+        mid = (lo + hi) // 2
+        start = mm.rfind(b"\n", 0, mid) + 1
+        if start <= lo:
+            break
+        stamp, nxt = None, start
+        for _ in range(16):
+            if nxt >= len(mm):
+                break
+            stamp, nxt = _stamp(mm, nxt)
+            if stamp is not None:
+                break
+        if stamp is None:
+            break
+        if stamp < t:
+            lo = start
+        else:
+            hi = start
+    return lo
+
+
+class LoopStops:
+    """What a loop's transcript says it stopped: its TaskStop calls that succeeded ({task id: [the call's time]}),
+    and the bridge's stop notes ({task id: time}), read back from the end only as far as asked (`reach`), each
+    stretch once."""
+
+    def __init__(self, path):
+        self.path, self.reached, self.offset = path, None, None
+        self.stops, self.notes, self.unreadable = {}, {}, False
+
+    def reach(self, t):
+        """Read back to rows written at `t` (less EVIDENCE_MARGIN), from where an earlier reach stopped."""
+        if self.unreadable or (self.reached is not None and t >= self.reached):
+            return self
+        mm = _open_map(self.path) if self.path else None
+        if mm is None:
+            self.unreadable = bool(self.path) and not (os.path.isfile(self.path) and os.path.getsize(self.path) == 0)
+            self.reached = float("-inf")
+            return self
+        try:
+            start = offset_since(mm, t - EVIDENCE_MARGIN) if t > float("-inf") else 0
+            end = len(mm) if self.offset is None else self.offset
+            if start < end:
+                self._read(mm, start, end)
+            self.offset, self.reached = min(start, end), t
+        finally:
+            mm.close()
+        return self
+
+    def _read(self, mm, start, end):
+        for span in _lines_holding(mm, TASKSTOP_CALL, start, end):
+            row = _row(mm, span)
+            msg = row.get("message") if row else None
+            for b in msg.get("content") or () if isinstance(msg, dict) and isinstance(msg.get("content"), list) else ():
+                if not (isinstance(b, dict) and b.get("type") == "tool_use" and b.get("name") == "TaskStop"
+                        and isinstance(b.get("input"), dict) and _str(b["input"].get("task_id")) and _str(b.get("id"))):
+                    continue
+                if self._succeeded(mm, b["id"], span[1]):
+                    self.stops.setdefault(b["input"]["task_id"], []).append(_epoch(row.get("timestamp")))
+        for phrase in STOP_NOTE_PHRASES:
+            for span in _lines_holding(mm, phrase, start, end):
+                row = _row(mm, span)
+                if row is None:
+                    continue
+                msg = row.get("message")
+                for task, _line in jobs._stop_records(row, msg.get("content") if isinstance(msg, dict) else None):
+                    self.notes[task] = _epoch(row.get("timestamp"))
+
+    @staticmethod
+    def _succeeded(mm, call, after):
+        """Whether the call's result, written after it, is no error."""
+        needle = ('"tool_use_id":"%s"' % call).encode()
+        for span in _lines_holding(mm, needle, mm.rfind(b"\n", 0, after) + 1, min(len(mm), after + RESULT_REACH)):
+            row = _row(mm, span)
+            msg = row.get("message") if row else None
+            for b in msg.get("content") or () if isinstance(msg, dict) and isinstance(msg.get("content"), list) else ():
+                if isinstance(b, dict) and b.get("type") == "tool_result" and b.get("tool_use_id") == call:
+                    return b.get("is_error") is not True
+        return False
+
+    def ended(self, task):
+        """Whether this loop's rows (as far as read) stop the task."""
+        return task in self.notes or task in self.stops
+
+
 def read_tail(path, opener=False):
     """What the end of an agent's transcript says of its turn: {last, closed, failed, at, inflight, openedAt}.
     `last` whether any conversation row was found; `at` the time of the last one; `inflight` the calls of the
@@ -202,9 +338,9 @@ def read_tail(path, opener=False):
 
 def live_background(path, main=None):
     """The background shells and monitors this loop started that the rows do not end, [{taskId, kind,
-    description, command, startedAt}]: each start found by its id, then every row naming that task read through the desk's
-    ledger (sminos_jobs.task_rows), the main loop's (`main`) after the loop's own, since a stop the bridge made is
-    recorded there and the engine sends no notification for it."""
+    description, command, startedAt}]: each start found by its id, then every row of the loop's naming that task
+    read through the desk's ledger (sminos_jobs.task_rows); a task they leave running is then asked of `main` (a
+    LoopStops of the main loop), whose TaskStops and bridge stop notes end it with no notification."""
     mm = _open_map(path)
     if mm is None:
         return []
@@ -218,12 +354,9 @@ def live_background(path, main=None):
         ledger.feed(jobs.task_rows(path, task))
         if not any(j["taskId"] == task and j["status"] == "running" for j in ledger.jobs_body(True)):
             continue
-        # Only a task the loop's own rows leave running costs a read of the main loop's (often far larger) rows.
-        also = None
-        if main:
-            also = jobs.Ledger()
-            also.feed(jobs.task_rows(main, task))
-        for j in ledger.jobs_body(True, also):
+        if main is not None and main.ended(task):
+            continue
+        for j in ledger.jobs_body(True):
             if j["taskId"] == task and j["status"] == "running":
                 out.append({"taskId": task, "kind": j["kind"], "description": j["description"],
                             "command": j.get("command"), "startedAt": j["startedAt"]})
@@ -250,10 +383,11 @@ class Subagents:
 
     def __init__(self, main, *, live, started=None, bridge=None, stall=STALL_SECONDS, now=None):
         self.main, self.live, self.started, self.stall = main, live, started, stall
+        self.engine_answered = bridge is not None
         self.now = time.time() if now is None else now
         self.held = {str(b["agentId"]): b for b in bridge or () if isinstance(b, dict) and b.get("agentId")}
         self.dir = main[:-len(".jsonl")] + "/subagents" if main.endswith(".jsonl") else None
-        self.agents, self.states, self.notes, self.parents_read, self.tails = {}, {}, [], {}, {}
+        self.agents, self.states, self.notes, self.loops, self.tails = {}, {}, [], {}, {}
         self._read_dir()
         for agent_id, b in self.held.items():
             # An agent the bridge knows only by a SubagentStop, never spawned and with no file, is the engine's own
@@ -332,46 +466,30 @@ class Subagents:
         return self.main if parent_id is None else self.agents[parent_id]["path"]
 
     def tail(self, a):
-        """The agent's transcript tail (read_tail), read once; an open turn of the running process back to its start."""
+        """The agent's transcript tail (read_tail), read once, an open turn back to where it began."""
         if a["agentId"] not in self.tails:
-            current = self._current(a["at"]) or (a["agentId"] in self.held and self.live)
-            self.tails[a["agentId"]] = read_tail(a["path"], opener=current) if a["path"] else None
+            self.tails[a["agentId"]] = read_tail(a["path"], opener=True) if a["path"] else None
         return self.tails[a["agentId"]]
 
-    def _asks_parent(self, a):
-        """Whether this agent's end turns on its parent's rows: no engine word, nothing on disk ends it, and its own
-        rows leave its turn open (a TaskStop leaves no word in them)."""
-        if a["agentId"] in self.held or a["path"] is None or a.get("workflow") or a["meta"].get("finished") is True \
-                or a["meta"].get("stoppedByUser") is True:
-            return False
-        t = self.tail(a)
-        return t is not None and t["last"] and not t["closed"]
+    def loop_stops(self, parent, since):
+        """The stops the loop that ran `parent`'s agents (the main loop's for None) made, read back to `since`."""
+        if parent not in self.loops:
+            self.loops[parent] = LoopStops(self._loop_path(parent))
+        stops = self.loops[parent].reach(since)
+        if stops.unreadable:
+            self.notes.append("the transcript of %s could not be read: an agent or task it stopped may read as "
+                              "orphaned, running or waiting" % ("the main loop" if parent is None else parent))
+            stops.unreadable = None   # said once
+        return stops
 
-    def parent_outcome(self, a):
-        """How the loop that ran this agent says it ended, or None: its rows on the agent (a result, a
-        notification, a TaskStop), read once per parent loop for every agent that asks it."""
-        parent = self.parent(a)
-        if parent not in self.parents_read:
-            asked = [x for x in self.agents.values() if self.parent(x) == parent and self._asks_parent(x)]
-            path = self._loop_path(parent)
-            ledger = None
-            if path and asked:
-                rows = jobs.rows_naming(path, [x["agentId"] for x in asked],
-                                        [x["meta"]["toolUseId"] for x in asked if _str(x["meta"].get("toolUseId"))])
-                if rows is None:
-                    self.notes.append("the transcript of %s could not be read: an agent it stopped may read as "
-                                      "orphaned or running" % ("the main loop" if parent is None else parent))
-                else:
-                    ledger = jobs.Ledger()
-                    ledger.feed(rows)
-            self.parents_read[parent] = ledger
-        ledger = self.parents_read[parent]
-        if ledger is None:
+    def parent_stop(self, a, tail):
+        """When the loop that ran this agent stopped it with TaskStop since its open turn began, or None."""
+        if a.get("workflow"):
             return None
-        meta = a["meta"]
-        background = meta.get("requestShape") == "background" or (self.held.get(a["agentId"]) or {}).get("background")
-        outcome = ledger.agent_outcome(a["agentId"], _str(meta.get("toolUseId")), bool(background))
-        return outcome if outcome is not None and outcome["status"] != "running" else None
+        since = tail.get("openedAt") or a["born"] or 0
+        stops = self.loop_stops(self.parent(a), since)
+        made = [t for t in stops.stops.get(a["agentId"], ()) if t is not None and t >= since - 1]
+        return max(made) if made else None
 
     def state(self, agent_id):
         """{state, source, since, stoppedBy?, tool?, quiet?, background?, waitingOn?} for one agent."""
@@ -382,7 +500,8 @@ class Subagents:
 
     def _waiting(self, a, since, source):
         """Waiting on background when a task this loop started, or a background child agent, still runs."""
-        tasks = live_background(a["path"], self.main) if a["path"] else []
+        main = self.loop_stops(None, self.started or 0) if self.main else None
+        tasks = live_background(a["path"], main) if a["path"] else []
         kids = [k for k in self.children.get(a["agentId"], ()) if self.state(k)["state"] in ("running", "waiting", "stalled")]
         if tasks or kids:
             return {"state": "waiting", "source": source, "since": since, "background": tasks, "waitingOn": kids}
@@ -390,7 +509,7 @@ class Subagents:
 
     def _derive(self, a):
         meta, held = a["meta"], self.held.get(a["agentId"])
-        if held is not None and self.live and not self._stale(a, held):
+        if held is not None and self.live and not self._revived(a, held):
             return self._engine(a, held)
         if a["path"] is None:
             if meta.get("finished") is True:
@@ -401,14 +520,14 @@ class Subagents:
         current = self._current(a["at"])
         revived = isinstance(meta.get("revivedAt"), (int, float)) and a["at"] * 1000 >= meta["revivedAt"]
         by_user = meta.get("stoppedByUser") is True and not revived
-        if not current and not meta.get("revivedAt") and (meta.get("finished") is True or by_user):
-            if by_user:
-                return {"state": "stopped", "source": "disk", "since": a["at"], "stoppedBy": "user"}
-            return {"state": "completed", "source": "disk", "since": a["at"]}
+        if by_user and not current:
+            return {"state": "stopped", "source": "disk", "since": a["at"], "stoppedBy": "user"}
         tail = self.tail(a)
         if tail is None or not tail["last"]:
             if current:
                 return {"state": "running", "source": "disk", "since": a["born"]}
+            if meta.get("finished") is True:   # no row the transcript holds says otherwise
+                return {"state": "completed", "source": "disk", "since": a["at"]}
             return {"state": "orphaned", "source": "disk", "since": a["at"]}
         if tail["failed"]:
             return {"state": "failed", "source": "disk", "since": tail["at"] or a["at"]}
@@ -422,13 +541,9 @@ class Subagents:
             return {"state": "completed", "source": "disk", "since": a["at"]}
         if by_user:
             return {"state": "stopped", "source": "disk", "since": a["at"], "stoppedBy": "user"}
-        ended = self.parent_outcome(a) if self._asks_parent(a) else None
-        if ended is not None:
-            state = {"completed": "completed", "failed": "failed"}.get(ended["status"], "stopped")
-            out = {"state": state, "source": "disk", "since": _epoch(ended.get("at")) or a["at"]}
-            if state == "stopped":
-                out["stoppedBy"] = "TaskStop"
-            return out
+        stopped = self.parent_stop(a, tail)
+        if stopped is not None:
+            return {"state": "stopped", "source": "disk", "since": stopped, "stoppedBy": "TaskStop"}
         if not current:
             return {"state": "orphaned", "source": "disk", "since": a["at"]}
         return self._open(a, tail, "disk")
@@ -447,13 +562,16 @@ class Subagents:
             out["quiet"] = a["at"]
         return out
 
-    @staticmethod
-    def _stale(a, held):
-        """Whether the engine's word that an agent ended predates what its transcript holds: a SendMessage revived
-        it, and the bridge, which learns an agent's end but no revival, still holds the end. Its rows decide."""
-        said = held.get("t")
-        return held.get("running") is False and isinstance(said, (int, float)) and a["at"] is not None \
-            and a["at"] > said / 1000.0 + REVIVAL_SLACK
+    def _revived(self, a, held):
+        """Whether the engine's word that an agent ended is older than the turn its rows hold open: a SendMessage
+        revived it (`revivedAt`) and wrote since, and the bridge, which learns an agent's end but no revival (nor
+        keeps when it learned the end, past a resync), still holds the end. The rows decide then."""
+        revived = a["meta"].get("revivedAt")
+        if held.get("running") is not False or not isinstance(revived, (int, float)) or a["at"] is None \
+                or a["at"] * 1000 < revived:
+            return False
+        tail = self.tail(a)
+        return bool(tail and tail["last"] and not tail["closed"])
 
     def _engine(self, a, held):
         """The engine's word first: alive runs (or waits on its background work once its turn closed); ended is
@@ -562,6 +680,21 @@ class Subagents:
 
         walk(None, 0)
         return out
+
+    def live_summary(self):
+        """The cheap count `sminos list` shows: {source, running} — the agents the engine holds as running, where
+        the bridge answered; else, from the disk, {source, open}: those of the running process whose turn its
+        transcript leaves open (running, or stalled: telling them apart, or a closed turn waiting on background
+        work, takes the deep reads this leaves to `tree`)."""
+        if self.engine_answered and self.live:
+            return {"source": "engine", "running": sum(1 for i, b in self.held.items()
+                                                       if b.get("running") is True and i in self.agents)}
+        n = 0
+        for a in self.agents.values():
+            if a["path"] and self._current(a["at"]) and a["meta"].get("stoppedByUser") is not True:
+                t = self.tail(a)
+                n += bool(t and t["last"] and not t["closed"] and not t["failed"])
+        return {"source": "disk", "open": n}
 
     def counts(self):
         """{state: how many agents are in it}, every state named, every depth counted."""

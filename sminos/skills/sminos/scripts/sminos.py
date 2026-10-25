@@ -101,8 +101,8 @@ member too, seat-less, from the first call that reads its project.
                    "+N hidden" tail; --stopped adds stopped, --all shows all, --state selects named states.
                    A row: alias [short], kind, state,
                    @machine, (project,) repo@branch, in charge (age), · active <age>. Inside a session
-                   it says who you are and ends with the session's subagents (the ids SendMessage takes;
-                   --all: the ended too); --here ends with the live sessions that are no member
+                   it says who you are and ends with how many of your subagents run (list --subagents
+                   for them); --here ends with the live sessions that are no member
     sminos list     --subagents [member] [--done N] [--depth N] [--stall MIN] [--all] [--json]
                    # your session's subagents (a member's on this machine: inspection only), in place of
                    ListAgents: counts at every depth, the live ones as a tree, each with its lifecycle
@@ -8827,20 +8827,22 @@ def subagents_session(q):
     return m.session
 
 
-def subagent_tail_lines(session, every):
-    """What `list` ends with inside a session that has subagents: their
-    counts, the live ones as a tree (every one with --all), how many have
-    ended, and what could not be read."""
-    V = subagents_module()
-    view, _ = subagents_view(session)
+def subagent_summary_line(session):
+    """The one line `list` ends with inside a session that has subagents:
+    how many run, cheaply — the bridge's live list, else the turns its
+    transcripts leave open in the running process — and where the whole
+    view is (`list --subagents`); "" with none."""
+    view, scope = subagents_view(session)
     if not view.agents:
-        return []
-    c = view.counts()
-    out = ["subagents " + V.counts_line(c)] + V.tree_lines(view.tree(every=every))
-    ended = V.ended_line(c)
-    if ended and not every:
-        out.append("  %s — sminos list --subagents --done 10" % ended)
-    return out + ["note: " + n for n in view.notes]
+        return ""
+    c = view.live_summary()
+    if c["source"] == "engine":
+        said = "%d running" % c["running"] if c["running"] else "none running"
+    else:
+        said = ("%d with a turn open (read from transcripts)" % c["open"] if c["open"]
+                else "none with a turn open (read from transcripts)" if scope["live"] else "none running: the session "
+                "runs no process")
+    return "subagents: %s — sminos list --subagents" % said
 
 
 def cmd_subagents(a):
@@ -8920,8 +8922,9 @@ def cmd_list(a):
     gone fold into a tail line; --stopped adds stopped, --all shows all, and
     --state keeps the named states; --here ends with the live sessions that
     are no member (other_live_sessions). Inside a session, the list says who
-    the caller is and ends with its subagents (subagent_tail_lines); with
-    --subagents or --done it is the subagent view alone (cmd_subagents)."""
+    the caller is and ends with one cheap line on its subagents
+    (subagent_summary_line); with --subagents or --done it is the subagent
+    view alone (cmd_subagents)."""
     if a.subagents is not None or a.done is not None:
         cmd_subagents(a)
         return
@@ -8988,7 +8991,8 @@ def cmd_list(a):
     me = self_identity()
     if me and not a.find:
         print(self_line(me))
-        for line in subagent_tail_lines(me["session"], a.all):
+        line = subagent_summary_line(me["session"])
+        if line:
             print(line)
 
 

@@ -33,7 +33,7 @@ session sminos spawned fills; it outlives its process.
 
     sminos list                     # your project
     sminos list --stopped           # also show stopped members, in the same scope
-    sminos list --here              # this machine, every project (the harness's ListAgents, and more)
+    sminos list --here              # this machine, every project
     sminos list --org               # every session in the org
     sminos find <words..>           # every session the words match: alias, short, project, repo, branch, in-charge line
     sminos who <commit|PR>          # the session its Sminos-Session line names, as it is now, and how to reach it
@@ -46,8 +46,8 @@ stopped, retired and gone members into a `+N hidden` tail. `list --stopped`
 adds stopped members without changing scope; `--all` unfolds all members;
 `--state stopped` selects only stopped members. `--json` keeps every
 matching member. `chart` also accepts `--stopped` and `--all`; in the TUI, `a`
-shows or hides all three states. Inside a session `list` ends with your
-own subagents; `--all` unfolds finished ones too.
+shows or hides all three states. Inside a session `list` says who you are
+and ends with how many of your own subagents run.
 States: `busy` (its turn runs), `idle`,
 `waiting` (on a question or a permission prompt), `stopped` (no process;
 `send` resumes a seat), `gone` (no transcript here), `vacant` (a seat
@@ -104,9 +104,8 @@ call of `mcp__to-human__message` where you have it; a question goes in an
 async `mcp__sminos__AskUserQuestion`; a hook records each, and `sminos
 chat --host` shows what every session sent them.
 
-**SendMessage and ListAgents** are the harness's: `SendMessage` reaches
-your own subagents (by the ids `list` ends with); other sessions are
-reached through sminos.
+**SendMessage** is the harness's: it reaches your own subagents, by
+their agent ids; other sessions are reached through sminos.
 
 ## Your lines and your project
 

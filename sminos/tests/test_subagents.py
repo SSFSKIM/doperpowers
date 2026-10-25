@@ -261,21 +261,107 @@ class Derivation(unittest.TestCase):
         self.assertEqual(self.s.view().entry("a1")["seconds"], 120, "running since the revival opened its turn")
 
     def test_a_revival_after_the_engine_said_it_ended_is_read_from_its_rows(self):
-        revived = NOW - 120
+        """The bridge learns an end but no revival, and a resync's records carry no time: a revival
+        (`revivedAt`, written since) whose turn its rows hold open is read from the rows, however soon after the
+        end it came."""
+        revived = NOW - 2898
         rows = [Rows.prompt(NOW - 3000), *Rows.handback(NOW - 2900),
                 Rows.prompt(revived, "go on", isMeta=True, origin={"kind": "human"}),
-                Rows.call(NOW - 100, "t9", "Grep", msg="m-r")]
-        self.s.agent("a1", rows, NOW - 100, meta={"finished": True, "revivedAt": int(revived * 1000)})
-        said = [{"agentId": "a1", "running": False, "status": "completed", "t": int((NOW - 2899) * 1000)}]
-        st = self.state("a1", bridge=said)
-        self.assertEqual((st["state"], st["source"], st["tool"]["name"]), ("running", "disk", "Grep"),
-                         "the bridge learns an end but no revival: its word, older than the rows, yields to them")
-        said[0]["t"] = int((NOW - 99) * 1000)
-        self.assertEqual(self.state("a1", bridge=said)["state"], "completed", "a word newer than the rows stands")
+                Rows.call(NOW - 2897, "t9", "Grep", msg="m-r")]
+        self.s.agent("a1", rows, NOW - 2897, meta={"finished": True, "revivedAt": int(revived * 1000)})
+        for said in ({"agentId": "a1", "running": False, "status": "completed"},
+                     {"agentId": "a1", "running": False, "status": "completed", "t": int((NOW - 2899) * 1000)}):
+            st = self.state("a1", bridge=[said])
+            self.assertEqual((st["state"], st["source"], st["tool"]["name"]), ("running", "disk", "Grep"), said)
+        closed = rows[:3] + [Rows.reply(NOW - 2890)]
+        self.s.agent("a2", closed, NOW - 2890, meta={"finished": True, "revivedAt": int(revived * 1000)})
+        st = self.state("a2", bridge=[{"agentId": "a2", "running": False, "status": "completed"}])
+        self.assertEqual((st["state"], st["source"]), ("completed", "engine"), "a revival whose turn closed again")
 
-    def test_a_finished_agent_of_an_earlier_process_costs_no_read(self):
+    def test_finished_revived_then_stopped_by_its_parent_is_stopped(self):
+        """TaskStop after a revival: the meta still says finished, the turn is open, the parent's rows end it.
+        A TaskStop from before the revival does not."""
+        revived = NOW - 300
+        rows = [Rows.prompt(NOW - 3000), *Rows.handback(NOW - 2900),
+                Rows.prompt(revived, "go on", isMeta=True, origin={"kind": "human"}),
+                Rows.call(NOW - 290, "t9", "Bash", msg="m-r")]
+        self.s.agent("a1", rows, NOW - 290, meta={"finished": True, "revivedAt": int(revived * 1000)})
+        self.s.append_main([Rows.call(NOW - 2950, "ts0", "TaskStop", {"task_id": "a1"}, msg="m-ts0"),
+                            Rows.result(NOW - 2949, "ts0", "stopped", tur={"task_id": "a1"})])
+        self.assertEqual(self.state("a1")["state"], "running", "a stop before the revival says nothing of this turn")
+        self.s.append_main([Rows.call(NOW - 200, "ts1", "TaskStop", {"task_id": "a1"}, msg="m-ts1"),
+                            Rows.result(NOW - 199, "ts1", "stopped", tur={"task_id": "a1"})])
+        for bridge in (None, [{"agentId": "a1", "running": False, "status": "completed"}]):
+            st = self.state("a1", bridge=bridge)
+            self.assertEqual((st["state"], st["stoppedBy"]), ("stopped", "TaskStop"), bridge)
+        self.s.append_main([Rows.call(NOW - 100, "ts2", "TaskStop", {"task_id": "a9"}, msg="m-ts2"),
+                            Rows.result(NOW - 99, "ts2", "Error: no such task", tur={})])
+
+    def test_a_failed_agent_stays_failed_once_its_process_ends(self):
+        self.s.agent("f1", [Rows.prompt(NOW - 900), Rows.api_error(NOW - 850)], NOW - 850, meta={"finished": True})
+        for live in (True, False):
+            self.assertEqual(self.state("f1", live=live)["state"], "failed", live)
+        self.s.agent("f2", [Rows.prompt(STARTED - 900), Rows.api_error(STARTED - 850)], STARTED - 850,
+                     meta={"finished": True})
+        self.assertEqual(self.state("f2")["state"], "failed", "of an earlier process")
+        self.assertEqual([e["agentId"] for e in self.s.view(live=False).done(5)], ["f1", "f2"])
+        self.assertTrue(all(e["state"] == "failed" for e in self.s.view(live=False).done(5)))
+
+    def test_a_transcript_with_no_readable_row_falls_back_to_its_meta(self):
         self.s.agent("a1", ["not json at all"], STARTED - 5000, meta={"finished": True})
         self.assertEqual(self.state("a1")["state"], "completed")
+
+    def test_the_main_loop_is_read_once_and_only_as_far_back_as_asked(self):
+        """Many agents waiting on shells cost one read of the main loop's rows since the process started (its
+        TaskStops and the bridge's stop notes), not a read per task; rows from before are not read."""
+        old = [Rows.prompt(STARTED - 86400 * 3 + i) for i in range(4000)]   # days of history, megabytes of it
+        for r in old:
+            r["message"]["content"] = "x" * 600
+        early = {"type": "user", "uuid": "note-0", "timestamp": ts(STARTED - 86400 * 4), "isMeta": True,
+                 "origin": {"kind": "plugin", "name": "sminos"},
+                 "message": {"role": "user", "content": "Task bs3, a background task, was stopped from the desk: it "
+                                                         "is not running."}}
+        self.s.write(self.s.main, [early] + old, STARTED - 100)
+        self.s.append_main([{"type": "user", "uuid": "note-1", "timestamp": ts(NOW - 60), "isMeta": True,
+                             "origin": {"kind": "plugin", "name": "sminos"},
+                             "message": {"role": "user", "content": "Task bs1, a background task, was stopped from "
+                                                                     "the desk: it is not running."}}])
+        for i in range(6):
+            rows = [Rows.prompt(NOW - 600), *Rows.bg_bash(NOW - 590, "t1", "bs%d" % i), Rows.reply(NOW - 580)]
+            self.s.agent("w%d" % i, rows, NOW - 580, meta={"finished": True})
+        calls = []
+        real = V.offset_since
+
+        def counted(mm, t):
+            calls.append(t)
+            return real(mm, t)
+
+        V.offset_since = counted
+        self.addCleanup(setattr, V, "offset_since", real)
+        v = self.s.view()
+        states = {i: v.state("w%d" % i)["state"] for i in range(6)}
+        self.assertEqual(states, {0: "waiting", 1: "completed", 2: "waiting", 3: "waiting", 4: "waiting",
+                                  5: "waiting"}, "a stop note from before the process started is not read")
+        self.assertEqual(calls, [STARTED - V.EVIDENCE_MARGIN], "the main loop read once, back to the process start")
+
+    def test_plain_list_counts_cheaply(self):
+        """`sminos list`'s line: the engine's running agents, else the open turns of the running process from the
+        tails alone; never the main loop's rows or the background reads."""
+        self.s.agent("r1", [Rows.prompt(NOW - 60), Rows.call(NOW - 50, "t1", "Bash")], NOW - 50)
+        self.s.agent("c1", [Rows.prompt(NOW - 600), *Rows.bg_bash(NOW - 590, "t1", "bs1"), Rows.reply(NOW - 580)],
+                     NOW - 580, meta={"finished": True})
+        self.s.agent("o1", [Rows.prompt(STARTED - 900), Rows.call(STARTED - 800, "t1", "Bash")], STARTED - 800)
+
+        def refuse(*_a, **_k):
+            raise AssertionError("the deep reads ran")
+
+        for name in ("live_background", "offset_since"):
+            real = getattr(V, name)
+            setattr(V, name, refuse)
+            self.addCleanup(setattr, V, name, real)
+        self.assertEqual(self.s.view().live_summary(), {"source": "disk", "open": 1})
+        bridge = [{"agentId": "r1", "running": True, "subagentType": "x"}, {"agentId": "c1", "running": False}]
+        self.assertEqual(self.s.view(bridge=bridge).live_summary(), {"source": "engine", "running": 1})
 
     # -- what the disk holds
     def test_missing_meta_keys_unreadable_and_malformed_metas(self):
