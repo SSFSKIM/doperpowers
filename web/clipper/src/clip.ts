@@ -86,7 +86,12 @@ export async function clip(rawUrl: string, opts: ClipOptions): Promise<ClipResul
 
   if (!opts.refresh) {
     const meta = await readFresh<ClipOk>(entry, REUSE_MAX_AGE_MS)
-    if (meta) return { ...meta, url: rawUrl, cached: true }
+    if (meta) {
+      // Nor a copy whose page was served from a host denied since it was saved.
+      const served = new URL(meta.finalUrl).hostname
+      if (isDenied(served, boundary.deny)) return fail(deniedError(served).message, { permanent: true })
+      return { ...meta, url: rawUrl, cached: true }
+    }
     const failure = await readFailure<ClipError & { failedAt: string }>(entry, FAILURE_MEMORY_MS)
     if (failure) return { ...failure, url: rawUrl }
   }
@@ -302,8 +307,11 @@ export function httpsFirst(url: URL): URL | undefined {
 /**
  * The response to `url`, an http: URL on the default port tried over https
  * first, and the URL it was asked of. When https brings no page (an error
- * status, a connection or TLS failure, a timeout), the URL is fetched as given,
- * and `httpsFailed` says why. A refusal is not tried again: the host is the same.
+ * status, a connection or TLS failure, a timeout, a refusal), the URL is
+ * fetched as given, and `httpsFailed` says why. A refusal falls back too: https
+ * follows redirects, so it may concern where https led rather than the URL's
+ * host, and the http attempt passes the same guard, so a host refused for
+ * itself is refused again, at the cost of a lookup.
  */
 export async function fetchHttpsFirst(url: URL, get: (target: URL) => Promise<HttpResponse>): Promise<{ res: HttpResponse; target: URL; httpsFailed?: string }> {
   const secure = httpsFirst(url)
@@ -314,7 +322,7 @@ export async function fetchHttpsFirst(url: URL, get: (target: URL) => Promise<Ht
     if (res.status < 400) return { res, target: secure }
     httpsFailed = statusLine(res)
   } catch (e) {
-    if (!(e instanceof HttpError)) throw e
+    if (!(e instanceof HttpError) && !(e instanceof RefusedError)) throw e
     httpsFailed = e.message
   }
   return { res: await get(url), target: url, httpsFailed }

@@ -6,7 +6,6 @@
 import { lookup as dnsLookup } from 'node:dns/promises'
 import { isIP } from 'node:net'
 import type { LookupFunction } from 'node:net'
-import { domainToASCII } from 'node:url'
 
 export type Address = { address: string; family: number }
 
@@ -47,10 +46,19 @@ export function deniedHosts(env: NodeJS.ProcessEnv = process.env): string[] {
   }).filter(r => r !== '' && r !== '*.')
 }
 
-/** Lowercased, unbracketed, without a trailing dot, in ASCII: the form a URL's hostname has. */
+/**
+ * The host as the URL parser writes it (lowercased, in punycode, an IP literal
+ * in its canonical form: `2130706433` is 127.0.0.1), unbracketed and without a
+ * trailing dot, so a rule and a host written two ways compare equal. Text the
+ * parser refuses is compared lowercased.
+ */
 function normalizeHost(host: string): string {
-  const h = host.replace(/^\[|\]$/g, '').replace(/\.+$/, '').toLowerCase()
-  return /[^\x00-\x7f]/.test(h) ? domainToASCII(h) : h
+  const h = host.replace(/^\[|\]$/g, '').replace(/\.+$/, '')
+  try {
+    return new URL(`http://${h.includes(':') ? `[${h}]` : h}/`).hostname.replace(/^\[|\]$/g, '')
+  } catch {
+    return h.toLowerCase()
+  }
 }
 
 export function isDenied(hostname: string, deny: string[]): boolean {

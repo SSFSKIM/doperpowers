@@ -15,6 +15,8 @@ export const FAILURE_MEMORY_MS = 5 * 60e3
 const TMP_PREFIX = '.tmp-'
 const TMP_STALE_MS = 3600e3
 const FAILED_FILE = '.failed.json'
+/** A failure record being written, renamed over FAILED_FILE once whole. */
+const FAILED_TMP_PREFIX = '.failed-'
 
 /** Absolute, whatever form it is given in: every path in a result names it (I1, I2). */
 export function cacheRoot(option: string | undefined, env: NodeJS.ProcessEnv = process.env): string {
@@ -63,15 +65,20 @@ export async function readFailure<T extends { failedAt: string }>(entry: string,
 }
 
 /**
- * Records a failure for `readFailure`, replacing the one before. Best effort:
- * a cache that cannot be written leaves the failure unremembered, and a read
- * that meets a write half done finds no failure.
+ * Records a failure for `readFailure`, replacing the one before. It is written
+ * whole under a name of its own and renamed over the record, so writers at the
+ * same moment leave one of their records, never a mix. Best effort: a cache
+ * that cannot be written leaves the failure unremembered.
  */
 export async function rememberFailure<T extends { failedAt: string }>(entry: string, failure: T): Promise<void> {
+  const tmp = join(entry, `${FAILED_TMP_PREFIX}${randomBytes(4).toString('hex')}.tmp`)
   try {
     await mkdir(entry, { recursive: true })
-    await writeFile(join(entry, FAILED_FILE), JSON.stringify(failure) + '\n')
-  } catch {}
+    await writeFile(tmp, JSON.stringify(failure) + '\n')
+    await rename(tmp, join(entry, FAILED_FILE))
+  } catch {
+    await rm(tmp, { force: true }).catch(() => {})
+  }
 }
 
 export async function beginBuild(entry: string): Promise<string> {
@@ -118,9 +125,12 @@ export async function prune(root: string, opts: { olderThanDays: number; now?: n
           removed++
         }
       }
-      const failed = join(entryDir, FAILED_FILE)
-      const failedStat = await stat(failed).catch(() => undefined)
-      if (failedStat && now - failedStat.mtimeMs > FAILURE_MEMORY_MS) await rm(failed, { force: true })
+      // The failure record, and a write of one that a crash left before its rename.
+      for (const name of await failureFiles(entryDir)) {
+        const file = join(entryDir, name)
+        const s = await stat(file).catch(() => undefined)
+        if (s && now - s.mtimeMs > FAILURE_MEMORY_MS) await rm(file, { force: true })
+      }
       await rmdir(entryDir).catch(() => {})
     }
     await rmdir(hostDir).catch(() => {})
@@ -133,6 +143,14 @@ export async function prune(root: string, opts: { olderThanDays: number; now?: n
 async function dirs(path: string): Promise<string[]> {
   try {
     return (await readdir(path, { withFileTypes: true })).filter(d => d.isDirectory()).map(d => d.name)
+  } catch {
+    return []
+  }
+}
+
+async function failureFiles(entry: string): Promise<string[]> {
+  try {
+    return (await readdir(entry)).filter(name => name === FAILED_FILE || name.startsWith(FAILED_TMP_PREFIX))
   } catch {
     return []
   }

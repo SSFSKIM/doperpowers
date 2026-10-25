@@ -322,6 +322,7 @@ new generation folder inside it:
     meta.json
   .tmp-<random>/                         a generation being built
   .failed.json                           the URL's last failure, remembered for 5 minutes
+  .failed-<random>.tmp                   a failure record being written, renamed to .failed.json once whole
 <root>/.pruned                           stamp of the last prune
 ```
 
@@ -362,14 +363,18 @@ new generation folder inside it:
     interrupted publish there destroys the copy that worked.
 - **Pruning.** `clip.mjs prune` deletes generations whose `fetchedAt` is
   over 7 days old, `.tmp-` folders over an hour old, failure records past
-  the failure memory, and entries left empty. The mod starts it at session
-  start, without awaiting it, when `.pruned` is over a day old.
+  the failure memory (a `.failed-` file a crash left before its rename
+  included, so it cannot keep an entry from emptying), and entries left
+  empty. The mod starts it at session start, without awaiting it, when
+  `.pruned` is over a day old.
 - **A failed fetch (R4) is never a generation; it is remembered.** A
   failure the site or the network gave (an HTTP status of 400 or above, a
   network error, a timeout) is written to `<entry>/.failed.json` with its
-  time, and for `FAILURE_MEMORY_MS = 300000` (5 minutes, `WebFetch`'s
-  figure) a call without `refresh` answers from it instead of a request,
-  after the reuse check: a fresh copy of the page still wins. `refresh`
+  time, whole under a name of its own and then renamed over the record, so
+  two failures written at once leave one of them, never a mix. For
+  `FAILURE_MEMORY_MS = 300000` (5 minutes, `WebFetch`'s figure) a call
+  without `refresh` answers from it instead of a request, after the reuse
+  check: a fresh copy of the page still wins. `refresh`
   fetches again. A refusal is not remembered: it is decided locally, at no
   cost, and the deny list must hold as it stands now. Without the memory,
   a URL that timed out or hit a bot wall was refetched in full on every
@@ -443,10 +448,15 @@ exposure, and the boundary closes it.
 - **The owner's deny list.** `WEB_DENY_HOSTS`, comma-separated hosts, is
   checked before the address check, and before any lookup, at the same
   point: the agent's URL (before the cache, so a denied host's saved copy
-  is not handed out either), each redirect hop, each image, each request of
-  Defuddle's site extractors and each request Chromium makes. `example.com`
-  names that host alone and `*.example.com` every host under it, not
-  `example.com` itself, as `WebFetch`'s `domain:` rules match. A denied host
+  is not handed out either, nor a saved copy whose final URL is on a host
+  denied since it was saved), each redirect hop, each image, each request
+  of Defuddle's site extractors and each request Chromium makes.
+  `example.com` names that host alone and `*.example.com` every host under
+  it, not `example.com` itself, as `WebFetch`'s `domain:` rules match. A
+  rule and a host are compared as the URL parser writes them, so an IP
+  literal written another way (`2130706433` for `127.0.0.1`, an IPv6
+  address without `::`), a name in Unicode or a trailing dot still
+  matches. A denied host
   is refused even when `WEB_ALLOW_HOSTS` lists it. The refusal is R4,
   `refused: <host> is on the deny list (WEB_DENY_HOSTS)`, and an image's
   error `refused: on the deny list`. It is empty by default. An environment
@@ -480,8 +490,10 @@ its own:
      `https:` first. When that brings no page (an error status, a
      connection or TLS failure, a timeout), the URL is fetched as given,
      and when the page then came over plain http a note says so:
-     `fetched over plain http: https failed (<why>)`. A refusal is not
-     tried again. An explicit port names a plain-http service, so it is
+     `fetched over plain http: https failed (<why>)`. A refusal falls back
+     too: https follows redirects, so it may have been refused for where it
+     led rather than for the URL's host, and the http attempt passes the
+     same guard. An explicit port names a plain-http service, so it is
      fetched as given. `WebFetch` upgrades every `http:` URL and has no
      fallback, so a site without https cannot be read at all; falling back
      on an error status as well as a transport failure keeps every page

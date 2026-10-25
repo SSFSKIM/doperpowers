@@ -81,6 +81,19 @@ test('WEB_DENY_HOSTS names hosts exactly, and *. names every host under one but 
   assert.deepEqual(deniedHosts({}), [])
 })
 
+test('a deny rule and a host are compared in the URL parser\'s form, so an IP literal or a name written another way still matches', async () => {
+  const deny = deniedHosts({ WEB_DENY_HOSTS: '[2606:4700:4700:0:0:0:0:1111], 2130706433, ::FFFF:127.0.0.2, 예시.KR, not a host' })
+  assert.deepEqual(deny, ['2606:4700:4700::1111', '127.0.0.1', '::ffff:7f00:2', 'xn--vv4b11d.kr', 'not a host'])
+  for (const host of ['[2606:4700:4700::1111]', '2606:4700:4700:0000:0000:0000:0000:1111', '127.0.0.1', '0x7f.1', '017700000001', '[::ffff:127.0.0.2]', '예시.kr', 'NOT A HOST'])
+    assert.equal(isDenied(host, deny), true, host)
+  for (const host of ['[2606:4700:4700::1112]', '127.0.0.3', '::ffff:127.0.0.3'])
+    assert.equal(isDenied(host, deny), false, host)
+  // The URL from the review: the rule in full form, the URL's host in the parser's.
+  const boundary = boundaryOf({ WEB_DENY_HOSTS: '[2606:4700:4700:0:0:0:0:1111]' })
+  const url = new URL('https://[2606:4700:4700::1111]/')
+  await assert.rejects(resolveChecked(url.hostname, 443, { boundary }), /^RefusedError: refused: 2606:4700:4700::1111 is on the deny list \(WEB_DENY_HOSTS\)$/)
+})
+
 test('a denied host is refused before any lookup, even one WEB_ALLOW_HOSTS exempts', async () => {
   const resolve = async () => { throw new Error('no lookup expected') }
   const boundary = boundaryOf({ WEB_ALLOW_HOSTS: 'cdn.blocked.test:443', WEB_DENY_HOSTS: '*.blocked.test' })

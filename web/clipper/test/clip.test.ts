@@ -326,6 +326,18 @@ test('a host on WEB_DENY_HOSTS is refused before any request and before its save
   assert.deepEqual(server.hits.slice(hits), ['/to-localhost'])
 })
 
+test('a saved copy whose final URL is on a host denied since is refused, permanent, without a request', async () => {
+  const cacheDir = await tmpCache()
+  const open = { ...env, WEB_ALLOW_HOSTS: `${env.WEB_ALLOW_HOSTS},localhost:${server.port}` }
+  const saved = ok(await clip(`${server.origin}/to-localhost`, { cacheDir, env: open }))
+  assert.equal(saved.finalUrl, `http://localhost:${server.port}/article`)
+  const hits = server.hits.length
+  const r = failure(await clip(`${server.origin}/to-localhost`, { cacheDir, env: { ...open, WEB_DENY_HOSTS: 'localhost' } }))
+  assert.equal(r.error, 'refused: localhost is on the deny list (WEB_DENY_HOSTS)')
+  assert.equal(r.permanent, true)
+  assert.equal(server.hits.length, hits)
+})
+
 test('an image on a denied host keeps its remote link, refused, and is never requested', async () => {
   const denied = { ...env, WEB_ALLOW_HOSTS: `${env.WEB_ALLOW_HOSTS},localhost:${server.port}`, WEB_DENY_HOSTS: 'localhost' }
   const hits = server.hits.length
@@ -344,17 +356,22 @@ test('an http: URL on the default port is tried over https first; any other URL 
   assert.equal(httpsFirst(new URL('https://example.com/')), undefined)
 })
 
-test('https first falls back to the URL as given when https brings no page, saying why; a refusal is not tried again', async () => {
+test('https first falls back to the URL as given when https brings no page or is refused, saying why', async () => {
   const response = (url: URL, status: number, statusText = ''): HttpResponse => ({ status, statusText, headers: {}, body: Buffer.alloc(0), url })
-  const run = async (https: (u: URL) => HttpResponse) => {
+  const run = async (https: (u: URL) => HttpResponse, http: (u: URL) => HttpResponse = u => response(u, 200)) => {
     const asked: string[] = []
-    const out = await fetchHttpsFirst(new URL('http://example.com/a'), async u => { asked.push(u.href); return u.protocol === 'https:' ? https(u) : response(u, 200) })
+    const out = await fetchHttpsFirst(new URL('http://example.com/a'), async u => { asked.push(u.href); return u.protocol === 'https:' ? https(u) : http(u) })
     return { asked, final: out.res.url.href, httpsFailed: out.httpsFailed }
   }
   assert.deepEqual(await run(u => response(u, 200)), { asked: ['https://example.com/a'], final: 'https://example.com/a', httpsFailed: undefined })
   assert.deepEqual(await run(u => response(u, 404, 'Not Found')), { asked: ['https://example.com/a', 'http://example.com/a'], final: 'http://example.com/a', httpsFailed: 'HTTP 404 Not Found' })
   assert.deepEqual(await run(() => { throw new HttpError('network error: self-signed certificate') }), { asked: ['https://example.com/a', 'http://example.com/a'], final: 'http://example.com/a', httpsFailed: 'network error: self-signed certificate' })
-  await assert.rejects(run(() => { throw new RefusedError('refused: example.com is on the deny list (WEB_DENY_HOSTS)') }), RefusedError)
+  // https may be refused for where it redirected, not for the URL's host: http is still read.
+  const hop = 'refused: tracker.test is on the deny list (WEB_DENY_HOSTS)'
+  assert.deepEqual(await run(() => { throw new RefusedError(hop) }), { asked: ['https://example.com/a', 'http://example.com/a'], final: 'http://example.com/a', httpsFailed: hop })
+  // A refusal of the http attempt too is the answer.
+  const own = 'refused: example.com resolves to a non-public address (10.0.0.7); for a local server use curl through Bash'
+  await assert.rejects(run(() => { throw new RefusedError(own) }, () => { throw new RefusedError(own) }), (e: unknown) => e instanceof RefusedError && e.message === own)
 })
 
 test('a redirect to a non-public address is refused, and the trap receives nothing', async () => {

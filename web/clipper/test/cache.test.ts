@@ -136,6 +136,32 @@ test('a remembered failure answers under FAILURE_MEMORY_MS, is never taken for a
   assert.equal(await readFailure(entry, FAILURE_MEMORY_MS, now), null)
 })
 
+test('concurrent failures of different lengths leave one whole record, and no file but it', async () => {
+  const entry = join(await tmp(), 'h', 'e')
+  for (let round = 0; round < 20; round++) {
+    await Promise.all(Array.from({ length: 8 }, (_, i) =>
+      rememberFailure(entry, { error: 'x'.repeat(1 + ((i * 997 + round * 31) % 4000)), failedAt: new Date().toISOString() })))
+    const text = await readFile(join(entry, '.failed.json'), 'utf8')
+    assert.doesNotThrow(() => JSON.parse(text), `round ${round}: ${text.length} bytes`)
+  }
+  assert.deepEqual(await readdir(entry), ['.failed.json'])
+})
+
+test('prune deletes a failure write a crash left before its rename once FAILURE_MEMORY_MS old, and the entry it leaves empty', async () => {
+  const root = await tmp()
+  const crashed = join(root, 'a.example', 'crash-11111111')
+  const writing = join(root, 'b.example', 'writing-22222222')
+  for (const entry of [crashed, writing]) {
+    await mkdir(entry, { recursive: true })
+    await writeFile(join(entry, '.failed-0123abcd.tmp'), '{"error":')
+  }
+  const before = new Date(Date.now() - FAILURE_MEMORY_MS - 60e3)
+  await utimes(join(crashed, '.failed-0123abcd.tmp'), before, before)
+  assert.deepEqual(await prune(root, { olderThanDays: 7 }), { removed: 0 })
+  await assert.rejects(stat(join(root, 'a.example')))
+  assert.deepEqual(await readdir(writing), ['.failed-0123abcd.tmp'])
+})
+
 test('prune deletes a failure no longer remembered, and the entry it leaves empty; a live one stays', async () => {
   const root = await tmp()
   const stale = join(root, 'a.example', 'gone-11111111')
