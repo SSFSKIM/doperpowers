@@ -1,7 +1,7 @@
 {
   "name": "web",
   "description": "The web as files: mcp__web__fetch saves a page as clean markdown (the shape Obsidian Web Clipper produces, its images downloaded beside it) in a cache every session on the machine shares, then replies with the page, its outline, or a small model's answer citing the saved file's lines",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "author": {
     "name": "SSFSKIM",
     "email": "supremekim17@gmail.com"

@@ -98,6 +98,9 @@ session on the machine.
   document without `<html>`/`<body>` extracts with no browser; RFC 8439
   gives 14,648 words under `WEB_CHROME=none`, where it gave 0 (Decision
   Log).
+- [x] (2026-10-25) Board #134: a page's SVG images, and an SVG fetched by
+  its own URL, are drawn as PNGs that `Read` shows (step 5, Decision Log).
+  The go.dev survey post's 36 SVG charts come back drawn and legible.
 
 ## Acceptance
 
@@ -518,7 +521,7 @@ its own:
    | `text/plain`, `text/csv`, XML, feeds | `page.txt` | As served |
    | `application/json` | `page.json` | Pretty-printed |
    | `application/pdf` | `page.pdf` | `page.txt` from `pdftotext -layout` when it is on `PATH`, else a note. The outline has one entry per PDF page: `pdftotext` ends each page with a form feed |
-   | `image/*` | `image.<ext>` | A note to Read it |
+   | `image/*` | `image.<ext>` | A note to Read it; an SVG is drawn as `image.png` (step 5) |
    | anything else | `file.<ext>` | A note naming the type and size |
 
    Markdown whose body is under 50 words can be a stub of a page a script
@@ -597,8 +600,32 @@ its own:
    - **Links:** each link is rewritten to its local file. An image that
      fails to download, or comes back under 1 KiB (tracking pixels, spacer
      GIFs), keeps its remote link, and the image list records the error.
-   - **SVGs** are saved as `.svg`. `Read` cannot display one, which is a
-     known gap.
+   - **SVGs are drawn as PNGs**, since `Read` cannot show an SVG. Each saved
+     `assets/NN.svg` gets `assets/NN.png` beside it, and the link names the
+     PNG. The image list gives the PNG with its source:
+     `…/assets/11.png  L85  "alt"  (an SVG drawn as PNG; its source: …/assets/11.svg)`.
+     The SVG stays because its text, such as a chart's labels, is readable
+     too.
+     - **How:** one launch of the render path's Chromium per page (the
+       filtering proxy, its flags, a fresh profile). Each SVG is drawn as an
+       `<img>` from a `data:` URI on a blank document set with
+       `Page.setDocumentContent`, then screenshotted on white. Drawn as an
+       image, an SVG runs no script and loads nothing it names except
+       `data:` URIs, as on the page that showed it, so drawing makes no
+       request. The proxy is a second wall.
+     - **Size and limits:** twice the SVG's natural size, its long edge at
+       most 2,000 px. An SVG that gives no width, or a percentage, is sized
+       by its viewBox when that has a finite, positive width and height,
+       its root read as Chromium parses it. Every SVG of a page is drawn
+       within 20 s and the fetch's deadline.
+     - **When an SVG is not drawn** (no Chromium, a time budget spent, an
+       SVG that cannot be decoded, one Chromium fails to draw while the
+       rest are drawn), its link stays the `.svg`. The list
+       then says
+       `(an SVG: Read shows its source text, not the picture; not drawn: <why>)`.
+     - **An SVG fetched by its own URL** is saved as `image.svg` and drawn
+       as `image.png`:
+       `Image saved: …/image.png, drawn from the SVG …/image.svg. Read it to see it.`
 6. **Measure and write.** The line count, the size estimate and the outline
    are computed over the text file as written: the main file, or `page.txt`
    for a PDF. Frontmatter is included, so an outline line number is the line
@@ -890,7 +917,7 @@ After the evals pass and the branch is merged (M4):
     Hosts degrade with notes until then.
   - MAWS drawing `mcp__web__fetch` calls in its web cell, as it draws
     `WebFetch`.
-  - SVG rasterizing.
+  - SVG rasterizing (done, board #134).
   - The logged-in mode.
 
 ## Execution
@@ -1907,6 +1934,53 @@ type Run = {
   words to 14,648, the render's count. Live, under `WEB_CHROME=none`, the
   tool saves it with no render and no note.
   Date/Author: 2026-10-25, web-clipper-fixes session.
+- Decision (board #134): SVG images are drawn as PNGs at save time with the
+  clipper's own Chromium (step 5, "SVGs are drawn as PNGs"), and the
+  agent-facing text changes with it.
+  - **What is drawn, and how:** one launch per page with SVGs. Each SVG is
+    drawn as an `<img>` from a `data:` URI on a blank document, at twice
+    its natural size, its long edge at most 2,000 px, on white, and
+    screenshotted.
+  - **Natural size:** an SVG with no width of its own (or a percentage)
+    takes its viewBox's size, when the viewBox has four finite numbers and
+    a positive width and height. Chromium's 300-pixel default for it would
+    draw an 800-unit chart at three-eighths scale. The root is read in the
+    drawing's page by a `DOMParser`, Chromium's own XML parser, whose
+    document runs no script and loads nothing; a regex on the source took
+    markup in a comment before the root for the root.
+  - **What the agent sees:**
+    - the markdown link names the PNG, and the `.svg` stays beside it;
+    - the image list gives a drawn SVG's PNG with its source;
+    - an SVG not drawn now says `Read shows its source text, not the picture`,
+      where the reply used to invite a `Read` to "see" it;
+    - an SVG fetched by its own URL names the PNG to `Read`.
+  - **Byte-identical without SVGs:** pages without SVGs, and their
+    `meta.json`, come out exactly as before.
+  Rationale: `Read` cannot show an SVG, and charts are often SVGs (the
+  eval's go.dev task, whose agents read the chart's XML for its labels). An
+  SVG drawn as an image runs no script and loads nothing it names except
+  `data:` URIs, so the drawing makes no request. The test shows it on ten
+  channels: `@import`, `@font-face`, a paint server, `<image href>`,
+  `xlink:href`, `<use>`, `<feImage>`, `<foreignObject>`'s `<img>`, a
+  script's `fetch`, and a script's `Image`. They are aimed at a host the
+  boundary allows: 0 reached in image mode, all 10 when the same browser
+  opens the SVG as a document. The proxy and flags are the render path's
+  regardless.
+  Rejected:
+  - resvg-js: a WASM or native dependency in the committed bundle, and it
+    draws text only with the fonts it is handed, while text is what charts
+    carry. It wins only where Chromium is missing, and the devcloud image
+    now has Chromium.
+  - Drawing on demand through a CLI subcommand: one more step the agent
+    has to know to take, to save about 0.1 s an SVG after a 0.5 s launch.
+  - Only saying so: leaves an SVG whose text is drawn as outlines
+    unreadable. Its wording is kept for an SVG not drawn.
+  - Opening the SVG as a document: it runs the SVG's scripts and loads
+    what it names.
+  - Screenshotting the image on the rendered page: it renders every page
+    that has an SVG, seconds each, and depends on its layout.
+  Date/Author: 2026-10-25, web-svg-raster session, design approved by the
+  coordinator.
 
 ## Outcomes & Retrospective
 

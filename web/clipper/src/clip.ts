@@ -12,8 +12,9 @@ import { extractHtml, htmlFrontmatter, markdownWithFrontmatter } from './extract
 import type { Extracted, PageMeta } from './extract.ts'
 import { guardedFetch, HttpError, request } from './http.ts'
 import type { HttpResponse } from './http.ts'
+import { DRAW_LIMITS, drawSvgs } from './draw.ts'
 import { downloadImages } from './images.ts'
-import type { ImageEntry } from './images.ts'
+import type { DrawSvgs, ImageEntry } from './images.ts'
 import { entryDir } from './key.ts'
 import { buildOutline, splitLines } from './measure.ts'
 import type { OutlineEntry, OutlineMode } from './measure.ts'
@@ -47,6 +48,9 @@ export type ClipOk = {
   /** Headings left out of `outline` to keep it within 80 entries. */
   outlineOmitted?: number
   images: ImageEntry[]
+  /** An SVG fetched by its own URL, drawn: the PNG beside it; or, not drawn, why. */
+  png?: string
+  notDrawn?: string
   notes: string[]
 }
 export type ClipError = {
@@ -185,6 +189,15 @@ export async function clip(rawUrl: string, opts: ClipOptions): Promise<ClipResul
     let textFile: string | undefined // the file lines and the outline are measured over
     let mode: OutlineMode = 'plain'
     const main = join(tmp, r.file)
+    let drawnSvg: { png: string } | { notDrawn: string } | undefined
+    const draw: DrawSvgs = files => {
+      const chrome = findChrome(env)
+      if ('note' in chrome) {
+        const why = chrome.note.replace(/^rendering unavailable on this machine: /, '')
+        return Promise.resolve(new Map(files.map(f => [f, { error: why }])))
+      }
+      return drawSvgs(files, chrome, deadline.limit(DRAW_LIMITS.timeoutMs), boundary)
+    }
 
     if (r.kind === 'html' || r.kind === 'markdown') {
       let head = ''
@@ -227,7 +240,7 @@ export async function clip(rawUrl: string, opts: ClipOptions): Promise<ClipResul
       }
       // 5. Images. Their lines are counted in the text as written, frontmatter included.
       const text = head + body
-      const withImages = await downloadImages(text, finalUrl, tmp, deadline, boundary)
+      const withImages = await downloadImages(text, finalUrl, tmp, deadline, boundary, draw)
       images = withImages.images
       await writeFile(main, withImages.markdown)
       textFile = main
@@ -251,6 +264,10 @@ export async function clip(rawUrl: string, opts: ClipOptions): Promise<ClipResul
       if (extracted === true) { textFile = txt; mode = 'pdf' } else notes.push(extracted)
     } else {
       await writeFile(main, res.body)
+      if (r.kind === 'image' && r.file.endsWith('.svg')) {
+        const d = (await draw([main])).get(main)!
+        drawnSvg = 'png' in d ? { png: d.png.slice(tmp.length + 1) } : { notDrawn: d.error }
+      }
     }
 
     // Said only when the page did come over plain http, not when http redirected back to https.
@@ -273,7 +290,9 @@ export async function clip(rawUrl: string, opts: ClipOptions): Promise<ClipResul
     await publish(tmp, entry, async dir => {
       written = {
         ...result, dir, file: join(dir, r.file), ...(textFile && textFile !== main ? { text: join(dir, 'page.txt') } : {}),
-        ...measured, images, notes,
+        ...measured, images,
+        ...(drawnSvg ? ('png' in drawnSvg ? { png: join(dir, drawnSvg.png) } : drawnSvg) : {}),
+        notes,
       }
       const { cached: _, ...onDisk } = written
       await writeFile(join(tmp, 'meta.json'), JSON.stringify(onDisk, null, 2) + '\n')

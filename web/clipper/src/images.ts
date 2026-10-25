@@ -10,8 +10,16 @@ import { RefusedError } from './netguard.ts'
 import type { Boundary } from './netguard.ts'
 import { imageExtension, mediaTypeOf, sniff } from './route.ts'
 import type { Deadline } from './deadline.ts'
+import type { Drawn } from './draw.ts'
 
-export type ImageEntry = { file?: string; url: string; alt: string; line: number; bytes?: number; error?: string }
+/**
+ * A saved SVG drawn as a PNG has the PNG as its `file` and the SVG as `svg`; one
+ * not drawn keeps the SVG as its `file`, and `notDrawn` says why.
+ */
+export type ImageEntry = { file?: string; url: string; alt: string; line: number; bytes?: number; error?: string; svg?: string; notDrawn?: string }
+
+/** Draws SVG files (absolute paths) as PNGs beside them: `drawSvgs` in the clipper. */
+export type DrawSvgs = (files: string[]) => Promise<Map<string, Drawn>>
 
 export const IMAGE_LIMITS = { concurrency: 6, timeoutMs: 20_000, maxBytes: 15 * 1048576, maxImages: 40, minBytes: 1024 }
 
@@ -101,10 +109,10 @@ export function findImageLinks(markdown: string): Link[] {
   return links
 }
 
-type Download = { file?: string; part?: string; ext?: string; bytes?: number; error?: string }
+type Download = { file?: string; part?: string; ext?: string; bytes?: number; error?: string; svg?: string; notDrawn?: string }
 
 export async function downloadImages(
-  markdown: string, base: string, dir: string, deadline: Deadline, boundary: Boundary,
+  markdown: string, base: string, dir: string, deadline: Deadline, boundary: Boundary, draw?: DrawSvgs,
 ): Promise<{ markdown: string; images: ImageEntry[] }> {
   const links = findImageLinks(markdown)
   const unique: string[] = []
@@ -148,6 +156,19 @@ export async function downloadImages(
   }
   if (queue.length && n === 0) await rm(assets, { recursive: true, force: true })
 
+  // Read cannot show an SVG: each saved one is drawn as a PNG beside it, which the link then names.
+  const svgs = queue.filter(url => results.get(url)!.file?.endsWith('.svg'))
+  if (draw && svgs.length) {
+    const drawn = await draw(svgs.map(url => join(dir, results.get(url)!.file!)))
+    for (const url of svgs) {
+      const svg = results.get(url)!
+      const d = drawn.get(join(dir, svg.file!)) ?? { error: 'not drawn' }
+      results.set(url, 'png' in d
+        ? { file: svg.file!.replace(/\.svg$/, '.png'), bytes: d.bytes, svg: svg.file }
+        : { ...svg, notDrawn: d.error })
+    }
+  }
+
   let out = ''
   let at = 0
   const images: ImageEntry[] = links.map((l, i) => {
@@ -159,7 +180,10 @@ export async function downloadImages(
     out += markdown.slice(at, l.start) + (keep ? markdown.slice(l.start, l.end) : l.rewrite(r.file ?? url))
     at = l.end
     const shown = url.startsWith('data:') ? url.slice(0, 40) + '…' : url
-    return { ...(r.file ? { file: r.file, bytes: r.bytes } : {}), url: shown, alt: l.alt, line: l.line, ...(r.error ? { error: r.error } : {}) }
+    return {
+      ...(r.file ? { file: r.file, bytes: r.bytes } : {}), url: shown, alt: l.alt, line: l.line,
+      ...(r.error ? { error: r.error } : {}), ...(r.svg ? { svg: r.svg } : {}), ...(r.notDrawn ? { notDrawn: r.notDrawn } : {}),
+    }
   })
   out += markdown.slice(at)
   return { markdown: out, images }
