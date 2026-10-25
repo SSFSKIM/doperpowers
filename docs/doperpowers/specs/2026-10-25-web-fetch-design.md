@@ -1274,7 +1274,10 @@ type Run = {
     model as `is_error: true`, wrapped in `<tool_use_error>`, with no
     permission wording. A throwing hook is not a mechanism: the engine
     skips it and the call fails with the engine's text. The registration's
-    `.catch` turns any step that throws into the same deny.
+    `.catch` turns a step that throws before the page is in hand into the
+    same deny. A summary request that throws is a failed summary, not a
+    failed fetch: it gives R1 or R2 opening with why, as R3 promises
+    (corrected after M2's review, 2026-10-25).
   - **`haiku` resolves to Haiku 5.5 with a 1M window** on this Mac
     (`ANTHROPIC_DEFAULT_HAIKU_MODEL` = `claude-haiku-5-5[1m]`, through the
     gateway); a live summary of 202,984 input tokens succeeded.
