@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { markdownWithFrontmatter, htmlFrontmatter, extractHtml } from '../src/extract.ts'
+import { fixture } from './helpers.ts'
 
 const F = '2026-10-25T00:00:00.000Z'
 
@@ -85,6 +86,29 @@ test('a lazy image wrapped alone beside its <noscript> copy is shown once', asyn
     <span class="lazy-wrap"><img loading="lazy" src="https://cdn.example/photo.jpg" alt="the photo"></span><noscript><img src="https://cdn.example/photo.jpg" alt="the photo"></noscript>${words}</article></body></html>`
   const ex = await extractHtml(html, 'https://blog.example/post/', fetch)
   assert.equal(ex.body.match(/photo\.jpg/g)?.length, 1, ex.body)
+})
+
+test("a registry page keeps its labeled dates and the dates in its sentences, and its chrome stays out", async () => {
+  // deps.dev's package page: Defuddle took "Published / May 22, 2023" for an article's
+  // byline, and cut the <time> out of "Package metadata as of …." and "Project metadata as of …".
+  const ex = await extractHtml(await fixture('registry.html'), 'https://deps.dev/pypi/requests/2.31.0', fetch)
+  assert.match(ex.body, /\n### Published\n\nMay 22, 2023\n\n### Description\n/, ex.body)
+  assert.match(ex.body, /\nPackage metadata as of February 11, 2026\.\n/)
+  assert.match(ex.body, /\nScorecard as of August 24, 2026\.\n/)
+  assert.match(ex.body, /\nProject metadata as of October 21, 2026\.\n$/)
+  for (const chrome of ['cookies', 'Privacy', 'Newer version available', '[Overview]', 'Search for open source']) assert.ok(!ex.body.includes(chrome), chrome)
+  assert.ok(!ex.body.includes('\u2063'))
+  assert.equal(ex.meta.published, '2026-02-11T16:44:52.000Z')
+})
+
+test('a date labeled by its line ("Release date:") is kept, and an unlabeled byline date is still dropped', async () => {
+  const prose = '<p>' + 'This release contains a variety of fixes from the previous version, and the notes below describe each of them. '.repeat(4) + '</p>'
+  const notes = await extractHtml(`<html><body><div class="sect1"><h2>E.16. Release 16</h2><p><strong>Release date:&nbsp;</strong>2023-09-14</p>${prose}${prose}</div></body></html>`, 'https://www.postgresql.org/docs/16/release-16.html', fetch)
+  assert.match(notes.body, /^## E\.16\. Release 16\n\n\*\*Release date:\*\* 2023-09-14\n\nThis release/, notes.body)
+  const post = await extractHtml(`<html><head><title>Notes on Gardening</title></head><body><article><h1>Notes on Gardening</h1><p><time datetime="2024-05-03">May 3, 2024</time></p>
+    <div class="byline">By <a href="/jane">Jane Doe</a> · <time datetime="2024-05-03">May 3, 2024</time> · 5 min read</div>${prose}${prose}</article></body></html>`, 'https://blog.example/notes', fetch)
+  assert.ok(!/May 3|Jane Doe/.test(post.body), post.body)
+  assert.equal(post.meta.published, '2024-05-03')
 })
 
 test('html frontmatter escapes quotes and backslashes and ends with fetched', () => {

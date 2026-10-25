@@ -42,6 +42,10 @@ before(async () => {
     '/shell': send('text/html', await fixture('js-shell.html')),
     // The same shell with no Content-Type at all, as package.elm-lang.org serves its pages.
     '/untyped-shell': async (_req, res) => { res.writeHead(200); res.end(await fixture('js-shell.html')) },
+    // The shell again, with a markdown stub for a client that asks for markdown, as bundlephobia serves its package pages.
+    '/stub-shell': async (req, res) => (req.headers.accept ?? '').startsWith('text/markdown')
+      ? send('text/markdown; charset=utf-8', '# Rendered Notes\n\nA notebook application.\n')(req, res)
+      : send('text/html', await fixture('js-shell.html'))(req, res),
     '/egress': send('text/html', egress),
     '/hello': send('text/plain', 'hello through the proxy'),
     '/slow': (_req, res) => { setTimeout(() => send('text/plain', 'ok')(_req, res), 2000) },
@@ -217,6 +221,17 @@ test('a page that needs JavaScript is rendered in headless Chromium', { skip: no
   delete env.WEB_CHROME
   const r = await clip(`${server.origin}/shell`, { cacheDir: await tmpCache(), env }) as ClipOk
   assert.equal(r.ok, true, JSON.stringify(r))
+  assert.equal(r.rendered, true, r.notes.join('|'))
+  assert.ok(r.words! > 50)
+  assert.match(await readFile(r.file, 'utf8'), /written by a script after the page loaded/)
+})
+
+test('a markdown stub of a page a script draws gives way to the page, rendered', { skip: noChrome }, async () => {
+  const env: NodeJS.ProcessEnv = { ...process.env, WEB_ALLOW_HOSTS: `127.0.0.1:${server.port}` }
+  delete env.WEB_CHROME
+  const r = await clip(`${server.origin}/stub-shell`, { cacheDir: await tmpCache(), env }) as ClipOk
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.equal(r.kind, 'html')
   assert.equal(r.rendered, true, r.notes.join('|'))
   assert.ok(r.words! > 50)
   assert.match(await readFile(r.file, 'utf8'), /written by a script after the page loaded/)

@@ -82,6 +82,9 @@ session on the machine.
   allowed in `~/.claude/settings.json`, and the CLAUDE.md research line
   names the new tool. claude-config commit `d31a5ae` is pushed, so the
   other machines receive it at their next pull.
+- [x] (2026-10-25) Two clipper follow-ups from the backlog, board #129 and
+  #131 (web 0.1.1, branch `web-clipper-fixes`): markdown stubs give way to
+  the HTML page, and dates that are data survive extraction (Decision Log).
 
 ## Acceptance
 
@@ -443,6 +446,13 @@ its own:
    | `application/pdf` | `page.pdf` | `page.txt` from `pdftotext -layout` when it is on `PATH`, else a note. The outline has one entry per PDF page: `pdftotext` ends each page with a form feed |
    | `image/*` | `image.<ext>` | A note to Read it |
    | anything else | `file.<ext>` | A note naming the type and size |
+
+   Markdown whose body is under 50 words can be a stub of a page a script
+   draws: bundlephobia answers the markdown `Accept` with seven words. The
+   URL is then fetched again with a browser's `Accept`, an HTML answer takes
+   steps 3 and 4, and it replaces the markdown when it has over twice the
+   markdown's words. A page that is short in both formats stays the
+   markdown its site wrote, with any note step 4 left.
 3. **Extract.**
    - Defuddle parses the HTML on a linkedom document and returns markdown
      plus metadata. Defuddle is the extraction library Obsidian Web
@@ -454,6 +464,13 @@ its own:
    - The frontmatter carries the fields Defuddle's `--frontmatter` mode
      writes (title, author, site, source, domain, language, description,
      published, word_count), plus `fetched`.
+   - Dates that are the page's data stay in it. Defuddle drops a short
+     dated line near the top of the content as an article's byline, and
+     near the content's edges cuts a `<time>` out of its line. A date with
+     a label of its own (a heading, `dt` or `th` just before it, or a short
+     `Label:` opening its line) is hidden from Defuddle's date patterns,
+     and a `<time>` inside a longer line hands the line its text. An
+     unlabeled date on its own, the byline, is still dropped.
 4. **Render when the plain fetch found no content.** When the extracted
    body has fewer than 50 words, the page is rendered and extracted again,
    and the result with more words is kept.
@@ -1530,6 +1547,50 @@ type Run = {
   cost hotlink-protected images. A second final run (192 `sol` runs) on a
   suite where every run is already correct would have measured noise.
   Date/Author: 2026-10-25, authoring session.
+- Decision: a markdown answer under 50 words gives way to the HTML page
+  when that has over twice its words (board #129). The URL is fetched
+  again with a browser's `Accept` and the HTML takes extraction and, if
+  thin, rendering; the markdown stays when the refetch fails, is not HTML,
+  or falls short of the margin, with any rendering note attached.
+  Rationale: bundlephobia's markdown is 7 words and its rendered page 54,
+  with the sizes. The ticket's default, the larger count, would replace a
+  short page the site wrote as markdown whenever its HTML carries a few
+  more words (the test's changelog: 8 words as markdown, 14 extracted).
+  Holding the HTML to 50 words instead would have lost bundlephobia had
+  its page been a few words shorter. A page in two formats counts about
+  the same and a stub is a fraction, and Defuddle accepts its own retries
+  by the same 2× margin. The refetch, rather than rendering at once, also
+  serves a site whose stub sits beside full server-side HTML on a host
+  without Chromium. No agent-facing text changes: the notes are step 4's.
+  Date/Author: 2026-10-25, web-clipper-fixes session.
+- Decision: dates that are a page's data are kept from Defuddle's byline
+  removal (board #131). What removed deps.dev's "Published / May 22, 2023"
+  is Defuddle 0.19.6's `removeByContentPattern`: a DIV or P of 10 words or
+  fewer holding a date above where it finds the prose to start is an
+  article's header unless its text opens with one of seven labels and a
+  colon (`date|published|updated|posted|from|to|subject:`). The same pass
+  cut the `<time>` out of "Package metadata as of …." and, near the
+  content's end, "Project metadata as of …". Run over 50 saved documents
+  (the 40 eval tasks' pages, the reserves', and npm, PyPI, crates.io and
+  bundlephobia package pages), the class also showed in PostgreSQL's
+  "Release date: 2023-09-14" (synthesis-3) and RFC 9000's last three
+  reference dates. The rule: a date labeled by a heading, `dt` or `th`
+  just before it, or by a `Label:` of up to three words opening its line,
+  gets an invisible separator (U+2063) between its characters, which
+  Defuddle's date patterns cannot see through and the output loses; a
+  `<time>` inside a longer line moves its text out beside it, keeping its
+  `datetime` for Defuddle's `published`. Alternatives: Defuddle's
+  `removeContentPatterns: false` turns off every pattern rule (read times,
+  newsletters, bylines); appending a colon to a heading label reaches
+  Defuddle's own guard only for its seven words, and that guard covers
+  neither relative dates, the `<time>` boundary rule nor the rule that
+  drops a dated block after the h1. Evidence: before and after on the 50
+  documents, only those three pages changed, by exactly the restored
+  dates; RFC 9000's Defuddle word count falls by 37 only because Defuddle
+  counts the "." after a `</time>` as a word. Accepted cost: a blog whose
+  byline is labeled ("Published on: …", a `dl` under the title) now keeps
+  it; no page in the 50 has one.
+  Date/Author: 2026-10-25, web-clipper-fixes session.
 
 ## Outcomes & Retrospective
 

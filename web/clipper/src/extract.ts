@@ -17,14 +17,87 @@ export async function extractHtml(html: string, url: string, siteFetch: typeof f
   loose.URL = url
   markWrapperLanguages(doc as unknown as Document)
   keepNoscriptImages(doc as unknown as Document)
+  keepDatesAsData(doc as unknown as Document)
   const r = await Defuddle(doc as unknown as Document, url, { markdown: true, fetch: siteFetch })
   const meta: PageMeta = {}
   for (const k of ['title', 'author', 'site', 'published', 'description', 'domain', 'language'] as const) {
-    const v = typeof r[k] === 'string' ? r[k].trim() : ''
+    const v = typeof r[k] === 'string' ? unshield(r[k]).trim() : ''
     if (v) meta[k] = v
   }
-  return { body: tidyMarkdown(r.content ?? ''), meta, words: r.wordCount ?? 0 }
+  return { body: tidyMarkdown(unshield(r.content ?? '')), meta, words: r.wordCount ?? 0 }
 }
+
+// Defuddle takes a short dated line near the top of the content for the article's
+// byline, whose date the frontmatter's `published` carries, and drops it; near the
+// content's edges it also cuts a <time> out of the line around it. On a reference
+// or registry page those dates are the page's data: deps.dev's "Published / May 22,
+// 2023", PostgreSQL's "Release date: 2023-09-14", an RFC's reference dates.
+// Defuddle keeps a date it sees labeled, but only as "Published:" or one of a few
+// other words and a colon. So a date with a label of its own (a heading, term or
+// header cell just before it, or any short "Label:" opening its line) is hidden
+// from Defuddle's date patterns, a SHIELD between its characters that the result
+// loses again; and a <time> inside a longer line hands the line its text. An
+// unlabeled date on its own, the byline, is still Defuddle's to drop.
+const SHIELD = '\u2063' // INVISIBLE SEPARATOR: to a pattern, no letter, digit or space
+const DATE = /(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2}|\d{1,2}(?:st|nd|rd|th)?\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*|\d{4}[-/]\d{1,2}[-/]\d{1,2}|\b\d+\s+(?:second|minute|hour|day|week|month|year)s?\s+ago\b/i
+const LABEL_TAGS = new Set(['H2', 'H3', 'H4', 'H5', 'H6', 'DT', 'TH'])
+const INLINE_TAGS = new Set(['A', 'ABBR', 'B', 'BDI', 'BDO', 'CITE', 'CODE', 'DATA', 'DFN', 'EM', 'FONT', 'I', 'KBD', 'MARK', 'Q', 'S', 'SAMP', 'SMALL', 'SPAN', 'STRONG', 'SUB', 'SUP', 'TIME', 'U', 'VAR'])
+
+const textOf = (el: Element) => (el.textContent ?? '').replace(/\s+/g, ' ').trim()
+const wordsIn = (s: string) => s ? s.split(' ').length : 0
+const isDate = (s: string) => wordsIn(s) <= 6 && DATE.test(s) && !s.includes('://')
+const isLabel = (el: Element | null) => {
+  const name = el && LABEL_TAGS.has(el.tagName) ? textOf(el) : ''
+  return wordsIn(name) >= 1 && wordsIn(name) <= 4 && !/[.!?]/.test(name)
+}
+const isLabeledLine = (s: string) => {
+  const m = /^(\p{L}[^:]*):(.+)$/u.exec(s)
+  return !!m && wordsIn(m[1].trim()) <= 3 && isDate(m[2].trim())
+}
+
+function keepDatesAsData(doc: Document): void {
+  for (const time of Array.from(doc.querySelectorAll('time'))) {
+    let block = time.parentElement
+    while (block && INLINE_TAGS.has(block.tagName)) block = block.parentElement
+    if (block && textOf(block) !== textOf(time)) freeTime(time)
+  }
+  const dated: Node[] = []
+  const collect = (node: Node) => {
+    if (node.nodeType === 3) { if (DATE.test(node.nodeValue ?? '')) dated.push(node) }
+    else if (node.nodeName !== 'SCRIPT' && node.nodeName !== 'STYLE') for (const child of Array.from(node.childNodes)) collect(child)
+  }
+  if (doc.body) collect(doc.body)
+  // From each date up through the few-word elements around it, to the first that is
+  // labeled: by the element before it, or by its own text.
+  for (const node of dated) {
+    for (let el = node.parentElement; el; el = el.parentElement) {
+      const text = textOf(el)
+      if (wordsIn(text) > 10) break
+      if (isLabeledLine(text) || isDate(text) && isLabel(el.previousElementSibling)) { shield(el); break }
+    }
+  }
+}
+
+function shield(el: Element): void {
+  for (const time of Array.from(el.querySelectorAll('time'))) freeTime(time)
+  const walk = (node: Node) => {
+    if (node.nodeType === 3) { if (DATE.test(node.nodeValue ?? '')) node.nodeValue = Array.from(node.nodeValue!).join(SHIELD) }
+    else for (const child of Array.from(node.childNodes)) walk(child)
+  }
+  walk(el)
+}
+
+// Its text moves out beside it, since Defuddle removes a <time> near the content's
+// edges whatever it holds. The emptied element keeps the date in `datetime`, where
+// Defuddle's `published` reads it.
+function freeTime(time: Element): void {
+  const text = textOf(time)
+  if (!text) return
+  if (!time.getAttribute('datetime')) time.setAttribute('datetime', text)
+  time.after(...Array.from(time.childNodes))
+}
+
+const unshield = (s: string) => s.split(SHIELD).join('')
 
 // Highlighters that name the language on a wrapper around the <pre>: Sphinx
 // (`highlight-python3`) and GitHub (`highlight-source-shell`). Defuddle reads
