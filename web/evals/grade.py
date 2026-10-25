@@ -26,8 +26,8 @@ GRADER_SYSTEM = """You grade one answer an AI agent gave to a research question 
 You get the question, the answer key (numbered facts), and the agent's answer.
 For each fact, decide whether the answer states it correctly: the same value, name,
 number or code, allowing a different wording, order, formatting, units written another
-way, or extra correct detail. Code must match the key's text apart from whitespace
-and indentation, unless the fact says otherwise. A fact the answer leaves out, hedges
+way, or extra correct detail. Code, and any text a fact calls verbatim, must match the
+key's text apart from whitespace and indentation, unless the fact says otherwise. A fact the answer leaves out, hedges
 between alternatives, or gets wrong is false. Do not use your own knowledge of the page;
 grade against the key. Ignore citations, references and how the agent says it got the page.
 Reply with one JSON object and nothing else:

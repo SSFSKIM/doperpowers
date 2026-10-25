@@ -1,0 +1,857 @@
+[
+ {
+  "id": "verbatim-h1",
+  "set": "dev",
+  "category": "verbatim",
+  "lang": "en",
+  "url": "https://github.com/tmux/tmux/blob/7f2a35ad3321f9ba57a1062ca73b1f3ff26aca53/fuzzy.c",
+  "question": "Using the tmux source file fuzzy.c at https://github.com/tmux/tmux/blob/7f2a35ad3321f9ba57a1062ca73b1f3ff26aca53/fuzzy.c (the tmux 3.8 release commit), quote verbatim the complete static functions `fuzzy_score_positions` and `fuzzy_match_fuzzy`, each including the comment directly above it.",
+  "mechanism": "quote-limit",
+  "facts": [
+   {
+    "id": "f1",
+    "claim": "The `fuzzy_score_positions` function with its comment, verbatim (the common leading indentation is not graded):\n/* Add the score for a fuzzy token matched at the given positions. */\nstatic int\nfuzzy_score_positions(const u_int *pos, u_int npos, const struct fuzzy_char *cs)\n{\n\tu_int\ti, gap, span;\n\tint\tscore = 0;\n\n\tif (npos == 0)\n\t\treturn (0);\n\tif (pos[0] == 0)\n\t\tscore += FUZZY_BONUS_START;\n\telse {\n\t\tif (fuzzy_is_boundary(&cs[pos[0] - 1].ud))\n\t\t\tscore += FUZZY_BONUS_BOUNDARY;\n\t\tif (pos[0] < FUZZY_PENALTY_LEADING_MAX)\n\t\t\tscore -= pos[0] * FUZZY_PENALTY_LEADING;\n\t\telse {\n\t\t\tscore -= FUZZY_PENALTY_LEADING_MAX *\n\t\t\t    FUZZY_PENALTY_LEADING;\n\t\t}\n\t}\n\tfor (i = 1; i < npos; i++) {\n\t\tif (pos[i] == pos[i - 1] + 1)\n\t\t\tscore += FUZZY_BONUS_CONSECUTIVE;\n\t\telse if (fuzzy_is_boundary(&cs[pos[i] - 1].ud))\n\t\t\tscore += FUZZY_BONUS_BOUNDARY;\n\t}\n\tspan = pos[npos - 1] - pos[0] + 1;\n\tgap = span - npos;\n\tscore -= gap * FUZZY_PENALTY_GAP;\n\treturn (score);\n}",
+    "evidence": "source line 264 of the file at that commit: \"/* Add the score for a fuzzy token matched at the given positions. */\" (the function runs through line 295; lines 264-295 equal the quoted code exactly). On the blob page the line is rendered at page-source line 523 (data-line-number=\"264\", byte 442350 of 592028), and the page's embedded rawLines hold the same text."
+   },
+   {
+    "id": "f2",
+    "claim": "The `fuzzy_match_fuzzy` function with its comment, verbatim (the common leading indentation is not graded):\n/*\n * Match a token as a subsequence of the visible characters. Returns if the\n * token matches.\n */\nstatic int\nfuzzy_match_fuzzy(const struct utf8_data *tok, u_int toklen,\n    struct fuzzy_char *cs, u_int ncs, int fold, int *score, char *matched)\n{\n\tu_int\tpi, ci, *pos;\n\tint\tfound, value;\n\n\tif (toklen == 0 || ncs == 0)\n\t\treturn (0);\n\tpos = xcalloc(toklen, sizeof *pos);\n\n\t/* First find a subsequence from the start. */\n\tci = 0;\n\tfor (pi = 0; pi < toklen; pi++) {\n\t\twhile (ci != ncs &&\n\t\t    !fuzzy_char_equal(&tok[pi], &cs[ci].ud, fold))\n\t\t\tci++;\n\t\tif (ci == ncs) {\n\t\t\tfree(pos);\n\t\t\treturn (0);\n\t\t}\n\t\tpos[pi] = ci++;\n\t}\n\n\t/* Then compact it backwards to prefer a shorter span. */\n\tci = pos[toklen - 1];\n\tfor (pi = toklen; pi > 0; pi--) {\n\t\tfound = 0;\n\t\tfor (;;) {\n\t\t\tif (fuzzy_char_equal(&tok[pi - 1], &cs[ci].ud, fold)) {\n\t\t\t\tpos[pi - 1] = ci;\n\t\t\t\tfound = 1;\n\t\t\t\tbreak;\n\t\t\t}\n\t\t\tif (ci == 0)\n\t\t\t\tbreak;\n\t\t\tci--;\n\t\t}\n\t\tif (!found) {\n\t\t\tfree(pos);\n\t\t\treturn (0);\n\t\t}\n\t\tif (pi != 1)\n\t\t\tci--;\n\t}\n\n\tvalue = fuzzy_score_positions(pos, toklen, cs);\n\t*score += value;\n\tfor (pi = 0; pi < toklen; pi++)\n\t\tmatched[pos[pi]] = 1;\n\tfree(pos);\n\treturn (1);\n}",
+    "evidence": "source line 297 of the file at that commit: \"/*\" followed by line 298 \" * Match a token as a subsequence of the visible characters. Returns if the\" (the function runs through line 353; lines 297-353 equal the quoted code exactly). On the blob page line 353 is rendered at page-source line 529 (data-line-number=\"353\", byte 472455 of 592028)."
+   }
+  ]
+ },
+ {
+  "id": "verbatim-h2",
+  "set": "final",
+  "category": "verbatim",
+  "lang": "en",
+  "url": "https://codeberg.org/dnkl/foot/src/commit/ab33c9a19d626f8d0ac0bd1adfdba21946ada948/uri.c",
+  "question": "Using the foot terminal emulator's source file uri.c at https://codeberg.org/dnkl/foot/src/commit/ab33c9a19d626f8d0ac0bd1adfdba21946ada948/uri.c (the foot 1.28.0 release commit), quote verbatim the part of `uri_parse` that decodes %xx-encoded characters in the path: from the comment `/* Path - decode %xx encoded characters */` through the end of the `else` branch that logs `decoded=<skipped>`.",
+  "mechanism": "quote-limit",
+  "facts": [
+   {
+    "id": "f1",
+    "claim": "The path-decoding block, verbatim (the common leading indentation is not graded):\n    /* Path - decode %xx encoded characters */\n    if (path != NULL) {\n        const char *encoded = start;\n        char *decoded = xmalloc(path_len + 1);\n        char *p = decoded;\n\n        size_t encoded_len = path_len;\n        size_t UNUSED decoded_len = 0;\n\n        while (true) {\n            /* Find next '%' */\n            const char *next = memchr(encoded, '%', encoded_len);\n\n            if (next == NULL) {\n                strncpy(p, encoded, encoded_len);\n                decoded_len += encoded_len;\n                p += encoded_len;\n                break;\n            }\n\n            /* Copy everything leading up to the '%' */\n            size_t prefix_len = next - encoded;\n            memcpy(p, encoded, prefix_len);\n\n            p += prefix_len;\n            encoded_len -= prefix_len;\n            decoded_len += prefix_len;\n\n            if (encoded_len >= 3 &&\n                hex2nibble(next[1]) <= 15 && hex2nibble(next[2]) <= 15)\n            {\n                *p++ = hex2nibble(next[1]) << 4 | hex2nibble(next[2]);\n                decoded_len++;\n                encoded_len -= 3;\n                encoded = next + 3;\n            } else {\n                *p++ = *next;\n                decoded_len++;\n                encoded_len -= 1;\n                encoded = next + 1;\n            }\n        }\n\n        *p = '\\0';\n        *path = decoded;\n\n        LOG_DBG(\"path: encoded=\\\"%.*s\\\", decoded=\\\"%s\\\"\", (int)path_len, start, decoded);\n    } else\n        LOG_DBG(\"path: encoded=\\\"%.*s\\\", decoded=<skipped>\", (int)path_len, start);",
+    "evidence": "page source line 2163: \"<td rel=\\\"L170\\\" class=\\\"lines-code chroma\\\"><code class=\\\"code-inner\\\">    <span class=\\\"cm\\\">/* Path - decode %xx encoded characters */</span>\" (the block runs through file line 218, page-source line 2547, byte ~114100 of 224097; the code cells L170-L218 with tags stripped and entities decoded equal the quoted code exactly, as does the raw file https://codeberg.org/dnkl/foot/raw/commit/ab33c9a19d626f8d0ac0bd1adfdba21946ada948/uri.c lines 170-218). The `encoded_len >= 3 &&` guard is new in 1.28.0 (1.27.0 has `if (hex2nibble(next[1]) <= 15 && hex2nibble(next[2]) <= 15) {`)."
+   }
+  ]
+ },
+ {
+  "id": "verbatim-h3",
+  "set": "final",
+  "category": "verbatim",
+  "lang": "en",
+  "url": "https://www.rfc-editor.org/rfc/rfc9535.html",
+  "question": "Using RFC 9535 (JSONPath: Query Expressions for JSON) at https://www.rfc-editor.org/rfc/rfc9535.html, quote verbatim Figure 3 in Appendix A, the collected ABNF grammar of JSONPath Normalized Paths, including its comments.",
+  "mechanism": "quote-limit",
+  "facts": [
+   {
+    "id": "f1",
+    "claim": "The rules `normalized-path` through `normal-unescaped`, verbatim (alignment and indentation are not graded):\nnormalized-path      = root-identifier *(normal-index-segment)\nnormal-index-segment = \"[\" normal-selector \"]\"\nnormal-selector      = normal-name-selector / normal-index-selector\nnormal-name-selector = %x27 *normal-single-quoted %x27 ; 'string'\nnormal-single-quoted = normal-unescaped /\n                       ESC normal-escapable\nnormal-unescaped     =    ; omit %x0-1F control codes\n                       %x20-26 /\n                          ; omit 0x27 '\n                       %x28-5B /\n                          ; omit 0x5C \\\n                       %x5D-D7FF /\n                          ; skip surrogate code points\n                       %xE000-10FFFF",
+    "evidence": "source line 5842: \"normalized-path      = root-identifier *(normal-index-segment)\" (this part runs through line 5855; lines 5842-5855 contain no tags or entities and equal the quoted ABNF exactly; byte 296331 of 321191)"
+   },
+   {
+    "id": "f2",
+    "claim": "The rules `normal-escapable` through `normal-index-selector`, verbatim (alignment and indentation are not graded):\nnormal-escapable     = %x62 / ; b BS backspace U+0008\n                       %x66 / ; f FF form feed U+000C\n                       %x6E / ; n LF line feed U+000A\n                       %x72 / ; r CR carriage return U+000D\n                       %x74 / ; t HT horizontal tab U+0009\n                       \"'\" /  ; ' apostrophe U+0027\n                       \"\\\" /  ; \\ backslash (reverse solidus) U+005C\n                       (%x75 normal-hexchar)\n                                       ; certain values u00xx U+00XX\nnormal-hexchar       = \"0\" \"0\"\n                       (\n                          (\"0\" %x30-37) / ; \"00\"-\"07\"\n                             ; omit U+0008-U+000A BS HT LF\n                          (\"0\" %x62) /    ; \"0b\"\n                             ; omit U+000C-U+000D FF CR\n                          (\"0\" %x65-66) / ; \"0e\"-\"0f\"\n                          (\"1\" normal-HEXDIG)\n                       )\nnormal-HEXDIG        = DIGIT / %x61-66    ; \"0\"-\"9\", \"a\"-\"f\"\nnormal-index-selector = \"0\" / (DIGIT1 *DIGIT)\n                        ; non-negative decimal integer",
+    "evidence": "source line 5857: \"normal-escapable     = %x62 / ; b BS backspace U+0008\" (the figure runs through line 5877, closed by </pre> on 5878 and captioned \"Figure 3: Collected ABNF of JSONPath Normalized Paths\"; lines 5857-5877 equal the quoted ABNF exactly)"
+   }
+  ]
+ },
+ {
+  "id": "verbatim-h4",
+  "set": "dev",
+  "category": "verbatim",
+  "lang": "en",
+  "url": "https://pkware.cachefly.net/webdocs/APPNOTE/APPNOTE-6.3.10.TXT",
+  "question": "Using PKWARE's .ZIP File Format Specification (APPNOTE.TXT) version 6.3.10 at https://pkware.cachefly.net/webdocs/APPNOTE/APPNOTE-6.3.10.TXT, quote verbatim section 4.6.11 (Data Stream Alignment, header ID 0xa11e): its introductory paragraphs, its Value / Size / Description field layout, and the paragraph that follows the layout.",
+  "mechanism": "quote-limit",
+  "facts": [
+   {
+    "id": "f1",
+    "claim": "The introductory paragraphs, verbatim (line breaks and indentation are not graded):\n       (per Zbynek Vyskovsky) Defines alignment of data stream of this\n       entry within the zip archive.  Additionally, indicates whether the\n       compression method should be kept when re-compressing the zip file.\n\n       The purpose of this extra field is to align specific resources to\n       word or page boundaries so they can be easily mapped into memory.",
+    "evidence": "source line 1832: \"       (per Zbynek Vyskovsky) Defines alignment of data stream of this \" (the paragraphs run through line 1837; section heading on line 1830 at byte 79602 of 174585)"
+   },
+   {
+    "id": "f2",
+    "claim": "The field layout, verbatim (column alignment and indentation are not graded):\n         Value         Size        Description\n         -----         ----        -----------\n         0xa11e        Short       tag for this extra block type\n         TSize         Short       total data size for this block (2+padding)\n         alignment     Short       required alignment and indicator\n         0x00          Variable    padding",
+    "evidence": "source line 1839: \"         Value         Size        Description\" (the layout runs through line 1844: \"         0x00          Variable    padding\")"
+   },
+   {
+    "id": "f3",
+    "claim": "The paragraph after the layout, verbatim (line breaks and spacing are not graded):\n       The alignment field (lower 15 bits) defines the minimal alignment\n       required by the data stream.   Bit 15 of alignment field indicates\n       whether the compression method of this entry can be changed when\n       recompressing the zip file.  The value 0 means the compression method\n       should not be changed.  The value 1 indicates  the compression method\n       may be changed. The padding field contains padding to ensure the correct\n       alignment.  It can be changed at any time when the offset or required\n       alignment changes. (see https://issues.apache.org/jira/browse/COMPRESS-391)",
+    "evidence": "source line 1846: \"       The alignment field (lower 15 bits) defines the minimal alignment \" (the paragraph runs through line 1853, ending \"(see https://issues.apache.org/jira/browse/COMPRESS-391)\"; section 4.7 starts on line 1856)"
+   }
+  ]
+ },
+ {
+  "id": "verbatim-h5",
+  "set": "final",
+  "category": "verbatim",
+  "lang": "en",
+  "url": "https://element-hq.github.io/synapse/v1.162/usage/configuration/config_documentation.html",
+  "question": "Using the Synapse v1.162 configuration manual at https://element-hq.github.io/synapse/v1.162/usage/configuration/config_documentation.html, quote verbatim the example configuration given for the `saml2_config` option (under \"Single sign-on integration\").",
+  "mechanism": "quote-limit",
+  "facts": [
+   {
+    "id": "f1",
+    "claim": "The example from its first line through the end of `sp_config`, verbatim (indentation is not graded):\nsaml2_config:\n  sp_config:\n    metadata:\n      local:\n      - saml2/idp.xml\n      remote:\n      - url: https://our_idp/metadata.xml\n    accepted_time_diff: 3\n    service:\n      sp:\n        allow_unsolicited: true\n    description:\n    - My awesome SP\n    - en\n    name:\n    - Test SP\n    - en\n    ui_info:\n      display_name:\n      - lang: en\n        text: Display Name is the descriptive name of your service.\n      description:\n      - lang: en\n        text: Description should be a short paragraph explaining the purpose of the\n          service.\n      information_url:\n      - lang: en\n        text: https://example.com/terms-of-service\n      privacy_statement_url:\n      - lang: en\n        text: https://example.com/privacy-policy\n      keywords:\n      - lang: en\n        text:\n        - Matrix\n        - Element\n      logo:\n      - lang: en\n        text: https://example.com/logo.svg\n        width: '200'\n        height: '80'\n    organization:\n      name: Example com\n      display_name:\n      - - Example co\n        - en\n      url: http://example.com\n    contact_person:\n    - given_name: Bob\n      sur_name: the Sysadmin\n      email_address:\n      - admin@example.com\n      contact_type: technical",
+    "evidence": "source line 3141: \"<pre><code class=\\\"language-yaml\\\">saml2_config:\" (the example runs through line 3207; lines 3141-3207 with tags stripped and entities decoded equal the quoted YAML exactly; byte 207511 of 294406; the block starts about 130,500 characters into the page's roughly 187,000 characters of visible text, so past WebFetch's first window)"
+   },
+   {
+    "id": "f2",
+    "claim": "The rest of the example, from `saml_session_lifetime` to the end, verbatim (indentation is not graded):\n  saml_session_lifetime: 5m\n  user_mapping_provider:\n    config:\n      mxid_source_attribute: displayName\n      mxid_mapping: dotreplace\n  grandfathered_mxid_source_attribute: upn\n  attribute_requirements:\n  - attribute: userGroup\n    value: staff\n  - attribute: department\n    one_of:\n    - sales\n    - admins\n  idp_entityid: https://our_idp/entityid",
+    "evidence": "source line 3194: \"  saml_session_lifetime: 5m\" (the block ends on line 3207: \"  idp_entityid: https://our_idp/entityid\", closed by </code></pre> on line 3208)"
+   }
+  ]
+ },
+ {
+  "id": "verbatim-h6",
+  "set": "final",
+  "category": "verbatim",
+  "lang": "en",
+  "url": "https://www.unicode.org/reports/tr29/tr29-45.html",
+  "question": "Using Unicode Standard Annex #29 (Unicode Text Segmentation), revision 45 for Unicode 16.0.0, at https://www.unicode.org/reports/tr29/tr29-45.html, reproduce Table 4 (Sentence_Break Property Values) completely: every Value with its Summary List of Characters, verbatim. The sample glyphs shown in parentheses after code points may be left out.",
+  "mechanism": "quote-limit",
+  "facts": [
+   {
+    "id": "f1",
+    "claim": "Table 4 rows CR, LF, Extend, Sep, Format, Sp, Numeric, Any, each Value with its Summary List of Characters verbatim (sample glyphs in parentheses, line breaks and spacing are not graded):\nCR: U+000D CARRIAGE RETURN (CR)\nLF: U+000A LINE FEED (LF)\nExtend: Grapheme_Extend = Yes, or U+200D ZERO WIDTH JOINER (ZWJ), or General_Category = Spacing_Mark\nSep: U+0085 NEXT LINE (NEL) U+2028 LINE SEPARATOR U+2029 PARAGRAPH SEPARATOR\nFormat: General_Category = Format and not U+200C ZERO WIDTH NON-JOINER (ZWNJ) and not U+200D ZERO WIDTH JOINER (ZWJ)\nSp: White_Space = Yes and Sentence_Break ≠ Sep and Sentence_Break ≠ CR and Sentence_Break ≠ LF\nNumeric: Line_Break = Numeric\nAny: This is not a property value; it is used in the rules to represent any code point.",
+    "evidence": "source line 2293: row \"CR\"; source line 2297: row \"LF\"; source line 2301: row \"Extend\"; source line 2308: row \"Sep\"; source line 2314: row \"Format\"; source line 2321: row \"Sp\"; source line 2359: row \"Numeric\"; source line 2419: row \"Any\" (each row's cell text, tags stripped, entities decoded and whitespace collapsed, equals the quoted text with the sample glyphs removed; the table caption is on source line 2282, byte 98719 of 139601)"
+   },
+   {
+    "id": "f2",
+    "claim": "Table 4 rows Lower, Upper, OLetter, each Value with its Summary List of Characters verbatim (sample glyphs in parentheses, line breaks and spacing are not graded):\nLower: Lowercase = Yes and Grapheme_Extend = No and not in the ranges (for Mkhedruli Georgian) U+10D0 GEORGIAN LETTER AN ..U+10FA GEORGIAN LETTER AIN and U+10FD GEORGIAN LETTER AEN ..U+10FF GEORGIAN LETTER LABIAL SIGN\nUpper: General_Category = Titlecase_Letter, or Uppercase = Yes and not in the ranges (for Mtavruli Georgian) U+1C90 GEORGIAN MTAVRULI CAPITAL LETTER AN ..U+1CBA GEORGIAN MTAVRULI CAPITAL LETTER AIN and U+1CBD GEORGIAN MTAVRULI CAPITAL LETTER AEN ..U+1CBF GEORGIAN LETTER MTAVRULI CAPITAL LABIAL SIGN\nOLetter: Alphabetic = Yes, or U+00A0 NO-BREAK SPACE (NBSP), or U+05F3 HEBREW PUNCTUATION GERESH and Lower = No and Upper = No and Sentence_Break ≠ Extend",
+    "evidence": "source line 2328: row \"Lower\"; source line 2340: row \"Upper\"; source line 2351: row \"OLetter\" (each row's cell text, tags stripped, entities decoded and whitespace collapsed, equals the quoted text with the sample glyphs removed; the table caption is on source line 2282, byte 98719 of 139601)"
+   },
+   {
+    "id": "f3",
+    "claim": "Table 4 rows ATerm, STerm, Close, each Value with its Summary List of Characters verbatim (sample glyphs in parentheses, line breaks and spacing are not graded):\nATerm: U+002E FULL STOP U+2024 ONE DOT LEADER U+FE52 SMALL FULL STOP U+FF0E FULLWIDTH FULL STOP\nSTerm: Sentence_Terminal = Yes and not ATerm\nClose: General_Category = Open_Punctuation, or General_Category = Close_Punctuation, or Line_Break = Quotation and not U+05F3 HEBREW PUNCTUATION GERESH and ATerm = No and STerm = No",
+    "evidence": "source line 2363: row \"ATerm\"; source line 2405: row \"STerm\"; source line 2410: row \"Close\" (each row's cell text, tags stripped, entities decoded and whitespace collapsed, equals the quoted text with the sample glyphs removed; the table caption is on source line 2282, byte 98719 of 139601)"
+   },
+   {
+    "id": "f4",
+    "claim": "Table 4 row SContinue (31 characters), each Value with its Summary List of Characters verbatim (sample glyphs in parentheses, line breaks and spacing are not graded):\nSContinue: U+002C COMMA U+002D HYPHEN-MINUS U+003A COLON U+003B SEMICOLON U+037E GREEK QUESTION MARK U+055D ARMENIAN COMMA U+060C ARABIC COMMA U+060D ARABIC DATE SEPARATOR U+07F8 NKO COMMA U+1802 MONGOLIAN COMMA U+1808 MONGOLIAN MANCHU COMMA U+2013 EN DASH U+2014 EM DASH U+3001 IDEOGRAPHIC COMMA U+FE10 PRESENTATION FORM FOR VERTICAL COMMA U+FE11 PRESENTATION FORM FOR VERTICAL IDEOGRAPHIC COMMA U+FE13 PRESENTATION FORM FOR VERTICAL COLON U+FE14 PRESENTATION FORM FOR VERTICAL SEMICOLON U+FE31 PRESENTATION FORM FOR VERTICAL EM DASH U+FE32 PRESENTATION FORM FOR VERTICAL EN DASH U+FE50 SMALL COMMA U+FE51 SMALL IDEOGRAPHIC COMMA U+FE54 SMALL SEMICOLON U+FE55 SMALL COLON U+FE58 SMALL EM DASH U+FE63 SMALL HYPHEN-MINUS U+FF0C FULLWIDTH COMMA U+FF0D FULLWIDTH HYPHEN-MINUS U+FF1A FULLWIDTH COLON U+FF1B FULLWIDTH SEMICOLON U+FF64 HALFWIDTH IDEOGRAPHIC COMMA",
+    "evidence": "source line 2370: row \"SContinue\" (each row's cell text, tags stripped, entities decoded and whitespace collapsed, equals the quoted text with the sample glyphs removed; the table caption is on source line 2282, byte 98719 of 139601); the 31 SContinue entries run from U+002C COMMA to U+FF64 HALFWIDTH IDEOGRAPHIC COMMA. The revision 45 modification notes say, source line 3284: \"Updated the definition of SContinue to include several Semicolon & related characters.\" and source line 3282: \"Updated the definition of SB=STerm to subtract ATerm, to ensure that they are disjoint.\""
+   }
+  ]
+ },
+ {
+  "id": "verbatim-h7",
+  "set": "final",
+  "category": "verbatim",
+  "lang": "en",
+  "url": "https://peps.python.org/pep-0765/",
+  "question": "Using PEP 765 (\"Disallow return/break/continue that exit a finally block\") at https://peps.python.org/pep-0765/, quote verbatim the last paragraph of its Specification section, the one about when the CPython implementation emits the SyntaxWarning.",
+  "mechanism": "quote-limit",
+  "facts": [
+   {
+    "id": "f1",
+    "claim": "The paragraph, verbatim, including the page's own misspelling \"anlaysis\" (line breaks and spacing are not graded):\nThe CPython implementation will emit the SyntaxWarning during AST construction, to ensure that the warning will show up during static anlaysis and compilation, but not during execution of pre-compiled code. We expect that the warning will be seen by a project maintainer (when they run static analysis, or CI which does not have precompiled files). However, end users of a project will only see a warning if they skip precompilation at installation time, check installation time warnings, or run static analysis over their dependencies.",
+    "evidence": "source lines 251-259: \"<p>The CPython implementation will emit the <code ...>SyntaxWarning</code> during\" ... \"their dependencies.</p>\" (the paragraph closes the Specification section, which ends with </section> on line 260; with tags stripped and whitespace collapsed it equals the quoted text exactly, \"static anlaysis\" on line 253 at byte 19840 of 40927). The PEP is placed in the public domain or under CC0-1.0 (source lines 459-460)"
+   }
+  ]
+ },
+ {
+  "id": "long-page-h1",
+  "set": "final",
+  "category": "long-page",
+  "lang": "en",
+  "url": "https://raw.githubusercontent.com/torvalds/linux/v6.6/MAINTAINERS",
+  "question": "Using the Linux kernel's MAINTAINERS file at tag v6.6 (https://raw.githubusercontent.com/torvalds/linux/v6.6/MAINTAINERS), which sections that cover a file system under fs/ (that is, have an F: pattern pointing into fs/) have the status \"S: Orphan\"? List every such section by its title.",
+  "mechanism": "window-scan",
+  "facts": [
+   {
+    "id": "f1",
+    "claim": "HFS FILESYSTEM and HFSPLUS FILESYSTEM are both orphaned.",
+    "evidence": "source line 9211: \"HFS FILESYSTEM\", line 9213: \"S:\tOrphan\", line 9215: \"F:\tfs/hfs/\"; source line 9217: \"HFSPLUS FILESYSTEM\", line 9219: \"S:\tOrphan\", line 9221: \"F:\tfs/hfsplus/\" (byte offset ~285 KB of 727 KB, third 100k window)"
+   },
+   {
+    "id": "f2",
+    "claim": "EFS FILESYSTEM is orphaned.",
+    "evidence": "source line 7629: \"EFS FILESYSTEM\", line 7630: \"S:\tOrphan\", line 7632: \"F:\tfs/efs/\" (byte offset ~239 KB)"
+   },
+   {
+    "id": "f3",
+    "claim": "QNX6 FILESYSTEM and SYSV FILESYSTEM are orphaned.",
+    "evidence": "source line 17573: \"QNX6 FILESYSTEM\", line 17574: \"S:\tOrphan\", line 17576: \"F:\tfs/qnx6/\" (byte offset ~536 KB); source line 20935: \"SYSV FILESYSTEM\", line 20936: \"S:\tOrphan\", line 20938: \"F:\tfs/sysv/\" (byte offset ~640 KB)"
+   },
+   {
+    "id": "f4",
+    "claim": "No other section qualifies: exactly these five (EFS, HFS, HFSPLUS, QNX6, SYSV).",
+    "evidence": "Parsed all 2,722 sections of the file: the sections with an S: line containing \"Orphan\" (83 such lines) and an F: pattern beginning with fs/ are exactly these five. Near-miss distractors: source line 18164 \"REISERFS FILE SYSTEM\" has line 18166 \"S:\tObsolete\"; line 11237 \"JFS FILESYSTEM\" is \"S:\tOdd Fixes\"."
+   }
+  ]
+ },
+ {
+  "id": "long-page-h2",
+  "set": "final",
+  "category": "long-page",
+  "lang": "en",
+  "url": "https://raw.githubusercontent.com/vim/vim/v9.1.0000/runtime/doc/version9.txt",
+  "question": "Using Vim's runtime/doc/version9.txt at tag v9.1.0000 (https://raw.githubusercontent.com/vim/vim/v9.1.0000/runtime/doc/version9.txt), which patches listed in it have a \"Problem:\" description that mentions VMS or OpenVMS? Give every such patch number.",
+  "mechanism": "window-scan",
+  "facts": [
+   {
+    "id": "f1",
+    "claim": "Patches 8.2.0009, 8.2.0255 and 8.2.1448.",
+    "evidence": "source line 576: \"Patch 8.2.0009\", line 577: \"Problem:    VMS: terminal version doesn't build.\" (byte ~22 KB); line 2060: \"Patch 8.2.0255\", line 2061: \"Problem:    VMS: missing files in build.\" (byte ~81 KB); line 9423: \"Patch 8.2.1448\", line 9424: \"Problem:    Test 77a for VMS depends on small.vim which does not exist.\" (byte ~380 KB)"
+   },
+   {
+    "id": "f2",
+    "claim": "Patches 8.2.2247 and 8.2.2294.",
+    "evidence": "source line 14063: \"Patch 8.2.2247\", line 14064: \"Problem:    VMS: various smaller problems.\" (byte ~564 KB); line 14331: \"Patch 8.2.2294\", line 14332: \"Problem:    VMS: a few remaining problems.\" (byte ~574 KB)"
+   },
+   {
+    "id": "f3",
+    "claim": "Patches 9.0.2153 and 9.0.2180 (both about OpenVMS).",
+    "evidence": "source line 41364: \"Patch 9.0.2153\", line 41365: \"Problem:    no support to build on OpenVMS\" (byte offset ~1.605 MB, past the first 1 MiB); line 41482: \"Patch 9.0.2180\", lines 41483-41484: \"Problem:    POSIX function name in exarg struct causes issues\" / \"on OpenVMS\" (byte offset ~1.609 MB). Neither is in the per-series patch index https://ftp.nluug.nl/pub/vim/patches/9.0/README, which stops at 9.0.1678."
+   },
+   {
+    "id": "f4",
+    "claim": "No other patch qualifies: exactly these seven.",
+    "evidence": "Parsed all 7,362 patch blocks of the file: a case-insensitive search for \"vms\" in Problem: text matches exactly these seven. Elsewhere VMS appears only in Files: lines (e.g. line 542 \"src/Make_vms.mms\") and in Solution: text, which the question excludes."
+   }
+  ]
+ },
+ {
+  "id": "long-page-h3",
+  "set": "final",
+  "category": "long-page",
+  "lang": "en",
+  "url": "https://www.govinfo.gov/content/pkg/BILLS-117hr4346enr/html/BILLS-117hr4346enr.htm",
+  "question": "Using the enrolled text of H.R. 4346, the CHIPS and Science Act, at https://www.govinfo.gov/content/pkg/BILLS-117hr4346enr/html/BILLS-117hr4346enr.htm: (1) how much does Division A appropriate to the CHIPS for America Workforce and Education Fund for fiscal year 2025; (2) how much does Division B, title V, subtitle D (Combating Sexual Harassment in Science) authorize to be appropriated to carry out that subtitle; (3) under section 10825, by what date must the Near-Earth Object Surveyor mission achieve launch readiness; (4) what additional amounts for \"Salaries and Expenses\" does Division C provide to the United States Marshals Service and to the Supreme Court of the United States?",
+  "mechanism": "html-1mb-cut",
+  "facts": [
+   {
+    "id": "f1",
+    "claim": "$50,000,000 for fiscal year 2025.",
+    "evidence": "source line 768: \"(d) Creating Helpful Incentives to Produce Semiconductors (CHIPS)\" [for America Workforce and Education Fund]; line 786: \"(C) for fiscal year 2025, $50,000,000, to remain available\" (byte offset ~36 KB)"
+   },
+   {
+    "id": "f2",
+    "claim": "$32,500,000.",
+    "evidence": "source line 14291: \"Subtitle D--Combating Sexual Harassment in Science\" (byte ~833 KB, inside TITLE V at line 13330); line 14563: \"SEC. 10539. AUTHORIZATION OF APPROPRIATIONS.\", line 14565: \"this subtitle, $32,500,000.\" (byte offset ~849 KB)"
+   },
+   {
+    "id": "f3",
+    "claim": "Not later than March 30, 2026 (or the earliest practicable date).",
+    "evidence": "source line 20528: \"SEC. 10825. PLANETARY DEFENSE COORDINATION OFFICE.\"; lines 20586-20588: \"telescope mission, known as the ``Near-Earth Object Surveyor'',\" / \"on a schedule to achieve a launch-readiness date not later than\" / \"March 30, 2026, or the earliest practicable date, for the\" (byte offset ~1.20 MB, past the first 1 MiB)"
+   },
+   {
+    "id": "f4",
+    "claim": "$10,300,000 to the United States Marshals Service and $9,100,000 to the Supreme Court.",
+    "evidence": "source line 21235: \"United States Marshals Service\", line 21240: \"$10,300,000, to remain available until September 30, 2023, for expenses\"; line 21247: \"Supreme Court of the United States\", line 21251: \"For an additional amount for ``Salaries and Expenses'', $9,100,000,\" (byte offset ~1.24 MB, past the first 1 MiB; the page is 1,241,249 bytes)"
+   }
+  ]
+ },
+ {
+  "id": "long-page-h4",
+  "set": "dev",
+  "category": "long-page",
+  "lang": "en",
+  "url": "https://raw.githubusercontent.com/vdukhovni/postfix/v3.8.0/postfix/HISTORY",
+  "question": "Using the Postfix HISTORY file at tag v3.8.0 (https://raw.githubusercontent.com/vdukhovni/postfix/v3.8.0/postfix/HISTORY), give the date heading (YYYYMMDD) under which each of these changes is recorded and the person credited with finding or reporting the problem: (a) the compatibility change that makes Postfix put two spaces after the sender in a \"From sender date...\" header; (b) the performance fix for poor smtpd_proxy_filter TCP performance over loopback (127.0.0.1) connections; (c) the cleanup after which the milter header/body checks no longer log less text than the original header/body checks.",
+  "mechanism": "window-scan",
+  "facts": [
+   {
+    "id": "f1",
+    "claim": "(a) is recorded under 19990326 and was found by John A. Martin (fixed by Lamont Jones).",
+    "evidence": "source line 2453: \"19990326\"; lines 2455-2457: \"Compatibility: Postfix now puts two spaces after the sender\" / \"in a \\\"From sender date...\\\" header. Found by John A. Martin,\" / \"fixed by Lamont Jones, Hewlett-Packard.\" (byte offset ~84 KB)"
+   },
+   {
+    "id": "f2",
+    "claim": "(b) is recorded under 20100827 and was reported by Mark Martinec.",
+    "evidence": "source line 15898: \"20100827\"; lines 15900-15902: \"Performance: fix for poor smtpd_proxy_filter TCP performance\" / \"over loopback (127.0.0.1) connections. Problem reported by\" / \"Mark Martinec.  Files: smtpd/smtpd_proxy.c.\" (byte offset ~556 KB). Distractors: the earlier general loopback fix under 20070729 (line 13661, also reported by Mark Martinec) and the Linux TCP_MAXSEG workaround under 20190820 (line 24365)."
+   },
+   {
+    "id": "f3",
+    "claim": "(c) is recorded under 20230310 and was reported by Aleksandr Stankevic.",
+    "evidence": "source line 26934: \"20230310\"; lines 26936-26938: \"Cleanup: the milter header/body checks logged less text (up\" / \"to 60 bytes) than the 'original' header/body checks (up to\" / \"200 bytes). Problem reported by Aleksandr Stankevic. Fixed\" (byte offset ~963 KB of 968 KB)"
+   }
+  ]
+ },
+ {
+  "id": "long-page-h5",
+  "set": "final",
+  "category": "long-page",
+  "lang": "en",
+  "url": "https://curl.se/changes.html",
+  "question": "Using curl's changelog at https://curl.se/changes.html, in which curl release did the FTP code start rejecting illegal port numbers in EPSV 229 responses, and on what date was that release made?",
+  "mechanism": "html-1mb-cut",
+  "facts": [
+   {
+    "id": "f1",
+    "claim": "curl 7.29.0.",
+    "evidence": "source line 14314: \"<li> FTP: reject illegal port numbers in EPSV 229 responses\" (byte offset ~1.274 MB, past the first 1 MiB of the 1.51 MB page), in the section opened by source line 14280: \"<h2> Fixed in 7.29.0 - February 6 2013 </h2>\" and closed by line 14334: \"<h2> Fixed in 7.28.1 - November 20 2012 </h2>\". Distractors: line 14139 \"FTP: when EPSV gets a 229 but fails to connect, retry with PASV\" (7.32.0) and the much older \"The FTP-EPSV response parser for the 229 code was fixed\"."
+   },
+   {
+    "id": "f2",
+    "claim": "Released February 6, 2013.",
+    "evidence": "source line 14280: \"<h2> Fixed in 7.29.0 - February 6 2013 </h2>\" (byte offset ~1.271 MB)"
+   }
+  ]
+ },
+ {
+  "id": "long-page-h6",
+  "set": "final",
+  "category": "long-page",
+  "lang": "en",
+  "url": "https://raw.githubusercontent.com/torvalds/linux/v6.6/MAINTAINERS",
+  "question": "Using the Linux kernel MAINTAINERS file at tag v5.4 (https://raw.githubusercontent.com/torvalds/linux/v5.4/MAINTAINERS) and at tag v6.6 (https://raw.githubusercontent.com/torvalds/linux/v6.6/MAINTAINERS): which sections have the status \"S: Orphan\" in v5.4 but, under exactly the same section title, are no longer orphaned in v6.6, and who is listed as maintainer (M:) of each in v6.6?",
+  "mechanism": "window-scan",
+  "facts": [
+   {
+    "id": "f1",
+    "claim": "ACPI WMI DRIVER, maintained in v6.6 by Armin Wolf.",
+    "evidence": "v5.4 source line 408: \"ACPI WMI DRIVER\", line 410: \"S:\tOrphan\" (byte ~14 KB); v6.6 source line 380: \"ACPI WMI DRIVER\", line 381: \"M:\tArmin Wolf <W_Armin@gmx.de>\", line 383: \"S:\tMaintained\" (byte ~12 KB)"
+   },
+   {
+    "id": "f2",
+    "claim": "NFC SUBSYSTEM, maintained in v6.6 by Krzysztof Kozlowski.",
+    "evidence": "v5.4 source line 11452: \"NFC SUBSYSTEM\", line 11454: \"S:\tOrphan\" (byte ~340 KB); v6.6 source line 15015: \"NFC SUBSYSTEM\", line 15016: \"M:\tKrzysztof Kozlowski <krzysztof.kozlowski@linaro.org>\", line 15018: \"S:\tMaintained\" (byte ~460 KB)"
+   },
+   {
+    "id": "f3",
+    "claim": "VIA RHINE NETWORK DRIVER, maintained in v6.6 by Kevin Brace.",
+    "evidence": "v5.4 source line 17146: \"VIA RHINE NETWORK DRIVER\", line 17147: \"S:\tOrphan\" (byte ~504 KB); v6.6 source line 22656: \"VIA RHINE NETWORK DRIVER\", line 22657: \"M:\tKevin Brace <kevinbrace@bracecomputerlab.com>\", line 22658: \"S:\tMaintained\" (byte ~690 KB)"
+   },
+   {
+    "id": "f4",
+    "claim": "No other section qualifies: exactly these three.",
+    "evidence": "Parsed both files: v5.4 has 67 sections with an Orphan status; under the same title in v6.6, 44 are still \"Orphan\", 1 is \"Orphan / Obsolete\", 19 no longer exist under that title (removed or renamed, e.g. PA SEMI SMBUS DRIVER, whose file moved under ARM/APPLE MACHINE SUPPORT), and only these 3 have a non-orphan status (all \"Maintained\")."
+   }
+  ]
+ },
+ {
+  "id": "long-page-h7",
+  "set": "dev",
+  "category": "long-page",
+  "lang": "en",
+  "url": "https://www.openssh.com/releasenotes.html",
+  "question": "Using three changelogs, OpenSSL's CHANGES.md at tag openssl-3.2.0 (https://raw.githubusercontent.com/openssl/openssl/openssl-3.2.0/CHANGES.md), OpenSSH's release notes (https://www.openssh.com/releasenotes.html) and curl's changelog (https://curl.se/changes.html), find the release in which each project records the following year-2038 change, give each release's version and date, and order the three releases chronologically: (a) OpenSSL: a new function that adds days and seconds to a tm structure directly instead of going through OS date routines, avoiding the year 2038 bug; (b) OpenSSH: ssh-keygen avoiding a Y2038 problem when printing certificate validity lifetimes; (c) curl: fixing potential year 2038 issues in the curl tool and its tests.",
+  "mechanism": "window-scan",
+  "facts": [
+   {
+    "id": "f1",
+    "claim": "(a) OpenSSL 1.0.0, released 29 March 2010.",
+    "evidence": "CHANGES.md source line 9571: \"### Changes between 0.9.8n and 1.0.0  [29 Mar 2010]\"; lines 9730-9733: \"* New function OPENSSL_gmtime_adj() to add a specific number of days and\" ... \"as the year 2038 bug. New `*_adj()` functions for ASN1 time structures\" (byte offset ~365 KB of 771 KB; next section heading is 0.9.8m-0.9.8n at line 10533)"
+   },
+   {
+    "id": "f2",
+    "claim": "(b) OpenSSH 8.7 (8.7p1), released 2021-08-20.",
+    "evidence": "releasenotes.html source line 4153: \"<h3><a href='txt/release-8.7' id='8.7'>OpenSSH 8.7</a>/<a href='txt/release-8.7' id='8.7p1'>8.7p1</a> (2021-08-20)</h3>\", line 4155: \"OpenSSH 8.7 was released on 2021-08-20. It is available from the\"; line 4318: \"* <a href='https://man.openbsd.org/ssh-keygen.1'>ssh-keygen(1)</a>: avoid Y2038 problem in printing certificate\" (byte offset ~237 KB of 779 KB; the next heading, line 4431, is OpenSSH 8.6). The page's other Y2038 entry (line 1748, wtmpdb support) is a different change."
+   },
+   {
+    "id": "f3",
+    "claim": "(c) curl 7.79.0, released September 15, 2021.",
+    "evidence": "changes.html source line 8218: \"<h2> Fixed in 7.79.0 - September 15 2021 </h2>\"; line 8347: \"<li> <a href=\\\"https://curl.se/bug/?i=7466\\\">tool/tests: fix potential year 2038 issues</a>\" (byte offset ~779 KB); the next heading is line 8358: \"<h2> Fixed in 7.78.0 - July 21 2021 </h2>\""
+   },
+   {
+    "id": "f4",
+    "claim": "Chronological order: OpenSSL 1.0.0 (2010), then OpenSSH 8.7 (2021-08-20), then curl 7.79.0 (2021-09-15).",
+    "evidence": "From the three release dates above: 29 Mar 2010 < 20 Aug 2021 < 15 Sep 2021."
+   }
+  ]
+ },
+ {
+  "id": "long-pdf-h1",
+  "set": "final",
+  "category": "long-pdf",
+  "lang": "en",
+  "url": "https://iea.blob.core.windows.net/assets/140a0470-5b90-4922-a0e9-838b3ac6918c/WorldEnergyOutlook2024.pdf",
+  "question": "Using the IEA's World Energy Outlook 2024 PDF at https://iea.blob.core.windows.net/assets/140a0470-5b90-4922-a0e9-838b3ac6918c/WorldEnergyOutlook2024.pdf, Annex A: in Table A.28 (Low-emissions hydrogen balance), how much low-emissions hydrogen does water electrolysis produce in 2035 under the Stated Policies, Announced Pledges and Net Zero Emissions by 2050 scenarios, and in Table A.29 (Total CO2 emissions), what are Southeast Asia's emissions in 2035 under the Stated Policies Scenario?",
+  "mechanism": "over-10mb",
+  "facts": [
+   {
+    "id": "f1",
+    "claim": "Water electrolysis produces 11 Mt H2 equivalent in 2035 under the Stated Policies Scenario.",
+    "evidence": "pdftotext page 325 (printed 325), Table A.28 header \"2023 2030 2035 2050 2030 2035 2050 2030 2035 2050\" under Stated Policies / Announced Pledges / Net Zero Emissions by 2050; row: \"Water electrolysis 0 5 11 37 18 61 203 49 118 326\""
+   },
+   {
+    "id": "f2",
+    "claim": "Water electrolysis produces 61 Mt H2 equivalent in 2035 under the Announced Pledges Scenario.",
+    "evidence": "pdftotext page 325: \"Water electrolysis 0 5 11 37 18 61 203 49 118 326\" (APS 2035 is the sixth value)"
+   },
+   {
+    "id": "f3",
+    "claim": "Water electrolysis produces 118 Mt H2 equivalent in 2035 under the Net Zero Emissions by 2050 Scenario.",
+    "evidence": "pdftotext page 325: \"Water electrolysis 0 5 11 37 18 61 203 49 118 326\" (NZE 2035 is the ninth value)"
+   },
+   {
+    "id": "f4",
+    "claim": "Southeast Asia's total CO2 emissions in 2035 under the Stated Policies Scenario are 2 423 Mt CO2.",
+    "evidence": "pdftotext page 325, Table A.29 header \"2010 2022 2023 2030 2035 2050 2030 2035 2050\" (STEPS then APS); row: \"Southeast Asia 1 165 1 833 1 925 2 258 2 423 2 617 2 057 1 794 886\""
+   }
+  ]
+ },
+ {
+  "id": "long-pdf-h2",
+  "set": "dev",
+  "category": "long-pdf",
+  "lang": "en",
+  "url": "https://www.govinfo.gov/content/pkg/BUDGET-2025-APP/pdf/BUDGET-2025-APP.pdf",
+  "question": "Using the Appendix volume of the Budget of the U.S. Government, Fiscal Year 2025, at https://www.govinfo.gov/content/pkg/BUDGET-2025-APP/pdf/BUDGET-2025-APP.pdf, for the Office of Navajo and Hopi Indian Relocation's Salaries and Expenses account (identification code 435–1100–0–1–808): what amount does the proposed appropriations language provide, what unobligated balance brought forward on October 1 does the Program and Financing schedule show in its 2023 actual column, and how many direct civilian full-time equivalent employees does the Employment Summary show for 2025?",
+  "mechanism": "over-10mb",
+  "facts": [
+   {
+    "id": "f1",
+    "claim": "The proposed appropriations language provides $3,500,000.",
+    "evidence": "pdftotext page 1211 (printed 1205): \"For necessary expenses of the Office of Navajo and Hopi Indian Relocation as authorized by\" / \"Public Law 93–531, $3,500,000, to remain available until expended\""
+   },
+   {
+    "id": "f2",
+    "claim": "The unobligated balance brought forward on October 1 in the 2023 actual column is $15 million.",
+    "evidence": "pdftotext page 1212 (printed 1206), Program and Financing, \"Identification code 435–1100–0–1–808 2023 actual 2024 est. 2025 est.\"; \"1000 Unobligated balance brought forward, Oct 1 … 15 9 4\""
+   },
+   {
+    "id": "f3",
+    "claim": "The Employment Summary shows 18 direct civilian full-time equivalent employees for 2025.",
+    "evidence": "pdftotext page 1212 (printed 1206), Employment Summary for identification code 435–1100–0–1–808: \"1001 Direct civilian full-time equivalent employment … 18 18 18\""
+   }
+  ]
+ },
+ {
+  "id": "long-pdf-h3",
+  "set": "dev",
+  "category": "long-pdf",
+  "lang": "en",
+  "url": "https://www.etsi.org/deliver/etsi_ts/138300_138399/138331/17.06.00_60/ts_138331v170600p.pdf",
+  "question": "Using ETSI TS 138 331 V17.6.0 (3GPP TS 38.331 version 17.6.0, NR Radio Resource Control) at https://www.etsi.org/deliver/etsi_ts/138300_138399/138331/17.06.00_60/ts_138331v170600p.pdf: when a measId is configured for CGI reporting (reportType set to reportCGI) and its measObject concerns NR on FR2, what value does the UE start timer T321 with if useAutonomousGaps is included, (a) for a RedCap UE with 1 Rx branch and (b) for any other UE, and (c) what value if useAutonomousGaps is not included? And in the specification's change history, which CR introduced \"Correction on T321 for autonomous gap based CGI in FR2\", and in which version?",
+  "mechanism": "pdf-navigation",
+  "facts": [
+   {
+    "id": "f1",
+    "claim": "With useAutonomousGaps included on FR2, a RedCap UE with 1 Rx branch starts T321 with 6 seconds.",
+    "evidence": "pdftotext page 182 (printed 181), clause 5.5.2.3: \"4> if the measObject associated with this measId concerns FR2:\" / \"5> if the useAutonomousGaps is included in the reportConfig associated with this measId:\" / \"6> if the UE is a RedCap UE with 1 Rx branch\" / \"7> start timer T321 with the timer value set to 6 seconds for this measId;\""
+   },
+   {
+    "id": "f2",
+    "claim": "With useAutonomousGaps included on FR2, any other UE starts T321 with 5 seconds.",
+    "evidence": "pdftotext page 182: \"6> else\" / \"7> start timer T321 with the timer value set to 5 seconds for this measId;\""
+   },
+   {
+    "id": "f3",
+    "claim": "Without useAutonomousGaps on FR2, the UE starts T321 with 16 seconds.",
+    "evidence": "pdftotext page 182: \"5> else:\" / \"6> start timer T321 with the timer value set to 16 seconds for this measId.\""
+   },
+   {
+    "id": "f4",
+    "claim": "The change was CR 2254 (category F, approved at TSG RAN #90 in RP-202775, December 2020), producing version 16.3.0.",
+    "evidence": "pdftotext page 1300 (printed 1299), Annex E Change history: \"12/2020 RP-90 RP-202775 1775 2 F NR CA additional spectrum emission requirements 16.3.0\" … \"RP-90 RP-202775 2254 - F Correction on T321 for autonomous gap based CGI in FR2 16.3.0\""
+   }
+  ]
+ },
+ {
+  "id": "long-pdf-h4",
+  "set": "final",
+  "category": "long-pdf",
+  "lang": "en",
+  "url": "https://www.federalreserve.gov/econres/files/BulletinCharts.pdf",
+  "question": "Using the Federal Reserve's 2016 SCF Chartbook at https://www.federalreserve.gov/econres/files/BulletinCharts.pdf (Survey of Consumer Finances time-series charts, 1989–2016, in 2016 dollars): on the chart \"Median value of education installment loans for families with holdings\" by race or ethnicity of respondent, what were the values for Black, non-Hispanic families in 2004 and for Hispanic families in 2001; and on the chart \"Percent of families with credit card balances\" by race or ethnicity of respondent, what percentage of Hispanic families had credit card balances in 1995?",
+  "mechanism": "pdf-navigation",
+  "facts": [
+   {
+    "id": "f1",
+    "claim": "The median education installment loan of Black, non-Hispanic families with such loans was 10.5 thousand 2016 dollars in 2004.",
+    "evidence": "pdftotext page 1099 (no printed page numbers): \"Median value of education installment\" / \"loans for families with holdings\" / \"By race or ethnicity of respondent\"; columns \"Year White, Black, Hispanic Other\" (non-Hispanic), \"Level (thousands of 2016 dollars)\"; \"2004 12.7 10.5 6.4 6.4\""
+   },
+   {
+    "id": "f2",
+    "claim": "The median education installment loan of Hispanic families with such loans was 6.8 thousand 2016 dollars in 2001.",
+    "evidence": "pdftotext page 1099: \"2001 10.8 6.5 6.8 12.2\""
+   },
+   {
+    "id": "f3",
+    "claim": "56.1 percent of Hispanic families had credit card balances in 1995.",
+    "evidence": "pdftotext page 1170: \"Percent of families with credit card balances\" / \"By race or ethnicity of respondent\"; \"Level (percent)\"; \"1995 47.1 45.3 56.1 44.8\" (columns White non-Hispanic, Black non-Hispanic, Hispanic, Other)"
+   }
+  ]
+ },
+ {
+  "id": "long-pdf-h5",
+  "set": "final",
+  "category": "long-pdf",
+  "lang": "ko",
+  "url": "https://www.nabo.go.kr/board/file/down.do?fid=33318261",
+  "question": "https://www.nabo.go.kr/board/file/down.do?fid=33318261 에 있는 국회예산정책처 「2025년 조세지출예산 분석」(2024년 10월) PDF의 부록 '1. 운용중인 조세지출 현황(경과규정 포함 총 280개)' 표에서, 적용기한이 24.12.31.인 항목 가운데 2025년 전망 감면액이 가장 큰 항목은 무엇이며 그 금액은 얼마입니까? 또 같은 표에서 '폐광지역 카지노에 대한 개별소비세 저율과세 등' 항목의 2023년 실적과 2025년 전망 감면액은 각각 얼마입니까?",
+  "mechanism": "pdf-navigation",
+  "facts": [
+   {
+    "id": "f1",
+    "claim": "적용기한이 24.12.31.인 항목 중 2025년 전망 감면액이 가장 큰 항목은 '창업중소기업 등에 대한 세액감면'(연번 19)이다.",
+    "evidence": "pdftotext page 157 (printed 부록 134): \"19 창업중소기업 등에 대한 세액감면 24.12.31. 7,629 8,446 8,953\"; 적용기한 24.12.31. 항목은 연번 1–23(pages 156–157)이며 나머지의 2025년 전망치는 모두 이보다 작거나 '추정곤란'이다(다음으로 큰 값: \"15 전기자동차에 대한 개별소비세 감면 24.12.31. 2,580 3,622 3,822\")"
+   },
+   {
+    "id": "f2",
+    "claim": "그 항목의 2025년 전망 감면액은 8,953억원이다.",
+    "evidence": "pdftotext page 157: \"19 창업중소기업 등에 대한 세액감면 24.12.31. 7,629 8,446 8,953\"; 표 단위는 page 156: \"(단위: 억원)\""
+   },
+   {
+    "id": "f3",
+    "claim": "'폐광지역 카지노에 대한 개별소비세 저율과세 등'의 2023년 실적은 1,358억원이다.",
+    "evidence": "pdftotext page 168 (printed 부록 145): \"236 폐광지역 카지노에 대한 개별소비세 저율과세 등 없음 1,358 1,879 1,982\""
+   },
+   {
+    "id": "f4",
+    "claim": "같은 항목의 2025년 전망 감면액은 1,982억원이다.",
+    "evidence": "pdftotext page 168: \"236 폐광지역 카지노에 대한 개별소비세 저율과세 등 없음 1,358 1,879 1,982\" (열: 적용기한, ’23 실적, ’24 잠정, ’25 전망)"
+   }
+  ]
+ },
+ {
+  "id": "long-pdf-h6",
+  "set": "final",
+  "category": "long-pdf",
+  "lang": "en",
+  "url": "https://www.govinfo.gov/content/pkg/ERP-2024/pdf/ERP-2024.pdf",
+  "question": "Using the Economic Report of the President, March 2024, at https://www.govinfo.gov/content/pkg/ERP-2024/pdf/ERP-2024.pdf, Table B–21 (Real farm income, 1957–2024, in billions of chained 2024 dollars): what was net farm income in 1983, what were direct Federal Government payments in 1987, and what was farm-related income in 2000?",
+  "mechanism": "pdf-table-reading",
+  "facts": [
+   {
+    "id": "f1",
+    "claim": "Net farm income in 1983 was 37.5 billion chained 2024 dollars.",
+    "evidence": "pdftotext page 442 (printed 437): \"Table B–21. Real farm income, 1957–2024\" / \"[Billions of chained (2024) dollars]\"; columns: gross farm income total; value of agricultural sector production total, crops, animals and animal products, farm-related income; direct Federal Government payments; production expenses; net farm income; row \"1983 … 404.2 379.8 149.4 184.0 46.4 24.4 366.7 37.5\""
+   },
+   {
+    "id": "f2",
+    "claim": "Direct Federal Government payments in 1987 were 39.4 billion chained 2024 dollars.",
+    "evidence": "pdftotext page 442: \"1987 … 396.0 356.6 151.6 178.1 26.9 39.4 306.6 89.4\""
+   },
+   {
+    "id": "f3",
+    "claim": "Farm-related income in 2000 was 42.0 billion chained 2024 dollars.",
+    "evidence": "pdftotext page 442: \"2000 … 415.2 375.3 163.1 170.2 42.0 39.9 328.1 87.1\""
+   }
+  ]
+ },
+ {
+  "id": "long-pdf-h7",
+  "set": "final",
+  "category": "long-pdf",
+  "lang": "en",
+  "url": "https://www.govinfo.gov/content/pkg/BUDGET-2025-PER/pdf/BUDGET-2025-PER.pdf",
+  "question": "Using Analytical Perspectives, Budget of the U.S. Government, Fiscal Year 2025, at https://www.govinfo.gov/content/pkg/BUDGET-2025-PER/pdf/BUDGET-2025-PER.pdf, Table 18–4 (Receipts by Source, in millions of dollars): what are the estimated excise tax receipts from indoor tanning services for 2025, from the black lung disability insurance trust fund excise for 2030, and from the supplementary medical insurance trust fund excise for 2028?",
+  "mechanism": "pdf-table-reading",
+  "facts": [
+   {
+    "id": "f1",
+    "claim": "Indoor tanning services excise receipts are estimated at $61 million for 2025.",
+    "evidence": "pdftotext page 219 (printed 208): \"Table 18–4. RECEIPTS BY SOURCE—Continued\" / \"(In millions of dollars)\"; columns \"2023 Actual 2024 2025 2026 2027 2028 2029 2030 2031 2032 2033 2034\"; \"Indoor tanning services … 66 63 61 60 58 57 55 54 53 51 50 49\""
+   },
+   {
+    "id": "f2",
+    "claim": "Black lung disability insurance trust fund excise receipts are estimated at $110 million for 2030.",
+    "evidence": "pdftotext page 219, Excise taxes, Trust funds: \"Black lung disability\" / \"insurance … 295 308 294 261 225 189 143 110 105 109 115 119\""
+   },
+   {
+    "id": "f3",
+    "claim": "Supplementary medical insurance trust fund excise receipts are estimated at $1,483 million for 2028.",
+    "evidence": "pdftotext page 219, Excise taxes, Trust funds: \"Supplementary medical\" / \"insurance … 2,797 4,263 2,800 2,800 2,800 1,483 2,800 4,117 2,800 2,800 2,800 1,483\""
+   }
+  ]
+ },
+ {
+  "id": "image-h1",
+  "set": "final",
+  "category": "image",
+  "lang": "en",
+  "url": "https://hothardware.com/reviews/dell-xps-13-for-2026-with-intel-wildcat-lake-review?page=2",
+  "question": "Using page 2 of HotHardware's review \"Dell XPS 13 (2026) Review: Wildcat Lake Challenges Apple Efficiency\" at https://hothardware.com/reviews/dell-xps-13-for-2026-with-intel-wildcat-lake-review?page=2, what overall scores does the review's UL Procyon AI Computer Vision benchmark (NPU) chart give for the Dell XPS 13 (Core 5 320) and for the ASUS ROG Flow Z13 (Ryzen AI Max+ 395)?",
+  "mechanism": "image-unlinked",
+  "facts": [
+   {
+    "id": "f1",
+    "claim": "The Dell XPS 13 (Core 5 320 / Intel Graphics) scores 989.",
+    "evidence": "Image https://images.hothardware.com/contentimages/article/3622/content/procyon-ai-xps-13-performance.png, a bar chart titled \"UL Procyon AI Computer Vision Benchmark - NPU, DirectML / OpenVINO / Ryzen AI (Integer), Overall Score\", row \"Dell XPS 13 (Core 5 320 / Intel Graphics)\" labeled 989. Source line 980: <img ... alt=\"procyon ai xps 13 performance\" src=\"data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7\" ... data-src=\"https://images.hothardware.com/contentimages/article/3622/content/procyon-ai-xps-13-performance.png\"><figcaption>Ul Procyon, Dell XPS 13 - Image: HotHardware</figcaption>: the visible src is a 1x1 GIF placeholder, the real URL is only in data-src, and the image is not wrapped in a link (the article's photo-gallery pages list photos but not the benchmark charts). Check (fetched with WebFetch's UA and Accept headers, script/style/noscript/iframe removed): \"989\" occurs nowhere in the text, alt, title or figcaption (raw HTML only in fb:app_id 454058957989161); the text says only that the XPS 13 'manages to outrun the Lenovo IdeaPad Slim 3i once again, but trails the higher powered systems'."
+   },
+   {
+    "id": "f2",
+    "claim": "The ASUS ROG Flow Z13 (Ryzen AI Max+ 395 / Radeon 8060S) scores 1831.",
+    "evidence": "Same image, row \"ASUS ROG Flow Z13 (Ryzen AI Max+ 395 / Radeon 8060S)\" labeled 1831. Check: \"1831\" has 0 occurrences in the raw page HTML."
+   }
+  ]
+ },
+ {
+  "id": "image-h2",
+  "set": "final",
+  "category": "image",
+  "lang": "en",
+  "url": "https://www.tomshardware.com/pc-components/gpus/nvidia-geforce-rtx-5070-review-founders-edition/4",
+  "question": "Using the rasterization gaming performance page of Tom's Hardware's review \"Nvidia GeForce RTX 5070 review\" at https://www.tomshardware.com/pc-components/gpus/nvidia-geforce-rtx-5070-review-founders-edition/4, what average frame rate and what 1% low did the RTX 5070 Founders Edition record in Flight Simulator 2020 (DX12) at 2560x1440 Ultra?",
+  "mechanism": "html-1mb-cut",
+  "facts": [
+   {
+    "id": "f1",
+    "claim": "Average 86.1 fps.",
+    "evidence": "Image https://cdn.mos.cms.futurecdn.net/QfrodTBv7ukrKMkZVMawok.png (the page's src is the -1200-80.png variant of the same chart), titled \"Flight Simulator 2020 (DX12) 2560x1440, Ultra\", row \"RTX 5070 FE\": dark bar labeled 86.1 (Average). All ~70 performance charts on the page share the alt \"Nvidia GeForce RTX 5070 Founders Edition performance charts\" and the figcaption \"(Image credit: Tom's Hardware)\"; each game has a gallery of four charts, one per test setting (the Flight Simulator 2020 gallery, which opens with this 1440p chart, precedes the paragraph \"We've been using Flight Simulator 2020 for several years...\"). The page is 2,645,252 characters: its <h1> starts at character 1,433,336 and this chart's first reference at 1,650,251, both past the 1,048,576 characters WebFetch converts. Check: \"86.1\" is absent from the page text and attributes (one raw match is inside SVG path data)."
+   },
+   {
+    "id": "f2",
+    "claim": "1% low 69 fps.",
+    "evidence": "Same image, row \"RTX 5070 FE\": light bar labeled 69 (1% Low)."
+   }
+  ]
+ },
+ {
+  "id": "image-h3",
+  "set": "final",
+  "category": "image",
+  "lang": "en",
+  "url": "https://www.kitguru.net/components/graphic-cards/dominic-moass/nvidia-rtx-5070-review/all/1/",
+  "question": "Using KitGuru's \"Nvidia RTX 5070 Review: RTX 4090 Performance?\" (single-page view) at https://www.kitguru.net/components/graphic-cards/dominic-moass/nvidia-rtx-5070-review/all/1/, what average frame rate and what 1% low did the Nvidia RTX 5070 FE 12GB record in the Senua's Saga: Hellblade 2 (DX12) results at 2560x1440?",
+  "mechanism": "image-many",
+  "facts": [
+   {
+    "id": "f1",
+    "claim": "Average 51.4 fps.",
+    "evidence": "Image https://www.kitguru.net/wp-content/uploads/2025/02/sen2-3.png, titled \"Senua's Saga: Hellblade 2 (DX12)\", \"Resolution: 2560x1440\", \"IQ: High Preset, TSR 100% Scale\", row \"Nvidia RTX 5070 FE 12GB\": red bar (Avg FPS) labeled 51.4. Source line 1120: <a href=\"https://www.kitguru.net/wp-content/uploads/2025/02/sen2-3.png\" rel=\"lightbox[691010]\"><img ... alt=\"\" ...>. The page carries 342 images, every one with an empty alt and no caption; the charts are named only by codes (sen1-3, sen2-3, sen3-3 for this game's three resolutions; other sections use other suffixes) and sit among game screenshots. Check: \"51.4\" has 0 occurrences in the raw HTML; the text around the game only describes it."
+   },
+   {
+    "id": "f2",
+    "claim": "1% low 46.9 fps.",
+    "evidence": "Same image, row \"Nvidia RTX 5070 FE 12GB\": yellow bar (1% Low) labeled 46.9. Check: \"46.9\" occurs in the raw HTML only inside screenshot filenames (Final-Fantasy-XVI-Screenshot-2024.11.28-00.11.46.98...)."
+   }
+  ]
+ },
+ {
+  "id": "image-h4",
+  "set": "dev",
+  "category": "image",
+  "lang": "en",
+  "url": "https://www.niskanencenter.org/family-benefits-in-america-2025-report-card/",
+  "question": "Using the Niskanen Center's \"Family benefits in America 2025 report card\" at https://www.niskanencenter.org/family-benefits-in-america-2025-report-card/, in Figure 4 (income breakdown for married parents with two children, minimum wage earnings), which state has the second-highest cumulative income after Hawaii, and in which state does TANF contribute the largest amount?",
+  "mechanism": "image-unlinked",
+  "facts": [
+   {
+    "id": "f1",
+    "claim": "Colorado is second after Hawaii.",
+    "evidence": "Image https://www.niskanencenter.org/wp-content/uploads/2025/09/fig-4.png, a stacked bar chart titled \"Cumulative benefit amounts, married parents with two children\" / \"Minimum wage earnings, 2025\", states sorted by total: Hawaii (~$59.6k), Colorado (~$56.3k), New York (~$54.1k), New Jersey ... North Dakota last. Source line 1078: <p class=\"wp-block-paragraph\"><strong>Figure 4:</strong> Income breakdown for married parents with two children, minimum wage earnings</p>; source line 1082: <img ... data-src=\"https://www.niskanencenter.org/wp-content/uploads/2025/09/fig-4.png\" alt=\"\" class=\"wp-image-19394 lazyload\" src=\"data:image/svg+xml;base64,PHN2Zy...\">: an empty-alt image whose visible src is an SVG placeholder and whose URL is only in data-src, not wrapped in a link (Figures 1, 2, 5, 7 and 8 are linked; 3, 4 and 6 are not). Check: the text names Colorado only for its state EITC and CTC rates, and gives only the extremes for this family ('$29,054 in North Dakota to $59,641 in Hawaii')."
+   },
+   {
+    "id": "f2",
+    "claim": "Wyoming has the largest TANF amount.",
+    "evidence": "Same image: Wyoming's orange TANF segment spans about $14.5k to $25.2k (~$10.7k), larger than Wisconsin's (~$7.9k), Tennessee's (~$5.2k) and the small TANF segments of Maine, Alaska, Minnesota, Utah, South Carolina, Iowa and Kentucky. Check: the only mention of Wyoming in the page text is its 66 percent IMTR in Figure 8's discussion."
+   }
+  ]
+ },
+ {
+  "id": "image-h5",
+  "set": "final",
+  "category": "image",
+  "lang": "en",
+  "url": "https://www.backblaze.com/blog/backblaze-drive-stats-for-q2-2025/",
+  "question": "Using Backblaze's \"Backblaze Drive Stats for Q2 2025\" at https://www.backblaze.com/blog/backblaze-drive-stats-for-q2-2025/, what does the Q2 2025 quarterly failure-rate table report for the 16TB WDC drive model WUH721816ALE6L0: its drive count, its number of failures, and its annualized failure rate?",
+  "mechanism": "image-relative",
+  "facts": [
+   {
+    "id": "f1",
+    "claim": "3,006 drives.",
+    "evidence": "Image https://www.backblaze.com/blog/wp-content/uploads/2025/08/Quarterly-Q22025-1.png (alt \"The Q2 2025 quarterly Backblaze Drive Stats data.\"), a table with columns MFG, Model, Size (TB), Drive Count, Avg. Age (Months), Drive Days, Failures, AFR; row \"WDC WUH721816ALE6L0 16 3,006 41.5 272,497 17 2.28%\". Source line 696: <a href=\"/blog/wp-content/uploads/2025/08/Quarterly-Q22025-1.png\" ...><img ... src=\"/blog/wp-content/uploads/2025/08/Quarterly-Q22025-1.png\" ...>: a relative src, one of 27 images on the page (about 20 of them tables and charts); the same model also appears in the lifetime table image (4_Lifetime.png, source line 822) with different numbers. Check: \"WUH721816ALE6L0\" and \"3,006\" have 0 occurrences in the raw HTML."
+   },
+   {
+    "id": "f2",
+    "claim": "17 failures.",
+    "evidence": "Same image and row, Failures column: 17."
+   },
+   {
+    "id": "f3",
+    "claim": "AFR 2.28%.",
+    "evidence": "Same image and row, AFR column: 2.28%. Check: \"2.28\" has 0 occurrences in the raw HTML."
+   }
+  ]
+ },
+ {
+  "id": "image-h6",
+  "set": "final",
+  "category": "image",
+  "lang": "en",
+  "url": "https://www.ntsb.gov/investigations/AccidentReports/Reports/AIR-24-07.pdf",
+  "question": "Using NTSB Aviation Investigation Report AIR-24-07, \"In-Flight Collision During Air Show\" (Commemorative Air Force Boeing B-17G and Bell P-63F, Dallas) at https://www.ntsb.gov/investigations/AccidentReports/Reports/AIR-24-07.pdf, the figure showing the position and altitude of each airplane at 1320:37 lists each airplane's altitude. What altitude does it give for the accident Bell P-63F, and what altitude for the B-17G lead?",
+  "mechanism": "pdf-figure",
+  "facts": [
+   {
+    "id": "f1",
+    "claim": "Bell P-63F: 990 ft.",
+    "evidence": "Figure 4 on PDF page 16 (printed page 8) is a single raster image (pdfimages: 1428x1099 JPEG); its inset table (Time 1320:37) lists Bombers: *B-17G lead 930 ft, B-24 460 ft, SB2C 420 ft, B-25J 500 ft; Fighters: P-51D lead 1,130 ft, P-51C 1,060 ft, *P-63F 990 ft; Revenue ride: PT-17 530 ft. pdftotext page 16: \"Figure 4. Position and altitude of each airplane at 1320:37.\" is the only figure text; the list of figures reads \"Figure 4. Position and altitude of each airplane at 1320:37. .... 8\". Check: pdftotext -layout of the whole 94-page report has no \"990\" and no \"930\"."
+   },
+   {
+    "id": "f2",
+    "claim": "B-17G lead: 930 ft.",
+    "evidence": "Same figure, inset table row \"*B-17G lead 930 ft\"."
+   }
+  ]
+ },
+ {
+  "id": "image-h7",
+  "set": "dev",
+  "category": "image",
+  "lang": "en",
+  "url": "https://images.nvidia.com/aem-dam/Solutions/geforce/blackwell/nvidia-rtx-blackwell-gpu-architecture.pdf",
+  "question": "Using NVIDIA's whitepaper \"NVIDIA RTX Blackwell GPU Architecture\" at https://images.nvidia.com/aem-dam/Solutions/geforce/blackwell/nvidia-rtx-blackwell-gpu-architecture.pdf, the figure comparing GDDR7 with prior-generation GDDR6/GDDR6X contains a data-rate chart and an energy-efficiency chart. What DRAM utilization does the figure's note say the energy-efficiency comparison reflects, and which years label the two GDDR6X bars in the data-rate chart?",
+  "mechanism": "pdf-figure",
+  "facts": [
+   {
+    "id": "f1",
+    "claim": "30% DRAM utilization (the average graphics application with 30% DRAM utilization).",
+    "evidence": "Figure 7 on PDF page 13 (printed page 13) is a single raster image (pdfimages: 1542x667 JPEG) whose note reads \"Energy Efficiency reflects the average graphics application with 30% DRAM utilization\"; its right chart is labeled \"MaxQ Energy (pJ/bit)\" and \"2X Efficiency\". pdftotext page 13 gives only the caption \"Figure 7. GDDR7 compared to prior generation GDDR6/6x\". Check: pdftotext -layout of the whole 57-page whitepaper has no \"DRAM utilization\"; its only \"30%\" is \"uses 30% less VRAM\" in the DLSS section."
+   },
+   {
+    "id": "f2",
+    "claim": "2020 and 2024 (the bars read GDDR6, GDDR6x 2020, GDDR6x 2024, GDDR7).",
+    "evidence": "Same figure, middle chart \"2X Data Rate of G6\" (y axis \"Data Rate (GB/s)\"): x-axis labels \"GDDR6\", \"GDDR6x 2020\", \"GDDR6x 2024\", \"GDDR7\". Check: the text's GDDR6X passages (pdftotext lines 394-396, 415) give no years for GDDR6X bars."
+   }
+  ]
+ },
+ {
+  "id": "search-h1",
+  "set": "final",
+  "category": "search",
+  "lang": "en",
+  "url": "https://www.nasa.gov/wp-content/uploads/2024/04/fy-2025-full-budget-request-congressional-justification-update.pdf",
+  "question": "Using NASA's FY 2025 President's Budget Request Congressional Justification (the full 'Congressional Justification' volume posted on NASA's FY 2025 Budget Request page in spring 2024), find the 'Summary of Projected FY 2025 EUL Activity' table in the Supporting Data section on Enhanced Use Leasing. In whole dollars, what base rent does that table project for Ames Research Center (ARC), what total estimated lease collections does it project for Kennedy Space Center (KSC), and what total estimated lease collections does it give for NASA as a whole (the Total column)?",
+  "search": true,
+  "mechanism": "over-10mb",
+  "facts": [
+   {
+    "id": "f1",
+    "claim": "Projected FY 2025 EUL base rent at Ames Research Center (ARC) is $12,942,927.",
+    "evidence": "pdftotext page 751 (printed SD-15), columns ARC GRC GSFC JPL(NMO) MSFC SSC KSC JSC Agency Total: \"Base Rent 12,942,927 34,661 1,852,300 113 2,213,424 5,009,955 7,027,769 - 3,745,000 32,826,148\""
+   },
+   {
+    "id": "f2",
+    "claim": "Total estimated lease collections at Kennedy Space Center (KSC) for program year 2025 are $13,063,605.",
+    "evidence": "pdftotext page 751 (printed SD-15): \"Total Estimated Lease Collections (N + E Funds Lease Project Code) - Program Year 2025 14,385,712 52,167 2,130,400 113 5,032,842 5,722,197 13,063,605 - 3,745,000 44,132,035\" (KSC is the seventh column)"
+   },
+   {
+    "id": "f3",
+    "claim": "Total estimated lease collections for NASA as a whole (Total column) are $44,132,035.",
+    "evidence": "pdftotext page 751 (printed SD-15): same row, last (Total) column \"44,132,035\""
+   }
+  ]
+ },
+ {
+  "id": "search-h3",
+  "set": "final",
+  "category": "search",
+  "lang": "en",
+  "url": "https://www.federalreserve.gov/monetarypolicy/files/FOMC20191211meeting.pdf",
+  "question": "Using the Federal Reserve's transcript of the FOMC meeting held December 10-11, 2019: in his remarks on the economic outlook, Richmond Fed President Thomas Barkin cited work by his staff that reverse-engineered JOLTS data and described a meeting of the Virginia Governor's Advisory Council on Revenue Estimates; in his policy remarks the next day he aligned himself with research on the effect of high uncertainty on firms' investment. What increase in the time to fill jobs, and over what period, did his staff's work suggest; how many CEOs did he say were present at that council meeting; and whose research did he name?",
+  "search": true,
+  "mechanism": "pdf-navigation",
+  "facts": [
+   {
+    "id": "f1",
+    "claim": "His staff's work suggested a 10-day increase in the time to fill jobs over the past four years.",
+    "evidence": "pdftotext page 122 (printed 122 of 252): \"some work by my staff—reverse-engineering JOLTS data—would suggest part of the explanation could be a 10-day increase in the time to fill jobs in the past four years.\""
+   },
+   {
+    "id": "f2",
+    "claim": "Twenty CEOs were present at the Virginia Governor's Advisory Council on Revenue Estimates meeting.",
+    "evidence": "pdftotext page 123 (printed 123 of 252): \"I served on the Virginia Governor's Advisory Council on Revenue Estimates two weeks ago.\" ... \"Twenty CEOs were present.\""
+   },
+   {
+    "id": "f3",
+    "claim": "He aligned himself with research by Vavra and Bloom (and others).",
+    "evidence": "pdftotext page 167 (printed 167 of 252): \"But I'd align myself with research by Vavra, Bloom, and others referenced in those footnotes on the negative effect of high uncertainty on firms and their investment spending.\""
+   }
+  ]
+ },
+ {
+  "id": "search-h4",
+  "set": "final",
+  "category": "search",
+  "lang": "en",
+  "url": "https://www.unicode.org/emoji/charts-15.1/emoji-list.html",
+  "question": "Using the Unicode Consortium's 'Emoji List, v15.1' chart (the Emoji v15.1 chart of emoji characters and sequences with keywords, without skin tones), what number in the chart's № column is given to the emoji 'hair pick', and what number to the emoji 'khanda'?",
+  "search": true,
+  "mechanism": "html-1mb-cut",
+  "facts": [
+   {
+    "id": "f1",
+    "claim": "'hair pick' (U+1FAAE) is № 1184.",
+    "evidence": "source line 7770: \"<tr><td class='rchars'>1184</td>\"; source line 7773: \"<td class='name'>hair pick</td>\" (byte offset 5,371,272 of 7,328,466)"
+   },
+   {
+    "id": "f2",
+    "claim": "'khanda' (U+1FAAF) is № 1470.",
+    "evidence": "source line 9664: \"<tr><td class='rchars'>1470</td>\"; source line 9667: \"<td class='name'>khanda</td>\" (byte offset 6,310,910 of 7,328,466)"
+   }
+  ]
+ },
+ {
+  "id": "search-h5",
+  "set": "dev",
+  "category": "search",
+  "lang": "en",
+  "url": "https://www.federalregister.gov/documents/2024/12/09/2024-25382/medicare-and-medicaid-programs-cy-2025-payment-policies-under-the-physician-fee-schedule-and-other-changes-to-part-b",
+  "question": "Using CMS's CY 2025 Medicare Physician Fee Schedule final rule as published in the Federal Register on December 9, 2024 (FR Doc. 2024-25382, 'Medicare and Medicaid Programs; CY 2025 Payment Policies Under the Physician Fee Schedule and Other Changes to Part B Payment and Coverage Policies; ...'), find the regulatory impact analysis's estimate of regulatory familiarization costs. What hourly cost of reviewing the rulemaking does it use, how many reviewers does it assume, and what total cost of reviewing the regulation does it estimate?",
+  "search": true,
+  "mechanism": "html-1mb-cut",
+  "facts": [
+   {
+    "id": "f1",
+    "claim": "The cost of reviewing the rulemaking is $129.28 per hour (BLS wage for medical and health service managers, including overhead and fringe benefits).",
+    "evidence": "source line 26648: \"we estimated that the cost of reviewing this rulemaking is $129.28, including overhead and fringe benefits\"; source line 26649: \"For each facility that reviews the rule, the estimated cost is $1,034.24 (8.0 hours &times; $129.28).\""
+   },
+   {
+    "id": "f2",
+    "claim": "It assumes 6,980 reviewers.",
+    "evidence": "source line 26649: \"($1,034.24 &times; 6,980 reviewers on this year's final rule)\""
+   },
+   {
+    "id": "f3",
+    "claim": "The total cost of reviewing the regulation is estimated at $7,218,995.",
+    "evidence": "source line 26649 (byte offset 6,810,850 of 8,535,956; printed page 89 FR 98552): \"Therefore, we estimated that the total cost of reviewing this regulation is $7,218,995 ($1,034.24 &times; 6,980 reviewers on this year's final rule).\""
+   }
+  ]
+ },
+ {
+  "id": "search-h6",
+  "set": "dev",
+  "category": "search",
+  "lang": "en",
+  "url": "https://arxiv.org/html/2410.13720v2",
+  "question": "Using Meta's paper 'Movie Gen: A Cast of Media Foundation Models' (by the Movie Gen team, arXiv, first posted October 2024 and revised February 2025), find the appendix table that compares Movie Gen's generation specifications with external text-to-video models (Table 46) and the text around it. How many video frames does the table list for Kling1.5, on what date were the Kling1.5 videos collected, and how many videos from OpenAI Sora's public website did the comparison use?",
+  "search": true,
+  "mechanism": "html-1mb-cut",
+  "facts": [
+   {
+    "id": "f1",
+    "claim": "Table 46 lists 313 video frames for Kling1.5.",
+    "evidence": "source line 9150: \"<span id=\"A3.T46.2.1.1.1.1.1.1.2.5\" class=\"ltx_td ltx_align_center\">Kling1.5</span>\" (column 5 header); source line 9167: \"#Video frames\" row; source line 9171: \"<span id=\"A3.T46.2.1.1.1.1.1.1.5.5\" class=\"ltx_td ltx_align_center\">313</span>\" (byte offset ~1,235,000 of 1,383,608)"
+   },
+   {
+    "id": "f2",
+    "claim": "The Kling1.5 videos were collected on September 25, 2024.",
+    "evidence": "source line 9188: \"Kling1.5 videos are collected on September 25th, 2024.\""
+   },
+   {
+    "id": "f3",
+    "claim": "The comparison used 158 videos from OpenAI Sora's publicly released website.",
+    "evidence": "source line 9195: \"Our only option for comparing to OpenAI Sora is by using the prompts and videos from their publicly released website (158 videos in total).\""
+   }
+  ]
+ },
+ {
+  "id": "search-h7",
+  "set": "final",
+  "category": "search",
+  "lang": "ko",
+  "url": "https://www.bok.or.kr/fileSrc/portal/799d2055a9ac4715aca727924eb991cb/1/891c497af8e446ef83427b8a20971103.pdf",
+  "question": "한국은행이 2025년 3월 발간한 「2024년도 연차보고서」의 부록 '3. 부문별 담당 부서 및 집필자' 표에 따르면, <참고> '국가 간 지급 개선 프로젝트(Agorá, Mandala) 추진 현황'과 <참고> '한국은행 스튜디오 개관'은 각각 어느 부서의 누가 집필했습니까?",
+  "search": true,
+  "mechanism": "over-10mb",
+  "facts": [
+   {
+    "id": "f1",
+    "claim": "<참고> 국가 간 지급 개선 프로젝트(Agorá, Mandala) 추진 현황은 디지털화폐연구실 임상혁이 집필했다.",
+    "evidence": "pdftotext page 150 (printed 136): \"<참고> 국가 간 지급 개선 프로젝트(Agorá Mandala) 추진 디지털화폐연구실 임상혁\""
+   },
+   {
+    "id": "f2",
+    "claim": "<참고> 한국은행 스튜디오 개관은 커뮤니케이션국 이지선이 집필했다.",
+    "evidence": "pdftotext page 151 (printed 137): \"<참고> 한국은행 스튜디오 개관 커뮤니케이션국 이지선\""
+   }
+  ]
+ }
+]
