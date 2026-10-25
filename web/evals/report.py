@@ -236,12 +236,19 @@ def _audit_lines(a):
     return lines
 
 
+def _graders(runs):
+    """Who graded the runs, read from their grade records: "opus", "sol at xhigh", or both."""
+    seen = sorted({(g['model'] + (f" at {g['effort']}" if g.get('effort') else ''))
+                   for g in ((r.get('grade') or {}) for r in runs) if g.get('model')})
+    return ' and '.join(seen) or 'no grader yet'
+
+
 def render_screening(tasks, runs, title, expected, arm):
     """A round of one configuration: no criteria, each task's verdicts."""
     a = audit(tasks, runs, expected)
     md = [f'# Web fetch screening — {title}', '',
           f"Configuration {arm} only ({'A = WebFetch' if arm == 'A' else 'B = mcp__web__fetch'}); "
-          f"{len(runs)} runs of {len(expected)} expected; sol at xhigh; graded by opus.", '']
+          f"{len(runs)} runs of {len(expected)} expected; sol at xhigh; graded by {_graders(runs)}.", '']
     if not a['complete']:
         md += ['## Completeness', '', *_audit_lines(a), '']
     md += ['## By task', '', *_by_task(tasks, runs, [arm]), '',
@@ -261,7 +268,7 @@ def render(tasks, runs, title, expected, dev_rounds=()):
         overall = 'PASS' if all(c['verdict'] in ('PASS', 'N/A') for c in cs) else 'NOT PASSED'
     md = [f'# Web fetch eval report — {title}', '',
           f"Overall: **{overall}** "
-          f"({len(runs)} runs of {len(expected)} expected; A = WebFetch only, B = mcp__web__fetch only; sol at xhigh; graded by opus).", '']
+          f"({len(runs)} runs of {len(expected)} expected; A = WebFetch only, B = mcp__web__fetch only; sol at xhigh; graded by {_graders(runs)}).", '']
     if not a['complete']:
         md += ['No gate verdict: the matrix is not complete and validly graded. '
                'The figures below are provisional, over the runs there are.', '', '## Completeness', '', *_audit_lines(a), '']
@@ -302,7 +309,9 @@ def _folder(path):
     with open(os.path.join(HERE, m['tasksFile'])) as f:
         tasks = json.load(f)
     arms = m.get('arms', ['A', 'B'])
-    runs = load_runs(path)
+    # A task since dropped from its file leaves its runs behind; they are no part of the set now.
+    ids = {t['id'] for t in tasks}
+    runs = [r for r in load_runs(path) if r['task'] in ids]
     if len(arms) == 2:
         # A gate is judged over the design's runs per task.
         return tasks, runs, expected_runs(tasks, m['set'], harness.REPS[m['set']], arms)

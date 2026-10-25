@@ -58,32 +58,6 @@
   ]
  },
  {
-  "id": "verbatim-h4",
-  "set": "dev",
-  "category": "verbatim",
-  "lang": "en",
-  "url": "https://pkware.cachefly.net/webdocs/APPNOTE/APPNOTE-6.3.10.TXT",
-  "question": "Using PKWARE's .ZIP File Format Specification (APPNOTE.TXT) version 6.3.10 at https://pkware.cachefly.net/webdocs/APPNOTE/APPNOTE-6.3.10.TXT, quote verbatim section 4.6.11 (Data Stream Alignment, header ID 0xa11e): its introductory paragraphs, its Value / Size / Description field layout, and the paragraph that follows the layout.",
-  "mechanism": "quote-limit",
-  "facts": [
-   {
-    "id": "f1",
-    "claim": "The introductory paragraphs, verbatim (line breaks and indentation are not graded):\n       (per Zbynek Vyskovsky) Defines alignment of data stream of this\n       entry within the zip archive.  Additionally, indicates whether the\n       compression method should be kept when re-compressing the zip file.\n\n       The purpose of this extra field is to align specific resources to\n       word or page boundaries so they can be easily mapped into memory.",
-    "evidence": "source line 1832: \"       (per Zbynek Vyskovsky) Defines alignment of data stream of this \" (the paragraphs run through line 1837; section heading on line 1830 at byte 79602 of 174585)"
-   },
-   {
-    "id": "f2",
-    "claim": "The field layout, verbatim (column alignment and indentation are not graded):\n         Value         Size        Description\n         -----         ----        -----------\n         0xa11e        Short       tag for this extra block type\n         TSize         Short       total data size for this block (2+padding)\n         alignment     Short       required alignment and indicator\n         0x00          Variable    padding",
-    "evidence": "source line 1839: \"         Value         Size        Description\" (the layout runs through line 1844: \"         0x00          Variable    padding\")"
-   },
-   {
-    "id": "f3",
-    "claim": "The paragraph after the layout, verbatim (line breaks and spacing are not graded):\n       The alignment field (lower 15 bits) defines the minimal alignment\n       required by the data stream.   Bit 15 of alignment field indicates\n       whether the compression method of this entry can be changed when\n       recompressing the zip file.  The value 0 means the compression method\n       should not be changed.  The value 1 indicates  the compression method\n       may be changed. The padding field contains padding to ensure the correct\n       alignment.  It can be changed at any time when the offset or required\n       alignment changes. (see https://issues.apache.org/jira/browse/COMPRESS-391)",
-    "evidence": "source line 1846: \"       The alignment field (lower 15 bits) defines the minimal alignment \" (the paragraph runs through line 1853, ending \"(see https://issues.apache.org/jira/browse/COMPRESS-391)\"; section 4.7 starts on line 1856)"
-   }
-  ]
- },
- {
   "id": "verbatim-h5",
   "set": "final",
   "category": "verbatim",

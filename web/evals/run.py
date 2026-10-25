@@ -121,8 +121,9 @@ def projection(runs, rounds=ROUND_RUNS):
         have = [r for r in rs if r.get('usageByModel') is not None]
         n_have, n = max(len(have), 1), len(rs)
         run_tok = {m: _zero() for m in ('sol', 'haiku')}
-        grade_tok = {'opus': _zero()}
-        run_usd, grade_usd = {'sol': 0.0, 'haiku': 0.0}, {'opus': 0.0}
+        # The grader's usage is its own row, whatever its model: grading on sol must not add to the runner's.
+        grade_tok = {'grader': _zero()}
+        run_usd, grade_usd = {'sol': 0.0, 'haiku': 0.0}, {'grader': 0.0}
         runner_usd = grader_usd = 0.0
         searches = 0
         for r in have:
@@ -140,10 +141,9 @@ def projection(runs, rounds=ROUND_RUNS):
             runner_usd += r.get('costUsd') or 0.0
         for r in rs:
             g = r.get('grade') or {}
-            for model, u in (g.get('usageByModel') or {}).items():
-                fam = _family(model)
-                _add(grade_tok.setdefault(fam, _zero()), u)
-                grade_usd[fam] = grade_usd.get(fam, 0.0) + (u.get('costUSD') or 0.0)
+            for u in (g.get('usageByModel') or {}).values():
+                _add(grade_tok['grader'], u)
+                grade_usd['grader'] += u.get('costUSD') or 0.0
             grader_usd += g.get('costUsd') or 0.0
         mean = {m: {k: v / n_have for k, v in t.items()} for m, t in run_tok.items()}
         mean.update({m: {k: v / n for k, v in t.items()} for m, t in grade_tok.items()})
@@ -185,7 +185,7 @@ def format_projection(p):
         if not t:
             continue
         lines.append(f'Projected for {label}:')
-        for m, role in (('sol', 'runner'), ('opus', 'grader'), ('haiku', 'summaries'), ('search', 'searches')):
+        for m, role in (('sol', 'runner'), ('grader', 'grading'), ('haiku', 'summaries'), ('search', 'searches')):
             u = t.get(m, {})
             if m == 'search' and not u:
                 continue
@@ -215,8 +215,11 @@ def _manifest(out, set_, tasks_file, reps, arms=ARMS):
                      f"({os.path.basename(tasks_file)}, {','.join(arms)}): start a new folder")
         return m
     version = subprocess.run(['claude', '--version'], capture_output=True, text=True).stdout.strip()
+    with open(os.path.join(harness.WEB_PLUGIN, '.claude-plugin', 'plugin.json')) as f:
+        web = json.load(f)['version']
     m = {**now, 'set': set_, 'tasksFile': os.path.basename(tasks_file), 'arms': list(arms), 'reps': reps, 'model': harness.RUNNER_MODEL,
-         'effort': harness.RUNNER_EFFORT, 'claude': version, 'started': datetime.datetime.now(datetime.timezone.utc).isoformat()}
+         'effort': harness.RUNNER_EFFORT, 'grader': grade.GRADER_MODEL, 'graderEffort': grade.GRADER_EFFORT,
+         'web': web, 'claude': version, 'started': datetime.datetime.now(datetime.timezone.utc).isoformat()}
     grade.write_json(path, m)
     return m
 

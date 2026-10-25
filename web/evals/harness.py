@@ -48,6 +48,11 @@ BASE_TOOLS = ('Read', 'Grep', 'Glob', 'ToolSearch')
 SEARCH_SERVER = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'search_mcp.py')
 SEARCH_TOOL = 'mcp__search__web_search'
 SEARCH_USAGE = os.path.join('.cache', 'web-evals-search', 'usage.jsonl')
+# Both configurations' fetch tools refuse third-party readers and proxies: the deny-readers
+# plugin's mod asks deny_readers.py about every WebFetch and mcp__web__fetch call (a settings
+# hook would not do: the engine runs none for a mod's tool).
+DENY_READERS = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'deny_readers.py')
+DENY_PLUGIN = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'deny-readers')
 
 
 def playwright_cache():
@@ -97,6 +102,7 @@ def runner_args(arm, plugin_dir, question, search=False):
         'claude', '-p',
         '--model', RUNNER_MODEL, '--effort', RUNNER_EFFORT,
         '--output-format', 'stream-json', '--verbose',
+        '--plugin-dir', DENY_PLUGIN,
         '--plugin-dir', plugin_dir,
         *mcp,
         '--tools', ','.join(tools),
@@ -142,7 +148,10 @@ _SITE_REASON = re.compile(r'(HTTP \d{3}|network error|refused:|too many redirect
 
 
 def is_tool_caused(arm, text):
-    """Whether a fetch error is the tool's own (criterion 3) rather than the site's."""
+    """Whether a fetch error is the tool's own (criterion 3) rather than the site's, or the eval's
+    refusal of a third-party reader."""
+    if text.startswith('Refused: ') and 'third-party reader or proxy' in text:
+        return False
     if arm == 'B':
         m = re.match(r'fetch failed: (?:\S+: )?(.*)', text, re.S)
         return not (m and _SITE_REASON.match(m.group(1)))

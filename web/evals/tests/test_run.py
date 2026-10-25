@@ -90,9 +90,9 @@ class Projection(unittest.TestCase):
         self.assertEqual(p['perRun']['A']['sol'], {'input': 200, 'output': 20, 'cacheRead': 2000, 'cacheCreation': 0})
         self.assertEqual(p['perRun']['A']['haiku'], {'input': 25, 'output': 2.5, 'cacheRead': 0, 'cacheCreation': 0})
         self.assertEqual(p['perRun']['B']['haiku'], {'input': 70, 'output': 7, 'cacheRead': 0, 'cacheCreation': 0})
-        self.assertEqual(p['perRun']['A']['opus'], {'input': 30, 'output': 3, 'cacheRead': 0, 'cacheCreation': 0})
+        self.assertEqual(p['perRun']['A']['grader'], {'input': 30, 'output': 3, 'cacheRead': 0, 'cacheCreation': 0})
         self.assertEqual(p['perRun']['A']['usdRunner'], 2.0)
-        self.assertEqual(p['perRun']['A']['usdByModel'], {'sol': 0.0, 'haiku': 0.1, 'opus': 0.0})
+        self.assertEqual(p['perRun']['A']['usdByModel'], {'sol': 0.0, 'haiku': 0.1, 'grader': 0.0})
         self.assertEqual(p['perRun']['B']['usdGrader'], 0.2)
         # A round: 32 runs per arm; the final: 96 per arm.
         self.assertEqual(p['dev']['sol']['input'], 200 * 32 + 200 * 32)

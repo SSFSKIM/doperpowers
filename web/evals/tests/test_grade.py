@@ -1,6 +1,7 @@
 import unittest
 
 import grade
+import harness
 
 TASK = {
     'id': 'exact-detail-1', 'question': 'What default applies to max_udp_payload_size?',
@@ -78,6 +79,34 @@ class ParseGrade(unittest.TestCase):
     def test_unparseable_is_none(self):
         self.assertIsNone(grade.parse_grade('I think it is correct.', ['f1']))
         self.assertIsNone(grade.parse_grade('{"verdict": "correct", "facts": [true]}', ['f1']))
+
+
+class Grader(unittest.TestCase):
+    def setUp(self):
+        import json
+        import tempfile
+        self.calls, self.work = [], tempfile.mkdtemp()
+        reply = json.dumps({'result': '{"verdict":"correct","facts":{"f1":true,"f2":true},"note":""}',
+                            'modelUsage': {'sol': {'inputTokens': 9, 'costUSD': 0.01}}, 'total_cost_usd': 0.01})
+        self.saved = harness.run_claude, harness.make_home
+        harness.run_claude = lambda args, *rest: (self.calls.append(args) or (reply, '', 0, False, 5))
+        harness.make_home = lambda parent: tempfile.mkdtemp(dir=parent)
+
+    def tearDown(self):
+        harness.run_claude, harness.make_home = self.saved
+
+    def test_sol_at_xhigh_grades_by_default(self):
+        g, usage = grade.grade(TASK, 'It is 65527, below 1200 invalid.', self.work)
+        args = self.calls[0]
+        self.assertEqual(args[args.index('--model') + 1], 'sol')
+        self.assertEqual(args[args.index('--effort') + 1], 'xhigh')
+        self.assertEqual((usage['model'], usage['effort'], g['verdict']), ('sol', 'xhigh', 'correct'))
+
+    def test_another_grader_runs_at_its_default_effort(self):
+        _, usage = grade.grade(TASK, 'It is 65527.', self.work, 'opus')
+        self.assertEqual(self.calls[0][self.calls[0].index('--model') + 1], 'opus')
+        self.assertNotIn('--effort', self.calls[0])
+        self.assertNotIn('effort', usage)
 
 
 if __name__ == '__main__':
