@@ -40,6 +40,8 @@ before(async () => {
   const egress = (await fixture('egress.html')).replaceAll('{{TRAP}}', String(trap.port)).replaceAll('{{UDP}}', String(udp.port))
   server = await startServer({
     '/shell': send('text/html', await fixture('js-shell.html')),
+    // The same shell with no Content-Type at all, as package.elm-lang.org serves its pages.
+    '/untyped-shell': async (_req, res) => { res.writeHead(200); res.end(await fixture('js-shell.html')) },
     '/egress': send('text/html', egress),
     '/hello': send('text/plain', 'hello through the proxy'),
     '/slow': (_req, res) => { setTimeout(() => send('text/plain', 'ok')(_req, res), 2000) },
@@ -181,7 +183,10 @@ test('a last main-frame response that cannot replace the document gives no docum
   assert.equal(denialThen('HTTP/1.1 205 Reset Content'), undefined)
   assert.equal(denialThen('HTTP/1.1 200 OK', 'content-type: text/html', 'Content-Disposition: attachment; filename="a.html"'), undefined)
   assert.equal(denialThen('HTTP/1.1 200 OK', 'content-type: application/pdf'), undefined)
-  assert.equal(denialThen('HTTP/1.1 200 OK'), undefined)
+  assert.equal(denialThen('HTTP/1.1 200 OK', 'Content-Type: text/plain'), undefined)
+  // No Content-Type at all: Chromium sniffs the body and renders it, so it becomes the document
+  // (package.elm-lang.org serves its pages this way).
+  assert.deepEqual(denialThen('HTTP/1.1 200 OK', 'Server: nginx', 'Transfer-Encoding: chunked'), { url: 'https://x.test/next', status: 200 })
   assert.deepEqual(denialThen('HTTP/1.1 200 OK', 'Content-Type: application/xhtml+xml; charset=utf-8'), { url: 'https://x.test/next', status: 200 })
   // A redirect the log never saw answered leaves nothing committed after it.
   assert.equal(servedDocument(netLog([
@@ -195,6 +200,16 @@ test('a NetLog that names no answered main-frame request, or does not parse, giv
   assert.equal(servedDocument(netLog([[20, 'URL_REQUEST_START_JOB', start('https://x.test/a.js', 'other')], [20, 'HTTP_TRANSACTION_READ_RESPONSE_HEADERS', headers('HTTP/1.1 200')]])), undefined)
   assert.equal(servedDocument('{"constants": {"logEventTypes": {}}, "events": [{"type"'), undefined)
   assert.equal(servedDocument(''), undefined)
+})
+
+test('a page served with no Content-Type, which Chromium sniffs as HTML, is rendered', { skip: noChrome }, async () => {
+  const env: NodeJS.ProcessEnv = { ...process.env, WEB_ALLOW_HOSTS: `127.0.0.1:${server.port}` }
+  delete env.WEB_CHROME
+  const r = await clip(`${server.origin}/untyped-shell`, { cacheDir: await tmpCache(), env }) as ClipOk
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.equal(r.rendered, true, r.notes.join('|'))
+  assert.ok(r.words! > 50)
+  assert.match(await readFile(r.file, 'utf8'), /written by a script after the page loaded/)
 })
 
 test('a page that needs JavaScript is rendered in headless Chromium', { skip: noChrome }, async () => {

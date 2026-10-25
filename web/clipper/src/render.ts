@@ -154,7 +154,8 @@ type NetLogEvent = { source?: { id?: number }; type?: number; params?: { url?: s
  * redirects and its HTTP status. A page that reloads itself (a challenge
  * passed) is the later navigation, which is what the DOM holds. The log does
  * not say whether a response became the document, so one that could not have
- * (a redirect, 204/205, an attachment, anything but HTML) gives none: the DOM
+ * (a redirect, 204/205, an attachment, an explicit type that is not HTML; a
+ * missing type counts, since Chromium sniffs it) gives none: the DOM
  * is then some earlier document, of no known status.
  */
 export function servedDocument(netLog: string): ServedDocument | undefined {
@@ -183,7 +184,10 @@ function canBeDocument(status: number, fields: string[]): boolean {
   if (status < 200 || (status >= 300 && status < 400) || status === 204 || status === 205) return false
   const field = (name: string) => fields.find(f => f.toLowerCase().startsWith(name + ':'))?.slice(name.length + 1).trim().toLowerCase() ?? ''
   if (/^attachment\b/.test(field('content-disposition'))) return false
-  return /^(text\/html|application\/xhtml\+xml)\b/.test(field('content-type'))
+  // With no Content-Type Chromium sniffs the body and renders it as the document
+  // (package.elm-lang.org serves its pages so); an explicit type must be HTML.
+  const type = field('content-type')
+  return type === '' || /^(text\/html|application\/xhtml\+xml)\b/.test(type)
 }
 
 function killGroup(pid: number | undefined) {
