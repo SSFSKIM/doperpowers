@@ -36,3 +36,4 @@ __pycache__/
 /sminos/tsconfig.json
 /to-human/tsconfig.json
 /devcloud/tsconfig.json
+/web/tsconfig.json

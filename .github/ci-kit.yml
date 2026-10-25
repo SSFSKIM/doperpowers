@@ -113,6 +113,22 @@ gates:
     timeout: 15
     paths: ["to-human/**", ".github/**"]
 
+  # The web plugin: the clipper's tests, the check that the committed bundle is
+  # what its source builds, and the mod's tests. Rendering is off here
+  # (WEB_CHROME=none), so the tests that need Chromium skip with their reason:
+  # whether a runner's Chrome is on PATH and its sandbox starts is the runner
+  # image's, not this change's, and the egress evidence that decides whether
+  # rendering ships is taken on the Playwright headless shell the Macs run.
+  - name: web
+    run: |
+      for i in 1 2 3; do
+        timeout 300 npm i -g @anthropic-ai/claude-code && break
+        [ "$i" = 3 ] && exit 1; sleep 10
+      done
+      WEB_CHROME=none bash web/tests/run.sh
+    timeout: 15
+    paths: ["web/**", ".github/**"]
+
   # Every plugin's mods and their tests typechecked (tsc) against the
   # declarations the installed engine lays as it loads each plugin.
   - name: mods-types
@@ -123,7 +139,7 @@ gates:
       done
       bash tests/mods/typecheck.sh --lay
     timeout: 10
-    paths: [".claude-plugin/**", "hooks/**", "tests/mods/**", "sminos/.claude-plugin/**", "sminos/hooks/**", "sminos/types/**", "sminos/tests/mods/**", "to-human/.claude-plugin/**", "to-human/hooks/**", "to-human/tests/mods/**", "devcloud/.claude-plugin/**", "devcloud/hooks/**", "devcloud/types/**", "devcloud/tests/mods/**", ".github/**"]
+    paths: [".claude-plugin/**", "hooks/**", "tests/mods/**", "sminos/.claude-plugin/**", "sminos/hooks/**", "sminos/types/**", "sminos/tests/mods/**", "to-human/.claude-plugin/**", "to-human/hooks/**", "to-human/tests/mods/**", "devcloud/.claude-plugin/**", "devcloud/hooks/**", "devcloud/types/**", "devcloud/tests/mods/**", "web/.claude-plugin/**", "web/hooks/**", "web/tests/mods/**", ".github/**"]
 
   # The devcloud host in four parts, run side by side (DEVCLOUD_PART in
   # devcloud/tests/run.sh; about 8.5 min serial): the unit tests, and the

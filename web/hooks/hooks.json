@@ -1,0 +1,6 @@
+{
+  "description": "mods (function hooks, under CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1): the fetch tool, mcp__web__fetch, which runs the clipper (bin/clip.mjs) to save a page into the machine's shared cache and replies with the page, its outline, or a small model's answer citing the saved file's lines; and the cache's prune, started as a session starts when the last one is a day old",
+  "modules": [
+    "./mods/register.tsx"
+  ]
+}
