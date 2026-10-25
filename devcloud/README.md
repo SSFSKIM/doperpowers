@@ -213,7 +213,9 @@ mechanism.
 installs what every host has — git and git-lfs, build tools, Python 3 with
 venv, uv, Node LTS, jq, tmux, mosh, gh, the Google Cloud CLI, hcloud,
 Tailscale, the Docker client, zsh, perl and xxd (with python3, jq and gh,
-the tools the guard's notices suggest for reading a file), and Claude Code (native installer, as the
+the tools the guard's notices suggest for reading a file), poppler's
+`pdftotext` and a headless Chromium (the `web` plugin's fetch tool extracts
+PDFs' text and renders pages that need their scripts with them), and Claude Code (native installer, as the
 user) — and creates the user from three build inputs, `DEVCLOUD_USER`,
 `DEVCLOUD_UID` and `DEVCLOUD_HOME`, the Mac's own account, so a session
 moves between a Mac and a host under the same paths, with passwordless sudo
@@ -238,7 +240,7 @@ tool that fails rather than list differences — fails the check.
 A VM builder runs `setup.sh` and snapshots, and its `devcloud-boot.service`
 runs the boot at every start. `setup.sh` starts with `image/packages.sh`,
 the packages and tools, which takes no input; `image/Dockerfile` runs its
-three parts (apt, gcloud, tools) as a layer each, keyed on `packages.sh` alone
+four parts (apt, gcloud, tools, chromium) as a layer each, keyed on `packages.sh` alone
 so that a change anywhere else in `devcloud/` reuses them from a build cache,
 whose layers a warm build pulls side by side. `image/fetch-claude.sh` gets its
 own script-only layer: it downloads the native release for the image's
@@ -401,7 +403,21 @@ of Claude Code's Bash tool), bash login shells through
 `/etc/profile.d/devcloud.sh`, and services as their environment file. Every
 value is written double-quoted with `\`, `"`, `$` and the backtick escaped,
 which shells and systemd read alike. Root's shells skip it: it can put the
-user's directories on `PATH`.
+user's directories on `PATH`. Under the profile's pairs it holds the image's
+own defaults (`steps.IMAGE_ENV`): `WEB_CHROME`, the headless Chromium the
+`web` plugin renders with, so that a session a service starts finds it too;
+`WEB_CHROME=none` in `profile.env` turns rendering off.
+
+**Rendering and the Chromium sandbox.** The fetch tool launches Chromium
+with its sandbox, which needs unprivileged user namespaces. On a VM the
+image's AppArmor profile for the binary grants them (Ubuntu 24.04 grants them
+no unconfined program; `/etc/apparmor.d/devcloud-chrome-headless-shell`, as
+Ubuntu's own for Google Chrome). A container gets them only from its
+runtime: Docker's default seccomp profile refuses them, so in a container
+started as above the tool keeps the plain fetch with a note that rendering
+failed (`No usable sandbox!`); `--security-opt seccomp=unconfined` lets the
+sandbox start (Docker's AppArmor profile stays on), which `--privileged` does
+not (an unconfined process is under Ubuntu's restriction).
 
 **Configuration is received, never sent.** `~/.claude` is a clone whose push
 URL is invalid, so a push fails loudly. The config pull job fetches and resets
