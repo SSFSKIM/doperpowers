@@ -315,11 +315,10 @@ def _folder(path):
     if len(arms) == 2:
         # A gate is judged over the design's runs per task.
         return tasks, runs, expected_runs(tasks, m['set'], harness.REPS[m['set']], arms)
-    # A screening round: its runs per task, and the extra runs it gave some of the set's tasks.
-    expected = expected_runs(tasks, m['set'], m['reps'], arms)
+    # A screening round is judged over the runs it was given (all of a set, or the tasks named with
+    # --ids, some twice): what it can lack is a valid grade, not a run.
     in_set = {t['id'] for t in tasks if t['set'] == m['set']}
-    expected |= {(r['task'], r['arm'], r['rep']) for r in runs if r['task'] in in_set and r['arm'] in arms}
-    return tasks, runs, expected
+    return tasks, runs, {(r['task'], r['arm'], r['rep']) for r in runs if r['task'] in in_set and r['arm'] in arms}
 
 
 def gate_matrix(tasks, expected):

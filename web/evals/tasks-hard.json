@@ -177,7 +177,7 @@
    },
    {
     "id": "f3",
-    "claim": "Patches 9.0.2153 and 9.0.2180 (both about OpenVMS).",
+    "claim": "Patches 9.0.2153 and 9.0.2180.",
     "evidence": "source line 41364: \"Patch 9.0.2153\", line 41365: \"Problem:    no support to build on OpenVMS\" (byte offset ~1.605 MB, past the first 1 MiB); line 41482: \"Patch 9.0.2180\", lines 41483-41484: \"Problem:    POSIX function name in exarg struct causes issues\" / \"on OpenVMS\" (byte offset ~1.609 MB). Neither is in the per-series patch index https://ftp.nluug.nl/pub/vim/patches/9.0/README, which stops at 9.0.1678."
    },
    {
@@ -208,7 +208,7 @@
    },
    {
     "id": "f3",
-    "claim": "Not later than March 30, 2026 (or the earliest practicable date).",
+    "claim": "Not later than March 30, 2026.",
     "evidence": "source line 20528: \"SEC. 10825. PLANETARY DEFENSE COORDINATION OFFICE.\"; lines 20586-20588: \"telescope mission, known as the ``Near-Earth Object Surveyor'',\" / \"on a schedule to achieve a launch-readiness date not later than\" / \"March 30, 2026, or the earliest practicable date, for the\" (byte offset ~1.20 MB, past the first 1 MiB)"
    },
    {
@@ -229,7 +229,7 @@
   "facts": [
    {
     "id": "f1",
-    "claim": "(a) is recorded under 19990326 and was found by John A. Martin (fixed by Lamont Jones).",
+    "claim": "(a) is recorded under 19990326 and was found by John A. Martin.",
     "evidence": "source line 2453: \"19990326\"; lines 2455-2457: \"Compatibility: Postfix now puts two spaces after the sender\" / \"in a \\\"From sender date...\\\" header. Found by John A. Martin,\" / \"fixed by Lamont Jones, Hewlett-Packard.\" (byte offset ~84 KB)"
    },
    {
@@ -410,7 +410,7 @@
    },
    {
     "id": "f4",
-    "claim": "The change was CR 2254 (category F, approved at TSG RAN #90 in RP-202775, December 2020), producing version 16.3.0.",
+    "claim": "The change was CR 2254, in version 16.3.0.",
     "evidence": "pdftotext page 1300 (printed 1299), Annex E Change history: \"12/2020 RP-90 RP-202775 1775 2 F NR CA additional spectrum emission requirements 16.3.0\" … \"RP-90 RP-202775 2254 - F Correction on T321 for autonomous gap based CGI in FR2 16.3.0\""
    }
   ]
@@ -666,12 +666,12 @@
   "facts": [
    {
     "id": "f1",
-    "claim": "30% DRAM utilization (the average graphics application with 30% DRAM utilization).",
+    "claim": "30% DRAM utilization.",
     "evidence": "Figure 7 on PDF page 13 (printed page 13) is a single raster image (pdfimages: 1542x667 JPEG) whose note reads \"Energy Efficiency reflects the average graphics application with 30% DRAM utilization\"; its right chart is labeled \"MaxQ Energy (pJ/bit)\" and \"2X Efficiency\". pdftotext page 13 gives only the caption \"Figure 7. GDDR7 compared to prior generation GDDR6/6x\". Check: pdftotext -layout of the whole 57-page whitepaper has no \"DRAM utilization\"; its only \"30%\" is \"uses 30% less VRAM\" in the DLSS section."
    },
    {
     "id": "f2",
-    "claim": "2020 and 2024 (the bars read GDDR6, GDDR6x 2020, GDDR6x 2024, GDDR7).",
+    "claim": "The two GDDR6X bars are labeled 2020 and 2024.",
     "evidence": "Same figure, middle chart \"2X Data Rate of G6\" (y axis \"Data Rate (GB/s)\"): x-axis labels \"GDDR6\", \"GDDR6x 2020\", \"GDDR6x 2024\", \"GDDR7\". Check: the text's GDDR6X passages (pdftotext lines 394-396, 415) give no years for GDDR6X bars."
    }
   ]
@@ -764,7 +764,7 @@
   "facts": [
    {
     "id": "f1",
-    "claim": "The cost of reviewing the rulemaking is $129.28 per hour (BLS wage for medical and health service managers, including overhead and fringe benefits).",
+    "claim": "The cost of reviewing the rulemaking is $129.28 per hour.",
     "evidence": "source line 26648: \"we estimated that the cost of reviewing this rulemaking is $129.28, including overhead and fringe benefits\"; source line 26649: \"For each facility that reviews the rule, the estimated cost is $1,034.24 (8.0 hours &times; $129.28).\""
    },
    {

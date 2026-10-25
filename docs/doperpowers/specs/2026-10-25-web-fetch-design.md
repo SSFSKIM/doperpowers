@@ -903,6 +903,13 @@ fields more (I4): `search` and `mechanism`.
 - **Screening.** Configuration A alone ran every candidate once
   (`run.py --arms A`), then a second time on the ten passes whose success
   looked most fragile. B was not run, so the selection cannot favour it.
+- **Readers.** Both configurations load `web/evals/deny-readers/`, whose
+  mod denies a fetch through a third-party reader or proxy, for the reason
+  Bash is left out of both. The screening had found the runner reading
+  through them what WebFetch could not.
+- **Grader.** `sol` at `xhigh`, as the runner (the human's "all
+  sol-xhigh"). The first suite was graded by opus, and `grade.py --grader
+  opus` repeats that on any folder.
 - **Reading.** Criterion 1 also says whether B is better with confidence
   (the interval's lower bound above 0); criterion 4 applies only to a set
   with gist tasks.
@@ -1475,6 +1482,12 @@ type Run = {
   (ignored).
 - Observation: WebFetch's 1 MB cut applies to HTML only. Text, XML and JSON
   are windowed whole, so the cut is escaped by any non-HTML edition.
+- Observation: the engine runs no settings hook for a tool a mod registered.
+  A catch-all `PreToolUse` and `PostToolUse` command hook, given through
+  `--settings`, logged every `ToolSearch` and `WebFetch` call in
+  configuration A and nothing for `mcp__web__fetch` in B. A mod's
+  `tool.call` handler sees both kinds of tool.
+  Evidence: probes on `claude -p` at 2.1.310, 2026-10-25 (board #132).
 
 ## Decision Log
 
@@ -2092,6 +2105,66 @@ type Run = {
   a failed task re-confirms a cap; a second run of a fragile pass is where
   a new failure could show.
   Date/Author: 2026-10-25, hard-set session (board #132).
+- Decision: a fetch through a third-party reader or proxy is denied in both
+  configurations.
+  - The hosts: `r.jina.ai` and `s.jina.ai`, `wsrv.nl` and
+    `images.weserv.nl`, Google's document viewer (`docs.google.com/viewer`,
+    `/gview`, `/viewerng`), `translate.goog` and `translate.google.com`,
+    `archive.org` with its subdomains, and archive.today's mirrors. They
+    live in `web/evals/deny_readers.py`.
+  - Both configurations load `web/evals/deny-readers/`, an eval-only
+    plugin, ahead of `web`. Its mod's `tool.call` handler asks the script
+    about every `WebFetch` and `mcp__web__fetch` call and returns the
+    refusal as the call's deny. The refusal never counts as a tool error.
+  - The rule names generic readers, which render any URL. A mirror of one
+    kind of document (arXiv's renderers), another edition of the same
+    document, and a search engine fetched through the tool stay allowed:
+    either configuration can use them.
+
+  Rationale: the reason Bash is left out of both configurations. Each
+  configuration is to read the web through its own fetch tool. Phase 1
+  found 10 of 44 A runs reading through a reader, 8 of them correct, so
+  the comparison measured those services as much as WebFetch.
+
+  A settings `PreToolUse` command hook was the first means. It fired for
+  `WebFetch` but for no call of the mod's tool, Pre or Post (probed with a
+  catch-all hook in configuration B), so it would have bound A alone.
+
+  The human approved the rule on 2026-10-25. Re-screened under it, A
+  failed 2 of the 5 tasks it had passed through a reader (screening
+  record).
+  Date/Author: 2026-10-25, hard-set session (board #132); approved by the human.
+- Decision: the grader is `sol` at `xhigh` from the hard set's final round
+  on, in place of opus.
+  - The human's answer to the Phase 1 report was "all sol-xhigh". The
+    dispatcher read that as every model the eval itself calls, the runner
+    and the grader.
+  - The models inside the tools under test stay: WebFetch's Haiku, the web
+    tool's Haiku summary, and the search tool's haiku are part of what is
+    measured.
+  - `grade.py --grader opus` re-grades any folder, since a run file keeps
+    its final text. The manifest records the grader.
+  - Evidence: re-grading copies of the 43 Phase 1 runs still in the set,
+    sol agreed with opus on 42 verdicts, at about $0.006 a grade against
+    $0.009. The one disagreement was long-pdf-h3's f4, which asked for the
+    change request's category and meeting where the question asked only
+    its number and version. That fact and six others like it were trimmed
+    to what their questions ask; their evidence is unchanged.
+
+  Rationale: the design had kept the grader in another model family so
+  that no model grades its own answers. The masking still hides which
+  configuration answered. Any preference sol has for its own wording
+  therefore falls on A and B alike, and leaves d alone, though it could
+  move the absolute shares. The opus re-grade is there if the human meant
+  only the runner.
+  Date/Author: 2026-10-25, hard-set session (board #132), on the human's instruction.
+- Decision: verbatim-h4 (PKWARE's APPNOTE) leaves the hard set.
+  Rationale: A's one failure there was the runner declining to quote a
+  specification marked "All Rights Reserved". Scoring B's verbatim copy of
+  it as better would reward bypassing a copyright safeguard rather than
+  reading more faithfully. The set is now 33 tasks, 9 dev and 24 final.
+  The final set is unchanged, since verbatim-h4 was a dev task.
+  Date/Author: 2026-10-25, hard-set session (board #132); approved by the human.
 
 ## Outcomes & Retrospective
 

@@ -153,7 +153,7 @@ def _grade_folder(a, tasks, work):
         path = os.path.join(a.runs, name)
         with open(path) as f:
             r = json.load(f)
-        if 'verdict' in r and not a.regrade:
+        if ('verdict' in r and not a.regrade) or r['task'] not in tasks:  # a task since dropped from its file
             continue
         g, usage = grade(tasks[r['task']], r.get('finalText', ''), work, a.grader, a.grader_effort)
         r['grade'] = usage
