@@ -55,7 +55,9 @@ session on the machine.
   clean: 77 tests; acceptance 1–5 held live on this Mac. One review
   finding deferred as minor (image notation inside a code span that
   crosses a line break is taken for an image).
-- [ ] M2 — the tool: the `web` plugin and its mod.
+- [x] (2026-10-25) M2 — the tool: the `web` plugin and its mod (`61db8306`,
+  `9e010af2`, fix `0c83c23f`), reviewed clean: 48 mod tests, the `web`
+  gate green in CI; acceptance 6–8 held live in `claude -p` sessions.
 - [ ] M3 — the evals, and acceptance 1–9.
 - [ ] Branch review (doperpowers:review-code, high), merge.
 - [ ] M4 — the switch-over, after the merge (acceptance 10).
