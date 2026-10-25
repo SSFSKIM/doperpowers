@@ -131,7 +131,7 @@ export function registerFetch(on: On) {
     } catch {
       return { deny: `fetch failed: ${url}: the clipper's result could not be read: ${ran.stdout.slice(0, 300)}` }
     }
-    if (!result.ok) return { deny: failureReply(result) }
+    if (!result.ok) return { deny: failureReply(result, await $.clock.now()) }
 
     const textFile = textFileOf(result)
     let summary: Summary | undefined

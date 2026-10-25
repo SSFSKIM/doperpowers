@@ -8,6 +8,7 @@ import { clip } from '../src/clip.ts'
 import type { ClipOk } from '../src/clip.ts'
 import { findChrome, servedDocument } from '../src/render.ts'
 import { startEgressProxy } from '../src/proxy.ts'
+import { boundaryOf } from '../src/netguard.ts'
 import { startServer, startTrap, startUdpTrap, tmpCache, send, fixture, noChrome, pngBytes } from './helpers.ts'
 
 const WALLED_ARTICLE = '<html><head><title>Behind the wall</title></head><body><article><h1>Behind the wall</h1><p>'
@@ -111,7 +112,7 @@ test('chromium on PATH is found after the Playwright cache, with --headless=new'
 })
 
 test('the egress proxy forwards to allowed hosts and refuses non-public ones, for plain requests and CONNECT', async () => {
-  const proxy = await startEgressProxy(new Set([`127.0.0.1:${server.port}`]))
+  const proxy = await startEgressProxy(boundaryOf({ WEB_ALLOW_HOSTS: `127.0.0.1:${server.port}` }))
   try {
     const plain = (target: string) => new Promise<{ status: number; body: string }>((resolve, reject) => {
       const req = request({ host: '127.0.0.1', port: proxy.port, path: target, headers: { host: new URL(target).host } }, res => {
@@ -348,7 +349,7 @@ test('a render whose navigation fails is not taken for the page', { skip: noChro
 test('a CONNECT tunnel falls back from an unreachable first address to the next checked one', async () => {
   // Only 127.0.0.1 listens: the first address, ::1 on this port, refuses the connection.
   const resolve = async () => [{ address: '::1', family: 6 }, { address: '127.0.0.1', family: 4 }]
-  const proxy = await startEgressProxy(new Set([`fallback.test:${server.port}`]), { resolve })
+  const proxy = await startEgressProxy(boundaryOf({ WEB_ALLOW_HOSTS: `fallback.test:${server.port}` }), { resolve })
   try {
     const reply = await new Promise<string>((done, fail) => {
       const sock = connect(proxy.port, '127.0.0.1', () => sock.write(`CONNECT fallback.test:${server.port} HTTP/1.1\r\nHost: fallback.test\r\n\r\n`))
@@ -375,7 +376,7 @@ test('a CONNECT tunnel falls back from an unreachable first address to the next 
 test('a CONNECT tunnel connects to no address the guard did not check', async () => {
   const resolve = async () => [{ address: '::1', family: 6 }, { address: '127.0.0.1', family: 4 }]
   // Not allowed, so the check refuses both loopback addresses: nothing is connected to.
-  const proxy = await startEgressProxy(new Set(), { resolve })
+  const proxy = await startEgressProxy(boundaryOf({}), { resolve })
   try {
     const line = await new Promise<string>((done, fail) => {
       const sock = connect(proxy.port, '127.0.0.1', () => sock.write(`CONNECT fallback.test:${trap.port} HTTP/1.1\r\n\r\n`))

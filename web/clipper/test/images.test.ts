@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { findImageLinks, downloadImages } from '../src/images.ts'
 import { Deadline } from '../src/deadline.ts'
+import { boundaryOf } from '../src/netguard.ts'
 import { startServer, send, pngBytes } from './helpers.ts'
 
 let server: Awaited<ReturnType<typeof startServer>>
@@ -44,7 +45,7 @@ test('reference-style images are found through their definitions; code, escapes 
 
 test('images are rewritten where they render, and code, escapes, definitions and links are left as written', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'clip-images-'))
-  const { markdown, images } = await downloadImages(page, `${server.origin}/page`, dir, new Deadline(10_000), new Set([`127.0.0.1:${server.port}`]))
+  const { markdown, images } = await downloadImages(page, `${server.origin}/page`, dir, new Deadline(10_000), boundaryOf({ WEB_ALLOW_HOSTS: `127.0.0.1:${server.port}` }))
   const lines = markdown.split('\n')
   assert.equal(lines[0], page.split('\n')[0])
   assert.equal(lines[1], '![ref one](assets/01.png)')
@@ -70,7 +71,7 @@ test("an image host on another origin sees neither the page's query nor its frag
   const pageUrl = `${site.origin}/signed/page?token=s3cret&sig=abc#section-2`
   const dir = await mkdtemp(join(tmpdir(), 'clip-images-'))
   const md = `![cross](${host.origin}/x.png)\n\n![same](/own.png)\n`
-  const { images } = await downloadImages(md, pageUrl, dir, new Deadline(10_000), new Set([`127.0.0.1:${site.port}`, `127.0.0.1:${host.port}`]))
+  const { images } = await downloadImages(md, pageUrl, dir, new Deadline(10_000), boundaryOf({ WEB_ALLOW_HOSTS: `127.0.0.1:${site.port},127.0.0.1:${host.port}` }))
   assert.deepEqual(images.map(i => i.file), ['assets/01.png', 'assets/02.png'])
   assert.equal(referers.cross, `${site.origin}/`)
   assert.equal(referers.same, `${site.origin}/signed/page?token=s3cret&sig=abc`)

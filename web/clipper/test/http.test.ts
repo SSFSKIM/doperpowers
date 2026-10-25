@@ -1,7 +1,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import http from 'node:http'
-import { CONNECT_ATTEMPT_MS, networkErrorMessage, referrerFor, request } from '../src/http.ts'
+import { CONNECT_ATTEMPT_MS, HttpError, networkErrorMessage, referrerFor, request } from '../src/http.ts'
+import { boundaryOf } from '../src/netguard.ts'
 import { startServer, send } from './helpers.ts'
 
 function connectError(code: string, address: string): Error {
@@ -20,6 +21,14 @@ test('an ordinary error keeps its message, and an error without one gives its co
   assert.equal(networkErrorMessage('boom'), 'boom')
 })
 
+test('an OpenSSL error gives its reason, not its record dump', () => {
+  // httpforever.com over https, 2026-10-25.
+  const e = new Error('write EPROTO 80A10DFA01000000:error:0A000410:SSL routines:ssl3_read_bytes:ssl/tls alert handshake failure:../deps/openssl/openssl/ssl/record/rec_layer_s3.c:916:SSL alert number 40\n')
+  assert.equal(networkErrorMessage(e), 'TLS failed: ssl/tls alert handshake failure')
+  assert.equal(networkErrorMessage(new Error('80B1:error:0A00010B:SSL routines::wrong version number:../deps/x.c:1:')), 'TLS failed: wrong version number')
+  assert.equal(networkErrorMessage(new Error('certificate has expired')), 'certificate has expired')
+})
+
 test('each connection attempt may take far longer than Node’s 250 ms default before the next address is tried', async t => {
   // archive.apache.org from Seoul: a 250 ms attempt dropped the IPv4 connection while it was still
   // being made, and the IPv6 address was unreachable, so 4 of 12 image downloads failed (2026-10-25).
@@ -29,7 +38,7 @@ test('each connection attempt may take far longer than Node’s 250 ms default b
   const seen: unknown[] = []
   const real = http.request
   t.mock.method(http, 'request', (...args: Parameters<typeof http.request>) => { seen.push(args[0]); return real(...args) })
-  const res = await request(new URL(`${server.origin}/`), { headers: {}, timeoutMs: 5000, maxBytes: 1024, allow: new Set([`127.0.0.1:${server.port}`]) })
+  const res = await request(new URL(`${server.origin}/`), { headers: {}, timeoutMs: 5000, maxBytes: 1024, boundary: boundaryOf({ WEB_ALLOW_HOSTS: `127.0.0.1:${server.port}` }) })
   assert.equal(res.status, 200)
   assert.equal(seen.length, 1)
   assert.equal((seen[0] as { autoSelectFamilyAttemptTimeout?: number }).autoSelectFamilyAttemptTimeout, CONNECT_ATTEMPT_MS)
@@ -59,15 +68,26 @@ test('a referrer is worked out again at every redirect hop, so a hop to another 
     '/hop': (req, res) => { seen.hop = req.headers.referer; res.writeHead(302, { location: `${other.origin}/img/y.png` }); res.end() },
   })
   t.after(() => site.close())
-  const allow = new Set([`127.0.0.1:${site.port}`, `127.0.0.1:${other.port}`])
+  const boundary = boundaryOf({ WEB_ALLOW_HOSTS: `127.0.0.1:${site.port},127.0.0.1:${other.port}` })
   const page = `${site.origin}/page?token=secret#frag`
-  await request(new URL(`${site.origin}/img/same.png`), { referrer: page, timeoutMs: 5000, maxBytes: 1e6, allow })
-  await request(new URL(`${site.origin}/hop`), { referrer: page, timeoutMs: 5000, maxBytes: 1e6, allow })
+  await request(new URL(`${site.origin}/img/same.png`), { referrer: page, timeoutMs: 5000, maxBytes: 1e6, boundary })
+  await request(new URL(`${site.origin}/hop`), { referrer: page, timeoutMs: 5000, maxBytes: 1e6, boundary })
   assert.equal(seen.same, `${site.origin}/page?token=secret`)
   assert.equal(seen.hop, `${site.origin}/page?token=secret`)
   assert.equal(seen.other, `${site.origin}/`)
   // A Referer passed as a header is held to the same policy.
   delete seen.other
-  await request(new URL(`${other.origin}/img/y.png`), { headers: { Referer: page }, timeoutMs: 5000, maxBytes: 1e6, allow })
+  await request(new URL(`${other.origin}/img/y.png`), { headers: { Referer: page }, timeoutMs: 5000, maxBytes: 1e6, boundary })
   assert.equal(seen.other, `${site.origin}/`)
+})
+
+test('https to a server that does not speak TLS is an HttpError, the failure https first falls back from', async t => {
+  const server = await startServer({ '/': send('text/plain', 'plain') })
+  t.after(() => server.close())
+  const boundary = boundaryOf({ WEB_ALLOW_HOSTS: `127.0.0.1:${server.port}` })
+  await assert.rejects(request(new URL(`https://127.0.0.1:${server.port}/`), { timeoutMs: 5000, maxBytes: 1024, boundary }), (e: unknown) => {
+    assert.ok(e instanceof HttpError, String(e))
+    assert.match(e.message, /^network error: TLS failed: /)
+    return true
+  })
 })

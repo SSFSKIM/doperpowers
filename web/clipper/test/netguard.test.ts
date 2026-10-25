@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createServer, get } from 'node:http'
-import { isPublicAddress, resolveChecked, allowedHosts, pinnedLookup, RefusedError } from '../src/netguard.ts'
+import { isPublicAddress, resolveChecked, allowedHosts, boundaryOf, deniedHosts, isDenied, pinnedLookup, RefusedError } from '../src/netguard.ts'
 
 test('IPv4 addresses outside the public internet are refused', () => {
   for (const ip of [
@@ -31,7 +31,7 @@ test('public IPv6 addresses pass', () => {
 
 test('a host resolving to a public and a private address is refused, naming the private one', async () => {
   const resolve = async () => [{ address: '93.184.216.34', family: 4 }, { address: '10.0.0.7', family: 4 }]
-  await assert.rejects(resolveChecked('mixed.example', 443, { resolve, allow: new Set() }), (e: unknown) => {
+  await assert.rejects(resolveChecked('mixed.example', 443, { resolve, boundary: boundaryOf({}) }), (e: unknown) => {
     assert.ok(e instanceof RefusedError)
     assert.equal(e.message, 'refused: mixed.example resolves to a non-public address (10.0.0.7); for a local server use curl through Bash')
     return true
@@ -40,8 +40,8 @@ test('a host resolving to a public and a private address is refused, naming the 
 
 test('an IP literal is checked without a lookup', async () => {
   const resolve = async () => { throw new Error('no lookup expected') }
-  await assert.rejects(resolveChecked('169.254.169.254', 80, { resolve, allow: new Set() }), /^RefusedError: refused: 169\.254\.169\.254/)
-  assert.deepEqual(await resolveChecked('8.8.8.8', 80, { resolve, allow: new Set() }), [{ address: '8.8.8.8', family: 4 }])
+  await assert.rejects(resolveChecked('169.254.169.254', 80, { resolve, boundary: boundaryOf({}) }), /^RefusedError: refused: 169\.254\.169\.254/)
+  assert.deepEqual(await resolveChecked('8.8.8.8', 80, { resolve, boundary: boundaryOf({}) }), [{ address: '8.8.8.8', family: 4 }])
 })
 
 test('a connection made with the pinned lookup goes to the checked address and never asks DNS', async () => {
@@ -66,7 +66,28 @@ test('a connection made with the pinned lookup goes to the checked address and n
 test('WEB_ALLOW_HOSTS exempts exactly the listed host:port pairs', async () => {
   const allow = allowedHosts({ WEB_ALLOW_HOSTS: '127.0.0.1:4100, localhost:4101' })
   assert.deepEqual([...allow], ['127.0.0.1:4100', 'localhost:4101'])
-  assert.deepEqual(await resolveChecked('127.0.0.1', 4100, { allow }), [{ address: '127.0.0.1', family: 4 }])
-  await assert.rejects(resolveChecked('127.0.0.1', 4102, { allow }), RefusedError)
+  assert.deepEqual(await resolveChecked('127.0.0.1', 4100, { boundary: { allow, deny: [] } }), [{ address: '127.0.0.1', family: 4 }])
+  await assert.rejects(resolveChecked('127.0.0.1', 4102, { boundary: { allow, deny: [] } }), RefusedError)
   assert.equal(allowedHosts({}).size, 0)
+})
+
+test('WEB_DENY_HOSTS names hosts exactly, and *. names every host under one but not the host itself', () => {
+  const deny = deniedHosts({ WEB_DENY_HOSTS: ' Example.COM , *.tracker.test., [::1], 예시.kr, , *. ' })
+  assert.deepEqual(deny, ['example.com', '*.tracker.test', '::1', 'xn--vv4b11d.kr'])
+  for (const host of ['example.com', 'EXAMPLE.com.', 'a.tracker.test', 'a.b.tracker.test', '[::1]', 'xn--vv4b11d.kr'])
+    assert.equal(isDenied(host, deny), true, host)
+  for (const host of ['www.example.com', 'notexample.com', 'tracker.test', 'eviltracker.test', 'example.org'])
+    assert.equal(isDenied(host, deny), false, host)
+  assert.deepEqual(deniedHosts({}), [])
+})
+
+test('a denied host is refused before any lookup, even one WEB_ALLOW_HOSTS exempts', async () => {
+  const resolve = async () => { throw new Error('no lookup expected') }
+  const boundary = boundaryOf({ WEB_ALLOW_HOSTS: 'cdn.blocked.test:443', WEB_DENY_HOSTS: '*.blocked.test' })
+  await assert.rejects(resolveChecked('cdn.blocked.test', 443, { boundary, resolve }), (e: unknown) => {
+    assert.ok(e instanceof RefusedError)
+    assert.equal(e.message, 'refused: cdn.blocked.test is on the deny list (WEB_DENY_HOSTS)')
+    assert.equal(e.brief, 'on the deny list')
+    return true
+  })
 })

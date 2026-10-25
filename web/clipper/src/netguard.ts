@@ -1,18 +1,34 @@
 // The network boundary: every request the tool makes, and every request a
-// page makes it make, goes to a public internet address only. A host is
+// page makes it make, goes to a public internet address only, and never to a
+// host on the owner's deny list. A host is checked against the list, then
 // resolved, every address checked, and the connection pinned to the checked
 // addresses, so a DNS answer that changes in between cannot slip through.
 import { lookup as dnsLookup } from 'node:dns/promises'
 import { isIP } from 'node:net'
 import type { LookupFunction } from 'node:net'
+import { domainToASCII } from 'node:url'
 
 export type Address = { address: string; family: number }
 
 export class RefusedError extends Error {
-  constructor(message: string) {
+  /** The refusal in a few words, for an image's error. */
+  readonly brief: string
+
+  constructor(message: string, brief = 'non-public address') {
     super(message)
     this.name = 'RefusedError'
+    this.brief = brief
   }
+}
+
+/**
+ * The boundary's host rules: `allow`, the test seam's host:port pairs exempted
+ * from the address check, and `deny`, the hosts never reached, allowed or not.
+ */
+export type Boundary = { allow: Set<string>; deny: string[] }
+
+export function boundaryOf(env: NodeJS.ProcessEnv = process.env): Boundary {
+  return { allow: allowedHosts(env), deny: deniedHosts(env) }
 }
 
 /** The test seam: `WEB_ALLOW_HOSTS`, a comma-separated list of host:port exempted from the check. */
@@ -20,15 +36,45 @@ export function allowedHosts(env: NodeJS.ProcessEnv = process.env): Set<string> 
   return new Set((env.WEB_ALLOW_HOSTS ?? '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean))
 }
 
+/**
+ * The owner's deny list: `WEB_DENY_HOSTS`, comma-separated hosts. `example.com`
+ * is that host alone; `*.example.com` is every host under it, not example.com.
+ */
+export function deniedHosts(env: NodeJS.ProcessEnv = process.env): string[] {
+  return (env.WEB_DENY_HOSTS ?? '').split(',').map(rule => {
+    const r = rule.trim()
+    return r.startsWith('*.') ? '*.' + normalizeHost(r.slice(2)) : normalizeHost(r)
+  }).filter(r => r !== '' && r !== '*.')
+}
+
+/** Lowercased, unbracketed, without a trailing dot, in ASCII: the form a URL's hostname has. */
+function normalizeHost(host: string): string {
+  const h = host.replace(/^\[|\]$/g, '').replace(/\.+$/, '').toLowerCase()
+  return /[^\x00-\x7f]/.test(h) ? domainToASCII(h) : h
+}
+
+export function isDenied(hostname: string, deny: string[]): boolean {
+  if (deny.length === 0) return false
+  const host = normalizeHost(hostname)
+  return deny.some(rule => (rule.startsWith('*.') ? host.endsWith(rule.slice(1)) : host === rule))
+}
+
+/** The refusal of a host on the deny list. */
+export function deniedError(hostname: string): RefusedError {
+  return new RefusedError(`refused: ${normalizeHost(hostname)} is on the deny list (WEB_DENY_HOSTS)`, 'on the deny list')
+}
+
 export type ResolveOptions = {
-  allow?: Set<string>
+  /** The host rules; `boundaryOf(process.env)` when absent. */
+  boundary?: Boundary
   resolve?: (host: string) => Promise<Address[]>
 }
 
 /** Resolves a host to the addresses a connection may use, or throws RefusedError. */
 export async function resolveChecked(hostname: string, port: number, opts: ResolveOptions = {}): Promise<Address[]> {
   const host = hostname.replace(/^\[|\]$/g, '').toLowerCase()
-  const allow = opts.allow ?? allowedHosts()
+  const { allow, deny } = opts.boundary ?? boundaryOf()
+  if (isDenied(host, deny)) throw deniedError(host)
   const literal = isIP(host)
   const addresses: Address[] = literal
     ? [{ address: host, family: literal }]

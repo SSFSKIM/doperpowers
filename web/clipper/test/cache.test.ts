@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtemp, mkdir, writeFile, readdir, readFile, utimes, stat } from 'node:fs/promises'
 import { tmpdir, homedir } from 'node:os'
 import { join } from 'node:path'
-import { cacheRoot, generationName, currentGeneration, readFresh, beginBuild, publish, prune } from '../src/cache.ts'
+import { cacheRoot, generationName, currentGeneration, readFresh, beginBuild, publish, prune, readFailure, rememberFailure, FAILURE_MEMORY_MS } from '../src/cache.ts'
 
 const tmp = () => mkdtemp(join(tmpdir(), 'clip-cache-'))
 
@@ -119,6 +119,34 @@ test('prune deletes old generations, stale .tmp- folders and empty entries, keep
   await assert.rejects(stat(join(root, 'a.example')))
   assert.ok((await stat(join(root, '.pruned'))).isFile())
   assert.ok((await stat(join(root, 'usage.jsonl'))).isFile())
+})
+
+test('a remembered failure answers under FAILURE_MEMORY_MS, is never taken for a generation, and a newer one replaces it', async () => {
+  const entry = join(await tmp(), 'h', 'e')
+  assert.equal(await readFailure(entry, FAILURE_MEMORY_MS), null)
+  const now = Date.now()
+  await rememberFailure(entry, { error: 'HTTP 404 Not Found', failedAt: new Date(now - 1000).toISOString() })
+  assert.equal((await readFailure<{ error: string; failedAt: string }>(entry, FAILURE_MEMORY_MS, now))?.error, 'HTTP 404 Not Found')
+  assert.equal(await readFailure(entry, FAILURE_MEMORY_MS, now + FAILURE_MEMORY_MS), null)
+  assert.equal(currentGeneration(entry), null)
+  await rememberFailure(entry, { error: 'HTTP 503 Service Unavailable', failedAt: new Date(now).toISOString() })
+  assert.equal((await readFailure<{ error: string; failedAt: string }>(entry, FAILURE_MEMORY_MS, now))?.error, 'HTTP 503 Service Unavailable')
+  // A file half written reads as no failure.
+  await writeFile(join(entry, '.failed.json'), '{"error":')
+  assert.equal(await readFailure(entry, FAILURE_MEMORY_MS, now), null)
+})
+
+test('prune deletes a failure no longer remembered, and the entry it leaves empty; a live one stays', async () => {
+  const root = await tmp()
+  const stale = join(root, 'a.example', 'gone-11111111')
+  const live = join(root, 'b.example', 'down-22222222')
+  await rememberFailure(stale, { failedAt: new Date(Date.now() - FAILURE_MEMORY_MS - 60e3).toISOString() })
+  const before = new Date(Date.now() - FAILURE_MEMORY_MS - 60e3)
+  await utimes(join(stale, '.failed.json'), before, before)
+  await rememberFailure(live, { failedAt: new Date().toISOString() })
+  assert.deepEqual(await prune(root, { olderThanDays: 7 }), { removed: 0 })
+  await assert.rejects(stat(join(root, 'a.example')))
+  assert.ok((await stat(join(live, '.failed.json'))).isFile())
 })
 
 test('prune of a missing root removes nothing', async () => {

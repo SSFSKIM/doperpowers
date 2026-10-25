@@ -1,7 +1,8 @@
 // The cache: one entry folder per requested URL, one generation folder per
 // fetch. A generation is built in a .tmp- folder and published by renaming it
 // to a name that never existed, so readers see only complete generations and a
-// refresh never replaces one another agent may be reading.
+// refresh never replaces one another agent may be reading. A failed fetch is
+// never a generation: it is remembered beside them for a few minutes.
 import { randomBytes } from 'node:crypto'
 import { readdirSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, readdir, rename, rm, rmdir, stat, writeFile } from 'node:fs/promises'
@@ -9,8 +10,11 @@ import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 export const REUSE_MAX_AGE_MS = 24 * 3600e3
+/** How long a failed fetch answers for its URL instead of a new request. */
+export const FAILURE_MEMORY_MS = 5 * 60e3
 const TMP_PREFIX = '.tmp-'
 const TMP_STALE_MS = 3600e3
+const FAILED_FILE = '.failed.json'
 
 /** Absolute, whatever form it is given in: every path in a result names it (I1, I2). */
 export function cacheRoot(option: string | undefined, env: NodeJS.ProcessEnv = process.env): string {
@@ -47,6 +51,29 @@ export async function readFresh<T extends { fetchedAt: string }>(entry: string, 
   }
 }
 
+/** The entry's last failure, when it was recorded under `maxAgeMs` ago. */
+export async function readFailure<T extends { failedAt: string }>(entry: string, maxAgeMs: number, now = Date.now()): Promise<T | null> {
+  try {
+    const failure = JSON.parse(await readFile(join(entry, FAILED_FILE), 'utf8')) as T
+    const age = now - Date.parse(failure.failedAt)
+    return age >= 0 && age < maxAgeMs ? failure : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Records a failure for `readFailure`, replacing the one before. Best effort:
+ * a cache that cannot be written leaves the failure unremembered, and a read
+ * that meets a write half done finds no failure.
+ */
+export async function rememberFailure<T extends { failedAt: string }>(entry: string, failure: T): Promise<void> {
+  try {
+    await mkdir(entry, { recursive: true })
+    await writeFile(join(entry, FAILED_FILE), JSON.stringify(failure) + '\n')
+  } catch {}
+}
+
 export async function beginBuild(entry: string): Promise<string> {
   await mkdir(entry, { recursive: true })
   return mkdtemp(join(entry, TMP_PREFIX))
@@ -75,7 +102,7 @@ export async function publish(tmp: string, entry: string, writeMeta: (finalDir: 
   }
 }
 
-/** Deletes generations fetched over `olderThanDays` ago, stale .tmp- folders, and folders left empty. */
+/** Deletes generations fetched over `olderThanDays` ago, stale .tmp- folders, failures no longer remembered, and folders left empty. */
 export async function prune(root: string, opts: { olderThanDays: number; now?: number }): Promise<{ removed: number }> {
   const now = opts.now ?? Date.now()
   const maxAge = opts.olderThanDays * 86400e3
@@ -91,6 +118,9 @@ export async function prune(root: string, opts: { olderThanDays: number; now?: n
           removed++
         }
       }
+      const failed = join(entryDir, FAILED_FILE)
+      const failedStat = await stat(failed).catch(() => undefined)
+      if (failedStat && now - failedStat.mtimeMs > FAILURE_MEMORY_MS) await rm(failed, { force: true })
       await rmdir(entryDir).catch(() => {})
     }
     await rmdir(hostDir).catch(() => {})
