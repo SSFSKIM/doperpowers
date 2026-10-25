@@ -81,6 +81,66 @@ test('a referrer is worked out again at every redirect hop, so a hop to another 
   assert.equal(seen.other, `${site.origin}/`)
 })
 
+/** A server whose `/` sends its headers, then `chunks` pieces of `size` bytes `everyMs` apart (forever when Infinity), then ends. */
+async function trickle(t: { after: (fn: () => Promise<void>) => void }, o: { chunks: number; size: number; everyMs: number; length?: number }) {
+  const timers: NodeJS.Timeout[] = []
+  const server = await startServer({
+    '/': (_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/octet-stream', ...(o.length ? { 'content-length': String(o.length) } : {}) })
+      let sent = 0
+      const next = () => {
+        if (sent >= o.chunks) { if (!o.length) res.end(); return }
+        res.write(Buffer.alloc(o.size, 120))
+        sent++
+        timers.push(setTimeout(next, o.everyMs))
+      }
+      next()
+    },
+    '/silent': () => {},
+  })
+  t.after(async () => { for (const x of timers) clearTimeout(x); await server.close() })
+  return { server, boundary: boundaryOf({ WEB_ALLOW_HOSTS: `127.0.0.1:${server.port}` }) }
+}
+
+const timedOut = (pattern: RegExp) => (e: unknown) => {
+  assert.ok(e instanceof HttpError, String(e))
+  assert.match(e.message, pattern)
+  assert.equal(e.timedOut, true)
+  return true
+}
+
+test('a body still arriving runs past the time to the headers, to the whole time', async t => {
+  const { server, boundary } = await trickle(t, { chunks: 15, size: 1024, everyMs: 100 })
+  const started = Date.now()
+  const res = await request(new URL(`${server.origin}/`), { headersMs: 500, stallMs: 1000, timeoutMs: 10_000, maxBytes: 1e6, boundary })
+  assert.equal(res.body.length, 15 * 1024)
+  assert.ok(Date.now() - started > 1000, 'the body took past the headers limit')
+})
+
+test('headers that do not come in the time to the headers fail with no response, well before the whole time', async t => {
+  const { server, boundary } = await trickle(t, { chunks: 0, size: 0, everyMs: 0 })
+  const started = Date.now()
+  await assert.rejects(request(new URL(`${server.origin}/silent`), { headersMs: 1000, stallMs: 500, timeoutMs: 10_000, maxBytes: 1e6, boundary }), timedOut(/^no response within 1 s$/))
+  assert.ok(Date.now() - started < 5000)
+})
+
+test('a body that stops arriving fails at the stall limit, saying how much came', async t => {
+  const { server, boundary } = await trickle(t, { chunks: 2, size: 64 * 1024, everyMs: 50, length: 2 * 1048576 })
+  const started = Date.now()
+  await assert.rejects(request(new URL(`${server.origin}/`), { headersMs: 1000, stallMs: 1000, timeoutMs: 10_000, maxBytes: 1e7, boundary }), timedOut(/^stalled: no data for 1 s after 128 KB of 2\.0 MB$/))
+  assert.ok(Date.now() - started < 5000)
+})
+
+test('a body still arriving at the whole time fails with what it received', async t => {
+  const { server, boundary } = await trickle(t, { chunks: Infinity, size: 1024, everyMs: 100 })
+  await assert.rejects(request(new URL(`${server.origin}/`), { headersMs: 1000, stallMs: 1000, timeoutMs: 2000, maxBytes: 1e7, boundary }), timedOut(/^timed out after 2 s with \d+ KB received$/))
+})
+
+test('without a time to the headers, the whole time covers the headers as before', async t => {
+  const { server, boundary } = await trickle(t, { chunks: 0, size: 0, everyMs: 0 })
+  await assert.rejects(request(new URL(`${server.origin}/silent`), { timeoutMs: 1000, maxBytes: 1e6, boundary }), timedOut(/^timed out after 1 s$/))
+})
+
 test('https to a server that does not speak TLS is an HttpError, the failure https first falls back from', async t => {
   const server = await startServer({ '/': send('text/plain', 'plain') })
   t.after(() => server.close())

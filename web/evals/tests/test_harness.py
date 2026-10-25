@@ -169,7 +169,10 @@ class ClassifyFetchError(unittest.TestCase):
     def test_b_tool_errors(self):
         for reason in ('the clipper failed (exit 1), a bug in the web plugin: TypeError', "the clipper's result could not be read: {",
                        'the clipper did not finish within 180 s and was stopped', 'the web plugin failed (throw: boom)',
-                       'timed out after 30 s', 'the saved page could not be read: EACCES'):
+                       'timed out after 30 s', 'the saved page could not be read: EACCES',
+                       # The clipper's own download limits (board #143) stay the tool's.
+                       'no response within 30 s', 'stalled: no data for 20 s after 3.2 of 17.6 MB',
+                       'timed out after 150 s with 12.3 of 17.6 MB received'):
             self.assertTrue(harness.is_tool_caused('B', f'fetch failed: https://x.example/: {reason}'), reason)
 
     def test_a_status_errors_are_the_sites(self):

@@ -101,6 +101,11 @@ session on the machine.
 - [x] (2026-10-25) Board #134: a page's SVG images, and an SVG fetched by
   its own URL, are drawn as PNGs that `Read` shows (step 5, Decision Log).
   The go.dev survey post's 36 SVG charts come back drawn and legible.
+- [x] (2026-10-25) Board #143 (web 0.3.1, branch `web-download-stall`): the
+  page's 30 s total becomes 30 s to the headers and a 20 s stall limit
+  under the deadline (step 1, Decision Log). The IEA's 17.6 MB PDF served
+  at 400 KB/s is saved with its text in 46 s, where 0.3.0 timed out at
+  30 s.
 
 ## Acceptance
 
@@ -500,8 +505,9 @@ its own:
      not. The reply's header names the final URL when it is another page.
    - **HTTPS first.** An `http:` URL on the default port is fetched as
      `https:` first. When that brings no page (an error status, a
-     connection or TLS failure, a timeout), the URL is fetched as given,
-     and when the page then came over plain http a note says so:
+     connection or TLS failure, a timeout), the URL is fetched as given
+     (unless the https attempt spent the deadline, whose failure then
+     stands), and when the page then came over plain http a note says so:
      `fetched over plain http: https failed (<why>)`. A refusal falls back
      too: https follows redirects, so it may have been refused for where it
      led rather than for the URL's host, and the http attempt passes the
@@ -510,8 +516,13 @@ its own:
      fallback, so a site without https cannot be read at all; falling back
      on an error status as well as a transport failure keeps every page
      the tool could read before.
-   - Limits: 30 seconds and 50 MB per attempt. A status of 400 or above is
-     R4.
+   - Limits, per attempt: 30 seconds to the response's headers; then the
+     body for as long as bytes keep arriving, up to the deadline, failing
+     when none arrive for 20 seconds; 50 MB. The failures read
+     `no response within 30 s`, `stalled: no data for 20 s after <received>
+     [of <length>]`, and `timed out after <s> s with <received> [of
+     <length>] received` (Decision Log, board #143). A status of 400 or
+     above is R4.
 2. **Route by content type** (the header, else a sniff of the first bytes):
 
    | Type | Main file | Then |
@@ -641,9 +652,12 @@ page itself is in hand, the clipper always publishes it:
 - a render the deadline cuts short leaves the plain result, with a note.
 
 The mod's 180-second process limit sits 30 seconds above the deadline, so
-it fires only on a clipper bug. Without the shared deadline, the stage
-limits as written sum past it: 30 s fetch, 30 s render, and 40 images at
-six at a time and 20 s each, which is 140 s.
+it fires only on a clipper bug. The page's own download has no total of
+its own: a body still arriving may take the whole deadline, and the stages
+after it then get what is left (a PDF saved, its text cut short, says so:
+`no text extracted: pdftotext did not finish within <s> s`). Without the
+shared deadline, the other stage limits as written sum to 30 s render and
+40 images at six at a time and 20 s each, which is 140 s.
 
 ### The summary
 
@@ -2187,6 +2201,44 @@ type Run = {
   reading more faithfully. The set is now 33 tasks, 9 dev and 24 final.
   The final set is unchanged, since verbatim-h4 was a dev task.
   Date/Author: 2026-10-25, hard-set session (board #132); approved by the human.
+- Decision: the page's fetch has two limits in place of a 30 s total: 30 s
+  to the response's headers (every hop's lookup, connection and headers),
+  then the body for as long as bytes keep arriving, failing when none
+  arrive for 20 s, the whole within the call's deadline. The size cap
+  stays 50 MB.
+  - It applies to the main fetch and its 406 and markdown-stub retries.
+    Images keep their 20 s total each, and Defuddle's site extractors
+    their 15 s: they are many and secondary to the page, and a slow one
+    should not hold the rest.
+  - A failure says which limit ended it and how much had arrived, so an
+    agent can tell a dead server from a slow one: `no response within 30
+    s`, `stalled: no data for 20 s after 3.2 of 17.6 MB`, `timed out after
+    150 s with 12.3 of 17.6 MB received`.
+  - pdftotext killed by its time now says so (`did not finish within <s>
+    s`) instead of `pdftotext failed (Command failed: …)`: a long download
+    can leave it only seconds.
+  - An https-first download that ran out the deadline is the answer; the
+    http fallback, which would have no time, is not tried, so the agent
+    reads how much arrived rather than `timed out after 0 s`.
+  Rationale: the hard round's only tool-caused error was the 17.6 MB IEA
+  PDF timing out at 30 s on a machine at load 120–250 while it was still
+  arriving; the 50 MB cap exists for files like it. The same file served
+  locally at 400 KB/s (44 s) fails `timed out after 30 s` on 0.3.0 and is
+  saved with its text now. Undici's `headersTimeout`/`bodyTimeout` and
+  Python requests' read timeout split the limit the same way.
+  Rejected:
+  - a longer total (90 or 120 s): still a figure a slower link outruns,
+    and a dead server would hold a call that long;
+  - a minimum rate (curl's `--speed-limit`) or a finish projected from
+    `Content-Length`: either cuts off a download that is still arriving,
+    which is the failure being fixed, on an estimate; the deadline already
+    bounds a trickle;
+  - reserving deadline time after the download for pdftotext: a PDF saved
+    without text is worth more to the agent than an error.
+  The 20 s stall is shorter than the 30 s it replaces, so a server that
+  sends headers and stops fails within about 50 s; a TCP connection that
+  goes 20 s with no bytes is rarely coming back.
+  Date/Author: 2026-10-25, board #143 session (branch `web-download-stall`).
 
 ## Outcomes & Retrospective
 

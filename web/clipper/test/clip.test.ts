@@ -1,8 +1,9 @@
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFile, readdir, stat, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, readdir, stat, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { clip, fetchHttpsFirst, httpsFirst } from '../src/clip.ts'
+import { clip, fetchHttpsFirst, FETCH_LIMITS, httpsFirst } from '../src/clip.ts'
 import type { ClipResult, ClipOk, ClipError } from '../src/clip.ts'
 import { FAILURE_MEMORY_MS } from '../src/cache.ts'
 import { HttpError } from '../src/http.ts'
@@ -208,6 +209,48 @@ test('a PDF without pdftotext is saved with a note and no text figures', async (
   assert.ok(r.notes.some(n => n.includes('pdftotext')), r.notes.join('|'))
 })
 
+test('pdftotext cut short by the time left says so, and the PDF is still saved', async () => {
+  const bin = await mkdtemp(join(tmpdir(), 'slow-pdftotext-'))
+  await writeFile(join(bin, 'pdftotext'), '#!/bin/sh\nexec sleep 30\n', { mode: 0o755 })
+  const r = ok(await clip(`${server.origin}/paper.pdf`, { cacheDir: await tmpCache(), env: { ...env, PATH: `${bin}:${process.env.PATH}` }, deadlineMs: 3000 }))
+  assert.equal(r.kind, 'pdf')
+  assert.equal(r.text, undefined)
+  assert.equal(r.notes.length, 1)
+  assert.match(r.notes[0], /^no text extracted: pdftotext did not finish within \d s$/)
+})
+
+test('a page still arriving past the time to its headers is fetched; one that stops fails at the stall limit', async t => {
+  // The hard eval's 17.6 MB IEA PDF timed out at a fixed 30 s while it was still arriving (board #143).
+  const steadyMs = FETCH_LIMITS.headersMs + 3000
+  const timers: NodeJS.Timeout[] = []
+  const slow = await startServer({
+    '/steady.txt': (_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/plain' })
+      const until = Date.now() + steadyMs
+      const next = () => {
+        if (Date.now() >= until) { res.end('the last line\n'); return }
+        res.write('a line still arriving\n')
+        timers.push(setTimeout(next, 1000))
+      }
+      next()
+    },
+    '/stops.txt': (_req, res) => { res.writeHead(200, { 'content-type': 'text/plain', 'content-length': String(1048576) }); res.write('the first line, and no more\n') },
+  })
+  t.after(async () => { for (const x of timers) clearTimeout(x); await slow.close() })
+  const slowEnv = { ...env, WEB_ALLOW_HOSTS: `127.0.0.1:${slow.port}` }
+  const started = Date.now()
+  const [steady, stops] = await Promise.all([
+    clip(`${slow.origin}/steady.txt`, { cacheDir: await tmpCache(), env: slowEnv }).then(r => ({ r, ms: Date.now() - started })),
+    clip(`${slow.origin}/stops.txt`, { cacheDir: await tmpCache(), env: slowEnv }).then(r => ({ r, ms: Date.now() - started })),
+  ])
+  const page = ok(steady.r)
+  assert.ok(steady.ms >= steadyMs, `took ${steady.ms} ms`)
+  assert.match(await readFile(page.file, 'utf8'), /^(a line still arriving\n)+the last line\n$/)
+  assert.equal(stops.r.ok, false, JSON.stringify(stops.r))
+  assert.equal((stops.r as ClipError).error, `stalled: no data for ${FETCH_LIMITS.stallMs / 1000} s after 28 bytes of 1.0 MB`)
+  assert.ok(stops.ms >= FETCH_LIMITS.stallMs && stops.ms < FETCH_LIMITS.stallMs + 10_000, `failed after ${stops.ms} ms`)
+})
+
 test('redirects are followed and the final URL recorded', async () => {
   const cacheDir = await tmpCache()
   const r = ok(await clip(`${server.origin}/r1`, { cacheDir, env }))
@@ -373,6 +416,11 @@ test('https first falls back to the URL as given when https brings no page or is
   // A refusal of the http attempt too is the answer.
   const own = 'refused: example.com resolves to a non-public address (10.0.0.7); for a local server use curl through Bash'
   await assert.rejects(run(() => { throw new RefusedError(own) }, () => { throw new RefusedError(own) }), (e: unknown) => e instanceof RefusedError && e.message === own)
+  // An https download that ran out the time left is the answer: http would have none.
+  const asked: string[] = []
+  const late = 'timed out after 150 s with 12.3 of 17.6 MB received'
+  await assert.rejects(fetchHttpsFirst(new URL('http://example.com/a'), async u => { asked.push(u.href); throw new HttpError(late, true) }, () => 0), (e: unknown) => e instanceof HttpError && e.message === late)
+  assert.deepEqual(asked, ['https://example.com/a'])
 })
 
 test('a redirect to a non-public address is refused, and the trap receives nothing', async () => {

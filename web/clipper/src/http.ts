@@ -57,7 +57,12 @@ export type RequestOptions = {
   method?: string
   headers?: Record<string, string>
   body?: Buffer | string
+  /** The whole request's time: every hop, the headers and the body. */
   timeoutMs: number
+  /** The time to the final response's headers (every hop's lookup, connection and headers), when less. */
+  headersMs?: number
+  /** The longest the body may go with no bytes arriving. A body still arriving runs on to `timeoutMs`. */
+  stallMs?: number
   maxBytes: number
   boundary: Boundary
   /** The page the request is made for; each hop gets the Referer `referrerFor` allows. */
@@ -81,11 +86,21 @@ export function referrerFor(page: string, target: URL): string | undefined {
   return from.origin === target.origin ? from.href : from.origin + '/'
 }
 
-/** One request, following redirects (each hop checked), within one time limit. */
+/**
+ * One request, following redirects (each hop checked), within its time limits:
+ * `headersMs` to the final response's headers, then the body for as long as
+ * bytes keep arriving (no gap of `stallMs`), the whole within `timeoutMs`.
+ */
 export async function request(start: URL, o: RequestOptions): Promise<HttpResponse> {
-  const until = Date.now() + o.timeoutMs
-  const timeLeft = () => Math.max(0, until - Date.now())
-  const timedOut = () => new HttpError(`timed out after ${Math.round(o.timeoutMs / 1000)} s`, true)
+  const started = Date.now()
+  const headersMs = o.headersMs !== undefined && o.headersMs < o.timeoutMs ? o.headersMs : undefined
+  const limits: Limits = {
+    timeLeft: () => Math.max(0, started + o.timeoutMs - Date.now()),
+    headersLeft: () => Math.max(0, started + (headersMs ?? o.timeoutMs) - Date.now()),
+    noHeaders: () => new HttpError(headersMs === undefined ? `timed out after ${seconds(o.timeoutMs)} s` : `no response within ${seconds(headersMs)} s`, true),
+    timeoutMs: o.timeoutMs,
+    stallMs: o.stallMs,
+  }
   let url = start
   let method = o.method ?? 'GET'
   let body = o.body
@@ -98,10 +113,10 @@ export async function request(start: URL, o: RequestOptions): Promise<HttpRespon
   for (let hop = 0; ; hop++) {
     if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new HttpError(`unsupported scheme: ${url.protocol}`)
     const port = Number(url.port) || (url.protocol === 'https:' ? 443 : 80)
-    const addresses = await withTimeout(resolveChecked(url.hostname, port, { boundary: o.boundary }), timeLeft(), timedOut)
+    const addresses = await withTimeout(resolveChecked(url.hostname, port, { boundary: o.boundary }), limits.headersLeft(), limits.noHeaders)
       .catch(e => { throw asTransportError(e) })
     const referer = referrer === undefined ? undefined : referrerFor(referrer, url)
-    const res = await once(url, addresses, { ...o, headers: referer ? { ...headers, referer } : headers, method, body }, timeLeft(), timedOut)
+    const res = await once(url, addresses, { ...o, headers: referer ? { ...headers, referer } : headers, method, body }, limits)
     const location = res.headers.location
     if ([301, 302, 303, 307, 308].includes(res.status) && location) {
       if (hop >= MAX_REDIRECTS) throw new HttpError(`too many redirects (more than ${MAX_REDIRECTS})`)
@@ -112,6 +127,19 @@ export async function request(start: URL, o: RequestOptions): Promise<HttpRespon
     return res
   }
 }
+
+/** One request's clock: what is left of its whole time and of its time to the headers. */
+type Limits = {
+  timeLeft: () => number
+  headersLeft: () => number
+  noHeaders: () => HttpError
+  timeoutMs: number
+  stallMs?: number
+}
+
+const seconds = (ms: number) => Math.round(ms / 1000)
+const amount = (bytes: number) =>
+  bytes < 1024 ? `${bytes} bytes` : bytes < 1048576 ? `${Math.round(bytes / 1024)} KB` : `${(bytes / 1048576).toFixed(1)} MB`
 
 /**
  * The transport boundary: a refusal and an HttpError pass as they are, and any
@@ -128,9 +156,10 @@ function withTimeout<T>(p: Promise<T>, ms: number, error: () => Error): Promise<
   return Promise.race([p, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(error()), ms) })]).finally(() => clearTimeout(timer))
 }
 
-function once(url: URL, addresses: Address[], o: RequestOptions & { method: string }, ms: number, timedOut: () => Error): Promise<HttpResponse> {
+function once(url: URL, addresses: Address[], o: RequestOptions & { method: string }, limits: Limits): Promise<HttpResponse> {
   return new Promise((resolve, reject) => {
-    if (ms <= 0) { reject(timedOut()); return }
+    const headersMs = limits.headersLeft()
+    if (headersMs <= 0) { reject(limits.noHeaders()); return }
     const mod = url.protocol === 'https:' ? https : http
     const req = mod.request({
       protocol: url.protocol,
@@ -144,15 +173,33 @@ function once(url: URL, addresses: Address[], o: RequestOptions & { method: stri
       ...({ autoSelectFamilyAttemptTimeout: CONNECT_ATTEMPT_MS } as object),
       agent: false,
     })
-    const timer = setTimeout(() => req.destroy(timedOut()), ms)
-    const fail = (e: Error) => { clearTimeout(timer); reject(e instanceof HttpError ? e : new HttpError(`network error: ${networkErrorMessage(e)}`)) }
+    const timers: NodeJS.Timeout[] = []
+    let over = false
+    const end = () => { over = true; for (const t of timers) clearTimeout(t) }
+    const fail = (e: Error) => { end(); reject(e instanceof HttpError ? e : new HttpError(`network error: ${networkErrorMessage(e)}`)) }
+    // A limit that runs out fails the request with its own reason, before the teardown raises another.
+    const abort = (e: HttpError) => { fail(e); req.destroy() }
+    timers.push(setTimeout(() => abort(limits.noHeaders()), headersMs))
     req.on('error', fail)
     req.on('response', res => {
+      clearTimeout(timers[0])
       const done = (body: Buffer) => {
-        clearTimeout(timer)
+        end()
         resolve({ status: res.statusCode ?? 0, statusText: res.statusMessage ?? '', headers: res.headers, body, url })
       }
       if ([301, 302, 303, 307, 308].includes(res.statusCode ?? 0) && res.headers.location) { res.resume(); done(Buffer.alloc(0)); return }
+      // The body runs on to the request's whole time, unless no bytes arrive for `stallMs`.
+      const length = Number(res.headers['content-length']) || 0
+      let got = 0
+      const progress = () => (length ? `${amount(got)} of ${amount(length)}` : amount(got))
+      timers.push(setTimeout(() => abort(new HttpError(`timed out after ${seconds(limits.timeoutMs)} s with ${progress()} received`, true)), limits.timeLeft()))
+      const stallMs = limits.stallMs
+      const stall = stallMs ? setTimeout(() => abort(new HttpError(`stalled: no data for ${seconds(stallMs)} s after ${progress()}`, true)), stallMs) : undefined
+      if (stall) timers.push(stall)
+      res.on('data', (chunk: Buffer) => {
+        got += chunk.length
+        if (!over) stall?.refresh()
+      })
       readBody(res, o.maxBytes).then(done, e => { req.destroy(); fail(e) })
     })
     req.end(o.body)
