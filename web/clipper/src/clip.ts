@@ -9,7 +9,7 @@ import { beginBuild, publish, readFresh, REUSE_MAX_AGE_MS } from './cache.ts'
 import { CLIP_DEADLINE_MS, Deadline } from './deadline.ts'
 import { countWords, estimateTokens } from './estimate.ts'
 import { extractHtml, htmlFrontmatter, markdownWithFrontmatter } from './extract.ts'
-import type { PageMeta } from './extract.ts'
+import type { Extracted, PageMeta } from './extract.ts'
 import { guardedFetch, HttpError, request } from './http.ts'
 import { downloadImages } from './images.ts'
 import type { ImageEntry } from './images.ts'
@@ -77,23 +77,44 @@ export async function clip(rawUrl: string, opts: ClipOptions): Promise<ClipResul
   }
 
   // 1. Fetch.
+  const get = (accept: string) => request(url, {
+    headers: { accept, 'accept-language': 'en-US,en;q=0.9' }, timeoutMs: deadline.limit(FETCH_LIMITS.timeoutMs), maxBytes: FETCH_LIMITS.maxBytes, allow,
+  })
   let res
+  let accept = ACCEPT
   try {
-    const get = (accept: string) => request(url, {
-      headers: { accept, 'accept-language': 'en-US,en;q=0.9' }, timeoutMs: deadline.limit(FETCH_LIMITS.timeoutMs), maxBytes: FETCH_LIMITS.maxBytes, allow,
-    })
-    res = await get(ACCEPT)
-    if (res.status === 406) res = await get(BROWSER_ACCEPT)
+    res = await get(accept)
+    if (res.status === 406) res = await get(accept = BROWSER_ACCEPT)
   } catch (e) {
     if (e instanceof RefusedError || e instanceof HttpError) return fail(e.message)
     throw e
+  }
+  const siteFetch = guardedFetch(allow, () => deadline.remaining())
+  // 3. Extract, and 4. render when the plain fetch found no content: the result with more words.
+  const extractPage = async (html: string, at: string): Promise<HtmlPage> => {
+    const notes: string[] = []
+    const ex = await extractHtml(html, at, siteFetch)
+    if (ex.words < RENDER_MIN_WORDS) {
+      const chrome = findChrome(env)
+      if ('note' in chrome) notes.push(chrome.note)
+      else {
+        const out = await renderDom(at, chrome, deadline.limit(RENDER_LIMITS.timeoutMs), allow)
+        const served = 'note' in out ? out : servedPage(out)
+        if ('note' in served) notes.push(served.note)
+        else {
+          // Extracted, and later its images resolved, against the document the browser ended on.
+          const again = await extractHtml(served.html, served.url, siteFetch)
+          if (again.words > ex.words) return { ex: again, url: served.url, rendered: true, notes }
+        }
+      }
+    }
+    return { ex, url: at, rendered: false, notes }
   }
   // A 403 is often a bot wall that turns away a client that is not a browser and lets
   // one through (techblog.woowahan.com: 403 to this client, the article to Chromium).
   // The page is the browser's only when the browser was served it with a 2xx, by its
   // own NetLog: a denial page renders to a DOM like any other. Otherwise the 403 stands.
-  let walled: { ex: Awaited<ReturnType<typeof extractHtml>>; url: string } | undefined
-  const siteFetch = guardedFetch(allow, () => deadline.remaining())
+  let walled: { ex: Extracted; url: string } | undefined
   if (res.status === 403) {
     const chrome = findChrome(env)
     if (!('note' in chrome)) {
@@ -112,10 +133,11 @@ export async function clip(rawUrl: string, opts: ClipOptions): Promise<ClipResul
   const fetchedAt = new Date().toISOString()
   // Where the page saved was served from; a render the browser navigated elsewhere moves it.
   let finalUrl = walled?.url ?? res.url.href
-  const contentType = walled ? 'text/html' : String(res.headers['content-type'] ?? '')
+  let contentType = walled ? 'text/html' : String(res.headers['content-type'] ?? '')
+  let status = res.status
 
   // 2. Route. The page is in hand: from here on it is published.
-  const r = walled ? route('text/html', Buffer.alloc(0)) : route(contentType, res.body)
+  let r = walled ? route('text/html', Buffer.alloc(0)) : route(contentType, res.body)
   const tmp = await beginBuild(entry)
   try {
     const notes: string[] = []
@@ -129,35 +151,39 @@ export async function clip(rawUrl: string, opts: ClipOptions): Promise<ClipResul
 
     if (r.kind === 'html' || r.kind === 'markdown') {
       let head = ''
-      let body: string
-      if (r.kind === 'html') {
-        // 3. Extract, and 4. render when the plain fetch found no content.
-        let ex = walled?.ex ?? await extractHtml(decodeText(res.body, contentType, true), finalUrl, siteFetch)
-        if (walled) {
-          rendered = true
-          notes.push(`the site refused a plain fetch (HTTP ${res.status}); this is the page as headless Chromium rendered it`)
-        } else if (ex.words < RENDER_MIN_WORDS) {
-          const chrome = findChrome(env)
-          if ('note' in chrome) notes.push(chrome.note)
-          else {
-            const out = await renderDom(finalUrl, chrome, deadline.limit(RENDER_LIMITS.timeoutMs), allow)
-            const served = 'note' in out ? out : servedPage(out)
-            if ('note' in served) notes.push(served.note)
-            else {
-              // Extracted, and later its images resolved, against the document the browser ended on.
-              const again = await extractHtml(served.html, served.url, siteFetch)
-              if (again.words > ex.words) { ex = again; rendered = true; finalUrl = served.url }
-            }
-          }
-        }
-        meta = ex.meta
-        words = ex.words
-        head = htmlFrontmatter(meta, words, finalUrl, fetchedAt)
-        body = ex.body
-      } else {
+      let body = ''
+      let page: HtmlPage | undefined
+      if (walled) page = { ...walled, rendered: true, notes: [`the site refused a plain fetch (HTTP ${res.status}); this is the page as headless Chromium rendered it`] }
+      else if (r.kind === 'html') page = await extractPage(decodeText(res.body, contentType, true), finalUrl)
+      else {
         const md = markdownWithFrontmatter(decodeText(res.body, contentType, false), finalUrl, fetchedAt)
         if (md.title) meta.title = md.title
         body = md.text
+        // Markdown with no content can be a stub of a page a script draws (bundlephobia
+        // answers the markdown Accept with seven words). The HTML page then takes the
+        // HTML path, and replaces the stub when it finds over twice the words: one page
+        // in two formats counts about the same, a stub a fraction (Defuddle accepts its
+        // own retries by the same margin). A page short either way stays the markdown.
+        const mdWords = bodyWords(body)
+        if (accept === ACCEPT && mdWords < RENDER_MIN_WORDS) {
+          const html = await get(BROWSER_ACCEPT).catch(e => { if (e instanceof RefusedError || e instanceof HttpError) return undefined; throw e })
+          const type = String(html?.headers['content-type'] ?? '')
+          if (html && html.status < 400 && route(type, html.body).kind === 'html') {
+            const alt = await extractPage(decodeText(html.body, type, true), html.url.href)
+            if (alt.ex.words > 2 * mdWords) { page = alt; r = route(type, html.body); status = html.status; contentType = type }
+            else notes.push(...alt.notes)
+          }
+        }
+      }
+      if (page) {
+        // Extracted, and its images resolved, against where the page was served from.
+        finalUrl = page.url
+        rendered = page.rendered
+        notes.push(...page.notes)
+        meta = page.ex.meta
+        words = page.ex.words
+        head = htmlFrontmatter(meta, words, finalUrl, fetchedAt)
+        body = page.ex.body
       }
       // 5. Images. Their lines are counted in the text as written, frontmatter included.
       const text = head + body
@@ -189,13 +215,13 @@ export async function clip(rawUrl: string, opts: ClipOptions): Promise<ClipResul
 
     // 6. Measure, write meta.json, publish.
     const result = {
-      ok: true as const, kind: r.kind, url: rawUrl, finalUrl, status: res.status, contentType, fetchedAt, cached: false, rendered,
+      ok: true as const, kind: r.kind, url: rawUrl, finalUrl, status, contentType, fetchedAt, cached: false, rendered,
       ...pick(meta), bytes: (await stat(main)).size,
     }
     let measured = {}
     if (textFile) {
       const text = await readFile(textFile, 'utf8')
-      if (r.kind === 'markdown') words = countWords(text.replace(/^---\n[\s\S]*?\n---\n/, ''))
+      if (r.kind === 'markdown') words = bodyWords(text)
       else if (words === undefined) words = countWords(text)
       const { outline, omitted } = buildOutline(text, mode, images.map(i => i.line))
       measured = { words, lines: splitLines(text).length, tokens: estimateTokens(text), outline, ...(omitted ? { outlineOmitted: omitted } : {}) }
@@ -215,6 +241,11 @@ export async function clip(rawUrl: string, opts: ClipOptions): Promise<ClipResul
     throw e
   }
 }
+
+type HtmlPage = { ex: Extracted; url: string; rendered: boolean; notes: string[] }
+
+/** The words of a markdown file under its frontmatter. */
+const bodyWords = (text: string) => countWords(text.replace(/^---\n[\s\S]*?\n---\n/, ''))
 
 /**
  * A render counts as the page only when Chromium's NetLog shows the browser was

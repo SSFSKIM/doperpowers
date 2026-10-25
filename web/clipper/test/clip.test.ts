@@ -48,6 +48,14 @@ before(async () => {
       if ((req.headers.accept ?? '').startsWith('text/markdown')) { res.writeHead(406, { 'content-type': 'text/plain' }); res.end('Not Acceptable'); return }
       res.writeHead(200, { 'content-type': 'text/html' }); res.end(article)
     },
+    // A markdown stub to the markdown Accept, the article to a browser's.
+    '/stub': (req, res) => (req.headers.accept ?? '').startsWith('text/markdown')
+      ? send('text/markdown; charset=utf-8', '# react\n\n@18.2.0\n\n[View react on npm](https://npmjs.com/package/react)\n')(req, res)
+      : send('text/html; charset=utf-8', article)(req, res),
+    // A short page either way, its HTML a few words longer.
+    '/short': (req, res) => (req.headers.accept ?? '').startsWith('text/markdown')
+      ? send('text/markdown', '# Changelog\n\nVersion 1.0.1 fixes the date parser.\n')(req, res)
+      : send('text/html', '<!doctype html><html><head><title>Changelog</title></head><body><article><h1>Changelog</h1><p>Version 1.0.1 fixes the date parser.</p><p>Older versions are listed on the releases page.</p></article></body></html>')(req, res),
     '/trap-image': send('text/html', article.replace('/img/diagram.png', `http://127.0.0.1:${trap.port}/diagram.png`)),
     '/many': send('text/html', many.join('')),
     '/thin': send('text/html', '<!doctype html><html><head><title>Thin</title></head><body><div id="root"></div></body></html>'),
@@ -195,6 +203,25 @@ test('redirects are followed and the final URL recorded', async () => {
   const r = ok(await clip(`${server.origin}/r1`, { cacheDir, env }))
   assert.equal(r.url, `${server.origin}/r1`)
   assert.equal(r.finalUrl, `${server.origin}/article`)
+})
+
+test('a markdown stub gives way to the HTML page, and a page short either way stays the markdown served', async () => {
+  const hits = server.hits.length
+  const r = ok(await clip(`${server.origin}/stub`, { cacheDir: await tmpCache(), env }))
+  assert.equal(r.kind, 'html')
+  assert.equal(r.contentType, 'text/html; charset=utf-8')
+  assert.equal(r.title, 'Gardens of the Test Server')
+  const md = await readFile(r.file, 'utf8')
+  assert.ok(!md.includes('View react on npm'))
+  assert.match(md, /water the beans first/)
+  assert.deepEqual(server.hits.slice(hits).filter(h => h === '/stub'), ['/stub', '/stub'])
+
+  const short = ok(await clip(`${server.origin}/short`, { cacheDir: await tmpCache(), env }))
+  assert.equal(short.kind, 'markdown')
+  assert.equal(short.title, 'Changelog')
+  assert.match(await readFile(short.file, 'utf8'), /\n---\n\n# Changelog\n\nVersion 1\.0\.1 fixes the date parser\.\n$/)
+  // The HTML page was thin too, and this machine (WEB_CHROME=none) would not render it.
+  assert.deepEqual(short.notes, ['rendering unavailable on this machine: turned off by WEB_CHROME=none'])
 })
 
 test('a 406 is retried once with a browser Accept', async () => {
