@@ -190,8 +190,10 @@ def _table(tasks, runs):
 def _by_task(tasks, runs, arms):
     """Each task's verdicts per configuration (correct/partial/wrong), and d when both ran."""
     both = len(arms) == 2
-    head = '| Task | Category | ' + ' | '.join(f'{arm} correct/partial/wrong' for arm in arms) + (' | d (B − A) |' if both else ' | Median tokens | Median duration (s) | Fetch calls (mean) |')
-    rows = [head, '|' + '---|' * (2 + len(arms) + (1 if both else 3))]
+    mech = any('mechanism' in t for t in tasks)
+    head = ('| Task | Category | ' + ('Mechanism | ' if mech else '') + ' | '.join(f'{arm} correct/partial/wrong' for arm in arms)
+            + (' | d (B − A) |' if both else ' | Median tokens | Median duration (s) | Fetch calls (mean) |'))
+    rows = [head, '|' + '---|' * (2 + mech + len(arms) + (1 if both else 3))]
     for t in tasks:
         cells, shares = [], {}
         rs_all = [r for r in runs if r['task'] == t['id']]
@@ -209,7 +211,7 @@ def _by_task(tasks, runs, arms):
             durations = [None if r.get('durationMs') is None else r['durationMs'] / 1000 for r in rs]
             cells += [_median([main_tokens(r) for r in rs], ',.0f'), _median(durations, '.0f'),
                       f"{statistics.mean(r.get('fetchCalls', 0) for r in rs):.1f}"]
-        rows.append(f"| {t['id']} | {t['category']} | " + ' | '.join(cells) + ' |')
+        rows.append(f"| {t['id']} | {t['category']} | " + (f"{t.get('mechanism', '')} | " if mech else '') + ' | '.join(cells) + ' |')
     return rows
 
 
@@ -300,9 +302,15 @@ def _folder(path):
     with open(os.path.join(HERE, m['tasksFile'])) as f:
         tasks = json.load(f)
     arms = m.get('arms', ['A', 'B'])
-    # A gate is judged over the design's runs per task; a screening round over the runs it was given.
-    reps = harness.REPS[m['set']] if len(arms) == 2 else m['reps']
-    return tasks, load_runs(path), expected_runs(tasks, m['set'], reps, arms)
+    runs = load_runs(path)
+    if len(arms) == 2:
+        # A gate is judged over the design's runs per task.
+        return tasks, runs, expected_runs(tasks, m['set'], harness.REPS[m['set']], arms)
+    # A screening round: its runs per task, and the extra runs it gave some of the set's tasks.
+    expected = expected_runs(tasks, m['set'], m['reps'], arms)
+    in_set = {t['id'] for t in tasks if t['set'] == m['set']}
+    expected |= {(r['task'], r['arm'], r['rep']) for r in runs if r['task'] in in_set and r['arm'] in arms}
+    return tasks, runs, expected
 
 
 def main():

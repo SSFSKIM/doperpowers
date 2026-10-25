@@ -252,6 +252,12 @@ class HardSet(unittest.TestCase):
         self.assertIn('| search-2 | search | 1/0/1 |', md)
         self.assertIn('- search-2 A rep 2: wrong', md)
 
+    def test_a_tasks_mechanism_gets_a_column(self):
+        ts = [dict(t, mechanism='over-10mb' if t['category'] == 'long-pdf' else 'quote-limit') for t in hard_tasks()]
+        rows = report._by_task(ts, runs_for(ts, {'long-pdf-1': 0}, {}), ['A', 'B'])
+        self.assertEqual(rows[0], '| Task | Category | Mechanism | A correct/partial/wrong | B correct/partial/wrong | d (B − A) |')
+        self.assertIn('| long-pdf-1 | long-pdf | over-10mb | 0/0/4 | 4/0/0 | +1.00 |', rows)
+
 
 if __name__ == '__main__':
     unittest.main()

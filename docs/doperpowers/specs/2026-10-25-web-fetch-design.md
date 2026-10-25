@@ -877,6 +877,36 @@ agent chooses `prompt` or the file at the right times.
 
   Raw runs stay in `web/evals/runs/<UTC stamp>/`, which is gitignored.
 
+#### The hard set (board #132)
+
+The suite above saturated (384 of 384 runs correct), so it can show B is
+not worse but never that B is better. `web/evals/tasks-hard.json` holds
+tasks aimed at where the two tools differ, in the same format, with two
+fields more (I4): `search` and `mechanism`.
+
+| Category | What the task needs | Mechanisms aimed at |
+|---|---|---|
+| `verbatim` | 500–2,500 characters reproduced exactly, on a host outside WebFetch's preapproved list | the summarizer's 125-character quote rule |
+| `long-page` | an enumeration, several needles, or facts from 2–3 long pages (raw text or HTML of 0.5–1.6 MB) | one 100k-character window per call, no grep; the 1 MB HTML cut |
+| `long-pdf` | an exact value deep in a PDF of 179–1,309 pages | PDFs seen only as page images, 20 a call; the 10 MB response cap |
+| `image` | a value only in a raster chart: unlinked lazy images, 70 charts sharing one alt, figures inside PDFs | images never downloaded, `<noscript>` and `data-src` dropped |
+| `search` | the same, with no URL in the question | the fetch after the search |
+
+- **Authoring.** Five authors, one per category, each told how WebFetch
+  works (read from the 2.1.310 binary) and forbidden either fetch tool on
+  their candidates, checked every fact against the page's own source.
+- **Search.** A `search` task gives both configurations `search_mcp.py`'s
+  `web_search`, since `WebSearch` fails on `sol` through the gateway
+  (Surprises & Discoveries).
+- **Split.** A seeded shuffle per category put 2 candidates in `dev` and
+  the rest in `final` before any run.
+- **Screening.** Configuration A alone ran every candidate once
+  (`run.py --arms A`), then a second time on the ten passes whose success
+  looked most fragile. B was not run, so the selection cannot favour it.
+- **Reading.** Criterion 1 also says whether B is better with confidence
+  (the interval's lower bound above 0); criterion 4 applies only to a set
+  with gist tasks.
+
 ### The switch-over
 
 After the evals pass and the branch is merged (M4):
@@ -1240,7 +1270,9 @@ type Task = {
   category: 'exact-detail' | 'table' | 'code' | 'image' | 'js' | 'pdf' | 'gist' | 'synthesis'
   lang: string                    // BCP 47, "en", "ko"
   url: string
-  question: string                // names the URL
+  question: string                // names the URL, unless `search`
+  search?: boolean                // tasks-hard.json: no URL in the question; both configurations get the search tool
+  mechanism?: string              // tasks-hard.json: what should make WebFetch fail ("quote-limit", "over-10mb", …)
   facts: { id: string; claim: string; evidence: string }[]
 }
 // web/evals/runs/<stamp>/<task>.<arm A|B>.<model>.<rep>.json
@@ -1250,8 +1282,10 @@ type Run = {
   mainTokens: { input: number; output: number; cacheRead: number; cacheCreation: number }
   haikuUsage?: unknown[]          // B: the usage.jsonl lines of this run
   fetchCalls: number; fetchErrors: { text: string; toolCaused: boolean }[]
+  searchCalls?: number; searchUsage?: unknown[]   // a search task: its web_search calls, and their usage lines
   turns: number; durationMs: number; costUsd: number
 }
+// manifest.json gains `arms` (["A"] for a screening round; absent means both)
 ```
 
 **Dependencies:**
@@ -1410,6 +1444,37 @@ type Run = {
 - Observation: crates.io's sidebar (license, 11K SLoC, 75.8 KiB, downloads)
   is in the rendered DOM; Defuddle drops it as not the article, so the
   page is 242 words either way. An extraction matter, not a render one.
+- Observation: `WebSearch` fails on `sol` through the gateway. It runs the
+  API's server-side search on the session's own model, and the gateway
+  answers `400 The request contains content this Codex gateway cannot
+  translate`; on haiku it works. The gateway serves a Claude model only to a
+  request whose first system block names Claude Code (429 otherwise).
+  Evidence: probes in temporary HOMEs, 2026-10-25 (board #132).
+- Observation: on the hard set, `sol` at `xhigh` with `WebFetch` alone
+  answered 41 of 44 screening runs correctly (34 tasks; 10 run twice). It
+  routes around nearly every limit the set aimed at:
+  - third-party readers and proxies: `r.jina.ai` (a rendered page with its
+    image URLs), `wsrv.nl` (one page of a 30 MB PDF rasterized to PNG),
+    Google's document viewer. 10 of 44 runs used one, and 8 of those 10 were
+    correct;
+  - other editions of the same document: govinfo's XML past the 1 MB HTML
+    cut, a budget volume's per-section PDF found through its package
+    metadata, an RFC's `.txt`;
+  - parallel `offset` calls over 10–17 windows of a long text;
+  - the quote rule bends: the summarizer quotes open-source code whole, and
+    quotes standards text once the runner shows it the licence.
+
+  The three failures, one run each: two PDFs over 10 MB with no rescue found
+  (IEA's World Energy Outlook 2024, 17.6 MB; the Bank of Korea's 2024 annual
+  report, 11.5 MB behind a signed CDN redirect, timed out), and PKWARE's
+  APPNOTE, which the runner itself declined to quote after reading "All
+  Rights Reserved". A's successes cost: median 86 s and $0.19 a run, up to
+  384 s and $1.39.
+  Evidence: `docs/doperpowers/specs/2026-10-25-web-fetch-hard-screening.md`;
+  the runs in `web/evals/runs/hard-screen-dev` and `hard-screen-final`
+  (ignored).
+- Observation: WebFetch's 1 MB cut applies to HTML only. Text, XML and JSON
+  are windowed whole, so the cut is escaped by any non-HTML edition.
 
 ## Decision Log
 
@@ -1981,6 +2046,52 @@ type Run = {
     that has an SVG, seconds each, and depends on its layout.
   Date/Author: 2026-10-25, web-svg-raster session, design approved by the
   coordinator.
+- Decision: the hard set's harness and reading (board #132).
+  - A `search` task gives both configurations one MCP search tool,
+    `web/evals/search_mcp.py`. It makes WebSearch's request (system text,
+    forced `web_search_20250305`, eight uses, reply shape) on haiku through
+    the gateway, and logs each search's usage, which the run file keeps as
+    `searchUsage` and the projection counts beside B's summaries.
+  - `run.py --arms A` runs one configuration. Its folder's manifest records
+    `arms`, and `report.py` reports it as a screening round (each task's
+    verdicts), with no criteria.
+  - Round sizes in the projection come from the tasks file. A
+    configuration the pilot left out is projected at the piloted one's
+    cost, and the projection says so.
+  - Criterion 4 is N/A for a set without gist tasks, and N/A counts as
+    passing. Criterion 1 also states whether B is better with confidence:
+    the 90% interval's lower bound above 0. That is a reading of the same
+    interval, not a new gate. The report gains a by-task table with each
+    task's d.
+  - The grader's exact-match rule covers any text a fact calls verbatim,
+    not only code. Every verbatim fact in `tasks.json` is code, so that
+    suite's grading is unchanged.
+  Rationale: the ticket's four task shapes need search without a URL, and
+  `WebSearch` cannot run on `sol` here. The alternatives were the built-in
+  `WebSearch` on a Claude runner, which would abandon the human's choice of
+  `sol`, or a third-party search API, which the person's agents do not
+  use. Screening on A alone is the ticket's rule, which keeps B's success
+  out of the selection.
+  Date/Author: 2026-10-25, hard-set session (board #132).
+- Decision: how the hard set was screened.
+  - 35 candidates were authored. search-c2, a second over-10 MB PDF, was
+    dropped before any run: it repeats search-c1's mechanism, and that kind
+    of run is A's most expensive (up to $1.46).
+  - A ran each of the 34 once, then a second time on the ten passes whose
+    success looked most fragile (many calls, a proxy, a negotiated quote).
+    That was 44 runs at about $12.7 reported, plus about $2 of search
+    calls outside that figure.
+  - All 34 candidates stay in `tasks-hard.json` until the final round's
+    selection. That selection waits on two questions the screening raised,
+    put to the human with its report: whether third-party readers count as
+    the fetch tool, and what to keep when A fails only 3 of 34.
+  - The screening's record is
+    `docs/doperpowers/specs/2026-10-25-web-fetch-hard-screening.md`
+    (`report.py` over both screening folders).
+  Rationale: the Phase 1 budget (about 60 runs and $15). A second run of
+  a failed task re-confirms a cap; a second run of a fragile pass is where
+  a new failure could show.
+  Date/Author: 2026-10-25, hard-set session (board #132).
 
 ## Outcomes & Retrospective
 
