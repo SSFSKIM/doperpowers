@@ -44,7 +44,10 @@ session on the machine.
   four choices above settled by the human. Spikes run: Defuddle 0.19.6 on
   three pages, a bundled Defuddle + linkedom script, and headless-shell
   `--dump-dom` on three JavaScript pages (Surprises & Discoveries).
-- [ ] Spec reviewed (adversarial design review and buildability review).
+- [x] (2026-10-25) Spec review round 1 (adversarial design review and
+  buildability review): 9 findings, all applied (Decision Log).
+- [ ] Spec review round 2 on the revisions; the human's answer on the eval
+  gate change.
 - [ ] M1 — the clipper.
 - [ ] M2 — the tool: the `web` plugin and its mod.
 - [ ] M3 — the evals, and acceptance 1–9.
@@ -65,7 +68,8 @@ root unless stated otherwise.
    `assets/01.*` with `Read` in a session shows a diagram.
 2. **The cache answers repeat requests.** The same command again prints
    `"cached": true` within one second, and makes no network request. With
-   `--refresh` it fetches again and prints `"cached": false`.
+   `--refresh` it fetches again and prints `"cached": false` and a new
+   `dir`. The first `dir` is still there.
 3. **Pages that need JavaScript are rendered.** For `https://excalidraw.com/`,
    which a plain fetch extracts to 0 words, the result has `"rendered": true`
    and more than 20 words. With no Chromium findable
@@ -77,7 +81,10 @@ root unless stated otherwise.
    a `page.txt` holding its text where `pdftotext` exists, and an outline
    with one entry per PDF page.
 5. **Failures say what failed and are not cached.** A URL that answers 404
-   gives `"ok": false, "status": 404`, and nothing is left in the cache for it.
+   gives `"ok": false, "status": 404`, and nothing is left in the cache for
+   it. `http://127.0.0.1:8080/` and `http://169.254.169.254/` each give
+   `"ok": false` with an error that opens `refused:`, without a request
+   being made.
 6. **The tool replies in the shape the page needs.** In a session started
    with `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude --plugin-dir web`:
    - `mcp__web__fetch` is in the model's tool list.
@@ -95,7 +102,8 @@ root unless stated otherwise.
 8. **Subagents have it.** A subagent spawned in that session calls
    `mcp__web__fetch` and gets the same kind of reply.
 9. **The evals pass.** `docs/doperpowers/specs/2026-10-25-web-fetch-eval-report.md`
-   is committed and shows all four pass criteria met (The evals, below).
+   is committed and shows all four pass criteria met on the held-out final
+   set (The evals, below).
 10. **WebFetch is gone.** After the switch-over, a new session on this Mac
     has no `WebFetch` in its tool list. Its `mcp__web__fetch` runs without a
     permission prompt in the default mode. The claude-config repository
@@ -157,7 +165,8 @@ beside it) in a cache every session and subagent on this machine shares.
 - Pages that render with JavaScript are rendered in a headless browser.
   PDFs are saved for Read, by page.
 - A copy saved in the last 24 hours is reused; `refresh: true` fetches again.
-- Pages behind a login cannot be fetched.
+- Pages behind a login cannot be fetched. Local and private-network
+  addresses are refused; use curl through Bash for a local server.
 ```
 
 It is registered with `isDeferred: false`, so its schema is in the prompt's
@@ -169,8 +178,12 @@ habit should be in sight. Subagents get it as they get every mod tool. A
 subagent's call is served like the main session's.
 
 **Replies.** The page's size estimate decides between the first two shapes.
-It is the main file's UTF-8 bytes divided by 4, shown with `~` because it
-is an approximation. The constant is `INLINE_MAX_TOKENS = 5000`.
+Every size in this design is the same estimate: one token per four ASCII
+characters, plus one token per non-ASCII character. It runs high on
+purpose. Bytes divided by four would undercount Korean or Chinese text by
+two to three times, and the summary's cap has to hold for those pages too.
+Replies show it with `~`, because it is an approximation. The constant is
+`INLINE_MAX_TOKENS = 5000`.
 
 - **R1, the whole page** (no `prompt`, estimate ≤ 5,000): a header, then
   the main file's text. Image links are rewritten to absolute paths so
@@ -230,18 +243,36 @@ fetches again)`, and add `· rendered in headless Chromium` when the render
 path produced the page. Each note the clipper returns (I1 `notes`) follows
 the header as one line.
 
+**Replies by kind.** R1–R3 work on the result's text file: the main file
+for `html`, `markdown`, `text` and `json`, and `page.txt` for a `pdf` whose
+text was extracted. The other cases never send binary content to the
+model or to Haiku:
+
+| Kind | Without `prompt` | With `prompt` |
+|---|---|---|
+| `pdf` with text | R1 or R2 over `page.txt`, the outline one entry per PDF page; the header also names `page.pdf` and says `Read(page.pdf, pages: "N-M")` shows the pages as rendered | R3 over `page.txt` |
+| `pdf` without text | The header, the `page.pdf` path, and `No text extracted here (<the note>); Read the PDF by page: Read(file_path, pages: "1-5").` | The same, opening with `Cannot answer from a PDF without its text.` |
+| `image` | The header and `Image saved: <path>. Read it to see it.` | The same, opening with `A small model cannot read images.` |
+| `binary` | The header and `Saved <path> (<content type>, <size>); not a page.` | The same, opening with `Cannot answer from a <content type> file.` |
+
+For these kinds, `lines`, `tokens` and `outline` are absent from I1, and
+the header leaves them out.
+
 ### The cache
 
 The cache root is the clipper's `--cache-dir` when given, else
-`$WEB_CACHE_DIR`, else `${XDG_CACHE_HOME:-$HOME/.cache}/claude-web`. One
-folder per requested URL:
+`$WEB_CACHE_DIR`, else `${XDG_CACHE_HOME:-$HOME/.cache}/claude-web`. Each
+requested URL gets one entry folder, and each fetch of that URL writes a
+new generation folder inside it:
 
 ```
-<root>/<host>/<slug>-<hash8>/
-  page.md | page.txt | page.json | page.pdf (+ page.txt) | image.<ext> | file.<ext>
-  assets/01.png, 02.jpg, …
-  meta.json
-<root>/.pruned        stamp of the last prune
+<root>/<host>/<slug>-<hash8>/            the entry: one per requested URL
+  <generation>/                          one per fetch; the name is <UTC yyyymmddThhmmssZ>-<4 random hex>
+    page.md | page.txt | page.json | page.pdf (+ page.txt) | image.<ext> | file.<ext>
+    assets/01.png, 02.jpg, …
+    meta.json
+  .tmp-<random>/                         a generation being built
+<root>/.pruned                           stamp of the last prune
 ```
 
 - **Key.** The URL as requested, normalized: scheme and host lowercased,
@@ -251,25 +282,92 @@ folder per requested URL:
   characters (`index` for an empty path). The final URL after redirects
   is recorded in `meta.json`, not keyed: a page reached by two URLs is saved
   twice, which costs disk and nothing else.
-- **Reuse.** A folder whose `meta.json` `fetchedAt` is under 24 hours old
-  answers without a request, unless `refresh` is set. The age goes into
+- **Reuse.** The entry's current generation is the newest one by name
+  that does not start with `.tmp-`. When its `meta.json` `fetchedAt` is
+  under 24 hours old, it answers without a request, unless `refresh` is
+  set. The age goes into
   the header so the agent can judge staleness. 24 hours rather than
   `WebFetch`'s 15 minutes, because the cache is shared and the documentation
   and articles agents fetch rarely change within a day. `refresh` covers the
   page that just changed.
-- **Writes are atomic.** The clipper builds the folder under a temporary
-  name beside it, then renames it into place, replacing any older copy. Two
-  agents fetching the same URL at once each get a complete folder, and the
-  last rename wins.
-- **Pruning.** `clip.mjs prune` deletes folders whose `fetchedAt` is over
-  7 days old. The mod starts it at session start, without awaiting it,
-  when `.pruned` is over a day old.
+- **Writes publish whole generations.** The clipper builds a generation
+  in `.tmp-<random>/` inside the entry, writes `meta.json` last, and then
+  renames the folder to its generation name. That name never exists
+  beforehand, so the rename is atomic. A rename onto an existing non-empty
+  folder fails with `ENOTEMPTY` on macOS and Linux, which is why a
+  generation never replaces another (Surprises & Discoveries).
+  - A reader sees only complete generations.
+  - Two agents fetching the same URL at once each publish their own, and
+    the newer one becomes current.
+  - An interrupted fetch leaves only a `.tmp-` folder, which nothing reads.
+  - A refresh leaves the older generation in place, so a path an agent
+    already cited or handed on stays readable until the prune.
+  - The alternative, deleting the old folder and then renaming the new
+    one in, lost because it leaves a moment with no copy at all, and an
+    interrupted publish there destroys the copy that worked.
+- **Pruning.** `clip.mjs prune` deletes generations whose `fetchedAt` is
+  over 7 days old, `.tmp-` folders over an hour old, and entries left
+  empty. The mod starts it at session start, without awaiting it, when
+  `.pruned` is over a day old.
 - Failed fetches (R4) are never cached.
 
 The shared machine cache won over a per-session temporary folder (no
 sharing, so a research subagent could not hand its parent a path) and over a
 folder in the person's Obsidian vault (clips pile up where they keep their
 own notes). The human chose it.
+
+### The network boundary
+
+The tool reaches public internet addresses only. Every request it makes
+must resolve to a public address, and so must every request the page
+makes it make:
+
+- the agent's URL and each redirect hop;
+- each image download;
+- every request headless Chromium makes while rendering.
+
+**Refused ranges:**
+- IPv4: loopback `127.0.0.0/8`; `0.0.0.0/8`; private `10/8`, `172.16/12`
+  and `192.168/16`; link-local `169.254/16`, which includes cloud metadata;
+  CGNAT `100.64/10`, which is where Tailscale addresses live; multicast and
+  reserved ranges;
+- IPv6: `::1`, `fc00::/7`, `fe80::/10`, and the IPv4-mapped forms of all
+  of the above.
+
+Without this, a public page could put `http://127.0.0.1:…`, a tailnet
+address or a metadata URL in an image or a redirect. The clipper would then
+request it on its own, with no agent decision and no permission check in
+between. The person's machines run local services (the sminos daemon, the
+gateway relay) and tailnet hosts. `WebFetch` never downloads a page's
+images, and it hands cross-host redirects back, so this tool widens the
+exposure, and the boundary closes it.
+
+- **The clipper's own requests** resolve the host first, check every
+  address it resolves to, and connect to the address that was checked, by
+  pinning it in the request's connection lookup. A DNS answer that changes
+  between the check and the connection cannot slip a private address
+  through.
+- **Chromium's requests** go through a filtering HTTP proxy that the
+  clipper runs in-process on `127.0.0.1` for the render's lifetime.
+  - Chromium is launched with `--proxy-server` pointing at it and
+    `--proxy-bypass-list="<-loopback>"`, which removes Chromium's built-in
+    exemption for loopback addresses.
+  - The proxy applies the same check to every plain HTTP request and every
+    `CONNECT`, and connects to the address it checked.
+  - If the proxy cannot start, the page is not rendered, and a note says
+    so. Rendering never runs unguarded.
+- **A refused agent URL** is R4:
+  `refused: <host> resolves to a non-public address (<address>); for a local server use curl through Bash`.
+  A refused redirect is R4 too. A refused image keeps its remote link, with
+  the error `refused: non-public address`.
+- **Tests** need local servers, so `WEB_ALLOW_HOSTS` (a comma-separated
+  list of `host:port`) exempts exactly those. It is a test seam, documented
+  as such. The tests serve the page from an allowed port and a trap
+  endpoint from a port not on the list, then assert the trap received
+  nothing.
+
+Restoring `WebFetch`'s per-domain permission prompts would not close this
+hole, because the requests in question are the page's, not the agent's.
 
 ### From URL to file
 
@@ -315,7 +413,10 @@ its own:
      (it prints the page's DOM after its scripts ran), a fresh temporary
      `--user-data-dir` (so a running Chrome's profile lock never matters),
      `--virtual-time-budget=10000` and a 30-second timeout.
-   - **Finding the binary:** `$WEB_CHROME`; then the newest
+   - **Finding the binary:** `$WEB_CHROME`, when set, is the only
+     candidate. An explicit setting is authoritative: a path that does not
+     exist, or the value `none`, turns rendering off, and the note names
+     `WEB_CHROME`. Unset, the clipper tries the newest
      `chromium_headless_shell-*` in the Playwright cache
      (`$PLAYWRIGHT_BROWSERS_PATH`, else `~/Library/Caches/ms-playwright` on
      macOS and `~/.cache/ms-playwright` on Linux); then Google Chrome at
@@ -339,10 +440,23 @@ its own:
    - **SVGs** are saved as `.svg`. `Read` cannot display one, which is a
      known gap.
 6. **Measure and write.** The line count, the size estimate and the outline
-   are computed over the main file as written, frontmatter included, so an
-   outline line number is the line `Read` shows. Headings inside fenced code
-   blocks are not headings. Then `meta.json` is written, and the folder is
-   renamed into place.
+   are computed over the text file as written: the main file, or `page.txt`
+   for a PDF. Frontmatter is included, so an outline line number is the line
+   `Read` shows. Headings inside fenced code blocks are not headings. Then
+   `meta.json` is written, and the generation is published (The cache).
+
+**One deadline.** A whole `fetch` runs within `CLIP_DEADLINE_MS = 150000`.
+Each stage takes the lesser of its own limit and the time left. Once the
+page itself is in hand, the clipper always publishes it:
+
+- downloads still pending at the deadline are abandoned, and their images
+  keep remote links with the error `not downloaded: time budget`;
+- a render the deadline cuts short leaves the plain result, with a note.
+
+The mod's 180-second process limit sits 30 seconds above the deadline, so
+it fires only on a clipper bug. Without the shared deadline, the stage
+limits as written sum past it: 30 s fetch, 30 s render, and 40 images at
+six at a time and 20 s each, which is 140 s.
 
 ### The summary
 
@@ -367,11 +481,19 @@ Numbering the lines is what lets the citations be exact. Asking for
 citations is the improvement over `WebFetch`.
 
 - **Limits:** `maxTokens: 2048` and `timeoutMs: 120000`.
-- **The cap:** lines are taken from the top until the page's estimated size
-  reaches `SUMMARY_MAX_TOKENS = 150000`, which leaves headroom in Haiku's
-  context window. M2 checks the window of the model `haiku` resolves to,
-  and the Decision Log records the figure. Lines past the cap are not sent,
-  and R3 says so.
+- **The cap:** lines are taken from the top until the estimated size of
+  the numbered lines plus the question reaches
+  `SUMMARY_MAX_TOKENS = 150000`, which leaves headroom in Haiku's context
+  window. M2 checks the window of the model `haiku` resolves to, and the
+  Decision Log records the figure. Lines past the cap are not sent, and R3
+  says so.
+- **Where the text comes from:** the mod gets it from the clipper
+  (`clip.mjs numbered`, I1), not from `$.fs.read`. That call rejects any
+  file over 4 MiB whole and has no offset, and a text page can be larger
+  than that. The numbered excerpt is at most about 600 KB at the cap,
+  within `$.process.run`'s 4 MiB stdout.
+- **When the cap was not enough:** if the API still answers that the
+  prompt is too long, the mod retries once at half the cap.
 - **Usage log:** each call's `usage` is appended as one JSON line to
   `<cache root>/usage.jsonl`, with the time, the URL and the model. A
   completion's cost stays out of the session's cost total (the engine's
@@ -398,8 +520,8 @@ outside world only through `$`, so Defuddle cannot run inside it.
   calls Haiku for `prompt`, and starts the prune.
   - When `node` cannot start, the reply is R4 naming the fix
     (`node not found on PATH`).
-  - The clipper's own timeouts sum to under 2 minutes for a page with
-    images. The mod's `timeoutMs` for the process is 180000.
+  - The mod's `timeoutMs` for the process is 180000, 30 seconds past the
+    clipper's own deadline (From URL to file).
 - Any agent can also run the clipper from Bash, including Codex, a ptc
   kernel, and a session without the mod. That keeps the conversion logic
   testable without a session.
@@ -417,8 +539,16 @@ condition. They compare two configurations on the same research tasks. The
 eval also tests the tool's description, since that text decides whether an
 agent chooses `prompt` or the file at the right times.
 
-- **Tasks.** `web/evals/tasks.json` holds 24 tasks, 3 in each of 8
-  categories:
+- **Tasks.** `web/evals/tasks.json` holds 40 tasks, 5 in each of 8
+  categories.
+  - **Split:** each category's tasks are split 2 for development and 3
+    held out for the final gate (`"set": "dev" | "final"`).
+  - **Development tasks** are what the tool and its description are built
+    and tuned against.
+  - **Final tasks** run once, on the frozen tool, and nothing is tuned
+    against them. Tuning against the same tasks that decide the switch
+    would select for this suite rather than for the web.
+  - **Categories:**
 
   | Category | What the task needs |
   |---|---|
@@ -450,8 +580,11 @@ agent chooses `prompt` or the file at the right times.
   - In both, `Read`, `Grep` and `Glob` are allowed, and `Bash`, `WebSearch`
     and `Agent` are not, so neither configuration can route around its
     fetch tool with `curl`.
-  - Each task runs 3 times per configuration on `sonnet` (Sonnet 5.5) and
-    once on `opus` (Opus 5.5): 192 runs.
+  - On the final set, each task runs 3 times per configuration on
+    `sonnet` (Sonnet 5.5) and once on `opus` (Opus 5.5): 24 × 2 × 4 = 192
+    runs.
+  - On the development set, a round is 2 `sonnet` runs per configuration:
+    16 × 2 × 2 = 64 runs.
   - Every run is `claude -p --output-format stream-json --verbose` in a
     temporary `HOME` and working directory, so no user settings,
     instructions, plugins or cache bleed in. It runs with
@@ -475,32 +608,59 @@ agent chooses `prompt` or the file at the right times.
   - the fetch tool's calls and errors;
   - turns, duration and cost;
   - for B, the Haiku usage from `usage.jsonl`.
-- **Pass.** All four must hold:
-  1. B's correct rate (runs graded correct, over all runs) is at least A's.
-  2. In every category, B has at most one fewer correct run than A, out of
-     12 each.
+- **Pass**, judged on the final set. All four must hold:
+  1. **B is not worse overall, with confidence.**
+     - For each task, `d` = B's share of correct runs minus A's (each out
+       of 4 runs).
+     - The gate is the mean of `d` over the 24 tasks, with a 90% bootstrap
+       interval: 10,000 resamples of tasks, seeded, so the report
+       reproduces.
+     - It passes when the interval's lower bound is at least −0.05, so B
+       is at most 5 points worse at 90% confidence. The task is the
+       resampling unit, because runs of one task are not independent.
+     - A positive mean whose lower bound falls below −0.05 is
+       *inconclusive*, not a pass. 16 more final tasks (2 per category,
+       authored the same way) are added, run, and the gate is recomputed
+       over all 40. If it is still inconclusive, the decision goes to the
+       human.
+  2. **No category trips the tripwire:** B has at most one fewer correct
+     run than A, out of 12 each. Three tasks a category cannot bound a
+     category's regression statistically, so this is a tripwire that
+     catches a gross one. A trip is a fail, reported with the category's
+     transcripts.
   3. No B run has a tool error the tool caused: an exception, an
      unparseable clipper result, or a timeout. Errors that are the site's
      own, such as an HTTP status, do not count.
   4. In `gist`, B's median main-model tokens are at most 1.5× A's.
 
   Cost and duration are reported per category and do not gate.
-- **The pilot first.** Before the full run, 3 tasks × 2 configurations ×
-  1 `sonnet` run project the total cost. The projection goes up the
-  dispatch chain to the main session, which tells the human before the full
-  run. Up to $150 the run proceeds. Above $150, it waits for the human's
-  answer.
-- **When a criterion fails**, the transcripts say why. The fix may touch
-  the tool, its description or its constants (`INLINE_MAX_TOKENS`, the
-  render threshold), and then the whole suite runs again. Rerunning only
-  the failing category would let noise pass. After two fix rounds that
-  still fail, the work stops and the data goes to the human.
+- **The pilot first.** Before any full round, 3 development tasks × 2
+  configurations × 1 `sonnet` run project the cost of a development round
+  and of the final run. The projection goes up the dispatch chain to the
+  main session, which tells the human before the spend. Up to $150 for one
+  development round plus the final run, the work proceeds. Above that, it
+  waits for the human's answer.
+- **Development rounds.** Run a development round, read its transcripts,
+  and fix what they show. The fix may touch the tool, its description or
+  its constants (`INLINE_MAX_TOKENS`, the render threshold). Then run the
+  whole development set again; a single category rerun would let noise
+  pass. The tool is frozen when a development round meets criteria 2–4
+  and shows B's mean `d` at 0 or above, or after three rounds. The Decision
+  Log records the freeze and the commit.
+- **The final run** goes once, on the frozen commit. If it fails, the work
+  stops, and the report and transcripts go to the human. A fix followed by
+  a second final run on the same tasks would be tuning against the gate,
+  so that call is the human's.
 - **Report.** `web/evals/report.py` writes
-  `docs/doperpowers/specs/2026-10-25-web-fetch-eval-report.md`. It has a
-  table per category and configuration (correct, partial, wrong; median
-  tokens, cost and duration; fetch calls), each criterion with its numbers
-  and verdict, and the runs that failed, each with a one-line reason. Raw
-  runs stay in `web/evals/runs/<UTC stamp>/`, which is gitignored.
+  `docs/doperpowers/specs/2026-10-25-web-fetch-eval-report.md`. It has:
+  - a table per category and configuration: correct, partial and wrong;
+    median tokens, cost and duration; fetch calls;
+  - each criterion with its numbers and verdict, criterion 1 with its mean
+    `d` and interval;
+  - the runs that failed, each with a one-line reason;
+  - a summary of each development round.
+
+  Raw runs stay in `web/evals/runs/<UTC stamp>/`, which is gitignored.
 
 ### The switch-over
 
@@ -603,8 +763,26 @@ Acceptance 1–5 hold on this Mac.
   - outline ranges nest and count frontmatter lines;
   - the 80-entry cap drops the deepest level first;
   - an image under 1 KiB keeps its remote link;
-  - a concurrent second write of the same URL leaves one complete folder;
-  - a failed fetch leaves no folder.
+  - the token estimate counts a non-ASCII character as one token;
+  - generations:
+    - a refresh over an existing entry publishes a new generation, and
+      the older one stays readable at the path already returned;
+    - two concurrent fetches of one URL publish two complete generations,
+      and the newer one is current;
+    - an interrupted build leaves only a `.tmp-` folder, which reuse
+      ignores and prune removes;
+    - a failed fetch publishes nothing;
+  - the network boundary:
+    - an agent URL, a redirect and an image pointing at a non-public
+      address are each refused, with the trap endpoint receiving nothing;
+    - a rendered page whose script and `<img>` request the trap gets no
+      request through to it;
+    - a host that resolves to both a public and a private address is
+      refused;
+  - the deadline: a page whose 40 images all stall is still published
+    before `CLIP_DEADLINE_MS`, its images marked `not downloaded: time budget`;
+  - `numbered` stops at its cap and reports the last line it included;
+  - `WEB_CHROME=none` turns rendering off, with the note.
 
 #### M2 — the tool: the `web` plugin and its mod
 
@@ -638,16 +816,20 @@ version bump, the typecheck and CI.
     `$.model.complete` it awaits are not.
   - `$.process.run` caps stdout at 4 MiB. The clipper's result is small
     because it never prints the page.
-  - `$.fs.read` rejects files over 4 MiB, so the mod reads `page.md` for R1
-    and the summary only within the size caps. A larger file gets R2 or a
-    capped summary, which never needs the whole file.
+  - `$.fs.read` rejects files over 4 MiB. The mod reads a file with it only
+    for R1, where `INLINE_MAX_TOKENS` keeps the file small. The summary's
+    text comes from `clip.mjs numbered`.
 - **Does not touch:** `~/.claude`, and the clipper's behavior. A clipper
   fix found here goes back into `web/clipper/` with its test.
 - **Proves:** acceptance 6–8. Its tests must also pin:
   - the choice between R1 and R2 at `INLINE_MAX_TOKENS`;
   - absolute image paths in R1 only;
   - R3 when the summary fails (an R2 or R1 reply opening with the failure);
-  - the cap's `lines 1–N of M` wording;
+  - the cap's `lines 1–N of M` wording, with a text file over 4 MiB
+    summarized through the real mod;
+  - the half-cap retry on a prompt-too-long answer;
+  - every row of "Replies by kind", with and without `prompt`;
+  - a clipper killed by the process limit gives R4, not a hang;
   - each summary call appends one line to `usage.jsonl`;
   - prune started only when the stamp is a day old.
 - **Records** in the Decision Log which mechanism gives R4 its error
@@ -662,8 +844,11 @@ run as written.
 
 - **Touches:** `web/evals/` (`tasks.json`, `run.py`, `grade.py` or the
   grader prompt, `report.py`, `.gitignore` for `runs/`), the eval report
-  under `docs/doperpowers/specs/`, and whatever the failures show needs
-  fixing in `web/`.
+  under `docs/doperpowers/specs/`, whatever the failures show needs fixing
+  in `web/`, and the root `.gitignore`. Its unanchored `evals/` rule, meant
+  for the separately cloned harness at the root, also ignores `web/evals/`.
+  Anchor it as `/evals/`, then check with `git check-ignore` that the
+  suite's sources are tracked and `web/evals/runs/` is ignored.
 - **Consumes:** I3, and the plugin as M2 built it.
 - **Produces:** I4 (the task and result formats) and the report.
 - **Decisions of its own:**
@@ -719,6 +904,8 @@ node web/bin/clip.mjs fetch https://excalidraw.com/ | grep -o '"rendered": *true
 WEB_CHROME=/nonexistent PLAYWRIGHT_BROWSERS_PATH="$(mktemp -d)" node web/bin/clip.mjs fetch --refresh https://excalidraw.com/ | grep -o 'rendering unavailable[^"]*'
 node web/bin/clip.mjs fetch https://arxiv.org/pdf/1706.03762v7 | grep -o '"kind": *"pdf"'
 node web/bin/clip.mjs fetch https://www.anthropic.com/this-page-does-not-exist | grep -o '"status": *404'
+node web/bin/clip.mjs fetch http://127.0.0.1:8080/ | grep -o '"error": *"refused:[^"]*'
+node web/bin/clip.mjs fetch http://169.254.169.254/ | grep -o '"error": *"refused:[^"]*'
 
 # M2
 bash web/tests/run.sh                            # clipper tests, bundle check, claude plugin test web
@@ -728,10 +915,12 @@ CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude -p --plugin-dir web --allowedTools mc
 #   Saved …/page.md, "Prompt caching" …, Outline (lines · ~tokens · images): …
 
 # M3
-python3 -I web/evals/run.py --pilot              # 6 runs; prints the projected full cost
-python3 -I web/evals/run.py                      # 192 runs, resumable
-python3 -I web/evals/report.py web/evals/runs/<stamp> > docs/doperpowers/specs/2026-10-25-web-fetch-eval-report.md
-#   PASS 1 correct rate … PASS 2 … PASS 3 … PASS 4 …
+python3 -I web/evals/run.py --pilot              # 6 runs; prints the projected cost of a dev round and of the final run
+python3 -I web/evals/run.py --set dev            # one development round, 64 runs, resumable
+python3 -I web/evals/run.py --set final          # once, on the frozen commit: 192 runs, resumable
+python3 -I web/evals/report.py web/evals/runs/<final stamp> --dev web/evals/runs/<dev stamp>... \
+  > docs/doperpowers/specs/2026-10-25-web-fetch-eval-report.md
+#   PASS 1 mean d +0.xx, 90% interval [-0.0x, +0.xx] … PASS 2 … PASS 3 … PASS 4 …
 
 # M4 (main session, after merge; ~/.claude is claude-config)
 claude plugin marketplace update doperpowers && claude plugin install web@doperpowers --scope user
@@ -741,20 +930,32 @@ claude -p "List the names of your tools that fetch web pages, one per line."
 
 ### Interfaces and Dependencies
 
-**I1 — the clipper CLI.** `node web/bin/clip.mjs fetch <url> [--refresh] [--cache-dir <dir>]`
-and `node web/bin/clip.mjs prune [--older-than-days 7] [--cache-dir <dir>]`.
+**I1 — the clipper CLI.** Three subcommands:
 
-- `fetch` prints exactly one JSON object on stdout and exits 0, both when
-  it succeeds and when the site fails.
-- A non-zero exit means a bug in the clipper, and its stack is on stderr.
-  The mod turns that into R4, naming the clipper failure.
-- `prune` prints `{ "removed": <n> }`.
+- `node web/bin/clip.mjs fetch <url> [--refresh] [--cache-dir <dir>]`
+  prints exactly one JSON object on stdout and exits 0, both when it
+  succeeds and when the site fails or the network boundary refuses.
+- `node web/bin/clip.mjs numbered <text file> [--max-tokens <n>] [--reserve <n>]`
+  prints one JSON line, `{ "firstLine": 1, "lastLine": <n>, "totalLines": <m> }`,
+  then the file's lines from the first, each prefixed `<number>| `, until
+  the next line would push the estimate of what was printed plus
+  `--reserve` (the question's estimate) past `--max-tokens`.
+- `node web/bin/clip.mjs prune [--older-than-days 7] [--cache-dir <dir>]`
+  prints `{ "removed": <n> }`, the number of generations and `.tmp-`
+  folders it deleted.
+
+A non-zero exit from any of them means a bug in the clipper, and its stack
+is on stderr. The mod turns that into R4, naming the clipper failure.
+
+Environment: `WEB_CACHE_DIR`, `XDG_CACHE_HOME`, `WEB_CHROME`,
+`PLAYWRIGHT_BROWSERS_PATH`, and the test seam `WEB_ALLOW_HOSTS` (The
+network boundary).
 
 ```ts
 type ClipResult =
   | {
       ok: true
-      dir: string            // absolute cache folder
+      dir: string            // absolute generation folder
       file: string           // absolute main file (page.md, page.txt, page.json, page.pdf, image.<ext>, file.<ext>)
       text?: string          // absolute page.txt beside a page.pdf, when extracted
       kind: 'html' | 'markdown' | 'text' | 'json' | 'pdf' | 'image' | 'binary'
@@ -767,10 +968,13 @@ type ClipResult =
       rendered: boolean
       title?: string; site?: string; author?: string; published?: string; description?: string
       words?: number
-      lines: number          // of the main file (of page.txt for a PDF)
-      bytes: number
-      tokens: number         // ceil(bytes / 4) of the file the lines count
-      outline: OutlineEntry[]
+      bytes: number          // of the main file
+      // The next three describe the text file (the main file, or page.txt
+      // for a PDF) and are absent when there is none: a PDF without
+      // extracted text, an image, a binary.
+      lines?: number
+      tokens?: number        // the estimate: ceil(ASCII chars / 4) + non-ASCII chars
+      outline?: OutlineEntry[]
       images: ImageEntry[]
       notes: string[]        // one human-readable line each
     }
@@ -784,8 +988,9 @@ type ImageEntry = { file?: string; url: string; alt: string; line: number; bytes
 **I2 — the cache.** The layout in "The cache". `meta.json` is the
 `ok: true` result as written at fetch time, with `cached` absent. A
 `fetch` answered from the cache prints it with `cached: true`. Its paths
-are absolute and stay valid, because folders are never moved after the
-rename.
+are absolute and name the generation, which is never moved or rewritten
+after it is published, so they stay valid until prune deletes the
+generation.
 
 **I3 — the tool.** `mcp__web__fetch`, with the input schema and
 description in "The tool", replying R1–R4. Constants in the mod:
@@ -798,6 +1003,7 @@ model `haiku`, `maxTokens 2048`, the process `timeoutMs 180000`.
 // web/evals/tasks.json
 type Task = {
   id: string                      // "exact-detail-1"
+  set: 'dev' | 'final'
   category: 'exact-detail' | 'table' | 'code' | 'image' | 'js' | 'pdf' | 'gist' | 'synthesis'
   lang: string                    // BCP 47, "en", "ko"
   url: string
@@ -837,6 +1043,10 @@ type Run = {
   downloaded renders JavaScript-only pages with `--dump-dom`, and pages
   that don't need it extract the same either way.
   Evidence: excalidraw.com 0 → 51 words; notion.notion.site public page 0 → 28 words (9.7 s at `--virtual-time-budget=10000`); vitejs.dev/guide 1,341 = 1,341 words.
+- Observation: renaming a finished folder over an existing non-empty one
+  fails on macOS. Replacing a cache folder in place therefore cannot be
+  atomic, which is why each fetch publishes a new generation.
+  Evidence: both spec reviewers' Node experiments on this Mac, 2026-10-25: `rename` → `ENOTEMPTY` (errno 66, `Directory not empty`), old folder kept.
 - Observation: devcloud hosts have Node (NodeSource LTS) but neither
   Chromium nor poppler, so rendering and PDF text extraction degrade there,
   with notes, until the image adds them.
@@ -853,6 +1063,36 @@ type Run = {
   this tool is how every agent on every machine reads the web.
   Rationale: execspec's default, raised one rung for reach.
   Date/Author: 2026-10-25, authoring session (web-fetch-replacement).
+- Decision: spec review round 1 applied (design review and buildability
+  review, both "needs attention"). Changes:
+  - generation folders replace in-place folder replacement (The cache);
+  - a network boundary covers every request the tool and the page cause
+    (new section);
+  - one 150 s deadline replaces stage limits that summed to 200 s;
+  - replies are defined per non-text kind;
+  - the summary's text comes from `clip.mjs numbered` instead of
+    `$.fs.read`, which rejects files over 4 MiB;
+  - a token estimate that counts non-ASCII characters as one token each;
+  - `WEB_CHROME` is authoritative when set, so acceptance 3 can turn
+    rendering off;
+  - the root `.gitignore`'s `evals/` rule is anchored so `web/evals/` is
+    tracked.
+  Rationale: each finding was checked against the code or by experiment
+  and held. The rejected alternatives are named in the sections changed.
+  Date/Author: 2026-10-25, authoring session.
+- Decision: the eval gate changes from the approved count rule to
+  three things: a held-out final set (40 tasks: 16 development, 24 final),
+  a task-level bootstrap bound with a 5-point non-inferiority margin, and
+  the per-category count kept as a tripwire (The evals).
+  Rationale: the design review computed that the approved rule passes
+  about 57.5% of the time when B is truly 10 points worse in a category
+  (exact binomial, 12 runs, 90% vs 80%), and that fixing against the same
+  tasks that gate selects for the suite. The alternative was the approved
+  rule unchanged: cheaper, and it cannot tell "as good" from noise. **This
+  changes a bar the human approved, so it is put to them; it binds only
+  once they confirm.** If they keep the original rule, revert to it here
+  before M3.
+  Date/Author: 2026-10-25, authoring session.
 
 ## Outcomes & Retrospective
 
