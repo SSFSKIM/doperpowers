@@ -11,6 +11,8 @@ import {
   compactedOfferText,
   describeCompact,
   isOfferText,
+  notRunReason,
+  notRunText,
   offerDue,
   offerText,
   readRequest,
@@ -127,6 +129,23 @@ describe('texts', () => {
     expect(text).toContain('compacted since this offer was made, so there is nothing to decide now')
     expect(text).toContain('Reply "Not compacting." (one line) and end your turn.')
     expect(text).not.toMatch(/\d/)
+  })
+
+  test('the not-run text names why, hands the request back, and leaves out the default resume line', async () => {
+    expect(notRunReason('doperpowers: $.session.compact: a turn is running (t1); the conversation compacts between turns, so call it from turn.complete or later')).toBe(
+      'a prompt that was waiting (a message, a notification or a command) started its turn first',
+    )
+    expect(notRunReason('doperpowers: $.session.compact: Error during compaction: overloaded')).toBe('Error during compaction: overloaded')
+    expect(notRunReason('blocked by a hook')).toBe('blocked by a hook')
+    const bare = notRunText({ resume: RESUME_DEFAULT }, 'blocked by a hook')
+    expect(bare).toBe(
+      'The compaction you asked for did not run: blocked by a hook. Nothing was summarized; the conversation is whole.\n' +
+        'If this is still a checkpoint, compact again (mcp__doperpowers__compact, alone, then end your turn); otherwise go on from where you were.',
+    )
+    expect(notRunText({ instructions: 'keep the ids', resume: 'Pick up M3.' }, 'x').split('\n').slice(2)).toEqual([
+      'Your instructions were: keep the ids',
+      'Your resume prompt was: Pick up M3.',
+    ])
   })
 
   test('the scheduled text tells the model to end its turn and what comes next', async () => {
@@ -296,9 +315,22 @@ function harness(
   const submitted = () => calls.filter((c) => c.op === 'prompt.submit').map((c) => (c.args as { text: string }).text)
   const offers = () => submitted().filter(isOfferText)
   const registered = () => calls.filter((c) => c.op === 'tool.register').map((c) => (c.args as { name: string }).name)
+  /**
+   * A prompt the person types at the terminal, over the turn `turnId` (none:
+   * the session was idle), as the engine raises it: settles once the mod's
+   * hook passes it on, which `calls` records.
+   */
+  const typed = (text: string, turnId?: string) => {
+    const e = { text, origin: { kind: 'composer' }, wait: false, ...(turnId !== undefined && { turnId }) }
+    return find('prompt.submit', e).handler($, e, async (down: { text: string }) => {
+      calls.push({ op: 'typed passed', args: down.text })
+      return { text: down.text, origin: e.origin }
+    }) as Promise<Entered>
+  }
+  const passed = () => calls.filter((c) => c.op === 'typed passed').map((c) => c.args)
   const sessionCompact = (e: Record<string, unknown>, beneath: Record<string, unknown> = { messages: [], tokensBefore: 312_400, tokensAfter: 20_000 }) =>
     find('session.compact', e).handler($, e, async () => beneath) as Promise<Record<string, unknown>>
-  return { calls, call, stop, begin, end, turn, enter, settleWaiting, decline, submitted, offers, sessionCompact, mod, engine, settle, registered, state, queue, hooks }
+  return { calls, call, stop, begin, end, turn, enter, settleWaiting, decline, submitted, offers, typed, passed, sessionCompact, mod, engine, settle, registered, state, queue, hooks }
 }
 
 describe('registerCompact', () => {
@@ -720,23 +752,74 @@ describe('registerCompact', () => {
     expect(h.calls.some((c) => c.op === 'session.compact')).toBe(false)
   })
 
-  test('the resume prompt enters even when the compaction is skipped or fails', async () => {
+  test("a prompt the person types over the turn that called compact passes once the compaction's outcome is in", async () => {
+    let finish = () => {}
+    const h = harness({ compact: () => new Promise((resolve) => (finish = () => resolve({ messages: [], tokensBefore: 400_000, tokensAfter: 20_000 }))) })
+    await h.mod.start(h.engine, start(true))
+    await h.begin()
+    await h.call({ tool: COMPACT, tool_use_id: 't1', resume: 'Resume M3.' })
+    const held = h.typed('and keep the ids', 't')
+    await h.settle()
+    expect(h.passed()).toEqual([])
+    await h.stop()
+    const ending = h.end()
+    await h.settle()
+    expect(h.calls.some((c) => c.op === 'session.compact')).toBe(true)
+    expect(h.passed()).toEqual([])
+    finish()
+    await ending
+    expect(await held).toMatchObject({ text: 'and keep the ids' })
+    expect(h.passed()).toEqual(['and keep the ids'])
+    expect(h.submitted()).toEqual(['Resume M3.'])
+  })
+
+  test('a held prompt goes when the turn ends without an answer, and the request with it', async () => {
+    const h = harness()
+    await h.mod.start(h.engine, start(true))
+    await h.begin()
+    await h.call({ tool: COMPACT, tool_use_id: 't1' })
+    const held = h.typed('stop there', 't')
+    await h.end({ ...turnEnd(), isAborted: true, reason: 'aborted' })
+    await held
+    expect(h.passed()).toEqual(['stop there'])
+    expect(h.calls.some((c) => c.op === 'session.compact' || c.op === 'prompt.submit')).toBe(false)
+  })
+
+  test('a prompt typed while idle, or over a turn that called no compact, is not held', async () => {
+    const h = harness({ tokens: 12_000 })
+    await h.mod.start(h.engine, start(true))
+    await h.begin()
+    await h.typed('over a plain turn', 't')
+    await h.call({ tool: COMPACT, tool_use_id: 't1' })
+    // The engine reserved the session for an idle prompt before raising it.
+    await h.typed('from idle')
+    expect(h.passed()).toEqual(['over a plain turn', 'from idle'])
+  })
+
+  test('a compaction that did not run is told to the model in the resume prompt\'s place, with its request', async () => {
     const skipped = harness({ compact: async () => ({ skip: 'blocked by a hook' }) })
     await skipped.call({ tool: COMPACT, tool_use_id: 't1' })
     await skipped.mod.turnComplete(skipped.engine, turnEnd())
     await skipped.settle()
     expect(skipped.calls.some((c) => c.op === 'ui.toast' && String(c.args).includes('blocked by a hook'))).toBe(true)
-    expect(skipped.submitted()).toEqual([RESUME_DEFAULT])
+    expect(skipped.submitted()).toEqual([notRunText({ resume: RESUME_DEFAULT }, 'blocked by a hook')])
 
-    const failed = harness({
+    // A waiting prompt's turn began first: the engine's words, read for the model.
+    const raced = harness({
       compact: async () => {
-        throw new Error('a turn is running')
+        throw new Error('doperpowers: $.session.compact: a turn is in flight; the conversation compacts between turns')
       },
     })
-    await failed.call({ tool: COMPACT, tool_use_id: 't1' })
-    await failed.mod.turnComplete(failed.engine, turnEnd())
-    await failed.settle()
-    expect(failed.calls.some((c) => c.op === 'ui.toast' && String(c.args).includes('a turn is running'))).toBe(true)
-    expect(failed.submitted()).toEqual([RESUME_DEFAULT])
+    await raced.call({ tool: COMPACT, tool_use_id: 't1', instructions: 'keep the plan', resume: 'Resume M3.' })
+    await raced.mod.turnComplete(raced.engine, turnEnd())
+    await raced.settle()
+    expect(raced.calls.some((c) => c.op === 'ui.log' && String(c.args).includes('a turn is in flight'))).toBe(true)
+    const [told] = raced.submitted()
+    expect(told).toContain('The compaction you asked for did not run: a prompt that was waiting')
+    expect(told).toContain('Your instructions were: keep the plan')
+    expect(told).toContain('Your resume prompt was: Resume M3.')
+    expect(isOfferText(told!)).toBe(false)
+    // It enters through the plugin's own prompt.submit hook untouched.
+    expect(await raced.enter()).toBe(told)
   })
 })

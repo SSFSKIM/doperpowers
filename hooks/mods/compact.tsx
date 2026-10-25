@@ -203,6 +203,34 @@ export function scheduledText(request: CompactRequest): string {
   ].join('\n')
 }
 
+/**
+ * Why a compaction did not run, as the model reads it. The engine starts
+ * whatever waits in its queue (a message, a notification, a command) the
+ * moment a turn ends, before the turn's turn.complete hooks run, and a
+ * compaction called from one then finds that turn begun (2.1.310); the
+ * engine's own words for it are advice to the hook's author.
+ */
+export function notRunReason(why: string): string {
+  if (/a turn is (running|in flight)/.test(why)) {
+    return 'a prompt that was waiting (a message, a notification or a command) started its turn first'
+  }
+  return why.replace(/^[^:]+: \$\.session\.compact: /, '')
+}
+
+/**
+ * What enters in the resume prompt's place when the compaction did not run:
+ * the model ended its turn to be compacted, so it is told the conversation
+ * is whole and handed its request back, to compact again or go on.
+ */
+export function notRunText(request: CompactRequest, why: string): string {
+  return [
+    `The compaction you asked for did not run: ${notRunReason(why)}. Nothing was summarized; the conversation is whole.`,
+    'If this is still a checkpoint, compact again (mcp__doperpowers__compact, alone, then end your turn); otherwise go on from where you were.',
+    ...(request.instructions === undefined ? [] : [`Your instructions were: ${request.instructions}`]),
+    ...(request.resume === RESUME_DEFAULT ? [] : [`Your resume prompt was: ${request.resume}`]),
+  ].join('\n')
+}
+
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error))
 
 /** A tool.describe answer that keeps the tool out of tool-search deferral. */
@@ -216,7 +244,9 @@ const inline = (described: ToolDescribeResult): ToolDescribeResult => ({ ...desc
  * `preventContinuation` in this main turn; the offer in flight, `queued`
  * once submitted and `entering` once it passed `prompt.submit`, until its
  * turn starts, and whether a compaction has stood since it was submitted;
- * and whether the running main turn is an offer's own.
+ * whether the running main turn is an offer's own; and the hold on prompts
+ * the person types over a turn that called compact, from the call until the
+ * compaction's outcome or the request's drop.
  */
 let pending: CompactRequest | undefined
 let threshold: number | undefined
@@ -227,6 +257,7 @@ let prevented = false
 let offer: 'queued' | 'entering' | undefined
 let compactedSinceOffer = false
 let offerTurn = false
+let held: { released: Promise<void>; release: () => void } | undefined
 
 /** Forgets all of it; for tests, which share this module. */
 export function resetCompact() {
@@ -239,6 +270,21 @@ export function resetCompact() {
   offer = undefined
   compactedSinceOffer = false
   offerTurn = false
+  held = undefined
+}
+
+/** Holds the person's prompts typed over this turn, until `release`. */
+function hold() {
+  if (held === undefined) {
+    let release = () => {}
+    const released = new Promise<void>((resolve) => (release = resolve))
+    held = { released, release }
+  }
+}
+
+function release() {
+  held?.release()
+  held = undefined
 }
 
 /** A main-conversation compaction stood: the baseline starts over, and an offer in flight lost its figures. */
@@ -301,7 +347,8 @@ export async function compactStart($: EngineInterface, _: SessionStartInput) {
 /**
  * Turn start: a request still pending is stale (its turn ended by an
  * interruption or an error, not by the model's answer) and is dropped, so a
- * turn the person starts is not compacted behind them. The turn an entering
+ * turn the person starts is not compacted behind them, and the person's
+ * prompts it held go. The turn an entering
  * offer starts is the offer's own. A subagent's turn start (it carries the
  * agentId) is not the main conversation's and passes.
  */
@@ -310,6 +357,7 @@ export function compactTurnStart(e: { agentId?: string }) {
     return
   }
   pending = undefined
+  release()
   prevented = false
   offerTurn = offer === 'entering'
   if (offerTurn) {
@@ -411,13 +459,22 @@ async function enteringOffer($: EngineInterface, text: string): Promise<string> 
 /**
  * The end of a turn the model answered: the compaction it asked for, the
  * first moment after the turn is released (the engine compacts only between
- * turns), then the `resume` prompt, submitted whatever the compaction's
- * outcome, so a session nobody watches never stalls on a turn the model
- * ended to be compacted; else the offer, where it is due. A subagent's turn
- * ends are not the main conversation's and pass.
+ * turns), then the `resume` prompt, or where the compaction did not run (a
+ * waiting prompt's turn began first, a hook skipped it, it failed) what
+ * tells the model so; one or the other is submitted, so a session nobody
+ * watches never stalls on a turn the model ended to be compacted. Else the
+ * offer, where it is due. The person's prompts held over the turn go once
+ * the compaction's outcome is in. A main turn that ended otherwise
+ * (interrupted, refused, an error) drops its request and lets them go. A
+ * subagent's turn ends are not the main conversation's and pass.
  */
 export async function compactTurnComplete($: EngineInterface, e: TurnCompleteInput) {
   if (e.agentId !== undefined) {
+    return
+  }
+  if (e.reason !== 'answer') {
+    pending = undefined
+    release()
     return
   }
   if (pending === undefined) {
@@ -426,9 +483,11 @@ export async function compactTurnComplete($: EngineInterface, e: TurnCompleteInp
   }
   const request = pending
   pending = undefined
+  let notRun: string | undefined
   try {
     const outcome = await $.session.compact(request.instructions === undefined ? {} : { instructions: request.instructions })
     if (outcome.skip !== undefined) {
+      notRun = outcome.skip
       $.ui.toast(`compact: not compacted · ${outcome.skip}`)
     } else {
       // Its rows reach the bridge (the sminos plugin's) through its own
@@ -437,11 +496,14 @@ export async function compactTurnComplete($: EngineInterface, e: TurnCompleteInp
       compacted()
     }
   } catch (error) {
+    notRun = message(error)
     $.ui.toast(`compact: ${message(error)}`)
     $.ui.log(`compact: the compaction failed: ${message(error)}`)
+  } finally {
+    release()
   }
   void $.prompt
-    .submit({ text: request.resume })
+    .submit({ text: notRun === undefined ? request.resume : notRunText(request, notRun) })
     .then((entered) => {
       if (entered.drop !== undefined) {
         $.ui.toast(`compact: the resume prompt did not enter · ${entered.drop}`)
@@ -485,9 +547,9 @@ export function registerCompact(on: On) {
     return result
   })
 
-  // After core closed the turn; the matcher keeps interrupted and errored
-  // turns out, whose request turn.start then drops.
-  on('turn.complete', { reason: 'answer' }, async ($, e, next) => {
+  // After core closed the turn, whatever it ended in (a turn's reason is
+  // never empty).
+  on('turn.complete', { reason: /./ }, async ($, e, next) => {
     const result = await next(e)
     await compactTurnComplete($, e)
     return result
@@ -513,6 +575,22 @@ export function registerCompact(on: On) {
     return result
   }).catch((_, e, next) => next(e))
 
+  // A prompt the person types over the turn that called compact waits for
+  // the compaction. Let through, it is queued and starts its turn the moment
+  // this turn ends, before turn.complete runs, so the compaction finds that
+  // turn begun and does not run; held at this hook, it heads the queue
+  // unscreened, which the engine does not drain (2.1.310), so the turn's end
+  // compacts first and the prompt is answered on the compacted conversation.
+  // One sent while no turn runs (no turnId) has already taken the session
+  // for its turn when it reaches this hook (the engine reserves it first),
+  // so holding it would only stall it.
+  on('prompt.submit', { origin: { kind: 'composer' } }, async (_, e, next) => {
+    if (e.turnId !== undefined) {
+      await held?.released
+    }
+    return next(e)
+  }).catch((_, e, next) => next(e))
+
   // Tool search defers every MCP tool, and this is an MCP tool to the
   // engine: the model would see its name alone and read the guidance only
   // after loading it. A tool.describe verdict of isDeferred: false keeps it
@@ -524,6 +602,7 @@ export function registerCompact(on: On) {
       return { deny: 'compact is for the main conversation; a subagent cannot compact its own context.' }
     }
     pending = readRequest(e)
+    hold()
     return { result: scheduledText(pending) }
   })
 }
