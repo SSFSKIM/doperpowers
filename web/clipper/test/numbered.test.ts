@@ -22,6 +22,23 @@ test('numbering stops before the line that would pass the cap, reserve included,
   assert.ok(body.endsWith(`${header.lastLine}| ${lines[header.lastLine - 1]}\n`))
 })
 
+test('a first line that alone passes the cap is printed cut to fit, and the header says so', () => {
+  const huge = 'x'.repeat(4000) + '한'.repeat(10)
+  const { header, body } = numbered(huge + '\nsecond\n', 300, 20)
+  assert.deepEqual(header, { firstLine: 1, lastLine: 1, totalLines: 2, cut: true })
+  assert.ok(body.startsWith('1| xxxx') && body.endsWith('\n'))
+  assert.equal(body.split('\n').length, 2) // one line, then the final newline
+  assert.ok(estimateTokens(body) + 20 <= 300)
+  assert.ok(estimateTokens(body) + 20 > 296, 'cut as late as fits')
+  // Cut by characters, never inside one: a multi-byte character is whole or absent.
+  const korean = numbered('가'.repeat(500) + '\n', 100, 0)
+  assert.equal(korean.header.cut, true)
+  assert.match(korean.body, /^1\| 가+\n$/)
+  assert.ok(estimateTokens(korean.body) <= 100)
+  // A first line that fits leaves no flag.
+  assert.equal('cut' in numbered('short\n', 100, 0).header, false)
+})
+
 test('a carriage return at a line end is dropped; an empty file numbers nothing', () => {
   assert.equal(numbered('a\r\nb\r\n', 100, 0).body, '1| a\n2| b\n')
   assert.deepEqual(numbered('', 100, 0).header, { firstLine: 1, lastLine: 0, totalLines: 0 })

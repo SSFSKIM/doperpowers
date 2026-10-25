@@ -6,16 +6,17 @@ import { randomBytes } from 'node:crypto'
 import { readdirSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, readdir, rename, rm, rmdir, stat, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 
 export const REUSE_MAX_AGE_MS = 24 * 3600e3
 const TMP_PREFIX = '.tmp-'
 const TMP_STALE_MS = 3600e3
 
+/** Absolute, whatever form it is given in: every path in a result names it (I1, I2). */
 export function cacheRoot(option: string | undefined, env: NodeJS.ProcessEnv = process.env): string {
-  if (option) return option
-  if (env.WEB_CACHE_DIR) return env.WEB_CACHE_DIR
-  return join(env.XDG_CACHE_HOME || join(homedir(), '.cache'), 'claude-web')
+  if (option) return resolve(option)
+  if (env.WEB_CACHE_DIR) return resolve(env.WEB_CACHE_DIR)
+  return resolve(env.XDG_CACHE_HOME || join(homedir(), '.cache'), 'claude-web')
 }
 
 /** `<UTC yyyymmddThhmmssSSSZ>-<4 hex>`: names sort in publishing order. */

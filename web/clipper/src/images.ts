@@ -17,33 +17,86 @@ export const IMAGE_LIMITS = { concurrency: 6, timeoutMs: 20_000, maxBytes: 15 * 
 // Avif is left out: Read cannot show it, and image CDNs pick a format by Accept.
 const IMAGE_ACCEPT = 'image/webp,image/png,image/jpeg,image/gif,image/svg+xml,image/*;q=0.8,*/*;q=0.5'
 
-// [targetStart, targetEnd) is the link target's span in the markdown, angle brackets included.
-type Link = { targetStart: number; targetEnd: number; alt: string; target: string; line: number }
+// An image as written: [start, end) is the span a rewrite replaces, and
+// `rewrite` gives that span's new text for a new target. An inline image
+// replaces only its target (its title stays); a reference image becomes an
+// inline one in place, leaving its definition to any links that share it.
+type Link = { start: number; end: number; alt: string; target: string; line: number; rewrite: (target: string) => string }
 
 const FENCE = /^ {0,3}(`{3,}|~{3,})/
-// ![alt](target "title"): the target may hold one level of balanced parentheses.
-const IMAGE = /!\[((?:\\.|[^\]\\])*)\]\(\s*(<[^>\n]*>|(?:[^\s()]|\([^\s()]*\))+)(\s+(?:"[^"\n]*"|'[^'\n]*'))?\s*\)/dg
+// ![alt](target "title"), the target holding at most one level of balanced
+// parentheses; else ![alt][label], ![label][] or ![label], through a definition.
+const IMAGE = /!\[((?:\\.|[^\]\\])*)\](?:\(\s*(<[^>\n]*>|(?:[^\s()]|\([^\s()]*\))+)(\s+(?:"[^"\n]*"|'[^'\n]*'))?\s*\)|\[((?:\\.|[^\]\\])*)\])?/dg
+const DEFINITION = /^ {0,3}\[((?:\\.|[^\]\\])+)\]:[ \t]*(<[^>\n]*>|\S+)(?:[ \t]+(?:"[^"\n]*"|'[^'\n]*'|\([^)\n]*\)))?[ \t]*$/
 
-/** Image links outside fenced code, with the line each sits on. */
-export function findImageLinks(markdown: string): Link[] {
-  const links: Link[] = []
+const normalizeLabel = (label: string) => label.trim().replace(/\s+/g, ' ').toLowerCase()
+const unbracket = (t: string) => (t.startsWith('<') && t.endsWith('>') ? t.slice(1, -1) : t)
+const destination = (t: string) => (/[\s()<>]/.test(t) ? `<${t}>` : t)
+
+/** The lines outside fenced code, each with its offset in the markdown. */
+function proseLines(markdown: string): { text: string; offset: number; line: number }[] {
+  const out: { text: string; offset: number; line: number }[] = []
   let offset = 0
   let fence: string | null = null
-  const lines = markdown.split('\n')
-  lines.forEach((line, i) => {
-    const f = FENCE.exec(line)
+  markdown.split('\n').forEach((text, i) => {
+    const f = FENCE.exec(text)
     if (fence) {
-      if (f && f[1][0] === fence[0] && f[1].length >= fence.length && line.trim() === f[1]) fence = null
+      if (f && f[1][0] === fence[0] && f[1].length >= fence.length && text.trim() === f[1]) fence = null
     } else if (f) fence = f[1]
-    else {
-      for (const m of line.matchAll(IMAGE)) {
-        const target = m[2].startsWith('<') ? m[2].slice(1, -1) : m[2]
-        const [targetStart, targetEnd] = m.indices![2]
-        links.push({ targetStart: offset + targetStart, targetEnd: offset + targetEnd, alt: m[1].replace(/\\(.)/g, '$1'), target, line: i + 1 })
-      }
-    }
-    offset += line.length + 1
+    else out.push({ text, offset, line: i + 1 })
+    offset += text.length + 1
   })
+  return out
+}
+
+/** The spans of a line's inline code: a backtick run up to the next run of the same length. */
+function codeSpans(line: string): [number, number][] {
+  const spans: [number, number][] = []
+  const runs = [...line.matchAll(/`+/g)].filter(r => !escaped(line, r.index))
+  for (let i = 0; i < runs.length; i++) {
+    const close = runs.findIndex((r, j) => j > i && r[0].length === runs[i][0].length)
+    if (close < 0) continue
+    spans.push([runs[i].index, runs[close].index + runs[close][0].length])
+    i = close
+  }
+  return spans
+}
+
+/** Whether the character at `at` is escaped by an odd run of backslashes before it. */
+function escaped(line: string, at: number): boolean {
+  let n = 0
+  while (at - n - 1 >= 0 && line[at - n - 1] === '\\') n++
+  return n % 2 === 1
+}
+
+/** Image links where they render: not in fenced or inline code, not escaped. */
+export function findImageLinks(markdown: string): Link[] {
+  const lines = proseLines(markdown)
+  const definitions = new Map<string, string>()
+  for (const { text } of lines) {
+    const d = DEFINITION.exec(text)
+    if (d && !definitions.has(normalizeLabel(d[1]))) definitions.set(normalizeLabel(d[1]), unbracket(d[2]))
+  }
+  const links: Link[] = []
+  for (const { text, offset, line } of lines) {
+    if (DEFINITION.test(text)) continue
+    const code = codeSpans(text)
+    for (const m of text.matchAll(IMAGE)) {
+      if (escaped(text, m.index) || code.some(([s, e]) => m.index >= s && m.index < e)) continue
+      const rawAlt = m[1]
+      const alt = rawAlt.replace(/\\(.)/g, '$1')
+      if (m[2] !== undefined) {
+        const [s, e] = m.indices![2]
+        links.push({ start: offset + s, end: offset + e, alt, target: unbracket(m[2]), line, rewrite: t => t })
+        continue
+      }
+      // A reference: ![alt][label], or ![label][] and ![label], whose label is the alt.
+      if (text[m.index + m[0].length] === '(') continue
+      const target = definitions.get(normalizeLabel(m[4] || rawAlt))
+      if (target === undefined) continue
+      links.push({ start: offset + m.index, end: offset + m.index + m[0].length, alt, target, line, rewrite: t => `![${rawAlt}](${destination(t)})` })
+    }
+  }
   return links
 }
 
@@ -99,10 +152,11 @@ export async function downloadImages(
   const images: ImageEntry[] = links.map((l, i) => {
     const url = absolute[i]
     const r = results.get(url)!
-    // A saved image links to its file; one that was not keeps a remote link, made absolute.
-    const target = r.file ?? (url.startsWith('data:') ? markdown.slice(l.targetStart, l.targetEnd) : url)
-    out += markdown.slice(at, l.targetStart) + target
-    at = l.targetEnd
+    // A saved image links to its file; one that was not keeps a remote link,
+    // made absolute. A data: URI that was not saved stays as it was written.
+    const keep = !r.file && url.startsWith('data:')
+    out += markdown.slice(at, l.start) + (keep ? markdown.slice(l.start, l.end) : l.rewrite(r.file ?? url))
+    at = l.end
     const shown = url.startsWith('data:') ? url.slice(0, 40) + '…' : url
     return { ...(r.file ? { file: r.file, bytes: r.bytes } : {}), url: shown, alt: l.alt, line: l.line, ...(r.error ? { error: r.error } : {}) }
   })

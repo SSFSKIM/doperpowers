@@ -22,6 +22,12 @@ test('the cache root is --cache-dir, else WEB_CACHE_DIR, else XDG_CACHE_HOME/cla
   assert.equal(cacheRoot(undefined, {}), join(homedir(), '.cache', 'claude-web'))
 })
 
+test('a relative cache root, from the option or the environment, is made absolute', () => {
+  assert.equal(cacheRoot('clips', {}), join(process.cwd(), 'clips'))
+  assert.equal(cacheRoot(undefined, { WEB_CACHE_DIR: 'rel/web' }), join(process.cwd(), 'rel', 'web'))
+  assert.equal(cacheRoot(undefined, { XDG_CACHE_HOME: 'xdg' }), join(process.cwd(), 'xdg', 'claude-web'))
+})
+
 test('generation names carry the UTC time to the millisecond and a random suffix', () => {
   assert.equal(generationName(new Date('2026-10-25T10:15:30.042Z'), 'a1f3'), '20261025T101530042Z-a1f3')
 })

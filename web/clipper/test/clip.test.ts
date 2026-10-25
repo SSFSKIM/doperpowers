@@ -36,6 +36,7 @@ before(async () => {
     '/img/pixel.gif': send('image/gif', PIXEL_GIF),
     '/img/photo': send('image/webp', pngBytes(4000, 5)),
     '/notes.md': send('text/markdown; charset=utf-8', '# Field Notes\n\nSome notes in markdown.\n\n![chart](/img/diagram.png)\n\n## Later\n\nMore.\n'),
+    '/pixel.md': send('text/markdown', '# Pixel\n\n![tracker](/img/pixel.gif)\n'),
     '/data.json': send('application/json', '{"a":1,"b":[1,2]}'),
     '/readme.txt': send('text/plain; charset=utf-8', 'Plain text.\n# not a heading\n'),
     '/paper.pdf': send('application/pdf', pdfBytes(['First page words', 'Second page words', 'Third page words'])),
@@ -115,16 +116,11 @@ test('an article becomes page.md with clipper frontmatter and its images downloa
 })
 
 test('an image under 1 KiB keeps its remote link, with the reason recorded', async () => {
-  const cacheDir = await tmpCache()
-  const r = ok(await clip(`${server.origin}/article`, { cacheDir, env }))
-  const pixel = r.images.find(i => i.url.endsWith('/img/pixel.gif'))
-  // Defuddle may drop the pixel itself; when it is kept, it must keep its remote link.
-  if (pixel) {
-    assert.equal(pixel.file, undefined)
-    assert.match(pixel.error!, /under 1 KiB/)
-    const md = await readFile(r.file, 'utf8')
-    assert.ok(md.includes(`${server.origin}/img/pixel.gif`))
-  }
+  // Served markdown, so no extractor stands between the link and the image step.
+  const r = ok(await clip(`${server.origin}/pixel.md`, { cacheDir: await tmpCache(), env }))
+  assert.deepEqual(r.images, [{ url: `${server.origin}/img/pixel.gif`, alt: 'tracker', line: 9, error: 'under 1 KiB (42 bytes)' }])
+  const md = await readFile(r.file, 'utf8')
+  assert.equal(md.split('\n')[8], `![tracker](${server.origin}/img/pixel.gif)`)
 })
 
 test('the cache answers a repeat request without a request, and --refresh publishes a new generation', async () => {

@@ -1,7 +1,7 @@
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
-import { writeFile } from 'node:fs/promises'
+import { writeFile, readdir, realpath } from 'node:fs/promises'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { startServer, tmpCache, send, fixture } from './helpers.ts'
@@ -38,6 +38,26 @@ test('fetch prints exactly one JSON object and exits 0, for a page and for a fai
   const bad = await run(['fetch', `${server.origin}/missing`, '--cache-dir', cacheDir], env)
   assert.equal(bad.code, 0)
   assert.deepEqual(Object.keys(JSON.parse(bad.stdout)).sort(), ['bodySnippet', 'error', 'ok', 'status', 'url'])
+})
+
+test('a host that does not resolve is a failure result with exit 0, not a crash', async () => {
+  const cacheDir = await tmpCache()
+  const r = await run(['fetch', 'http://clipper-review-nxdomain.invalid/', '--cache-dir', cacheDir])
+  assert.equal(r.code, 0, r.stderr)
+  assert.equal(r.stderr, '')
+  const result = JSON.parse(r.stdout)
+  assert.equal(result.ok, false)
+  assert.match(result.error, /^network error: .*clipper-review-nxdomain\.invalid/)
+  assert.deepEqual(await readdir(cacheDir), [])
+})
+
+test('a relative --cache-dir still gives absolute paths', async () => {
+  const cwd = await tmpCache()
+  const r = await new Promise<string>(resolve => execFile(process.execPath, [CLI, 'fetch', `${server.origin}/article`, '--cache-dir', 'clips'],
+    { cwd, env: { ...process.env, WEB_CHROME: 'none', WEB_ALLOW_HOSTS: `127.0.0.1:${server.port}` } }, (_e, stdout) => resolve(stdout)))
+  const result = JSON.parse(r)
+  assert.ok(result.dir.startsWith(join(await realpath(cwd), 'clips') + '/') || result.dir.startsWith(join(cwd, 'clips') + '/'), result.dir)
+  assert.ok(result.file.startsWith('/'))
 })
 
 test('the cache root falls back to WEB_CACHE_DIR', async () => {

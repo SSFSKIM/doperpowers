@@ -6,7 +6,7 @@ import https from 'node:https'
 import type { IncomingHttpHeaders, IncomingMessage } from 'node:http'
 import { createBrotliDecompress, createGunzip, createInflate } from 'node:zlib'
 import type { Readable } from 'node:stream'
-import { pinnedLookup, resolveChecked } from './netguard.ts'
+import { pinnedLookup, RefusedError, resolveChecked } from './netguard.ts'
 import type { Address } from './netguard.ts'
 
 export const USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36'
@@ -46,16 +46,27 @@ export async function request(start: URL, o: RequestOptions): Promise<HttpRespon
     if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new HttpError(`unsupported scheme: ${url.protocol}`)
     const port = Number(url.port) || (url.protocol === 'https:' ? 443 : 80)
     const addresses = await withTimeout(resolveChecked(url.hostname, port, { allow: o.allow }), timeLeft(), timedOut)
+      .catch(e => { throw asTransportError(e) })
     const res = await once(url, addresses, { ...o, method, body }, timeLeft(), timedOut)
     const location = res.headers.location
     if ([301, 302, 303, 307, 308].includes(res.status) && location) {
       if (hop >= MAX_REDIRECTS) throw new HttpError(`too many redirects (more than ${MAX_REDIRECTS})`)
-      url = new URL(location, url)
+      try { url = new URL(location, url) } catch { throw new HttpError(`redirected to an invalid location: ${location.slice(0, 200)}`) }
       if (res.status === 303 || ((res.status === 301 || res.status === 302) && method === 'POST')) { method = 'GET'; body = undefined }
       continue
     }
     return res
   }
+}
+
+/**
+ * The transport boundary: a refusal and an HttpError pass as they are, and any
+ * other failure on the way to a connection (a name that does not resolve, a
+ * resolver error) becomes a network error, which a fetch reports as a result.
+ */
+function asTransportError(e: unknown): Error {
+  if (e instanceof RefusedError || e instanceof HttpError) return e
+  return new HttpError(`network error: ${e instanceof Error ? e.message : String(e)}`)
 }
 
 function withTimeout<T>(p: Promise<T>, ms: number, error: () => Error): Promise<T> {

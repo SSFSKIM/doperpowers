@@ -1,6 +1,6 @@
 // The cache key: one entry folder per requested URL.
 import { createHash } from 'node:crypto'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 
 /** Scheme and host lowercased, default port and fragment dropped, query kept. */
 export function normalizeUrl(url: URL): string {
@@ -14,5 +14,5 @@ export function entryDir(root: string, url: URL): string {
   const hash = createHash('sha256').update(key).digest('hex').slice(0, 8)
   const host = url.hostname.toLowerCase().replace(/[^a-z0-9.-]+/g, '_') + (url.port ? `_${url.port}` : '')
   const slug = url.pathname.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60).replace(/-+$/, '') || 'index'
-  return join(root, host, `${slug}-${hash}`)
+  return join(resolve(root), host, `${slug}-${hash}`)
 }
