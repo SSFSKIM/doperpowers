@@ -48,7 +48,9 @@ session on the machine.
   buildability review): 9 findings, all applied (Decision Log).
 - [x] (2026-10-25) The human confirmed the stricter eval gate, with the
   runs on `sol` at `xhigh` (Decision Log).
-- [ ] Spec review round 2 on the revisions.
+- [x] (2026-10-25) Spec review round 2: 2 findings, both applied (WebRTC
+  egress, generation ordering). Converged: the findings narrowed to
+  mechanisms with tests, so no round 3.
 - [ ] M1 — the clipper.
 - [ ] M2 — the tool: the `web` plugin and its mod.
 - [ ] M3 — the evals, and acceptance 1–9.
@@ -268,7 +270,8 @@ new generation folder inside it:
 
 ```
 <root>/<host>/<slug>-<hash8>/            the entry: one per requested URL
-  <generation>/                          one per fetch; the name is <UTC yyyymmddThhmmssZ>-<4 random hex>
+  <generation>/                          one per fetch; the name is <UTC yyyymmddThhmmssSSSZ>-<4 random hex>,
+                                         the time taken just before the publishing rename, to the millisecond
     page.md | page.txt | page.json | page.pdf (+ page.txt) | image.<ext> | file.<ext>
     assets/01.png, 02.jpg, …
     meta.json
@@ -284,7 +287,12 @@ new generation folder inside it:
   is recorded in `meta.json`, not keyed: a page reached by two URLs is saved
   twice, which costs disk and nothing else.
 - **Reuse.** The entry's current generation is the newest one by name
-  that does not start with `.tmp-`. When its `meta.json` `fetchedAt` is
+  that does not start with `.tmp-`. The name's millisecond timestamp
+  orders generations by when they were published. Only two generations
+  published in the same millisecond fall back to the random suffix, and
+  those are equally fresh, so either may be current. A timestamp in whole
+  seconds would let a refresh lose to the copy it replaced, by the luck of
+  the suffix. When its `meta.json` `fetchedAt` is
   under 24 hours old, it answers without a request, unless `refresh` is
   set. The age goes into
   the header so the agent can judge staleness. 24 hours rather than
@@ -355,6 +363,19 @@ exposure, and the boundary closes it.
     exemption for loopback addresses.
   - The proxy applies the same check to every plain HTTP request and every
     `CONNECT`, and connects to the address it checked.
+  - **Traffic a proxy setting does not cover is switched off.** The proxy
+    governs HTTP, HTTPS and WebSocket only. WebRTC opens UDP sockets
+    directly: round-2 review reproduced a rendered page sending packets to
+    a loopback UDP trap past the proxy. So Chromium also gets
+    `--force-webrtc-ip-handling-policy=disable_non_proxied_udp` and
+    `--disable-quic`.
+  - **The tests decide whether rendering ships at all.** They hold every
+    egress channel the page can open to a trap: an `<img>`, a script's
+    `fetch`, a WebSocket, and an `RTCPeerConnection` aimed at a UDP trap.
+    They run against the Playwright headless shell installed here. If
+    any channel reaches its trap with these flags, the flags are
+    insufficient, the clipper ships with rendering off, and the Decision
+    Log says why.
   - If the proxy cannot start, the page is not rendered, and a note says
     so. Rendering never runs unguarded.
 - **A refused agent URL** is R4:
@@ -413,7 +434,9 @@ its own:
    - **How it renders:** the Chromium binary runs headless with `--dump-dom`
      (it prints the page's DOM after its scripts ran), a fresh temporary
      `--user-data-dir` (so a running Chrome's profile lock never matters),
-     `--virtual-time-budget=10000` and a 30-second timeout.
+     `--virtual-time-budget=10000` and a 30-second timeout. It also gets
+     the proxy and egress flags from "The network boundary", without
+     which it does not run.
    - **Finding the binary:** `$WEB_CHROME`, when set, is the only
      candidate. An explicit setting is authoritative: a path that does not
      exist, or the value `none`, turns rendering off, and the note names
@@ -794,14 +817,17 @@ Acceptance 1–5 hold on this Mac.
       the older one stays readable at the path already returned;
     - two concurrent fetches of one URL publish two complete generations,
       and the newer one is current;
+    - two refreshes in the same second whose random suffixes sort in
+      reverse order leave the later one current;
     - an interrupted build leaves only a `.tmp-` folder, which reuse
       ignores and prune removes;
     - a failed fetch publishes nothing;
   - the network boundary:
     - an agent URL, a redirect and an image pointing at a non-public
       address are each refused, with the trap endpoint receiving nothing;
-    - a rendered page whose script and `<img>` request the trap gets no
-      request through to it;
+    - a rendered page whose `<img>`, script `fetch`, WebSocket and
+      `RTCPeerConnection` (aimed at a UDP trap) target non-public
+      addresses gets nothing through to any trap;
     - a host that resolves to both a public and a private address is
       refused;
   - the deadline: a page whose 40 images all stall is still published
@@ -1127,6 +1153,18 @@ type Run = {
   so `sol` does not grade its own answers. That is a reading of "use
   sol-xhigh as models" as the runs' model; if the human meant the grader
   too, it changes here.
+  Date/Author: 2026-10-25, authoring session.
+- Decision: spec review round 2 applied.
+  - Rendering adds `--force-webrtc-ip-handling-policy=disable_non_proxied_udp`
+    and `--disable-quic`, and a trap test per egress channel decides
+    whether rendering ships.
+  - Generation names carry milliseconds, not seconds.
+
+  Rationale: the reviewer reproduced WebRTC UDP reaching a loopback trap
+  past the proxy with the installed headless shell. It also showed that
+  whole-second names order same-second refreshes by their random suffix.
+  The alternative for WebRTC, removing `RTCPeerConnection` with an
+  injected script, lost because a page's own script can run before it.
   Date/Author: 2026-10-25, authoring session.
 
 ## Outcomes & Retrospective
