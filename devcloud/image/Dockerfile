@@ -15,6 +15,7 @@ FROM ubuntu:24.04
 RUN --mount=type=bind,source=devcloud/image/packages.sh,target=/tmp/packages.sh bash /tmp/packages.sh apt
 RUN --mount=type=bind,source=devcloud/image/packages.sh,target=/tmp/packages.sh bash /tmp/packages.sh gcloud
 RUN --mount=type=bind,source=devcloud/image/packages.sh,target=/tmp/packages.sh bash /tmp/packages.sh tools
+RUN --mount=type=bind,source=devcloud/image/packages.sh,target=/tmp/packages.sh bash /tmp/packages.sh chromium
 RUN --mount=type=bind,source=devcloud/image/fetch-claude.sh,target=/tmp/fetch-claude.sh bash /tmp/fetch-claude.sh
 # The build inputs after the download layers: a RUN after an ARG is keyed on its value.
 ARG DEVCLOUD_USER

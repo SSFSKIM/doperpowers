@@ -39,8 +39,9 @@ ENV_PATH = pathlib.Path(services.ENV_PATH)
 MANAGED_SETTINGS = pathlib.Path("/etc/claude-code/managed-settings.json")
 # Where a push from a host's ~/.claude goes: nowhere, loudly.
 PUSH_URL = "DISABLED--a-devcloud-host-only-receives-its-configuration"
-ENV_HEADER = ("# Written by devcloud (boot step 10, reconcile, refresh-secrets): the identity of\n"
-              "# boot step 1, the profile's profile.env, and secrets.toml's env targets.\n"
+ENV_HEADER = ("# Written by devcloud (boot step 10, reconcile, refresh-secrets): the image's\n"
+              "# defaults, the identity of boot step 1, the profile's profile.env, and\n"
+              "# secrets.toml's env targets.\n"
               "# Edits here are lost at the next reconcile.\n")
 
 
@@ -637,13 +638,17 @@ def apply(r):
 # Per-host identity: the session store's host name, sminos's machine name
 # and boot id. Only boot step 1 sets them; the profile is every host's.
 IDENTITY_KEYS = ("SESSION_MIRROR_HOST", "DAEMON_HOST", "DAEMON_BOOT_ID")
+# What the image installed for every session to find, here rather than in a
+# shell's startup so that a session a service starts (a sminos seat) finds it
+# too: the web plugin's renderer (image/packages.sh, part chromium).
+IMAGE_ENV = {"WEB_CHROME": "/usr/local/bin/chrome-headless-shell"}
 
 
 def host_env(identity, profile_env, secret_env):
-    """/etc/devcloud/env's pairs: the identity, then profile.env, then
-    secrets.toml's env targets; and the identity keys the latter two tried to
-    set, which are dropped (hosts would share a name or a boot id)."""
-    pairs = dict(identity)
+    """/etc/devcloud/env's pairs: the image's, the identity, then profile.env,
+    then secrets.toml's env targets; and the identity keys the latter two tried
+    to set, which are dropped (hosts would share a name or a boot id)."""
+    pairs = {**IMAGE_ENV, **identity}
     ignored = set()
     for source in (profile_env, secret_env):
         for key, value in source.items():
