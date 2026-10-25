@@ -90,7 +90,7 @@ Seventeen skills, grouped by what they're for. Each one auto-triggers from its d
 **Keep it honest**
 - `review-code` — the Claude-native code-review path: effort-routed to registered reviewer agents on GPT through the local gateway (low/medium/high) or a multi-lens panel workflow (xhigh/max)
 - `codex-companion` — drive OpenAI Codex models for independent reviews and delegated work (manual `/codex-companion`)
-- `progress-report` — explain a change your human partner didn't watch, or a concept, so they can steer it: behavior, the decisions made for them, limits, how to check; or mechanism, boundaries, what it means for them — delivered as a self-contained HTML page opened in their browser (manual `/progress-report`)
+- `present` — an HTML explainer article that leaves your human partner understanding a subject end to end: work an agent shipped, a design you discussed, a spec, someone else's code, or any idea (manual `/present`)
 
 **Track it and coordinate**
 - `issue-tracker` — the board as a backlog, in GitHub issues or on an Arkho board service: register, search, take a named ticket, close it out (its automatic dispatch is dormant)
