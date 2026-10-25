@@ -70,7 +70,10 @@ session on the machine.
   in a `claude -p` session R1 with 8 absolute image paths, R2 whose 36
   heading entries each open on their heading, R3 with every cited line
   holding its value, and a subagent served the same.
-- [ ] Branch review (doperpowers:review-code, high), merge.
+- [x] (2026-10-25) Branch review (doperpowers:review-code, high): four
+  defects fixed after the final run (`55d814cb`, `199e5dfe`; Decision
+  Log), then converged with the remaining findings logged as debt in the
+  pull request. Pull request opened; the merge is the main session's.
 - [ ] M4 — the switch-over, after the merge (acceptance 10).
 
 ## Acceptance
@@ -1500,4 +1503,56 @@ type Run = {
 
 ## Outcomes & Retrospective
 
-Pending — written at finish.
+2026-10-25, at the pull request (M1–M3 and the branch review; M4 waits
+for the merge).
+
+**What was built.** `web/` is a fifth plugin in this marketplace, at
+0.1.0. Its mod registers `mcp__web__fetch` (not deferred), which runs the
+clipper (`web/bin/clip.mjs`, Defuddle on linkedom, bundled and committed)
+and answers R1–R4 as designed. Pages land as Obsidian-Web-Clipper-shaped
+markdown with their images in a machine-shared cache of immutable
+generations. Pages that need JavaScript are rendered in headless Chromium
+behind an in-process filtering proxy with WebRTC and QUIC off. PDFs are
+saved with their `pdftotext` text, an outline by page. A 403 is retried
+once through the guarded render path. The eval suite lives in
+`web/evals/` with its 40 tasks, 16 reserves, runner, grader and report.
+
+**Against the purpose.** The gate the human set passed: on the held-out
+final set B was not worse (mean d 0.000, 90% interval [0, 0]), no category
+tripped, no tool-caused error, and gist cost 0.67× A's tokens.
+Acceptance 1–9 held as written. The gate passed by tying, not by winning:
+`sol` at `xhigh` answered every task correctly with either tool, in the
+development rounds and the final run alike. What the suite does show is
+cost. On PDFs B used 1.1 fetch calls and 26k median tokens against A's
+15.9 and 67k; on gists and images B took about half the time. Code and
+synthesis cost B more tokens (16k against 10.6k), since B reads the file
+where A reads a summary. The design's premise that `WebFetch` never shows
+the page also did not hold in 2.1.310, which pages long text in windows
+and lets an agent `Read` an image it fetched. The switch-over's case
+therefore rests on equal correctness, verifiable citations, files that can
+be handed on, and cheaper PDFs and gists, not on better answers. If a
+better-answers claim is ever wanted, the suite needs harder tasks.
+
+**What the reviews caught.** Every task review and the branch review found
+real defects; most were in the clipper's edges, and two were
+security-relevant: a `Referer` that would have sent signed page URLs to
+third-party image hosts, and renders that could publish a browser-denied
+page as a cached success. The freeze review before the final run was the
+most valuable process step: the dev round 1 fixes it reviewed had
+introduced three defects that the saturated development set could not
+have shown. Reviews of the 403/NetLog evidence converged on a residue: a
+heuristic signal invites ever more contrived counterexamples, and the
+loop was stopped there.
+
+**Left behind** (listed in the pull request for tickets): the deferred
+review findings (code spans across lines taken for images, R1 rewriting a
+same-line inline-code literal, an adjacent one-lazy-image wrapper taken
+for a `<noscript>` twin, a headerless download after a denial page taken
+as the document); markdown-first stubs (bundlephobia now answers the
+markdown `Accept` with a 7-word stub, never rendered); Terraform's render
+hang; deps.dev's lost "Published" header; and the backlog the design
+named (Chromium and poppler on the devcloud image, MAWS drawing the new
+tool, SVG rasterizing, the logged-in mode).
+
+**For M4.** Use the `--allowedTools=` form in any `claude -p` check: the
+spaced form swallows the prompt.
