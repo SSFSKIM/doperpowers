@@ -1500,6 +1500,18 @@ type Run = {
   asset; an adjacent wrapper holding one lazy image taken for a
   `<noscript>` chart's twin.
   Date/Author: 2026-10-25, plan executor.
+- Decision: the eval result is taken as standing for the shipped tool
+  (`aa361be6`), so the switch-over proceeds without a second final run.
+  Rationale: a model-free diff of the clipper on all 40 eval task URLs
+  shows the post-eval fixes change nothing those tasks measured. The
+  frozen bundle (`542ba02d`) and the head bundle ran side by side, each
+  with `--refresh` and its own cache, and agreed on every URL: `ok`,
+  `kind`, `rendered`, `words`, `lines`, images found, images saved, and
+  image errors. Totals for both: 40 of 40 ok, 6 rendered, 103 images
+  saved. That includes the referrer change, the one fix that could have
+  cost hotlink-protected images. A second final run (192 `sol` runs) on a
+  suite where every run is already correct would have measured noise.
+  Date/Author: 2026-10-25, authoring session.
 
 ## Outcomes & Retrospective
 
