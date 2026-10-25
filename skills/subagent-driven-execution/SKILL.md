@@ -73,10 +73,10 @@ or brainstorm first.
    downstream consumes yet may keep executing and are reviewed together
    when the frontier closes (the next task consumes from them, or the Plan
    of Work ends): one review package per task (`scripts/review-package
-   SPEC_FILE BASE HEAD`, each task's own BASE..HEAD), one task reviewer
-   per task (`doperpowers:task-reviewer`) with the printed path,
+   SPEC_FILE BASE HEAD`, each task's own BASE..HEAD), one reviewer per
+   task (Model selection below names the rung) with the printed path,
    dispatched together when their focused tests cannot
-   collide — reviews read their package, not the tree, so hermetic suites
+   collide — reviews are read-only, so hermetic suites
    run concurrently; suites that share mutable state — a test database, a
    fixed port — run one reviewer at a time.
    Where no interface is declared but two tasks touch the same files,
@@ -93,26 +93,25 @@ or brainstorm first.
    detached worktree at the packaged HEAD (`git worktree add --detach
    <workspace>/review-N <HEAD_N>`, removed after the review) rather
    than in the shared checkout.
-6. **Findings:** Critical/Important findings go back to the executor that
-   wrote the code — resume it with the findings; it holds the task's
-   context and skips the orientation a fresh fixer pays. Several tasks
-   with findings in one wave resume one at a time (shared worktree).
-   Re-review by resuming the reviewer with the fix commits' package
-   (`scripts/review-package SPEC_FILE FIX_BASE FIX_HEAD` — the fix range:
-   the reviewer already holds the task's original package, and a deferred
-   task's fix lands past its siblings' commits); repeat until both
-   verdicts are clean. That message names the fix range, sends the
-   reviewer back to the report (the executor appended the fix's test
-   evidence there), and carries the refreshed checkout head and what
-   landed since — plus a fresh detached worktree at the fix head if the
-   review needs the task's own tree. A resumed reviewer otherwise judges
-   the fix against its pre-fix memory. A fresh fixer (a new
-   `doperpowers:task-executor` briefed with the findings) when the executor
-   cannot be resumed, or when its frame is the problem — two failed
-   re-reviews is the usual sign. Record Minor findings in the ledger —
-   the final review triages that list, so it is read, not discarded. Fix
-   through a worker, not your own edits: manual fixes pollute your
-   context and skip review.
+6. **Findings:** a finding that holds the task — one you would not build
+   the next milestone on — goes back to the executor that wrote the code:
+   resume it with the findings; it holds the task's context and skips the
+   orientation a fresh fixer pays. Several tasks with findings in one wave
+   resume one at a time (shared worktree). Re-review by resuming the
+   reviewer with the fix commits' package (`scripts/review-package
+   SPEC_FILE FIX_BASE FIX_HEAD` — the fix range: the reviewer already
+   holds the task's original package, and a deferred task's fix lands past
+   its siblings' commits); repeat until no finding holds the task. That
+   message names the fix range and carries the refreshed
+   checkout head and what landed since — plus a fresh detached worktree at
+   the fix head if the review needs the task's own tree. A resumed reviewer
+   otherwise judges the fix against its pre-fix memory. A fresh fixer (a
+   new `doperpowers:task-executor` briefed with the findings) when the
+   executor cannot be resumed, or when its frame is the problem — two
+   failed re-reviews is the usual sign. Record a finding that is real but
+   too small to hold the task in the ledger — the final review triages
+   that list, so it is read, not discarded. Fix through a worker, not your
+   own edits: manual fixes pollute your context and skip review.
 7. Mark the task complete in todos and the ledger, and tick its milestone
    in the spec's `Progress` with a timestamp and commit — the tick means
    reviewed clean, the same as the ledger's `complete`, and the ledger is
@@ -134,24 +133,24 @@ or brainstorm first.
 
 `doperpowers:task-executor` is pinned to opus at high reasoning effort;
 the milestone grain is calibrated to that tier, and fixes resume the same
-executor. `doperpowers:task-reviewer` is pinned to sol at xhigh effort —
-the low review rung's model and effort: the frontier review is a
-task-scoped gate, and the whole-branch review at the spec's named rung is
-the deep read. A simple task — a doc update, a mechanical rename, a
+executor. Frontier reviews go to doperpowers:review-code's single
+reviewers: `doperpowers:reviewer-medium` by default, or the rung the
+spec's verification entry names for its milestones. The frontier review
+is a task-scoped gate; the whole-branch review at the spec's named rung
+is the deep read. A simple task — a doc update, a mechanical rename, a
 verification walk with every command given — can go to sonnet, the tier
 below opus, by passing `model: sonnet` at dispatch, which overrides the
-executor's pin. Never dispatch workers on fable or astra: the top tier
+executor's pin. Never dispatch executors on fable or astra: the top tier
 adds cost without adding reliability — the spec absorbs the difficulty,
 not the model, whatever model wrote the spec. When a worker reports BLOCKED on reasoning capacity rather
 than missing context, a sonnet task moves to opus; from opus there is no
 tier above — resolve the hard call yourself in the spec's Decision Log and
 re-dispatch, or split the milestone.
 
-The final whole-branch review is the deliberate exception: it goes through
-doperpowers:review-code at the rung the spec's verification entry names
-(its Decision Log), or the level the branch warrants when none is
-recorded — it is the last gate before merge and the only reader of the
-entire branch.
+The final whole-branch review goes through doperpowers:review-code at the
+rung the spec's verification entry names (its Decision Log), or the level
+the branch warrants when none is recorded — it is the last gate before
+merge and the only reader of the entire branch.
 
 ## Executor statuses
 
@@ -169,11 +168,10 @@ entire branch.
   Something must change — a bare retry answers an escalation with
   nothing.
 
-**Reviewer ⚠️ items** — requirements the reviewer could not verify from the
-diff (unchanged code, cross-task) come back marked ⚠️. Resolve each one
-yourself before marking the task complete; you hold the cross-task context
-the reviewer lacks. A confirmed gap is a failed spec review: back to the
-executor, then re-review.
+**What the review could not verify** — a requirement that lives in
+unchanged code or spans tasks — is yours to resolve before marking the
+task complete; you hold the cross-task context the reviewer lacks. A
+confirmed gap goes back to the executor, then re-review.
 
 ## Dispatch hygiene
 
@@ -198,8 +196,8 @@ pasted prior-task history):
   writes detail there and returns only status, commits, a one-line test
   summary, decisions made, and concerns.
 - A reviewer dispatch carries the spec path and milestone (and, for a
-  composite child, the composite's path and child id), the report path,
-  the review package path, the task's BASE and HEAD and, for a deferred
+  composite child, the composite's path and child id), the review
+  package path, the task's BASE and HEAD and, for a deferred
   review, a checkout line: where the shared checkout sits, the
   sibling commits and files that landed since HEAD, and the detached
   worktree at HEAD if one was made. Omit the checkout line when the
@@ -210,7 +208,7 @@ pasted prior-task history):
   `fix-base` — the HEAD when the fix dispatched — so the package is the
   fix alone.
 - Let the reviewer judge: don't pre-rate severity or list things not to
-  flag ("don't treat X as a defect", "at most Minor") — that impulse is
+  flag ("don't treat X as a defect", "at most P3") — that impulse is
   usually you sparing yourself a review loop. Adjudicate findings when they
   come back, against the spec's intent. A finding that exposes a spec
   statement as wrong is fixed in the spec by you — the design section

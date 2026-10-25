@@ -129,8 +129,8 @@ If you find issues during self-review, fix them now before reporting.
 ## After Review Findings
 
 If a reviewer finds issues and you fix them, re-run the tests that cover
-the amended code and append the results to your report file. Reviewers
-will not re-run tests for you — your report is the test evidence.
+the amended code and append the results to your report file: your report
+is the test evidence the controller checks before the re-review.
 
 ## Report Format
 

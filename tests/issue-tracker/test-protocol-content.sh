@@ -608,7 +608,7 @@ pexec="$(cat "$PLAN_EXECUTOR")"
 assert_contains "$pexec" "model: opus" "the plan-executor is pinned to opus"
 assert_contains "$pexec" "effort: high" "...at high reasoning effort"
 assert_contains "$pexec" "disallowedTools: AskUserQuestion" "...and it runs detached from the human: no AskUserQuestion"
-assert_contains "$pexec" "opus at high effort, sol at xhigh" "...and it dispatches its workers at their pins whatever model wrote the spec: execution is close-frontier work"
+assert_contains "$pexec" "at its pin — opus at high effort" "...and it dispatches its executors at their pin whatever model wrote the spec: execution is close-frontier work"
 assert_contains "$pexec" "escalated to that
 session" "...an input only the human or the owners can give — friction, an approval, a fork — is escalated to the session that dispatched it"
 assert_contains "$pexec" "## Checkpoints" "...and it messages its dispatcher when it holds something the dispatcher needs"
@@ -640,12 +640,10 @@ assert_contains "$texec" "effort: high" "...at high reasoning effort"
 assert_contains "$texec" "disallowedTools: AskUserQuestion" "...and it runs detached from the human: no AskUserQuestion"
 assert_contains "$texec" "escalated to the controller in your return" "...an input only the human or the owners can give — friction, an approval, a fork — is escalated to the controller in its return"
 
-echo "task-reviewer agent (subagent-driven-execution's frontier gate):"
-TASK_REVIEWER="$REPO_ROOT/agents/task-reviewer.md"
-[ -f "$TASK_REVIEWER" ] || { echo "missing $TASK_REVIEWER"; exit 1; }
-trev="$(cat "$TASK_REVIEWER")"
-assert_contains "$trev" "model: sol" "the task-reviewer stays on sol"
-assert_contains "$trev" "effort: xhigh" "...at xhigh effort, the low review rung's model and effort"
+echo "frontier review (subagent-driven-execution's gate between milestones):"
+sde="$(cat "$REPO_ROOT/skills/subagent-driven-execution/SKILL.md")"
+assert_contains "$sde" '`doperpowers:reviewer-medium` by default' "frontier reviews go to review-code's medium rung unless the spec names another"
+assert_contains "$(cat "$REPO_ROOT/agents/reviewer-medium.md")" "## Requirements" "...and the reviewer judges the change against the spec a brief names"
 
 # The spec is written, reviewed, and executed through the execspec skill;
 # brainstorming closes the design and routes. The Architect names both, and

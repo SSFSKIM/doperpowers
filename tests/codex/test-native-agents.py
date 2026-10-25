@@ -15,7 +15,6 @@ MODELS = {
     "reviewer-medium": ("gpt-5.6-sol", "xhigh"),
     "reviewer-high": ("gpt-6-astra", "high"),
     "adversarial-reviewer": ("gpt-6-astra", "high"),
-    "task-reviewer": ("gpt-5.6-sol", "xhigh"),
     "critique": ("gpt-6-astra", "high"),
     "plan-executor": ("gpt-5.6-sol", "xhigh"),
     "task-executor": ("gpt-5.6-sol", "high"),
@@ -24,7 +23,7 @@ MODELS = {
 
 READ_ONLY = {
     "reviewer-low", "reviewer-medium", "reviewer-high",
-    "adversarial-reviewer", "task-reviewer",
+    "adversarial-reviewer",
 }
 
 NO_DELEGATION = (
@@ -64,8 +63,6 @@ class NativeAgentContracts(unittest.TestCase):
                 )
                 if name.startswith("reviewer-"):
                     body = body.replace("`CLAUDE.md`", "`AGENTS.md`")
-                if name == "task-reviewer":
-                    body = body.replace("do not Read a\nchanged file", "do not read a\nchanged file")
                 if name in READ_ONLY:
                     body += NO_DELEGATION
                 self.assertEqual(data["developer_instructions"], body)

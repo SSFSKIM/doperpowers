@@ -11,7 +11,6 @@ loading the Markdown definitions; its configuration is unchanged.
 | reviewer-high | gpt-6-astra | high |
 | adversarial-reviewer | gpt-6-astra | high |
 | critique | gpt-6-astra | high |
-| task-reviewer | gpt-5.6-sol | xhigh |
 | plan-executor | gpt-5.6-sol | xhigh |
 | task-executor | gpt-5.6-sol | high |
 | qa-loop | gpt-5.6-sol | high |
@@ -59,7 +58,8 @@ dispatch: `agent_type = "doperpowers:reviewer-low"`, `reviewer-medium`, or
 `reviewer-high`, using the full `doperpowers:` prefix for each. Specs and plans
 use `doperpowers:adversarial-reviewer`; design debates use `doperpowers:critique`.
 A spec's Plan of Work and its individual milestones use `plan-executor` and
-`task-executor`, and the controller sends task reviews to `task-reviewer`.
+`task-executor`, and the controller sends task reviews to the reviewer rungs,
+`reviewer-medium` by default.
 
 When a shared skill says `Agent`, use Codex's native spawn operation with the
 declared role and a fresh context. `SendMessage` means the native message or

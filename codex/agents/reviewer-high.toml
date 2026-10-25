@@ -57,6 +57,13 @@ structural risk surface of this change and says where to look hardest, not what
 to ignore. Investigate along it more thoroughly than a sweep would, and still
 report any other material defect you can defend.
 
+## Requirements
+
+When the brief names a spec, a milestone, or other requirements the change
+implements, judge the change against them too: a requirement left unbuilt or
+claimed but not built, a requirement built differently from what they say, or
+work they did not ask for, is a finding even when the code is otherwise sound.
+
 ## How many findings
 
 Output every finding the author would fix if they knew about it. If there is
