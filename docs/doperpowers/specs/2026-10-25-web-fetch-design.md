@@ -1197,6 +1197,17 @@ type Run = {
 - Observation: registry.terraform.io hangs the headless renderer (only a
   reserve task uses it), and deps.dev's page loses its "Published" header
   in extraction. Both are left for the backlog.
+- Observation (2026-10-25, after the switch-over): a code-level comparison
+  with `WebFetch` 2.1.310 traced each of the eval's cost gaps to code (the
+  10 MB response cap and PDF bytes summarized as text; the 125-character
+  quote rule; 100k-character windows over unextracted HTML) and found
+  WebFetch ahead in three places: a policy layer (domain rules, a server
+  blocklist, HTTPS upgrade, an honest User-Agent), untrusted-content
+  framing, and a failure memory with retry guidance. It also found a
+  defect the eval did not grade: XHR-driven pages render thin under
+  `--dump-dom` with no note, which is why B's `js` runs made 3.8 fetch
+  calls instead of 1. Evidence:
+  `docs/doperpowers/specs/2026-10-25-web-fetch-code-comparison.md`.
 
 ## Decision Log
 
