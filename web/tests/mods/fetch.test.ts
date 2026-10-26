@@ -141,7 +141,7 @@ describe('the fetch tool', () => {
     await start($)
 
     expect(FETCH_TOOL).toBe('mcp__web__fetch')
-    expect(registered).toEqual([{ name: 'fetch', description: DESCRIPTION, inputSchema: INPUT_SCHEMA, isDeferred: false }])
+    expect(registered).toEqual([{ name: 'fetch', description: DESCRIPTION, inputSchema: INPUT_SCHEMA, isDeferred: true }])
     expect(INPUT_SCHEMA).toEqual({
       type: 'object',
       properties: {
