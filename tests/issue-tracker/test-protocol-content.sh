@@ -629,6 +629,8 @@ assert_contains "$texec" "never \`HEAD~1\`" "...packaging the range from the dis
 assert_contains "$texec" "is its address" "...and it learns the controller's address from the message that follows its dispatch"
 assert_contains "$texec" "reaches the human's session" "...because a nested agent's main is the human's session, not its controller"
 assert_contains "$texec" "not yours to settle" "...and a finding it disputes goes to the controller rather than being settled by the code's author"
+assert_contains "$texec" "run_in_background: false" "...dispatching its reviewer in the foreground, since an executor that ended its turn to wait was told to hand back"
+assert_contains "$texec" "dispatch a fresh reviewer the same" "...and a re-review is a fresh foreground reviewer, not a SendMessage resume of the finished one"
 assert_not_contains "$texec" "You Do Not Dispatch Reviewers" "...the ban on executor-dispatched reviewers is gone with the controller's own review"
 
 echo "task-reviewer agent (subagent-driven-execution's task gate):"
@@ -641,6 +643,7 @@ assert_contains "$trev" "is a claim like the" "...and it reads its dispatcher's 
 assert_not_contains "$trev" "deferred review" "...with no deferred review: the checkout sits at the head under review"
 sde_skill="$(cat "$REPO_ROOT/skills/subagent-driven-execution/SKILL.md")"
 assert_contains "$sde_skill" "send it one message" "subagent-driven-execution: the controller messages each executor once, so its verdicts have an address"
+assert_contains "$sde_skill" "in the background — while it runs, its verdicts are" "...and dispatches the executor in the background, so it can read the verdicts while the executor runs"
 assert_not_contains "$sde_skill" "checkout line" "...and no deferred-review checkout line survives"
 
 # The spec is written, reviewed, and executed through the execspec skill;

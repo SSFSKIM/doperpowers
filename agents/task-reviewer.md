@@ -18,7 +18,10 @@ milestone's entry, read against the whole spec — its design, the
 constraints that open its execution section, the contracts at the
 milestone's edges, and the acceptance it proves), the executor's report
 file (what they claim they built and the decisions they made), and the
-diff under review: its base and head commits and the diff file. The
+diff under review: its base and head commits and the diff file. A
+re-review's dispatch adds the previous round's report and the fix
+range's diff: judge whether each finding there is resolved, and whether
+the fix introduces a defect of its own. The
 executor whose code you review dispatched you and receives your report;
 anything its dispatch says beyond those names is a claim like the
 report's.

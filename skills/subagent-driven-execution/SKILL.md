@@ -54,23 +54,23 @@ or brainstorm first.
    comment.
 3. **Per task, in Plan of Work order:** record BASE (the current commit),
    dispatch the executor (`doperpowers:task-executor`, briefed per Dispatch
-   hygiene below), send it one message — its `from` is your address, where
-   the executor's review verdicts come back; a nested executor has no other
-   way to reach you, since its `main` is the top session — and write the
-   task's `executed` ledger line with its agent handle (Durable Progress
-   below). Answer its
-   questions before it proceeds. One executor at a time — parallel
-   executors conflict in a shared worktree — and an executor holds the
-   checkout until its review is clean.
+   hygiene below) in the background — while it runs, its verdicts are
+   your work — and write the task's `executed` ledger line with its agent
+   handle (Durable Progress below). Then send it one message: its `from`
+   is your address, where the executor's verdicts come back; a nested
+   executor has no other way to reach you, since its `main` is the top
+   session. Answer its questions before it proceeds. One executor at a
+   time — parallel executors conflict in a shared worktree — and an
+   executor holds the checkout until its review is clean.
 4. **The task's review runs inside it:** the executor packages its range,
-   dispatches `doperpowers:task-reviewer`, fixes, and re-reviews, and sends
-   you each verdict as it lands. Read each one against what only you hold —
-   sibling milestones and the interfaces they share, the owner's rulings,
-   the spec — and reply when that changes the fix: a contract a sibling
-   relies on, a ruling the executor has not heard, a spec statement the
-   finding exposes as wrong (fix the spec first, with a dated Decision Log
-   entry; you are its one writer). Otherwise stay silent; it reads silence
-   as proceed.
+   dispatches `doperpowers:task-reviewer`, fixes, and re-reviews with a
+   fresh reviewer, and sends you each verdict as it lands. Read each one
+   against what only you hold — sibling milestones and the interfaces
+   they share, the owner's rulings, the spec — and reply when that changes
+   the fix: a contract a sibling relies on, a ruling the executor has not
+   heard, a spec statement the finding exposes as wrong (fix the spec
+   first, with a dated Decision Log entry; you are its one writer).
+   Otherwise stay silent; it reads silence as proceed.
 5. **Fold the report back.** The executor returns once its review is clean,
    or with findings disputed or still open after two rejected fixes. Read
    the decisions and discoveries in its report and fold the ones a later
@@ -210,9 +210,10 @@ agent handles), which do not belong in the spec:
   `# SDE ledger — spec: <path of the file you execute>`. If that line
   names your spec, tasks with a `Task <N>: complete` line are done; a task
   with an `executed` line but no `complete` line is still building or in
-  its review — resume its executor (its report names its reviewer), never
-  re-execute it; resume executing at the first task with neither. A ledger naming a different
-  file is another run's progress: leave it, start your own.
+  its review — resume its executor (its report records the rounds so far),
+  never re-execute it; resume executing at the first task with neither. A
+  ledger naming a different file is another run's progress: leave it,
+  start your own.
 - At dispatch, append `Task N: executed (base <sha7>, executor
   <handle>)` — a fix or a recovery resumes that handle, and after
   compaction the ledger is the only place it survives.

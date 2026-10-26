@@ -27,7 +27,8 @@ resumes you with the answer.
 The controller messages you once right after dispatch; that message's
 `from` is its address, and your review verdicts go there (Review, below).
 `SendMessage` to `main` would skip the controller: from a nested agent it
-reaches the human's session.
+reaches the human's session. With no such message, your verdicts ride in
+your return.
 
 ## Before You Begin
 
@@ -73,9 +74,12 @@ you dispatch at its pin, once your work is committed and self-reviewed.
 1. Build the package: `review-package SPEC_FILE BASE HEAD`, with the BASE
    the dispatch names — never `HEAD~1`, which drops all but the last commit
    of a multi-commit task.
-2. Dispatch the reviewer with a brief that carries exactly: the spec path
-   and your milestone, your report file, the package path, BASE and HEAD.
-   Anything you want the reviewer to weigh — a decision and its reason, a
+2. Dispatch the reviewer in the foreground (`run_in_background: false`)
+   with a brief that carries exactly: the spec path and your milestone,
+   your report file, the package path, BASE and HEAD. Your next step is
+   its verdict, and an executor that ended its turn to wait for one was
+   told to hand back before it arrived. Anything you want the reviewer to
+   weigh — a decision and its reason, a
    risk you saw — goes in the report, which it reads as claims to verify.
    The brief is where the review's independence lives: implementers who
    briefed their own reviewers argued for their code or fenced off parts
@@ -93,8 +97,12 @@ you dispatch at its pin, once your work is committed and self-reviewed.
    the tests that cover the amended code and append the command and output
    to your report — the reviewer does not re-run tests. Commit, package the
    fix range (`review-package SPEC_FILE FIX_BASE FIX_HEAD`, FIX_BASE being
-   the head the reviewer last saw), and resume the same reviewer with that
-   package and the report path. Repeat until both verdicts are clean.
+   the head the reviewer last saw), and dispatch a fresh reviewer the same
+   way, its brief adding the fix package and the previous round's saved
+   report. Not a `SendMessage` resume of the finished one: that leaves you
+   waiting on nothing live, and the one observed was told to hand back
+   while its reviewer's report went to the top session. Repeat until both
+   verdicts are clean.
 
 A finding you believe is wrong, or one that conflicts with the spec, is
 not yours to settle — you wrote the code. Fix the rest, and return it as
@@ -103,9 +111,6 @@ front of you answers is yours to check; one that spans tasks goes to the
 controller. When the reviewer rejects your fix a second time, return
 DONE_WITH_CONCERNS with the open findings: a fresh frame or a spec change
 is the controller's call.
-
-Note the reviewer's handle in your report: a re-review after compaction
-resumes it from there.
 
 ## Code Organization
 
@@ -181,7 +186,7 @@ Write your full report to the report file the dispatch names:
 - **Discoveries:** anything that changed your understanding of the design
   or the codebase, with short evidence
 - Self-review findings (if any)
-- **Review:** the reviewer's handle; per round, each Critical and
+- **Review:** per round, each Critical and
   Important finding and what you did; deferred Minor findings with why;
   disputed findings with your reasoning
 - Any issues or concerns
