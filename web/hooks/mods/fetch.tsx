@@ -104,7 +104,7 @@ export function registerFetch(on: On) {
     return next(e)
   })
 
-  on('tool.call', { tool: FETCH_TOOL }, async ($, e) => {
+  on('tool.call', { tool: FETCH_TOOL }, async ($, e, next) => {
     const input = e as { url?: unknown; prompt?: unknown; refresh?: unknown }
     if (typeof input.url !== 'string' || input.url.trim() === '') return { deny: 'fetch failed: no url given (an http or https URL is required)' }
     const url = input.url.trim()
@@ -118,6 +118,10 @@ export function registerFetch(on: On) {
     try {
       ran = await $.process.run(argv, { timeoutMs: PROCESS_TIMEOUT_MS })
     } catch (error) {
+      // The user's interrupt kills the clipper: not a failure of the site or the tool. After send now the model reads this; after Esc, the engine's own text.
+      if (next.signal.aborted) {
+        return { deny: `fetch interrupted: ${url}: the call was stopped before the page was saved (the user interrupted it); the site and the web plugin did not fail.` }
+      }
       const elapsed = (await $.clock.now()) - startedAt
       if (elapsed >= PROCESS_TIMEOUT_MS - 2000) {
         return { deny: `fetch failed: ${url}: the clipper did not finish within ${PROCESS_TIMEOUT_MS / 1000} s and was stopped (its own deadline is 150 s, so this is a bug in the web plugin): ${message(error)}` }

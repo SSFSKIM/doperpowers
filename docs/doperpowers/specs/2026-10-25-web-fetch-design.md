@@ -168,7 +168,10 @@ session on the machine.
   a mod's tool cannot detach as `WebFetch` does, and detach turned out to
   be send now's alone, never a slow call's (Surprises & Discoveries,
   Decision Log). Its findings are board comment 979. The gap they found
-  instead: parallel `mcp__web__fetch` calls run one after another.
+  instead: parallel `mcp__web__fetch` calls run one after another, which
+  needs annotations on `$.tool.register`, a request the owner is sending
+  to Anthropic. From the findings the owner chose one fix (web 0.5.1): an
+  interrupted call says it was interrupted, not that the clipper failed.
 
 ## Acceptance
 
@@ -982,6 +985,11 @@ outside world only through `$`, so Defuddle cannot run inside it.
     (`node not found on PATH`).
   - The mod's `timeoutMs` for the process is 180000, 30 seconds past the
     clipper's own deadline (From URL to file).
+  - When the user interrupts the call, the engine aborts the dispatch and
+    kills the clipper. After send now (a message sent while the call runs)
+    the reply opens `fetch interrupted:` and says neither the site nor the
+    plugin failed, rather than that the clipper could not run; after Esc the
+    engine puts its own rejection text in the result.
 - Any agent can also run the clipper from Bash, including Codex, a ptc
   kernel, and a session without the mod. That keeps the conversion logic
   testable without a session.
@@ -2985,6 +2993,21 @@ type Run = {
   and an agent mostly needs the page for its next step. Several URLs in
   one call (`urls: [...]`), run in parallel by the mod: a schema change
   and a round of evals, for 4% of B's fetch messages.
+  Date/Author: 2026-10-26, board #138 (branch `web-fetch-detach-spike`).
+- Decision: a call the user interrupts replies `fetch interrupted: <url>:
+  the call was stopped before the page was saved (the user interrupted it);
+  the site and the web plugin did not fail.` (web 0.5.1;
+  Packaging). The mod reads `next.signal.aborted` when `$.process.run`
+  rejects. Before, the reply was `fetch failed: … the clipper could not
+  run: … aborted`, and in #138's run the model told the person the fetch
+  had failed. The owner chose this fix from the spike's findings. Live,
+  send now gave the new reply and the model said the fetch was
+  interrupted; Esc puts the engine's own rejection text in the result, so
+  the reply matters after send now.
+  Rejected: letting the clipper finish after the interrupt so the page
+  still reaches the cache: `$.process.run` dies with the dispatch, and
+  escaping it (a detached child) would leave a process nobody owns for up
+  to 150 s, to save one refetch.
   Date/Author: 2026-10-26, board #138 (branch `web-fetch-detach-spike`).
 
 ## Outcomes & Retrospective
