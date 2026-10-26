@@ -31,6 +31,7 @@ import { catalogNow } from './bridge-catalog'
 import { controlsOf } from './bridge-controls'
 import { READ_KINDS, readKind } from './bridge-reads'
 import { endOrphanedSideQuestions, sideQuestion } from './bridge-btw'
+import { engineError, stopAgent, tellAgent } from './bridge-agent-ops'
 
 export { OFF_LINE, ON_LINE } from './bridge-place'
 export { BLOCK_TAIL, TEXT_CAP, capped, resetBridge } from './bridge-state'
@@ -101,7 +102,9 @@ export { FOLLOW_REASON, PANEL_REASON, SELF_REASON, UNKNOWN_REASON, UNMEASURED_RE
  * - bridge-controls.tsx: the desk's per-control capability map;
  * - bridge-reads.tsx (which takes `$`, as bridge-catalog.tsx does): the
  *   desk's reads of usage, config, settings and MCP servers, cut to what the
- *   desk shows.
+ *   desk shows;
+ * - bridge-btw.tsx and bridge-agent-ops.tsx (which take `$`): the desk's side
+ *   question, and one subagent stopped or told.
  *
  * The desk's ops (spec 2026-10-22-desk-control-surface-design.md): `read`
  * answers from `$` at once (`status`, `catalog`, and bridge-reads.tsx's
@@ -183,7 +186,7 @@ export function wakeText(when: WakeWhen, rows: readonly { isDelivery?: boolean; 
 const SUBMISSIONS_KEPT = 100
 /** After an abort, how long the Bash calls it ended have to report where they went. */
 export const INTERRUPT_WAIT_MS = 3_000
-/** How long a Bash call of an interrupted turn waits for the interrupt's record, at most (a TaskStop that never answers). */
+/** How long a Bash call of an interrupted turn waits for the interrupt's record, and an Agent call for an agent stop's note, at most (a TaskStop that never answers). */
 export const INTERRUPT_HOLD_MS = 10_000
 /**
  * A family alias's model as the engine resolves it first, before its own
@@ -253,7 +256,7 @@ function recoverMainTurn(turnId: string) {
 export const TURN_UNKNOWN = 'turn state unknown since the bridge reloaded; retry after the next model request'
 const TURN_OPS = new Set(['steer', 'interrupt', 'compact'])
 /** The ops this bridge answers (DX5 `capabilities.ops`), and the reads (`read`'s kinds). */
-export const OPS = ['ping', 'steer', 'interrupt', 'stop', 'model', 'compact', 'deliver', 'answer', 'read', 'command', 'btw']
+export const OPS = ['ping', 'steer', 'interrupt', 'stop', 'model', 'compact', 'deliver', 'answer', 'read', 'command', 'btw', 'stop-agent', 'tell']
 export const READS = ['status', 'catalog', ...READ_KINDS]
 /** The DX5 protocol the capabilities speak: 2 is the desk's control surface (capabilities, `read`, `command`). */
 export const CAPABILITIES_PROTOCOL = 2
@@ -352,6 +355,10 @@ function commandAnswer($: EngineInterface, command: Command): Answered | Promise
       return deskCommand($, command)
     case 'btw':
       return sideQuestion($, command.id, command.prompt)
+    case 'stop-agent':
+      return stopAgent($, command.agentId, command.from)
+    case 'tell':
+      return tellAgent($, command.agentId, command.text)
     default:
       return { ok: false, error: `unknown op: ${command.op}` }
   }
@@ -780,6 +787,9 @@ async function interrupt($: EngineInterface, from: unknown): Promise<Answer> {
   }
 }
 
+/** The tool that runs a subagent: `Agent` (`Task` on an older engine). */
+const AGENT_TOOLS: ReadonlySet<string> = new Set(['Agent', 'Task'])
+
 /** A task id as the engine spells one (DX6 `stop`). */
 const TASK_ID = /^[A-Za-z0-9_-]{1,64}$/
 
@@ -810,12 +820,6 @@ async function stopTask($: EngineInterface, taskId: unknown, from: unknown): Pro
   }
   await recordStop($, taskId, from)
   return { ok: true, result: { taskId } }
-}
-
-/** A tool's error text without the engine's `<tool_use_error>` wrapping. */
-function engineError(text: string | undefined): string {
-  const t = (text ?? '').replace(/^\s*<tool_use_error>([\s\S]*)<\/tool_use_error>\s*$/, '$1').trim()
-  return t === '' ? 'TaskStop failed' : t
 }
 
 /** The line a stop leaves the model, and DX4 reads as the row's whole text (sminos_jobs.STOP_NOTE). */
@@ -1902,6 +1906,13 @@ export function registerBridge(on: On) {
         state.calls.get(call)?.settle(resultText)
         let held: { cancel: () => void } | undefined
         await Promise.race([interrupted.recorded, new Promise<void>((resolve) => (held = $.clock.after(INTERRUPT_HOLD_MS, resolve)))])
+        held?.cancel()
+      }
+      // An Agent call while the desk stops an agent: the call the stop ended
+      // goes back to its loop with the stop's note in (bridge-agent-ops.tsx).
+      if (AGENT_TOOLS.has(e.tool) && state.agentStops.size > 0) {
+        let held: { cancel: () => void } | undefined
+        await Promise.race([Promise.all(state.agentStops), new Promise<void>((resolve) => (held = $.clock.after(INTERRUPT_HOLD_MS, resolve)))])
         held?.cancel()
       }
       const shown = result.deny === undefined ? shownText(result) : undefined

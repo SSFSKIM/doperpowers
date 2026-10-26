@@ -385,6 +385,12 @@ export type BridgeState = {
   btwOpen: Set<string>
   /** The writes of `btwOpen` to the session's `$.state`, in order. */
   btwWrites: Promise<void>
+  /**
+   * The desk's agent stops whose note to the parent is not in yet
+   * (bridge-agent-ops.tsx): an Agent call's result waits for them, so a
+   * foreground agent the stop ended goes back to its loop with the note.
+   */
+  agentStops: Set<Promise<void>>
 }
 
 const fresh = (): BridgeState => ({
@@ -421,6 +427,7 @@ const fresh = (): BridgeState => ({
   owedEnds: new Map(),
   btwOpen: new Set(),
   btwWrites: Promise.resolve(),
+  agentStops: new Set(),
   transitions: 0,
   isUnreadSaid: false,
   generation: 0,

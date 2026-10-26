@@ -25,12 +25,13 @@ export type ControlKey = (typeof CONTROL_KEYS)[number]
  * What this bridge does: the controls from before the wave, and those the
  * wave has built so far (MW1 the reads, MW2 the side question, MW3 the
  * scoped allows: `decide.addDirectory` is an `addDirectories` suggestion
- * through `decide.scope`, never a directory of the desk's own).
+ * through `decide.scope`, never a directory of the desk's own; MW4 one
+ * subagent stopped or told).
  */
 const AVAILABLE: ReadonlySet<ControlKey> = new Set<ControlKey>([
   'read.usage', 'read.config', 'read.settings', 'read.mcp',
   'btw', 'compact', 'model', 'mcp.enable', 'mcp.disable', 'mcp.reconnect', 'decide',
-  'decide.scope', 'decide.addDirectory',
+  'decide.scope', 'decide.addDirectory', 'stop-agent', 'tell',
 ])
 
 /** What lane A cannot do, with the standing reason: no later sminos changes these, only the engine or another path. */
