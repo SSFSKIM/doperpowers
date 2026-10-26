@@ -54,23 +54,26 @@ or brainstorm first.
    comment.
 3. **Per task, in Plan of Work order:** record BASE (the current commit),
    dispatch the executor (`doperpowers:task-executor`, briefed per Dispatch
-   hygiene below) with `run_in_background: true` — while it runs, its
-   verdicts are your work, and a nested dispatch that leaves the flag out
-   ran in the foreground — and write the task's `executed` ledger line
-   with its agent handle (Durable Progress below). Then send it one
-   message: its `from` is your address, where the executor's verdicts
-   come back; a nested executor has no other way to reach you, since its
-   `main` is the top session. Answer its questions before it proceeds. One executor at a
-   time — parallel executors conflict in a shared worktree — and an
-   executor holds the checkout until its review is clean.
+   hygiene below) with `run_in_background: true` — a nested dispatch that
+   leaves the flag out ran in the foreground, where you cannot read its
+   verdicts — and write the task's `executed` ledger line with its agent
+   handle (Durable Progress below). Then wait in the foreground until it
+   returns: Bash loops of a few minutes each that come back early when a
+   new `task-N-review-*.md` lands in the workspace; its return reaches you
+   between calls. A controller that is itself a subagent and ends its turn while its
+   executor runs is told to hand back at once, mid-milestone (seen in a
+   live run of this loop; friction tracker #304). One executor at a time —
+   parallel executors conflict in a shared worktree — and an executor
+   holds the checkout until its review is clean.
 4. **The task's review runs inside it:** the executor packages its range,
    dispatches `doperpowers:task-reviewer`, fixes, and re-reviews with a
-   fresh reviewer, and sends you each verdict as it lands. Read each one
+   fresh reviewer, writing each round's verdict, with what it will do
+   about each finding, as `task-N-review-K.md`. Read each one as it lands
    against what only you hold — sibling milestones and the interfaces
-   they share, the owner's rulings, the spec — and reply when that changes
-   the fix: a contract a sibling relies on, a ruling the executor has not
-   heard, a spec statement the finding exposes as wrong (fix the spec
-   first, with a dated Decision Log entry; you are its one writer).
+   they share, the owner's rulings, the spec — and message the executor
+   when that changes the fix: a contract a sibling relies on, a ruling it
+   has not heard, a spec statement the finding exposes as wrong (fix the
+   spec first, with a dated Decision Log entry; you are its one writer).
    Otherwise stay silent; it reads silence as proceed.
 5. **Fold the report back.** The executor returns once its review is clean,
    or with findings disputed or still open after two rejected fixes. Read

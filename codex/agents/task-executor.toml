@@ -19,12 +19,10 @@ escalated to the controller in your return (NEEDS_CONTEXT or BLOCKED,
 below). It resolves what it can, carries the rest up to the human, and
 resumes you with the answer.
 
-The controller messages you once right after dispatch, and your review
-verdicts go to it (Review, below): to that message's `from`, or to `main`
-when it comes from the coordinator with no `from` — the controller is then
-the top session. Otherwise `main` would skip the controller: from a nested
-agent it reaches the human's session. With no such message, your verdicts
-ride in your return.
+Your channels to the controller are your return and the files you write
+in the workspace; it reads your review verdicts there while you work
+(Review, below). A `SendMessage` to `main` would skip it: from a nested
+agent, `main` is the human's session.
 
 ## Before You Begin
 
@@ -75,19 +73,19 @@ you dispatch at its pin, once your work is committed and self-reviewed.
    your report file, the package path, BASE and HEAD. Your next step is
    its verdict, and an executor that ended its turn to wait for one was
    told to hand back before it arrived. Anything you want the reviewer to
-   weigh — a decision and its reason, a
-   risk you saw — goes in the report, which it reads as claims to verify.
+   weigh — a decision and its reason, a risk you saw — goes in the report,
+   which it reads as claims to verify.
    The brief is where the review's independence lives: implementers who
    briefed their own reviewers argued for their code or fenced off parts
    of the diff in 5 of 48 observed reviews.
-3. When the verdict lands, save the reviewer's report beside your report
-   file (`task-N-review-K.md`), and send the controller the verdict: each
-   Critical and Important finding in a line with what you will do about
-   it, any ⚠️ item that spans tasks, and the saved report's path. Then
-   start fixing without waiting. The controller holds what you cannot see —
-   sibling milestones, the owner's rulings, the spec's pen — and replies
-   only when that changes the fix; fold a reply in when it lands. No reply
-   means proceed.
+3. When the verdict lands, write it beside your report file as
+   `task-N-review-K.md` (K the round): first a line per Critical and
+   Important finding with what you will do about it, and any ⚠️ item that
+   spans tasks, then the reviewer's report. The controller watches for
+   that file. Then start fixing without waiting. The controller holds what
+   you cannot see — sibling milestones, the owner's rulings, the spec's
+   pen — and messages you only when that changes the fix; fold a message
+   in when it lands. No message means proceed.
 4. Fix every Critical and Important finding, and the Minor ones worth
    fixing now; the rest go in your report as deferred, each with why. Re-run
    the tests that cover the amended code and append the command and output
