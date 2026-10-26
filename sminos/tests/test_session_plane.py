@@ -2219,7 +2219,8 @@ class McpDisabled(unittest.TestCase):
     the directory holding `.git`)."""
 
     def setUp(self):
-        self.root = tempfile.mkdtemp(prefix="mcpd.", dir=T)
+        # Resolved, as a session's working directory is (macOS's /tmp is /private/tmp), and as git writes worktree paths.
+        self.root = os.path.realpath(tempfile.mkdtemp(prefix="mcpd.", dir=T))
         self.repo = os.path.join(self.root, "repo")
         self.sub = os.path.join(self.repo, "a", "b")
         os.makedirs(os.path.join(self.repo, ".git"))
@@ -2238,6 +2239,33 @@ class McpDisabled(unittest.TestCase):
         self.assertEqual(plane.global_config(), os.path.join(self.config, ".claude.json"))
         with mock.patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": ""}):
             self.assertEqual(plane.global_config(), os.path.join(os.environ["HOME"], ".claude.json"))
+        with mock.patch.dict(os.environ, {"CLAUDE_CODE_CUSTOM_OAUTH_URL": "https://login.example"}):
+            self.assertEqual(plane.global_config(), os.path.join(self.config, ".claude-custom-oauth.json"))
+
+    def test_a_nonempty_legacy_config_json_wins_as_the_engine_reads_it(self):
+        """2.1.310 (`y_` in its cli): `<config dir>/.config.json` is the
+        global config while it is a nonempty file, or an empty writable one
+        with no `.claude.json` beside it."""
+        legacy = os.path.join(self.config, ".config.json")
+        main = os.path.join(self.config, ".claude.json")
+        open(legacy, "w").close()
+        self.assertEqual(plane.global_config(), legacy, "empty, writable, and no .claude.json")
+        self.write({})
+        self.assertEqual(plane.global_config(), main, "empty, with .claude.json beside it")
+        with open(legacy, "w") as f:
+            json.dump({"projects": {self.repo: {"disabledMcpServers": ["from legacy"]}}}, f)
+        self.assertEqual(plane.global_config(), legacy, "nonempty")
+        self.assertEqual(plane.disabled_mcp(self.sub), ["from legacy"])
+        with mock.patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": ""}):
+            home_legacy = os.path.join(os.environ["HOME"], ".claude", ".config.json")
+            os.makedirs(os.path.dirname(home_legacy), exist_ok=True)
+            with open(home_legacy, "w") as f:
+                f.write("{}")
+            self.addCleanup(os.remove, home_legacy)
+            self.assertEqual(plane.global_config(), home_legacy, "under ~/.claude without a config dir")
+        os.remove(legacy)
+        os.makedirs(legacy)
+        self.assertEqual(plane.global_config(), main, "a directory is no file")
 
     def test_a_project_is_keyed_by_the_directory_holding_git_else_the_directory(self):
         self.assertEqual(plane.project_key(self.sub), self.repo)
@@ -2245,11 +2273,36 @@ class McpDisabled(unittest.TestCase):
         loose = os.path.join(self.root, "loose")
         os.makedirs(loose)
         self.assertEqual(plane.project_key(loose), loose)
-        worktree = os.path.join(self.root, "wt")
-        os.makedirs(worktree)
-        with open(os.path.join(worktree, ".git"), "w") as f:
-            f.write("gitdir: elsewhere\n")   # a worktree's .git is a file
-        self.assertEqual(plane.project_key(os.path.join(worktree)), worktree)
+        stray = os.path.join(self.root, "stray")
+        os.makedirs(stray)
+        with open(os.path.join(stray, ".git"), "w") as f:
+            f.write("gitdir: elsewhere\n")   # a .git file naming no worktree of a repository
+        self.assertEqual(plane.project_key(stray), stray)
+
+    def test_a_linked_worktree_is_keyed_by_its_primary_checkout(self):
+        """As the engine keys it (2.1.310's canonical root): a linked
+        worktree's `.git` file names `<primary>/.git/worktrees/<name>`, whose
+        commondir is the primary's `.git`, so the key is the primary
+        checkout. Measured: `/mcp disable` in a linked worktree updated the
+        primary checkout's entry."""
+        main = os.path.join(self.root, "main")
+        os.makedirs(main)
+        git = ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "init.defaultBranch=main"]
+        subprocess.run(git + ["init", "-q", main], check=True)
+        subprocess.run(git + ["-C", main, "commit", "-q", "--allow-empty", "-m", "c"], check=True)
+        linked = os.path.join(self.root, "linked")
+        subprocess.run(git + ["-C", main, "worktree", "add", "-q", "-b", "side", linked], check=True)
+        inside = os.path.join(linked, "deep")
+        os.makedirs(inside)
+        self.assertEqual(plane.project_key(inside), main)
+        self.assertEqual(plane.project_key(linked), main)
+        self.assertEqual(plane.project_key(main), main)
+        self.write({main: {"disabledMcpServers": ["plain"]}, linked: {"disabledMcpServers": ["wrong key"]}})
+        self.assertEqual(plane.disabled_mcp(inside), ["plain"])
+        # A worktree whose back-pointer names another directory is not taken for the primary's.
+        with open(os.path.join(main, ".git", "worktrees", "linked", "gitdir"), "w") as f:
+            f.write(os.path.join(self.root, "moved", ".git") + "\n")
+        self.assertEqual(plane.project_key(inside), linked)
 
     def test_the_disabled_names_alone_from_the_projects_entry(self):
         self.write({self.repo: {"disabledMcpServers": ["parked server", 7, "", "x" * 300, "plain"],

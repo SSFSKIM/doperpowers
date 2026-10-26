@@ -171,6 +171,7 @@ import pickle
 import queue
 import re
 import socket
+import stat
 import subprocess
 import sys
 import threading
@@ -2190,23 +2191,72 @@ def read_answer(path, rid, what, args, cwd=""):
 
 
 def global_config():
-    """The engine's global config, `.claude.json`: in CLAUDE_CONFIG_DIR when
-    it is set, else in the home directory (as the engine places it)."""
-    return os.path.join(os.environ.get("CLAUDE_CONFIG_DIR") or sminos.home_dir(), ".claude.json")
+    """The engine's global config file, chosen as 2.1.310 chooses it (`y_`
+    in its cli): `<config dir>/.config.json` while that legacy file is a
+    nonempty file, or an empty writable one with no `.claude.json` beside
+    it; else `.claude.json` (`.claude-custom-oauth.json` under a custom OAuth
+    URL) in CLAUDE_CONFIG_DIR when it is set, else in the home directory."""
+    suffix = "-custom-oauth" if os.environ.get("CLAUDE_CODE_CUSTOM_OAUTH_URL") else ""
+    main = os.path.join(os.environ.get("CLAUDE_CONFIG_DIR") or sminos.home_dir(), ".claude%s.json" % suffix)
+    legacy = os.path.join(bridge.config_dir(), ".config.json")
+    try:
+        st = os.stat(legacy)
+    except OSError:
+        return main
+    if stat.S_ISREG(st.st_mode) and (st.st_size > 0 or (st.st_mode & 0o222 and not os.path.exists(main))):
+        return legacy
+    return main
+
+
+def _read_text(path, follow=False):
+    """A regular file's text, stripped; None for anything else (a symlink
+    too, unless `follow`, as the engine refuses one in a worktree's gitdir)."""
+    try:
+        if not stat.S_ISREG((os.stat if follow else os.lstat)(path).st_mode):
+            return None
+        with open(path, encoding="utf-8") as f:
+            return f.read().strip()
+    except (OSError, ValueError):
+        return None
 
 
 def project_key(cwd):
-    """The key the engine files a project's entry of `.claude.json` under:
-    the nearest directory at or above `cwd` holding `.git` (a worktree's own
-    root), else `cwd` itself."""
+    """The key the engine files a project's entry of `.claude.json` under
+    (2.1.310's canonical git root): the nearest directory at or above `cwd`
+    holding `.git`, and for a linked worktree its primary checkout (a bare
+    repository's directory when the primary is bare); `cwd` itself outside
+    any repository."""
     at = os.path.normpath(cwd)
-    while True:
-        if os.path.lexists(os.path.join(at, ".git")):
-            return at
+    while not os.path.isdir(os.path.join(at, ".git")) and not os.path.isfile(os.path.join(at, ".git")):
         up = os.path.dirname(at)
         if up == at:
             return os.path.normpath(cwd)
         at = up
+    return _canonical_root(at)
+
+
+def _canonical_root(root):
+    """A linked worktree's primary checkout, its `.git` file followed as the
+    engine follows it: `gitdir: <primary>/.git/worktrees/<name>`, whose
+    `commondir` names the primary's `.git` and whose `gitdir` points back
+    at this worktree's `.git`. Anything that does not hold together is the
+    root itself."""
+    text = _read_text(os.path.join(root, ".git"), follow=True)
+    if text is None or not text.startswith("gitdir:"):
+        return root
+    gitdir = os.path.normpath(os.path.join(root, text[len("gitdir:"):].strip()))
+    common = _read_text(os.path.join(gitdir, "commondir"))
+    if not common:
+        return root
+    common = os.path.normpath(os.path.join(gitdir, common))
+    if os.path.dirname(gitdir) != os.path.join(common, "worktrees"):
+        return root
+    back = _read_text(os.path.join(gitdir, "gitdir"))
+    if not back or os.path.realpath(os.path.join(gitdir, back)) != os.path.join(os.path.realpath(root), ".git"):
+        return root
+    if os.path.basename(common) != ".git":
+        return root if os.path.exists(os.path.join(common, ".git")) else common
+    return os.path.dirname(common)
 
 
 def disabled_mcp(cwd):
