@@ -140,6 +140,12 @@ session on the machine.
     and image main serves);
   - $6.50 reported in all ($3.49 the baseline, $3.01 after), the
     summaries' haiku calls outside it (about $0.20 in the baseline).
+- [x] (2026-10-26) Board #144 (web 0.4.1, branch `web-inline-images`):
+  inline images cost extraction what their links cost (step 3, Decision
+  Log). hothardware's review (image-h1) extracts in 0.2 s of CPU, not
+  6.2 s, and gets its `full.md`; Unicode's emoji list in 2.0 s, not
+  5.1–5.5 s, and gets its own. `page.md` and the saved images are as main
+  saves them on every eval page, but for what two runs of main differ by.
 
 ## Acceptance
 
@@ -617,6 +623,22 @@ its own:
      An unlabeled date on its own, the byline, is still dropped, and dates
      beside the title (the first h1 and three elements either side) are
      left to Defuddle, which reads the page's `published` and author there.
+   - **Inline images cost what their links cost.** Defuddle 0.19.6 reads
+     a `srcset` with a pattern whose time grows with the square of an
+     entry's length, and passes every image URL through steps that are
+     linear but many: one 49 KB `data:` URI in a `<picture>`'s
+     `<source srcset>` (hothardware's review) took 6 s of CPU a pass, and
+     Unicode's emoji list, 1,902 inline PNGs in `src`, 3 s of its 5. So
+     before Defuddle reads the document, each base64 payload of 1,024
+     characters or more in an attribute stands in for a short one of its
+     own, and the markdown Defuddle writes gets the payloads back, before
+     step 5 saves the images. The stand-in keeps the URI's header and is
+     136 characters, so every check Defuddle makes on the URI (`data:`,
+     `data:image/`, `svg+xml`, a lazy image's placeholder under 133
+     characters) reads as before, and like base64 it holds no character
+     the URL parser or the markdown conversion changes, so the links and
+     the files saved from them are what they were. Both passes, `page.md`'s
+     and `full.md`'s, have it (Decision Log, board #144).
    - **The whole page, beside the article** (board #139). Defuddle keeps
      the article and drops what it takes for the page's chrome, and an
      answer can sit there: crates.io's sidebar (licence, crate size,
@@ -2582,6 +2604,48 @@ type Run = {
   stays the fallback on Node 20, which has no per-thread figure, and errs
   toward skipping there.
   Date/Author: 2026-10-26, board #139 re-review (branch `web-extraction-reach`).
+- Decision: an inline image's long base64 payload stands in for a short
+  one while Defuddle reads the document, and the markdown gets it back
+  (step 3, "Inline images cost what their links cost"; web 0.4.1).
+  Rationale: profiled, image-h1's 6.2 s was not its 25 inline images, as
+  #139 recorded (Surprises & Discoveries). 12.4 s of the 12.9 s both
+  passes took was one regular expression, Defuddle's
+  `/(.+?)\s+(\d+(?:\.\d+)?[wx])/g`, in `extractFirstUrlFromSrcset` (its
+  `<picture>` rule) and `resolveRelativeUrls`: over a `srcset` entry with
+  no space and no width it tries each position against all the rest. The
+  page's one 49 KB URI in a `<source srcset>` made all of it; the same URI
+  in the `<img src>` beside it, and the other 24 (20 one-pixel GIFs, 3
+  PNGs under 7 KB), cost nothing measurable. With the stand-ins the
+  article's extraction takes 0.2 s of CPU live (as `clip` measures it,
+  cold) and 0.08 s warm, `full.md`'s 0.06 s, and the page gets its
+  `full.md` (2,215 words). Over every HTML URL of both suites, main's
+  bundle and this one, run back to back, saved the same `page.md`,
+  `full.md` and `assets/` on 47 of 55 pages. Of the other eight, two are
+  this change: image-h1 and Unicode's emoji list (search-h4, 5.1–5.5 s to
+  2.0 s, its 1,902 inline PNGs in `src`) now get the `full.md` the 5 s
+  rule skipped, their `page.md` and images the same. Two are the CPU
+  figure in the 5 s rule's note on pages it still skips (curl's changes,
+  10.3 s against 10.1 s; federalregister, 24.8 s against 24.5 s), and four
+  are the page's own drift, which a second run of main shows as well:
+  js-3's SVG, js-2's rendered chart, kitguru's (image-h3) rotating ad
+  banners, and toss.tech's (gist-2) randomly chosen profile image.
+  - Every attribute, not only `srcset`: a payload in `src` costs only
+    linear time, but Defuddle carries each URL through many steps, and the
+    emoji list's 6.5 MB of them took 3 s of its 5.
+  - 1,024 characters: below that an entry costs Defuddle's pattern under a
+    millisecond, and a page without one is not touched at all (one test
+    of the HTML before the walk).
+  - The stand-in is the extraction's random nonce and a counter, 136
+    characters: one payload, one stand-in, so Defuddle's comparisons of
+    sources (a `<noscript>` image against its lazy twin) come out as
+    before, and no text of the page's own can be taken for one.
+  Rejected: fixing the pattern in Defuddle (a vendored fork, or a patch
+  step on the pinned package, which the gate's `npm ci --ignore-scripts`
+  would not run): it leaves the cost a payload in `src` carries through
+  Defuddle's other steps; standing in on the HTML text before parsing, as
+  the ticket sketched: it would rewrite scripts, styles and text too, and
+  the parse was never the cost.
+  Date/Author: 2026-10-26, board #144 (branch `web-inline-images`).
 
 ## Outcomes & Retrospective
 

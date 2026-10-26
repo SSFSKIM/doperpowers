@@ -75,6 +75,30 @@ export function pngBytes(size: number, seed = 1): Buffer {
   return b
 }
 
+/**
+ * A page whose images are inline base64 data: URIs, `bytes` each, in the forms
+ * Defuddle reads: a <picture> (its <source srcset> and <img src>), an <img srcset>
+ * with widths and one without, a link to one, and a gallery beside the article,
+ * which only full.md keeps. `images` holds each image's bytes and URI by its alt.
+ */
+export function inlineImagesPage(bytes: number) {
+  const image = (seed: number, type: string) => {
+    const body = pngBytes(bytes, seed)
+    return { body, uri: `data:image/${type};base64,${body.toString('base64')}` }
+  }
+  const images = { chart: image(1, 'webp'), wide: image(2, 'png'), narrow: image(3, 'png'), bare: image(4, 'png'), gallery: image(5, 'jpeg') }
+  const words = '<p>' + 'Prose about the benchmark charts, long enough for the extractor to keep the article whole. '.repeat(6) + '</p>'
+  const html = `<!doctype html><html><head><title>Benchmarks</title></head><body>
+    <article><h1>Benchmarks</h1>${words}
+    <picture><source srcset="${images.chart.uri}" media="(max-width: 30em)"><img src="${images.chart.uri}" alt="chart"></picture>${words}
+    <figure><img srcset="${images.wide.uri} 800w, ${images.narrow.uri} 400w" src="${images.narrow.uri}" alt="wide"></figure>${words}
+    <figure><img srcset="${images.bare.uri}" alt="bare"><figcaption>A srcset of one URI and no width</figcaption></figure>${words}
+    <p>The <a href="${images.chart.uri}">chart itself</a>.</p></article>
+    <aside><h2>Gallery</h2><img src="${images.gallery.uri}" alt="gallery"><p>${'Gallery notes the article leaves out. '.repeat(20)}</p></aside>
+    </body></html>`
+  return { html, images }
+}
+
 /** A 1×1 transparent GIF: 43 bytes. */
 export const PIXEL_GIF = Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64')
 

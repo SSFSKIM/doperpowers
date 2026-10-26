@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { markdownWithFrontmatter, htmlFrontmatter, extractHtml, extractFull } from '../src/extract.ts'
-import { fixture } from './helpers.ts'
+import { fixture, inlineImagesPage } from './helpers.ts'
 
 const F = '2026-10-25T00:00:00.000Z'
 
@@ -179,4 +179,42 @@ test('the whole page is the body on a page a site extractor claims (Wikipedia, i
   assert.match(full.body, /Boost clock\n\n2\.51 GHz/)
   assert.ok(full.body.includes('![Average fps at 1440p](https://en.wikipedia.org/charts/fps-1440p.png)'), full.body)
   assert.match(full.body, /last edited on 3 March 2026/)
+})
+
+const cpuMs = () => {
+  const usage = (process.threadCpuUsage ?? process.cpuUsage).call(process)
+  return (usage.user + usage.system) / 1000
+}
+
+test("an inline image's payload costs extraction nothing that grows with it, in the article and the whole page", async () => {
+  // hothardware's review: a 49 KB data: URI in a <picture>'s <source srcset> took 6 s of CPU a pass.
+  const url = 'https://bench.example/review'
+  const cost = async (bytes: number) => {
+    const { html } = inlineImagesPage(bytes)
+    const started = cpuMs()
+    await extractHtml(html, url, fetch)
+    extractFull(html, url)
+    return cpuMs() - started
+  }
+  await cost(2048)
+  const small = await cost(2048)
+  const large = await cost(16 * 1024)
+  assert.ok(large < 2 * small + 50, `${large.toFixed(0)} ms at 16 KiB an image, ${small.toFixed(0)} ms at 2 KiB`)
+})
+
+test('inline images come out of both extractions as they went in', async () => {
+  const { html, images } = inlineImagesPage(4096)
+  const url = 'https://bench.example/review'
+  const page = (await extractHtml(html, url, fetch)).body
+  const full = extractFull(html, url).body
+  for (const body of [page, full]) {
+    assert.ok(body.includes(`![chart](${images.chart.uri})`), body.slice(0, 300))
+    assert.ok(body.includes(`![wide](${images.wide.uri})`), body.slice(0, 300))
+    assert.ok(body.includes(`[chart itself](${images.chart.uri})`), body.slice(0, 300))
+    // Every data: URI written is one of the page's, whole.
+    const uris = new Set(Object.values(images).map(i => i.uri))
+    for (const m of body.matchAll(/data:[^)\s]*/g)) assert.ok(uris.has(m[0]), m[0].slice(0, 200))
+  }
+  assert.ok(!page.includes(images.gallery.uri))
+  assert.ok(full.includes(`![gallery](${images.gallery.uri})`))
 })
