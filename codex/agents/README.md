@@ -29,13 +29,15 @@ does not install these files. From this repository's root, copy them there:
 
 ```sh
 mkdir -p "$HOME/.codex/agents"
+rm -f "$HOME/.codex/agents"/doperpowers-*.toml
 for agent in codex/agents/*.toml; do
   cp "$agent" "$HOME/.codex/agents/doperpowers-$(basename "$agent")"
 done
 ```
 
-Repeat the copy after updating the definitions. For a project-only installation,
-use that project's `.codex/agents/` instead. Start a new Codex task to discover
+Repeat the copy after updating the definitions; the `rm` clears copies of roles
+since removed. For a project-only installation, use that project's
+`.codex/agents/` instead. Start a new Codex task to discover
 the installed roles.
 
 Disable the companion skill in `~/.codex/config.toml` (update an existing rule
