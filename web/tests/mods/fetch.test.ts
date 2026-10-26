@@ -414,6 +414,86 @@ describe('the summary (R3)', () => {
     ])
   })
 
+  test('the system text asks for a fixed opening when the page does not answer', async () => {
+    expect(SUMMARY_SYSTEM).toContain('- Answer only from the page. If it does not answer the question, begin\n  your reply with "Not on this page:", then say what it does cover that\n  comes closest.')
+  })
+
+  const FULL = `${DIR}/full.md`
+  const fullText = Array.from({ length: 60 }, (_, i) => (i === 54 ? 'License: MIT OR Apache-2.0' : `whole ${i + 1}`)).join('\n')
+  const withFull = (over: Partial<ClipOk> = {}) => page({ full: { file: FULL, words: 2215, lines: 60, tokens: 3000, images: 2 }, ...over })
+  const miss = answer('Not on this page: it describes the crate\'s usage [L13–30].')
+
+  test('an answer the article does not hold is asked again over full.md, and that answer is the reply\'s', async ($, on) => {
+    const { runs, completions, usage } = engine(on, {
+      clip: withFull(),
+      files: { [`${DIR}/page.md`]: pageText(), [FULL]: fullText },
+      completions: [miss, answer('MIT OR Apache-2.0 [L55].')],
+    })
+    await start($)
+    const reply = textOf(await $.tool.call(call({ url: 'https://example.com/docs/guide', prompt: 'What is the licence?' })))
+
+    expect(numberings(runs).map((run) => run.argv[3])).toEqual([`${DIR}/page.md`, FULL])
+    expect(numberings(runs).map((run) => flag(run.argv, '--max-tokens'))).toEqual([String(SUMMARY_MAX_TOKENS), String(SUMMARY_MAX_TOKENS)])
+    expect(completions).toHaveLength(2)
+    expect(completions[1]).toMatchObject({ model: 'haiku', system: SUMMARY_SYSTEM })
+    expect(String(completions[1]!.prompt)).toContain('55| License: MIT OR Apache-2.0\n')
+    expect(usage).toHaveLength(2)
+    expect(reply).toStartWith('MIT OR Apache-2.0 [L55].\n\n')
+    expect(reply).toContain(`— Answered by haiku from ${FULL} (the whole page: the article did not answer; lines 1–60 of 60). Read cited lines to check them.`)
+    expect(reply).not.toContain('Not on this page')
+  })
+
+  test('the opening is read through markdown emphasis, and a second miss is still the whole page\'s answer', async ($, on) => {
+    const { completions } = engine(on, {
+      clip: withFull(),
+      files: { [`${DIR}/page.md`]: pageText(), [FULL]: fullText },
+      completions: [answer('**Not on this page:** usage only [L13].'), answer('Not on this page: the whole page has no licence either [L1–60].')],
+    })
+    await start($)
+    const reply = textOf(await $.tool.call(call({ url: 'https://example.com/docs/guide', prompt: 'What is the licence?' })))
+    expect(completions).toHaveLength(2)
+    expect(reply).toStartWith('Not on this page: the whole page has no licence either [L1–60].')
+    expect(reply).toContain(`from ${FULL} (the whole page: the article did not answer;`)
+  })
+
+  test('an answer the article holds is asked once, and the reply\'s last line names full.md', async ($, on) => {
+    const answered = engine(on, { clip: withFull(), files: { [`${DIR}/page.md`]: pageText(), [FULL]: fullText } })
+    await start($)
+    const reply = textOf(await $.tool.call(call({ url: 'https://example.com/docs/guide', prompt: question })))
+    expect(answered.completions).toHaveLength(1)
+    expect(reply).toContain(`— Answered by haiku from ${DIR}/page.md (lines 1–40 of 40).`)
+    expect(reply.split('\n').at(-1)).toStartWith(`The whole page, menus and sidebars included: ${FULL} (`)
+  })
+
+  test('a miss on a page with no full.md is the answer', async ($, on) => {
+    const { completions } = engine(on, { files: { [`${DIR}/page.md`]: pageText() }, completions: [miss] })
+    await start($)
+    const reply = textOf(await $.tool.call(call({ url: 'https://example.com/docs/guide', prompt: question })))
+    expect(completions).toHaveLength(1)
+    expect(reply).toStartWith('Not on this page: it describes')
+    expect(reply).toContain(`from ${DIR}/page.md (lines 1–40 of 40)`)
+  })
+
+  test('the question over full.md is retried at half the cap as the first is, and when it fails the article\'s answer stands', async ($, on) => {
+    const long = Array.from({ length: 6000 }, (_, i) => `whole ${i + 1} ${'y'.repeat(80)}`).join('\n')
+    const tooLong = { isAnswered: false, reason: 'api-error', status: 400, error: 'invalid_request', usage: ZERO }
+    const { runs, completions } = engine(on, {
+      clip: withFull({ full: { file: FULL, words: 90_000, lines: 6000, tokens: estimateTokens(long), images: 0 } }),
+      files: { [`${DIR}/page.md`]: pageText(), [FULL]: long },
+      completions: [miss, tooLong, { isAnswered: false, reason: 'api-error', status: 529, error: 'overloaded', usage: ZERO }],
+    })
+    await start($)
+    const reply = textOf(await $.tool.call(call({ url: 'https://example.com/docs/guide', prompt: question })))
+    expect(numberings(runs).map((run) => [run.argv[3], flag(run.argv, '--max-tokens')])).toEqual([
+      [`${DIR}/page.md`, '150000'],
+      [FULL, '150000'],
+      [FULL, '75000'],
+    ])
+    expect(completions).toHaveLength(3)
+    expect(reply).toStartWith('Not on this page: it describes')
+    expect(reply).toContain(`from ${DIR}/page.md (lines 1–40 of 40)`)
+  })
+
   test('a PDF with text is answered from page.txt', async ($, on) => {
     const { runs } = engine(on, { clip: pdf(), files: { [`${PDF_DIR}/page.txt`]: 'one\ntwo\n' } })
     await start($)

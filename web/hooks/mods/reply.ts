@@ -29,6 +29,8 @@ export type ClipOk = {
   outline?: OutlineEntry[]
   outlineOmitted?: number
   images: ImageEntry[]
+  /** The whole page beside page.md (full.md), when the clipper saved it; `images` counts its image links. */
+  full?: { file: string; words: number; lines: number; tokens: number; images: number }
   png?: string
   notDrawn?: string
   notes: string[]
@@ -59,9 +61,13 @@ export type NumberedHeader = { firstLine: number; lastLine: number; totalLines: 
 /** A page whose estimate is at most this comes back whole (R1); a longer one as its outline (R2). */
 export const INLINE_MAX_TOKENS = 5000
 
-/** What the summary came to: the model's answer over the lines it read, or why there is none. */
+/**
+ * What the summary came to: the model's answer over the lines it read, or why
+ * there is none. `isWholePage`: the answer is over full.md, asked again because
+ * the article (page.md) did not answer.
+ */
 export type Summary =
-  | { isAnswered: true; text: string; model: string; header: NumberedHeader }
+  | { isAnswered: true; text: string; model: string; header: NumberedHeader; isWholePage?: boolean }
   | { isAnswered: false; why: string }
 
 export type ReplyContext = {
@@ -137,13 +143,23 @@ function answered(r: ClipOk, textFile: string, summary: Extract<Summary, { isAns
       ? `lines 1–${number(lastLine)} of ${number(totalLines)}: the rest was not read`
       : `lines 1–${number(lastLine)} of ${number(totalLines)}`
   const facts = [quotedTitle(r), siteOf(r), r.lines !== undefined && count(r.lines, 'line'), hasImages(r) && count(savedImages(r).length, 'image'), `fetched ${age(r, now)}`]
+  const from = summary.isWholePage && r.full !== undefined ? `${r.full.file} (the whole page: the article did not answer; ${span})` : `${textFile} (${span})`
   return [
     summary.text.trim(),
     '',
-    `— Answered by ${summary.model} from ${textFile} (${span}). Read cited lines to check them.`,
+    `— Answered by ${summary.model} from ${from}. Read cited lines to check them.`,
     joinFacts(facts) + provenance(r),
     ...r.notes,
+    ...wholePage(r),
   ].join('\n')
+}
+
+/** The line naming full.md, the whole page beside the article, when the clipper saved one. */
+function wholePage(r: ClipOk): string[] {
+  if (r.full === undefined) return []
+  const { file, words, tokens: size, images } = r.full
+  const figures = [count(words, 'word'), `~${tokens(size)} tokens`, ...(images > 0 ? [`${count(images, 'image')} by URL`] : [])]
+  return [`The whole page, menus and sidebars included: ${file} (${figures.join(', ')}); Grep it for what this page leaves out.`]
 }
 
 // The kinds with no text file: never sent to the model or to the summary.
@@ -174,8 +190,8 @@ function notAPage(r: ClipOk, context: ReplyContext): string {
 /**
  * The header: where the file is (left out for the kinds whose body names it),
  * what the page is, how fresh the copy is and where it was read from, each
- * clipper note on a line, then, over a page the agent reads, that it is
- * untrusted.
+ * clipper note on a line, the whole page when there is one, then, over a page
+ * the agent reads, that it is untrusted.
  */
 function header(r: ClipOk, textFile: string | undefined, now: number, omitNote?: string): string[] {
   const lines: string[] = []
@@ -198,6 +214,7 @@ function header(r: ClipOk, textFile: string | undefined, now: number, omitNote?:
   )
   lines.push((r.cached ? `Cached, fetched ${age(r, now)} (refresh: true fetches again)` : 'Fetched now') + provenance(r))
   lines.push(...r.notes.filter((n) => n !== omitNote))
+  lines.push(...wholePage(r))
   if (textFile !== undefined) lines.push(UNTRUSTED)
   return lines
 }
