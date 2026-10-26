@@ -108,7 +108,7 @@ session on the machine.
   30 s.
 - [x] (2026-10-26) The tool is registered deferred, behind `ToolSearch`,
   by the owner's ruling (web 0.3.2, #384; Decision Log).
-- [ ] (2026-10-26) Board #139 (branch `web-extraction-reach`): the whole
+- [x] (2026-10-26) Board #139 (branch `web-extraction-reach`): the whole
   page saved beside the article as `full.md`, a prompt the article does
   not answer asked again over it, and a dead image host no longer holding
   the fetch. Design approved by the owner, with the two choices it put to
@@ -121,7 +121,25 @@ session on the machine.
   image destinations read as markdown), and the re-review's three
   (`8895c93e`: the destination regex linear again, the breaker checked
   at every redirect hop, the 5 s rule on CPU time; `6533b335`, a budget
-  race the gate caught). The evals the Decision Log names wait.
+  race the gate caught). A third review converged: its one finding (a
+  CPU counter that throws on SunOS would fail the fetch) is logged as
+  debt on board #11. The evals, all B on sol at xhigh:
+  - the five new `extraction-dropped` dev tasks: 10/10 correct and one
+    fetch a text task (two for the gallery chart), against 8/10 and 4.75
+    fetches a correct text run on main (`47981db9`), at about a fifth of
+    the cost; the chart, which both configurations failed on main, read
+    from a gallery image `full.md` named;
+  - the held-out finals, once: image-h2 4/4 (0/4 in both configurations
+    of the hard round), two fetches and about 30 s a run; js-4 2/2 in one
+    fetch and 20–24 s (6–10 fetches and 47–111 s in the first suite's
+    final round);
+  - the regression sample: the first suite's 16 dev tasks 16/16, about
+    250–300 tokens a run more than the deferral alone (the header's
+    `full.md` line); the hard set's 9 original dev tasks 8 correct and
+    one partial (image-h4, a stacked bar misread from the same `page.md`
+    and image main serves);
+  - $6.50 reported in all ($3.49 the baseline, $3.01 after), the
+    summaries' haiku calls outside it (about $0.20 in the baseline).
 
 ## Acceptance
 
