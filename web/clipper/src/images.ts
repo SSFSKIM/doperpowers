@@ -38,25 +38,25 @@ type Link = { start: number; end: number; alt: string; target: string; line: num
 
 const FENCE = /^ {0,3}(`{3,}|~{3,})/
 const PUNCTUATION = '[!-/:-@[-`{-~]'
-// V8 keeps a backtrack entry for each repetition of a group in a pattern (a character
-// class under `*` or `+` keeps none), and some 8.4 million exhaust its stack: the match
-// throws RangeError and the fetch fails, as an inline image's data: URI over about 6 MB
-// did. So nothing here repeats a group per character: a label (or alt) runs to the
-// first `]` not escaped, its group repeated per backslash, and a destination is read
-// by a loop.
-const LABEL = String.raw`[^\]\\]*(?:\\.[^\]\\]*)*`
-// ![alt], then an inline image's `(`, its destination read on by `inlineDestination`;
-// else ![alt][label], ![label][] or ![label], through a definition.
-const IMAGE = new RegExp(String.raw`!\[(${LABEL})\](?:(\(\s*)|\[(${LABEL})\])?`, 'g')
-const DEFINITION = new RegExp(String.raw`^ {0,3}\[((?!\])${LABEL})\]:[ \t]*(<[^>\n]*>|\S+)(?:[ \t]+(?:"[^"\n]*"|'[^'\n]*'|\([^)\n]*\)))?[ \t]*$`)
-// A destination's characters, a step at a time and one way only: a run of characters
-// but a space, a parenthesis or a backslash; a backslash and the punctuation it
-// escapes; a backslash before anything else. Readings that overlapped gave a
-// destination that cannot close 2^n ways to fail (28 escape pairs: 9 s).
-const STEP = new RegExp(String.raw`[^\s()\\]+|\\${PUNCTUATION}?`, 'y')
-const ANGLED = /<[^>\n]*>/y
+// A link is read a step at a time, by loops over patterns that repeat only a character
+// class (V8 keeps no backtrack entry for those). A pattern that repeats a group keeps an
+// entry per repetition, and some millions exhaust V8's stack: the match throws RangeError
+// and the fetch fails, as an inline image's data: URI over about 6 MB did (board #145).
+//
+// A label's (or alt's) characters: a run of characters but `]` and a backslash, or a
+// backslash and the character after it. A label runs to the first `]` not escaped.
+const LABEL_STEP = /[^\]\\]+|\\./y
+// A destination's characters, one way only: a run of characters but a space, a
+// parenthesis or a backslash; a backslash and the punctuation it escapes; a backslash
+// before anything else. Readings that overlapped gave a destination that cannot close
+// 2^n ways to fail (28 escape pairs: 9 s).
+const DESTINATION_STEP = new RegExp(String.raw`[^\s()\\]+|\\${PUNCTUATION}?`, 'y')
+const SPACES = /\s*/y
 // What follows a destination: a title, if any, and the `)` that closes the link.
 const CLOSE = /(?:\s+(?:"[^"\n]*"|'[^'\n]*'))?\s*\)/y
+// A definition, `[label]: destination "title"`: its `[`, and what follows the label's `]`.
+const DEFINITION_OPEN = /^ {0,3}\[/
+const DEFINITION_REST = /:[ \t]*(<[^>\n]*>|\S+)(?:[ \t]+(?:"[^"\n]*"|'[^'\n]*'|\([^)\n]*\)))?[ \t]*$/y
 
 const normalizeLabel = (label: string) => label.trim().replace(/\s+/g, ' ').toLowerCase()
 const unbracket = (t: string) => (t.startsWith('<') && t.endsWith('>') ? t.slice(1, -1) : t)
@@ -96,8 +96,15 @@ function proseLines(markdown: string): { text: string; offset: number; line: num
 function codeSpans(line: string): [number, number][] {
   const spans: [number, number][] = []
   const runs = [...line.matchAll(/`+/g)].filter(r => !escaped(line, r.index))
+  // Each run's next run of the same length, found in one pass from the end.
+  const next: number[] = []
+  const later = new Map<number, number>()
+  for (let j = runs.length - 1; j >= 0; j--) {
+    next[j] = later.get(runs[j][0].length) ?? -1
+    later.set(runs[j][0].length, j)
+  }
   for (let i = 0; i < runs.length; i++) {
-    const close = runs.findIndex((r, j) => j > i && r[0].length === runs[i][0].length)
+    const close = next[i]
     if (close < 0) continue
     spans.push([runs[i].index, runs[close].index + runs[close][0].length])
     i = close
@@ -112,32 +119,91 @@ function escaped(line: string, at: number): boolean {
   return n % 2 === 1
 }
 
-/** Where the destination characters from `at` end. */
-function characters(line: string, at: number): number {
-  for (STEP.lastIndex = at; STEP.test(line); ) at = STEP.lastIndex
+/** Where a run of `step`s from `at` stops. */
+function steps(step: RegExp, line: string, at: number): number {
+  for (step.lastIndex = at; step.test(line); ) at = step.lastIndex
   return at
 }
 
+/** A definition line's label and destination as written, or none for any other line. */
+function definitionOf(line: string): { label: string; destination: string } | undefined {
+  const open = DEFINITION_OPEN.exec(line)
+  if (!open) return undefined
+  const start = open[0].length
+  const end = steps(LABEL_STEP, line, start)
+  if (end === start || line[end] !== ']') return undefined
+  DEFINITION_REST.lastIndex = end + 1
+  const rest = DEFINITION_REST.exec(line)
+  return rest ? { label: line.slice(start, end), destination: rest[1] } : undefined
+}
+
 /**
- * The inline destination from `at` and the end of its link, or none when it does not
- * close: `<…>`, else characters and at most one level of balanced parentheses, then a
- * title, if any, and `)`.
+ * An image notation as written: `![alt]`, then an inline image's destination
+ * ([start, end) in the line) and its `)`, or a `[label]`, or nothing. [index, end) is
+ * the whole notation; an inline image that does not close is its `![alt]` alone.
  */
-function inlineDestination(line: string, at: number): { end: number; close: number } | undefined {
+type Notation = { index: number; end: number; alt: string; destination?: [number, number]; label?: string }
+
+/**
+ * The image notations on a line, in order, as one pattern matched them before board
+ * #145. Each `![` costs what it reads: a label that starts inside one already read ends
+ * where that one did, and the next `>` is looked for once, so a line of `![` that never
+ * close is read once, not again from each.
+ */
+function* notations(line: string): Generator<Notation> {
+  let label = { from: 0, to: 0 } // the last label read: [from, to)
+  const labelEnd = (open: number) => {
+    // A `[` the last label read through is a run's character or an escape's second, and
+    // what follows it is read the same way to the same stop.
+    if (open < label.from || open >= label.to) label = { from: open + 1, to: steps(LABEL_STEP, line, open + 1) }
+    return line[label.to] === ']' ? label.to : -1
+  }
+  let gt = { from: Infinity, at: -1 } // the first `>` at or past `from`, -1 for none
+  const angledEnd = (at: number) => {
+    if (line[at] !== '<') return -1
+    if (at + 1 < gt.from || (gt.at >= 0 && gt.at <= at)) gt = { from: at + 1, at: line.indexOf('>', at + 1) }
+    return gt.at < 0 ? -1 : gt.at + 1
+  }
+  // A destination closes with a title, if any, and `)`.
   const closes = (end: number) => {
     CLOSE.lastIndex = end
-    return CLOSE.test(line) ? { end, close: CLOSE.lastIndex } : undefined
+    return CLOSE.test(line) ? CLOSE.lastIndex : -1
   }
-  ANGLED.lastIndex = at
-  const angled = ANGLED.test(line) ? closes(ANGLED.lastIndex) : undefined
-  if (angled) return angled
-  let end = characters(line, at)
-  while (line[end] === '(') {
-    const inner = characters(line, end + 1)
-    if (line[inner] !== ')') break
-    end = characters(line, inner + 1)
+  // `<…>`, else characters and at most one level of balanced parentheses: [at, end) and the link's end.
+  const inline = (at: number): { end: number; close: number } | undefined => {
+    const angled = angledEnd(at)
+    const angledClose = angled < 0 ? -1 : closes(angled)
+    if (angledClose >= 0) return { end: angled, close: angledClose }
+    let end = steps(DESTINATION_STEP, line, at)
+    while (line[end] === '(') {
+      const inner = steps(DESTINATION_STEP, line, end + 1)
+      if (line[inner] !== ')') break
+      end = steps(DESTINATION_STEP, line, inner + 1)
+    }
+    const close = end > at ? closes(end) : -1
+    return close < 0 ? undefined : { end, close }
   }
-  return end > at ? closes(end) : undefined
+  for (let index = line.indexOf('!['); index >= 0; ) {
+    const altEnd = labelEnd(index + 1)
+    if (altEnd < 0) {
+      index = line.indexOf('![', index + 1)
+      continue
+    }
+    const alt = line.slice(index + 2, altEnd)
+    let found: Notation = { index, end: altEnd + 1, alt }
+    if (line[altEnd + 1] === '(') {
+      SPACES.lastIndex = altEnd + 2
+      SPACES.test(line)
+      const start = SPACES.lastIndex
+      const d = inline(start)
+      if (d) found = { index, end: d.close, alt, destination: [start, d.end] }
+    } else if (line[altEnd + 1] === '[') {
+      const end = labelEnd(altEnd + 1)
+      if (end >= 0) found = { index, end: end + 1, alt, label: line.slice(altEnd + 2, end) }
+    }
+    yield found
+    index = line.indexOf('![', found.end)
+  }
 }
 
 /** Image links where they render: not in fenced or inline code, not escaped. */
@@ -145,34 +211,29 @@ export function findImageLinks(markdown: string): Link[] {
   const lines = proseLines(markdown)
   const definitions = new Map<string, string>()
   for (const { text } of lines) {
-    const d = DEFINITION.exec(text)
-    if (d && !definitions.has(normalizeLabel(d[1]))) definitions.set(normalizeLabel(d[1]), literal(unbracket(d[2])))
+    const d = definitionOf(text)
+    if (d && !definitions.has(normalizeLabel(d.label))) definitions.set(normalizeLabel(d.label), literal(unbracket(d.destination)))
   }
   const links: Link[] = []
   for (const { text, offset, line } of lines) {
-    if (DEFINITION.test(text)) continue
+    if (definitionOf(text)) continue
     const code = codeSpans(text)
-    IMAGE.lastIndex = 0
-    for (let m = IMAGE.exec(text); m; m = IMAGE.exec(text)) {
-      // An inline image: the link ends past its `)`, and one that does not close is text.
-      const start = IMAGE.lastIndex
-      let inline: { end: number; close: number } | undefined
-      if (m[2] !== undefined) {
-        inline = inlineDestination(text, start)
-        if (!inline) continue
-        IMAGE.lastIndex = inline.close
-      }
-      if (escaped(text, m.index) || code.some(([s, e]) => m.index >= s && m.index < e)) continue
-      const rawAlt = m[1]
-      const alt = rawAlt.replace(/\\(.)/g, '$1')
-      if (inline) {
-        links.push({ start: offset + start, end: offset + inline.end, alt, target: literal(unbracket(text.slice(start, inline.end))), line, rewrite: destination })
+    let span = 0 // the first code span not wholly before the notation
+    for (const n of notations(text)) {
+      while (span < code.length && code[span][1] <= n.index) span++
+      if (escaped(text, n.index) || (span < code.length && code[span][0] <= n.index)) continue
+      const alt = n.alt.replace(/\\(.)/g, '$1')
+      if (n.destination) {
+        const [s, e] = n.destination
+        links.push({ start: offset + s, end: offset + e, alt, target: literal(unbracket(text.slice(s, e))), line, rewrite: destination })
         continue
       }
-      // A reference: ![alt][label], or ![label][] and ![label], whose label is the alt.
-      const target = definitions.get(normalizeLabel(m[3] || rawAlt))
+      // A reference: ![alt][label], or ![label][] and ![label], whose label is the alt;
+      // not one a `(` follows, which is an inline image that does not close, or text.
+      if (text[n.end] === '(') continue
+      const target = definitions.get(normalizeLabel(n.label || n.alt))
       if (target === undefined) continue
-      links.push({ start: offset + m.index, end: offset + m.index + m[0].length, alt, target, line, rewrite: t => `![${rawAlt}](${destination(t)})` })
+      links.push({ start: offset + n.index, end: offset + n.end, alt, target, line, rewrite: t => `![${n.alt}](${destination(t)})` })
     }
   }
   return links
