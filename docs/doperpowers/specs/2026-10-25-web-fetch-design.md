@@ -1839,6 +1839,30 @@ type Run = {
     showed.
   Evidence: `/tmp/web137/` (`spike.ts`, `headers.json`, `analyze.py`),
   2026-10-26; the figures are on board #137 (comment 970).
+- Observation: the check, run live over the same URLs (b3491e2e): each
+  fetched, its copy moved past the floor, and fetched again. 88 fetched
+  (five large or slow downloads stalled or timed out the first time).
+  - 81 copies were kept, the same folder with a `checkedAt`: 59 by a 304
+    (247 ms at the median, 2.9 s at most), 19 by the same body or the same
+    text (543 ms at the median), 3 rendered pages by a render (3.0 s). The
+    first fetches took 2.4 s at the median. One check stalled
+    (nabo.go.kr's PDF) and gave the copy with why.
+  - 7 were rebuilt, each for the page's own drift between two fetches
+    seconds apart, never a change of its article: rotating ads and an
+    avatar in `full.md` (kitguru, bundlephobia, toss.tech), a chart's
+    generated SVG id (artifacthub's `full.md`, npmgraph's `page.md`), the
+    Terraform registry's rendered tabs, and a PDF whose bytes differ on
+    every download (bok.or.kr).
+  - A page with no validators and bytes that vary costs its extraction on
+    each check: federalregister's 27 s (its 24 s of CPU), as its fetch did.
+    The differing bytes sit outside the text (nonces and CSRF tokens in the
+    head, cache-busting `?ver=` on stylesheets, a Phoenix session id).
+    Hashing the body without scripts, styles, comments, links and nonces
+    matched on hothardware, niskanencenter and backblaze, but not on
+    federalregister (a CSRF `<meta>` in the body) or hex.pm, so it was not
+    added: each site would need its own rule.
+  Evidence: `/tmp/web137/` (`verify.ts`, `verify.json`, `normdiff.ts`),
+  2026-10-26.
 
 ## Decision Log
 
