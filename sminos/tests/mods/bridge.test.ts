@@ -42,6 +42,7 @@ import {
   withoutUserinfo,
 } from '../../hooks/mods/bridge'
 import { ROUTE_TABLES } from '../../hooks/mods/bridge-routes'
+import { BTW_FRAME, BTW_REFUSAL_WAIT_MS, NOTHING_TO_FORK } from '../../hooks/mods/bridge-btw'
 import { controlsOf } from '../../hooks/mods/bridge-controls'
 
 tier('user')
@@ -183,6 +184,8 @@ function harness(
     configWait?: Promise<void>
     /** What `$.session.repo()` answers. */
     repo?: { root: string; remote: string | null; internal: boolean; name: string | null } | null
+    /** What `$.model.fork` resolves to at once; otherwise each fork waits for the test (`forks`). */
+    forkAnswer?: Record<string, unknown>
   } = {},
 ) {
   const hooks: { event: string; matcher: Matcher; handler: Handler }[] = []
@@ -236,6 +239,8 @@ function harness(
   const running: ((result: Record<string, unknown>) => void)[] = []
   /** Files `$.fs.read` reads (the session's transcripts; the plugin's manifest). */
   const files: Record<string, string> = { '/plug/.claude-plugin/plugin.json': JSON.stringify({ name: 'sminos', version: '1.7.0' }) }
+  /** Each `$.model.fork`, held until the test settles it. */
+  const forks: { prompt: string; resolve: (r: Record<string, unknown>) => void; reject: (e: Error) => void }[] = []
   /** Each `$.command.run`, held until the test settles it. */
   const runs: { args: { command: string; args?: string }; resolve: (r: Record<string, unknown>) => void; reject: (e: Error) => void }[] = []
   /** Each loop's rows on disk, as the child's GET /rows reads them; and the reads made. */
@@ -289,6 +294,12 @@ function harness(
       compact: (args: unknown) => {
         calls.push({ op: 'compact', args })
         return new Promise((resolve, reject) => compactions.push({ args, finish: resolve, fail: reject }))
+      },
+    },
+    model: {
+      fork: (request: { prompt: string }) => {
+        calls.push({ op: 'fork', args: request })
+        return options.forkAnswer !== undefined ? Promise.resolve(options.forkAnswer) : new Promise((resolve, reject) => forks.push({ prompt: request.prompt, resolve, reject }))
       },
     },
     turn: {
@@ -622,6 +633,7 @@ function harness(
     children,
     calls,
     compactions,
+    forks,
     runs,
     appends,
     submits,
@@ -1766,6 +1778,82 @@ describe('compact', () => {
     h.compactions[0]!.fail(new Error('a turn is running'))
     await h.settle()
     expect(h.ofType('compact').at(-1)).toMatchObject({ phase: 'end', id: r.id, error: 'a turn is running' })
+  })
+})
+
+describe('side question (btw)', () => {
+  const USAGE = { input_tokens: 12, output_tokens: 34, cache_read_input_tokens: 5000, cache_creation_input_tokens: 7 }
+  /** A `btw` op, answered once the bridge's short wait for a refusal has run out. */
+  const ask = async (h: ReturnType<typeof harness>, prompt: unknown) => {
+    const answered = h.command({ op: 'btw', prompt })
+    await h.settle()
+    await h.fire(BTW_REFUSAL_WAIT_MS)
+    return answered
+  }
+
+  test("answered at once, started, the question asked under the frame; the start, then the end with the answer and its cost, follow the answer", async () => {
+    const h = harness()
+    await h.ready()
+    const r = await ask(h, 'what did we decide about the cache?')
+    expect(r).toMatchObject({ ok: true, result: { started: true, id: r.id } })
+    expect(h.forks.map((f) => f.prompt)).toEqual([`${BTW_FRAME}\n\nwhat did we decide about the cache?`])
+    expect(h.ofType('btw')).toMatchObject([{ phase: 'start', id: r.id }])
+    const at = (e: Record<string, unknown>) => h.events().indexOf(e)
+    expect(at(h.ofType('btw')[0]!)).toBeGreaterThan(at(r))
+    h.forks[0]!.resolve({ isAnswered: true, text: 'Keep it per session.', usage: USAGE })
+    await h.settle()
+    expect(h.ofType('btw')[1]).toMatchObject({ type: 'btw', phase: 'end', id: r.id, text: 'Keep it per session.', usage: { input: 12, output: 34, cacheRead: 5000, cacheWrite: 7 } })
+    expect(h.ofType('btw')[1]).not.toHaveProperty('truncated')
+    // Nothing is written into the conversation.
+    expect(h.calls.filter((c) => c.op === 'append' || c.op === 'submit' || c.op === 'command.run')).toEqual([])
+  })
+
+  test('mid-turn it runs beside the turn: nothing waits for the turn to end', async () => {
+    const h = harness()
+    await h.ready()
+    await h.turn('t1')
+    const r = await ask(h, 'one line: what is this session doing?')
+    expect(r).toMatchObject({ ok: true, result: { started: true } })
+    h.forks[0]!.resolve({ isAnswered: true, text: 'Running the tests.', usage: USAGE })
+    await h.settle()
+    expect(h.ofType('btw').map((e) => e.phase)).toEqual(['start', 'end'])
+    // The turn still runs.
+    expect(h.ofType('turn').filter((e) => e.phase === 'end')).toEqual([])
+  })
+
+  test('nothing to fork, which the engine knows at once, is refused with its code: no start, no end', async () => {
+    const h = harness({ forkAnswer: { isAnswered: false, reason: 'nothing-to-fork' } })
+    await h.ready()
+    const r = await h.command({ op: 'btw', prompt: 'anything?' })
+    expect(r).toMatchObject({ ok: false, code: 'nothing-to-fork', error: NOTHING_TO_FORK })
+    await h.settle()
+    expect(h.ofType('btw')).toEqual([])
+  })
+
+  test('an empty question is refused before any fork; a fork with no answer, or one that fails, still ends, saying why', async () => {
+    const h = harness()
+    await h.ready()
+    expect(await h.command({ op: 'btw', prompt: '  ' })).toMatchObject({ ok: false, error: 'a side question is its text' })
+    expect(await h.command({ op: 'btw' })).toMatchObject({ ok: false, error: 'a side question is its text' })
+    expect(h.forks).toEqual([])
+    const overloaded = await ask(h, 'a')
+    h.forks[0]!.resolve({ isAnswered: false, reason: 'api-error', status: 529, error: 'overloaded', usage: USAGE })
+    const broken = await ask(h, 'b')
+    h.forks[1]!.reject(new Error('the plugin environment unloaded'))
+    await h.settle()
+    expect(h.ofType('btw').filter((e) => e.phase === 'end')).toMatchObject([
+      { id: overloaded.id, reason: 'api-error', status: 529, error: 'overloaded', usage: { input: 12 } },
+      { id: broken.id, reason: 'failed', error: 'the plugin environment unloaded' },
+    ])
+  })
+
+  test('a long answer goes up cut to 64 KiB, marked truncated', async () => {
+    const h = harness()
+    await h.ready()
+    const r = await ask(h, 'at length')
+    h.forks[0]!.resolve({ isAnswered: true, text: '가'.repeat(30_000), usage: USAGE })
+    await h.settle()
+    expect(h.ofType('btw')[1]).toMatchObject({ phase: 'end', id: r.id, text: '가'.repeat(21_845), truncated: true })
   })
 })
 
@@ -5550,12 +5638,47 @@ describe('the desk: routes (the 2.1.307 table)', () => {
   })
 
   test('a session routes by the newest table at or below its engine; one older than every table has none, and every built-in is unmeasured', async () => {
+    expect(ROUTE_TABLES.map((t) => t.engine)).toEqual(['2.1.307', '2.1.310'])
     expect(measuredFor('2.1.307')).toBe('2.1.307')
     expect(measuredFor('2.1.307-dev')).toBe('2.1.307')
-    expect(measuredFor('2.1.312')).toBe('2.1.307')
+    expect(measuredFor('2.1.309')).toBe('2.1.307')
+    expect(measuredFor('2.1.310')).toBe('2.1.310')
+    expect(measuredFor('2.1.312')).toBe('2.1.310')
     expect(measuredFor('2.1.300')).toBe('none')
     expect(measuredFor('a build')).toBe('none')
     expect(route('rename', 'x', builtin('rename'), '2.1.300')).toEqual({ refusal: { code: 'unknown-builtin', reason: UNMEASURED_REASON } })
+  })
+})
+
+describe('the desk: routes (the 2.1.310 table, /mcp as measured there)', () => {
+  const mcp = (args: string, engine = '2.1.310') => routeOf(engine, { name: 'mcp', source: 'builtin' }, 'mcp', args, 'sminos')
+
+  test('one server is named as it is configured, spaces and punctuation included: run, saved for the project, no confirm', async () => {
+    for (const args of ['disable probe server', 'enable probe server', 'reconnect probe server', 'disable plugin:cua:cua_repl', 'reconnect claude.ai Gmail', 'disable sminos']) {
+      expect(mcp(args)).toMatchObject({ route: { class: 'run', enabled: true, outlives: 'saved for this project on <machine>: .claude.json' } })
+      expect(mcp(args)).not.toHaveProperty('route.confirm')
+    }
+  })
+
+  test('enable and disable with no server, or all, and reconnect all, act on every server: run, after a confirm that says so', async () => {
+    for (const args of ['enable', 'disable', 'enable all', 'disable all', 'reconnect all']) {
+      expect(mcp(args)).toMatchObject({ route: { class: 'run', confirm: true, enabled: true } })
+      expect((mcp(args) as { route: { outlives: string } }).route.outlives).toContain("the plugins' own tool servers among them")
+    }
+  })
+
+  test('a bare reconnect, which opens the panel, and any other form are refused bad-args and never run', async () => {
+    for (const args of ['reconnect', 'remove probe', 'enable  probe', 'enable a\tb']) {
+      expect(mcp(args)).toMatchObject({ refusal: { code: 'bad-args' } })
+    }
+    expect(mcp('')).toEqual({ refusal: { code: 'panel', reason: PANEL_REASON } })
+  })
+
+  test("a 2.1.307 session keeps 2.1.307's forms: what was measured only on 2.1.310 stays refused there", async () => {
+    expect(mcp('disable probe', '2.1.307')).toMatchObject({ route: { class: 'run' } })
+    for (const args of ['disable probe server', 'enable', 'disable']) {
+      expect(mcp(args, '2.1.307')).toMatchObject({ refusal: { code: 'bad-args' } })
+    }
   })
 })
 
@@ -5567,7 +5690,7 @@ describe('the desk: capabilities and read', () => {
       sminos: '1.7.0',
       protocol: 2,
       engine: '2.1.307',
-      ops: ['ping', 'steer', 'interrupt', 'stop', 'model', 'compact', 'deliver', 'answer', 'read', 'command'],
+      ops: ['ping', 'steer', 'interrupt', 'stop', 'model', 'compact', 'deliver', 'answer', 'read', 'command', 'btw'],
       reads: ['status', 'catalog', 'usage', 'config', 'settings', 'mcp'],
       routes: { measured: '2.1.307' },
       controls: controlsOf('1.7.0'),

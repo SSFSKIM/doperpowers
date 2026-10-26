@@ -21,10 +21,10 @@ export const CONTROL_KEYS = [
 ] as const
 export type ControlKey = (typeof CONTROL_KEYS)[number]
 
-/** What this bridge does: the controls from before the wave, and those the wave has built so far (MW1, the reads). */
+/** What this bridge does: the controls from before the wave, and those the wave has built so far (MW1 the reads, MW2 the side question). */
 const AVAILABLE: ReadonlySet<ControlKey> = new Set<ControlKey>([
   'read.usage', 'read.config', 'read.settings', 'read.mcp',
-  'compact', 'model', 'mcp.enable', 'mcp.disable', 'mcp.reconnect', 'decide',
+  'btw', 'compact', 'model', 'mcp.enable', 'mcp.disable', 'mcp.reconnect', 'decide',
 ])
 
 /** What lane A cannot do, with the standing reason: no later sminos changes these, only the engine or another path. */

@@ -219,6 +219,7 @@ class Mod(tpr.Bridge):
         self.hold_runs = False
         self.held_runs = []
         self.refuse_reload = None
+        self.refuse_btw = None    # the bridge's refusal of a side question: (code, reason)
         self.rows = []
         super().__init__(sid)
 
@@ -280,6 +281,19 @@ class Mod(tpr.Bridge):
             self.delivered.append(cmd["text"])
             self.post({"type": "delivered", "key": cmd["key"], "outcome": "submitted"})
             res = {"ok": True, "result": {"submitted": True}}
+        elif op == "btw":
+            if self.refuse_btw:
+                code, why = self.refuse_btw
+                res = {"ok": False, "error": why, "code": code}
+            else:
+                res = {"ok": True, "result": {"started": True, "id": cmd["id"]}}
+                end = {"type": "btw", "phase": "end", "id": cmd["id"], "text": "Keep it per session.",
+                       "usage": {"input": 12, "output": 34, "cacheRead": 5000, "cacheWrite": 7}, "t": 0}
+                after = [None, {"type": "btw", "phase": "start", "id": cmd["id"], "t": 0}]
+                if self.hold_runs:
+                    self.held_runs.append(end)
+                else:
+                    after.append(end)
         elif op == "command":
             name, args = cmd.get("name"), cmd.get("args") or ""
             if name in self.refuse_commands:
@@ -398,6 +412,7 @@ class Checks(unittest.TestCase):
         self.mod.hold_runs = False
         self.mod.held_runs = []
         self.mod.refuse_reload = None
+        self.mod.refuse_btw = None
         self.mod.commands.clear()
         self.clock = [time.time()]
         self.r = rpcs.Rpcs(KEY, "testhost", clock=lambda: self.clock[0])
@@ -1306,6 +1321,104 @@ class Checks(unittest.TestCase):
         kept = lambda: ((bridgemod.load_kept(session.sid).get("rpcs") or {}).get("nonce-across") or {}).get("end")
         self.assertTrue(wait_for(kept, 5.0), "the new child kept the end under its nonce")
         self.assertEqual((kept()["id"], kept()["rpc"], kept()["settled"]), (out["result"]["id"], "nonce-across", {"ok": True}))
+
+    # ------------------------------------------------ a side question, compact's instructions (MW2)
+
+    def test_m2_a_side_questions_shape(self):
+        for args in ({}, {"prompt": ""}, {"prompt": "   "}, {"prompt": 5}, {"prompt": "x" * 8193}):
+            self.refused(self.send("btw", {"session": self.bridged.sid, **args}), "bad-shape")
+        self.assertEqual(self.mod.ops("btw"), [], "nothing reached the bridge")
+        asked = self.send("btw", {"session": self.bridged.sid, "prompt": "x" * 8192})
+        self.assertEqual(self.outcome(asked)["state"], "done", "8,192 characters is a question")
+
+    def test_m2_a_side_question_answers_started_and_its_answer_follows_as_op_carrying_the_nonce(self):
+        reqs = self.following()
+        self.r.kinds = frozenset({"op"})
+        prompt = "what did we decide\nabout the cache?"
+        asked = self.send("btw", {"session": self.bridged.sid, "prompt": prompt})
+        o = self.outcome(asked)
+        cmd = self.mod.ops("btw")[-1]
+        self.assertEqual(o, {"state": "done", "result": {"started": True, "id": cmd["id"]}})
+        self.assertEqual((cmd["prompt"], cmd["rpc"]), (prompt, asked["nonce"]), "the question as asked, under the nonce")
+        got = wait_for(lambda: len(self.op_messages(reqs)) >= 2 and self.op_messages())
+        self.assertTrue(got, "the side question's start and end, as DX4 op")
+        head = {"rpc": asked["nonce"], "op": "btw", "id": cmd["id"], "t": 0}
+        self.assertEqual([m["body"] for m in got],
+                         [{**head, "phase": "start"},
+                          {**head, "phase": "end", "text": "Keep it per session.",
+                           "usage": {"input": 12, "output": 34, "cacheRead": 5000, "cacheWrite": 7}}])
+        self.assertEqual((got[0]["session"], got[0]["sub"]), (self.bridged.sid, None), "session-wide")
+        self.assertNotIn("op_id", self.ledger()[asked["nonce"]], "not kept once its end went up")
+
+    def test_m2_a_refused_side_question_fails_with_the_bridges_code_first(self):
+        self.mod.refuse_btw = ("nothing-to-fork", "nothing to fork yet: the session has made no model request")
+        asked = self.send("btw", {"session": self.bridged.sid, "prompt": "anything?"})
+        o = self.refused(asked, "failed")
+        self.assertEqual(o["error"]["message"], "nothing-to-fork: nothing to fork yet: the session has made no model request")
+        self.assertNotIn("op_id", self.ledger()[asked["nonce"]], "nothing started: nothing is kept for it")
+
+    def test_m2_a_side_question_needs_a_bridge_and_a_machine_that_runs_rpcs(self):
+        self.refused(self.send("btw", {"session": self.plain.sid, "prompt": "anything?"}), "unsupported")
+        policy.write({"read_only": True, "ceiling": "auto"})
+        self.refused(self.send("btw", {"session": self.bridged.sid, "prompt": "anything?"}), "read-only")
+        self.assertEqual(self.mod.ops("btw"), [])
+
+    def test_m2_a_side_questions_end_that_came_while_the_daemon_was_stopped_goes_up_as_btw(self):
+        reqs = self.following()
+        self.mod.hold_runs = True
+        asked = self.send("btw", {"session": self.bridged.sid, "prompt": "while down"})
+        self.assertEqual(self.outcome(asked)["state"], "done")
+        self.assertEqual(self.ledger()[asked["nonce"]]["op_id"], self.mod.ops("btw")[-1]["id"], "kept on the claim")
+        reqs.close()                                       # the daemon stops: nothing reads the stream
+        self.mod.post(*self.mod.held_runs)
+        kept = lambda: ((bridgemod.load_kept(self.bridged.sid).get("rpcs") or {}).get(asked["nonce"]) or {}).get("end")
+        self.assertTrue(wait_for(kept), "the child kept the end beside the answer")
+        self.r = rpcs.Rpcs(KEY, "testhost", clock=lambda: self.clock[0])   # and starts again
+        self.r.kinds = frozenset({"op"})
+        self.frames = []
+        got = wait_for(lambda: self.op_messages())
+        self.assertTrue(got, "the end, read from the bridge's file")
+        self.assertEqual([(m["body"]["op"], m["body"]["rpc"], m["body"]["phase"], m["body"]["text"]) for m in got],
+                         [("btw", asked["nonce"], "end", "Keep it per session.")])
+        self.assertNotIn("op_id", self.ledger()[asked["nonce"]], "forgotten once it went")
+
+    def test_m2_a_side_question_claimed_before_a_stop_is_reconciled_and_its_end_goes_up_as_btw(self):
+        """The daemon stops after the bridge answered the side question and
+        before its id was kept on the claim: the restart reconciles the claim
+        from the child's kept answer and sends the end the child kept."""
+        self.following()
+        self.mod.hold_runs = True
+        asked = self.send("btw", {"session": self.bridged.sid, "prompt": "in the gap"})
+        self.assertEqual(self.outcome(asked)["state"], "done")
+        bid = self.mod.ops("btw")[-1]["id"]
+        path = os.path.join(os.environ["SMINOS_HOME"], "daemon", rpcs.LEDGER_FILE)
+        entries = self.ledger()
+        entries[asked["nonce"]] = {k: v for k, v in entries[asked["nonce"]].items()
+                                   if k not in ("op_id", "outcome", "done_at", "acked")}   # the claim the stop left
+        sminos.write_json(path, entries)
+        self.mod.post(*self.mod.held_runs)
+        kept = lambda: ((bridgemod.load_kept(self.bridged.sid).get("rpcs") or {}).get(asked["nonce"]) or {}).get("end")
+        self.assertTrue(wait_for(kept), "the child kept the end beside the answer")
+        self.r = rpcs.Rpcs(KEY, "testhost", clock=lambda: self.clock[0])   # the restart reconciles the claim
+        self.r.kinds = frozenset({"op"})
+        self.frames = []
+        self.assertEqual(self.outcome(asked), {"state": "done", "result": {"started": True, "id": bid}})
+        got = wait_for(lambda: self.op_messages())
+        self.assertEqual([(m["body"]["op"], m["body"]["rpc"], m["body"]["phase"], m["body"]["id"]) for m in got],
+                         [("btw", asked["nonce"], "end", bid)])
+
+    def test_m2_compact_takes_instructions(self):
+        for instructions in (5, "x" * 4097, ["keep"]):
+            self.refused(self.send("compact", {"session": self.bridged.sid, "instructions": instructions}), "bad-shape")
+        self.assertEqual(self.mod.ops("compact"), [], "nothing reached the bridge")
+        asked = self.send("compact", {"session": self.bridged.sid, "instructions": "keep the plan\nand the open questions"})
+        self.assertEqual(self.outcome(asked), {"state": "done", "result": {"at": "now"}})
+        self.assertEqual(self.mod.ops("compact")[-1]["instructions"], "keep the plan\nand the open questions")
+        bare = self.send("compact", {"session": self.bridged.sid})
+        self.assertEqual(self.outcome(bare)["state"], "done")
+        self.assertNotIn("instructions", self.mod.ops("compact")[-1], "none asked: none passed")
+        edge = self.send("compact", {"session": self.bridged.sid, "instructions": "x" * 4096})
+        self.assertEqual(self.outcome(edge)["state"], "done", "4,096 characters are instructions")
 
     def test_g_spawn_and_retire_through_sminos(self):
         tpr.set_policy({"read_only": False, "ceiling": "acceptEdits"})

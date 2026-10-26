@@ -55,10 +55,13 @@ hello. The file outlives the process too, so a session resumed under its id
 nonce (`rpc`) has the mod's answer kept there under it (`rpcs`, the last
 RPCS_KEPT): what the daemon reads after a stop between sending the command
 and reading its answer (sminos_rpc's trace). An op answered at once whose
-outcome follows on the stream (a desk `command` answered `queued`, DX5) keeps
-its nonce here past that answer, until its `run` end: every `run` event of
-it is relayed carrying `rpc`, and the end is kept beside the answer (`end`,
-its texts cut to END_TEXT_KEPT), for a daemon that was stopped when it came.
+outcome follows on the stream (a desk `command` answered `queued`, a side
+question `btw` answered `started`, DX5) keeps its nonce here past that
+answer, until its end (OUTCOME_EVENTS: the `run` or `btw` event of phase
+`end`): every such event of it is relayed carrying `rpc`, and the end is kept
+beside the answer (`end`, its texts cut to END_TEXT_KEPT, a side question's
+answer marked `truncated` when cut), for a daemon that was stopped when it
+came.
 A `/reload-plugins` run's start is relayed naming this child (`child`: its
 socket's inode and its pid), the one the reload replaces: the daemon finishes
 the op by the session's bridge answering from another.
@@ -115,7 +118,8 @@ SUBSCRIBER_BACKLOG = 10000     # a subscriber this far behind is cut off and res
 COMMAND_WAIT_MAX = 25000       # ms: under the 30 s an engine fetch waits
 AGENTS_KEPT = 200
 RPCS_KEPT = 100                # the mod's answers to commands a desk RPC sent, kept by its nonce
-END_TEXT_KEPT = 4096           # characters of a kept run end's texts (its readback's, its settled's)
+END_TEXT_KEPT = 4096           # characters of a kept end's texts (a run's readback and settled, a side question's answer)
+OUTCOME_EVENTS = {"run": "command", "btw": "btw"}   # an op's outcome on the stream → the op it ends
 REFUSED_KEPT = 100             # deliveries the engine dropped after `submitted`, kept for the daemon to report
 REASON_MAX = 1000              # characters of a refusal's reason kept
 WATCHDOG_EVERY = 0.5
@@ -203,9 +207,12 @@ def _refusal(r):
 
 
 def _kept_end(e):
-    """A run's end as the child keeps it beside its RPC's answer: its fields
-    but the stream's own, its texts cut, a settled run's context left out."""
+    """An op's end as the child keeps it beside its RPC's answer: its fields
+    but the stream's own, its texts cut, a settled run's context left out, a
+    side question's answer cut and said to be."""
     end = {k: v for k, v in e.items() if k not in ("type", "n")}
+    if isinstance(end.get("text"), str) and len(end["text"]) > END_TEXT_KEPT:
+        end["text"], end["truncated"] = end["text"][:END_TEXT_KEPT], True
     for k in ("settled", "readback"):
         if isinstance(end.get(k), dict):
             part = {f: v for f, v in end[k].items() if f != "context"}
@@ -600,7 +607,7 @@ class Bridge:
         # not ended, still runs in the mod (that child crashed, and the module
         # spawned this one): its end carries its nonce, and is kept, here too.
         self.rpc_of = {a["result"]["id"]: n for n, a in self.kept.get("rpcs", {}).items()
-                       if a.get("op") == "command" and a.get("ok") is True and "end" not in a
+                       if a.get("op") in OUTCOME_EVENTS.values() and a.get("ok") is True and "end" not in a
                        and isinstance(a.get("result"), dict) and isinstance(a["result"].get("id"), str)}
         # Minted for this child and said only in its hello, which only the
         # module that spawned it reads: every post of the mod's carries it, so
@@ -840,7 +847,7 @@ class Bridge:
         elif kind == "result":
             r = e.get("result") if isinstance(e.get("result"), dict) else {}
             # An op answered at once, its outcome to follow, keeps its nonce
-            # until that outcome's end (DX5: `run`).
+            # until that outcome's end (DX5: `run`, `btw`).
             follows = e.get("ok") is True and (r.get("queued") is True or r.get("started") is True)
             rpc = self.rpc_of.get(e.get("id")) if follows else self.rpc_of.pop(e.get("id"), None)
             if rpc is not None:
@@ -853,8 +860,8 @@ class Bridge:
             if w is not None:
                 w[1] = e
                 w[0].set()
-        elif kind == "run":
-            if phase == "start" and e.get("name") == "reload-plugins" and self.child is not None:
+        elif kind in OUTCOME_EVENTS:
+            if kind == "run" and phase == "start" and e.get("name") == "reload-plugins" and self.child is not None:
                 e["child"] = list(self.child)
             rpc = self.rpc_of.get(e.get("id"))
             if rpc is not None:

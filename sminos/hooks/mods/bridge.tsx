@@ -29,6 +29,7 @@ import { measuredFor, routeOf } from './bridge-commands'
 import { catalogNow } from './bridge-catalog'
 import { controlsOf } from './bridge-controls'
 import { READ_KINDS, readKind } from './bridge-reads'
+import { sideQuestion } from './bridge-btw'
 
 export { OFF_LINE, ON_LINE } from './bridge-place'
 export { BLOCK_TAIL, TEXT_CAP, capped, resetBridge } from './bridge-state'
@@ -251,7 +252,7 @@ function recoverMainTurn(turnId: string) {
 export const TURN_UNKNOWN = 'turn state unknown since the bridge reloaded; retry after the next model request'
 const TURN_OPS = new Set(['steer', 'interrupt', 'compact'])
 /** The ops this bridge answers (DX5 `capabilities.ops`), and the reads (`read`'s kinds). */
-export const OPS = ['ping', 'steer', 'interrupt', 'stop', 'model', 'compact', 'deliver', 'answer', 'read', 'command']
+export const OPS = ['ping', 'steer', 'interrupt', 'stop', 'model', 'compact', 'deliver', 'answer', 'read', 'command', 'btw']
 export const READS = ['status', 'catalog', ...READ_KINDS]
 /** The DX5 protocol the capabilities speak: 2 is the desk's control surface (capabilities, `read`, `command`). */
 export const CAPABILITIES_PROTOCOL = 2
@@ -348,6 +349,8 @@ function commandAnswer($: EngineInterface, command: Command): Answered | Promise
       return read($, command.what, command.args)
     case 'command':
       return deskCommand($, command)
+    case 'btw':
+      return sideQuestion($, command.id, command.prompt)
     default:
       return { ok: false, error: `unknown op: ${command.op}` }
   }

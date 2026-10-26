@@ -89,7 +89,7 @@ OWED_FILE = "requests-owed.json"  # daemon/: the settlements not yet the hub's (
 RELAYED_KEPT = 200
 RELAYED_SESSIONS = 1000
 TOOL_USE_ID_MAX = 512      # the hub's bound on `raised.toolUseId` (DC3, MAWS 4b5d0a67)
-WANTED = (b'"raised"', b'"settled"', b'"resync"', b'"compact"', b'"run"')   # a line carrying none of these is no line of ours
+WANTED = (b'"raised"', b'"settled"', b'"resync"', b'"compact"', b'"run"', b'"btw"')   # a line carrying none of these is no line of ours
 
 
 def log(line):
@@ -180,7 +180,7 @@ class Reader(threading.Thread):
                     self.put(kind, (e.get("pending") if isinstance(e.get("pending"), list) else [], listed))
                 elif kind == "resync" and isinstance(e.get("pending"), list):
                     self.put(kind, (e["pending"], listed))
-                elif kind in ("raised", "settled", "compact", "run"):
+                elif kind in ("raised", "settled", "compact", "run", "btw"):
                     self.put(kind, e)
         except (OSError, ValueError, http.client.HTTPException) as e:
             self.put("closed", "closed here" if self.closing.is_set() else str(e) or repr(e))
@@ -223,7 +223,7 @@ class Requests:
         self.flying = {}      # id(frame) → frame: outbox messages on a lane, their POST not yet answered
         self.relayed = load_relayed()  # session → [(request, t)]: the settlements done with (sent or superseded)
         self.compacts = []    # [(session, project id, event)]: the bridges' `compact` events, for the RPCs
-        self.ops = []         # [(session, project id, event)]: the bridges' `run` events, for the RPCs
+        self.ops = []         # [(session, project id, event)]: the bridges' `run` and `btw` events, for the RPCs
         self.said = set()
         self.kept = owed.Kept(OWED_FILE, log)
         self.restore()
@@ -324,7 +324,7 @@ class Requests:
                 self.settled(sid, pid, data)
             elif kind == "compact":
                 self.compacts.append((sid, pid, data))
-            elif kind == "run":
+            elif kind in ("run", "btw"):
                 self.ops.append((sid, pid, data))
             elif kind == "closed":
                 del self.readers[sid]
@@ -350,7 +350,7 @@ class Requests:
         return out
 
     def take_ops(self):
-        """The `run` events read since the last call, in order."""
+        """The `run` and `btw` events read since the last call, in order."""
         out, self.ops = self.ops, []
         return out
 
