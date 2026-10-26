@@ -11,6 +11,8 @@ import type { Catalog } from './bridge-catalog'
 
 /** The longest string an event carries; the rest is in the transcript. */
 export const TEXT_CAP = 65_536
+/** How long a Bash call of an interrupted turn waits for the interrupt's record, and what an agent's stop hands its parent for the stop's note, at most (a TaskStop or an append that never answers). */
+export const INTERRUPT_HOLD_MS = 10_000
 /** A child that ended on its own is started again after this long, the first time (after a stable run, or ever)... */
 export const RESPAWN_FIRST_MS = 0
 /** ...and this long the next time it ends at once, doubling from there while it keeps doing so. */
@@ -141,6 +143,8 @@ export type HeldRow = { row: TranscriptRecord; calls: Set<string>; results: Tran
  */
 export type Check = { toolUseId: string; tool: string; agentId: string | null; input: unknown; shown?: Capped }
 /** One agent of the session as `$.agent.list()` gives it (the fields the bridge reads). */
+/** An agent the desk is stopping: its id, and its note's keeping (resolved once kept, or not to be). */
+export type AgentStop = { agentId: string; noted: Promise<void> }
 export type ListedAgent = { id: string; description: string; type: string; status: string; parentId?: string; name?: string }
 /** A log event's key: its project (absent from a CLI older than the project in the key), writer and seq. */
 export type DeliveryKey = { project?: string; writer: string; seq: number }
@@ -387,10 +391,11 @@ export type BridgeState = {
   btwWrites: Promise<void>
   /**
    * The desk's agent stops whose note to the parent is not in yet
-   * (bridge-agent-ops.tsx): an Agent call's result waits for them, so a
-   * foreground agent the stop ended goes back to its loop with the note.
+   * (bridge-agent-ops.tsx): an Agent call's result and the stopped agent's
+   * task notification wait for them, so the parent's next request carries
+   * the note.
    */
-  agentStops: Set<Promise<void>>
+  agentStops: Set<AgentStop>
 }
 
 const fresh = (): BridgeState => ({

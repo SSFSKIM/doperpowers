@@ -37,9 +37,11 @@ the first that fails is its answer, as DX6's error code:
    index holds as running, the main loop's or a subagent's, read from the
    rows as the plane reads them (sminos_jobs.running_task; `unknown-task`);
    for a stop-agent or a tell, the agent: one the session's subagent tree
-   holds as running, by its id or its name (`unknown-agent`), as the bridge's
-   child keeps the tree from the engine's list (GET /agents) and the plane
-   is fed it.
+   holds as running, by its id, else by the name of exactly one running
+   agent (`unknown-agent`; `ambiguous-agent` for a shared name), as the
+   bridge's child keeps the tree from the engine's list (GET /agents) and
+   the plane is fed it. The id it resolved goes to the bridge, which acts on
+   that agent alone.
 
 A refusal from 1 or 2 precedes the ledger and is not kept in it: it goes up
 while its project is open on the stream (an `unknown-project` never is, and
@@ -631,12 +633,10 @@ class Rpcs:
             if name in ("answer", "decide"):
                 return lambda: decide(path, args["digest"]["request"], decision)
             if name in ("stop-agent", "tell"):
-                if not running_agent(path, args["agentId"]):
-                    raise Refused("unknown-agent", "the session's subagent tree holds no running agent by the id or "
-                                                   "name %s" % args["agentId"])
+                agent = resolve_agent(path, args["agentId"])
                 if name == "stop-agent":
-                    return lambda: stop_agent(path, args["agentId"], nonce)
-                return lambda: tell(path, args["agentId"], args["text"], nonce)
+                    return lambda: stop_agent(path, args["agentId"], agent, nonce)
+                return lambda: tell(path, args["agentId"], agent, args["text"], nonce)
             if name == "stop":
                 if not jobs.running_task(facts["transcript"], args["taskId"]):
                     raise Refused("unknown-task", "the session's jobs hold no background shell or monitor %s running"
@@ -1373,43 +1373,58 @@ def stop(path, task):
     return done({"taskId": task})
 
 
-def running_agent(path, ref):
-    """Whether the session's subagent tree, as its bridge's child keeps it
-    (GET /agents), holds a running agent whose id or name is `ref`."""
+def resolve_agent(path, ref):
+    """The id of the running agent `ref` names in the session's subagent tree,
+    as its bridge's child keeps it (GET /agents): an id the tree holds first,
+    else the name of exactly one running agent. Refused `unknown-agent` when
+    none runs by it, `ambiguous-agent` when two running agents share the name."""
     try:
         code, body = bridge.request(path, "GET", "/agents", timeout=3)
     except (OSError, http.client.HTTPException) as e:
         raise Refused("failed", "the session's bridge did not say which agents run (%s): nothing ran" % unanswered(e))
     if code != 200 or not isinstance(body, dict) or not isinstance(body.get("agents"), list):
         raise Refused("failed", "the session's bridge did not say which agents run (HTTP %s): nothing ran" % code)
-    return any(isinstance(a, dict) and a.get("running") is True and ref in (a.get("agentId"), a.get("name"))
-               for a in body["agents"])
+    agents = [a for a in body["agents"] if isinstance(a, dict) and isinstance(a.get("agentId"), str)]
+    by_id = next((a for a in agents if a["agentId"] == ref), None)
+    if by_id is not None:
+        if by_id.get("running") is True:
+            return ref
+        raise Refused("unknown-agent", "agent %s is not running" % ref)
+    named = [a["agentId"] for a in agents if a.get("running") is True and a.get("name") == ref]
+    if len(named) > 1:
+        raise Refused("ambiguous-agent", "%d running agents are named %s (%s): name one by its id"
+                      % (len(named), ref, ", ".join(named)))
+    if not named:
+        raise Refused("unknown-agent", "the session's subagent tree holds no running agent by the id or name %s" % ref)
+    return named[0]
 
 
-def stop_agent(path, ref, nonce):
-    """One subagent stopped through the session's bridge, which resolves a
-    name to its id, runs TaskStop and leaves the parent its note (DX5
-    `stop-agent`), carrying the RPC's nonce, under which the bridge's child
-    keeps the answer. The agent's end reaches browsers in the subagent tree."""
-    out, _ = command(path, {"op": "stop-agent", "agentId": ref, "from": "desk", "rpc": nonce})
+def stop_agent(path, ref, agent, nonce):
+    """One subagent stopped through the session's bridge, which stops the
+    agent the tree resolved `ref` to (`agent`, refused if it no longer runs),
+    runs TaskStop and leaves the parent its note (DX5 `stop-agent`),
+    carrying the RPC's nonce, under which the bridge's child keeps the
+    answer. The agent's end reaches browsers in the subagent tree."""
+    out, _ = command(path, {"op": "stop-agent", "agentId": ref, "resolvedAgentId": agent, "from": "desk", "rpc": nonce})
     return agent_stopped(out)
 
 
 def agent_stopped(out):
     """A stop-agent's outcome from the bridge's answer (DX6): the spelling
-    asked, and the id a name resolved to; or the bridge's refusal."""
+    asked, the id a name resolved to, and why the parent's note was not
+    kept if it was not; or the bridge's refusal."""
     if not out.get("ok"):
         return refused_op(out)
     r = out.get("result") or {}
-    resolved = r.get("resolvedAgentId")
-    return done({"agentId": r.get("agentId"), "accepted": True,
-                 **({"resolvedAgentId": resolved} if isinstance(resolved, str) and resolved else {})})
+    extra = {k: r[k] for k in ("resolvedAgentId", "noteError") if isinstance(r.get(k), str) and r[k]}
+    return done({"agentId": r.get("agentId"), "accepted": True, **extra})
 
 
-def tell(path, ref, text, nonce):
+def tell(path, ref, agent, text, nonce):
     """A message to one subagent through the session's bridge, which sends
-    it with the engine's own delivery (DX5 `tell`), carrying the RPC's nonce."""
-    out, _ = command(path, {"op": "tell", "agentId": ref, "text": text, "rpc": nonce})
+    it with the engine's own delivery to the agent the tree resolved `ref`
+    to (DX5 `tell`), carrying the RPC's nonce."""
+    out, _ = command(path, {"op": "tell", "agentId": ref, "resolvedAgentId": agent, "text": text, "rpc": nonce})
     return told(out)
 
 

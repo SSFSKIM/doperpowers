@@ -1763,6 +1763,104 @@ describe('stop-agent', () => {
     await call
     expect(isBack).toBe(true)
   })
+
+  test('the id a caller resolved is the one acted on, kept apart from the spelling asked; one no longer running is refused, never its namesake', async () => {
+    const replacement = { ...FG, id: 'ae00000000000000e', name: 'bg sleeper' }
+    const h = harness({ agents: [BG, FG] })
+    await h.ready()
+    expect(await h.command({ op: 'stop-agent', agentId: 'bg sleeper', resolvedAgentId: BG.id, from: 'desk' })).toMatchObject({
+      ok: true,
+      result: { agentId: 'bg sleeper', accepted: true, resolvedAgentId: BG.id },
+    })
+    expect(said(h.conversation)).toContain(agentStopNote('bg sleeper', 'desk'))
+    // BG ended and another agent took its name between the caller's check and the stop.
+    h.setAgents([{ ...BG, status: 'killed' }, replacement])
+    const answer = await h.command({ op: 'stop-agent', agentId: 'bg sleeper', resolvedAgentId: BG.id, from: 'desk' })
+    expect(answer).toMatchObject({ ok: false, code: 'unknown-agent' })
+    expect(String(answer.error)).toContain(BG.id)
+    expect(await h.command({ op: 'tell', agentId: 'bg sleeper', resolvedAgentId: BG.id, text: 'hi' })).toMatchObject({ ok: false, code: 'unknown-agent' })
+    expect(h.calls.filter((c) => c.op === 'tool')).toEqual([{ op: 'tool', args: { tool: 'TaskStop', task_id: BG.id } }])
+    expect(h.calls.filter((c) => c.op === 'send')).toEqual([])
+    for (const resolvedAgentId of ['', 'a b', 7]) {
+      expect(await h.command({ op: 'stop-agent', agentId: 'bg sleeper', resolvedAgentId })).toMatchObject({ ok: false, error: 'stop-agent needs an agent id or name' })
+    }
+  })
+
+  test("TaskStop refused by a hook is no stop: the hook's reason is the error, and no note is left", async () => {
+    const h = harness({ agents: [BG] })
+    await h.ready()
+    ;(h.engine as unknown as { tool: { call: (a: Record<string, unknown>) => Promise<unknown> } }).tool.call = async () => ({ deny: 'policy: no stops today' })
+    const answer = await h.command({ op: 'stop-agent', agentId: BG.id })
+    expect(answer).toMatchObject({ ok: false })
+    expect(String(answer.error)).toContain('policy: no stops today')
+    expect(said(h.conversation)).toBe('')
+    expect(h.ofType('row-seen').filter((e) => e.door === 'note')).toHaveLength(0)
+  })
+
+  test("a background agent's task notification waits for the stop's note, so the parent's next request carries both", async () => {
+    const h = harness({ agents: [BG], holdAppend: true })
+    await h.ready()
+    const stopped = h.command({ op: 'stop-agent', agentId: BG.id, from: 'desk' })
+    await h.settle()
+    // TaskStop answered and queued the notification; the note is not kept yet.
+    const notification = { type: 'user', content: [{ type: 'text', text: `<task-notification>\n<task-id>${BG.id}</task-id>\n<status>killed</status>\n</task-notification>` }] }
+    let isKept = false
+    const kept = Promise.resolve(
+      h.hook('session.append', { door: 'delivery' })(h.engine, { door: 'delivery', message: notification, uuid: 'n1', origin: { kind: 'task-notification' } }, async (inner: Record<string, unknown>) => ({ message: inner.message, uuid: inner.uuid })),
+    ).then(() => (isKept = true))
+    // Another task's notification, and the queue's record of this one, are not held.
+    await h.append('delivery', { type: 'user', content: [{ type: 'text', text: '<task-notification>\n<task-id>other</task-id>\n</task-notification>' }] })
+    await h.append('queue', notification)
+    expect(isKept, 'held for the note').toBe(false)
+    h.appends.shift()!()
+    await kept
+    expect(isKept).toBe(true)
+    expect(await stopped).toMatchObject({ ok: true })
+  })
+
+  test("the notification's hold is bounded: a note that never comes lets it go after INTERRUPT_HOLD_MS", async () => {
+    const h = harness({ agents: [BG], holdAppend: true })
+    await h.ready()
+    void h.command({ op: 'stop-agent', agentId: BG.id }).catch(() => undefined)
+    await h.settle()
+    let isKept = false
+    const message = { type: 'user', content: [{ type: 'text', text: `<task-notification><task-id>${BG.id}</task-id></task-notification>` }] }
+    const kept = Promise.resolve(
+      h.hook('session.append', { door: 'delivery' })(h.engine, { door: 'delivery', message, uuid: 'n1', origin: { kind: 'task-notification' } }, async (inner: Record<string, unknown>) => ({ message: inner.message, uuid: inner.uuid })),
+    ).then(() => (isKept = true))
+    await h.settle()
+    expect(isKept).toBe(false)
+    await h.fire(INTERRUPT_HOLD_MS)
+    await kept
+    expect(isKept).toBe(true)
+  })
+
+  test("a nested agent's note goes to the loop that spawned it, named as that loop's row; main's own agents' to main", async () => {
+    const PARENT = { id: 'ap00000000000000p', description: 'Coordinate', type: 'general-purpose', status: 'running' }
+    const CHILD = { ...FG, parentId: PARENT.id }
+    const h = harness({ agents: [PARENT, CHILD, BG] })
+    await h.ready()
+    expect(await h.command({ op: 'stop-agent', agentId: CHILD.id, from: 'desk' })).toMatchObject({ ok: true })
+    expect(await h.command({ op: 'stop-agent', agentId: BG.id, from: 'desk' })).toMatchObject({ ok: true })
+    const appended = h.calls.filter((c) => c.op === 'append').map((c) => c.args as { agentId?: string; message: { content: { text: string }[] } })
+    expect(appended.map((a) => [a.agentId, a.message.content[0]!.text])).toEqual([
+      [PARENT.id, agentStopNote(CHILD.id, 'desk')],
+      [undefined, agentStopNote(BG.id, 'desk')],
+    ])
+    expect(h.ofType('row-seen').filter((e) => e.door === 'note').map((e) => e.agentId)).toEqual([PARENT.id, null])
+  })
+
+  test('a note the session did not keep is in the answer: the agent is stopped, its parent was not told', async () => {
+    const h = harness({ agents: [BG, FG], denyAppend: 'was stopped by the person' })
+    await h.ready()
+    const answer = await h.command({ op: 'stop-agent', agentId: BG.id, from: 'desk' })
+    expect(answer).toMatchObject({ ok: true, result: { agentId: BG.id, accepted: true, noteError: 'refused by a hook' } })
+    ;(h.engine as unknown as { session: { append: () => Promise<unknown> } }).session.append = async () => {
+      throw new Error('the loop is gone')
+    }
+    expect(await h.command({ op: 'stop-agent', agentId: FG.id })).toMatchObject({ ok: true, result: { accepted: true, noteError: 'the loop is gone' } })
+    expect(h.ofType('row-seen').filter((e) => e.door === 'note')).toHaveLength(0)
+  })
 })
 
 describe('tell', () => {

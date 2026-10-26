@@ -5,7 +5,7 @@ import type {} from '../../../devcloud/types/devcloud'
 import { ASK_TOOL, PLUGIN, asyncAsks, observeAsks } from './ask'
 import { OFF_LINE, ON_LINE, isCuaEnabled, isLiveMarker, verdictOf } from './bridge-place'
 import type { Guard, Place, Verdict } from './bridge-place'
-import { EFFORTS, RESPAWN_FIRST_MS, RESPAWN_STEP_MS, capped, isEffort, loopKey, message, parsed, state } from './bridge-state'
+import { EFFORTS, INTERRUPT_HOLD_MS, RESPAWN_FIRST_MS, RESPAWN_STEP_MS, capped, isEffort, loopKey, message, parsed, state } from './bridge-state'
 import type { Answer, Capabilities, Command, Decision, DeliveryKey, DeskRun, Override, Readback, Request, Steer, Stops, Wake } from './bridge-state'
 import { adoptKept, adoptSeed, emit, emitOwed, emitTaken, endStep, forgetLive, poster, pump, releaseStepEnd, requeue, resyncEvents, stopChild } from './bridge-stream'
 import {
@@ -31,10 +31,10 @@ import { catalogNow } from './bridge-catalog'
 import { controlsOf } from './bridge-controls'
 import { READ_KINDS, readKind } from './bridge-reads'
 import { endOrphanedSideQuestions, sideQuestion } from './bridge-btw'
-import { engineError, stopAgent, tellAgent } from './bridge-agent-ops'
+import { engineError, forNotes, notifiedStops, stopAgent, tellAgent } from './bridge-agent-ops'
 
 export { OFF_LINE, ON_LINE } from './bridge-place'
-export { BLOCK_TAIL, TEXT_CAP, capped, resetBridge } from './bridge-state'
+export { BLOCK_TAIL, INTERRUPT_HOLD_MS, TEXT_CAP, capped, resetBridge } from './bridge-state'
 export { RESYNC_INPUT_CAP, RESYNC_MAX, STEP_END_WAIT_MS } from './bridge-stream'
 export { RECORD_WAIT_MS, TRANSCRIPT_RETRY_MS, onAskNote } from './bridge-requests'
 export { READBACK_WAIT_MS, READBACK_WINDOW_MS, ROWS_POLLS, ROWS_POLL_MS, compacted } from './bridge-rows'
@@ -186,8 +186,6 @@ export function wakeText(when: WakeWhen, rows: readonly { isDelivery?: boolean; 
 const SUBMISSIONS_KEPT = 100
 /** After an abort, how long the Bash calls it ended have to report where they went. */
 export const INTERRUPT_WAIT_MS = 3_000
-/** How long a Bash call of an interrupted turn waits for the interrupt's record, and an Agent call for an agent stop's note, at most (a TaskStop that never answers). */
-export const INTERRUPT_HOLD_MS = 10_000
 /**
  * A family alias's model as the engine resolves it first, before its own
  * table: ANTHROPIC_DEFAULT_<FAMILY>_MODEL. Each name is spelled out, as the
@@ -356,9 +354,9 @@ function commandAnswer($: EngineInterface, command: Command): Answered | Promise
     case 'btw':
       return sideQuestion($, command.id, command.prompt)
     case 'stop-agent':
-      return stopAgent($, command.agentId, command.from)
+      return stopAgent($, command.agentId, command.from, command.resolvedAgentId)
     case 'tell':
-      return tellAgent($, command.agentId, command.text)
+      return tellAgent($, command.agentId, command.text, command.resolvedAgentId)
     default:
       return { ok: false, error: `unknown op: ${command.op}` }
   }
@@ -1910,10 +1908,8 @@ export function registerBridge(on: On) {
       }
       // An Agent call while the desk stops an agent: the call the stop ended
       // goes back to its loop with the stop's note in (bridge-agent-ops.tsx).
-      if (AGENT_TOOLS.has(e.tool) && state.agentStops.size > 0) {
-        let held: { cancel: () => void } | undefined
-        await Promise.race([Promise.all(state.agentStops), new Promise<void>((resolve) => (held = $.clock.after(INTERRUPT_HOLD_MS, resolve)))])
-        held?.cancel()
+      if (AGENT_TOOLS.has(e.tool)) {
+        await forNotes($, [...state.agentStops])
       }
       const shown = result.deny === undefined ? shownText(result) : undefined
       const text = capped(shown)
@@ -2070,6 +2066,12 @@ export function registerBridge(on: On) {
     const transitionsAt = state.transitions
     const isLive = state.post !== undefined
     const agentId = e.agentId ?? null
+    // A background agent the desk stopped: its task notification, which may
+    // start its parent's next request, waits for the stop's note
+    // (bridge-agent-ops.tsx). The queue's record is no row of a conversation.
+    if (e.door !== 'queue') {
+      await forNotes($, notifiedStops(e.message))
+    }
     const stored = await next(e)
     if (isLive && stored.deny === undefined) {
       announceRow(e.door, e.door === 'note' ? stored.message : e.message, stored.uuid, agentId)
