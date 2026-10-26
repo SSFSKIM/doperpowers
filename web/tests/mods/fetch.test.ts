@@ -147,7 +147,7 @@ describe('the fetch tool', () => {
       properties: {
         url: { type: 'string', format: 'uri', description: 'The page to fetch (http or https).' },
         prompt: { type: 'string', description: 'A question for a small fast model to answer from the page, citing its lines. Leave out to get the page itself.' },
-        refresh: { type: 'boolean', description: 'Fetch again even when a copy saved in the last 24 hours exists.' },
+        refresh: { type: 'boolean', description: 'Fetch again without reusing a saved copy.' },
       },
       required: ['url'],
     })

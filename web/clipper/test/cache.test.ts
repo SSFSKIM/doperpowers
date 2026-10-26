@@ -2,8 +2,8 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtemp, mkdir, writeFile, readdir, readFile, utimes, stat } from 'node:fs/promises'
 import { tmpdir, homedir } from 'node:os'
-import { join } from 'node:path'
-import { cacheRoot, generationName, currentGeneration, readFresh, beginBuild, publish, prune, readFailure, rememberFailure, FAILURE_MEMORY_MS } from '../src/cache.ts'
+import { basename, join } from 'node:path'
+import { cacheRoot, generationName, currentGeneration, readCurrent, recordCheck, beginBuild, publish, prune, readFailure, rememberFailure, FAILURE_MEMORY_MS } from '../src/cache.ts'
 
 const tmp = () => mkdtemp(join(tmpdir(), 'clip-cache-'))
 
@@ -81,21 +81,42 @@ test('two concurrent publishes both complete, and the newer is current', async (
   assert.equal(currentGeneration(entry), join(entry, gens[1]))
 })
 
-test('reuse answers from a generation under 24 hours old, and not from an older one or a .tmp- folder', async () => {
+test('the copy is the newest published generation, of any age, never a .tmp- folder', async () => {
   const entry = join(await tmp(), 'h', 'e')
-  assert.equal(await readFresh(entry, 24 * 3600e3), null)
+  assert.equal(await readCurrent(entry), null)
   // Each generation is named by its own fetch time: two builds published in the
   // same millisecond would otherwise be ordered by their random suffixes.
-  const old = new Date(Date.now() - 25 * 3600e3)
-  await build(entry, old, { now: () => old })
-  assert.equal(await readFresh(entry, 24 * 3600e3), null)
+  const old = new Date(Date.now() - 6 * 86400e3)
+  const oldDir = await build(entry, old, { now: () => old })
+  assert.equal((await readCurrent<{ dir: string }>(entry))?.meta.dir, oldDir)
   const recent = new Date(Date.now() - 3600e3)
   const dir = await build(entry, recent, { now: () => recent })
   // An interrupted build: a .tmp- folder newer than anything, with files in it.
   const t = await beginBuild(entry)
   await writeFile(join(t, 'page.md'), 'partial')
-  const meta = await readFresh<{ fetchedAt: string; dir: string }>(entry, 24 * 3600e3)
-  assert.equal(meta?.dir, dir)
+  const current = await readCurrent<{ fetchedAt: string; dir: string }>(entry)
+  assert.equal(current?.meta.dir, dir)
+  assert.equal(current?.generation, basename(dir))
+  assert.equal(current?.checkedAt, undefined)
+})
+
+test('a check record counts for the generation it names, and a newer one replaces it', async () => {
+  const entry = join(await tmp(), 'h', 'e')
+  const first = await build(entry, new Date(Date.now() - 3 * 3600e3))
+  const checkedAt = new Date(Date.now() - 60e3).toISOString()
+  await recordCheck(entry, basename(first), checkedAt)
+  assert.equal((await readCurrent(entry))?.checkedAt, checkedAt)
+  const later = new Date().toISOString()
+  await recordCheck(entry, basename(first), later)
+  assert.equal((await readCurrent(entry))?.checkedAt, later)
+  // A newer generation was not checked: the record names the one before it.
+  await build(entry, new Date())
+  assert.equal((await readCurrent(entry))?.checkedAt, undefined)
+  // A record half written reads as none.
+  await writeFile(join(entry, '.checked.json'), '{"generation":')
+  const current = await readCurrent(entry)
+  assert.ok(current)
+  assert.equal(current.checkedAt, undefined)
 })
 
 test('prune deletes old generations, stale .tmp- folders and empty entries, keeps the rest, and stamps .pruned', async () => {
@@ -173,6 +194,23 @@ test('prune deletes a failure no longer remembered, and the entry it leaves empt
   assert.deepEqual(await prune(root, { olderThanDays: 7 }), { removed: 0 })
   await assert.rejects(stat(join(root, 'a.example')))
   assert.ok((await stat(join(live, '.failed.json'))).isFile())
+})
+
+test('prune deletes a check record whose generation is gone, and a check write a crash left; a record of a live generation stays', async () => {
+  const root = await tmp()
+  const gone = join(root, 'a.example', 'gone-11111111')
+  const live = join(root, 'b.example', 'live-22222222')
+  const oldGen = await build(gone, new Date(Date.now() - 8 * 86400e3))
+  await recordCheck(gone, basename(oldGen), new Date().toISOString())
+  const liveGen = await build(live, new Date(Date.now() - 86400e3))
+  await recordCheck(live, basename(liveGen), new Date().toISOString())
+  await writeFile(join(live, '.checked-0123abcd.tmp'), '{"generation":')
+  const before = new Date(Date.now() - FAILURE_MEMORY_MS - 60e3)
+  await utimes(join(live, '.checked-0123abcd.tmp'), before, before)
+  // A copy is pruned by its fetch time, however recently it was confirmed.
+  assert.deepEqual(await prune(root, { olderThanDays: 7 }), { removed: 1 })
+  await assert.rejects(stat(join(root, 'a.example')))
+  assert.deepEqual((await readdir(live)).sort(), ['.checked.json', basename(liveGen)])
 })
 
 test('prune of a missing root removes nothing', async () => {

@@ -5,13 +5,13 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { clip, fetchHttpsFirst, FETCH_LIMITS, FULL_LIMITS, httpsFirst } from '../src/clip.ts'
 import type { ClipResult, ClipOk, ClipError } from '../src/clip.ts'
-import { FAILURE_MEMORY_MS } from '../src/cache.ts'
+import { CHECK_FLOOR_MS, FAILURE_MEMORY_MS, readCurrent } from '../src/cache.ts'
 import { HttpError } from '../src/http.ts'
 import type { HttpResponse } from '../src/http.ts'
 import { estimateTokens } from '../src/estimate.ts'
 import { entryDir } from '../src/key.ts'
 import { RefusedError } from '../src/netguard.ts'
-import { startServer, startTrap, tmpCache, send, fixture, pngBytes, pdfBytes, PIXEL_GIF, noPdftotext, entryContents, inlineImagesPage } from './helpers.ts'
+import { startServer, startTrap, tmpCache, send, fixture, pngBytes, pdfBytes, PIXEL_GIF, noPdftotext, entryContents, inlineImagesPage, pastFloor } from './helpers.ts'
 
 let server: Awaited<ReturnType<typeof startServer>>
 let trap: Awaited<ReturnType<typeof startTrap>>
@@ -266,6 +266,160 @@ test('two concurrent fetches of one URL publish two complete generations', async
   for (const r of [a, b]) assert.ok(JSON.parse(await readFile(join(r.dir, 'meta.json'), 'utf8')).ok)
   const again = ok(await clip(`${server.origin}/article`, { cacheDir, env }))
   assert.equal(again.dir, [a.dir, b.dir].sort()[1])
+})
+
+// The check of a saved copy past CHECK_FLOOR_MS (board #137): each test runs a site of its own.
+const LAST_MODIFIED = 'Mon, 12 Oct 2026 03:39:42 GMT'
+/** An article over RENDER_MIN_WORDS with no images, `extra` inside it. */
+const releaseNotes = (text: string, extra = '') =>
+  `<!doctype html><html><head><title>Release notes</title></head><body><article><h1>Release notes</h1><p>${(text + ' ').repeat(12)}</p>${extra}</article></body></html>`
+
+async function siteFor(t: import('node:test').TestContext, routes: Parameters<typeof startServer>[0]) {
+  const site = await startServer(routes)
+  t.after(() => site.close())
+  return { site, env: { ...env, WEB_ALLOW_HOSTS: `127.0.0.1:${site.port}` }, cacheDir: await tmpCache() }
+}
+
+/** Moves the URL's remembered failure past FAILURE_MEMORY_MS. */
+async function forgetFailure(cacheDir: string, url: string) {
+  const file = join(entryDir(cacheDir, new URL(url)), '.failed.json')
+  const failure = JSON.parse(await readFile(file, 'utf8'))
+  await writeFile(file, JSON.stringify({ ...failure, failedAt: new Date(Date.parse(failure.failedAt) - FAILURE_MEMORY_MS - 1000).toISOString() }))
+}
+
+test('past the floor the site is asked, and a 304 to the copy\'s validators keeps it: the same folder, the check recorded, no request again within the floor', async t => {
+  const asked: { etag?: string; since?: string }[] = []
+  const { site, env, cacheDir } = await siteFor(t, {
+    '/notes': (req, res) => {
+      asked.push({ etag: req.headers['if-none-match'], since: req.headers['if-modified-since'] })
+      // GitHub's 304: gzip named, nothing sent.
+      if (req.headers['if-none-match'] === '"v1"') { res.writeHead(304, { etag: '"v1"', 'content-encoding': 'gzip' }); res.end(); return }
+      res.writeHead(200, { 'content-type': 'text/html', etag: '"v1"', 'last-modified': LAST_MODIFIED }); res.end(releaseNotes('Version 1.0.1 fixes the date parser.'))
+    },
+  })
+  const url = `${site.origin}/notes`
+  const first = ok(await clip(url, { cacheDir, env }))
+  assert.equal(first.validators?.etag, '"v1"')
+  assert.equal(first.validators?.lastModified, LAST_MODIFIED)
+  assert.deepEqual(asked, [{ etag: undefined, since: undefined }])
+
+  await pastFloor(cacheDir, url)
+  const checked = ok(await clip(url, { cacheDir, env }))
+  assert.deepEqual(asked.at(-1), { etag: '"v1"', since: LAST_MODIFIED })
+  assert.equal(checked.cached, true)
+  assert.equal(checked.dir, first.dir)
+  assert.equal(checked.checkFailed, undefined)
+  assert.ok(Date.now() - Date.parse(checked.checkedAt!) < 5000, checked.checkedAt)
+  const entry = entryDir(cacheDir, new URL(url))
+  assert.deepEqual((await readdir(entry)).sort(), ['.checked.json', first.dir.split('/').pop()])
+
+  // Within the floor of the check, no request.
+  const hits = site.hits.length
+  const again = ok(await clip(url, { cacheDir, env }))
+  assert.equal(site.hits.length, hits)
+  assert.equal(again.dir, first.dir)
+  assert.equal(again.checkedAt, checked.checkedAt)
+})
+
+test('past the floor, a page without validators is kept when it comes back the same, in bytes or in its text, and replaced when its text changed', async t => {
+  let text = 'Version 1.0.1 fixes the date parser.'
+  let nonce = 0
+  const { site, env, cacheDir } = await siteFor(t, {
+    '/plain': (_req, res) => { res.writeHead(200, { 'content-type': 'text/html' }); res.end(releaseNotes(text, `<!-- request ${nonce} -->`)) },
+  })
+  const url = `${site.origin}/plain`
+  const first = ok(await clip(url, { cacheDir, env }))
+  assert.equal(first.validators?.etag, undefined)
+  assert.match(first.validators?.body ?? '', /^[0-9a-f]{64}$/)
+  assert.match(first.validators?.content ?? '', /^[0-9a-f]{64}$/)
+
+  // The same bytes.
+  await pastFloor(cacheDir, url)
+  const same = ok(await clip(url, { cacheDir, env }))
+  assert.equal(same.cached, true)
+  assert.equal(same.dir, first.dir)
+  assert.ok(same.checkedAt)
+
+  // Other bytes, the same text: a nonce in a comment.
+  nonce++
+  await pastFloor(cacheDir, url)
+  const sameText = ok(await clip(url, { cacheDir, env }))
+  assert.equal(sameText.cached, true)
+  assert.equal(sameText.dir, first.dir)
+  assert.ok(Date.parse(sameText.checkedAt!) > Date.parse(same.checkedAt!) - CHECK_FLOOR_MS)
+
+  // Changed text: the answer to the check is the new copy, and the old one stays readable.
+  text = 'Version 1.0.2 fixes the time zone parser.'
+  await pastFloor(cacheDir, url)
+  const hits = site.hits.length
+  const changed = ok(await clip(url, { cacheDir, env }))
+  assert.equal(site.hits.length, hits + 1)
+  assert.equal(changed.cached, false)
+  assert.notEqual(changed.dir, first.dir)
+  assert.match(await readFile(changed.file, 'utf8'), /1\.0\.2 fixes the time zone parser/)
+  assert.match(await readFile(first.file, 'utf8'), /1\.0\.1 fixes the date parser/)
+  assert.equal(ok(await clip(url, { cacheDir, env })).dir, changed.dir)
+})
+
+test('a check the site fails gives the copy with why, answered from the failure memory after; a 404 is the error, naming the copy', async t => {
+  let mode: 'page' | 'drop' | '503' | '404' = 'page'
+  const { site, env, cacheDir } = await siteFor(t, {
+    '/status': (req, res) => {
+      if (mode === 'page') { res.writeHead(200, { 'content-type': 'text/html' }); res.end(releaseNotes('Every system is working as it should.')); return }
+      if (mode === 'drop') { req.socket.destroy(); return }
+      res.writeHead(Number(mode), { 'content-type': 'text/plain' }); res.end(mode === '404' ? 'No such page' : 'Down for maintenance')
+    },
+  })
+  const url = `${site.origin}/status`
+  const first = ok(await clip(url, { cacheDir, env }))
+
+  mode = '503'
+  await pastFloor(cacheDir, url)
+  const down = ok(await clip(url, { cacheDir, env }))
+  assert.equal(down.cached, true)
+  assert.equal(down.dir, first.dir)
+  assert.equal(down.checkFailed, 'HTTP 503 Service Unavailable')
+  assert.equal(down.checkedAt, undefined)
+  // Remembered: no request until the memory runs out.
+  const hits = site.hits.length
+  assert.equal(ok(await clip(url, { cacheDir, env })).checkFailed, 'HTTP 503 Service Unavailable')
+  assert.equal(site.hits.length, hits)
+
+  mode = 'drop'
+  await forgetFailure(cacheDir, url)
+  assert.match(ok(await clip(url, { cacheDir, env })).checkFailed ?? '', /^network error: /)
+
+  mode = '404'
+  await forgetFailure(cacheDir, url)
+  const gone = failure(await clip(url, { cacheDir, env }))
+  assert.equal(gone.status, 404)
+  assert.equal(gone.permanent, true)
+  const { meta } = (await readCurrent<ClipOk>(entryDir(cacheDir, new URL(url))))!
+  assert.deepEqual(gone.copy, { file: first.file, fetchedAt: meta.fetchedAt })
+  const remembered = failure(await clip(url, { cacheDir, env }))
+  assert.deepEqual(remembered.copy, gone.copy)
+  assert.ok(remembered.failedAt)
+})
+
+test('a 304 from the page a redirect now leads to is not taken for the copy: that page is fetched in full', async t => {
+  let target = '/v1'
+  const { site, env, cacheDir } = await siteFor(t, {
+    '/latest': (_req, res) => { res.writeHead(302, { location: target }); res.end() },
+    // A static site's pages share one build time.
+    '*': (req, res) => {
+      if (req.headers['if-modified-since'] === LAST_MODIFIED) { res.writeHead(304); res.end(); return }
+      res.writeHead(200, { 'content-type': 'text/html', 'last-modified': LAST_MODIFIED }); res.end(releaseNotes(`This is the documentation of ${req.url}.`))
+    },
+  })
+  const url = `${site.origin}/latest`
+  const first = ok(await clip(url, { cacheDir, env }))
+  assert.equal(first.finalUrl, `${site.origin}/v1`)
+  target = '/v2'
+  await pastFloor(cacheDir, url)
+  const moved = ok(await clip(url, { cacheDir, env }))
+  assert.equal(moved.cached, false)
+  assert.equal(moved.finalUrl, `${site.origin}/v2`)
+  assert.match(await readFile(moved.file, 'utf8'), /documentation of \/v2/)
 })
 
 test('a served markdown file gets frontmatter and its images', async () => {

@@ -39,7 +39,8 @@ beside it) in a cache every session and subagent on this machine shares.
   the whole page is saved beside it as full.md, and the reply names it.
 - Pages that render with JavaScript are rendered in a headless browser.
   PDFs are saved for Read, by page.
-- A copy saved in the last 24 hours is reused; \`refresh: true\` fetches again.
+- A saved copy is reused when the site shows the page unchanged (asked at
+  most once every 5 minutes); \`refresh: true\` fetches again.
 - Pages behind a login cannot be fetched. Local and private-network
   addresses are refused; use curl through Bash for a local server.`
 
@@ -48,7 +49,7 @@ export const INPUT_SCHEMA = {
   properties: {
     url: { type: 'string', format: 'uri', description: 'The page to fetch (http or https).' },
     prompt: { type: 'string', description: 'A question for a small fast model to answer from the page, citing its lines. Leave out to get the page itself.' },
-    refresh: { type: 'boolean', description: 'Fetch again even when a copy saved in the last 24 hours exists.' },
+    refresh: { type: 'boolean', description: 'Fetch again without reusing a saved copy.' },
   },
   required: ['url'],
 }

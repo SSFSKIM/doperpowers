@@ -1,15 +1,18 @@
 // The cache: one entry folder per requested URL, one generation folder per
 // fetch. A generation is built in a .tmp- folder and published by renaming it
 // to a name that never existed, so readers see only complete generations and a
-// refresh never replaces one another agent may be reading. A failed fetch is
-// never a generation: it is remembered beside them for a few minutes.
+// refresh never replaces one another agent may be reading. When the site last
+// showed the current generation unchanged is recorded beside the generations,
+// which never change once published. A failed fetch is never a generation: it
+// is remembered beside them for a few minutes.
 import { randomBytes } from 'node:crypto'
 import { readdirSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, readdir, rename, rm, rmdir, stat, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { basename, join, resolve } from 'node:path'
 
-export const REUSE_MAX_AGE_MS = 24 * 3600e3
+/** How long a copy, after its fetch or its last check, answers without asking the site whether it changed. */
+export const CHECK_FLOOR_MS = 5 * 60e3
 /** How long a failed fetch answers for its URL instead of a new request. */
 export const FAILURE_MEMORY_MS = 5 * 60e3
 const TMP_PREFIX = '.tmp-'
@@ -17,6 +20,9 @@ const TMP_STALE_MS = 3600e3
 const FAILED_FILE = '.failed.json'
 /** A failure record being written, renamed over FAILED_FILE once whole. */
 const FAILED_TMP_PREFIX = '.failed-'
+const CHECKED_FILE = '.checked.json'
+/** A check record being written, renamed over CHECKED_FILE once whole. */
+const CHECKED_TMP_PREFIX = '.checked-'
 
 /** Absolute, whatever form it is given in: every path in a result names it (I1, I2). */
 export function cacheRoot(option: string | undefined, env: NodeJS.ProcessEnv = process.env): string {
@@ -40,17 +46,22 @@ export function currentGeneration(entry: string): string | null {
   return gens.length ? join(entry, gens[gens.length - 1]) : null
 }
 
-/** The current generation's meta.json, when it was fetched under `maxAgeMs` ago. */
-export async function readFresh<T extends { fetchedAt: string }>(entry: string, maxAgeMs: number, now = Date.now()): Promise<T | null> {
+/** The entry's copy: its current generation's meta.json, and when the site last showed it unchanged. */
+export type Current<T> = { meta: T; generation: string; checkedAt?: string }
+
+export async function readCurrent<T>(entry: string): Promise<Current<T> | null> {
   const gen = currentGeneration(entry)
   if (!gen) return null
-  try {
-    const meta = JSON.parse(await readFile(join(gen, 'meta.json'), 'utf8')) as T
-    const age = now - Date.parse(meta.fetchedAt)
-    return age >= 0 && age < maxAgeMs ? meta : null
-  } catch {
-    return null
-  }
+  let meta: T
+  try { meta = JSON.parse(await readFile(join(gen, 'meta.json'), 'utf8')) as T } catch { return null }
+  const generation = basename(gen)
+  const check = await readFile(join(entry, CHECKED_FILE), 'utf8').then(text => JSON.parse(text) as { generation?: string; checkedAt?: string }).catch(() => undefined)
+  return { meta, generation, ...(check?.generation === generation && check.checkedAt ? { checkedAt: check.checkedAt } : {}) }
+}
+
+/** Records that the site showed `generation` unchanged at `checkedAt`, replacing the record before. Best effort, as `rememberFailure`. */
+export async function recordCheck(entry: string, generation: string, checkedAt: string): Promise<void> {
+  await writeRecord(entry, CHECKED_FILE, CHECKED_TMP_PREFIX, { generation, checkedAt })
 }
 
 /** The entry's last failure, when it was recorded under `maxAgeMs` ago. */
@@ -71,11 +82,15 @@ export async function readFailure<T extends { failedAt: string }>(entry: string,
  * that cannot be written leaves the failure unremembered.
  */
 export async function rememberFailure<T extends { failedAt: string }>(entry: string, failure: T): Promise<void> {
-  const tmp = join(entry, `${FAILED_TMP_PREFIX}${randomBytes(4).toString('hex')}.tmp`)
+  await writeRecord(entry, FAILED_FILE, FAILED_TMP_PREFIX, failure)
+}
+
+async function writeRecord(entry: string, file: string, tmpPrefix: string, value: unknown): Promise<void> {
+  const tmp = join(entry, `${tmpPrefix}${randomBytes(4).toString('hex')}.tmp`)
   try {
     await mkdir(entry, { recursive: true })
-    await writeFile(tmp, JSON.stringify(failure) + '\n')
-    await rename(tmp, join(entry, FAILED_FILE))
+    await writeFile(tmp, JSON.stringify(value) + '\n')
+    await rename(tmp, join(entry, file))
   } catch {
     await rm(tmp, { force: true }).catch(() => {})
   }
@@ -125,9 +140,15 @@ export async function prune(root: string, opts: { olderThanDays: number; now?: n
           removed++
         }
       }
-      // The failure record, and a write of one that a crash left before its rename.
-      for (const name of await failureFiles(entryDir)) {
+      // The failure record past its memory, the check record once its generation is
+      // gone, and a write of either that a crash left before its rename.
+      for (const name of await recordFiles(entryDir)) {
         const file = join(entryDir, name)
+        if (name === CHECKED_FILE) {
+          const gen = await readFile(file, 'utf8').then(text => String(JSON.parse(text).generation ?? '')).catch(() => '')
+          if (!gen || !isGeneration(gen) || gen.includes('/') || !(await stat(join(entryDir, gen)).catch(() => undefined))) await rm(file, { force: true })
+          continue
+        }
         const s = await stat(file).catch(() => undefined)
         if (s && now - s.mtimeMs > FAILURE_MEMORY_MS) await rm(file, { force: true })
       }
@@ -148,9 +169,9 @@ async function dirs(path: string): Promise<string[]> {
   }
 }
 
-async function failureFiles(entry: string): Promise<string[]> {
+async function recordFiles(entry: string): Promise<string[]> {
   try {
-    return (await readdir(entry)).filter(name => name === FAILED_FILE || name.startsWith(FAILED_TMP_PREFIX))
+    return (await readdir(entry)).filter(name => [FAILED_FILE, CHECKED_FILE].includes(name) || name.startsWith(FAILED_TMP_PREFIX) || name.startsWith(CHECKED_TMP_PREFIX))
   } catch {
     return []
   }

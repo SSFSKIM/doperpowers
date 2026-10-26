@@ -9,7 +9,7 @@ import type { ClipOk } from '../src/clip.ts'
 import { findChrome, renderDom, servedDocument } from '../src/render.ts'
 import { startEgressProxy } from '../src/proxy.ts'
 import { boundaryOf } from '../src/netguard.ts'
-import { startServer, startTrap, startUdpTrap, tmpCache, send, fixture, noChrome, pngBytes, FIXTURES } from './helpers.ts'
+import { startServer, startTrap, startUdpTrap, tmpCache, send, fixture, noChrome, pngBytes, FIXTURES, pastFloor } from './helpers.ts'
 
 const WALLED_ARTICLE = '<html><head><title>Behind the wall</title></head><body><article><h1>Behind the wall</h1><p>'
   + 'This article is served only to clients that look like a browser, as a bot wall would serve it. '.repeat(8) + '</p></article></body></html>'
@@ -43,6 +43,8 @@ const WORKER_PAGE = '<html><head><title>From a worker</title></head><body><div i
 const browserOnly = (status: number, body: string) => (req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse) =>
   req.headers['sec-fetch-mode'] ? send('text/html', body, status)(req, res) : send('text/html', SHORT_SHELL)(req, res)
 
+let shellApp = 'notebook'
+const shellAsked: (string | undefined)[] = []
 let server: Awaited<ReturnType<typeof startServer>>
 let trap: Awaited<ReturnType<typeof startTrap>>
 let udp: Awaited<ReturnType<typeof startUdpTrap>>
@@ -59,6 +61,13 @@ before(async () => {
     '/stub-shell': async (req, res) => (req.headers.accept ?? '').startsWith('text/markdown')
       ? send('text/markdown; charset=utf-8', '# Rendered Notes\n\nA notebook application.\n')(req, res)
       : send('text/html', await fixture('js-shell.html'))(req, res),
+    // The shell with validators, answering 304 to them, though what its script writes changes (board #137).
+    '/shell-etag': async (req, res) => {
+      shellAsked.push(req.headers['if-none-match'])
+      if (req.headers['if-none-match'] === '"shell"') { res.writeHead(304, { etag: '"shell"' }); res.end(); return }
+      res.writeHead(200, { 'content-type': 'text/html', etag: '"shell"' })
+      res.end((await fixture('js-shell.html')).replace('a small notebook application', `a small ${shellApp} application`))
+    },
     '/egress': send('text/html', egress),
     '/hello': send('text/plain', 'hello through the proxy'),
     '/held-open': send('text/html', HELD_OPEN),
@@ -246,6 +255,30 @@ test('a page that needs JavaScript is rendered in headless Chromium', { skip: no
   assert.equal(r.rendered, true, r.notes.join('|'))
   assert.ok(r.words! > 50)
   assert.match(await readFile(r.file, 'utf8'), /written by a script after the page loaded/)
+})
+
+test('a rendered copy is checked by rendering it again: its shell\'s validators are never sent, and what the script writes decides', { skip: noChrome }, async () => {
+  const env: NodeJS.ProcessEnv = { ...process.env, WEB_ALLOW_HOSTS: `127.0.0.1:${server.port}` }
+  delete env.WEB_CHROME
+  const cacheDir = await tmpCache()
+  const url = `${server.origin}/shell-etag`
+  const first = await clip(url, { cacheDir, env }) as ClipOk
+  assert.equal(first.rendered, true, JSON.stringify(first))
+  assert.deepEqual(Object.keys(first.validators ?? {}), ['content'])
+
+  await pastFloor(cacheDir, url)
+  const same = await clip(url, { cacheDir, env }) as ClipOk
+  assert.equal(same.cached, true, JSON.stringify(same))
+  assert.equal(same.dir, first.dir)
+  assert.ok(same.checkedAt)
+
+  shellApp = 'calendar'
+  await pastFloor(cacheDir, url)
+  const changed = await clip(url, { cacheDir, env }) as ClipOk
+  assert.equal(changed.cached, false, JSON.stringify(changed))
+  assert.notEqual(changed.dir, first.dir)
+  assert.match(await readFile(changed.file, 'utf8'), /a small calendar application/)
+  assert.ok(shellAsked.every(etag => etag === undefined), JSON.stringify(shellAsked))
 })
 
 test('a markdown stub of a page a script draws gives way to the page, rendered', { skip: noChrome }, async () => {

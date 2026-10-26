@@ -208,6 +208,8 @@ function once(url: URL, addresses: Address[], o: RequestOptions & { method: stri
         resolve({ status: res.statusCode ?? 0, statusText: res.statusMessage ?? '', headers: res.headers, body, url })
       }
       if ([301, 302, 303, 307, 308].includes(res.statusCode ?? 0) && res.headers.location) { res.resume(); done(Buffer.alloc(0)); return }
+      // No body, whatever encoding the headers name: GitHub's 304 says gzip and sends nothing to unzip.
+      if (res.statusCode === 204 || res.statusCode === 304 || o.method === 'HEAD') { res.resume(); done(Buffer.alloc(0)); return }
       // The body runs on to the request's whole time, unless no bytes arrive for `stallMs`.
       const length = Number(res.headers['content-length']) || 0
       let got = 0
