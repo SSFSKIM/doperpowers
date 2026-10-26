@@ -60,6 +60,8 @@ export const RESYNC_MAX = 4_000_000
 /** Characters of each string a shortened permission's input keeps in a resync past RESYNC_MAX. */
 export const RESYNC_INPUT_CAP = 1_024
 const QUEUE_MAX = 10_000
+/** Op ends kept for the child at most (as many answers as it keeps). */
+const OWED_ENDS_MAX = 100
 /** After a post that failed, the next waits this long. */
 const RETRY_MS = 500
 /** A step's end waits this long at most for the rows of its blocks the engine appends after the request's result. */
@@ -166,6 +168,13 @@ function track(e: BridgeEvent) {
 /** The refusals a post the child answered carried, in its own events or a resync's: the child keeps them. */
 function acknowledge(batch: BridgeEvent[]) {
   settleTaken(batch, true)
+  for (const e of batch) {
+    const taken = state.owedEnds.get(e)
+    if (taken !== undefined) {
+      state.owedEnds.delete(e)
+      taken()
+    }
+  }
   const name = (k: Refusal['key']) => `${k.project ?? ''}|${k.writer}:${k.seq}`
   const carried = new Set(
     batch.flatMap((e) =>
@@ -207,7 +216,8 @@ export const raisedFields = (r: Request) => ({
  * input cut to TEXT_CAP; then questions (async asks among them), largest
  * first, sent ahead of the resync whole, each as its own `raised` (the poster
  * splits them into posts that fit), the resync naming them (`pendingAhead`)
- * so the child keeps each as that raise left it. Every request keeps its id,
+ * so the child keeps each as that raise left it. The op ends not yet taken
+ * follow it (owedEnds). Every request keeps its id,
  * tool, agent and window, which deciding it needs; a question's input stays
  * whole, since its answers are matched against its questions. The child
  * takes what it carries, but a request it already holds keeps the input its
@@ -216,6 +226,10 @@ export const raisedFields = (r: Request) => ({
  * post, the resync last.
  */
 export function resyncEvents(): BridgeEvent[] {
+  return [...resyncAlone(), ...state.owedEnds.keys()]
+}
+
+function resyncAlone(): BridgeEvent[] {
   const resync = wholeResync()
   let size = JSON.stringify(resync).length
   if (size <= RESYNC_MAX) {
@@ -385,7 +399,7 @@ export function adoptKept(kept: unknown) {
  */
 function lose(events: BridgeEvent[]) {
   settleTaken(events, false)
-  const dropped = events.reduce((n, e) => n + (e.type === 'gap' ? Number(e.dropped) : e.type === 'resync' || isHold(e) || aheadOfResync.has(e) ? 0 : 1), 0)
+  const dropped = events.reduce((n, e) => n + (e.type === 'gap' ? Number(e.dropped) : e.type === 'resync' || isHold(e) || aheadOfResync.has(e) || state.owedEnds.has(e) ? 0 : 1), 0)
   requeue([{ type: 'gap', dropped, t: Date.now() }, ...resyncEvents()])
 }
 
@@ -422,6 +436,30 @@ export function emitTaken(event: BridgeEvent): Promise<boolean> {
   return new Promise((resolve) => state.taking.set(queued, resolve))
 }
 
+/**
+ * Emits an op's end and keeps it until a post the child answered carried it:
+ * a lost post, or a child replaced before it came, sends it again after the
+ * resync. Resolves once the child took it (at once with no bridge to post to).
+ */
+export function emitOwed(end: BridgeEvent): Promise<void> {
+  if (state.post === undefined) {
+    emit(end)
+    return Promise.resolve()
+  }
+  const stamped = { ...end, t: Date.now() }
+  return new Promise((resolve) => {
+    state.owedEnds.set(stamped, resolve)
+    for (const [oldest, taken] of state.owedEnds) {
+      if (state.owedEnds.size <= OWED_ENDS_MAX) {
+        break
+      }
+      state.owedEnds.delete(oldest)
+      taken()
+    }
+    queueStamped(stamped)
+  })
+}
+
 /** Places a hold (Hold) at the queue's end. */
 export function hold(h: Hold) {
   if (state.post === undefined || state.isEnding || state.place === 'off') {
@@ -437,7 +475,10 @@ export function emit(event: BridgeEvent): BridgeEvent | undefined {
   if (state.post === undefined) {
     return undefined
   }
-  const stamped = { ...event, t: Date.now() }
+  return queueStamped({ ...event, t: Date.now() })
+}
+
+function queueStamped(stamped: BridgeEvent): BridgeEvent | undefined {
   track(stamped)
   // A bridge that is off has no child to post to: the live state it keeps
   // reaches the child a later safe verdict starts, as that child's resync.

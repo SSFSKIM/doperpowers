@@ -186,6 +186,11 @@ function harness(
     repo?: { root: string; remote: string | null; internal: boolean; name: string | null } | null
     /** What `$.model.fork` resolves to at once; otherwise each fork waits for the test (`forks`). */
     forkAnswer?: Record<string, unknown>
+    /**
+     * The host's `$.state` for this plugin's own keys, by key: shared between
+     * two harnesses, it is what a reloaded module finds of the one before it.
+     */
+    sessionState?: Map<string, unknown>
   } = {},
 ) {
   const hooks: { event: string; matcher: Matcher; handler: Handler }[] = []
@@ -239,6 +244,7 @@ function harness(
   const running: ((result: Record<string, unknown>) => void)[] = []
   /** Files `$.fs.read` reads (the session's transcripts; the plugin's manifest). */
   const files: Record<string, string> = { '/plug/.claude-plugin/plugin.json': JSON.stringify({ name: 'sminos', version: '1.7.0' }) }
+  const sessionState = options.sessionState ?? new Map<string, unknown>()
   /** Each `$.model.fork`, held until the test settles it. */
   const forks: { prompt: string; resolve: (r: Record<string, unknown>) => void; reject: (e: Error) => void }[] = []
   /** Each `$.command.run`, held until the test settles it. */
@@ -419,12 +425,19 @@ function harness(
     ui: { log: (text: string) => logs.push(text), toast: (text: string) => toasts.push(text), notify: async () => ({ isSent: true, channel: 'terminal_bell' }) },
     state: {
       get: async (ref: { plugin: string; key: string }) => {
+        if (ref.plugin === PLUGIN) {
+          return sessionState.has(ref.key) ? { value: sessionState.get(ref.key), version: 1 } : { value: undefined, version: 0 }
+        }
         guardReads.push({ op: 'state.get', args: ref })
         await readGate
         if (options.stateFails) {
           throw new Error('$.state.get: the host did not answer')
         }
         return ref.plugin === 'devcloud' && ref.key === 'secrets-guard' ? marker : { value: undefined, version: 0 }
+      },
+      set: async (ref: { plugin: string; key: string }, value: unknown) => {
+        sessionState.set(ref.key, value)
+        return { isSet: true, version: 1 }
       },
     },
     settings: {
@@ -634,6 +647,7 @@ function harness(
     calls,
     compactions,
     forks,
+    sessionState,
     runs,
     appends,
     submits,
@@ -1854,6 +1868,101 @@ describe('side question (btw)', () => {
     h.forks[0]!.resolve({ isAnswered: true, text: '가'.repeat(30_000), usage: USAGE })
     await h.settle()
     expect(h.ofType('btw')[1]).toMatchObject({ phase: 'end', id: r.id, text: '가'.repeat(21_845), truncated: true })
+  })
+
+  test('a side question started in a module that is then reloaded ends once in its successor, aborted, under its own id', async () => {
+    const kept = new Map<string, unknown>()
+    const before = harness({ sessionState: kept })
+    await before.ready()
+    const r = await ask(before, 'still there?')
+    expect(r).toMatchObject({ ok: true, result: { started: true } })
+    // The reload: the engine aborts the fork with the module's environment, which says nothing more.
+    const after = harness({ sessionState: kept, messages: [{ type: 'user' }] })
+    await after.ready()
+    expect(after.ofType('btw')).toEqual([expect.objectContaining({ phase: 'end', id: r.id, reason: 'aborted' })])
+    // Once its end reached the child, nothing is left for a module after this one.
+    const next = harness({ sessionState: kept, messages: [{ type: 'user' }] })
+    await next.ready()
+    expect(next.ofType('btw')).toEqual([])
+  })
+
+  test("a side question that ended leaves nothing for a successor; one the successor asks itself is its own", async () => {
+    const kept = new Map<string, unknown>()
+    const before = harness({ sessionState: kept })
+    await before.ready()
+    await ask(before, 'done soon')
+    before.forks[0]!.resolve({ isAnswered: true, text: 'Done.', usage: USAGE })
+    await before.settle()
+    const after = harness({ sessionState: kept, messages: [{ type: 'user' }] })
+    await after.ready()
+    expect(after.ofType('btw')).toEqual([])
+    const own = await ask(after, 'and now?')
+    const again = harness({ sessionState: kept, messages: [{ type: 'user' }] })
+    await again.ready()
+    expect(again.ofType('btw')).toEqual([expect.objectContaining({ phase: 'end', id: own.id, reason: 'aborted' })])
+  })
+
+  test("an end that came while no child was there reaches the next child after its resync, once", async () => {
+    const h = harness()
+    await h.ready()
+    const r = await ask(h, 'across a crash')
+    const timers = h.timers.length
+    h.children[0]!.end()
+    await h.settle()
+    // The fork answers before the replacement says hello.
+    h.forks[0]!.resolve({ isAnswered: true, text: 'Still here.', usage: USAGE })
+    await h.settle()
+    h.timers[timers]!.fn()
+    await h.settle()
+    h.children[1]!.write(hello(SID, SOCK, undefined, 'n1'))
+    await h.settle()
+    const toNext = h.posts.filter((p) => p.nonce === 'n1').flatMap((p) => p.events)
+    expect(toNext.map((e) => e.type)).toEqual(['session', 'resync', 'btw'])
+    expect(toNext[2]).toMatchObject({ phase: 'end', id: r.id, text: 'Still here.' })
+  })
+
+  test('an end whose post failed goes again after the resync that follows, once; one the child took is not sent again', async () => {
+    const h = harness({ hold: true })
+    const releaseAll = async () => {
+      for (const p of h.posts.filter((p) => !released.has(p))) {
+        released.add(p)
+        p.release()
+        await h.settle()
+      }
+    }
+    const released = new Set<(typeof h.posts)[number]>()
+    await h.ready()
+    await releaseAll()
+    const answered = h.command({ op: 'btw', prompt: 'lost once' })
+    await h.settle()
+    await h.fire(BTW_REFUSAL_WAIT_MS)
+    await releaseAll()
+    const r = await answered
+    await releaseAll()
+    h.forks[0]!.resolve({ isAnswered: true, text: 'Twice?', usage: USAGE })
+    await h.settle()
+    const carrying = h.posts.at(-1)!
+    expect(carrying.events.map((e) => [e.type, e.phase])).toEqual([['btw', 'end']])
+    released.add(carrying)
+    carrying.fail()
+    await h.settle()
+    await h.fire(500)
+    await releaseAll()
+    await h.fire(500)
+    await releaseAll()
+    const after = h.posts.slice(h.posts.indexOf(carrying) + 1).flatMap((p) => p.events)
+    expect(after.map((e) => e.type)).toEqual(['gap', 'resync', 'btw'])
+    expect(after[2]).toMatchObject({ phase: 'end', id: r.id, text: 'Twice?' })
+    // Taken now: a later resync does not carry it again.
+    h.children[0]!.end()
+    await h.settle()
+    h.timers.filter((t) => t.kind === 'after' && !t.cancelled).at(-1)!.fn()
+    await h.settle()
+    h.children[1]!.write(hello(SID, SOCK, undefined, 'n1'))
+    await h.settle()
+    await releaseAll()
+    await releaseAll()
+    expect(h.posts.filter((p) => p.nonce === 'n1').flatMap((p) => p.events).map((e) => e.type)).toEqual(['session', 'resync'])
   })
 })
 
@@ -5651,6 +5760,7 @@ describe('the desk: routes (the 2.1.307 table)', () => {
 })
 
 describe('the desk: routes (the 2.1.310 table, /mcp as measured there)', () => {
+  const MCP_DISABLE_ALL = "turns off every server, this desk's own tools among them: run it in the terminal"
   const mcp = (args: string, engine = '2.1.310') => routeOf(engine, { name: 'mcp', source: 'builtin' }, 'mcp', args, 'sminos')
 
   test('one server is named as it is configured, spaces and punctuation included: run, saved for the project, no confirm', async () => {
@@ -5660,15 +5770,22 @@ describe('the desk: routes (the 2.1.310 table, /mcp as measured there)', () => {
     }
   })
 
-  test('enable and disable with no server, or all, and reconnect all, act on every server: run, after a confirm that says so', async () => {
-    for (const args of ['enable', 'disable', 'enable all', 'disable all', 'reconnect all']) {
+  test('enable with no server, or all, and reconnect all, act on every server: run, after a confirm that says so', async () => {
+    for (const args of ['enable', 'enable all', 'reconnect all']) {
       expect(mcp(args)).toMatchObject({ route: { class: 'run', confirm: true, enabled: true } })
       expect((mcp(args) as { route: { outlives: string } }).route.outlives).toContain("the plugins' own tool servers among them")
     }
   })
 
+  test("disable with no server, or all, is refused: it would turn off this desk's own tools, saved for the project", async () => {
+    for (const args of ['disable', 'disable all']) {
+      expect(mcp(args)).toEqual({ refusal: { code: 'drop', reason: `not from the desk: ${MCP_DISABLE_ALL}` } })
+    }
+  })
+
   test('a bare reconnect, which opens the panel, and any other form are refused bad-args and never run', async () => {
-    for (const args of ['reconnect', 'remove probe', 'enable  probe', 'enable a\tb']) {
+    // U+2028 and U+2029 end the engine's argument (its `.` stops at them): the panel would open.
+    for (const args of ['reconnect', 'remove probe', 'enable  probe', 'enable a\tb', 'disable a\u2028b', 'reconnect a\u2029b']) {
       expect(mcp(args)).toMatchObject({ refusal: { code: 'bad-args' } })
     }
     expect(mcp('')).toEqual({ refusal: { code: 'panel', reason: PANEL_REASON } })
@@ -5676,8 +5793,12 @@ describe('the desk: routes (the 2.1.310 table, /mcp as measured there)', () => {
 
   test("a 2.1.307 session keeps 2.1.307's forms: what was measured only on 2.1.310 stays refused there", async () => {
     expect(mcp('disable probe', '2.1.307')).toMatchObject({ route: { class: 'run' } })
-    for (const args of ['disable probe server', 'enable', 'disable']) {
+    for (const args of ['disable probe server', 'enable']) {
       expect(mcp(args, '2.1.307')).toMatchObject({ refusal: { code: 'bad-args' } })
+    }
+    // A refusal needs no measuring: disabling every server is refused there too.
+    for (const args of ['disable', 'disable all']) {
+      expect(mcp(args, '2.1.307')).toEqual({ refusal: { code: 'drop', reason: `not from the desk: ${MCP_DISABLE_ALL}` } })
     }
   })
 })

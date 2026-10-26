@@ -367,6 +367,18 @@ export type BridgeState = {
   readback?: ReadbackWatch
   /** Events a caller waits to see posted (bridge-stream, emitTaken): settled true once the child took one, false once it is lost. */
   taking: Map<BridgeEvent, (isTaken: boolean) => void>
+  /**
+   * The ends of ops answered at once (a desk command's `run`, a side
+   * question's `btw`) that no post the child answered has carried yet, oldest
+   * first, each with what waits on its taking (bridge-stream, emitOwed): every
+   * resync is followed by them, so one whose post was lost, or that came while
+   * no child was there, still reaches the child.
+   */
+  owedEnds: Map<BridgeEvent, () => void>
+  /** The side questions open in this session as this module knows them: its own, and those it ends for a module before it (bridge-btw.tsx). */
+  btwOpen: Set<string>
+  /** The writes of `btwOpen` to the session's `$.state`, in order. */
+  btwWrites: Promise<void>
 }
 
 const fresh = (): BridgeState => ({
@@ -400,6 +412,9 @@ const fresh = (): BridgeState => ({
   refusals: [],
   deskQueue: [],
   taking: new Map(),
+  owedEnds: new Map(),
+  btwOpen: new Set(),
+  btwWrites: Promise.resolve(),
   transitions: 0,
   isUnreadSaid: false,
   generation: 0,

@@ -1,6 +1,11 @@
 /**
- * sminos's contract: the one value it publishes in `$.state`, held by the
- * host for the session.
+ * sminos's contract: the values it keeps in `$.state`, held by the host for
+ * the session.
+ *
+ * `btw`: the ids of the session's side questions answered `started` whose
+ * end the bridge's child has not taken yet (hooks/mods/bridge-btw.tsx), so
+ * that the module that loads after a reload ends those whose fork the reload
+ * aborted. Only sminos writes or reads it.
  *
  * `ask`: the ask mod's async asks and the answers on their way to the model
  * (hooks/mods/ask.tsx), kept so that a reload of the module takes them up,
@@ -37,6 +42,6 @@ export type AskSnapshot = {
 
 declare module 'claude-code' {
   interface PluginState {
-    sminos: { ask: AskSnapshot }
+    sminos: { ask: AskSnapshot; btw: string[] }
   }
 }

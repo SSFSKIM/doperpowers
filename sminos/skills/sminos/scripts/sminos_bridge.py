@@ -61,7 +61,9 @@ answer, until its end (OUTCOME_EVENTS: the `run` or `btw` event of phase
 `end`): every such event of it is relayed carrying `rpc`, and the end is kept
 beside the answer (`end`, its texts cut to END_TEXT_KEPT, a side question's
 answer marked `truncated` when cut), for a daemon that was stopped when it
-came.
+came. The mod posts an op's end again when it cannot tell a child took it (a
+post lost, a child replaced): the child relays each end once, by the op's id,
+those kept beside an answer counting as relayed.
 A `/reload-plugins` run's start is relayed naming this child (`child`: its
 socket's inode and its pid), the one the reload replaces: the daemon finishes
 the op by the session's bridge answering from another.
@@ -120,6 +122,7 @@ AGENTS_KEPT = 200
 RPCS_KEPT = 100                # the mod's answers to commands a desk RPC sent, kept by its nonce
 END_TEXT_KEPT = 4096           # characters of a kept end's texts (a run's readback and settled, a side question's answer)
 OUTCOME_EVENTS = {"run": "command", "btw": "btw"}   # an op's outcome on the stream → the op it ends
+ENDED_KEPT = 1000              # ids of ops whose end was relayed, kept so an end the mod posts again is dropped
 REFUSED_KEPT = 100             # deliveries the engine dropped after `submitted`, kept for the daemon to report
 REASON_MAX = 1000              # characters of a refusal's reason kept
 WATCHDOG_EVERY = 0.5
@@ -609,6 +612,11 @@ class Bridge:
         self.rpc_of = {a["result"]["id"]: n for n, a in self.kept.get("rpcs", {}).items()
                        if a.get("op") in OUTCOME_EVENTS.values() and a.get("ok") is True and "end" not in a
                        and isinstance(a.get("result"), dict) and isinstance(a["result"].get("id"), str)}
+        # The ops whose end went out, oldest first: one a child before this
+        # one kept beside its answer went out with it.
+        self.ended = collections.OrderedDict(
+            (a["end"]["id"], None) for a in self.kept.get("rpcs", {}).values()
+            if isinstance(a.get("end"), dict) and isinstance(a["end"].get("id"), str))
         # Minted for this child and said only in its hello, which only the
         # module that spawned it reads: every post of the mod's carries it, so
         # an older module instance still posting to the path (a reload keeps
@@ -641,6 +649,8 @@ class Bridge:
                 if e.get("type") == "inbox":
                     self._inbox(e)
                     continue
+                if self._is_repeated_end(e):
+                    continue
                 self._apply(e)
                 if e.get("type") == "resync":
                     # The first makes the child ready; any later one replaced
@@ -659,6 +669,18 @@ class Bridge:
             note = self._save()
             if note is not None:
                 self._fan_out(note)
+
+    def _is_repeated_end(self, e):
+        """An op's end the mod posted again (it could not tell this child, or
+        the one before, took it): dropped. A first one is noted."""
+        if e.get("type") not in OUTCOME_EVENTS or e.get("phase") != "end" or not isinstance(e.get("id"), str):
+            return False
+        if e["id"] in self.ended:
+            return True
+        self.ended[e["id"]] = None
+        while len(self.ended) > ENDED_KEPT:
+            self.ended.popitem(last=False)
+        return False
 
     def _end_subscribers(self):
         for sub in list(self.subscribers):

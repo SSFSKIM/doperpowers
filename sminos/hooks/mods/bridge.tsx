@@ -7,7 +7,7 @@ import { OFF_LINE, ON_LINE, isCuaEnabled, isLiveMarker, verdictOf } from './brid
 import type { Guard, Place, Verdict } from './bridge-place'
 import { EFFORTS, RESPAWN_FIRST_MS, RESPAWN_STEP_MS, capped, isEffort, loopKey, message, parsed, state } from './bridge-state'
 import type { Answer, Capabilities, Command, Decision, DeliveryKey, DeskRun, Override, Readback, Request, Steer, Stops, Wake } from './bridge-state'
-import { adoptKept, adoptSeed, emit, emitTaken, endStep, forgetLive, poster, pump, releaseStepEnd, requeue, resyncEvents, stopChild } from './bridge-stream'
+import { adoptKept, adoptSeed, emit, emitOwed, emitTaken, endStep, forgetLive, poster, pump, releaseStepEnd, requeue, resyncEvents, stopChild } from './bridge-stream'
 import {
   CHECKS_KEPT,
   askCallFor,
@@ -29,7 +29,7 @@ import { measuredFor, routeOf } from './bridge-commands'
 import { catalogNow } from './bridge-catalog'
 import { controlsOf } from './bridge-controls'
 import { READ_KINDS, readKind } from './bridge-reads'
-import { sideQuestion } from './bridge-btw'
+import { endOrphanedSideQuestions, sideQuestion } from './bridge-btw'
 
 export { OFF_LINE, ON_LINE } from './bridge-place'
 export { BLOCK_TAIL, TEXT_CAP, capped, resetBridge } from './bridge-state'
@@ -489,7 +489,7 @@ async function followRun($: EngineInterface, run: DeskRun, settled: Promise<Sett
   emit({ type: 'run', phase: 'start', id: run.id, name: run.name, args: run.args })
   const outcome = await settled
   const readback: Readback = !outcome.ok ? { how: 'none' } : outcome.text !== undefined ? { how: 'text', text: outcome.text } : run.prompt ? { how: 'none' } : await readBack(run.name, run.args)
-  emit({ type: 'run', phase: 'end', id: run.id, name: run.name, args: run.args, settled: outcome, readback })
+  void emitOwed({ type: 'run', phase: 'end', id: run.id, name: run.name, args: run.args, settled: outcome, readback })
   releaseDeskRun($, run)
 }
 
@@ -502,7 +502,7 @@ async function followRun($: EngineInterface, run: DeskRun, settled: Promise<Sett
  * refused (RELOADING_REASON).
  */
 async function reloadPlugins($: EngineInterface, run: DeskRun) {
-  const end = (settled: Settled, readback: Readback = { how: 'none' }) => emit({ type: 'run', phase: 'end', id: run.id, name: run.name, args: run.args, settled, readback })
+  const end = (settled: Settled, readback: Readback = { how: 'none' }) => void emitOwed({ type: 'run', phase: 'end', id: run.id, name: run.name, args: run.args, settled, readback })
   let waited: { cancel: () => void } | undefined
   const isTaken = await Promise.race([
     emitTaken({ type: 'run', phase: 'start', id: run.id, name: run.name, args: run.args }),
@@ -1658,6 +1658,9 @@ export async function bridgeStart($: EngineInterface, e: SessionStartInput) {
   for (const ask of asyncAsks().filter((candidate) => candidate.status === 'open')) {
     onAskNote({ kind: 'open', id: ask.id, questions: ask.questions })
   }
+  // A side question a module before this one started, whose fork the reload
+  // aborted: its end goes to the first child, after the resync.
+  await endOrphanedSideQuestions($)
   stopChild()
   startChild($, await $.session.id())
   if (!state.isPosterRunning) {

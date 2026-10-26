@@ -494,14 +494,14 @@ assert_equals "$(field_of "$(event_of "$WATCHD" run end "$CID")" rpc)" "nonce-q1
 KR="$(kept_rpc nonce-q1)"
 assert_equals "$(field_of "$KR" ok)/$(field_of "$KR" result.queued)/$(field_of "$KR" end.readback.how)" "true/true/row" \
   "the answer kept under the nonce, and the end beside it once it came"
+# The mod posts an end again when it cannot tell the child took it (a lost
+# post, a child replaced): the child relays an op's end once, and keeps the
+# first beside the answer.
 ctl post "$SOCK" "[{\"type\":\"run\",\"phase\":\"end\",\"id\":\"$CID\",\"name\":\"rename\",\"args\":\"desk-m1\",
- \"settled\":{\"ok\":true},\"readback\":{\"how\":\"none\"}}]" >/dev/null
-two_ends() { [ "$(count_event "$WATCHD" run end "$CID")" -ge 2 ]; }
-until_true 100 two_ends || true
-LAST_END="$(python3 -c 'import json, sys
-hits = [json.loads(l) for l in open(sys.argv[1]) if l.startswith("{") and json.loads(l).get("type") == "run" and json.loads(l).get("phase") == "end" and json.loads(l).get("id") == sys.argv[2]]
-print(json.dumps(hits[-1]) if len(hits) > 1 else "{}")' "$WATCHD" "$CID")"
-assert_equals "$(field_of "$LAST_END" readback.how)/$(field_of "$LAST_END" rpc)" "none/null" "after its end the command's nonce is let go"
+ \"settled\":{\"ok\":true},\"readback\":{\"how\":\"none\"}},{\"type\":\"run\",\"phase\":\"start\",\"id\":\"after-$CID\",\"name\":\"color\",\"args\":\"red\"}]" >/dev/null
+until_true 100 has_event "$WATCHD" run start "after-$CID" || true
+assert_equals "$(count_event "$WATCHD" run end "$CID")" "1" "an op's end posted again is relayed once"
+assert_equals "$(field_of "$(kept_rpc nonce-q1)" end.readback.how)" "row" "and the end kept is the first"
 OUTR="$(ctl command "$SOCK" '{"op":"command","name":"config","rpc":"nonce-r1"}')"
 assert_equals "$(field_of "${OUTR#* }" code)" "panel" "a refusal's code is in the child's answer"
 assert_equals "$(field_of "$(kept_rpc nonce-r1)" code)" "panel" "and in the answer kept under the nonce"
@@ -518,13 +518,10 @@ KB="$(kept_rpc nonce-b1)"
 assert_equals "$(field_of "$KB" result.started)/$(field_of "$KB" end.usage.output)/$(field_of "$KB" end.truncated)" "true/34/true" \
   "the answer kept under the nonce, and the end beside it, its text cut and said to be"
 assert_equals "$(python3 -c 'import json, sys; print(len(json.loads(sys.argv[1])["end"]["text"]))' "$KB")" "4096" "to the kept end's bound"
-ctl post "$SOCK" "[{\"type\":\"btw\",\"phase\":\"end\",\"id\":\"$BID\",\"reason\":\"aborted\"}]" >/dev/null
-two_btw_ends() { [ "$(count_event "$WATCHD" btw end "$BID")" -ge 2 ]; }
-until_true 100 two_btw_ends || true
-LAST_BTW="$(python3 -c 'import json, sys
-hits = [json.loads(l) for l in open(sys.argv[1]) if l.startswith("{") and json.loads(l).get("type") == "btw" and json.loads(l).get("phase") == "end" and json.loads(l).get("id") == sys.argv[2]]
-print(json.dumps(hits[-1]) if len(hits) > 1 else "{}")' "$WATCHD" "$BID")"
-assert_equals "$(field_of "$LAST_BTW" reason)/$(field_of "$LAST_BTW" rpc)" "aborted/null" "after its end the side question's nonce is let go"
+ctl post "$SOCK" "[{\"type\":\"btw\",\"phase\":\"end\",\"id\":\"$BID\",\"reason\":\"aborted\"},{\"type\":\"btw\",\"phase\":\"start\",\"id\":\"after-$BID\"}]" >/dev/null
+until_true 100 has_event "$WATCHD" btw start "after-$BID" || true
+assert_equals "$(count_event "$WATCHD" btw end "$BID")" "1" "a side question's end posted again is relayed once"
+assert_equals "$(field_of "$(kept_rpc nonce-b1)" end.usage.output)" "34" "and the end kept is the first"
 # A reload's start names the child that relays it, the one the reload replaces:
 # the daemon finishes the op by another answering (from the CLI too, no nonce).
 ctl post "$SOCK" '[{"type":"run","phase":"start","id":"rl-1","name":"reload-plugins","args":""}]' >/dev/null
