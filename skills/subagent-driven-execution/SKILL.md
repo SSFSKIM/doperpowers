@@ -54,9 +54,11 @@ or brainstorm first.
    comment.
 3. **Per task, in Plan of Work order:** record BASE (the current commit),
    dispatch the executor (`doperpowers:task-executor`, briefed per Dispatch
-   hygiene below) in the background — while it runs, its verdicts are
-   your work — and write the task's `executed` ledger line with its agent
-   handle (Durable Progress below). Then send it one message: its `from`
+   hygiene below) with `run_in_background: true` — while it runs, its
+   verdicts are your work, and a nested dispatch that leaves the flag out
+   ran in the foreground — and write the task's `executed` ledger line
+   with its agent handle (Durable Progress below). Then send it one
+   message: its `from`
    is your address, where the executor's verdicts come back; a nested
    executor has no other way to reach you, since its `main` is the top
    session. Answer its questions before it proceeds. One executor at a

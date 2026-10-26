@@ -643,7 +643,7 @@ assert_contains "$trev" "is a claim like the" "...and it reads its dispatcher's 
 assert_not_contains "$trev" "deferred review" "...with no deferred review: the checkout sits at the head under review"
 sde_skill="$(cat "$REPO_ROOT/skills/subagent-driven-execution/SKILL.md")"
 assert_contains "$sde_skill" "send it one message" "subagent-driven-execution: the controller messages each executor once, so its verdicts have an address"
-assert_contains "$sde_skill" "in the background — while it runs, its verdicts are" "...and dispatches the executor in the background, so it can read the verdicts while the executor runs"
+assert_contains "$sde_skill" "with \`run_in_background: true\`" "...and dispatches the executor in the background, so it can read the verdicts while the executor runs"
 assert_not_contains "$sde_skill" "checkout line" "...and no deferred-review checkout line survives"
 
 # The spec is written, reviewed, and executed through the execspec skill;

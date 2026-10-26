@@ -62,8 +62,10 @@ rubric and scripts were kept in `/tmp/nest-eval/` for the session.
 - **One extra message per dispatch.** A subagent has no address for its
   dispatcher until the dispatcher messages it (friction tracker #304), so
   the controller messages each executor once after dispatching it.
-- **A notice per review round.** An executor waiting on its reviewer ends
-  its turn, and the controller is told it is waiting on its own work.
+- **A fresh reviewer per round.** A re-review is a new foreground
+  dispatch, briefed with the fix package and the previous round's report,
+  not a resume of the reviewer that already holds the task: it re-reads
+  the spec each round (rounds per task in the old loop: median 2).
 
 ## Rules that carry a reason
 
@@ -77,10 +79,31 @@ rubric and scripts were kept in `/tmp/nest-eval/` for the session.
 - `SendMessage` to `main` from a nested agent reaches the top session (18
   executor messages did, skipping their plan-executor), so the executor
   uses the address the controller's message carries.
+- The executor dispatches its reviewer in the foreground and repeats a
+  review by a fresh dispatch. In the first live run an executor resumed
+  its finished reviewer with `SendMessage` and ended its turn to wait; the
+  engine told it to hand back 12 s later, and the reviewer's report went
+  to the top session, twice (friction tracker #304, the
+  `[handback-send-enforce]` row).
+- The controller dispatches each executor in the background. In the first
+  live run it chose the foreground for two of three, which left it unable
+  to send the address message or read a verdict until the executor
+  returned.
 
 ## Verification
 
-Pending — a live run of a three-milestone spec with the branch's plugin.
+Live runs of a three-milestone spec (slugify, unique slugs, a CLI; each
+consumes the last) in a throwaway repository, through
+`claude -p --plugin-dir <this worktree>` with the installed plugin
+turned off, the design session dispatching one plan-executor:
+
+- **Run 1** (definitions at f15aded1): every milestone built and
+  reviewed clean (M1 in two rounds), 53/53 tests, the Purpose's example
+  exact. Every reviewer brief carried only paths, at the pin. The
+  re-review broke as described above, and the plan-executor dispatched in
+  the foreground; the M1 executor found its controller's id through
+  `ListAgents` and its verdicts arrived. Both fixed in e5300304.
+- **Run 2**: pending.
 
 ## Open
 
