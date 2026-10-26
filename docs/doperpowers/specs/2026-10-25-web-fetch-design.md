@@ -151,10 +151,19 @@ session on the machine.
   (step 5, Decision Log). A 10 MB PNG is saved byte for byte. `page.md`
   and `full.md` are as main saves them on every eval page, apart from what
   two runs of main also differ by.
-- [ ] (2026-10-26) Board #137 (web 0.5.0, branch `web-cache-freshness`): a
+- [x] (2026-10-26) Board #137 (web 0.5.0, branch `web-cache-freshness`): a
   saved copy is checked with the site past a 5-minute floor, in place of
   24 hours' reuse without a request (The cache, Decision Log). Design
-  approved by the owner, with its three choices; building.
+  approved by the owner, with its three choices. Built (`b3491e2e`), with
+  the HTTP client reading a 304 that names gzip (GitHub's, Wikipedia's).
+  Live over the eval URLs, 81 of 88 copies were kept by their check (59 by
+  a 304 at 247 ms) and 7 rebuilt for their own drift (Surprises &
+  Discoveries). The first review's four findings fixed (`70eb95d5`), the
+  second clean. The first suite's 16 dev tasks on B, after the tool
+  description's change: 15 correct and one partial (gist-1, a reason left
+  out of a summary), one fetch each. In the same version, the owner's
+  `WEBFETCH_MODEL` (`d50615d1`): `luna` answered live in `claude -p`, and a
+  name that does not resolve gave the page with why.
 
 ## Acceptance
 
