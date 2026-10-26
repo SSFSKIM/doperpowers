@@ -234,7 +234,7 @@ assert_contains "$MANUAL" "## Dedupe & sweep policy" "operation manual preserves
 assert_contains "$MANUAL" "## Adopting a repo (checklist)" "operation manual preserves setup guidance"
 assert_contains "$MANUAL" "## Migrating an installed workflow" "an installed Action copy has a migration note"
 assert_contains "$MANUAL" "owner reviews" "the dedupe table leads with the owner's own review"
-assert_contains "$MANUAL" "agents/qa-loop.md" "the manual points at the agent that IS the loop"
+assert_contains "$MANUAL" "archive/qa-loop/qa-loop.md" "the manual points at the archived agent that WAS the loop"
 assert_contains "$MANUAL" "references/review-standin-protocol.md" "...and at the stand-in's protocol"
 assert_contains "$MANUAL" "references/review-standin-bootstrap.md" "...and at the stand-in's bootstrap"
 assert_not_contains "$MANUAL" '`SKILL.md`' "the retired skill is no longer a piece of the loop"

@@ -39,6 +39,10 @@ for entry in ([declared] if isinstance(declared, str) else declared):
         m = re.search(r"export\s+const\s+meta\s*=\s*\{[^}]*?\bname:\s*['\"]([^'\"]+)['\"]", js.read_text())
         if m:
             workflows.add(m.group(1))
+# Archived agents still named by the dormant doctrine that dispatched them,
+# each licensed only inside that skill: the doctrine is kept as written, and
+# a live skill naming one is still a dangling reference.
+archived = {"qa-loop": "issue-tracker"}
 fails, checked = [], 0
 
 def paragraphs(text):
@@ -80,6 +84,8 @@ for f in sorted(root.rglob("*.md")):
                     fails.append(f"{f}:{start}: {kind}-path resolves nowhere: {rel}")
         for m in re.finditer(r'doperpowers:([a-z0-9-]+)', para):
             checked += 1
+            if archived.get(m.group(1)) == my_skill:
+                continue
             if m.group(1) not in skills and m.group(1) not in agents and m.group(1) not in workflows:
                 fails.append(f"{f}:{start}: dangling reference doperpowers:{m.group(1)}")
 

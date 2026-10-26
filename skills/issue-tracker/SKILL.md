@@ -427,9 +427,11 @@ than wake this doctrine as written (the ruling).
 - **Worker doctrine.** `references/worker-bootstrap.md`,
   `architect-worker-protocol.md`, `implement-worker-protocol.md`,
   `implement-decompose.md`, `spike-worker-protocol.md`, `ticket-gate.md`.
-- **The seats' review loop.** `agents/qa-loop.md`,
-  `references/review-loop.md`, `review-standin-protocol.md`,
-  `review-standin-bootstrap.md`, `wave-board.md`.
+- **The seats' review loop.** `references/review-loop.md`,
+  `review-standin-protocol.md`, `review-standin-bootstrap.md`,
+  `wave-board.md`. The loop's agent itself is archived at
+  `archive/qa-loop/` and no longer registers, so the protocols here that
+  dispatch `doperpowers:qa-loop` name an agent that does not exist.
 - **Surfaces.** A consumer repo can declare contested code seams in
   `.doperpowers/surfaces.md` (read from the default branch); the board
   carries them as the closed `surface:<name>` label vocabulary (lint FAILs

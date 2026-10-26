@@ -14,14 +14,12 @@ loading the Markdown definitions; its configuration is unchanged.
 | task-reviewer | gpt-5.6-sol | xhigh |
 | plan-executor | gpt-5.6-sol | xhigh |
 | task-executor | gpt-5.6-sol | high |
-| qa-loop | gpt-5.6-sol | high |
 
 The reviewer pins match Claude's GPT routes. The critic uses Astra for design
-judgment; the executors and the QA agent that runs the board's review loop use
-Sol at the project's execution tiers. Role files
+judgment; the executors use Sol at the project's execution tiers. Role files
 pin both model and effort, so changing the parent model does not change them.
-Claude's `plan-executor` and `qa-loop` (2026-09-25) and `task-executor`
-(2026-09-26) are pinned to opus; the Codex mirrors keep Sol, since Codex has
+Claude's `plan-executor` (2026-09-25) and `task-executor` (2026-09-26) are
+pinned to opus; the Codex mirrors keep Sol, since Codex has
 no Claude route.
 
 ## Install or update
