@@ -193,10 +193,9 @@ request left by a turn that ended otherwise (an interruption, an API error)
 is dropped at the next `turn.start`, so a turn the person starts is not
 compacted behind them. Nothing is aborted: background shells, monitors, MCP
 servers and subagents run on through a compaction, and their notifications
-arrive in the turn after. The tool's description carries the guidance
-(the work's checkpoints decide, size only sets how small a checkpoint will
-do, why a checkpoint is worth compacting at, the token bands, when the
-size is told, call it last and alone, end the turn).
+arrive in the turn after. The tool's description says what a call does
+and how to make one (last and alone, then end the turn); the guidance on
+when rides the plugin's MCP server instructions (below).
 
 The offer is a prompt the plugin submits (`$.prompt.submit`) at the
 `turn.complete` of a main-conversation turn the model answered and asked no
@@ -268,9 +267,9 @@ while a request pends, at a subagent's turn end (`SubagentStop` is another
 event, and a subagent cannot compact), in a session without the tool
 (headless), or when the figures cannot be read (logged). The free
 `context_usage` tool the model used to ask the figures with was retired
-with the offer (7.184.0): the offer carries them, and the tool's
-description says when they come — until the first offer the model is under
-the floor, and it may compact unasked at any checkpoint.
+with the offer (7.184.0): the offer carries them, and the guidance says
+when they come — until the first offer the model is under the floor, and
+it may compact unasked at any checkpoint.
 
 A subagent's call to `compact` is refused (its turn ends are not the main
 conversation's). A headless (`-p` / SDK) session gets no tool: the engine
@@ -281,19 +280,33 @@ kairos, agents, appeal and interim register them too,
 and the engine admits one
 unmatched registration of an event per module.
 
-The tool is an MCP tool to the engine, which tool search defers (the model
-sees the name alone until it loads the tool with `ToolSearch`). A
-`tool.describe` hook answers `isDeferred: false`, which the engine takes
-over its own placement (SPEC 14.4.2, since 2.1.287), so it ships inline in
-every request: the definition (about 2.3k characters) in the
-prompt-cache prefix, where `/context` counts it under "MCP tools". The
-7.202.0 release let it be deferred (2026-10-20), the offer sending the
-model to load it; the owner ruled it back inline (2026-10-21), since the
-guidance on when to compact has to be in view before any offer comes, and
-below the floor, where none comes, at all. Appeal stays deferred. Its
-answer is a line.
+The tool is an MCP tool to the engine, which tool search defers: the model
+sees its name alone until it loads it with `ToolSearch`
+(`select:mcp__doperpowers__compact`, which the guidance and the offer
+both give). The guidance on when to compact (the work's checkpoints
+decide, size only sets how small a checkpoint will do, why a checkpoint
+is worth compacting at, the token bands, when the size is told, and not
+during a design discussion or while something is pending) has to be in
+view before any offer comes, and below the floor, where none comes, at
+all (the owner's ruling, 2026-10-21), so it rides the plugin's MCP server
+instructions: a `prompt.attachment` hook on the `mcp_instructions_delta`
+the engine announces the servers in, at the first request and again after
+each compaction, puts it in place of the engine's line under
+`## doperpowers` ("Tools registered by the doperpowers plugin through
+$.tool.register."), in every loop of a session with surfaces. The answer
+is loop-independent because the engine caches it process-wide by attachment
+UUID (forks inherit them), clearing it on reload; reload does not await
+`session.start`, so the hook reads surfaces, window and gate itself. The
+transcript keeps the engine's text. Until 7.207.0 a `tool.describe` hook
+answered `isDeferred: false` and the definition (about 2.3k characters,
+the guidance in its description) shipped inline in every request of every
+loop, subagents' included; now every loop carries the guidance (about 1.7k
+characters), and the description (about 0.4k) and schema load on demand,
+at the price of a `ToolSearch` step when the model compacts with the tool
+not loaded.
+Appeal is deferred too. Its answer is a line.
 
-Known limits: the threshold is read once, at session start, so a window
+Known limits: the offer's threshold is read once, at session start, so a window
 changed by `/autocompact` mid-session is not followed; a model that keeps
 working after the tool answered is compacted at whatever answered turn end
 comes; the `resume` prompt enters under the plugin's name, as any
