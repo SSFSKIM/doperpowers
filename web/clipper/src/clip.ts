@@ -81,10 +81,21 @@ export const RENDER_MIN_WORDS = 50
 /**
  * The whole page (full.md) is saved when it adds `minWords` words to the
  * article, or an image link; it is not made when the article's own extraction
- * took over `skipAfterMs`: a page that large has nearly all of it in the
- * article already, and its second conversion would take as long again.
+ * took over `skipAfterMs` of CPU time: a page that large has nearly all of it in
+ * the article already, and its second conversion would take as long again.
  */
 export const FULL_LIMITS = { minWords: 50, skipAfterMs: 5_000 }
+
+/**
+ * The main thread's CPU time so far, in ms: what work on this thread cost,
+ * whatever else the machine was doing (wall time on a loaded machine skipped
+ * full.md for Django's docs, 0.7 s of work). Node 20 has only the process's,
+ * which also counts V8's garbage-collector threads, up to half again more.
+ */
+function cpuMs(): number {
+  const usage = (process.threadCpuUsage ?? process.cpuUsage).call(process)
+  return (usage.user + usage.system) / 1000
+}
 
 const ACCEPT = 'text/markdown;q=1.0, text/html;q=0.9, */*;q=0.8'
 const BROWSER_ACCEPT = 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8'
@@ -142,11 +153,11 @@ export async function clip(rawUrl: string, opts: ClipOptions): Promise<ClipResul
   }
   const siteFetch = guardedFetch(boundary, () => deadline.remaining())
   // 3. Extract, and 4. render when the plain fetch found no content: the result with more words.
-  // The article, and the document and time it came from, for the whole page (full.md).
+  // The article, and the document it came from and its CPU time, for the whole page (full.md).
   const extracted = async (html: string, at: string) => {
-    const started = Date.now()
+    const started = cpuMs()
     const ex = await extractHtml(html, at, siteFetch)
-    return { ex, html, extractMs: Date.now() - started }
+    return { ex, html, extractCpuMs: cpuMs() - started }
   }
   const extractPage = async (html: string, at: string): Promise<HtmlPage> => {
     const notes: string[] = []
@@ -176,7 +187,7 @@ export async function clip(rawUrl: string, opts: ClipOptions): Promise<ClipResul
   // one through (techblog.woowahan.com: 403 to this client, the article to Chromium).
   // The page is the browser's only when the browser was served it with a 2xx, by its
   // own NetLog: a denial page renders to a DOM like any other. Otherwise the 403 stands.
-  let walled: { ex: Extracted; html: string; extractMs: number; url: string; unsettled?: string } | undefined
+  let walled: { ex: Extracted; html: string; extractCpuMs: number; url: string; unsettled?: string } | undefined
   if (res.status === 403) {
     const chrome = findChrome(env)
     if (!('note' in chrome)) {
@@ -228,7 +239,7 @@ export async function clip(rawUrl: string, opts: ClipOptions): Promise<ClipResul
       let page: HtmlPage | undefined
       if (walled) {
         const notes = [`the site refused a plain fetch (HTTP ${res.status}); this is the page as headless Chromium rendered it`]
-        page = { ex: walled.ex, html: walled.html, extractMs: walled.extractMs, url: walled.url, rendered: true, notes: walled.unsettled ? [...notes, walled.unsettled] : notes }
+        page = { ex: walled.ex, html: walled.html, extractCpuMs: walled.extractCpuMs, url: walled.url, rendered: true, notes: walled.unsettled ? [...notes, walled.unsettled] : notes }
       }
       else if (r.kind === 'html') page = await extractPage(decodeText(res.body, contentType, true), finalUrl)
       else {
@@ -261,7 +272,7 @@ export async function clip(rawUrl: string, opts: ClipOptions): Promise<ClipResul
         head = htmlFrontmatter(meta, words, finalUrl, fetchedAt)
         body = page.ex.body
         // The whole page beside the article, when it adds to it (step 3).
-        if (page.extractMs > FULL_LIMITS.skipAfterMs) notes.push(`the whole page (full.md) was not saved: extracting the article took ${(page.extractMs / 1000).toFixed(1)} s`)
+        if (page.extractCpuMs > FULL_LIMITS.skipAfterMs) notes.push(`the whole page (full.md) was not saved: extracting the article took ${(page.extractCpuMs / 1000).toFixed(1)} s of CPU time`)
         else {
           try {
             const whole = extractFull(page.html, finalUrl)
@@ -345,8 +356,8 @@ export async function clip(rawUrl: string, opts: ClipOptions): Promise<ClipResul
   }
 }
 
-/** The article kept, with the document it was extracted from and how long that took. */
-type HtmlPage = { ex: Extracted; html: string; extractMs: number; url: string; rendered: boolean; notes: string[] }
+/** The article kept, with the document it was extracted from and the CPU time that took. */
+type HtmlPage = { ex: Extracted; html: string; extractCpuMs: number; url: string; rendered: boolean; notes: string[] }
 
 /** The words of a markdown file under its frontmatter. */
 const bodyWords = (text: string) => countWords(text.replace(/^---\n[\s\S]*?\n---\n/, ''))

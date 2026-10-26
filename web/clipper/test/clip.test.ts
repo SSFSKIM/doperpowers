@@ -192,7 +192,7 @@ test('full.md is saved for an image link the article lacks, and not made when th
   assert.equal(md.full, undefined)
 })
 
-test('an article whose extraction took over FULL_LIMITS.skipAfterMs gets no full.md, and a note says so', async t => {
+test('an article whose extraction took over FULL_LIMITS.skipAfterMs of CPU time gets no full.md, and a note says so', async t => {
   const before = FULL_LIMITS.skipAfterMs
   FULL_LIMITS.skipAfterMs = -1 // any extraction takes longer
   t.after(() => { FULL_LIMITS.skipAfterMs = before })
@@ -200,7 +200,7 @@ test('an article whose extraction took over FULL_LIMITS.skipAfterMs gets no full
   assert.equal(r.full, undefined)
   assert.ok(!(await readdir(r.dir)).includes('full.md'))
   assert.equal(r.notes.length, 1, r.notes.join('|'))
-  assert.match(r.notes[0], /^the whole page \(full\.md\) was not saved: extracting the article took \d+\.\d s$/)
+  assert.match(r.notes[0], /^the whole page \(full\.md\) was not saved: extracting the article took \d+\.\d s of CPU time$/)
 })
 
 test('an image under 1 KiB keeps its remote link, with the reason recorded', async () => {

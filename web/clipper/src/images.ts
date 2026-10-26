@@ -37,10 +37,16 @@ const IMAGE_ACCEPT = 'image/webp,image/png,image/jpeg,image/gif,image/svg+xml,im
 type Link = { start: number; end: number; alt: string; target: string; line: number; rewrite: (target: string) => string }
 
 const FENCE = /^ {0,3}(`{3,}|~{3,})/
+// A destination's character, read one way only: a backslash and the punctuation it
+// escapes, a backslash before anything else, or any other character but a space or a
+// parenthesis. Readings that overlapped gave a destination that cannot close 2^n ways
+// to fail (28 escape pairs: 9 s).
+const PUNCTUATION = '[!-/:-@[-`{-~]'
+const CHARACTER = String.raw`(?:\\${PUNCTUATION}|\\(?!${PUNCTUATION})|[^\s()\\])`
 // ![alt](target "title"), the target holding escaped characters (`\(`) and at most
 // one level of balanced parentheses; else ![alt][label], ![label][] or ![label],
 // through a definition.
-const IMAGE = /!\[((?:\\.|[^\]\\])*)\](?:\(\s*(<[^>\n]*>|(?:\\[!-\/:-@[-`{-~]|[^\s()]|\((?:\\[!-\/:-@[-`{-~]|[^\s()])*\))+)(\s+(?:"[^"\n]*"|'[^'\n]*'))?\s*\)|\[((?:\\.|[^\]\\])*)\])?/dg
+const IMAGE = new RegExp(String.raw`!\[((?:\\.|[^\]\\])*)\](?:\(\s*(<[^>\n]*>|(?:${CHARACTER}|\(${CHARACTER}*\))+)(\s+(?:"[^"\n]*"|'[^'\n]*'))?\s*\)|\[((?:\\.|[^\]\\])*)\])?`, 'dg')
 const DEFINITION = /^ {0,3}\[((?:\\.|[^\]\\])+)\]:[ \t]*(<[^>\n]*>|\S+)(?:[ \t]+(?:"[^"\n]*"|'[^'\n]*'|\([^)\n]*\)))?[ \t]*$/
 
 const normalizeLabel = (label: string) => label.trim().replace(/\s+/g, ' ').toLowerCase()
@@ -52,7 +58,8 @@ const unbracket = (t: string) => (t.startsWith('<') && t.endsWith('>') ? t.slice
  * before an `&` that would read as an entity). Resolved as written, `\(` is a
  * path separator to the URL parser.
  */
-const literal = (t: string) => t.replace(/\\([!-\/:-@[-`{-~])|&amp;/g, (_, c?: string) => c ?? '&')
+const ESCAPE = new RegExp(String.raw`\\(${PUNCTUATION})|&amp;`, 'g')
+const literal = (t: string) => t.replace(ESCAPE, (_, c?: string) => c ?? '&')
 
 /** A target written as a destination that reads back as the same target: the inverse of `literal`. */
 function destination(t: string): string {
@@ -182,8 +189,12 @@ export async function downloadImages(
   // The page's images share one budget from here, within the fetch's deadline:
   // most pages' images take half a second, and the time went to hosts that never answered.
   const budget = new Deadline(Math.min(IMAGE_LIMITS.totalMs, deadline.remaining()))
-  // An origin that did not answer one image is not asked for the rest: each would wait its full time.
+  // An origin that did not answer one image is not asked for the rest, at any hop: each would wait its full time.
   const silent = new Set<string>()
+  const beforeHop = (hop: URL) => {
+    const origin = originOf(hop)
+    if (origin && silent.has(origin)) throw new HttpError(`not downloaded: ${origin} did not answer an earlier image`)
+  }
 
   // Downloads land in part files. Once the budget closes nothing more is
   // written (each write is synchronous after the check), so a download the
@@ -195,9 +206,7 @@ export async function downloadImages(
     while (next < queue.length && !budget.expired()) {
       const k = next++
       const url = queue[k]
-      const origin = originOf(url)
-      if (origin && silent.has(origin)) { results.set(url, { error: `not downloaded: ${origin} did not answer an earlier image` }); continue }
-      const got = await downloadOne(url, join(assets, `.part-${k}`), base, budget, boundary, gate)
+      const got = await downloadOne(url, join(assets, `.part-${k}`), base, budget, boundary, gate, beforeHop)
       if (got.silent) silent.add(got.silent)
       results.set(url, got)
     }
@@ -250,7 +259,9 @@ export async function downloadImages(
   return { markdown: out, images }
 }
 
-async function downloadOne(url: string, part: string, page: string, budget: Deadline, boundary: Boundary, gate: { closed: boolean }): Promise<Download> {
+async function downloadOne(
+  url: string, part: string, page: string, budget: Deadline, boundary: Boundary, gate: { closed: boolean }, beforeHop: (hop: URL) => void,
+): Promise<Download> {
   let body: Buffer
   let mediaType: string
   try {
@@ -261,7 +272,7 @@ async function downloadOne(url: string, part: string, page: string, budget: Dead
       const timeoutMs = budget.limit(IMAGE_LIMITS.timeoutMs)
       if (timeoutMs <= 0) return { error: 'not downloaded: time budget' }
       const res = await request(parsed, {
-        headers: { accept: IMAGE_ACCEPT, 'user-agent': USER_AGENT }, referrer: page, timeoutMs, maxBytes: IMAGE_LIMITS.maxBytes, boundary,
+        headers: { accept: IMAGE_ACCEPT, 'user-agent': USER_AGENT }, referrer: page, timeoutMs, maxBytes: IMAGE_LIMITS.maxBytes, boundary, beforeHop,
       })
       if (res.status >= 400) return { error: `HTTP ${res.status}` }
       mediaType = mediaTypeOf(res.headers['content-type'])

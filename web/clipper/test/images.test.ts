@@ -35,6 +35,17 @@ const page = [
   '[A link to the diagram][diag], not an image.', //                                          12
 ].join('\n') + '\n'
 
+test('a destination that cannot close is rejected in linear time, however many escapes it holds', () => {
+  // Escape pairs that could also be read as two characters each made 2^n readings to try.
+  for (const pairs of [28, 20_000]) {
+    const line = '![x](/img/' + '\\!'.repeat(pairs) + ' (broken'
+    const started = performance.now()
+    assert.deepEqual(findImageLinks(line), [])
+    const ms = performance.now() - started
+    assert.ok(ms < 250, `${pairs} escape pairs took ${Math.round(ms)} ms`)
+  }
+})
+
 test('reference-style images are found through their definitions; code, escapes and missing definitions are not images', () => {
   const links = findImageLinks(page)
   assert.deepEqual(links.map(l => [l.line, l.alt, l.target]), [
@@ -154,6 +165,28 @@ test('a host that redirected an image to one that did not answer answered: only 
   assert.equal(silent.connections(), 1)
 })
 
+test('a redirect into an origin that did not answer is not followed, and the host that redirected is still asked', async t => {
+  limits(t, { concurrency: 1, timeoutMs: 400 })
+  const silent = await startSilent()
+  t.after(() => silent.close())
+  const dead = `http://127.0.0.1:${silent.port}`
+  const site = await startServer({
+    '/hop1.png': (_req, res) => { res.writeHead(302, { location: `${dead}/1.png` }); res.end() },
+    '/hop2.png': (_req, res) => { res.writeHead(302, { location: `${dead}/2.png` }); res.end() },
+    '/ok.png': send('image/png', pngBytes(2000, 10)),
+  })
+  t.after(() => site.close())
+  const md = '![h1](/hop1.png)\n\n![h2](/hop2.png)\n\n![ok](/ok.png)\n'
+  const dir = await mkdtemp(join(tmpdir(), 'clip-images-'))
+  const { images } = await downloadImages(md, `${site.origin}/page`, dir, new Deadline(10_000), boundaryOf({ WEB_ALLOW_HOSTS: `127.0.0.1:${site.port},127.0.0.1:${silent.port}` }))
+  const byAlt = Object.fromEntries(images.map(i => [i.alt, i]))
+  assert.equal(byAlt.h1.error, 'timed out after 0 s')
+  assert.equal(byAlt.h2.error, `not downloaded: ${dead} did not answer an earlier image`)
+  assert.equal(byAlt.ok.file, 'assets/01.png', JSON.stringify(byAlt.ok))
+  assert.equal(silent.connections(), 1)
+  assert.deepEqual(site.hits, ['/hop1.png', '/hop2.png', '/ok.png'])
+})
+
 test('a host is its origin: an http image that did not answer leaves the same host\'s https images asked', async t => {
   // .invalid never resolves: each request fails before any response, unanswered.
   limits(t, { concurrency: 1, timeoutMs: 3000 })
@@ -187,6 +220,11 @@ test('an image destination is read as markdown writes it: escapes undone before 
   assert.equal(lines[6], `![spaced](${site.origin}/img/my%20chart.png)`)
   assert.equal(lines[8], `![odd](<${site.origin}/img/odd(3.png>)`)
   assert.deepEqual(findImageLinks(markdown).slice(2).map(l => l.target), [`${site.origin}/img/gone_(2).png`, `${site.origin}/img/my%20chart.png`, `${site.origin}/img/odd(3.png`])
+
+  // Escapes read one way only: two backslashes are one, escaped, so the parenthesis after them opens a
+  // group that never closes, and the line is text; three are an escaped backslash and an escaped parenthesis.
+  assert.deepEqual(findImageLinks('![a](foo\\\\(bar)'), [])
+  assert.deepEqual(findImageLinks('![a](foo\\\\\\(bar)').map(l => l.target), ['foo\\(bar'])
 
   // The whole page's links, never downloaded, are made absolute the same way.
   const whole = absoluteImageLinks(md, 'https://img.example/page')

@@ -76,6 +76,8 @@ export type RequestOptions = {
   boundary: Boundary
   /** The page the request is made for; each hop gets the Referer `referrerFor` allows. */
   referrer?: string
+  /** Called before each hop is requested, the first included; what it throws ends the request. */
+  beforeHop?: (url: URL) => void
 }
 
 /**
@@ -121,6 +123,7 @@ export async function request(start: URL, o: RequestOptions): Promise<HttpRespon
   }
   for (let hop = 0; ; hop++) {
     if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new HttpError(`unsupported scheme: ${url.protocol}`)
+    o.beforeHop?.(url)
     const port = Number(url.port) || (url.protocol === 'https:' ? 443 : 80)
     const at = url
     const failedAt = (e: unknown) => {
