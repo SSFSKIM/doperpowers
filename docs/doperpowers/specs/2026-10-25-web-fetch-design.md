@@ -146,6 +146,11 @@ session on the machine.
   6.2 s, and gets its `full.md`; Unicode's emoji list in 2.0 s, not
   5.1–5.5 s, and gets its own. `page.md` and the saved images are as main
   saves them on every eval page, but for what two runs of main differ by.
+- [x] (2026-10-26) Board #145 (web 0.4.2, branch `web-image-link-stack`):
+  an inline image of any size in the article no longer fails the fetch
+  (step 5, Decision Log). A 10 MB PNG is saved byte for byte. `page.md`
+  and `full.md` are as main saves them on every eval page, apart from what
+  two runs of main also differ by.
 
 ## Acceptance
 
@@ -735,8 +740,12 @@ its own:
      else, or another character), so `foo\\(bar` is text, as markdown
      reads it, and a destination that cannot close is rejected in linear
      time: two readings of a backslash made 28 escape pairs take 9 s. A
-     link kept remote is written back as a valid destination, in angle
-     brackets when it holds a parenthesis.
+     loop reads the destination, not the link's pattern, and no part of
+     the pattern repeats a group once per character: V8 keeps a backtrack
+     entry for each repetition, and an inline image whose `data:` URI ran
+     past about 8.4 million characters (some 6 MB) failed the fetch with
+     `RangeError` (board #145). A link kept remote is written back as a
+     valid destination, in angle brackets when it holds a parenthesis.
    - **An origin that does not answer** one image (no response at all: a
      name that does not resolve, no connection or one closed unanswered,
      no headers within its time; an HTTP error status, or a body that
@@ -2655,6 +2664,37 @@ type Run = {
   the ticket sketched: it would rewrite scripts, styles and text too, and
   the parse was never the cost.
   Date/Author: 2026-10-26, board #144 (branch `web-inline-images`).
+- Decision: a loop reads an image link's destination, and the link's
+  pattern repeats no group once per character (step 5; web 0.4.2).
+  Rationale: `IMAGE` matched a destination as a repeated group of
+  one-character readings, and V8 keeps a backtrack entry for each
+  repetition. An inline image whose `data:` URI ran past about 8.4
+  million characters (some 6 MB) threw `RangeError: Maximum call stack
+  size exceeded` in the image step, and the agent got "the clipper
+  failed" in place of the page. Now the pattern stops at an inline
+  image's `(`. A loop reads the destination in steps, each read one way
+  as the pattern read it: a run of characters that are not a space, a
+  parenthesis or a backslash, or a backslash and the punctuation it
+  escapes, or a lone backslash. A sticky pattern then reads the title and
+  the `)`. The alt and a reference's label had the same shape and are
+  unrolled (`[^\]\\]*(?:\\.[^\]\\]*)*`), a repetition per backslash only;
+  a character class under `*` or `+` keeps no entry (measured over 13.4
+  million characters). A test fetches a page whose article holds a 10 MB
+  PNG (13.3 million characters): it is saved byte for byte as
+  `assets/01.png`, and `full.md` keeps its URI as written; on 0.4.1 it
+  throws. Main's `findImageLinks` and this one gave the same links and
+  rewrites on 1.8 million generated lines, 900,000 of them shaped as
+  links. Over every HTML URL of both suites (55 pages), main's bundle
+  and this one, run side by side, saved the same `page.md`, `full.md` and
+  `assets/` on 50. Four of the other five are the pages' own drift (js-2,
+  js-3, image-h3, gist-2, as #144 recorded). The fifth is federalregister's
+  CPU figure in the 5 s rule's note.
+  Rejected: unrolling the destination's run in the pattern, as the alt's
+  is: it still keeps an entry per escape or parenthesis, and a destination
+  of 4 million escapes (12 million characters) overflowed. Rejected too:
+  bounding the run and reading a longer destination apart, which would
+  give one grammar two readers.
+  Date/Author: 2026-10-26, board #145 (branch `web-image-link-stack`).
 
 ## Outcomes & Retrospective
 

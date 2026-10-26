@@ -37,17 +37,26 @@ const IMAGE_ACCEPT = 'image/webp,image/png,image/jpeg,image/gif,image/svg+xml,im
 type Link = { start: number; end: number; alt: string; target: string; line: number; rewrite: (target: string) => string }
 
 const FENCE = /^ {0,3}(`{3,}|~{3,})/
-// A destination's character, read one way only: a backslash and the punctuation it
-// escapes, a backslash before anything else, or any other character but a space or a
-// parenthesis. Readings that overlapped gave a destination that cannot close 2^n ways
-// to fail (28 escape pairs: 9 s).
 const PUNCTUATION = '[!-/:-@[-`{-~]'
-const CHARACTER = String.raw`(?:\\${PUNCTUATION}|\\(?!${PUNCTUATION})|[^\s()\\])`
-// ![alt](target "title"), the target holding escaped characters (`\(`) and at most
-// one level of balanced parentheses; else ![alt][label], ![label][] or ![label],
-// through a definition.
-const IMAGE = new RegExp(String.raw`!\[((?:\\.|[^\]\\])*)\](?:\(\s*(<[^>\n]*>|(?:${CHARACTER}|\(${CHARACTER}*\))+)(\s+(?:"[^"\n]*"|'[^'\n]*'))?\s*\)|\[((?:\\.|[^\]\\])*)\])?`, 'dg')
-const DEFINITION = /^ {0,3}\[((?:\\.|[^\]\\])+)\]:[ \t]*(<[^>\n]*>|\S+)(?:[ \t]+(?:"[^"\n]*"|'[^'\n]*'|\([^)\n]*\)))?[ \t]*$/
+// V8 keeps a backtrack entry for each repetition of a group in a pattern (a character
+// class under `*` or `+` keeps none), and some 8.4 million exhaust its stack: the match
+// throws RangeError and the fetch fails, as an inline image's data: URI over about 6 MB
+// did. So nothing here repeats a group per character: a label (or alt) runs to the
+// first `]` not escaped, its group repeated per backslash, and a destination is read
+// by a loop.
+const LABEL = String.raw`[^\]\\]*(?:\\.[^\]\\]*)*`
+// ![alt], then an inline image's `(`, its destination read on by `inlineDestination`;
+// else ![alt][label], ![label][] or ![label], through a definition.
+const IMAGE = new RegExp(String.raw`!\[(${LABEL})\](?:(\(\s*)|\[(${LABEL})\])?`, 'g')
+const DEFINITION = new RegExp(String.raw`^ {0,3}\[((?!\])${LABEL})\]:[ \t]*(<[^>\n]*>|\S+)(?:[ \t]+(?:"[^"\n]*"|'[^'\n]*'|\([^)\n]*\)))?[ \t]*$`)
+// A destination's characters, a step at a time and one way only: a run of characters
+// but a space, a parenthesis or a backslash; a backslash and the punctuation it
+// escapes; a backslash before anything else. Readings that overlapped gave a
+// destination that cannot close 2^n ways to fail (28 escape pairs: 9 s).
+const STEP = new RegExp(String.raw`[^\s()\\]+|\\${PUNCTUATION}?`, 'y')
+const ANGLED = /<[^>\n]*>/y
+// What follows a destination: a title, if any, and the `)` that closes the link.
+const CLOSE = /(?:\s+(?:"[^"\n]*"|'[^'\n]*'))?\s*\)/y
 
 const normalizeLabel = (label: string) => label.trim().replace(/\s+/g, ' ').toLowerCase()
 const unbracket = (t: string) => (t.startsWith('<') && t.endsWith('>') ? t.slice(1, -1) : t)
@@ -103,6 +112,34 @@ function escaped(line: string, at: number): boolean {
   return n % 2 === 1
 }
 
+/** Where the destination characters from `at` end. */
+function characters(line: string, at: number): number {
+  for (STEP.lastIndex = at; STEP.test(line); ) at = STEP.lastIndex
+  return at
+}
+
+/**
+ * The inline destination from `at` and the end of its link, or none when it does not
+ * close: `<…>`, else characters and at most one level of balanced parentheses, then a
+ * title, if any, and `)`.
+ */
+function inlineDestination(line: string, at: number): { end: number; close: number } | undefined {
+  const closes = (end: number) => {
+    CLOSE.lastIndex = end
+    return CLOSE.test(line) ? { end, close: CLOSE.lastIndex } : undefined
+  }
+  ANGLED.lastIndex = at
+  const angled = ANGLED.test(line) ? closes(ANGLED.lastIndex) : undefined
+  if (angled) return angled
+  let end = characters(line, at)
+  while (line[end] === '(') {
+    const inner = characters(line, end + 1)
+    if (line[inner] !== ')') break
+    end = characters(line, inner + 1)
+  }
+  return end > at ? closes(end) : undefined
+}
+
 /** Image links where they render: not in fenced or inline code, not escaped. */
 export function findImageLinks(markdown: string): Link[] {
   const lines = proseLines(markdown)
@@ -115,18 +152,25 @@ export function findImageLinks(markdown: string): Link[] {
   for (const { text, offset, line } of lines) {
     if (DEFINITION.test(text)) continue
     const code = codeSpans(text)
-    for (const m of text.matchAll(IMAGE)) {
+    IMAGE.lastIndex = 0
+    for (let m = IMAGE.exec(text); m; m = IMAGE.exec(text)) {
+      // An inline image: the link ends past its `)`, and one that does not close is text.
+      const start = IMAGE.lastIndex
+      let inline: { end: number; close: number } | undefined
+      if (m[2] !== undefined) {
+        inline = inlineDestination(text, start)
+        if (!inline) continue
+        IMAGE.lastIndex = inline.close
+      }
       if (escaped(text, m.index) || code.some(([s, e]) => m.index >= s && m.index < e)) continue
       const rawAlt = m[1]
       const alt = rawAlt.replace(/\\(.)/g, '$1')
-      if (m[2] !== undefined) {
-        const [s, e] = m.indices![2]
-        links.push({ start: offset + s, end: offset + e, alt, target: literal(unbracket(m[2])), line, rewrite: destination })
+      if (inline) {
+        links.push({ start: offset + start, end: offset + inline.end, alt, target: literal(unbracket(text.slice(start, inline.end))), line, rewrite: destination })
         continue
       }
       // A reference: ![alt][label], or ![label][] and ![label], whose label is the alt.
-      if (text[m.index + m[0].length] === '(') continue
-      const target = definitions.get(normalizeLabel(m[4] || rawAlt))
+      const target = definitions.get(normalizeLabel(m[3] || rawAlt))
       if (target === undefined) continue
       links.push({ start: offset + m.index, end: offset + m.index + m[0].length, alt, target, line, rewrite: t => `![${rawAlt}](${destination(t)})` })
     }

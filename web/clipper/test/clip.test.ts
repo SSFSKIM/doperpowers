@@ -216,6 +216,26 @@ test('inline images are saved byte for byte, and the whole page beside them keep
   assert.ok((await readFile(r.full.file, 'utf8')).includes(`![gallery](${inline.images.gallery.uri})`))
 })
 
+test('a 10 MB inline image in the article is saved byte for byte, and the whole page keeps its link as written', async t => {
+  // Its data: URI is 13.3 million characters. Matched a character at a time, a link
+  // that long exhausted V8's regexp stack (RangeError), and the fetch failed.
+  const photo = pngBytes(10_000_000, 6)
+  const uri = `data:image/png;base64,${photo.toString('base64')}`
+  const words = '<p>' + 'Prose around a photograph saved into the page itself, long enough to keep the article. '.repeat(6) + '</p>'
+  const site = await startServer({
+    '/photo': send('text/html; charset=utf-8', `<!doctype html><html><head><title>Photo</title></head><body><article><h1>Photo</h1>${words}<img src="${uri}" alt="photo">${words}</article>
+      <aside><h2>Elsewhere</h2><p>${'Notes beside the article that the whole page keeps. '.repeat(10)}</p></aside></body></html>`),
+  })
+  t.after(() => site.close())
+  const r = ok(await clip(`${site.origin}/photo`, { cacheDir: await tmpCache(), env: { ...env, WEB_ALLOW_HOSTS: `127.0.0.1:${site.port}` } }))
+  assert.deepEqual(r.notes, [])
+  assert.deepEqual(r.images.map(i => [i.alt, i.file, i.bytes]), [['photo', 'assets/01.png', photo.length]])
+  assert.deepEqual(await readFile(join(r.dir, 'assets/01.png')), photo)
+  assert.ok((await readFile(r.file, 'utf8')).includes('![photo](assets/01.png)'))
+  assert.ok(r.full, JSON.stringify(r.notes))
+  assert.ok((await readFile(r.full.file, 'utf8')).includes(`![photo](${uri})`))
+})
+
 test('an image under 1 KiB keeps its remote link, with the reason recorded', async () => {
   // Served markdown, so no extractor stands between the link and the image step.
   const r = ok(await clip(`${server.origin}/pixel.md`, { cacheDir: await tmpCache(), env }))

@@ -46,6 +46,15 @@ test('a destination that cannot close is rejected in linear time, however many e
   }
 })
 
+test('an image link is read whole however long its parts, its destination however many escapes it holds', () => {
+  // Some 8.4 million repetitions of a pattern's group exhaust V8's regexp stack (RangeError), and the fetch failed.
+  const run = 'A'.repeat(9_000_000)
+  assert.deepEqual(findImageLinks(`![a](data:image/png;base64,${run} "t")`).map(l => l.target.length), [22 + run.length])
+  const escapes = 'a\\!'.repeat(5_000_000)
+  assert.deepEqual(findImageLinks(`![a](/img/${escapes}(1).png)`).map(l => l.target.length), [5 + 2 * 5_000_000 + 7])
+  assert.deepEqual(findImageLinks(`![${run}](x.png) ![b][${run}]\n\n[${run}]: y.png`).map(l => [l.alt.length, l.target]), [[run.length, 'x.png'], [1, 'y.png']])
+})
+
 test('reference-style images are found through their definitions; code, escapes and missing definitions are not images', () => {
   const links = findImageLinks(page)
   assert.deepEqual(links.map(l => [l.line, l.alt, l.target]), [
