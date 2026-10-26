@@ -87,8 +87,12 @@ export type StepBlocks = {
   /** The step's end, held until every block that streamed has its row named (STEP_END_WAIT_MS at most). */
   heldEnd?: BridgeEvent
 }
-/** What a client decided, as the child hands it over. */
-export type Decision = { behavior: 'allow' | 'deny'; message?: string; updatedInput?: { answers?: Record<string, string> } }
+/**
+ * What a client decided, as the child hands it over: a question's answers;
+ * a scoped allow's rules (`updatedPermissions`), resolved by the daemon from
+ * the request's own suggestions.
+ */
+export type Decision = { behavior: 'allow' | 'deny'; message?: string; updatedInput?: { answers?: Record<string, string> }; updatedPermissions?: Record<string, unknown>[] }
 export type Outcome = 'allow' | 'deny' | 'answered' | 'withdrawn'
 /**
  * A request from outside the terminal, raised until settled: a permission
@@ -121,6 +125,8 @@ export type Request = {
   transcript?: string
   /** The ask mod's dialog: the call it opened inside, which the transcript names (DX5 `toolUseId`). */
   toolUseId?: string
+  /** The engine's `permission_suggestions`, raised only within their bound and for the call this module saw (DX5 `suggestions`). */
+  suggestions?: Record<string, unknown>[]
 }
 /** A row as the session's transcript keeps it, in the shape the Stop hook's export reads (`sminos record`). */
 export type TranscriptRecord =
@@ -481,6 +487,51 @@ export function capped(value: unknown, cap = TEXT_CAP): Capped {
     return { value: Object.fromEntries(entries.map(([k, c]) => [k, c.value])), cut: entries.some(([, c]) => c.cut) }
   }
   return { value, cut: false }
+}
+
+/** A UTF-16 surrogate without its pair: no canonical JSON or UTF-8 carries one. */
+const LONE_SURROGATE = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/
+
+/**
+ * A JSON value's canonical text (RFC 8785, as the hub's codes and the
+ * daemon's digests write it: keys sorted by UTF-16 code units, no
+ * whitespace, strings and numbers as JSON.stringify writes them), or
+ * undefined for a value that has none: a lone surrogate, a number that is
+ * not finite, anything that is not JSON.
+ */
+export function canonical(value: unknown): string | undefined {
+  if (value === null || typeof value === 'boolean') {
+    return JSON.stringify(value)
+  }
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? JSON.stringify(value) : undefined
+  }
+  if (typeof value === 'string') {
+    return LONE_SURROGATE.test(value) ? undefined : JSON.stringify(value)
+  }
+  if (Array.isArray(value)) {
+    const items = value.map(canonical)
+    return items.every((i) => i !== undefined) ? `[${items.join(',')}]` : undefined
+  }
+  const proto = isRecord(value) ? Object.getPrototypeOf(value) : undefined
+  if (isRecord(value) && (proto === Object.prototype || proto === null)) {
+    const entries = Object.keys(value)
+      .filter((k) => value[k] !== undefined)
+      .sort()
+      .map((k) => [canonical(k), canonical(value[k])])
+    return entries.every(([k, v]) => k !== undefined && v !== undefined) ? `{${entries.map(([k, v]) => `${k}:${v}`).join(',')}}` : undefined
+  }
+  return undefined
+}
+
+/** UTF-8 bytes of a text that holds no lone surrogate (a canonical text). */
+export function utf8Bytes(text: string): number {
+  let bytes = 0
+  for (const ch of text) {
+    const cp = ch.codePointAt(0)!
+    bytes += cp < 0x80 ? 1 : cp < 0x800 ? 2 : cp < 0x10000 ? 3 : 4
+  }
+  return bytes
 }
 
 /** The key of a loop: a subagent's id, '' for the main loop. */

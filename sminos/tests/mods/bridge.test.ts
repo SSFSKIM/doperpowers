@@ -564,11 +564,20 @@ function harness(
       },
     }
   }
-  /** The classic PermissionRequest hooks for a call; the settings hooks beneath answer `beneath`. */
-  const permission = (tool: string, input: unknown, agentId?: string, beneath: Record<string, unknown> = {}) =>
+  /** The classic PermissionRequest hooks for a call, with the engine's `suggestions` if any; the settings hooks beneath answer `beneath`. */
+  const permission = (tool: string, input: unknown, agentId?: string, beneath: Record<string, unknown> = {}, suggestions?: unknown) =>
     hook('classic.PermissionRequest', { hook_event_name: 'PermissionRequest' })(
       engine,
-      { hook_event_name: 'PermissionRequest', tool_name: tool, tool_input: input, session_id: SID, transcript_path: '/t', cwd: '/w', ...(agentId !== undefined && { agent_id: agentId }) },
+      {
+        hook_event_name: 'PermissionRequest',
+        tool_name: tool,
+        tool_input: input,
+        session_id: SID,
+        transcript_path: '/t',
+        cwd: '/w',
+        ...(agentId !== undefined && { agent_id: agentId }),
+        ...(suggestions !== undefined && { permission_suggestions: suggestions }),
+      },
       Object.assign(async () => beneath, { signal: new AbortController().signal }),
     ) as Promise<Record<string, unknown>>
   let rows = 0
@@ -3936,6 +3945,33 @@ describe('requests from outside: a secrets guard that restores handles in tool.c
     expect(posted(h)).not.toContain(VALUE)
   })
 
+  test("the guard beneath restored the call: the engine's suggestions, made from the restored call, are not raised, and no restored value reaches the raise or a resync", async () => {
+    const h = harness()
+    await h.ready()
+    await h.turn('t1')
+    // What the engine suggests for the call it holds: the restored command, whole.
+    const SUGGESTED = [{ type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: RESTORED.command }], behavior: 'allow', destination: 'localSettings' }]
+    const suggesting = async (e: Record<string, unknown>) => {
+      const input = { command: e.command, description: e.description }
+      await h.check('toolu_s', 'Bash', input)
+      const answer = await h.permission('Bash', input, undefined, {}, SUGGESTED)
+      const text = (answer.decision as { behavior?: string } | undefined)?.behavior === 'allow' ? 'ran' : 'refused'
+      return { result: { stdout: text, stderr: '', interrupted: false }, text }
+    }
+    const ran = bridge(h)(CALL, (e) => guard(e, suggesting))
+    const poll = await h.nextPoll()
+    expect(h.ofType('raised')).toEqual([expect.objectContaining({ request: 'toolu_s', input: MODEL })])
+    expect(h.ofType('raised')[0]).not.toHaveProperty('suggestions')
+    h.children[0]!.write(hello())
+    await h.settle()
+    const pending = (h.ofType('resync').at(-1)?.pending ?? []) as Record<string, unknown>[]
+    expect(pending).toEqual([expect.objectContaining({ request: 'toolu_s', input: MODEL })])
+    expect(pending[0]).not.toHaveProperty('suggestions')
+    poll.respond(200, { decision: { behavior: 'allow' }, by: 'm-1' })
+    await ran
+    expect(posted(h)).not.toContain(VALUE)
+  })
+
   test('a hook beneath answering content blocks (text and an image): the result event draws the text blocks, none of the image data', async () => {
     const h = harness()
     await h.ready()
@@ -4004,6 +4040,122 @@ describe('requests from outside: a plan', () => {
     expect(await answer).toEqual({ decision: { behavior: 'allow', updatedInput: RESTORED } })
     await h.recorded('toolu_p', 'hook', 'accept', 'ExitPlanMode')
     expect(JSON.stringify(h.posts.map((p) => p.events))).not.toContain('redacted')
+  })
+
+  test('a scoped allow keeps the whole input the plan needs, and adds the rules', async () => {
+    const RULES = [{ type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: 'npm test' }], behavior: 'allow', destination: 'session' }]
+    const { h, answer, poll } = await raised(INPUT, INPUT)
+    poll.respond(200, { decision: { behavior: 'allow', updatedPermissions: RULES }, by: 'm-1' })
+    expect(await answer).toEqual({ decision: { behavior: 'allow', updatedInput: INPUT, updatedPermissions: RULES } })
+    await h.recorded('toolu_p', 'hook', 'accept', 'ExitPlanMode')
+  })
+})
+
+describe("requests from outside: the engine's suggestions and a scoped allow (MW3)", () => {
+  const INPUT = { command: 'npm test', description: 'test' }
+  const SESSION_RULE = { type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: 'npm test' }], behavior: 'allow', destination: 'session' }
+  const LOCAL_RULE = { ...SESSION_RULE, destination: 'localSettings' }
+  const DIRECTORY = { type: 'addDirectories', directories: ['/w/other'], destination: 'session' }
+  /** UTF-8 bytes of a text. */
+  const utf8 = (text: string) => new TextEncoder().encode(text).length
+  /**
+   * A rule suggestion whose canonical JSON (keys sorted, no whitespace) is
+   * exactly `bytes` of UTF-8, most of it three-byte characters, so a bound
+   * counted in UTF-16 units would admit what the byte bound refuses.
+   */
+  const sized = (bytes: number, toolName = 'Bash') => {
+    const canonical = (content: string) => `{"behavior":"allow","destination":"session","rules":[{"ruleContent":"${content}","toolName":"${toolName}"}],"type":"addRules"}`
+    const room = bytes - utf8(canonical(''))
+    const content = '가'.repeat(Math.floor(room / 3)) + 'a'.repeat(room % 3)
+    expect(utf8(canonical(content))).toBe(bytes)
+    return { type: 'addRules', rules: [{ toolName, ruleContent: content }], behavior: 'allow', destination: 'session' }
+  }
+  /** A call put to the dialog, the engine's PermissionRequest carrying `suggestions`: the hook polling. */
+  const raisedWith = async (suggestions: unknown, input: Record<string, unknown> = INPUT) => {
+    const h = harness()
+    await h.ready()
+    await h.turn('t1')
+    await h.called('toolu_1', 'Bash', input)
+    const answer = h.permission('Bash', input, undefined, {}, suggestions)
+    const poll = await h.nextPoll()
+    return { h, answer, poll }
+  }
+
+  test("carried verbatim when the engine's input is exactly the call this module saw: in the raise, and in a resync's pending", async () => {
+    const { h } = await raisedWith([SESSION_RULE, LOCAL_RULE, DIRECTORY])
+    expect(h.ofType('raised')).toEqual([expect.objectContaining({ request: 'toolu_1', input: INPUT, suggestions: [SESSION_RULE, LOCAL_RULE, DIRECTORY] })])
+    h.children[0]!.write(hello())
+    await h.settle()
+    expect(h.ofType('resync').at(-1)).toMatchObject({ pending: [expect.objectContaining({ request: 'toolu_1', suggestions: [SESSION_RULE, LOCAL_RULE, DIRECTORY] })] })
+  })
+
+  test('the same input with its keys in another order is the same call', async () => {
+    const h = harness()
+    await h.ready()
+    await h.turn('t1')
+    await h.called('toolu_1', 'Bash', INPUT)
+    void h.permission('Bash', { description: INPUT.description, command: INPUT.command }, undefined, {}, [SESSION_RULE])
+    await h.nextPoll()
+    expect(h.ofType('raised')).toEqual([expect.objectContaining({ request: 'toolu_1', suggestions: [SESSION_RULE] })])
+  })
+
+  test('none suggested: the raise has no suggestions field', async () => {
+    const { h } = await raisedWith(undefined)
+    expect(h.ofType('raised')).toHaveLength(1)
+    expect(h.ofType('raised')[0]).not.toHaveProperty('suggestions')
+  })
+
+  test('the bound, both sides: eight of 2,048 bytes each are carried; a ninth, or one of 2,049 bytes, leaves the list out whole, and the request is still raised', async () => {
+    const eight = Array.from({ length: 8 }, () => sized(2_048))
+    const carried = await raisedWith(eight)
+    expect(carried.h.ofType('raised')[0]?.suggestions).toEqual(eight)
+    for (const over of [[...eight, SESSION_RULE], [SESSION_RULE, sized(2_049)]]) {
+      const { h, poll } = await raisedWith(over)
+      expect(h.ofType('raised')).toEqual([expect.objectContaining({ request: 'toolu_1', input: INPUT })])
+      expect(h.ofType('raised')[0]).not.toHaveProperty('suggestions')
+      expect(poll.url).toBe('http://bridge/requests/toolu_1/wait?ms=20000')
+    }
+  })
+
+  test('a list with no canonical form (a lone surrogate), an entry that is not an object, or no list at all is left out whole', async () => {
+    for (const bad of [[{ ...SESSION_RULE, rules: [{ toolName: 'Bash', ruleContent: 'npm \ud800' }] }], [SESSION_RULE, 'addRules'], [SESSION_RULE, [SESSION_RULE]], SESSION_RULE]) {
+      const { h } = await raisedWith(bad)
+      expect(h.ofType('raised')).toHaveLength(1)
+      expect(h.ofType('raised')[0]).not.toHaveProperty('suggestions')
+    }
+  })
+
+  test("a call whose input the raise cut is raised without suggestions: what the raise shows is not the engine's input", async () => {
+    const long = { command: `echo ${'x'.repeat(TEXT_CAP)}`, description: 'long' }
+    const { h } = await raisedWith([SESSION_RULE], long)
+    expect(h.ofType('raised')).toEqual([expect.objectContaining({ request: 'toolu_1', truncated: true })])
+    expect(h.ofType('raised')[0]).not.toHaveProperty('suggestions')
+  })
+
+  test("a call a hook beneath rewrote is raised without suggestions: the engine's were made for its call, not the one shown", async () => {
+    const h = harness()
+    await h.ready()
+    await h.turn('t1')
+    const REWRITTEN = { ...INPUT, command: 'npm test --ci' }
+    await h.called('toolu_1', 'Bash', INPUT, undefined, REWRITTEN)
+    void h.permission('Bash', REWRITTEN, undefined, {}, [{ ...SESSION_RULE, rules: [{ toolName: 'Bash', ruleContent: 'npm test --ci' }] }])
+    await h.nextPoll()
+    expect(h.ofType('raised')).toEqual([expect.objectContaining({ request: 'toolu_1', input: INPUT })])
+    expect(h.ofType('raised')[0]).not.toHaveProperty('suggestions')
+  })
+
+  test('a scoped allow: the engine gets the allow with the rules and no input, which would have it ask again', async () => {
+    const { h, answer, poll } = await raisedWith([SESSION_RULE, DIRECTORY])
+    poll.respond(200, { decision: { behavior: 'allow', updatedPermissions: [DIRECTORY] }, by: 'm-1' })
+    expect(await answer).toEqual({ decision: { behavior: 'allow', updatedPermissions: [DIRECTORY] } })
+    await h.recorded('toolu_1', 'hook')
+    expect(h.ofType('settled')).toEqual([expect.objectContaining({ request: 'toolu_1', winner: 'web', outcome: 'allow', by: 'm-1' })])
+  })
+
+  test('a deny is a deny: rules handed out with one are not passed on', async () => {
+    const { answer, poll } = await raisedWith([SESSION_RULE])
+    poll.respond(200, { decision: { behavior: 'deny', message: 'no', updatedPermissions: [SESSION_RULE] }, by: 'm-1' })
+    expect(await answer).toEqual({ decision: { behavior: 'deny', message: 'no' } })
   })
 })
 

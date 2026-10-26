@@ -26,8 +26,10 @@ the first that fails is its answer, as DX6's error code:
    be read as a flag;
 7. for an answer or a decision, the digest (DX1's `{session, request, tool,
    input_sha256}`) against the request still pending in the session, as its
-   bridge reports it (`digest-mismatch`, `not-pending`), and the decision
-   fitting that request by the bridge's own rule (`bad-shape`);
+   bridge reports it (`digest-mismatch`, `not-pending`), a scoped allow's
+   rule resolved from that request's own suggestions (`not-pending` when they
+   changed, `bad-shape` for one it may not take), and the decision fitting
+   that request by the bridge's own rule (`bad-shape`);
 8. the session's kind against §5's table (`unsupported`); a Resume, against
    the transcript this machine holds of the session (`unsupported` when it
    holds none: `claude --resume` would start an empty session under its id);
@@ -152,6 +154,9 @@ NAME_MAX = 128            # DX6 `command`: a name as $.command.list() spells it
 ARGS_MAX = 4096           # and its arguments' text
 PROMPT_MAX = 8192         # DX6 `btw`: a side question's text
 INSTRUCTIONS_MAX = 4096   # DX6 `compact`: its instructions' text
+SCOPE_DESTINATIONS = ("session", "localSettings")   # DX6 `decide.scope` (§11): nothing saved, or the checkout's own
+SCOPED_TYPES = ("addRules", "addDirectories")        # the suggestions a scoped allow takes (MW3)
+SHA256_RE = re.compile(r"[0-9a-f]{64}")
 RELOAD = "reload-plugins"
 RECONCILE_EVERY = 1.0     # how often claims left by a stop are looked at again
 SPAWN_TIMEOUT = 600
@@ -593,7 +598,7 @@ class Rpcs:
             if "message" in args:
                 decision["message"] = args["message"]
         if name in ("answer", "decide") and bridged:
-            check_digest(path, sid, args["digest"], decision)
+            check_digest(path, sid, args["digest"], decision, args.get("scope") if name == "decide" else None)
         if name == "retire":
             return lambda: retire(sid, facts["root"], rpc["member"])
         if not facts["running"]:
@@ -1142,6 +1147,15 @@ def shape(name, args, member):
         else:
             need(args.get("decision") in ("allow", "deny"), "decision is allow or deny")
             need(isinstance(args.get("message", ""), str), "message is text")
+            if "scope" in args:
+                sc = args["scope"]
+                need(args["decision"] == "allow", "a scope goes with an allow")
+                need(isinstance(sc, dict) and type(sc.get("suggestion")) is int and sc["suggestion"] >= 0,
+                     "scope.suggestion is the index of one of the request's suggestions")
+                need(isinstance(sc.get("sha256"), str) and SHA256_RE.fullmatch(sc["sha256"]),
+                     "scope.sha256 is the lowercase hex SHA-256 of that suggestion's canonical JSON")
+                need(sc.get("destination") in SCOPE_DESTINATIONS,
+                     "scope.destination is session or localSettings: the terminal changes any other settings")
     elif name == "model":
         m, e = args.get("model"), args.get("effort")
         need(m is not None or e is not None, "a model, an effort, or both")
@@ -1171,13 +1185,14 @@ def shape(name, args, member):
         need(e is None or e in control.EFFORTS, "effort is one of %s" % ", ".join(control.EFFORTS))
 
 
-def check_digest(path, sid, digest, decision):
+def check_digest(path, sid, digest, decision, scope=None):
     """Check 7: the request as the browser drew it is the one still
     pending in the session, as its bridge reports it, and the decision fits
     it by the bridge's own rule (composite dd908dfa): an async question is
     answered, never denied; a permission is allowed or denied, never
-    answered; a question's allow carries answers keyed by its questions. The
-    bridge's 400 stays behind it, after the claim."""
+    answered; a question's allow carries answers keyed by its questions. A
+    scoped allow's rule is resolved from that request (scoped_rule) into the
+    decision. The bridge's 400 stays behind it, after the claim."""
     rid = digest["request"]
     try:
         status, body = bridge.request(path, "GET", "/requests/" + urllib.parse.quote(rid, safe=""))
@@ -1198,9 +1213,38 @@ def check_digest(path, sid, digest, decision):
     if (body.get("session"), body.get("request"), body.get("tool"), drawn) != \
             (sid, rid, digest["tool"], digest["input_sha256"]):
         raise Refused("digest-mismatch", "the request pending is not the one shown")
+    if scope is not None:
+        if bridge.is_question(body):
+            raise Refused("bad-shape", "decide: a question is answered; a scope goes with a permission's allow")
+        decision["updatedPermissions"] = [scoped_rule(body.get("suggestions"), scope)]
     why = bridge._check_decision(body, decision)
     if why:
         raise Refused("bad-shape", why)
+
+
+def scoped_rule(suggestions, scope):
+    """A scoped allow's one rule (§7, §11, MW3): the suggestion at the
+    scope's index in the list the bridge holds now, never one the browser
+    sent, under the scope's destination. The browser's hash is of the
+    suggestion as it drew it: a list that changed under the card (another
+    suggestion there, or none) is `not-pending`. Only a rule or a directory
+    the engine suggested is taken, and `localSettings` only where the
+    suggestion itself names it; `session` may replace any destination."""
+    i = scope["suggestion"]
+    s = suggestions[i] if isinstance(suggestions, list) and i < len(suggestions) else None
+    try:
+        held = codes.input_sha256(s) if isinstance(s, dict) else None  # the canonical JSON's SHA-256
+    except (codes.NotCanonical, RecursionError):
+        held = None
+    if held is None or held != scope["sha256"]:
+        raise Refused("not-pending", "the suggestions changed: the request no longer offers the one shown")
+    if s.get("type") not in SCOPED_TYPES:
+        raise Refused("bad-shape", "decide: a scope takes a rule or a directory the engine suggested "
+                                   "(addRules, addDirectories), not %s" % s.get("type"))
+    if scope["destination"] == "localSettings" and s.get("destination") != "localSettings":
+        raise Refused("bad-shape", "decide: localSettings only where the engine suggested it; this suggestion is "
+                                   "for %s" % s.get("destination"))
+    return dict(s, destination=scope["destination"])
 
 
 # ------------------------------------------------------------- execution

@@ -12,6 +12,7 @@ import {
   CHECKS_KEPT,
   askCallFor,
   answerFromOutside,
+  boundedSuggestions,
   claimCheck,
   decisionRecorded,
   engineDecision,
@@ -1961,6 +1962,12 @@ export function registerBridge(on: On) {
   // question is otherwise raised as the
   // engine gave it: the ask mod widens its dialog's beneath this module, and
   // no guard restores into one.
+  //
+  // The engine's suggestions (a rule, a directory) are made from its own
+  // input, after those hooks: a Bash rule can carry the whole restored
+  // command. They are raised only when that input is exactly the call this
+  // module saw (claimCheck's `isSeen`), so nothing beneath restored
+  // anything, and only within the bound the hub admits (boundedSuggestions).
   on('classic.PermissionRequest', { hook_event_name: 'PermissionRequest' }, async ($, e, next) => {
     if (state.post === undefined) {
       return next(e)
@@ -2013,6 +2020,10 @@ export function registerBridge(on: On) {
       turnId: state.loopTurns.get(loopKey(agentId)),
       isAborted: false,
       transcript: typeof e.transcript_path === 'string' && e.transcript_path !== '' ? e.transcript_path : undefined,
+    }
+    const suggestions = !isQuestion && claimed?.isSeen === true ? boundedSuggestions(e.permission_suggestions) : undefined
+    if (suggestions !== undefined) {
+      r.suggestions = suggestions
     }
     const outer = state.dialogCalls.get(id)
     if (outer !== undefined && outer !== id) {

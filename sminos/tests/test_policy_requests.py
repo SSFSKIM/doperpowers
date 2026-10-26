@@ -893,6 +893,43 @@ class Requests(unittest.TestCase):
             self.assertTrue(codes.verifies(KEY, "raised", self.PID, b), "the code covers every field")
             self.assertNotIn("t", b)
 
+    def test_a_requests_suggestions_go_up_under_the_code_within_the_hubs_bound(self):
+        """DX5 `raised.suggestions` (the desk control surface's MW3): the
+        engine's suggestions as the bridge raised them, under the code, only
+        while they keep the bound the hub admits (at most 8, each at most
+        2,048 bytes of canonical UTF-8 JSON). A list past it is left out
+        whole and the request still goes up: the hub would refuse the raise,
+        and with it the whole pending set."""
+        def sized(n):
+            """A rule suggestion whose canonical JSON is exactly n bytes, mostly three-byte characters."""
+            empty = {"type": "addRules", "rules": [{"toolName": "Bash", "ruleContent": ""}], "behavior": "allow",
+                     "destination": "session"}
+            room = n - len(codes.canonical(empty).encode("utf-8"))
+            s = dict(empty, rules=[{"toolName": "Bash", "ruleContent": "가" * (room // 3) + "a" * (room % 3)}])
+            self.assertEqual(len(codes.canonical(s).encode("utf-8")), n)
+            return s
+        rule = {"type": "addRules", "rules": [{"toolName": "Bash", "ruleContent": "ls"}], "behavior": "allow",
+                "destination": "localSettings"}
+        eight = [sized(2048) for _ in range(8)]
+        self.bridge.raise_("toolu_sg1", suggestions=[rule])
+        self.bridge.raise_("toolu_sg8", suggestions=eight)
+        self.bridge.raise_("toolu_sg9", suggestions=eight + [rule])
+        self.bridge.raise_("toolu_sgbig", suggestions=[rule, sized(2049)])
+        self.bridge.raise_("toolu_sgbad", suggestions=[rule, "addRules"])
+        self.bridge.raise_("toolu_sgnone")
+        frames = self.due(lambda fs: len(messages(fs, "raised")) == 6)
+        bodies = {m["body"]["request"]: m["body"] for m in messages(frames, "raised")}
+        self.assertEqual(bodies["toolu_sg1"]["suggestions"], [rule], "verbatim")
+        self.assertEqual(bodies["toolu_sg8"]["suggestions"], eight, "eight of 2,048 bytes each: within the bound")
+        for rid in ("toolu_sg9", "toolu_sgbig", "toolu_sgbad", "toolu_sgnone"):
+            self.assertNotIn("suggestions", bodies[rid], rid + ": left out whole, the request still raised")
+        for b in bodies.values():
+            self.assertTrue(codes.verifies(KEY, "raised", self.PID, b), "the code covers them")
+        self.assertEqual([r.get("suggestions") for r in self.r.pending_frame(self.PID)["raised"]
+                          if r["request"] == "toolu_sg1"], [[rule]], "the pending set carries them")
+        for rid in bodies:
+            self.bridge.settle(rid)
+
     def test_the_ask_mods_dialog_carries_its_calls_tool_use_id(self):
         """DX5 `raised.toolUseId` (composite 43a27604): the call a dialog of
         the ask mod belongs to, carried into DX4 `raised` under the code, only
