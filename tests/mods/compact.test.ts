@@ -1,5 +1,5 @@
 import { describe, expect, test, tier } from 'claude-code/testing'
-import type { EngineInterface, On, SessionCompactTrigger } from 'claude-code'
+import type { EngineInterface, On, RenderSurface, SessionCompactTrigger } from 'claude-code'
 
 import {
   COMPACT,
@@ -83,8 +83,8 @@ describe('texts', () => {
   })
 
   test('the guidance names the tool and how to load it, and the harness threshold, or its absence', async () => {
-    expect(compactGuidance(967_000).startsWith('mcp__doperpowers__compact compacts your own context')).toBe(true)
-    expect(compactGuidance(967_000)).toContain('ToolSearch with "select:mcp__doperpowers__compact"\nloads it.')
+    const opening = compactGuidance(967_000).split('\n\n')[0]!.replace(/\n/g, ' ')
+    expect(opening).toBe('mcp__doperpowers__compact compacts your own context at a checkpoint of your choosing, in the main conversation only (a subagent or a fork cannot compact); if it is not loaded, ToolSearch with "select:mcp__doperpowers__compact" loads it.')
     expect(compactGuidance(967_000)).toContain('compacts on its own at about 967,000')
     expect(compactGuidance(undefined)).toContain("compacts on its own near the window's end")
     expect(compactGuidance(967_000)).toContain('300k–450k: at any reasonable checkpoint')
@@ -234,7 +234,7 @@ function matches(matcher: unknown, value: unknown): boolean {
  * or settles it otherwise.
  */
 function harness(
-  options: { window?: number; compactionWindow?: number; tokens?: number; env?: Record<string, string>; compact?: () => Promise<unknown>; usage?: () => never } = {},
+  options: { window?: number; compactionWindow?: number; tokens?: number; surfaces?: RenderSurface[]; env?: Record<string, string>; compact?: () => Promise<unknown>; usage?: () => never } = {},
 ) {
   const hooks: { event: string; matcher: Matcher; handler: Handler; fallback?: Handler }[] = []
   const on = ((event: string, ...rest: unknown[]) => {
@@ -255,6 +255,7 @@ function harness(
   const queue: { text: string; settle: (entered: Entered) => void }[] = []
   const $ = {
     session: {
+      surfaces: async () => options.surfaces ?? ['terminal'],
       // The breakdown, asked for, measures against the compaction window.
       usage: async (args?: { breakdown?: string }) => {
         options.usage?.()
@@ -409,7 +410,7 @@ describe('registerCompact', () => {
     expect(h.hooks.filter((x) => x.event === 'tool.describe')).toEqual([])
   })
 
-  test("the main conversation's server instructions carry the guidance, by the window and the gate read at session start", async () => {
+  test("the main conversation's server instructions carry the guidance, by the window and the gate", async () => {
     const h = harness({ env: { DOPERPOWERS_COMPACT_OFFER_FLOOR: '200000' } })
     await h.mod.start(h.engine, start(true))
     const text = (await h.attach(SERVER_DELTA)).text
@@ -418,13 +419,47 @@ describe('registerCompact', () => {
     expect(text).toContain('## web\nTools registered by the web plugin through $.tool.register.')
   })
 
-  test("a subagent's server instructions, a session without the tool, and an attachment dropped beneath are left as they are", async () => {
+  test("a subagent's row rendered first carries the same guidance as the main conversation's", async () => {
     const h = harness()
     await h.mod.start(h.engine, start(true))
-    expect(await h.attach(SERVER_DELTA, 'a1')).toEqual({ text: SERVER_DELTA })
+    const subagent = await h.attach(SERVER_DELTA, 'a1')
+    expect(subagent).toEqual({ text: withGuidance(SERVER_DELTA, compactGuidance(967_000)) })
+    expect(await h.attach(SERVER_DELTA)).toEqual(subagent)
+  })
+
+  test('a session without surfaces and an attachment dropped beneath are left as they are', async () => {
+    const h = harness()
+    await h.mod.start(h.engine, start(true))
     expect(await h.attach(SERVER_DELTA, undefined, null)).toEqual({ text: null })
-    const headless = harness()
+    const headless = harness({ surfaces: [] })
     expect(await headless.attach(SERVER_DELTA)).toEqual({ text: SERVER_DELTA })
+  })
+
+  test('the guidance carries the window and env gate before session.start runs after a reload', async () => {
+    const h = harness({
+      compactionWindow: 900_000,
+      env: { DOPERPOWERS_COMPACT_OFFER_FLOOR: '200000', DOPERPOWERS_COMPACT_OFFER_STEP: '50000' },
+    })
+    expect(h.registered()).toEqual([])
+    const text = (await h.attach(SERVER_DELTA, 'fork')).text
+    expect(text).toBe(withGuidance(SERVER_DELTA, compactGuidance(867_000, { floor: 200_000, step: 50_000 })))
+    expect(text).toContain('compacts on its own at about 867,000')
+    expect(text).toContain('from 200,000 tokens on, once it has grown 50,000')
+    expect(await h.attach(SERVER_DELTA)).toEqual({ text })
+    expect(h.registered()).toEqual([])
+  })
+
+  test('a failed window read still gives the guidance with its env gate before session.start', async () => {
+    const h = harness({
+      usage: () => {
+        throw new Error('no session')
+      },
+      env: { DOPERPOWERS_COMPACT_OFFER_FLOOR: '0', DOPERPOWERS_COMPACT_OFFER_STEP: '0' },
+    })
+    const text = (await h.attach(SERVER_DELTA)).text
+    expect(text).toBe(withGuidance(SERVER_DELTA, compactGuidance(undefined, { floor: 0, step: 0 })))
+    expect(text).toContain("compacts on its own near the window's end")
+    expect(text).toContain('at the end of every turn')
   })
 
   test('a compaction window smaller than the model window is the one measured against', async () => {

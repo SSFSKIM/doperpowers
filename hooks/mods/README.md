@@ -293,20 +293,20 @@ instructions: a `prompt.attachment` hook on the `mcp_instructions_delta`
 the engine announces the servers in, at the first request and again after
 each compaction, puts it in place of the engine's line under
 `## doperpowers` ("Tools registered by the doperpowers plugin through
-$.tool.register."), with the threshold and the gate read at session
-start. Only the main conversation's rows are rewritten (a fork carries
-its parent's, so it reads them as its parent did; a subagent, which cannot
-compact, reads the engine's line), and only in a session that registered
-the tool; the transcript keeps the engine's text. Until 7.207.0 a
-`tool.describe` hook answered `isDeferred: false` and the definition
-(about 2.3k characters, the guidance in its description) shipped inline
-in every request of every loop, subagents' included; now a loop carries
-the guidance (about 1.7k characters) in the main conversation alone, and
-the description (about 0.4k) and schema load on demand, at the price of a
-`ToolSearch` step when the model compacts with the tool not loaded.
+$.tool.register."), in every loop of a session with surfaces. The answer
+is loop-independent because the engine caches it process-wide by attachment
+UUID (forks inherit them), clearing it on reload; reload does not await
+`session.start`, so the hook reads surfaces, window and gate itself. The
+transcript keeps the engine's text. Until 7.207.0 a `tool.describe` hook
+answered `isDeferred: false` and the definition (about 2.3k characters,
+the guidance in its description) shipped inline in every request of every
+loop, subagents' included; now every loop carries the guidance (about 1.7k
+characters), and the description (about 0.4k) and schema load on demand,
+at the price of a `ToolSearch` step when the model compacts with the tool
+not loaded.
 Appeal is deferred too. Its answer is a line.
 
-Known limits: the threshold is read once, at session start, so a window
+Known limits: the offer's threshold is read once, at session start, so a window
 changed by `/autocompact` mid-session is not followed; a model that keeps
 working after the tool answered is compacted at whatever answered turn end
 comes; the `resume` prompt enters under the plugin's name, as any

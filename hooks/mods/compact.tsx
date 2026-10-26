@@ -97,18 +97,19 @@ export function describeCompact(): string {
 }
 
 /**
- * When to compact, as the plugin's MCP server instructions carry it in the
- * main conversation: in view from the first request on, while the tool
- * waits behind ToolSearch. `threshold` is where the engine compacts on its
- * own; undefined when the window could not be read.
+ * When to compact, carried in every loop's plugin MCP server instructions:
+ * in view from the first request on, while the tool waits behind ToolSearch.
+ * `threshold` is where the engine compacts on its own; undefined when the
+ * window could not be read.
  */
 export function compactGuidance(threshold: number | undefined, gate: OfferGate = OFFER_GATE): string {
   const own = threshold === undefined ? "near the window's end" : `at about ${n(threshold)}`
   const before = gate.floor === 0 ? '' : ` Until the first time, you are under ${n(gate.floor)}.`
   return [
     'mcp__doperpowers__compact compacts your own context at a checkpoint of your',
-    'choosing; if it is not loaded, ToolSearch with "select:mcp__doperpowers__compact"',
-    'loads it.',
+    'choosing, in the main conversation only (a subagent or a fork cannot',
+    'compact); if it is not loaded, ToolSearch with',
+    '"select:mcp__doperpowers__compact" loads it.',
     '',
     'When. Let the work decide rather than the context size: compact at a',
     'checkpoint in the work where none of its state is lost; the larger the',
@@ -628,17 +629,18 @@ export function registerCompact(on: On) {
     return next(e)
   }).catch((_, e, next) => next(e))
 
-  // The tool waits behind ToolSearch, as the engine places an MCP tool, so
-  // the guidance on when to compact rides the plugin's server instructions,
-  // in view from the first request on (and again after a compaction, which
-  // announces the servers anew). Only in the main conversation's own rows:
-  // a subagent cannot compact, and a fork carries its parent's rows, so
-  // it reads them as its parent did.
-  on('prompt.attachment', { type: 'mcp_instructions_delta' }, async (_, e, next) => {
+  // Guidance rides server instructions while the tool waits behind ToolSearch.
+  // The engine caches answers process-wide by attachment UUID, cleared on
+  // reload; forks inherit those UUIDs, so the text must be loop-independent.
+  // Reload does not await session.start: read the window and gate here,
+  // without relying on compactStart's state.
+  on('prompt.attachment', { type: 'mcp_instructions_delta' }, async ($, e, next) => {
     const result = await next(e)
-    if (!registered || e.agentId !== undefined || result.text === null) {
+    if (result.text === null || (await $.session.surfaces()).length === 0) {
       return result
     }
+    const threshold = await compactionWindow($).then(({ window }) => thresholdOf(window), () => undefined)
+    const gate = await gateOf($)
     return { ...result, text: withGuidance(result.text, compactGuidance(threshold, gate)) }
   })
 
