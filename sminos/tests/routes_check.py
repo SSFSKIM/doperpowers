@@ -65,6 +65,8 @@ CLASSES = {"run", "run-prompt", "routed", "follow", "panel", "local", "drop"}
 ROUTE_KEYS = {"class", "to", "reason", "forms", "outlives", "confirm", "enabled", "measured", "otherwise"}
 FORMS_KEYS = {"args", "pattern", "hint"}
 ENTRY_KEYS = {"name", "bare", "withArgs", "plugin"}
+# The reason a desk's disabling of every MCP server is refused (the spec's MW2 review wave).
+MCP_DISABLE_ALL = "turns off every server, this desk's own tools among them: run it in the terminal"
 TABLE_KEYS = {"engine", "about", "entries", "pluginExceptions", "catalog", "carriedFrom", "remeasured"}
 M1_ENABLED = {("rename", "bare"), ("color", "bare"), ("reload-plugins", "bare"), ("reload-skills", "bare"),
               ("mcp", "withArgs"), ("cd", "bare"), ("goal", "withArgs"), ("plan", "withArgs"),
@@ -210,26 +212,38 @@ def check_table(doc, by_engine):
        and by_name["goal"]["bare"]["class"] == "panel")
 
     mcp = by_name["mcp"]["withArgs"]
+    # Disabling every server writes the project's disabled list and turns off the desk's own tools (sminos's ask,
+    # to-human's message, web's fetch): refused on every engine, a refusal needing no measurement.
+    drop = mcp.get("otherwise", {})
+    if engine != "2.1.307":
+        drop = drop.get("otherwise", {})
+    ok("mcp: disable with no server, or all, is refused, saying why",
+       drop.get("class") == "drop" and drop.get("reason") == MCP_DISABLE_ALL
+       and all(whole(drop.get("forms", {}).get("pattern", ""), t) for t in ("disable", "disable all"))
+       and not whole(mcp["forms"]["pattern"], "disable all"))
     if engine == "2.1.307":
         p = mcp["forms"]["pattern"]
         ok("mcp's pattern takes enable, disable and reconnect with one server",
            all(whole(p, t) for t in ("enable probe", "disable probe", "reconnect a:b")))
         ok("mcp's pattern refuses a bare verb, two servers and any other verb",
            not any(whole(p, t) for t in ("enable", "enable a b", "remove probe", "disable  probe")))
+        ok("mcp: the refusal of disabling every server is not a measurement", drop.get("measured") == "I")
     else:
         # As measured on 2.1.310 (the spec's MW2): a server by its configured name, spaces included; enable and disable
         # with no server or all, and reconnect all, act on every server and confirm first; a bare reconnect opens the
         # panel, so no route takes it.
         one, every = mcp["forms"]["pattern"], mcp.get("otherwise", {}).get("forms", {}).get("pattern", "")
-        takes = lambda t: whole(one, t) or whole(every, t)
+        takes = lambda t: whole(one, t) or whole(every, t) or whole(drop.get("forms", {}).get("pattern", ""), t)
         ok("mcp: one server by its configured name, spaces and punctuation included",
            all(whole(one, t) for t in ("enable probe", "disable probe server", "reconnect probe server",
                                        "disable plugin:cua:cua_repl", "reconnect claude.ai Gmail")))
-        ok("mcp: every server with no server named, or all, confirmed first",
-           all(whole(every, t) and not whole(one, t) for t in ("enable", "disable", "enable all", "disable all", "reconnect all"))
+        ok("mcp: enable with no server named, or all, and reconnect all, confirmed first",
+           all(whole(every, t) and not whole(one, t) for t in ("enable", "enable all", "reconnect all"))
+           and not any(whole(every, t) for t in ("disable", "disable all"))
            and mcp["otherwise"].get("confirm") is True and mcp["otherwise"]["class"] == "run" and "outlives" in mcp["otherwise"])
         ok("mcp: a bare reconnect (the panel), another verb, two spaces or a control character run nothing",
-           not any(takes(t) for t in ("reconnect", "remove probe", "enable  probe", "enable a\tb", "disable a\x01b", "all")))
+           not any(takes(t) for t in ("reconnect", "remove probe", "enable  probe", "enable a\tb", "disable a\x01b", "all",
+                                      "disable a\u2028b", "reconnect a\u2029b")))
 
     base_engine = doc.get("carriedFrom")
     if base_engine is not None:

@@ -4,14 +4,15 @@
     "The route table of the desk control surface, spec 2026-10-22-desk-control-surface-design.md (Interfaces, 'The route table').",
     "entries: one per built-in name; pluginExceptions: non-built-ins with a fixed route, matched by name and plugin. A non-built-in not listed is run-prompt, or 'self' when its plugin is sminos.",
     "A route's forms.args says whether the trimmed args are required, optional or none; args that break that, or miss forms.pattern (a JS RegExp source matched whole), are bad-args unless the route has 'otherwise', the route those args take instead.",
-    "withArgs applies when the trimmed args are non-empty; absent, bare applies to both. measured: M from the probe or the spikes, I otherwise."
+    "withArgs applies when the trimmed args are non-empty; absent, bare applies to both. measured: M from the probe or the spikes, I otherwise.",
+    "mcp's refusal of disable with no server or all (2026-10-26, the MW2 review) is a refusal only, made without measuring 2.1.307 again: disabling every server is saved for the project and turns off the desk's own tools."
   ],
   "entries": [
     {"name": "rename", "bare": {"class": "run", "forms": {"args": "required", "hint": "a name is needed"}, "enabled": true, "measured": "M"}},
     {"name": "color", "bare": {"class": "run", "forms": {"args": "required", "pattern": "^[a-z]+$"}, "enabled": true, "measured": "M"}},
     {"name": "reload-plugins", "bare": {"class": "run", "forms": {"args": "none"}, "enabled": true, "measured": "M"}},
     {"name": "reload-skills", "bare": {"class": "run", "forms": {"args": "none"}, "enabled": true, "measured": "M"}},
-    {"name": "mcp", "bare": {"class": "panel", "to": "read mcp", "enabled": true, "measured": "M"}, "withArgs": {"class": "run", "forms": {"args": "required", "pattern": "^(enable|disable|reconnect) \\S+$", "hint": "enable|disable|reconnect <server>"}, "outlives": "saved for this project on <machine>: .claude.json", "enabled": true, "measured": "M"}},
+    {"name": "mcp", "bare": {"class": "panel", "to": "read mcp", "enabled": true, "measured": "M"}, "withArgs": {"class": "run", "forms": {"args": "required", "pattern": "^(?!disable all$)(enable|disable|reconnect) \\S+$", "hint": "enable|disable|reconnect <server>"}, "outlives": "saved for this project on <machine>: .claude.json", "enabled": true, "measured": "M", "otherwise": {"class": "drop", "forms": {"args": "required", "pattern": "^disable(?: all)?$"}, "reason": "turns off every server, this desk's own tools among them: run it in the terminal", "enabled": true, "measured": "I"}}},
     {"name": "cd", "bare": {"class": "run", "forms": {"args": "required", "hint": "absolute path of a known checkout of this project"}, "enabled": true, "measured": "M"}},
     {"name": "goal", "bare": {"class": "panel", "reason": "the bare form opens a panel", "enabled": true, "measured": "I"}, "withArgs": {"class": "run", "forms": {"args": "required", "pattern": "^clear$", "hint": "a queued clear waits behind a running goal: Interrupt stops it"}, "enabled": true, "measured": "M", "otherwise": {"class": "run-prompt", "forms": {"args": "required"}, "enabled": true, "measured": "M"}}},
     {"name": "plan", "bare": {"class": "routed", "to": "the mode control", "reason": "comes with M3", "enabled": false, "measured": "M"}, "withArgs": {"class": "run-prompt", "forms": {"args": "required"}, "enabled": true, "measured": "M"}},
@@ -93,7 +94,7 @@
   }
 ],
   "catalog": {
-  "fingerprint": "ae6d3dcd5857b9d3",
+  "fingerprint": "9bd731c58e2920de",
   "commands": [
     {
       "name": "rename",
@@ -163,12 +164,22 @@
         "class": "run",
         "forms": {
           "args": "required",
-          "pattern": "^(enable|disable|reconnect) \\S+$",
+          "pattern": "^(?!disable all$)(enable|disable|reconnect) \\S+$",
           "hint": "enable|disable|reconnect <server>"
         },
         "outlives": "saved for this project on <machine>: .claude.json",
         "enabled": true,
-        "measured": "M"
+        "measured": "M",
+        "otherwise": {
+          "class": "drop",
+          "forms": {
+            "args": "required",
+            "pattern": "^disable(?: all)?$"
+          },
+          "reason": "turns off every server, this desk's own tools among them: run it in the terminal",
+          "enabled": true,
+          "measured": "I"
+        }
       }
     },
     {
