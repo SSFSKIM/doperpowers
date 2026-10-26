@@ -2639,6 +2639,15 @@ type Run = {
     characters: one payload, one stand-in, so Defuddle's comparisons of
     sources (a `<noscript>` image against its lazy twin) come out as
     before, and no text of the page's own can be taken for one.
+  - A payload is found by a pattern that looks only 1,024 characters
+    ahead, and its end by a loop. The first build matched the whole run
+    with `{1024,}`, and V8 keeps a backtrack entry for each character of
+    such a run: from about 5.6 million characters (a 1900×1400 PNG is
+    10.6 MB as a URI) both extractions threw `RangeError: Maximum call
+    stack size exceeded`, and the page went unsaved (the review). Main
+    saves such a page, unless the image is in the article and its URI is
+    over about 8.4 million characters: there step 5's link pattern throws
+    the same way, on main as here, a fault of its own.
   Rejected: fixing the pattern in Defuddle (a vendored fork, or a patch
   step on the pinned package, which the gate's `npm ci --ignore-scripts`
   would not run): it leaves the cost a payload in `src` carries through

@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { markdownWithFrontmatter, htmlFrontmatter, extractHtml, extractFull } from '../src/extract.ts'
-import { fixture, inlineImagesPage } from './helpers.ts'
+import { fixture, inlineImagesPage, pngBytes } from './helpers.ts'
 
 const F = '2026-10-25T00:00:00.000Z'
 
@@ -217,4 +217,15 @@ test('inline images come out of both extractions as they went in', async () => {
   }
   assert.ok(!page.includes(images.gallery.uri))
   assert.ok(full.includes(`![gallery](${images.gallery.uri})`))
+})
+
+test('an inline image of over 10 MB is extracted whole, in the article and the whole page', async () => {
+  // A 1900×1400 PNG is 8 MB. Found by an unbounded pattern, its payload exhausted V8's
+  // regexp stack (RangeError), and the page went unsaved.
+  const uri = `data:image/png;base64,${pngBytes(8_000_000).toString('base64')}`
+  const words = '<p>' + 'Prose around a photograph saved into the page itself, long enough to keep the article. '.repeat(6) + '</p>'
+  const html = `<!doctype html><html><head><title>Photo</title></head><body><article><h1>Photo</h1>${words}<img src="${uri}" alt="photo">${words}</article></body></html>`
+  const url = 'https://photos.example/post'
+  assert.ok((await extractHtml(html, url, fetch)).body.includes(`![photo](${uri})`))
+  assert.ok(extractFull(html, url).body.includes(`![photo](${uri})`))
 })

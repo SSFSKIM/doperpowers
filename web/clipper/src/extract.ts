@@ -98,11 +98,29 @@ function prepare(html: string, url: string): { doc: Document; restore: (text: st
 // Every attribute, not only srcset: a payload anywhere is one Defuddle pass away
 // from the same cost.
 const MIN_PAYLOAD = 1024
-const LONG_PAYLOAD = new RegExp(`(;base64,)([A-Za-z0-9+/=]{${MIN_PAYLOAD},})`, 'i')
 const STAND_IN_LENGTH = 136
+// Where a long payload starts. The pattern only looks MIN_PAYLOAD characters ahead,
+// and a loop finds where the payload ends: V8 keeps a backtrack entry for each
+// character an unbounded run matches, and a 10 MB image's run exhausts its stack.
+const PAYLOAD_START = new RegExp(`;base64,(?=[A-Za-z0-9+/=]{${MIN_PAYLOAD}})`, 'i')
+const isBase64 = (c: number) => c >= 65 && c <= 90 || c >= 97 && c <= 122 || c >= 48 && c <= 57 || c === 43 || c === 47 || c === 61
+
+/** The long base64 payloads in a text, as [start, end) spans in order. */
+function longPayloads(text: string): [number, number][] {
+  const spans: [number, number][] = []
+  const starts = new RegExp(PAYLOAD_START.source, 'gi')
+  for (let m = starts.exec(text); m; m = starts.exec(text)) {
+    const start = m.index + m[0].length
+    let end = start + MIN_PAYLOAD
+    while (end < text.length && isBase64(text.charCodeAt(end))) end++
+    spans.push([start, end])
+    starts.lastIndex = end
+  }
+  return spans
+}
 
 function standInForPayloads(doc: Document, html: string): (text: string) => string {
-  if (!LONG_PAYLOAD.test(html)) return text => text
+  if (!PAYLOAD_START.test(html)) return text => text
   // Unique to this extraction, so no text of the page's own is taken for one.
   const nonce = randomBytes(8).toString('hex')
   const standIns = new Map<string, string>() // payload → its stand-in: one payload, one stand-in
@@ -116,12 +134,17 @@ function standInForPayloads(doc: Document, html: string): (text: string) => stri
     }
     return s
   }
-  const every = new RegExp(LONG_PAYLOAD.source, 'gi')
   for (const el of Array.from(doc.querySelectorAll('*'))) {
     for (const { name, value } of Array.from(el.attributes)) {
-      if (value.length < MIN_PAYLOAD) continue
-      const short = value.replace(every, (_, head: string, payload: string) => head + standInFor(payload))
-      if (short !== value) el.setAttribute(name, short)
+      const spans = value.length < MIN_PAYLOAD ? [] : longPayloads(value)
+      if (!spans.length) continue
+      let short = ''
+      let at = 0
+      for (const [start, end] of spans) {
+        short += value.slice(at, start) + standInFor(value.slice(start, end))
+        at = end
+      }
+      el.setAttribute(name, short + value.slice(at))
     }
   }
   if (!payloads.size) return text => text
