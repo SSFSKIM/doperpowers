@@ -222,13 +222,15 @@ beside it) in a cache every session and subagent on this machine shares.
   addresses are refused; use curl through Bash for a local server.
 ```
 
-It is registered with `isDeferred: false`, so its schema is in the prompt's
-tool list from the first turn. An agent doing research should reach for it
-without a `ToolSearch` round trip first. The cost is its description, about
-200 tokens per session. The alternative, deferring it as the engine defers
-`WebFetch` in these sessions, was rejected because a tool meant to replace a
-habit should be in sight. Subagents get it as they get every mod tool. A
-subagent's call is served like the main session's.
+It is registered with `isDeferred: true`, behind `ToolSearch`, as the
+engine defers `WebFetch`: a session sees the tool's name in its list of
+deferred tools and loads the schema before its first call, so a session
+that reads no page pays for the name alone, not the description's 200 or so
+tokens. It shipped in the prompt's tool list (`isDeferred: false`), on the
+reasoning that a tool meant to replace a habit should be in sight; the
+owner ruled on 2026-10-26 that it be deferred like `WebFetch` (Decision
+Log). Subagents get it as they get every mod tool. A subagent's call is
+served like the main session's.
 
 **Replies.** The page's size estimate decides between the first two shapes.
 Every size in this design is the same estimate: one token per four ASCII
@@ -2239,6 +2241,18 @@ type Run = {
   sends headers and stops fails within about 50 s; a TCP connection that
   goes 20 s with no bytes is rarely coming back.
   Date/Author: 2026-10-25, board #143 session (branch `web-download-stall`).
+- Decision: the tool is registered deferred (`isDeferred: true`), behind
+  `ToolSearch` like `WebFetch`, in place of in the prompt's tool list.
+  Rationale: the owner's ruling ("defer it, just like WebFetch is deferred
+  as default"). A session that reads no page no longer carries the
+  description; the name stays in the deferred-tool list, and the owner's
+  instructions name the tool for research, so an agent still finds it.
+  The evals already gave both configurations `ToolSearch`, and A met
+  `WebFetch` deferred, so the two now start the same way.
+  Rejected: keeping it in the prompt's list, the reasoning it shipped with
+  (a tool replacing a habit should be in sight); the owner weighed it the
+  other way.
+  Date/Author: 2026-10-26, web-fetch-plugin session (branch `web-defer-tool`).
 
 ## Outcomes & Retrospective
 

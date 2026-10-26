@@ -69,14 +69,14 @@ const message = (error: unknown) => (error instanceof Error ? error.message : St
 
 /**
  * Registers the tool as a session starts, interactive or headless (the evals
- * run `claude -p`), in the prompt's tool list rather than behind ToolSearch:
- * a tool meant to replace a habit should be in sight. A subagent's call is
+ * run `claude -p`), deferred behind ToolSearch as the engine defers WebFetch,
+ * so a session that reads no page pays only for its name. A subagent's call is
  * served like the main session's.
  */
 export function registerFetch(on: On) {
   on('session.start', async ($, e, next) => {
     try {
-      const { tool } = await $.tool.register({ name: 'fetch', description: DESCRIPTION, inputSchema: INPUT_SCHEMA, isDeferred: false })
+      const { tool } = await $.tool.register({ name: 'fetch', description: DESCRIPTION, inputSchema: INPUT_SCHEMA, isDeferred: true })
       if (tool !== FETCH_TOOL) $.ui.log(`web: the fetch tool registered as ${tool}, not ${FETCH_TOOL}`, { to: 'debug' })
     } catch (error) {
       $.ui.log(`web: the fetch tool is not registered: ${message(error)}`, { to: 'debug' })
