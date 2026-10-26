@@ -21,7 +21,8 @@ import type { CompletionOutcome } from './summary'
  * The fetch tool (design: docs/doperpowers/specs/2026-10-25-web-fetch-design.md).
  * The clipper (`bin/clip.mjs`, a Node bundle) saves the page into the machine's
  * shared cache and prints its I1 result; this mod turns that into a reply,
- * asking `haiku` when the call has a `prompt`, and starts the cache's prune.
+ * asking a model (`haiku`, or the one `WEBFETCH_MODEL` names) when the call has a
+ * `prompt`, and starts the cache's prune.
  */
 export const FETCH_TOOL = 'mcp__web__fetch' // the name register() returns; a test pins it
 
@@ -39,7 +40,8 @@ beside it) in a cache every session and subagent on this machine shares.
   the whole page is saved beside it as full.md, and the reply names it.
 - Pages that render with JavaScript are rendered in a headless browser.
   PDFs are saved for Read, by page.
-- A copy saved in the last 24 hours is reused; \`refresh: true\` fetches again.
+- A saved copy is reused when the site shows the page unchanged (asked at
+  most once every 5 minutes); \`refresh: true\` fetches again.
 - Pages behind a login cannot be fetched. Local and private-network
   addresses are refused; use curl through Bash for a local server.`
 
@@ -48,7 +50,7 @@ export const INPUT_SCHEMA = {
   properties: {
     url: { type: 'string', format: 'uri', description: 'The page to fetch (http or https).' },
     prompt: { type: 'string', description: 'A question for a small fast model to answer from the page, citing its lines. Leave out to get the page itself.' },
-    refresh: { type: 'boolean', description: 'Fetch again even when a copy saved in the last 24 hours exists.' },
+    refresh: { type: 'boolean', description: 'Fetch again without reusing a saved copy.' },
   },
   required: ['url'],
 }
@@ -102,7 +104,7 @@ export function registerFetch(on: On) {
     return next(e)
   })
 
-  on('tool.call', { tool: FETCH_TOOL }, async ($, e) => {
+  on('tool.call', { tool: FETCH_TOOL }, async ($, e, next) => {
     const input = e as { url?: unknown; prompt?: unknown; refresh?: unknown }
     if (typeof input.url !== 'string' || input.url.trim() === '') return { deny: 'fetch failed: no url given (an http or https URL is required)' }
     const url = input.url.trim()
@@ -116,6 +118,10 @@ export function registerFetch(on: On) {
     try {
       ran = await $.process.run(argv, { timeoutMs: PROCESS_TIMEOUT_MS })
     } catch (error) {
+      // The user's interrupt kills the clipper: not a failure of the site or the tool. After send now the model reads this; after Esc, the engine's own text.
+      if (next.signal.aborted) {
+        return { deny: `fetch interrupted: ${url}: the call was stopped before the page was saved (the user interrupted it); the site and the web plugin did not fail.` }
+      }
       const elapsed = (await $.clock.now()) - startedAt
       if (elapsed >= PROCESS_TIMEOUT_MS - 2000) {
         return { deny: `fetch failed: ${url}: the clipper did not finish within ${PROCESS_TIMEOUT_MS / 1000} s and was stopped (its own deadline is 150 s, so this is a bug in the web plugin): ${message(error)}` }
@@ -137,6 +143,8 @@ export function registerFetch(on: On) {
     if (!result.ok) return { deny: failureReply(result, await $.clock.now()) }
 
     const textFile = textFileOf(result)
+    // The model that answers: the owner's WEBFETCH_MODEL, else haiku. One the engine will not resolve fails the summary, not the fetch.
+    const model = ((await $.env.get('WEBFETCH_MODEL')) ?? '').trim() || SUMMARY_MODEL
     let summary: Summary | undefined
     if (question !== undefined && textFile !== undefined) {
       summary = await summarize(result, textFile, question)
@@ -157,7 +165,7 @@ export function registerFetch(on: On) {
     }
     return { result: replyFor(result, { now: await $.clock.now(), isAsked: question !== undefined, summary, page }) }
 
-    /** The answer from `haiku` over the numbered page, retried once at half the cap when the prompt was too long. */
+    /** The answer from the summary model over the numbered page, retried once at half the cap when the prompt was too long. */
     async function summarize(r: ClipOk, file: string, ask: string): Promise<Summary> {
       const reserve = summaryReserve(ask)
       let cap = SUMMARY_MAX_TOKENS
@@ -179,7 +187,7 @@ export function registerFetch(on: On) {
         let reply
         try {
           reply = await $.model.complete({
-            model: SUMMARY_MODEL,
+            model,
             system: SUMMARY_SYSTEM,
             prompt: summaryPrompt(numbered.body, ask),
             maxTokens: SUMMARY_MAX_OUTPUT_TOKENS,
@@ -194,7 +202,7 @@ export function registerFetch(on: On) {
         await logUsage(r, reply)
         const outcome = reply as CompletionOutcome
         if (outcome.isAnswered && outcome.text.trim() !== '') {
-          return { isAnswered: true, text: outcome.text, model: SUMMARY_MODEL, header: numbered.header }
+          return { isAnswered: true, text: outcome.text, model, header: numbered.header }
         }
         why = whyUnanswered(outcome, elapsed)
         if (!isPromptTooLong(outcome)) break
@@ -214,7 +222,7 @@ export function registerFetch(on: On) {
       const line = {
         time: new Date(await $.clock.now()).toISOString(),
         url: r.url,
-        model: SUMMARY_MODEL,
+        model,
         session: await $.session.id().catch(() => undefined),
         ...(e.agentId !== undefined && { agentId: e.agentId }),
         isAnswered: reply.isAnswered,

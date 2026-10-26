@@ -171,3 +171,19 @@ test('https to a server that does not speak TLS is an HttpError, the failure htt
     return true
   })
 })
+
+test('a 304 that names a content encoding resolves with no body, not a broken stream', async t => {
+  // GitHub and Wikipedia answer a conditional request with 304, Content-Encoding: gzip and nothing after the headers (2026-10-26).
+  const server = await startServer({
+    '/': (req, res) => {
+      if (req.headers['if-none-match'] === '"v1"') { res.writeHead(304, { etag: '"v1"', 'content-encoding': 'gzip' }); res.end(); return }
+      res.writeHead(200, { 'content-type': 'text/plain', etag: '"v1"' }); res.end('the page')
+    },
+  })
+  t.after(() => server.close())
+  const boundary = boundaryOf({ WEB_ALLOW_HOSTS: `127.0.0.1:${server.port}` })
+  const res = await request(new URL(`${server.origin}/`), { headers: { 'if-none-match': '"v1"' }, timeoutMs: 5000, maxBytes: 1024, boundary })
+  assert.equal(res.status, 304)
+  assert.equal(res.body.length, 0)
+  assert.equal(res.headers.etag, '"v1"')
+})

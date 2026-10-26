@@ -4,13 +4,15 @@ import { createServer } from 'node:http'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { createServer as createTcpServer } from 'node:net'
 import { createSocket } from 'node:dgram'
-import { mkdtemp, readFile, readdir } from 'node:fs/promises'
+import { mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { execFileSync } from 'node:child_process'
 import { findChrome } from '../src/render.ts'
+import { CHECK_FLOOR_MS, FAILURE_MEMORY_MS, readCurrent, recordCheck } from '../src/cache.ts'
+import { entryDir } from '../src/key.ts'
 
 export const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), 'fixtures')
 export const fixture = (name: string) => readFile(join(FIXTURES, name), 'utf8')
@@ -57,6 +59,22 @@ export async function startUdpTrap() {
 }
 
 export const tmpCache = () => mkdtemp(join(tmpdir(), 'clip-test-'))
+
+/** Moves the URL's saved copy, and its last check, past CHECK_FLOOR_MS: the next call asks the site. */
+export async function pastFloor(cacheDir: string, url: string) {
+  const entry = entryDir(cacheDir, new URL(url))
+  const current = (await readCurrent<{ fetchedAt: string }>(entry))!
+  const earlier = (at: string) => new Date(Date.parse(at) - CHECK_FLOOR_MS - 1000).toISOString()
+  await writeFile(join(entry, current.generation, 'meta.json'), JSON.stringify({ ...current.meta, fetchedAt: earlier(current.meta.fetchedAt) }))
+  if (current.checkedAt) await recordCheck(entry, current.generation, earlier(current.checkedAt))
+}
+
+/** Moves the URL's remembered failure past FAILURE_MEMORY_MS. */
+export async function forgetFailure(cacheDir: string, url: string) {
+  const file = join(entryDir(cacheDir, new URL(url)), '.failed.json')
+  const failure = JSON.parse(await readFile(file, 'utf8'))
+  await writeFile(file, JSON.stringify({ ...failure, failedAt: new Date(Date.parse(failure.failedAt) - FAILURE_MEMORY_MS - 1000).toISOString() }))
+}
 
 /** The cache's files and folders below its entries (host/entry/<name>), as `<entry>/<name>`: generations, .tmp- folders, failures. */
 export async function entryContents(root: string): Promise<string[]> {

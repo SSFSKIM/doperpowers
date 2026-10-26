@@ -66,6 +66,8 @@ function engine(
   const completions: Record<string, unknown>[] = []
   const usage: Record<string, unknown>[] = []
   const files = new Map(Object.entries(options.files ?? {}))
+  let reported!: (text: string) => void
+  const report = new Promise<string>((resolve) => (reported = resolve))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('session.id', () => ({ value: 's1' }))
   on('tool.register', (_, e, next) => {
@@ -88,6 +90,10 @@ function engine(
     const run = { argv: e.argv, stdin: e.init?.stdin, timeoutMs: e.init?.timeoutMs }
     runs.push(run)
     const ok = (stdout: string) => ({ value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
+    if (e.argv[0] === 'report') {
+      reported(e.argv[1]!)
+      return ok('')
+    }
     if (e.argv[1] === '-e') {
       usage.push(JSON.parse(e.init?.stdin ?? ''))
       return ok('')
@@ -116,7 +122,7 @@ function engine(
     if (options.complete) return options.complete().then((value) => ('deny' in value ? (value as { deny: string }) : { value: value as never }))
     return { value: (script.shift() ?? answer('again')) as never }
   })
-  return { clock, registered, runs, reads, completions, usage }
+  return { clock, registered, runs, reads, completions, usage, report }
 }
 
 const flag = (argv: readonly string[], name: string) => argv[argv.indexOf(name) + 1]
@@ -129,6 +135,23 @@ async function start($: Engine, isInteractive = false) {
 
 const call = (input: Record<string, unknown>, agentId?: string) =>
   ({ tool: FETCH_TOOL, tool_use_id: 'toolu_f1', ...input, ...(agentId !== undefined && { agentId }) }) as never
+
+/**
+ * A plugin above the web plugin's that answers the fetch first, so the call
+ * beneath is abandoned, as an interrupt abandons it. An inline plugin loads on
+ * its own, closing over nothing of this file's, so it hands what the web
+ * plugin answered back through a `process.run` the test records.
+ */
+const interrupter = {
+  name: 'interrupter',
+  tier: 'prepend' as const,
+  register: ((on: On) => {
+    on('tool.call', { tool: 'mcp__web__fetch' }, ($, e, next) => {
+      void next(e).then((beneath) => $.process.run(['report', JSON.stringify(beneath)]))
+      return { deny: 'interrupted' }
+    })
+  }) as never,
+}
 
 const textOf = (result: { result?: unknown; deny?: string }) => {
   if (result.deny !== undefined) throw new Error(`denied: ${result.deny}`)
@@ -147,7 +170,7 @@ describe('the fetch tool', () => {
       properties: {
         url: { type: 'string', format: 'uri', description: 'The page to fetch (http or https).' },
         prompt: { type: 'string', description: 'A question for a small fast model to answer from the page, citing its lines. Leave out to get the page itself.' },
-        refresh: { type: 'boolean', description: 'Fetch again even when a copy saved in the last 24 hours exists.' },
+        refresh: { type: 'boolean', description: 'Fetch again without reusing a saved copy.' },
       },
       required: ['url'],
     })
@@ -237,6 +260,23 @@ describe('the fetch tool\'s errors (R4)', () => {
     expect(result.deny).toStartWith('fetch failed: https://example.com/: node not found on PATH')
   })
 
+  // The user's interrupt (send now, Esc) abandons the call's dispatch: a hook above settling first does the same.
+  test('a call the user interrupts says so, not that the clipper failed', { plugins: [interrupter] }, async ($, on) => {
+    let release!: () => void
+    const held = new Promise<void>((resolve) => (release = resolve))
+    const { report } = engine(on, {
+      clip: async () => {
+        await held
+        return { deny: 'web: $.process.run(node) aborted' }
+      },
+    })
+    await start($)
+    expect((await $.tool.call(call({ url: 'https://example.com/slow' }))).deny).toBe('interrupted')
+    release()
+    const beneath = JSON.parse(await report) as { deny?: string }
+    expect(beneath.deny).toBe('fetch interrupted: https://example.com/slow: the call was stopped before the page was saved (the user interrupted it); the site and the web plugin did not fail.')
+  })
+
   test('a clipper that crashed gives R4 naming the clipper and its error', async ($, on) => {
     engine(on, { clip: async () => ({ exitCode: 1, stdout: '', stderr: 'TypeError: boom\n    at clip (clip.mjs:1:1)\n' }) })
     await start($)
@@ -284,6 +324,22 @@ describe('the summary (R3)', () => {
     expect(prompt).toEndWith(question)
     expect(reply).toStartWith('It is 1024 [L22].\n\n— Answered by haiku from ')
     expect(reply).toContain('(lines 1–40 of 40)')
+  })
+
+  test('WEBFETCH_MODEL names the model that answers, in the request, the reply and the usage log', async ($, on) => {
+    const { completions, usage } = engine(on, { files: { [`${DIR}/page.md`]: pageText() }, env: { HOME, WEBFETCH_MODEL: ' luna ' } })
+    await start($)
+    const reply = textOf(await $.tool.call(call({ url: 'https://example.com/docs/guide', prompt: question })))
+    expect(completions[0]).toMatchObject({ model: 'luna', system: SUMMARY_SYSTEM })
+    expect(reply).toStartWith('It is 1024 [L22].\n\n— Answered by luna from ')
+    expect(usage[0]).toMatchObject({ model: 'luna' })
+  })
+
+  test('a blank WEBFETCH_MODEL is haiku', async ($, on) => {
+    const { completions } = engine(on, { files: { [`${DIR}/page.md`]: pageText() }, env: { HOME, WEBFETCH_MODEL: '  ' } })
+    await start($)
+    await $.tool.call(call({ url: 'https://example.com/docs/guide', prompt: question }))
+    expect(completions[0]).toMatchObject({ model: 'haiku' })
   })
 
   test('a text file over 4 MiB is summarized from its numbered lines, never read whole, and the reply says where the cap cut it', async ($, on) => {
