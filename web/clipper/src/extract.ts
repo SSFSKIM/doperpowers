@@ -5,19 +5,21 @@ import { Defuddle, DefuddleClass } from 'defuddle/node'
 // Not in Defuddle's package exports, so named by path; the same module defuddle/node converts with.
 import { createMarkdownContent } from '../node_modules/defuddle/dist/markdown.js'
 import { parseHTML } from 'linkedom'
+import { randomBytes } from 'node:crypto'
 import { findHeadings, splitLines } from './measure.ts'
 
 export type PageMeta = { title?: string; author?: string; site?: string; published?: string; description?: string; domain?: string; language?: string }
 export type Extracted = { body: string; meta: PageMeta; words: number }
 
 export async function extractHtml(html: string, url: string, siteFetch: typeof fetch): Promise<Extracted> {
-  const r = await Defuddle(prepare(html, url), url, { markdown: true, fetch: siteFetch })
+  const { doc, restore } = prepare(html, url)
+  const r = await Defuddle(doc, url, { markdown: true, fetch: siteFetch })
   const meta: PageMeta = {}
   for (const k of ['title', 'author', 'site', 'published', 'description', 'domain', 'language'] as const) {
-    const v = typeof r[k] === 'string' ? unshield(r[k]).trim() : ''
+    const v = typeof r[k] === 'string' ? restore(unshield(r[k])).trim() : ''
     if (v) meta[k] = v
   }
-  return { body: tidyMarkdown(unshield(r.content ?? '')), meta, words: r.wordCount ?? 0 }
+  return { body: tidyMarkdown(restore(unshield(r.content ?? ''))), meta, words: r.wordCount ?? 0 }
 }
 
 /**
@@ -41,7 +43,7 @@ export async function extractHtml(html: string, url: string, siteFetch: typeof f
  *   give the article.
  */
 export function extractFull(html: string, url: string): { body: string; words: number } {
-  const doc = prepare(html, url)
+  const { doc, restore } = prepare(html, url)
   for (const script of Array.from(doc.querySelectorAll('script'))) {
     if (/ld\+json/i.test(script.getAttribute('type') ?? '')) script.remove()
   }
@@ -59,11 +61,15 @@ export function extractFull(html: string, url: string): { body: string; words: n
   if (internals._inExtractorPipelineRun !== false) throw new Error('this Defuddle has no flag to keep its site extractors out')
   internals._inExtractorPipelineRun = true
   const r = defuddle.parse()
-  return { body: tidyMarkdown(unshield(createMarkdownContent(r.content ?? '', url))), words: r.wordCount ?? 0 }
+  return { body: tidyMarkdown(restore(unshield(createMarkdownContent(r.content ?? '', url)))), words: r.wordCount ?? 0 }
 }
 
-/** The document Defuddle reads: parsed, polyfilled as Defuddle polyfills its own, and through the clipper's pre-passes. */
-function prepare(html: string, url: string): Document {
+/**
+ * The document Defuddle reads: parsed, polyfilled as Defuddle polyfills its
+ * own, and through the clipper's pre-passes; with what puts back, in text
+ * made from it, the inline images' payloads it stands in for.
+ */
+function prepare(html: string, url: string): { doc: Document; restore: (text: string) => string } {
   const doc = parseDocument(html)
   // The polyfills Defuddle applies to a linkedom document of its own.
   const loose = doc as unknown as { URL: string; styleSheets?: unknown; defaultView: { getComputedStyle?: unknown } | null }
@@ -73,7 +79,77 @@ function prepare(html: string, url: string): Document {
   markWrapperLanguages(doc as unknown as Document)
   keepNoscriptImages(doc as unknown as Document)
   keepDatesAsData(doc as unknown as Document)
-  return doc as unknown as Document
+  // Last, so the images a <noscript> gave way to are covered too.
+  const restore = standInForPayloads(doc as unknown as Document, html)
+  return { doc: doc as unknown as Document, restore }
+}
+
+// Defuddle reads a srcset with /(.+?)\s+(\d+(?:\.\d+)?[wx])/g, which tries each
+// position of an entry without a width against all the rest of it: time in the
+// square of the entry's length. A URL is short; an inline image's base64 payload is
+// not, and hothardware's <picture>, one 49 KB data: URI in a <source srcset>, took
+// 6 s of CPU a pass. So each long payload in an attribute stands in for a short one
+// of its own while Defuddle reads the document, and is put back in the markdown it
+// writes: the image links, and the files saved from them, are what they were. The
+// stand-in keeps the URI's header (Defuddle tells data:, data:image/ and svg+xml
+// apart by it), is STAND_IN_LENGTH long so Defuddle does not take it for a lazy
+// image's placeholder (a payload under 133 characters), and, like the base64 it
+// stands for, holds no character the URL parser or the markdown conversion changes.
+// Every attribute, not only srcset: a payload anywhere is one Defuddle pass away
+// from the same cost.
+const MIN_PAYLOAD = 1024
+const STAND_IN_LENGTH = 136
+// Where a long payload starts. The pattern only looks MIN_PAYLOAD characters ahead,
+// and a loop finds where the payload ends: V8 keeps a backtrack entry for each
+// character an unbounded run matches, and a 10 MB image's run exhausts its stack.
+const PAYLOAD_START = new RegExp(`;base64,(?=[A-Za-z0-9+/=]{${MIN_PAYLOAD}})`, 'i')
+const isBase64 = (c: number) => c >= 65 && c <= 90 || c >= 97 && c <= 122 || c >= 48 && c <= 57 || c === 43 || c === 47 || c === 61
+
+/** The long base64 payloads in a text, as [start, end) spans in order. */
+function longPayloads(text: string): [number, number][] {
+  const spans: [number, number][] = []
+  const starts = new RegExp(PAYLOAD_START.source, 'gi')
+  for (let m = starts.exec(text); m; m = starts.exec(text)) {
+    const start = m.index + m[0].length
+    let end = start + MIN_PAYLOAD
+    while (end < text.length && isBase64(text.charCodeAt(end))) end++
+    spans.push([start, end])
+    starts.lastIndex = end
+  }
+  return spans
+}
+
+function standInForPayloads(doc: Document, html: string): (text: string) => string {
+  if (!PAYLOAD_START.test(html)) return text => text
+  // Unique to this extraction, so no text of the page's own is taken for one.
+  const nonce = randomBytes(8).toString('hex')
+  const standIns = new Map<string, string>() // payload → its stand-in: one payload, one stand-in
+  const payloads = new Map<string, string>() // stand-in → payload
+  const standInFor = (payload: string) => {
+    let s = standIns.get(payload)
+    if (!s) {
+      s = nonce + String(standIns.size).padStart(STAND_IN_LENGTH - nonce.length, '0')
+      standIns.set(payload, s)
+      payloads.set(s, payload)
+    }
+    return s
+  }
+  for (const el of Array.from(doc.querySelectorAll('*'))) {
+    for (const { name, value } of Array.from(el.attributes)) {
+      const spans = value.length < MIN_PAYLOAD ? [] : longPayloads(value)
+      if (!spans.length) continue
+      let short = ''
+      let at = 0
+      for (const [start, end] of spans) {
+        short += value.slice(at, start) + standInFor(value.slice(start, end))
+        at = end
+      }
+      el.setAttribute(name, short + value.slice(at))
+    }
+  }
+  if (!payloads.size) return text => text
+  const standIn = new RegExp(`${nonce}\\d{${STAND_IN_LENGTH - nonce.length}}`, 'g')
+  return text => text.replace(standIn, s => payloads.get(s) ?? s)
 }
 
 // linkedom builds only the structure a document's tags spell out. HTML lets a page

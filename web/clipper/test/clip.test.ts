@@ -11,13 +11,15 @@ import type { HttpResponse } from '../src/http.ts'
 import { estimateTokens } from '../src/estimate.ts'
 import { entryDir } from '../src/key.ts'
 import { RefusedError } from '../src/netguard.ts'
-import { startServer, startTrap, tmpCache, send, fixture, pngBytes, pdfBytes, PIXEL_GIF, noPdftotext, entryContents } from './helpers.ts'
+import { startServer, startTrap, tmpCache, send, fixture, pngBytes, pdfBytes, PIXEL_GIF, noPdftotext, entryContents, inlineImagesPage } from './helpers.ts'
 
 let server: Awaited<ReturnType<typeof startServer>>
 let trap: Awaited<ReturnType<typeof startTrap>>
 let env: NodeJS.ProcessEnv
 const stall: { res: import('node:http').ServerResponse }[] = []
 let stallingHtml = ''
+// Inline images as large as hothardware's, a 49 KB data: URI.
+const inline = inlineImagesPage(36 * 1024)
 
 before(async () => {
   trap = await startTrap()
@@ -39,6 +41,7 @@ before(async () => {
     '/crates/tinycrate': send('text/html; charset=utf-8', await fixture('sidebar.html')),
     // The article, with one chart beside it and nothing more.
     '/gallery': send('text/html; charset=utf-8', article.replace('</main>', '</main><aside><img src="/charts/beside.png" alt="Beside the article"></aside>')),
+    '/inline': send('text/html; charset=utf-8', inline.html),
     '/img/diagram.png': send('image/png', pngBytes(2048, 1)),
     '/img/lazy.png': send('image/png', pngBytes(3000, 2)),
     '/img/small.png': send('image/png', pngBytes(1500, 3)),
@@ -201,6 +204,16 @@ test('an article whose extraction took over FULL_LIMITS.skipAfterMs of CPU time 
   assert.ok(!(await readdir(r.dir)).includes('full.md'))
   assert.equal(r.notes.length, 1, r.notes.join('|'))
   assert.match(r.notes[0], /^the whole page \(full\.md\) was not saved: extracting the article took \d+\.\d s of CPU time$/)
+})
+
+test('inline images are saved byte for byte, and the whole page beside them keeps its own as written', async () => {
+  const r = ok(await clip(`${server.origin}/inline`, { cacheDir: await tmpCache(), env }))
+  assert.deepEqual(r.notes, [])
+  assert.deepEqual(r.images.map(i => [i.alt, i.file]), [['chart', 'assets/01.webp'], ['wide', 'assets/02.png']])
+  assert.deepEqual(await readFile(join(r.dir, 'assets/01.webp')), inline.images.chart.body)
+  assert.deepEqual(await readFile(join(r.dir, 'assets/02.png')), inline.images.wide.body)
+  assert.ok(r.full, JSON.stringify(r))
+  assert.ok((await readFile(r.full.file, 'utf8')).includes(`![gallery](${inline.images.gallery.uri})`))
 })
 
 test('an image under 1 KiB keeps its remote link, with the reason recorded', async () => {
