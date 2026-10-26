@@ -264,12 +264,13 @@ async function downloadOne(
 ): Promise<Download> {
   let body: Buffer
   let mediaType: string
+  // The image's own time, or what is left of the page's budget when that is less.
+  const timeoutMs = budget.limit(IMAGE_LIMITS.timeoutMs)
   try {
     if (url.startsWith('data:')) {
       ;({ body, mediaType } = decodeDataUri(url))
     } else {
       const parsed = new URL(url)
-      const timeoutMs = budget.limit(IMAGE_LIMITS.timeoutMs)
       if (timeoutMs <= 0) return { error: 'not downloaded: time budget' }
       const res = await request(parsed, {
         headers: { accept: IMAGE_ACCEPT, 'user-agent': USER_AGENT }, referrer: page, timeoutMs, maxBytes: IMAGE_LIMITS.maxBytes, boundary, beforeHop,
@@ -281,7 +282,9 @@ async function downloadOne(
     }
   } catch (e) {
     if (e instanceof RefusedError) return { error: `refused: ${e.brief}` }
-    if (e instanceof HttpError && e.timedOut && budget.expired()) return { error: 'not downloaded: time budget' }
+    // A request whose time was the budget's remainder ran out of budget, though its timer may fire a
+    // millisecond before the budget's clock reads zero; it says nothing of its host.
+    if (e instanceof HttpError && e.timedOut && (budget.expired() || timeoutMs < IMAGE_LIMITS.timeoutMs)) return { error: 'not downloaded: time budget' }
     // Keyed by where it went unanswered: a host that redirected did answer.
     if (e instanceof HttpError && e.unanswered) return { error: e.message, silent: originOf(e.at ?? url) }
     return { error: e instanceof Error ? e.message : String(e) }
