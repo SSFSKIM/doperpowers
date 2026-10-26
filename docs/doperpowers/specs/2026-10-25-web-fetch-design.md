@@ -112,7 +112,11 @@ session on the machine.
   page saved beside the article as `full.md`, a prompt the article does
   not answer asked again over it, and a dead image host no longer holding
   the fetch. Design approved by the owner, with the two choices it put to
-  them (Decision Log).
+  them (Decision Log). Built as web 0.4.0 (`c4a040cc` the clipper,
+  `c3ed9dc4` the mod): `page.md` unchanged on the eval's pages, and
+  crates.io's MSRV answered live from `full.md` after `page.md` missed
+  (Surprises & Discoveries). The review and the evals the Decision Log
+  names wait.
 
 ## Acceptance
 
@@ -321,11 +325,14 @@ line shown above.
 
 **The whole page.** When the clipper saved `full.md` (From URL to file,
 step 3), R1's and R2's header name it on a line of its own before the
-untrusted-content line, and R3's last lines name it too:
+untrusted-content line, and R3's last lines name it too, after the notes:
 
 ```
 The whole page, menus and sidebars included: /Users/new/.cache/claude-web/…/full.md (7,595 words, ~25k tokens, 191 images by URL); Grep it for what this page leaves out.
 ```
+
+The image count is of distinct image links, and is left out when there
+are none.
 
 **Replies by kind.** R1–R3 work on the result's text file: the main file
 for `html`, `markdown`, `text` and `json`, and `page.txt` for a `pdf` whose
@@ -601,7 +608,10 @@ its own:
        `word_count`. Hidden elements are still removed: kept, they add
        only language pickers and menus. It holds the article too, in the
        page's order, and the order is what tells a gallery's chart from
-       its neighbours'.
+       its neighbours'. It makes no request: Defuddle's async extractors,
+       which fetch (a YouTube page's transcript, already `page.md`'s), stay
+       off. A conversion that fails leaves the page as it was, with the note
+       `the whole page (full.md) was not saved: <why>`.
      - **Its images stay links:** absolute URLs, never downloaded (Tom's
        Hardware's page links 191, federalregister's 682). An agent fetches
        the one it needs, and the tool saves an image URL as a file.
@@ -655,11 +665,12 @@ its own:
      made absolute against the final URL, `data:` URIs included. Six at a
      time, 20 seconds and 15 MB each, at most 40 per page, all within 30
      seconds of the first. Duplicates are saved once.
-   - **A host that does not answer** one image (no connection, no
-     response within its time, a name that does not resolve; not an HTTP
-     error status) is not asked for the page's other images, which keep
-     their remote links with `not downloaded: <host> did not answer an
-     earlier image`. Most pages' images take half a second; the time went
+   - **A host that does not answer** one image (no response at all: a
+     name that does not resolve, no connection or one closed unanswered,
+     no headers within its time; an HTTP error status, or a body that
+     began, is an answer) is not asked for the page's other queued images,
+     which keep their remote links with `not downloaded: <host> did not
+     answer an earlier image`. Most pages' images take half a second; the time went
      to dead hosts, 20 s an image (board #139).
    - **Naming:** files are named by first appearance, `assets/01.<ext>`,
      with the extension taken from the response's content type.
@@ -743,7 +754,10 @@ the reply's: `— Answered by haiku from <full.md> (the whole page: the
 article did not answer; lines …)`. A second `Not on this page` is still
 the whole page's answer, the fuller of the two. Only a miss costs the
 second call; an answer the article holds keeps its citations in the clean
-file.
+file. The opening is read through markdown emphasis
+(`**Not on this page:**`). A second request that fails (an API error, a
+timeout) leaves the first answer standing: it is an answer still, and the
+reply's last line names `full.md` for the agent to Grep.
 
 Numbering the lines is what lets the citations be exact. Asking for
 citations is the improvement over `WebFetch`. An instruction a page aims at
@@ -1323,7 +1337,7 @@ type ClipResult =
       outlineOmitted?: number // headings the 80-entry cap left out; absent when 0
       images: ImageEntry[]
       full?: { file: string; words: number; lines: number; tokens: number; images: number }
-                             // the whole page beside page.md (step 3), when saved; `images` counts its image links
+                             // the whole page beside page.md (step 3), when saved; `images` counts its distinct image links
       notes: string[]        // one human-readable line each
     }
   | {
@@ -1591,6 +1605,34 @@ type Run = {
   Codex tool results cannot contain PDF/document files`. A `Read` with
   `pages` gives page images, which pass.
   Evidence: long-pdf-h1 A rep 2's first attempt, 2026-10-25.
+- Observation: board #139 left `page.md` as it was. Over the 51 HTML URLs
+  of both suites, main's bundle and web 0.4.0's, run back to back, saved
+  the same `page.md` on 49 of 50 pages (Cloudflare's post came as
+  markdown). The 50th, npmgraph, differs inside an SVG its script draws,
+  and main's own three fetches of it differ the same way. `full.md` was
+  saved on 41, added nothing on 5, and was skipped on 4 by the 5 s rule.
+  It came to a median 50 KB, 1.28 times `page.md` (p90 2.5), 3.6 MB in
+  all. The conversion alone, on the spike's documents, took a median
+  92 ms (p90 447 ms, max 1.3 s). By the clock a fetch took 0.2 s longer
+  (p10 −0.2 s, p90 +0.8 s: the network's noise).
+  - The 5 s rule reads wall time. Unicode's emoji list extracts in 5.5 s
+    alone and took 6.7 s with two other fetches running, so a loaded
+    machine skips the pages near the line.
+  - One skipped page is not large: hothardware's review (image-h1) has a
+    1,566-word article that takes 6 s to extract, all of it spent on 25
+    inline base64 images (115 KB); with their payloads cut short the same
+    extraction takes 73 ms. The cost is `page.md`'s too, on every such
+    page, and is a ticket of its own.
+  - crates.io's serde 1.0.200 (rendered) holds its sidebar in `full.md`
+    (`Minimum Rust version: v1.31.0`, licence, `11K SLoC`, `Size: 75.8
+    KiB`) and none of it in `page.md`. Asked its MSRV in a `claude -p`
+    session, the mod's answer over `page.md` opened `Not on this page`,
+    and the second, over `full.md`, answered `v1.31.0 [L85]`. Tom's
+    Hardware's page (image-h2) links 191 images in `full.md`, all
+    absolute, the Flight Simulator chart at L993 in the gallery above its
+    game's paragraph.
+  Evidence: `/tmp/web139b/` (the comparison's records and analysis),
+  2026-10-26.
 
 ## Decision Log
 
@@ -2379,6 +2421,30 @@ type Run = {
   proposed: it saves a median 0.5 s, and it makes a second kind of cached
   copy, which a later call without a prompt would have to fetch again.
   Date/Author: 2026-10-26, web-fetch-plugin session; the owner chose.
+- Decision: board #139 as built, where the build settled what the design
+  left open.
+  - `full.md`'s conversion makes no request: Defuddle's async extractors
+    stay off (`useAsync: false`). The spike passed the guarded fetch with
+    them on. No eval page has one, so the output is the same, and a page
+    that has one (a YouTube transcript) would fetch for a second time what
+    `page.md` already holds.
+  - A conversion that throws leaves the page published, with a note. The
+    file is an extra, and a clipper that exits non-zero loses the page to
+    an R4.
+  - "Did not answer" is decided where the request fails, not from its
+    message: `HttpError.unanswered`, set when no response headers came (a
+    name that did not resolve, a connection refused, closed unanswered or
+    failing TLS, no headers within the time). A body that began and then
+    stalled is an answer; the image's 20 s and the page's 30 s bound it.
+  - The breaker is keyed by the image URL's host with its port, and skips
+    queued images only; one already in flight to that host ends on its
+    own.
+  - A re-ask that fails leaves the first answer, which is an answer still;
+    the reply's last line names `full.md`. The marker is read through
+    markdown emphasis, since Haiku may bold an opening.
+  - `full.images` counts distinct image URLs, and the reply's line leaves
+    the count out at 0 rather than say `0 images by URL`.
+  Date/Author: 2026-10-26, board #139 build (branch `web-extraction-reach`).
 
 ## Outcomes & Retrospective
 
