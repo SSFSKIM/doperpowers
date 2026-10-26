@@ -13,7 +13,10 @@ loudly, in a terminal session with the plugin:
   as it enters (the last response's, not the earlier turn's);
 - an offer the model takes compacts the conversation at the end of the
   offer's turn and the resume prompt it wrote enters and is answered;
-- the model's tool list carries compact alone (context_usage is gone).
+- the model's tool list carries compact alone (context_usage is gone),
+  behind ToolSearch, and the plugin's MCP server instructions the model
+  reads carry the guidance on when to compact (the transcript keeps the
+  engine's text, so the model quotes them).
 
 It spends model calls (haiku, short prompts, one compaction), so no suite
 runs it: run it by hand with the model gateway's keys in the environment.
@@ -138,9 +141,10 @@ class Offer(LB.Live):
         wait_for("the subscription", 10, lambda: self.subscriptions > 0)
 
         # A turn the model declines: the offer is a turn of its own, and its
-        # end offers nothing more.
+        # end offers nothing more. The turn before it quotes the guidance.
         t1 = time.time()
-        self.prompt("Reply with the single word ready and nothing else.")
+        self.prompt('Quote, verbatim, the first line under the "## doperpowers" heading of your MCP server '
+                    "instructions, and nothing else.")
         wait_for("the turn's end and the offer's", 120, lambda: len(self.main_turn_ends(t1)) >= 2)
         quiet = self.quiet(t1, 2)
 
@@ -170,6 +174,13 @@ class Offer(LB.Live):
             tools.update(tool_uses(r))
         used_usage = any(n == "mcp__doperpowers__context_usage" for n in tools)
         self.check("context_usage is not among the tools the model reaches for", not used_usage, "tools used: %s" % sorted(tools))
+        deferred = [n for r in rows if (r.get("attachment") or {}).get("type") == "deferred_tools_delta"
+                    for n in r["attachment"].get("addedNames") or []]
+        self.check("compact waits behind ToolSearch", COMPACT in deferred, "deferred: %s" % sorted(deferred))
+        quoted = [text_of(rows[i]) for i in answers(rows) if not offers or i < offers[0]]
+        self.check("the server instructions the model reads open the plugin's block with the guidance",
+                   any("mcp__doperpowers__compact compacts your own context" in t for t in quoted),
+                   "the model quoted %r" % [t[:120] for t in quoted])
 
         # A prompt the person queues while the turn's answer streams goes
         # first; the offer waits, and enters with the figures as they are then.

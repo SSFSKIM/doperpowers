@@ -1,4 +1,4 @@
-import type { EngineInterface, On, SessionStartInput, ToolDescribeResult, TurnCompleteInput } from 'claude-code'
+import type { EngineInterface, On, SessionStartInput, TurnCompleteInput } from 'claude-code'
 
 /**
  * The tool as the model names it, `mcp__<plugin>__<name>` with the plugin's
@@ -34,7 +34,7 @@ export const OFFER_GATE: OfferGate = { floor: 300_000, step: 70_000 }
 
 /**
  * Below this, an offer says compacting is not necessarily recommended: the
- * description's "under about 300k" band, where only a clean checkpoint is
+ * guidance's "under about 300k" band, where only a clean checkpoint is
  * worth it. The default floor is this figure, so only a launch that lowers
  * the floor is offered below it.
  */
@@ -70,7 +70,7 @@ export function readRequest(args: Record<string, unknown>): CompactRequest {
 
 const n = (value: number) => value.toLocaleString('en-US')
 
-/** How the offer's gate reads in the tool's description. */
+/** How the offer's gate reads in the guidance. */
 function gateText(gate: OfferGate): string {
   if (gate.floor === 0 && gate.step === 0) {
     return 'at the end of every turn'
@@ -80,18 +80,35 @@ function gateText(gate: OfferGate): string {
 }
 
 /**
- * The compact tool as the model reads it. `threshold` is where the engine
- * compacts on its own; undefined when the window could not be read.
+ * The compact tool as the model reads it once loaded: what a call does and
+ * how to make it. When to make one is the guidance's.
  */
-export function describeCompact(threshold: number | undefined, gate: OfferGate = OFFER_GATE): string {
-  const own = threshold === undefined ? "near the window's end" : `at about ${n(threshold)}`
-  const before = gate.floor === 0 ? '' : ` Until the first time, you are under ${n(gate.floor)}.`
+export function describeCompact(): string {
   return [
     'Compact your own context at a reasonable checkpoint of your choosing. Runs when',
     'this turn ends: you write the summary that replaces the conversation',
     '(standard instructions plus your `instructions`), then `resume` is',
     'submitted to you as the next prompt. Background shells, monitors, MCP',
     'servers and subagents keep running.',
+    '',
+    'How: the last tool call of the turn, alone, after pending results have',
+    'arrived; then end your turn.',
+  ].join('\n')
+}
+
+/**
+ * When to compact, as the plugin's MCP server instructions carry it in the
+ * main conversation: in view from the first request on, while the tool
+ * waits behind ToolSearch. `threshold` is where the engine compacts on its
+ * own; undefined when the window could not be read.
+ */
+export function compactGuidance(threshold: number | undefined, gate: OfferGate = OFFER_GATE): string {
+  const own = threshold === undefined ? "near the window's end" : `at about ${n(threshold)}`
+  const before = gate.floor === 0 ? '' : ` Until the first time, you are under ${n(gate.floor)}.`
+  return [
+    'mcp__doperpowers__compact compacts your own context at a checkpoint of your',
+    'choosing; if it is not loaded, ToolSearch with "select:mcp__doperpowers__compact"',
+    'loads it.',
     '',
     'When. Let the work decide rather than the context size: compact at a',
     'checkpoint in the work where none of its state is lost; the larger the',
@@ -117,10 +134,19 @@ export function describeCompact(threshold: number | undefined, gate: OfferGate =
     'the human, a decision you are still weighing, a subagent or job whose',
     'result you will judge against what sent it; settling it takes the',
     'context that raised it.',
-    '',
-    'How: the last tool call of the turn, alone, after pending results have',
-    'arrived; then end your turn.',
   ].join('\n')
+}
+
+/**
+ * The plugin's server block in an MCP instructions delta: its heading and
+ * the engine's one line under it ("Tools registered by the doperpowers
+ * plugin through $.tool.register.").
+ */
+const SERVER_BLOCK = /^## doperpowers\n[^\n]*$/m
+
+/** The delta's text with the plugin's block carrying `guidance`; a delta without the block is left as it is. */
+export function withGuidance(text: string, guidance: string): string {
+  return text.replace(SERVER_BLOCK, () => `## doperpowers\n${guidance}`)
 }
 
 export type ContextFigures = {
@@ -166,9 +192,10 @@ export function offerText(context: ContextFigures, threshold: number): string {
     usageText(context, threshold),
     ...early,
     'If you truly think this is the right time to compact, you can compact now with',
-    'mcp__doperpowers__compact (alone, then end your turn; its description says when a',
-    "checkpoint is worth it). Otherwise reply \"Not compacting.\" (one line, a reason",
-    'optional) and end your turn.',
+    'mcp__doperpowers__compact (alone, then end your turn; if it is not loaded, ToolSearch',
+    'with "select:mcp__doperpowers__compact" loads it; the doperpowers MCP server',
+    "instructions say when a checkpoint is worth it). Otherwise reply \"Not compacting.\"",
+    '(one line, a reason optional) and end your turn.',
   ].join('\n')
 }
 
@@ -235,9 +262,6 @@ export function notRunText(request: CompactRequest, why: string): string {
 }
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error))
-
-/** A tool.describe answer that keeps the tool out of tool-search deferral. */
-const inline = (described: ToolDescribeResult): ToolDescribeResult => ({ ...described, isDeferred: false }) as ToolDescribeResult
 
 /**
  * The request the compact tool took this turn, spent at the turn's end;
@@ -335,7 +359,7 @@ export async function compactStart($: EngineInterface, _: SessionStartInput) {
   gate = await gateOf($)
   await $.tool.register({
     name: 'compact',
-    description: describeCompact(threshold, gate),
+    description: describeCompact(),
     inputSchema: {
       type: 'object',
       properties: {
@@ -604,11 +628,19 @@ export function registerCompact(on: On) {
     return next(e)
   }).catch((_, e, next) => next(e))
 
-  // Tool search defers every MCP tool, and this is an MCP tool to the
-  // engine: the model would see its name alone and read the guidance only
-  // after loading it. A tool.describe verdict of isDeferred: false keeps it
-  // inline (the engine's own placement, passed as e.isDeferred, loses).
-  on('tool.describe', { tool: 'mcp__doperpowers__compact' }, async (_, e, next) => inline(await next(e)))
+  // The tool waits behind ToolSearch, as the engine places an MCP tool, so
+  // the guidance on when to compact rides the plugin's server instructions,
+  // in view from the first request on (and again after a compaction, which
+  // announces the servers anew). Only in the main conversation's own rows:
+  // a subagent cannot compact, and a fork carries its parent's rows, so
+  // it reads them as its parent did.
+  on('prompt.attachment', { type: 'mcp_instructions_delta' }, async (_, e, next) => {
+    const result = await next(e)
+    if (!registered || e.agentId !== undefined || result.text === null) {
+      return result
+    }
+    return { ...result, text: withGuidance(result.text, compactGuidance(threshold, gate)) }
+  })
 
   on('tool.call', { tool: 'mcp__doperpowers__compact' }, (_, e) => {
     if (e.agentId !== undefined) {

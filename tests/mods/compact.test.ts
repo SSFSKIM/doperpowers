@@ -8,6 +8,7 @@ import {
   RESUME_DEFAULT,
   compactStart,
   compactTurnComplete,
+  compactGuidance,
   compactTurnStart,
   compactedOfferText,
   describeCompact,
@@ -22,6 +23,7 @@ import {
   scheduledText,
   thresholdOf,
   usageText,
+  withGuidance,
 } from '../../hooks/mods/compact'
 
 tier('user')
@@ -72,30 +74,59 @@ describe('readRequest', () => {
 })
 
 describe('texts', () => {
-  test('the compact description names the harness threshold, or its absence', async () => {
-    expect(describeCompact(967_000)).toContain('compacts on its own at about 967,000')
-    expect(describeCompact(undefined)).toContain("compacts on its own near the window's end")
-    expect(describeCompact(967_000)).toContain('Runs when\nthis turn ends')
-    expect(describeCompact(967_000)).toContain('300k–450k: at any reasonable checkpoint')
-    expect(describeCompact(967_000)).toContain('Prefer not to pass 600k')
-    expect(describeCompact(967_000)).toContain('a backstop, not the plan')
-    expect(describeCompact(967_000)).toContain('never as a percentage of the window')
-    expect(describeCompact(967_000)).toContain('Not during a design discussion: its state is the conversation itself,')
-    expect(describeCompact(967_000)).toContain('Nor while something is pending: an unanswered question to\nthe human')
-    expect(describeCompact(967_000).endsWith('How: the last tool call of the turn, alone, after pending results have\narrived; then end your turn.')).toBe(true)
+  test('the compact description says what a call does and how to make one, and leaves when to the guidance', async () => {
+    const description = describeCompact()
+    expect(description).toContain('Runs when\nthis turn ends')
+    expect(description).toContain('subagents keep running')
+    expect(description.endsWith('How: the last tool call of the turn, alone, after pending results have\narrived; then end your turn.')).toBe(true)
+    expect(description).not.toContain('When.')
   })
 
-  test('the compact description tells the model when it is told its size, by the gate', async () => {
-    const gated = describeCompact(967_000)
+  test('the guidance names the tool and how to load it, and the harness threshold, or its absence', async () => {
+    expect(compactGuidance(967_000).startsWith('mcp__doperpowers__compact compacts your own context')).toBe(true)
+    expect(compactGuidance(967_000)).toContain('ToolSearch with "select:mcp__doperpowers__compact"\nloads it.')
+    expect(compactGuidance(967_000)).toContain('compacts on its own at about 967,000')
+    expect(compactGuidance(undefined)).toContain("compacts on its own near the window's end")
+    expect(compactGuidance(967_000)).toContain('300k–450k: at any reasonable checkpoint')
+    expect(compactGuidance(967_000)).toContain('Prefer not to pass 600k')
+    expect(compactGuidance(967_000)).toContain('a backstop, not the plan')
+    expect(compactGuidance(967_000)).toContain('never as a percentage of the window')
+    expect(compactGuidance(967_000)).toContain('Not during a design discussion: its state is the conversation itself,')
+    expect(compactGuidance(967_000).endsWith('Nor while something is pending: an unanswered question to\nthe human, a decision you are still weighing, a subagent or job whose\nresult you will judge against what sent it; settling it takes the\ncontext that raised it.')).toBe(true)
+  })
+
+  test('the guidance tells the model when it is told its size, by the gate', async () => {
+    const gated = compactGuidance(967_000)
     expect(gated).toContain("at the end of each turn from 300,000 tokens on, once it has grown 70,000 since the last time (a message from the doperpowers plugin")
     expect(gated).toContain('Until the first time, you are under 300,000.')
     expect(gated).toContain('compact unasked at any checkpoint, mid-turn included')
     expect(gated).not.toContain('context_usage')
-    const every = describeCompact(967_000, { floor: 0, step: 0 })
+    const every = compactGuidance(967_000, { floor: 0, step: 0 })
     expect(every).toContain("at the end of every turn (a message from the doperpowers plugin")
     expect(every).not.toContain('Until the first time')
-    expect(describeCompact(967_000, { floor: 200_000, step: 0 })).toContain("at the end of each turn from 200,000 tokens on (a message from the doperpowers plugin")
-    expect(describeCompact(967_000, { floor: 0, step: 50_000 })).toContain("at the end of each turn, once it has grown 50,000 since the last time (a message from the doperpowers plugin")
+    expect(compactGuidance(967_000, { floor: 200_000, step: 0 })).toContain("at the end of each turn from 200,000 tokens on (a message from the doperpowers plugin")
+    expect(compactGuidance(967_000, { floor: 0, step: 50_000 })).toContain("at the end of each turn, once it has grown 50,000 since the last time (a message from the doperpowers plugin")
+  })
+
+  test("the guidance takes the place of the engine's line under the plugin's heading, and only there", async () => {
+    const delta = [
+      '# MCP Server Instructions',
+      '',
+      'The following MCP servers have provided instructions for how to use their tools and resources:',
+      '',
+      '## doperpowers',
+      'Tools registered by the doperpowers plugin through $.tool.register.',
+      '',
+      '## doperpowers-extra',
+      'Its own line.',
+      '',
+      '## web',
+      'Tools registered by the web plugin through $.tool.register.',
+    ].join('\n')
+    // `$` patterns in the guidance are written as they are.
+    expect(withGuidance(delta, "When. Then $& and $'.")).toBe(delta.replace('Tools registered by the doperpowers plugin through $.tool.register.', () => "When. Then $& and $'."))
+    const others = '# MCP Server Instructions\n\n## web\nTools registered by the web plugin through $.tool.register.'
+    expect(withGuidance(others, 'When.')).toBe(others)
   })
 
   test('the usage text carries the figures and the threshold', async () => {
@@ -109,8 +140,9 @@ describe('texts', () => {
   test('the offer carries the figures, names the tool, and asks for a line on a decline', async () => {
     const text = offerText({ tokens: 412_300, window: 1_000_000 }, 967_000)
     expect(text).toContain('Context: 412,300 tokens; window 1,000,000.')
-    expect(text).toContain('If you truly think this is the right time to compact, you can compact now with\nmcp__doperpowers__compact (alone, then end your turn; its description says when a\ncheckpoint is worth it).')
-    expect(text).not.toContain('ToolSearch')
+    expect(text).toContain(
+      'If you truly think this is the right time to compact, you can compact now with\nmcp__doperpowers__compact (alone, then end your turn; if it is not loaded, ToolSearch\nwith "select:mcp__doperpowers__compact" loads it; the doperpowers MCP server\ninstructions say when a checkpoint is worth it).',
+    )
     expect(text).toContain('reply "Not compacting."')
   })
 
@@ -169,6 +201,18 @@ const start = (isInteractive: boolean) => ({ cwd: '/', surface: isInteractive ? 
 const turnEnd = (agentId?: string) => ({ ...(agentId !== undefined && { agentId }), turnId: 't', answer: '', durationMs: 1, isAborted: false, reason: 'answer' as const })
 const compactAt = (trigger: SessionCompactTrigger = 'manual', agentId?: string) => ({ trigger, ...(agentId !== undefined && { agentId }), messages: [] })
 const stopAt = (fields: Record<string, unknown> = {}) => ({ hook_event_name: 'Stop', session_id: 's', transcript_path: '/t', cwd: '/', stop_hook_active: false, ...fields })
+/** An MCP instructions delta as the engine renders it (2.1.310), the plugin's block among others. */
+const SERVER_DELTA = [
+  '# MCP Server Instructions',
+  '',
+  'The following MCP servers have provided instructions for how to use their tools and resources:',
+  '',
+  '## doperpowers',
+  'Tools registered by the doperpowers plugin through $.tool.register.',
+  '',
+  '## web',
+  'Tools registered by the web plugin through $.tool.register.',
+].join('\n')
 
 /** A matcher as the engine reads one: a RegExp tests a string, an object is a partial at any depth, else `===`. */
 function matches(matcher: unknown, value: unknown): boolean {
@@ -344,30 +388,49 @@ function harness(
     return find('prompt.submit', e).handler($, e, next) as Promise<Entered>
   }
   const passed = () => calls.filter((c) => c.op === 'typed passed').map((c) => c.args)
+  /** An MCP instructions delta of the loop `agentId` (none: the main conversation's) on its way to the model, answered `beneath` below the mod. */
+  const attach = (text: string, agentId?: string, beneath: string | null = text) => {
+    const e = { type: 'mcp_instructions_delta', text, origin: { kind: 'engine' }, ...(agentId !== undefined && { agentId }) }
+    return find('prompt.attachment', e).handler($, e, async () => ({ text: beneath })) as Promise<{ text: string | null }>
+  }
   const sessionCompact = (e: Record<string, unknown>, beneath: Record<string, unknown> = { messages: [], tokensBefore: 312_400, tokensAfter: 20_000 }) =>
     find('session.compact', e).handler($, e, async () => beneath) as Promise<Record<string, unknown>>
-  return { calls, call, stop, begin, end, turn, enter, settleWaiting, decline, submitted, offers, typed, passed, sessionCompact, mod, engine, settle, registered, state, queue, hooks }
+  return { calls, call, stop, begin, end, turn, enter, settleWaiting, decline, submitted, offers, typed, passed, attach, sessionCompact, mod, engine, settle, registered, state, queue, hooks }
 }
 
 describe('registerCompact', () => {
-  test('registers the compact tool alone at session start', async () => {
+  test('registers the compact tool alone at session start, left to the engine to place behind ToolSearch', async () => {
     const h = harness()
     await h.mod.start(h.engine, start(true))
     expect(h.registered()).toEqual(['compact'])
-    // Kept inline, out of tool-search deferral: its guidance is in view before any offer.
-    const describe = h.hooks.filter((x) => x.event === 'tool.describe')
-    expect(describe.map((x) => x.matcher)).toEqual([{ tool: 'mcp__doperpowers__compact' }])
-    expect(await describe[0]!.handler(h.engine, { isDeferred: true }, async (e: unknown) => e)).toMatchObject({ isDeferred: false })
-    const spec = h.calls.find((c) => c.op === 'tool.register' && (c.args as { name: string }).name === 'compact')?.args as { description: string }
-    expect(spec.description).toContain('at about 967,000')
-    expect(spec.description).toContain('from 300,000 tokens on')
+    const spec = h.calls.find((c) => c.op === 'tool.register' && (c.args as { name: string }).name === 'compact')?.args as Record<string, unknown>
+    expect(spec.description).toBe(describeCompact())
+    expect('isDeferred' in spec).toBe(false)
+    expect(h.hooks.filter((x) => x.event === 'tool.describe')).toEqual([])
+  })
+
+  test("the main conversation's server instructions carry the guidance, by the window and the gate read at session start", async () => {
+    const h = harness({ env: { DOPERPOWERS_COMPACT_OFFER_FLOOR: '200000' } })
+    await h.mod.start(h.engine, start(true))
+    const text = (await h.attach(SERVER_DELTA)).text
+    expect(text).toBe(withGuidance(SERVER_DELTA, compactGuidance(967_000, { floor: 200_000, step: OFFER_GATE.step })))
+    expect(text).toContain('## doperpowers\nmcp__doperpowers__compact compacts your own context')
+    expect(text).toContain('## web\nTools registered by the web plugin through $.tool.register.')
+  })
+
+  test("a subagent's server instructions, a session without the tool, and an attachment dropped beneath are left as they are", async () => {
+    const h = harness()
+    await h.mod.start(h.engine, start(true))
+    expect(await h.attach(SERVER_DELTA, 'a1')).toEqual({ text: SERVER_DELTA })
+    expect(await h.attach(SERVER_DELTA, undefined, null)).toEqual({ text: null })
+    const headless = harness()
+    expect(await headless.attach(SERVER_DELTA)).toEqual({ text: SERVER_DELTA })
   })
 
   test('a compaction window smaller than the model window is the one measured against', async () => {
     const h = harness({ window: 1_000_000, compactionWindow: 900_000 })
     await h.mod.start(h.engine, start(true))
-    const spec = h.calls.find((c) => c.op === 'tool.register' && (c.args as { name: string }).name === 'compact')?.args as { description: string }
-    expect(spec.description).toContain('at about 867,000')
+    expect((await h.attach(SERVER_DELTA)).text).toContain('at about 867,000')
     await h.turn()
     expect(h.offers()[0]).toContain('312,400 tokens; window 900,000')
     expect(h.offers()[0]).toContain('about 867,000')
@@ -653,8 +716,7 @@ describe('registerCompact', () => {
     await every.turn()
     expect(every.offers()).toHaveLength(2)
     expect(every.offers()[1]).toContain('Context: 12,000 tokens')
-    const spec = every.calls.find((c) => c.op === 'tool.register')?.args as { description: string }
-    expect(spec.description).toContain('at the end of every turn')
+    expect((await every.attach(SERVER_DELTA)).text).toContain('at the end of every turn')
 
     const bad = harness({ tokens: 200_000, env: { DOPERPOWERS_COMPACT_OFFER_FLOOR: 'abc', DOPERPOWERS_COMPACT_OFFER_STEP: '-1' } })
     await bad.mod.start(bad.engine, start(true))
