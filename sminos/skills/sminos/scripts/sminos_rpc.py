@@ -150,6 +150,8 @@ RELOAD_WAIT_S = 60        # a `/reload-plugins` is done once its bridge answers 
 OPS_ENDED_KEPT = 1000     # nonces of ops whose end went up, kept so another copy of that end is passed by
 NAME_MAX = 128            # DX6 `command`: a name as $.command.list() spells it
 ARGS_MAX = 4096           # and its arguments' text
+PROMPT_MAX = 8192         # DX6 `btw`: a side question's text
+INSTRUCTIONS_MAX = 4096   # DX6 `compact`: its instructions' text
 RELOAD = "reload-plugins"
 RECONCILE_EVERY = 1.0     # how often claims left by a stop are looked at again
 SPAWN_TIMEOUT = 600
@@ -158,10 +160,11 @@ SNAPSHOT_TIMEOUT = 8      # the bridge holds its stream up to 5 s until the mod'
 DECISION_TIMEOUT = 15     # an async question's answer is relayed to the mod, which waits 5 s
 SPAWN_TASK = "Begin with your brief."
 RPC_NAMES = ("steer", "interrupt", "answer", "decide", "model", "compact", "spawn", "retire", "resume", "stop",
-             "command")
+             "command", "btw")
 TASK_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")   # DX6 `stop`'s taskId, as the engine spells task ids
 CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
-OP_OF = {"run": "command"}  # a bridge's event → the DX4 `op` it reports
+OP_OF = {"run": "command", "btw": "btw"}  # a bridge's event → the DX4 `op` it reports
+EVENT_OF = {op: event for event, op in OP_OF.items()}  # an op (the RPC that issued it) → the bridge's event of it
 MODEL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/@\[\]-]{0,199}")
 WORKTREE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}")
 CREATED_RE = re.compile(r"([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})(\.[0-9]{1,9})?Z")
@@ -606,6 +609,8 @@ class Rpcs:
                 return lambda: self.compact(path, rpc, sid)
             if name == "command":
                 return lambda: self.desk_command(path, rpc, sid, status)
+            if name == "btw":
+                return lambda: self.side_question(path, rpc, sid)
             if name in ("answer", "decide"):
                 return lambda: decide(path, args["digest"]["request"], decision)
             if name == "stop":
@@ -638,7 +643,8 @@ class Rpcs:
             return locks.setdefault(sid, threading.Lock())
 
     def compact(self, path, rpc, sid):
-        result, cid = command(path, {"op": "compact"})
+        instructions = rpc["args"].get("instructions")
+        result, cid = command(path, {"op": "compact", **({"instructions": instructions} if instructions else {})})
         if not result["ok"]:
             raise Refused("failed", refusal(result))
         if cid:
@@ -685,8 +691,28 @@ class Rpcs:
         except OSError as e:
             log("command %s: its id %s could not be kept in the ledger (%s): an end a restart misses is not "
                 "sent" % (nonce, oid, e))
-        self.finished.put(("op", (oid, rpc["project"], sid, nonce, name, text, child)))
+        self.finished.put(("op", (oid, rpc["project"], sid, nonce, name, text, child, "command")))
         return done({**outcome["result"], "id": oid})
+
+    def side_question(self, path, rpc, sid):
+        """A side question asked of the session's bridge (DX5 `btw`), which
+        answers `started` at once; its answer follows on the stream (`ops`),
+        as a desk command's run does. The bridge's refusal is the RPC's
+        failure, its code the message's first word. Its id is kept on the
+        claim until its end."""
+        nonce = rpc["nonce"]
+        out, cid = command(path, {"op": "btw", "prompt": rpc["args"]["prompt"], "rpc": nonce})
+        outcome = started(out)
+        if outcome["state"] != "done":
+            return outcome
+        oid = outcome["result"]["id"] or cid
+        try:
+            self.note(nonce, {"op_id": oid})
+        except OSError as e:
+            log("btw %s: its id %s could not be kept in the ledger (%s): an end a restart misses is not sent"
+                % (nonce, oid, e))
+        self.finished.put(("op", (oid, rpc["project"], sid, nonce, None, "", None, "btw")))
+        return done({"started": True, "id": oid})
 
     # ---------------------------------------------------- frames up
 
@@ -709,9 +735,9 @@ class Rpcs:
                 cid, pid, sid, nonce = data
                 self.compact_ids[cid] = (pid, sid, nonce, self.clock())
             elif kind == "op":
-                oid, pid, sid, nonce, name, text, child = data
+                oid, pid, sid, nonce, name, text, child, op = data
                 self.op_ids[oid] = {"project": pid, "session": sid, "nonce": nonce, "at": self.clock(), "name": name,
-                                    "args": text, "child": child}
+                                    "args": text, "child": child, "op": op}
 
     def compacted(self, items):
         """The bridges' `compact` events (session, project id, event): every
@@ -776,11 +802,12 @@ class Rpcs:
         self.kept.save(self.messages)
 
     def ops(self, items):
-        """The bridges' `run` events (session, project id, event): each run
-        of a desk command becomes DX4 `op` (the desk control surface, §3),
-        carrying the nonce of the DX6 `command` that asked for it — the
-        event's own (the bridge's child names it), else the one this daemon
-        kept for the command — or null for one nobody here asked for."""
+        """The bridges' `run` and `btw` events (session, project id, event):
+        each run of a desk command, and each side question, becomes DX4 `op`
+        (the desk control surface, §3), carrying the nonce of the DX6
+        `command` or `btw` that asked for it — the event's own (the bridge's
+        child names it), else the one this daemon kept for it — or null for
+        one nobody here asked for."""
         self.take()
         for sid, pid, e in items:
             if isinstance(e, dict) and pid and e.get("type") in OP_OF:
@@ -800,14 +827,14 @@ class Rpcs:
             # the child it replaces.
             if held is None:
                 held = self.op_ids[oid] = {"project": pid, "session": sid, "nonce": nonce, "at": self.clock(),
-                                           "name": RELOAD, "args": e.get("args") or "", "child": child}
+                                           "name": RELOAD, "args": e.get("args") or "", "child": child, "op": "command"}
             elif held["child"] is None:
                 held["child"] = child
         body = {"rpc": nonce, "op": OP_OF[e["type"]], **{k: v for k, v in e.items() if k not in ("type", "rpc", "n")}}
         self.owe(held["project"] if held else pid, held["session"] if held else sid, "op", body)
         if e.get("phase") == "end":
             if self.op_ids.pop(oid, None) is not None:
-                self.forget(nonce, ("op_id", "op_name", "op_args", "op_child"), "command")
+                self.forget(nonce, ("op_id", "op_name", "op_args", "op_child"), OP_OF[e["type"]])
             self.ops_ended[key] = None
             while len(self.ops_ended) > OPS_ENDED_KEPT:
                 self.ops_ended.popitem(last=False)
@@ -858,18 +885,18 @@ class Rpcs:
                 continue
             end = ((bridge.load_kept(op["session"]).get("rpcs") or {}).get(op["nonce"]) or {}).get("end")
             if isinstance(end, dict) and end.get("id") == oid and end.get("phase") == "end":
-                self.op_event(op["session"], op["project"], {**end, "type": "run", "rpc": op["nonce"]})
+                self.op_event(op["session"], op["project"], {**end, "type": EVENT_OF[op["op"]], "rpc": op["nonce"]})
         now = self.clock()
         for oid in [o for o, op in self.op_ids.items() if now - op["at"] >= KEPT_S]:
             del self.op_ids[oid]
 
     def rearm(self, nonce):
-        """A command claim about to be reconciled `done` from the child's
-        kept answer (the daemon stopped after the bridge answered it and
-        before its id was kept): its id kept on the claim first, while the
-        claim is still open, so that a stop before its outcome is written
-        leaves a claim the next restart reconciles again; then its run
-        followed as one this daemon saw answered — its end, if the child
+        """A command or side question claim about to be reconciled `done`
+        from the child's kept answer (the daemon stopped after the bridge
+        answered it and before its id was kept): its id kept on the claim
+        first, while the claim is still open, so that a stop before its
+        outcome is written leaves a claim the next restart reconciles again;
+        then its outcome followed as one this daemon saw answered — its end, if the child
         kept it meanwhile, sent at once (recover_ops). False when the id
         could not be kept: the claim stays open, reconciled again."""
         with self.ledger.lock:
@@ -891,7 +918,8 @@ class Rpcs:
                 return False
         child = e.get("op_child")
         self.op_ids[oid] = {"project": e.get("project"), "session": e["session"], "nonce": nonce, "at": e["at"],
-                            "name": e["op_name"], "args": e["op_args"], "child": child if isinstance(child, list) else None}
+                            "name": e["op_name"], "args": e["op_args"], "child": child if isinstance(child, list) else None,
+                            "op": e["rpc"]}
         return True
 
     def restore_ops(self):
@@ -904,7 +932,8 @@ class Rpcs:
                 child = e.get("op_child")
                 self.op_ids[oid] = {"project": e.get("project"), "session": e.get("session"), "nonce": nonce,
                                     "at": e["at"], "name": e.get("op_name"), "args": e.get("op_args") or "",
-                                    "child": child if isinstance(child, list) else None}
+                                    "child": child if isinstance(child, list) else None,
+                                    "op": e.get("rpc") if e.get("rpc") in EVENT_OF else "command"}
 
     def reconcile(self):
         """Outcomes whose ledger write failed, written again; then claims no
@@ -938,7 +967,7 @@ class Rpcs:
                 continue
             if outcome is None:
                 outcome = failed("interrupted", "the daemon stopped while it ran: it is not run again")
-            if e.get("rpc") == "command" and outcome["state"] == "done" and not self.rearm(nonce):
+            if e.get("rpc") in EVENT_OF and outcome["state"] == "done" and not self.rearm(nonce):
                 continue
             try:
                 self.ledger.answer(nonce, outcome)
@@ -1127,6 +1156,13 @@ def shape(name, args, member):
              "name is a command's name as the session lists it (1-%d characters, none a control)" % NAME_MAX)
         need(a is None or (isinstance(a, str) and len(a) <= ARGS_MAX),
              "args is text of at most %d characters" % ARGS_MAX)
+    elif name == "btw":
+        p = args.get("prompt")
+        need(is_text(p) and len(p) <= PROMPT_MAX, "prompt is the question's text, at most %d characters" % PROMPT_MAX)
+    elif name == "compact":
+        i = args.get("instructions")
+        need(i is None or (isinstance(i, str) and len(i) <= INSTRUCTIONS_MAX),
+             "instructions is text of at most %d characters" % INSTRUCTIONS_MAX)
     elif name == "spawn":
         need(is_text(args.get("brief")), "brief is the session's brief")
         wt, m, e = args.get("worktree"), args.get("model"), args.get("effort")
@@ -1219,14 +1255,28 @@ def steered(out):
     return failed("failed", refusal(out))
 
 
+def refused_op(out):
+    """An op the bridge refused, as the RPC's failure: its code the
+    message's first word, its reason after."""
+    code = out.get("code")
+    return failed("failed", "%s: %s" % (code, refusal(out)) if isinstance(code, str) and code else refusal(out))
+
+
 def commanded(out):
     """A desk command's outcome from the bridge's answer to it (DX6): queued,
-    or the bridge's refusal, its code the message's first word."""
+    or the bridge's refusal."""
     if out.get("ok"):
         r = out.get("result") or {}
         return done({"queued": r.get("queued") is True, "route": r.get("route"), "id": r.get("id")})
-    code = out.get("code")
-    return failed("failed", "%s: %s" % (code, refusal(out)) if isinstance(code, str) and code else refusal(out))
+    return refused_op(out)
+
+
+def started(out):
+    """A side question's outcome from the bridge's answer to it (DX6 `btw`):
+    started, or the bridge's refusal (`nothing-to-fork`)."""
+    if out.get("ok"):
+        return done({"started": True, "id": (out.get("result") or {}).get("id")})
+    return refused_op(out)
 
 
 def interrupt(path):
@@ -1572,9 +1622,10 @@ def trace(nonce, e, others=()):
     a trace may still appear). `others`: the ledger's other entries."""
     if e.get("rpc") == "spawn":
         return spawned(nonce), SPAWN_TRACE_S
-    if e.get("rpc") in ("steer", "command") and e.get("session"):
+    if e.get("rpc") in ("steer", "command", "btw") and e.get("session"):
         answered = (bridge.load_kept(e["session"]).get("rpcs") or {}).get(nonce)
-        outcome = (steered if e["rpc"] == "steer" else commanded)(answered) if isinstance(answered, dict) else None
+        read = {"steer": steered, "command": commanded, "btw": started}[e["rpc"]]
+        outcome = read(answered) if isinstance(answered, dict) else None
         return outcome, STEER_TRACE_S
     if e.get("rpc") == "resume" and e.get("session"):
         launched, job = e.get("launched_at"), kept_job(e)
