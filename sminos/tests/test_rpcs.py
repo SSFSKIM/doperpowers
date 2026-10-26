@@ -25,6 +25,7 @@ Hermetic: HOME and SMINOS_HOME are temporary (test_session_plane's); nothing
 reaches beyond 127.0.0.1 and this directory.
 """
 
+import base64
 import hashlib
 import json
 import os
@@ -44,6 +45,7 @@ import test_policy_requests as tpr  # noqa: E402
 import sminos  # noqa: E402
 import sminos_bridge as bridgemod  # noqa: E402
 import sminos_codes as codes  # noqa: E402
+import sminos_media as media  # noqa: E402
 import sminos_plane as plane  # noqa: E402
 import sminos_policy as policy  # noqa: E402
 import sminos_requests as requests  # noqa: E402
@@ -57,6 +59,8 @@ GIT = tpr.GIT
 wait_for = tpr.wait_for
 cli = tpr.cli
 
+PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 24
+PDF = b"%PDF-1.4\n1 0 obj\n<<>>\nendobj\n"
 TURN_UNKNOWN = "turn state unknown since the bridge reloaded; retry after the next model request"
 
 
@@ -223,6 +227,9 @@ class Mod(tpr.Bridge):
         self.refuse_agents = {}   # an agent's id or name → the bridge's refusal of a stop-agent or tell: (code, reason)
         self.names = {}           # an agent's name → the id the engine's list resolves it to (a caller that gave none)
         self.note_error = None    # why a stop's note was not kept
+        self.cwd = "/"            # the session's live working directory, as `read status` answers it
+        self.uploads = {}         # an upload the mod holds → its op
+        self.refuse_media = None  # the bridge's refusal of an upload: (code, reason)
         self.rows = []
         super().__init__(sid)
 
@@ -309,6 +316,35 @@ class Mod(tpr.Bridge):
                 res = {"ok": True, "result": {"agentId": ref, "accepted": True,
                                               **({"resolvedAgentId": resolved} if resolved != ref else {}),
                                               **({"noteError": self.note_error} if self.note_error else {})}}
+        elif op == "read" and cmd.get("what") == "status":
+            res = {"ok": True, "result": {"cwd": self.cwd, "root": self.cwd, "model": None}}
+        elif op == "media":
+            upload = cmd["upload"]
+            missing = [f["name"] for f in cmd["files"] if not os.path.isfile(f["path"])]
+            if self.refuse_media:
+                code, why = self.refuse_media
+                res = {"ok": False, "error": why, "code": code}
+            elif upload in self.uploads:
+                res = {"ok": True, "result": {"duplicate": True, "upload": upload}}
+            elif missing:
+                res = {"ok": False, "error": "%s is missing" % missing[0]}
+            else:
+                # Held, then each attachment read and forwarded, as bridge-media.tsx says them.
+                self.uploads[upload] = cmd
+                res = {"ok": True, "result": {"queued": True, "upload": upload}}
+                states = {f["n"]: "pending" for f in cmd["files"]}
+                after = [None]
+                for f in cmd["files"]:
+                    for state in ("read", "forwarded"):
+                        states[f["n"]] = state
+                        ended = all(x == "forwarded" for x in states.values())
+                        e = {"type": "media", "id": upload, "upload": upload, "index": f["n"], "state": state,
+                             "phase": "end" if ended else "start", "toolUseId": "toolu_sminos_%024d" % f["n"],
+                             "attachments": [{"index": n, "state": x} for n, x in sorted(states.items())]}
+                        if self.hold_runs and ended:
+                            self.held_runs.append(e)
+                        else:
+                            after.append(e)
         elif op == "command":
             name, args = cmd.get("name"), cmd.get("args") or ""
             if name in self.refuse_commands:
@@ -431,6 +467,10 @@ class Checks(unittest.TestCase):
         self.mod.refuse_agents = {}
         self.mod.note_error = None
         self.mod.names = {}
+        self.mod.cwd = self.root
+        self.mod.uploads = {}
+        shutil.rmtree(os.path.join(self.root, ".claude", "desk-uploads"), ignore_errors=True)   # an earlier test's
+        self.mod.refuse_media = None
         self.mod.commands.clear()
         self.clock = [time.time()]
         self.r = rpcs.Rpcs(KEY, "testhost", clock=lambda: self.clock[0])
@@ -1712,6 +1752,183 @@ class Checks(unittest.TestCase):
         self.assertNotIn("instructions", self.mod.ops("compact")[-1], "none asked: none passed")
         edge = self.send("compact", {"session": self.bridged.sid, "instructions": "x" * 4096})
         self.assertEqual(self.outcome(edge)["state"], "done", "4,096 characters are instructions")
+
+    # ------------------------------------------------ image and PDF intake (MW5)
+
+    def attachments(self, *files):
+        return [{"name": name, "mediaType": media_type, "data": base64.b64encode(data).decode("ascii")}
+                for name, media_type, data in files]
+
+    def upload(self, *files, session=None):
+        files = files or (("shot.png", "image/png", PNG),)
+        return self.send("media", {"session": session or self.bridged.sid, "attachments": self.attachments(*files),
+                                   "delivery": "queued-turn"})
+
+    def uploads_of(self, base, sid=None):
+        root = os.path.join(os.path.realpath(base), ".claude", "desk-uploads", sid or self.bridged.sid)
+        return sorted(os.listdir(root)) if os.path.isdir(root) else []
+
+    def test_m5_an_uploads_shape(self):
+        good = self.attachments(("shot.png", "image/png", PNG))[0]
+        for args in ({"attachments": [good]},                                       # no delivery
+                     {"attachments": [good], "delivery": "now"},
+                     {"attachments": [good], "delivery": "queued-turn", "text": "look"},   # words go as a Send
+                     {"attachments": [], "delivery": "queued-turn"},
+                     {"attachments": [good] * 5, "delivery": "queued-turn"},
+                     {"attachments": [{**good, "mediaType": "application/pdf"}], "delivery": "queued-turn"},
+                     {"attachments": [{**good, "data": "%%%"}], "delivery": "queued-turn"},
+                     {"attachments": [{**good, "name": "../shot.png"}], "delivery": "queued-turn"}):
+            self.refused(self.send("media", {"session": self.bridged.sid, **args}), "bad-shape")
+        self.assertEqual(self.mod.ops("media") + self.mod.ops("read"), [], "nothing reached the bridge")
+        self.assertEqual(self.uploads_of(self.root), [], "nothing saved")
+
+    def test_m5_an_upload_is_saved_under_the_live_cwd_and_answered_queued_once_the_bridge_holds_it(self):
+        sub = os.path.join(self.root, "moved-" + uuidlib.uuid4().hex[:6])   # where a /cd took the session
+        os.makedirs(sub)
+        self.mod.cwd = sub
+        asked = self.upload(("photo", "image/png", PNG), ("photo", "application/pdf", PDF), ("x.jpg", "image/png", PNG))
+        n = asked["nonce"]
+        root = os.path.join(os.path.realpath(sub), ".claude", "desk-uploads", self.bridged.sid)
+        paths = [n + ".0.png", n + ".1.pdf", n + ".2.png"]
+        self.assertEqual(self.outcome(asked), {"state": "done", "result": {
+            "queued": True, "upload": n, "intake": "native-read", "root": root, "paths": paths}})
+        cmd = self.mod.ops("media")[-1]
+        self.assertEqual((cmd["upload"], cmd["rpc"], cmd["root"]), (n, n, root), "the upload is the nonce")
+        self.assertEqual(cmd["files"], [
+            {"n": 0, "path": os.path.join(root, paths[0]), "name": "photo", "mediaType": "image/png"},
+            {"n": 1, "path": os.path.join(root, paths[1]), "name": "photo", "mediaType": "application/pdf"},
+            {"n": 2, "path": os.path.join(root, paths[2]), "name": "x.jpg", "mediaType": "image/png"}])
+        with open(os.path.join(root, paths[1]), "rb") as f:
+            self.assertEqual(f.read(), PDF)
+        self.assertEqual(self.mod.ops("read")[-1]["what"], "status", "the cwd read from the live session")
+        with open(os.path.join(self.root, ".git", "info", "exclude")) as f:
+            self.assertIn(media.EXCLUDE_LINE, f.read().splitlines())
+        self.assertEqual(self.ledger()[n]["op_id"], n, "followed to its end under the upload")
+
+    def test_m5_an_uploads_states_go_up_as_op_carrying_the_nonce(self):
+        reqs = self.following()
+        self.r.kinds = frozenset({"op"})
+        asked = self.upload()
+        n = asked["nonce"]
+        self.assertEqual(self.outcome(asked)["state"], "done")
+        got = wait_for(lambda: len(self.op_messages(reqs)) >= 2 and self.op_messages())
+        self.assertTrue(got, "the attachment's read and forwarded, as DX4 op")
+        head = {"rpc": n, "op": "media", "id": n, "upload": n, "index": 0, "toolUseId": "toolu_sminos_%024d" % 0}
+        self.assertEqual([m["body"] for m in got],
+                         [{**head, "state": "read", "phase": "start", "attachments": [{"index": 0, "state": "read"}]},
+                          {**head, "state": "forwarded", "phase": "end",
+                           "attachments": [{"index": 0, "state": "forwarded"}]}])
+        self.assertEqual((got[0]["session"], got[0]["sub"]), (self.bridged.sid, None), "session-wide")
+        self.assertNotIn("op_id", self.ledger()[n], "not kept once its end went up")
+        kept = (bridgemod.load_kept(self.bridged.sid).get("rpcs") or {}).get(n) or {}
+        self.assertEqual((kept.get("op"), (kept.get("end") or {}).get("state")), ("media", "forwarded"),
+                         "the child kept the end beside the answer")
+
+    def test_m5_a_refused_upload_fails_with_the_bridges_code_first_and_its_files_go(self):
+        self.mod.refuse_media = ("not-main", "an upload goes to the main loop")
+        asked = self.upload()
+        o = self.refused(asked, "failed")
+        self.assertEqual(o["error"]["message"], "not-main: an upload goes to the main loop")
+        self.assertEqual(len(self.mod.ops("media")), 1, "it reached the bridge")
+        self.assertEqual(self.uploads_of(self.root), [], "the files it saved are removed")
+        self.assertNotIn("op_id", self.ledger()[asked["nonce"]])
+
+    def test_m5_an_upload_needs_a_bridge_and_a_machine_that_runs_rpcs(self):
+        self.refused(self.upload(session=self.plain.sid), "unsupported")
+        policy.write({"read_only": True, "ceiling": "auto"})
+        self.refused(self.upload(), "read-only")
+        self.assertEqual(self.mod.ops("media"), [])
+        self.assertEqual(self.uploads_of(self.root, self.plain.sid) + self.uploads_of(self.root), [])
+
+    def test_m5_a_link_in_the_upload_path_refuses_it_before_the_bridge(self):
+        base = os.path.realpath(os.path.join(tsp.T, "linked-" + uuidlib.uuid4().hex[:6]))
+        elsewhere = os.path.join(tsp.T, "elsewhere-" + uuidlib.uuid4().hex[:6])
+        os.makedirs(os.path.join(base, ".claude"))
+        os.makedirs(elsewhere)
+        os.symlink(elsewhere, os.path.join(base, ".claude", "desk-uploads"))
+        self.mod.cwd = base
+        o = self.refused(self.upload(), "failed")
+        self.assertIn("link", o["error"]["message"])
+        self.assertEqual(os.listdir(elsewhere), [], "nothing written through the link")
+        self.assertEqual(self.mod.ops("media"), [], "nothing reached the bridge")
+
+    def test_m5_a_restart_between_save_and_acceptance_runs_nothing_again(self):
+        """The daemon saved the files and stopped before the bridge was told:
+        the claim finds no answer in the child's kept file and is answered
+        `interrupted` once its window passes; the hub's resend is answered
+        from the ledger, and the files are left to the sweep."""
+        rpc = sign(KEY, "media", self.pid, {"session": self.bridged.sid, "delivery": "queued-turn",
+                                            "attachments": self.attachments(("a.png", "image/png", PNG))})
+        n = rpc["nonce"]
+        root, names = media.save(os.path.realpath(self.root), self.bridged.sid, n, rpc["args"]["attachments"])
+        sminos.write_json(os.path.join(os.environ["SMINOS_HOME"], "daemon", rpcs.LEDGER_FILE), {n: {
+            "project": self.pid, "rpc": "media", "session": self.bridged.sid, "at": self.clock[0],
+            "media_root": root, "media_paths": names}})
+        self.r = rpcs.Rpcs(KEY, "testhost", clock=lambda: self.clock[0])   # the restart
+        self.r.receive(rpc, self.here)                                     # the hub sends it again meanwhile
+        self.assertEqual(results(self.collect(), n), [], "a claim being reconciled: its result follows")
+        self.clock[0] += rpcs.STEER_TRACE_S + 1
+        self.r.next_reconcile = 0
+        o = self.outcome(rpc)
+        self.assertEqual((o["state"], o["error"]["code"]), ("failed", "interrupted"))
+        self.r.receive(rpc, self.here)
+        self.assertEqual(self.mod.ops("media") + self.mod.ops("read"), [], "never run again")
+        self.assertEqual(media.roots(self.bridged.sid)[-1:], [root], "its root is recorded for the sweep")
+
+    def test_m5_a_restart_between_acceptance_and_answer_is_answered_from_the_childs_kept_answer(self):
+        """The bridge held the upload and the daemon stopped before its
+        outcome was kept: the restart answers it `queued` from the child's
+        kept answer and the claim's root, and the end the child kept while
+        the daemon was down goes up as op."""
+        self.following()
+        self.mod.hold_runs = True
+        asked = self.upload()
+        n = asked["nonce"]
+        first = self.outcome(asked)
+        self.assertEqual(first["state"], "done")
+        path = os.path.join(os.environ["SMINOS_HOME"], "daemon", rpcs.LEDGER_FILE)
+        entries = self.ledger()
+        entries[n] = {k: v for k, v in entries[n].items()
+                      if k not in ("op_id", "outcome", "done_at", "acked")}   # the claim the stop left
+        sminos.write_json(path, entries)
+        self.mod.post(*self.mod.held_runs)
+        kept = lambda: ((bridgemod.load_kept(self.bridged.sid).get("rpcs") or {}).get(n) or {}).get("end")
+        self.assertTrue(wait_for(kept), "the child kept the end beside the answer")
+        self.r = rpcs.Rpcs(KEY, "testhost", clock=lambda: self.clock[0])
+        self.r.kinds = frozenset({"op"})
+        self.frames = []
+        self.assertEqual(self.outcome(asked), first, "the same answer, root and paths included")
+        got = wait_for(lambda: self.op_messages())
+        self.assertEqual([(m["body"]["op"], m["body"]["rpc"], m["body"]["state"], m["body"]["phase"]) for m in got],
+                         [("media", n, "forwarded", "end")])
+        self.assertEqual(len(self.mod.ops("media")), 1, "the bridge was asked once")
+
+    def test_m5_a_refusal_reconciled_after_a_restart_removes_the_files(self):
+        """The bridge refused the upload and the daemon stopped before its
+        outcome was kept: the restart answers it failed from the child's kept
+        refusal, and removes what was saved for it."""
+        self.mod.refuse_media = ("not-main", "an upload goes to the main loop")
+        asked = self.upload()
+        n = asked["nonce"]
+        self.refused(asked, "failed")
+        path = os.path.join(os.environ["SMINOS_HOME"], "daemon", rpcs.LEDGER_FILE)
+        entries = self.ledger()
+        entries[n] = {k: v for k, v in entries[n].items() if k not in ("outcome", "done_at", "acked")}
+        sminos.write_json(path, entries)
+        media.save(os.path.realpath(self.root), self.bridged.sid, n, asked["args"]["attachments"])   # as the stop left them
+        self.assertEqual(self.uploads_of(self.root), [n + ".0.png"])
+        self.r = rpcs.Rpcs(KEY, "testhost", clock=lambda: self.clock[0])
+        self.frames = []
+        o = self.refused(asked, "failed")
+        self.assertEqual(o["error"]["message"], "not-main: an upload goes to the main loop")
+        self.assertEqual(self.uploads_of(self.root), [], "its files removed")
+
+    def test_m5_an_upload_the_bridge_already_holds_counts_as_held(self):
+        self.assertEqual(rpcs.media_held({"ok": True, "result": {"duplicate": True, "upload": "u1"}},
+                                         {"media_root": "/r", "media_paths": ["u1.0.png"]}),
+                         {"state": "done", "result": {"queued": True, "upload": "u1", "intake": "native-read",
+                                                      "root": "/r", "paths": ["u1.0.png"]}})
+
 
     def test_g_spawn_and_retire_through_sminos(self):
         tpr.set_policy({"read_only": False, "ceiling": "acceptEdits"})

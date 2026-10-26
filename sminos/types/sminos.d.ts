@@ -40,8 +40,35 @@ export type AskSnapshot = {
   store?: { slug: string; sessionId: string; root?: string | null }
 }
 
+/**
+ * `media`: the desk's uploads this session holds (hooks/mods/bridge-media.tsx,
+ * the desk control surface spec's MW5), each attachment where its intake
+ * stands, so that the module that loads after a reload claims nothing twice
+ * and ends what it cannot know. Only sminos writes or reads it.
+ */
+export type MediaState = 'pending' | 'claimed' | 'read' | 'forwarded' | 'aborted' | 'failed'
+export type MediaAttachment = {
+  /** The upload: the desk RPC's nonce. Attachment `index` of it is `<upload>.<index>`. */
+  upload: string
+  index: number
+  /** The name the person gave it, for display: the prelude and the events. */
+  name: string
+  mediaType: string
+  /** Where the daemon saved it, absolute and resolved, inside `root`. */
+  path: string
+  /** The upload directory the daemon resolved from the live working directory, pinned. */
+  root: string
+  state: MediaState
+  /** The Read's tool-use id, generated when the attachment is claimed. */
+  toolUseId?: string
+  reason?: string
+  /** The last state whose event the bridge's child took. */
+  told?: MediaState
+}
+export type MediaSnapshot = { shape: 1; attachments: MediaAttachment[] }
+
 declare module 'claude-code' {
   interface PluginState {
-    sminos: { ask: AskSnapshot; btw: string[] }
+    sminos: { ask: AskSnapshot; btw: string[]; media: MediaSnapshot }
   }
 }

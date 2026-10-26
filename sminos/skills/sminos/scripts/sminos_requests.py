@@ -91,7 +91,7 @@ RELAYED_SESSIONS = 1000
 TOOL_USE_ID_MAX = 512      # the hub's bound on `raised.toolUseId` (DC3, MAWS 4b5d0a67)
 SUGGESTIONS_MAX = 8        # the hub's bound on `raised.suggestions` (the desk control surface's MW3): this many,
 SUGGESTION_BYTES_MAX = 2048  # each at most this many bytes of canonical UTF-8 JSON, the bridge's bound too
-WANTED = (b'"raised"', b'"settled"', b'"resync"', b'"compact"', b'"run"', b'"btw"')   # a line carrying none of these is no line of ours
+WANTED = (b'"raised"', b'"settled"', b'"resync"', b'"compact"', b'"run"', b'"btw"', b'"media"')   # a line carrying none of these is no line of ours
 
 
 def log(line):
@@ -203,7 +203,7 @@ class Reader(threading.Thread):
                     self.put(kind, (e.get("pending") if isinstance(e.get("pending"), list) else [], listed))
                 elif kind == "resync" and isinstance(e.get("pending"), list):
                     self.put(kind, (e["pending"], listed))
-                elif kind in ("raised", "settled", "compact", "run", "btw"):
+                elif kind in ("raised", "settled", "compact", "run", "btw", "media"):
                     self.put(kind, e)
         except (OSError, ValueError, http.client.HTTPException) as e:
             self.put("closed", "closed here" if self.closing.is_set() else str(e) or repr(e))
@@ -347,7 +347,7 @@ class Requests:
                 self.settled(sid, pid, data)
             elif kind == "compact":
                 self.compacts.append((sid, pid, data))
-            elif kind in ("run", "btw"):
+            elif kind in ("run", "btw", "media"):
                 self.ops.append((sid, pid, data))
             elif kind == "closed":
                 del self.readers[sid]

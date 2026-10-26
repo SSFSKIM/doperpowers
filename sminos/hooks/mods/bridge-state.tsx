@@ -1,5 +1,7 @@
 import type { HookStream, HttpResponse, ProcessSpawnChunk, ProcessSpawnResult, Timer } from 'claude-code'
 
+import type { MediaAttachment } from '../../types/sminos'
+
 import type { Place } from './bridge-place'
 import type { Catalog } from './bridge-catalog'
 
@@ -9,6 +11,12 @@ import type { Catalog } from './bridge-catalog'
  * their common helpers. `resetBridge` replaces the object whole.
  */
 
+/**
+ * The first line of every wake the bridge sends, naming who sends it, so a
+ * reader of the transcript (the desk among them) tells a wake from the
+ * human's own prompt or a peer's message.
+ */
+export const WAKE_LINE = '[sminos bridge]'
 /** The longest string an event carries; the rest is in the transcript. */
 export const TEXT_CAP = 65_536
 /** How long a Bash call of an interrupted turn waits for the interrupt's record, and what an agent's stop hands its parent for the stop's note, at most (a TaskStop or an append that never answers). */
@@ -396,6 +404,19 @@ export type BridgeState = {
    * the note.
    */
   agentStops: Set<AgentStop>
+  /**
+   * The desk's uploads this module holds (bridge-media.tsx): what `$.state`
+   * kept for the session, reconciled once (`mediaLoad`), then every upload the
+   * bridge accepts, each attachment where its intake stands.
+   */
+  media: MediaAttachment[]
+  mediaLoad?: Promise<void>
+  /** The writes of `media` to the session's `$.state`, in order. */
+  mediaWrites: Promise<void>
+  /** The one wake an intake may owe: armed until a turn starts, then submitted until its turn starts. */
+  mediaWake: { armed?: object; isSubmitted: boolean }
+  /** Whether the main turn's state is still unknown (bridge.tsx): a wake waits while it is. */
+  isTurnStillUnknown?: () => Promise<boolean>
 }
 
 const fresh = (): BridgeState => ({
@@ -433,6 +454,9 @@ const fresh = (): BridgeState => ({
   btwOpen: new Set(),
   btwWrites: Promise.resolve(),
   agentStops: new Set(),
+  media: [],
+  mediaWrites: Promise.resolve(),
+  mediaWake: { isSubmitted: false },
   transitions: 0,
   isUnreadSaid: false,
   generation: 0,
