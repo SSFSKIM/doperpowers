@@ -428,8 +428,10 @@ The tool declares `maxResultSizeChars: IL` = 50,000 and
 `skipAggregateToolResultBudget: !0` (`:197179`), so the harness never
 persists its result to a file; `shouldDefer: !0` puts it behind `ToolSearch`
 (every A run spent its first turn on `ToolSearch "select:WebFetch"`);
-`backgrounding: "detach"` lets the harness move a slow call out of the turn
-and deliver it later (`mTo`, `:196151`).
+`backgrounding: "detach"` lets the harness move a running call out of the
+turn and deliver it later (`mTo`, `:196151`), when the person sends a
+message with send now and no mod hooks the tool (board #138; item 7
+below). `isConcurrencySafe` is true (`:197199`), so parallel calls overlap.
 
 Ours returns R1 (header + whole page, ≤5k tokens), R2 (header + outline +
 image list, typically 0.5–2k tokens), R3 (Haiku's cited answer + provenance
@@ -610,6 +612,15 @@ because of the renders.
    slow WebFetch leave the turn. If `$.tool.register` exposes an equivalent,
    declare it: a 150 s clipper run otherwise blocks the agent. Depends on
    the mod API; check before planning.
+   *Checked, 2026-10-26 (board #138): not possible, and narrower than it
+   reads.* Detach acts only on send now, a message the person sends while
+   a call runs; a slow call alone never leaves the turn. A mod's tool
+   cannot declare it (`ToolSpec` has no field; a mod's tools are MCP tools,
+   `backgrounding: "self"`), and the engine refuses detach for any tool a
+   mod hooks with `tool.call`, which on the owner's machines is every
+   tool. The difference that does cost time is concurrency: parallel
+   `mcp__web__fetch` calls run one after another, since `$.tool.register`
+   carries no `readOnlyHint`. The design's Decision Log has the entry.
 
 8. **Dedup of repeated identical calls** (`:197351`). Low value for ours:
    the disk cache makes a repeat cheap in time, and the R1/R2 tokens of a

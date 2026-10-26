@@ -164,6 +164,11 @@ session on the machine.
   out of a summary), one fetch each. In the same version, the owner's
   `WEBFETCH_MODEL` (`d50615d1`): `luna` answered live in `claude -p`, and a
   name that does not resolve gave the page with why.
+- [x] (2026-10-26) Board #138, a spike (branch `web-fetch-detach-spike`):
+  a mod's tool cannot detach as `WebFetch` does, and detach turned out to
+  be send now's alone, never a slow call's (Surprises & Discoveries,
+  Decision Log). Its findings are board comment 979. The gap they found
+  instead: parallel `mcp__web__fetch` calls run one after another.
 
 ## Acceptance
 
@@ -1887,6 +1892,34 @@ type Run = {
     added: each site would need its own rule.
   Evidence: `/tmp/web137/` (`verify.ts`, `verify.json`, `normdiff.ts`),
   2026-10-26.
+- Observation: `WebFetch`'s `backgrounding: "detach"` acts only on send
+  now (ctrl+enter, or ctrl+x ctrl+s), the person's message typed while a
+  call runs (`cli.pretty.js:550982`); a message without it waits for the
+  call, whatever the tool. On send now a detachable call answers the
+  model `[Still running…]` and its result comes later as a task
+  notification; a call that cannot move is interrupted after 0.4 s. A
+  mod's tool cannot move: `ToolSpec` has no such field (`:858651`), a
+  mod's tools are an in-process MCP server whose tools declare
+  `backgrounding: "self"` (`:241705`, `:632196`), and the gate refuses any
+  tool a loaded mod hooks with `tool.call` (`:235146`), which a mod's own
+  tool always is. Live in interactive sessions with a bare HOME: `WebFetch`
+  detached; `mcp__web__fetch` was interrupted, the clipper killed and the
+  reply `fetch failed: … the clipper could not run: web: $.process.run(node)
+  aborted`; and `WebFetch` beside one mod with a catch-all `tool.call` hook
+  was interrupted too. On the owner's machines devcloud's, sminos's and
+  doperpowers' mods hook every tool, so nothing detaches there,
+  `WebSearch` included.
+- Observation: parallel `mcp__web__fetch` calls run one at a time. The
+  engine runs an MCP tool's calls together only when its annotations say
+  `readOnlyHint` (`:286115`), and `$.tool.register` passes none
+  (`:241707`); `WebFetch` is concurrency-safe (`:197199`). Two 8 s pages
+  in one message took 16.6 s through `mcp__web__fetch`, the second request
+  reaching the server as the first answered; two through `WebFetch`
+  finished 9.2 s after the first started. In the eval transcripts, B's
+  agents put 2+ fetches in one message in 13 of 313 fetch messages (8 of
+  254 runs), A's in 69 of 435.
+  Evidence: `/tmp/web138/` (`drive.py`, `slow_server.py`, `parallel.py`,
+  `findings.md`), 2026-10-26; board #138 (comment 979).
 
 ## Decision Log
 
@@ -2940,6 +2973,19 @@ type Run = {
   plugin's `WEB_` prefix (`WEB_CACHE_DIR`, `WEB_CHROME`) as the owner wrote
   it; renaming it is theirs to ask.
   Date/Author: 2026-10-26, the owner's request (branch `web-cache-freshness`).
+- Decision: the fetch does not try to leave the turn as `WebFetch`'s detach
+  does (board #138, a spike; Surprises & Discoveries). The engine offers a
+  mod's tool no route to it, and detach serves only send now, which on the
+  owner's machines moves no tool at all. What a slow fetch does cost is
+  parallel calls run one at a time. Annotations on `$.tool.register`
+  (`readOnlyHint`) would close that, an engine change to ask Anthropic for.
+  Rejected: a detach of our own (answer at once, deliver the page later by
+  `$.prompt.submit`): the result would arrive as a new turn once the
+  session is idle, not inside the turn as `WebFetch`'s notification does,
+  and an agent mostly needs the page for its next step. Several URLs in
+  one call (`urls: [...]`), run in parallel by the mod: a schema change
+  and a round of evals, for 4% of B's fetch messages.
+  Date/Author: 2026-10-26, board #138 (branch `web-fetch-detach-spike`).
 
 ## Outcomes & Retrospective
 
