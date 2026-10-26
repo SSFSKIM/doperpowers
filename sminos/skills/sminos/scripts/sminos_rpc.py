@@ -119,6 +119,14 @@ agent's end reaches browsers in the subagent tree. Each carries its nonce to
 the bridge, whose child keeps the answer under it, so a claim the daemon
 stopped between the two is reconciled from that answer, as a steer's is.
 
+An upload (`media`, the desk control surface's MW5) is saved by this daemon
+under the session's live working directory, read from its bridge, without
+following a link (sminos_media), and handed to the bridge, which reads each
+file into the conversation by a Read of its own; it is answered `queued` only
+once the bridge holds it, and its attachments' states follow as `op`, the
+upload being the nonce. Its root and files are kept on the claim before
+anything is written, so a restart answers it from the child's kept answer.
+
 Checks 1-6 and the ledger's lookup run on the uplink's main thread, which
 alone may call sminos (its caches are module globals); the digest, the kind,
 the claim, and the execution run on a worker of their own, since a bridge
@@ -147,6 +155,7 @@ import sminos_bridge as bridge  # noqa: E402
 import sminos_codes as codes  # noqa: E402
 import sminos_control as control  # noqa: E402
 import sminos_jobs as jobs  # noqa: E402
+import sminos_media as media  # noqa: E402
 import sminos_owed as owed  # noqa: E402
 import sminos_policy as policy  # noqa: E402
 
@@ -179,10 +188,10 @@ SNAPSHOT_TIMEOUT = 8      # the bridge holds its stream up to 5 s until the mod'
 DECISION_TIMEOUT = 15     # an async question's answer is relayed to the mod, which waits 5 s
 SPAWN_TASK = "Begin with your brief."
 RPC_NAMES = ("steer", "interrupt", "answer", "decide", "model", "compact", "spawn", "retire", "resume", "stop",
-             "command", "btw", "stop-agent", "tell")
+             "command", "btw", "stop-agent", "tell", "media")
 TASK_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")   # DX6 `stop`'s taskId, as the engine spells task ids
 CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
-OP_OF = {"run": "command", "btw": "btw"}  # a bridge's event → the DX4 `op` it reports
+OP_OF = {"run": "command", "btw": "btw", "media": "media"}  # a bridge's event → the DX4 `op` it reports
 EVENT_OF = {op: event for event, op in OP_OF.items()}  # an op (the RPC that issued it) → the bridge's event of it
 MODEL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/@\[\]-]{0,199}")
 WORKTREE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}")
@@ -630,6 +639,8 @@ class Rpcs:
                 return lambda: self.desk_command(path, rpc, sid, status)
             if name == "btw":
                 return lambda: self.side_question(path, rpc, sid)
+            if name == "media":
+                return lambda: self.media(path, rpc, sid)
             if name in ("answer", "decide"):
                 return lambda: decide(path, args["digest"]["request"], decision)
             if name in ("stop-agent", "tell"):
@@ -737,6 +748,52 @@ class Rpcs:
                 % (nonce, oid, e))
         self.finished.put(("op", (oid, rpc["project"], sid, nonce, None, "", None, "btw")))
         return done({"started": True, "id": oid})
+
+    def media(self, path, rpc, sid):
+        """An upload (DX6 `media`, the desk control surface's MW5): saved under
+        the session's live working directory, read from its bridge now
+        (`/cd` moves it), without following a link (sminos_media), then handed
+        to the bridge, which reads each file into the conversation by a Read
+        of its own. Answered `queued` only once the bridge holds the upload
+        (a duplicate is held); a refusal removes the files saved for it. The
+        upload is the nonce: its root and files are kept on the claim before
+        anything is written, so a restart answers from the child's kept
+        answer, and its states follow on the stream as `op` (`ops`)."""
+        args, nonce = rpc["args"], rpc["nonce"]
+        out, _ = command(path, {"op": "read", "what": "status"})
+        cwd = (out.get("result") or {}).get("cwd") if out.get("ok") else None
+        if not (isinstance(cwd, str) and os.path.isabs(cwd)):
+            raise Refused("failed", "the session did not say where it works: %s" % (out.get("error") or cwd))
+        base = os.path.realpath(cwd)
+        root = media.root_of(base, sid)
+        names = [media.file_name(nonce, n, a["mediaType"]) for n, a in enumerate(args["attachments"])]
+        kept = {"media_root": root, "media_paths": names}
+        try:
+            self.note(nonce, kept)
+        except OSError as e:
+            raise Refused("failed", "the upload could not be kept in the ledger (%s): nothing was saved" % e)
+        try:
+            media.save(base, sid, nonce, args["attachments"])   # rolls back what it made its own
+        except (media.Unsafe, OSError) as e:
+            raise Refused("failed", "the upload was not saved: %s" % e)
+        try:
+            media.exclude(base)
+        except (media.Unsafe, OSError, subprocess.SubprocessError) as e:
+            log("media %s: %s was not excluded from git (%s)" % (nonce, root, e))
+        files = [{"n": n, "path": os.path.join(root, name), "name": a["name"], "mediaType": a["mediaType"]}
+                 for n, (name, a) in enumerate(zip(names, args["attachments"]))]
+        out, _ = command(path, {"op": "media", "upload": nonce, "root": root, "files": files, "rpc": nonce})
+        outcome = media_held(out, kept)
+        if outcome["state"] != "done":
+            media.remove(root, names)
+            return outcome
+        try:
+            self.note(nonce, {"op_id": nonce})
+        except OSError as e:
+            log("media %s: its upload could not be kept in the ledger (%s): an end a restart misses is not sent"
+                % (nonce, e))
+        self.finished.put(("op", (nonce, rpc["project"], sid, nonce, None, "", None, "media")))
+        return outcome
 
     # ---------------------------------------------------- frames up
 
@@ -928,7 +985,7 @@ class Rpcs:
             if e is None or not e.get("session"):
                 return True
             answered = (bridge.load_kept(e["session"]).get("rpcs") or {}).get(nonce) or {}
-            oid = (answered.get("result") or {}).get("id")
+            oid = (answered.get("result") or {}).get("upload" if e.get("rpc") == "media" else "id")
             if not isinstance(oid, str) or not oid:
                 return True
             end = answered["end"] if isinstance(answered.get("end"), dict) else {}
@@ -991,6 +1048,9 @@ class Rpcs:
                 continue
             if outcome is None:
                 outcome = failed("interrupted", "the daemon stopped while it ran: it is not run again")
+            if e.get("rpc") == "media" and outcome["state"] == "failed" and isinstance(e.get("media_root"), str) and \
+                    ((bridge.load_kept(e["session"]).get("rpcs") or {}).get(nonce) or {}).get("ok") is False:
+                media.remove(e["media_root"], e["media_paths"])   # the bridge refused it: its files go
             if e.get("rpc") in EVENT_OF and outcome["state"] == "done" and not self.rearm(nonce):
                 continue
             try:
@@ -1201,6 +1261,11 @@ def shape(name, args, member):
     elif name == "btw":
         p = args.get("prompt")
         need(is_text(p) and len(p) <= PROMPT_MAX, "prompt is the question's text, at most %d characters" % PROMPT_MAX)
+    elif name == "media":
+        need("text" not in args, "the words go as a Send, not with the upload")
+        need(args.get("delivery") == "queued-turn", "delivery is queued-turn")
+        why = media.why_not(args.get("attachments"))
+        need(why is None, why)
     elif name == "compact":
         i = args.get("instructions")
         need(i is None or (isinstance(i, str) and len(i) <= INSTRUCTIONS_MAX),
@@ -1432,6 +1497,19 @@ def told(out):
     """A tell's outcome from the bridge's answer (DX6): sent, once the
     message is in the agent's queue; or the bridge's refusal."""
     return done({"sent": True}) if out.get("ok") else refused_op(out)
+
+
+def media_held(out, claim):
+    """An upload's outcome from the bridge's answer (DX6 `media`): queued once
+    the bridge holds it (one it already held counts), its root and files as
+    the claim keeps them; or the bridge's refusal."""
+    if not out.get("ok"):
+        return refused_op(out)
+    r = out.get("result") or {}
+    if not (r.get("queued") is True or r.get("duplicate") is True) or not isinstance(claim.get("media_root"), str):
+        return failed("failed", "the bridge did not say it holds the upload")
+    return done({"queued": True, "upload": r.get("upload"), "intake": "native-read", "root": claim["media_root"],
+                 "paths": list(claim.get("media_paths") or [])})
 
 
 def bridge_snapshot(path):
@@ -1759,6 +1837,9 @@ def trace(nonce, e, others=()):
     a trace may still appear). `others`: the ledger's other entries."""
     if e.get("rpc") == "spawn":
         return spawned(nonce), SPAWN_TRACE_S
+    if e.get("rpc") == "media" and e.get("session"):
+        answered = (bridge.load_kept(e["session"]).get("rpcs") or {}).get(nonce)
+        return (media_held(answered, e) if isinstance(answered, dict) else None), STEER_TRACE_S
     if e.get("rpc") in KEPT_READERS and e.get("session"):
         answered = (bridge.load_kept(e["session"]).get("rpcs") or {}).get(nonce)
         read = KEPT_READERS[e["rpc"]]

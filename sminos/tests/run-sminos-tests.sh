@@ -394,6 +394,8 @@ run_suites() {
     fail "the machine's policy, requests and settlements, delivery outcomes (test_policy_requests.py)"; fi
   if python3 "$SCRIPT_DIR/test_rpcs.py"; then pass "the RPCs: verified, bound, at most once (test_rpcs.py)"; else
     fail "the RPCs: verified, bound, at most once (test_rpcs.py)"; fi
+  if python3 "$SCRIPT_DIR/test_media.py"; then pass "a desk upload's files: no link followed, excluded, swept (test_media.py)"; else
+    fail "a desk upload's files: no link followed, excluded, swept (test_media.py)"; fi
   if python3 "$SCRIPT_DIR/test_scale.py"; then
     pass "a machine that follows its whole org: no walk per session, no stale re-join, the directory first (test_scale.py)"
   else fail "a machine that follows its whole org: no walk per session, no stale re-join, the directory first (test_scale.py)"; fi

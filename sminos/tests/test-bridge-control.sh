@@ -268,6 +268,15 @@ elif op == "fakemod":       # sminos session lines-file mode-file
                          {"type": "btw", "phase": "end", "id": cid, "text": "\uac00" * 5000,
                           "usage": {"input": 12, "output": 34, "cacheRead": 5000, "cacheWrite": 7}}]
                 threading.Timer(0.3, post, (sock, later)).start()
+            elif o == "media":
+                # As the bridge answers a desk upload: queued once held, its
+                # attachment's states following on the stream, the upload
+                # the RPC's nonce.
+                up = msg.get("upload")
+                result = {"ok": True, "result": {"queued": True, "upload": up}}
+                said = lambda st, ph: {"type": "media", "id": up, "upload": up, "index": 0, "state": st, "phase": ph,
+                                       "toolUseId": "toolu_sminos_1", "attachments": [{"index": 0, "state": st, "toolUseId": "toolu_sminos_1"}]}
+                threading.Timer(0.3, post, (sock, [said("read", "start"), said("forwarded", "end")])).start()
             elif o == "command":
                 # As the bridge answers a desk command: at once, the run's
                 # start and end following on the stream (none for a panel).
@@ -522,6 +531,25 @@ ctl post "$SOCK" "[{\"type\":\"btw\",\"phase\":\"end\",\"id\":\"$BID\",\"reason\
 until_true 100 has_event "$WATCHD" btw start "after-$BID" || true
 assert_equals "$(count_event "$WATCHD" btw end "$BID")" "1" "a side question's end posted again is relayed once"
 assert_equals "$(field_of "$(kept_rpc nonce-b1)" end.usage.output)" "34" "and the end kept is the first"
+# A desk upload: the answer is kept under the RPC's nonce, which is the
+# upload; each `media` event is relayed carrying it as `rpc`, once by its
+# (upload, index, state); the upload's end is kept beside the answer.
+OUTM="$(ctl command "$SOCK" '{"op":"media","upload":"up-m1","root":"/w/.claude/desk-uploads/s","files":[],"rpc":"up-m1"}')"
+assert_equals "$(field_of "${OUTM#* }" result.queued)/$(field_of "${OUTM#* }" result.upload)" "true/up-m1" "the child answers an upload queued, at once"
+until_true 100 has_event "$WATCHD" media end up-m1 || true
+assert_equals "$(field_of "$(event_of "$WATCHD" media start up-m1)" rpc)/$(field_of "$(event_of "$WATCHD" media start up-m1)" state)" "up-m1/read" \
+  "an attachment's read, relayed, carries the upload as the RPC's nonce"
+assert_equals "$(field_of "$(event_of "$WATCHD" media end up-m1)" rpc)/$(field_of "$(event_of "$WATCHD" media end up-m1)" index)" "up-m1/0" \
+  "and so does the upload's end, its index the attachment's"
+KM="$(kept_rpc up-m1)"
+assert_equals "$(field_of "$KM" op)/$(field_of "$KM" result.queued)/$(field_of "$KM" end.state)/$(field_of "$KM" end.phase)" "media/true/forwarded/end" \
+  "the answer kept under the nonce, and the upload's end beside it"
+ctl post "$SOCK" '[{"type":"media","id":"up-m1","upload":"up-m1","index":0,"state":"read","phase":"start"},
+ {"type":"media","id":"up-m1","upload":"up-m1","index":0,"state":"forwarded","phase":"end"},
+ {"type":"media","id":"up-m2","upload":"up-m2","index":0,"state":"failed","phase":"end"}]' >/dev/null
+until_true 100 has_event "$WATCHD" media end up-m2 || true
+assert_equals "$(count_event "$WATCHD" media start up-m1)/$(count_event "$WATCHD" media end up-m1)" "1/1" "a state posted again is relayed once"
+assert_equals "$(field_of "$(event_of "$WATCHD" media end up-m2)" rpc)" "up-m2" "an upload no RPC of this child's carried still names its nonce"
 # A reload's start names the child that relays it, the one the reload replaces:
 # the daemon finishes the op by another answering (from the CLI too, no nonce).
 ctl post "$SOCK" '[{"type":"run","phase":"start","id":"rl-1","name":"reload-plugins","args":""}]' >/dev/null

@@ -919,6 +919,7 @@ def bridge_duty():
         return
     _BRIDGE_SWEPT = time.time()
     sweep_bridges()
+    sweep_uploads()
 
 
 def mtime(path):
@@ -964,6 +965,25 @@ def sweep_bridges():
         except OSError:
             continue
         sminos.daemon_log("removed %s: its session has run nowhere here for %d h" % (path, (now - last) // 3600))
+
+
+def sweep_uploads():
+    """A desk upload's files (sminos_media) go by the bridge's kept file's
+    rule: once their session runs nowhere here and neither its transcript nor
+    its upload record has been touched for BRIDGE_QUIET_S, every root
+    recorded for it is removed, never through a link, then the record."""
+    media = sminos.sibling_module("sminos_media")
+    sminos.transcripts_now()
+    now = time.time()
+    for sid in media.recorded():
+        if sminos.session_running(sid):
+            continue
+        last = max([t for t in (mtime(sminos.transcript_path(sid)), mtime(media.record_path(sid))) if t is not None],
+                   default=None)
+        if last is None or now - last < BRIDGE_QUIET_S:
+            continue
+        media.sweep(sid)
+        sminos.daemon_log("removed the desk uploads of %s: it has run nowhere here for %d h" % (sid, (now - last) // 3600))
 
 
 def override_duty():

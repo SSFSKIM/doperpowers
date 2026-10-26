@@ -5,7 +5,7 @@ import type {} from '../../../devcloud/types/devcloud'
 import { ASK_TOOL, PLUGIN, asyncAsks, observeAsks } from './ask'
 import { OFF_LINE, ON_LINE, isCuaEnabled, isLiveMarker, verdictOf } from './bridge-place'
 import type { Guard, Place, Verdict } from './bridge-place'
-import { EFFORTS, INTERRUPT_HOLD_MS, RESPAWN_FIRST_MS, RESPAWN_STEP_MS, capped, isEffort, loopKey, message, parsed, state } from './bridge-state'
+import { EFFORTS, INTERRUPT_HOLD_MS, RESPAWN_FIRST_MS, RESPAWN_STEP_MS, WAKE_LINE, capped, isEffort, loopKey, message, parsed, state } from './bridge-state'
 import type { Answer, Capabilities, Command, Decision, DeliveryKey, DeskRun, Override, Readback, Request, Steer, Stops, Wake } from './bridge-state'
 import { adoptKept, adoptSeed, emit, emitOwed, emitTaken, endStep, forgetLive, poster, pump, releaseStepEnd, requeue, resyncEvents, stopChild } from './bridge-stream'
 import {
@@ -32,9 +32,10 @@ import { controlsOf } from './bridge-controls'
 import { READ_KINDS, readKind } from './bridge-reads'
 import { endOrphanedSideQuestions, sideQuestion } from './bridge-btw'
 import { engineError, forNotes, notifiedStops, stopAgent, tellAgent } from './bridge-agent-ops'
+import { acceptMedia, claimMedia, mediaLoaded, mediaPassedOn, mediaTurnEnded, mediaTurnStarted, observeMediaResult } from './bridge-media'
 
 export { OFF_LINE, ON_LINE } from './bridge-place'
-export { BLOCK_TAIL, INTERRUPT_HOLD_MS, TEXT_CAP, capped, resetBridge } from './bridge-state'
+export { BLOCK_TAIL, INTERRUPT_HOLD_MS, TEXT_CAP, WAKE_LINE, capped, resetBridge } from './bridge-state'
 export { RESYNC_INPUT_CAP, RESYNC_MAX, STEP_END_WAIT_MS } from './bridge-stream'
 export { RECORD_WAIT_MS, TRANSCRIPT_RETRY_MS, onAskNote } from './bridge-requests'
 export { READBACK_WAIT_MS, READBACK_WINDOW_MS, ROWS_POLLS, ROWS_POLL_MS, compacted } from './bridge-rows'
@@ -103,8 +104,9 @@ export { FOLLOW_REASON, PANEL_REASON, SELF_REASON, UNKNOWN_REASON, UNMEASURED_RE
  * - bridge-reads.tsx (which takes `$`, as bridge-catalog.tsx does): the
  *   desk's reads of usage, config, settings and MCP servers, cut to what the
  *   desk shows;
- * - bridge-btw.tsx and bridge-agent-ops.tsx (which take `$`): the desk's side
- *   question, and one subagent stopped or told.
+ * - bridge-btw.tsx, bridge-agent-ops.tsx and bridge-media.tsx (which take
+ *   `$`): the desk's side question, one subagent stopped or told, and the
+ *   desk's images and PDFs read into the conversation.
  *
  * The desk's ops (spec 2026-10-22-desk-control-surface-design.md): `read`
  * answers from `$` at once (`status`, `catalog`, and bridge-reads.tsx's
@@ -124,12 +126,6 @@ export const CLEAR_POLL_MS = 100
 const CLEAR_POLL_TRIES = 50
 /** How many polls the old session's last events may take to reach its child before it is stopped. */
 const DRAIN_TRIES = 10
-/**
- * The first line of every wake the bridge sends, naming who sends it, so a
- * reader of the transcript (the desk among them) tells a wake from the
- * human's own prompt or a peer's message.
- */
-export const WAKE_LINE = '[sminos bridge]'
 /** A line sminos opens every event it pushes with, naming the event (sminos.py, compose_chat_frame and compose_frame). */
 const FRAME_LINE = /^\[sminos [^\n]*\]$/
 
@@ -254,7 +250,7 @@ function recoverMainTurn(turnId: string) {
 export const TURN_UNKNOWN = 'turn state unknown since the bridge reloaded; retry after the next model request'
 const TURN_OPS = new Set(['steer', 'interrupt', 'compact'])
 /** The ops this bridge answers (DX5 `capabilities.ops`), and the reads (`read`'s kinds). */
-export const OPS = ['ping', 'steer', 'interrupt', 'stop', 'model', 'compact', 'deliver', 'answer', 'read', 'command', 'btw', 'stop-agent', 'tell']
+export const OPS = ['ping', 'steer', 'interrupt', 'stop', 'model', 'compact', 'deliver', 'answer', 'read', 'command', 'btw', 'stop-agent', 'tell', 'media']
 export const READS = ['status', 'catalog', ...READ_KINDS]
 /** The DX5 protocol the capabilities speak: 2 is the desk's control surface (capabilities, `read`, `command`). */
 export const CAPABILITIES_PROTOCOL = 2
@@ -357,6 +353,8 @@ function commandAnswer($: EngineInterface, command: Command): Answered | Promise
       return stopAgent($, command.agentId, command.from, command.resolvedAgentId)
     case 'tell':
       return tellAgent($, command.agentId, command.text, command.resolvedAgentId)
+    case 'media':
+      return acceptMedia($, command)
     default:
       return { ok: false, error: `unknown op: ${command.op}` }
   }
@@ -1603,6 +1601,7 @@ export async function bridgeStart($: EngineInterface, e: SessionStartInput) {
     startChild($, session)
   }
   state.listAgents = () => $.agent.list()
+  state.isTurnStillUnknown = isTurnStillUnknown
   // A session with no message yet when the module loads (a start, not a
   // reload or a resume): its main loop is seen from its first row.
   if (!state.isSeeded && (await $.session.messages().then((m) => Array.isArray(m) && m.length === 0, () => false))) {
@@ -1664,6 +1663,9 @@ export async function bridgeStart($: EngineInterface, e: SessionStartInput) {
   // A side question a module before this one started, whose fork the reload
   // aborted: its end goes to the first child, after the resync.
   await endOrphanedSideQuestions($)
+  // The desk's uploads a module before this one held: reconciled, their
+  // unsaid states said to the first child, a pending one's wake armed again.
+  await mediaLoaded($)
   stopChild()
   startChild($, await $.session.id())
   if (!state.isPosterRunning) {
@@ -1750,6 +1752,7 @@ export function registerBridge(on: On) {
     if (e.agentId === undefined) {
       state.mainTurn = e.turnId
       state.isTurnUnknown = false
+      mediaTurnStarted()
       if (state.deliveredRows.length > 0) {
         void recheckDeliveries($, e.turnId)
       }
@@ -1792,14 +1795,18 @@ export function registerBridge(on: On) {
         $.ui.log(`bridge: usage not read: ${message(error)}`, { to: 'debug' })
       }
       await mainTurnEnded($, e.turnId, e.reason)
+      mediaTurnEnded($)
     }
     return result
   })
 
   // Every model request of the main loop and of every subagent: each chunk
   // as the engine streamed it, tagged with its message (turn, agent, step) and
-  // its index there; the engine's own opaque items are left out.
-  on('turn.step', { turnId: /^/ }, async function* (_, e, next) {
+  // its index there; the engine's own opaque items are left out. A main-loop
+  // step with a desk upload pending is the bridge's own: it claims one and
+  // streams its Read instead of a request (bridge-media.tsx), and its chunks go
+  // on the stream as any step's do.
+  on('turn.step', { turnId: /^/ }, async function* ($, e, next) {
     const tag = { turnId: e.turnId, agentId: e.agentId ?? null, step: e.index }
     // A request of a loop older than the module, begun before the seed, may
     // have rows at or before it: it streams to nobody, and its rows reach a
@@ -1810,6 +1817,13 @@ export function registerBridge(on: On) {
       recoverMainTurn(e.turnId)
     }
     releaseStepEnd(loopKey(e.agentId))
+    // Only a step with an upload pending waits on anything here.
+    const synthetic = isMain && state.media.some((a) => a.state === 'pending')
+      ? await claimMedia($, e).catch((error: unknown) => {
+          $.ui.log(`bridge: no upload claimed: ${message(error)}`, { to: 'debug' })
+          return undefined
+        })
+      : undefined
     // The model chosen through the bridge is the main loop's: a subagent runs
     // on what its definition or its caller chose.
     const o = isMain ? state.override : undefined
@@ -1819,6 +1833,9 @@ export function registerBridge(on: On) {
     }
     if (isMain) {
       state.steps++
+    }
+    // Only a step that makes a request reads what was appended before it.
+    if (isMain && synthetic === undefined) {
       // A request after the turn's first carries every row of its turn
       // appended before it. The first carries the conversation as the turn
       // began: a row appended between turn.start and it is not in it (live,
@@ -1835,12 +1852,13 @@ export function registerBridge(on: On) {
           w.isRead = true
         }
       }
+      mediaPassedOn($)
     }
     let chunkIndex = 0
     let stopReason: unknown = null
     let usage: unknown = null
     try {
-      const stream = next(input)
+      const stream = synthetic ?? next(input)
       for await (const chunk of stream) {
         if (isShown && chunk.kind !== 'engine') {
           emit({ type: 'chunk', ...tag, chunkIndex: chunkIndex++, chunk })
@@ -2073,6 +2091,8 @@ export function registerBridge(on: On) {
       await forNotes($, notifiedStops(e.message))
     }
     const stored = await next(e)
+    // A desk upload's Read: its result moves the attachment on (bridge-media.tsx).
+    observeMediaResult($, e.door, e.message, agentId)
     if (isLive && stored.deny === undefined) {
       announceRow(e.door, e.door === 'note' ? stored.message : e.message, stored.uuid, agentId)
       observeRow(e.door, e.message, stored.uuid)

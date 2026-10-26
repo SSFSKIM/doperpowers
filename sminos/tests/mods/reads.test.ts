@@ -155,15 +155,12 @@ describe('read usage', () => {
 })
 
 describe('capabilities.controls', () => {
-  test("carries every key of the lane map: the controls before the wave, MW1's reads, MW2's side question, MW3's scoped allows and MW4's agent stop and tell available, the rest with a reason", () => {
+  test("carries every key of the lane map: the controls before the wave and each the wave built (MW1's reads, MW2's side question, MW3's scoped allows, MW4's agent stop and tell, MW5's media) available, lane A's standing four with a reason", () => {
     const map = controlsOf('9.9.9')
     expect(Object.keys(map)).toEqual([...CONTROL_KEYS])
     expect(CONTROL_KEYS).toHaveLength(20)
     const available = CONTROL_KEYS.filter((k) => map[k].available)
-    expect(available).toEqual(['read.usage', 'read.config', 'read.settings', 'read.mcp', 'btw', 'compact', 'model', 'mcp.enable', 'mcp.disable', 'mcp.reconnect', 'decide', 'decide.scope', 'decide.addDirectory', 'stop-agent', 'tell'])
-    for (const key of ['media'] as const) {
-      expect(map[key]).toEqual({ available: false, reason: notInVersion('9.9.9') })
-    }
+    expect(available).toEqual(['read.usage', 'read.config', 'read.settings', 'read.mcp', 'btw', 'compact', 'model', 'mcp.enable', 'mcp.disable', 'mcp.reconnect', 'decide', 'decide.scope', 'decide.addDirectory', 'stop-agent', 'tell', 'media'])
     for (const key of ['decide.interrupt', 'forget', 'rewind-files', 'elicitation.answer'] as const) {
       expect(map[key]).toEqual({ available: false, reason: STANDING[key] })
     }

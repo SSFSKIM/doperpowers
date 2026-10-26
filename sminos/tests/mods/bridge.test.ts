@@ -30,6 +30,7 @@ import {
   STEP_END_WAIT_MS,
   TRANSCRIPT_RETRY_MS,
   TEXT_CAP,
+  WAKE_LINE,
   compacted,
   measuredFor,
   onAskNote,
@@ -45,6 +46,7 @@ import { ROUTE_TABLES } from '../../hooks/mods/bridge-routes'
 import { BTW_FRAME, BTW_REFUSAL_WAIT_MS, NOTHING_TO_FORK } from '../../hooks/mods/bridge-btw'
 import { controlsOf } from '../../hooks/mods/bridge-controls'
 import { AGENT_REF_MAX, TELL_LINE, agentStopNote } from '../../hooks/mods/bridge-agent-ops'
+import { MEDIA_MOVED_REASON, MEDIA_RELOAD_REASON, MEDIA_WAKE_MS, mediaPrelude, mediaWakeText } from '../../hooks/mods/bridge-media'
 
 tier('user')
 
@@ -247,6 +249,8 @@ function harness(
   const running: ((result: Record<string, unknown>) => void)[] = []
   /** Files `$.fs.read` reads (the session's transcripts; the plugin's manifest). */
   const files: Record<string, string> = { '/plug/.claude-plugin/plugin.json': JSON.stringify({ name: 'sminos', version: '1.7.0' }) }
+  /** What `$.fs.stat` finds at a path: its kind, whether it is a link, and where it resolves (itself unless said). */
+  const stats: Record<string, { kind: 'file' | 'dir' | 'other'; isLink?: boolean; realPath?: string }> = {}
   const sessionState = options.sessionState ?? new Map<string, unknown>()
   /** Each `$.model.fork`, held until the test settles it. */
   const forks: { prompt: string; resolve: (r: Record<string, unknown>) => void; reject: (e: Error) => void }[] = []
@@ -460,6 +464,13 @@ function harness(
         }
         return files[path]
       },
+      stat: async (path: string, options?: { resolve?: boolean }) => {
+        const found = stats[path]
+        if (found === undefined) {
+          throw new Error(`ENOENT: ${path}`)
+        }
+        return { kind: found.kind, size: 80, mtimeMs: 0, isLink: found.isLink === true, ...(options?.resolve === true && { realPath: found.realPath ?? path }) }
+      },
     },
   }
   resetBridge()
@@ -652,6 +663,7 @@ function harness(
     resultRow,
     recorded,
     files,
+    stats,
     disk,
     rowReads,
     polls,
@@ -2273,6 +2285,338 @@ describe('side question (btw)', () => {
     await releaseAll()
     await releaseAll()
     expect(h.posts.filter((p) => p.nonce === 'n1').flatMap((p) => p.events).map((e) => e.type)).toEqual(['session', 'resync'])
+  })
+})
+
+describe('the desk: media intake (MW5)', () => {
+  const ROOT = `/w/.claude/desk-uploads/${SID}`
+  const UP = 'Nonce_upload-1'
+  const PNG = `${ROOT}/${UP}.0.png`
+  const PDF = `${ROOT}/${UP}.1.pdf`
+  const files = [
+    { n: 0, path: PNG, name: 'photo.png', mediaType: 'image/png' },
+    { n: 1, path: PDF, name: 'plan.pdf', mediaType: 'application/pdf' },
+  ]
+  /** The daemon's saved upload, as the bridge's stat finds it. */
+  const saved = (h: ReturnType<typeof harness>, paths = [PNG, PDF]) => {
+    h.stats[ROOT] = { kind: 'dir' }
+    for (const p of paths) {
+      h.stats[p] = { kind: 'file' }
+    }
+  }
+  const media = (h: ReturnType<typeof harness>, upload = UP, these = files) => h.command({ op: 'media', upload, root: ROOT, files: these, rpc: upload })
+  const kept = (h: ReturnType<typeof harness>) => ((h.sessionState.get('media') as { attachments: Record<string, unknown>[] } | undefined)?.attachments ?? [])
+  const MAIN = (turnId: string, index: number) => ({ turnId, index, model: 'm', messageCount: 1 })
+  const imageResult = (id: string) => [{ type: 'tool_result', tool_use_id: id, content: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'iVBORw0KGgo=' } }] }]
+  const pdfResult = (id: string) => [{ type: 'tool_result', tool_use_id: id, content: [{ type: 'text', text: 'PDF file read: x (599 bytes)' }, { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: 'JVBERi0=' } }] }]
+  const resultOf = (h: ReturnType<typeof harness>, content: unknown[]) => h.append('tool-result', { type: 'user', role: 'user', content }, { origin: { kind: 'tool', tool: 'Read' } })
+  const mediaEvents = (h: ReturnType<typeof harness>) => h.ofType('media')
+
+  test('an upload is held in the session state before it is answered queued; its files are checked inside the root first', async () => {
+    const h = harness()
+    await h.ready()
+    saved(h)
+    const r = await media(h)
+    expect(r).toMatchObject({ ok: true, result: { queued: true, upload: UP } })
+    expect(kept(h)).toEqual([
+      { upload: UP, index: 0, name: 'photo.png', mediaType: 'image/png', path: PNG, root: ROOT, state: 'pending' },
+      { upload: UP, index: 1, name: 'plan.pdf', mediaType: 'application/pdf', path: PDF, root: ROOT, state: 'pending' },
+    ])
+    // Saved is the RPC's answer: no event.
+    expect(mediaEvents(h)).toEqual([])
+    expect(h.ofType('resync')[0]!.capabilities).toMatchObject({ ops: expect.arrayContaining(['media']), controls: { media: { available: true } } })
+  })
+
+  test('the same upload twice is one upload: the second is answered duplicate and holds nothing more', async () => {
+    const h = harness()
+    await h.ready()
+    saved(h)
+    await media(h)
+    expect(await media(h)).toMatchObject({ ok: true, result: { duplicate: true, upload: UP } })
+    expect(kept(h)).toHaveLength(2)
+  })
+
+  test('refused, nothing held: a path outside the root, a link, a missing file, a root that is not its own real path, a bad shape', async () => {
+    const h = harness()
+    await h.ready()
+    saved(h)
+    h.stats['/w/elsewhere.png'] = { kind: 'file' }
+    expect(await media(h, 'u-out', [{ n: 0, path: '/w/elsewhere.png', name: 'x.png', mediaType: 'image/png' }])).toMatchObject({ ok: false })
+    h.stats[`${ROOT}/u-link.0.png`] = { kind: 'file', isLink: true, realPath: '/etc/passwd' }
+    expect(await media(h, 'u-link', [{ n: 0, path: `${ROOT}/u-link.0.png`, name: 'x.png', mediaType: 'image/png' }])).toMatchObject({ ok: false })
+    expect(await media(h, 'u-gone', [{ n: 0, path: `${ROOT}/u-gone.0.png`, name: 'x.png', mediaType: 'image/png' }])).toMatchObject({ ok: false, error: expect.stringContaining('missing') })
+    h.stats['/w/linked-root'] = { kind: 'dir', realPath: ROOT }
+    expect(await h.command({ op: 'media', upload: 'u-root', root: '/w/linked-root', files: [{ n: 0, path: PNG, name: 'x.png', mediaType: 'image/png' }] })).toMatchObject({ ok: false })
+    for (const bad of [
+      { upload: '', root: ROOT, files },
+      { upload: 'u', root: 'relative', files },
+      { upload: 'u', root: ROOT, files: [] },
+      { upload: 'u', root: ROOT, files: [...files, ...files, ...files] },
+      { upload: 'u', root: ROOT, files: [{ ...files[0], mediaType: 'text/plain' }] },
+      { upload: 'u', root: ROOT, files: [files[0], files[0]] },
+      { upload: 'u', root: ROOT, files: [{ ...files[0], name: 'a\nb' }] },
+    ]) {
+      expect(await h.command({ op: 'media', ...bad })).toMatchObject({ ok: false })
+    }
+    expect(kept(h)).toEqual([])
+  })
+
+  test('idle, one wake after 2 s names the attachments, unless a turn starts first; at most one is owed', async () => {
+    const h = harness()
+    await h.ready()
+    saved(h)
+    await media(h)
+    expect(h.calls.filter((c) => c.op === 'submit')).toEqual([])
+    await h.fire(MEDIA_WAKE_MS)
+    expect(h.calls.filter((c) => c.op === 'submit')).toEqual([{ op: 'submit', args: { text: mediaWakeText(['photo.png', 'plan.pdf']), asUser: true } }])
+    expect(mediaWakeText(['photo.png', 'plan.pdf'])).toBe(`${WAKE_LINE}\nThe person attached photo.png and plan.pdf from the desk: the bridge reads them into the conversation now.`)
+    // The person's own Send starts the turn first: no wake.
+    const other = harness()
+    await other.ready()
+    saved(other)
+    await media(other)
+    await other.turn('t-person')
+    await other.fire(MEDIA_WAKE_MS)
+    expect(other.calls.filter((c) => c.op === 'submit')).toEqual([])
+  })
+
+  test('a main step claims one attachment, recorded before anything is yielded, and streams the prelude and that one Read; the step after claims the next, then passes through', async () => {
+    const h = harness()
+    await h.ready()
+    saved(h)
+    await media(h)
+    await h.turn('t1')
+    const e0 = MAIN('t1', 0)
+    const gen = h.hook('turn.step', e0)(h.engine, e0, () => {
+      throw new Error('a synthetic step calls no next')
+    }) as AsyncGenerator<Record<string, unknown>, Record<string, unknown>>
+    const first = await gen.next()
+    const claimed = kept(h)[0]!
+    expect(claimed).toMatchObject({ state: 'claimed', toolUseId: expect.stringMatching(/^toolu_sminos_[A-Za-z0-9_-]+$/) })
+    expect(first.value).toEqual({ kind: 'text', index: 0, text: mediaPrelude('photo.png') })
+    expect(mediaPrelude('photo.png')).toBe("[sminos bridge] The person attached photo.png from the desk: this Read is the bridge's, not your choice.")
+    const rest: unknown[] = []
+    let done = await gen.next()
+    while (!done.done) {
+      rest.push(done.value)
+      done = await gen.next()
+    }
+    expect(rest).toEqual([
+      { kind: 'tool', index: 1, id: claimed.toolUseId, name: 'Read' },
+      { kind: 'input', index: 1, json: JSON.stringify({ file_path: PNG }) },
+      { kind: 'stop', stopReason: 'tool_use', usage: null },
+    ])
+    expect(done.value).toMatchObject({ turnId: 't1', index: 0, stopReason: 'tool_use', toolUses: [{ name: 'Read', input: { file_path: PNG } }] })
+    await resultOf(h, imageResult(String(claimed.toolUseId)))
+    const second = await h.step(MAIN('t1', 1), [{ kind: 'text', index: 0, text: 'never' }])
+    expect(second.yielded[1]).toMatchObject({ kind: 'tool', name: 'Read', id: kept(h)[1]!.toolUseId })
+    expect(h.requests).toHaveLength(0)
+    // A subagent's loop is never touched.
+    expect(kept(h)[1]).toMatchObject({ state: 'claimed' })
+    const sub = await h.step({ ...MAIN('t1', 0), agentId: 'a1' }, [{ kind: 'text', index: 0, text: 'sub' }])
+    expect(sub.yielded).toEqual([{ kind: 'text', index: 0, text: 'sub' }])
+    await resultOf(h, pdfResult(String(kept(h)[1]!.toolUseId)))
+    const third = await h.step(MAIN('t1', 2), [{ kind: 'text', index: 0, text: 'I see a photo and a plan.' }])
+    expect(third.yielded).toEqual([{ kind: 'text', index: 0, text: 'I see a photo and a plan.' }])
+    expect(h.requests).toHaveLength(2)
+  })
+
+  test('read once its result holds the image or the document; forwarded when the next main step passes the conversation on; the last end is the upload\'s end', async () => {
+    const h = harness()
+    await h.ready()
+    saved(h)
+    await media(h)
+    await h.turn('t1')
+    await h.step(MAIN('t1', 0), [])
+    const png = String(kept(h)[0]!.toolUseId)
+    await resultOf(h, imageResult(png))
+    expect(mediaEvents(h)).toMatchObject([{ type: 'media', id: UP, upload: UP, index: 0, state: 'read', toolUseId: png, phase: 'start' }])
+    await h.step(MAIN('t1', 1), [])
+    const pdf = String(kept(h)[1]!.toolUseId)
+    await resultOf(h, pdfResult(pdf))
+    await h.step(MAIN('t1', 2), [{ kind: 'text', index: 0, text: 'ok' }])
+    expect(mediaEvents(h).map((e) => [e.index, e.state, e.phase])).toEqual([
+      [0, 'read', 'start'],
+      [1, 'read', 'start'],
+      [0, 'forwarded', 'start'],
+      [1, 'forwarded', 'end'],
+    ])
+    expect(mediaEvents(h).at(-1)!.attachments).toEqual([
+      { index: 0, state: 'forwarded', toolUseId: png },
+      { index: 1, state: 'forwarded', toolUseId: pdf },
+    ])
+    expect(kept(h).map((a) => a.state)).toEqual(['forwarded', 'forwarded'])
+  })
+
+  test("failed: a denied or error result with its text, a result with no image or document, a file no longer inside its root at the claim", async () => {
+    const h = harness()
+    await h.ready()
+    saved(h)
+    await media(h)
+    await h.turn('t1')
+    await h.step(MAIN('t1', 0), [])
+    const id = String(kept(h)[0]!.toolUseId)
+    await resultOf(h, [{ type: 'tool_result', tool_use_id: id, is_error: true, content: 'Permission to use Read has been denied.' }])
+    expect(mediaEvents(h).at(-1)).toMatchObject({ index: 0, state: 'failed', reason: 'Permission to use Read has been denied.' })
+    // The second was moved out of its root before its claim: failed, and the step passes through.
+    h.stats[PDF] = { kind: 'file', realPath: '/w/plan.pdf' }
+    const passed = await h.step(MAIN('t1', 1), [{ kind: 'text', index: 0, text: 'model' }])
+    expect(passed.yielded).toEqual([{ kind: 'text', index: 0, text: 'model' }])
+    expect(mediaEvents(h).at(-1)).toMatchObject({ index: 1, state: 'failed', reason: MEDIA_MOVED_REASON, phase: 'end' })
+    // A result that holds neither.
+    const t = harness()
+    await t.ready()
+    saved(t)
+    await media(t, UP, [files[0]!])
+    await t.turn('t2')
+    await t.step(MAIN('t2', 0), [])
+    await resultOf(t, [{ type: 'tool_result', tool_use_id: String(kept(t)[0]!.toolUseId), content: 'Wasted call: file unchanged since last read.' }])
+    expect(mediaEvents(t).at(-1)).toMatchObject({ state: 'failed', reason: expect.stringContaining('no image or document') })
+  })
+
+  test('an Esc during the synthetic step leaves the claim aborted, never retried; a turn that ends with a claim unread ends it too', async () => {
+    const h = harness()
+    await h.ready()
+    saved(h)
+    await media(h)
+    await h.turn('t1')
+    const e0 = MAIN('t1', 0)
+    const gen = h.hook('turn.step', e0)(h.engine, e0, () => {
+      throw new Error('no next')
+    }) as AsyncGenerator<Record<string, unknown>, Record<string, unknown>>
+    await gen.next()
+    await gen.return({})
+    await h.settle()
+    expect(mediaEvents(h)).toMatchObject([{ index: 0, state: 'aborted' }])
+    // The turn ends (the Esc): the other is still pending, so one wake goes, which the engine refuses after an Esc.
+    await h.complete('t1', 'interrupted')
+    expect(h.calls.filter((c) => c.op === 'submit')).toHaveLength(1)
+    // The person's next turn claims the pending one, never the aborted.
+    await h.turn('t2')
+    const next = await h.step(MAIN('t2', 0), [])
+    expect(next.yielded[0]).toEqual({ kind: 'text', index: 0, text: mediaPrelude('plan.pdf') })
+    await h.complete('t2', 'interrupted')
+    expect(kept(h).map((a) => a.state)).toEqual(['aborted', 'aborted'])
+    expect(mediaEvents(h).at(-1)).toMatchObject({ index: 1, state: 'aborted', phase: 'end' })
+  })
+
+  test('a turn that ends with an attachment pending (its last request ended end_turn) submits one wake; refused after an Esc, the attachment waits', async () => {
+    const h = harness({ submitDrops: 'the session was stopped and nobody has sent input since' })
+    await h.ready()
+    saved(h)
+    await h.turn('t1')
+    await media(h)
+    await h.fire(MEDIA_WAKE_MS)
+    expect(h.calls.filter((c) => c.op === 'submit')).toEqual([])
+    await h.complete('t1', 'answer')
+    expect(h.calls.filter((c) => c.op === 'submit')).toHaveLength(1)
+    await h.settle()
+    expect(kept(h).map((a) => a.state)).toEqual(['pending', 'pending'])
+    expect(h.calls.filter((c) => c.op === 'submit')).toHaveLength(1)
+  })
+
+  test('a reload reconciles: a claim whose result is in the transcript advances (forwarded once a response followed it), one with none is aborted, pending waits with the wake armed again', async () => {
+    const sessionState = new Map<string, unknown>()
+    const before = harness({ sessionState })
+    await before.ready()
+    saved(before, ['a', 'b', 'c', 'd'].map((u) => `${ROOT}/up-${u}.0.png`))
+    await media(before, 'up-a', [{ n: 0, path: `${ROOT}/up-a.0.png`, name: 'a.png', mediaType: 'image/png' }])
+    await media(before, 'up-b', [{ n: 0, path: `${ROOT}/up-b.0.png`, name: 'b.png', mediaType: 'image/png' }])
+    await media(before, 'up-c', [{ n: 0, path: `${ROOT}/up-c.0.png`, name: 'c.png', mediaType: 'image/png' }])
+    await media(before, 'up-d', [{ n: 0, path: `${ROOT}/up-d.0.png`, name: 'd.png', mediaType: 'image/png' }])
+    await before.turn('t1')
+    // Three claims, whose results the module never saw: the reload came first.
+    await before.step(MAIN('t1', 0), [])
+    await before.step(MAIN('t1', 1), [])
+    await before.step(MAIN('t1', 2), [])
+    expect(kept(before).map((x) => x.state)).toEqual(['claimed', 'claimed', 'claimed', 'pending'])
+    const a = String(kept(before)[0]!.toolUseId)
+    const b = String(kept(before)[1]!.toolUseId)
+    const c = String(kept(before)[2]!.toolUseId)
+    // The reload: a's result and b's are in the transcript (b's with nothing after it), c's is not; d was never claimed.
+    const after = harness({ sessionState, messages: [{ role: 'user', text: 'x' }] })
+    after.setApiConversation([
+      { role: 'user', content: imageResult(a) },
+      { role: 'assistant', content: [{ type: 'text', text: 'seen' }] },
+      { role: 'user', content: imageResult(b) },
+    ])
+    // The session's engine record says idle once the child names it.
+    after.files['/rec.json'] = JSON.stringify({ sessionId: SID, status: 'idle' })
+    await after.start()
+    after.children[0]!.write(line({ op: 'hello', session: SID, pid: 7, socket: SOCK, protocol: 1, nonce: NONCE, presence: '/rec.json' }))
+    await after.settle()
+    const states = Object.fromEntries(kept(after).map((x) => [x.upload, [x.state, x.reason]]))
+    expect(states).toEqual({
+      'up-a': ['forwarded', undefined],
+      'up-b': ['read', undefined],
+      'up-c': ['aborted', MEDIA_RELOAD_REASON],
+      'up-d': ['pending', undefined],
+    })
+    expect(c).toMatch(/^toolu_sminos_/)
+    // What changed is said, each once.
+    expect(mediaEvents(after).map((e) => [e.upload, e.state])).toEqual([
+      ['up-a', 'forwarded'],
+      ['up-b', 'read'],
+      ['up-c', 'aborted'],
+    ])
+    // The session is idle: its wake is armed again from now.
+    await after.fire(MEDIA_WAKE_MS)
+    expect(after.calls.filter((c) => c.op === 'submit')).toEqual([{ op: 'submit', args: { text: mediaWakeText(['d.png']), asUser: true } }])
+  })
+
+  test("a wake waiting to learn the turn's state is not sent when a turn started meanwhile", async () => {
+    const sessionState = new Map<string, unknown>()
+    const before = harness({ sessionState })
+    await before.ready()
+    saved(before, [`${ROOT}/up-d.0.png`])
+    await media(before, 'up-d', [{ n: 0, path: `${ROOT}/up-d.0.png`, name: 'd.png', mediaType: 'image/png' }])
+    // A reload: the module cannot see the turn's state until the session's record says it.
+    const after = harness({ sessionState, messages: [{ role: 'user', text: 'x' }] })
+    await after.start()
+    after.children[0]!.write(line({ op: 'hello', session: SID, pid: 7, socket: SOCK, protocol: 1, nonce: NONCE, presence: '/rec.json' }))
+    await after.settle()
+    expect(kept(after).map((x) => x.state)).toEqual(['pending'])
+    // The record's read is slow: the wake waits on it, and the person's Send starts a turn meanwhile.
+    let release: (text: string) => void = () => undefined
+    Object.defineProperty(after.files, '/rec.json', { configurable: true, get: () => new Promise<string>((resolve) => (release = resolve)) })
+    await after.fire(MEDIA_WAKE_MS)
+    await after.turn('t9')
+    release(JSON.stringify({ sessionId: SID, status: 'idle' }))
+    await after.settle()
+    expect(after.calls.filter((c) => c.op === 'submit')).toEqual([])
+  })
+
+  test('a reload re-says a state the child never took, once', async () => {
+    const sessionState = new Map<string, unknown>()
+    const before = harness({ sessionState, hold: true })
+    const released = new Set<(typeof before.posts)[number]>()
+    const releaseAll = async () => {
+      for (let round = 0; round < 5; round++) {
+        for (const p of before.posts.filter((p) => !released.has(p))) {
+          released.add(p)
+          p.release()
+          await before.settle()
+        }
+      }
+    }
+    await before.ready()
+    await releaseAll()
+    saved(before)
+    const answered = media(before, UP, [files[0]!])
+    await releaseAll()
+    await answered
+    await before.turn('t1')
+    await before.step(MAIN('t1', 0), [])
+    await releaseAll()
+    // The read event's post is never answered: the module is reloaded first.
+    await resultOf(before, imageResult(String(kept(before)[0]!.toolUseId)))
+    expect(kept(before)[0]).toMatchObject({ state: 'read' })
+    expect(kept(before)[0]!.told).toBeUndefined()
+    const after = harness({ sessionState, messages: [{ role: 'user', text: 'x' }] })
+    after.setApiConversation([])
+    await after.ready()
+    expect(mediaEvents(after)).toMatchObject([{ upload: UP, index: 0, state: 'read' }])
+    expect(kept(after)[0]).toMatchObject({ told: 'read' })
   })
 })
 
@@ -6264,7 +6608,7 @@ describe('the desk: capabilities and read', () => {
       sminos: '1.7.0',
       protocol: 2,
       engine: '2.1.307',
-      ops: ['ping', 'steer', 'interrupt', 'stop', 'model', 'compact', 'deliver', 'answer', 'read', 'command', 'btw', 'stop-agent', 'tell'],
+      ops: ['ping', 'steer', 'interrupt', 'stop', 'model', 'compact', 'deliver', 'answer', 'read', 'command', 'btw', 'stop-agent', 'tell', 'media'],
       reads: ['status', 'catalog', 'usage', 'config', 'settings', 'mcp'],
       routes: { measured: '2.1.307' },
       controls: controlsOf('1.7.0'),
