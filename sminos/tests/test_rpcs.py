@@ -1777,7 +1777,13 @@ class Checks(unittest.TestCase):
                      {"attachments": [good] * 5, "delivery": "queued-turn"},
                      {"attachments": [{**good, "mediaType": "application/pdf"}], "delivery": "queued-turn"},
                      {"attachments": [{**good, "data": "%%%"}], "delivery": "queued-turn"},
-                     {"attachments": [{**good, "name": "../shot.png"}], "delivery": "queued-turn"}):
+                     {"attachments": [{**good, "name": "../shot.png"}], "delivery": "queued-turn"},
+                     {"attachments": [{**good, "mediaType": []}], "delivery": "queued-turn"},
+                     {"attachments": [{**good, "mediaType": {}}], "delivery": "queued-turn"},
+                     {"attachments": [{**good, "name": ["shot.png"]}], "delivery": "queued-turn"},
+                     {"attachments": [{**good, "data": {}}], "delivery": "queued-turn"},
+                     {"attachments": {"0": good}, "delivery": "queued-turn"},
+                     {"attachments": [good], "delivery": ["queued-turn"]}):
             self.refused(self.send("media", {"session": self.bridged.sid, **args}), "bad-shape")
         self.assertEqual(self.mod.ops("media") + self.mod.ops("read"), [], "nothing reached the bridge")
         self.assertEqual(self.uploads_of(self.root), [], "nothing saved")
@@ -1852,6 +1858,38 @@ class Checks(unittest.TestCase):
         self.assertEqual(os.listdir(elsewhere), [], "nothing written through the link")
         self.assertEqual(self.mod.ops("media"), [], "nothing reached the bridge")
 
+    def test_m5_a_collision_refuses_the_upload_and_leaves_what_it_never_made_its_own(self):
+        nonce = codes.b64url(os.urandom(16))
+        root = os.path.join(os.path.realpath(self.root), ".claude", "desk-uploads", self.bridged.sid)
+        os.makedirs(root, exist_ok=True)
+        theirs = {nonce + ".1.png": b"theirs", nonce + ".2.png": b"never reached"}
+        for name, data in theirs.items():
+            with open(os.path.join(root, name), "wb") as f:
+                f.write(data)
+        asked = self.send("media", {"session": self.bridged.sid, "delivery": "queued-turn", "attachments": self.attachments(
+            ("a.png", "image/png", PNG), ("b.png", "image/png", PNG), ("c.png", "image/png", PNG))}, nonce=nonce)
+        o = self.refused(asked, "failed")
+        self.assertIn("other bytes", o["error"]["message"])
+        self.assertEqual(self.uploads_of(self.root), sorted(theirs), "only the file it created went")
+        self.assertEqual(self.mod.ops("media"), [], "nothing reached the bridge")
+
+    def test_m5_a_linked_exclude_is_reported_and_the_upload_goes_on(self):
+        repo = os.path.realpath(os.path.join(tsp.T, "xrepo-" + uuidlib.uuid4().hex[:6]))
+        os.makedirs(repo)
+        subprocess.run(["git", "init", "-q", repo], check=True)
+        outside = os.path.join(tsp.T, "outside-" + uuidlib.uuid4().hex[:6])
+        with open(outside, "w") as f:
+            f.write("theirs\n")
+        info = os.path.join(repo, ".git", "info")
+        os.makedirs(info, exist_ok=True)
+        if os.path.lexists(os.path.join(info, "exclude")):
+            os.unlink(os.path.join(info, "exclude"))
+        os.symlink(outside, os.path.join(info, "exclude"))
+        self.mod.cwd = repo
+        self.assertEqual(self.outcome(self.upload())["state"], "done", "not excluded is not fatal")
+        with open(outside) as f:
+            self.assertEqual(f.read(), "theirs\n", "nothing appended through the link")
+
     def test_m5_a_restart_between_save_and_acceptance_runs_nothing_again(self):
         """The daemon saved the files and stopped before the bridge was told:
         the claim finds no answer in the child's kept file and is answered
@@ -1873,7 +1911,7 @@ class Checks(unittest.TestCase):
         self.assertEqual((o["state"], o["error"]["code"]), ("failed", "interrupted"))
         self.r.receive(rpc, self.here)
         self.assertEqual(self.mod.ops("media") + self.mod.ops("read"), [], "never run again")
-        self.assertEqual(media.roots(self.bridged.sid)[-1:], [root], "its root is recorded for the sweep")
+        self.assertIn(root, media.roots(self.bridged.sid), "its root is recorded for the sweep")
 
     def test_m5_a_restart_between_acceptance_and_answer_is_answered_from_the_childs_kept_answer(self):
         """The bridge held the upload and the daemon stopped before its

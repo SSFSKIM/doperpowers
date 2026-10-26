@@ -9,6 +9,7 @@ Hermetic: HOME and SMINOS_HOME are temporary (test_session_plane's)."""
 import base64
 import json
 import os
+import signal
 import subprocess
 import time
 import unittest
@@ -53,6 +54,15 @@ class Shape(unittest.TestCase):
                     [{**good, "data": "not base64!"}], [{**good, "data": b64(PNG)[:-2]}], [{**good, "data": ""}],
                     [{**good, "data": b64(PNG) + "\n"}]):
             self.assertIsNotNone(media.why_not(bad), bad)
+
+    def test_every_wrong_json_type_is_a_reason_never_an_error(self):
+        good = attachment("shot.png", "image/png", PNG)
+        wrong = (None, True, 5, 1.5, "x", [], {}, ["image/png"], {"image/png": 1})
+        for bad in [w for w in wrong if not isinstance(w, list) or w] + \
+                   [[w] for w in wrong] + \
+                   [[{**good, key: w}] for key in ("name", "mediaType", "data") for w in wrong
+                    if (key, w) != ("name", "x")]:
+            self.assertIsInstance(media.why_not(bad), str, bad)
 
 
 class Save(unittest.TestCase):
@@ -114,6 +124,68 @@ class Save(unittest.TestCase):
         with open(target, "rb") as f:
             self.assertEqual(f.read(), b"theirs", "never written through")
 
+    def test_a_linked_ancestor_of_the_base_refuses_the_upload(self):
+        real = self.base
+        link = os.path.join(os.path.dirname(real), "link-" + uuidlib.uuid4().hex[:8])
+        os.symlink(real, link)
+        with self.assertRaises(media.Unsafe):
+            media.save(link, self.sid, NONCE, [attachment("a.png", "image/png", PNG)])
+        self.assertFalse(os.path.exists(os.path.join(real, ".claude")), "nothing written through it")
+
+    def test_a_collision_with_other_bytes_rolls_back_only_what_this_upload_made_its_own(self):
+        root = os.path.join(self.base, ".claude", "desk-uploads", self.sid)
+        os.makedirs(root)
+        theirs = {NONCE + ".1.png": b"theirs", NONCE + ".2.pdf": b"never reached"}
+        for name, data in theirs.items():
+            with open(os.path.join(root, name), "wb") as f:
+                f.write(data)
+        three = [attachment("a.png", "image/png", PNG), attachment("b.png", "image/png", PNG),
+                 attachment("c.pdf", "application/pdf", PDF)]
+        with self.assertRaises(media.Unsafe):
+            media.save(self.base, self.sid, NONCE, three)
+        self.assertEqual(sorted(os.listdir(root)), sorted(theirs),
+                         "the file it created goes; one it never made its own stays")
+        for name, data in theirs.items():
+            with open(os.path.join(root, name), "rb") as f:
+                self.assertEqual(f.read(), data)
+        with open(os.path.join(root, NONCE + ".0.png"), "wb") as f:
+            f.write(PNG)   # this upload's bytes, as a restart's second save finds them: its own
+        with self.assertRaises(media.Unsafe):
+            media.save(self.base, self.sid, NONCE, three)
+        self.assertEqual(sorted(os.listdir(root)), sorted(theirs), "a file holding this upload's bytes goes too")
+
+    def test_a_fifo_where_a_file_goes_refuses_the_upload_without_blocking(self):
+        root = os.path.join(self.base, ".claude", "desk-uploads", self.sid)
+        os.makedirs(root)
+        os.mkfifo(os.path.join(root, NONCE + ".0.png"))
+        signal.signal(signal.SIGALRM, lambda *_: (_ for _ in ()).throw(TimeoutError("save blocked on a FIFO")))
+        signal.alarm(5)
+        try:
+            with self.assertRaises(media.Unsafe):
+                media.save(self.base, self.sid, NONCE, [attachment("a.png", "image/png", PNG)])
+        finally:
+            signal.alarm(0)
+
+    def test_remove_never_follows_a_link_an_ancestor_became(self):
+        outer = os.path.realpath(os.path.join(tsp.T, "outer-" + uuidlib.uuid4().hex[:8]))
+        base = os.path.join(outer, "cwd")
+        os.makedirs(base)
+        root, names = media.save(base, self.sid, NONCE, [attachment("a.png", "image/png", PNG)])
+        other = os.path.realpath(os.path.join(tsp.T, "other-" + uuidlib.uuid4().hex[:8]))
+        theirs = os.path.join(other, "cwd", ".claude", "desk-uploads", self.sid)
+        os.makedirs(theirs)
+        with open(os.path.join(theirs, names[0]), "wb") as f:
+            f.write(b"another tree's file")
+        os.rename(outer, outer + ".moved")
+        os.symlink(other, outer)   # days later, an ancestor of the recorded root is a link to another tree
+        media.remove(root, names)
+        media.remove(root)
+        self.assertEqual(os.listdir(theirs), [names[0]], "nothing removed through the link")
+        os.unlink(outer)
+        os.rename(outer + ".moved", outer)
+        media.remove(root, names)
+        self.assertFalse(os.path.exists(root), "removed when the path is its own again")
+
     def test_remove_takes_the_named_files_and_an_emptied_root(self):
         root, names = media.save(self.base, self.sid, NONCE, [attachment("a.png", "image/png", PNG)])
         other = media.save(self.base, self.sid, "BBBBBBBBBBBBBBBBBBBBBB", [attachment("b.pdf", "application/pdf", PDF)])[1]
@@ -142,6 +214,53 @@ class Exclude(unittest.TestCase):
         status = subprocess.run(["git", "-C", repo, "status", "--porcelain", "--untracked-files=all"],
                                 capture_output=True, text=True, check=True).stdout
         self.assertNotIn("desk-uploads", status, "an upload in a subdirectory's session never shows")
+
+    def repo(self):
+        repo = os.path.realpath(os.path.join(tsp.T, "repo-" + uuidlib.uuid4().hex[:8]))
+        os.makedirs(repo)
+        subprocess.run(["git", "init", "-q", repo], check=True)
+        info = os.path.join(repo, ".git", "info")
+        os.makedirs(info, exist_ok=True)
+        for name in os.listdir(info):
+            os.unlink(os.path.join(info, name))
+        return repo, info
+
+    def test_a_linked_info_or_exclude_is_refused_and_nothing_is_written_through_it(self):
+        outside = os.path.join(tsp.T, "outside-" + uuidlib.uuid4().hex[:8])
+        os.makedirs(outside)
+        target = os.path.join(outside, "file")
+        with open(target, "w") as f:
+            f.write("theirs\n")
+        repo, info = self.repo()
+        os.symlink(target, os.path.join(info, "exclude"))
+        with self.assertRaises(media.Unsafe):
+            media.exclude(repo)
+        repo2, info2 = self.repo()
+        os.rmdir(info2)
+        os.symlink(outside, info2)
+        with self.assertRaises(media.Unsafe):
+            media.exclude(repo2)
+        self.assertEqual(sorted(os.listdir(outside)), ["file"])
+        with open(target) as f:
+            self.assertEqual(f.read(), "theirs\n")
+
+    def test_an_exclude_that_is_no_regular_file_is_refused_without_blocking(self):
+        repo, info = self.repo()
+        os.mkfifo(os.path.join(info, "exclude"))
+        signal.signal(signal.SIGALRM, lambda *_: (_ for _ in ()).throw(TimeoutError("exclude blocked on a FIFO")))
+        signal.alarm(5)
+        try:
+            with self.assertRaises(media.Unsafe):
+                media.exclude(repo)
+        finally:
+            signal.alarm(0)
+
+    def test_a_missing_info_and_exclude_are_made(self):
+        repo, info = self.repo()
+        os.rmdir(info)
+        self.assertTrue(media.exclude(repo))
+        with open(os.path.join(info, "exclude")) as f:
+            self.assertEqual(f.read(), media.EXCLUDE_LINE + "\n")
 
     def test_outside_a_repository_nothing_is_excluded(self):
         bare = os.path.realpath(os.path.join(tsp.T, "plain-" + uuidlib.uuid4().hex[:8]))

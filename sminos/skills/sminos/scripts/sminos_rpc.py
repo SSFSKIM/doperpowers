@@ -773,13 +773,12 @@ class Rpcs:
         except OSError as e:
             raise Refused("failed", "the upload could not be kept in the ledger (%s): nothing was saved" % e)
         try:
-            media.save(base, sid, nonce, args["attachments"])
+            media.save(base, sid, nonce, args["attachments"])   # rolls back what it made its own
         except (media.Unsafe, OSError) as e:
-            media.remove(root, names)
             raise Refused("failed", "the upload was not saved: %s" % e)
         try:
             media.exclude(base)
-        except (OSError, subprocess.SubprocessError) as e:
+        except (media.Unsafe, OSError, subprocess.SubprocessError) as e:
             log("media %s: %s was not excluded from git (%s)" % (nonce, root, e))
         files = [{"n": n, "path": os.path.join(root, name), "name": a["name"], "mediaType": a["mediaType"]}
                  for n, (name, a) in enumerate(zip(names, args["attachments"]))]

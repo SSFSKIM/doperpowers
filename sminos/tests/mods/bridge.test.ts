@@ -2564,6 +2564,28 @@ describe('the desk: media intake (MW5)', () => {
     expect(after.calls.filter((c) => c.op === 'submit')).toEqual([{ op: 'submit', args: { text: mediaWakeText(['d.png']), asUser: true } }])
   })
 
+  test("a wake waiting to learn the turn's state is not sent when a turn started meanwhile", async () => {
+    const sessionState = new Map<string, unknown>()
+    const before = harness({ sessionState })
+    await before.ready()
+    saved(before, [`${ROOT}/up-d.0.png`])
+    await media(before, 'up-d', [{ n: 0, path: `${ROOT}/up-d.0.png`, name: 'd.png', mediaType: 'image/png' }])
+    // A reload: the module cannot see the turn's state until the session's record says it.
+    const after = harness({ sessionState, messages: [{ role: 'user', text: 'x' }] })
+    await after.start()
+    after.children[0]!.write(line({ op: 'hello', session: SID, pid: 7, socket: SOCK, protocol: 1, nonce: NONCE, presence: '/rec.json' }))
+    await after.settle()
+    expect(kept(after).map((x) => x.state)).toEqual(['pending'])
+    // The record's read is slow: the wake waits on it, and the person's Send starts a turn meanwhile.
+    let release: (text: string) => void = () => undefined
+    Object.defineProperty(after.files, '/rec.json', { configurable: true, get: () => new Promise<string>((resolve) => (release = resolve)) })
+    await after.fire(MEDIA_WAKE_MS)
+    await after.turn('t9')
+    release(JSON.stringify({ sessionId: SID, status: 'idle' }))
+    await after.settle()
+    expect(after.calls.filter((c) => c.op === 'submit')).toEqual([])
+  })
+
   test('a reload re-says a state the child never took, once', async () => {
     const sessionState = new Map<string, unknown>()
     const before = harness({ sessionState, hold: true })

@@ -395,17 +395,24 @@ function armWake($: EngineInterface) {
   }
   const armed = {}
   state.mediaWake.armed = armed
+  // Owed while no turn runs and something is pending; a turn start disarms it too.
+  const isOwed = () => state.mainTurn === undefined && state.media.some((a) => a.state === 'pending')
   state.after(MEDIA_WAKE_MS, () => {
-    if (state.mediaWake.armed !== armed) {
-      return
-    }
-    state.mediaWake.armed = undefined
     void (async () => {
-      if (state.mainTurn !== undefined || !state.media.some((a) => a.state === 'pending')) {
+      if (state.mediaWake.armed !== armed) {
         return
       }
-      // Loaded into a session whose turn it cannot see yet: wait until it can tell.
-      if ((await state.isTurnStillUnknown?.()) === true) {
+      // Loaded into a session whose turn it cannot see yet: wait until it can tell, still armed meanwhile.
+      const isUnknown = isOwed() && (await state.isTurnStillUnknown?.()) === true
+      if (state.mediaWake.armed !== armed) {
+        return
+      }
+      state.mediaWake.armed = undefined
+      // Checked again right before the submit: a Send may have started a turn while the state was read.
+      if (!isOwed()) {
+        return
+      }
+      if (isUnknown) {
         armWake($)
         return
       }
