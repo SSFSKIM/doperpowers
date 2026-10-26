@@ -691,6 +691,109 @@ class Checks(unittest.TestCase):
         self.assertEqual(body["decision"], {"behavior": "allow", "updatedInput": {"answers": {"Which?": "B"}}})
         self.mod.settle("toolu_q1", outcome="answered", winner="web", by=MEMBER)
 
+    # ------------------------------------------------ a scoped allow (MW3)
+
+    SESSION_RULE = {"type": "addRules", "rules": [{"toolName": "Bash", "ruleContent": "npm test"}],
+                    "behavior": "allow", "destination": "session"}
+    LOCAL_RULE = dict(SESSION_RULE, destination="localSettings")
+    DIRECTORY = {"type": "addDirectories", "directories": ["/w/other"], "destination": "session"}
+    LOCAL_DIRECTORY = dict(DIRECTORY, destination="localSettings")
+    MODE = {"type": "setMode", "mode": "acceptEdits", "destination": "session"}
+
+    def scoped(self, rid, suggestions):
+        """A Bash request raised with `suggestions`; its decide args, without a scope."""
+        tool_input = {"command": "npm test"}
+        self.mod.raise_(rid, input_=tool_input, suggestions=suggestions)
+        wait_for(lambda: self.request_info(rid)[0] == 200)
+        return {"session": self.bridged.sid, "decision": "allow",
+                "digest": digest_of(self.bridged.sid, rid, "Bash", tool_input)}
+
+    def test_m3_a_scoped_allow_hands_the_bridge_the_suggestion_at_its_index_with_its_destination(self):
+        """DX6 `decide.scope` (§7, MW3): the rule is resolved from the
+        request the bridge still holds, never from the browser; `session` in
+        place of any destination, or the suggestion's own `localSettings`."""
+        listed = [self.SESSION_RULE, self.LOCAL_RULE, self.DIRECTORY, self.LOCAL_DIRECTORY]
+        cases = [(0, "session", self.SESSION_RULE), (1, "session", self.SESSION_RULE),
+                 (1, "localSettings", self.LOCAL_RULE), (2, "session", self.DIRECTORY),
+                 (3, "localSettings", self.LOCAL_DIRECTORY)]
+        for n, (index, destination, rule) in enumerate(cases):
+            with self.subTest(index=index, destination=destination):
+                rid = "toolu_sc%d" % n
+                args = self.scoped(rid, listed)
+                args["scope"] = {"suggestion": index, "sha256": codes.input_sha256(listed[index]),
+                                 "destination": destination}
+                self.assertEqual(self.outcome(self.send("decide", args)), {"state": "done", "result": {}})
+                status, body = self.mod_wait(rid)
+                self.assertEqual(status, 200, body)
+                self.assertEqual(body["decision"], {"behavior": "allow", "updatedPermissions": [rule]})
+                self.mod.settle(rid, outcome="allow", winner="web", by=MEMBER)
+
+    def test_m3_a_scope_the_request_does_not_bear_is_refused_before_the_claim(self):
+        """The hash binds the suggestion as the browser drew it: a list that
+        changed under the card (another hash, an index past it) is
+        `not-pending` *the suggestions changed*; a type but a rule or a
+        directory, or a `localSettings` the suggestion did not offer, is
+        `bad-shape`, and so is a scope's shape (a destination outside the
+        two, a scope on a deny). Nothing is claimed; nothing reaches the
+        bridge."""
+        listed = [self.SESSION_RULE, self.MODE, dict(self.SESSION_RULE, type="replaceRules"),
+                  dict(self.SESSION_RULE, type="removeRules"), dict(self.DIRECTORY, type="removeDirectories")]
+        args = self.scoped("toolu_scx", listed)
+        sha = codes.input_sha256
+        changed = sha(dict(self.SESSION_RULE, rules=[{"toolName": "Bash", "ruleContent": "npm *"}]))
+        cases = {
+            "another hash": ("not-pending", {"suggestion": 0, "sha256": changed, "destination": "session"}),
+            "an index past the list": ("not-pending", {"suggestion": 5, "sha256": sha(self.SESSION_RULE),
+                                                       "destination": "session"}),
+            "a localSettings not offered": ("bad-shape", {"suggestion": 0, "sha256": sha(self.SESSION_RULE),
+                                                          "destination": "localSettings"}),
+            "setMode": ("bad-shape", {"suggestion": 1, "sha256": sha(self.MODE), "destination": "session"}),
+            "replaceRules": ("bad-shape", {"suggestion": 2, "sha256": sha(listed[2]), "destination": "session"}),
+            "removeRules": ("bad-shape", {"suggestion": 3, "sha256": sha(listed[3]), "destination": "session"}),
+            "removeDirectories": ("bad-shape", {"suggestion": 4, "sha256": sha(listed[4]),
+                                                "destination": "session"}),
+            "userSettings": ("bad-shape", {"suggestion": 0, "sha256": sha(self.SESSION_RULE),
+                                           "destination": "userSettings"}),
+            "projectSettings": ("bad-shape", {"suggestion": 0, "sha256": sha(self.SESSION_RULE),
+                                              "destination": "projectSettings"}),
+            "a negative index": ("bad-shape", {"suggestion": -1, "sha256": sha(self.SESSION_RULE),
+                                               "destination": "session"}),
+            "an index that is no integer": ("bad-shape", {"suggestion": True, "sha256": sha(self.SESSION_RULE),
+                                                          "destination": "session"}),
+            "a hash that is no SHA-256": ("bad-shape", {"suggestion": 0, "sha256": "ab", "destination": "session"}),
+            "a scope that is no object": ("bad-shape", [0]),
+        }
+        claims = []
+        real_put = self.r.ledger.put
+        self.r.ledger.put = lambda nonce, e: (claims.append(e) if "outcome" not in e else None,
+                                              real_put(nonce, e))[1]
+        for what, (code, scope) in cases.items():
+            with self.subTest(what):
+                o = self.refused(self.send("decide", dict(args, scope=scope)), code)
+                if code == "not-pending":
+                    self.assertIn("the suggestions changed", o["error"]["message"])
+        with self.subTest("a scope on a deny"):
+            self.refused(self.send("decide", dict(args, decision="deny", scope={
+                "suggestion": 0, "sha256": sha(self.SESSION_RULE), "destination": "session"})), "bad-shape")
+        none = self.scoped("toolu_scnone", None)
+        with self.subTest("a request raised without suggestions"):
+            o = self.refused(self.send("decide", dict(none, scope={
+                "suggestion": 0, "sha256": sha(self.SESSION_RULE), "destination": "session"})), "not-pending")
+            self.assertIn("the suggestions changed", o["error"]["message"])
+        self.assertEqual(claims, [], "nothing claimed, so nothing reached the bridge")
+        self.r.ledger.put = real_put
+        status, _ = self.mod_wait("toolu_scx")
+        self.assertEqual(status, 204, "no decision was handed out")
+        for rid in ("toolu_scx", "toolu_scnone"):
+            self.mod.settle(rid)
+
+    def test_m3_a_scoped_allow_on_a_read_only_machine_is_refused(self):
+        args = dict(self.scoped("toolu_scro", [self.SESSION_RULE]), scope={
+            "suggestion": 0, "sha256": codes.input_sha256(self.SESSION_RULE), "destination": "session"})
+        tpr.set_policy({"read_only": True})
+        self.refused(self.send("decide", args), "read-only")
+        self.mod.settle("toolu_scro")
+
     def request_info(self, rid):
         import sminos_bridge as bridge
         return bridge.request(bridge.endpoint(self.bridged.sid), "GET", "/requests/" + rid)

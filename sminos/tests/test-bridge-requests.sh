@@ -310,6 +310,30 @@ run ctl postto "$SOCK" /requests/toolu_perm02/decision '{"behavior":"allow","by"
 assert_contains "$OUT" "400 " "a permission is allowed as asked: a rewritten input is refused"
 run ctl postto "$SOCK" /requests/toolu_nothing/decision '{"behavior":"allow","by":"cli"}'
 assert_contains "$OUT" "404 " "a decision on a request nobody raised is 404"
+RULE='{"type":"addRules","rules":[{"toolName":"Bash","ruleContent":"rm -rf /tmp/x"}],"behavior":"allow","destination":"session"}'
+NINE="[$RULE,$RULE,$RULE,$RULE,$RULE,$RULE,$RULE,$RULE,$RULE]"
+run ctl postto "$SOCK" /requests/toolu_perm02/decision '{"behavior":"allow","by":"cli","updatedPermissions":'"$NINE"'}'
+assert_contains "$OUT" "400 " "a scoped allow carries at most 8 rules"
+run ctl postto "$SOCK" /requests/toolu_perm02/decision '{"behavior":"allow","by":"cli","updatedPermissions":["addRules"]}'
+assert_contains "$OUT" "400 " "each rule an object"
+run ctl postto "$SOCK" /requests/toolu_perm02/decision '{"behavior":"allow","by":"cli","updatedPermissions":'"$RULE"'}'
+assert_contains "$OUT" "400 " "in a list"
+run ctl postto "$SOCK" /requests/toolu_perm02/decision '{"behavior":"deny","by":"cli","updatedPermissions":['"$RULE"']}'
+assert_contains "$OUT" "400 " "rules go with an allow, never a deny"
+ctl post "$SOCK" '[{"type":"raised","request":"toolu_q9","tool":"AskUserQuestion","input":'"$QUESTIONS"',"agentId":null}]' >/dev/null
+run ctl postto "$SOCK" /requests/toolu_q9/decision '{"behavior":"allow","by":"cli","updatedInput":{"answers":{"Which fruit?":"Apple"}},"updatedPermissions":['"$RULE"']}'
+assert_contains "$OUT" "400 " "a question carries no rules"
+ctl post "$SOCK" '[{"type":"settled","request":"toolu_q9","winner":"terminal","outcome":"answered","by":"terminal"}]' >/dev/null
+
+echo "a scoped allow:"
+ctl post "$SOCK" '[{"type":"raised","request":"toolu_perm10","tool":"Bash","input":{"command":"rm -rf /tmp/x"},"agentId":null,"suggestions":['"$RULE"']}]' >/dev/null
+run ctl get "$SOCK" /requests/toolu_perm10
+assert_equals "$(field_of "${OUT#200 }" suggestions.0.destination)" "session" "a request's suggestions are what the daemon resolves a scope from"
+run ctl postto "$SOCK" /requests/toolu_perm10/decision '{"behavior":"allow","by":"m-5","updatedPermissions":['"$RULE"']}'
+assert_contains "$OUT" "200 " "an allow with its rules is taken"
+until_true grep -q toolu_perm10 "$T/decisions" || true
+assert_equals "$(field_of "$(decision_of toolu_perm10)" decision.updatedPermissions.0.rules.0.ruleContent)" "rm -rf /tmp/x" \
+  "and handed to the mod with them"
 
 echo "the terminal answering first:"
 # The stand-in's poll on toolu_perm02 is open; the session record leaving

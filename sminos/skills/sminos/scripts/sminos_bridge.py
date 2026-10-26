@@ -141,6 +141,9 @@ NONCE_HEADER = "X-Bridge-Nonce"       # this child's, from its hello: a post wit
 QUESTION_TOOLS = ("AskUserQuestion",)
 # Who answered, as a client may not claim it: the terminal and the bridge settle on their own.
 RESERVED_BY = ("terminal", "bridge")
+# The rules a scoped allow adds at most (DX5's decision POST): the bound of
+# the suggestions a request carries, from which the daemon resolves them.
+PERMISSIONS_MAX = 8
 
 
 def _ready_wait():
@@ -539,9 +542,10 @@ def is_question(raised):
 
 def _check_decision(raised, body):
     """Why a client's decision cannot be taken for this request, or None.
-    A permission is allowed or denied as asked; a question's allow carries its
-    answers, keyed by the questions it asks; an async question is answered,
-    never denied."""
+    A permission is allowed or denied as asked, its allow adding at most
+    PERMISSIONS_MAX rules (`updatedPermissions`, a scoped allow's); a
+    question's allow carries its answers, keyed by the questions it asks, and
+    no rules; an async question is answered, never denied."""
     if not isinstance(body, dict):
         return "a decision is an object"
     if body.get("behavior") not in ("allow", "deny"):
@@ -553,6 +557,14 @@ def _check_decision(raised, body):
         return "%r is the bridge's own; a client answers as itself" % by
     if "message" in body and not isinstance(body["message"], str):
         return "message is text"
+    rules = body.get("updatedPermissions")
+    if rules is not None:
+        if is_question(raised):
+            return "a question is answered: updatedPermissions goes with a permission's allow only"
+        if body["behavior"] != "allow":
+            return "updatedPermissions goes with an allow, never a deny"
+        if not (isinstance(rules, list) and len(rules) <= PERMISSIONS_MAX and all(isinstance(r, dict) for r in rules)):
+            return "updatedPermissions is a list of at most %d rules, each an object" % PERMISSIONS_MAX
     updated = body.get("updatedInput")
     if not is_question(raised):
         if updated is not None:
@@ -1141,7 +1153,7 @@ class Bridge:
                 return 409, {"error": "the terminal answered it; its settlement follows", "winner": "terminal",
                              "by": "terminal"}
             decision = {"behavior": body["behavior"]}
-            for k in ("message", "updatedInput"):
+            for k in ("message", "updatedInput", "updatedPermissions"):
                 if k in body:
                     decision[k] = body[k]
             p["decided"] = {"decision": decision, "by": body["by"]}

@@ -89,6 +89,8 @@ OWED_FILE = "requests-owed.json"  # daemon/: the settlements not yet the hub's (
 RELAYED_KEPT = 200
 RELAYED_SESSIONS = 1000
 TOOL_USE_ID_MAX = 512      # the hub's bound on `raised.toolUseId` (DC3, MAWS 4b5d0a67)
+SUGGESTIONS_MAX = 8        # the hub's bound on `raised.suggestions` (the desk control surface's MW3): this many,
+SUGGESTION_BYTES_MAX = 2048  # each at most this many bytes of canonical UTF-8 JSON, the bridge's bound too
 WANTED = (b'"raised"', b'"settled"', b'"resync"', b'"compact"', b'"run"', b'"btw"')   # a line carrying none of these is no line of ours
 
 
@@ -101,9 +103,28 @@ def iso_ms(epoch_ms):
     return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(ms // 1000)) + ".%03dZ" % (ms % 1000)
 
 
+def within_bound(suggestions):
+    """Whether the engine's suggestions keep the bound the hub admits: a list
+    of at most SUGGESTIONS_MAX objects, each with a canonical form of at most
+    SUGGESTION_BYTES_MAX bytes. A `raised` the hub refuses refuses the request
+    with it, and one bad entry the whole pending set."""
+    if not (isinstance(suggestions, list) and len(suggestions) <= SUGGESTIONS_MAX):
+        return False
+    for s in suggestions:
+        try:
+            text = codes.canonical(s) if isinstance(s, dict) else None
+        except (codes.NotCanonical, RecursionError):
+            text = None
+        if text is None or len(text.encode("utf-8")) > SUGGESTION_BYTES_MAX:
+            return False
+    return True
+
+
 def raised_draft(sid, e):
     """DX4's `raised` for a request as the bridge reported it, without its
-    code; None for one that names no request, tool, or input."""
+    code; None for one that names no request, tool, or input. Its suggestions
+    go only within the hub's bound (within_bound); past it the request goes
+    without them, as the bridge raises it."""
     rid, tool, tool_input = e.get("request"), e.get("tool"), e.get("input")
     if not (isinstance(rid, str) and rid and isinstance(tool, str) and tool and isinstance(tool_input, dict)):
         return None
@@ -120,6 +141,8 @@ def raised_draft(sid, e):
     call = e.get("toolUseId")
     if isinstance(call, str) and call and call != rid and len(call) <= TOOL_USE_ID_MAX:
         d["toolUseId"] = call
+    if within_bound(e.get("suggestions")):
+        d["suggestions"] = e["suggestions"]
     return d
 
 

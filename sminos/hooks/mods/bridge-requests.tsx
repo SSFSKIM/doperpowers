@@ -2,7 +2,7 @@ import type { PermissionRequestDecision } from 'claude-code'
 
 import { ASK_TOOL, answerAsync } from './ask'
 import type { AskNote } from './ask'
-import { capped, isRecord, parsed, state } from './bridge-state'
+import { canonical, capped, isRecord, parsed, state, utf8Bytes } from './bridge-state'
 import type { Answer, Capped, Check, Command, Decision, Outcome, Request } from './bridge-state'
 import { emit, raisedFields } from './bridge-stream'
 
@@ -99,14 +99,18 @@ export function shownCall(toolUseId: string): Capped | undefined {
  * names it (the one with the same input first). Every PermissionRequest takes
  * its check, raised or not, so none is left for a later identical call. A
  * check whose decision the engine already recorded is taken as decided.
+ * `isSeen`: the engine's input is exactly, whole, the call this module's
+ * `tool.call` hook saw, so no hook beneath restored or rewrote anything.
  */
-export function claimCheck(tool: string, agentId: string | null, input: unknown): { toolUseId: string; shown?: Capped; isDecided: boolean } | undefined {
+export function claimCheck(tool: string, agentId: string | null, input: unknown): { toolUseId: string; shown?: Capped; isDecided: boolean; isSeen: boolean } | undefined {
   const same = (c: Check) => c.tool === tool && c.agentId === agentId
   const text = JSON.stringify(input)
   const exact = (c: Check) => same(c) && JSON.stringify(c.input) === text
+  const engine = canonical(input)
   const take = (list: Check[], at: number, isDecided: boolean) => {
     const c = list.splice(at, 1)[0] as Check
-    return { toolUseId: c.toolUseId, ...(c.shown !== undefined && { shown: c.shown }), isDecided }
+    const isSeen = c.shown !== undefined && !c.shown.cut && engine !== undefined && canonical(c.shown.value) === engine
+    return { toolUseId: c.toolUseId, ...(c.shown !== undefined && { shown: c.shown }), isDecided, isSeen }
   }
   let at = state.checks.findIndex(exact)
   if (at >= 0) {
@@ -118,6 +122,27 @@ export function claimCheck(tool: string, agentId: string | null, input: unknown)
   }
   at = state.checks.findIndex(same)
   return at < 0 ? undefined : take(state.checks, at, false)
+}
+
+/** The suggestions a raise carries at most, and each one's canonical JSON at most, in UTF-8 bytes: the hub admits exactly this bound (DX5 `raised.suggestions`). */
+export const SUGGESTIONS_MAX = 8
+export const SUGGESTION_BYTES_MAX = 2_048
+
+/**
+ * The engine's `permission_suggestions` as a raise carries them: verbatim, or
+ * none when the list breaks the bound — more than SUGGESTIONS_MAX, an entry
+ * that is no object, one with no canonical form or over SUGGESTION_BYTES_MAX
+ * — since a `raised` the hub refuses refuses the request with it.
+ */
+export function boundedSuggestions(list: unknown): Record<string, unknown>[] | undefined {
+  if (!Array.isArray(list) || list.length > SUGGESTIONS_MAX) {
+    return undefined
+  }
+  const fits = (s: unknown) => {
+    const text = isRecord(s) ? canonical(s) : undefined
+    return text !== undefined && utf8Bytes(text) <= SUGGESTION_BYTES_MAX
+  }
+  return list.every(fits) ? (list as Record<string, unknown>[]) : undefined
 }
 
 /**
@@ -137,7 +162,9 @@ const PLAN_TOOL = 'ExitPlanMode'
  * whole. That is `rawInput`, the hook's input as the engine handed it, which
  * the engine finds unchanged and runs as it is. The raised `input` is the
  * call before the hooks beneath, capped: in its place a long plan would
- * reach the tool cut, and be approved and saved as the plan.
+ * reach the tool cut, and be approved and saved as the plan. A permission's
+ * allow adds the rules a scoped allow carries (`updatedPermissions`: one of
+ * the request's own suggestions, its destination as the daemon admitted it).
  */
 export function engineDecision(r: Request, d: Decision): PermissionRequestDecision {
   if (d.behavior === 'deny') {
@@ -146,11 +173,15 @@ export function engineDecision(r: Request, d: Decision): PermissionRequestDecisi
   if (r.isQuestion) {
     return { behavior: 'allow', updatedInput: { ...(isRecord(r.rawInput) ? r.rawInput : {}), answers: d.updatedInput?.answers ?? {} } }
   }
+  const rules = Array.isArray(d.updatedPermissions) && d.updatedPermissions.length > 0 ? { updatedPermissions: d.updatedPermissions as PermissionUpdates } : {}
   if (r.tool === PLAN_TOOL && isRecord(r.rawInput)) {
-    return { behavior: 'allow', updatedInput: r.rawInput }
+    return { behavior: 'allow', updatedInput: r.rawInput, ...rules }
   }
-  return { behavior: 'allow' }
+  return { behavior: 'allow', ...rules }
 }
+
+/** The rules an allow may add, as the engine types them. */
+type PermissionUpdates = NonNullable<Extract<PermissionRequestDecision, { behavior: 'allow' }>['updatedPermissions']>
 
 /**
  * The engine recorded the decision on a call (DX4's evidence of who won,

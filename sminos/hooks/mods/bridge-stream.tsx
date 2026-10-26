@@ -204,6 +204,7 @@ export const raisedFields = (r: Request) => ({
   ...(r.isAsync && { async: true }),
   ...(r.isTruncated && { truncated: true }),
   ...(r.toolUseId !== undefined && { toolUseId: r.toolUseId }),
+  ...(r.suggestions !== undefined && { suggestions: r.suggestions }),
 })
 
 /**

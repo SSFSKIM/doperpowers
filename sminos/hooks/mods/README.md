@@ -366,6 +366,17 @@ rows read from the transcript, and the export to the host).
   be approved and saved). Any other goes bare: an input, even the call's
   own, has the engine check the call again first, and ask again one an ask
   rule or a safety check put to the dialog.
+  The engine's `permission_suggestions` (a rule, a directory, a mode) are
+  made from its own input, after the hooks beneath, so a Bash rule can
+  carry the whole restored command: a permission carries them (`raised`'s
+  `suggestions`, verbatim) only when that input is exactly, whole, the call
+  the bridge's `tool.call` hook saw, and only within the bound the hub
+  admits (at most 8, each at most 2,048 bytes of canonical UTF-8 JSON); past
+  it the request is raised without them. An allow from outside may add
+  rules (`updatedPermissions`: the daemon resolves one of those suggestions,
+  never a rule a client wrote), still with no input but a question's or a
+  plan's; measured on 2.1.310, such an allow on a call an ask rule put to
+  the dialog adds the rule and runs the call.
 - **Messages to the host.** The main loop's rows that may carry one — a text
   row with a mark, an async ask with its result, a row that may answer one
   (the ask mod's delivery, as its prompt row or a context attachment; a MAWS
