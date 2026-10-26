@@ -66,6 +66,8 @@ function engine(
   const completions: Record<string, unknown>[] = []
   const usage: Record<string, unknown>[] = []
   const files = new Map(Object.entries(options.files ?? {}))
+  let reported!: (text: string) => void
+  const report = new Promise<string>((resolve) => (reported = resolve))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('session.id', () => ({ value: 's1' }))
   on('tool.register', (_, e, next) => {
@@ -88,6 +90,10 @@ function engine(
     const run = { argv: e.argv, stdin: e.init?.stdin, timeoutMs: e.init?.timeoutMs }
     runs.push(run)
     const ok = (stdout: string) => ({ value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
+    if (e.argv[0] === 'report') {
+      reported(e.argv[1]!)
+      return ok('')
+    }
     if (e.argv[1] === '-e') {
       usage.push(JSON.parse(e.init?.stdin ?? ''))
       return ok('')
@@ -116,7 +122,7 @@ function engine(
     if (options.complete) return options.complete().then((value) => ('deny' in value ? (value as { deny: string }) : { value: value as never }))
     return { value: (script.shift() ?? answer('again')) as never }
   })
-  return { clock, registered, runs, reads, completions, usage }
+  return { clock, registered, runs, reads, completions, usage, report }
 }
 
 const flag = (argv: readonly string[], name: string) => argv[argv.indexOf(name) + 1]
@@ -129,6 +135,23 @@ async function start($: Engine, isInteractive = false) {
 
 const call = (input: Record<string, unknown>, agentId?: string) =>
   ({ tool: FETCH_TOOL, tool_use_id: 'toolu_f1', ...input, ...(agentId !== undefined && { agentId }) }) as never
+
+/**
+ * A plugin above the web plugin's that answers the fetch first, so the call
+ * beneath is abandoned, as an interrupt abandons it. An inline plugin loads on
+ * its own, closing over nothing of this file's, so it hands what the web
+ * plugin answered back through a `process.run` the test records.
+ */
+const interrupter = {
+  name: 'interrupter',
+  tier: 'prepend' as const,
+  register: ((on: On) => {
+    on('tool.call', { tool: 'mcp__web__fetch' }, ($, e, next) => {
+      void next(e).then((beneath) => $.process.run(['report', JSON.stringify(beneath)]))
+      return { deny: 'interrupted' }
+    })
+  }) as never,
+}
 
 const textOf = (result: { result?: unknown; deny?: string }) => {
   if (result.deny !== undefined) throw new Error(`denied: ${result.deny}`)
@@ -235,6 +258,23 @@ describe('the fetch tool\'s errors (R4)', () => {
     await start($)
     const result = await $.tool.call(call({ url: 'https://example.com/' }))
     expect(result.deny).toStartWith('fetch failed: https://example.com/: node not found on PATH')
+  })
+
+  // The user's interrupt (send now, Esc) abandons the call's dispatch: a hook above settling first does the same.
+  test('a call the user interrupts says so, not that the clipper failed', { plugins: [interrupter] }, async ($, on) => {
+    let release!: () => void
+    const held = new Promise<void>((resolve) => (release = resolve))
+    const { report } = engine(on, {
+      clip: async () => {
+        await held
+        return { deny: 'web: $.process.run(node) aborted' }
+      },
+    })
+    await start($)
+    expect((await $.tool.call(call({ url: 'https://example.com/slow' }))).deny).toBe('interrupted')
+    release()
+    const beneath = JSON.parse(await report) as { deny?: string }
+    expect(beneath.deny).toBe('fetch interrupted: https://example.com/slow: the call was stopped before the page was saved (the user interrupted it); the site and the web plugin did not fail.')
   })
 
   test('a clipper that crashed gives R4 naming the clipper and its error', async ($, on) => {
