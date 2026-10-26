@@ -1,7 +1,7 @@
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdir, writeFile, chmod, readFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { mkdir, writeFile, chmod, readFile, readdir } from 'node:fs/promises'
+import { basename, join } from 'node:path'
 import { request } from 'node:http'
 import { connect } from 'node:net'
 import { clip } from '../src/clip.ts'
@@ -9,7 +9,7 @@ import type { ClipOk } from '../src/clip.ts'
 import { findChrome, renderDom, servedDocument } from '../src/render.ts'
 import { startEgressProxy } from '../src/proxy.ts'
 import { boundaryOf } from '../src/netguard.ts'
-import { startServer, startTrap, startUdpTrap, tmpCache, send, fixture, noChrome, pngBytes, FIXTURES } from './helpers.ts'
+import { startServer, startTrap, startUdpTrap, tmpCache, send, fixture, noChrome, pngBytes, FIXTURES, pastFloor, forgetFailure } from './helpers.ts'
 
 const WALLED_ARTICLE = '<html><head><title>Behind the wall</title></head><body><article><h1>Behind the wall</h1><p>'
   + 'This article is served only to clients that look like a browser, as a bot wall would serve it. '.repeat(8) + '</p></article></body></html>'
@@ -40,9 +40,17 @@ const WORKER_WORDS = 'These words reached the page from a worker, which fetched 
 const WORKER_PAGE = '<html><head><title>From a worker</title></head><body><div id="app">Loading</div><script>'
   + 'new Worker("/worker.js").onmessage = e => setTimeout(() => { document.getElementById("app").innerHTML = "<article><h1>From a worker</h1><p>" + e.data + "</p></article>" }, 50)'
   + '</script></body></html>'
+// A shell whose script writes what its data API answers (board #137's checks of a rendered copy).
+const API_WORDS = 'These notes came from the data API the page calls once it loads, and a script wrote them into the page. '.repeat(4)
+const API_SHELL = '<html><head><title>API notes</title></head><body><div id="app">Loading</div><script>'
+  + 'fetch("/notes-api").then(r => r.ok ? r.text() : "").then(t => { document.getElementById("app").innerHTML = "<article><h1>API notes</h1><p>" + t + "</p></article>" })'
+  + '</script></body></html>'
+const apiDown = { api: false, browser: false }
 const browserOnly = (status: number, body: string) => (req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse) =>
   req.headers['sec-fetch-mode'] ? send('text/html', body, status)(req, res) : send('text/html', SHORT_SHELL)(req, res)
 
+let shellApp = 'notebook'
+const shellAsked: (string | undefined)[] = []
 let server: Awaited<ReturnType<typeof startServer>>
 let trap: Awaited<ReturnType<typeof startTrap>>
 let udp: Awaited<ReturnType<typeof startUdpTrap>>
@@ -59,6 +67,17 @@ before(async () => {
     '/stub-shell': async (req, res) => (req.headers.accept ?? '').startsWith('text/markdown')
       ? send('text/markdown; charset=utf-8', '# Rendered Notes\n\nA notebook application.\n')(req, res)
       : send('text/html', await fixture('js-shell.html'))(req, res),
+    // The shell with validators, answering 304 to them, though what its script writes changes (board #137).
+    '/shell-etag': async (req, res) => {
+      shellAsked.push(req.headers['if-none-match'])
+      if (req.headers['if-none-match'] === '"shell"') { res.writeHead(304, { etag: '"shell"' }); res.end(); return }
+      res.writeHead(200, { 'content-type': 'text/html', etag: '"shell"' })
+      res.end((await fixture('js-shell.html')).replace('a small notebook application', `a small ${shellApp} application`))
+    },
+    '/api-shell': (req, res) => apiDown.browser && req.headers['sec-fetch-mode']
+      ? send('text/html', '<html><body><h1>Service unavailable</h1></body></html>', 503)(req, res)
+      : send('text/html', API_SHELL)(req, res),
+    '/notes-api': (req, res) => apiDown.api ? send('text/plain', 'down', 503)(req, res) : send('text/plain', API_WORDS)(req, res),
     '/egress': send('text/html', egress),
     '/hello': send('text/plain', 'hello through the proxy'),
     '/held-open': send('text/html', HELD_OPEN),
@@ -246,6 +265,55 @@ test('a page that needs JavaScript is rendered in headless Chromium', { skip: no
   assert.equal(r.rendered, true, r.notes.join('|'))
   assert.ok(r.words! > 50)
   assert.match(await readFile(r.file, 'utf8'), /written by a script after the page loaded/)
+})
+
+test('a rendered copy is checked by rendering it again: its shell\'s validators are never sent, and what the script writes decides', { skip: noChrome }, async () => {
+  const env: NodeJS.ProcessEnv = { ...process.env, WEB_ALLOW_HOSTS: `127.0.0.1:${server.port}` }
+  delete env.WEB_CHROME
+  const cacheDir = await tmpCache()
+  const url = `${server.origin}/shell-etag`
+  const first = await clip(url, { cacheDir, env }) as ClipOk
+  assert.equal(first.rendered, true, JSON.stringify(first))
+  assert.deepEqual(Object.keys(first.validators ?? {}), ['content'])
+
+  await pastFloor(cacheDir, url)
+  const same = await clip(url, { cacheDir, env }) as ClipOk
+  assert.equal(same.cached, true, JSON.stringify(same))
+  assert.equal(same.dir, first.dir)
+  assert.ok(same.checkedAt)
+
+  shellApp = 'calendar'
+  await pastFloor(cacheDir, url)
+  const changed = await clip(url, { cacheDir, env }) as ClipOk
+  assert.equal(changed.cached, false, JSON.stringify(changed))
+  assert.notEqual(changed.dir, first.dir)
+  assert.match(await readFile(changed.file, 'utf8'), /a small calendar application/)
+  assert.ok(shellAsked.every(etag => etag === undefined), JSON.stringify(shellAsked))
+})
+
+test('a check whose render comes back thin keeps the rendered copy, saying why: its data API down, or the browser served a 503', { skip: noChrome }, async () => {
+  const cacheDir = await tmpCache()
+  const url = `${server.origin}/api-shell`
+  const first = await clip(url, { cacheDir, env: renderEnv() }) as ClipOk
+  assert.equal(first.rendered, true, JSON.stringify(first))
+  assert.match(await readFile(first.file, 'utf8'), /came from the data API/)
+
+  apiDown.api = true
+  await pastFloor(cacheDir, url)
+  const noData = await clip(url, { cacheDir, env: renderEnv() }) as ClipOk
+  assert.equal(noData.cached, true, JSON.stringify(noData))
+  assert.equal(noData.dir, first.dir)
+  assert.match(noData.checkFailed ?? '', new RegExp(`^the page came back with \\d+ words, the copy has ${first.words}; even rendered, the page holds only \\d+ words`))
+
+  apiDown.browser = true
+  await forgetFailure(cacheDir, url)
+  const refused = await clip(url, { cacheDir, env: renderEnv() }) as ClipOk
+  assert.equal(refused.cached, true, JSON.stringify(refused))
+  assert.equal(refused.dir, first.dir)
+  assert.match(refused.checkFailed ?? '', new RegExp(`^the page came back with \\d+ words, the copy has ${first.words}; rendering not used: the browser was served HTTP 503$`))
+  // Nothing published: the copy is the entry's one generation.
+  assert.deepEqual((await readdir(join(first.dir, '..'))).filter(n => !n.startsWith('.')), [basename(first.dir)])
+  apiDown.api = apiDown.browser = false
 })
 
 test('a markdown stub of a page a script draws gives way to the page, rendered', { skip: noChrome }, async () => {

@@ -1,11 +1,16 @@
 // One `fetch`: the cache, then fetch → route → extract → render → images →
 // measure → publish, all within one deadline. Once the page itself is in
-// hand, it is always published; a failure is remembered for a few minutes.
+// hand, it is always published, unless the fetch was the check of a saved copy
+// and the site showed it unchanged (a 304, the same body, or the same text
+// extracted), or the page came out thin where the copy was not: then the copy
+// stands. A failure is remembered for a few minutes.
 import { execFile } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { statSync } from 'node:fs'
 import { readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { delimiter, join } from 'node:path'
-import { beginBuild, FAILURE_MEMORY_MS, publish, readFailure, readFresh, rememberFailure, REUSE_MAX_AGE_MS } from './cache.ts'
+import { beginBuild, CHECK_FLOOR_MS, FAILURE_MEMORY_MS, publish, readCurrent, readFailure, recordCheck, rememberFailure } from './cache.ts'
+import type { Current } from './cache.ts'
 import { CLIP_DEADLINE_MS, Deadline } from './deadline.ts'
 import { countWords, estimateTokens } from './estimate.ts'
 import { extractFull, extractHtml, htmlFrontmatter, markdownWithFrontmatter } from './extract.ts'
@@ -54,8 +59,22 @@ export type ClipOk = {
   png?: string
   notDrawn?: string
   notes: string[]
+  /** On a cached result: when the site last showed the copy unchanged. */
+  checkedAt?: string
+  /** On a cached result: why the site could not be asked whether the copy changed. */
+  checkFailed?: string
+  /** What the next check compares the site's answer with. */
+  validators?: Validators
 }
 export type FullPage = { file: string; words: number; lines: number; tokens: number; images: number }
+/**
+ * A copy's record for its check: the `ETag`, `Last-Modified` and body SHA-256 of
+ * the response it was made from, when it is that response's own content (no
+ * render, no other response in its place, none of a site extractor's requests
+ * beside it); and, for an HTML page, the SHA-256 of its text as extracted
+ * (`contentDigest`), whatever it was extracted from.
+ */
+export type Validators = { etag?: string; lastModified?: string; body?: string; content?: string }
 export type ClipError = {
   ok: false
   url: string
@@ -66,6 +85,8 @@ export type ClipError = {
   permanent?: true
   /** When the failure happened, on an answer from the failure memory rather than a request. */
   failedAt?: string
+  /** The saved copy, when its check ended in a failure a second fetch would repeat. */
+  copy?: { file: string; fetchedAt: string }
 }
 export type ClipResult = ClipOk | ClipError
 
@@ -113,16 +134,23 @@ export async function clip(rawUrl: string, opts: ClipOptions): Promise<ClipResul
   if (isDenied(url.hostname, boundary.deny)) return fail(deniedError(url.hostname).message, { permanent: true })
   const entry = entryDir(opts.cacheDir, url)
 
+  // The saved copy, unless refresh: within the floor it answers as it stands; past it,
+  // the fetch below is its check, and the copy stands when the site shows it unchanged.
+  let previous: Current<ClipOk> | undefined
   if (!opts.refresh) {
-    const meta = await readFresh<ClipOk>(entry, REUSE_MAX_AGE_MS)
-    if (meta) {
-      // Nor a copy whose page was served from a host denied since it was saved.
-      const served = new URL(meta.finalUrl).hostname
-      if (isDenied(served, boundary.deny)) return fail(deniedError(served).message, { permanent: true })
-      return { ...meta, url: rawUrl, cached: true }
-    }
+    const current = await readCurrent<ClipOk>(entry)
     const failure = await readFailure<ClipError & { failedAt: string }>(entry, FAILURE_MEMORY_MS)
-    if (failure) return { ...failure, url: rawUrl }
+    if (current) {
+      // Nor a copy whose page was served from a host denied since it was saved.
+      const served = new URL(current.meta.finalUrl).hostname
+      if (isDenied(served, boundary.deny)) return fail(deniedError(served).message, { permanent: true })
+      const confirmed = Math.max(Date.parse(current.meta.fetchedAt), current.checkedAt ? Date.parse(current.checkedAt) : -Infinity)
+      const age = Date.now() - confirmed
+      if (age >= 0 && age < CHECK_FLOOR_MS) return copyOf(current, rawUrl)
+      // The site failed a check since: its answer stands while it is remembered.
+      if (failure && Date.parse(failure.failedAt) > confirmed) return failure.permanent ? { ...failure, url: rawUrl } : { ...copyOf(current, rawUrl), checkFailed: failure.error }
+      previous = current
+    } else if (failure) return { ...failure, url: rawUrl }
   }
   // What the site or the network failed is remembered; a refusal is decided again each time, at no cost.
   const failed = async (error: string, extra: Partial<ClipError> = {}): Promise<ClipError> => {
@@ -130,34 +158,68 @@ export async function clip(rawUrl: string, opts: ClipOptions): Promise<ClipResul
     await rememberFailure(entry, { ...result, failedAt: new Date().toISOString() })
     return result
   }
+  // A check the site failed: the copy, saying why, the failure remembered as a fetch's is.
+  const unchecked = async (copy: Current<ClipOk>, error: string, extra: Partial<ClipError> = {}): Promise<ClipOk> => {
+    await failed(error, extra)
+    return { ...copyOf(copy, rawUrl), checkFailed: error }
+  }
+  // A check the site showed unchanged: the copy, the check recorded beside it. A copy a prune
+  // deleted while the site was asked (one past the prune's age, never checked) is no copy: none
+  // is returned, `previous` is dropped, and the call goes on as a fetch of a URL without one.
+  // The record is written before the copy is looked for: a prune reads it just before it deletes
+  // a generation, so a copy still there once the record is written stays.
+  const confirm = async (copy: Current<ClipOk>): Promise<ClipOk | undefined> => {
+    const checkedAt = new Date().toISOString()
+    await recordCheck(entry, copy.generation, checkedAt)
+    if (await stat(join(entry, copy.generation, 'meta.json')).then(() => true, () => false)) return { ...copyOf(copy, rawUrl), checkedAt }
+    previous = undefined
+    return undefined
+  }
 
-  // 1. Fetch.
-  const get = (target: URL, accept: string) => request(target, {
-    headers: { accept, 'accept-language': 'en-US,en;q=0.9' }, boundary,
+  // 1. Fetch. A check sends the copy's validators: a 304 is the site's word that it is current.
+  const validators = previous?.meta.validators
+  const conditional: Record<string, string> = {
+    ...(validators?.etag ? { 'if-none-match': validators.etag } : {}),
+    ...(validators?.lastModified ? { 'if-modified-since': validators.lastModified } : {}),
+  }
+  const asked = Object.keys(conditional).length > 0
+  const get = (target: URL, accept: string, extra: Record<string, string> = {}) => request(target, {
+    headers: { accept, 'accept-language': 'en-US,en;q=0.9', ...extra }, boundary,
     timeoutMs: deadline.remaining(), headersMs: FETCH_LIMITS.headersMs, stallMs: FETCH_LIMITS.stallMs, maxBytes: FETCH_LIMITS.maxBytes,
   })
   let res: HttpResponse
   let httpsFailed: string | undefined
   let fetched = url // the URL the response was asked of: its https form when https first worked
   let accept = ACCEPT
+  const fetchPage = (extra: Record<string, string>) => fetchHttpsFirst(url, async target => {
+    accept = ACCEPT
+    const first = await get(target, accept, extra)
+    return first.status === 406 ? get(target, accept = BROWSER_ACCEPT, extra) : first
+  }, () => deadline.remaining())
   try {
-    ;({ res, target: fetched, httpsFailed } = await fetchHttpsFirst(url, async target => {
-      accept = ACCEPT
-      const first = await get(target, accept)
-      return first.status === 406 ? get(target, accept = BROWSER_ACCEPT) : first
-    }, () => deadline.remaining()))
+    ;({ res, target: fetched, httpsFailed } = await fetchPage(conditional))
+    if (asked && res.status === 304) {
+      // The copy's own page, whatever the fragments: the copy stands. A 304 from another page (a
+      // redirect now leads elsewhere, to a page of the same build time) says nothing of the copy,
+      // nor does one for a copy a prune took meanwhile: the page is asked for in full.
+      const kept = previous && resourceOf(res.url.href) === resourceOf(previous.meta.finalUrl) ? await confirm(previous) : undefined
+      if (kept) return kept
+      ;({ res, target: fetched, httpsFailed } = await fetchPage({}))
+    }
   } catch (e) {
     if (e instanceof RefusedError) return fail(e.message, { permanent: true })
-    if (e instanceof HttpError) return failed(e.message)
+    if (e instanceof HttpError) return previous ? unchecked(previous, e.message) : failed(e.message)
     throw e
   }
   const siteFetch = guardedFetch(boundary, () => deadline.remaining())
   // 3. Extract, and 4. render when the plain fetch found no content: the result with more words.
-  // The article, and the document it came from and its CPU time, for the whole page (full.md).
+  // The article, and the document it came from and its CPU time, for the whole page (full.md);
+  // and whether the article was filled in from other URLs too (a site extractor's API requests).
   const extracted = async (html: string, at: string) => {
     const started = cpuMs()
-    const ex = await extractHtml(html, at, siteFetch)
-    return { ex, html, extractCpuMs: cpuMs() - started }
+    const others = { fetched: false }
+    const ex = await extractHtml(html, at, ((input, init) => { others.fetched = true; return siteFetch(input, init) }) as typeof fetch)
+    return { ex, html, extractCpuMs: cpuMs() - started, fromOthers: others.fetched }
   }
   const extractPage = async (html: string, at: string): Promise<HtmlPage> => {
     const notes: string[] = []
@@ -187,7 +249,7 @@ export async function clip(rawUrl: string, opts: ClipOptions): Promise<ClipResul
   // one through (techblog.woowahan.com: 403 to this client, the article to Chromium).
   // The page is the browser's only when the browser was served it with a 2xx, by its
   // own NetLog: a denial page renders to a DOM like any other. Otherwise the 403 stands.
-  let walled: { ex: Extracted; html: string; extractCpuMs: number; url: string; unsettled?: string } | undefined
+  let walled: { ex: Extracted; html: string; extractCpuMs: number; fromOthers: boolean; url: string; unsettled?: string } | undefined
   if (res.status === 403) {
     const chrome = findChrome(env)
     if (!('note' in chrome)) {
@@ -202,7 +264,16 @@ export async function clip(rawUrl: string, opts: ClipOptions): Promise<ClipResul
   if (res.status >= 400 && !walled) {
     const snippet = snippetOf(res.body, res.headers['content-type'])
     const permanent = res.status < 500 && res.status !== 408 && res.status !== 429
-    return failed(statusLine(res), { status: res.status, ...(snippet ? { bodySnippet: snippet } : {}), ...(permanent ? { permanent: true } : {}) })
+    const extra = { status: res.status, ...(snippet ? { bodySnippet: snippet } : {}) }
+    // A check the site failed for now gives the copy; a page gone or refused for good is the error, naming the copy.
+    if (previous && !permanent) return unchecked(previous, statusLine(res), extra)
+    const copy = previous ? { copy: { file: previous.meta.file, fetchedAt: previous.meta.fetchedAt } } : {}
+    return failed(statusLine(res), { ...extra, ...(permanent ? { permanent: true } : {}), ...copy })
+  }
+  // The very body the copy was made from: unchanged, whatever the site's validators said.
+  if (previous && !walled && validators?.body !== undefined && resourceOf(res.url.href) === resourceOf(previous.meta.finalUrl) && sha256(res.body) === validators.body) {
+    const kept = await confirm(previous)
+    if (kept) return kept
   }
   const fetchedAt = new Date().toISOString()
   // Where the page saved was served from; a render the browser navigated elsewhere moves it.
@@ -220,6 +291,8 @@ export async function clip(rawUrl: string, opts: ClipOptions): Promise<ClipResul
     let rendered = false
     let images: ImageEntry[] = []
     let full: Omit<FullPage, 'file'> | undefined
+    let content: string | undefined // an HTML page's text digest, for its checks
+    let fromResponse = !walled // the copy is the response's own content, so its validators speak for it
     let textFile: string | undefined // the file lines and the outline are measured over
     let mode: OutlineMode = 'plain'
     const main = join(tmp, r.file)
@@ -237,9 +310,10 @@ export async function clip(rawUrl: string, opts: ClipOptions): Promise<ClipResul
       let head = ''
       let body = ''
       let page: HtmlPage | undefined
+      let stubWhy: string | undefined // why a markdown stub stayed, when its HTML page failed or came out short
       if (walled) {
         const notes = [`the site refused a plain fetch (HTTP ${res.status}); this is the page as headless Chromium rendered it`]
-        page = { ex: walled.ex, html: walled.html, extractCpuMs: walled.extractCpuMs, url: walled.url, rendered: true, notes: walled.unsettled ? [...notes, walled.unsettled] : notes }
+        page = { ex: walled.ex, html: walled.html, extractCpuMs: walled.extractCpuMs, fromOthers: walled.fromOthers, url: walled.url, rendered: true, notes: walled.unsettled ? [...notes, walled.unsettled] : notes }
       }
       else if (r.kind === 'html') page = await extractPage(decodeText(res.body, contentType, true), finalUrl)
       else {
@@ -253,25 +327,44 @@ export async function clip(rawUrl: string, opts: ClipOptions): Promise<ClipResul
         // own retries by the same margin). A page short either way stays the markdown.
         const mdWords = bodyWords(body)
         if (accept === ACCEPT && mdWords < RENDER_MIN_WORDS) {
-          const html = await get(fetched, BROWSER_ACCEPT).catch(e => { if (e instanceof RefusedError || e instanceof HttpError) return undefined; throw e })
+          let html: HttpResponse | undefined
+          try { html = await get(fetched, BROWSER_ACCEPT) } catch (e) {
+            if (!(e instanceof RefusedError) && !(e instanceof HttpError)) throw e
+            stubWhy = `asking for its HTML page failed: ${e.message}`
+          }
           const type = String(html?.headers['content-type'] ?? '')
-          if (html && html.status < 400 && route(type, html.body).kind === 'html') {
+          if (html && html.status >= 400) stubWhy = `asking for its HTML page failed: ${statusLine(html)}`
+          else if (html && route(type, html.body).kind === 'html') {
             const alt = await extractPage(decodeText(html.body, type, true), html.url.href)
-            if (alt.ex.words > 2 * mdWords) { page = alt; r = route(type, html.body); status = html.status; contentType = type }
-            else notes.push(...alt.notes)
+            if (alt.ex.words > 2 * mdWords) { page = alt; r = route(type, html.body); status = html.status; contentType = type; fromResponse = false }
+            else { notes.push(...alt.notes); stubWhy = alt.notes[0] }
           }
         }
+      }
+      // A check whose page came out thin where the copy was not: a render or an HTML request that
+      // failed, far more often than a page that shrank. Nothing is published, and the copy answers,
+      // saying why, the failure remembered as a failed check's is; `refresh` takes the page as it comes.
+      const got = page ? page.ex.words : bodyWords(body)
+      const had = previous?.meta.words ?? 0
+      if (previous && had >= RENDER_MIN_WORDS && got < RENDER_MIN_WORDS) {
+        await rm(tmp, { recursive: true, force: true })
+        // A render's note says the plain fetch is kept: here the copy is.
+        const why = (page ? page.notes[0] : stubWhy)?.replace(/; the plain fetch is kept$/, '')
+        return await unchecked(previous, `the page came back with ${got} words, the copy has ${had}${why ? `; ${why}` : ''}`)
       }
       if (page) {
         // Extracted, and its images resolved, against where the page was served from.
         finalUrl = page.url
         rendered = page.rendered
+        // An article filled in from other URLs too is not the response's own content.
+        if (page.fromOthers) fromResponse = false
         notes.push(...page.notes)
         meta = page.ex.meta
         words = page.ex.words
         head = htmlFrontmatter(meta, words, finalUrl, fetchedAt)
         body = page.ex.body
         // The whole page beside the article, when it adds to it (step 3).
+        let wholeText: string | undefined
         if (page.extractCpuMs > FULL_LIMITS.skipAfterMs) notes.push(`the whole page (full.md) was not saved: extracting the article took ${(page.extractCpuMs / 1000).toFixed(1)} s of CPU time`)
         else {
           try {
@@ -282,10 +375,20 @@ export async function clip(rawUrl: string, opts: ClipOptions): Promise<ClipResul
               const text = htmlFrontmatter(meta, whole.words, finalUrl, fetchedAt) + linked.markdown
               await writeFile(join(tmp, 'full.md'), text)
               full = { words: whole.words, lines: splitLines(text).length, tokens: estimateTokens(text), images: linked.urls.length }
+              wholeText = linked.markdown
             }
           } catch (e) {
             // An extra file: its failure costs the page nothing.
             notes.push(`the whole page (full.md) was not saved: ${(e instanceof Error ? e.message : String(e)).slice(0, 200)}`)
+          }
+        }
+        // The text the agent reads and cites, the same as the copy's: the copy stands, its images and all.
+        content = contentDigest(finalUrl, body, wholeText)
+        if (previous && content === validators?.content) {
+          const kept = await confirm(previous)
+          if (kept) {
+            await rm(tmp, { recursive: true, force: true })
+            return kept
           }
         }
       }
@@ -325,6 +428,15 @@ export async function clip(rawUrl: string, opts: ClipOptions): Promise<ClipResul
     if (httpsFailed !== undefined && finalUrl.startsWith('http:')) notes.unshift(`fetched over plain http: https failed (${httpsFailed.slice(0, 160)})`)
 
     // 6. Measure, write meta.json, publish.
+    // What the next check compares: a rendered page's shell, a response another's page replaced,
+    // or one whose article other URLs filled in, says nothing of the copy.
+    const own = fromResponse && !rendered
+    const recorded: Validators = {
+      ...(own && res.headers.etag ? { etag: res.headers.etag } : {}),
+      ...(own && res.headers['last-modified'] ? { lastModified: res.headers['last-modified'] } : {}),
+      ...(own ? { body: sha256(res.body) } : {}),
+      ...(content ? { content } : {}),
+    }
     const result = {
       ok: true as const, kind: r.kind, url: rawUrl, finalUrl, status, contentType, fetchedAt, cached: false, rendered,
       ...pick(meta), bytes: (await stat(main)).size,
@@ -345,6 +457,7 @@ export async function clip(rawUrl: string, opts: ClipOptions): Promise<ClipResul
         ...(full ? { full: { file: join(dir, 'full.md'), ...full } } : {}),
         ...(drawnSvg ? ('png' in drawnSvg ? { png: join(dir, drawnSvg.png) } : drawnSvg) : {}),
         notes,
+        ...(Object.keys(recorded).length ? { validators: recorded } : {}),
       }
       const { cached: _, ...onDisk } = written
       await writeFile(join(tmp, 'meta.json'), JSON.stringify(onDisk, null, 2) + '\n')
@@ -356,11 +469,33 @@ export async function clip(rawUrl: string, opts: ClipOptions): Promise<ClipResul
   }
 }
 
-/** The article kept, with the document it was extracted from and the CPU time that took. */
-type HtmlPage = { ex: Extracted; html: string; extractCpuMs: number; url: string; rendered: boolean; notes: string[] }
+/** The article kept, with the document it was extracted from, the CPU time that took, and whether other URLs filled it in. */
+type HtmlPage = { ex: Extracted; html: string; extractCpuMs: number; fromOthers: boolean; url: string; rendered: boolean; notes: string[] }
 
 /** The words of a markdown file under its frontmatter. */
 const bodyWords = (text: string) => countWords(text.replace(/^---\n[\s\S]*?\n---\n/, ''))
+
+const sha256 = (data: Buffer | string) => createHash('sha256').update(data).digest('hex')
+
+/**
+ * An HTML page's text as the agent reads it, for its checks: the URL it was read
+ * at (its links resolve against it) without its fragment, the article, and the
+ * whole page when saved, all before the images are fetched and without the
+ * frontmatter's fetch time.
+ */
+export const contentDigest = (url: string, article: string, whole: string | undefined) => sha256([resourceOf(url), article, whole ?? ''].join('\0'))
+
+/** A URL without its fragment: the resource a request fetches, the same whatever place in it the fragment names (the cache's key drops it too). */
+function resourceOf(href: string): string {
+  const url = new URL(href)
+  url.hash = ''
+  return url.href
+}
+
+/** A saved copy as a cached result for `url`. */
+function copyOf(copy: Current<ClipOk>, url: string): ClipOk {
+  return { ...copy.meta, url, cached: true, ...(copy.checkedAt ? { checkedAt: copy.checkedAt } : {}) }
+}
 
 /**
  * A render counts as the page only when Chromium's NetLog shows the browser was

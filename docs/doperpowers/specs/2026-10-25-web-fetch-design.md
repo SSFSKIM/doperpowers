@@ -151,6 +151,19 @@ session on the machine.
   (step 5, Decision Log). A 10 MB PNG is saved byte for byte. `page.md`
   and `full.md` are as main saves them on every eval page, apart from what
   two runs of main also differ by.
+- [x] (2026-10-26) Board #137 (web 0.5.0, branch `web-cache-freshness`): a
+  saved copy is checked with the site past a 5-minute floor, in place of
+  24 hours' reuse without a request (The cache, Decision Log). Design
+  approved by the owner, with its three choices. Built (`b3491e2e`), with
+  the HTTP client reading a 304 that names gzip (GitHub's, Wikipedia's).
+  Live over the eval URLs, 81 of 88 copies were kept by their check (59 by
+  a 304 at 247 ms) and 7 rebuilt for their own drift (Surprises &
+  Discoveries). The first review's four findings fixed (`70eb95d5`), the
+  second clean. The first suite's 16 dev tasks on B, after the tool
+  description's change: 15 correct and one partial (gist-1, a reason left
+  out of a summary), one fetch each. In the same version, the owner's
+  `WEBFETCH_MODEL` (`d50615d1`): `luna` answered live in `claude -p`, and a
+  name that does not resolve gave the page with why.
 
 ## Acceptance
 
@@ -167,7 +180,10 @@ root unless stated otherwise.
 2. **The cache answers repeat requests.** The same command again prints
    `"cached": true` within one second, and makes no network request. With
    `--refresh` it fetches again and prints `"cached": false` and a new
-   `dir`. The first `dir` is still there.
+   `dir`. The first `dir` is still there. Past 5 minutes, the same command
+   asks the site first: on a page that has not changed it prints
+   `"cached": true` with the same `dir` and a `checkedAt`; on one that has,
+   `"cached": false` and a new `dir`.
 3. **Pages that need JavaScript are rendered.** For `https://excalidraw.com/`,
    which a plain fetch extracts to 0 words, the result has `"rendered": true`
    and more than 20 words. With no Chromium findable
@@ -240,7 +256,7 @@ checked.
   "properties": {
     "url": { "type": "string", "format": "uri", "description": "The page to fetch (http or https)." },
     "prompt": { "type": "string", "description": "A question for a small fast model to answer from the page, citing its lines. Leave out to get the page itself." },
-    "refresh": { "type": "boolean", "description": "Fetch again even when a copy saved in the last 24 hours exists." }
+    "refresh": { "type": "boolean", "description": "Fetch again without reusing a saved copy." }
   },
   "required": ["url"]
 }
@@ -264,7 +280,8 @@ beside it) in a cache every session and subagent on this machine shares.
   the whole page is saved beside it as full.md, and the reply names it.
 - Pages that render with JavaScript are rendered in a headless browser.
   PDFs are saved for Read, by page.
-- A copy saved in the last 24 hours is reused; `refresh: true` fetches again.
+- A saved copy is reused when the site shows the page unchanged (asked at
+  most once every 5 minutes); `refresh: true` fetches again.
 - Pages behind a login cannot be fetched. Local and private-network
   addresses are refused; use curl through Bash for a local server.
 ```
@@ -349,7 +366,14 @@ Replies show it with `~`, because it is an approximation. The constant is
   network error do not.
 
 Headers say `Fetched now`, or `Cached, fetched <age> ago (refresh: true
-fetches again)`, and add `· rendered in headless Chromium` when the render
+fetches again)`. A copy the site has shown unchanged (The cache, the
+check) says so, `Cached, fetched 5 h ago, unchanged when checked 2 s ago
+(refresh: true fetches again)`, and one whose check the site failed says
+why, `Cached, fetched 5 h ago; a check for changes failed: HTTP 503
+Service Unavailable (refresh: true fetches again)`; R3's last line carries
+the same words after `fetched`. A 4xx that ended a check adds to R4, before
+its last line, `An earlier copy, fetched <age> ago, is saved at <file>.`
+Headers add `· rendered in headless Chromium` when the render
 path produced the page, and `· redirected to <final URL>` when the page was
 read from another URL than the one asked for (R3's last line adds both
 too). https in place of http, or a fragment, is not another URL. Each note
@@ -399,6 +423,8 @@ new generation folder inside it:
     assets/01.png, 02.jpg, …
     meta.json
   .tmp-<random>/                         a generation being built
+  .checked.json                          when the site last showed the current generation unchanged
+  .checked-<random>.tmp                  a check record being written, renamed to .checked.json once whole
   .failed.json                           the URL's last failure, remembered for 5 minutes
   .failed-<random>.tmp                   a failure record being written, renamed to .failed.json once whole
 <root>/.pruned                           stamp of the last prune
@@ -417,13 +443,58 @@ new generation folder inside it:
   published in the same millisecond fall back to the random suffix, and
   those are equally fresh, so either may be current. A timestamp in whole
   seconds would let a refresh lose to the copy it replaced, by the luck of
-  the suffix. When its `meta.json` `fetchedAt` is
-  under 24 hours old, it answers without a request, unless `refresh` is
-  set. The age goes into
-  the header so the agent can judge staleness. 24 hours rather than
-  `WebFetch`'s 15 minutes, because the cache is shared and the documentation
-  and articles agents fetch rarely change within a day. `refresh` covers the
-  page that just changed.
+  the suffix. Unless `refresh` is set, the current generation answers the
+  call, after a check with the site once it is past the floor:
+  - **The floor.** For `CHECK_FLOOR_MS = 300000` (5 minutes) after its
+    `fetchedAt`, or after the site last showed it unchanged
+    (`.checked.json`), the copy answers without a request. Back-to-back
+    calls on one page (a second prompt, subagents fanned out over the same
+    source) cost nothing, and a change shows within 5 minutes.
+  - **The check.** Past the floor, the call starts with the request a
+    fetch would make, carrying the copy's validators, when it has them, as
+    `If-None-Match` and `If-Modified-Since`. The copy is kept when the site
+    answers 304 from the URL the copy was served from; when its body is
+    byte for byte the body the copy was made from; or when the page
+    extracted from the answer (the article and, when saved, the whole page,
+    with the URL they were read at) hashes as the copy's did. A URL's
+    fragment is never part of that comparison: the cache key drops it, and
+    the server never sees it. A kept copy's
+    check time is written to `<entry>/.checked.json`, naming the
+    generation, whole under a name of its own and renamed over the record,
+    as the failure record is. The generation itself never changes, so
+    every path in it stays as the agent was given it. Anything else is a
+    changed page: the answer already in hand is built into a new
+    generation, with no second request. A copy the prune removed while its
+    check was under way is not handed out: the check goes on as a fetch.
+  - **What a copy records for its check** (`meta.json` `validators`): the
+    `ETag` and `Last-Modified` of the response it was made from and a
+    SHA-256 of that response's body, only when the copy is that response's
+    own content (no render, no bot-wall render, no HTML page in place of a
+    markdown stub, no site request a Defuddle extractor made, as Reddit's
+    does for a post's comments); and, for every HTML page, a SHA-256 of the
+    extracted text above. A rendered page is a script shell whose
+    validators say nothing about what the scripts load: its check renders
+    it again and compares the text.
+  - **A check the site fails.** A network error, a timeout, a 5xx, 408 or
+    429 is remembered as a failed fetch is, and the copy answers with why
+    it was not checked (I1 `checkFailed`). Until the failure memory runs out
+    the copy answers so without a request. So does a check whose page comes
+    back under `RENDER_MIN_WORDS` (50) words where the copy had at least
+    that many: a render that failed, the HTML page behind a markdown stub
+    that failed, a page whose data API is down. A fallback's failure must
+    not replace a good copy with the stub or the shell; a page that did
+    shrink is a `refresh` away. A 4xx other than 408 and 429
+    (the page is gone, or refused for good) is the fetch's error, R4,
+    naming the copy (I1 `copy`). A refusal by the network boundary is
+    decided as for any fetch.
+  - **Its age.** A copy of any age the prune leaves can be confirmed; the
+    header gives its fetch age and its last check, so the agent can judge
+    it. `refresh` fetches anew without a check.
+
+  The check replaced a reuse of 24 hours without a request (board #137,
+  Decision Log), which let the first session to fetch a changing page
+  (release notes, an issue, a status page) fix what every session on the
+  machine saw for a day.
 - **Writes publish whole generations.** The clipper builds a generation
   in `.tmp-<random>/` inside the entry, writes `meta.json` last, and then
   renames the folder to its generation name. That name never exists
@@ -439,11 +510,15 @@ new generation folder inside it:
   - The alternative, deleting the old folder and then renaming the new
     one in, lost because it leaves a moment with no copy at all, and an
     interrupted publish there destroys the copy that worked.
-- **Pruning.** `clip.mjs prune` deletes generations whose `fetchedAt` is
-  over 7 days old, `.tmp-` folders over an hour old, failure records past
+- **Pruning.** `clip.mjs prune` deletes generations over 7 days old,
+  `.tmp-` folders over an hour old, failure records past
   the failure memory (a `.failed-` file a crash left before its rename
-  included, so it cannot keep an entry from emptying), and entries left
-  empty. The mod starts it at session start, without awaiting it, when
+  included, so it cannot keep an entry from emptying), a check record
+  whose generation is gone (and a `.checked-` file past the failure
+  memory), and entries left empty. A generation's age runs from the later
+  of its `fetchedAt` and the check `.checked.json` records for it: a check
+  hands its copy out as a fetch does, and the path must stay readable as
+  long. The mod starts it at session start, without awaiting it, when
   `.pruned` is over a day old.
 - **A failed fetch (R4) is never a generation; it is remembered.** A
   failure the site or the network gave (an HTTP status of 400 or above, a
@@ -451,8 +526,10 @@ new generation folder inside it:
   time, whole under a name of its own and then renamed over the record, so
   two failures written at once leave one of them, never a mix. For
   `FAILURE_MEMORY_MS = 300000` (5 minutes, `WebFetch`'s figure) a call
-  without `refresh` answers from it instead of a request, after the reuse
-  check: a fresh copy of the page still wins. `refresh`
+  without `refresh` answers from it instead of a request when the URL has
+  no copy; with a copy past the floor, a failure remembered since the
+  copy's last confirmation answers as the check would have (The check,
+  above), and a copy within the floor still wins. `refresh`
   fetches again. A refusal is not remembered: it is decided locally, at no
   cost, and the deny list must hold as it stands now. Without the memory,
   a URL that timed out or hit a bot wall was refetched in full on every
@@ -818,7 +895,12 @@ shared deadline, the other stage limits as written sum to 30 s of render,
 
 The mod answers a `prompt` with `$.model.complete({ model: 'haiku', … })`,
 the session's own API client, so no key is needed. Like `WebFetch`'s small
-model, it is text only. The model is given the system text below, the main
+model, it is text only. The owner names another model in the environment's
+`WEBFETCH_MODEL` (an alias or a model id, resolved as `--model` resolves it:
+`WEBFETCH_MODEL=luna`); blank or unset is `haiku`. The reply's
+`Answered by` line and `usage.jsonl` name the model that answered, and a
+name the engine will not resolve fails the summary, not the fetch: the page
+comes back opening with why. The model is given the system text below, the main
 file with every line prefixed by its number (`12| …`), and then the
 question:
 
@@ -1428,11 +1510,18 @@ type ClipResult =
       full?: { file: string; words: number; lines: number; tokens: number; images: number }
                              // the whole page beside page.md (step 3), when saved; `images` counts its distinct image links
       notes: string[]        // one human-readable line each
+      checkedAt?: string     // ISO 8601; on a cached result, when the site last showed the copy unchanged
+      checkFailed?: string   // on a cached result, why the site could not be asked whether the copy changed
+      validators?: { etag?: string; lastModified?: string; body?: string; content?: string }
+                             // what the next check compares (The cache): the response's validators and
+                             // body SHA-256 when the copy is its own content; the extracted text's SHA-256
     }
   | {
       ok: false; url: string; status?: number; error: string; bodySnippet?: string
       permanent?: true       // a second fetch will fail the same way: an HTTP 4xx other than 408 and 429, or a refusal
       failedAt?: string      // ISO 8601; set only on an answer from the failure memory
+      copy?: { file: string; fetchedAt: string }
+                             // the saved copy, when a check ended in a 4xx other than 408 and 429
     }
 
 type OutlineEntry = { level: number; title: string; line: number; endLine: number; tokens: number; images: number }
@@ -1745,6 +1834,59 @@ type Run = {
     hothardware 6.2 s, Unicode's emoji list 5.3 s, federalregister 23.9 s.
   Evidence: `/tmp/web139b/` (the comparisons' records and analysis,
   `run1/` and `run2/`), 2026-10-26.
+- Observation: what the eval pages' sites send for a cache to check with
+  them (board #137's design spike). Of 93 URLs in the three task files,
+  91 answered (two large PDFs stalled). Each got a clip, a GET with the
+  clipper's headers, and 3 s later a GET carrying that response's
+  validators.
+  - 65 send `ETag` or `Last-Modified` (31 both, 15 `ETag` only, 19
+    `Last-Modified` only); 26 neither. 61 answer the conditional GET with
+    304, GitHub and Wikipedia among them. 4 send validators and answer 200
+    anyway, the same content both times (deps.dev, archive.apache.org,
+    niskanencenter.org, letsencrypt.org).
+  - Of the 25 without validators that answered twice, 19 sent the same
+    bytes, 5 differed only outside the extracted article (hex.pm,
+    hothardware, kitguru, backblaze, federalregister), and 1 inside it:
+    toss.tech's article draws a random profile avatar per request. A
+    check that compares bytes, then the extracted text, keeps the copy for
+    89 of the 90 pages that answered twice.
+  - A 304 took 162 ms at the median (782 ms at most); a plain GET 381 ms;
+    a whole clip 1.9 s (9.6 s at the 90th percentile). The seven rendered
+    pages took 2.3–4.7 s, registry.terraform.io 28 s.
+  - `Cache-Control` says little about change: 42 pages send no freshness,
+    20 send `no-cache`, `max-age=0` or `no-store`, 21 allow up to an hour,
+    8 longer. Tom's Hardware sends `no-store, private` and answers 304.
+  - The clipper's `request()` failed every 304 from GitHub and Wikipedia
+    with `network error: unexpected end of file`: those 304s carry
+    `Content-Encoding: gzip` and no body, and the empty body went through
+    gunzip. Nothing sent a conditional request before #137, so it never
+    showed.
+  Evidence: `/tmp/web137/` (`spike.ts`, `headers.json`, `analyze.py`),
+  2026-10-26; the figures are on board #137 (comment 970).
+- Observation: the check, run live over the same URLs (b3491e2e): each
+  fetched, its copy moved past the floor, and fetched again. 88 fetched
+  (five large or slow downloads stalled or timed out the first time).
+  - 81 copies were kept, the same folder with a `checkedAt`: 59 by a 304
+    (247 ms at the median, 2.9 s at most), 19 by the same body or the same
+    text (543 ms at the median), 3 rendered pages by a render (3.0 s). The
+    first fetches took 2.4 s at the median. One check stalled
+    (nabo.go.kr's PDF) and gave the copy with why.
+  - 7 were rebuilt, each for the page's own drift between two fetches
+    seconds apart, never a change of its article: rotating ads and an
+    avatar in `full.md` (kitguru, bundlephobia, toss.tech), a chart's
+    generated SVG id (artifacthub's `full.md`, npmgraph's `page.md`), the
+    Terraform registry's rendered tabs, and a PDF whose bytes differ on
+    every download (bok.or.kr).
+  - A page with no validators and bytes that vary costs its extraction on
+    each check: federalregister's 27 s (its 24 s of CPU), as its fetch did.
+    The differing bytes sit outside the text (nonces and CSRF tokens in the
+    head, cache-busting `?ver=` on stylesheets, a Phoenix session id).
+    Hashing the body without scripts, styles, comments, links and nonces
+    matched on hothardware, niskanencenter and backblaze, but not on
+    federalregister (a CSRF `<meta>` in the body) or hex.pm, so it was not
+    added: each site would need its own rule.
+  Evidence: `/tmp/web137/` (`verify.ts`, `verify.json`, `normdiff.ts`),
+  2026-10-26.
 
 ## Decision Log
 
@@ -2712,6 +2854,92 @@ type Run = {
   too: bounding the run and reading a longer link apart, which would give
   one grammar two readers.
   Date/Author: 2026-10-26, board #145 (branch `web-image-link-stack`).
+- Decision: a saved copy answers without a request for 5 minutes after
+  its fetch or its last check; past that, the call asks the site first,
+  and the copy is kept when the site shows it unchanged: a 304 to its
+  validators, the same body, or the same extracted text (The cache, the
+  check; web 0.5.0). A check the site fails gives the copy with why. The
+  owner chose this design, the 5-minute floor and the copy on a failed
+  check, each the recommended option.
+  Rationale: the cache is the machine's, so 24 hours' reuse without a
+  request let one session's fetch of a changing page stand for every
+  session for a day, where `WebFetch` forgets after 15 minutes and one
+  process. The spike (Surprises & Discoveries) measured what a check
+  costs and catches: a 304 takes 162 ms against a clip's 1.9 s, two thirds
+  of the eval pages answer one, and comparing the answer with the copy
+  covers the rest but toss.tech. A changed page costs what a fetch did,
+  since the answer to the check is the new copy. A kept copy keeps its
+  generation, and the check's time goes beside it in the entry, so
+  generations stay immutable and a cited path never moves. The floor
+  spares back-to-back calls on one page, the case a rendered page's
+  check (a render, 2–5 s) would make costly, and matches the failure
+  memory's 5 minutes.
+  - A rendered copy records no validators: its HTML is the script shell,
+    and a 304 to the shell (npmgraph and the Terraform registry give one)
+    says nothing of the data its scripts load. Its check renders again and
+    compares the text. A copy built from another response than the
+    request's own (a bot wall's render, the HTML that replaced a markdown
+    stub) records none either.
+  - The text compared is the article and, when saved, the whole page,
+    with the URL they were read at, before the images: what the agent
+    reads and cites. A 304 counts only from the URL the copy was served
+    from: a redirect that now leads elsewhere can meet a `Last-Modified`
+    shared across a static site's pages, so the page is then asked for in
+    full.
+  - A 4xx other than 408 and 429 ends the check as it ends a fetch, R4,
+    naming the copy: the site says the page is gone or refused, which the
+    copy cannot answer, and the agent may still want what it said.
+  - The review's four findings, all fixed (`70eb95d5`), each reproduced
+    first by a test that failed:
+    - A Defuddle site extractor fills an article in from other URLs
+      (Reddit's comments), so the shell's validators said nothing of it:
+      a copy whose extraction made a site request records none.
+    - A check whose fallback failed (the HTML page behind a markdown stub
+      answering 503, a render that failed) published the stub or the
+      empty shell as a changed page, which its own body validators then
+      kept confirming: a check's page under 50 words where the copy had
+      more now keeps the copy, saying why.
+    - The prune deleted by fetch time, and a check can hand out a copy of
+      any age, so a path just handed out could vanish at the next prune:
+      the prune now dates a generation by its last check too, and a check
+      whose copy a prune took while the site was asked goes on as a fetch.
+    - A fragment made the same resource look like another page (`/p#a`
+      checked as `/p#b` was fetched and built again): the comparisons drop
+      it, as the cache key does.
+    Left as debt (board #11): a copy rendered past a bot wall whose check
+    render fails still ends in the 403 as R4 naming the copy, not the copy
+    with why; a copy over 7 days old that is handed out unconfirmed after a
+    failed check is not protected from the next prune; and a prune that
+    reads the check record just before a check writes it can still take
+    the copy that check hands out.
+  Rejected: validators alone with server freshness behind them (the
+  ticket's options 1 and 2): the 29 pages without working validators,
+  the Go blog, PostgreSQL's and Django's documentation and crates.io among
+  them, would keep 24 hours unchecked. A shorter fixed age without checks
+  (`WebFetch`'s 15 minutes): it loses most reuse across sessions and still
+  serves a changed page until it ages out. Server freshness (`max-age`,
+  `Expires`, RFC 9111's heuristic of a tenth of the time since
+  `Last-Modified`) to skip the check: on these pages it describes browser
+  and CDN policy rather than change, and a check costs 162 ms. Crawl4AI's
+  fallback, a hash of the head's title and meta tags: a page whose body
+  changes (a new comment) keeps its head; the extracted text is in hand
+  anyway. A floor of 1 minute (the owner's alternative): fresher, with a
+  check on more calls; 15 minutes: hides a change for longer.
+  Date/Author: 2026-10-26, board #137 (branch `web-cache-freshness`).
+- Decision: `WEBFETCH_MODEL` names the model that answers a `prompt`, `haiku`
+  when blank or unset (The summary; web 0.5.0). The owner asked for it on
+  2026-10-26, naming the variable and `luna` as its example.
+  Rationale: the summary's model is the owner's call to make per machine
+  (cost, speed, a gateway's models), and `$.model.complete` resolves any
+  alias or id as `--model` does, so no list of models is kept here. The
+  engine requires `$.env.get`'s name to be written out in the call, so the
+  name lives at the call site. The cap stays 150k: a model with a smaller
+  window answers "prompt too long", which is already asked again at half.
+  The eval harness builds each run's environment from nothing, so the evals
+  stay on `haiku` whatever the owner's shell holds. The name breaks the
+  plugin's `WEB_` prefix (`WEB_CACHE_DIR`, `WEB_CHROME`) as the owner wrote
+  it; renaming it is theirs to ask.
+  Date/Author: 2026-10-26, the owner's request (branch `web-cache-freshness`).
 
 ## Outcomes & Retrospective
 

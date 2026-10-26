@@ -119,6 +119,22 @@ describe('the header', () => {
     expect(lines.slice(3, 6)).toEqual(['first note', 'second note', UNTRUSTED])
   })
 
+  test('a copy the site showed unchanged says when it was checked, one whose check failed says why, and R3\'s last line says the same', async () => {
+    const checkedAt = new Date(NOW - 2000).toISOString()
+    const header = (r: Parameters<typeof page>[0]) => replyFor(page({ tokens: 9000, cached: true, ...r }), { now: NOW, isAsked: false }).split('\n')[2]
+    expect(header({ checkedAt })).toBe('Cached, fetched 3 h ago, unchanged when checked 2 s ago (refresh: true fetches again)')
+    expect(header({ checkFailed: 'HTTP 503 Service Unavailable' })).toBe('Cached, fetched 3 h ago; a check for changes failed: HTTP 503 Service Unavailable (refresh: true fetches again)')
+    expect(header({ checkedAt: new Date(NOW - 20 * 60_000).toISOString(), checkFailed: 'timed out after 30 s', rendered: true })).toBe(
+      'Cached, fetched 3 h ago, unchanged when checked 20 min ago; a check for changes failed: timed out after 30 s (refresh: true fetches again) · rendered in headless Chromium',
+    )
+    const answered = replyFor(page({ cached: true, checkedAt }), {
+      now: NOW,
+      isAsked: true,
+      summary: { isAnswered: true, text: 'A.', model: 'haiku', header: { firstLine: 1, lastLine: 40, totalLines: 40 } },
+    })
+    expect(answered.split('\n').at(-1)).toBe('"The guide" · Example · 40 lines · 1 image · fetched 3 h ago, unchanged when checked 2 s ago')
+  })
+
   test('without a title or a site, the site is the final URL\'s host', async () => {
     const reply = replyFor(page({ tokens: 9000, title: undefined, site: undefined }), { now: NOW, isAsked: false })
     expect(reply.split('\n')[1]).toBe('example.com · 800 words · 40 lines · ~9.0k tokens · 1 image')
@@ -324,6 +340,13 @@ describe('R4: the error', () => {
     )
     expect(failureReply({ ok: false, url: 'https://example.com/x', error: 'timed out after 30 s', failedAt: new Date(NOW - 150_000).toISOString() }, NOW)).toBe(
       ['fetch failed: https://example.com/x: timed out after 30 s', 'Not fetched again: this URL failed 2 min ago (refresh: true tries again).'].join('\n'),
+    )
+  })
+
+  test('a check of a saved copy that the site ended for good names the copy, before the last line', async () => {
+    const copy = { file: `${DIR}/page.md`, fetchedAt: new Date(NOW - 3 * 86_400_000).toISOString() }
+    expect(failureReply({ ok: false, url: 'https://example.com/x', status: 410, error: 'HTTP 410 Gone', permanent: true, copy }, NOW)).toBe(
+      ['fetch failed: https://example.com/x: HTTP 410 Gone', `An earlier copy, fetched 3 d ago, is saved at ${DIR}/page.md.`, NO_RETRY].join('\n'),
     )
   })
 })

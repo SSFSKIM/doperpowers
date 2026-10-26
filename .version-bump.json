@@ -104,7 +104,8 @@
       "audit": {
         "root": "web",
         "exclude": [
-          "clipper"
+          "clipper",
+          "runs"
         ]
       }
     }

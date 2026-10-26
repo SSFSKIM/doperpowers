@@ -34,6 +34,10 @@ export type ClipOk = {
   png?: string
   notDrawn?: string
   notes: string[]
+  /** On a cached result: when the site last showed the copy unchanged. */
+  checkedAt?: string
+  /** On a cached result: why the site could not be asked whether the copy changed. */
+  checkFailed?: string
 }
 export type ClipError = {
   ok: false
@@ -45,6 +49,8 @@ export type ClipError = {
   permanent?: true
   /** Set when the failure was answered from the clipper's memory of it, not a request. */
   failedAt?: string
+  /** The saved copy, when the check of it ended in this failure. */
+  copy?: { file: string; fetchedAt: string }
 }
 export type ClipResult = ClipOk | ClipError
 
@@ -110,6 +116,7 @@ export function failureReply(r: ClipError, now: number): string {
   const lines = [`fetch failed: ${r.url}: ${r.error}`]
   if (r.failedAt !== undefined) lines.push(`Not fetched again: this URL failed ${ago(r.failedAt, now)} (refresh: true tries again).`)
   if (r.bodySnippet) lines.push(`The site's response began: "${r.bodySnippet}"`)
+  if (r.copy) lines.push(`An earlier copy, fetched ${ago(r.copy.fetchedAt, now)}, is saved at ${r.copy.file}.`)
   if (r.permanent) lines.push(NO_RETRY)
   return lines.join('\n')
 }
@@ -142,7 +149,7 @@ function answered(r: ClipOk, textFile: string, summary: Extract<Summary, { isAns
     : lastLine < totalLines
       ? `lines 1–${number(lastLine)} of ${number(totalLines)}: the rest was not read`
       : `lines 1–${number(lastLine)} of ${number(totalLines)}`
-  const facts = [quotedTitle(r), siteOf(r), r.lines !== undefined && count(r.lines, 'line'), hasImages(r) && count(savedImages(r).length, 'image'), `fetched ${age(r, now)}`]
+  const facts = [quotedTitle(r), siteOf(r), r.lines !== undefined && count(r.lines, 'line'), hasImages(r) && count(savedImages(r).length, 'image'), fetched(r, now)]
   const from = summary.isWholePage && r.full !== undefined ? `${r.full.file} (the whole page: the article did not answer; ${span})` : `${textFile} (${span})`
   return [
     summary.text.trim(),
@@ -212,7 +219,7 @@ function header(r: ClipOk, textFile: string | undefined, now: number, omitNote?:
       hasImages(r) && count(savedImages(r).length, 'image'),
     ]),
   )
-  lines.push((r.cached ? `Cached, fetched ${age(r, now)} (refresh: true fetches again)` : 'Fetched now') + provenance(r))
+  lines.push((r.cached ? `Cached, ${fetched(r, now)} (refresh: true fetches again)` : 'Fetched now') + provenance(r))
   lines.push(...r.notes.filter((n) => n !== omitNote))
   lines.push(...wholePage(r))
   if (textFile !== undefined) lines.push(UNTRUSTED)
@@ -316,9 +323,16 @@ function siteOf(r: ClipOk): string {
 
 const joinFacts = (facts: (string | false | undefined)[]) => facts.filter((f): f is string => typeof f === 'string' && f !== '').join(' · ')
 
-/** How long ago the copy was fetched, for a header: `now` for a fresh fetch. */
-function age(r: ClipOk, now: number): string {
-  return r.cached ? ago(r.fetchedAt, now) : 'now'
+/**
+ * When the copy was fetched, and for a saved one what its last check found:
+ * `fetched now`, `fetched 5 h ago, unchanged when checked 2 s ago`, or
+ * `fetched 5 h ago; a check for changes failed: HTTP 503 Service Unavailable`.
+ */
+function fetched(r: ClipOk, now: number): string {
+  if (!r.cached) return 'fetched now'
+  const checked = r.checkedAt !== undefined ? `, unchanged when checked ${ago(r.checkedAt, now)}` : ''
+  const failed = r.checkFailed !== undefined ? `; a check for changes failed: ${r.checkFailed}` : ''
+  return `fetched ${ago(r.fetchedAt, now)}${checked}${failed}`
 }
 
 /** `37 s ago`, `5 min ago`, `3 h ago`, `2 d ago`. */
