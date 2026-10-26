@@ -264,7 +264,7 @@ export async function clip(rawUrl: string, opts: ClipOptions): Promise<ClipResul
         if (page.extractMs > FULL_LIMITS.skipAfterMs) notes.push(`the whole page (full.md) was not saved: extracting the article took ${(page.extractMs / 1000).toFixed(1)} s`)
         else {
           try {
-            const whole = await extractFull(page.html, finalUrl)
+            const whole = extractFull(page.html, finalUrl)
             const linked = absoluteImageLinks(whole.body, finalUrl)
             const own = new Set(absoluteImageLinks(body, finalUrl).urls)
             if (whole.words - words >= FULL_LIMITS.minWords || linked.urls.some(url => !own.has(url))) {

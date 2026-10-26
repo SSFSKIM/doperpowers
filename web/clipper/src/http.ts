@@ -49,6 +49,8 @@ export class HttpError extends Error {
    * answered with any status, or began a body, did answer.
    */
   readonly unanswered: boolean
+  /** The URL whose request failed: a redirect's target when the request had followed one. */
+  at?: URL
 
   constructor(message: string, timedOut = false, unanswered = false) {
     super(message)
@@ -120,10 +122,16 @@ export async function request(start: URL, o: RequestOptions): Promise<HttpRespon
   for (let hop = 0; ; hop++) {
     if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new HttpError(`unsupported scheme: ${url.protocol}`)
     const port = Number(url.port) || (url.protocol === 'https:' ? 443 : 80)
+    const at = url
+    const failedAt = (e: unknown) => {
+      if (e instanceof HttpError) e.at ??= at
+      return e
+    }
     const addresses = await withTimeout(resolveChecked(url.hostname, port, { boundary: o.boundary }), limits.headersLeft(), limits.noHeaders)
-      .catch(e => { throw asTransportError(e) })
+      .catch(e => { throw failedAt(asTransportError(e)) })
     const referer = referrer === undefined ? undefined : referrerFor(referrer, url)
     const res = await once(url, addresses, { ...o, headers: referer ? { ...headers, referer } : headers, method, body }, limits)
+      .catch(e => { throw failedAt(e) })
     const location = res.headers.location
     if ([301, 302, 303, 307, 308].includes(res.status) && location) {
       if (hop >= MAX_REDIRECTS) throw new HttpError(`too many redirects (more than ${MAX_REDIRECTS})`)

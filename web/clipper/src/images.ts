@@ -37,14 +37,28 @@ const IMAGE_ACCEPT = 'image/webp,image/png,image/jpeg,image/gif,image/svg+xml,im
 type Link = { start: number; end: number; alt: string; target: string; line: number; rewrite: (target: string) => string }
 
 const FENCE = /^ {0,3}(`{3,}|~{3,})/
-// ![alt](target "title"), the target holding at most one level of balanced
-// parentheses; else ![alt][label], ![label][] or ![label], through a definition.
-const IMAGE = /!\[((?:\\.|[^\]\\])*)\](?:\(\s*(<[^>\n]*>|(?:[^\s()]|\([^\s()]*\))+)(\s+(?:"[^"\n]*"|'[^'\n]*'))?\s*\)|\[((?:\\.|[^\]\\])*)\])?/dg
+// ![alt](target "title"), the target holding escaped characters (`\(`) and at most
+// one level of balanced parentheses; else ![alt][label], ![label][] or ![label],
+// through a definition.
+const IMAGE = /!\[((?:\\.|[^\]\\])*)\](?:\(\s*(<[^>\n]*>|(?:\\[!-\/:-@[-`{-~]|[^\s()]|\((?:\\[!-\/:-@[-`{-~]|[^\s()])*\))+)(\s+(?:"[^"\n]*"|'[^'\n]*'))?\s*\)|\[((?:\\.|[^\]\\])*)\])?/dg
 const DEFINITION = /^ {0,3}\[((?:\\.|[^\]\\])+)\]:[ \t]*(<[^>\n]*>|\S+)(?:[ \t]+(?:"[^"\n]*"|'[^'\n]*'|\([^)\n]*\)))?[ \t]*$/
 
 const normalizeLabel = (label: string) => label.trim().replace(/\s+/g, ' ').toLowerCase()
 const unbracket = (t: string) => (t.startsWith('<') && t.endsWith('>') ? t.slice(1, -1) : t)
-const destination = (t: string) => (/[\s()<>]/.test(t) ? `<${t}>` : t)
+
+/**
+ * A destination as markdown reads it: a backslash before punctuation is that
+ * character, and `&amp;` is `&` (Defuddle writes `chart_\(1\).png`, and `&amp;`
+ * before an `&` that would read as an entity). Resolved as written, `\(` is a
+ * path separator to the URL parser.
+ */
+const literal = (t: string) => t.replace(/\\([!-\/:-@[-`{-~])|&amp;/g, (_, c?: string) => c ?? '&')
+
+/** A target written as a destination that reads back as the same target: the inverse of `literal`. */
+function destination(t: string): string {
+  const escaped = t.replace(/[\\<>]/g, '\\$&').replace(/&(?=#\d+;|#x[\da-f]+;|[a-z][\da-z]*;)/gi, '&amp;')
+  return /[\s()]/.test(t) ? `<${escaped}>` : escaped
+}
 
 /** The lines outside fenced code, each with its offset in the markdown. */
 function proseLines(markdown: string): { text: string; offset: number; line: number }[] {
@@ -88,7 +102,7 @@ export function findImageLinks(markdown: string): Link[] {
   const definitions = new Map<string, string>()
   for (const { text } of lines) {
     const d = DEFINITION.exec(text)
-    if (d && !definitions.has(normalizeLabel(d[1]))) definitions.set(normalizeLabel(d[1]), unbracket(d[2]))
+    if (d && !definitions.has(normalizeLabel(d[1]))) definitions.set(normalizeLabel(d[1]), literal(unbracket(d[2])))
   }
   const links: Link[] = []
   for (const { text, offset, line } of lines) {
@@ -100,7 +114,7 @@ export function findImageLinks(markdown: string): Link[] {
       const alt = rawAlt.replace(/\\(.)/g, '$1')
       if (m[2] !== undefined) {
         const [s, e] = m.indices![2]
-        links.push({ start: offset + s, end: offset + e, alt, target: unbracket(m[2]), line, rewrite: t => t })
+        links.push({ start: offset + s, end: offset + e, alt, target: literal(unbracket(m[2])), line, rewrite: destination })
         continue
       }
       // A reference: ![alt][label], or ![label][] and ![label], whose label is the alt.
@@ -113,7 +127,18 @@ export function findImageLinks(markdown: string): Link[] {
   return links
 }
 
-type Download = { file?: string; part?: string; ext?: string; bytes?: number; error?: string; svg?: string; notDrawn?: string; unanswered?: boolean }
+/** A download's outcome. `silent`: the origin that gave no response (the image's own, or a redirect's target). */
+type Download = { file?: string; part?: string; ext?: string; bytes?: number; error?: string; svg?: string; notDrawn?: string; silent?: string }
+
+/** The breaker's key: a URL's origin (scheme, host and port, the scheme's default port left out), none for a data: URI. */
+function originOf(url: string | URL): string {
+  try {
+    const origin = new URL(url).origin
+    return origin === 'null' ? '' : origin
+  } catch {
+    return ''
+  }
+}
 
 /** Each image link's target made absolute against `base`, in order; one that will not parse stays as written. */
 function absoluteTargets(links: Link[], base: string): string[] {
@@ -157,9 +182,8 @@ export async function downloadImages(
   // The page's images share one budget from here, within the fetch's deadline:
   // most pages' images take half a second, and the time went to hosts that never answered.
   const budget = new Deadline(Math.min(IMAGE_LIMITS.totalMs, deadline.remaining()))
-  // A host that did not answer one image is not asked for the rest: each would wait its full time.
+  // An origin that did not answer one image is not asked for the rest: each would wait its full time.
   const silent = new Set<string>()
-  const hostOf = (url: string) => { try { return new URL(url).host } catch { return '' } }
 
   // Downloads land in part files. Once the budget closes nothing more is
   // written (each write is synchronous after the check), so a download the
@@ -171,10 +195,10 @@ export async function downloadImages(
     while (next < queue.length && !budget.expired()) {
       const k = next++
       const url = queue[k]
-      const host = hostOf(url)
-      if (host && silent.has(host)) { results.set(url, { error: `not downloaded: ${host} did not answer an earlier image` }); continue }
+      const origin = originOf(url)
+      if (origin && silent.has(origin)) { results.set(url, { error: `not downloaded: ${origin} did not answer an earlier image` }); continue }
       const got = await downloadOne(url, join(assets, `.part-${k}`), base, budget, boundary, gate)
-      if (got.unanswered && host) silent.add(host)
+      if (got.silent) silent.add(got.silent)
       results.set(url, got)
     }
   }
@@ -247,7 +271,8 @@ async function downloadOne(url: string, part: string, page: string, budget: Dead
   } catch (e) {
     if (e instanceof RefusedError) return { error: `refused: ${e.brief}` }
     if (e instanceof HttpError && e.timedOut && budget.expired()) return { error: 'not downloaded: time budget' }
-    if (e instanceof HttpError && e.unanswered) return { error: e.message, unanswered: true }
+    // Keyed by where it went unanswered: a host that redirected did answer.
+    if (e instanceof HttpError && e.unanswered) return { error: e.message, silent: originOf(e.at ?? url) }
     return { error: e instanceof Error ? e.message : String(e) }
   }
   const ext = imageExtension(mediaType)

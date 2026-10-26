@@ -1,7 +1,9 @@
 // HTML to clipper-shaped markdown: Defuddle (the extraction Obsidian Web
 // Clipper is built on) over a linkedom document, with the frontmatter
 // Defuddle's --frontmatter mode writes, plus `fetched`.
-import { Defuddle } from 'defuddle/node'
+import { Defuddle, DefuddleClass } from 'defuddle/node'
+// Not in Defuddle's package exports, so named by path; the same module defuddle/node converts with.
+import { createMarkdownContent } from '../node_modules/defuddle/dist/markdown.js'
 import { parseHTML } from 'linkedom'
 import { findHeadings, splitLines } from './measure.ts'
 
@@ -23,12 +25,28 @@ export async function extractHtml(html: string, url: string, siteFetch: typeof f
  * changes the one it reads, converted from its <body> with Defuddle's removal
  * passes off, so a sidebar or a gallery the article leaves out is kept, in the
  * page's order. Hidden elements still go: kept, they add only language pickers
- * and menus. No site request is made: the async extractors stay off (a YouTube
+ * and menus. It makes no request: the async extractors stay off (a YouTube
  * page's transcript is page.md's already).
+ *
+ * Defuddle reads `contentSelector` only after two ways of its own to the
+ * article, and both are taken away here:
+ * - a schema.org `articleBody` or `text` (JSON-LD) trades the body for the
+ *   element holding that text, or for the text itself: the fresh document's
+ *   JSON-LD goes (page.md's frontmatter has the metadata already);
+ * - a site extractor (Wikipedia's `#mw-content-text`, GitHub's issues, …)
+ *   answers before the selector is read: the flag Defuddle holds while an
+ *   extractor's own selector runs keeps them out. It is a private field of
+ *   defuddle 0.19.6, pinned; the absence check makes a version without it
+ *   fail here (full.md not saved, with a note) and in the tests, not quietly
+ *   give the article.
  */
-export async function extractFull(html: string, url: string): Promise<{ body: string; words: number }> {
-  const r = await Defuddle(prepare(html, url), url, {
-    markdown: true,
+export function extractFull(html: string, url: string): { body: string; words: number } {
+  const doc = prepare(html, url)
+  for (const script of Array.from(doc.querySelectorAll('script'))) {
+    if (/ld\+json/i.test(script.getAttribute('type') ?? '')) script.remove()
+  }
+  const defuddle = new DefuddleClass(doc, {
+    url,
     useAsync: false,
     contentSelector: 'body',
     removeExactSelectors: false,
@@ -37,7 +55,11 @@ export async function extractFull(html: string, url: string): Promise<{ body: st
     removeContentPatterns: false,
     removeHiddenElements: true,
   })
-  return { body: tidyMarkdown(unshield(r.content ?? '')), words: r.wordCount ?? 0 }
+  const internals = defuddle as unknown as { _inExtractorPipelineRun?: boolean }
+  if (internals._inExtractorPipelineRun !== false) throw new Error('this Defuddle has no flag to keep its site extractors out')
+  internals._inExtractorPipelineRun = true
+  const r = defuddle.parse()
+  return { body: tidyMarkdown(unshield(createMarkdownContent(r.content ?? '', url))), words: r.wordCount ?? 0 }
 }
 
 /** The document Defuddle reads: parsed, polyfilled as Defuddle polyfills its own, and through the clipper's pre-passes. */

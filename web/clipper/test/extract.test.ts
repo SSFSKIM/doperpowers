@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { markdownWithFrontmatter, htmlFrontmatter, extractHtml } from '../src/extract.ts'
+import { markdownWithFrontmatter, htmlFrontmatter, extractHtml, extractFull } from '../src/extract.ts'
 import { fixture } from './helpers.ts'
 
 const F = '2026-10-25T00:00:00.000Z'
@@ -145,4 +145,38 @@ test('a page that leaves out <html>, <head> or <body> extracts like the same pag
 test('html frontmatter escapes quotes and backslashes and ends with fetched', () => {
   const fm = htmlFrontmatter({ title: 'A "quoted" \\ title', site: 'S' }, 12, 'https://x.test/', F)
   assert.equal(fm, `---\ntitle: "A \\"quoted\\" \\\\ title"\nsite: "S"\nsource: "https://x.test/"\nword_count: 12\nfetched: ${F}\n---\n\n`)
+})
+
+// The whole page (full.md): Defuddle reads its contentSelector only after its own two ways of
+// picking the article, either of which would leave the sidebar and its chart out of "the whole page".
+const sidebar = `<aside class="sidebar"><h2>Specifications</h2><dl><dt>Boost clock</dt><dd>2.51 GHz</dd><dt>Memory</dt><dd>12 GB GDDR7</dd></dl>
+  <figure><img data-src="/charts/fps-1440p.png" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7" alt="Average fps at 1440p"></figure></aside>`
+
+test("the whole page is the body, though the page's JSON-LD carries the article's text", async () => {
+  const text = 'The card under test draws less power than the one it replaces and holds its clocks under load. '.repeat(30).trim()
+  const html = `<!doctype html><html><head><title>Bench</title>
+    <script type="application/ld+json">{"@context":"https://schema.org","@type":"NewsArticle","headline":"Bench","articleBody":${JSON.stringify(text)}}</script></head>
+    <body><nav><a href="/">Home</a> <a href="/reviews">Reviews</a></nav><div class="layout"><article><h1>Bench</h1><p>${text}</p></article>${sidebar}</div></body></html>`
+  const url = 'https://bench.example/reviews/card'
+  assert.doesNotMatch((await extractHtml(html, url, fetch)).body, /Boost clock/)
+  const full = extractFull(html, url)
+  assert.match(full.body, /The card under test draws less power/)
+  assert.match(full.body, /Boost clock\n\n2\.51 GHz/)
+  // The lazy chart by its real address, made absolute.
+  assert.ok(full.body.includes('![Average fps at 1440p](https://bench.example/charts/fps-1440p.png)'), full.body)
+  assert.ok(full.body.indexOf('The card under test') < full.body.indexOf('Boost clock'))
+})
+
+test('the whole page is the body on a page a site extractor claims (Wikipedia, its #mw-content-text)', async () => {
+  const words = '<p>' + 'Viking 1 was the first spacecraft to land on Mars successfully and return images of its surface. '.repeat(8) + '</p>'
+  const html = `<!doctype html><html><head><title>Viking 1 - Wikipedia</title><meta property="og:title" content="Viking 1 - Wikipedia"></head>
+    <body><div id="content"><h1 id="firstHeading">Viking 1</h1><div id="bodyContent"><div id="mw-content-text">${words}</div></div></div>
+    ${sidebar}<div id="footer"><p>This page was last edited on 3 March 2026.</p></div></body></html>`
+  const url = 'https://en.wikipedia.org/wiki/Viking_1'
+  assert.doesNotMatch((await extractHtml(html, url, fetch)).body, /Boost clock/)
+  const full = extractFull(html, url)
+  assert.match(full.body, /Viking 1 was the first spacecraft/)
+  assert.match(full.body, /Boost clock\n\n2\.51 GHz/)
+  assert.ok(full.body.includes('![Average fps at 1440p](https://en.wikipedia.org/charts/fps-1440p.png)'), full.body)
+  assert.match(full.body, /last edited on 3 March 2026/)
 })
