@@ -118,8 +118,10 @@ session on the machine.
   (Surprises & Discoveries). The medium review's four findings fixed
   (`d554d564`: `full.md` made past Defuddle's JSON-LD and site-extractor
   routes, the image breaker keyed by the origin that gave no response,
-  image destinations read as markdown). The evals the Decision Log names
-  wait.
+  image destinations read as markdown), and the re-review's three
+  (`8895c93e`: the destination regex linear again, the breaker checked
+  at every redirect hop, the 5 s rule on CPU time; `6533b335`, a budget
+  race the gate caught). The evals the Decision Log names wait.
 
 ## Acceptance
 
@@ -634,12 +636,15 @@ its own:
        the one it needs, and the tool saves an image URL as a file.
      - **When it is saved:** when it adds something, at least 50 words
        more than `page.md` or an image link `page.md` does not have. It is
-       not made when the article's extraction took over 5 s, a very large
-       page whose `page.md` already holds nearly all of it and whose second
-       conversion would take as long again; the note
-       `the whole page (full.md) was not saved: extracting the article took <s> s`
-       says so. A markdown page has none: its site wrote it, and nothing
-       was dropped.
+       not made when the article's extraction took over 5 s of CPU time, a
+       very large page whose `page.md` already holds nearly all of it and
+       whose second conversion would take as long again; the note
+       `the whole page (full.md) was not saved: extracting the article took <s> s of CPU time`
+       says so. The time is the main thread's CPU time
+       (`process.threadCpuUsage()`; on Node 20, which lacks it, the
+       process's), so the rule depends on the page, not on how busy the
+       machine is. A markdown page has none: its site wrote it, and
+       nothing was dropped.
      - **Its cost,** over the eval's HTML pages: a median 0.1 s more
        per fetch (p90 0.5 s) and 46 KB, 1.3 times `page.md`'s bytes (p90
        3.0), as built (Surprises & Discoveries).
@@ -685,8 +690,13 @@ its own:
      is read as markdown reads it before it is resolved: Defuddle writes
      `chart_\(1\).png` and `&amp;` before an `&` that would read as an
      entity, and resolved as written a `\` is a path separator to the URL
-     parser. A link kept remote is written back as a valid destination, in
-     angle brackets when it holds a parenthesis.
+     parser. Each character of a destination is read one way only (a
+     backslash and the punctuation it escapes, a backslash before anything
+     else, or another character), so `foo\\(bar` is text, as markdown
+     reads it, and a destination that cannot close is rejected in linear
+     time: two readings of a backslash made 28 escape pairs take 9 s. A
+     link kept remote is written back as a valid destination, in angle
+     brackets when it holds a parenthesis.
    - **An origin that does not answer** one image (no response at all: a
      name that does not resolve, no connection or one closed unanswered,
      no headers within its time; an HTTP error status, or a body that
@@ -696,8 +706,10 @@ its own:
      a refused `http:` image leaves the same CDN's `https:` ones asked, and
      it is the one that gave no response: a host that redirected an image
      to a dead one answered, and only the redirect's target is not asked
-     again. Most pages' images take half a second; the time went to dead
-     hosts, 20 s an image (board #139).
+     again. Every hop is checked, so a later image the same host redirects
+     there stops at the redirect, and the host stays asked. Most pages'
+     images take half a second; the time went to dead hosts, 20 s an image
+     (board #139).
    - **Naming:** files are named by first appearance, `assets/01.<ext>`,
      with the extension taken from the response's content type.
    - **Links:** each link is rewritten to its local file. An image that
@@ -1641,9 +1653,13 @@ type Run = {
   all. The conversion alone, on the spike's documents, took a median
   92 ms (p90 447 ms, max 1.3 s). By the clock a fetch took 0.2 s longer
   (p10 −0.2 s, p90 +0.8 s: the network's noise).
-  - The 5 s rule reads wall time. Unicode's emoji list extracts in 5.5 s
-    alone and took 6.7 s with two other fetches running, so a loaded
-    machine skips the pages near the line.
+  - The 5 s rule read wall time at first. Unicode's emoji list extracts
+    in 5.5 s alone and took 6.7 s with two other fetches running, and in
+    the eval's regression runs (load average 100–250) Django's settings
+    page took 8.7 s, so a loaded machine skipped ordinary pages. It reads
+    the main thread's CPU time now (Decision Log). The process's CPU time
+    would not do: it counts V8's garbage-collector threads, 1.2 s for
+    Django's 0.72 s of main-thread work and 7.0 s for Unicode's 5.2 s.
   - One skipped page is not large: hothardware's review (image-h1) has a
     1,566-word article that takes 6 s to extract, all of it spent on 25
     inline base64 images (115 KB); with their payloads cut short the same
@@ -1670,6 +1686,12 @@ type Run = {
     `full.md` held 102 of Wikipedia's hidden citation-maintenance notes,
     which `page.md` never had. The five new tasks each got a `full.md`
     holding their facts, none of them in `page.md`.
+  - After the re-review's fixes (`8895c93e`, `6533b335`), a third run of
+    the 56 URLs gave the same: `page.md` as main saves it on 54 of 55 (js-3
+    again), and the same 46 `full.md` files, 44 byte for byte, kitguru's
+    rotating ad banners and js-2's render the other two. The 5 s rule, on
+    CPU time now, skipped the same four pages: curl's changes 10.0 s,
+    hothardware 6.2 s, Unicode's emoji list 5.3 s, federalregister 23.9 s.
   Evidence: `/tmp/web139b/` (the comparisons' records and analysis,
   `run1/` and `run2/`), 2026-10-26.
 
@@ -2475,12 +2497,19 @@ type Run = {
     name that did not resolve, a connection refused, closed unanswered or
     failing TLS, no headers within the time). A body that began and then
     stalled is an answer; the image's 20 s and the page's 30 s bound it.
+    A request whose time was the budget's remainder is `not downloaded:
+    time budget` when it runs out, not unanswered: its timer can fire a
+    millisecond before the budget's clock reads zero, and it says nothing
+    of its host.
   - The breaker is keyed by origin (scheme, host, port), the origin of
-    the hop that gave no response (`HttpError.at`), and skips queued images
-    only; one already in flight there ends on its own. The first build
-    keyed the image URL's host, which silenced a host that had answered
-    with a redirect, and an `https:` CDN for its refused `http:` image
-    (board #139 review).
+    the hop that gave no response (`HttpError.at`), and is consulted
+    before every hop a request makes (`beforeHop`), so a redirect into a
+    silent origin stops there; one already in flight there ends on its
+    own. The first build keyed the image URL's host, which silenced a host
+    that had answered with a redirect, and an `https:` CDN for its refused
+    `http:` image (board #139 review); the fix checked only each image's
+    own origin, so every later redirect into the silent one waited again
+    (re-review).
   - A re-ask that fails leaves the first answer, which is an answer still;
     the reply's last line names `full.md`. The marker is read through
     markdown emphasis, since Haiku may bold an opening.
@@ -2516,6 +2545,25 @@ type Run = {
   Defuddle that renamed it. Defuddle's own fallbacks for a body under 50
   words (its hidden-element retries) still apply, as they do to `page.md`.
   Date/Author: 2026-10-26, board #139 review fixes (branch `web-extraction-reach`).
+- Decision: `full.md`'s 5 s rule measures the article extraction's CPU
+  time on the main thread (`process.threadCpuUsage()`), not wall time; the
+  figure stays 5 s.
+  Rationale: the rule is meant to skip pages whose own extraction is
+  costly, and wall time also counts the time a loaded machine leaves the
+  process waiting for a core: in the eval's regression runs, at a load
+  average of 100–250, Django's settings page took 8.7 s and lost its
+  `full.md`, though its extraction is 0.7 s of work. The extraction
+  awaits nothing in between (the async extractors fetch only on domains
+  of their own, and none of the eval's pages is one), so its CPU time is
+  its cost.
+  Rejected: the process's CPU time (`process.cpuUsage()`, the
+  coordinator's first proposal): it counts V8's garbage-collector threads,
+  which run beside the extraction and added up to 65% (Django 1.2 s
+  against 0.72 s on the main thread, Unicode's emoji list 7.0 s against
+  5.2 s), so it would skip pages near the line on an idle machine. It
+  stays the fallback on Node 20, which has no per-thread figure, and errs
+  toward skipping there.
+  Date/Author: 2026-10-26, board #139 re-review (branch `web-extraction-reach`).
 
 ## Outcomes & Retrospective
 
