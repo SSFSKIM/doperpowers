@@ -115,8 +115,11 @@ session on the machine.
   them (Decision Log). Built as web 0.4.0 (`c4a040cc` the clipper,
   `c3ed9dc4` the mod): `page.md` unchanged on the eval's pages, and
   crates.io's MSRV answered live from `full.md` after `page.md` missed
-  (Surprises & Discoveries). The review and the evals the Decision Log
-  names wait.
+  (Surprises & Discoveries). The medium review's four findings fixed
+  (`d554d564`: `full.md` made past Defuddle's JSON-LD and site-extractor
+  routes, the image breaker keyed by the origin that gave no response,
+  image destinations read as markdown). The evals the Decision Log names
+  wait.
 
 ## Acceptance
 
@@ -612,6 +615,20 @@ its own:
        which fetch (a YouTube page's transcript, already `page.md`'s), stay
        off. A conversion that fails leaves the page as it was, with the note
        `the whole page (full.md) was not saved: <why>`.
+     - **Why the selector alone is not enough:** Defuddle 0.19.6 reads
+       `contentSelector` only after two ways of its own to the article. A
+       site extractor that claims the page (Wikipedia's
+       `#mw-content-text`, GitHub's issues) answers first, and a schema.org
+       `articleBody` or `text` in the page's JSON-LD trades the body for
+       the element holding that text, or for the text itself. So the
+       document `full.md` is made from loses its JSON-LD (the metadata is
+       `page.md`'s already), and the conversion runs with the flag Defuddle
+       holds while an extractor's own selector runs, which keeps the
+       extractors out. The flag is a private field: the clipper checks it
+       is there, so a Defuddle without it fails loudly (the note above, and
+       the tests) rather than give the article as the whole page. The
+       markdown conversion is Defuddle's own, as `page.md`'s (Decision Log,
+       board #139 review).
      - **Its images stay links:** absolute URLs, never downloaded (Tom's
        Hardware's page links 191, federalregister's 682). An agent fetches
        the one it needs, and the tool saves an image URL as a file.
@@ -623,9 +640,9 @@ its own:
        `the whole page (full.md) was not saved: extracting the article took <s> s`
        says so. A markdown page has none: its site wrote it, and nothing
        was dropped.
-     - **Its cost,** over the eval's 63 HTML pages: a median 0.1 s more
-       per fetch (p90 0.6 s) and 50 KB, 1.2 times `page.md`'s bytes (p90
-       2.4).
+     - **Its cost,** over the eval's HTML pages: a median 0.1 s more
+       per fetch (p90 0.5 s) and 46 KB, 1.3 times `page.md`'s bytes (p90
+       3.0), as built (Surprises & Discoveries).
 4. **Render when the plain fetch found no content.** When the extracted
    body has fewer than 50 words, the page is rendered and extracted again,
    and the result with more words is kept.
@@ -664,14 +681,23 @@ its own:
    - **What is downloaded:** every image link in the extracted markdown,
      made absolute against the final URL, `data:` URIs included. Six at a
      time, 20 seconds and 15 MB each, at most 40 per page, all within 30
-     seconds of the first. Duplicates are saved once.
-   - **A host that does not answer** one image (no response at all: a
+     seconds of the first. Duplicates are saved once. A link's destination
+     is read as markdown reads it before it is resolved: Defuddle writes
+     `chart_\(1\).png` and `&amp;` before an `&` that would read as an
+     entity, and resolved as written a `\` is a path separator to the URL
+     parser. A link kept remote is written back as a valid destination, in
+     angle brackets when it holds a parenthesis.
+   - **An origin that does not answer** one image (no response at all: a
      name that does not resolve, no connection or one closed unanswered,
      no headers within its time; an HTTP error status, or a body that
      began, is an answer) is not asked for the page's other queued images,
-     which keep their remote links with `not downloaded: <host> did not
-     answer an earlier image`. Most pages' images take half a second; the time went
-     to dead hosts, 20 s an image (board #139).
+     which keep their remote links with `not downloaded: <origin> did not
+     answer an earlier image`. The origin is the scheme, host and port, so
+     a refused `http:` image leaves the same CDN's `https:` ones asked, and
+     it is the one that gave no response: a host that redirected an image
+     to a dead one answered, and only the redirect's target is not asked
+     again. Most pages' images take half a second; the time went to dead
+     hosts, 20 s an image (board #139).
    - **Naming:** files are named by first appearance, `assets/01.<ext>`,
      with the extension taken from the response's content type.
    - **Links:** each link is rewritten to its local file. An image that
@@ -1631,8 +1657,21 @@ type Run = {
     Hardware's page (image-h2) links 191 images in `full.md`, all
     absolute, the Flight Simulator chart at L993 in the gallery above its
     game's paragraph.
-  Evidence: `/tmp/web139b/` (the comparison's records and analysis),
-  2026-10-26.
+  - After the review's fixes (`d554d564`), the same comparison over 56
+    URLs (the five `extraction-dropped` tasks added) again left `page.md`
+    as main saves it on 54 of 55 HTML pages, js-3's SVG the exception: no
+    eval page has an image whose destination Defuddle escaped. Of the
+    first run's 41 `full.md` files, 37 are byte for byte the same and 4
+    grew: kitguru (image-h3) and both Korean Wikipedia pages now carry
+    their menus, sidebars and footers, which JSON-LD or the Wikipedia
+    extractor had cut, and js-2 differs only by its render. None shrank in
+    bytes. Incheon Airport's (synthesis-4) lost 1,016 words while gaining
+    bytes: the extractor's path keeps hidden elements, and its first
+    `full.md` held 102 of Wikipedia's hidden citation-maintenance notes,
+    which `page.md` never had. The five new tasks each got a `full.md`
+    holding their facts, none of them in `page.md`.
+  Evidence: `/tmp/web139b/` (the comparisons' records and analysis,
+  `run1/` and `run2/`), 2026-10-26.
 
 ## Decision Log
 
@@ -2436,15 +2475,47 @@ type Run = {
     name that did not resolve, a connection refused, closed unanswered or
     failing TLS, no headers within the time). A body that began and then
     stalled is an answer; the image's 20 s and the page's 30 s bound it.
-  - The breaker is keyed by the image URL's host with its port, and skips
-    queued images only; one already in flight to that host ends on its
-    own.
+  - The breaker is keyed by origin (scheme, host, port), the origin of
+    the hop that gave no response (`HttpError.at`), and skips queued images
+    only; one already in flight there ends on its own. The first build
+    keyed the image URL's host, which silenced a host that had answered
+    with a redirect, and an `https:` CDN for its refused `http:` image
+    (board #139 review).
   - A re-ask that fails leaves the first answer, which is an answer still;
     the reply's last line names `full.md`. The marker is read through
     markdown emphasis, since Haiku may bold an opening.
   - `full.images` counts distinct image URLs, and the reply's line leaves
     the count out at 0 rather than say `0 images by URL`.
   Date/Author: 2026-10-26, board #139 build (branch `web-extraction-reach`).
+- Decision: `full.md` is made by Defuddle's own pipeline with its two
+  article finders taken away: the fresh document's JSON-LD removed, and the
+  conversion run on a `DefuddleClass` instance with its private
+  `_inExtractorPipelineRun` flag set, which keeps the site extractors out;
+  then Defuddle's `createMarkdownContent`, imported by path since the
+  package does not export it.
+  Rationale: the review of the first build (medium) found `contentSelector:
+  'body'` losing to both. A Wikipedia page gave its `#mw-content-text`, the
+  sidebar dropped. A page whose JSON-LD carried its `articleBody` gave its
+  `<article>`, so a sidebar and a chart beside a 300-word article made no
+  `full.md`, and no note. Defuddle 0.19.6 has no option for either. Its
+  pipeline is kept because it is what resolves lazy images (`data-src`,
+  `srcset`) and relative URLs, and writes the article part as `page.md`
+  writes it.
+  Rejected:
+  - Defuddle's markdown conversion over the raw body with the clipper's
+    own URL and lazy-image resolution: it rebuilds the part of Defuddle
+    the spike found plain Turndown lose (lazy images, relative URLs), and
+    the article part would no longer read as `page.md` does;
+  - a URL no extractor claims, with a `<base href>` for resolution:
+    extractors also claim by the document (one matches every URL), and the
+    URL feeds Defuddle's other steps;
+  - emptying the extractor registry for the call: global state of the
+    library, where an instance's flag is local.
+  The private flag holds while the dependency is pinned (it is, exactly);
+  the clipper checks it exists, and the extractor test fails on a
+  Defuddle that renamed it. Defuddle's own fallbacks for a body under 50
+  words (its hidden-element retries) still apply, as they do to `page.md`.
+  Date/Author: 2026-10-26, board #139 review fixes (branch `web-extraction-reach`).
 
 ## Outcomes & Retrospective
 
