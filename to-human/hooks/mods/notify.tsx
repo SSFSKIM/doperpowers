@@ -16,7 +16,8 @@ export function previewLine(text: string): string | undefined {
   const line = text
     .replace(/\[([^\]]*)\]\((?:[^()]|\([^()]*\))*\)/g, '$1')
     .replace(/^[ \t]*>/gm, '')
-    .replace(/`|\*\*|─+/g, ' ')
+    .replace(/`|─+/g, ' ')
+    .replace(/\*+/g, '')
     .replace(/\s+/g, ' ')
     .trim()
   if (line === '') return undefined

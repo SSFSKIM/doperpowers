@@ -103,6 +103,8 @@ describe('previewOf', () => {
     expect(previewOf(text(critical))).toBe('⚠ Critical The build broke in the runner. Handled: no.')
     const earlier = '<message>\n`⚠ Critical ────────`\nThe build broke.\n`──────`\n</message>'
     expect(previewOf(text(earlier))).toBe('⚠ Critical The build broke.')
+    const asking = '<message>Done; *pick per key or per org*, since it sets what customers pay.</message>'
+    expect(previewOf(text(asking))).toBe('Done; pick per key or per org, since it sets what customers pay.')
     expect(previewOf([{ type: 'tool_use' }, ...text('<message> </message><message>Next.</message>')])).toBe('Next.')
     expect(previewOf(text('No marks.'))).toBeUndefined()
   })
