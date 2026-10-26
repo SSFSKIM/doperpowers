@@ -953,6 +953,18 @@ class Checks(unittest.TestCase):
                                                              "text": "hi"}))["state"], "done")
         self.assertEqual([c["resolvedAgentId"] for c in self.mod.ops("tell")], ["aid0000000000023", "aid0000000000025"])
 
+    def test_n_a_teammates_address_is_an_id_as_the_tree_spells_it(self):
+        """A teammate's id is `<name>@<team>`, no task id's shape: taken by
+        the tree's spelling alone, and passed to the bridge as resolved."""
+        self.spawn_agent("worker@team", name="worker")
+        for ref in ("worker@team", "worker"):
+            o = self.send("tell", {"session": self.bridged.sid, "agentId": ref, "text": "hi"})
+            self.assertEqual(self.outcome(o), {"state": "done", "result": {"sent": True}})
+        o = self.outcome(self.send("stop-agent", {"session": self.bridged.sid, "agentId": "worker"}))
+        self.assertEqual(o["result"], {"agentId": "worker", "accepted": True, "resolvedAgentId": "worker@team"})
+        self.assertEqual([c["resolvedAgentId"] for c in self.mod.ops("tell") + self.mod.ops("stop-agent")],
+                         ["worker@team"] * 3)
+
     def test_n_a_note_the_session_did_not_keep_is_in_the_result(self):
         self.spawn_agent("aid0000000000026", name="unnoted")
         self.mod.note_error = "refused by a hook"

@@ -1,6 +1,5 @@
 import type { EngineInterface } from 'claude-code'
-import { INTERRUPT_HOLD_MS } from './bridge-state'
-import { message, state } from './bridge-state'
+import { INTERRUPT_HOLD_MS, message, state } from './bridge-state'
 import type { AgentStop, Answer, ListedAgent } from './bridge-state'
 import { noticeRow } from './bridge-rows'
 
@@ -42,9 +41,12 @@ const CONTROL = /[\u0000-\u001f\u007f]/
 const ENDED = new Set(['completed', 'failed', 'killed'])
 
 const isAgentRef = (ref: unknown): ref is string => typeof ref === 'string' && ref.trim() !== '' && ref.length <= AGENT_REF_MAX && !CONTROL.test(ref)
-/** An agent's id as the engine spells one (a task id: TaskStop's). */
-const AGENT_ID = /^[A-Za-z0-9_-]{1,64}$/
-const isResolved = (id: unknown): id is string | undefined => id === undefined || (typeof id === 'string' && AGENT_ID.test(id))
+/**
+ * A caller's resolved id: text as an agent ref is, then checked against the
+ * list alone (resolvedAgent), never a shape of its own, since the engine's
+ * ids are not one shape (a subagent's hex, a teammate's `<name>@<team>`).
+ */
+const isResolved = (id: unknown): id is string | undefined => id === undefined || isAgentRef(id)
 
 /** A running agent the engine lists, by its id first, then by its name; else the refusal. */
 export function resolveAgent(listed: readonly ListedAgent[], ref: string): { agent: ListedAgent } | { refusal: Answer } {

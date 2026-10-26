@@ -1781,9 +1781,24 @@ describe('stop-agent', () => {
     expect(await h.command({ op: 'tell', agentId: 'bg sleeper', resolvedAgentId: BG.id, text: 'hi' })).toMatchObject({ ok: false, code: 'unknown-agent' })
     expect(h.calls.filter((c) => c.op === 'tool')).toEqual([{ op: 'tool', args: { tool: 'TaskStop', task_id: BG.id } }])
     expect(h.calls.filter((c) => c.op === 'send')).toEqual([])
-    for (const resolvedAgentId of ['', 'a b', 7]) {
+    for (const resolvedAgentId of ['', '  ', 'a\nb', 'x'.repeat(AGENT_REF_MAX + 1), 7]) {
       expect(await h.command({ op: 'stop-agent', agentId: 'bg sleeper', resolvedAgentId })).toMatchObject({ ok: false, error: 'stop-agent needs an agent id or name' })
     }
+    // Any other spelling is checked against the list alone: one it does not hold is not running.
+    expect(await h.command({ op: 'stop-agent', agentId: 'bg sleeper', resolvedAgentId: 'a b' })).toMatchObject({ ok: false, code: 'unknown-agent' })
+  })
+
+  test("a teammate's id is its address (`<name>@<team>`): a caller's resolved id is taken as the list spells it, for a stop and a message", async () => {
+    const MATE = { id: 'worker@team', description: 'Work', type: 'teammate', status: 'running', name: 'worker' }
+    const h = harness({ agents: [MATE] })
+    await h.ready()
+    expect(await h.command({ op: 'tell', agentId: 'worker', resolvedAgentId: MATE.id, text: 'hi' })).toMatchObject({ ok: true, result: { sent: true } })
+    expect(await h.command({ op: 'stop-agent', agentId: 'worker', resolvedAgentId: MATE.id, from: 'desk' })).toMatchObject({
+      ok: true,
+      result: { agentId: 'worker', accepted: true, resolvedAgentId: MATE.id },
+    })
+    expect(h.calls.filter((c) => c.op === 'send')).toEqual([{ op: 'send', args: { to: { agentId: MATE.id }, text: `${TELL_LINE}\nhi` } }])
+    expect(h.calls.filter((c) => c.op === 'tool')).toEqual([{ op: 'tool', args: { tool: 'TaskStop', task_id: MATE.id } }])
   })
 
   test("TaskStop refused by a hook is no stop: the hook's reason is the error, and no note is left", async () => {
