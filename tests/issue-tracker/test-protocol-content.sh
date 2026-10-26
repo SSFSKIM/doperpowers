@@ -420,29 +420,21 @@ assert_not_contains "$proto" "scale-review dispatcher" \
     "...an Executor never meets a scale-review dispatcher"
 
 echo "E2 worker-protocol prose (env-issue, recomposition, scale review):"
-REVIEW="$REPO_ROOT/agents/qa-loop.md"
-[ -f "$REVIEW" ] || { echo "missing $REVIEW"; exit 1; }
-review="$(cat "$REVIEW")"
-# env-issue authority — all four worker protocols carry the same opt-in filing.
+# env-issue authority — all three worker protocols carry the same opt-in filing.
+# (The qa-loop agent carried a fourth copy until it was archived.)
 assert_contains "$arch" "env-issue" "architect protocol carries env-issue authority"
 assert_contains "$proto" "env-issue" "executor protocol carries env-issue authority"
 assert_contains "$spike" "env-issue" "spike protocol carries env-issue authority"
-assert_contains "$review" "env-issue" "review protocol carries env-issue authority"
-# The audit's authorization anchor: whichever transition comment MINTED the
-# pin. The Architect's build edge mints one too, so naming only the handoff
-# comment left a built-by-Architect ticket with no anchor at all.
-assert_contains "$review" "in-progress: plan-execution:" "the audit anchors on the build edge's pin-minting comment too"
 assert_contains "$proto" "never park, transition, or otherwise interrupt" "env-issue filing is fire-and-continue"
-# One doctrine in four voices: the load-bearing clauses are pinned in EVERY
+# One doctrine in three voices: the load-bearing clauses are pinned in EVERY
 # copy. The --note pin is a regression guard — board-register.sh dies on an
 # env-issue with neither --state nor --note, i.e. on this block's own default
 # path, and a worker filing on a side errand would drop the report silently.
-for _pair in "architect:$ARCHITECT" "executor:$PROTO" "spike:$SPIKE" "review:$REVIEW"; do
+for _pair in "architect:$ARCHITECT" "executor:$PROTO" "spike:$SPIKE"; do
     _name="${_pair%%:*}"; _body="$(cat "${_pair#*:}")"
-    # The three worker protocols are rendered against a bootstrap and name the
-    # dispatcher's binding; the qa-loop agent carries no placeholders at all and
-    # names the brief's ticket instead. Same command, same --note.
-    _ticket='{{ISSUE_NUMBER}}'; [ "$_name" = review ] && _ticket='<ticket>'
+    # Each protocol is rendered against a bootstrap and names the dispatcher's
+    # binding. Same command, same --note.
+    _ticket='{{ISSUE_NUMBER}}'
     assert_contains "$_body" "env-issue <P0..P3> --spawned-by $_ticket --note" "$_name: env-issue register command passes --note (board-register.sh refuses it otherwise)"
     assert_contains "$_body" "Default birth is needs-human" "$_name: env-issue birth default is needs-human"
     assert_contains "$_body" "opt-in authority, not a duty" "$_name: filing is opt-in authority, never a duty"
@@ -496,14 +488,6 @@ assert_contains "$arch" '[board-epic] reconcile: #<child>@<comment-id>' \
     "the claim marks every proposal it dispositioned, in the sweep's exact dedupe format"
 assert_contains "$arch" "Before you release the claim" \
     "the marking duty binds to every exit, not just the closing verdict"
-# Scale review: the audit object and the trail's target are BOTH PR-shaped by
-# default, and an epic has neither a PR body nor an executor gate comment.
-assert_contains "$review" "object is the CLOSURE PACKAGE" \
-    "scale audit rebinds its object to the closure package, not a PR"
-assert_contains "$review" "the absence of an artifact that cannot exist is never a" \
-    "scale audit never turns a nonexistent PR artifact into a finding"
-assert_contains "$review" "on the EPIC ticket, the same thread its closure" \
-    "the scale run's review trail has a valid target"
 assert_contains "$arch" "NEW comment each recomposition cycle" "closure package is a new comment per cycle (an in-place edit strands the epic)"
 # The integration ref is per-cycle supply, not inherited state: the
 # recomposition return clears branch: with pr:, so what the handoff passes is
@@ -535,9 +519,6 @@ assert_contains "$arch" "binds whether or not the ticket has" \
     "reconciliation-due handling does not depend on the ticket still having children"
 assert_contains "$arch" "continues into ordinary design of the ticket with" \
     "...and a childless reconciliation claim folds the findings into ordinary design"
-# Scale-review variant (QAgent).
-assert_contains "$review" "scale review" "review protocol names the scale-review variant"
-assert_contains "$review" "corrective child" "scale review verdict set: close or corrective child"
 
 echo "E2 board + decomposing doctrine (the mechanics' own prose):"
 DECOMPOSING="$REPO_ROOT/skills/decomposing/SKILL.md"
@@ -656,7 +637,7 @@ assert_contains "$execspec" "leave its workers' pins to it" "execspec: the main 
 assert_not_contains "$arch" "brainstorming's step" "architect: no step-number reference into brainstorming"
 
 # ACTOR NAMES ARE THE INTERFACE. The review is run by the owning seat's QA
-# agent (agents/qa-loop.md) and, on a PR nobody owns, by the review stand-in
+# agent (archived at archive/qa-loop/) and, on a PR nobody owns, by the review stand-in
 # seat the review dispatcher spawns. The fold left no review lane, no
 # Reviewer worker and no qa-loops skill, so prose naming any of them points
 # a reader at something nothing can dispatch. Six such sentences survived in

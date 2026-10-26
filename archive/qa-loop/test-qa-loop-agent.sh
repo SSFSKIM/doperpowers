@@ -9,8 +9,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-AGENT="$REPO_ROOT/agents/qa-loop.md"
+AGENT="$SCRIPT_DIR/qa-loop.md"
 
 FAILURES=0
 pass() { echo "  [PASS] $1"; }
