@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>tinycrate 1.0.200 | Fixture Registry</title>
+  <meta property="og:title" content="tinycrate 1.0.200">
+  <meta property="og:site_name" content="Fixture Registry">
+</head>
+<body>
+  <header class="site-header"><nav><a href="/">Home</a> <a href="/crates">Browse all crates</a> <a href="/login">Log in with GitHub</a></nav>
+    <div class="language-picker" style="display: none"><p>Choose a language: Deutsch, Español, Français, Italiano, Nederlands, Polski, Português, Svenska, Türkçe</p></div></header>
+  <div class="layout">
+    <main>
+      <article>
+        <h1>tinycrate 1.0.200</h1>
+        <p>Tinycrate is a small serialization framework for the test server. It turns the garden's records into bytes and back again, and it never allocates more than the record needs.</p>
+        <p>Every record has a schema, and the schema is checked when the record is read, so a record written by an older gardener still reads cleanly. The crate has no dependencies of its own beyond the standard library.</p>
+        <h2>Usage</h2>
+        <p>Add the crate to the manifest, derive the trait on a record, and call the writer. The reader returns the record or the first field that did not match its schema.</p>
+        <pre><code class="language-rust">let bytes = tinycrate::to_bytes(&amp;record)?;</code></pre>
+        <p>The writer and the reader are both streaming, so a large harvest log is never held in memory whole.</p>
+      </article>
+      <section class="gallery-strip">
+        <figure><img src="/charts/yield-spring.png" alt="Spring yield by bed"><figcaption>Spring yield: beans 41 kg, peas 17 kg</figcaption></figure>
+        <figure><img src="charts/yield-autumn.png" alt="Autumn yield by bed"><figcaption>Autumn yield: squash 63 kg, kale 9 kg</figcaption></figure>
+      </section>
+    </main>
+    <aside class="sidebar">
+      <h2>Metadata</h2>
+      <dl>
+        <dt>Published</dt><dd>about 1 year ago</dd>
+        <dt>MSRV</dt><dd>v1.31.0</dd>
+        <dt>License</dt><dd>MIT OR Apache-2.0</dd>
+        <dt>Crate size</dt><dd>77.6 KiB</dd>
+      </dl>
+      <h2>Install</h2>
+      <p>Run the following command in your project directory: cargo add tinycrate@1.0.200, or add the line to the manifest's dependencies table by hand.</p>
+      <h2>Owners</h2>
+      <p>Ada Fixture and the garden's records team maintain this crate, answer its issues, and publish each release from the shed.</p>
+    </aside>
+  </div>
+  <footer><p>Fixture Registry is run by the test server's gardeners. Status, privacy policy and terms of use.</p></footer>
+</body>
+</html>

@@ -8,6 +8,7 @@ import {
   SUMMARY_MODEL,
   SUMMARY_SYSTEM,
   SUMMARY_TIMEOUT_MS,
+  isNotOnPage,
   isPromptTooLong,
   parseNumbered,
   summaryPrompt,
@@ -34,6 +35,8 @@ beside it) in a cache every session and subagent on this machine shares.
   its path and an outline of line ranges and sizes; Read the sections you
   need. Use it for exact text, code, tables, or the whole argument.
 - Images are files: Read one to see it.
+- When the extraction leaves part of a page out (a sidebar, a gallery),
+  the whole page is saved beside it as full.md, and the reply names it.
 - Pages that render with JavaScript are rendered in a headless browser.
   PDFs are saved for Read, by page.
 - A copy saved in the last 24 hours is reused; \`refresh: true\` fetches again.
@@ -137,6 +140,12 @@ export function registerFetch(on: On) {
     let summary: Summary | undefined
     if (question !== undefined && textFile !== undefined) {
       summary = await summarize(result, textFile, question)
+      // The article did not answer: asked once more over the whole page, whose answer is the reply's.
+      // A second request that fails leaves the first answer standing.
+      if (summary.isAnswered && isNotOnPage(summary.text) && result.full !== undefined) {
+        const whole = await summarize(result, result.full.file, question)
+        if (whole.isAnswered) summary = { ...whole, isWholePage: true }
+      }
     }
     let page: string | undefined
     if (!summary?.isAnswered && isWhole(result) && textFile !== undefined) {

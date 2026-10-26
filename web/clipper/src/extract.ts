@@ -1,7 +1,9 @@
 // HTML to clipper-shaped markdown: Defuddle (the extraction Obsidian Web
 // Clipper is built on) over a linkedom document, with the frontmatter
 // Defuddle's --frontmatter mode writes, plus `fetched`.
-import { Defuddle } from 'defuddle/node'
+import { Defuddle, DefuddleClass } from 'defuddle/node'
+// Not in Defuddle's package exports, so named by path; the same module defuddle/node converts with.
+import { createMarkdownContent } from '../node_modules/defuddle/dist/markdown.js'
 import { parseHTML } from 'linkedom'
 import { findHeadings, splitLines } from './measure.ts'
 
@@ -9,6 +11,59 @@ export type PageMeta = { title?: string; author?: string; site?: string; publish
 export type Extracted = { body: string; meta: PageMeta; words: number }
 
 export async function extractHtml(html: string, url: string, siteFetch: typeof fetch): Promise<Extracted> {
+  const r = await Defuddle(prepare(html, url), url, { markdown: true, fetch: siteFetch })
+  const meta: PageMeta = {}
+  for (const k of ['title', 'author', 'site', 'published', 'description', 'domain', 'language'] as const) {
+    const v = typeof r[k] === 'string' ? unshield(r[k]).trim() : ''
+    if (v) meta[k] = v
+  }
+  return { body: tidyMarkdown(unshield(r.content ?? '')), meta, words: r.wordCount ?? 0 }
+}
+
+/**
+ * The whole page (full.md): the same document, parsed afresh since Defuddle
+ * changes the one it reads, converted from its <body> with Defuddle's removal
+ * passes off, so a sidebar or a gallery the article leaves out is kept, in the
+ * page's order. Hidden elements still go: kept, they add only language pickers
+ * and menus. It makes no request: the async extractors stay off (a YouTube
+ * page's transcript is page.md's already).
+ *
+ * Defuddle reads `contentSelector` only after two ways of its own to the
+ * article, and both are taken away here:
+ * - a schema.org `articleBody` or `text` (JSON-LD) trades the body for the
+ *   element holding that text, or for the text itself: the fresh document's
+ *   JSON-LD goes (page.md's frontmatter has the metadata already);
+ * - a site extractor (Wikipedia's `#mw-content-text`, GitHub's issues, …)
+ *   answers before the selector is read: the flag Defuddle holds while an
+ *   extractor's own selector runs keeps them out. It is a private field of
+ *   defuddle 0.19.6, pinned; the absence check makes a version without it
+ *   fail here (full.md not saved, with a note) and in the tests, not quietly
+ *   give the article.
+ */
+export function extractFull(html: string, url: string): { body: string; words: number } {
+  const doc = prepare(html, url)
+  for (const script of Array.from(doc.querySelectorAll('script'))) {
+    if (/ld\+json/i.test(script.getAttribute('type') ?? '')) script.remove()
+  }
+  const defuddle = new DefuddleClass(doc, {
+    url,
+    useAsync: false,
+    contentSelector: 'body',
+    removeExactSelectors: false,
+    removePartialSelectors: false,
+    removeLowScoring: false,
+    removeContentPatterns: false,
+    removeHiddenElements: true,
+  })
+  const internals = defuddle as unknown as { _inExtractorPipelineRun?: boolean }
+  if (internals._inExtractorPipelineRun !== false) throw new Error('this Defuddle has no flag to keep its site extractors out')
+  internals._inExtractorPipelineRun = true
+  const r = defuddle.parse()
+  return { body: tidyMarkdown(unshield(createMarkdownContent(r.content ?? '', url))), words: r.wordCount ?? 0 }
+}
+
+/** The document Defuddle reads: parsed, polyfilled as Defuddle polyfills its own, and through the clipper's pre-passes. */
+function prepare(html: string, url: string): Document {
   const doc = parseDocument(html)
   // The polyfills Defuddle applies to a linkedom document of its own.
   const loose = doc as unknown as { URL: string; styleSheets?: unknown; defaultView: { getComputedStyle?: unknown } | null }
@@ -18,13 +73,7 @@ export async function extractHtml(html: string, url: string, siteFetch: typeof f
   markWrapperLanguages(doc as unknown as Document)
   keepNoscriptImages(doc as unknown as Document)
   keepDatesAsData(doc as unknown as Document)
-  const r = await Defuddle(doc as unknown as Document, url, { markdown: true, fetch: siteFetch })
-  const meta: PageMeta = {}
-  for (const k of ['title', 'author', 'site', 'published', 'description', 'domain', 'language'] as const) {
-    const v = typeof r[k] === 'string' ? unshield(r[k]).trim() : ''
-    if (v) meta[k] = v
-  }
-  return { body: tidyMarkdown(unshield(r.content ?? '')), meta, words: r.wordCount ?? 0 }
+  return doc as unknown as Document
 }
 
 // linkedom builds only the structure a document's tags spell out. HTML lets a page

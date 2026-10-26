@@ -149,6 +149,19 @@ describe('the header', () => {
     const image = page({ kind: 'image', file: `${DIR}/image.png`, lines: undefined, tokens: undefined, outline: undefined, images: [] })
     expect(replyFor(image, { now: NOW, isAsked: false })).not.toContain(UNTRUSTED)
   })
+
+  test('a whole page saved beside the article is named on a line of its own, after the notes and before the untrusted-content line', async () => {
+    const full = { file: `${DIR}/full.md`, words: 7595, lines: 900, tokens: 25_000, images: 191 }
+    const line = `The whole page, menus and sidebars included: ${DIR}/full.md (7,595 words, ~25k tokens, 191 images by URL); Grep it for what this page leaves out.`
+    const outline = replyFor(page({ tokens: 9000, full, notes: ['a note'] }), { now: NOW, isAsked: false })
+    expect(outline.split('\n').slice(2, 6)).toEqual(['Fetched now', 'a note', line, UNTRUSTED])
+    const whole = replyFor(page({ full }), { now: NOW, isAsked: false, page: pageText() })
+    expect(whole.split('\n---\n')[0]!.split('\n').slice(-3)).toEqual([line, UNTRUSTED, ''])
+    // One image is one; a whole page with no image links leaves the count out.
+    expect(replyFor(page({ tokens: 9000, full: { ...full, words: 1, tokens: 850, images: 1 } }), { now: NOW, isAsked: false })).toContain(`(1 word, ~850 tokens, 1 image by URL);`)
+    expect(replyFor(page({ tokens: 9000, full: { ...full, images: 0 } }), { now: NOW, isAsked: false })).toContain(`full.md (7,595 words, ~25k tokens); Grep it`)
+    expect(replyFor(page({ tokens: 9000 }), { now: NOW, isAsked: false })).not.toContain('The whole page')
+  })
 })
 
 describe('R3: the answer', () => {
@@ -174,6 +187,25 @@ describe('R3: the answer', () => {
   test('a first line cut to fit says so', async () => {
     const reply = replyFor(page({ lines: 1 }), { now: NOW, isAsked: true, summary: { isAnswered: true, text: 'A.', model: 'haiku', header: { firstLine: 1, lastLine: 1, totalLines: 1, cut: true } } })
     expect(reply).toContain('(line 1 cut short, of 1: the rest was not read)')
+  })
+
+  test('with a whole page saved, its last line names full.md; an answer asked again over it says it is from the whole page', async () => {
+    const full = { file: `${DIR}/full.md`, words: 7595, lines: 900, tokens: 25_000, images: 191 }
+    const line = `The whole page, menus and sidebars included: ${DIR}/full.md (7,595 words, ~25k tokens, 191 images by URL); Grep it for what this page leaves out.`
+    const fromArticle = replyFor(page({ full, notes: ['a note'] }), { now: NOW, isAsked: true, summary: { isAnswered: true, text: 'It is 1024 [L22].', model: 'haiku', header } })
+    expect(fromArticle.split('\n').slice(2)).toEqual([
+      `— Answered by haiku from ${DIR}/page.md (lines 1–40 of 40). Read cited lines to check them.`,
+      '"The guide" · Example · 40 lines · 1 image · fetched now',
+      'a note',
+      line,
+    ])
+    const fromWhole = replyFor(page({ full }), {
+      now: NOW,
+      isAsked: true,
+      summary: { isAnswered: true, text: 'MIT OR Apache-2.0 [L412].', model: 'haiku', header: { firstLine: 1, lastLine: 900, totalLines: 900 }, isWholePage: true },
+    })
+    expect(fromWhole.split('\n')[2]).toBe(`— Answered by haiku from ${DIR}/full.md (the whole page: the article did not answer; lines 1–900 of 900). Read cited lines to check them.`)
+    expect(fromWhole.split('\n').at(-1)).toBe(line)
   })
 
   test('when the summary failed, the reply is R1 or R2 opening with why', async () => {

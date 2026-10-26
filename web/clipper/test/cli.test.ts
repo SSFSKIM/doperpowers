@@ -1,9 +1,11 @@
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
-import { writeFile, realpath } from 'node:fs/promises'
+import type { ChildProcess } from 'node:child_process'
+import { readFile, writeFile, realpath } from 'node:fs/promises'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { FULL_LIMITS } from '../src/clip.ts'
 import { startServer, tmpCache, send, fixture, entryContents } from './helpers.ts'
 
 const CLI = join(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'cli.ts')
@@ -90,4 +92,35 @@ test('a usage error exits non-zero with the reason on stderr', async () => {
   const r = await run(['frobnicate'])
   assert.notEqual(r.code, 0)
   assert.match(r.stderr, /usage/i)
+})
+
+test("full.md's 5 s rule reads the article extraction's CPU time: a clipper stopped mid-extraction, as a loaded machine stops it, still saves full.md", async t => {
+  // A page whose article takes about a second of CPU to extract (4,000 paragraphs; Defuddle grows faster than the page), and a sidebar outside it.
+  const para = '<p>' + 'The garden log records each bed, what was sown there, when it sprouted, and how much it gave at harvest. '.repeat(3) + '</p>'
+  const html = `<!doctype html><html><head><title>Log</title></head><body><nav><a href="/">Home</a></nav><main><article><h1>Log</h1>${para.repeat(4_000)}</article></main>`
+    + `<aside><h2>Facts</h2><p>${'The shed holds the seed tins and the watering timer. '.repeat(12)}</p></aside></body></html>`
+  let child: ChildProcess | undefined
+  const timers: NodeJS.Timeout[] = []
+  const site = await startServer({
+    '/log': (_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/html' })
+      // Once the page is sent, the clipper is extracting it: stopped there for longer than the limit, wall
+      // time passes and CPU time does not, as when a busy machine leaves the process waiting for a core.
+      res.end(html, () => timers.push(
+        setTimeout(() => child?.kill('SIGSTOP'), 300),
+        setTimeout(() => child?.kill('SIGCONT'), 300 + FULL_LIMITS.skipAfterMs + 700),
+      ))
+    },
+  })
+  t.after(async () => { for (const x of timers) clearTimeout(x); child?.kill('SIGCONT'); await site.close() })
+  const cacheDir = await tmpCache()
+  const out = await new Promise<string>(resolve => {
+    child = execFile(process.execPath, [CLI, 'fetch', `${site.origin}/log`, '--cache-dir', cacheDir],
+      { env: { ...process.env, WEB_CHROME: 'none', WEB_ALLOW_HOSTS: `127.0.0.1:${site.port}` } }, (_e, stdout) => resolve(stdout))
+  })
+  const result = JSON.parse(out)
+  assert.equal(result.ok, true, out)
+  assert.deepEqual(result.notes, [])
+  assert.ok(result.full, out.slice(0, 600))
+  assert.match(await readFile(result.full.file, 'utf8'), /The shed holds the seed tins/)
 })

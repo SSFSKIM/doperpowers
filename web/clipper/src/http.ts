@@ -43,10 +43,19 @@ export function networkErrorMessage(e: unknown): string {
 /** A request that failed on the way: the network, a timeout, a size limit. */
 export class HttpError extends Error {
   readonly timedOut: boolean
+  /**
+   * No response came at all: the name did not resolve, no connection was made
+   * or it closed unanswered, or no headers came within the time. A host that
+   * answered with any status, or began a body, did answer.
+   */
+  readonly unanswered: boolean
+  /** The URL whose request failed: a redirect's target when the request had followed one. */
+  at?: URL
 
-  constructor(message: string, timedOut = false) {
+  constructor(message: string, timedOut = false, unanswered = false) {
     super(message)
     this.timedOut = timedOut
+    this.unanswered = unanswered
     this.name = 'HttpError'
   }
 }
@@ -67,6 +76,8 @@ export type RequestOptions = {
   boundary: Boundary
   /** The page the request is made for; each hop gets the Referer `referrerFor` allows. */
   referrer?: string
+  /** Called before each hop is requested, the first included; what it throws ends the request. */
+  beforeHop?: (url: URL) => void
 }
 
 /**
@@ -97,7 +108,7 @@ export async function request(start: URL, o: RequestOptions): Promise<HttpRespon
   const limits: Limits = {
     timeLeft: () => Math.max(0, started + o.timeoutMs - Date.now()),
     headersLeft: () => Math.max(0, started + (headersMs ?? o.timeoutMs) - Date.now()),
-    noHeaders: () => new HttpError(headersMs === undefined ? `timed out after ${seconds(o.timeoutMs)} s` : `no response within ${seconds(headersMs)} s`, true),
+    noHeaders: () => new HttpError(headersMs === undefined ? `timed out after ${seconds(o.timeoutMs)} s` : `no response within ${seconds(headersMs)} s`, true, true),
     timeoutMs: o.timeoutMs,
     stallMs: o.stallMs,
   }
@@ -112,11 +123,18 @@ export async function request(start: URL, o: RequestOptions): Promise<HttpRespon
   }
   for (let hop = 0; ; hop++) {
     if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new HttpError(`unsupported scheme: ${url.protocol}`)
+    o.beforeHop?.(url)
     const port = Number(url.port) || (url.protocol === 'https:' ? 443 : 80)
+    const at = url
+    const failedAt = (e: unknown) => {
+      if (e instanceof HttpError) e.at ??= at
+      return e
+    }
     const addresses = await withTimeout(resolveChecked(url.hostname, port, { boundary: o.boundary }), limits.headersLeft(), limits.noHeaders)
-      .catch(e => { throw asTransportError(e) })
+      .catch(e => { throw failedAt(asTransportError(e)) })
     const referer = referrer === undefined ? undefined : referrerFor(referrer, url)
     const res = await once(url, addresses, { ...o, headers: referer ? { ...headers, referer } : headers, method, body }, limits)
+      .catch(e => { throw failedAt(e) })
     const location = res.headers.location
     if ([301, 302, 303, 307, 308].includes(res.status) && location) {
       if (hop >= MAX_REDIRECTS) throw new HttpError(`too many redirects (more than ${MAX_REDIRECTS})`)
@@ -148,7 +166,7 @@ const amount = (bytes: number) =>
  */
 function asTransportError(e: unknown): Error {
   if (e instanceof RefusedError || e instanceof HttpError) return e
-  return new HttpError(`network error: ${networkErrorMessage(e)}`)
+  return new HttpError(`network error: ${networkErrorMessage(e)}`, false, true)
 }
 
 function withTimeout<T>(p: Promise<T>, ms: number, error: () => Error): Promise<T> {
@@ -175,13 +193,15 @@ function once(url: URL, addresses: Address[], o: RequestOptions & { method: stri
     })
     const timers: NodeJS.Timeout[] = []
     let over = false
+    let answered = false
     const end = () => { over = true; for (const t of timers) clearTimeout(t) }
-    const fail = (e: Error) => { end(); reject(e instanceof HttpError ? e : new HttpError(`network error: ${networkErrorMessage(e)}`)) }
+    const fail = (e: Error) => { end(); reject(e instanceof HttpError ? e : new HttpError(`network error: ${networkErrorMessage(e)}`, false, !answered)) }
     // A limit that runs out fails the request with its own reason, before the teardown raises another.
     const abort = (e: HttpError) => { fail(e); req.destroy() }
     timers.push(setTimeout(() => abort(limits.noHeaders()), headersMs))
     req.on('error', fail)
     req.on('response', res => {
+      answered = true
       clearTimeout(timers[0])
       const done = (body: Buffer) => {
         end()
