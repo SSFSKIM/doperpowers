@@ -94,14 +94,15 @@ you dispatch at its pin, once your work is committed and self-reviewed.
 4. Fix every Critical and Important finding, and the Minor ones worth
    fixing now; the rest go in your report as deferred, each with why. Re-run
    the tests that cover the amended code and append the command and output
-   to your report — the reviewer does not re-run tests. Commit, package the
-   fix range (`review-package SPEC_FILE FIX_BASE FIX_HEAD`, FIX_BASE being
-   the head the reviewer last saw), and dispatch a fresh reviewer the same
-   way, its brief adding the fix package and the previous round's saved
-   report. Not a `SendMessage` resume of the finished one: that leaves you
-   waiting on nothing live, and the one observed was told to hand back
-   while its reviewer's report went to the top session. Repeat until both
-   verdicts are clean.
+   to your report — the reviewer does not re-run tests. Commit, rebuild the
+   whole-task package (`review-package SPEC_FILE BASE HEAD`) at the new head,
+   and package the fix range (`review-package SPEC_FILE FIX_BASE FIX_HEAD`,
+   FIX_BASE being the head the previous reviewer saw), and
+   dispatch a fresh reviewer the same way, its brief carrying both packages
+   and the previous round's saved verdict file. Not a `SendMessage` resume
+   of the finished one: that leaves you waiting on nothing live, and the one
+   observed was told to hand back while its reviewer's report went to the
+   top session. Repeat until both verdicts are clean.
 
 A finding you believe is wrong, or one that conflicts with the spec, is
 not yours to settle — you wrote the code. Fix the rest, and return it as
