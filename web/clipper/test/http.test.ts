@@ -141,6 +141,26 @@ test('without a time to the headers, the whole time covers the headers as before
   await assert.rejects(request(new URL(`${server.origin}/silent`), { timeoutMs: 1000, maxBytes: 1e6, boundary }), timedOut(/^timed out after 1 s$/))
 })
 
+test('a request that got no response is unanswered; one whose server answered, then failed, is not', async t => {
+  const unanswered = (expected: boolean) => (e: unknown) => {
+    assert.ok(e instanceof HttpError, String(e))
+    assert.equal(e.unanswered, expected, e.message)
+    return true
+  }
+  const { server, boundary } = await trickle(t, { chunks: 2, size: 1024, everyMs: 50, length: 1048576 })
+  // No headers within the time.
+  await assert.rejects(request(new URL(`${server.origin}/silent`), { timeoutMs: 500, maxBytes: 1e6, boundary }), unanswered(true))
+  // No connection: nothing listens on the port.
+  const closed = await startServer({})
+  await closed.close()
+  await assert.rejects(request(new URL(`${closed.origin}/`), { timeoutMs: 2000, maxBytes: 1e6, boundary: boundaryOf({ WEB_ALLOW_HOSTS: `127.0.0.1:${closed.port}` }) }), unanswered(true))
+  // A name that does not resolve (.invalid never does; a resolver that hangs times out, unanswered too).
+  await assert.rejects(request(new URL('http://no-such-host.invalid/x.png'), { timeoutMs: 3000, maxBytes: 1e6, boundary }), unanswered(true))
+  // Headers came, then the body stopped, or ran past the size limit: the host answered.
+  await assert.rejects(request(new URL(`${server.origin}/`), { timeoutMs: 10_000, stallMs: 500, maxBytes: 1e6, boundary }), unanswered(false))
+  await assert.rejects(request(new URL(`${server.origin}/`), { timeoutMs: 10_000, maxBytes: 1500, boundary }), unanswered(false))
+})
+
 test('https to a server that does not speak TLS is an HttpError, the failure https first falls back from', async t => {
   const server = await startServer({ '/': send('text/plain', 'plain') })
   t.after(() => server.close())

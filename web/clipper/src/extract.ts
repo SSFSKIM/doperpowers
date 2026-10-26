@@ -9,6 +9,39 @@ export type PageMeta = { title?: string; author?: string; site?: string; publish
 export type Extracted = { body: string; meta: PageMeta; words: number }
 
 export async function extractHtml(html: string, url: string, siteFetch: typeof fetch): Promise<Extracted> {
+  const r = await Defuddle(prepare(html, url), url, { markdown: true, fetch: siteFetch })
+  const meta: PageMeta = {}
+  for (const k of ['title', 'author', 'site', 'published', 'description', 'domain', 'language'] as const) {
+    const v = typeof r[k] === 'string' ? unshield(r[k]).trim() : ''
+    if (v) meta[k] = v
+  }
+  return { body: tidyMarkdown(unshield(r.content ?? '')), meta, words: r.wordCount ?? 0 }
+}
+
+/**
+ * The whole page (full.md): the same document, parsed afresh since Defuddle
+ * changes the one it reads, converted from its <body> with Defuddle's removal
+ * passes off, so a sidebar or a gallery the article leaves out is kept, in the
+ * page's order. Hidden elements still go: kept, they add only language pickers
+ * and menus. No site request is made: the async extractors stay off (a YouTube
+ * page's transcript is page.md's already).
+ */
+export async function extractFull(html: string, url: string): Promise<{ body: string; words: number }> {
+  const r = await Defuddle(prepare(html, url), url, {
+    markdown: true,
+    useAsync: false,
+    contentSelector: 'body',
+    removeExactSelectors: false,
+    removePartialSelectors: false,
+    removeLowScoring: false,
+    removeContentPatterns: false,
+    removeHiddenElements: true,
+  })
+  return { body: tidyMarkdown(unshield(r.content ?? '')), words: r.wordCount ?? 0 }
+}
+
+/** The document Defuddle reads: parsed, polyfilled as Defuddle polyfills its own, and through the clipper's pre-passes. */
+function prepare(html: string, url: string): Document {
   const doc = parseDocument(html)
   // The polyfills Defuddle applies to a linkedom document of its own.
   const loose = doc as unknown as { URL: string; styleSheets?: unknown; defaultView: { getComputedStyle?: unknown } | null }
@@ -18,13 +51,7 @@ export async function extractHtml(html: string, url: string, siteFetch: typeof f
   markWrapperLanguages(doc as unknown as Document)
   keepNoscriptImages(doc as unknown as Document)
   keepDatesAsData(doc as unknown as Document)
-  const r = await Defuddle(doc as unknown as Document, url, { markdown: true, fetch: siteFetch })
-  const meta: PageMeta = {}
-  for (const k of ['title', 'author', 'site', 'published', 'description', 'domain', 'language'] as const) {
-    const v = typeof r[k] === 'string' ? unshield(r[k]).trim() : ''
-    if (v) meta[k] = v
-  }
-  return { body: tidyMarkdown(unshield(r.content ?? '')), meta, words: r.wordCount ?? 0 }
+  return doc as unknown as Document
 }
 
 // linkedom builds only the structure a document's tags spell out. HTML lets a page

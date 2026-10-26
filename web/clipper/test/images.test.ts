@@ -2,11 +2,13 @@ import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtemp, readdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
+import { createServer as createTcpServer } from 'node:net'
+import type { Socket } from 'node:net'
 import { join } from 'node:path'
-import { findImageLinks, downloadImages } from '../src/images.ts'
+import { findImageLinks, downloadImages, IMAGE_LIMITS } from '../src/images.ts'
 import { Deadline } from '../src/deadline.ts'
 import { boundaryOf } from '../src/netguard.ts'
-import { startServer, send, pngBytes } from './helpers.ts'
+import { startServer, startTrap, send, pngBytes } from './helpers.ts'
 
 let server: Awaited<ReturnType<typeof startServer>>
 before(async () => {
@@ -75,4 +77,76 @@ test("an image host on another origin sees neither the page's query nor its frag
   assert.deepEqual(images.map(i => i.file), ['assets/01.png', 'assets/02.png'])
   assert.equal(referers.cross, `${site.origin}/`)
   assert.equal(referers.same, `${site.origin}/signed/page?token=s3cret&sig=abc`)
+})
+
+/** A TCP port that accepts each connection and never answers it, as a dead image host does. */
+async function startSilent() {
+  const sockets: Socket[] = []
+  const server = createTcpServer(sock => { sockets.push(sock) })
+  await new Promise<void>(r => server.listen(0, '127.0.0.1', r))
+  return {
+    port: (server.address() as { port: number }).port,
+    connections: () => sockets.length,
+    close: () => { for (const s of sockets) s.destroy(); return new Promise<void>(r => server.close(() => r())) },
+  }
+}
+
+/** Sets IMAGE_LIMITS fields for one test. */
+function limits(t: { after: (fn: () => void) => void }, over: Partial<typeof IMAGE_LIMITS>) {
+  const before = { ...IMAGE_LIMITS }
+  Object.assign(IMAGE_LIMITS, over)
+  t.after(() => { Object.assign(IMAGE_LIMITS, before) })
+}
+
+test('a host that did not answer one image is not asked for the page\'s others; a host that answered with an error status is', async t => {
+  // One at a time, so the first failure is known before the next image is taken.
+  limits(t, { concurrency: 1, timeoutMs: 400 })
+  const silent = await startSilent()
+  t.after(() => silent.close())
+  const closed = await startTrap()
+  await closed.close() // nothing listens: each connection is refused
+  const errors = await startServer({ '*': send('text/plain', 'gone', 404) })
+  t.after(() => errors.close())
+  const dead = `127.0.0.1:${silent.port}`
+  const refused = `127.0.0.1:${closed.port}`
+  const md = [
+    `![d1](http://${dead}/1.png)`, `![r1](http://${refused}/1.png)`, `![e1](${errors.origin}/1.png)`, '![ok](/img/a.png)',
+    `![d2](http://${dead}/2.png)`, `![r2](http://${refused}/2.png)`, `![e2](${errors.origin}/2.png)`, `![d3](http://${dead}/3.png)`,
+  ].join('\n\n') + '\n'
+  const allow = [`127.0.0.1:${server.port}`, dead, refused, `127.0.0.1:${errors.port}`].join(',')
+  const dir = await mkdtemp(join(tmpdir(), 'clip-images-'))
+  const started = Date.now()
+  const { images } = await downloadImages(md, `${server.origin}/page`, dir, new Deadline(10_000), boundaryOf({ WEB_ALLOW_HOSTS: allow }))
+  const byAlt = Object.fromEntries(images.map(i => [i.alt, i]))
+  assert.equal(byAlt.d1.error, 'timed out after 0 s')
+  assert.match(byAlt.r1.error!, /^network error: /)
+  assert.equal(byAlt.e1.error, 'HTTP 404')
+  assert.equal(byAlt.ok.file, 'assets/01.png')
+  assert.equal(byAlt.d2.error, `not downloaded: ${dead} did not answer an earlier image`)
+  assert.equal(byAlt.d3.error, `not downloaded: ${dead} did not answer an earlier image`)
+  assert.equal(byAlt.r2.error, `not downloaded: ${refused} did not answer an earlier image`)
+  assert.equal(byAlt.e2.error, 'HTTP 404')
+  assert.equal(silent.connections(), 1)
+  assert.deepEqual(errors.hits, ['/1.png', '/2.png'])
+  // The images not asked for keep their remote links.
+  assert.equal(byAlt.d2.url, `http://${dead}/2.png`)
+  assert.equal(byAlt.d2.file, undefined)
+  assert.ok(Date.now() - started < 2000, `took ${Date.now() - started} ms`)
+})
+
+test('a page\'s images share IMAGE_LIMITS.totalMs from the first download, well within the fetch\'s deadline', async t => {
+  limits(t, { totalMs: 1200 })
+  const timers: NodeJS.Timeout[] = []
+  const slow = await startServer({ '*': (req, res) => { timers.push(setTimeout(() => send('image/png', pngBytes(2000, req.url?.length ?? 0))(req, res), 500)) } })
+  t.after(async () => { for (const x of timers) clearTimeout(x); await slow.close() })
+  // Three rounds of six at 500 ms each: the third is still arriving when the 1.2 s are up.
+  const md = Array.from({ length: 18 }, (_, i) => `![i${i}](/img/${i}.png)`).join('\n\n') + '\n'
+  const dir = await mkdtemp(join(tmpdir(), 'clip-images-'))
+  const started = Date.now()
+  const { images } = await downloadImages(md, `${slow.origin}/page`, dir, new Deadline(60_000), boundaryOf({ WEB_ALLOW_HOSTS: `127.0.0.1:${slow.port}` }))
+  const took = Date.now() - started
+  assert.ok(took >= 1100 && took < 1600, `took ${took} ms`)
+  assert.equal(images.filter(i => i.file).length, 12)
+  assert.deepEqual(images.slice(12).map(i => i.error), Array(6).fill('not downloaded: time budget'))
+  assert.equal((await readdir(join(dir, 'assets'))).length, 12)
 })

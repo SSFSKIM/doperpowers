@@ -9,7 +9,7 @@ import { request, HttpError, USER_AGENT } from './http.ts'
 import { RefusedError } from './netguard.ts'
 import type { Boundary } from './netguard.ts'
 import { imageExtension, mediaTypeOf, sniff } from './route.ts'
-import type { Deadline } from './deadline.ts'
+import { Deadline } from './deadline.ts'
 import type { Drawn } from './draw.ts'
 
 /**
@@ -21,7 +21,11 @@ export type ImageEntry = { file?: string; url: string; alt: string; line: number
 /** Draws SVG files (absolute paths) as PNGs beside them: `drawSvgs` in the clipper. */
 export type DrawSvgs = (files: string[]) => Promise<Map<string, Drawn>>
 
-export const IMAGE_LIMITS = { concurrency: 6, timeoutMs: 20_000, maxBytes: 15 * 1048576, maxImages: 40, minBytes: 1024 }
+/**
+ * Each image's time is `timeoutMs`; a page's images together have `totalMs`
+ * from the first download (and never past the fetch's deadline).
+ */
+export const IMAGE_LIMITS = { concurrency: 6, timeoutMs: 20_000, totalMs: 30_000, maxBytes: 15 * 1048576, maxImages: 40, minBytes: 1024 }
 
 // Avif is left out: Read cannot show it, and image CDNs pick a format by Accept.
 const IMAGE_ACCEPT = 'image/webp,image/png,image/jpeg,image/gif,image/svg+xml,image/*;q=0.8,*/*;q=0.5'
@@ -109,39 +113,72 @@ export function findImageLinks(markdown: string): Link[] {
   return links
 }
 
-type Download = { file?: string; part?: string; ext?: string; bytes?: number; error?: string; svg?: string; notDrawn?: string }
+type Download = { file?: string; part?: string; ext?: string; bytes?: number; error?: string; svg?: string; notDrawn?: string; unanswered?: boolean }
+
+/** Each image link's target made absolute against `base`, in order; one that will not parse stays as written. */
+function absoluteTargets(links: Link[], base: string): string[] {
+  return links.map(l => {
+    try { return new URL(l.target, base).href } catch { return l.target }
+  })
+}
+
+/**
+ * The markdown with every image link's target made absolute, nothing
+ * downloaded, and the distinct targets in order of first appearance: the
+ * whole page's links (full.md), which an agent fetches one by one.
+ */
+export function absoluteImageLinks(markdown: string, base: string): { markdown: string; urls: string[] } {
+  const links = findImageLinks(markdown)
+  const absolute = absoluteTargets(links, base)
+  let out = ''
+  let at = 0
+  links.forEach((l, i) => {
+    // A data: URI stays as it was written, as a page.md image not saved does.
+    const keep = absolute[i].startsWith('data:')
+    out += markdown.slice(at, l.start) + (keep ? markdown.slice(l.start, l.end) : l.rewrite(absolute[i]))
+    at = l.end
+  })
+  out += markdown.slice(at)
+  return { markdown: out, urls: [...new Set(absolute)] }
+}
 
 export async function downloadImages(
   markdown: string, base: string, dir: string, deadline: Deadline, boundary: Boundary, draw?: DrawSvgs,
 ): Promise<{ markdown: string; images: ImageEntry[] }> {
   const links = findImageLinks(markdown)
-  const unique: string[] = []
-  const absolute = links.map(l => {
-    let url: string
-    try { url = new URL(l.target, base).href } catch { url = l.target }
-    if (!unique.includes(url)) unique.push(url)
-    return url
-  })
+  const absolute = absoluteTargets(links, base)
+  const unique = [...new Set(absolute)]
   const results = new Map<string, Download>()
   const queue = unique.slice(0, IMAGE_LIMITS.maxImages)
   for (const url of unique.slice(IMAGE_LIMITS.maxImages)) results.set(url, { error: `not downloaded: over the ${IMAGE_LIMITS.maxImages}-image limit` })
   const assets = join(dir, 'assets')
   if (queue.length) await mkdir(assets, { recursive: true })
 
+  // The page's images share one budget from here, within the fetch's deadline:
+  // most pages' images take half a second, and the time went to hosts that never answered.
+  const budget = new Deadline(Math.min(IMAGE_LIMITS.totalMs, deadline.remaining()))
+  // A host that did not answer one image is not asked for the rest: each would wait its full time.
+  const silent = new Set<string>()
+  const hostOf = (url: string) => { try { return new URL(url).host } catch { return '' } }
+
   // Downloads land in part files. Once the budget closes nothing more is
   // written (each write is synchronous after the check), so a download the
-  // deadline abandoned cannot leave a file in a published generation.
+  // budget abandoned cannot leave a file in a published generation.
   const gate = { closed: false }
-  const budget = new Promise<void>(resolve => { setTimeout(resolve, deadline.remaining()).unref() })
+  const closed = new Promise<void>(resolve => { setTimeout(resolve, budget.remaining()).unref() })
   let next = 0
   const worker = async () => {
-    while (next < queue.length && !deadline.expired()) {
+    while (next < queue.length && !budget.expired()) {
       const k = next++
       const url = queue[k]
-      results.set(url, await downloadOne(url, join(assets, `.part-${k}`), base, deadline, boundary, gate))
+      const host = hostOf(url)
+      if (host && silent.has(host)) { results.set(url, { error: `not downloaded: ${host} did not answer an earlier image` }); continue }
+      const got = await downloadOne(url, join(assets, `.part-${k}`), base, budget, boundary, gate)
+      if (got.unanswered && host) silent.add(host)
+      results.set(url, got)
     }
   }
-  await Promise.race([Promise.all(Array.from({ length: IMAGE_LIMITS.concurrency }, worker)), budget])
+  await Promise.race([Promise.all(Array.from({ length: IMAGE_LIMITS.concurrency }, worker)), closed])
   gate.closed = true
   for (const url of queue) if (!results.has(url)) results.set(url, { error: 'not downloaded: time budget' })
 
@@ -189,7 +226,7 @@ export async function downloadImages(
   return { markdown: out, images }
 }
 
-async function downloadOne(url: string, part: string, page: string, deadline: Deadline, boundary: Boundary, gate: { closed: boolean }): Promise<Download> {
+async function downloadOne(url: string, part: string, page: string, budget: Deadline, boundary: Boundary, gate: { closed: boolean }): Promise<Download> {
   let body: Buffer
   let mediaType: string
   try {
@@ -197,7 +234,7 @@ async function downloadOne(url: string, part: string, page: string, deadline: De
       ;({ body, mediaType } = decodeDataUri(url))
     } else {
       const parsed = new URL(url)
-      const timeoutMs = deadline.limit(IMAGE_LIMITS.timeoutMs)
+      const timeoutMs = budget.limit(IMAGE_LIMITS.timeoutMs)
       if (timeoutMs <= 0) return { error: 'not downloaded: time budget' }
       const res = await request(parsed, {
         headers: { accept: IMAGE_ACCEPT, 'user-agent': USER_AGENT }, referrer: page, timeoutMs, maxBytes: IMAGE_LIMITS.maxBytes, boundary,
@@ -209,7 +246,8 @@ async function downloadOne(url: string, part: string, page: string, deadline: De
     }
   } catch (e) {
     if (e instanceof RefusedError) return { error: `refused: ${e.brief}` }
-    if (e instanceof HttpError && e.timedOut && deadline.expired()) return { error: 'not downloaded: time budget' }
+    if (e instanceof HttpError && e.timedOut && budget.expired()) return { error: 'not downloaded: time budget' }
+    if (e instanceof HttpError && e.unanswered) return { error: e.message, unanswered: true }
     return { error: e instanceof Error ? e.message : String(e) }
   }
   const ext = imageExtension(mediaType)

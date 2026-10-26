@@ -43,10 +43,17 @@ export function networkErrorMessage(e: unknown): string {
 /** A request that failed on the way: the network, a timeout, a size limit. */
 export class HttpError extends Error {
   readonly timedOut: boolean
+  /**
+   * No response came at all: the name did not resolve, no connection was made
+   * or it closed unanswered, or no headers came within the time. A host that
+   * answered with any status, or began a body, did answer.
+   */
+  readonly unanswered: boolean
 
-  constructor(message: string, timedOut = false) {
+  constructor(message: string, timedOut = false, unanswered = false) {
     super(message)
     this.timedOut = timedOut
+    this.unanswered = unanswered
     this.name = 'HttpError'
   }
 }
@@ -97,7 +104,7 @@ export async function request(start: URL, o: RequestOptions): Promise<HttpRespon
   const limits: Limits = {
     timeLeft: () => Math.max(0, started + o.timeoutMs - Date.now()),
     headersLeft: () => Math.max(0, started + (headersMs ?? o.timeoutMs) - Date.now()),
-    noHeaders: () => new HttpError(headersMs === undefined ? `timed out after ${seconds(o.timeoutMs)} s` : `no response within ${seconds(headersMs)} s`, true),
+    noHeaders: () => new HttpError(headersMs === undefined ? `timed out after ${seconds(o.timeoutMs)} s` : `no response within ${seconds(headersMs)} s`, true, true),
     timeoutMs: o.timeoutMs,
     stallMs: o.stallMs,
   }
@@ -148,7 +155,7 @@ const amount = (bytes: number) =>
  */
 function asTransportError(e: unknown): Error {
   if (e instanceof RefusedError || e instanceof HttpError) return e
-  return new HttpError(`network error: ${networkErrorMessage(e)}`)
+  return new HttpError(`network error: ${networkErrorMessage(e)}`, false, true)
 }
 
 function withTimeout<T>(p: Promise<T>, ms: number, error: () => Error): Promise<T> {
@@ -175,13 +182,15 @@ function once(url: URL, addresses: Address[], o: RequestOptions & { method: stri
     })
     const timers: NodeJS.Timeout[] = []
     let over = false
+    let answered = false
     const end = () => { over = true; for (const t of timers) clearTimeout(t) }
-    const fail = (e: Error) => { end(); reject(e instanceof HttpError ? e : new HttpError(`network error: ${networkErrorMessage(e)}`)) }
+    const fail = (e: Error) => { end(); reject(e instanceof HttpError ? e : new HttpError(`network error: ${networkErrorMessage(e)}`, false, !answered)) }
     // A limit that runs out fails the request with its own reason, before the teardown raises another.
     const abort = (e: HttpError) => { fail(e); req.destroy() }
     timers.push(setTimeout(() => abort(limits.noHeaders()), headersMs))
     req.on('error', fail)
     req.on('response', res => {
+      answered = true
       clearTimeout(timers[0])
       const done = (body: Buffer) => {
         end()

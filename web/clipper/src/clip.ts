@@ -8,12 +8,12 @@ import { delimiter, join } from 'node:path'
 import { beginBuild, FAILURE_MEMORY_MS, publish, readFailure, readFresh, rememberFailure, REUSE_MAX_AGE_MS } from './cache.ts'
 import { CLIP_DEADLINE_MS, Deadline } from './deadline.ts'
 import { countWords, estimateTokens } from './estimate.ts'
-import { extractHtml, htmlFrontmatter, markdownWithFrontmatter } from './extract.ts'
+import { extractFull, extractHtml, htmlFrontmatter, markdownWithFrontmatter } from './extract.ts'
 import type { Extracted, PageMeta } from './extract.ts'
 import { guardedFetch, HttpError, request } from './http.ts'
 import type { HttpResponse } from './http.ts'
 import { DRAW_LIMITS, drawSvgs } from './draw.ts'
-import { downloadImages } from './images.ts'
+import { absoluteImageLinks, downloadImages } from './images.ts'
 import type { DrawSvgs, ImageEntry } from './images.ts'
 import { entryDir } from './key.ts'
 import { buildOutline, splitLines } from './measure.ts'
@@ -48,11 +48,14 @@ export type ClipOk = {
   /** Headings left out of `outline` to keep it within 80 entries. */
   outlineOmitted?: number
   images: ImageEntry[]
+  /** The whole page beside page.md (full.md), when it adds to it; `images` counts its distinct image links. */
+  full?: FullPage
   /** An SVG fetched by its own URL, drawn: the PNG beside it; or, not drawn, why. */
   png?: string
   notDrawn?: string
   notes: string[]
 }
+export type FullPage = { file: string; words: number; lines: number; tokens: number; images: number }
 export type ClipError = {
   ok: false
   url: string
@@ -75,6 +78,13 @@ export type ClipOptions = { cacheDir: string; refresh?: boolean; env?: NodeJS.Pr
 export const FETCH_LIMITS = { headersMs: 30_000, stallMs: 20_000, maxBytes: 50 * 1048576 }
 export const PDFTOTEXT_TIMEOUT_MS = 60_000
 export const RENDER_MIN_WORDS = 50
+/**
+ * The whole page (full.md) is saved when it adds `minWords` words to the
+ * article, or an image link; it is not made when the article's own extraction
+ * took over `skipAfterMs`: a page that large has nearly all of it in the
+ * article already, and its second conversion would take as long again.
+ */
+export const FULL_LIMITS = { minWords: 50, skipAfterMs: 5_000 }
 
 const ACCEPT = 'text/markdown;q=1.0, text/html;q=0.9, */*;q=0.8'
 const BROWSER_ACCEPT = 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8'
@@ -132,9 +142,16 @@ export async function clip(rawUrl: string, opts: ClipOptions): Promise<ClipResul
   }
   const siteFetch = guardedFetch(boundary, () => deadline.remaining())
   // 3. Extract, and 4. render when the plain fetch found no content: the result with more words.
+  // The article, and the document and time it came from, for the whole page (full.md).
+  const extracted = async (html: string, at: string) => {
+    const started = Date.now()
+    const ex = await extractHtml(html, at, siteFetch)
+    return { ex, html, extractMs: Date.now() - started }
+  }
   const extractPage = async (html: string, at: string): Promise<HtmlPage> => {
     const notes: string[] = []
-    const ex = await extractHtml(html, at, siteFetch)
+    const plain = await extracted(html, at)
+    const { ex } = plain
     if (ex.words < RENDER_MIN_WORDS) {
       const chrome = findChrome(env)
       if ('note' in chrome) notes.push(chrome.note)
@@ -144,30 +161,30 @@ export async function clip(rawUrl: string, opts: ClipOptions): Promise<ClipResul
         if ('note' in served) notes.push(served.note)
         else {
           // Extracted, and later its images resolved, against the document the browser ended on.
-          const again = await extractHtml(served.html, served.url, siteFetch)
-          const used = again.words > ex.words
+          const again = await extracted(served.html, served.url)
+          const used = again.ex.words > ex.words
           // Either way the agent is told when what it gets may not be the whole page.
           if (used && served.unsettled) notes.push(served.unsettled)
-          else if (Math.max(again.words, ex.words) < RENDER_MIN_WORDS) notes.push(`even rendered, the page holds only ${Math.max(again.words, ex.words)} words; its content may load later than the render waits, or come from an API the page calls`)
-          if (used) return { ex: again, url: served.url, rendered: true, notes }
+          else if (Math.max(again.ex.words, ex.words) < RENDER_MIN_WORDS) notes.push(`even rendered, the page holds only ${Math.max(again.ex.words, ex.words)} words; its content may load later than the render waits, or come from an API the page calls`)
+          if (used) return { ...again, url: served.url, rendered: true, notes }
         }
       }
     }
-    return { ex, url: at, rendered: false, notes }
+    return { ...plain, url: at, rendered: false, notes }
   }
   // A 403 is often a bot wall that turns away a client that is not a browser and lets
   // one through (techblog.woowahan.com: 403 to this client, the article to Chromium).
   // The page is the browser's only when the browser was served it with a 2xx, by its
   // own NetLog: a denial page renders to a DOM like any other. Otherwise the 403 stands.
-  let walled: { ex: Extracted; url: string; unsettled?: string } | undefined
+  let walled: { ex: Extracted; html: string; extractMs: number; url: string; unsettled?: string } | undefined
   if (res.status === 403) {
     const chrome = findChrome(env)
     if (!('note' in chrome)) {
       const out = await renderDom(res.url.href, chrome, deadline.limit(RENDER_LIMITS.timeoutMs), boundary)
       const served = 'note' in out ? undefined : servedPage(out)
       if (served && 'url' in served) {
-        const ex = await extractHtml(served.html, served.url, siteFetch)
-        if (ex.words >= RENDER_MIN_WORDS) walled = { ex, url: served.url, unsettled: served.unsettled }
+        const got = await extracted(served.html, served.url)
+        if (got.ex.words >= RENDER_MIN_WORDS) walled = { ...got, url: served.url, unsettled: served.unsettled }
       }
     }
   }
@@ -191,6 +208,7 @@ export async function clip(rawUrl: string, opts: ClipOptions): Promise<ClipResul
     let words: number | undefined
     let rendered = false
     let images: ImageEntry[] = []
+    let full: Omit<FullPage, 'file'> | undefined
     let textFile: string | undefined // the file lines and the outline are measured over
     let mode: OutlineMode = 'plain'
     const main = join(tmp, r.file)
@@ -210,7 +228,7 @@ export async function clip(rawUrl: string, opts: ClipOptions): Promise<ClipResul
       let page: HtmlPage | undefined
       if (walled) {
         const notes = [`the site refused a plain fetch (HTTP ${res.status}); this is the page as headless Chromium rendered it`]
-        page = { ex: walled.ex, url: walled.url, rendered: true, notes: walled.unsettled ? [...notes, walled.unsettled] : notes }
+        page = { ex: walled.ex, html: walled.html, extractMs: walled.extractMs, url: walled.url, rendered: true, notes: walled.unsettled ? [...notes, walled.unsettled] : notes }
       }
       else if (r.kind === 'html') page = await extractPage(decodeText(res.body, contentType, true), finalUrl)
       else {
@@ -242,6 +260,23 @@ export async function clip(rawUrl: string, opts: ClipOptions): Promise<ClipResul
         words = page.ex.words
         head = htmlFrontmatter(meta, words, finalUrl, fetchedAt)
         body = page.ex.body
+        // The whole page beside the article, when it adds to it (step 3).
+        if (page.extractMs > FULL_LIMITS.skipAfterMs) notes.push(`the whole page (full.md) was not saved: extracting the article took ${(page.extractMs / 1000).toFixed(1)} s`)
+        else {
+          try {
+            const whole = await extractFull(page.html, finalUrl)
+            const linked = absoluteImageLinks(whole.body, finalUrl)
+            const own = new Set(absoluteImageLinks(body, finalUrl).urls)
+            if (whole.words - words >= FULL_LIMITS.minWords || linked.urls.some(url => !own.has(url))) {
+              const text = htmlFrontmatter(meta, whole.words, finalUrl, fetchedAt) + linked.markdown
+              await writeFile(join(tmp, 'full.md'), text)
+              full = { words: whole.words, lines: splitLines(text).length, tokens: estimateTokens(text), images: linked.urls.length }
+            }
+          } catch (e) {
+            // An extra file: its failure costs the page nothing.
+            notes.push(`the whole page (full.md) was not saved: ${(e instanceof Error ? e.message : String(e)).slice(0, 200)}`)
+          }
+        }
       }
       // 5. Images. Their lines are counted in the text as written, frontmatter included.
       const text = head + body
@@ -296,6 +331,7 @@ export async function clip(rawUrl: string, opts: ClipOptions): Promise<ClipResul
       written = {
         ...result, dir, file: join(dir, r.file), ...(textFile && textFile !== main ? { text: join(dir, 'page.txt') } : {}),
         ...measured, images,
+        ...(full ? { full: { file: join(dir, 'full.md'), ...full } } : {}),
         ...(drawnSvg ? ('png' in drawnSvg ? { png: join(dir, drawnSvg.png) } : drawnSvg) : {}),
         notes,
       }
@@ -309,7 +345,8 @@ export async function clip(rawUrl: string, opts: ClipOptions): Promise<ClipResul
   }
 }
 
-type HtmlPage = { ex: Extracted; url: string; rendered: boolean; notes: string[] }
+/** The article kept, with the document it was extracted from and how long that took. */
+type HtmlPage = { ex: Extracted; html: string; extractMs: number; url: string; rendered: boolean; notes: string[] }
 
 /** The words of a markdown file under its frontmatter. */
 const bodyWords = (text: string) => countWords(text.replace(/^---\n[\s\S]*?\n---\n/, ''))

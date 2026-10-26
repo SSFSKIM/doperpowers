@@ -3,11 +3,12 @@ import assert from 'node:assert/strict'
 import { mkdtemp, readFile, readdir, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { clip, fetchHttpsFirst, FETCH_LIMITS, httpsFirst } from '../src/clip.ts'
+import { clip, fetchHttpsFirst, FETCH_LIMITS, FULL_LIMITS, httpsFirst } from '../src/clip.ts'
 import type { ClipResult, ClipOk, ClipError } from '../src/clip.ts'
 import { FAILURE_MEMORY_MS } from '../src/cache.ts'
 import { HttpError } from '../src/http.ts'
 import type { HttpResponse } from '../src/http.ts'
+import { estimateTokens } from '../src/estimate.ts'
 import { entryDir } from '../src/key.ts'
 import { RefusedError } from '../src/netguard.ts'
 import { startServer, startTrap, tmpCache, send, fixture, pngBytes, pdfBytes, PIXEL_GIF, noPdftotext, entryContents } from './helpers.ts'
@@ -35,6 +36,9 @@ before(async () => {
 
   server = await startServer({
     '/article': send('text/html; charset=utf-8', article),
+    '/crates/tinycrate': send('text/html; charset=utf-8', await fixture('sidebar.html')),
+    // The article, with one chart beside it and nothing more.
+    '/gallery': send('text/html; charset=utf-8', article.replace('</main>', '</main><aside><img src="/charts/beside.png" alt="Beside the article"></aside>')),
     '/img/diagram.png': send('image/png', pngBytes(2048, 1)),
     '/img/lazy.png': send('image/png', pngBytes(3000, 2)),
     '/img/small.png': send('image/png', pngBytes(1500, 3)),
@@ -132,6 +136,71 @@ test('an article becomes page.md with clipper frontmatter and its images downloa
   const meta = JSON.parse(await readFile(join(r.dir, 'meta.json'), 'utf8'))
   assert.equal(meta.cached, undefined)
   assert.equal(meta.dir, r.dir)
+})
+
+test('the whole page is saved beside the article as full.md: what the article leaves out, its images as absolute links never fetched', async () => {
+  const cacheDir = await tmpCache()
+  const hits = server.hits.length
+  const r = ok(await clip(`${server.origin}/crates/tinycrate`, { cacheDir, env }))
+  const page = await readFile(r.file, 'utf8')
+  assert.doesNotMatch(page, /77\.6 KiB/)
+
+  assert.ok(r.full, JSON.stringify(r))
+  assert.equal(r.full.file, join(r.dir, 'full.md'))
+  const full = await readFile(r.full.file, 'utf8')
+  // The sidebar's figures and the gallery's captions, in the page's order, around the article.
+  for (const text of ['MSRV', 'v1.31.0', 'MIT OR Apache-2.0', '77.6 KiB', 'Spring yield: beans 41 kg', 'Every record has a schema']) assert.ok(full.includes(text), text)
+  assert.ok(full.indexOf('Every record has a schema') < full.indexOf('Spring yield') && full.indexOf('Spring yield') < full.indexOf('77.6 KiB'))
+  // Hidden elements are still removed.
+  assert.doesNotMatch(full, /Choose a language/)
+  // Its images are links, made absolute, and never downloaded.
+  assert.ok(full.includes(`![Spring yield by bed](${server.origin}/charts/yield-spring.png)`), full)
+  assert.ok(full.includes(`![Autumn yield by bed](${server.origin}/crates/charts/yield-autumn.png)`), full)
+  assert.ok(!server.hits.slice(hits).some(h => h.includes('/charts/')), server.hits.slice(hits).join(' '))
+  assert.deepEqual(r.images, [])
+  assert.ok(!(await readdir(r.dir)).includes('assets'))
+
+  // page.md's frontmatter, with the whole page's own word count; measured as page.md is.
+  const front = (md: string) => md.slice(0, md.indexOf('\n---\n') + 5).replace(/\nword_count: \d+\n/, '\n')
+  assert.equal(front(full), front(page))
+  assert.match(front(page), /^---\ntitle: "tinycrate 1\.0\.200"\n/)
+  assert.match(full, new RegExp(`\\nword_count: ${r.full.words}\\n`))
+  assert.ok(r.full.words >= r.words! + FULL_LIMITS.minWords, `${r.full.words} against ${r.words}`)
+  assert.equal(r.full.lines, full.split('\n').length - 1)
+  assert.equal(r.full.tokens, estimateTokens(full))
+  assert.equal(r.full.images, 2)
+
+  // A cached copy carries it too.
+  const again = ok(await clip(`${server.origin}/crates/tinycrate`, { cacheDir, env }))
+  assert.equal(again.cached, true)
+  assert.deepEqual(again.full, r.full)
+})
+
+test('full.md is saved for an image link the article lacks, and not made when the whole page adds nothing', async () => {
+  const beside = ok(await clip(`${server.origin}/gallery`, { cacheDir: await tmpCache(), env }))
+  assert.ok(beside.full, JSON.stringify(beside))
+  assert.ok(beside.full.words < beside.words! + FULL_LIMITS.minWords, `${beside.full.words} against ${beside.words}`)
+  assert.ok((await readFile(beside.full.file, 'utf8')).includes(`![Beside the article](${server.origin}/charts/beside.png)`))
+
+  // The article fixture's page adds its menu and footer, a few words, and no image.
+  const r = ok(await clip(`${server.origin}/article`, { cacheDir: await tmpCache(), env }))
+  assert.equal(r.full, undefined)
+  assert.ok(!(await readdir(r.dir)).includes('full.md'))
+  assert.deepEqual(r.notes, [])
+  // A markdown page has none: its site wrote it, and nothing was dropped.
+  const md = ok(await clip(`${server.origin}/notes.md`, { cacheDir: await tmpCache(), env }))
+  assert.equal(md.full, undefined)
+})
+
+test('an article whose extraction took over FULL_LIMITS.skipAfterMs gets no full.md, and a note says so', async t => {
+  const before = FULL_LIMITS.skipAfterMs
+  FULL_LIMITS.skipAfterMs = -1 // any extraction takes longer
+  t.after(() => { FULL_LIMITS.skipAfterMs = before })
+  const r = ok(await clip(`${server.origin}/crates/tinycrate`, { cacheDir: await tmpCache(), env }))
+  assert.equal(r.full, undefined)
+  assert.ok(!(await readdir(r.dir)).includes('full.md'))
+  assert.equal(r.notes.length, 1, r.notes.join('|'))
+  assert.match(r.notes[0], /^the whole page \(full\.md\) was not saved: extracting the article took \d+\.\d s$/)
 })
 
 test('an image under 1 KiB keeps its remote link, with the reason recorded', async () => {
