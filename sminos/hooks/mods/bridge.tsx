@@ -5,7 +5,7 @@ import type {} from '../../../devcloud/types/devcloud'
 import { ASK_TOOL, PLUGIN, asyncAsks, observeAsks } from './ask'
 import { OFF_LINE, ON_LINE, isCuaEnabled, isLiveMarker, verdictOf } from './bridge-place'
 import type { Guard, Place, Verdict } from './bridge-place'
-import { EFFORTS, RESPAWN_FIRST_MS, RESPAWN_STEP_MS, capped, isEffort, loopKey, message, parsed, state } from './bridge-state'
+import { EFFORTS, INTERRUPT_HOLD_MS, RESPAWN_FIRST_MS, RESPAWN_STEP_MS, capped, isEffort, loopKey, message, parsed, state } from './bridge-state'
 import type { Answer, Capabilities, Command, Decision, DeliveryKey, DeskRun, Override, Readback, Request, Steer, Stops, Wake } from './bridge-state'
 import { adoptKept, adoptSeed, emit, emitOwed, emitTaken, endStep, forgetLive, poster, pump, releaseStepEnd, requeue, resyncEvents, stopChild } from './bridge-stream'
 import {
@@ -31,9 +31,10 @@ import { catalogNow } from './bridge-catalog'
 import { controlsOf } from './bridge-controls'
 import { READ_KINDS, readKind } from './bridge-reads'
 import { endOrphanedSideQuestions, sideQuestion } from './bridge-btw'
+import { engineError, forNotes, notifiedStops, stopAgent, tellAgent } from './bridge-agent-ops'
 
 export { OFF_LINE, ON_LINE } from './bridge-place'
-export { BLOCK_TAIL, TEXT_CAP, capped, resetBridge } from './bridge-state'
+export { BLOCK_TAIL, INTERRUPT_HOLD_MS, TEXT_CAP, capped, resetBridge } from './bridge-state'
 export { RESYNC_INPUT_CAP, RESYNC_MAX, STEP_END_WAIT_MS } from './bridge-stream'
 export { RECORD_WAIT_MS, TRANSCRIPT_RETRY_MS, onAskNote } from './bridge-requests'
 export { READBACK_WAIT_MS, READBACK_WINDOW_MS, ROWS_POLLS, ROWS_POLL_MS, compacted } from './bridge-rows'
@@ -101,7 +102,9 @@ export { FOLLOW_REASON, PANEL_REASON, SELF_REASON, UNKNOWN_REASON, UNMEASURED_RE
  * - bridge-controls.tsx: the desk's per-control capability map;
  * - bridge-reads.tsx (which takes `$`, as bridge-catalog.tsx does): the
  *   desk's reads of usage, config, settings and MCP servers, cut to what the
- *   desk shows.
+ *   desk shows;
+ * - bridge-btw.tsx and bridge-agent-ops.tsx (which take `$`): the desk's side
+ *   question, and one subagent stopped or told.
  *
  * The desk's ops (spec 2026-10-22-desk-control-surface-design.md): `read`
  * answers from `$` at once (`status`, `catalog`, and bridge-reads.tsx's
@@ -183,8 +186,6 @@ export function wakeText(when: WakeWhen, rows: readonly { isDelivery?: boolean; 
 const SUBMISSIONS_KEPT = 100
 /** After an abort, how long the Bash calls it ended have to report where they went. */
 export const INTERRUPT_WAIT_MS = 3_000
-/** How long a Bash call of an interrupted turn waits for the interrupt's record, at most (a TaskStop that never answers). */
-export const INTERRUPT_HOLD_MS = 10_000
 /**
  * A family alias's model as the engine resolves it first, before its own
  * table: ANTHROPIC_DEFAULT_<FAMILY>_MODEL. Each name is spelled out, as the
@@ -253,7 +254,7 @@ function recoverMainTurn(turnId: string) {
 export const TURN_UNKNOWN = 'turn state unknown since the bridge reloaded; retry after the next model request'
 const TURN_OPS = new Set(['steer', 'interrupt', 'compact'])
 /** The ops this bridge answers (DX5 `capabilities.ops`), and the reads (`read`'s kinds). */
-export const OPS = ['ping', 'steer', 'interrupt', 'stop', 'model', 'compact', 'deliver', 'answer', 'read', 'command', 'btw']
+export const OPS = ['ping', 'steer', 'interrupt', 'stop', 'model', 'compact', 'deliver', 'answer', 'read', 'command', 'btw', 'stop-agent', 'tell']
 export const READS = ['status', 'catalog', ...READ_KINDS]
 /** The DX5 protocol the capabilities speak: 2 is the desk's control surface (capabilities, `read`, `command`). */
 export const CAPABILITIES_PROTOCOL = 2
@@ -352,6 +353,10 @@ function commandAnswer($: EngineInterface, command: Command): Answered | Promise
       return deskCommand($, command)
     case 'btw':
       return sideQuestion($, command.id, command.prompt)
+    case 'stop-agent':
+      return stopAgent($, command.agentId, command.from, command.resolvedAgentId)
+    case 'tell':
+      return tellAgent($, command.agentId, command.text, command.resolvedAgentId)
     default:
       return { ok: false, error: `unknown op: ${command.op}` }
   }
@@ -780,6 +785,9 @@ async function interrupt($: EngineInterface, from: unknown): Promise<Answer> {
   }
 }
 
+/** The tool that runs a subagent: `Agent` (`Task` on an older engine). */
+const AGENT_TOOLS: ReadonlySet<string> = new Set(['Agent', 'Task'])
+
 /** A task id as the engine spells one (DX6 `stop`). */
 const TASK_ID = /^[A-Za-z0-9_-]{1,64}$/
 
@@ -810,12 +818,6 @@ async function stopTask($: EngineInterface, taskId: unknown, from: unknown): Pro
   }
   await recordStop($, taskId, from)
   return { ok: true, result: { taskId } }
-}
-
-/** A tool's error text without the engine's `<tool_use_error>` wrapping. */
-function engineError(text: string | undefined): string {
-  const t = (text ?? '').replace(/^\s*<tool_use_error>([\s\S]*)<\/tool_use_error>\s*$/, '$1').trim()
-  return t === '' ? 'TaskStop failed' : t
 }
 
 /** The line a stop leaves the model, and DX4 reads as the row's whole text (sminos_jobs.STOP_NOTE). */
@@ -1904,6 +1906,11 @@ export function registerBridge(on: On) {
         await Promise.race([interrupted.recorded, new Promise<void>((resolve) => (held = $.clock.after(INTERRUPT_HOLD_MS, resolve)))])
         held?.cancel()
       }
+      // An Agent call while the desk stops an agent: the call the stop ended
+      // goes back to its loop with the stop's note in (bridge-agent-ops.tsx).
+      if (AGENT_TOOLS.has(e.tool)) {
+        await forNotes($, [...state.agentStops])
+      }
       const shown = result.deny === undefined ? shownText(result) : undefined
       const text = capped(shown)
       const denied = capped(result.deny)
@@ -2059,6 +2066,12 @@ export function registerBridge(on: On) {
     const transitionsAt = state.transitions
     const isLive = state.post !== undefined
     const agentId = e.agentId ?? null
+    // A background agent the desk stopped: its task notification, which may
+    // start its parent's next request, waits for the stop's note
+    // (bridge-agent-ops.tsx). The queue's record is no row of a conversation.
+    if (e.door !== 'queue') {
+      await forNotes($, notifiedStops(e.message))
+    }
     const stored = await next(e)
     if (isLive && stored.deny === undefined) {
       announceRow(e.door, e.door === 'note' ? stored.message : e.message, stored.uuid, agentId)

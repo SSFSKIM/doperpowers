@@ -44,6 +44,7 @@ import {
 import { ROUTE_TABLES } from '../../hooks/mods/bridge-routes'
 import { BTW_FRAME, BTW_REFUSAL_WAIT_MS, NOTHING_TO_FORK } from '../../hooks/mods/bridge-btw'
 import { controlsOf } from '../../hooks/mods/bridge-controls'
+import { AGENT_REF_MAX, TELL_LINE, agentStopNote } from '../../hooks/mods/bridge-agent-ops'
 
 tier('user')
 
@@ -191,6 +192,8 @@ function harness(
      * two harnesses, it is what a reloaded module finds of the one before it.
      */
     sessionState?: Map<string, unknown>
+    /** `$.session.send` answers not delivered, with this reason. */
+    sendRefuses?: string
   } = {},
 ) {
   const hooks: { event: string; matcher: Matcher; handler: Handler }[] = []
@@ -296,6 +299,10 @@ function harness(
           return Promise.resolve(keep())
         }
         return new Promise((resolve) => appends.push(() => resolve(keep())))
+      },
+      send: async (args: unknown) => {
+        calls.push({ op: 'send', args })
+        return options.sendRefuses !== undefined ? { isDelivered: false, reason: options.sendRefuses } : { isDelivered: true }
       },
       compact: (args: unknown) => {
         calls.push({ op: 'compact', args })
@@ -1619,6 +1626,300 @@ describe('stop', () => {
       expect(await h.command({ op: 'stop', taskId })).toMatchObject({ ok: false, error: 'stop needs a task id' })
     }
     expect(h.calls.filter((c) => c.op === 'tool')).toEqual([])
+  })
+})
+
+describe('stop-agent', () => {
+  const BG = { id: 'a1b2c3d4e5f6a7b8c', description: 'Sleep a while', type: 'general-purpose', status: 'running', name: 'bg sleeper' }
+  const FG = { id: 'af00000000000000f', description: 'Look around', type: 'Explore', status: 'running' }
+  const DONE = { id: 'ad00000000000000d', description: 'Done already', type: 'general-purpose', status: 'completed', name: 'finished one' }
+
+  test('one running agent stopped by its id with TaskStop: accepted, the spelling asked, no resolved id', async () => {
+    const h = harness({ agents: [BG, FG] })
+    await h.ready()
+    expect(await h.command({ op: 'stop-agent', agentId: FG.id, from: 'desk' })).toMatchObject({ ok: true, result: { agentId: FG.id, accepted: true } })
+    const answer = h.ofType('result').at(-1)!
+    expect((answer.result as Record<string, unknown>).resolvedAgentId).toBeUndefined()
+    expect(h.calls.filter((c) => c.op === 'tool')).toEqual([{ op: 'tool', args: { tool: 'TaskStop', task_id: FG.id } }])
+  })
+
+  test('a name with a space is resolved to the id the engine lists, stopped by that id, and answered with both', async () => {
+    const h = harness({ agents: [BG, FG] })
+    await h.ready()
+    expect(await h.command({ op: 'stop-agent', agentId: 'bg sleeper', from: 'desk' })).toMatchObject({
+      ok: true,
+      result: { agentId: 'bg sleeper', accepted: true, resolvedAgentId: BG.id },
+    })
+    expect(h.calls.filter((c) => c.op === 'tool')).toEqual([{ op: 'tool', args: { tool: 'TaskStop', task_id: BG.id } }])
+  })
+
+  test('the parent is left the note row: stopped by the person, not to be started again or redone; from the desk or outside the terminal', async () => {
+    const h = harness({ agents: [BG, FG] })
+    await h.ready()
+    await h.command({ op: 'stop-agent', agentId: 'bg sleeper', from: 'desk' })
+    await h.command({ op: 'stop-agent', agentId: FG.id })
+    expect(agentStopNote('bg sleeper', 'desk')).toBe(
+      'Agent bg sleeper was stopped by the person from the desk: it is not running. Do not start it again or redo its task unless the person asks.',
+    )
+    const record = said(h.conversation)
+    expect(record).toContain(agentStopNote('bg sleeper', 'desk'))
+    expect(record).toContain(`Agent ${FG.id} was stopped by the person from outside the terminal: it is not running.`)
+    // Each note is named as the row it became, as the stop's and the interrupt's are.
+    expect(h.ofType('row-seen').filter((e) => e.door === 'note')).toHaveLength(2)
+  })
+
+  test('an id or name the engine lists as no running agent is refused unknown-agent before any TaskStop', async () => {
+    const h = harness({ agents: [BG, DONE] })
+    await h.ready()
+    for (const agentId of ['nobody', DONE.id, 'finished one', 'Sleep a while', 'BG SLEEPER']) {
+      expect(await h.command({ op: 'stop-agent', agentId })).toMatchObject({ ok: false, code: 'unknown-agent' })
+    }
+    expect(h.calls.filter((c) => c.op === 'tool')).toEqual([])
+    expect(said(h.conversation)).toBe('')
+  })
+
+  test('a name two running agents hold is refused, naming their ids: stop one by its id', async () => {
+    const twin = { ...FG, name: 'bg sleeper' }
+    const h = harness({ agents: [BG, twin] })
+    await h.ready()
+    const answer = await h.command({ op: 'stop-agent', agentId: 'bg sleeper' })
+    expect(answer).toMatchObject({ ok: false, code: 'ambiguous-agent' })
+    expect(String(answer.error)).toContain(BG.id)
+    expect(String(answer.error)).toContain(twin.id)
+    expect(h.calls.filter((c) => c.op === 'tool')).toEqual([])
+  })
+
+  test("an id comes before a name, as the engine's resolver takes them", async () => {
+    const h = harness({ agents: [{ ...BG, name: FG.id }, FG] })
+    await h.ready()
+    expect(await h.command({ op: 'stop-agent', agentId: FG.id })).toMatchObject({ ok: true, result: { agentId: FG.id } })
+    expect(h.calls.filter((c) => c.op === 'tool')).toEqual([{ op: 'tool', args: { tool: 'TaskStop', task_id: FG.id } }])
+  })
+
+  test('an agent waiting or idle is still running; the ref is 1 to 128 characters, not blank, no control character', async () => {
+    const h = harness({ agents: [{ ...BG, status: 'waiting' }, { ...FG, status: 'idle' }] })
+    await h.ready()
+    expect(await h.command({ op: 'stop-agent', agentId: BG.id })).toMatchObject({ ok: true })
+    expect(await h.command({ op: 'stop-agent', agentId: FG.id })).toMatchObject({ ok: true })
+    for (const agentId of [undefined, '', '   ', 'a\nb', 'a\u0000', 'x'.repeat(AGENT_REF_MAX + 1), 7]) {
+      expect(await h.command({ op: 'stop-agent', agentId })).toMatchObject({ ok: false, error: 'stop-agent needs an agent id or name' })
+    }
+    expect(h.calls.filter((c) => c.op === 'tool')).toHaveLength(2)
+  })
+
+  test("TaskStop's refusal is the answer's error in the engine's words, and no note is left", async () => {
+    const h = harness({ agents: [BG] })
+    await h.ready()
+    ;(h.engine as unknown as { tool: { call: (a: Record<string, unknown>) => Promise<unknown> } }).tool.call = async () => ({
+      text: `<tool_use_error>Task ${BG.id} is not running (status: completed)</tool_use_error>`,
+      isError: true,
+    })
+    expect(await h.command({ op: 'stop-agent', agentId: BG.id })).toMatchObject({ ok: false, error: `Task ${BG.id} is not running (status: completed)` })
+    expect(said(h.conversation)).toBe('')
+  })
+
+  test("a foreground agent's Agent call, which the stop ends, returns to its loop only once the note is in", async () => {
+    const h = harness({ agents: [FG], holdAppend: true })
+    await h.ready()
+    await h.turn('t1')
+    let finish: () => void = () => undefined
+    let isBack = false
+    const call = Promise.resolve(
+      h.hook('tool.call', { tool: 'Agent' })(h.engine, { tool: 'Agent', tool_use_id: 'tuA', description: 'Look around', prompt: 'look' }, () =>
+        new Promise((resolve) => (finish = () => resolve({ text: '[Request interrupted by user for tool use]', isError: true }))),
+      ),
+    ).then(() => (isBack = true))
+    await h.settle()
+    const stopped = h.command({ op: 'stop-agent', agentId: FG.id, from: 'desk' })
+    await h.settle()
+    finish()
+    await h.settle()
+    expect(isBack, 'held for the note').toBe(false)
+    h.appends.shift()!()
+    await call
+    expect(isBack).toBe(true)
+    expect(await stopped).toMatchObject({ ok: true })
+    expect(said(h.conversation)).toContain(agentStopNote(FG.id, 'desk'))
+  })
+
+  test('the hold is bounded: a note that never comes lets the Agent call go after INTERRUPT_HOLD_MS', async () => {
+    const h = harness({ agents: [FG], holdAppend: true })
+    await h.ready()
+    await h.turn('t1')
+    let finish: () => void = () => undefined
+    let isBack = false
+    const call = Promise.resolve(
+      h.hook('tool.call', { tool: 'Agent' })(h.engine, { tool: 'Agent', tool_use_id: 'tuA', description: 'Look around', prompt: 'look' }, () =>
+        new Promise((resolve) => (finish = () => resolve({ text: 'interrupted', isError: true }))),
+      ),
+    ).then(() => (isBack = true))
+    await h.settle()
+    void h.command({ op: 'stop-agent', agentId: FG.id }).catch(() => undefined)
+    await h.settle()
+    finish()
+    await h.settle()
+    expect(isBack).toBe(false)
+    await h.fire(INTERRUPT_HOLD_MS)
+    await call
+    expect(isBack).toBe(true)
+  })
+
+  test('the id a caller resolved is the one acted on, kept apart from the spelling asked; one no longer running is refused, never its namesake', async () => {
+    const replacement = { ...FG, id: 'ae00000000000000e', name: 'bg sleeper' }
+    const h = harness({ agents: [BG, FG] })
+    await h.ready()
+    expect(await h.command({ op: 'stop-agent', agentId: 'bg sleeper', resolvedAgentId: BG.id, from: 'desk' })).toMatchObject({
+      ok: true,
+      result: { agentId: 'bg sleeper', accepted: true, resolvedAgentId: BG.id },
+    })
+    expect(said(h.conversation)).toContain(agentStopNote('bg sleeper', 'desk'))
+    // BG ended and another agent took its name between the caller's check and the stop.
+    h.setAgents([{ ...BG, status: 'killed' }, replacement])
+    const answer = await h.command({ op: 'stop-agent', agentId: 'bg sleeper', resolvedAgentId: BG.id, from: 'desk' })
+    expect(answer).toMatchObject({ ok: false, code: 'unknown-agent' })
+    expect(String(answer.error)).toContain(BG.id)
+    expect(await h.command({ op: 'tell', agentId: 'bg sleeper', resolvedAgentId: BG.id, text: 'hi' })).toMatchObject({ ok: false, code: 'unknown-agent' })
+    expect(h.calls.filter((c) => c.op === 'tool')).toEqual([{ op: 'tool', args: { tool: 'TaskStop', task_id: BG.id } }])
+    expect(h.calls.filter((c) => c.op === 'send')).toEqual([])
+    for (const resolvedAgentId of ['', '  ', 'a\nb', 'x'.repeat(AGENT_REF_MAX + 1), 7]) {
+      expect(await h.command({ op: 'stop-agent', agentId: 'bg sleeper', resolvedAgentId })).toMatchObject({ ok: false, error: 'stop-agent needs an agent id or name' })
+    }
+    // Any other spelling is checked against the list alone: one it does not hold is not running.
+    expect(await h.command({ op: 'stop-agent', agentId: 'bg sleeper', resolvedAgentId: 'a b' })).toMatchObject({ ok: false, code: 'unknown-agent' })
+  })
+
+  test("a teammate's id is its address (`<name>@<team>`): a caller's resolved id is taken as the list spells it, for a stop and a message", async () => {
+    const MATE = { id: 'worker@team', description: 'Work', type: 'teammate', status: 'running', name: 'worker' }
+    const h = harness({ agents: [MATE] })
+    await h.ready()
+    expect(await h.command({ op: 'tell', agentId: 'worker', resolvedAgentId: MATE.id, text: 'hi' })).toMatchObject({ ok: true, result: { sent: true } })
+    expect(await h.command({ op: 'stop-agent', agentId: 'worker', resolvedAgentId: MATE.id, from: 'desk' })).toMatchObject({
+      ok: true,
+      result: { agentId: 'worker', accepted: true, resolvedAgentId: MATE.id },
+    })
+    expect(h.calls.filter((c) => c.op === 'send')).toEqual([{ op: 'send', args: { to: { agentId: MATE.id }, text: `${TELL_LINE}\nhi` } }])
+    expect(h.calls.filter((c) => c.op === 'tool')).toEqual([{ op: 'tool', args: { tool: 'TaskStop', task_id: MATE.id } }])
+  })
+
+  test("TaskStop refused by a hook is no stop: the hook's reason is the error, and no note is left", async () => {
+    const h = harness({ agents: [BG] })
+    await h.ready()
+    ;(h.engine as unknown as { tool: { call: (a: Record<string, unknown>) => Promise<unknown> } }).tool.call = async () => ({ deny: 'policy: no stops today' })
+    const answer = await h.command({ op: 'stop-agent', agentId: BG.id })
+    expect(answer).toMatchObject({ ok: false })
+    expect(String(answer.error)).toContain('policy: no stops today')
+    expect(said(h.conversation)).toBe('')
+    expect(h.ofType('row-seen').filter((e) => e.door === 'note')).toHaveLength(0)
+  })
+
+  test("a background agent's task notification waits for the stop's note, so the parent's next request carries both", async () => {
+    const h = harness({ agents: [BG], holdAppend: true })
+    await h.ready()
+    const stopped = h.command({ op: 'stop-agent', agentId: BG.id, from: 'desk' })
+    await h.settle()
+    // TaskStop answered and queued the notification; the note is not kept yet.
+    const notification = { type: 'user', content: [{ type: 'text', text: `<task-notification>\n<task-id>${BG.id}</task-id>\n<status>killed</status>\n</task-notification>` }] }
+    let isKept = false
+    const kept = Promise.resolve(
+      h.hook('session.append', { door: 'delivery' })(h.engine, { door: 'delivery', message: notification, uuid: 'n1', origin: { kind: 'task-notification' } }, async (inner: Record<string, unknown>) => ({ message: inner.message, uuid: inner.uuid })),
+    ).then(() => (isKept = true))
+    // Another task's notification, and the queue's record of this one, are not held.
+    await h.append('delivery', { type: 'user', content: [{ type: 'text', text: '<task-notification>\n<task-id>other</task-id>\n</task-notification>' }] })
+    await h.append('queue', notification)
+    expect(isKept, 'held for the note').toBe(false)
+    h.appends.shift()!()
+    await kept
+    expect(isKept).toBe(true)
+    expect(await stopped).toMatchObject({ ok: true })
+  })
+
+  test("the notification's hold is bounded: a note that never comes lets it go after INTERRUPT_HOLD_MS", async () => {
+    const h = harness({ agents: [BG], holdAppend: true })
+    await h.ready()
+    void h.command({ op: 'stop-agent', agentId: BG.id }).catch(() => undefined)
+    await h.settle()
+    let isKept = false
+    const message = { type: 'user', content: [{ type: 'text', text: `<task-notification><task-id>${BG.id}</task-id></task-notification>` }] }
+    const kept = Promise.resolve(
+      h.hook('session.append', { door: 'delivery' })(h.engine, { door: 'delivery', message, uuid: 'n1', origin: { kind: 'task-notification' } }, async (inner: Record<string, unknown>) => ({ message: inner.message, uuid: inner.uuid })),
+    ).then(() => (isKept = true))
+    await h.settle()
+    expect(isKept).toBe(false)
+    await h.fire(INTERRUPT_HOLD_MS)
+    await kept
+    expect(isKept).toBe(true)
+  })
+
+  test("a nested agent's note goes to the loop that spawned it, named as that loop's row; main's own agents' to main", async () => {
+    const PARENT = { id: 'ap00000000000000p', description: 'Coordinate', type: 'general-purpose', status: 'running' }
+    const CHILD = { ...FG, parentId: PARENT.id }
+    const h = harness({ agents: [PARENT, CHILD, BG] })
+    await h.ready()
+    expect(await h.command({ op: 'stop-agent', agentId: CHILD.id, from: 'desk' })).toMatchObject({ ok: true })
+    expect(await h.command({ op: 'stop-agent', agentId: BG.id, from: 'desk' })).toMatchObject({ ok: true })
+    const appended = h.calls.filter((c) => c.op === 'append').map((c) => c.args as { agentId?: string; message: { content: { text: string }[] } })
+    expect(appended.map((a) => [a.agentId, a.message.content[0]!.text])).toEqual([
+      [PARENT.id, agentStopNote(CHILD.id, 'desk')],
+      [undefined, agentStopNote(BG.id, 'desk')],
+    ])
+    expect(h.ofType('row-seen').filter((e) => e.door === 'note').map((e) => e.agentId)).toEqual([PARENT.id, null])
+  })
+
+  test('a note the session did not keep is in the answer: the agent is stopped, its parent was not told', async () => {
+    const h = harness({ agents: [BG, FG], denyAppend: 'was stopped by the person' })
+    await h.ready()
+    const answer = await h.command({ op: 'stop-agent', agentId: BG.id, from: 'desk' })
+    expect(answer).toMatchObject({ ok: true, result: { agentId: BG.id, accepted: true, noteError: 'refused by a hook' } })
+    ;(h.engine as unknown as { session: { append: () => Promise<unknown> } }).session.append = async () => {
+      throw new Error('the loop is gone')
+    }
+    expect(await h.command({ op: 'stop-agent', agentId: FG.id })).toMatchObject({ ok: true, result: { accepted: true, noteError: 'the loop is gone' } })
+    expect(h.ofType('row-seen').filter((e) => e.door === 'note')).toHaveLength(0)
+  })
+})
+
+describe('tell', () => {
+  const BG = { id: 'a1b2c3d4e5f6a7b8c', description: 'Sleep a while', type: 'general-purpose', status: 'running', name: 'bg sleeper' }
+  const DONE = { id: 'ad00000000000000d', description: 'Done already', type: 'general-purpose', status: 'completed', name: 'finished one' }
+
+  test("the text goes to the running agent by its id through the engine's own send, under the line saying who wrote it, answered sent", async () => {
+    const h = harness({ agents: [BG] })
+    await h.ready()
+    expect(await h.command({ op: 'tell', agentId: BG.id, text: 'Also check the cache.' })).toMatchObject({ ok: true, result: { sent: true } })
+    expect(TELL_LINE).toBe('From the person at the desk, not from your coordinator:')
+    expect(h.calls.filter((c) => c.op === 'send')).toEqual([{ op: 'send', args: { to: { agentId: BG.id }, text: `${TELL_LINE}\nAlso check the cache.` } }])
+  })
+
+  test('a name with a space is resolved to its id first, and the message goes to that id', async () => {
+    const h = harness({ agents: [BG] })
+    await h.ready()
+    expect(await h.command({ op: 'tell', agentId: 'bg sleeper', text: 'hi' })).toMatchObject({ ok: true, result: { sent: true } })
+    expect(h.calls.filter((c) => c.op === 'send')).toEqual([{ op: 'send', args: { to: { agentId: BG.id }, text: `${TELL_LINE}\nhi` } }])
+  })
+
+  test('an agent that is not running is refused unknown-agent and nothing is sent: a send would revive an ended one', async () => {
+    const h = harness({ agents: [BG, DONE] })
+    await h.ready()
+    for (const agentId of ['nobody', DONE.id, 'finished one']) {
+      expect(await h.command({ op: 'tell', agentId, text: 'hi' })).toMatchObject({ ok: false, code: 'unknown-agent' })
+    }
+    expect(h.calls.filter((c) => c.op === 'send')).toEqual([])
+  })
+
+  test("the engine's refusal to deliver is the answer's error, in its words", async () => {
+    const h = harness({ agents: [BG], sendRefuses: 'the recipient is gone' })
+    await h.ready()
+    expect(await h.command({ op: 'tell', agentId: BG.id, text: 'hi' })).toMatchObject({ ok: false, error: 'the recipient is gone' })
+  })
+
+  test('the text is text, not blank; nothing is sent otherwise', async () => {
+    const h = harness({ agents: [BG] })
+    await h.ready()
+    for (const text of [undefined, '', '  \n', 7]) {
+      expect(await h.command({ op: 'tell', agentId: BG.id, text })).toMatchObject({ ok: false, error: 'tell needs an agent id or name, and the text' })
+    }
+    expect(await h.command({ op: 'tell', agentId: 'a\nb', text: 'hi' })).toMatchObject({ ok: false, error: 'tell needs an agent id or name, and the text' })
+    expect(h.calls.filter((c) => c.op === 'send')).toEqual([])
   })
 })
 
@@ -5963,7 +6264,7 @@ describe('the desk: capabilities and read', () => {
       sminos: '1.7.0',
       protocol: 2,
       engine: '2.1.307',
-      ops: ['ping', 'steer', 'interrupt', 'stop', 'model', 'compact', 'deliver', 'answer', 'read', 'command', 'btw'],
+      ops: ['ping', 'steer', 'interrupt', 'stop', 'model', 'compact', 'deliver', 'answer', 'read', 'command', 'btw', 'stop-agent', 'tell'],
       reads: ['status', 'catalog', 'usage', 'config', 'settings', 'mcp'],
       routes: { measured: '2.1.307' },
       controls: controlsOf('1.7.0'),

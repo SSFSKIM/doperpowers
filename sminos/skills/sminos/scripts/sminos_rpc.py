@@ -35,7 +35,13 @@ the first that fails is its answer, as DX6's error code:
    holds none: `claude --resume` would start an empty session under its id);
 9. for a stop, the task: a background shell or monitor the session's jobs
    index holds as running, the main loop's or a subagent's, read from the
-   rows as the plane reads them (sminos_jobs.running_task; `unknown-task`).
+   rows as the plane reads them (sminos_jobs.running_task; `unknown-task`);
+   for a stop-agent or a tell, the agent: one the session's subagent tree
+   holds as running, by its id, else by the name of exactly one running
+   agent (`unknown-agent`; `ambiguous-agent` for a shared name), as the
+   bridge's child keeps the tree from the engine's list (GET /agents) and
+   the plane is fed it. The id it resolved goes to the bridge, which acts on
+   that agent alone.
 
 A refusal from 1 or 2 precedes the ledger and is not kept in it: it goes up
 while its project is open on the stream (an `unknown-project` never is, and
@@ -106,6 +112,13 @@ RELOAD_WAIT_S is a timeout. The first end wins, including for `sminos
 command`, which carries no nonce and is tracked by its start.
 A hub whose welcome does not list `op` is sent none.
 
+One subagent stopped or told (`stop-agent`, `tell`; the desk control
+surface's MW4) answers when the bridge has: TaskStop and the engine's send
+answer at once, so the result is the outcome and no `op` follows; the
+agent's end reaches browsers in the subagent tree. Each carries its nonce to
+the bridge, whose child keeps the answer under it, so a claim the daemon
+stopped between the two is reconciled from that answer, as a steer's is.
+
 Checks 1-6 and the ledger's lookup run on the uplink's main thread, which
 alone may call sminos (its caches are module globals); the digest, the kind,
 the claim, and the execution run on a worker of their own, since a bridge
@@ -154,6 +167,7 @@ NAME_MAX = 128            # DX6 `command`: a name as $.command.list() spells it
 ARGS_MAX = 4096           # and its arguments' text
 PROMPT_MAX = 8192         # DX6 `btw`: a side question's text
 INSTRUCTIONS_MAX = 4096   # DX6 `compact`: its instructions' text
+AGENT_MAX = 128           # DX6 `stop-agent`, `tell`: an agent's id or name (a name may hold a space)
 SCOPE_DESTINATIONS = ("session", "localSettings")   # DX6 `decide.scope` (§11): nothing saved, or the checkout's own
 SCOPED_TYPES = ("addRules", "addDirectories")        # the suggestions a scoped allow takes (MW3)
 SHA256_RE = re.compile(r"[0-9a-f]{64}")
@@ -165,7 +179,7 @@ SNAPSHOT_TIMEOUT = 8      # the bridge holds its stream up to 5 s until the mod'
 DECISION_TIMEOUT = 15     # an async question's answer is relayed to the mod, which waits 5 s
 SPAWN_TASK = "Begin with your brief."
 RPC_NAMES = ("steer", "interrupt", "answer", "decide", "model", "compact", "spawn", "retire", "resume", "stop",
-             "command", "btw")
+             "command", "btw", "stop-agent", "tell")
 TASK_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")   # DX6 `stop`'s taskId, as the engine spells task ids
 CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
 OP_OF = {"run": "command", "btw": "btw"}  # a bridge's event → the DX4 `op` it reports
@@ -618,6 +632,11 @@ class Rpcs:
                 return lambda: self.side_question(path, rpc, sid)
             if name in ("answer", "decide"):
                 return lambda: decide(path, args["digest"]["request"], decision)
+            if name in ("stop-agent", "tell"):
+                agent = resolve_agent(path, args["agentId"])
+                if name == "stop-agent":
+                    return lambda: stop_agent(path, args["agentId"], agent, nonce)
+                return lambda: tell(path, args["agentId"], agent, args["text"], nonce)
             if name == "stop":
                 if not jobs.running_task(facts["transcript"], args["taskId"]):
                     raise Refused("unknown-task", "the session's jobs hold no background shell or monitor %s running"
@@ -1122,6 +1141,10 @@ def is_text(v):
     return isinstance(v, str) and v.strip() != ""
 
 
+def is_agent(ref):
+    return is_text(ref) and len(ref) <= AGENT_MAX and not CONTROL_RE.search(ref)
+
+
 def is_digest(d):
     return isinstance(d, dict) and all(isinstance(d.get(k), str) and d[k] for k in
                                        ("session", "request", "tool", "input_sha256"))
@@ -1164,6 +1187,11 @@ def shape(name, args, member):
     elif name == "stop":
         need(isinstance(args.get("taskId"), str) and TASK_RE.fullmatch(args["taskId"]),
              "taskId is a background task's id")
+    elif name in ("stop-agent", "tell"):
+        need(is_agent(args.get("agentId")), "agentId is an agent's id or name: 1-%d characters, not blank, none a "
+                                            "control" % AGENT_MAX)
+        if name == "tell":
+            need(is_text(args.get("text")), "text is the message's text")
     elif name == "command":
         n, a = args.get("name"), args.get("args")
         need(isinstance(n, str) and 1 <= len(n) <= NAME_MAX and not CONTROL_RE.search(n),
@@ -1343,6 +1371,67 @@ def stop(path, task):
     if not out.get("ok"):
         raise Refused("failed", refusal(out))
     return done({"taskId": task})
+
+
+def resolve_agent(path, ref):
+    """The id of the running agent `ref` names in the session's subagent tree,
+    as its bridge's child keeps it (GET /agents): an id the tree holds first,
+    else the name of exactly one running agent. Refused `unknown-agent` when
+    none runs by it, `ambiguous-agent` when two running agents share the name."""
+    try:
+        code, body = bridge.request(path, "GET", "/agents", timeout=3)
+    except (OSError, http.client.HTTPException) as e:
+        raise Refused("failed", "the session's bridge did not say which agents run (%s): nothing ran" % unanswered(e))
+    if code != 200 or not isinstance(body, dict) or not isinstance(body.get("agents"), list):
+        raise Refused("failed", "the session's bridge did not say which agents run (HTTP %s): nothing ran" % code)
+    agents = [a for a in body["agents"] if isinstance(a, dict) and isinstance(a.get("agentId"), str)]
+    by_id = next((a for a in agents if a["agentId"] == ref), None)
+    if by_id is not None:
+        if by_id.get("running") is True:
+            return ref
+        raise Refused("unknown-agent", "agent %s is not running" % ref)
+    named = [a["agentId"] for a in agents if a.get("running") is True and a.get("name") == ref]
+    if len(named) > 1:
+        raise Refused("ambiguous-agent", "%d running agents are named %s (%s): name one by its id"
+                      % (len(named), ref, ", ".join(named)))
+    if not named:
+        raise Refused("unknown-agent", "the session's subagent tree holds no running agent by the id or name %s" % ref)
+    return named[0]
+
+
+def stop_agent(path, ref, agent, nonce):
+    """One subagent stopped through the session's bridge, which stops the
+    agent the tree resolved `ref` to (`agent`, refused if it no longer runs),
+    runs TaskStop and leaves the parent its note (DX5 `stop-agent`),
+    carrying the RPC's nonce, under which the bridge's child keeps the
+    answer. The agent's end reaches browsers in the subagent tree."""
+    out, _ = command(path, {"op": "stop-agent", "agentId": ref, "resolvedAgentId": agent, "from": "desk", "rpc": nonce})
+    return agent_stopped(out)
+
+
+def agent_stopped(out):
+    """A stop-agent's outcome from the bridge's answer (DX6): the spelling
+    asked, the id a name resolved to, and why the parent's note was not
+    kept if it was not; or the bridge's refusal."""
+    if not out.get("ok"):
+        return refused_op(out)
+    r = out.get("result") or {}
+    extra = {k: r[k] for k in ("resolvedAgentId", "noteError") if isinstance(r.get(k), str) and r[k]}
+    return done({"agentId": r.get("agentId"), "accepted": True, **extra})
+
+
+def tell(path, ref, agent, text, nonce):
+    """A message to one subagent through the session's bridge, which sends
+    it with the engine's own delivery to the agent the tree resolved `ref`
+    to (DX5 `tell`), carrying the RPC's nonce."""
+    out, _ = command(path, {"op": "tell", "agentId": ref, "resolvedAgentId": agent, "text": text, "rpc": nonce})
+    return told(out)
+
+
+def told(out):
+    """A tell's outcome from the bridge's answer (DX6): sent, once the
+    message is in the agent's queue; or the bridge's refusal."""
+    return done({"sent": True}) if out.get("ok") else refused_op(out)
 
 
 def bridge_snapshot(path):
@@ -1661,14 +1750,18 @@ def resume_rivals(e, others):
     return out
 
 
+# The RPCs whose answer the bridge's child keeps under the nonce, each with how that answer reads as the outcome.
+KEPT_READERS = {"steer": steered, "command": commanded, "btw": started, "stop-agent": agent_stopped, "tell": told}
+
+
 def trace(nonce, e, others=()):
     """(the outcome a claim's trace shows, or None; how long after its claim
     a trace may still appear). `others`: the ledger's other entries."""
     if e.get("rpc") == "spawn":
         return spawned(nonce), SPAWN_TRACE_S
-    if e.get("rpc") in ("steer", "command", "btw") and e.get("session"):
+    if e.get("rpc") in KEPT_READERS and e.get("session"):
         answered = (bridge.load_kept(e["session"]).get("rpcs") or {}).get(nonce)
-        read = {"steer": steered, "command": commanded, "btw": started}[e["rpc"]]
+        read = KEPT_READERS[e["rpc"]]
         outcome = read(answered) if isinstance(answered, dict) else None
         return outcome, STEER_TRACE_S
     if e.get("rpc") == "resume" and e.get("session"):

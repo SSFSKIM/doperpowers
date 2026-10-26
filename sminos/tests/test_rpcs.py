@@ -220,6 +220,9 @@ class Mod(tpr.Bridge):
         self.held_runs = []
         self.refuse_reload = None
         self.refuse_btw = None    # the bridge's refusal of a side question: (code, reason)
+        self.refuse_agents = {}   # an agent's id or name → the bridge's refusal of a stop-agent or tell: (code, reason)
+        self.names = {}           # an agent's name → the id the engine's list resolves it to (a caller that gave none)
+        self.note_error = None    # why a stop's note was not kept
         self.rows = []
         super().__init__(sid)
 
@@ -294,6 +297,18 @@ class Mod(tpr.Bridge):
                     self.held_runs.append(end)
                 else:
                     after.append(end)
+        elif op in ("stop-agent", "tell"):
+            ref = cmd["agentId"]
+            if ref in self.refuse_agents:
+                code, why = self.refuse_agents[ref]
+                res = {"ok": False, "error": why, "code": code}
+            elif op == "tell":
+                res = {"ok": True, "result": {"sent": True}}
+            else:
+                resolved = cmd.get("resolvedAgentId") or self.names.get(ref, ref)
+                res = {"ok": True, "result": {"agentId": ref, "accepted": True,
+                                              **({"resolvedAgentId": resolved} if resolved != ref else {}),
+                                              **({"noteError": self.note_error} if self.note_error else {})}}
         elif op == "command":
             name, args = cmd.get("name"), cmd.get("args") or ""
             if name in self.refuse_commands:
@@ -413,6 +428,9 @@ class Checks(unittest.TestCase):
         self.mod.held_runs = []
         self.mod.refuse_reload = None
         self.mod.refuse_btw = None
+        self.mod.refuse_agents = {}
+        self.mod.note_error = None
+        self.mod.names = {}
         self.mod.commands.clear()
         self.clock = [time.time()]
         self.r = rpcs.Rpcs(KEY, "testhost", clock=lambda: self.clock[0])
@@ -882,6 +900,178 @@ class Checks(unittest.TestCase):
         self.send("stop", {"session": self.bridged.sid, "taskId": "bonce1"}, nonce=nonce)
         self.assertEqual(len(results(self.r.opening(self.pid), nonce)), 1, "answered from the ledger")
         self.assertEqual(len(self.mod.ops("stop")), 1, "TaskStop ran once")
+
+    # ------------------------------------------------ one agent stopped or told (MW4)
+
+    def spawn_agent(self, agent_id, name=None, stopped=False):
+        """An agent in the session's tree as the mod reports one: its spawn,
+        and its stop when `stopped`."""
+        self.mod.post({"type": "agent", "phase": "spawn", "agentId": agent_id, "parentAgentId": None,
+                       "subagentType": "general-purpose", "description": "a task", "name": name,
+                       "background": True, "toolUseId": "toolu_" + agent_id})
+        if stopped:
+            self.mod.post({"type": "agent", "phase": "stop", "agentId": agent_id, "agentType": "general-purpose",
+                           "status": "killed"})
+
+    def test_n_stop_agent_by_id_and_by_a_name_with_a_space(self):
+        """DX6 `stop-agent`: an agent the tree holds as running, by its id or
+        its name, stopped through the bridge (DX5 `stop-agent`, from the desk,
+        carrying the nonce and the id the tree resolved the spelling to, which
+        alone the bridge acts on), answered with the spelling asked and, for
+        a name, the id it resolved to."""
+        self.spawn_agent("aid0000000000001", name="bg sleeper")
+        self.spawn_agent("aid0000000000002")
+        by_id = self.send("stop-agent", {"session": self.bridged.sid, "agentId": "aid0000000000002"})
+        self.assertEqual(self.outcome(by_id), {"state": "done", "result": {"agentId": "aid0000000000002",
+                                                                            "accepted": True}})
+        by_name = self.send("stop-agent", {"session": self.bridged.sid, "agentId": "bg sleeper"})
+        self.assertEqual(self.outcome(by_name), {"state": "done", "result": {
+            "agentId": "bg sleeper", "accepted": True, "resolvedAgentId": "aid0000000000001"}})
+        self.assertEqual([(c["agentId"], c.get("resolvedAgentId"), c.get("from"), c.get("rpc"))
+                          for c in self.mod.ops("stop-agent")],
+                         [("aid0000000000002", "aid0000000000002", "desk", by_id["nonce"]),
+                          ("bg sleeper", "aid0000000000001", "desk", by_name["nonce"])])
+
+    def test_n_the_tree_resolves_an_id_first_then_one_running_name_never_a_shared_one(self):
+        """The spelling is an id when the tree holds that id, else the name
+        of exactly one running agent; a name two running agents hold is
+        refused `ambiguous-agent` before the claim, naming both ids."""
+        self.spawn_agent("aid0000000000020", name="twin")
+        self.spawn_agent("aid0000000000021", name="twin")
+        self.spawn_agent("aid0000000000022", name="aid0000000000023")
+        self.spawn_agent("aid0000000000023")
+        self.spawn_agent("aid0000000000024", name="reborn", stopped=True)
+        self.spawn_agent("aid0000000000025", name="reborn")
+        for name, args in (("stop-agent", {}), ("tell", {"text": "hi"})):
+            o = self.send(name, {"session": self.bridged.sid, "agentId": "twin", **args})
+            self.refused(o, "ambiguous-agent")
+            self.assertIn("aid0000000000020", self.outcome(o)["error"]["message"])
+            self.assertIn("aid0000000000021", self.outcome(o)["error"]["message"])
+        self.assertEqual(self.mod.ops("stop-agent") + self.mod.ops("tell"), [])
+        for ref in ("aid0000000000023", "reborn"):
+            self.assertEqual(self.outcome(self.send("tell", {"session": self.bridged.sid, "agentId": ref,
+                                                             "text": "hi"}))["state"], "done")
+        self.assertEqual([c["resolvedAgentId"] for c in self.mod.ops("tell")], ["aid0000000000023", "aid0000000000025"])
+
+    def test_n_a_teammates_address_is_an_id_as_the_tree_spells_it(self):
+        """A teammate's id is `<name>@<team>`, no task id's shape: taken by
+        the tree's spelling alone, and passed to the bridge as resolved."""
+        self.spawn_agent("worker@team", name="worker")
+        for ref in ("worker@team", "worker"):
+            o = self.send("tell", {"session": self.bridged.sid, "agentId": ref, "text": "hi"})
+            self.assertEqual(self.outcome(o), {"state": "done", "result": {"sent": True}})
+        o = self.outcome(self.send("stop-agent", {"session": self.bridged.sid, "agentId": "worker"}))
+        self.assertEqual(o["result"], {"agentId": "worker", "accepted": True, "resolvedAgentId": "worker@team"})
+        self.assertEqual([c["resolvedAgentId"] for c in self.mod.ops("tell") + self.mod.ops("stop-agent")],
+                         ["worker@team"] * 3)
+
+    def test_n_a_note_the_session_did_not_keep_is_in_the_result(self):
+        self.spawn_agent("aid0000000000026", name="unnoted")
+        self.mod.note_error = "refused by a hook"
+        o = self.outcome(self.send("stop-agent", {"session": self.bridged.sid, "agentId": "unnoted"}))
+        self.assertEqual(o, {"state": "done", "result": {"agentId": "unnoted", "accepted": True,
+                                                         "resolvedAgentId": "aid0000000000026",
+                                                         "noteError": "refused by a hook"}})
+
+    def test_n_tell_a_running_agent(self):
+        self.spawn_agent("aid0000000000003", name="reader")
+        o = self.outcome(self.send("tell", {"session": self.bridged.sid, "agentId": "reader", "text": "also the cache"}))
+        self.assertEqual(o, {"state": "done", "result": {"sent": True}})
+        self.assertEqual([(c["agentId"], c["resolvedAgentId"], c["text"]) for c in self.mod.ops("tell")],
+                         [("reader", "aid0000000000003", "also the cache")])
+
+    def test_n_an_agent_the_tree_does_not_hold_running_is_unknown_agent_before_the_claim(self):
+        """An id or name no agent of the session's tree has, an agent that
+        ended, another session's, a description: refused `unknown-agent`,
+        never sent to the bridge, and the nonce never claimed."""
+        self.spawn_agent("aid0000000000004", name="gone one", stopped=True)
+        self.spawn_agent("aid0000000000005", name="live one")
+        claims = []
+        real = rpcs.Ledger.put
+
+        def put(ledger, nonce, entry):
+            if "outcome" not in entry:
+                claims.append(nonce)
+            return real(ledger, nonce, entry)
+
+        with mock.patch.object(rpcs.Ledger, "put", put):
+            for ref in ("aid-never", "aid0000000000004", "gone one", "a task", "LIVE ONE"):
+                self.refused(self.send("stop-agent", {"session": self.bridged.sid, "agentId": ref}), "unknown-agent")
+                self.refused(self.send("tell", {"session": self.bridged.sid, "agentId": ref, "text": "hi"}),
+                             "unknown-agent")
+        self.assertEqual(claims, [], "refused before any claim")
+        self.assertEqual(self.mod.ops("stop-agent") + self.mod.ops("tell"), [])
+
+    def test_n_a_malformed_agent_or_text_is_bad_shape(self):
+        self.spawn_agent("aid0000000000006", name="shaped")
+        for ref in ("", "   ", "a\nb", "a\x00", "a\x7f", "x" * 129, None, 7):
+            self.refused(self.send("stop-agent", {"session": self.bridged.sid, "agentId": ref}), "bad-shape")
+            self.refused(self.send("tell", {"session": self.bridged.sid, "agentId": ref, "text": "hi"}), "bad-shape")
+        for text in ("", "  ", None, 7):
+            self.refused(self.send("tell", {"session": self.bridged.sid, "agentId": "shaped", "text": text}),
+                         "bad-shape")
+        self.refused(self.send("stop-agent", {"session": self.bridged.sid}), "bad-shape")
+        self.assertEqual(self.mod.ops("stop-agent") + self.mod.ops("tell"), [])
+        # 128 characters, a space among them, is a name.
+        name = "n" * 63 + " " + "m" * 64
+        self.spawn_agent("aid0000000000007", name=name)
+        self.assertEqual(self.outcome(self.send("stop-agent", {"session": self.bridged.sid, "agentId": name}))["state"],
+                         "done")
+
+    def test_n_the_bridges_refusal_fails_the_rpc_with_its_code_first(self):
+        """After the claim the bridge has the last word (the agent ended
+        between the two checks; a send the engine refused): `failed`, its
+        code the message's first word, as a command's refusal is."""
+        self.spawn_agent("aid0000000000008", name="raced")
+        self.mod.refuse_agents["raced"] = ("unknown-agent", "no running agent has the id or name raced")
+        o = self.outcome(self.send("stop-agent", {"session": self.bridged.sid, "agentId": "raced"}))
+        self.assertEqual(o, {"state": "failed", "error": {"code": "failed", "message":
+                                                          "unknown-agent: no running agent has the id or name raced"}})
+        self.mod.refuse_agents["aid0000000000008"] = (None, "the recipient is gone")
+        o = self.outcome(self.send("tell", {"session": self.bridged.sid, "agentId": "aid0000000000008", "text": "x"}))
+        self.assertEqual(o, {"state": "failed", "error": {"code": "failed", "message": "the recipient is gone"}})
+
+    def test_n_stop_agent_and_tell_need_a_bridge_and_a_machine_that_runs_rpcs(self):
+        self.spawn_agent("aid0000000000009", name="policed")
+        self.refused(self.send("stop-agent", {"session": self.plain.sid, "agentId": "policed"}), "unsupported")
+        self.refused(self.send("tell", {"session": self.ended, "agentId": "policed", "text": "x"}), "unsupported")
+        tpr.set_policy({"read_only": True})
+        self.refused(self.send("stop-agent", {"session": self.bridged.sid, "agentId": "policed"}), "read-only")
+        self.refused(self.send("tell", {"session": self.bridged.sid, "agentId": "policed", "text": "x"}), "read-only")
+        self.assertEqual(self.mod.ops("stop-agent") + self.mod.ops("tell"), [])
+
+    def test_n_a_retried_nonce_never_stops_or_tells_twice(self):
+        self.spawn_agent("aid0000000000010", name="once")
+        for name, args in (("stop-agent", {"agentId": "once"}), ("tell", {"agentId": "once", "text": "x"})):
+            nonce = codes.b64url(os.urandom(16))
+            first = self.send(name, {"session": self.bridged.sid, **args}, nonce=nonce)
+            self.assertEqual(self.outcome(first)["state"], "done")
+            self.r.reset()
+            self.send(name, {"session": self.bridged.sid, **args}, nonce=nonce)
+            self.assertEqual(len(results(self.r.opening(self.pid), nonce)), 1, "answered from the ledger")
+            self.assertEqual(len(self.mod.ops(name)), 1, "%s ran once" % name)
+
+    def test_n_a_stop_or_tell_claimed_before_a_stop_is_reconciled_from_the_childs_kept_answer(self):
+        """The daemon stops after the claim, with the op on its way: the
+        bridge's child keeps the mod's answer under the nonce, which the next
+        daemon reads as the outcome, not `interrupted`; one the child kept no
+        answer for is `interrupted` once its window has passed."""
+        now = time.time()
+        path = rpcs.bridge.endpoint(self.bridged.sid)
+        stop_nonce, tell_nonce, lost_nonce = "SSSSSSSSSSSSSSSSSSSSSA", "TTTTTTTTTTTTTTTTTTTTTA", "UUUUUUUUUUUUUUUUUUUUUA"
+        self.claim(stop_nonce, "stop-agent", self.bridged.sid, now)
+        self.claim(tell_nonce, "tell", self.bridged.sid, now)
+        self.claim(lost_nonce, "tell", self.bridged.sid, now)
+        stopped = rpcs.stop_agent(path, "kept one", "aid0000000000011", stop_nonce)
+        told = rpcs.tell(path, "kept one", "aid0000000000011", "x", tell_nonce)
+        r = rpcs.Rpcs(KEY, "testhost", clock=lambda: self.clock[0])
+        frames = r.due({self.pid})
+        self.assertEqual(results(frames, stop_nonce), [stopped])
+        self.assertEqual(stopped["result"], {"agentId": "kept one", "accepted": True, "resolvedAgentId": "aid0000000000011"})
+        self.assertEqual(results(frames, tell_nonce), [told])
+        self.assertEqual(results(frames, lost_nonce), [], "its answer may still come, so it waits")
+        self.clock[0] = now + rpcs.STEER_TRACE_S + 1
+        self.assertEqual([x["error"]["code"] for x in results(r.due({self.pid}), lost_nonce)], ["interrupted"])
 
     # ------------------------------------------------ execution, through DC2's protocol
 
