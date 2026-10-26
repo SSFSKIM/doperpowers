@@ -46,6 +46,36 @@ test('a destination that cannot close is rejected in linear time, however many e
   }
 })
 
+test('an image link is read whole however long its parts and however many escapes they hold', () => {
+  // A pattern that repeats a group keeps a V8 backtrack entry per repetition, and some
+  // millions exhaust its stack (RangeError): the fetch failed.
+  const run = 'A'.repeat(9_000_000)
+  assert.deepEqual(findImageLinks(`![a](data:image/png;base64,${run} "t")`).map(l => l.target.length), [22 + run.length])
+  assert.deepEqual(findImageLinks(`![a](/img/${'a\\!'.repeat(5_000_000)}(1).png)`).map(l => l.target.length), [5 + 2 * 5_000_000 + 7])
+  // An alt, a reference's label and a definition's label, long or escaped throughout.
+  for (const label of [run, '\\!'.repeat(3_500_000)]) {
+    const alt = label.replace(/\\(.)/g, '$1').length
+    assert.deepEqual(findImageLinks(`![${label}](x.png) ![b][${label}] ![${label}]\n\n[${label}]: y.png`).map(l => [l.alt.length, l.target]),
+      [[alt, 'x.png'], [1, 'y.png'], [alt, 'y.png']])
+  }
+})
+
+test('image openings that never close are read in linear time', () => {
+  // Each `![` read the rest of the line again: 32,000 took 2.4 s, and 32,000 `![a](<` 9.6 s.
+  for (const line of ['!['.repeat(32_000), '![a](<'.repeat(32_000), '`x` ![a] '.repeat(32_000)]) {
+    const started = performance.now()
+    assert.deepEqual(findImageLinks(line), [])
+    const ms = performance.now() - started
+    assert.ok(ms < 500, `${JSON.stringify(line.slice(0, 9))}… took ${Math.round(ms)} ms`)
+  }
+})
+
+test('an image a ( follows is not a reference: a full or collapsed one, or an inline one that does not close', () => {
+  const definitions = '\n\n[a]: a.png\n[b]: b.png\n'
+  for (const line of ['![a][b](note)', '![a][](note)', '![a](note']) assert.deepEqual(findImageLinks(line + definitions), [], line)
+  assert.deepEqual(findImageLinks('![a][b] (note) ![a][] ![a]' + definitions).map(l => l.target), ['b.png', 'a.png', 'a.png'])
+})
+
 test('reference-style images are found through their definitions; code, escapes and missing definitions are not images', () => {
   const links = findImageLinks(page)
   assert.deepEqual(links.map(l => [l.line, l.alt, l.target]), [

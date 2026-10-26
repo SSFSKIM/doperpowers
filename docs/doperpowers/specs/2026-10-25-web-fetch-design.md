@@ -146,6 +146,11 @@ session on the machine.
   6.2 s, and gets its `full.md`; Unicode's emoji list in 2.0 s, not
   5.1–5.5 s, and gets its own. `page.md` and the saved images are as main
   saves them on every eval page, but for what two runs of main differ by.
+- [x] (2026-10-26) Board #145 (web 0.4.2, branch `web-image-link-stack`):
+  an inline image of any size in the article no longer fails the fetch
+  (step 5, Decision Log). A 10 MB PNG is saved byte for byte. `page.md`
+  and `full.md` are as main saves them on every eval page, apart from what
+  two runs of main also differ by.
 
 ## Acceptance
 
@@ -734,9 +739,15 @@ its own:
      backslash and the punctuation it escapes, a backslash before anything
      else, or another character), so `foo\\(bar` is text, as markdown
      reads it, and a destination that cannot close is rejected in linear
-     time: two readings of a backslash made 28 escape pairs take 9 s. A
-     link kept remote is written back as a valid destination, in angle
-     brackets when it holds a parenthesis.
+     time: two readings of a backslash made 28 escape pairs take 9 s.
+     Loops read a link's alt, labels and destination a step at a time,
+     each step a pattern that repeats only a character class: V8 keeps a
+     backtrack entry for each repetition of a group, and an inline image
+     whose `data:` URI ran past about 8.4 million characters (some 6 MB)
+     failed the fetch with `RangeError` (board #145). Each `![` costs what
+     it reads, so a line of image openings that never close is read in
+     linear time too. A link kept remote is written back as a valid
+     destination, in angle brackets when it holds a parenthesis.
    - **An origin that does not answer** one image (no response at all: a
      name that does not resolve, no connection or one closed unanswered,
      no headers within its time; an HTTP error status, or a body that
@@ -2655,6 +2666,52 @@ type Run = {
   the ticket sketched: it would rewrite scripts, styles and text too, and
   the parse was never the cost.
   Date/Author: 2026-10-26, board #144 (branch `web-inline-images`).
+- Decision: loops read an image link a step at a time (its alt, its
+  labels, its destination, and a definition's label), each step a
+  pattern that repeats only a character class (step 5; web 0.4.2).
+  Rationale: `IMAGE` matched a link's parts as groups repeated once per
+  character, and V8 keeps a backtrack entry for each repetition. An
+  inline image whose `data:` URI ran past about 8.4 million characters
+  (some 6 MB) threw `RangeError: Maximum call stack size exceeded` in the
+  image step, and the agent got "the clipper failed" in place of the
+  page. A character class under `*` or `+` keeps no entry (measured over
+  13.4 million characters). Each step is read one way, as the pattern read
+  it, so a destination that cannot close is still rejected in linear time
+  and `foo\\(bar` is still text. The notations found are the pattern's
+  matches, `findImageLinks` judging them as before. A test fetches a page
+  whose article holds a 10 MB PNG (13.3 million characters): it is saved
+  byte for byte as `assets/01.png`, and `full.md` keeps its URI as
+  written; on 0.4.1 it throws.
+  - The review's two findings, both regressions against main, fixed. The
+    first build unrolled the alt and the labels
+    (`[^\]\\]*(?:\\.[^\]\\]*)*`), a repetition per escape, and an alt of
+    3.5 million escapes, which main reads, overflowed; they are read by
+    the loop too. It also dropped the check that a `(` after
+    `![alt][label]` or `![alt][]` leaves them text, so `![a][b](note)`
+    became an image; the check is back. (CommonMark would read that as an
+    image followed by text; main's reading is kept.)
+  - Each `![` costs what it reads. A label that starts inside one already
+    read ends where that one did, and the next `>` is looked for once. A
+    line's code spans pair each backtick run with its next of the same
+    length in one pass, and a notation is checked against them in order.
+    On main, 32,000 `![` that never close took 2.4 s, 32,000 `![a](<` took
+    9.6 s and 32,000 `` `x` ![a] `` took 4.7 s; each now takes under 25 ms.
+  - Main's `findImageLinks` and this one gave the same links and rewrites
+    on 2.7 million generated lines. 900,000 of those lines were
+    definitions above full, collapsed, shortcut, inline and broken
+    references, followed by `(`, `[` or text. The 207e944b build fails
+    that check within seconds. Over every HTML URL of both suites (55
+    pages), main's bundle and the first build, run side by side, saved the
+    same `page.md`, `full.md` and `assets/` on 50. Four of the other five
+    are the pages' own drift (js-2, js-3, image-h3, gist-2, as #144
+    recorded). The fifth is federalregister's CPU figure in the 5 s rule's
+    note.
+  Rejected: unrolling the runs in the pattern, as the first build did for
+  the alt: it keeps an entry per escape or parenthesis, and 4 million
+  escapes in a destination (12 million characters) overflowed. Rejected
+  too: bounding the run and reading a longer link apart, which would give
+  one grammar two readers.
+  Date/Author: 2026-10-26, board #145 (branch `web-image-link-stack`).
 
 ## Outcomes & Retrospective
 
