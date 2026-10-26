@@ -827,5 +827,115 @@
     "evidence": "pdftotext page 151 (printed 137): \"<참고> 한국은행 스튜디오 개관 커뮤니케이션국 이지선\""
    }
   ]
+ },
+ {
+  "id": "dropped-go-net",
+  "set": "dev",
+  "category": "exact-detail",
+  "lang": "en",
+  "url": "https://pkg.go.dev/golang.org/x/net@v0.17.0",
+  "question": "Using the Go module page for golang.org/x/net v0.17.0 at https://pkg.go.dev/golang.org/x/net@v0.17.0, what publication date and license does the page list for that version?",
+  "mechanism": "extraction-dropped",
+  "facts": [
+   {
+    "id": "f1",
+    "claim": "The publication date is October 10, 2023.",
+    "evidence": "The original page HTML, source line 606, has <span class=\"go-Main-headerDetailItem\" data-test-id=\"UnitHeader-commitTime\"> Published: Oct 10, 2023 </span> inside header.go-Main-header, outside div.UnitDetails. Saved independently of markdown at /tmp/web139/eval/sources/go-net/source.html. Main's page.md omits that header; the spike's f1_hidden_removed conversion retains the date."
+   },
+   {
+    "id": "f2",
+    "claim": "The license is BSD-3-Clause.",
+    "evidence": "Original page HTML source line 612: <a href=\"/golang.org/x/net@v0.17.0?tab=licenses\" data-test-id=\"UnitHeader-license\" ...>BSD-3-Clause</a>, inside the visible header's License field. Verified directly in /tmp/web139/eval/sources/go-net/source.html, not from clipper output. Main's page.md lacks BSD-3-Clause; f1_hidden_removed retains it."
+   }
+  ]
+ },
+ {
+  "id": "dropped-hex-phoenix",
+  "set": "dev",
+  "category": "exact-detail",
+  "lang": "en",
+  "url": "https://hex.pm/packages/phoenix/1.7.10",
+  "question": "For Phoenix 1.7.10 at https://hex.pm/packages/phoenix/1.7.10, what Last Updated date, license, and build tool are listed in the page's Package Details panel?",
+  "mechanism": "extraction-dropped",
+  "facts": [
+   {
+    "id": "f1",
+    "claim": "Last Updated is November 3, 2023.",
+    "evidence": "Original page HTML source lines 1602-1608: a flex-column block labels a paragraph Last Updated and the next paragraph reads Nov 03, 2023. Source HTML saved at /tmp/web139/eval/sources/hex-phoenix/source.html. Main's page.md retains the version list and description but omits Package Details; f1_hidden_removed restores this value."
+   },
+   {
+    "id": "f2",
+    "claim": "The license is MIT.",
+    "evidence": "Original page HTML source lines 1611-1620: a paragraph labeled License is followed by a div containing a paragraph with the text MIT. Verified in /tmp/web139/eval/sources/hex-phoenix/source.html. MIT is absent from main's page.md and present in f1_hidden_removed."
+   },
+   {
+    "id": "f3",
+    "claim": "The build tool is mix.",
+    "evidence": "Original page HTML source lines 1623-1633: Build Tools labels a div with one span whose text is mix (line 1630). Verified in /tmp/web139/eval/sources/hex-phoenix/source.html. Main's page.md omits this panel; f1_hidden_removed retains it."
+   }
+  ]
+ },
+ {
+  "id": "dropped-arxiv-license",
+  "set": "dev",
+  "category": "exact-detail",
+  "lang": "en",
+  "url": "https://arxiv.org/abs/2305.18290v1",
+  "question": "On the arXiv abstract page for Direct Preference Optimization v1 at https://arxiv.org/abs/2305.18290v1, what is the destination URL of the 'view license' control in the Access Paper panel?",
+  "mechanism": "extraction-dropped",
+  "facts": [
+   {
+    "id": "f1",
+    "claim": "The view license control links to http://creativecommons.org/licenses/by/4.0/ (the HTTPS equivalent is acceptable).",
+    "evidence": "Original page HTML source line 177, inside div.extra-services > div.full-text > div.abs-license: <a href=\"http://creativecommons.org/licenses/by/4.0/\" title=\"Rights to this article\" class=\"has_license\"> followed by the license icon and <span>view license</span>. Verified against /tmp/web139/eval/sources/arxiv-dpo/source.html. Main's page.md excludes the extra-services panel and has no license link; f1_hidden_removed preserves it."
+   }
+  ]
+ },
+ {
+  "id": "dropped-viking-infobox",
+  "set": "dev",
+  "category": "table",
+  "lang": "en",
+  "url": "https://en.wikipedia.org/w/index.php?title=Viking_1&oldid=1368758694",
+  "question": "Using this pinned revision of Wikipedia's Viking 1 page, https://en.wikipedia.org/w/index.php?title=Viking_1&oldid=1368758694, report the infobox's power ratings in watts for the orbiter and lander, and its orbital period in hours.",
+  "mechanism": "extraction-dropped",
+  "facts": [
+   {
+    "id": "f1",
+    "claim": "The orbiter's power rating is 620 W.",
+    "evidence": "The original page's visible table.infobox.ib-spaceflight has a row headed Power with cell text 'Orbiter: 620 W' followed by a line break and the lander's rating. Checked directly in the DOM parsed from /tmp/web139/eval/sources/wiki-viking-pinned/source.html. The infobox table and the value 620 are absent from main's page.md; f1_hidden_removed preserves the table and value."
+   },
+   {
+    "id": "f2",
+    "claim": "The lander's power rating is 70 W.",
+    "evidence": "The Power row of table.infobox.ib-spaceflight in the original HTML has 'Lander: 70 W' after the orbiter's rating. Verified directly in /tmp/web139/eval/sources/wiki-viking-pinned/source.html. This rating is absent from main's page.md and survives in f1_hidden_removed."
+   },
+   {
+    "id": "f3",
+    "claim": "The orbital period is 47.26 hours.",
+    "evidence": "Under Orbital parameters, the original infobox has <th ...>Period</th> and a cell reading '47.26 hours'. Checked in table.infobox.ib-spaceflight in /tmp/web139/eval/sources/wiki-viking-pinned/source.html, not the data-mw template payload. Main's page.md omits the infobox and 47.26; f1_hidden_removed retains them."
+   }
+  ]
+ },
+ {
+  "id": "dropped-7800x3d-chart",
+  "set": "dev",
+  "category": "image",
+  "lang": "en",
+  "url": "https://www.tomshardware.com/reviews/amd-ryzen-7-7800x3d-cpu-review/4",
+  "question": "Using the Far Cry 6 (DX12) chart at 1920x1080 Ultra on page 4 of Tom's Hardware's Ryzen 7 7800X3D review, https://www.tomshardware.com/reviews/amd-ryzen-7-7800x3d-cpu-review/4, what average FPS and 99th-percentile FPS are shown for the stock Ryzen 7 7800X3D (not the PBO UV row)?",
+  "mechanism": "extraction-dropped",
+  "facts": [
+   {
+    "id": "f1",
+    "claim": "The stock Ryzen 7 7800X3D averages 208.2 FPS.",
+    "evidence": "Verified visually in the original page's chart image, not from markdown: https://cdn.mos.cms.futurecdn.net/UpSJoyAmcTfaNGBss2Ca9S-1920-80.png.webp (saved at /tmp/web139/eval/sources/tom-7800/farcry6-1080.webp). The title reads 'Far Cry 6 (DX12) — CPU Gaming Performance', with 'RTX 4090 FPS, 1920x1080, Ultra'; the second row, Ryzen 7 7800X3D, shows 208.2 at the red bar's right edge. The page's original HTML has this image in the Far Cry 6 gallery via img[src*=\"UpSJoyAmcTfaNGBss2Ca9S\"], with data-original-mos pointing to the same chart. Main's page.md contains none of these gallery image links; f1_hidden_removed contains both the 1200px and 1920px chart links. The chart values themselves are only in the image."
+   },
+   {
+    "id": "f2",
+    "claim": "The stock Ryzen 7 7800X3D's 99th-percentile FPS is 156.7.",
+    "evidence": "The same original chart image, independently opened with Read, labels the stock Ryzen 7 7800X3D row's black bar 156.7. The legend calls the black bar '99th'. The row immediately above is PBO UV with different values (159.1 / 209.8), so it is not the requested row. Original page HTML and downloaded chart are saved under /tmp/web139/eval/sources/tom-7800/. The gallery is absent from main's page.md and its image URLs are restored by f1_hidden_removed."
+   }
+  ]
  }
 ]
