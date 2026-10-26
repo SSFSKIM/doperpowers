@@ -11,7 +11,7 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { execFileSync } from 'node:child_process'
 import { findChrome } from '../src/render.ts'
-import { CHECK_FLOOR_MS, readCurrent, recordCheck } from '../src/cache.ts'
+import { CHECK_FLOOR_MS, FAILURE_MEMORY_MS, readCurrent, recordCheck } from '../src/cache.ts'
 import { entryDir } from '../src/key.ts'
 
 export const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), 'fixtures')
@@ -67,6 +67,13 @@ export async function pastFloor(cacheDir: string, url: string) {
   const earlier = (at: string) => new Date(Date.parse(at) - CHECK_FLOOR_MS - 1000).toISOString()
   await writeFile(join(entry, current.generation, 'meta.json'), JSON.stringify({ ...current.meta, fetchedAt: earlier(current.meta.fetchedAt) }))
   if (current.checkedAt) await recordCheck(entry, current.generation, earlier(current.checkedAt))
+}
+
+/** Moves the URL's remembered failure past FAILURE_MEMORY_MS. */
+export async function forgetFailure(cacheDir: string, url: string) {
+  const file = join(entryDir(cacheDir, new URL(url)), '.failed.json')
+  const failure = JSON.parse(await readFile(file, 'utf8'))
+  await writeFile(file, JSON.stringify({ ...failure, failedAt: new Date(Date.parse(failure.failedAt) - FAILURE_MEMORY_MS - 1000).toISOString() }))
 }
 
 /** The cache's files and folders below its entries (host/entry/<name>), as `<entry>/<name>`: generations, .tmp- folders, failures. */

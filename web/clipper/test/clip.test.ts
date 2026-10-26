@@ -1,8 +1,8 @@
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile, readdir, stat, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { clip, fetchHttpsFirst, FETCH_LIMITS, FULL_LIMITS, httpsFirst } from '../src/clip.ts'
 import type { ClipResult, ClipOk, ClipError } from '../src/clip.ts'
 import { CHECK_FLOOR_MS, FAILURE_MEMORY_MS, readCurrent } from '../src/cache.ts'
@@ -11,7 +11,7 @@ import type { HttpResponse } from '../src/http.ts'
 import { estimateTokens } from '../src/estimate.ts'
 import { entryDir } from '../src/key.ts'
 import { RefusedError } from '../src/netguard.ts'
-import { startServer, startTrap, tmpCache, send, fixture, pngBytes, pdfBytes, PIXEL_GIF, noPdftotext, entryContents, inlineImagesPage, pastFloor } from './helpers.ts'
+import { startServer, startTrap, tmpCache, send, fixture, pngBytes, pdfBytes, PIXEL_GIF, noPdftotext, entryContents, inlineImagesPage, pastFloor, forgetFailure } from './helpers.ts'
 
 let server: Awaited<ReturnType<typeof startServer>>
 let trap: Awaited<ReturnType<typeof startTrap>>
@@ -280,13 +280,6 @@ async function siteFor(t: import('node:test').TestContext, routes: Parameters<ty
   return { site, env: { ...env, WEB_ALLOW_HOSTS: `127.0.0.1:${site.port}` }, cacheDir: await tmpCache() }
 }
 
-/** Moves the URL's remembered failure past FAILURE_MEMORY_MS. */
-async function forgetFailure(cacheDir: string, url: string) {
-  const file = join(entryDir(cacheDir, new URL(url)), '.failed.json')
-  const failure = JSON.parse(await readFile(file, 'utf8'))
-  await writeFile(file, JSON.stringify({ ...failure, failedAt: new Date(Date.parse(failure.failedAt) - FAILURE_MEMORY_MS - 1000).toISOString() }))
-}
-
 test('past the floor the site is asked, and a 304 to the copy\'s validators keeps it: the same folder, the check recorded, no request again within the floor', async t => {
   const asked: { etag?: string; since?: string }[] = []
   const { site, env, cacheDir } = await siteFor(t, {
@@ -420,6 +413,120 @@ test('a 304 from the page a redirect now leads to is not taken for the copy: tha
   assert.equal(moved.cached, false)
   assert.equal(moved.finalUrl, `${site.origin}/v2`)
   assert.match(await readFile(moved.file, 'utf8'), /documentation of \/v2/)
+})
+
+test('a copy is checked as the page it is, whatever fragment either URL carries: by a 304, the same body, or the same text', async t => {
+  const asked: (string | undefined)[] = []
+  let nonce = 0
+  const { site, env, cacheDir } = await siteFor(t, {
+    '/notes': (req, res) => {
+      asked.push(req.headers['if-none-match'])
+      if (req.headers['if-none-match'] === '"v1"') { res.writeHead(304, { etag: '"v1"' }); res.end(); return }
+      res.writeHead(200, { 'content-type': 'text/html', etag: '"v1"' }); res.end(releaseNotes('Version 1.0.1 fixes the date parser.'))
+    },
+    '/plain': (_req, res) => { res.writeHead(200, { 'content-type': 'text/html' }); res.end(releaseNotes('Version 2.0.0 drops the old parser.', `<!-- request ${nonce} -->`)) },
+  })
+  const first = ok(await clip(`${site.origin}/notes#install`, { cacheDir, env }))
+  await pastFloor(cacheDir, `${site.origin}/notes`)
+  const checked = ok(await clip(`${site.origin}/notes#usage`, { cacheDir, env }))
+  assert.equal(checked.cached, true, JSON.stringify(checked))
+  assert.equal(checked.dir, first.dir)
+  // The 304 was the whole check: no second request for the page in full.
+  assert.deepEqual(asked, [undefined, '"v1"'])
+
+  const plain = ok(await clip(`${site.origin}/plain#a`, { cacheDir, env }))
+  for (const [fragment, change] of [['#b', 0], ['#c', 1]] as const) {
+    nonce += change // the same bytes, then the same text in other bytes
+    await pastFloor(cacheDir, `${site.origin}/plain`)
+    const again = ok(await clip(`${site.origin}/plain${fragment}`, { cacheDir, env }))
+    assert.equal(again.cached, true, `${fragment}: ${JSON.stringify(again)}`)
+    assert.equal(again.dir, plain.dir)
+  }
+})
+
+test('a copy its extraction built from other responses too (a site extractor\'s requests) records none of the response\'s validators: its check compares the text', async t => {
+  // Defuddle's YouTube extractor takes any URL holding youtube.com/watch?v= and asks
+  // www.youtube.com for the transcript; the deny list refuses those requests here, offline.
+  const asked: (string | undefined)[] = []
+  const { site, env, cacheDir } = await siteFor(t, {
+    '/youtube.com/watch': (req, res) => {
+      asked.push(req.headers['if-none-match'])
+      if (req.headers['if-none-match'] === '"shell"') { res.writeHead(304, { etag: '"shell"' }); res.end(); return }
+      res.writeHead(200, { 'content-type': 'text/html', etag: '"shell"', 'last-modified': LAST_MODIFIED })
+      res.end('<!doctype html><html><head><title>Garden walk - YouTube</title></head><body><h1>Garden walk</h1><p>A walk through the beds in spring.</p></body></html>')
+    },
+  })
+  const denied = { ...env, WEB_DENY_HOSTS: 'youtube.com,*.youtube.com' }
+  const url = `${site.origin}/youtube.com/watch?v=dQw4w9WgXcQ`
+  const first = ok(await clip(url, { cacheDir, env: denied }))
+  assert.equal(first.site, 'YouTube') // the extractor read the page
+  assert.deepEqual(Object.keys(first.validators ?? {}), ['content'])
+
+  // The shell would answer 304, but it is not asked: the text, extracted again, decides.
+  await pastFloor(cacheDir, url)
+  const checked = ok(await clip(url, { cacheDir, env: denied }))
+  assert.deepEqual(asked, [undefined, undefined])
+  assert.equal(checked.cached, true)
+  assert.equal(checked.dir, first.dir)
+  assert.ok(checked.checkedAt)
+})
+
+test('a check whose HTML page fails where a markdown stub came back keeps the copy, saying why, remembered; refresh takes the stub', async t => {
+  let html = true
+  const { site, env, cacheDir } = await siteFor(t, {
+    '/package': (req, res) => (req.headers.accept ?? '').startsWith('text/markdown')
+      ? send('text/markdown; charset=utf-8', '# react\n\n@18.2.0\n\n[View react on npm](https://npmjs.com/package/react)\n')(req, res)
+      : html ? send('text/html', releaseNotes('React is a library for building user interfaces.'))(req, res) : send('text/plain', 'Down for maintenance', 503)(req, res),
+  })
+  const url = `${site.origin}/package`
+  const first = ok(await clip(url, { cacheDir, env }))
+  assert.equal(first.kind, 'html')
+
+  html = false
+  await pastFloor(cacheDir, url)
+  const down = ok(await clip(url, { cacheDir, env }))
+  assert.equal(down.cached, true, JSON.stringify(down))
+  assert.equal(down.dir, first.dir)
+  assert.match(down.checkFailed ?? '', new RegExp(`^the page came back with \\d+ words, the copy has ${first.words}; asking for its HTML page failed: HTTP 503 Service Unavailable$`))
+  assert.deepEqual((await readdir(entryDir(cacheDir, new URL(url)))).sort(), ['.failed.json', basename(first.dir)])
+  const hits = site.hits.length
+  assert.equal(ok(await clip(url, { cacheDir, env })).checkFailed, down.checkFailed)
+  assert.equal(site.hits.length, hits)
+
+  const stub = ok(await clip(url, { cacheDir, env, refresh: true }))
+  assert.equal(stub.kind, 'markdown')
+  assert.notEqual(stub.dir, first.dir)
+})
+
+test('a copy a prune deletes while its check is in flight is not handed out: after a 304 the page is asked for in full; after the same body or text, the page in hand is published', async t => {
+  let pruning: string | undefined // the generation the next request deletes before it is answered, as a prune would
+  let nonce = 0
+  const asked: (string | undefined)[] = []
+  const pruned = async () => { if (pruning) await rm(pruning, { recursive: true, force: true }); pruning = undefined }
+  const { site, env, cacheDir } = await siteFor(t, {
+    '/notes': async (req, res) => {
+      asked.push(req.headers['if-none-match'])
+      await pruned()
+      if (req.headers['if-none-match'] === '"v1"') { res.writeHead(304, { etag: '"v1"' }); res.end(); return }
+      res.writeHead(200, { 'content-type': 'text/html', etag: '"v1"' }); res.end(releaseNotes('Version 1.0.1 fixes the date parser.'))
+    },
+    '/plain': async (_req, res) => {
+      await pruned()
+      res.writeHead(200, { 'content-type': 'text/html' }); res.end(releaseNotes('Version 2.0.0 drops the old parser.', `<!-- request ${nonce} -->`))
+    },
+  })
+  for (const [path, change] of [['/notes', 0], ['/plain', 0], ['/plain', 1]] as const) {
+    const url = `${site.origin}${path}`
+    const copy = ok(await clip(url, { cacheDir, env }))
+    nonce += change
+    await pastFloor(cacheDir, url)
+    pruning = copy.dir
+    const again = ok(await clip(url, { cacheDir, env }))
+    assert.equal(again.cached, false, `${path} ${change}: ${JSON.stringify(again)}`)
+    assert.notEqual(again.dir, copy.dir)
+    assert.ok((await stat(again.file)).isFile())
+  }
+  assert.deepEqual(asked, [undefined, '"v1"', undefined])
 })
 
 test('a served markdown file gets frontmatter and its images', async () => {

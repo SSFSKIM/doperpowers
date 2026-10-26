@@ -200,17 +200,31 @@ test('prune deletes a check record whose generation is gone, and a check write a
   const root = await tmp()
   const gone = join(root, 'a.example', 'gone-11111111')
   const live = join(root, 'b.example', 'live-22222222')
-  const oldGen = await build(gone, new Date(Date.now() - 8 * 86400e3))
-  await recordCheck(gone, basename(oldGen), new Date().toISOString())
+  const oldGen = await build(gone, new Date(Date.now() - 9 * 86400e3))
+  await recordCheck(gone, basename(oldGen), new Date(Date.now() - 8 * 86400e3).toISOString())
   const liveGen = await build(live, new Date(Date.now() - 86400e3))
   await recordCheck(live, basename(liveGen), new Date().toISOString())
   await writeFile(join(live, '.checked-0123abcd.tmp'), '{"generation":')
   const before = new Date(Date.now() - FAILURE_MEMORY_MS - 60e3)
   await utimes(join(live, '.checked-0123abcd.tmp'), before, before)
-  // A copy is pruned by its fetch time, however recently it was confirmed.
   assert.deepEqual(await prune(root, { olderThanDays: 7 }), { removed: 1 })
   await assert.rejects(stat(join(root, 'a.example')))
   assert.deepEqual((await readdir(live)).sort(), ['.checked.json', basename(liveGen)])
+})
+
+test('prune keeps a generation while the later of its fetch and its last check is within the age: a path a check handed out stays readable', async () => {
+  const root = await tmp()
+  const entry = join(root, 'a.example', 'checked-11111111')
+  const unchecked = await build(entry, new Date(Date.now() - 10 * 86400e3))
+  const checked = await build(entry, new Date(Date.now() - 9 * 86400e3))
+  await recordCheck(entry, basename(checked), new Date(Date.now() - 86400e3).toISOString())
+  // The record names one generation: an older one is pruned by its fetch time.
+  assert.deepEqual(await prune(root, { olderThanDays: 7 }), { removed: 1 })
+  assert.deepEqual((await readdir(entry)).sort(), ['.checked.json', basename(checked)])
+  await assert.rejects(stat(unchecked))
+  // Once its check is past the age too, it goes, and its record with it.
+  assert.deepEqual(await prune(root, { olderThanDays: 7, now: Date.now() + 7 * 86400e3 }), { removed: 1 })
+  await assert.rejects(stat(join(root, 'a.example')))
 })
 
 test('prune of a missing root removes nothing', async () => {

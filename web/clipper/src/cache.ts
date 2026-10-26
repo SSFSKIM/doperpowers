@@ -55,9 +55,13 @@ export async function readCurrent<T>(entry: string): Promise<Current<T> | null> 
   let meta: T
   try { meta = JSON.parse(await readFile(join(gen, 'meta.json'), 'utf8')) as T } catch { return null }
   const generation = basename(gen)
-  const check = await readFile(join(entry, CHECKED_FILE), 'utf8').then(text => JSON.parse(text) as { generation?: string; checkedAt?: string }).catch(() => undefined)
+  const check = await readCheck(entry)
   return { meta, generation, ...(check?.generation === generation && check.checkedAt ? { checkedAt: check.checkedAt } : {}) }
 }
+
+/** The entry's check record; none when there is none, or it is half written. */
+const readCheck = (entry: string) =>
+  readFile(join(entry, CHECKED_FILE), 'utf8').then(text => JSON.parse(text) as { generation?: string; checkedAt?: string }).catch(() => undefined)
 
 /** Records that the site showed `generation` unchanged at `checkedAt`, replacing the record before. Best effort, as `rememberFailure`. */
 export async function recordCheck(entry: string, generation: string, checkedAt: string): Promise<void> {
@@ -124,10 +128,19 @@ export async function publish(tmp: string, entry: string, writeMeta: (finalDir: 
   }
 }
 
-/** Deletes generations fetched over `olderThanDays` ago, stale .tmp- folders, failures no longer remembered, and folders left empty. */
+/**
+ * Deletes generations neither fetched nor shown unchanged by a check in the last
+ * `olderThanDays` (a copy a check confirmed was handed out then, and its paths
+ * stay readable as a fresh fetch's do), stale .tmp- folders, failures no longer
+ * remembered, and folders left empty.
+ */
 export async function prune(root: string, opts: { olderThanDays: number; now?: number }): Promise<{ removed: number }> {
   const now = opts.now ?? Date.now()
   const maxAge = opts.olderThanDays * 86400e3
+  // The check record is read just before a generation past its age is deleted, not once per
+  // entry: a check that confirms the copy meanwhile writes it first, then looks for the copy.
+  const old = async (entryDir: string, name: string) =>
+    now - (await fetchedAt(join(entryDir, name))) > maxAge && now - (await checkedAt(entryDir, name)) > maxAge
   let removed = 0
   for (const host of await dirs(root)) {
     const hostDir = join(root, host)
@@ -135,7 +148,7 @@ export async function prune(root: string, opts: { olderThanDays: number; now?: n
       const entryDir = join(hostDir, entry)
       for (const name of await dirs(entryDir)) {
         const dir = join(entryDir, name)
-        if (name.startsWith(TMP_PREFIX) ? now - (await stat(dir)).mtimeMs > TMP_STALE_MS : now - (await fetchedAt(dir)) > maxAge) {
+        if (name.startsWith(TMP_PREFIX) ? now - (await stat(dir)).mtimeMs > TMP_STALE_MS : await old(entryDir, name)) {
           await rm(dir, { recursive: true, force: true })
           removed++
         }
@@ -175,6 +188,13 @@ async function recordFiles(entry: string): Promise<string[]> {
   } catch {
     return []
   }
+}
+
+/** When a check last showed `generation` unchanged, by the entry's check record; never, when the record names another. */
+async function checkedAt(entry: string, generation: string): Promise<number> {
+  const check = await readCheck(entry)
+  const t = check?.generation === generation && check.checkedAt ? Date.parse(check.checkedAt) : NaN
+  return Number.isNaN(t) ? -Infinity : t
 }
 
 async function fetchedAt(gen: string): Promise<number> {
