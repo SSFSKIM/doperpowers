@@ -8,9 +8,12 @@ on:
   workflow_dispatch:
     inputs:
       gates: {description: 'comma list of gate names; empty = all', required: false, default: ''}
-  # ci-kit's build cache seed: the build_cache gates on main, just after the ISO week turns.
+  # ci-kit's build cache seed: the build_cache gates on main, just after the ISO week turns, and again that
+  # morning, since GitHub drops scheduled runs under load (the first, at 00:10 on 2026-10-26, never ran); off the
+  # hour's busy start. A second seed on a warm scope rebuilds nothing.
   schedule:
-    - cron: '10 0 * * 1'
+    - cron: '23 0 * * 1'
+    - cron: '47 6 * * 1'
 jobs:
   ci:
     uses: SSFSKIM/ci-kit/.github/workflows/gates.yml@v1
