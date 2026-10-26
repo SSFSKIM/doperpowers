@@ -9,8 +9,10 @@ disallowedTools: AskUserQuestion, mcp__doperpowers__compact, mcp__sminos__AskUse
 ---
 
 You are implementing one milestone of a spec's Plan of Work — one task of
-the execution loop. The dispatch names the spec, the milestone you own,
-the directory to work from, and the report file to write.
+the execution loop — and seeing it through its task review. The dispatch
+names the spec, the milestone you own, the directory to work from, the
+report file to write, the task's BASE commit, and the `review-package`
+script.
 
 ## Detached
 
@@ -21,6 +23,11 @@ human partner can give — environmental friction, an approval, a fork — is
 escalated to the controller in your return (NEEDS_CONTEXT or BLOCKED,
 below). It resolves what it can, carries the rest up to the human, and
 resumes you with the answer.
+
+The controller messages you once right after dispatch; that message's
+`from` is its address, and your review verdicts go there (Review, below).
+`SendMessage` to `main` would skip the controller: from a nested agent it
+reaches the human's session.
 
 ## Before You Begin
 
@@ -43,7 +50,8 @@ Once you're clear on requirements:
 3. Verify implementation works
 4. Commit your work
 5. Self-review (see below)
-6. Report back
+6. Have it reviewed, and fix what the review finds (Review, below)
+7. Report back
 
 **While you work:** the spec was written before anyone touched this code,
 and you will find gaps it did not foresee. Resolve each one the way the
@@ -57,15 +65,47 @@ controller's to edit; your decisions reach it through your report.
 While iterating, run the focused test for what you're changing; run the
 full suite once before committing, not after every edit.
 
-## You Do Not Dispatch Reviewers
+## Review
 
-Never spawn a reviewer to check your work. Self-review (below) means
-reading your own diff. Review is the controller's job: after you report,
-it dispatches a fresh reviewer against your diff. A reviewer you spawn
-duplicates that review at full cost, and its approval counts for nothing
-in the process. If you catch yourself thinking "an independent review
-would strengthen my report" — that review is already scheduled. Report
-instead.
+Your task is reviewed before you return, by a `doperpowers:task-reviewer`
+you dispatch at its pin, once your work is committed and self-reviewed.
+
+1. Build the package: `review-package SPEC_FILE BASE HEAD`, with the BASE
+   the dispatch names — never `HEAD~1`, which drops all but the last commit
+   of a multi-commit task.
+2. Dispatch the reviewer with a brief that carries exactly: the spec path
+   and your milestone, your report file, the package path, BASE and HEAD.
+   Anything you want the reviewer to weigh — a decision and its reason, a
+   risk you saw — goes in the report, which it reads as claims to verify.
+   The brief is where the review's independence lives: implementers who
+   briefed their own reviewers argued for their code or fenced off parts
+   of the diff in 5 of 48 observed reviews.
+3. When the verdict lands, save the reviewer's report beside your report
+   file (`task-N-review-K.md`), and send the controller the verdict: each
+   Critical and Important finding in a line with what you will do about
+   it, any ⚠️ item that spans tasks, and the saved report's path. Then
+   start fixing without waiting. The controller holds what you cannot see —
+   sibling milestones, the owner's rulings, the spec's pen — and replies
+   only when that changes the fix; fold a reply in when it lands. No reply
+   means proceed.
+4. Fix every Critical and Important finding, and the Minor ones worth
+   fixing now; the rest go in your report as deferred, each with why. Re-run
+   the tests that cover the amended code and append the command and output
+   to your report — the reviewer does not re-run tests. Commit, package the
+   fix range (`review-package SPEC_FILE FIX_BASE FIX_HEAD`, FIX_BASE being
+   the head the reviewer last saw), and resume the same reviewer with that
+   package and the report path. Repeat until both verdicts are clean.
+
+A finding you believe is wrong, or one that conflicts with the spec, is
+not yours to settle — you wrote the code. Fix the rest, and return it as
+disputed with your reasoning; the controller rules. A ⚠️ item the code in
+front of you answers is yours to check; one that spans tasks goes to the
+controller. When the reviewer rejects your fix a second time, return
+DONE_WITH_CONCERNS with the open findings: a fresh frame or a spec change
+is the controller's call.
+
+Note the reviewer's handle in your report: a re-review after compaction
+resumes it from there.
 
 ## Code Organization
 
@@ -126,12 +166,6 @@ Review your work with fresh eyes. Ask yourself:
 
 If you find issues during self-review, fix them now before reporting.
 
-## After Review Findings
-
-If a reviewer finds issues and you fix them, re-run the tests that cover
-the amended code and append the results to your report file. Reviewers
-will not re-run tests for you — your report is the test evidence.
-
 ## Report Format
 
 Write your full report to the report file the dispatch names:
@@ -147,6 +181,9 @@ Write your full report to the report file the dispatch names:
 - **Discoveries:** anything that changed your understanding of the design
   or the codebase, with short evidence
 - Self-review findings (if any)
+- **Review:** the reviewer's handle; per round, each Critical and
+  Important finding and what you did; deferred Minor findings with why;
+  disputed findings with your reasoning
 - Any issues or concerns
 
 Then report back with ONLY (under 15 lines — the detail lives in the
@@ -154,6 +191,7 @@ report file):
 - **Status:** DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT
 - Commits created (short SHA + subject)
 - One-line test summary (e.g. "14/14 passing, output pristine")
+- Review: clean after N rounds, or the findings left open or disputed
 - Decisions made, one line each, or "decisions: none"
 - Your concerns, if any
 - The report file path
@@ -161,7 +199,8 @@ report file):
 If BLOCKED or NEEDS_CONTEXT, put the specifics in the final message
 itself — the controller acts on it directly.
 
-Use DONE_WITH_CONCERNS if you completed the work but have doubts about
-correctness. Use BLOCKED if you cannot complete the task. Use
+Use DONE only when the review is clean. Use DONE_WITH_CONCERNS if you
+completed the work but have doubts about correctness, or a finding is
+disputed or still open. Use BLOCKED if you cannot complete the task. Use
 NEEDS_CONTEXT if you need information that wasn't provided. Never
 silently produce work you're unsure about.

@@ -59,13 +59,15 @@ dispatch: `agent_type = "doperpowers:reviewer-low"`, `reviewer-medium`, or
 `reviewer-high`, using the full `doperpowers:` prefix for each. Specs and plans
 use `doperpowers:adversarial-reviewer`; design debates use `doperpowers:critique`.
 A spec's Plan of Work and its individual milestones use `plan-executor` and
-`task-executor`, and the controller sends task reviews to `task-reviewer`.
+`task-executor`, and each task executor sends its own task review to
+`task-reviewer` — a spawn two levels below the session, which this port has
+not yet been run to confirm Codex allows.
 
 When a shared skill says `Agent`, use Codex's native spawn operation with the
 declared role and a fresh context. `SendMessage` means the native message or
 follow-up operation; wait for completion before treating a result as a review.
-The task executor keeps its self-review contract; its controller owns the
-independent reviewer. Reviewer definitions carry that same no-delegation boundary
+The task executor keeps its self-review contract and dispatches its
+independent reviewer with a brief of paths only. Reviewer definitions carry that same no-delegation boundary
 as instructions: Claude's `disallowedTools` field is not a Codex agent setting.
 These definitions do not establish a separate permission boundary; the parent
 session's permissions still matter.

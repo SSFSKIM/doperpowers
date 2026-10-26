@@ -6,10 +6,10 @@ description: Use to run a doperpowers:execspec spec whose Plan of Work has sever
 # Subagent-Driven Execution
 
 Execute a spec's Plan of Work by dispatching a fresh executor subagent per
-milestone, a task review (spec compliance + code quality) at each
-dependency frontier, and a broad whole-branch review at the end. Each
-milestone of the spec is one task of this loop — the ledger and the scripts
-count tasks.
+milestone — each has its task reviewed (spec compliance + code quality) and
+fixes what the review finds before it returns — and a broad whole-branch
+review at the end. Each milestone of the spec is one task of this loop —
+the ledger and the scripts count tasks.
 
 **Why subagents:** each worker starts from the spec and the code, with no
 session history and no other tasks' noise, and your own context stays free
@@ -54,65 +54,42 @@ or brainstorm first.
    comment.
 3. **Per task, in Plan of Work order:** record BASE (the current commit),
    dispatch the executor (`doperpowers:task-executor`, briefed per Dispatch
-   hygiene below) and write the task's `executed` ledger line with its
-   agent handle (Durable Progress below) — fixes resume it. Answer its
+   hygiene below), send it one message — its `from` is your address, where
+   the executor's review verdicts come back; a nested executor has no other
+   way to reach you, since its `main` is the top session — and write the
+   task's `executed` ledger line with its agent handle (Durable Progress
+   below). Answer its
    questions before it proceeds. One executor at a time — parallel
-   executors conflict in a shared worktree.
-4. **Fold the report back.** When an executor returns, read the decisions
-   and discoveries in its report. Fold the ones a later reader needs into
-   the spec — a decision into the Decision Log, a discovery into
-   Surprises & Discoveries — and commit, so the next executor reads them
-   in the spec rather than in your dispatch. A decision that works
-   against the spec's intent or crosses the gate is not folded: it goes
-   back to the executor, or up to whoever dispatched you; one the reviewer
-   later rejects is reversed in the log when the fix lands.
-5. **Review at the frontier:** a task is reviewed clean — findings fixed
-   and re-reviewed — before any task that consumes what it produced
-   dispatches; the milestones' Interfaces name the producers, and the
-   spec's last milestone consumes the whole branch. Tasks nothing
-   downstream consumes yet may keep executing and are reviewed together
-   when the frontier closes (the next task consumes from them, or the Plan
-   of Work ends): one review package per task (`scripts/review-package
-   SPEC_FILE BASE HEAD`, each task's own BASE..HEAD), one task reviewer
-   per task (`doperpowers:task-reviewer`) with the printed path,
-   dispatched together when their focused tests cannot
-   collide — reviews read their package, not the tree, so hermetic suites
-   run concurrently; suites that share mutable state — a test database, a
-   fixed port — run one reviewer at a time.
-   Where no interface is declared but two tasks touch the same files,
-   judge from what each milestone says it touches: an overlap that looks
-   load-bearing is reviewed before the later task dispatches. The frontier
-   is the ceiling on deferral, not the floor: a DONE_WITH_CONCERNS or a
-   doubt of your own is a reason to review that task now.
-   A deferred review reads a tree that has moved past its package —
-   Task 1's package is BASE1..HEAD1 while the checkout sits at the
-   wave's last HEAD. Name the current HEAD and what landed since the
-   task's own HEAD (the sibling commits and files) in the dispatch, so
-   a sibling's effect is not read as this task's; a check that must see
-   the task's own tree — a focused test, a named risk — runs in a
-   detached worktree at the packaged HEAD (`git worktree add --detach
-   <workspace>/review-N <HEAD_N>`, removed after the review) rather
-   than in the shared checkout.
-6. **Findings:** Critical/Important findings go back to the executor that
-   wrote the code — resume it with the findings; it holds the task's
-   context and skips the orientation a fresh fixer pays. Several tasks
-   with findings in one wave resume one at a time (shared worktree).
-   Re-review by resuming the reviewer with the fix commits' package
-   (`scripts/review-package SPEC_FILE FIX_BASE FIX_HEAD` — the fix range:
-   the reviewer already holds the task's original package, and a deferred
-   task's fix lands past its siblings' commits); repeat until both
-   verdicts are clean. That message names the fix range, sends the
-   reviewer back to the report (the executor appended the fix's test
-   evidence there), and carries the refreshed checkout head and what
-   landed since — plus a fresh detached worktree at the fix head if the
-   review needs the task's own tree. A resumed reviewer otherwise judges
-   the fix against its pre-fix memory. A fresh fixer (a new
-   `doperpowers:task-executor` briefed with the findings) when the executor
-   cannot be resumed, or when its frame is the problem — two failed
-   re-reviews is the usual sign. Record Minor findings in the ledger —
-   the final review triages that list, so it is read, not discarded. Fix
-   through a worker, not your own edits: manual fixes pollute your
-   context and skip review.
+   executors conflict in a shared worktree — and an executor holds the
+   checkout until its review is clean.
+4. **The task's review runs inside it:** the executor packages its range,
+   dispatches `doperpowers:task-reviewer`, fixes, and re-reviews, and sends
+   you each verdict as it lands. Read each one against what only you hold —
+   sibling milestones and the interfaces they share, the owner's rulings,
+   the spec — and reply when that changes the fix: a contract a sibling
+   relies on, a ruling the executor has not heard, a spec statement the
+   finding exposes as wrong (fix the spec first, with a dated Decision Log
+   entry; you are its one writer). Otherwise stay silent; it reads silence
+   as proceed.
+5. **Fold the report back.** The executor returns once its review is clean,
+   or with findings disputed or still open after two rejected fixes. Read
+   the decisions and discoveries in its report and fold the ones a later
+   reader needs into the spec — a decision into the Decision Log, a
+   discovery into Surprises & Discoveries — and commit, so the next
+   executor reads them in the spec rather than in your dispatch. A
+   decision that works against the spec's intent or crosses the gate is
+   not folded: it goes back to the executor, or up to whoever dispatched
+   you. Record the deferred Minor findings in the ledger — the final
+   review triages that list, so it is read, not discarded.
+6. **Disputes and open findings** are yours to adjudicate against the
+   spec's intent: the author does not grade its own work, and the reviewer
+   is rigorous by design, so a real finding can still be too minor to act
+   on or bounded by the design. Upheld, resume the executor to fix and
+   re-review; when its frame is the problem — two rejected fixes is the
+   usual sign — or it cannot be resumed, dispatch a fresh
+   `doperpowers:task-executor` briefed with the findings, which reviews its
+   fix the same way. Fix through a worker, not your own edits: manual
+   fixes pollute your context and skip review.
 7. Mark the task complete in todos and the ledger, and tick its milestone
    in the spec's `Progress` with a timestamp and commit — the tick means
    reviewed clean, the same as the ledger's `complete`, and the ledger is
@@ -135,7 +112,8 @@ or brainstorm first.
 `doperpowers:task-executor` is pinned to opus at high reasoning effort;
 the milestone grain is calibrated to that tier, and fixes resume the same
 executor. `doperpowers:task-reviewer` is pinned to sol at xhigh effort —
-the medium review rung's model and effort: the frontier review is a
+the medium review rung's model and effort — and the executor dispatches it
+at that pin, a sonnet executor's included: the task review is a
 task-scoped gate, and the whole-branch review at the spec's named rung is
 the deep read. A simple task — a doc update, a mechanical rename, a
 verification walk with every command given — can go to sonnet, the tier
@@ -155,12 +133,12 @@ entire branch.
 
 ## Executor statuses
 
-- **DONE** → fold its report back (step 4), then review at the frontier
-  (step 5): package and reviewer now when something downstream consumes
-  the task or an early-review reason applies, otherwise it waits for the
-  wave.
-- **DONE_WITH_CONCERNS** → read the concerns first: correctness or scope
-  concerns get addressed before review; observations ride along to it.
+- **DONE** → its review is clean: fold its report back (step 5) and mark
+  the task complete (step 7).
+- **DONE_WITH_CONCERNS** → read the concerns first: disputed or open
+  findings go to step 6; correctness or scope concerns are addressed —
+  back to the executor, then re-review — before the task is complete;
+  observations are folded like any other report.
 - **NEEDS_CONTEXT** → provide the missing context, re-dispatch.
 - **BLOCKED** → diagnose before retrying: missing context (provide it),
   reasoning capacity (sonnet → opus; from opus, resolve the hard call in
@@ -170,10 +148,11 @@ entire branch.
   nothing.
 
 **Reviewer ⚠️ items** — requirements the reviewer could not verify from the
-diff (unchanged code, cross-task) come back marked ⚠️. Resolve each one
-yourself before marking the task complete; you hold the cross-task context
-the reviewer lacks. A confirmed gap is a failed spec review: back to the
-executor, then re-review.
+diff come back marked ⚠️. The executor checks the ones its task's code
+answers; one that spans tasks reaches you in its verdict. Resolve each of
+those yourself before marking the task complete; you hold the cross-task
+context the reviewer lacks. A confirmed gap is a failed spec review: back
+to the executor, then re-review.
 
 ## Dispatch hygiene
 
@@ -183,46 +162,34 @@ artifacts over as files (a real session's dispatch hit 42k chars, 99% of it
 pasted prior-task history):
 
 - The worker contracts — TDD, deciding gaps and reporting decisions,
-  self-review, escalation statuses, the report shape, the reviewer's
-  rubric and read-only posture — live in the agent definitions, not in
+  self-review, the task review and its brief, escalation statuses, the
+  report shape, the reviewer's rubric and read-only posture — live in the
+  agent definitions, not in
   your dispatch. A dispatch carries only what is particular to this task.
 - The spec is the single source of requirements; exact values live only
-  there, and anything decided since goes into the spec (step 4), not into
+  there, and anything decided since goes into the spec (step 5), not into
   a dispatch. An executor dispatch carries: the spec path and the
   milestone ("read the whole spec; you own M3 of its Plan of Work"); for
   a composite child, the composite's path and the child id its execution
   document cites, since the design lives in that section; the directory
-  to work from; the report-file path; and your answer to anything the
-  executor asked.
+  to work from; the report-file path; the task's BASE (the commit you
+  recorded); the path of this skill's `scripts/review-package`; and your
+  answer to anything the executor asked.
 - The report file is `task-N-report.md` in the workspace; the executor
-  writes detail there and returns only status, commits, a one-line test
-  summary, decisions made, and concerns.
-- A reviewer dispatch carries the spec path and milestone (and, for a
-  composite child, the composite's path and child id), the report path,
-  the review package path, the task's BASE and HEAD and, for a deferred
-  review, a checkout line: where the shared checkout sits, the
-  sibling commits and files that landed since HEAD, and the detached
-  worktree at HEAD if one was made. Omit the checkout line when the
-  checkout is at HEAD.
-- `review-package` BASE is the commit you recorded before dispatching the
-  executor — never `HEAD~1`, which silently drops all but the last
-  commit of a multi-commit task. A re-review's BASE is the ledger's
-  `fix-base` — the HEAD when the fix dispatched — so the package is the
-  fix alone.
-- Let the reviewer judge: don't pre-rate severity or list things not to
-  flag ("don't treat X as a defect", "at most Minor") — that impulse is
-  usually you sparing yourself a review loop. Adjudicate findings when they
-  come back, against the spec's intent. A finding that exposes a spec
-  statement as wrong is fixed in the spec by you — the design section
-  revised, a dated Decision Log entry; you are its one writer — and in
-  the code by the worker; only a fork under the gate goes up.
-- Fix messages — to a resumed executor or a fresh fixer — carry the
-  executor contract: re-run the covering tests (name them — a one-line
-  fix doesn't need the whole suite), report the command and output;
-  confirm all three are in the fix report before re-review. A resumed
-  executor's view of the tree ends at its own HEAD: name what landed
-  since (commits and files) and have it re-read before editing; its
-  covering tests include sibling suites touching the same files.
+  writes detail there — its reviewer's reports beside it — and returns
+  only status, commits, a one-line test summary, the review's outcome,
+  decisions made, and concerns.
+- Adjudicate disputed findings against the spec's intent. A finding that
+  exposes a spec statement as wrong is fixed in the spec by you — the
+  design section revised, a dated Decision Log entry; you are its one
+  writer — and in the code by the worker; only a fork under the gate goes
+  up.
+- A fix message to a resumed executor, or a fresh fixer's brief, names
+  the findings and the tests that cover them — a one-line fix doesn't need
+  the whole suite. A resumed executor's view of the tree ends at its own
+  HEAD: name what landed since (commits and files) and have it re-read
+  before editing; its covering tests include sibling suites touching the
+  same files.
 - Final-review findings go to ONE fixer with the complete list — per-finding
   fixers each rebuild context and re-run suites; a real session's
   per-finding fix wave cost more than all its tasks combined.
@@ -242,20 +209,16 @@ agent handles), which do not belong in the spec:
 - The ledger lives at `<workspace>/progress.md`, first line
   `# SDE ledger — spec: <path of the file you execute>`. If that line
   names your spec, tasks with a `Task <N>: complete` line are done; a task
-  with an `executed` line but no `complete` line is awaiting review or
-  fixes — resume its review (or its handles), never re-execute it; resume
-  executing at the first task with neither. A ledger naming a different
+  with an `executed` line but no `complete` line is still building or in
+  its review — resume its executor (its report names its reviewer), never
+  re-execute it; resume executing at the first task with neither. A ledger naming a different
   file is another run's progress: leave it, start your own.
 - At dispatch, append `Task N: executed (base <sha7>, executor
-  <handle>)`; add `head <sha7>` when the executor returns and
-  `reviewer <handle>` when the review dispatches — a fix resumes those
-  handles, and after compaction the ledger is the only place they
-  survive. When a fix dispatches append `fix-base <sha7>` (the HEAD at
-  that moment) and `fix-head <sha7>` when it lands: a deferred task's
-  fix commits sit past its siblings', so `base..head` no longer bounds
-  the task's history.
-- When a task's review comes back clean, append `Task N: complete
-  (commits <base7>..<head7>[, fix <base7>..<head7>], review clean)`.
+  <handle>)` — a fix or a recovery resumes that handle, and after
+  compaction the ledger is the only place it survives.
+- When the executor returns reviewed clean, append `Task N: complete
+  (commits <base7>..<head7>, review clean in <n> rounds)`, and the
+  deferred Minor findings beneath it.
 - After compaction, trust the ledger and `git log` over your own
   recollection. (`git clean -fdx` destroys the workspace — recover from
   `git log`.)

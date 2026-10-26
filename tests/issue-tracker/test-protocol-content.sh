@@ -620,13 +620,28 @@ assert_contains "$texec" "model: opus" "the task-executor is pinned to opus, the
 assert_contains "$texec" "effort: high" "...at high reasoning effort"
 assert_contains "$texec" "disallowedTools: AskUserQuestion" "...and it runs detached from the human: no AskUserQuestion"
 assert_contains "$texec" "escalated to the controller in your return" "...an input only the human or the owners can give — friction, an approval, a fork — is escalated to the controller in its return"
+# The task review runs inside the executor (2026-10-25,
+# docs/doperpowers/specs/2026-10-25-sde-nested-review.md): it dispatches its
+# own reviewer, and the review's independence rests on a brief of paths.
+assert_contains "$texec" 'by a `doperpowers:task-reviewer`' "...and it has its own task reviewed before it returns"
+assert_contains "$texec" "carries exactly: the spec path" "...through a brief that carries the paths and nothing that argues for the code"
+assert_contains "$texec" "never \`HEAD~1\`" "...packaging the range from the dispatch's BASE, never HEAD~1"
+assert_contains "$texec" "is its address" "...and it learns the controller's address from the message that follows its dispatch"
+assert_contains "$texec" "reaches the human's session" "...because a nested agent's main is the human's session, not its controller"
+assert_contains "$texec" "not yours to settle" "...and a finding it disputes goes to the controller rather than being settled by the code's author"
+assert_not_contains "$texec" "You Do Not Dispatch Reviewers" "...the ban on executor-dispatched reviewers is gone with the controller's own review"
 
-echo "task-reviewer agent (subagent-driven-execution's frontier gate):"
+echo "task-reviewer agent (subagent-driven-execution's task gate):"
 TASK_REVIEWER="$REPO_ROOT/agents/task-reviewer.md"
 [ -f "$TASK_REVIEWER" ] || { echo "missing $TASK_REVIEWER"; exit 1; }
 trev="$(cat "$TASK_REVIEWER")"
 assert_contains "$trev" "model: sol" "the task-reviewer stays on sol"
 assert_contains "$trev" "effort: xhigh" "...at xhigh effort, the medium review rung's model and effort"
+assert_contains "$trev" "is a claim like the" "...and it reads its dispatcher's brief, the author's, as claims"
+assert_not_contains "$trev" "deferred review" "...with no deferred review: the checkout sits at the head under review"
+sde_skill="$(cat "$REPO_ROOT/skills/subagent-driven-execution/SKILL.md")"
+assert_contains "$sde_skill" "send it one message" "subagent-driven-execution: the controller messages each executor once, so its verdicts have an address"
+assert_not_contains "$sde_skill" "checkout line" "...and no deferred-review checkout line survives"
 
 # The spec is written, reviewed, and executed through the execspec skill;
 # brainstorming closes the design and routes. The Architect names both, and
