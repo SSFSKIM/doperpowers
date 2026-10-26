@@ -65,6 +65,8 @@ READY_HOLD = 5.0
 # `read status`'s answer, as the mod's (DX5).
 STATUS = {"version": {"version": "2.1.307", "base": "2.1.307"}, "model": "claude-opus-5-5", "cwd": "/w", "root": "/w",
           "repo": None, "surfaces": ["terminal"], "override": None}
+# What a bridge at MW1 answers `read mcp` with: the servers whose tools the model has.
+MCP = {"exact": False, "servers": [{"name": "probe_server", "status": "connected", "tools": 2}]}
 BACKLOG = 10000       # a subscriber this far behind is cut off, as the child cuts it off
 PLUGIN_ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 SMINOS = os.path.join(PLUGIN_ROOT, "skills", "sminos", "scripts", "sminos")
@@ -204,6 +206,8 @@ class Endpoint:
             return 200, {"id": "c0", "ok": True, "result": {"slow": True}}
         if what == "status":
             return 200, {"id": "c0", "ok": True, "result": STATUS}
+        if what == "mcp":
+            return 200, {"id": "c0", "ok": True, "result": MCP}
         return 200, {"id": "c0", "ok": False, "error": "no read %s" % what}
 
     def end_all(self):

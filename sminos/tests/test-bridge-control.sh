@@ -456,9 +456,10 @@ run "$SMINOS" read "$SID" status
 assert_rc 0 "$RC" "read status exits 0"
 assert_equals "$(field_of "$OUT" version.version)" "2.1.307" "printing the mod's answer as JSON"
 assert_equals "$(field_of "$(last_op "$T/lines-b" read)" what)" "status" "the read reached the mod"
-run "$SMINOS" read "$SID" usage
+run "$SMINOS" read "$SID" usage --breakdown full
 assert_rc 1 "$RC" "a read the mod does not serve exits 1"
 assert_contains "$OUT" "no read usage" "in the mod's words"
+assert_equals "$(field_of "$(last_op "$T/lines-b" read)" args.breakdown)" "full" "a read's args reach the mod (--breakdown)"
 WATCHD="$T/wd"
 "$SMINOS" watch "$SID" --json > "$WATCHD" 2>&1 &
 PIDS+=("$!")

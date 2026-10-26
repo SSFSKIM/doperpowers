@@ -68,7 +68,8 @@ member too, seat-less, from the first call that reads its project.
                    (needs the bridge)
     sminos command  <member> <name> [args...]             # a slash command run in it as the desk runs one:
                    routed by the bridge, queued, then the line it printed (needs the bridge)
-    sminos read     <member> <what>                       # one of its bridge's reads, as JSON (`status`)
+    sminos read     <member> <what> [--breakdown full]    # one of its bridge's reads, as JSON: status, catalog,
+                   usage (the token-count API's exact count with --breakdown full), config, settings, mcp
     sminos decide   <member> <request> allow|deny [--message M]   # a permission prompt the session raised
                    (`watch` prints its id; a unique prefix will do), racing the terminal's own dialog
     sminos answer   <member> <request> <answer>...        # a question it asked, one answer per question
@@ -10035,6 +10036,7 @@ def build_parser():
     rd = sub.add_parser("read", add_help=False)
     rd.add_argument("member")
     rd.add_argument("what")
+    rd.add_argument("--breakdown", choices=("summary", "full"))
     rd.set_defaults(fn=cmd_read)
 
     de = sub.add_parser("decide", add_help=False)

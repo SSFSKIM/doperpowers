@@ -171,6 +171,7 @@ import pickle
 import queue
 import re
 import socket
+import stat
 import subprocess
 import sys
 import threading
@@ -229,6 +230,8 @@ READ_ID_MAX = 64          # DX3 `read`: its id's characters
 READ_WHAT = re.compile(r"^[a-z-]{1,32}$")
 READ_ARGS_MAX = 4096      # bytes of a read's args, as JSON
 READS_IN_FLIGHT = 4       # reads one subscription waits on at once
+DISABLED_MAX = 256        # `read mcp`: the disabled servers relayed at most
+DISABLED_NAME_MAX = 256   # characters of a disabled server's name
 DISK_KEEP = 4096          # files whose facts the disk cache keeps (metas, agent transcripts, parent loops)
 STAMP_BLOCK = 64 << 10    # bytes read at a time looking backward for an agent transcript's last row
 SLUG_MAX = 200            # UTF-16 units of the engine's slug before it is cut and hashed (2.1.300 `xge`)
@@ -2159,9 +2162,11 @@ class Subscription:
         return [self.message("read", body)]
 
 
-def read_answer(path, rid, what, args):
+def read_answer(path, rid, what, args, cwd=""):
     """DX4 `read`'s body: the session's bridge's answer to the read (DX5),
-    or why there is none."""
+    or why there is none; an `mcp` answer with the servers the session's
+    project disables added (`with_disabled`, from its working directory
+    `cwd`)."""
     def error(code, message):
         return {"id": rid, "what": what, "error": {"code": code, "message": message}}
 
@@ -2178,10 +2183,111 @@ def read_answer(path, rid, what, args):
     if status != 200:
         return error("failed", "the bridge answered %d: %s" % (status, out.get("error")))
     if out.get("ok"):
-        return {"id": rid, "what": what, "result": out.get("result")}
+        result = out.get("result")
+        return {"id": rid, "what": what, "result": with_disabled(result, cwd) if what == "mcp" else result}
     why = str(out.get("error") or "the session refused the read")
     # A kind the mod does not serve, or a mod from before reads.
     return error("unsupported" if why.startswith(("no read ", "unknown op")) else "failed", why)
+
+
+def global_config():
+    """The engine's global config file, chosen as 2.1.310 chooses it (`y_`
+    in its cli): `<config dir>/.config.json` while that legacy file is a
+    nonempty file, or an empty writable one with no `.claude.json` beside
+    it; else `.claude.json` (`.claude-custom-oauth.json` under a custom OAuth
+    URL) in CLAUDE_CONFIG_DIR when it is set, else in the home directory."""
+    suffix = "-custom-oauth" if os.environ.get("CLAUDE_CODE_CUSTOM_OAUTH_URL") else ""
+    main = os.path.join(os.environ.get("CLAUDE_CONFIG_DIR") or sminos.home_dir(), ".claude%s.json" % suffix)
+    legacy = os.path.join(bridge.config_dir(), ".config.json")
+    try:
+        st = os.stat(legacy)
+    except OSError:
+        return main
+    if stat.S_ISREG(st.st_mode) and (st.st_size > 0 or (st.st_mode & 0o222 and not os.path.exists(main))):
+        return legacy
+    return main
+
+
+def _read_text(path, follow=False):
+    """A regular file's text, stripped; None for anything else (a symlink
+    too, unless `follow`, as the engine refuses one in a worktree's gitdir)."""
+    try:
+        if not stat.S_ISREG((os.stat if follow else os.lstat)(path).st_mode):
+            return None
+        with open(path, encoding="utf-8") as f:
+            return f.read().strip()
+    except (OSError, ValueError):
+        return None
+
+
+def project_key(cwd):
+    """The key the engine files a project's entry of `.claude.json` under
+    (2.1.310's canonical git root): the nearest directory at or above `cwd`
+    holding `.git`, and for a linked worktree its primary checkout (a bare
+    repository's directory when the primary is bare); `cwd` itself outside
+    any repository."""
+    at = os.path.normpath(cwd)
+    while not os.path.isdir(os.path.join(at, ".git")) and not os.path.isfile(os.path.join(at, ".git")):
+        up = os.path.dirname(at)
+        if up == at:
+            return os.path.normpath(cwd)
+        at = up
+    return _canonical_root(at)
+
+
+def _canonical_root(root):
+    """A linked worktree's primary checkout, its `.git` file followed as the
+    engine follows it: `gitdir: <primary>/.git/worktrees/<name>`, whose
+    `commondir` names the primary's `.git` and whose `gitdir` points back
+    at this worktree's `.git`. Anything that does not hold together is the
+    root itself."""
+    text = _read_text(os.path.join(root, ".git"), follow=True)
+    if text is None or not text.startswith("gitdir:"):
+        return root
+    gitdir = os.path.normpath(os.path.join(root, text[len("gitdir:"):].strip()))
+    common = _read_text(os.path.join(gitdir, "commondir"))
+    if not common:
+        return root
+    common = os.path.normpath(os.path.join(gitdir, common))
+    if os.path.dirname(gitdir) != os.path.join(common, "worktrees"):
+        return root
+    back = _read_text(os.path.join(gitdir, "gitdir"))
+    if not back or os.path.realpath(os.path.join(gitdir, back)) != os.path.join(os.path.realpath(root), ".git"):
+        return root
+    if os.path.basename(common) != ".git":
+        return root if os.path.exists(os.path.join(common, ".git")) else common
+    return os.path.dirname(common)
+
+
+def disabled_mcp(cwd):
+    """The MCP servers the engine keeps disabled for the project `cwd` is in
+    (`/mcp disable`): `projects[<key>].disabledMcpServers` of `.claude.json`,
+    the one key of that file read, names alone. [] when there are none or the
+    file cannot be read."""
+    if not cwd:
+        return []
+    try:
+        with open(global_config(), encoding="utf-8") as f:
+            config = json.load(f)
+    except (OSError, ValueError):
+        return []
+    projects = config.get("projects") if isinstance(config, dict) else None
+    entry = projects.get(project_key(cwd)) if isinstance(projects, dict) else None
+    names = entry.get("disabledMcpServers") if isinstance(entry, dict) else None
+    if not isinstance(names, list):
+        return []
+    return [n for n in names if isinstance(n, str) and 0 < len(n) <= DISABLED_NAME_MAX][:DISABLED_MAX]
+
+
+def with_disabled(result, cwd):
+    """`read mcp`'s answer with each server the project disables added as
+    `{name, status: "disabled"}`, unless the bridge already named it: the
+    bridge sees only servers whose tools the model has."""
+    if not (isinstance(result, dict) and isinstance(result.get("servers"), list)):
+        return result
+    named = {s.get("name") for s in result["servers"] if isinstance(s, dict)}
+    added = [{"name": n, "status": "disabled"} for n in disabled_mcp(cwd) if n not in named]
+    return {**result, "servers": result["servers"] + added}
 
 
 def block_row(e):
@@ -2672,9 +2778,10 @@ class Plane:
                 "code": "busy", "message": "%d reads of this subscription are not answered yet" % READS_IN_FLIGHT}})
         self.reading[s.sub] += 1
         path = bridge.endpoint(s.session)
+        cwd = str((self.live.get(s.session) or {}).get("cwd") or self.here.get(s.project, {}).get(s.session) or "")
 
         def run(sub=s.sub):
-            self.read_answers.put((sub, read_answer(path, rid, what, args)))
+            self.read_answers.put((sub, read_answer(path, rid, what, args, cwd)))
             self.wake()
 
         threading.Thread(target=run, name="plane-read", daemon=True).start()
