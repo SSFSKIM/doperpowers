@@ -149,7 +149,16 @@ export type DeliveredRow = { key: DeliveryKey; text: string; turnId?: string }
 /** A delivery the engine dropped after it was submitted, as `delivered {outcome: "refused"}` reports it. */
 export type Refusal = { key: DeliveryKey; reason: string }
 /** What the bridge can do, as `GET /status` and the plane's presence carry it (DX5 `capabilities`). */
-export type Capabilities = { sminos: string; protocol: number; engine: string; ops: string[]; reads: string[]; routes: { measured: string } }
+export type Capabilities = {
+  sminos: string
+  protocol: number
+  engine: string
+  ops: string[]
+  reads: string[]
+  routes: { measured: string }
+  /** Each desk control's capability, every key present (bridge-controls.tsx). */
+  controls: Record<string, { available: boolean; reason?: string }>
+}
 /** A desk command (DX5 op `command`) the bridge runs: its op id, the command and its trimmed args. */
 export type DeskRun = { id: string; name: string; args: string; prompt?: boolean }
 /** How a command's outcome was read back (DX5 `run` end): the settled text, its output row, or nothing sure. */

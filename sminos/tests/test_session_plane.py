@@ -2210,6 +2210,88 @@ class Desk(unittest.TestCase):
         self.assertIsNone(self.bridges.capabilities(self.sid))
 
 
+class McpDisabled(unittest.TestCase):
+    """`read mcp` (MW1): the bridge names the servers whose tools the model
+    has; the plane adds the ones the session's project disables, from the
+    one key of the engine's `.claude.json` it reads, filed as the engine
+    files a project: under the repository's top level (measured on 2.1.310:
+    a session launched in a subdirectory, `/mcp disable` wrote the key of
+    the directory holding `.git`)."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="mcpd.", dir=T)
+        self.repo = os.path.join(self.root, "repo")
+        self.sub = os.path.join(self.repo, "a", "b")
+        os.makedirs(os.path.join(self.repo, ".git"))
+        os.makedirs(self.sub)
+        self.config = os.path.join(self.root, "config")
+        os.makedirs(self.config)
+        patcher = mock.patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": self.config})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def write(self, projects, **rest):
+        with open(os.path.join(self.config, ".claude.json"), "w") as f:
+            json.dump({"projects": projects, **rest}, f)
+
+    def test_the_engines_file_is_in_its_config_dir_else_the_home(self):
+        self.assertEqual(plane.global_config(), os.path.join(self.config, ".claude.json"))
+        with mock.patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": ""}):
+            self.assertEqual(plane.global_config(), os.path.join(os.environ["HOME"], ".claude.json"))
+
+    def test_a_project_is_keyed_by_the_directory_holding_git_else_the_directory(self):
+        self.assertEqual(plane.project_key(self.sub), self.repo)
+        self.assertEqual(plane.project_key(self.repo + "/"), self.repo)
+        loose = os.path.join(self.root, "loose")
+        os.makedirs(loose)
+        self.assertEqual(plane.project_key(loose), loose)
+        worktree = os.path.join(self.root, "wt")
+        os.makedirs(worktree)
+        with open(os.path.join(worktree, ".git"), "w") as f:
+            f.write("gitdir: elsewhere\n")   # a worktree's .git is a file
+        self.assertEqual(plane.project_key(os.path.join(worktree)), worktree)
+
+    def test_the_disabled_names_alone_from_the_projects_entry(self):
+        self.write({self.repo: {"disabledMcpServers": ["parked server", 7, "", "x" * 300, "plain"],
+                                "mcpServers": {"secret": {"env": {"TOKEN": "s3cret"}}}},
+                    self.sub: {"disabledMcpServers": ["wrong key"]}},
+                   mcpServers={"plain": {"headers": {"Authorization": "Bearer s3cret"}}})
+        self.assertEqual(plane.disabled_mcp(self.sub), ["parked server", "plain"])
+        self.assertEqual(plane.disabled_mcp(""), [])
+
+    def test_no_file_a_broken_file_or_no_entry_disables_nothing(self):
+        self.assertEqual(plane.disabled_mcp(self.sub), [])
+        with open(os.path.join(self.config, ".claude.json"), "w") as f:
+            f.write("{not json")
+        self.assertEqual(plane.disabled_mcp(self.sub), [])
+        self.write({"/elsewhere": {"disabledMcpServers": ["x"]}})
+        self.assertEqual(plane.disabled_mcp(self.sub), [])
+        self.write({self.repo: {"disabledMcpServers": "not a list"}})
+        self.assertEqual(plane.disabled_mcp(self.sub), [])
+
+    def test_each_disabled_server_is_added_once_after_the_bridges(self):
+        self.write({self.repo: {"disabledMcpServers": ["parked server", "probe_server"]}})
+        bridged = {"exact": False, "servers": [{"name": "probe_server", "status": "connected", "tools": 2}]}
+        self.assertEqual(plane.with_disabled(bridged, self.sub), {"exact": False, "servers": [
+            {"name": "probe_server", "status": "connected", "tools": 2},
+            {"name": "parked server", "status": "disabled"}]})
+        self.assertEqual(plane.with_disabled({"weird": True}, self.sub), {"weird": True})
+        self.assertIsNone(plane.with_disabled(None, self.sub))
+
+    def test_the_relay_adds_them_to_the_bridges_answer_and_to_no_other_read(self):
+        self.write({self.repo: {"disabledMcpServers": ["parked server"]}})
+        sid = new_session()
+        fake = fake_session.FakeSession(os.environ["HOME"], os.environ["SMINOS_HOME"], sid)
+        fake.start_bridge()
+        self.addCleanup(fake.stop_bridge)
+        path = plane.bridge.endpoint(sid)
+        got = plane.read_answer(path, "r1", "mcp", None, self.sub)
+        self.assertEqual(got, {"id": "r1", "what": "mcp", "result": {"exact": False, "servers": [
+            *fake_session.MCP["servers"], {"name": "parked server", "status": "disabled"}]}})
+        self.assertEqual(plane.read_answer(path, "r2", "status", None, self.sub),
+                         {"id": "r2", "what": "status", "result": fake_session.STATUS})
+
+
 class Catalog(Session):
     """The child's catalog is pushed once at open, then on negotiated main subscriptions only."""
 

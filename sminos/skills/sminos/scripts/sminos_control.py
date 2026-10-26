@@ -315,8 +315,11 @@ def streamed(member, verb):
 
 
 def cmd_read(a):
-    """One of the session's reads (DX5 `read`), as the mod answers it: JSON."""
-    _, result = bridged(a.member, "read", {"op": "read", "what": a.what})
+    """One of the session's reads (DX5 `read`), as the mod answers it: JSON.
+    `--breakdown full` asks `usage` for the exact count (the token-count
+    API), the summary otherwise."""
+    args = {"breakdown": a.breakdown} if getattr(a, "breakdown", None) else None
+    _, result = bridged(a.member, "read", {"op": "read", "what": a.what, **({"args": args} if args else {})})
     if result is None:
         no_bridge(a.member, "read")
     result.pop("id", None)   # the command's, which bridged adds: no field of the read's

@@ -42,6 +42,7 @@ import {
   withoutUserinfo,
 } from '../../hooks/mods/bridge'
 import { ROUTE_TABLES } from '../../hooks/mods/bridge-routes'
+import { controlsOf } from '../../hooks/mods/bridge-controls'
 
 tier('user')
 
@@ -308,6 +309,7 @@ function harness(
       },
     },
     tool: {
+      list: async () => [{ name: 'Bash', description: '', mcp: false }, { name: 'mcp__probe__hello', description: '', mcp: true }],
       call: async (args: Record<string, unknown>) => {
         calls.push({ op: 'tool', args })
         if (options.taskStopHangs) {
@@ -5566,8 +5568,9 @@ describe('the desk: capabilities and read', () => {
       protocol: 2,
       engine: '2.1.307',
       ops: ['ping', 'steer', 'interrupt', 'stop', 'model', 'compact', 'deliver', 'answer', 'read', 'command'],
-      reads: ['status', 'catalog'],
+      reads: ['status', 'catalog', 'usage', 'config', 'settings', 'mcp'],
       routes: { measured: '2.1.307' },
+      controls: controlsOf('1.7.0'),
     })
     h.children[0]!.write(hello())
     await h.settle()
@@ -5597,7 +5600,17 @@ describe('the desk: capabilities and read', () => {
         override: null,
       },
     })
-    expect(await h.command({ op: 'read', what: 'usage' })).toMatchObject({ ok: false, error: 'no read usage' })
+    expect(await h.command({ op: 'read', what: 'files' })).toMatchObject({ ok: false, error: 'no read files' })
+  })
+
+  test("the reads of usage, config, settings and MCP answer from the engine, a read's args reaching it", async () => {
+    const h = harness({ version: { version: '2.1.307', base: '2.1.307' } })
+    await h.ready()
+    expect(await h.command({ op: 'read', what: 'usage', args: { breakdown: 'full' } })).toMatchObject({ ok: true, result: { context: { window: 200000 }, breakdownDetail: 'full' } })
+    expect(await h.command({ op: 'read', what: 'usage' })).toMatchObject({ ok: true, result: { breakdownDetail: 'summary' } })
+    expect(await h.command({ op: 'read', what: 'config' })).toMatchObject({ ok: true, result: { readOnly: true, rows: [{ key: 'model', value: 'default' }] } })
+    expect(await h.command({ op: 'read', what: 'settings' })).toMatchObject({ ok: true, result: { permissionsExact: false, hooks: {} } })
+    expect(await h.command({ op: 'read', what: 'mcp' })).toMatchObject({ ok: true, result: { exact: false, servers: [{ name: 'probe', status: 'connected', tools: 1 }] } })
   })
 
   test('a remote loses only its userinfo; a scp-like address is left as it is', async () => {

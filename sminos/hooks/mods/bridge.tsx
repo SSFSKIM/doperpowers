@@ -27,6 +27,8 @@ import { announceRow, commandRow, compacted, enteredRow, exportRow, noticeRow, o
 import { claimAgent, forgetAgents, refreshAgents, watchAgents } from './bridge-agents'
 import { measuredFor, routeOf } from './bridge-commands'
 import { catalogNow } from './bridge-catalog'
+import { controlsOf } from './bridge-controls'
+import { READ_KINDS, readKind } from './bridge-reads'
 
 export { OFF_LINE, ON_LINE } from './bridge-place'
 export { BLOCK_TAIL, TEXT_CAP, capped, resetBridge } from './bridge-state'
@@ -93,10 +95,15 @@ export { FOLLOW_REASON, PANEL_REASON, SELF_REASON, UNKNOWN_REASON, UNMEASURED_RE
  * - bridge-agents.tsx: the agents the module did not see spawn, learned from
  *   the engine's list;
  * - bridge-routes.tsx, bridge-commands.tsx: the desk's route table, written
- *   from its fixture, and the rule that routes a command by it.
+ *   from its fixture, and the rule that routes a command by it;
+ * - bridge-controls.tsx: the desk's per-control capability map;
+ * - bridge-reads.tsx (which takes `$`, as bridge-catalog.tsx does): the
+ *   desk's reads of usage, config, settings and MCP servers, cut to what the
+ *   desk shows.
  *
  * The desk's ops (spec 2026-10-22-desk-control-surface-design.md): `read`
- * answers from `$` at once (`status`); `command` runs one slash command the
+ * answers from `$` at once (`status`, `catalog`, and bridge-reads.tsx's
+ * kinds); `command` runs one slash command the
  * route table allows, answering `queued` at once and its outcome on the
  * stream (`run` start and end, the end carrying what the command printed,
  * read back from its rows), one desk command at a time. What the bridge can
@@ -245,7 +252,7 @@ export const TURN_UNKNOWN = 'turn state unknown since the bridge reloaded; retry
 const TURN_OPS = new Set(['steer', 'interrupt', 'compact'])
 /** The ops this bridge answers (DX5 `capabilities.ops`), and the reads (`read`'s kinds). */
 export const OPS = ['ping', 'steer', 'interrupt', 'stop', 'model', 'compact', 'deliver', 'answer', 'read', 'command']
-export const READS = ['status', 'catalog']
+export const READS = ['status', 'catalog', ...READ_KINDS]
 /** The DX5 protocol the capabilities speak: 2 is the desk's control surface (capabilities, `read`, `command`). */
 export const CAPABILITIES_PROTOCOL = 2
 /**
@@ -338,7 +345,7 @@ function commandAnswer($: EngineInterface, command: Command): Answered | Promise
     case 'answer':
       return answerFromOutside(command)
     case 'read':
-      return read($, command.what)
+      return read($, command.what, command.args)
     case 'command':
       return deskCommand($, command)
     default:
@@ -370,13 +377,17 @@ async function capabilitiesOf($: EngineInterface, engine: string): Promise<Capab
   } catch (error) {
     $.ui.log(`bridge: the plugin's version was not read: ${message(error)}`, { to: 'debug' })
   }
-  return { sminos, protocol: CAPABILITIES_PROTOCOL, engine, ops: [...OPS], reads: [...READS], routes: { measured: measuredFor(engine) } }
+  return { sminos, protocol: CAPABILITIES_PROTOCOL, engine, ops: [...OPS], reads: [...READS], routes: { measured: measuredFor(engine) }, controls: controlsOf(sminos) }
 }
 
-/** DX5 `read`: what the desk shows of the session, answered from `$` (spec §5; `status` alone at M0). */
-async function read($: EngineInterface, what: unknown): Promise<Answer> {
+/** DX5 `read`: what the desk shows of the session, answered from `$` (spec §5; `usage`, `config`, `settings` and `mcp` in bridge-reads.tsx). */
+async function read($: EngineInterface, what: unknown, args: unknown): Promise<Answer> {
   if (what === 'catalog') {
     return { ok: true, result: await state.refreshCatalog!() }
+  }
+  const kind = readKind($, what, args)
+  if (kind !== undefined) {
+    return kind
   }
   if (what !== 'status') {
     return { ok: false, error: `no read ${String(what)}` }
