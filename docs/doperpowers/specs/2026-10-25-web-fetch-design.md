@@ -447,25 +447,34 @@ new generation folder inside it:
     answers 304 from the URL the copy was served from; when its body is
     byte for byte the body the copy was made from; or when the page
     extracted from the answer (the article and, when saved, the whole page,
-    with the URL they were read at) hashes as the copy's did. A kept copy's
+    with the URL they were read at) hashes as the copy's did. A URL's
+    fragment is never part of that comparison: the cache key drops it, and
+    the server never sees it. A kept copy's
     check time is written to `<entry>/.checked.json`, naming the
     generation, whole under a name of its own and renamed over the record,
     as the failure record is. The generation itself never changes, so
     every path in it stays as the agent was given it. Anything else is a
     changed page: the answer already in hand is built into a new
-    generation, with no second request.
+    generation, with no second request. A copy the prune removed while its
+    check was under way is not handed out: the check goes on as a fetch.
   - **What a copy records for its check** (`meta.json` `validators`): the
     `ETag` and `Last-Modified` of the response it was made from and a
     SHA-256 of that response's body, only when the copy is that response's
     own content (no render, no bot-wall render, no HTML page in place of a
-    markdown stub); and, for every HTML page, a SHA-256 of the extracted
-    text above. A rendered page is a script shell whose validators say
-    nothing about what the scripts load: its check renders it again and
-    compares the text.
+    markdown stub, no site request a Defuddle extractor made, as Reddit's
+    does for a post's comments); and, for every HTML page, a SHA-256 of the
+    extracted text above. A rendered page is a script shell whose
+    validators say nothing about what the scripts load: its check renders
+    it again and compares the text.
   - **A check the site fails.** A network error, a timeout, a 5xx, 408 or
     429 is remembered as a failed fetch is, and the copy answers with why
     it was not checked (I1 `checkFailed`). Until the failure memory runs out
-    the copy answers so without a request. A 4xx other than 408 and 429
+    the copy answers so without a request. So does a check whose page comes
+    back under `RENDER_MIN_WORDS` (50) words where the copy had at least
+    that many: a render that failed, the HTML page behind a markdown stub
+    that failed, a page whose data API is down. A fallback's failure must
+    not replace a good copy with the stub or the shell; a page that did
+    shrink is a `refresh` away. A 4xx other than 408 and 429
     (the page is gone, or refused for good) is the fetch's error, R4,
     naming the copy (I1 `copy`). A refusal by the network boundary is
     decided as for any fetch.
@@ -492,14 +501,15 @@ new generation folder inside it:
   - The alternative, deleting the old folder and then renaming the new
     one in, lost because it leaves a moment with no copy at all, and an
     interrupted publish there destroys the copy that worked.
-- **Pruning.** `clip.mjs prune` deletes generations whose `fetchedAt` is
-  over 7 days old, `.tmp-` folders over an hour old, failure records past
+- **Pruning.** `clip.mjs prune` deletes generations over 7 days old,
+  `.tmp-` folders over an hour old, failure records past
   the failure memory (a `.failed-` file a crash left before its rename
   included, so it cannot keep an entry from emptying), a check record
   whose generation is gone (and a `.checked-` file past the failure
-  memory), and entries left empty. A copy is pruned by its fetch time
-  however recently it was confirmed, so one confirmed daily is fetched in
-  full once a week. The mod starts it at session start, without awaiting it, when
+  memory), and entries left empty. A generation's age runs from the later
+  of its `fetchedAt` and the check `.checked.json` records for it: a check
+  hands its copy out as a fetch does, and the path must stay readable as
+  long. The mod starts it at session start, without awaiting it, when
   `.pruned` is over a day old.
 - **A failed fetch (R4) is never a generation; it is remembered.** A
   failure the site or the network gave (an HTTP status of 400 or above, a
@@ -2865,6 +2875,29 @@ type Run = {
   - A 4xx other than 408 and 429 ends the check as it ends a fetch, R4,
     naming the copy: the site says the page is gone or refused, which the
     copy cannot answer, and the agent may still want what it said.
+  - The review's four findings, all fixed (`70eb95d5`), each reproduced
+    first by a test that failed:
+    - A Defuddle site extractor fills an article in from other URLs
+      (Reddit's comments), so the shell's validators said nothing of it:
+      a copy whose extraction made a site request records none.
+    - A check whose fallback failed (the HTML page behind a markdown stub
+      answering 503, a render that failed) published the stub or the
+      empty shell as a changed page, which its own body validators then
+      kept confirming: a check's page under 50 words where the copy had
+      more now keeps the copy, saying why.
+    - The prune deleted by fetch time, and a check can hand out a copy of
+      any age, so a path just handed out could vanish at the next prune:
+      the prune now dates a generation by its last check too, and a check
+      whose copy a prune took while the site was asked goes on as a fetch.
+    - A fragment made the same resource look like another page (`/p#a`
+      checked as `/p#b` was fetched and built again): the comparisons drop
+      it, as the cache key does.
+    Left as debt (board #11): a copy rendered past a bot wall whose check
+    render fails still ends in the 403 as R4 naming the copy, not the copy
+    with why; a copy over 7 days old that is handed out unconfirmed after a
+    failed check is not protected from the next prune; and a prune that
+    reads the check record just before a check writes it can still take
+    the copy that check hands out.
   Rejected: validators alone with server freshness behind them (the
   ticket's options 1 and 2): the 29 pages without working validators,
   the Go blog, PostgreSQL's and Django's documentation and crates.io among
