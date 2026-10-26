@@ -21,7 +21,8 @@ import type { CompletionOutcome } from './summary'
  * The fetch tool (design: docs/doperpowers/specs/2026-10-25-web-fetch-design.md).
  * The clipper (`bin/clip.mjs`, a Node bundle) saves the page into the machine's
  * shared cache and prints its I1 result; this mod turns that into a reply,
- * asking `haiku` when the call has a `prompt`, and starts the cache's prune.
+ * asking a model (`haiku`, or the one `WEBFETCH_MODEL` names) when the call has a
+ * `prompt`, and starts the cache's prune.
  */
 export const FETCH_TOOL = 'mcp__web__fetch' // the name register() returns; a test pins it
 
@@ -138,6 +139,8 @@ export function registerFetch(on: On) {
     if (!result.ok) return { deny: failureReply(result, await $.clock.now()) }
 
     const textFile = textFileOf(result)
+    // The model that answers: the owner's WEBFETCH_MODEL, else haiku. One the engine will not resolve fails the summary, not the fetch.
+    const model = ((await $.env.get('WEBFETCH_MODEL')) ?? '').trim() || SUMMARY_MODEL
     let summary: Summary | undefined
     if (question !== undefined && textFile !== undefined) {
       summary = await summarize(result, textFile, question)
@@ -158,7 +161,7 @@ export function registerFetch(on: On) {
     }
     return { result: replyFor(result, { now: await $.clock.now(), isAsked: question !== undefined, summary, page }) }
 
-    /** The answer from `haiku` over the numbered page, retried once at half the cap when the prompt was too long. */
+    /** The answer from the summary model over the numbered page, retried once at half the cap when the prompt was too long. */
     async function summarize(r: ClipOk, file: string, ask: string): Promise<Summary> {
       const reserve = summaryReserve(ask)
       let cap = SUMMARY_MAX_TOKENS
@@ -180,7 +183,7 @@ export function registerFetch(on: On) {
         let reply
         try {
           reply = await $.model.complete({
-            model: SUMMARY_MODEL,
+            model,
             system: SUMMARY_SYSTEM,
             prompt: summaryPrompt(numbered.body, ask),
             maxTokens: SUMMARY_MAX_OUTPUT_TOKENS,
@@ -195,7 +198,7 @@ export function registerFetch(on: On) {
         await logUsage(r, reply)
         const outcome = reply as CompletionOutcome
         if (outcome.isAnswered && outcome.text.trim() !== '') {
-          return { isAnswered: true, text: outcome.text, model: SUMMARY_MODEL, header: numbered.header }
+          return { isAnswered: true, text: outcome.text, model, header: numbered.header }
         }
         why = whyUnanswered(outcome, elapsed)
         if (!isPromptTooLong(outcome)) break
@@ -215,7 +218,7 @@ export function registerFetch(on: On) {
       const line = {
         time: new Date(await $.clock.now()).toISOString(),
         url: r.url,
-        model: SUMMARY_MODEL,
+        model,
         session: await $.session.id().catch(() => undefined),
         ...(e.agentId !== undefined && { agentId: e.agentId }),
         isAnswered: reply.isAnswered,

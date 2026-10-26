@@ -286,6 +286,22 @@ describe('the summary (R3)', () => {
     expect(reply).toContain('(lines 1–40 of 40)')
   })
 
+  test('WEBFETCH_MODEL names the model that answers, in the request, the reply and the usage log', async ($, on) => {
+    const { completions, usage } = engine(on, { files: { [`${DIR}/page.md`]: pageText() }, env: { HOME, WEBFETCH_MODEL: ' luna ' } })
+    await start($)
+    const reply = textOf(await $.tool.call(call({ url: 'https://example.com/docs/guide', prompt: question })))
+    expect(completions[0]).toMatchObject({ model: 'luna', system: SUMMARY_SYSTEM })
+    expect(reply).toStartWith('It is 1024 [L22].\n\n— Answered by luna from ')
+    expect(usage[0]).toMatchObject({ model: 'luna' })
+  })
+
+  test('a blank WEBFETCH_MODEL is haiku', async ($, on) => {
+    const { completions } = engine(on, { files: { [`${DIR}/page.md`]: pageText() }, env: { HOME, WEBFETCH_MODEL: '  ' } })
+    await start($)
+    await $.tool.call(call({ url: 'https://example.com/docs/guide', prompt: question }))
+    expect(completions[0]).toMatchObject({ model: 'haiku' })
+  })
+
   test('a text file over 4 MiB is summarized from its numbered lines, never read whole, and the reply says where the cap cut it', async ($, on) => {
     const line = 'x'.repeat(99)
     const big = Array.from({ length: 50_000 }, (_, i) => `${i} ${line}`).join('\n')

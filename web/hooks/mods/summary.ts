@@ -5,8 +5,16 @@
  */
 import type { NumberedHeader } from './reply'
 
+/**
+ * The model that answers a `prompt`, unless the owner names another in the
+ * environment's `WEBFETCH_MODEL`: an alias or a model id, resolved as `--model`
+ * resolves it (`WEBFETCH_MODEL=luna`).
+ */
 export const SUMMARY_MODEL = 'haiku'
-/** The cap on the numbered lines plus the question, in the estimate; the model `haiku` resolves to has the window for it. */
+/**
+ * The cap on the numbered lines plus the question, in the estimate; the model `haiku` resolves to has the window for it,
+ * and a model whose window is smaller answers "prompt too long", which is asked again at half the cap.
+ */
 export const SUMMARY_MAX_TOKENS = 150_000
 export const SUMMARY_MAX_OUTPUT_TOKENS = 2048
 export const SUMMARY_TIMEOUT_MS = 120_000

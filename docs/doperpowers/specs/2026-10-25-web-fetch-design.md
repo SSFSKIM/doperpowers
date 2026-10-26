@@ -886,7 +886,12 @@ shared deadline, the other stage limits as written sum to 30 s of render,
 
 The mod answers a `prompt` with `$.model.complete({ model: 'haiku', … })`,
 the session's own API client, so no key is needed. Like `WebFetch`'s small
-model, it is text only. The model is given the system text below, the main
+model, it is text only. The owner names another model in the environment's
+`WEBFETCH_MODEL` (an alias or a model id, resolved as `--model` resolves it:
+`WEBFETCH_MODEL=luna`); blank or unset is `haiku`. The reply's
+`Answered by` line and `usage.jsonl` name the model that answered, and a
+name the engine will not resolve fails the summary, not the fetch: the page
+comes back opening with why. The model is given the system text below, the main
 file with every line prefixed by its number (`12| …`), and then the
 question:
 
@@ -2912,6 +2917,20 @@ type Run = {
   anyway. A floor of 1 minute (the owner's alternative): fresher, with a
   check on more calls; 15 minutes: hides a change for longer.
   Date/Author: 2026-10-26, board #137 (branch `web-cache-freshness`).
+- Decision: `WEBFETCH_MODEL` names the model that answers a `prompt`, `haiku`
+  when blank or unset (The summary; web 0.5.0). The owner asked for it on
+  2026-10-26, naming the variable and `luna` as its example.
+  Rationale: the summary's model is the owner's call to make per machine
+  (cost, speed, a gateway's models), and `$.model.complete` resolves any
+  alias or id as `--model` does, so no list of models is kept here. The
+  engine requires `$.env.get`'s name to be written out in the call, so the
+  name lives at the call site. The cap stays 150k: a model with a smaller
+  window answers "prompt too long", which is already asked again at half.
+  The eval harness builds each run's environment from nothing, so the evals
+  stay on `haiku` whatever the owner's shell holds. The name breaks the
+  plugin's `WEB_` prefix (`WEB_CACHE_DIR`, `WEB_CHROME`) as the owner wrote
+  it; renaming it is theirs to ask.
+  Date/Author: 2026-10-26, the owner's request (branch `web-cache-freshness`).
 
 ## Outcomes & Retrospective
 
