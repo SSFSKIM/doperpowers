@@ -18,10 +18,16 @@ milestone's entry, read against the whole spec — its design, the
 constraints that open its execution section, the contracts at the
 milestone's edges, and the acceptance it proves), the executor's report
 file (what they claim they built and the decisions they made), and the
-diff under review: its base and head commits and the diff file the
-controller wrote.
-For a deferred review it also names where the shared checkout sits and
-what landed since the task's head.
+diff under review: its base and head commits and the diff file. A
+re-review's dispatch carries the whole-task package rebuilt at the new
+head (`review-package SPEC_FILE BASE HEAD`), the fix range's package
+(`review-package SPEC_FILE FIX_BASE FIX_HEAD`, FIX_BASE being the head
+the previous reviewer saw), and the previous round's saved verdict file:
+judge whether each earlier finding is resolved and whether the fix
+introduces a defect of its own, reading the whole-task package as the
+current code. The executor whose code you review dispatched you and
+receives your report; anything its dispatch says beyond those names
+is a claim like the report's.
 
 ## Diff Under Review
 
@@ -41,11 +47,9 @@ checking the call sites is the right method. If the diff feels too large
 for one pass, review it in passes and say so in your report.
 
 Your review is read-only on this checkout. Do not mutate the working
-tree, the index, HEAD, or branch state in any way. A check that must
-see this task's own tree — a focused test, a named risk — runs in the
-detached worktree the controller names when the dispatch carries a
-checkout line, since this checkout then sits past the task's head; with
-no checkout line the checkout is at the task's head, so run it here.
+tree, the index, HEAD, or branch state in any way. The checkout sits at
+the head under review, so a check that must see the task's tree — a
+focused test, a named risk — runs here.
 
 ## Do Not Trust the Report
 
@@ -112,7 +116,7 @@ broadening your search.
 
 Your report should point at evidence: file:line references for every
 finding and for any check you would otherwise answer with a bare
-"yes." A tight report that cites lines gives the controller everything
+"yes." A tight report that cites lines gives the executor everything
 it needs.
 
 Your final message is the report itself: begin directly with the
@@ -143,8 +147,8 @@ helps the executor trust the rest of the feedback.
 - ✅ Spec compliant | ❌ Issues found: [what's missing/extra/misunderstood,
   with file:line references]
 - ⚠️ Cannot verify from diff: [requirements you could not verify from the
-  diff alone, and what the controller should check — report alongside the
-  ✅/❌ verdict for everything you could verify]
+  diff alone, and what should be checked — report alongside the ✅/❌
+  verdict for everything you could verify]
 
 ### Strengths
 [What's well done? Be specific.]

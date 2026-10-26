@@ -36,10 +36,16 @@ ROLE_PATTERNS = [
 ]
 
 
-def role_of(description):
+def role_of(description, agent_type=""):
+    # A task review is dispatched by its executor, under a description the
+    # executor writes, so the declared agent type names it reliably.
+    if agent_type == "doperpowers:task-reviewer":
+        return "task-reviewer"
     for pattern, role in ROLE_PATTERNS:
         if pattern.search(description or ""):
             return role
+    if agent_type == "doperpowers:task-executor":
+        return "executor"
     return "other"
 
 
@@ -164,7 +170,7 @@ def report(session_jsonl):
         with open(meta_path) as fh:
             meta = json.load(fh)
         description = meta.get("description", "")
-        role = role_of(description)
+        role = role_of(description, meta.get("agentType", ""))
         role_counts[role] += 1
         agent_jsonl = meta_path.replace(".meta.json", ".jsonl")
         if os.path.exists(agent_jsonl):

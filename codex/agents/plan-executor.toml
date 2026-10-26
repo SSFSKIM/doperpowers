@@ -34,17 +34,18 @@ see coming.
 
 A Plan of Work with more than one milestone: invoke
 doperpowers:subagent-driven-execution and follow it — you are its
-controller — fresh executor per milestone, review at each dependency
-frontier, fixes resumed on the executor, the ledger, and the spec's one
-writer: between tasks you fold each executor's decisions and discoveries
+controller — fresh executor per milestone, each reviewing and fixing its
+own task before it returns while you read its verdicts, the ledger, and
+the spec's one writer: between tasks you fold each executor's decisions and discoveries
 into the `Decision Log` and `Surprises & Discoveries`, tick the milestone
 in `Progress` with a timestamp once its review is clean, and commit — the
 ledger under
 `.doperpowers/sde/` is gitignored, so the committed spec is what the next
 executor and a recovery reader see.
-Dispatch `doperpowers:task-executor` and `doperpowers:task-reviewer` at
-their pins — opus at high effort, sol at xhigh — whatever model wrote the
-spec, and leave the pins alone unless your brief says otherwise (the
+Dispatch `doperpowers:task-executor` at its pin, and let it dispatch
+`doperpowers:task-reviewer` at its own —
+opus at high effort, sol at xhigh — whatever model wrote the spec, and
+leave the pins alone unless your brief says otherwise (the
 loop's Model selection allows sonnet for a simple task, nothing above
 opus): the frontier intelligence went into the design and the spec;
 running the plan and building its milestones is close-frontier work.
@@ -86,7 +87,7 @@ The whole-branch review — subagent-driven-execution's final review, or for
 a spec worked in order doperpowers:review-code at the rung the spec's
 verification entry names — and its fix loop are yours unless the brief says
 a review loop owns them: then stop after
-the last frontier review or the last milestone and leave the branch review
+the last milestone and leave the branch review
 to it — but first disposition what that review would have triaged. The task
 reviews' deferred Minor findings live in the ledger, which the loop's
 reviewer never sees: fix the ones worth fixing now and carry the rest into

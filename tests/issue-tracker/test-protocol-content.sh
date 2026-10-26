@@ -620,13 +620,31 @@ assert_contains "$texec" "model: opus" "the task-executor is pinned to opus, the
 assert_contains "$texec" "effort: high" "...at high reasoning effort"
 assert_contains "$texec" "disallowedTools: AskUserQuestion" "...and it runs detached from the human: no AskUserQuestion"
 assert_contains "$texec" "escalated to the controller in your return" "...an input only the human or the owners can give — friction, an approval, a fork — is escalated to the controller in its return"
+# The task review runs inside the executor (2026-10-25,
+# docs/doperpowers/specs/2026-10-25-sde-nested-review.md): it dispatches its
+# own reviewer, and the review's independence rests on a brief of paths.
+assert_contains "$texec" 'by a `doperpowers:task-reviewer`' "...and it has its own task reviewed before it returns"
+assert_contains "$texec" "carries exactly: the spec path" "...through a brief that carries the paths and nothing that argues for the code"
+assert_contains "$texec" "never \`HEAD~1\`" "...packaging the range from the dispatch's BASE, never HEAD~1"
+assert_contains "$texec" "The controller watches for" "...and it writes each round's verdict where the controller watches for it"
+assert_contains "$texec" "\`main\` is the human's session" "...and no SendMessage to main: from a nested agent it reaches the human's session, not its controller"
+assert_contains "$texec" "not yours to settle" "...and a finding it disputes goes to the controller rather than being settled by the code's author"
+assert_contains "$texec" "run_in_background: false" "...dispatching its reviewer in the foreground, since an executor that ended its turn to wait was told to hand back"
+assert_contains "$texec" "dispatch a fresh reviewer the same" "...and a re-review is a fresh foreground reviewer, not a SendMessage resume of the finished one"
+assert_not_contains "$texec" "You Do Not Dispatch Reviewers" "...the ban on executor-dispatched reviewers is gone with the controller's own review"
 
-echo "task-reviewer agent (subagent-driven-execution's frontier gate):"
+echo "task-reviewer agent (subagent-driven-execution's task gate):"
 TASK_REVIEWER="$REPO_ROOT/agents/task-reviewer.md"
 [ -f "$TASK_REVIEWER" ] || { echo "missing $TASK_REVIEWER"; exit 1; }
 trev="$(cat "$TASK_REVIEWER")"
 assert_contains "$trev" "model: sol" "the task-reviewer stays on sol"
 assert_contains "$trev" "effort: xhigh" "...at xhigh effort, the medium review rung's model and effort"
+assert_contains "$trev" "is a claim like the" "...and it reads its dispatcher's brief, the author's, as claims"
+assert_not_contains "$trev" "deferred review" "...with no deferred review: the checkout sits at the head under review"
+sde_skill="$(cat "$REPO_ROOT/skills/subagent-driven-execution/SKILL.md")"
+assert_contains "$sde_skill" "Then wait in the foreground until it" "subagent-driven-execution: the controller waits in the foreground, since a nested controller that ends its turn is told to hand back"
+assert_contains "$sde_skill" "with \`run_in_background: true\`" "...and dispatches the executor in the background, so it can read the verdicts while the executor runs"
+assert_not_contains "$sde_skill" "checkout line" "...and no deferred-review checkout line survives"
 
 # The spec is written, reviewed, and executed through the execspec skill;
 # brainstorming closes the design and routes. The Architect names both, and
