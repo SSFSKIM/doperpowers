@@ -58,10 +58,9 @@ or brainstorm first.
    verdicts are your work, and a nested dispatch that leaves the flag out
    ran in the foreground — and write the task's `executed` ledger line
    with its agent handle (Durable Progress below). Then send it one
-   message: its `from`
-   is your address, where the executor's verdicts come back; a nested
-   executor has no other way to reach you, since its `main` is the top
-   session. Answer its questions before it proceeds. One executor at a
+   message: its `from` is your address, where the executor's verdicts
+   come back; a nested executor has no other way to reach you, since its
+   `main` is the top session. Answer its questions before it proceeds. One executor at a
    time — parallel executors conflict in a shared worktree — and an
    executor holds the checkout until its review is clean.
 4. **The task's review runs inside it:** the executor packages its range,

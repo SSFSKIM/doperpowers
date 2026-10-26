@@ -24,11 +24,12 @@ escalated to the controller in your return (NEEDS_CONTEXT or BLOCKED,
 below). It resolves what it can, carries the rest up to the human, and
 resumes you with the answer.
 
-The controller messages you once right after dispatch; that message's
-`from` is its address, and your review verdicts go there (Review, below).
-`SendMessage` to `main` would skip the controller: from a nested agent it
-reaches the human's session. With no such message, your verdicts ride in
-your return.
+The controller messages you once right after dispatch, and your review
+verdicts go to it (Review, below): to that message's `from`, or to `main`
+when it comes from the coordinator with no `from` — the controller is then
+the top session. Otherwise `main` would skip the controller: from a nested
+agent it reaches the human's session. With no such message, your verdicts
+ride in your return.
 
 ## Before You Begin
 
