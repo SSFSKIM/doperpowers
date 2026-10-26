@@ -180,7 +180,7 @@ def messages(x):
 
 CODE = re.compile(r"```.*?```|`[^`\n]*`", re.S)
 ITALIC = re.compile(r"(?<![*\w\\])\*(?![*\s])((?:(?!\n\n)[^*])+?)(?<![\s\\])\*(?![*\w])"
-                    r"|(?<![_\w\\])_(?![_\s])((?:(?!\n\n)[^_])+?)(?<![\s\\])_(?![_\w])", re.S)
+                    r"|(?<![_\w\\])_(?![_\s])((?:(?!\n\n)(?:[^_]|(?<=\w)_(?=\w)))+?)(?<![\s\\])_(?![_\w])", re.S)
 
 
 def italics(text):
@@ -220,13 +220,19 @@ def judge(text, spans_found):
     return json.loads(re.search(r"\{.*\}", out, re.S).group(0))
 
 
+def ended(x):
+    """True when the run's turn ended: its last response called no tool, or only the message tool (that call is the turn's last word)."""
+    last = x["steps"][-1]["blocks"] if x.get("steps") else []
+    return all(b["name"] == MESSAGE_TOOL for b in last if b["type"] == "tool_use")
+
+
 def tally(results):
     counts = {}
     for x in results:
         c = counts.setdefault((x["scenario"], x["arm"]), {"runs": 0, "reported": 0, "block": 0, "italic_spans": 0,
                                                           "stray_spans": 0, "needs": 0, "needs_italic": 0, "asked_again": 0})
         c["runs"] += 1
-        if "error" in x or not x.get("messages"):
+        if "error" in x or not x.get("messages") or not ended(x):
             continue
         c["reported"] += 1
         c["block"] += any(own_block(m) for m in x["messages"])
