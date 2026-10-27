@@ -959,6 +959,9 @@ run "$SMINOS" hub show
 assert_contains "$OUT" "cut over" "hub show prints the identity, cut over"
 
 echo "  the endpoint's policy, which delivery reads:"
+# The endpoint's policy changed and sent (its own, which its answer to a policy-set applies the change to: the
+# hello's, ceiling "settings", until then).
+ep set '{"policy": {"read_only": true, "ceiling": "default"}}' >/dev/null
 ep send '{"frames": [{"t": "policy", "read_only": true, "ceiling": "default"}]}' >/dev/null
 read_only_is() { "$SMINOS" daemon policy | grep -q "read-only: $1"; }
 until_true 200 read_only_is yes || true

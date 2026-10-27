@@ -1,0 +1,310 @@
+{
+  "format": [
+    "RL10's conversation between sminos and the mawsd endpoint (MAWS docs/doperpowers/plans/2026-10-27-p5-o10-endpoint.md, M6 and Interfaces §D), replayed by both sides: the endpoint's suite (test/endpoint/rl10/conversation.local.test.ts) plays sminos's lines against the real server, and sminos's conformance replay (O12 phase 2, rl10_conformance.py) plays the endpoint's lines against sminos.",
+    "Cases run in order on one machine, each building on the last. A step is one of:",
+    "  {up: frame}            a line sminos sends (the endpoint's suite sends it; sminos's replay checks sminos sent it);",
+    "  {down: frame}          a line the endpoint sends (the endpoint's suite checks it arrived; sminos's replay sends it);",
+    "  {open: conn} / {closed: conn}   a connection to the socket opened, or closed by the endpoint with nothing written on it;",
+    "  {quiet: [t...], ms}    no line of these kinds comes down within ms (the endpoint refused, held, or sent nothing);",
+    "  {scene: name, ...}     what happens on the endpoint's side (the hub, a device, the org state, a restart); sminos's replay skips it.",
+    "conn names the connection a step is on ('main' when absent). Frames are matched whole: {{name}} is a binding (the header's 'bindings' give sample values, each side substitutes its own run's), and each path in a step's 'vary' (dot-separated, array indexes as numbers) holds a value neither side can predict (a signature, a time, a version), compared only for presence. A down step matches the first line of its kind not matched before it, in order; lines of other kinds may come between.",
+    "note: what the step proves, or what sminos's side does with it."
+  ],
+  "bindings": {
+    "org": "org-local",
+    "hub": "http://127.0.0.1:8787",
+    "name": "rl10-host",
+    "ref": "q4Hc2Wv9Kp0Lm8Tr1Xy7Za",
+    "enrolled": "2026-10-27T18:00:00.000Z",
+    "build": "rl10-suite",
+    "token": "<the token of the endpoint's rl10.json: 64 hex characters, new each time it serves>",
+    "wrongToken": "<64 hex characters that are not the token>",
+    "legacyKey": "<hub.json's DX1 org key, 32 bytes base64url: never written here>",
+    "member:A": "6b0d7c9e1f2a3b4c5d6e7f8091a2b3c4",
+    "member:B": "0f1e2d3c4b5a69788796a5b4c3d2e1f0",
+    "email:A": "owner@example.com",
+    "device:b1": "b1",
+    "device:b2": "b2",
+    "device:b3": "b3",
+    "kid:b1": "AAECAwQFBgcICQoLDA0ODw",
+    "kid:b2": "EBESExQVFhcYGRobHB0eHw",
+    "kid:b3": "QEFCQ0RFRkdISUpLTE1OTw",
+    "kid:b1-step": "ICEiIyQlJicoKSorLC0uLw",
+    "kid:machine": "MDEyMzQ1Njc4OTo7PD0-Pw",
+    "project:P": "7d2b9c40-1f3e-4a6b-8c5d-9e0f1a2b3c4d",
+    "project:Q": "a1b2c3d4-e5f6-4071-8293-a4b5c6d7e8f9",
+    "project:machine": "<machineProjectId of the org and the machine's name>",
+    "session:S1": "11111111-1111-4111-8111-111111111111",
+    "session:S2": "22222222-2222-4222-8222-222222222222",
+    "session:S3": "33333333-3333-4333-8333-333333333333",
+    "session:S4": "44444444-4444-4444-8444-444444444444",
+    "session:S5": "55555555-5555-4555-8555-555555555555",
+    "app:S3": "app-33333333",
+    "launch:L1": "launch-1-a7c3",
+    "launch:L1b": "launch-1-e902",
+    "launch:L2": "launch-2-51fd",
+    "checkout": "/work/maws",
+    "opId:steer": "c3RlZXItb3AtaWQtMDAwMDAx",
+    "nonce:steer": "AAAAAAAAAAAAAAAAAAAAAQ",
+    "created:steer": "2026-10-27T18:05:00.000Z",
+    "fingerprint:steer": "ZmluZ2VycHJpbnQtb2Ytc3RlZXItYWN0aW9uLTAwMDA",
+    "opId:decide": "ZGVjaWRlLW9wLWlkLTAwMDAwMQ",
+    "nonce:decide": "AAAAAAAAAAAAAAAAAAAAAg",
+    "created:decide": "2026-10-27T18:05:01.000Z",
+    "fingerprint:decide": "ZmluZ2VycHJpbnQtb2YtZGVjaWRlLWFjdGlvbi0wMDA",
+    "opId:spawn": "c3Bhd24tb3AtaWQtMDAwMDAwMQ",
+    "nonce:spawn": "AAAAAAAAAAAAAAAAAAAAAw",
+    "created:spawn": "2026-10-27T18:05:02.000Z",
+    "fingerprint:spawn": "ZmluZ2VycHJpbnQtb2Ytc3Bhd24tYWN0aW9uLTAwMDA",
+    "device:a1": "a1",
+    "words:b1": "<the arriving words of b1, as the endpoint sent them down: the event with its sig>",
+    "words:b2": "<the arriving words of b2, likewise>",
+    "words:b3": "<the arriving words of b3, likewise>"
+  },
+  "cases": [
+    {
+      "name": "the token: a hello without it is closed with nothing written; one with it is welcomed, then the revocation set, the directory and the legacy key's ask",
+      "steps": [
+        { "open": "stranger" },
+        { "up": { "t": "hello", "protocol": { "major": 1, "minor": 0 }, "capabilities": [], "token": "{{wrongToken}}", "sminos": { "version": "1.25.0" }, "policy": { "read_only": false, "ceiling": "settings" } }, "conn": "stranger", "vary": ["sminos.version"] },
+        { "closed": "stranger" },
+        { "open": "main" },
+        { "up": { "t": "hello", "protocol": { "major": 1, "minor": 0 }, "capabilities": [], "token": "{{token}}", "sminos": { "version": "1.25.0" }, "policy": { "read_only": false, "ceiling": "settings" } }, "vary": ["sminos.version"], "note": "the policy is taken only while the endpoint holds none" },
+        {
+          "down": { "t": "welcome", "protocol": { "major": 1, "minor": 0 }, "capabilities": [], "build": "{{build}}", "identity": { "org": "{{org}}", "hub": "{{hub}}", "name": "{{name}}", "former": [], "ref": "{{ref}}", "enrolled": "{{enrolled}}" }, "policy": { "read_only": false, "ceiling": "settings" }, "stateVersion": 3 },
+          "vary": ["stateVersion"],
+          "note": "former is names only; capabilities name no kind filter"
+        },
+        { "down": { "t": "revoked", "version": 3, "devices": [], "members": [], "keys": [] }, "vary": ["version"], "note": "the head's whole set, first after every welcome" },
+        {
+          "down": { "t": "org", "projects": [{ "id": "{{project:machine}}", "name": "{{name}}", "kind": "machine", "machine": "{{name}}", "retired": false }], "machines": [{ "name": "{{name}}", "online": false, "seen": null }] },
+          "note": "DX2's org shape built from the head: online is unknown on RL1"
+        },
+        { "down": { "t": "legacy-key?" }, "note": "asked while no legacy.json is held" }
+      ]
+    },
+    {
+      "name": "the legacy key handed over once, kept 0600 and never logged",
+      "steps": [
+        { "up": { "t": "legacy-key", "org": "{{org}}", "key": "{{legacyKey}}" }, "vary": ["key"] },
+        { "scene": "legacy-kept" }
+      ]
+    },
+    {
+      "name": "the policy: sminos's local change sets the endpoint's, which comes down whole",
+      "steps": [
+        { "up": { "t": "policy-set", "read_only": true } },
+        { "down": { "t": "policy", "read_only": true, "ceiling": "settings" } },
+        { "up": { "t": "policy-set", "read_only": false } },
+        { "down": { "t": "policy", "read_only": false, "ceiling": "settings" } }
+      ]
+    },
+    {
+      "name": "the session lane: a project's presence, and every session on the machine as a member, with no other id than session",
+      "steps": [
+        { "scene": "engine-sessions", "note": "the engine host reports {{session:S3}} as {{app:S3}}" },
+        {
+          "up": { "t": "session", "message": { "project": "{{project:P}}", "machine": "{{name}}", "session": null, "kind": "machine", "sub": null, "n": null, "body": { "online": true, "policy": { "read_only": false, "ceiling": "settings" }, "checkouts": [{ "path": "{{checkout}}", "branch": "main" }], "desk": { "sminos": "1.25.0", "rpcs": ["steer", "decide", "spawn"], "reads": [] } } } },
+          "vary": ["message.body.desk"],
+          "note": "the machine's presence is a session-lane message of kind machine, one per project"
+        },
+        { "up": { "t": "member", "session": "{{session:S1}}", "alias": "main", "project": "{{project:P}}", "lane": "A", "state": "idle", "title": "the main session", "cwd": "{{checkout}}", "launch": "{{launch:L1}}", "owners": ["@machine"], "ownersProof": [], "origin": { "kind": "terminal" } } },
+        { "up": { "t": "member", "session": "{{session:S2}}", "alias": "bob", "project": "{{project:P}}", "lane": "A", "state": "idle", "cwd": "{{checkout}}", "launch": "{{launch:L2}}", "owners": ["{{member:B}}"], "ownersProof": [], "origin": { "kind": "maws", "requester": "{{member:B}}" } } },
+        { "up": { "t": "member", "session": "{{session:S3}}", "alias": "lane-b", "project": "{{project:P}}", "lane": "B", "state": "idle", "cwd": "{{checkout}}", "owners": ["@machine"], "ownersProof": [], "origin": { "kind": "maws" } }, "note": "lane B: joined to its appSessionId through engine.sessions" },
+        { "up": { "t": "member", "session": "{{session:S4}}", "alias": "unbridged", "project": "{{project:P}}", "lane": "A", "state": "idle", "cwd": "{{checkout}}", "owners": ["@machine"], "ownersProof": [], "origin": { "kind": "terminal" } }, "note": "no bridge: no launch" },
+        { "up": { "t": "member", "session": "{{session:S5}}", "alias": "local", "project": "{{project:Q}}", "lane": "A", "state": "idle", "cwd": "/work/local", "owners": ["@machine"], "ownersProof": [], "origin": { "kind": "terminal" } }, "note": "in a project the endpoint doesn't relay" },
+        { "up": { "t": "pending", "project": "{{project:P}}", "raised": [] } },
+        { "up": { "t": "restated" }, "note": "the restatement after the welcome is whole: nothing held before it to withdraw" }
+      ]
+    },
+    {
+      "name": "the log plane: an own event as _append writes it (ts, no created) signed once in its upload form, dual-coded, a session writer's attested, resent byte-identical, another body refused",
+      "steps": [
+        { "up": { "t": "hello", "project": "{{project:P}}", "name": "maws", "have": {} } },
+        { "down": { "t": "have", "project": "{{project:P}}", "have": {}, "archive": false }, "vary": ["archive"] },
+        { "scene": "listed", "session": "{{session:S1}}", "note": "the session is listed at the hub once its project is relayed" },
+        { "scene": "listed", "session": "{{app:S3}}", "note": "a lane B session is listed under its appSessionId" },
+        {
+          "up": { "t": "events", "project": "{{project:P}}", "events": [
+            { "ts": "2026-10-27T18:02:11.482Z", "writer": "{{name}}/human", "seq": 1, "kind": "human", "from": "human", "to": [{ "session": "{{session:S1}}", "alias": "main" }], "text": "run the tests" },
+            { "ts": "2026-10-27T18:02:12.001Z", "writer": "{{name}}/{{session:S1}}", "seq": 1, "kind": "say", "from": "main", "to": "*", "text": "tests pass" }
+          ] },
+          "note": "events as stored: ts and no created, no mac"
+        },
+        { "scene": "hub-holds", "writer": "{{name}}/human", "seq": 1, "created": "2026-10-27T18:02:11.482Z", "note": "the hub verifies its v2 sig; its DX1 mac verifies under the legacy key" },
+        { "scene": "hub-holds", "writer": "{{name}}/{{session:S1}}", "seq": 1, "created": "2026-10-27T18:02:12.001Z", "attest": ["{{member:A}}"], "note": "attest {owners: @machine resolved}, inside the v2 signature" },
+        { "scene": "hub-resend", "writer": "{{name}}/human", "from": 1 },
+        { "down": { "t": "resend", "project": "{{project:P}}", "writer": "{{name}}/human", "from": 1 } },
+        { "up": { "t": "events", "project": "{{project:P}}", "events": [{ "ts": "2026-10-27T18:02:11.482Z", "writer": "{{name}}/human", "seq": 1, "kind": "human", "from": "human", "to": [{ "session": "{{session:S1}}", "alias": "main" }], "text": "run the tests" }] } },
+        { "scene": "resent-identical", "writer": "{{name}}/human", "seq": 1, "note": "the same bytes as the first upload, from the signature ledger" },
+        { "up": { "t": "events", "project": "{{project:P}}", "events": [{ "ts": "2026-10-27T18:02:11.482Z", "writer": "{{name}}/human", "seq": 1, "kind": "human", "from": "human", "to": [{ "session": "{{session:S1}}", "alias": "main" }], "text": "run the tests now" }] } },
+        { "down": { "t": "refused", "project": "{{project:P}}", "refusal": { "reason": "conflict", "writer": "{{name}}/human", "seq": 1, "message": "another body" } }, "vary": ["refusal.message"], "note": "never signed again" },
+        { "up": { "t": "events", "project": "{{project:P}}", "events": [{ "ts": "2026-10-27T18:02:13Z", "writer": "{{name}}/human", "seq": 2, "kind": "human", "from": "human", "to": "*", "text": "an older log's whole second" }] } },
+        { "scene": "hub-holds", "writer": "{{name}}/human", "seq": 2, "created": "2026-10-27T18:02:13.000Z" },
+        { "up": { "t": "events", "project": "{{project:P}}", "events": [{ "ts": "2026-10-27T18:02:14.000Z", "created": "2026-10-27T18:09:00.000Z", "writer": "{{name}}/human", "seq": 3, "kind": "human", "from": "human", "to": "*", "text": "a created of its own" }] } },
+        { "down": { "t": "refused", "project": "{{project:P}}", "refusal": { "reason": "malformed", "writer": "{{name}}/human", "seq": 3, "message": "a created other than its ts" } }, "vary": ["refusal.message"] }
+      ]
+    },
+    {
+      "name": "this machine's own writers come down only as echoes of what the endpoint signed there; anything else there spends the position",
+      "steps": [
+        { "scene": "hub-echo", "writer": "{{name}}/human", "seq": 1 },
+        {
+          "down": { "t": "events", "project": "{{project:P}}", "events": [{
+            "event": { "ts": "2026-10-27T18:02:11.482Z", "writer": "{{name}}/human", "seq": 1, "kind": "human", "from": "human", "to": [{ "session": "{{session:S1}}", "alias": "main" }], "text": "run the tests", "created": "2026-10-27T18:02:11.482Z", "sig": { "kid": "{{kid:machine}}", "value": "AQ" }, "mac": { "nonce": "AQ", "value": "AQ" } },
+            "signer": { "kind": "machine", "ref": "{{ref}}", "name": "{{name}}", "keyId": "{{kid:machine}}" }
+          }] },
+          "vary": ["events.0.event.sig.value", "events.0.event.mac"],
+          "note": "the echo carries the derived created; sminos strips created, sig, attest and mac when it compares (same_uncoded): present"
+        },
+        { "scene": "hub-repost", "writer": "{{name}}/human", "from": 1, "to": 7, "note": "a signed own body reposted at a new seq" },
+        { "down": { "t": "spent", "project": "{{project:P}}", "writer": "{{name}}/human", "seq": 7, "reason": "conflict" }, "note": "no content; sminos spends its own writer's position (spend_own)" },
+        { "quiet": ["events"], "ms": 400 },
+        { "scene": "hub-rejected", "writer": "{{name}}/human", "seq": 7, "reason": "conflict" },
+        { "scene": "hub-forged-own", "writer": "{{name}}/human", "seq": 8, "note": "an own-writer event the ledger holds nothing for" },
+        { "down": { "t": "spent", "project": "{{project:P}}", "writer": "{{name}}/human", "seq": 8, "reason": "conflict" } },
+        { "quiet": ["events"], "ms": 400 },
+        { "scene": "hub-rejected", "writer": "{{name}}/human", "seq": 8, "reason": "conflict" }
+      ]
+    },
+    {
+      "name": "words? for this machine's own writer: words into an @machine session, peer into one another member owns, refuse for another body at its position; the record alone where the ledger holds nothing",
+      "steps": [
+        { "up": { "t": "words?", "id": "w-own-1", "project": "{{project:P}}", "session": "{{session:S1}}", "event": { "ts": "2026-10-27T18:02:11.482Z", "writer": "{{name}}/human", "seq": 1, "kind": "human", "from": "human", "to": [{ "session": "{{session:S1}}", "alias": "main" }], "text": "run the tests" } }, "vary": ["id"], "note": "asked after its events frame went up; the event as stored, no created" },
+        { "down": { "t": "words", "id": "w-own-1", "verdict": "words" } },
+        { "up": { "t": "words?", "id": "w-own-2", "project": "{{project:P}}", "session": "{{session:S2}}", "event": { "ts": "2026-10-27T18:02:11.482Z", "writer": "{{name}}/human", "seq": 1, "kind": "human", "from": "human", "to": [{ "session": "{{session:S1}}", "alias": "main" }], "text": "run the tests" } }, "vary": ["id"] },
+        { "down": { "t": "words", "id": "w-own-2", "verdict": "peer" } },
+        { "up": { "t": "words?", "id": "w-own-3", "project": "{{project:P}}", "session": "{{session:S1}}", "event": { "ts": "2026-10-27T18:02:11.482Z", "writer": "{{name}}/human", "seq": 1, "kind": "human", "from": "human", "to": [{ "session": "{{session:S1}}", "alias": "main" }], "text": "run the tests now" } }, "vary": ["id"] },
+        { "down": { "t": "words", "id": "w-own-3", "verdict": "refuse" } },
+        { "up": { "t": "words?", "id": "w-own-4", "project": "{{project:P}}", "session": "{{session:S1}}", "event": { "ts": "2026-10-27T18:03:00.000Z", "writer": "{{name}}/human", "seq": 9, "kind": "human", "from": "human", "to": "*", "text": "asked while RL1 is down" } }, "vary": ["id"], "note": "nothing signed at seq 9: the record alone decides" },
+        { "down": { "t": "words", "id": "w-own-4", "verdict": "words" } },
+        { "up": { "t": "words?", "id": "w-own-5", "project": "{{project:Q}}", "session": "{{session:S5}}", "event": { "ts": "2026-10-27T18:03:01.000Z", "writer": "{{name}}/human", "seq": 1, "kind": "human", "from": "human", "to": "*", "text": "a project the endpoint doesn't relay" } }, "vary": ["id"] },
+        { "down": { "t": "words", "id": "w-own-5", "verdict": "words" } },
+        { "up": { "t": "words?", "id": "w-own-6", "session": "{{session:S1}}", "event": { "ts": "2026-10-27T18:02:11.482Z", "writer": "{{name}}/human", "seq": 1, "kind": "human", "from": "human", "to": [{ "session": "{{session:S1}}", "alias": "main" }], "text": "run the tests" } }, "vary": ["id"], "note": "no project: the log the event is in is unknown (say copies one message into two projects' logs)" },
+        { "down": { "t": "words", "id": "w-own-6", "verdict": "refuse" } }
+      ]
+    },
+    {
+      "name": "arriving events: verified and annotated with their signer's key id, a forged one rejected up and its position spent, a legacy one annotated legacy, a repost at the next seq spent as replayed",
+      "steps": [
+        { "scene": "device-words", "device": "b1", "seq": 1, "session": "{{session:S2}}", "binding": "words:b1" },
+        {
+          "down": { "t": "events", "project": "{{project:P}}", "events": [{ "event": "{{words:b1}}", "signer": { "kind": "device", "member": "{{member:B}}", "device": "{{device:b1}}", "keyId": "{{kid:b1}}" } }] },
+          "note": "stored with verified {signer, owners}; the signer's keyId lets a later revocation name it"
+        },
+        { "scene": "device-words", "device": "b1", "seq": 2, "session": "{{session:S2}}", "forged": true },
+        { "down": { "t": "spent", "project": "{{project:P}}", "writer": "hub/{{member:B}}", "seq": 2, "reason": "bad-signature" }, "note": "a final verdict: the position is spent, so the writer's later events aren't held behind it" },
+        { "quiet": ["events"], "ms": 400 },
+        { "scene": "hub-rejected", "writer": "hub/{{member:B}}", "seq": 2, "reason": "bad-code" },
+        { "scene": "legacy-words", "seq": 1 },
+        { "down": { "t": "events", "project": "{{project:P}}", "events": [{ "event": { "ts": "2026-10-27T18:04:00.000Z", "writer": "old-mini/human", "seq": 1, "kind": "human", "from": "human", "to": "*", "text": "from a machine not yet moved", "mac": { "nonce": "AQ", "value": "AQ" } }, "signer": { "kind": "legacy" } }] }, "vary": ["events.0.event.mac"], "note": "delivered only as a peer message marked unverified" },
+        { "scene": "hub-repost", "writer": "hub/{{member:B}}", "from": 1, "to": 3, "note": "the same signed words at the next free seq" },
+        { "down": { "t": "spent", "project": "{{project:P}}", "writer": "hub/{{member:B}}", "seq": 3, "reason": "replayed" } },
+        { "quiet": ["events"], "ms": 400 },
+        { "scene": "hub-rejected", "writer": "hub/{{member:B}}", "seq": 3, "reason": "seen-nonce" },
+        { "up": { "t": "words?", "id": "w-b1-a", "project": "{{project:P}}", "session": "{{session:S2}}", "event": "{{words:b1}}" }, "vary": ["id"], "note": "B owns the session: words" },
+        { "down": { "t": "words", "id": "w-b1-a", "verdict": "words" } },
+        { "up": { "t": "words?", "id": "w-b1-b", "project": "{{project:P}}", "session": "{{session:S1}}", "event": "{{words:b1}}" }, "vary": ["id"], "note": "B holds only list on an @machine session: peer" },
+        { "down": { "t": "words", "id": "w-b1-b", "verdict": "peer" } },
+        { "up": { "t": "words?", "id": "w-none", "project": "{{project:P}}", "session": "66666666-6666-4666-8666-666666666666", "event": "{{words:b1}}" }, "vary": ["id"], "note": "a session with no member here" },
+        { "down": { "t": "words", "id": "w-none", "verdict": "peer" } }
+      ]
+    },
+    {
+      "name": "a to-human host message raises one notify wrote, however often it comes again; a raised draft is taken without a mac",
+      "steps": [
+        { "up": { "t": "session", "message": { "project": "{{project:P}}", "machine": "{{name}}", "session": "{{session:S1}}", "kind": "host", "sub": null, "n": null, "body": { "id": { "writer": "{{name}}/{{session:S1}}", "seq": 1 }, "event": { "ts": "2026-10-27T18:06:00.000Z", "writer": "{{name}}/{{session:S1}}", "seq": 1, "kind": "message", "from": "main", "text": "the build is green" } } } } },
+        { "scene": "notified", "session": "{{session:S1}}", "kind": "wrote", "count": 1 },
+        { "up": { "t": "session", "message": { "project": "{{project:P}}", "machine": "{{name}}", "session": "{{session:S1}}", "kind": "host", "sub": null, "n": null, "body": { "id": { "writer": "{{name}}/{{session:S1}}", "seq": 1 }, "event": { "ts": "2026-10-27T18:06:00.000Z", "writer": "{{name}}/{{session:S1}}", "seq": 1, "kind": "message", "from": "main", "text": "the build is green" } } } }, "note": "the last 50 again after a reconnect" },
+        { "scene": "notified", "session": "{{session:S1}}", "kind": "wrote", "count": 1 },
+        { "up": { "t": "session", "message": { "project": "{{project:P}}", "machine": "{{name}}", "session": "{{session:S1}}", "kind": "raised", "sub": null, "n": null, "body": { "session": "{{session:S1}}", "request": "req-1", "kind": "permission", "tool": "Bash", "input": { "command": "ls" }, "at": "2026-10-27T18:06:01.000Z" } } }, "note": "a draft: no mac on RL10" },
+        { "scene": "heard", "kind": "raised" }
+      ]
+    },
+    {
+      "name": "lane A actions go down as DX2's rpc, the RPC nested under rpc with its nonce, machine, args.session, a decision's args.digest, its context and fingerprint; a spawn's project is the one whose presence lists its checkout",
+      "steps": [
+        { "scene": "act", "action": "sminos.steer", "session": "{{session:S1}}", "launch": "{{launch:L1}}", "args": { "session": "{{session:S1}}", "text": "keep going" }, "as": "steer" },
+        {
+          "down": { "t": "rpc", "rpc": { "rpc": "steer", "project": "{{project:P}}", "machine": "{{name}}", "member": "{{member:A}}", "device": "{{device:a1}}", "created": "{{created:steer}}", "nonce": "{{nonce:steer}}", "opId": "{{opId:steer}}", "opCreated": "{{created:steer}}", "args": { "session": "{{session:S1}}", "text": "keep going" }, "context": { "lane": "A", "session": "{{session:S1}}", "launch": "{{launch:L1}}" }, "fingerprint": "{{fingerprint:steer}}" } }
+        },
+        { "up": { "t": "rpc-result", "project": "{{project:P}}", "opId": "{{opId:steer}}", "nonce": "{{nonce:steer}}", "outcome": { "state": "done", "result": {} } }, "vary": ["outcome"] },
+        { "down": { "t": "rpc-ack", "opId": "{{opId:steer}}", "nonce": "{{nonce:steer}}" } },
+        { "scene": "act", "action": "sminos.decide", "session": "{{session:S1}}", "launch": "{{launch:L1}}", "args": { "session": "{{session:S1}}", "request": "req-1", "decision": "allow", "digest": { "session": "{{session:S1}}", "request": "req-1", "tool": "Bash", "input_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" } }, "as": "decide" },
+        {
+          "down": { "t": "rpc", "rpc": { "rpc": "decide", "project": "{{project:P}}", "machine": "{{name}}", "member": "{{member:A}}", "device": "{{device:a1}}", "created": "{{created:decide}}", "nonce": "{{nonce:decide}}", "opId": "{{opId:decide}}", "opCreated": "{{created:decide}}", "args": { "session": "{{session:S1}}", "request": "req-1", "decision": "allow", "digest": { "session": "{{session:S1}}", "request": "req-1", "tool": "Bash", "input_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" } }, "context": { "lane": "A", "session": "{{session:S1}}", "launch": "{{launch:L1}}" }, "fingerprint": "{{fingerprint:decide}}" } }
+        },
+        { "up": { "t": "member", "session": "{{session:S1}}", "alias": "main", "project": "{{project:P}}", "lane": "A", "state": "idle", "title": "the main session", "cwd": "{{checkout}}", "launch": "{{launch:L1b}}", "owners": ["@machine"], "ownersProof": [], "origin": { "kind": "terminal" } }, "note": "the session relaunched after the decision was admitted" },
+        { "up": { "t": "rpc-result", "project": "{{project:P}}", "opId": "{{opId:decide}}", "nonce": "{{nonce:decide}}", "outcome": { "state": "failed", "error": { "code": "launch", "message": "sealed for another launch of the session" } } }, "vary": ["outcome.error.message"], "note": "the bridge's child refuses a launch other than its own (O12 M7); sminos reports it" },
+        { "down": { "t": "rpc-ack", "opId": "{{opId:decide}}", "nonce": "{{nonce:decide}}" } },
+        { "scene": "act", "action": "sminos.spawn", "args": { "checkout": "{{checkout}}", "brief": "fix the flake" }, "as": "spawn" },
+        { "down": { "t": "rpc", "rpc": { "rpc": "spawn", "project": "{{project:P}}", "machine": "{{name}}", "member": "{{member:A}}", "device": "{{device:a1}}", "created": "{{created:spawn}}", "nonce": "{{nonce:spawn}}", "opId": "{{opId:spawn}}", "opCreated": "{{created:spawn}}", "args": { "checkout": "{{checkout}}", "brief": "fix the flake" }, "fingerprint": "{{fingerprint:spawn}}", "proof": "{{proof:spawn}}" } }, "note": "no context; its signed action rides as proof, kept as the new session's ownersProof" },
+        { "scene": "act", "action": "sminos.steer", "session": "{{session:S4}}", "launch": "no-bridge", "args": { "session": "{{session:S4}}", "text": "hello?" }, "refused": "unavailable", "note": "no launch: no bridge to fence it" },
+        { "scene": "act", "action": "sminos.steer", "session": "{{session:S1}}", "launch": "{{launch:L1b}}", "args": { "session": "{{session:S2}}", "text": "the other one" }, "refused": "malformed", "note": "its own session is not args.session" },
+        { "quiet": ["rpc"], "ms": 400 }
+      ]
+    },
+    {
+      "name": "query and tombstone go down to sminos's ledger and back with the binding; a DX2-era entry answers none",
+      "steps": [
+        { "scene": "query", "opId": "{{opId:steer}}", "opCreated": "{{created:steer}}" },
+        { "down": { "t": "query", "opId": "{{opId:steer}}", "opCreated": "{{created:steer}}" } },
+        { "up": { "t": "queried", "opId": "{{opId:steer}}", "state": "done", "outcome": { "state": "done", "result": {} }, "member": "{{member:A}}", "device": "{{device:a1}}", "fingerprint": "{{fingerprint:steer}}", "target": { "kind": "session", "session": "{{session:S1}}" } }, "vary": ["outcome"] },
+        { "scene": "answered", "state": "done", "member": "{{member:A}}" },
+        { "scene": "query", "opId": "ZHgyLWVyYS1vcC0wMDAwMDAwMQ" },
+        { "down": { "t": "query", "opId": "ZHgyLWVyYS1vcC0wMDAwMDAwMQ" } },
+        { "up": { "t": "queried", "opId": "ZHgyLWVyYS1vcC0wMDAwMDAwMQ", "state": "done", "outcome": { "state": "done", "result": {} } }, "vary": ["outcome"], "note": "an entry from before RL10 holds no binding" },
+        { "scene": "answered", "state": "done", "member": null },
+        { "scene": "tombstone", "opId": "bm90LXJlY2VpdmVkLW9wLTAwMDE", "opCreated": "{{created:steer}}" },
+        { "down": { "t": "tombstone", "opId": "bm90LXJlY2VpdmVkLW9wLTAwMDE", "opCreated": "{{created:steer}}" } },
+        { "up": { "t": "tombstoned", "opId": "bm90LXJlY2VpdmVkLW9wLTAwMDE", "ok": true } },
+        { "scene": "answered", "state": "unavailable", "ok": true },
+        { "scene": "query", "opId": "short", "note": "an opId sminos's shape guard refuses: never sent" },
+        { "quiet": ["query"], "ms": 300 },
+        { "scene": "answered", "state": "unavailable" }
+      ]
+    },
+    {
+      "name": "after an endpoint restart: the session lane restated (closed by restated) replaces what was held, a session not restated is withdrawn at once, the replay still spent; an unknown signer held until the head holds it; then a revocation of one of a member's two devices, and its later words spent",
+      "steps": [
+        { "scene": "device-words", "device": "b2", "seq": 4, "session": "{{session:S2}}", "binding": "words:b2" },
+        { "down": { "t": "events", "project": "{{project:P}}", "events": [{ "event": "{{words:b2}}", "signer": { "kind": "device", "member": "{{member:B}}", "device": "{{device:b2}}", "keyId": "{{kid:b2}}" } }] } },
+        { "scene": "restart" },
+        { "closed": "main" },
+        { "open": "main" },
+        { "up": { "t": "hello", "protocol": { "major": 1, "minor": 0 }, "capabilities": [], "token": "{{token}}", "sminos": { "version": "1.25.0" }, "policy": { "read_only": false, "ceiling": "settings" } }, "vary": ["sminos.version"] },
+        { "down": { "t": "welcome", "protocol": { "major": 1, "minor": 0 }, "capabilities": [], "build": "{{build}}", "identity": { "org": "{{org}}", "hub": "{{hub}}", "name": "{{name}}", "former": [], "ref": "{{ref}}", "enrolled": "{{enrolled}}" }, "policy": { "read_only": false, "ceiling": "settings" }, "stateVersion": 3 }, "vary": ["stateVersion"] },
+        { "down": { "t": "revoked", "version": 3, "devices": [], "members": [], "keys": [] }, "vary": ["version"] },
+        { "quiet": ["legacy-key?"], "ms": 300, "note": "the key is held: not asked again" },
+        { "up": { "t": "session", "message": { "project": "{{project:P}}", "machine": "{{name}}", "session": null, "kind": "machine", "sub": null, "n": null, "body": { "online": true, "policy": { "read_only": false, "ceiling": "settings" }, "checkouts": [{ "path": "{{checkout}}", "branch": "main" }], "desk": { "sminos": "1.25.0", "rpcs": [], "reads": [] } } } }, "vary": ["message.body.desk"] },
+        { "up": { "t": "member", "session": "{{session:S1}}", "alias": "main", "project": "{{project:P}}", "lane": "A", "state": "idle", "title": "the main session", "cwd": "{{checkout}}", "launch": "{{launch:L1b}}", "owners": ["@machine"], "ownersProof": [], "origin": { "kind": "terminal" } } },
+        { "up": { "t": "member", "session": "{{session:S2}}", "alias": "bob", "project": "{{project:P}}", "lane": "A", "state": "idle", "cwd": "{{checkout}}", "launch": "{{launch:L2}}", "owners": ["{{member:B}}"], "ownersProof": [], "origin": { "kind": "maws", "requester": "{{member:B}}" } } },
+        { "up": { "t": "pending", "project": "{{project:P}}", "raised": [] } },
+        { "up": { "t": "restated" }, "note": "sminos's restatement after the welcome is whole: what it left out left" },
+        { "scene": "withdrawn", "session": "{{session:S4}}", "within": 2000, "note": "S4 and S3 left while the endpoint was down: their listings are withdrawn at once" },
+        { "scene": "withdrawn", "session": "{{app:S3}}", "within": 2000 },
+        { "up": { "t": "hello", "project": "{{project:P}}", "name": "maws", "have": { "{{name}}/human": 2, "{{name}}/{{session:S1}}": 1, "hub/{{member:B}}": 4, "old-mini/human": 1 } } },
+        { "down": { "t": "have", "project": "{{project:P}}", "have": {}, "archive": false }, "vary": ["have", "archive"] },
+        { "scene": "hub-repost", "writer": "hub/{{member:B}}", "from": 1, "to": 5, "note": "the inbound index survived the restart" },
+        { "down": { "t": "spent", "project": "{{project:P}}", "writer": "hub/{{member:B}}", "seq": 5, "reason": "replayed" } },
+        { "quiet": ["events"], "ms": 400 },
+        { "scene": "hub-rejected", "writer": "hub/{{member:B}}", "seq": 5, "reason": "seen-nonce" },
+        { "scene": "device-words", "device": "b3", "seq": 6, "session": "{{session:S2}}", "binding": "words:b3", "note": "a device the endpoint's head doesn't hold yet: its head is behind the hub's" },
+        { "quiet": ["events", "spent"], "ms": 400, "note": "held: neither delivered, nor spent, nor rejected" },
+        { "scene": "not-rejected", "writer": "hub/{{member:B}}", "seq": 6 },
+        { "scene": "add-device", "device": "b3", "note": "the head advances to one that holds b3" },
+        { "down": { "t": "revoked", "version": 4, "devices": [], "members": [], "keys": [] }, "vary": ["version"], "note": "the whole set at each new head, before what the head lets through" },
+        { "down": { "t": "events", "project": "{{project:P}}", "events": [{ "event": "{{words:b3}}", "signer": { "kind": "device", "member": "{{member:B}}", "device": "{{device:b3}}", "keyId": "{{kid:b3}}" } }] }, "note": "judged again on the new head, and delivered" },
+        { "scene": "revoke", "device": "b1" },
+        { "down": { "t": "revoked", "version": 5, "devices": ["{{device:b1}}"], "members": [], "keys": ["{{kid:b1}}", "{{kid:b1-step}}"] }, "vary": ["version", "keys"], "note": "the whole set again, on the head that drops the device; sminos marks what b1 signed refused-revoked" },
+        { "scene": "device-words", "device": "b1", "seq": 7, "session": "{{session:S2}}", "note": "words signed by the revoked device, arriving after the revocation" },
+        { "down": { "t": "spent", "project": "{{project:P}}", "writer": "hub/{{member:B}}", "seq": 7, "reason": "revoked" } },
+        { "scene": "hub-rejected", "writer": "hub/{{member:B}}", "seq": 7, "reason": "bad-code" },
+        { "up": { "t": "words?", "id": "w-b1-r", "project": "{{project:P}}", "session": "{{session:S2}}", "event": "{{words:b1}}" }, "vary": ["id"] },
+        { "down": { "t": "words", "id": "w-b1-r", "verdict": "refuse" } },
+        { "up": { "t": "words?", "id": "w-b2-r", "project": "{{project:P}}", "session": "{{session:S2}}", "event": "{{words:b2}}" }, "vary": ["id"], "note": "the member's other device still speaks" },
+        { "down": { "t": "words", "id": "w-b2-r", "verdict": "words" } }
+      ]
+    }
+  ]
+}

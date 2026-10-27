@@ -834,6 +834,92 @@ class MembersFirst(Machine):
         self.assertNotIn("more than", daemon_log())
 
 
+# ------------------------------------------------------------- the restatement's end (M7b)
+
+
+def restating(f):
+    """A frame of what each welcome restates (O10 M6): the session lane's
+    presence, the member set, the pending sets, the unacknowledged results,
+    the host events sent again."""
+    return f["t"] in ("member", "pending", "rpc-result") or (
+        f["t"] == "session" and f["message"]["kind"] in ("presence", "machine", "host"))
+
+
+class Restated(Machine):
+    """`restated {}` goes once after each welcome, behind the whole
+    restatement: the endpoint replaces what it held from the earlier
+    connection and, at `restated`, withdraws every session the restatement
+    left out (O10 M6), so it must never come early."""
+
+    def setUp(self):
+        super().setUp()
+        self.cut_over()
+        self.hp = self.project("hp", hub=True)
+
+    def test_restated_follows_the_whole_restatement_after_each_welcome(self):
+        lp = self.project("lp")
+        self.session(self.hp, S1)
+        self.session(self.hp, S2)
+        self.session(lp, S3)
+        sminos.reconcile(self.hp)
+        sminos.reconcile(lp)
+        sminos.append_host(self.hp, S1, [{"kind": "message", "from": "m", "to": "host", "text": "to my person",
+                                          "src": "msg-1"}])
+        ep = self.endpoint(ack_results=False)
+        self.uplink()
+
+        def check(conn):
+            ep.wait(lambda f: f["t"] == "restated" and ep.frames("restated", conn=conn))
+            time.sleep(1.0)
+            frames = ep.frames(conn=conn)
+            at = [i for i, f in enumerate(frames) if f["t"] == "restated"]
+            self.assertEqual(len(at), 1, "connection %d: once" % conn)
+            self.assertEqual(frames[at[0]], {"t": "restated"})
+            before, after = frames[:at[0]], frames[at[0] + 1:]
+            self.assertEqual([f for f in after if restating(f)], [], "connection %d: nothing of it after" % conn)
+            self.assertEqual({f["session"] for f in before if f["t"] == "member"}, {S1, S2, S3})
+            self.assertTrue(any(f["t"] == "pending" and f["project"] == self.hp.id for f in before))
+            self.assertTrue(any(f["t"] == "session" and f["message"]["kind"] == "machine"
+                                and f["message"]["project"] == self.hp.id for f in before))
+            self.assertTrue(any(f["t"] == "session" and f["message"]["kind"] == "presence"
+                                and f["message"]["session"] == S1 for f in before))
+            self.assertTrue(any(f["t"] == "session" and f["message"]["kind"] == "host" for f in before),
+                            "the host events sent again are before it")
+            return before
+
+        check(1)
+        # A remote steer on a session with no bridge: refused, its result
+        # unacknowledged, so every later welcome restates it.
+        rpc = ep.rpc("steer", self.hp.id, {"session": S1, "text": "go on"},
+                     context={"lane": "A", "session": S1, "launch": "launch-x"})
+        ep.wait(lambda f: f["t"] == "rpc-result" and f["opId"] == rpc["opId"])
+        ep.drop()
+        ep.wait_until(lambda: len(ep.hellos) > 1)
+        before = check(ep.hellos[-1][0])
+        self.assertTrue(any(f["t"] == "rpc-result" and f["opId"] == rpc["opId"] for f in before),
+                        "the unacknowledged result is restated before it")
+
+    def test_restated_waits_for_a_member_set_the_lane_could_not_take(self):
+        self.session(self.hp, S1)
+        sminos.reconcile(self.hp)
+        link = self.link()
+        link.on_welcome({"t": "welcome", "protocol": {"major": 1, "minor": 0}, "capabilities": [], "policy": None},
+                        None)
+        link.log_lane = link.session_lane = Lane()
+        with mock.patch.object(Lane, "queued", return_value=uplink.UPLOAD_AHEAD):
+            link.tick()
+            link.tick()
+        self.assertEqual([f for f in link.session_lane.take() if f["t"] == "restated"], [],
+                         "not while the member set waits for room on the lane")
+        link.tick()
+        frames = link.session_lane.take()
+        self.assertEqual(frames[-1], {"t": "restated"}, "behind the member set and every project's restatement")
+        self.assertTrue(any(f["t"] == "member" and f["session"] == S1 for f in frames))
+        self.assertTrue(any(f["t"] == "hello" and f.get("project") == self.hp.id for f in frames))
+        link.tick()
+        self.assertEqual([f for f in link.session_lane.take() if f["t"] == "restated"], [], "once a connection")
+
+
 # ------------------------------------------------------------- revocations applied by the uplink
 
 
@@ -931,7 +1017,8 @@ class Words(WordsRig):
         ep = self.endpoint(verdict="words")
         self.uplink()
         ask = ep.wait(lambda f: f["t"] == "words?")
-        self.assertEqual(set(ask), {"t", "id", "session", "event"})
+        self.assertEqual(set(ask), {"t", "id", "project", "session", "event"})
+        self.assertEqual(ask["project"], self.hp.id, "the project whose log holds the event (O10 §D: required)")
         self.assertEqual(ask["session"], S1)
         self.assertEqual(ask["event"], {k: v for k, v in e.items() if k != "verified"},
                          "the event exactly as stored, the endpoint's verdict left out")

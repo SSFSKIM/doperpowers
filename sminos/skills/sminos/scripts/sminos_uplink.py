@@ -81,11 +81,14 @@ On a machine cut over to its endpoint (sminos_rl10) the same Link runs with
 `coded` off over RL10's socket (SocketTransport): no hub, no generation, no
 codes; one SocketLane in place of both senders, a frame written being a
 frame taken, so every continuation runs once its frame is written, and
-everything a reconnect restates goes again after each welcome. The
+everything a reconnect restates goes again after each welcome, closed by
+`restated {}` once the whole of it is queued (Link.restated_due): the
+endpoint then withdraws whatever session the restatement left out. The
 endpoint's own frames down — its policy, its revocation set, its ask for
-the DX1 key, and a device's `query` and `tombstone` of an operation — are
-handled there alone. Up the socket go `member` frames too (O12 M6,
-Link.members): every session of this machine, in every project known here
+the DX1 key, a device's `query` and `tombstone` of an operation, and
+`spent`, a position it refused for good, recorded as one refused here
+(HubLog.spend) — are handled there alone. Up the socket go `member`
+frames too (O12 M6, Link.members): every session of this machine, in every project known here
 whether the endpoint relays it or not (the endpoint decides a person's
 words from them), the whole set after each welcome, then each one that
 changed, and `{session, gone: true}` for one that left. A revocation set
@@ -93,8 +96,9 @@ from the endpoint marks every event owed here that a revoked signer signed
 (Link.mark_revoked: never delivered, its outcome up). And a person's words
 are delivered here alone, on the endpoint's verdict: each tick's words pass
 (Link.ask_words), behind its upload pass, asks `words?` about the first
-owed event of each words-gated writer, and the `words` answer is carried out
-at once (on_words, sminos.deliver_verdict). Before the cutover the endpoint
+owed event of each words-gated writer, naming the project whose log holds
+it, and the `words` answer is carried out at once (on_words,
+sminos.deliver_verdict). Before the cutover the endpoint
 is only probed (cmd_probe), beside the hub's stream.
 """
 
@@ -1448,6 +1452,9 @@ class Link:
         self.asked = {}           # RL10: (project id, session, writer) → the id of the ask it has out
         self.words_due = True     # RL10: the words pass runs at the next tick (and every WORDS_EVERY)
         self.next_words = 0.0     # RL10: when it runs again unasked (monotonic)
+        self.restating = False    # RL10: this connection's welcome began a restatement not closed by `restated` yet
+        self.restate_scanned = False  # RL10: a whole scan (every hub project opened) ran since the welcome
+        self.members_whole = False    # RL10: the whole member set was queued since the welcome
         self.logs = logs          # project id → HubLog, kept across streams
         self.generation = None
         self.opened = set()       # the projects `hello`ed on this stream
@@ -1487,11 +1494,14 @@ class Link:
                          "rpc": self.on_rpc,
                          "rpc-ack": self.on_rpc_ack, "org": self.on_org}
         if not coded:
-            # What only the endpoint sends: its policy, its revocations, and
-            # its ask for the machine's DX1 key (RL10, O10 Interfaces §D).
+            # What only the endpoint sends: its policy, its revocations, its
+            # ask for the machine's DX1 key, a device's query and tombstone,
+            # the verdicts on words, and the positions it spent (RL10, O10
+            # Interfaces §D).
             self.handlers.update({"policy": self.on_policy, "revoked": self.on_revoked,
                                   "legacy-key?": self.on_legacy_key, "query": self.on_query,
-                                  "tombstone": self.on_tombstone, "words": self.on_words})
+                                  "tombstone": self.on_tombstone, "words": self.on_words,
+                                  "spent": self.on_spent})
 
     def post_session(self, messages):
         if messages:
@@ -1592,6 +1602,8 @@ class Link:
         self.words_due = True
         self.host_queued.clear()
         self.host_owed.clear()
+        self.restating = not self.coded
+        self.restate_scanned = self.members_whole = False
         if not self.coded:
             self.log_lane = self.session_lane = self.transport.lane()
             log("connected to the endpoint (RL10, local-only) as %s (connection %d)"
@@ -1748,6 +1760,18 @@ class Link:
             self.imported[hl.project.id] = hl
         if rejections and hl.project.id in self.opened:
             self.report(hl, rejections)
+
+    def on_spent(self, frame, _stream):
+        """RL10's `spent {project, writer, seq, reason}`: a position the
+        endpoint refused for good, in stream order where its event would have
+        come (O10 M6), recorded as one refused here (HubLog.spend)."""
+        pid = frame.get("project")
+        hl = self.logs[pid] if isinstance(pid, str) and pid in self.opened else self.log_of(pid)
+        if hl is None:
+            log("a spent position in project %r, which is no hub project of org %s known here: ignored"
+                % (pid, self.cred["org"]))
+            return
+        hl.spend(frame.get("writer"), frame.get("seq"), frame.get("reason"))
 
     def on_resend(self, frame, _stream):
         hl = self.logs.get(frame.get("project"))
@@ -2150,7 +2174,7 @@ class Link:
         drops it); the checkouts are read again every CHECKOUTS_EVERY, or at
         once when the policy changed (a `daemon policy` nudges one), and
         `machine` goes again for each held project whose body changed."""
-        current = policy.machine_policy()
+        current = policy.machine_policy() if self.coded else policy.wire_policy()   # as HubLog.presence says it
         fresh = now >= self.next_checkouts or any(self.machine_sent.get(pid, {}).get("policy") != current
                                                   for pid in self.opened if not self.follows.get(pid))
         if fresh:
@@ -2269,6 +2293,8 @@ class Link:
         if batch:
             self.send_members(batch)
         self.members_unsent = unsent
+        if not unsent:
+            self.members_whole = True
 
     def send_members(self, batch):
         """One entry of member frames queued, and taken as sent."""
@@ -2350,8 +2376,10 @@ class Link:
         own event that could go up has gone up on this socket before its
         `words?`: for each local member of every project known here, the
         first owed event of each words-gated writer not yet asked
-        (sminos.words_due) is sent as `words? {id, session, event}`, the
-        event as stored with the endpoint's verdict left out, its session's
+        (sminos.words_due) is sent as `words? {id, project, session, event}`,
+        `project` the one whose log holds it (a `say` copies one message into
+        two projects' logs), the event as stored with the endpoint's verdict
+        left out, its session's
         member frame first (members_before). Queued as the host pass queues,
         in entries of at most LANE_ENTRY, none while the lane holds
         UPLOAD_AHEAD unsent: a broadcast to many sessions is asked across
@@ -2397,7 +2425,7 @@ class Link:
                                     self.next_upload = 0.0
                             continue
                         ask = os.urandom(12).hex()
-                        frame = {"t": "words?", "id": ask, "session": sid,
+                        frame = {"t": "words?", "id": ask, "project": pid, "session": sid,
                                  "event": {k: v for k, v in e.items() if k != "verified"}}
                         n = len(json.dumps(frame, ensure_ascii=False).encode("utf-8"))
                         if batch and size + n > LANE_ENTRY:
@@ -2437,6 +2465,21 @@ class Link:
                 log("the endpoint gave no verdict on %s in %s within %g s: it stays owed, asked again each pass"
                     % (sminos.event_ref(held["event"]), held["project"].name, WORDS_WAIT))
             self.next_upload = 0.0   # an attempt given up has its outcome to send
+
+    def restated_due(self):
+        """RL10: whether the restatement this connection's welcome began is
+        whole on the lane, so `restated {}` may follow it (O10 M6: at
+        `restated` the endpoint withdraws every session held before the
+        welcome that the restatement left out, so it must never come early):
+        the whole member set queued (members_whole, nothing of it waiting
+        for room), every hub project known here opened by a scan — each
+        `open` queues its hello, its machine and sessions' presence, its
+        pending set when its bridges are read, and every result not yet
+        acknowledged — each project's pending set that waited for its
+        bridges sent since (Requests.stale), and the host events owed again
+        at the open queued (host_owed)."""
+        return self.restate_scanned and self.members_whole and not self.members_unsent \
+            and not (self.requests.stale & self.opened) and not any(self.host_owed.values())
 
     def words_now(self, nudged):
         """Whether this tick runs the words pass: one was asked for (a nudge,
@@ -2496,6 +2539,7 @@ class Link:
                 for pid in sorted(set(known) - self.opened):
                     self.open(self.log_of(pid, known))
                 self.machine_presence(time.monotonic())
+                self.restate_scanned = True
             every = archive.archive_every()
             if every > 0 and now >= self.next_confirm and not held:
                 # The hub reads the archive designation at each hello: asked
@@ -2533,6 +2577,9 @@ class Link:
                     self.mark_revoked(known)
                 if words and not held:
                     self.ask_words(known)   # behind the upload pass, which a held tick did not run
+                if self.restating and self.restated_due():
+                    self.session_lane.send([{"t": "restated"}])
+                    self.restating = False
             self.plane_failing = ""
         except EndStream:
             raise
@@ -2719,7 +2766,7 @@ def rl10_connection(info, kept, ended):
         log("the endpoint does not answer at %s (%s)" % (info["socket"], " ".join(str(e).split()) or type(e).__name__))
         return False
     try:
-        welcome = conn.handshake(rl10.hello_frame(info["token"], hublog.desk()["sminos"], policy.machine_policy()))
+        welcome = conn.handshake(rl10.hello_frame(info["token"], hublog.desk()["sminos"], policy.wire_policy()))
         identity = rl10.welcomed(welcome)
     except (rl10.Refused, ValueError) as e:
         log("the endpoint did not welcome this machine: %s" % e)
@@ -2788,7 +2835,7 @@ def cmd_probe(_a):
         print("it does not answer at %s (%s)" % (info["socket"], " ".join(str(e).split()) or type(e).__name__))
         sys.exit(1)
     try:
-        welcome = conn.handshake(rl10.hello_frame(info["token"], hublog.desk()["sminos"], policy.machine_policy()))
+        welcome = conn.handshake(rl10.hello_frame(info["token"], hublog.desk()["sminos"], policy.wire_policy()))
         identity = rl10.welcomed(welcome)
     except rl10.NotEnrolled as e:
         print("present but not enrolled (%s): this machine is not cut over" % e)

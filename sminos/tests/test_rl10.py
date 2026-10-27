@@ -425,6 +425,41 @@ class Policy(Machine):
         self.assertEqual(len(ep.frames("policy-set", conn=ep.hellos[1][0])), 1)
         self.assertTrue(policy.read_only())
 
+    def test_the_ceiling_settings_is_the_users_defaultmode_both_ways(self):
+        """O10's ceiling is a permission mode or `settings`, the machine's
+        settings' defaultMode (its default policy's): the hello and the
+        machine's presence on RL10 say `settings` while the file names no
+        ceiling, and an endpoint's `settings` is taken as the file naming
+        none, read as the settings give it (O12 M7b, found by the
+        conformance replay)."""
+        self.hub_json()
+        ep = self.endpoint()   # holds no policy: it takes the hello's
+        self.uplink()
+        hello = ep.wait(lambda f: f["t"] == "hello")
+        self.assertEqual(hello["policy"], {"read_only": False, "ceiling": "settings"})
+        self.assertEqual(ep.policy, {"read_only": False, "ceiling": "settings"})
+        wait_for(lambda: policy.stored().get("endpoint"))
+        self.assertNotIn("a policy from the endpoint that is no policy", daemon_log())
+        self.assertNotIn("ceiling", policy.stored(), "settings: the file names none")
+        self.assertEqual(policy.machine_policy(), {"read_only": False, "ceiling": "default"},
+                         "read as the user's settings give it")
+        machine = ep.wait(lambda f: f["t"] == "session" and f["message"]["kind"] == "machine")
+        self.assertEqual(machine["message"]["body"]["policy"], {"read_only": False, "ceiling": "settings"})
+        ep.send({"t": "policy", "read_only": True, "ceiling": "settings"})
+        wait_for(lambda: policy.read_only())
+        self.assertEqual(policy.stored(), {"read_only": True, "endpoint": {"read_only": True, "ceiling": "settings"}})
+        self.assertEqual(policy.unsent_change(), {}, "nothing differs from the endpoint's word")
+        out = self.cli_policy("--ceiling", "plan")
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertEqual(ep.wait(lambda f: f["t"] == "policy-set"), {"t": "policy-set", "ceiling": "plan"})
+        wait_for(lambda: policy.stored().get("endpoint", {}).get("ceiling") == "plan")
+        self.cli_policy("--ceiling", "settings")
+        self.assertEqual(ep.wait(lambda f: f["t"] == "policy-set" and f.get("ceiling") == "settings"),
+                         {"t": "policy-set", "ceiling": "settings"})
+        time.sleep(1.0)
+        presences = [f for f in ep.frames("session") if f["message"]["kind"] == "machine"]
+        self.assertLessEqual(len(presences), 6, "the presence goes when its policy changes, not every pass")
+
 
 # ------------------------------------------------------------- the DX1 key
 
@@ -577,6 +612,142 @@ class LogPlane(Machine):
             got = hl.take([{"event": {"ts": "2026-10-27T01:00:00.123Z", "writer": OTHER, "seq": 1, "kind": "say",
                                       "to": [], "text": "x"}, "signer": {"kind": "legacy"}}])
         self.assertEqual(got, (1, []))
+
+
+# ------------------------------------------------------------- spent positions (M7b)
+
+
+class Spent(Machine):
+    """The endpoint's final verdict on an arriving event it rejected comes
+    down as `spent {project, writer, seq, reason}`, carrying no content (O10
+    M6): sminos records the position as one it refused itself (`take`; an own
+    writer's through `spend_own`), so the writer's later events are not held
+    behind it and the vector moves past it; each position is one daemon.log
+    line, and `sminos daemon status` counts them."""
+
+    WRITER = "hub/mem-1"
+
+    def setUp(self):
+        super().setUp()
+        self.hub_json()
+        self.own = sminos.machine_project("org-1", "testhost")
+        self.writer = "testhost/human"
+        self.path = sminos.writer_path(self.own, self.writer)
+
+    def arrive(self, ep, seq, text):
+        ep.events(self.own.id, [ep.arriving({"ts": "2026-10-27T01:00:%02d.000Z" % seq, "writer": self.WRITER,
+                                             "seq": seq, "kind": "human", "from": "human", "member": "mem-1",
+                                             "to": [], "text": text, "sig": {"kid": "k-dev-1", "sig": "AA"}})])
+
+    def spend(self, ep, writer, seq, reason):
+        ep.send({"t": "spent", "project": self.own.id, "writer": writer, "seq": seq, "reason": reason})
+
+    def held(self, writer):
+        path = sminos.writer_path(self.own, writer)
+        if not os.path.exists(path):
+            return []
+        with open(path, encoding="utf-8") as f:
+            return [json.loads(line)["seq"] for line in f if line.strip()]
+
+    def hublog(self):
+        return hublog.HubLog(self.own, {"key": None, "machine": "testhost"}, coded=False)
+
+    def status(self):
+        r = subprocess.run([sys.executable, "-B", str(SCRIPTS / "sminos.py"), "daemon", "status"],
+                           capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return r.stdout
+
+    def started(self):
+        ep = self.endpoint()
+        self.uplink()
+        ep.wait(lambda f: f["t"] == "hello" and f.get("project") == self.own.id)
+        return ep
+
+    def test_a_spent_position_unblocks_the_writers_later_events_and_moves_the_vector(self):
+        ep = self.started()
+        self.arrive(ep, 1, "first")
+        self.spend(ep, self.WRITER, 2, "bad-signature")
+        self.arrive(ep, 3, "after the forged one")
+        self.assertEqual(wait_for(lambda: self.held(self.WRITER) == [1, 3] and self.held(self.WRITER)), [1, 3],
+                         "seq 3 is stored past the spent seq 2, not held behind a gap")
+        self.assertEqual(self.hublog().vector()[self.WRITER], 3)
+        self.spend(ep, self.WRITER, 4, "replayed")
+        wait_for(lambda: "%s:4" % self.WRITER in daemon_log())
+        self.assertEqual(self.hublog().vector()[self.WRITER], 4, "the vector moves past a spent position at the end")
+        log = daemon_log()
+        for seq, reason in ((2, "bad-signature"), (4, "replayed")):
+            line = next(x for x in log.splitlines() if "%s:%d " % (self.WRITER, seq) in x)
+            self.assertIn(reason, line)
+            self.assertIn(self.own.name, line, "the line names the project")
+        self.spend(ep, self.WRITER, 2, "bad-signature")   # the same position again
+        self.arrive(ep, 5, "a marker")
+        wait_for(lambda: 5 in self.held(self.WRITER))
+        self.assertEqual(daemon_log().count("%s:2 " % self.WRITER), 1, "one line per position")
+        self.assertEqual(ep.frames("rejected"), [], "the endpoint rejected it up already: nothing is reported again")
+        self.assertIn("%s: 2 spent positions" % self.own.name, self.status())
+
+    def test_an_own_writers_spent_position_is_skipped_by_its_appenders(self):
+        sminos.log_append(self.own, self.writer, "human", **{"from": "human", "to": [], "text": "one"})
+        ep = self.started()
+        self.spend(ep, self.writer, 3, "conflict")
+        wait_for(lambda: "%s:3 " % self.writer in daemon_log())
+        self.assertEqual(self.hublog().spent(), {self.writer: {3}}, "spent through spend_own")
+        for text in ("two", "four"):
+            sminos.log_append(self.own, self.writer, "human", **{"from": "human", "to": [], "text": text})
+        self.assertEqual(self.held(self.writer), [1, 2, 4], "its appenders allocate past it")
+        self.assertIn("%s: 1 spent position" % self.own.name, self.status())
+
+    def test_a_spent_at_or_below_an_own_writers_last_seq_is_a_no_op(self):
+        """A lost endpoint ledger would answer this machine's own echoes
+        `conflict` and spend them: a position an event of this machine holds
+        is that event's, and stays it."""
+        for text in ("one", "two"):
+            sminos.log_append(self.own, self.writer, "human", **{"from": "human", "to": [], "text": text})
+        before = Path(self.path).read_bytes()
+        ep = self.started()
+        for seq in (2, 1):
+            self.spend(ep, self.writer, seq, "conflict")
+        wait_for(lambda: "%s:1 " % self.writer in daemon_log())
+        self.assertEqual(self.hublog().spent(), {}, "nothing spent")
+        self.assertEqual(Path(self.path).read_bytes(), before)
+        self.assertEqual(self.hublog().vector()[self.writer], 2)
+        line = next(x for x in daemon_log().splitlines() if "%s:2 " % self.writer in x)
+        self.assertIn("not spent", line, "said, so a lost ledger shows")
+        sminos.log_append(self.own, self.writer, "human", **{"from": "human", "to": [], "text": "three"})
+        self.assertEqual(self.held(self.writer), [1, 2, 3])
+        self.assertNotIn("spent position", self.status())
+
+    def test_a_spent_at_or_below_a_former_names_last_seq_is_a_no_op(self):
+        """A writer under a name this machine wrote under before is its own
+        too (is_own): a position one of its events holds stays that event's,
+        so the identical echo still reads present rather than `conflict`."""
+        old = "oldname/human"
+        for text in ("one", "two"):
+            sminos.log_append(self.own, old, "human", **{"from": "human", "to": [], "text": text})
+        before = Path(sminos.writer_path(self.own, old)).read_bytes()
+        ep = self.endpoint()
+        ep.identity = {**ep.identity, "former": ["oldname"]}
+        self.uplink()
+        ep.wait(lambda f: f["t"] == "hello" and f.get("project") == self.own.id)
+        self.spend(ep, old, 2, "conflict")
+        self.spend(ep, old, 5, "replayed")
+        wait_for(lambda: "%s:5 " % old in daemon_log())
+        self.assertEqual(self.hublog().spent(), {old: {5}}, "past its last event a former name's position is spent")
+        self.assertEqual(Path(sminos.writer_path(self.own, old)).read_bytes(), before)
+        line = next(x for x in daemon_log().splitlines() if "%s:2 " % old in x)
+        self.assertIn("not spent", line)
+
+    def test_a_spent_frame_naming_no_position_is_ignored(self):
+        ep = self.started()
+        for bad in ({"writer": self.WRITER, "seq": 0}, {"writer": "nowriter", "seq": 2}, {"seq": 2},
+                    {"writer": self.WRITER, "seq": "2"}):
+            ep.send({"t": "spent", "project": self.own.id, "reason": "bad-shape", **bad})
+        ep.send({"t": "spent", "project": "no-such-project", "writer": self.WRITER, "seq": 2, "reason": "replayed"})
+        self.spend(ep, self.WRITER, 7, "expired")
+        wait_for(lambda: "%s:7 " % self.WRITER in daemon_log())
+        self.assertEqual(self.hublog().spent(), {self.WRITER: {7}})
+        self.assertIn("names no position", daemon_log())
 
 
 # ------------------------------------------------------------- the host store (M8)

@@ -372,6 +372,15 @@ run_suites() {
     fail "the endpoint (RL10): discovery, the cutover's identity, revocations, policy, the DX1 key (test_rl10.py)"; fi
   if python3 "$SCRIPT_DIR/test_words.py"; then pass "a person's words on a cut-over machine: members, receipts, revocations, words?, the deliverers, the label (test_words.py)"; else
     fail "a person's words on a cut-over machine: members, receipts, revocations, words?, the deliverers, the label (test_words.py)"; fi
+  # O10's RL10 conversation, MAWS's fixture copied byte for byte, replayed against sminos's own uplink
+  # (rl10_conformance.py): a line O10's fixture must change to fit sminos is played as amended and said so.
+  while IFS= read -r line; do
+    case "$line" in
+      "ok "*) pass "rl10 conformance: ${line#ok }" ;;
+      "amend "*) pass "rl10 conformance (amended for O10): ${line#amend }" ;;
+      *) fail "rl10 conformance: ${line#FAIL }" ;;
+    esac
+  done < <(python3 -B "$SCRIPT_DIR/rl10_conformance.py" "$PLUGIN_ROOT/skills/sminos/scripts" "$SCRIPT_DIR/rl10-conversation.json" 2>&1)
   if "$SCRIPT_DIR/test-sync.sh"; then pass "sync through the hub, two machines (test-sync.sh)"; else fail "sync through the hub, two machines (test-sync.sh)"; fi
   if "$SCRIPT_DIR/test-archive.sh"; then pass "the archive of a hub project (test-archive.sh)"; else fail "the archive of a hub project (test-archive.sh)"; fi
   if "$SCRIPT_DIR/test-org.sh"; then pass "the org's directory: machine projects, follow-only hellos (test-org.sh)"; else
