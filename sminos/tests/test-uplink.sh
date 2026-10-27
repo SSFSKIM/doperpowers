@@ -990,9 +990,13 @@ until_true 200 read_only_is no || true
 assert_equals "$(python3 -c 'import json, sys; print(json.dumps(json.load(open(sys.argv[1]))))' "$SMINOS_HOME/daemon/policy.json")" \
   '{"read_only": false, "ceiling": "default", "endpoint": {"read_only": false, "ceiling": "default"}}' \
   "and the policy settles on the endpoint's answer"
+# A person's words from outside are delivered on the endpoint's verdict (O12 M6): it answers words.
+ep set '{"verdict": "words"}' >/dev/null
 python3 "$T/outside.py" "said from outside after read-only" >/dev/null
 until_true 200 grep -q "said from outside after read-only" "$INBOX" || true
 assert_contains "$(cat "$INBOX")" "said from outside after read-only" "an event from outside is delivered again"
+assert_equals "$(epq "any(f['frame'].get('t') == 'words?' and f['frame']['event'].get('text') == 'said from outside after read-only' for f in d['received'])")" true \
+  "on the endpoint's verdict, asked with words?"
 
 echo "  for good:"
 printf '{"hub": "%s", "org": "org-1", "machine": "testhost", "client_id": "cid-1", "client_secret": "secret-1", "key": "%s", "enrolled": "%s"}\n' \

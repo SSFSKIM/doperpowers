@@ -495,6 +495,22 @@ class Label(Machine):
         self.assertIn("from human → @you", self.frame(mine))
         self.assertIn("from human (unverified) → @you", self.frame(forged))
 
+    def test_an_unreceipted_operator_event_from_before_the_cutover_is_unlabelled(self):
+        """The owner's ruling: `(unverified)` only for an event later than
+        the cutover (identity.json's `cutover`, 2026-10-27T00:00:01.000Z
+        here); earlier history reads as it did before phase 2."""
+        self.cut_over()
+        before = {"ts": "2026-10-26T23:59:59.000Z", "writer": "testhost/human", "seq": 1, "kind": "human",
+                  "from": "human", "to": [{"session": S1, "alias": "m"}], "text": "older history"}
+        after = {**before, "ts": "2026-10-27T00:00:02.000Z", "seq": 2, "text": "after the cutover"}
+        with open(sminos.writer_path(self.p, "testhost/human"), "a") as f:
+            f.write(json.dumps(before) + "\n" + json.dumps(after) + "\n")
+        self.assertIn("from human → @you", self.frame(before))
+        self.assertIn("from human (unverified) → @you", self.frame(after))
+        out = self.chat()
+        self.assertIn(" human → @m  older history", out)
+        self.assertIn(" human (unverified) → @m  after the cutover", out)
+
     def test_a_machine_not_cut_over_labels_nothing(self):
         e = self.say(1, owners=[{"id": "mem-1", "email": "one@example.com"}])
         forged = {"ts": "2026-10-27T02:00:00.000Z", "writer": "testhost/human", "seq": 1, "kind": "human",
@@ -949,6 +965,23 @@ class Deliverers(WordsRig):
         self.assertIn("from human (unverified)", frames[0])
         self.assertEqual(self.bridge, [])
         self.assertIn("testhost/human:1", daemon_log())
+
+    def test_an_unreceipted_operator_event_from_before_the_cutover_is_still_never_asked(self):
+        """Its chat label goes (the owner's ruling), its delivery does not
+        change: no receipt, so a peer's, never `words?`."""
+        self.session(self.hp, S1, inbox=True)
+        older = {"ts": "2026-10-26T23:59:59.000Z", "writer": "testhost/human", "seq": 1, "kind": "human",
+                 "from": "human", "to": [{"session": S1, "alias": "m"}], "text": "from before the cutover"}
+        with open(sminos.writer_path(self.hp, "testhost/human"), "a") as f:
+            f.write(json.dumps(older) + "\n")
+        self.assertEqual(sminos.words_due(self.hp, [member(S1)]), {}, "never asked")
+        result = sminos.deliver_next(self.hp, member(S1))
+        self.assertEqual((result["delivered"], result["gated"]), (1, []))
+        frames = self.inbox(S1)
+        self.assertEqual(len(frames), 1)
+        self.assertIn("from before the cutover", frames[0])
+        self.assertEqual(self.bridge, [], "a peer's, never words")
+        self.assertIn("testhost/human:1 (hp) is delivered as an unverified peer message", daemon_log())
 
     def test_a_legacy_signer_is_a_peer_marked_unverified(self):
         self.session(self.hp, S1, inbox=True)

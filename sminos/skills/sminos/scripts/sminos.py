@@ -3952,12 +3952,22 @@ def sender_labels(project):
     never `owned by`; with the set unreadable nothing reads as owned. An
     event claiming this machine's operator writer without its append receipt
     (a git mirror's import, an event from before receipts) is
-    ` (unverified)`. Anything else, and everything on a machine not cut over,
-    carries none. The revocation set is read once, when first needed."""
+    ` (unverified)` when it is later than the cutover (identity.json's
+    `cutover`; the owner's ruling): history from before it reads as it did
+    then, though delivery still never takes such an event as words. Anything
+    else, and everything on a machine not cut over, carries none. The
+    revocation set is read once, when first needed."""
     rl10 = sibling_module("sminos_rl10")
     if not rl10.cut_over():
         return lambda e: ""
     held = {}
+    since = _ts_epoch((rl10.cutover() or {}).get("cutover"))
+
+    def after_cutover(e):
+        """Whether the event is later than the cutover; when either time
+        cannot be read, so (the clause stays)."""
+        at = _ts_epoch(e.get("ts"))
+        return since is None or at is None or at > since
 
     def revoked():
         if "set" not in held:
@@ -3970,7 +3980,7 @@ def sender_labels(project):
     def label(e):
         verified = e.get("verified")
         if not isinstance(verified, dict):
-            return " (unverified)" if own_operator_event(e) and not receipted(project, e) else ""
+            return " (unverified)" if own_operator_event(e) and after_cutover(e) and not receipted(project, e) else ""
         signer = verified.get("signer")
         if isinstance(signer, dict) and signer.get("kind") == "legacy":
             return " (unverified, legacy)"
