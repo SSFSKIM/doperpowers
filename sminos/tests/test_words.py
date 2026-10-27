@@ -511,6 +511,28 @@ class Label(Machine):
         self.assertIn(" human → @m  older history", out)
         self.assertIn(" human (unverified) → @m  after the cutover", out)
 
+    def test_the_forms_in_a_send_frame(self):
+        """A `send` keeps its own frame — its id is what `send --wait` looks
+        for — and carries the same clause after its sender."""
+        def send(seq, signer=MACHINE_K, owners=None):
+            return self.arrive(self.p, OTHER, seq, kind="say", sender="peer", text="hello", signer=signer,
+                               owners=owners, msg_id="ab%06d" % seq, via="relay")
+        owned = send(1, owners=[{"id": "mem-1", "email": "one@example.com"}])
+        unverified = send(2, owners=[])
+        legacy = send(3, signer={"kind": "legacy"})
+        revoked = send(4, signer={**MACHINE_K, "keyId": "k-gone"}, owners=[{"id": "mem-1", "email": "o@x"}])
+        unsigned = send(5, signer=None)
+        self.assertEqual(self.frame(owned), "[sminos message from relay id=ab000001]", "not cut over: as today")
+        self.cut_over()
+        self.revoke(keys=["k-gone"])
+        for e, header in [(owned, "[sminos message from relay, owned by one@example.com id=ab000001]"),
+                          (unverified, "[sminos message from relay (owners unverified) id=ab000002]"),
+                          (legacy, "[sminos message from relay (unverified, legacy) id=ab000003]"),
+                          (revoked, "[sminos message from relay (signed by a revoked key) id=ab000004]"),
+                          (unsigned, "[sminos message from relay id=ab000005]")]:
+            with self.subTest(header):
+                self.assertEqual(self.frame(e), header)
+
     def test_a_machine_not_cut_over_labels_nothing(self):
         e = self.say(1, owners=[{"id": "mem-1", "email": "one@example.com"}])
         forged = {"ts": "2026-10-27T02:00:00.000Z", "writer": "testhost/human", "seq": 1, "kind": "human",
@@ -664,8 +686,10 @@ class Revoked(Machine):
 # ------------------------------------------------------------- the words pass
 
 
-def sminos_cli(*args, cwd=None):
-    return subprocess.run([sys.executable, "-B", str(SCRIPTS / "sminos.py"), *args], cwd=cwd,
+def sminos_cli(*args, cwd=None, session=None):
+    """The CLI as the operator, or as `session` (CLAUDE_CODE_SESSION_ID)."""
+    env = {**os.environ, **({"CLAUDE_CODE_SESSION_ID": session} if session else {})}
+    return subprocess.run([sys.executable, "-B", str(SCRIPTS / "sminos.py"), *args], cwd=cwd, env=env,
                           capture_output=True, text=True, timeout=120)
 
 
@@ -1006,6 +1030,27 @@ class Deliverers(WordsRig):
         self.deliver(self.hp)
         self.assertEqual(self.inbox(S1), [], "never delivered afterwards")
 
+    def test_a_signer_revoked_mid_batch_is_not_pushed(self):
+        """The set is read again for each event: a key revoked after the
+        batch's first push stops the next event it signed."""
+        self.session(self.hp, S1, inbox=True)
+        self.arrive(self.hp, OTHER, 1, kind="say", sender="peer", text="first", signer=MACHINE_K, owners=[])
+        self.arrive(self.hp, OTHER, 2, kind="say", sender="peer", text="second", signer=MACHINE_K, owners=[])
+        push = sminos.push_member
+
+        def push_then_revoke(*args, **kwargs):
+            out = push(*args, **kwargs)
+            self.revoke(keys=["k-machine"])
+            return out
+        with mock.patch.object(sminos, "push_member", side_effect=push_then_revoke):
+            sminos.deliver_next(self.hp, member(S1))
+        frames = self.inbox(S1)
+        self.assertEqual(len(frames), 1)
+        self.assertIn("first", frames[0])
+        self.assertEqual(self.record(self.hp, S1)[OTHER]["settled"], 2, "seq 2 marked; the prefix passes it")
+        self.assertEqual([(r["event"]["seq"], r["outcome"]) for r in outcomes.Outbox(self.hp).read()
+                          if r["outcome"].startswith("refused")], [(2, "refused-revoked")])
+
     def test_an_unreadable_revocation_set_fails_closed(self):
         self.session(self.hp, S1, inbox=True)
         self.arrive(self.hp, OTHER, 1, kind="say", sender="peer", text="signed", signer=MACHINE_K, owners=[])
@@ -1052,6 +1097,70 @@ class Deliverers(WordsRig):
         self.assertEqual(result.get("gated", []), [])
         self.assertEqual(sorted(self.bridged()), [("hub/mem-1", 1), ("othermachine/human", 1)],
                          "the owner's words by their writer, through the bridge")
+
+
+class Sends(WordsRig):
+    """A session's `send` is a peer's and is pushed at once, with every
+    earlier event of its writer still owed to the target in the same push
+    (SendDelivery): each is checked against the revocation set first, as
+    every deliverer checks — a revoked one marked and left out, the valid
+    ones kept; with the set unreadable, a signed one holds the send owed."""
+
+    WRITER = "testhost/" + S2
+
+    def setUp(self):
+        super().setUp()
+        self.session(self.hp, S1, name="rover", inbox=True)
+        self.session(self.hp, S2, name="sender")
+
+    def earlier(self, seq, text, signer=MACHINE_K):
+        """An earlier owed event of the sender's own writer carrying a
+        verdict, as one restored from the endpoint's echo does."""
+        e = {"ts": "2026-10-27T01:00:%02d.000Z" % seq, "writer": self.WRITER, "seq": seq, "kind": "say",
+             "from": "sender", "to": [{"session": S1, "alias": "rover"}], "text": text}
+        if signer is not None:
+            e["verified"] = {"signer": signer, "owners": []}
+        with open(sminos.writer_path(self.hp, self.WRITER), "a") as f:
+            f.write(json.dumps(e) + "\n")
+
+    def last_seq(self):
+        return max(e["seq"] for e in sminos.log_read(self.hp) if e["writer"] == self.WRITER)
+
+    def test_a_revoked_earlier_event_is_left_out_and_the_valid_ones_go(self):
+        self.earlier(1, "valid before")
+        self.earlier(2, "revoked before", signer={**MACHINE_K, "keyId": "k-gone"})
+        self.revoke(keys=["k-gone"])
+        r = sminos_cli("send", "rover", "the send", cwd=self.hp.root, session=S2)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("sent to rover", r.stdout)
+        frames = self.inbox(S1)
+        self.assertEqual(len(frames), 1, "one push")
+        self.assertIn("valid before", frames[0])
+        self.assertIn("the send", frames[0])
+        self.assertNotIn("revoked before", frames[0])
+        self.assertEqual(self.settled(self.hp, S1, self.WRITER), self.last_seq(), "the send, the last, settled")
+        self.assertIn("6d000002:2 (hp) is signed by a revoked key", daemon_log())
+
+    def test_with_the_set_unreadable_a_signed_earlier_event_holds_the_send_owed(self):
+        self.earlier(1, "signed before")
+        Path(rl10.revoked_path()).write_text("{not json")
+        r = sminos_cli("send", "rover", "the send", cwd=self.hp.root, session=S2)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout, "recorded 6d000002:%d for rover; it waits behind 6d000002:1, whose signer the "
+                         "revocation set, unreadable, cannot clear\n" % self.last_seq())
+        self.assertEqual(self.inbox(S1), [], "nothing pushed")
+        self.assertEqual([e["seq"] for e in sminos.owed(self.hp, member(S1))], [1, self.last_seq()])
+        self.revoke(version=5)
+        sminos.deliver_next(self.hp, member(S1))
+        self.assertEqual(len(self.inbox(S1)), 2, "delivered in order once the set reads")
+
+    def test_unsigned_earlier_events_go_with_the_set_unreadable(self):
+        self.earlier(1, "unsigned before", signer=None)
+        Path(rl10.revoked_path()).write_text("{not json")
+        r = sminos_cli("send", "rover", "the send", cwd=self.hp.root, session=S2)
+        self.assertIn("sent to rover", r.stdout, r.stderr)
+        self.assertEqual(len(self.inbox(S1)), 1)
+        self.assertIn("unsigned before", self.inbox(S1)[0])
 
 
 if __name__ == "__main__":

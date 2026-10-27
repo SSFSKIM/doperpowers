@@ -3133,6 +3133,42 @@ assert_equals "$(inbox b)" "" "nothing pushed by it either"
 CLAUDE_CODE_SESSION_ID="$SA" run_in "$PR" "$SMINOS" send demo/b "a peer's send"
 assert_rc 0 "$RC" "a session's send to a seat exits 0"
 assert_contains "$(inbox b)" "a peer's send" "a session's send is a peer's: pushed as today"
+# The earlier events a session's send carries to a seat are checked against the
+# revocation set as every deliverer checks them: one signed by a revoked key is
+# marked and left out, and with the set unreadable a signed one holds the send.
+signed_by_a() { # text keyId... → appended to a's writer, to b, each carrying a machine signer
+  python3 - "$SMINOS_PY" "$DEMO" "$SA" "$SB" "$@" <<'PY_SIGNED'
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("sminos", sys.argv[1]); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+p = mod.find_project(sys.argv[2])
+writer = mod.writer_id(sys.argv[3])
+seq = max([e["seq"] for e in mod.log_read(p) if e["writer"] == writer] or [0])
+with open(mod.writer_path(p, writer), "a") as f:
+    for n, (text, key) in enumerate(zip(sys.argv[5::2], sys.argv[6::2]), 1):
+        f.write(json.dumps({"ts": "2026-10-27T01:00:00.000Z", "writer": writer, "seq": seq + n, "kind": "say",
+                            "from": "a", "to": [{"session": sys.argv[4], "alias": "b"}], "text": text,
+                            "verified": {"signer": {"kind": "machine", "keyId": key}, "owners": []}}) + "\n")
+PY_SIGNED
+}
+OWED_B="$(owed_count "$SB")"
+signed_by_a "signed by a revoked key" k-gone "signed and kept" k-kept
+printf '{"version": 3, "devices": [], "members": [], "keys": ["k-gone"]}\n' > "$SMINOS_HOME/daemon/revoked.json"
+: > "$TEST_ROOT/in-b.received"
+CLAUDE_CODE_SESSION_ID="$SA" run_in "$PR" "$SMINOS" send demo/b "after a revoked one"
+assert_rc 0 "$RC" "a session's send behind a revoked event exits 0"
+assert_contains "$(inbox b)" "after a revoked one" "the send is pushed"
+assert_contains "$(inbox b)" "signed and kept" "with the valid earlier event"
+assert_not_contains "$(inbox b)" "signed by a revoked key" "and without the revoked one"
+assert_equals "$(owed_count "$SB")" "$OWED_B" "all three leave b's owed events"
+signed_by_a "signed, set unreadable" k-kept
+printf '{not json' > "$SMINOS_HOME/daemon/revoked.json"
+: > "$TEST_ROOT/in-b.received"
+CLAUDE_CODE_SESSION_ID="$SA" run_in "$PR" "$SMINOS" send demo/b "behind an unclearable one"
+assert_rc 0 "$RC" "a session's send behind an event the set cannot clear exits 0"
+assert_contains "$OUT" "for b; it waits behind" "saying it is recorded and what it waits behind"
+assert_equals "$(inbox b)" "" "and pushing nothing"
+assert_equals "$(owed_count "$SB")" "$((OWED_B + 2))" "both stay owed"
+rm -f "$SMINOS_HOME/daemon/revoked.json"
 # Back to a machine not cut over: what was held is delivered as it always was.
 rm -f "$SENTINEL_ID"
 python3 - "$SMINOS_PY" "$DEMO" "$SB" "$SSL" >/dev/null <<'PY_FLUSH'

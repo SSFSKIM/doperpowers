@@ -3781,27 +3781,26 @@ _UNREADABLE = {"said": None}   # the unreadable revocation set's error, as last 
 
 class WordsGate:
     """What a deliverer on a cut-over machine checks of an owed event before
-    it pushes it: the revocation set (read once, when an event carrying a
-    verdict first needs it) and the words rule (words_route)."""
+    it pushes it: the revocation set (read again for each event that carries
+    a verdict, so a revocation kept mid-batch stops the events after it) and
+    the words rule (words_route)."""
 
     def __init__(self, project):
         self.project = project
         self.rl10 = sibling_module("sminos_rl10")
-        self.set = self.unreadable = None
 
     def revoked(self):
-        """The revocation set; None when it cannot be read, said in daemon.log
-        once while it stays so."""
-        if self.set is None and self.unreadable is None:
-            try:
-                self.set = self.rl10.revoked()
-                _UNREADABLE["said"] = None
-            except self.rl10.RevokedUnreadable as e:
-                self.unreadable = str(e)
-                if _UNREADABLE["said"] != self.unreadable:
-                    _UNREADABLE["said"] = self.unreadable
-                    daemon_log("delivery: %s — nothing that carries a signer is delivered until it can be read" % e)
-        return self.set
+        """The revocation set as it is now; None when it cannot be read, said
+        in daemon.log once while it stays so."""
+        try:
+            got = self.rl10.revoked()
+        except self.rl10.RevokedUnreadable as e:
+            if _UNREADABLE["said"] != str(e):
+                _UNREADABLE["said"] = str(e)
+                daemon_log("delivery: %s — nothing that carries a signer is delivered until it can be read" % e)
+            return None
+        _UNREADABLE["said"] = None
+        return got
 
     def held(self, e, session):
         """What the revocation set says of an event: None when nothing holds
@@ -3940,12 +3939,14 @@ def words_due(project, members):
 def frame_of(project, e, events, session, cursor):
     """The frame an event is pushed as. A `send` keeps its own frame (its id
     is what `send --wait` looks for), its sender shown as the `--from`
-    override when it had one; anything else is a chat frame, whose target is
-    `@you`, or a broadcast's scope (target_label: `@all`, `@all on mini`).
+    override when it had one, then the label; anything else is a chat frame,
+    whose target is `@you`, or a broadcast's scope (target_label: `@all`,
+    `@all on mini`).
     Its unread count leaves out copies: each is a record of a message
     another log carries, not one spoken here."""
     if e.get("msg_id"):
-        return compose_frame(str(e.get("via") or e.get("from") or ""), e["msg_id"], str(e.get("text") or ""))
+        return compose_frame(str(e.get("via") or e.get("from") or ""), e["msg_id"], str(e.get("text") or ""),
+                             sender_labels(project)(e))
     unread = sum(1 for x in events if x is not e and x["kind"] in CHAT_KINDS and "copy" not in x and
                  writer_session(x["writer"]) != session and x["seq"] > cursor.get(x["writer"], 0))
     return compose_chat_frame(project.name, event_ref(e), str(e.get("from") or ""),
@@ -8898,10 +8899,11 @@ def cmd_wake(_a):
     die(WAKE_POINTER)
 
 
-def compose_frame(sender, msg_id, msg):
+def compose_frame(sender, msg_id, msg, label=""):
     """Every delivery — socket, resume, codex queue — opens with this line; the
-    id is what `--wait` looks for in the target's transcript."""
-    return "[sminos message from %s id=%s]\n%s" % (sender, msg_id, msg)
+    id is what `--wait` looks for in the target's transcript. `label` is what
+    follows the sender (sender_labels)."""
+    return "[sminos message from %s%s id=%s]\n%s" % (sender, label, msg_id, msg)
 
 
 def send_to_seat(s0, text, msg_id, wait, record=None, session="", sender=""):
@@ -8921,9 +8923,10 @@ def send_to_seat(s0, text, msg_id, wait, record=None, session="", sender=""):
     when the seat has no project): the push then carries every earlier event
     of the same writer still owed to the seat, in order, and the delivery
     record is settled on sent, woken, or uncertain and noted as failed
-    otherwise — so a send that dies on the way is the daemon's to retry. An
-    operator's send on a cut-over machine is recorded and pushed nothing: the
-    uplink delivers it on the endpoint's verdict (SendDelivery.held)."""
+    otherwise — so a send that dies on the way is the daemon's to retry. A
+    held send (SendDelivery.held: on a cut-over machine an operator's, which
+    the uplink delivers on the endpoint's verdict, or one behind an event the
+    revocation set cannot clear) is recorded and pushed nothing."""
     refuse_codex(s0)
     locks, s = locked_fresh(s0, "send", session)
     refuse_codex(s)
@@ -8945,14 +8948,15 @@ def send_to_seat(s0, text, msg_id, wait, record=None, session="", sender=""):
     delivery = record(s) if record else None
     if delivery and (delivery.held or not delivery.queue):
         # A concurrent deliverer pushed it between the append and our lock, or
-        # it is a person's words the uplink delivers on the endpoint's verdict
-        # (O12 M6): no push here, but --wait still waits on this message's id.
+        # it is held (O12 M6: a person's words the uplink delivers on the
+        # endpoint's verdict, or behind an event the revocation set cannot
+        # clear): no push here, but --wait still waits on this message's id.
         row = harness_row(s)
         was_idle = (normalize_state(row) not in ("working", "blocked")) if row else (
             not peer or peer.get("status") != "busy")
         guard = same_gen(current_gen(s["seat_id"]))
         if delivery.held:
-            delivery.recorded_for_words(s["alias"])
+            delivery.recorded_owed(s["alias"])
         else:
             delivery.release()
         unlock(locks)
@@ -9080,10 +9084,13 @@ class SendDelivery:
     delivered/<session>.lock from choosing to settling, and carries, in writer
     order, every event of the sender's writer still owed to the seat up to and
     including this send — an earlier pending one goes first, in the same push.
-    An operator's `send` on a cut-over machine is a person's words (`held`,
-    words_held): its sender pushes nothing and releases it at once
-    (recorded_for_words); the uplink delivers the writer's owed events, this
-    one last, on the endpoint's verdict (O12 M6)."""
+    On a cut-over machine (O12 M6) an operator's `send` is a person's words
+    (words_held): `held`, its sender pushes nothing and releases it at once
+    (recorded_owed); the uplink delivers the writer's owed events, this one
+    last, on the endpoint's verdict. A session's is checked as every
+    deliverer checks (checked): an earlier event signed by a revoked key is
+    marked and left out, and one whose signer the unreadable set cannot clear
+    holds the send owed (`held` too), for the daemon to deliver in order."""
 
     def __init__(self, project, session, writer, event):
         self.project, self.session, self.writer, self.event = project, session, writer, event
@@ -9094,7 +9101,27 @@ class SendDelivery:
                       if e["writer"] == writer and e["seq"] <= event["seq"]]
         self.cursor = cursor_load(project, session)
         self.skipped = []
-        self.held = words_held(event)
+        self.held = "the endpoint decides its delivery" if words_held(event) else (
+            self.checked() if sibling_module("sminos_rl10").cut_over() else None)
+
+    def checked(self):
+        """The queue through the revocation set (WordsGate.held), under the
+        lock: a revoked event marked (delivered_revoke) and left out, the
+        valid ones kept. Why the send stays owed, when an event cannot be
+        cleared (fail-closed), else None. A held send's writer is the
+        operator's; a session's writer holds no person's words, so nothing
+        here is the endpoint's to ask."""
+        gate, kept = WordsGate(self.project), []
+        for e in self.queue:
+            held = gate.held(e, self.session)
+            if held == "unchecked":
+                return "it waits behind %s, whose signer the revocation set, unreadable, cannot clear" % event_ref(e)
+            if held == "unmarked":
+                return "it waits behind %s, signed by a revoked key, whose refusal could not be kept" % event_ref(e)
+            if held is None:
+                kept.append(e)
+        self.queue = kept
+        return None
 
     def payload(self, live):
         """The text of the one push. Ordinary delivery's policy applies: an
@@ -9125,11 +9152,11 @@ class SendDelivery:
         if not self.lock.closed:
             self.lock.close()
 
-    def recorded_for_words(self, alias):
-        """A held send (`held`) left to the endpoint's verdict: released,
-        said, and the daemon nudged, whose uplink asks."""
+    def recorded_owed(self, alias):
+        """A held send (`held`) left owed — to the endpoint's verdict, or the
+        daemon's next pass: released, said why, and the daemon nudged."""
         self.release()
-        print("recorded %s for %s; the endpoint decides its delivery" % (event_ref(self.event), alias), flush=True)
+        print("recorded %s for %s; %s" % (event_ref(self.event), alias, self.held), flush=True)
         nudge_daemon()
 
 
@@ -9172,9 +9199,10 @@ def send_to_member(project, m, sender, via, text, msg_id):
     reached while it runs (push_live: the owner's through its bridge, a peer's
     through its inbox socket); a
     session sminos did not spawn is never resumed — it is the human's to
-    reopen. An operator's send on a cut-over machine is recorded and pushed
-    nothing: the uplink delivers it on the endpoint's verdict
-    (SendDelivery.held)."""
+    reopen. A held send (SendDelivery.held: on a cut-over machine an
+    operator's, which the uplink delivers on the endpoint's verdict, or one
+    behind an event the revocation set cannot clear) is recorded and pushed
+    nothing."""
     if not m.local:
         e = record_message(project, m.session, m.alias, sender, via, text, msg_id, deliver=False)
         print("recorded %s for %s on %s — its machine delivers it" % (event_ref(e), m.alias, m.machine))
@@ -9186,7 +9214,7 @@ def send_to_member(project, m, sender, via, text, msg_id):
             "sminos say records for it" % (m.alias, m.state), EXIT_UNKNOWN)
     delivery = record_message(project, m.session, m.alias, sender, via, text, msg_id)
     if delivery.held:
-        delivery.recorded_for_words(m.alias)
+        delivery.recorded_owed(m.alias)
         return
     if not delivery.queue:
         delivery.release()
