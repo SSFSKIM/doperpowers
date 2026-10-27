@@ -17,8 +17,9 @@ function engine(on: On, { env = {}, style = TO_HUMAN_STYLE }: { env?: Record<str
   mock.store(on)
   mock.clock(on)
   const figure: { tokens: number | undefined } = { tokens: undefined }
-  // How many of the next prompts a hook beneath refuses.
-  const beneath = { drops: 0 }
+  // How many of the next prompts a hook beneath refuses; and, by its text, a
+  // prompt held beneath (`hold`).
+  const beneath = { drops: 0, held: new Map<string, { arrive: () => void; verdict: Promise<'refuse' | 'pass'> }>() }
   const entered: (readonly string[])[] = []
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('tool.register', (_, e, next) => ({ value: { tool: `mcp__${next.origin.plugin.replace(/[^a-zA-Z0-9_-]/g, '_')}__${e.name}` } }))
@@ -27,12 +28,33 @@ function engine(on: On, { env = {}, style = TO_HUMAN_STYLE }: { env?: Record<str
   }))
   on('session.usage', () => ({ value: { startedAt: 0, context: { tokens: figure.tokens, window: 1_000_000, percent: 0 }, rateLimits: [] } }) as never)
   on('session.compact', () => ({ messages: [{ role: 'user', text: 'The summary.', toolUses: [] }] }) as never)
-  on('prompt.submit', (_, e) => (beneath.drops > 0 ? (beneath.drops--, { drop: 'refused beneath' }) : (entered.push(e.context ?? []), { text: e.text, context: e.context })) as never)
+  on('prompt.submit', async (_, e) => {
+    const held = beneath.held.get(e.text)
+    held?.arrive()
+    const isRefused = held !== undefined ? (await held.verdict) === 'refuse' : beneath.drops > 0 ? (beneath.drops--, true) : false
+    if (isRefused) {
+      return { drop: 'refused beneath' } as never
+    }
+    entered.push(e.context ?? [])
+    return { text: e.text, context: e.context } as never
+  })
   on('ui.log', () => ({ value: undefined }))
-  return { figure, entered, beneath }
+  /**
+   * Holds the prompt of this text beneath: `arrived` resolves once it is
+   * there, and it waits until `open` refuses it or lets it pass.
+   */
+  const hold = (text: string) => {
+    let arrive!: () => void
+    let open!: (verdict: 'refuse' | 'pass') => void
+    const arrived = new Promise<void>((resolve) => (arrive = resolve))
+    beneath.held.set(text, { arrive, verdict: new Promise((resolve) => (open = resolve)) })
+    return { arrived, open }
+  }
+  return { figure, entered, beneath, hold }
 }
 
 const prompt = (text: string, extra: Record<string, unknown> = {}) => ({ text, origin: { kind: 'composer' }, wait: false, ...extra }) as never
+const command = (name: string) => prompt(`/${name}`, { command: { name, args: '', kind: 'prompt' } })
 const notification = prompt('<task-notification>done</task-notification>', { origin: { kind: 'task-notification' } })
 const reminded = (entered: (readonly string[])[]) => entered.map((context) => context.includes(REMINDER))
 
@@ -44,7 +66,15 @@ describe('the reminder', () => {
     expect(REMINDER).toContain('<message>')
   })
 
-  test("a session's first prompt carries it, then the first prompt past each point, and no other", async ($, on) => {
+  test("a fresh session's first prompt carries nothing, since the style stands just before it", async ($, on) => {
+    const { entered } = engine(on)
+    await $.session.start({ cwd: '/w', surface: null, isInteractive: true })
+    await $.prompt.submit(prompt('start'))
+
+    expect(reminded(entered)).toEqual([false])
+  })
+
+  test('the first prompt past each point carries it, and no other', async ($, on) => {
     const { figure, entered } = engine(on)
     await $.session.start({ cwd: '/w', surface: null, isInteractive: true })
 
@@ -60,9 +90,9 @@ describe('the reminder', () => {
     figure.tokens = 520_000
     await $.prompt.submit(notification)
 
+    expect(reminded(entered)).toEqual([false, false, true, false, true, false])
     // Past 300k and 450k at once, the prompt carries it once.
-    expect(reminded(entered)).toEqual([true, false, true, false, true, false])
-    expect(entered[0]!.filter((context) => context === REMINDER)).toHaveLength(1)
+    expect(entered[4]!.filter((context) => context === REMINDER)).toHaveLength(1)
   })
 
   test('a compaction re-arms the points, without a reminder of its own', async ($, on) => {
@@ -77,10 +107,10 @@ describe('the reminder', () => {
     figure.tokens = 155_000
     await $.prompt.submit(notification)
 
-    expect(reminded(entered)).toEqual([true, true, true])
+    expect(reminded(entered)).toEqual([false, true, true])
   })
 
-  test('a context that fell back below a point without the event re-arms it too', async ($, on) => {
+  test('a context that fell back below a point without the event (a /clear) re-arms it too', async ($, on) => {
     const { figure, entered } = engine(on)
     await $.session.start({ cwd: '/w', surface: null, isInteractive: true })
     await $.prompt.submit(prompt('start'))
@@ -91,10 +121,10 @@ describe('the reminder', () => {
     figure.tokens = 151_000
     await $.prompt.submit(notification)
 
-    expect(reminded(entered)).toEqual([true, true, false, true])
+    expect(reminded(entered)).toEqual([false, true, false, true])
   })
 
-  test('a module that starts mid-session (a reload) takes the point the context stands at and reminds nothing then', async ($, on) => {
+  test('a module that starts mid-session (a reload, a resume) takes the point the context stands at and reminds nothing then', async ($, on) => {
     const { figure, entered } = engine(on)
     await $.session.start({ cwd: '/w', surface: null, isInteractive: true })
     figure.tokens = 210_000
@@ -107,38 +137,84 @@ describe('the reminder', () => {
     expect(reminded(entered)).toEqual([false, false, true])
   })
 
-  test('a slash command carries none; the next prompt does', async ($, on) => {
-    const { entered } = engine(on)
+  test("a slash command carries none, though the first one is where the module takes its point; the next prompt does", async ($, on) => {
+    const { figure, entered } = engine(on)
     await $.session.start({ cwd: '/w', surface: null, isInteractive: true })
-    await $.prompt.submit(prompt('/review', { command: { name: 'review', args: '', kind: 'prompt' } }))
+    await $.prompt.submit(command('review'))
+    figure.tokens = 160_000
+    await $.prompt.submit(command('review'))
+    await $.prompt.submit(prompt('next'))
+
+    expect(reminded(entered)).toEqual([false, false, true])
+  })
+
+  test('a prompt dropped beneath gives the reminder to the next one', async ($, on) => {
+    const { figure, entered, beneath } = engine(on)
+    await $.session.start({ cwd: '/w', surface: null, isInteractive: true })
     await $.prompt.submit(prompt('start'))
+    figure.tokens = 160_000
+    beneath.drops = 1
+    await $.prompt.submit(prompt('refused'))
+    await $.prompt.submit(prompt('next'))
 
     expect(reminded(entered)).toEqual([false, true])
   })
 
-  test('a prompt dropped beneath gives the reminder to the next one', async ($, on) => {
-    const { entered, beneath } = engine(on)
+  test('a prompt dropped while a newer one passed without the reminder gives it to the next', async ($, on) => {
+    const { figure, entered, hold } = engine(on)
     await $.session.start({ cwd: '/w', surface: null, isInteractive: true })
-    beneath.drops = 1
-    await $.prompt.submit(prompt('refused'))
+    figure.tokens = 20_000
     await $.prompt.submit(prompt('start'))
 
-    expect(reminded(entered)).toEqual([true])
+    figure.tokens = 160_000
+    const { arrived, open } = hold('screened')
+    const screened = $.prompt.submit(prompt('screened'))
+    await arrived
+    await $.prompt.submit(prompt('typed'))
+    open('refuse')
+    await screened
+    await $.prompt.submit(prompt('next'))
+
+    expect(reminded(entered)).toEqual([false, false, true])
+  })
+
+  test("a prompt dropped after a newer one carried the next point's reminder does not undo it", async ($, on) => {
+    const { figure, entered, hold } = engine(on)
+    await $.session.start({ cwd: '/w', surface: null, isInteractive: true })
+    figure.tokens = 20_000
+    await $.prompt.submit(prompt('start'))
+
+    figure.tokens = 160_000
+    const { arrived, open } = hold('screened')
+    const screened = $.prompt.submit(prompt('screened'))
+    await arrived
+    // While the earlier prompt is screened beneath, a newer one passes 300k and carries it.
+    figure.tokens = 310_000
+    await $.prompt.submit(prompt('typed'))
+    open('refuse')
+    expect((await screened).drop).toBe('refused beneath')
+    await $.prompt.submit(prompt('next'))
+
+    expect(reminded(entered)).toEqual([false, true, false])
   })
 
   test('where the message tool is not registered (MAWS, another style) nothing is attached', async ($, on) => {
     const maws = engine(on, { env: { MAWS_NATIVE_TO_HUMAN: '1' } })
     await $.session.start({ cwd: '/w', surface: null, isInteractive: true })
     await $.prompt.submit(prompt('start'))
+    maws.figure.tokens = 160_000
+    await $.prompt.submit(prompt('next'))
 
-    expect(reminded(maws.entered)).toEqual([false])
+    expect(reminded(maws.entered)).toEqual([false, false])
   })
 
   test('under another output style nothing is attached', async ($, on) => {
     const other = engine(on, { style: 'default' })
     await $.session.start({ cwd: '/w', surface: null, isInteractive: true })
     await $.prompt.submit(prompt('start'))
+    other.figure.tokens = 160_000
+    await $.prompt.submit(prompt('next'))
 
-    expect(reminded(other.entered)).toEqual([false])
+    expect(reminded(other.entered)).toEqual([false, false])
   })
 })
