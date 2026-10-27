@@ -2152,8 +2152,9 @@ def joined_fields(alias, name_source, cwd, worktree="", role="", seat="", by="",
     """A joined event's fields. `session_kind` is the session's kind
     (interactive, bg, seat) — never `kind`, every event's own discriminator;
     `repo` and `branch` are read where it works as it joins, and are not
-    published again when they change. With `session`, its record's `owners`
-    and `origin` once the record is final (published_provenance)."""
+    published again when they change. With `session`, what its record
+    publishes once it is final: its `origin`, and its `owners` unless they
+    hold `@machine` (published_provenance)."""
     repo, branch = repo_branch(cwd)
     return {"alias": alias, "name_source": name_source, "machine": host_name(), "cwd": cwd,
             "worktree": worktree, "role": role, "seat": seat, "by": by, "session_kind": session_kind,
@@ -2165,7 +2166,8 @@ def joined_fields(alias, name_source, cwd, worktree="", role="", seat="", by="",
 # sminos_records: who owns it, how it started, what inference it runs on.
 # Every path that joins a session first makes sure it has one
 # (ensure_record), so the `joined` it writes can carry the record's owners
-# and origin; only a final record's are published, and only on `joined`.
+# and origin; only a final record's are published, only on `joined`, and
+# never the `@machine` token.
 
 
 def records_module():
@@ -2191,16 +2193,26 @@ def owners_of(event):
     return None
 
 
+def publishes(event):
+    """Whether a `joined` carries its session's final provenance: its
+    `origin` (every final record's), or its `owners`."""
+    return event.get("kind") == "joined" and (isinstance(event.get("origin"), dict) or bool(owners_of(event)))
+
+
 def published_provenance(sid):
-    """What a `joined` of the session carries of its record: `owners` and
-    `origin`, once the record is final; nothing for a provisional record or
-    none, so readers elsewhere fall back to the machine's default without
-    being bound to it."""
+    """What a `joined` of the session carries of its record, once the record
+    is final: its `origin`, and its `owners` when they name members only.
+    `@machine` never leaves the machine (RL6, the remote layer's Decision
+    Log 17): owners that hold it are left off, and every reader takes a
+    member that publishes none as the machine's, the same value. Nothing for
+    a provisional record or none, so readers elsewhere fall back to the
+    machine's default without being bound to it."""
     records = records_module()
     rec = records.read(sid) if sid else None
     if not records.is_final(rec):
         return {}
-    return {"owners": list(rec["owners"]), "origin": dict(rec["origin"])}
+    owners = list(rec["owners"])
+    return {**({"owners": owners} if records.MACHINE not in owners else {}), "origin": dict(rec["origin"])}
 
 
 _LINEAGE_INDEX = [None, -1, None]   # the events last indexed, their count, (continuations, first owned)
@@ -2220,7 +2232,7 @@ def _lineage_index(events):
             continue
         if e["kind"] == "retired" and e.get("reason") == "continued" and UUID_RE.match(str(e.get("to") or "")):
             conts[e["to"]] = sid
-        elif e["kind"] == "joined" and sid not in owned and owners_of(e):
+        elif sid not in owned and publishes(e):
             owned[sid] = e
     _LINEAGE_INDEX[:] = [events, len(events), (conts, owned)]
     return conts, owned
@@ -2243,16 +2255,18 @@ def lineage_of(project, sid, peer=None, events=None):
 
 
 def first_owned(project, sid, events=None):
-    """The first `joined` in the session's own file that carries owners, or None."""
+    """The first `joined` in the session's own file that carries its final
+    provenance (publishes), or None."""
     if events is not None:
         return _lineage_index(events)[1].get(sid)
-    return next((e for e in _own_events(project, sid) if e["kind"] == "joined" and owners_of(e)), None)
+    return next((e for e in _own_events(project, sid) if publishes(e)), None)
 
 
 def lineage_provenance(project, sid, peer=None, former=None, events=None):
     """A provenance from the session's lineage, or None: its nearest
     predecessor's record (provisional when that one is), else the first
-    `joined` along it, its own first, that carries owners."""
+    `joined` along it, its own first, that carries a final provenance (its
+    owners the machine's when it names none)."""
     records = records_module()
     chain = list(former) if former else (lineage_of(project, sid, peer, events) if project is not None else [])
     for i, old in enumerate(chain):
@@ -2263,7 +2277,8 @@ def lineage_provenance(project, sid, peer=None, former=None, events=None):
         for s in [sid] + chain:
             j = first_owned(project, s, events)
             if j is not None:
-                return records.from_joined({"owners": owners_of(j), "origin": j.get("origin")}, chain)
+                return records.from_joined({"owners": owners_of(j) or [records.MACHINE], "origin": j.get("origin")},
+                                           chain)
     return None
 
 
@@ -2286,7 +2301,7 @@ def ensure_record(project, sid, seat=None, peer=None, evidence=None, former=None
         if have is not None and not records.is_final(prov):
             return have
         rec, changed = records.establish(sid, prov, _RECORD_DEADLINE)
-    except (OSError, LockBusy) as e:
+    except (OSError, LockBusy, ValueError) as e:
         warn("the record of session %s could not be written: %s" % (sid[:8], e))
         return have
     if changed and records.is_final(rec) and project is not None:
@@ -2296,11 +2311,11 @@ def ensure_record(project, sid, seat=None, peer=None, evidence=None, former=None
 
 def publish_owners(project, sid):
     """A member whose record became final after it joined is joined again,
-    once, carrying its owners and origin (published_provenance): its alias
+    once, carrying what the record publishes (published_provenance): its alias
     as the log holds it, the rest as its last `joined` had them, `by`
     empty. Written only while its latest membership is `joined` and none of
-    its own joins carries owners, checked again under the session file's
-    lock. Returns the events appended."""
+    its own joins publishes, checked again under the session file's lock.
+    Returns the events appended."""
     if not published_provenance(sid):
         return []
     own = _own_events(project, sid)
@@ -2309,7 +2324,7 @@ def publish_owners(project, sid):
         return []
 
     def guard(evs):
-        return latest_membership(evs) == "joined" and not any(e["kind"] == "joined" and owners_of(e) for e in evs)
+        return latest_membership(evs) == "joined" and not any(publishes(e) for e in evs)
 
     alias, source = own_alias(own, sid)
     fields = joined_fields(alias or str(last.get("alias") or sid[:8]),
@@ -2671,7 +2686,7 @@ def join_on_sight(project, sid, seat, peer, running, by=None, recheck=None, mark
     join is written only if it is still this one (retire_moved). `marked`:
     its host marked it (member_mark). Its record is made sure of first
     (ensure_record, with the hook's `evidence` when the hook joins it), so
-    the joined carries its owners once they are final."""
+    the joined carries what it publishes once it is final."""
     if not joinable(seat, peer, marked):
         return []
 
@@ -2976,8 +2991,9 @@ def _projection(events):
     latest rename, published state, and published title (its own file), its
     in-charge events (for charge_of), and its status: each writer's latest by
     seq, the later ts between writers (§3). `owned`: its first joined that
-    carries owners (RL6's listing fields, read as `by` is: a later joined
-    without them, an older binary's, never erases them). And its hand-offs: `to`, the
+    carries its final provenance (publishes: RL6's listing fields, read as
+    `by` is: a later joined without them, an older binary's, never erases
+    them). And its hand-offs: `to`, the
     session it continues in (the latest `retired` reason `continued` of its
     own, unless it joined again since: a session resumed after it was handed
     off is its own member, and the job keeps what its own events hold), and
@@ -3011,7 +3027,7 @@ def _projection(events):
                     r["to"] = ""
                     if not r["by"] and e.get("by"):
                         r["by"] = str(e["by"])
-                    if r["owned"] is None and owners_of(e):
+                    if r["owned"] is None and publishes(e):
                         r["owned"] = e
                 elif e.get("reason") == "continued" and UUID_RE.match(str(e.get("to") or "")):
                     r["to"] = str(e["to"])

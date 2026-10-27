@@ -4,7 +4,8 @@
 the path that first joins the session — the hook from the session's own
 environment, a spawn from its launch (a pending provenance the child claims
 at its SessionStart), a continuation from its predecessor's record — and
-read back by `list --json`; `owners` and `origin` ride on `joined` only once
+read back by `list --json`; `origin`, and `owners` that name members (never
+the `@machine` token, which stays on the machine), ride on `joined` only once
 the record is final.
 
 Hermetic: every machine here is a temporary HOME and SMINOS_HOME (one test
@@ -230,8 +231,8 @@ class Machine:
         """principal, inference, controller and source never leave the machine (RL §6.2)."""
         for p in glob.glob(str(self.reg / "projects" / "*" / "log" / "*.jsonl")):
             text = Path(p).read_text()
-            for word in ("principal", "inference", "controller", "settingsRef", "configDir"):
-                self.tc.assertNotIn('"%s"' % word, text, "%s in a log event (%s)" % (word, p))
+            for word in ("principal", "inference", "controller", "settingsRef", "configDir", "@machine"):
+                self.tc.assertNotIn('"%s' % word, text, "%s in a log event (%s)" % (word, p))
 
     def copy_log_to(self, other):
         dst = other.reg / "projects" / self.project / "log"
@@ -263,8 +264,8 @@ class TheRecord(unittest.TestCase):
         self.assertTrue(rec["created"].endswith("Z"))
         joined = m.own_joined(T0)
         self.assertEqual(len(joined), 1)
-        self.assertEqual((joined[0]["owners"], joined[0]["origin"]), (["@machine"], {"kind": "terminal"}),
-                         "a final record's owners and origin ride on joined")
+        self.assertEqual(joined[0]["origin"], {"kind": "terminal"}, "a final record's origin rides on joined")
+        self.assertNotIn("owners", joined[0], "@machine never leaves the machine")
         row = m.row(T0)
         self.assertEqual((row["owners"], row["origin"]), (["@machine"], {"kind": "terminal"}))
         self.assertEqual((row["principal"], row["inference"], row["controller"]), ("@machine", slot(m), None))
@@ -272,6 +273,25 @@ class TheRecord(unittest.TestCase):
         self.assertEqual(m.record(T0), rec, "a later hook leaves it as it is")
         self.assertEqual(len(m.own_joined(T0)), 1)
         m.assert_private()
+
+    def test_a_machine_owned_session_publishes_its_origin_and_reads_back_as_the_machines(self):
+        a = Machine(self)
+        a.peer(T0, "term")
+        a.hook("SessionStart", T0)
+        seat = a.spawn("kid", env={"CLAUDE_CODE_SESSION_ID": T0})
+        for sid in (T0, seat):
+            self.assertEqual(a.record(sid)["owners"], ["@machine"])
+            self.assertIn(a.record(sid)["source"], ("hook", "launch"))
+            joined = a.own_joined(sid)
+            self.assertTrue(joined and all("owners" not in j and j.get("origin") for j in joined), joined)
+        a.assert_private()
+        b = Machine(self, host="otherhost", project_from=a)
+        a.copy_log_to(b)
+        self.assertEqual((b.row(T0)["owners"], b.row(T0)["origin"]), (["@machine"], {"kind": "terminal"}))
+        self.assertEqual((b.row(seat)["owners"], b.row(seat)["origin"]),
+                         (["@machine"], {"kind": "sminos-spawn", "spawnerSession": T0}),
+                         "another machine reads the machine's owners, and the published origin")
+        b.assert_private()
 
     def test_the_route_is_read_from_the_sessions_environment(self):
         m = Machine(self)
@@ -309,7 +329,8 @@ class TheRecord(unittest.TestCase):
         self.assertEqual((row["owners"], row["origin"]), (["@machine"], {"kind": "sminos-spawn", "spawnerSession": T0}))
         self.assertEqual((row["principal"], row["inference"]), ("@machine", parent["inference"]))
         joined = m.own_joined(child)
-        self.assertEqual([j.get("owners") for j in joined], [["@machine"]])
+        self.assertEqual([(j.get("owners"), j.get("origin")) for j in joined],
+                         [(None, {"kind": "sminos-spawn", "spawnerSession": T0})])
         # A seat with settings of its own runs on them: its route is the merged launch file, never its content.
         routed = m.spawn("routed", "--settings", json.dumps({"env": {"ANTHROPIC_AUTH_TOKEN": SECRET}}),
                          env={"CLAUDE_CODE_SESSION_ID": T0})
@@ -341,6 +362,8 @@ class TheRecord(unittest.TestCase):
         self.assertEqual(rec["source"], "launch")
         row = m.row(sid)
         self.assertEqual((row["owners"], row["origin"]), ([MEMBER], {"kind": "maws", "requester": MEMBER}))
+        self.assertEqual([(j.get("owners"), j.get("origin")) for j in m.own_joined(sid)],
+                         [([MEMBER], {"kind": "maws", "requester": MEMBER})], "member owners ride on joined")
         # The RPC's own path: sminos_rpc.spawn runs the verb as the member.
         out = m.py("import json, sminos_rpc as r\n"
                    "print(json.dumps(r.spawn({'brief': 'b', 'permission_mode': 'auto'}, 'AAAAAAAAAAAAAAAAAAAAAA', "
@@ -422,13 +445,14 @@ class TheRecord(unittest.TestCase):
         m.transcript(T0)
         m.rows()   # reconciliation joins it: no environment, so defaults, provisional
         self.assertEqual(m.record(T0)["source"], "default")
-        self.assertEqual([j.get("owners") for j in m.own_joined(T0)], [None], "a provisional record publishes nothing")
+        self.assertEqual([(j.get("owners"), j.get("origin")) for j in m.own_joined(T0)], [(None, None)],
+                         "a provisional record publishes nothing")
         m.hand_off_transcript(T0, TB)
         m.peer(TB, "provjob", kind="bg", name_source="auto")
         m.hook("SessionStart", TB)
         rec = m.record(TB)
         self.assertEqual((rec["source"], rec["owners"], rec["former"]), ("default", ["@machine"], [T0]))
-        self.assertEqual([j.get("owners") for j in m.own_joined(TB)], [None])
+        self.assertEqual([(j.get("owners"), j.get("origin")) for j in m.own_joined(TB)], [(None, None)])
         self.assertEqual(m.row(TB)["owners"], ["@machine"], "read back as the default")
 
     def test_a_reconciled_session_is_published_once_its_hook_runs(self):
@@ -439,8 +463,9 @@ class TheRecord(unittest.TestCase):
         self.assertEqual(m.record(T0)["source"], "default")
         m.hook("Stop", T0, source="")
         self.assertEqual(m.record(T0)["source"], "hook", "the hook's evidence replaces the provisional default")
-        self.assertEqual([j.get("owners") for j in m.own_joined(T0)], [None, ["@machine"]],
-                         "and the final record is published by a joined of its own")
+        self.assertEqual([(j.get("owners"), j.get("origin")) for j in m.own_joined(T0)],
+                         [(None, None), (None, {"kind": "terminal"})],
+                         "and the final record is published by a joined of its own, its origin without @machine")
         m.hook("Stop", T0, source="")
         m.rows()
         self.assertEqual(len(m.own_joined(T0)), 2, "once")
@@ -623,6 +648,30 @@ class TheStore(unittest.TestCase):
         self.assertIsNone(R.claim("d" * 32, T0), "a session with a final record claims nothing")
         self.assertTrue(os.path.exists(R.pending_path("d" * 32)))
         self.assertIsNone(R.claim("../x", T0))
+
+    def test_owners_never_mix_the_machine_with_members(self):
+        R = self.R
+        mixed = dict(R.default_provenance(source="launch"), owners=["@machine", MEMBER])
+        with self.assertRaises(ValueError):
+            R.establish(T0, mixed)
+        self.assertIsNone(R.read(T0))
+        with self.assertRaises(ValueError):
+            R.write_pending("e" * 32, mixed)
+        self.assertFalse(os.path.exists(R.pending_path("e" * 32)))
+        R.establish(T0, R.default_provenance())
+        with self.assertRaises(ValueError):
+            R.establish(T0, dict(mixed, source="lineage"))
+        self.assertEqual(R.read(T0)["owners"], ["@machine"], "a provisional record is not replaced by a mixed list")
+        for bad in ([], ["@machine", "@machine"], [""], "@machine"):
+            with self.assertRaises(ValueError):
+                R.checked_owners(bad)
+        self.assertEqual(R.checked_owners([MEMBER, "f" * 32]), [MEMBER, "f" * 32])
+        # A pending file this code never wrote: the claim stands, its owners do not.
+        os.makedirs(os.path.dirname(R.pending_path("a" * 32)), exist_ok=True)
+        with open(R.pending_path("a" * 32), "w") as f:
+            json.dump(mixed, f)
+        got = R.claim("a" * 32, TB)
+        self.assertEqual((got["owners"], got["source"]), (["@machine"], "default"))
 
     def test_base_url_routes(self):
         R = self.R

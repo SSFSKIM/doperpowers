@@ -21,10 +21,13 @@ atomically (sminos._write_record) under one lock for every change here:
   record is final.
 - `controller {lane, since}` is current state, not provenance: set at each
   launch by the bridge's lane verdict (set_controller) and never copied.
-- `@machine`, as an owner or a principal, stands for this machine's owners;
+- `@machine`, as an owner or a principal, stands for this machine's owners,
+  and as an owner it stands alone: a list that mixes it with member ids is
+  refused by every writer here (checked_owners), since `joined` leaves the
+  token off and its readers would lose the members beside it;
   the endpoint resolves it against the org state, and it never leaves the
-  machine. Nothing here leaves the machine but `owners` and `origin`, on a
-  final record's `joined` (sminos.published_provenance).
+  machine. Nothing here leaves the machine but `origin`, and `owners` that
+  hold no `@machine`, on a final record's `joined` (sminos.published_provenance).
 - No secret is ever in a record: a route names a file (the merged launch
   settings a seat ran with) or a gateway's scheme, host and port.
 
@@ -105,7 +108,18 @@ def _locked(deadline=None):
             fcntl.flock(lf, fcntl.LOCK_UN)
 
 
+def checked_owners(owners):
+    """`owners` when it is a record's: a non-empty list of strings, either
+    exactly `@machine` or member ids only; otherwise ValueError."""
+    if not (isinstance(owners, list) and owners and all(isinstance(o, str) and o for o in owners)):
+        raise ValueError("owners must be a non-empty list of strings: %r" % (owners,))
+    if MACHINE in owners and owners != [MACHINE]:
+        raise ValueError("owners mixes %s with member ids: %r" % (MACHINE, owners))
+    return owners
+
+
 def _record(sid, prov, created=None, controller=None):
+    checked_owners(prov.get("owners"))
     rec = {"session": sid, "source": prov.get("source") or "default"}
     for k in PROVENANCE:
         rec[k] = prov[k]
@@ -153,6 +167,7 @@ def write_pending(launch, prov):
     """A launch's provenance, waiting for its session to claim it."""
     if not LAUNCH_RE.fullmatch(launch):
         raise ValueError("bad launch id: %r" % (launch,))
+    checked_owners(prov.get("owners"))
     os.makedirs(os.path.dirname(pending_path(launch)), mode=0o700, exist_ok=True)
     sminos._write_record(pending_path(launch), {**prov, "created": prov.get("created") or sminos.now()})
 
@@ -183,7 +198,11 @@ def claim(launch, sid, deadline=None):
                 prov = json.load(f)
         except (OSError, ValueError):
             prov = None
-        if not (isinstance(prov, dict) and all(k in prov for k in PROVENANCE)):
+        try:
+            if not (isinstance(prov, dict) and all(k in prov for k in PROVENANCE)):
+                raise ValueError("not a provenance")
+            checked_owners(prov["owners"])
+        except ValueError:
             # Not a provenance this code wrote: the claim stands, its content does not.
             prov = default_provenance()
         rec = _record(sid, prov, controller=(have or {}).get("controller"))
