@@ -539,14 +539,17 @@ class TheRecord(unittest.TestCase):
                          "a member with neither reads as the machine's own terminal session")
         # Owned by someone else: an older joined after it does not erase them.
         c = Machine(self, host="thirdhost")
-        c.py("p = sminos.resolve_project(sys.argv[1])\n"
-             "sminos.lifecycle(p, sys.argv[2], 'joined', **sminos.joined_fields('x', 'derived', sys.argv[1]),"
-             " owners=[sys.argv[3]], origin={'kind': 'maws', 'requester': sys.argv[3]})\n"
-             "sminos.lifecycle(p, sys.argv[2], 'joined', **sminos.joined_fields('x', 'derived', sys.argv[1]))",
+        # Written raw, as that session's machine wrote them (a joined's provenance through
+        # lifecycle is always this machine's record as it is).
+        c.py("p = sminos.resolve_project(sys.argv[1]); sid = sys.argv[2]\n"
+             "f = sminos.joined_fields('x', 'derived', sys.argv[1])\n"
+             "sminos._append(p, sminos.writer_id(sid), [{'kind': 'joined', 'session': sid, **f,"
+             " 'owners': [sys.argv[3]], 'origin': {'kind': 'maws', 'requester': sys.argv[3]}}])\n"
+             "sminos._append(p, sminos.writer_id(sid), [{'kind': 'joined', 'session': sid, **f}])",
              str(c.repo), TB, MEMBER)
         d = Machine(self, host="fourthhost", project_from=c)
         c.copy_log_to(d)
-        self.assertEqual(d.row(TB)["owners"], [MEMBER], "the first joined that carries owners decides")
+        self.assertEqual(d.row(TB)["owners"], [MEMBER], "an older joined that publishes nothing never erases them")
 
     def test_a_move_leaves_the_record_as_it_is(self):
         m = Machine(self)
@@ -700,6 +703,87 @@ class TheFixes(unittest.TestCase):
         self.assertEqual(m.publications(T0), [{"origin": {"kind": "terminal"}}], "published on the next pass")
         m.rows()
         self.assertEqual(len(m.publications(T0)), 1, "once")
+
+    def test_a_records_own_publication_is_no_lineage(self):
+        """hook, reconcile, reconcile, hand-off, reconcile: the job's own
+        publication never promotes its record, so the hand-off still can."""
+        m = Machine(self)
+        m.write_record(T0, owners=[MEMBER], principal=MEMBER, origin={"kind": "maws", "requester": MEMBER})
+        m.peer(TB, "job", kind="bg", name_source="auto")
+        m.hook("SessionStart", TB)
+        hooked = m.record(TB)
+        m.rows()
+        m.rows()
+        self.assertEqual(m.record(TB), hooked, "its own publication is not evidence")
+        m.continued(T0, TB)
+        m.rows()
+        rec = m.record(TB)
+        self.assertEqual((rec["owners"], rec["source"], rec["former"]), ([MEMBER], "lineage", [T0]))
+        self.assertEqual(m.publications(TB)[-1], {"owners": [MEMBER], "origin": {"kind": "maws", "requester": MEMBER}})
+
+    def test_a_writer_that_paused_never_appends_older_provenance(self):
+        """A joined prepared from the hook's record, held up before the
+        file's lock while another writer replaces the record with a launch's
+        and publishes it: what it appends is the record as it is then."""
+        m = Machine(self)
+        m.peer(T0, "racer")
+        m.hook("SessionStart", T0)
+        self.assertEqual(m.publications(T0), [{"origin": {"kind": "terminal"}}])
+        out = m.py(r"""
+import json, sminos_records as R
+p = sminos.resolve_project(sys.argv[1]); sid = sys.argv[2]; member = sys.argv[3]
+real = sminos._append
+def the_other_writer():
+    rec = R.read(sid)
+    rec.update(basis="launch", source="launch", owners=[member], principal=member,
+               origin={"kind": "maws", "requester": member})
+    sminos._write_record(R.record_path(sid), rec)
+    sminos.publish_owners(p, sid)
+# 1. publish_owners itself: it read the hook's provenance, then pauses before the lock.
+stale = sminos.published_provenance(sid)
+R.establish(sid, dict(R.default_provenance("lineage"), origin={"kind": "sminos-spawn"}))  # what it will publish
+calls = []
+def paused(*a, **k):
+    if not calls:
+        calls.append(1)
+        sminos._append = real
+        the_other_writer()
+    return real(*a, **k)
+sminos._append = paused
+sminos.publish_owners(p, sid)
+sminos._append = real
+# 2. any joined writer: fields prepared before the lock, the record replaced meanwhile.
+fields = sminos.joined_fields("racer", "derived", sys.argv[1], session=sid)
+rec = R.read(sid); rec["owners"] = ["f" * 32]; rec["origin"] = {"kind": "maws", "requester": "f" * 32}
+sminos._write_record(R.record_path(sid), rec)
+sminos.lifecycle(p, sid, "joined", required=False, **fields)
+print(json.dumps(stale))
+""", str(m.repo), T0, MEMBER)
+        self.assertEqual(json.loads(out), {"origin": {"kind": "terminal"}})
+        pubs = m.publications(T0)
+        self.assertEqual(pubs[-2:], [{"owners": [MEMBER], "origin": {"kind": "maws", "requester": MEMBER}},
+                                     {"owners": ["f" * 32], "origin": {"kind": "maws", "requester": "f" * 32}}],
+                         "the paused publisher appended nothing older; the other writer's joined carried the record "
+                         "as it was under the lock")
+        self.assertNotIn({"origin": {"kind": "sminos-spawn"}}, pubs)
+        self.assertEqual(len(pubs), 3)
+
+    def test_a_current_publication_costs_no_scan(self):
+        m = Machine(self)
+        for i, sid in enumerate((T0, TB, TX)):
+            m.peer(sid, "m%d" % i)
+            m.hook("SessionStart", sid)
+        out = m.py(r"""
+p = sminos.resolve_project(sys.argv[1])
+events = sminos.log_read(p)
+scans = []
+real = sminos.own_events_of
+sminos.own_events_of = lambda *a, **k: scans.append(a[1]) or real(*a, **k)
+for sid in sys.argv[2:]:
+    sminos.ensure_record(p, sid, events=events)
+print(len(scans))
+""", str(m.repo), T0, TB, TX)
+        self.assertEqual(out.strip(), "0", "members whose publication is current are told from the index")
 
     def test_the_orgs_listing_carries_no_private_field(self):
         m = Machine(self)

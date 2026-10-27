@@ -2220,7 +2220,7 @@ def published_provenance(sid):
     return {**({"owners": owners} if records.MACHINE not in owners else {}), "origin": dict(rec["origin"])}
 
 
-_LINEAGE_INDEX = [None, -1, None]   # the events last indexed, their count, (continuations, publications)
+_LINEAGE_INDEX = [None, -1, None]   # the events last indexed, their count, (continuations, publications, memberships)
 
 
 def publication(event):
@@ -2235,22 +2235,25 @@ def publication(event):
 
 def _lineage_index(events):
     """({session: the session it continues}, {session: its latest own joined
-    that publishes}) of a log as read: each `continued` retirement in its
-    writer's own file, the latest naming a session winning. Kept for the
-    events last asked about, so a reconciliation indexes its log once."""
+    that publishes}, {session: its latest own membership event's kind}) of
+    a log as read, in one pass: each `continued` retirement in its writer's
+    own file, the latest naming a session winning. Kept for the events last
+    asked about (their identity and length), so a reconciliation indexes
+    its log once, and a member whose publication is current costs no scan."""
     if _LINEAGE_INDEX[0] is events and _LINEAGE_INDEX[1] == len(events):
         return _LINEAGE_INDEX[2]
-    conts, published = {}, {}
+    conts, published, membership = {}, {}, {}
     for e in events:
         sid = e.get("session")
-        if not isinstance(sid, str) or writer_session(e["writer"]) != sid:
+        if not isinstance(sid, str) or e["kind"] not in MEMBERSHIP or writer_session(e["writer"]) != sid:
             continue
+        membership[sid] = e["kind"]
         if e["kind"] == "retired" and e.get("reason") == "continued" and UUID_RE.match(str(e.get("to") or "")):
             conts[e["to"]] = sid
         elif publishes(e):
             published[sid] = e
-    _LINEAGE_INDEX[:] = [events, len(events), (conts, published)]
-    return conts, published
+    _LINEAGE_INDEX[:] = [events, len(events), (conts, published, membership)]
+    return conts, published, membership
 
 
 def lineage_of(project, sid, peer=None, events=None):
@@ -2285,11 +2288,13 @@ def last_published(project, sid, events=None):
 
 
 def lineage_provenance(project, sid, peer=None, former=None, events=None):
-    """A provenance from the session's lineage, or None. The first final
-    record along it wins; else the latest `joined` along it, its own first,
-    that publishes (its owners the machine's when it names none); else the
-    first provisional record, the fallback, so a provisional session between
-    it and a final ancestor never hides the ancestor."""
+    """A provenance from the sessions `sid` continues, or None. The first
+    final record along them wins; else the latest `joined` among them, the
+    nearest first, that publishes (its owners the machine's when it names
+    none); else the first provisional record, the fallback, so a provisional
+    session between it and a final ancestor never hides the ancestor. The
+    session's own publications are never evidence: they say what its record
+    already is."""
     records = records_module()
     chain = list(former) if former else (lineage_of(project, sid, peer, events) if project is not None else [])
     fallback = None
@@ -2300,7 +2305,7 @@ def lineage_provenance(project, sid, peer=None, former=None, events=None):
                 return records.inherited(rec, chain[:i + 1])
             fallback = fallback or records.inherited(rec, chain[:i + 1])
     if project is not None:
-        for s in [sid] + chain:
+        for s in chain:
             j = last_published(project, s, events)
             if j is not None:
                 return records.from_joined({"owners": owners_of(j) or [records.MACHINE], "origin": j.get("origin")},
@@ -2347,26 +2352,34 @@ def publish_owners(project, sid, events=None):
     earlier publication's append failed) is joined again, carrying it: its
     alias as the log holds it, the rest as its last `joined` had them, `by`
     empty. Once per change of the record, which only moves up (default,
-    hook, lineage, launch). Written only while its latest membership is
-    `joined` and the publication is still missing, checked again under the
-    session file's lock. Returns the events appended."""
+    hook, lineage, launch). With `events` (a reconciliation's log), a member
+    whose publication is current is told from the log's index, no scan.
+    Under the session file's lock the record is read again (lifecycle), so
+    what is appended is the record as it is then, and nothing is appended
+    when the latest publication already carries it. Returns the events
+    appended."""
     pub = published_provenance(sid)
     if not pub:
         return []
+    if events is not None:
+        _, published, membership = _lineage_index(events)
+        latest = published.get(sid)
+        if membership.get(sid) != "joined" or (latest is not None and publication(latest) == pub):
+            return []
     own = own_events_of(project, sid, events)
     last = next((e for e in reversed(own) if e["kind"] == "joined"), None)
     if last is None or latest_membership(own) != "joined":
         return []
 
-    def missing(evs):
+    def missing(evs, now):
         latest = next((e for e in reversed(evs) if publishes(e)), None)
-        return latest is None or publication(latest) != pub
+        return bool(now) and (latest is None or publication(latest) != now)
 
-    if not missing(own):
+    if not missing(own, pub):
         return []
 
     def guard(evs):
-        return latest_membership(evs) == "joined" and missing(evs)
+        return latest_membership(evs) == "joined" and missing(evs, published_provenance(sid))
 
     alias, source = own_alias(own, sid)
     fields = joined_fields(alias or str(last.get("alias") or sid[:8]),
@@ -2386,6 +2399,15 @@ class LogWriteFailed(Exception):
     operation already happened; main() exits 1 saying both."""
 
 
+def _fresh_publication(event):
+    """A joined's `owners` and `origin` set to what its session's record
+    publishes now (published_provenance); always True, for a guard."""
+    event.pop("owners", None)
+    event.pop("origin", None)
+    event.update(published_provenance(event["session"]))
+    return True
+
+
 def lifecycle(log_project, session, kind, guard=None, required=True, **fields):
     """Append one lifecycle event for a session on this machine to the
     session's own file: a session's lifecycle has one writer, so its order is
@@ -2401,8 +2423,14 @@ def lifecycle(log_project, session, kind, guard=None, required=True, **fields):
     before = _former_events(log_project, session) if guard is not None else []
     if before:
         guard = (lambda inner: lambda evs: inner(before + evs))(guard)
+    event = {"kind": kind, "session": session, **fields}
+    if kind == "joined":
+        # What a joined publishes of the session's record was read before the
+        # file's lock; under it, it is read again, so a writer that paused
+        # between never appends provenance older than a publication since.
+        guard = (lambda inner: lambda evs: _fresh_publication(event) and (inner is None or inner(evs)))(guard)
     try:
-        return _append(log_project, writer_id(session), [{"kind": kind, "session": session, **fields}], guard=guard)
+        return _append(log_project, writer_id(session), [event], guard=guard)
     except OSError as e:
         msg = "recording %s of %s in %s's log failed: %s" % (kind, session[:8], log_project.name, e)
         if required:
