@@ -87,6 +87,10 @@ member too, seat-less, from the first call that reads its project.
     sminos hub      enroll [--name N] [--replace] | show   # this machine at the desk hub: its name
                    there is its name everywhere (the writer host of what it writes). The code is
                    pasted at a hidden prompt, or piped on stdin — never an argument: it carries the org key
+    sminos rpc-query <opId> [--created T]                 # what became of a desk RPC, as the daemon's ledger
+                   file holds it (RL4's query, JSON): done, refused, in-progress, expired, not-received;
+                   --created, its opCreated. The file alone: one a worker holds before its claim reads
+                   not-received here. It changes nothing
     sminos reply    <seat>                                # latest reply text
     sminos sync     [<seat>] [--all]                      # reconcile status from the harness
     sminos status   <member> <one line>                   # the member's own "now" line
@@ -10083,6 +10087,10 @@ def cmd_hub(a):
     hub_module().cmd_hub(a.words)
 
 
+def cmd_rpc_query(a):
+    sibling_module("sminos_rpc").cmd_rpc_query(a)
+
+
 def cmd_chart(a):
     """The members as boxes, flat: one project's in a column, or — for every
     project — each project a rounded box with its members beside it; hidden
@@ -10300,6 +10308,11 @@ def build_parser():
     hb.add_argument("words", nargs="*")
     hb.set_defaults(fn=cmd_hub)
 
+    rq = sub.add_parser("rpc-query", add_help=False)
+    rq.add_argument("op")
+    rq.add_argument("--created", default=None)
+    rq.set_defaults(fn=cmd_rpc_query)
+
     br = sub.add_parser("bridge", add_help=False)
     br.add_argument("--session", default="")
     br.set_defaults(fn=cmd_bridge)
@@ -10475,6 +10488,11 @@ def main(argv=None):
         # A SessionStart hook's: the record hook beside it migrates, bounded;
         # a session's start never waits here on the registry's lock.
         cmd_guide(a)
+        return
+    if a.cmd == "rpc-query":
+        # A diagnostic: it reads the RPC ledger's file and changes nothing,
+        # so no migration rewrites a record or takes the registry's lock.
+        cmd_rpc_query(a)
         return
     if a.cmd == "who" and not a.target:
         # The address mod's, before a session's model requests: it reads and
