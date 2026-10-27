@@ -117,6 +117,14 @@ client's decision (409, code `lane-b`). Each launch's lane, B for `match`, A
 for `mismatch` or an unmarked session, is relayed to the session's record
 (sminos.set_session_controller, O12 M1) once the record exists; desk Resume
 reads it.
+
+The launch (O12 M7) is the process holding the session, as its module names
+it (`--launch=<id>`, minted once per process and kept across a reload): the
+hello and GET /status carry it, and POST /command and the decision route
+refuse a body naming another (409, code `launch`) before anything reaches
+the mod. A remote desk action names the launch it was sealed for, so one
+sealed before a relaunch is refused here, at the effect; a body naming none
+is a local caller's.
 """
 
 import collections
@@ -170,6 +178,7 @@ RESERVED_BY = ("terminal", "bridge")
 CHILD_LINES = ("hello", "lane")   # what only the child says to the mod: never a client's command
 LANE_MARK = "MAWS_LANE"        # MAWS's lane B marker, beside SMNS_MEMBER (sminos.MEMBER_MARK)
 LANE_B = "lane-b"              # an observer's refusal's code
+LAUNCH = "launch"              # a command or decision sealed for another launch of the session: its refusal's code
 OBSERVER_REASON = "MAWS controls this session"
 LANE_RETRY_S, LANE_RETRY_FOR_S, LANE_RETRY_LATER_S = 2, 60, 30   # an unresolved verdict's retries, and the relay's
 # The rules a scoped allow adds at most (DX5's decision POST): the bound of
@@ -775,6 +784,20 @@ class Bridge:
         # The lane verdict (match | mismatch | unresolved) for a session
         # MAWS marked as its lane B; None for one it did not (serve).
         self.lane = None
+        # The launch: the process holding the session, as its module names
+        # it (`--launch`, O12 M7); None from a module that names none.
+        self.launch = None
+
+    def fenced(self, body):
+        """The refusal of a command or decision sealed for another launch of
+        the session (a remote RPC's `launch`, O12 M7), or None: one naming no
+        launch is a local caller's. This child is its process's (it ends
+        with it), so a launch that matches here is the launch it names."""
+        if not isinstance(body, dict) or "launch" not in body or body["launch"] == self.launch:
+            return None
+        return 409, {"ok": False, "code": LAUNCH,
+                     "error": "sealed for launch %s of the session; it runs as launch %s now" % (
+                         body["launch"], self.launch or "unnamed")}
 
     def observing(self):
         """Whether the session is an observer's (a MAWS lane B session, or a
@@ -1289,6 +1312,9 @@ class Bridge:
         request is pending, its dialog not answered in the terminal, and a
         background window not past its deadline; an async question's answer
         goes to the mod at once."""
+        refused = self.fenced(body)
+        if refused is not None:
+            return refused
         # A session MAWS controls answers its own prompts: no client's
         # decision, whatever the mod raised.
         if self.observing():
@@ -1368,6 +1394,7 @@ class Bridge:
                     "started": self.started, "ready": self.ready, "subscribers": len(self.subscribers),
                     "mod": {"events": self.mod_events, "last": self.mod_last},
                     **({"lane": self.lane} if self.lane is not None else {}),
+                    **({"launch": self.launch} if self.launch is not None else {}),
                     **({"capabilities": self.capabilities} if self.capabilities is not None else {})}
 
     def agents_now(self):
@@ -1390,8 +1417,11 @@ class Bridge:
                 raise
 
     def command(self, body, wait_ms):
+        refused = self.fenced(body)
+        if refused is not None:
+            return refused
         cid = uuidlib.uuid4().hex
-        line = {"id": cid, **{k: v for k, v in body.items() if k != "id"}}
+        line = {"id": cid, **{k: v for k, v in body.items() if k not in ("id", "launch")}}
         w = [threading.Event(), None]
         rpc = body.get("rpc")
         with self.lock:
@@ -1567,7 +1597,7 @@ class _Server(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
         super().handle_error(request, client_address)
 
 
-def serve(session, lane=None):
+def serve(session, lane=None, launch=None):
     """The child's life: bind beside the endpoint, listen, move the socket
     into place (so the path never names a socket nobody listens on yet), say
     hello, serve until the parent (the session) is gone, the path is another
@@ -1597,6 +1627,7 @@ def serve(session, lane=None):
     bridge.child = [mine, os.getpid()]
     parent = os.getppid()
     bridge.presence = presence_path(parent)
+    bridge.launch = launch or None
     if is_lane_marked():
         # The process's verdict, when its module holds one (`--lane`): a
         # replacement child after the engine host exited would find the
@@ -1626,7 +1657,8 @@ def serve(session, lane=None):
                      # The session's engine record, which the mod reads for an idle
                      # session while it cannot know (a reload) whether a turn runs.
                      "presence": bridge.presence,
-                     **({"lane": bridge.lane} if bridge.lane is not None else {})})
+                     **({"lane": bridge.lane} if bridge.lane is not None else {}),
+                     **({"launch": bridge.launch} if bridge.launch is not None else {})})
         threading.Thread(target=watchdog, daemon=True).start()
         threading.Thread(target=bridge.settle_lane, args=(parent,), daemon=True).start()
         threading.Thread(target=bridge.watch_presence, daemon=True).start()
@@ -1647,7 +1679,7 @@ def serve(session, lane=None):
 def cmd_bridge(a):
     if not S.UUID_RE.match(a.session or ""):
         S.die("bridge: %r is not a session id" % (a.session or ""))
-    serve(a.session, getattr(a, "lane", None))
+    serve(a.session, getattr(a, "lane", None), getattr(a, "launch", None))
 
 
 # ------------------------------------------------------------------ watch

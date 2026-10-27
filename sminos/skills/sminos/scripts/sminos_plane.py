@@ -2446,7 +2446,7 @@ class Bridges:
     def __init__(self):
         self.lock = threading.Lock()
         # session → [socket inode, answered, probed at, probing, the child that answered (inode, pid), its
-        # capabilities, the number of the probe that answered]
+        # capabilities, the number of the probe that answered, the launch it named (O12 M7)]
         self.held = {}
         self.probes = 0   # probes begun
         self.wake = lambda: None
@@ -2464,7 +2464,7 @@ class Bridges:
                 self.held.pop(sid, None)
             return False
         with self.lock:
-            h = self.held.setdefault(sid, [ino, False, None, False, None, None, 0])
+            h = self.held.setdefault(sid, [ino, False, None, False, None, None, 0, None])
             if not h[3] and (h[0] != ino or h[2] is None or now - h[2] >= BRIDGE_RECHECK):
                 h[3] = True
                 self.probes += 1
@@ -2473,21 +2473,22 @@ class Bridges:
             return h[1]
 
     def probe(self, sid, path, ino, now, number):
-        answered, child, caps = False, None, None
+        answered, child, caps, launch = False, None, None, None
         try:
             status, body = bridge.request(path, "GET", "/status", timeout=PROBE_TIMEOUT)
             answered = status == 200 and isinstance(body, dict) and body.get("session") == sid
             if answered:
                 child = [ino, body.get("pid")]
                 caps = body["capabilities"] if isinstance(body.get("capabilities"), dict) else None
+                launch = body["launch"] if isinstance(body.get("launch"), str) and body["launch"] else None
         except (OSError, ValueError, http.client.HTTPException):
             pass
         with self.lock:
             h = self.held.get(sid)
             if h is None:
                 return
-            changed = h[1] != answered or h[5] != caps
-            h[:] = [ino, answered, now, False, child, caps, number]
+            changed = h[1] != answered or h[5] != caps or h[7] != launch
+            h[:] = [ino, answered, now, False, child, caps, number, launch]
         if changed:
             self.wake()
 
@@ -2512,6 +2513,14 @@ class Bridges:
         with self.lock:
             h = self.held.get(sid)
             return h[5] if h and h[1] else None
+
+    def launch(self, sid):
+        """The launch the session's bridge named (O12 M7: its module's
+        per-process id, which a remote action is fenced to), when it
+        answered and named one."""
+        with self.lock:
+            h = self.held.get(sid)
+            return h[7] if h and h[1] else None
 
 
 def bridge_socks():
@@ -2547,10 +2556,12 @@ class Plane:
     subscriptions it serves. Made anew with every stream; `close` lets the
     readers go."""
 
-    def __init__(self, machine, wake, bridges=None, transcripts=None, disk=None, warmer=None, host=False):
+    def __init__(self, machine, wake, bridges=None, transcripts=None, disk=None, warmer=None, host=False,
+                 launches=False):
         self.machine = machine
         self.wake = wake
         self.host = host          # RL10: the sessions' host store is carried by their main subscriptions
+        self.launches = launches  # RL10: a bridged session's presence names its launch (O12 M7)
         self.bridges = bridges or Bridges()   # kept across streams by the uplink: no answer is relearned
         self.bridges.wake = wake
         self.transcripts = transcripts or TRANSCRIPTS   # the process's: no index is rebuilt across streams
@@ -2617,6 +2628,11 @@ class Plane:
         caps = self.bridges.capabilities(sid) if body["bridge"] else None
         if caps is not None:
             body["capabilities"] = caps
+        # A sibling of `bridge`, never under it: the hub refuses a `bridge`
+        # that is not a boolean (desk-hub's SessionPresence).
+        launch = self.bridges.launch(sid) if self.launches and body["bridge"] else None
+        if launch is not None:
+            body["launch"] = launch
         return body
 
     def presence(self, pid, force=False, now=None, socks=None):

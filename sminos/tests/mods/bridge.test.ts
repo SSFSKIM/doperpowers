@@ -56,6 +56,14 @@ const NONCE = 'n0'
 const hello = (session = SID, socket = SOCK, kept?: Record<string, unknown>, nonce = NONCE, seed?: Record<string, string>) =>
   `${JSON.stringify({ op: 'hello', session, pid: 7, socket, protocol: 1, nonce, ...(kept !== undefined && { kept }), ...(seed !== undefined && { seed }) })}\n`
 const line = (obj: Record<string, unknown>) => `${JSON.stringify(obj)}\n`
+/** The child's command line as the mod starts it: its session, and the process's launch the harness's `$.state` holds (O12 M7). */
+const childArgv = (h: { sessionState: Map<string, unknown> }, session = SID) => [
+  '/plug/skills/sminos/scripts/sminos',
+  'bridge',
+  '--session',
+  session,
+  `--launch=${String(h.sessionState.get('launch'))}`,
+]
 /** A steer's row and a delivered message's, as a wake counts them. */
 const NOTE = {}
 const MESSAGE = (frame?: string) => ({ isDelivery: true, ...(frame !== undefined && { frame }) })
@@ -722,7 +730,7 @@ describe('the child', () => {
     const h = harness()
     await h.start()
     expect(h.children.length).toBe(1)
-    expect(h.children[0]!.argv).toEqual(['/plug/skills/sminos/scripts/sminos', 'bridge', '--session', SID])
+    expect(h.children[0]!.argv).toEqual(childArgv(h))
   })
 
   test('nothing is posted before its hello; then the session start, then a resync holding what happened meanwhile, to the socket hello names', async () => {
@@ -865,7 +873,7 @@ describe('the child', () => {
     beat.fn()
     await h.settle()
     expect(h.children[0]!.killed).toBe(true)
-    expect(h.children[1]!.argv).toEqual(['/plug/skills/sminos/scripts/sminos', 'bridge', '--session', NEW])
+    expect(h.children[1]!.argv).toEqual(childArgv(h, NEW))
     // The stopped child is not respawned, and is said to be stopped, not to have failed.
     expect(h.timers.filter((t) => t.kind === 'after').length).toBe(0)
     expect(h.logs).toContain('bridge: the child was stopped')
@@ -1199,7 +1207,7 @@ describe('the stream', () => {
     h.timers.filter((t) => t.kind === 'after').at(-1)!.fn()
     await h.settle()
     expect(h.children[0]!.killed).toBe(true)
-    expect(h.children[1]!.argv).toEqual(['/plug/skills/sminos/scripts/sminos', 'bridge', '--session', NEW])
+    expect(h.children[1]!.argv).toEqual(childArgv(h, NEW))
     h.children[1]!.write(hello(NEW, NEWSOCK))
     await h.settle()
     const toNew = h.posts.filter((p) => p.socketPath === NEWSOCK).flatMap((p) => p.events)
@@ -6190,7 +6198,7 @@ describe("the bridge's place among the secrets guards (next.trace)", () => {
     await rowBeneath(h, ['doperpowers', 'devcloud'])
     expectOn(h)
     expect(h.children).toHaveLength(2)
-    expect(h.children[1]!.argv).toEqual(['/plug/skills/sminos/scripts/sminos', 'bridge', '--session', SID])
+    expect(h.children[1]!.argv).toEqual(childArgv(h))
     // A new child, a new nonce: what an old instance still posts is turned away.
     const after = await greetNewest(h, 'n1')
     expect(after().slice(0, 2).map((p) => p.events.map((e) => e.type))).toEqual([['session'], ['resync']])
@@ -6369,7 +6377,7 @@ describe("the bridge's place among the secrets guards (next.trace)", () => {
     // Back on only through a safe dispatch, for the session the /clear moved to.
     await rowBeneath(h, ['doperpowers', 'devcloud'])
     expectOn(h)
-    expect(h.children[1]!.argv).toEqual(['/plug/skills/sminos/scripts/sminos', 'bridge', '--session', NEW])
+    expect(h.children[1]!.argv).toEqual(childArgv(h, NEW))
     await rowBeneath(h, ['doperpowers'])
     expectOff(h, 2)
     expect(h.logs.filter((l) => l === ON_LINE)).toHaveLength(1)
@@ -7142,6 +7150,49 @@ describe('the desk: catalog belongs to the bound child, not merely a stable engi
   })
 })
 
+describe('the launch (O12 M7)', () => {
+  /** 16 random bytes, base64url without padding. */
+  const LAUNCH_RE = /^[A-Za-z0-9_-]{22}$/
+
+  test('the module mints one launch for its process, keeps it in $.state, and hands it to every child it starts', async () => {
+    const h = harness()
+    await h.start()
+    const launch = h.sessionState.get('launch')
+    expect(launch).toMatch(LAUNCH_RE)
+    expect(h.children[0]!.argv.at(-1)).toBe(`--launch=${String(launch)}`)
+    // A child that ended is followed by another of the same process: the same launch.
+    h.children[0]!.end()
+    await h.settle()
+    await h.fire(0)
+    expect(h.children[1]!.argv).toEqual(h.children[0]!.argv)
+    expect(h.sessionState.get('launch')).toBe(launch)
+  })
+
+  test('a module reload reads its process\'s launch back; another process mints its own', async () => {
+    const kept = new Map<string, unknown>()
+    const before = harness({ sessionState: kept })
+    await before.start()
+    const launch = kept.get('launch')
+    const reloaded = harness({ sessionState: kept })
+    await reloaded.start()
+    expect(reloaded.children[0]!.argv.at(-1)).toBe(`--launch=${String(launch)}`)
+    expect(kept.get('launch')).toBe(launch)
+    // A relaunch (a --resume in a new process) starts with nothing held: a new launch, so an action sealed for the old one is refused.
+    const relaunched = harness()
+    await relaunched.start()
+    expect(relaunched.sessionState.get('launch')).toMatch(LAUNCH_RE)
+    expect(relaunched.sessionState.get('launch')).not.toBe(launch)
+  })
+
+  test('a kept value that is no launch is replaced', async () => {
+    const kept = new Map<string, unknown>([['launch', 42]])
+    const h = harness({ sessionState: kept })
+    await h.start()
+    expect(kept.get('launch')).toMatch(LAUNCH_RE)
+    expect(h.children[0]!.argv.at(-1)).toBe(`--launch=${String(kept.get('launch'))}`)
+  })
+})
+
 describe('lane B: the observer (O12 M3)', () => {
   /** MAWS's marker on a `claude -p` child of its engine host (Interfaces §C). */
   const MARKED = { MAWS_LANE: 'B', SMNS_MEMBER: '4242' }
@@ -7286,28 +7337,27 @@ describe('lane B: the observer (O12 M3)', () => {
   })
 
   test('every child after the first is told the verdict the process holds (`--lane`), so a replacement never recomputes it after the engine was re-parented', async () => {
-    const ARGV = ['/plug/skills/sminos/scripts/sminos', 'bridge', '--session', SID]
     const h = await started(MARKED, 'match')
-    expect(h.children[0]!.argv).toEqual(ARGV)
+    expect(h.children[0]!.argv).toEqual(childArgv(h))
     h.children[0]!.end()
     await h.settle()
     await h.fire(0)
-    expect(h.children[1]!.argv).toEqual([...ARGV, '--lane', 'match'])
+    expect(h.children[1]!.argv).toEqual([...childArgv(h), '--lane', 'match'])
     // A reload whose process already holds a verdict: its first child is told it.
     const r = harness({ env: MARKED, messages: [], sessionState: new Map<string, unknown>([['lane', 'mismatch']]) })
     await r.start()
-    expect(r.children[0]!.argv).toEqual([...ARGV, '--lane', 'mismatch'])
+    expect(r.children[0]!.argv).toEqual([...childArgv(r), '--lane', 'mismatch'])
     // Unresolved is nothing to tell; an unmarked session's children never carry it.
     const u = await started(MARKED, 'unresolved')
     u.children[0]!.end()
     await u.settle()
     await u.fire(0)
-    expect(u.children[1]!.argv).toEqual(ARGV)
+    expect(u.children[1]!.argv).toEqual(childArgv(u))
     const a = await started({}, 'match')
     a.children[0]!.end()
     await a.settle()
     await a.fire(0)
-    expect(a.children[1]!.argv).toEqual(ARGV)
+    expect(a.children[1]!.argv).toEqual(childArgv(a))
   })
 
   test('an observer submits no wake for an upload pending: not at load, not at a turn\'s end, not when idle', async () => {

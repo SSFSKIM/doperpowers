@@ -50,7 +50,8 @@ state = os.environ["REC_STUB_STATE"]
 os.makedirs(os.path.join(state, "agents"), exist_ok=True)
 args = sys.argv[1:]
 with open(os.path.join(state, "calls.log"), "a") as f:
-    f.write(json.dumps({"args": args, "launch_env": os.environ.get("SMINOS_LAUNCH", "")}) + "\n")
+    f.write(json.dumps({"args": args, "launch_env": os.environ.get("SMINOS_LAUNCH", ""),
+                        "proof_env": os.environ.get("SMINOS_DESK_PROOF")}) + "\n")
 if args[:1] == ["agents"]:
     print(json.dumps([jload(p) for p in sorted(glob.glob(os.path.join(state, "agents", "*.json")))]))
     sys.exit(0)
@@ -392,6 +393,37 @@ class TheRecord(unittest.TestCase):
         sid2 = json.loads(out)["result"]["session"]
         self.assertEqual(m.record(sid2)["origin"], {"kind": "maws", "requester": MEMBER})
         self.assertEqual(m.record(sid2)["owners"], [MEMBER])
+        m.assert_private()
+
+    def test_a_desk_spawns_proof_is_its_records_ownersProof(self):
+        """O12 M7: a remote desk spawn's proof, handed by the daemon to the
+        verb (SMINOS_DESK_PROOF), is the new session's `ownersProof`, which
+        `list --json` shows; neither the launch's environment nor its
+        settings carry it, and a seat the session spawns copies it. One that
+        does not parse is [] and said in daemon.log, never a refusal; a spawn
+        the daemon handed none (DX2's) keeps [] and says nothing."""
+        m = Machine(self)
+        proof = {"v": 1, "action": {"name": "sminos.spawn", "opId": "op-proof-00000001"}, "sig": "proof-signature"}
+        out = m.py("import json, sminos_rpc as r\n"
+                   "print(json.dumps(r.spawn({'brief': 'b', 'permission_mode': 'auto'}, 'BBBBBBBBBBBBBBBBBBBBBB', "
+                   "sys.argv[1], sys.argv[2], json.loads(sys.argv[3]))))", str(m.repo), MEMBER, json.dumps(proof))
+        sid = json.loads(out)["result"]["session"]
+        self.assertEqual(m.record(sid)["ownersProof"], [proof])
+        self.assertEqual(m.row(sid)["ownersProof"], [proof], "list --json shows it")
+        launches = [json.loads(x) for x in lines(m.state / "calls.log") if "--bg" in json.loads(x)["args"]]
+        self.assertEqual([c["proof_env"] for c in launches], [None], "the session's environment carries no proof")
+        for p in glob.glob(str(m.reg / "settings" / "*.json")):
+            self.assertNotIn("proof-signature", Path(p).read_text(), "nor do its launch settings")
+        kid = m.spawn("kid", env={"CLAUDE_CODE_SESSION_ID": sid})
+        self.assertEqual(m.record(kid)["ownersProof"], [proof], "a seat it spawns copies it")
+        bad = m.spawn("badproof", env={"SMINOS_DESK_MEMBER": MEMBER, "SMINOS_DESK_PROOF": "{not json"})
+        self.assertEqual((m.record(bad)["ownersProof"], m.record(bad)["owners"]), ([], [MEMBER]),
+                         "spawned all the same")
+        said = (m.reg / "daemon.log").read_text()
+        self.assertEqual(said.count("proof does not parse"), 1, said)
+        plain = m.spawn("dx2", env={"SMINOS_DESK_MEMBER": MEMBER})
+        self.assertEqual(m.record(plain)["ownersProof"], [])
+        self.assertEqual((m.reg / "daemon.log").read_text().count("proof"), said.count("proof"), "nothing said")
         m.assert_private()
 
     def test_a_child_whose_hook_runs_before_the_poll_claims_its_launch(self):

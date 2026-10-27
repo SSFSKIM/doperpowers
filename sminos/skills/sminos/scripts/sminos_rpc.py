@@ -167,6 +167,21 @@ session). `rpc-result` carries the `opId` beside the nonce, a loose
 refusal's too; `rpc-ack {opId, nonce}` settles by the nonce, and by the
 `opId` when the ledger holds no op under that nonce.
 
+There a remote action is bound to its sender and fenced to its launch (O12
+M7). Its binding (`member`, `device`, `fingerprint`, `target`) and latest
+nonce are its in-flight record from dispatch on, under the op lock, and the
+claim or the refusal its worker keeps is built from that record; a copy of
+a known or in-flight op naming another member or fingerprint is another
+operation, refused `op-conflict` loose under its own nonce, revealing
+nothing; `query` and `tombstone` answer the binding. An RPC on a session
+carries `context {lane: 'A', session, launch}` (`bad-shape` without it, at
+check 6); every bridge command and decision it makes carries that launch,
+which the bridge's child refuses (`launch`) when its own differs,
+immediately before the mod would act; it never runs on a path around the
+bridge (`context`), and `resume`, `retire` and `stop`, outside the bridge's
+fence, are `unsupported`. A spawn's `proof` reaches the new session's
+record as its `ownersProof` (SMINOS_DESK_PROOF).
+
 Checks 1-6 and the ledger's lookup run on the uplink's main thread, which
 alone may call sminos (its caches are module globals); the digest, the kind,
 the claim, and the execution run on a worker of their own, since a bridge
@@ -206,6 +221,8 @@ KEPT_S = 86400            # the ledger keeps an entry a day
 OP_HORIZON = KEPT_S - 3600   # an op whose opCreated is older is refused `expired`: pruning never reopens an id
 LOOSE_S = 600             # a refusal kept out of the ledger waits this long for its project to open
 LANE_B = bridge.LANE_B    # a MAWS lane B session's refusal: its controller is MAWS (O12 M3)
+LAUNCH = bridge.LAUNCH    # a remote RPC sealed for another launch of its session (O12 M7)
+PROOF_ENV = sminos.DESK_PROOF_ENV   # a desk spawn's proof, handed to its verb (O12 M7)
 STEER_TRACE_S = 30        # a claimed steer's answer is looked for this long after its claim
 SPAWN_TRACE_S = 420       # a claimed spawn's seat: `claude --bg` may take 300 s, its uuid poll more
 RESUME_TRACE_S = 420      # a claimed Resume's job: the same launch and poll
@@ -224,6 +241,9 @@ SCOPED_TYPES = ("addRules", "addDirectories")        # the suggestions a scoped 
 SHA256_RE = re.compile(r"[0-9a-f]{64}")
 OP_ID_RE = re.compile(r"[A-Za-z0-9_-]{16,128}")   # an opId: a file name and an alias seed (MW5's mod takes 1-128)
 REMOTE_KEPT = ("member", "device", "fingerprint", "context", "proof")   # an RL10 RPC's fields its entry keeps
+BINDING = ("member", "device", "fingerprint", "target")   # who sent an RL10 op and what it acts on (O12 M7)
+CONFLICTING = ("member", "fingerprint")   # a copy differing from its op in one of these is another operation
+UNFENCED = ("resume", "retire", "stop")   # run outside the bridge's launch fence: refused a remote context (O10 §G)
 RELOAD = "reload-plugins"
 RECONCILE_EVERY = 1.0     # how often claims left by a stop are looked at again
 SPAWN_TIMEOUT = 600
@@ -375,13 +395,39 @@ def entry_of(rpc, at, remote=False):
     return e
 
 
+def binding_of(record):
+    """The binding an op's ledger entry or in-flight record holds (BINDING:
+    who sent it and what it acts on, an RL10 op's), or {}: a DX2 op's, a
+    tombstone's, and an entry an older daemon wrote hold none."""
+    return {k: record[k] for k in BINDING if k in record} if record else {}
+
+
+def context_refusal(rpc):
+    """Why a remote RPC's context cannot fence it (RL4: an action on a
+    session carries `{lane: 'A', session: args.session, launch}`), or None.
+    A spawn acts on the machine and carries none."""
+    if rpc["rpc"] == "spawn":
+        return None
+    c = rpc.get("context")
+    if not isinstance(c, dict):
+        return "an action on a session carries its context {lane, session, launch}"
+    if c.get("lane") != "A":
+        return "the context's lane is A: a lane B session's actions are its engine host's"
+    if c.get("session") != rpc["args"].get("session"):
+        return "the context names another session than the action's"
+    if not (isinstance(c.get("launch"), str) and c["launch"]):
+        return "the context names no launch of the session"
+    return None
+
+
 def ledger_view(entry, flying, op_created, now):
     """RL4's `query` answer from an op's ledger entry (None: none) and whether
     a worker holds it: `expired` past OP_HORIZON by `op_created` (else the
     entry's own), whatever the ledger holds; `in-progress` while held or
     claimed; `refused` or `done` with the outcome kept (refused: at
     admission, before any claim); else `not-received`, a tombstone's too.
-    The caller answers `unavailable` while the ledger cannot be read."""
+    The caller answers `unavailable` while the ledger cannot be read, and
+    adds the op's binding (binding_of)."""
     if op_created is None and entry is not None:
         op_created = entry.get("op_created", entry.get("created"))
     if isinstance(op_created, (int, float)) and not isinstance(op_created, bool) and now - op_created > OP_HORIZON:
@@ -649,7 +695,15 @@ class Rpcs:
             # Forwarded again (the hub lost it) or resealed: it never runs
             # again, and its one result goes up under this copy's nonce, the
             # one the hub waits for — at once when the ledger holds it, else
-            # once it exists (in flight, or a claim being reconciled).
+            # once it exists (in flight, or a claim being reconciled). On
+            # RL10 a copy is the op's only when it binds as the op does: one
+            # from another member, or of another operation, is refused
+            # `op-conflict`, under its own nonce, and changes nothing.
+            if not self.coded:
+                stored = self.flight.get(op) or known
+                if any(k in stored and rpc.get(k) != stored[k] for k in CONFLICTING):
+                    return self.refuse_loose(rpc, "op-conflict", "%s is another operation's id: this copy is not "
+                                             "that operation, or not its sender's" % op)
             if op in self.flight:
                 self.flight[op]["nonce"] = nonce   # what the worker's claim, or its refusal, is kept under
             if known is not None:
@@ -675,7 +729,11 @@ class Rpcs:
             seat = next((s for s in sminos.seats() if s["current"] == sid), None)
             facts.update(cwd=here.cwd(project, sid),
                          retired_seat=seat["alias"] if seat and seat["status"] == "retired" else None)
-        self.flight[op] = {"nonce": nonce}
+        # The in-flight record (O12 M7): the latest nonce, and on RL10 the
+        # binding, held from here on, so a copy arriving while the worker is
+        # still inside `plan` is checked against it, and the claim or the
+        # refusal the worker keeps is built from it.
+        self.flight[op] = {"nonce": nonce, **({} if self.coded else binding_of(rpc))}
         if name == "compact":
             self.compact_flight[op] = sid
         threading.Thread(target=self.run, args=(rpc, facts), name="rpc-" + name, daemon=True).start()
@@ -696,6 +754,9 @@ class Rpcs:
         if name == "spawn":
             admit_spawn(args, p["ceiling"], here.checkouts(project))
         shape(name, args, rpc.get("member"))
+        why = None if self.coded else context_refusal(rpc)
+        if why is not None:
+            raise Refused("bad-shape", "%s: %s" % (name, why))
         if name == "command" and args["name"] == "cd":
             # Resolve no relative path against the daemon's cwd (nor a stale
             # joined cwd): only a literal absolute checkout is unambiguous.
@@ -739,10 +800,11 @@ class Rpcs:
                                           outcome["error"]["message"]))
 
     def latest(self, rpc):
-        """The RPC under the latest nonce a copy of its op came with while a
-        worker holds it (ticket 11a). The caller holds the op lock."""
+        """The RPC as its in-flight record holds it while a worker does: the
+        latest nonce a copy of its op came with (ticket 11a), and on RL10
+        its binding (O12 M7). The caller holds the op lock."""
         held = self.flight.get(op_of(rpc))
-        return {**rpc, "nonce": held["nonce"]} if held is not None else rpc
+        return {**rpc, **held} if held is not None else rpc
 
     def ack(self, frame):
         """`rpc-ack`: the result taken, by the nonce it went up under; on
@@ -766,7 +828,15 @@ class Rpcs:
         with self.op_lock:
             if not self.ledger.readable():
                 return {"state": "unavailable"}
-            return ledger_view(self.ledger.get(op), op in self.flight, op_created, self.clock())
+            e = self.ledger.get(op)
+            return {**ledger_view(e, op in self.flight, op_created, self.clock()), **self.bound(op, e)}
+
+    def bound(self, op, entry):
+        """The op's binding (O12 M7), which `query` and `tombstone` answer so
+        the endpoint can authorize the asker against it: its entry's, else
+        its in-flight record's before the claim; {} when neither holds one.
+        The caller holds the op lock."""
+        return binding_of(entry) or binding_of(self.flight.get(op))
 
     def tombstone(self, op, op_created=None):
         """RL4's `not-received` tombstone, which the app sends once a query
@@ -782,7 +852,7 @@ class Rpcs:
             e = self.ledger.get(op)
             view = ledger_view(e, op in self.flight, op_created, self.clock())
             if view["state"] != "not-received":
-                return {"ok": False, "state": view["state"]}
+                return {"ok": False, "state": view["state"], **self.bound(op, e)}
             if e is not None:
                 return {"ok": True}
             stone = {"tombstone": True, "at": self.clock(), **({"op_created": op_created} if op_created is not None else {})}
@@ -850,11 +920,23 @@ class Rpcs:
             self.finished.put(("unwritten", (op, outcome)))
 
     def plan(self, rpc, facts):
-        """The action an RPC runs once claimed, or Refused (checks 7-8)."""
+        """The action an RPC runs once claimed, or Refused (checks 7-8). A
+        remote RPC (RL10, O12 M7) is fenced to the launch its context names:
+        every bridge command and decision carries that launch, which the
+        bridge's child checks immediately before the mod acts; nothing it
+        asks runs on a path around the bridge (`context`), and what runs
+        outside the bridge's fence (UNFENCED) is not offered (`unsupported`)."""
         name, args, op = rpc["rpc"], rpc["args"], op_of(rpc)
+        remote = not self.coded
         if name == "spawn":
-            return lambda: spawn(args, op, facts["checkout"], rpc["member"])
+            if remote and "proof" not in rpc:
+                log("spawn %s carries no proof: the session's ownersProof is []" % op)
+            return lambda: spawn(args, op, facts["checkout"], rpc["member"], rpc.get("proof") if remote else None)
         sid = args["session"]
+        launch = rpc["context"]["launch"] if remote else None
+        if remote and name in UNFENCED:
+            raise Refused("unsupported", "%s is not offered to a remote caller: it runs outside the bridge's launch "
+                                         "fence" % name)
         if name == "resume":
             if facts["retired_seat"]:
                 # A retired seat's session would run outside the family:
@@ -878,6 +960,10 @@ class Rpcs:
         path = bridge.endpoint(sid)
         status = bridge.probe(path)
         bridged = status is not None and status.get("session") == sid
+        if remote and not bridged:
+            # Its supervisor's reply or the inbox would run it unfenced.
+            raise Refused("context", "the session has no bridge to fence it: nothing here can hold it to the launch "
+                                     "it was sealed for")
         if name == "answer":
             decision = {"behavior": "allow", "updatedInput": {"answers": args["answers"]}, "by": rpc["member"]}
         elif name == "decide":
@@ -892,26 +978,26 @@ class Rpcs:
             raise Refused("unsupported", "the session is not running: only Resume brings it back")
         if bridged:
             if name == "steer":
-                return lambda: steer(path, args["text"], op)
+                return lambda: steer(path, args["text"], op, launch)
             if name == "interrupt":
-                return lambda: interrupt(path)
+                return lambda: interrupt(path, launch)
             if name == "model":
-                return lambda: model(path, sid, args, self.lock_of(self.model_locks, sid))
+                return lambda: model(path, sid, args, self.lock_of(self.model_locks, sid), launch)
             if name == "compact":
-                return lambda: self.compact(path, rpc, sid)
+                return lambda: self.compact(path, rpc, sid, launch)
             if name == "command":
-                return lambda: self.desk_command(path, rpc, sid, status)
+                return lambda: self.desk_command(path, rpc, sid, status, launch)
             if name == "btw":
-                return lambda: self.side_question(path, rpc, sid)
+                return lambda: self.side_question(path, rpc, sid, launch)
             if name == "media":
-                return lambda: self.media(path, rpc, sid)
+                return lambda: self.media(path, rpc, sid, launch)
             if name in ("answer", "decide"):
-                return lambda: decide(path, args["digest"]["request"], decision)
+                return lambda: decide(path, args["digest"]["request"], {**decision, **fence(launch)})
             if name in ("stop-agent", "tell"):
                 agent = resolve_agent(path, args["agentId"])
                 if name == "stop-agent":
-                    return lambda: stop_agent(path, args["agentId"], agent, op)
-                return lambda: tell(path, args["agentId"], agent, args["text"], op)
+                    return lambda: stop_agent(path, args["agentId"], agent, op, launch)
+                return lambda: tell(path, args["agentId"], agent, args["text"], op, launch)
             if name == "stop":
                 if not jobs.running_task(facts["transcript"], args["taskId"]):
                     raise Refused("unknown-task", "the session's jobs hold no background shell or monitor %s running"
@@ -941,9 +1027,10 @@ class Rpcs:
         with self.locks_lock:
             return locks.setdefault(sid, threading.Lock())
 
-    def compact(self, path, rpc, sid):
+    def compact(self, path, rpc, sid, launch=None):
         instructions = rpc["args"].get("instructions")
-        result, cid = command(path, {"op": "compact", **({"instructions": instructions} if instructions else {})})
+        result, cid = command(path, {"op": "compact", **({"instructions": instructions} if instructions else {}),
+                                     **fence(launch)})
         if not result["ok"]:
             raise Refused("failed", refusal(result))
         if cid:
@@ -958,7 +1045,7 @@ class Rpcs:
         r = result.get("result") or {}
         return done({"at": "turn-end" if r.get("queued") else "now"})
 
-    def desk_command(self, path, rpc, sid, status):
+    def desk_command(self, path, rpc, sid, status, launch=None):
         """A slash command run in the session by its bridge (DX5 `command`),
         which routes it and answers at once; its run's outcome follows on the
         stream (`ops`). The bridge's refusal is the RPC's failure, its code
@@ -979,7 +1066,8 @@ class Rpcs:
             self.note(op, {"op_name": name, "op_args": text, **({"op_child": child} if child else {})})
         except OSError as e:
             log("command %s: what it runs could not be kept in the ledger (%s)" % (op, e))
-        out, cid = command(path, {"op": "command", "name": name, "args": text, "rpc": op, "from": "desk"})
+        out, cid = command(path, {"op": "command", "name": name, "args": text, "rpc": op, "from": "desk",
+                                  **fence(launch)})
         outcome = commanded(out)
         if outcome["state"] != "done":
             self.forget(op, ("op_name", "op_args", "op_child"), "command")   # nothing ran: nothing follows
@@ -993,14 +1081,14 @@ class Rpcs:
         self.finished.put(("op", (oid, rpc["project"], sid, op, name, text, child, "command")))
         return done({**outcome["result"], "id": oid})
 
-    def side_question(self, path, rpc, sid):
+    def side_question(self, path, rpc, sid, launch=None):
         """A side question asked of the session's bridge (DX5 `btw`), which
         answers `started` at once; its answer follows on the stream (`ops`),
         as a desk command's run does. The bridge's refusal is the RPC's
         failure, its code the message's first word. Its id is kept on the
         claim until its end."""
         op = op_of(rpc)
-        out, cid = command(path, {"op": "btw", "prompt": rpc["args"]["prompt"], "rpc": op})
+        out, cid = command(path, {"op": "btw", "prompt": rpc["args"]["prompt"], "rpc": op, **fence(launch)})
         outcome = started(out)
         if outcome["state"] != "done":
             return outcome
@@ -1013,7 +1101,7 @@ class Rpcs:
         self.finished.put(("op", (oid, rpc["project"], sid, op, None, "", None, "btw")))
         return done({"started": True, "id": oid})
 
-    def media(self, path, rpc, sid):
+    def media(self, path, rpc, sid, launch=None):
         """An upload (DX6 `media`, the desk control surface's MW5): saved under
         the session's live working directory, read from its bridge now
         (`/cd` moves it), without following a link (sminos_media), then handed
@@ -1025,7 +1113,8 @@ class Rpcs:
         anything is written, so a restart answers from the child's kept
         answer, and its states follow on the stream as `op` (`ops`)."""
         args, op = rpc["args"], op_of(rpc)
-        out, _ = command(path, {"op": "read", "what": "status"})
+        # The read is fenced too: an upload sealed for another launch saves nothing.
+        out, _ = command(path, {"op": "read", "what": "status", **fence(launch)})
         cwd = (out.get("result") or {}).get("cwd") if out.get("ok") else None
         if not (isinstance(cwd, str) and os.path.isabs(cwd)):
             raise Refused("failed", "the session did not say where it works: %s" % (out.get("error") or cwd))
@@ -1048,11 +1137,13 @@ class Rpcs:
         files = [{"n": n, "path": os.path.join(root, name), "name": a["name"], "mediaType": a["mediaType"]}
                  for n, (name, a) in enumerate(zip(names, args["attachments"]))]
         try:
-            out, _ = command(path, {"op": "media", "upload": op, "root": root, "files": files, "rpc": op})
+            out, _ = command(path, {"op": "media", "upload": op, "root": root, "files": files, "rpc": op,
+                                    **fence(launch)})
         except Refused as e:
-            # An observer's refusal is as definite as any other: nothing holds
-            # the files. A silence is not (it may have run): they stay.
-            if e.outcome["error"]["code"] == LANE_B:
+            # An observer's refusal, or the fence's, is as definite as any
+            # other: nothing holds the files. A silence is not (it may have
+            # run): they stay.
+            if e.outcome["error"]["code"] in (LANE_B, LAUNCH):
                 media.remove(root, names)
             raise
         outcome = media_held(out, kept)
@@ -1314,7 +1405,7 @@ class Rpcs:
             if outcome is None and kept_job(e) and op not in self.copies_asked:
                 self.copies_asked.add(op)
                 with self.op_lock:
-                    self.flight[op] = {"nonce": e.get("nonce", op)}
+                    self.flight[op] = {"nonce": e.get("nonce", op), **binding_of(e)}
                 threading.Thread(target=self.check_copy, args=(op, e), name="rpc-resume-copy",
                                  daemon=True).start()
                 continue
@@ -1631,11 +1722,20 @@ def unanswered(e):
     return "%s: %s" % (type(e).__name__, e)
 
 
+def fence(launch):
+    """A bridge command's or decision's `launch` (O12 M7): the launch of the
+    session a remote RPC was sealed for, which the bridge's child checks
+    against its own before the mod acts; nothing for a local caller's."""
+    return {"launch": launch} if launch is not None else {}
+
+
 def command(path, body):
     """A command on the session's bridge, waiting for the mod's answer:
     ({ok, result?, error?}, the command's id). Refused `failed` when it did
     not reach the mod, or reached it and no answer came; refused `lane-b`
-    when the bridge only observes (a MAWS lane B session, O12 M3)."""
+    when the bridge only observes (a MAWS lane B session, O12 M3); refused
+    `launch` when the child runs another launch of the session than the one
+    the command was sealed for (O12 M7), nothing posted to the mod."""
     try:
         r = control.post_command(path, body)
     except control.Unanswered as e:
@@ -1647,6 +1747,8 @@ def command(path, body):
     if status == 504:
         raise Refused("failed", "the session did not answer within %d s: it may still run it" % (
             control.COMMAND_WAIT_MS // 1000))
+    if status == 409 and out.get("code") == LAUNCH:
+        raise Refused(LAUNCH, refusal(out))
     if status != 200:
         raise Refused("failed", "the bridge answered %d: %s" % (status, out.get("error")))
     if out.get("ok") is False and out.get("code") == LANE_B:
@@ -1661,10 +1763,10 @@ def refusal(out):
     return str(out.get("error") or "the session refused it")
 
 
-def steer(path, text, op):
+def steer(path, text, op, launch=None):
     """The steer as a bridge command carrying the RPC's op, under which the
     bridge's child keeps the mod's answer: the trace a restart finds it by."""
-    out, _ = command(path, {"op": "steer", "text": text, "rpc": op})
+    out, _ = command(path, {"op": "steer", "text": text, "rpc": op, **fence(launch)})
     return steered(out)
 
 
@@ -1707,10 +1809,10 @@ def started(out):
     return refused_op(out)
 
 
-def interrupt(path):
+def interrupt(path, launch=None):
     """The interrupt as a bridge command saying it came from the desk, which
     the record the mod leaves the model names."""
-    out, _ = command(path, {"op": "interrupt", "from": "desk"})
+    out, _ = command(path, {"op": "interrupt", "from": "desk", **fence(launch)})
     if not out.get("ok"):
         raise Refused("failed", refusal(out))
     r = out.get("result") or {}
@@ -1755,13 +1857,14 @@ def resolve_agent(path, ref):
     return named[0]
 
 
-def stop_agent(path, ref, agent, op):
+def stop_agent(path, ref, agent, op, launch=None):
     """One subagent stopped through the session's bridge, which stops the
     agent the tree resolved `ref` to (`agent`, refused if it no longer runs),
     runs TaskStop and leaves the parent its note (DX5 `stop-agent`),
     carrying the RPC's op, under which the bridge's child keeps the
     answer. The agent's end reaches browsers in the subagent tree."""
-    out, _ = command(path, {"op": "stop-agent", "agentId": ref, "resolvedAgentId": agent, "from": "desk", "rpc": op})
+    out, _ = command(path, {"op": "stop-agent", "agentId": ref, "resolvedAgentId": agent, "from": "desk", "rpc": op,
+                            **fence(launch)})
     return agent_stopped(out)
 
 
@@ -1776,11 +1879,12 @@ def agent_stopped(out):
     return done({"agentId": r.get("agentId"), "accepted": True, **extra})
 
 
-def tell(path, ref, agent, text, op):
+def tell(path, ref, agent, text, op, launch=None):
     """A message to one subagent through the session's bridge, which sends
     it with the engine's own delivery to the agent the tree resolved `ref`
     to (DX5 `tell`), carrying the RPC's op."""
-    out, _ = command(path, {"op": "tell", "agentId": ref, "resolvedAgentId": agent, "text": text, "rpc": op})
+    out, _ = command(path, {"op": "tell", "agentId": ref, "resolvedAgentId": agent, "text": text, "rpc": op,
+                            **fence(launch)})
     return told(out)
 
 
@@ -1821,7 +1925,7 @@ def bridge_snapshot(path):
         c.close()
 
 
-def model(path, sid, args, lock):
+def model(path, sid, args, lock, launch=None):
     """The mod replaces model and effort together, so a change naming one
     keeps the other as the session's bridge holds it now: read live from
     the child (its snapshot's `override`, what every writer's `model` event
@@ -1830,7 +1934,7 @@ def model(path, sid, args, lock):
     session, so two partial changes at once take turns. A live read that
     fails refuses the change; a change naming both reads nothing."""
     with lock:
-        body = {"op": "model", "model": args.get("model"), "effort": args.get("effort")}
+        body = {"op": "model", "model": args.get("model"), "effort": args.get("effort"), **fence(launch)}
         if "model" not in args or "effort" not in args:
             try:
                 live = bridge_snapshot(path).get("override") or {}
@@ -1861,6 +1965,8 @@ def decide(path, rid, body):
         return done({})
     if status == 409 and out.get("code") == LANE_B:
         raise Refused(LANE_B, str(out.get("error") or "MAWS controls this session"))
+    if status == 409 and out.get("code") == LAUNCH:
+        raise Refused(LAUNCH, str(out.get("error") or "sealed for another launch of the session"))
     if status == 400:
         raise Refused("bad-shape", str(out.get("error")))
     if status in (404, 409, 410):
@@ -1870,23 +1976,28 @@ def decide(path, rid, body):
     raise Refused("failed", "the bridge answered %d: %s" % (status, out.get("error")))
 
 
-def verb_env(member=None):
+def verb_env(member=None, proof=None):
     """The daemon's environment for a `sminos` verb, as the operator's: never
     a session's (a CLAUDE_CODE_SESSION_ID would make the verb a member's).
     With `member`, the verb's lifecycle events name the desk member it acts
-    for as `by` (composite 21c32db7)."""
+    for as `by` (composite 21c32db7); with `proof`, a desk spawn's signed
+    action (RL10), its canonical JSON goes to the verb as SMINOS_DESK_PROOF,
+    which the new session's record keeps as its ownersProof (O12 M7)."""
     env = dict(os.environ)
     env.pop("CLAUDE_CODE_SESSION_ID", None)
     env.pop(sminos.DESK_MEMBER_ENV, None)
+    env.pop(PROOF_ENV, None)
     if member:
         env[sminos.DESK_MEMBER_ENV] = member
+    if proof is not None:
+        env[PROOF_ENV] = json.dumps(proof, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return env
 
 
-def run_verb(argv, cwd, timeout, member=None):
+def run_verb(argv, cwd, timeout, member=None, proof=None):
     """(exit code, stdout, stderr) of a `sminos` verb."""
     try:
-        p = subprocess.run(SMINOS_CLI + argv, cwd=cwd, env=verb_env(member), stdin=subprocess.DEVNULL,
+        p = subprocess.run(SMINOS_CLI + argv, cwd=cwd, env=verb_env(member, proof), stdin=subprocess.DEVNULL,
                            capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
         raise Refused("failed", "sminos %s did not finish within %d s" % (argv[0], timeout))
@@ -1913,17 +2024,17 @@ def steer_without_bridge(sid, text, root):
     raise Refused("failed", last_line(err) or "sminos steer exited %d" % rc)
 
 
-def spawn(args, op, checkout, member):
+def spawn(args, op, checkout, member, proof=None):
     """`sminos spawn` into the checkout, the RPC's op stamped on the seat's
     record from its first write (`rpc_nonce`), the brief as its in-charge
-    line."""
+    line; a remote spawn's `proof` handed to the verb (verb_env)."""
     alias = alias_for(op)
     argv = ["spawn", "--cwd=" + checkout, "--brief=" + args["brief"], "--permission-mode=" + args["permission_mode"],
             "--stamp=rpc_nonce=" + op]
     for flag in ("worktree", "model", "effort"):
         if args.get(flag):
             argv.append("--%s=%s" % (flag, args[flag]))
-    rc, out, err = run_verb(argv + ["--", alias, SPAWN_TASK], checkout, SPAWN_TIMEOUT, member)
+    rc, out, err = run_verb(argv + ["--", alias, SPAWN_TASK], checkout, SPAWN_TIMEOUT, member, proof)
     if rc != 0:
         raise Refused("failed", last_line(err) or "sminos spawn exited %d" % rc)
     found = spawned(op)

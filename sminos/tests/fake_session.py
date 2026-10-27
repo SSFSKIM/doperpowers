@@ -93,6 +93,7 @@ class Endpoint:
         self.resyncs = 0
         self.sent = 0         # events fanned out
         self.capabilities = None   # the last resync's (DX5)
+        self.launch = None         # the process's launch its module named (`--launch`, O12 M7)
         self.hold = 0.0       # s: how long a `slow` read is held
 
     def snapshot(self):
@@ -243,6 +244,7 @@ class _Handler(BaseHTTPRequestHandler):
         ep = self.server.endpoint
         if self.path == "/status":
             return self._send(200, {"session": ep.session, "pid": os.getpid(), "protocol": 1, "ready": ep.ready,
+                                    **({"launch": ep.launch} if ep.launch is not None else {}),
                                     **({"capabilities": ep.capabilities} if ep.capabilities is not None else {})})
         if self.path != "/events":
             return self._send(404, {"error": "no route"})
@@ -500,6 +502,7 @@ class FakeSession:
 
     real = False          # start_bridge spawns the real child, not the script
     capabilities = None   # what the mod's resyncs say it can do (DX5): none, as a mod from before sminos 1.7.0
+    launch = None         # the process's launch the scripted child says (O12 M7): none, as a mod from before it
     legacy = False        # the mod (and the scripted child) from before the open-fast spec's M5: named blocks dropped, nothing declared
     child_env = None
 
@@ -521,6 +524,7 @@ class FakeSession:
             except OSError:
                 pass
             self.endpoint = self.module = Endpoint(self.session, legacy=self.legacy)
+            self.endpoint.launch = self.launch
             self.server = _Server(path, _Handler)
             self.server.endpoint = self.endpoint
             threading.Thread(target=self.server.serve_forever, daemon=True).start()
@@ -579,6 +583,7 @@ class FakeSession:
             d = os.path.join(self.sminos_home, "bridge")
             tmp = os.path.join(d, ".%s.next.sock" % self.session[:8])
             self.endpoint = Endpoint(self.session, legacy=self.legacy)
+            self.endpoint.launch = self.launch
             self.server = _Server(tmp, _Handler)
             self.server.endpoint = self.endpoint
             os.replace(tmp, os.path.join(d, self.session + ".sock"))

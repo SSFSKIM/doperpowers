@@ -540,8 +540,9 @@ class Bridge:
     process its parent; events posted as the mod posts them, and a delivery
     (`deliver`) answered as the mod answers one it submitted."""
 
-    def __init__(self, sid, ready=True):
+    def __init__(self, sid, ready=True, launch=None):
         self.sid = sid
+        self.launch = launch   # the process's launch the mod names (`--launch`, O12 M7); None: a module naming none
         self.delivered = []
         # A reason here: each delivery is then dropped by the engine after
         # it was submitted, as the mod reports a PromptSubmitResult.drop.
@@ -550,7 +551,8 @@ class Bridge:
         # as it does (bridge-stream.tsx, lose): a gap, then a resync of its
         # state, which carries the refusals no answered post has.
         self.losing_refusals = False
-        self.proc = subprocess.Popen([CLI, "bridge", "--session", sid], stdout=subprocess.PIPE,
+        self.proc = subprocess.Popen([CLI, "bridge", "--session", sid] + (["--launch=" + launch] if launch else []),
+                                     stdout=subprocess.PIPE,
                                      stderr=subprocess.DEVNULL, text=True)
         hello = json.loads(self.proc.stdout.readline())
         assert hello.get("op") == "hello", hello

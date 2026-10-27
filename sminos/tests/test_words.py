@@ -599,6 +599,30 @@ class Members(Machine):
         self.assertEqual(lane(origin={"kind": "maws"}, controller={"lane": "A", "since": "t"}), "A")
         self.assertEqual(lane(origin={"kind": "terminal"}), "A")
 
+    def test_the_launch_follows_the_bridge(self):
+        """O12 M7: `member.launch` is the launch the session's bridge names
+        (the plane's probe of its status, which RL10's presence carries),
+        absent while it has none, and sent again when a relaunch names
+        another."""
+        self.assertEqual(uplink.member_frame("p1", member(S1, cwd="/w"), "launch-one")["launch"], "launch-one")
+        self.assertNotIn("launch", uplink.member_frame("p1", member(S1, cwd="/w")))
+        p = self.project("alpha")
+        self.session(p, S1)
+        link = self.link()
+        launches = {}
+        now = 1000.0
+        with mock.patch.object(link.plane.bridges, "launch", side_effect=launches.get):
+            link.members(now)
+            self.assertNotIn("launch", link.session_lane.take()[0], "no bridge yet")
+            launches[S1] = "launch-one"
+            link.members(now + 1)
+            self.assertEqual([f.get("launch") for f in link.session_lane.take()], ["launch-one"])
+            launches[S1] = "launch-two"
+            link.members(now + 2)
+            self.assertEqual([f.get("launch") for f in link.session_lane.take()], ["launch-two"], "a relaunch")
+            link.members(now + 3)
+            self.assertEqual(link.session_lane.take(), [])
+
     def test_the_set_its_diff_and_gone(self):
         p, q = self.project("alpha"), self.project("beta")
         self.session(p, S1)

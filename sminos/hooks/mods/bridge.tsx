@@ -268,6 +268,37 @@ const CONTROL_OPS = new Set(OPS.filter((op) => op !== 'ping' && op !== 'read'))
 export const LANE_B = 'lane-b'
 /** The lane verdict kept for a module reload (types/sminos.d.ts): the process's, so a reload never re-opens the provisional window. */
 const LANE = { plugin: 'sminos', key: 'lane' } as const
+const LAUNCH = { plugin: 'sminos', key: 'launch' } as const
+/** A launch as this module mints it: 16 random bytes, base64url. */
+const LAUNCH_RE = /^[A-Za-z0-9_-]{22}$/
+
+/** A new launch: 16 random bytes, base64url without padding. */
+function mintLaunch(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(16))
+  return btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+}
+
+/**
+ * This process's launch (O12 M7): the one a module before this one kept in
+ * `$.state` (a reload), else a new one, kept for the next. A `--resume` is a
+ * new process, whose host holds nothing: it mints its own, so a desk action
+ * sealed for the process before is refused at the child.
+ */
+async function takeLaunch($: EngineInterface): Promise<void> {
+  if (state.launch !== undefined) {
+    return
+  }
+  const kept = await $.state.get(LAUNCH).then(
+    (read) => read.value,
+    () => undefined,
+  )
+  if (typeof kept === 'string' && LAUNCH_RE.test(kept)) {
+    state.launch = kept
+    return
+  }
+  state.launch = mintLaunch()
+  await $.state.set(LAUNCH, state.launch).catch((error: unknown) => $.ui.log(`bridge: the launch is not kept for a reload: ${message(error)}`, { to: 'debug' }))
+}
 /** The DX5 protocol the capabilities speak: 2 is the desk's control surface (capabilities, `read`, `command`). */
 export const CAPABILITIES_PROTOCOL = 2
 /**
@@ -1421,7 +1452,9 @@ function startChild($: EngineInterface, session: string) {
       // replacement after the engine host exited would find the engine
       // re-parented, and its own parent check would say mismatch.
       const lane = state.isLaneMarked && (state.laneVerdict === 'match' || state.laneVerdict === 'mismatch') ? ['--lane', state.laneVerdict] : []
-      const child = $.process.spawn({ argv: [`${$.plugin.root}/skills/sminos/scripts/sminos`, 'bridge', '--session', session, ...lane] })
+      // The process's launch, joined to its flag: a base64url id may start with `-`.
+      const launch = state.launch !== undefined ? [`--launch=${state.launch}`] : []
+      const child = $.process.spawn({ argv: [`${$.plugin.root}/skills/sminos/scripts/sminos`, 'bridge', '--session', session, ...launch, ...lane] })
       state.child = child
       for await (const piece of child) {
         if (piece.stream === 'stderr') {
@@ -1658,6 +1691,7 @@ export async function bridgeStart($: EngineInterface, e: SessionStartInput) {
       state.laneVerdict = kept
     }
   }
+  await takeLaunch($)
   state.post = (socketPath, nonce, body) =>
     $.http.fetch('http://bridge/events', {
       method: 'POST',
