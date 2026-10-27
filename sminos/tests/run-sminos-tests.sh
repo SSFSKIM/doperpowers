@@ -396,6 +396,8 @@ run_suites() {
     fail "the RPCs: verified, bound, at most once (test_rpcs.py)"; fi
   if python3 "$SCRIPT_DIR/test_media.py"; then pass "a desk upload's files: no link followed, excluded, swept (test_media.py)"; else
     fail "a desk upload's files: no link followed, excluded, swept (test_media.py)"; fi
+  if python3 "$SCRIPT_DIR/test_records.py"; then pass "each session's record: owners, origin, route, claimed at launch (test_records.py)"; else
+    fail "each session's record: owners, origin, route, claimed at launch (test_records.py)"; fi
   if python3 "$SCRIPT_DIR/test_scale.py"; then
     pass "a machine that follows its whole org: no walk per session, no stale re-join, the directory first (test_scale.py)"
   else fail "a machine that follows its whole org: no walk per session, no stale re-join, the directory first (test_scale.py)"; fi
@@ -790,9 +792,15 @@ launch_settings_of() { # the --settings value of the last --bg launch
 settings_json() { # file key → that key of the settings file, as JSON
   python3 -c 'import json, sys; print(json.dumps(json.load(open(sys.argv[1])).get(sys.argv[2]), sort_keys=True))' "$1" "$2"
 }
+settings_env() { # file → its env, as JSON, less the launch id every spawn's settings carry (test_records.py pins it)
+  python3 -c 'import json, sys
+env = json.load(open(sys.argv[1])).get("env") or {}
+launch = env.pop("SMINOS_LAUNCH", "")
+print(json.dumps(env, sort_keys=True) if len(launch) == 32 else "no SMINOS_LAUNCH: %r" % launch)' "$1"
+}
 GW_LAUNCH="$(launch_settings_of)"
 assert_contains "$GW_LAUNCH" "$SMINOS_HOME/settings/" "a seat launched under a set SMINOS_HOME gets settings written under it"
-assert_equals "$(settings_json "$GW_LAUNCH" env)" \
+assert_equals "$(settings_env "$GW_LAUNCH")" \
   "{\"ANTHROPIC_AUTH_TOKEN\": \"tok\", \"ANTHROPIC_BASE_URL\": \"http://gw\", \"CLAUDE_CODE_SUBAGENT_MODEL\": \"m\", \"PATH\": \"/nope\", \"SMINOS_HOME\": \"$SMINOS_HOME\"}" \
   "the caller's settings merged with the spawner's SMINOS_HOME"
 assert_contains "$(grep -- '--bg' "$STUB_STATE/log/calls.log" | tail -1)" "--settings $GW_LAUNCH --effort high" "gateway flags reach the launch"
@@ -801,15 +809,15 @@ assert_contains "$(grep 'bg-env:' "$STUB_STATE/log/calls.log" | tail -1)" "runne
 run "$SMINOS" spawn plain2 "PLAIN-2"
 assert_contains "$(grep 'bg-env:' "$STUB_STATE/log/calls.log" | tail -1)" "base=;token=;sub=;keep=keep;runner=;path=set" "plain route scrubs the gateway env keys, keeps PATH and unrelated vars"
 PLAIN_LAUNCH="$(launch_settings_of)"
-assert_equals "$(settings_json "$PLAIN_LAUNCH" env)" "{\"SMINOS_HOME\": \"$SMINOS_HOME\"}" \
-  "a plain-route seat's settings carry only the spawner's SMINOS_HOME, the route still the caller's"
+assert_equals "$(settings_env "$PLAIN_LAUNCH")" "{\"SMINOS_HOME\": \"$SMINOS_HOME\"}" \
+  "a plain-route seat's settings carry only the spawner's SMINOS_HOME (and its launch id), the route still the caller's"
 assert_equals "$(field "$(banner_uuid "$OUT")" settings)" "" "and its record keeps the plain route"
 unset ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_SUBAGENT_MODEL UNRELATED_TRANSPORT_VAR RUNNER_TRACKING_ID
 # A caller's --settings given inline (a JSON object) is merged the same way.
 run "$SMINOS" spawn inlineset "IN-1" --settings '{"model": "x", "env": {"SMINOS_HOME": "/elsewhere"}}'
 assert_rc 0 "$RC" "spawn with inline JSON settings exits 0"
 assert_equals "$(settings_json "$(launch_settings_of)" model)" '"x"' "an inline settings object is kept"
-assert_equals "$(settings_json "$(launch_settings_of)" env)" "{\"SMINOS_HOME\": \"$SMINOS_HOME\"}" "and its SMINOS_HOME is the spawner's"
+assert_equals "$(settings_env "$(launch_settings_of)")" "{\"SMINOS_HOME\": \"$SMINOS_HOME\"}" "and its SMINOS_HOME is the spawner's"
 "$SMINOS" remove work/inlineset >/dev/null
 run "$SMINOS" spawn badset "B" --settings "$TEST_ROOT/no-such-settings.json"
 assert_rc 2 "$RC" "a --settings file that cannot be read is a usage error"

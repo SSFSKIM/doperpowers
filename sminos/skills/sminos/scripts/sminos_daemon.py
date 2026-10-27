@@ -619,7 +619,7 @@ def rejoin_former(project, view=None):
         got = sminos.lifecycle(project, m.session, "joined", guard=guard, required=False,
                                **sminos.joined_fields(m.alias, m.name_source, *(
                                    j.get(k, "") for k in ("cwd", "worktree", "role", "seat", "by")),
-                                   session_kind=str(j.get("session_kind") or m.kind)))
+                                   session_kind=str(j.get("session_kind") or m.kind), session=m.session))
         if got:
             n += 1
             if m.state:
@@ -987,13 +987,23 @@ def sweep_uploads():
 
 
 def override_duty():
-    """The sweep of join overrides, at most once every OVERRIDE_SWEEP_EVERY
-    per loop (a one-shot tick sweeps each time)."""
+    """The sweep of join overrides, and of spawns' pending launches, at most
+    once every OVERRIDE_SWEEP_EVERY per loop (a one-shot tick sweeps each
+    time)."""
     global _OVERRIDES_SWEPT
     if time.time() - _OVERRIDES_SWEPT < OVERRIDE_SWEEP_EVERY:
         return
     _OVERRIDES_SWEPT = time.time()
     sweep_overrides()
+    sweep_launches()
+
+
+def sweep_launches():
+    """A spawn's pending provenance no session claimed within a day
+    (sminos_records.PENDING_KEPT_S) is removed, a daemon.log line each: the
+    launch it waited for never started, or never ran its hook."""
+    for launch in sminos.records_module().sweep_pending():
+        sminos.daemon_log("removed the unclaimed pending launch %s" % launch)
 
 
 def sweep_overrides():
