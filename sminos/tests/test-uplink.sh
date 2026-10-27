@@ -72,7 +72,7 @@ alive() { kill -0 "$1" 2>/dev/null; }
 dead() { ! kill -0 "$1" 2>/dev/null; }
 gitq() { git -c user.name=t -c user.email=t@t -c init.defaultBranch=main "$@"; }
 
-unset CLAUDE_CODE_SESSION_ID SMNS_INTERNAL DAEMON_HOME AGORA_HOME
+unset CLAUDE_CODE_SESSION_ID SMNS_INTERNAL DAEMON_HOME AGORA_HOME MAWS_USER_DATA SMINOS_RL10
 export HOME="$T/home"
 export SMINOS_HOME="$T/s"
 export DAEMON_HOST=testhost
@@ -856,6 +856,174 @@ PY
 )"
 assert_equals "$CONFLICT" '[1, 0, [["conflict", {"writer": "testhost/5a000005-0000-4000-8000-0000000000e5", "seq": 1}]], 0, []]' \
   "a different event that verifies at a held position is refused conflict, not bad-code, and the held event's echo imports as present"
+
+# ---- RL10: the machine cuts over to its endpoint (O12 M5)
+# The endpoint stand-in (endpoint_standin.py) writes rl10.json where
+# MAWS_USER_DATA puts it. One that names no endpoint (mode 644) is said once.
+# One that does is probed beside the hub's stream, never in its place: a
+# welcome without the whole identity (an endpoint not enrolled yet), a wrong
+# token and a refusal each leave the hub's uplink as it was. Only a whole
+# welcome cuts the machine over, for good: no connection to the hub stand-in
+# after it, with hub.json replaced or the endpoint gone. The endpoint's
+# policy is the machine's, which delivery reads.
+echo "RL10, the endpoint (local-only):"
+export MAWS_USER_DATA="$T/maws"
+EPDIR="$MAWS_USER_DATA/mawsd/endpoint"
+IDENTITY="{\"org\": \"org-1\", \"hub\": \"$HUB\", \"name\": \"testhost\", \"former\": [], \"ref\": \"ref-testhost\", \"enrolled\": \"2026-10-27T00:00:00.000Z\"}"
+python3 "$SCRIPT_DIR/endpoint_standin.py" serve "$EPDIR" "{\"identity\": {\"name\": \"testhost\", \"hub\": \"$HUB\", \"former\": []}}" &
+PIDS+=("$!")
+until_true 100 test -S "$EPDIR/ctl.sock"
+ep() { python3 "$SCRIPT_DIR/endpoint_standin.py" ctl "$EPDIR" "$@"; }
+epq() { ep state | python3 -c 'import json, sys; d = json.load(sys.stdin); print(json.dumps(eval(sys.argv[1], {"d": d})))' "$1"; }
+hubq() { python3 - "$T/hub.port" "$1" <<'PY'
+import http.client, json, sys
+c = http.client.HTTPConnection("127.0.0.1", int(open(sys.argv[1]).read()), timeout=30)
+c.request("GET", "/control/state")
+print(json.dumps(eval(sys.argv[2], {"d": json.loads(c.getresponse().read())})))
+PY
+}
+hub_seen() { hubq '[d["generation"], len(d["posted"]), len(d["requests"])]'; }
+next_seq() { python3 -c 'import json, sys; print(max(json.loads(l)["seq"] for l in open(sys.argv[1]) if l.strip()) + 1)' "$HPLOG/hub.$MEMBER.jsonl"; }
+cut_over() { test -f "$SMINOS_HOME/daemon/identity.json"; }
+probed() { grep -Fq "uplink: the endpoint, probed: $1" "$DLOG"; }
+dx2_holds() { # label — the hub's uplink is the one start_run began, its stream open, and a web event reaches m
+  local took
+  if [[ "$(uplink_pid)" == "$UP" ]] && alive "$UP" && [ "$(ctl opened "$HP")" = yes ]; then
+    pass "$1: the hub's uplink runs on, its stream open"; else fail "$1: the hub's uplink runs on, its stream open"; fi
+  took="$(deliver_time "$(next_seq)" "said from the web: $1")"
+  assert_within "$took" 5.0 "$1: an event from the hub still reaches m"
+  assert_equals "$(cut_over && echo there || echo none)" none "$1: no identity.json"
+}
+ep rl10 '{"mode": "644"}' >/dev/null
+NOEP="is mode 644, not 600"
+start_run
+assert_equals "$(test -n "$UP" && alive "$UP" && echo up)" up "with an rl10.json of mode 644, the uplink holds the hub's stream as before"
+sleep 2
+assert_equals "$(grep -c "rl10: no endpoint: .*$NOEP" "$DLOG")" 1 "that rl10.json is no endpoint, said once in daemon.log"
+assert_equals "$(epq 'd["conns"]')" 0 "and nothing dials its socket"
+run "$SMINOS" daemon status
+assert_contains "$OUT" "uplink: running (pid $UP" "daemon status shows the hub's uplink"
+
+echo "  an endpoint not enrolled, a wrong token, a refusal:"
+ep rl10 '{}' >/dev/null
+until_true 200 probed "present but not enrolled" || true
+assert_equals "$(probed "present but not enrolled" && echo said)" said \
+  "a welcome without the identity's org and ref is an endpoint not enrolled (daemon.log)"
+dx2_holds "an endpoint not enrolled"
+run "$SMINOS" daemon status
+assert_contains "$OUT" "uplink: running (pid $UP" "daemon status shows the hub's uplink"
+assert_contains "$OUT" "endpoint: present at $EPDIR/rl10.json but not enrolled" "and the endpoint present but not enrolled"
+ep set "{\"identity\": $IDENTITY}" >/dev/null
+ep rl10 '{"token": "0000000000000000000000000000000000000000000000000000000000000000"}' >/dev/null
+until_true 200 probed "it did not welcome this machine (the endpoint closed the socket" || true
+assert_equals "$(probed "it did not welcome this machine (the endpoint closed the socket" && echo said)" said \
+  "a wrong token: the endpoint closes the socket (daemon.log)"
+dx2_holds "a wrong token"
+ep set '{"refuse_reason": "not-listed"}' >/dev/null
+ep rl10 '{"token": "1111111111111111111111111111111111111111111111111111111111111111"}' >/dev/null
+until_true 200 probed "it did not welcome this machine (the endpoint refused the hello: not-listed)" || true
+assert_equals "$(probed "it did not welcome this machine (the endpoint refused the hello: not-listed)" && echo said)" said \
+  "a refusal (daemon.log)"
+dx2_holds "a refusal"
+assert_equals "$(epq '[f["frame"]["t"] for f in d["received"]]')" "$(epq '["hello"] * len(d["hellos"])')" \
+  "the probes sent the endpoint nothing but their hellos"
+ep set '{"refuse_reason": null}' >/dev/null
+
+echo "  the cutover:"
+HELLOS="$(epq 'len(d["hellos"])')"
+ep rl10 '{}' >/dev/null
+until_true 200 cut_over || true
+assert_equals "$(cut_over && echo there)" there "a whole welcome to the probe writes identity.json"
+moved() { grep -Fq "uplink (pid $UP): the endpoint welcomed this machine, which is cut over: restarting it on RL10 (local-only)" "$DLOG"; }
+until_true 200 moved || true
+assert_equals "$(moved && echo said)" said "and only then is the hub's uplink stopped, the uplink restarted on RL10 (daemon.log)"
+until_true 100 dead "$UP" || true
+assert_equals "$(dead "$UP" && echo gone)" gone "the hub's uplink is gone"
+assert_equals "$(python3 -c 'import os, stat, sys; print(oct(stat.S_IMODE(os.stat(sys.argv[1]).st_mode)))' "$SMINOS_HOME/daemon/identity.json")" \
+  0o600 "identity.json is mode 600"
+on_rl10() { [ "$(epq 'len(d["hellos"])')" -ge $((HELLOS + 2)) ]; }
+until_true 200 on_rl10 || true
+assert_equals "$(epq "[len(d['hellos']) - $HELLOS, all(h['hello']['token'] == d['token'] for h in d['hellos'][$HELLOS:])]")" "[2, true]" \
+  "the probe's hello and then the RL10 uplink's, each with rl10.json's token"
+NEWUP() { p="$(uplink_pid)"; [[ -n "$p" && "$p" != "$UP" ]] && alive "$p"; }
+until_true 100 NEWUP || true
+UP="$(uplink_pid)"
+sleep 1
+SEEN="$(hub_seen)"
+run "$SMINOS" daemon status
+assert_contains "$OUT" "uplink: RL10 (local-only), running (pid $UP" "daemon status prints uplink: RL10 (local-only)"
+rl10_hello() { [ "$(epq "any(f['frame'].get('t') == 'hello' and f['frame'].get('project') == '$HP' for f in d['received'])")" = true ]; }
+until_true 200 rl10_hello || true
+assert_equals "$(rl10_hello && echo yes)" yes "the hub project is opened on the endpoint's socket"
+run "$SMINOS" hub show
+assert_contains "$OUT" "cut over" "hub show prints the identity, cut over"
+
+echo "  the endpoint's policy, which delivery reads:"
+ep send '{"frames": [{"t": "policy", "read_only": true, "ceiling": "default"}]}' >/dev/null
+read_only_is() { "$SMINOS" daemon policy | grep -q "read-only: $1"; }
+until_true 200 read_only_is yes || true
+assert_equals "$(read_only_is yes && echo yes)" yes "a policy frame from the endpoint makes the machine read-only"
+cat > "$T/outside.py" <<'PY'
+import json, os, sys, time
+sys.path.insert(0, os.environ["SCRIPTS"])
+import sminos, sminos_hublog as hublog
+p = sminos.find_project(os.environ["HP"])
+w = "hub/" + os.environ["MEMBER"]
+path = os.path.join(p.home, "log", w.replace("/", ".") + ".jsonl")
+last = max(json.loads(l)["seq"] for l in open(path) if l.strip())
+ts = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime())
+e = {"ts": ts, "writer": w, "seq": last + 1, "kind": "human", "from": "human", "member": os.environ["MEMBER"],
+     "to": [{"session": os.environ["M"], "alias": "m"}], "text": sys.argv[1], "created": ts}
+print(hublog.append_verbatim(p, e))
+PY
+assert_equals "$(python3 "$T/outside.py" "said from outside while read-only")" appended "an event from outside is in the log"
+refused_ro() { grep -rqF "refused-read-only" "$SMINOS_HOME/projects/$HP/" 2>/dev/null; }
+until_true 200 refused_ro || true
+assert_equals "$(refused_ro && echo yes)" yes "delivery settles it refused-read-only"
+assert_not_contains "$(cat "$INBOX")" "said from outside while read-only" "and m never gets it"
+run "$SMINOS" daemon policy --read-only off
+assert_contains "$OUT" "This machine's policy is its endpoint's" "daemon policy says the endpoint decides"
+asked() { [ "$(epq "any(f['frame'] == {'t': 'policy-set', 'read_only': False} for f in d['received'])")" = true ]; }
+until_true 200 asked || true
+assert_equals "$(asked && echo yes)" yes "the uplink asks the endpoint for the change (policy-set)"
+until_true 200 read_only_is no || true
+assert_equals "$(python3 -c 'import json, sys; print(json.dumps(json.load(open(sys.argv[1]))))' "$SMINOS_HOME/daemon/policy.json")" \
+  '{"read_only": false, "ceiling": "default", "endpoint": {"read_only": false, "ceiling": "default"}}' \
+  "and the policy settles on the endpoint's answer"
+python3 "$T/outside.py" "said from outside after read-only" >/dev/null
+until_true 200 grep -q "said from outside after read-only" "$INBOX" || true
+assert_contains "$(cat "$INBOX")" "said from outside after read-only" "an event from outside is delivered again"
+
+echo "  for good:"
+printf '{"hub": "%s", "org": "org-1", "machine": "testhost", "client_id": "cid-1", "client_secret": "secret-1", "key": "%s", "enrolled": "%s"}\n' \
+  "$HUB" "$KEY" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$SMINOS_HOME/daemon/hub.json"
+sleep 2
+assert_equals "$(uplink_pid)" "$UP" "a fresh DX7 credential in hub.json after the cutover restarts nothing"
+assert_equals "$(hub_seen)" "$SEEN" "and since the cutover nothing has reached the hub stand-in: no stream, no POST, no request"
+ep unlink-rl10 >/dev/null
+until_true 100 dead "$UP" || true
+if dead "$UP"; then pass "with rl10.json removed, the uplink child exits"; else fail "with rl10.json removed, the uplink child exits"; fi
+assert_contains "$(cat "$DLOG")" "uplink (pid $UP): rl10.json is gone, and this machine is cut over: no uplink runs until the endpoint does" \
+  "daemon.log says why"
+assert_contains "$(cat "$DLOG")" "uplink: this machine is cut over to its endpoint, which is not running" "and that it waits for the endpoint"
+sleep 2
+run "$SMINOS" daemon status
+assert_not_contains "$OUT" "uplink: running" "no DX2 uplink starts in its place"
+assert_contains "$OUT" "uplink: cut over; the endpoint is not running" "daemon status says cut over; the endpoint is not running"
+assert_equals "$(hub_seen)" "$SEEN" "the hub stand-in still saw nothing"
+CUTOVER="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["cutover"])' "$SMINOS_HOME/daemon/identity.json")"
+HELLOS="$(epq 'len(d["hellos"])')"
+ep rl10 '{}' >/dev/null
+again() { [ "$(epq 'len(d["hellos"])')" -gt "$HELLOS" ]; }
+until_true 200 again || true
+sleep 1
+assert_equals "$(epq "len(d['hellos']) - $HELLOS")" 1 "rl10.json back: the uplink speaks to the endpoint again, once"
+assert_equals "$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["cutover"])' "$SMINOS_HOME/daemon/identity.json")" \
+  "$CUTOVER" "the cutover's time is kept"
+kill "$RUN"
+set +e; wait "$RUN"; set -e
+assert_not_contains "$(cat "$DLOG")" "$KEY" "the DX1 key handed to the endpoint is in no log line"
+assert_equals "$(epq 'd["legacy"]["key"]')" "\"$KEY\"" "the endpoint holds it"
 
 echo
 if [ "$FAILURES" -eq 0 ]; then

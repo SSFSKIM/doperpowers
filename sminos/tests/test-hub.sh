@@ -69,7 +69,7 @@ until_true() { # tries command...
 gitq() { git -c user.name=t -c user.email=t@t -c init.defaultBranch=main "$@"; }
 json_get() { python3 -c 'import json, sys; d = json.load(open(sys.argv[1])); print(json.dumps(eval(sys.argv[2], {"d": d})))' "$@"; }
 
-unset CLAUDE_CODE_SESSION_ID SMNS_INTERNAL DAEMON_HOME AGORA_HOME DAEMON_HOST
+unset CLAUDE_CODE_SESSION_ID SMNS_INTERNAL DAEMON_HOME AGORA_HOME DAEMON_HOST MAWS_USER_DATA SMINOS_RL10
 export SMINOS_DERIVE_EVERY=0
 export DAEMON_BOOT_ID=boot-current
 mkdir -p "$T/bin"
@@ -1055,6 +1055,72 @@ ctl cut 401 text/html '<html><title>Cloudflare Access</title></html>' 2
 leave_keeps "Access's 401 page cut short, past the grace"
 ctl answer '[]'
 check_is 0 "accepted" "the credential, kept, is still accepted"
+cd "$T"
+
+# ---- a machine cut over to its endpoint (O12 M5)
+# Enrolled at the hub as omega, the machine is cut over by its endpoint's
+# welcome (endpoint_standin.py, as `daemon run`'s probe meets it), which names
+# it sigma: identity.json holds the identity, omega's sessions stay this
+# machine's, and the enrollment is the endpoint's — hub show prints it,
+# enroll, check and leave exit 1 without a word to the hub, and hub.json
+# stays, its key the endpoint's to ask for.
+echo "a machine cut over to its endpoint:"
+as cut omega
+enroll "$(code_for omega)"
+assert_rc 0 "$RC" "enrolled at the hub as omega"
+PC="$T/cut/proj"
+mkdir -p "$PC"
+gitq init -q "$PC"
+cd "$PC"
+"$SMINOS" project init --name cproj >/dev/null
+S5=5c000005-0000-4000-8000-0000000000c5
+printf '{"pid":%s,"sessionId":"%s","name":"cterm","nameSource":"derived","kind":"interactive","status":"idle","cwd":"%s"}\n' \
+  "$$" "$S5" "$PC" > "$HOME/.claude/sessions/cterm.json"
+run "$SMINOS" list --json
+assert_equals "$(machines)" "[('cterm', 'omega', True)]" "a session joins as omega"
+export MAWS_USER_DATA="$T/cut/maws"
+EPC="$MAWS_USER_DATA/mawsd/endpoint"
+python3 "$SCRIPT_DIR/endpoint_standin.py" serve "$EPC" "{\"identity\": {\"org\": \"org-1\", \"hub\": \"$HUB\", \"name\": \"sigma\", \"former\": [\"omega\"], \"ref\": \"ref-sigma\", \"enrolled\": \"2026-10-27T00:00:00.000Z\"}}" &
+PIDS+=("$!")
+until_true 100 test -S "$EPC/ctl.sock"
+REQUESTS="$(ctl state 'len(d["requests"])')"
+CRED_BEFORE="$(cat "$(cred)")"
+run "$SMINOS" daemon probe
+assert_rc 0 "$RC" "the endpoint's whole welcome cuts the machine over"
+IDENT="$SMINOS_HOME/daemon/identity.json"
+assert_equals "$(mode_of "$IDENT")" 0o600 "identity.json is mode 600"
+assert_equals "$(json_get "$IDENT" '[d["name"], d["org"], d["ref"], d["former"]]')" "[\"sigma\", \"org-1\", \"ref-sigma\", {\"omega\": [\"$S5\"]}]" \
+  "it holds the endpoint's name, and omega with the session held under it"
+run "$SMINOS" list --json
+assert_equals "$(machines)" "[('cterm', 'sigma', True)]" "the session is this machine's, on sigma"
+run "$SMINOS" hub show
+assert_rc 0 "$RC" "hub show reads the identity"
+assert_contains "$OUT" "machine  sigma" "printing the endpoint's name"
+assert_contains "$OUT" "former   omega (1 sessions)" "the former name"
+assert_contains "$OUT" "cut over " "marked cut over"
+assert_contains "$OUT" "$IDENT holds it, and removing it undoes the cutover" "naming the file that undoes it"
+enroll "$(code_for sigma)" --replace
+assert_rc 1 "$RC" "hub enroll exits 1 on a cut-over machine"
+assert_contains "$OUT" "this machine's enrollment is its endpoint's: \`mawsd endpoint" "saying the enrollment is the endpoint's"
+run "$SMINOS" hub check
+assert_rc 1 "$RC" "hub check exits 1"
+assert_contains "$OUT" "this machine's enrollment is its endpoint's" "saying so"
+run "$SMINOS" hub leave
+assert_rc 1 "$RC" "hub leave exits 1"
+assert_contains "$OUT" "this machine's enrollment is its endpoint's" "saying so"
+assert_equals "$(cat "$(cred)")" "$CRED_BEFORE" "hub.json stays as it was"
+assert_equals "$(ctl state 'len(d["requests"])')" "$REQUESTS" "and not one of them asked the hub anything"
+run "$SMINOS" say "said as sigma"
+assert_contains "$(cat "$SMINOS_HOME/projects/$(json_get "$PC/.smns" 'd["project"]' | tr -d '"')/log/sigma.human.jsonl")" \
+  "said as sigma" "new events are written under sigma"
+PC2="$T/cut/proj2"
+mkdir -p "$PC2"
+gitq init -q "$PC2"
+cd "$PC2"
+run "$SMINOS" project init --hub --name cproj2
+assert_rc 0 "$RC" "project init --hub takes the hub from the identity"
+assert_equals "$(json_get "$PC2/.smns" 'd["hub"]')" '{"org": "org-1"}' "the org"
+unset MAWS_USER_DATA
 cd "$T"
 
 # ---- no secret anywhere

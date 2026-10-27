@@ -24,6 +24,14 @@ No file is the default policy: not read-only, the settings' ceiling. A file
 that cannot be read as a policy is read as read-only — the owner meant
 something, and the boundary fails closed — and said in daemon.log.
 
+On a machine cut over to its endpoint (RL10, sminos_rl10) the endpoint's
+policy is the machine's, and the file is its mirror: each `policy` the
+endpoint sends is written whole (`take_endpoint`), with the endpoint's last
+word kept beside it (`endpoint`). `sminos daemon policy` writes the file as
+everywhere, and the uplink, finding it differs from that last word
+(`unsent_change`), asks the endpoint (`policy-set`), whose answer writes the
+file again.
+
 The known checkouts of a project (where a spawn from outside may run) are
 the working directories its sessions joined from on this machine, and the
 project's own root.
@@ -161,6 +169,35 @@ def git_branch(path):
     return head[len("ref: refs/heads/"):] if head.startswith("ref: refs/heads/") else ""
 
 
+ENDPOINT = "endpoint"   # the policy file's record of the endpoint's last word (RL10)
+
+
+def endpoint_policy(frame):
+    """An endpoint's policy (a `policy` frame, a welcome's), checked:
+    {read_only, ceiling}; None when it is none."""
+    if not (isinstance(frame, dict) and isinstance(frame.get("read_only"), bool) and frame.get("ceiling") in MODES):
+        return None
+    return {"read_only": frame["read_only"], "ceiling": frame["ceiling"]}
+
+
+def take_endpoint(p):
+    """The endpoint's policy written as the machine's, with its record."""
+    write({"read_only": p["read_only"], "ceiling": p["ceiling"], ENDPOINT: dict(p)})
+
+
+def unsent_change():
+    """{field: value} of the policy in force where it differs from the
+    endpoint's last word, which the file records: a change made here since;
+    {} when there is none, when the endpoint never spoke, or when the file
+    is no policy (the endpoint's next word writes it whole)."""
+    d = stored()
+    heard = endpoint_policy(d.get(ENDPOINT)) if d else None
+    if heard is None:
+        return {}
+    now = machine_policy()
+    return {k: now[k] for k in ("read_only", "ceiling") if now[k] != heard[k]}
+
+
 def write(d):
     path = policy_path()
     os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
@@ -199,3 +236,6 @@ def cmd_policy(a):
         sminos.die("the policy could not be written to %s: %s" % (policy_path(), e), 1)
     sminos.nudge_daemon()
     print(describe(load()))
+    if sminos.sibling_module("sminos_rl10").cut_over():
+        print("This machine's policy is its endpoint's: the daemon's uplink asks the endpoint for this change, and "
+              "the policy settles on its answer.")

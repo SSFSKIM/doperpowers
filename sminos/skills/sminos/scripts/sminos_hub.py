@@ -39,6 +39,13 @@ file system that ignores case would make the two names' writers one file.
 
 `sminos project init --hub` writes the enrolled hub into .smns (`{url, org}`);
 a project whose .smns names a hub is never synced through git.
+
+On a machine cut over to its endpoint (RL10, sminos_rl10: daemon/identity.json
+is there) the enrollment is the endpoint's: `show` prints the identity the
+endpoint gave, marked cut over with its date and the file whose removal undoes
+it, and `enroll`, `check` and `leave` exit 1 saying so — none of them talks to
+the hub, which a cut-over machine never dials. hub.json stays, its key the
+endpoint's to ask for once (`legacy-key?`), until the legacy key retires.
 """
 
 import argparse
@@ -58,6 +65,7 @@ sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import sminos  # noqa: E402
 import sminos_codes as codes  # noqa: E402
 import sminos_daemon as daemon  # noqa: E402
+import sminos_rl10 as rl10  # noqa: E402
 import sminos_uplink as uplink  # noqa: E402
 
 CODE_PREFIX = "smns-enroll-v1."
@@ -265,8 +273,12 @@ def credential_lock():
 
 
 def enrolled_hub():
-    """This machine's hub, {url, org} (a .smns names only the org); exits
-    when the machine is not enrolled."""
+    """This machine's hub, {url, org} (a .smns names only the org): the
+    endpoint's identity on a cut-over machine, else hub.json's; exits when
+    the machine is not enrolled."""
+    ident = rl10.cutover()
+    if ident is not None:
+        return {"url": ident["hub"], "org": ident["org"]}
     d = held()
     if not (d and isinstance(d.get("hub"), str) and isinstance(d.get("org"), str) and d["hub"] and d["org"]):
         sminos.die("this machine is not enrolled at a hub: run sminos hub enroll first, and paste the code the web "
@@ -326,6 +338,17 @@ def refuse_case_twin(machine, old, former):
                "a name that differs in more than case" % (machine, said_as, keep, keep))
 
 
+def refuse_cut_over():
+    """Exit 1 on a machine cut over to its endpoint: its enrollment, and every
+    word with the hub, are the endpoint's."""
+    if not rl10.cut_over():
+        return
+    ident = rl10.cutover() or {}
+    sminos.die("this machine's enrollment is its endpoint's: `mawsd endpoint enroll|status` (it cut over to RL10%s; "
+               "its identity is %s)" % ((" on " + ident["cutover"]) if ident.get("cutover") else "",
+                                        rl10.identity_path()), 1)
+
+
 def enroll(a):
     if a.code:
         # Refused unread and never echoed: the code is already exposed in argv.
@@ -334,6 +357,7 @@ def enroll(a):
                    "code and paste it at the prompt (or pipe it on stdin); ask the web for a new code if this one "
                    "may have been seen" % ((" --name %s" % a.name if is_machine_name(a.name) else "")
                                            + (" --replace" if a.replace else "")))
+    refuse_cut_over()
     if a.name and not is_machine_name(a.name):
         # The value is not repeated: it may be a code typed in the wrong place.
         sminos.die("--name takes an admitted machine name: a letter or digit, then up to 62 letters, digits, "
@@ -402,7 +426,20 @@ def enroll(a):
 
 def show(_a):
     """What daemon/hub.json holds, read locally: exit 0 when a credential is
-    held here, 1 when none. Whether the hub still accepts it is `check`'s."""
+    held here, 1 when none. Whether the hub still accepts it is `check`'s.
+    On a cut-over machine, the identity its endpoint gave (identity.json)."""
+    if rl10.cut_over():
+        ident = rl10.cutover()
+        if ident is None:
+            sminos.die("this machine is cut over to its endpoint, but %s cannot be read: the endpoint's next welcome "
+                       "writes it again" % rl10.identity_path(), 1)
+        print("machine  %s\nhub      %s (org %s)\nformer   %s\nsince    %s\ncut over %s: RL10 (local-only), the "
+              "enrollment is its endpoint's (ref %s); %s holds it, and removing it undoes the cutover" % (
+                  ident["name"], ident["hub"], ident["org"],
+                  ", ".join("%s (%d sessions)" % (n, len(s)) for n, s in ident["former"].items()) or "-",
+                  ident.get("enrolled") or "?", ident.get("cutover") or "?", ident.get("ref") or "?",
+                  rl10.identity_path()))
+        return
     d = held()
     if d is None:
         print("this machine is not enrolled at a hub (sminos hub enroll, then paste the code); it writes as %s"
@@ -519,7 +556,9 @@ def stored(undecided):
 
 def check(_a):
     """Whether the hub still accepts this machine's credential; changes
-    nothing. Exit 0 accepted, 1 not enrolled here, 3 rejected, 4 undecided."""
+    nothing. Exit 0 accepted, 1 not enrolled here (or cut over to its
+    endpoint), 3 rejected, 4 undecided."""
+    refuse_cut_over()
     cred = stored(4)
     if cred is None:
         print("this machine is not enrolled at a hub")
@@ -537,7 +576,9 @@ def check(_a):
 def leave(_a):
     """Ends this machine's enrollment at its hub; on the hub's acceptance, or
     its rejection of a credential already revoked, hub.json goes, and the
-    daemon stops its uplink on its own. Anything else keeps it (exit 1)."""
+    daemon stops its uplink on its own. Anything else keeps it (exit 1), as
+    does a machine cut over to its endpoint."""
+    refuse_cut_over()
     cred = stored(1)
     if cred is None:
         print("this machine is not enrolled at a hub: nothing to leave")
