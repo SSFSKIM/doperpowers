@@ -7741,9 +7741,11 @@ def convert_v2_nodes(r, lock_until=None):
     With lock_until, a node whose record lock cannot be had by then is left
     as it is, for a later call."""
     converted = 0
-    for nodes_dir in glob.glob(os.path.join(r, "groups", "*", "nodes")):
+    # Sorted, so a session v2 seeded in two groups converts the same way on
+    # every machine: the first group by name keeps the session's seat id.
+    for nodes_dir in sorted(glob.glob(os.path.join(r, "groups", "*", "nodes"))):
         g = os.path.basename(os.path.dirname(nodes_dir))
-        for nf in glob.glob(os.path.join(nodes_dir, "*.json")):
+        for nf in sorted(glob.glob(os.path.join(nodes_dir, "*.json"))):
             try:
                 with open(nf) as f:
                     n = json.load(f)
