@@ -43,13 +43,28 @@ as sminos's reconnect does):
   `handler`, in-process, is called with each frame first and may return
   frames to send (the later halves' hook).
 
+The log plane, as O10 M6 relays it (with no hub behind it): a project's
+`hello` is answered `have {project, have}` with what the stand-in holds of
+it, unless `relay` is off (RL1 down: no `have`, so sminos uploads nothing).
+Each event uploaded (`events` up) is taken in its upload form — the event
+with `created` derived from its `ts` (`created_of`) — and kept in `logs`;
+one carrying another `created`, or a `ts` of neither form, is refused
+`malformed`, and another body at a position held is refused `conflict`
+(`refused {project, refusal}` down). Every raw line received is kept in
+`lines`. Down, for a test to send: `echo` (an own event as the endpoint
+returns it, `created`, `sig` and `attest` added), `arriving` (another's
+event wrapped `{event, signer, owners?}`), `resend`; and `rpc`, `query`,
+`tombstone` (§D's frames, the RPC nested under `rpc` as DX2 nests it).
+
 Fields (constructor keywords, `set`'s keys): token, identity, policy,
 revoked, org, build, state_version, refuse_reason, ask_legacy,
-persist_legacy, answer_policy, ack_results, verdicts, verdict.
+persist_legacy, answer_policy, ack_results, verdicts, verdict, relay.
 """
 
+import base64
 import json
 import os
+import re
 import secrets
 import socket
 import sys
@@ -58,7 +73,9 @@ import time
 
 LINE_MAX = 1 << 20   # a line at most 1 MiB of UTF-8 (O10 §D); larger text goes as `part`s
 FIELDS = ("token", "identity", "policy", "revoked", "org", "build", "state_version", "refuse_reason", "ask_legacy",
-          "persist_legacy", "answer_policy", "ack_results", "verdicts", "verdict")
+          "persist_legacy", "answer_policy", "ack_results", "verdicts", "verdict", "relay")
+TS_MS = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z")
+TS_S = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
 
 
 def iso(t=None):
@@ -81,6 +98,30 @@ def read_json(path):
             return json.load(f)
     except (OSError, ValueError):
         return None
+
+
+def created_of(ts):
+    """The signed `created` the endpoint derives from an event's `ts` (O10
+    M6's upload form): verbatim with milliseconds, `.000` added to a whole
+    second; None for any other form."""
+    if isinstance(ts, str) and TS_MS.fullmatch(ts):
+        return ts
+    if isinstance(ts, str) and TS_S.fullmatch(ts):
+        return ts[:-1] + ".000Z"
+    return None
+
+
+def upload_form(e):
+    """An event as the endpoint signs it: `created` derived from its `ts`;
+    None when it carries another `created`, or a `ts` of neither form."""
+    created = created_of(e.get("ts"))
+    if created is None or e.get("created", created) != created:
+        return None
+    return {**e, "created": created}
+
+
+def b64url(data):
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
 
 
 def lines_of(frame):
@@ -172,10 +213,13 @@ class Endpoint:
         self.ack_results = True
         self.verdicts = {}
         self.verdict = None
+        self.relay = True
         self.handler = None
         self.set(**fields)
         self.cv = threading.Condition()
         self.received = []      # [(connection number, frame)], in order, hellos included
+        self.lines = []         # [(connection number, line)]: every line after a connection's hello, as it came
+        self.logs = {}          # project id → {writer: {seq: the event in its upload form}}
         self.hellos = []        # [(connection number, hello)] accepted
         self.refused = []       # [(connection number, first line as JSON or text)] refused
         self.conns = 0
@@ -312,6 +356,8 @@ class Endpoint:
                 line = conn.read_line()
                 if line is None:
                     return
+                with self.cv:
+                    self.lines.append((conn.number, line))
                 frame = conn.joined(json.loads(line))
                 if frame is None:
                     continue
@@ -345,8 +391,80 @@ class Endpoint:
                 verdict = self.verdict(frame) if callable(self.verdict) else self.verdict
             if verdict is not None:
                 out.append({"t": "words", "id": frame.get("id"), "verdict": verdict})
+        elif t == "hello" and isinstance(frame.get("project"), str) and self.relay:
+            held = self.logs.get(frame["project"], {})
+            out.append({"t": "have", "project": frame["project"], "have": {w: max(ss) for w, ss in held.items() if ss}})
+        elif t == "events" and isinstance(frame.get("project"), str) and isinstance(frame.get("events"), list):
+            out += self.take(frame["project"], frame["events"])
         for f in out:
             conn.write(f)
+
+    def take(self, project, events):
+        """Events uploaded: each kept in its upload form, or refused (the
+        frames that say so)."""
+        out = []
+        with self.cv:
+            held = self.logs.setdefault(project, {})
+            for e in events:
+                form = upload_form(e) if isinstance(e, dict) else None
+                writer, seq = (e.get("writer"), e.get("seq")) if isinstance(e, dict) else (None, None)
+                if form is None:
+                    reason = "malformed"
+                elif seq in held.get(writer, {}) and held[writer][seq] != form:
+                    reason = "conflict"
+                else:
+                    held.setdefault(writer, {})[seq] = form
+                    continue
+                out.append({"t": "refused", "project": project,
+                            "refusal": {"reason": reason, "writer": writer, "seq": seq}})
+        return out
+
+    # ---------------------------------------------------- frames down, built for a test
+
+    def echo(self, project, writer, seq, **changes):
+        """An event of this machine's, held here, as the endpoint returns it
+        down (the ledger's echo): its upload form with `sig` and `attest`
+        added, signed by this machine; `changes` alter its body."""
+        with self.cv:
+            form = dict(self.logs[project][writer][seq])
+        event = {**form, "sig": {"kid": "k-machine", "sig": b64url(b"\x01" * 64)},
+                 "attest": {"owners": [], "ownersProof": [], "origin": {"kind": "terminal"}, "stateVersion": 1},
+                 **changes}
+        return {"event": event, "signer": {"kind": "machine", "ref": self.identity.get("ref"),
+                                           "name": self.identity.get("name"), "keyId": "k-machine"}, "owners": []}
+
+    @staticmethod
+    def arriving(event, signer=None, owners=None):
+        """Another's event as the endpoint sends it down, verified."""
+        out = {"event": event, "signer": signer or {"kind": "device", "member": "mem-1", "device": "dev-1",
+                                                     "keyId": "k-dev-1"}}
+        if owners is not None:
+            out["owners"] = owners
+        return out
+
+    def events(self, project, wrapped):
+        self.send({"t": "events", "project": project, "events": list(wrapped)})
+
+    def resend(self, project, writer, start):
+        self.send({"t": "resend", "project": project, "writer": writer, "from": start})
+
+    def rpc(self, name, project, args, **fields):
+        """An authorized lane A action as §D sends it down: DX6's Rpc nested
+        under `rpc`, `machine` the welcome's name, a fresh `nonce`, `opId`,
+        `created` and `opCreated`; `fields` override any of them. Sent, and
+        returned."""
+        now = iso()
+        rpc = {"rpc": name, "project": project, "machine": self.identity.get("name"), "member": "mem-1",
+               "device": "dev-1", "created": now, "nonce": b64url(os.urandom(16)), "opId": b64url(os.urandom(18)),
+               "opCreated": now, "args": args, "fingerprint": b64url(os.urandom(32)), **fields}
+        self.send({"t": "rpc", "rpc": rpc})
+        return rpc
+
+    def query(self, op, op_created=None):
+        self.send({"t": "query", "opId": op, **({"opCreated": op_created} if op_created is not None else {})})
+
+    def tombstone(self, op):
+        self.send({"t": "tombstone", "opId": op})
 
     # ---------------------------------------------------- the test's reads
 

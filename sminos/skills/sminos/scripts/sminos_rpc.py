@@ -156,6 +156,17 @@ once the bridge holds it, and its attachments' states follow as `op`, the
 upload being the op. Its root and files are kept on the claim before
 anything is written, so a restart answers it from the child's kept answer.
 
+On a machine cut over to its endpoint (RL10, O12 M5) the same frames come
+over the endpoint's socket with no code (`Rpcs(..., coded=False)`): check 1's
+code is skipped, and nothing else; the endpoint authorized the action. Its
+RPC carries who sent it — `member`, `device`, the operation's
+`fingerprint`, its `context` and, for a spawn, its `proof` — which the
+ledger entry keeps beside a `target` derived here from the checked RPC,
+never read from the frame (`{kind: machine}` for a spawn, else the
+session). `rpc-result` carries the `opId` beside the nonce, a loose
+refusal's too; `rpc-ack {opId, nonce}` settles by the nonce, and by the
+`opId` when the ledger holds no op under that nonce.
+
 Checks 1-6 and the ledger's lookup run on the uplink's main thread, which
 alone may call sminos (its caches are module globals); the digest, the kind,
 the claim, and the execution run on a worker of their own, since a bridge
@@ -212,6 +223,7 @@ SCOPE_DESTINATIONS = ("session", "localSettings")   # DX6 `decide.scope` (§11):
 SCOPED_TYPES = ("addRules", "addDirectories")        # the suggestions a scoped allow takes (MW3)
 SHA256_RE = re.compile(r"[0-9a-f]{64}")
 OP_ID_RE = re.compile(r"[A-Za-z0-9_-]{16,128}")   # an opId: a file name and an alias seed (MW5's mod takes 1-128)
+REMOTE_KEPT = ("member", "device", "fingerprint", "context", "proof")   # an RL10 RPC's fields its entry keeps
 RELOAD = "reload-plugins"
 RECONCILE_EVERY = 1.0     # how often claims left by a stop are looked at again
 SPAWN_TIMEOUT = 600
@@ -342,14 +354,24 @@ def op_created_of(rpc):
     return created_at(rpc.get("opCreated") if rpc.get("opId") is not None else rpc.get("created"))
 
 
-def entry_of(rpc, at):
+def target_of(rpc):
+    """What a checked RPC acts on (RL10's binding, O12 M5): the machine for a
+    spawn, else the session its args name."""
+    return {"kind": "machine"} if rpc["rpc"] == "spawn" else {"kind": "session", "session": rpc["args"].get("session")}
+
+
+def entry_of(rpc, at, remote=False):
     """A new ledger entry's own fields: the RPC's project, name and session,
     its `created`, its claim's or refusal's `at`; for an op keyed by its
-    `opId`, the nonce the hub knows it by and `op_created`."""
+    `opId`, the nonce the hub knows it by and `op_created`; for one the
+    endpoint sent (`remote`, RL10), who sent it and what it acts on
+    (REMOTE_KEPT, `target`)."""
     e = {"project": rpc["project"], "rpc": rpc["rpc"], "session": rpc["args"].get("session"), **created_of(rpc),
          "at": at}
     if rpc.get("opId") is not None:
         e.update(nonce=rpc["nonce"], op_created=op_created_of(rpc))
+    if remote:
+        e.update({k: rpc[k] for k in REMOTE_KEPT if k in rpc}, target=rpc["target"])
     return e
 
 
@@ -528,13 +550,14 @@ class Rpcs:
     """The RPCs this machine was sent, and their results owed to the hub.
     Kept across streams by the uplink; `wake` is the current stream's."""
 
-    def __init__(self, key, machine, wake=lambda: None, clock=time.time):
+    def __init__(self, key, machine, wake=lambda: None, clock=time.time, coded=True):
         self.key = key
+        self.coded = coded        # DX2: RPCs under the org key's code; RL10: the endpoint's, with none
         self.machine = machine
         self.wake = wake
         self.clock = clock
         self.ledger = Ledger(clock)
-        self.loose = {}           # nonce → (project id, outcome, at): refusals the ledger does not keep
+        self.loose = {}           # nonce → (project id, outcome, at, opId): refusals the ledger does not keep
         self.flight = {}          # op → {nonce}: ops a worker holds, each with the latest nonce a copy of it came
         #                           with, which its claim or refusal is kept under (ticket 11a)
         self.op_lock = threading.Lock()   # `flight` and the ledger's admission, claim and tombstone, as one transition
@@ -571,7 +594,10 @@ class Rpcs:
             log("an rpc frame without an RPC: passed by")
             return
         nonce, pid, name = rpc.get("nonce"), rpc.get("project"), rpc.get("rpc")
-        if not isinstance(pid, str) or codes.failure(self.key, "rpc", pid, rpc) is not None:
+        if not self.coded:
+            if not isinstance(pid, str):
+                return self.refuse_loose(rpc, "bad-shape", "the RPC names no project")
+        elif not isinstance(pid, str) or codes.failure(self.key, "rpc", pid, rpc) is not None:
             return self.refuse_loose(rpc, "bad-code", "the RPC's code does not verify under the org key")
         why = op_refusal(rpc)
         if why is not None:
@@ -593,6 +619,8 @@ class Rpcs:
         if name != "spawn" and not (isinstance(sid, str) and sminos.UUID_RE.match(sid)
                                     and here.has_session(project, sid)):
             return self.refuse_loose(rpc, "no-session", "no session %s of %s on this machine" % (sid, project.name))
+        if not self.coded:
+            rpc["target"] = target_of(rpc)   # derived from the RPC as checked, whatever the frame said
         with self.op_lock:   # nothing tombstones the op between the ledger's look and `flight`
             self.dispatch(rpc, op, project, args, here, received)
 
@@ -675,11 +703,11 @@ class Rpcs:
     def refuse_loose(self, rpc, code, message):
         """A refusal before the ledger: up while its project is open, else
         said only here."""
-        nonce, pid = rpc.get("nonce"), rpc.get("project")
+        nonce, pid, op = rpc.get("nonce"), rpc.get("project"), rpc.get("opId")
         log("%s %s refused %s: %s" % (rpc.get("rpc"), nonce, code, message))
         if codes.b64url_bytes(nonce, codes.NONCE_BYTES) is None or not isinstance(pid, str):
             return
-        self.loose[nonce] = (pid, failed(code, message), self.clock())
+        self.loose[nonce] = (pid, failed(code, message), self.clock(), op if isinstance(op, str) else None)
 
     def keep(self, rpc, outcome):
         """A refusal at admission, from freshness on: the op's one answer,
@@ -688,12 +716,12 @@ class Rpcs:
         copy of it came with. The caller holds the op lock."""
         rpc = self.latest(rpc)
         now = self.clock()
-        e = {**entry_of(rpc, now), "outcome": outcome, "refused": True, "done_at": now, "acked": False}
+        e = {**entry_of(rpc, now, not self.coded), "outcome": outcome, "refused": True, "done_at": now, "acked": False}
         try:
             self.ledger.put(op_of(rpc), e)
         except OSError as err:
             log("the ledger could not be written (%s): %s answered without it" % (err, rpc["nonce"]))
-            self.finished.put(("loose", (rpc["nonce"], rpc["project"], outcome)))
+            self.finished.put(("loose", (rpc["nonce"], rpc["project"], outcome, rpc.get("opId"))))
         if outcome["state"] == "failed":
             log("%s %s refused %s: %s" % (rpc["rpc"], rpc["nonce"], outcome["error"]["code"],
                                           outcome["error"]["message"]))
@@ -705,9 +733,14 @@ class Rpcs:
         return {**rpc, "nonce": held["nonce"]} if held is not None else rpc
 
     def ack(self, frame):
+        """`rpc-ack`: the result taken, by the nonce it went up under; on
+        RL10, by its `opId` when the ledger holds no op under that nonce (a
+        copy since resealed, or one it no longer knows)."""
         nonce = frame.get("nonce")
         if self.loose.pop(nonce, None) is None:
             op = self.ledger.op_of_nonce(nonce)
+            if op is None and not self.coded and isinstance(frame.get("opId"), str):
+                op = frame["opId"] if self.ledger.get(frame["opId"]) is not None else None
             if op is not None:
                 self.ledger.acked(op)
 
@@ -771,10 +804,11 @@ class Rpcs:
             try:
                 with self.op_lock:   # under the nonce a reseal left in flight; a later one finds the claim
                     current = self.latest(rpc)
-                    claimed = self.ledger.claim(op, entry_of(current, self.clock()))
+                    claimed = self.ledger.claim(op, entry_of(current, self.clock(), not self.coded))
             except OSError as e:
                 self.finished.put(("loose", (current["nonce"], rpc["project"],
-                                             failed("failed", "the ledger could not be written: %s" % e))))
+                                             failed("failed", "the ledger could not be written: %s" % e),
+                                             rpc.get("opId"))))
                 return
             if not claimed:   # the ledger's answer for the op stands; nothing here may change it
                 log("%s %s: the ledger holds it already, so it does not run" % (rpc["rpc"], op))
@@ -1034,8 +1068,8 @@ class Rpcs:
                     self.flight.pop(data, None)
                 self.compact_flight.pop(data, None)
             elif kind == "loose":
-                nonce, pid, outcome = data
-                self.loose[nonce] = (pid, outcome, self.clock())
+                nonce, pid, outcome, op = data
+                self.loose[nonce] = (pid, outcome, self.clock(), op)
             elif kind == "unwritten":
                 nonce, outcome = data
                 self.unwritten[nonce] = outcome
@@ -1307,20 +1341,27 @@ class Rpcs:
 
     def results(self, pids, again):
         """`rpc-result` frames of these projects not yet acknowledged; with
-        `again`, also those already sent on this stream."""
+        `again`, also those already sent on this stream. On RL10 each names
+        its `opId` beside the nonce (null for an op keyed by its nonce)."""
         out = []
         for op, e in self.ledger.items():
             nonce = e.get("nonce", op)
             if "outcome" in e and not e.get("acked") and e.get("project") in pids \
                     and (again or nonce not in self.sent_here):
-                out.append({"t": "rpc-result", "project": e["project"], "nonce": nonce, "outcome": e["outcome"]})
+                out.append(self.result_frame(e["project"], op if "nonce" in e else None, nonce, e["outcome"]))
         now = self.clock()
-        for nonce, (pid, outcome, at) in list(self.loose.items()):
+        for nonce, (pid, outcome, at, op) in list(self.loose.items()):
             if now - at > LOOSE_S:
                 del self.loose[nonce]
             elif pid in pids and (again or nonce not in self.sent_here):
-                out.append({"t": "rpc-result", "project": pid, "nonce": nonce, "outcome": outcome})
+                out.append(self.result_frame(pid, op, nonce, outcome))
         return out
+
+    def result_frame(self, pid, op, nonce, outcome):
+        """DX2's `rpc-result`; RL10's carries the `opId` too."""
+        if self.coded:
+            return {"t": "rpc-result", "project": pid, "nonce": nonce, "outcome": outcome}
+        return {"t": "rpc-result", "project": pid, "opId": op, "nonce": nonce, "outcome": outcome}
 
     def due(self, opened):
         """What goes up now for the projects open on the stream: new

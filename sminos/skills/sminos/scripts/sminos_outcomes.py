@@ -362,13 +362,17 @@ def report_refusals(project, box, sid, refused, events):
 
 def message(key, machine, project_id, r):
     """A record as DX4's `delivery` message, sealed under a fresh nonce; None
-    when it has no canonical form (said in daemon.log)."""
+    when it has no canonical form (said in daemon.log). With no key (RL10,
+    where nothing carries a code) the body is the draft as it is."""
     draft = {"event": r.get("event"), "session": r.get("session"), "outcome": r.get("outcome"),
              "reason": r.get("reason")}
-    try:
-        body = codes.seal(key, "delivery", project_id, draft, codes.b64url(os.urandom(codes.NONCE_BYTES)))
-    except codes.NotCanonical as err:
-        sminos.daemon_log("delivery: an outcome in %s has no canonical form (%s): not sent" % (project_id, err))
-        return None
+    if key is None:
+        body = draft
+    else:
+        try:
+            body = codes.seal(key, "delivery", project_id, draft, codes.b64url(os.urandom(codes.NONCE_BYTES)))
+        except codes.NotCanonical as err:
+            sminos.daemon_log("delivery: an outcome in %s has no canonical form (%s): not sent" % (project_id, err))
+            return None
     return {"t": "session", "message": {"project": project_id, "machine": machine, "session": r.get("session"),
                                         "kind": "delivery", "sub": None, "n": None, "body": body}}

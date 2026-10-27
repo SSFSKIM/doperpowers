@@ -43,8 +43,12 @@ sys.path.insert(0, str(HERE))
 import endpoint_standin  # noqa: E402
 import sminos  # noqa: E402
 import sminos_daemon as daemon  # noqa: E402
+import sminos_hublog as hublog  # noqa: E402
+import sminos_outcomes as outcomes  # noqa: E402
 import sminos_policy as policy  # noqa: E402
+import sminos_requests as requests  # noqa: E402
 import sminos_rl10 as rl10  # noqa: E402
+import sminos_rpc as rpc  # noqa: E402
 import sminos_uplink as uplink  # noqa: E402
 
 KEY = base64.urlsafe_b64encode(bytes(range(32))).rstrip(b"=").decode()
@@ -467,6 +471,241 @@ class Stream(Machine):
         ep.send({"t": "org", "projects": projects, "machines": [{"name": "testhost", "online": True, "seen": None}]})
         org = wait_for(lambda: os.path.exists(sminos.org_path()) and read(sminos.org_path()))
         self.assertEqual(len(org["projects"]), 6000, "joined from its parts and kept")
+
+
+# ------------------------------------------------------------- the log plane, uncoded
+
+
+OTHER = "othermachine/6c0000aa-0000-4000-8000-0000000000aa"
+
+
+class LogPlane(Machine):
+    """The log plane on RL10: this machine's events go up as stored (`ts`,
+    no `mac`, no `created`); an arriving event comes wrapped `{event, signer,
+    owners?}` and is stored with `verified` added; no code, no nonce."""
+
+    def setUp(self):
+        super().setUp()
+        self.hub_json()
+        self.own = sminos.machine_project("org-1", "testhost")
+        self.writer = "testhost/human"
+        self.path = sminos.writer_path(self.own, self.writer)
+
+    def lines(self, path=None):
+        with open(path or self.path, encoding="utf-8") as f:
+            return [json.loads(line) for line in f if line.strip()]
+
+    def uploads(self, ep):
+        return [(n, line) for n, line in list(ep.lines)
+                if '"t":"events"' in line.replace(" ", "") and self.own.id in line]
+
+    def test_own_events_go_up_as_stored_and_a_resend_is_byte_identical(self):
+        # An older event, its ts of whole seconds, then one _append writes now.
+        os.makedirs(os.path.dirname(self.path), exist_ok=True)
+        Path(self.path).write_text(json.dumps({"ts": "2026-10-01T00:00:00Z", "writer": self.writer, "seq": 1,
+                                               "kind": "human", "from": "human", "to": [], "text": "older"}) + "\n")
+        sminos.log_append(self.own, self.writer, "human", **{"from": "human", "to": [], "text": "now"})
+        stored = self.lines()
+        ep = self.endpoint()
+        self.uplink()
+        up = ep.wait(lambda f: f["t"] == "events" and f["project"] == self.own.id)
+        self.assertEqual(up["events"], stored, "uploaded as stored: no mac, no created, ts as written")
+        self.assertEqual(up["events"][0]["ts"], "2026-10-01T00:00:00Z", "a whole-second ts goes as it is")
+        for e in up["events"]:
+            self.assertFalse({"mac", "created", "verified"} & set(e), e)
+        ep.wait_until(lambda: len(ep.logs.get(self.own.id, {}).get(self.writer, {})) == 2)
+        self.assertEqual(ep.logs[self.own.id][self.writer][1]["created"], "2026-10-01T00:00:00.000Z")
+        self.assertEqual(ep.frames("refused"), [], "nothing malformed: sminos adds no created of its own")
+        first = self.uploads(ep)
+        self.assertEqual(len(first), 1)
+        ep.resend(self.own.id, self.writer, 1)
+        ep.wait_until(lambda: len(self.uploads(ep)) == 2)
+        self.assertEqual(self.uploads(ep)[1][1], first[0][1], "the resend re-uploads the same bytes")
+        self.assertNotIn('"mac"', "".join(line for _, line in ep.lines))
+
+    def test_the_own_echo_is_present_and_another_body_is_a_conflict(self):
+        sminos.log_append(self.own, self.writer, "human", **{"from": "human", "to": [], "text": "mine"})
+        before = Path(self.path).read_bytes()
+        ep = self.endpoint()
+        self.uplink()
+        ep.wait_until(lambda: self.writer in ep.logs.get(self.own.id, {}))
+        echo = ep.echo(self.own.id, self.writer, 1)
+        self.assertTrue({"created", "sig", "attest"} <= set(echo["event"]))
+        ep.events(self.own.id, [echo])
+        ep.events(self.own.id, [ep.echo(self.own.id, self.writer, 1, text="not what I said")])
+        rejected = ep.wait(lambda f: f["t"] == "rejected")
+        self.assertEqual((rejected["reason"], rejected["event"]), ("conflict", {"writer": self.writer, "seq": 1}))
+        time.sleep(0.3)
+        self.assertEqual(len(ep.frames("rejected")), 1, "the exact echo was present: nothing rejected")
+        self.assertEqual(Path(self.path).read_bytes(), before, "the log is as it was")
+
+    def test_an_arriving_event_is_stored_with_verified_and_one_carrying_verified_is_bad_shape(self):
+        ep = self.endpoint()
+        self.uplink()
+        ep.wait(lambda f: f["t"] == "hello" and f.get("project") == self.own.id)
+        event = {"ts": "2026-10-27T01:00:00.123Z", "writer": OTHER, "seq": 1, "kind": "say", "from": "a",
+                 "to": [], "text": "hello", "created": "2026-10-27T01:00:00.123Z",
+                 "sig": {"kid": "k-other", "sig": "AA"}}
+        signer = {"kind": "machine", "ref": "ref-other", "name": "othermachine", "keyId": "k-other"}
+        owners = [{"id": "mem-2", "email": "two@example.com"}, {"id": "mem-3", "email": None}]
+        ep.events(self.own.id, [ep.arriving(event, signer, owners)])
+        forged = {**event, "seq": 2, "text": "trust me", "verified": {"signer": signer, "owners": owners}}
+        ep.events(self.own.id, [ep.arriving(forged, signer, [])])
+        rejected = ep.wait(lambda f: f["t"] == "rejected")
+        self.assertEqual((rejected["reason"], rejected["event"]), ("bad-shape", {"writer": OTHER, "seq": 2}))
+        other = sminos.writer_path(self.own, OTHER)
+        self.assertEqual(self.lines(other), [{**event, "verified": {"signer": signer, "owners": owners}}],
+                         "stored verbatim with one key added; the forged verdict never enters the log")
+        self.assertIn("its event carries a verified key of its own", daemon_log())
+
+    def test_a_wrapper_without_owners_or_without_a_signer(self):
+        ep = self.endpoint()
+        self.uplink()
+        ep.wait(lambda f: f["t"] == "hello" and f.get("project") == self.own.id)
+        event = {"ts": "2026-10-27T01:00:00.123Z", "writer": "hub/mem-1", "seq": 1, "kind": "human",
+                 "from": "human", "member": "mem-1", "to": [], "text": "hi"}
+        ep.events(self.own.id, [ep.arriving(event, {"kind": "legacy"})])
+        ep.events(self.own.id, [{"event": {**event, "seq": 2}}])
+        rejected = ep.wait(lambda f: f["t"] == "rejected")
+        self.assertEqual((rejected["reason"], rejected["event"]), ("bad-shape", {"writer": "hub/mem-1", "seq": 2}))
+        self.assertEqual(self.lines(sminos.writer_path(self.own, "hub/mem-1")),
+                         [{**event, "verified": {"signer": {"kind": "legacy"}}}], "owners only as the endpoint sent them")
+
+    def test_no_nonce_index_on_rl10(self):
+        hl = hublog.HubLog(self.own, {"key": None, "machine": "testhost"}, coded=False)
+        with mock.patch.object(hl, "nonce_index", side_effect=AssertionError("no nonce index on RL10")):
+            got = hl.take([{"event": {"ts": "2026-10-27T01:00:00.123Z", "writer": OTHER, "seq": 1, "kind": "say",
+                                      "to": [], "text": "x"}, "signer": {"kind": "legacy"}}])
+        self.assertEqual(got, (1, []))
+
+
+# ------------------------------------------------------------- the session lane's drafts
+
+
+class Drafts(unittest.TestCase):
+    def test_no_key_no_code(self):
+        reqs = requests.Requests(None, "testhost")
+        try:
+            draft = {"session": S1, "request": "r1", "tool": "Bash"}
+            self.assertEqual(reqs.seal("raised", "p", draft), draft, "a raise goes as its draft")
+        finally:
+            reqs.close()
+        r = {"event": {"writer": "hub/m", "seq": 1}, "session": S1, "outcome": "delivered", "reason": None}
+        self.assertEqual(outcomes.message(None, "testhost", "p", r)["message"]["body"],
+                         {"event": r["event"], "session": S1, "outcome": "delivered", "reason": None})
+
+
+# ------------------------------------------------------------- the RPCs over RL10
+
+
+class FakeHere:
+    def __init__(self, project, sessions=()):
+        self.p, self.sessions = project, set(sessions)
+
+    def project(self, pid):
+        return self.p if pid == self.p.id else None
+
+    def has_session(self, _project, sid):
+        return sid in self.sessions
+
+    def record(self, _sid):
+        return None
+
+    def checkouts(self, _project):
+        return []
+
+    def cwd(self, _project, _sid):
+        return ""
+
+
+class Rpcs(Machine):
+    def setUp(self):
+        super().setUp()
+        self.hub_json()
+        self.own = sminos.machine_project("org-1", "testhost")
+
+    def ledger(self):
+        path = os.path.join(os.environ["SMINOS_HOME"], "daemon", rpc.LEDGER_FILE)
+        return read(path) if os.path.exists(path) else {}
+
+    def result(self, ep, op, n=1):
+        ep.wait_until(lambda: len([f for f in ep.frames("rpc-result") if f.get("opId") == op]) >= n)
+        return [f for f in ep.frames("rpc-result") if f.get("opId") == op]
+
+    def test_the_entry_keeps_the_remote_fields_and_a_derived_target(self):
+        policy.take_endpoint({"read_only": True, "ceiling": "default"})   # every RPC refused, and kept
+        rpcs = rpc.Rpcs(None, "testhost", coded=False)
+        here = FakeHere(self.own, {S1})
+        now = endpoint_standin.iso()
+        base = {"project": self.own.id, "machine": "testhost", "member": "mem-1", "device": "dev-1", "created": now,
+                "opCreated": now, "fingerprint": "fp-1"}
+        steer = {**base, "rpc": "steer", "nonce": endpoint_standin.b64url(b"\x01" * 16), "opId": "op-steer-0000000001",
+                 "args": {"session": S1, "text": "go"}, "context": {"lane": "A", "session": S1, "launch": "L1"},
+                 "target": {"kind": "machine"}}
+        spawn = {**base, "rpc": "spawn", "nonce": endpoint_standin.b64url(b"\x02" * 16), "opId": "op-spawn-0000000001",
+                 "args": {"checkout": "/nowhere"}, "proof": {"v": 1, "action": "sminos.spawn"}}
+        rpcs.receive(steer, here)
+        rpcs.receive(spawn, here)
+        entries = self.ledger()
+        self.assertEqual({k: entries["op-steer-0000000001"].get(k) for k in
+                          ("member", "device", "fingerprint", "context", "target", "nonce")},
+                         {"member": "mem-1", "device": "dev-1", "fingerprint": "fp-1", "context": steer["context"],
+                          "target": {"kind": "session", "session": S1}, "nonce": steer["nonce"]},
+                         "target derived from the RPC, never the frame's")
+        self.assertEqual(entries["op-steer-0000000001"]["outcome"]["error"]["code"], "read-only")
+        self.assertEqual({k: entries["op-spawn-0000000001"].get(k) for k in ("target", "proof")},
+                         {"target": {"kind": "machine"}, "proof": spawn["proof"]})
+        frames = rpcs.due({self.own.id})
+        self.assertEqual(sorted((f["opId"], f["nonce"]) for f in frames),
+                         sorted([("op-spawn-0000000001", spawn["nonce"]), ("op-steer-0000000001", steer["nonce"])]),
+                         "rpc-result carries the opId beside the nonce")
+
+    def test_an_rpc_down_rl10(self):
+        ep = self.endpoint(policy={"read_only": True, "ceiling": "default"}, ack_results=False)
+        self.uplink()
+        ep.wait(lambda f: f["t"] == "hello" and f.get("project") == self.own.id)
+        wait_for(lambda: policy.read_only())
+        spawn = ep.rpc("spawn", self.own.id, {"checkout": "/nowhere"})
+        got = self.result(ep, spawn["opId"])[0]
+        self.assertEqual({k: got[k] for k in ("project", "opId", "nonce")},
+                         {"project": self.own.id, "opId": spawn["opId"], "nonce": spawn["nonce"]})
+        self.assertEqual(got["outcome"]["error"]["code"], "read-only", "on_rpc and receive ran it, unchanged")
+        self.assertEqual(self.ledger()[spawn["opId"]]["target"], {"kind": "machine"})
+        wrong = ep.rpc("interrupt", self.own.id, {"session": S1}, machine="elsewhere")
+        loose = self.result(ep, wrong["opId"])[0]
+        self.assertEqual((loose["nonce"], loose["outcome"]["error"]["code"]), (wrong["nonce"], "wrong-machine"),
+                         "a loose refusal's rpc-result carries its opId")
+
+        # Again after each welcome until rpc-ack; settled by the opId when the nonce is unknown.
+        ep.drop()
+        self.result(ep, spawn["opId"], 2)
+        ep.send({"t": "rpc-ack", "opId": spawn["opId"], "nonce": endpoint_standin.b64url(b"\x09" * 16)})
+        self.assertTrue(wait_for(lambda: self.ledger()[spawn["opId"]].get("acked") is True), "settled by its opId")
+        ep.drop()
+        ep.wait_until(lambda: len(ep.hellos) >= 3)
+        ep.wait_until(lambda: any(n == ep.hellos[-1][0] and f.get("project") == self.own.id
+                                  for n, f in ep.received if f.get("t") == "hello"))
+        time.sleep(0.5)
+        self.assertEqual(len(self.result(ep, spawn["opId"])), 2, "acknowledged: not sent again")
+
+        # query and tombstone reach the ledger's own answers.
+        ep.query(spawn["opId"], spawn["opCreated"])
+        queried = ep.wait(lambda f: f["t"] == "queried")
+        self.assertEqual({k: queried[k] for k in ("opId", "state")}, {"opId": spawn["opId"], "state": "refused"})
+        self.assertEqual(queried["outcome"]["error"]["code"], "read-only")
+        lost = "op-never-arrived-0001"
+        ep.query(lost, endpoint_standin.iso())
+        self.assertEqual(ep.wait(lambda f: f["t"] == "queried" and f["opId"] == lost),
+                         {"t": "queried", "opId": lost, "state": "not-received"})
+        ep.tombstone(lost)
+        self.assertEqual(ep.wait(lambda f: f["t"] == "tombstoned" and f["opId"] == lost),
+                         {"t": "tombstoned", "opId": lost, "ok": True})
+        ep.tombstone(spawn["opId"])
+        self.assertEqual(ep.wait(lambda f: f["t"] == "tombstoned" and f["opId"] == spawn["opId"]),
+                         {"t": "tombstoned", "opId": spawn["opId"], "ok": False, "state": "refused"})
+        late = ep.rpc("spawn", self.own.id, {"checkout": "/nowhere"}, opId=lost)
+        self.assertEqual(self.result(ep, lost)[0]["outcome"]["error"]["code"], "tombstoned")
+        self.assertEqual(self.result(ep, lost)[0]["nonce"], late["nonce"])
 
 
 def tearDownModule():

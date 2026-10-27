@@ -38,6 +38,19 @@ the hub to send what is missing. Then whatever was appended is delivered —
 by the uplink, once per batch of the frames already queued with it
 (`deliver`) — and the tick loop nudged.
 
+On a machine cut over to its endpoint (RL10, sminos_rl10) the plane runs
+uncoded (`HubLog(..., coded=False)`): nothing is sealed, verified or indexed
+by nonce, the endpoint having signed and verified what passes it (O10 M6).
+Up, this machine's events go as stored (`ts`, no `mac`, no `created`: the
+endpoint derives the `created` it signs from `ts`). Down, each event comes
+wrapped `{event, signer, owners?}`; the shape checks run as on DX2, an
+`event` carrying a `verified` key of its own is refused `bad-shape` (the
+verdict is the endpoint's to say), and what passes is stored with one key
+added, `verified: {signer, owners}`, `owners` only when the endpoint sent
+them. The endpoint returns an own event only as the echo of what it signed
+at that position, `created`, `sig` and `attest` added: `same_uncoded`
+reads it `present`, and another body there `conflict`, as on DX2.
+
 Its state between streams lives in the project's home, `uplink.json`: the
 spent positions, the rejections not yet reported (a report whose POST
 failed is sent again after the next `hello`), and whether the hub's latest
@@ -71,6 +84,10 @@ MESSAGE_MAX = 2000  # a rejection's message, as the hub admits it
 # holds it here, or it is spent): DX2's `conflict`, which the hub admits since
 # DC3 M3.
 CONFLICT_REASON = "conflict"
+# What the endpoint adds to an event this machine wrote when it returns it
+# (RL10): the `created` it derived from `ts` and signed, its signature, the
+# owner attestation; and DX1's code while it dual-codes.
+ENDPOINT_ADDS = ("created", "mac", "sig", "attest")
 
 
 def log(line):
@@ -120,9 +137,10 @@ def position(e):
     return "%r:%r%s" % (e.get("writer"), e.get("seq"), " (nonce %r)" % nonce if nonce is not None else "")
 
 
-def refusal(key, project, e):
+def refusal(key, project, e, coded=True):
     """(DX2's reason, what was wrong) for an event from the hub that may not
-    enter this project's log; (None, "") when its shape and code pass."""
+    enter this project's log; (None, "") when its shape and code pass.
+    Uncoded (RL10), the shape alone."""
     if not isinstance(e, dict):
         return "bad-shape", "not a log event"
     writer = e.get("writer")
@@ -130,12 +148,33 @@ def refusal(key, project, e):
         return "bad-shape", "its writer is not one a log holds"
     if not (codes.is_log_seq(e.get("seq")) and isinstance(e.get("ts"), str) and isinstance(e.get("kind"), str)):
         return "bad-shape", "it is not a log event (seq, ts, kind)"
+    if not coded:
+        return None, ""
     why = {
         "encoding": "its code or nonce is not the canonical base64url of 32 and 16 bytes",
         "position": "a hub/ event whose writer, seq, or ts fails its shape",
         "code": "its code does not verify for project %s" % project.id,
     }.get(codes.failure(key, "log", project.id, e))
     return ("bad-code", why) if why else (None, "")
+
+
+def unwrapped(raw):
+    """An arriving event on RL10, `{event, signer, owners?}`: (the event, or
+    what stands for it in a rejection; its `verified` key; DX2's reason and
+    what was wrong, or None and "")."""
+    if not isinstance(raw, dict) or not isinstance(raw.get("event"), dict):
+        return raw.get("event") if isinstance(raw, dict) else None, None, "bad-shape", \
+            "not an event as the endpoint wraps it ({event, signer, owners?})"
+    e = raw["event"]
+    signer, owners = raw.get("signer"), raw.get("owners")
+    if not (isinstance(signer, dict) and isinstance(signer.get("kind"), str)):
+        return e, None, "bad-shape", "it carries no signer"
+    if "owners" in raw and not (isinstance(owners, list) and all(
+            isinstance(o, dict) and isinstance(o.get("id"), str) for o in owners)):
+        return e, None, "bad-shape", "its owners are not a list of {id, email}"
+    if "verified" in e:
+        return e, None, "bad-shape", "its event carries a verified key of its own, which only the endpoint says"
+    return e, {"signer": signer, **({"owners": owners} if "owners" in raw else {})}, None, ""
 
 
 def same_event(held, e):
@@ -151,6 +190,19 @@ def same_event(held, e):
         return False
 
 
+def same_uncoded(held, e, own):
+    """RL10's `same_event`: the canonical forms with the endpoint's verdict
+    (`verified`) left out of both; for an event this machine wrote (`own`),
+    what the endpoint adds when it returns it (ENDPOINT_ADDS) left out too,
+    of both copies, so an echo of the stored event is the stored event."""
+    drop = ("verified",) + (ENDPOINT_ADDS if own else ())
+    try:
+        return codes.canonical({k: v for k, v in held.items() if k not in drop}) == \
+            codes.canonical({k: v for k, v in e.items() if k not in drop})
+    except codes.NotCanonical:
+        return False
+
+
 def frontier(last, spent):
     """A writer's last seq here, carried past the spent positions that follow it."""
     while last + 1 in spent:
@@ -158,12 +210,13 @@ def frontier(last, spent):
     return last
 
 
-def append_verbatim(project, e, spent=()):
+def append_verbatim(project, e, spent=(), same=same_event):
     """Append an imported event to its writer's file as it came, under the
     locks every appender takes (`.sync.lock` shared, the file's own lock):
-    "appended"; "present" when that (writer, seq) holds the same content;
-    "conflict" when it holds another; "spent" when an event was refused there
-    (a tombstone: nothing is ever appended at it, whatever arrives); "gap"
+    "appended"; "present" when that (writer, seq) holds the same content
+    (`same` tells); "conflict" when it holds another; "spent" when an event
+    was refused there (a tombstone: nothing is ever appended at it, whatever
+    arrives); "gap"
     when seq is not one past the last (carried past the writer's `spent`
     positions)."""
     if e["seq"] in spent:
@@ -183,7 +236,7 @@ def append_verbatim(project, e, spent=()):
                 for line in f.read().decode("utf-8", "replace").split("\n"):
                     x = sminos.parse_event(line) if line.strip() else None
                     if x and x["seq"] == e["seq"]:
-                        return "present" if same_event(x, e) else "conflict"
+                        return "present" if same(x, e) else "conflict"
                 return "conflict"
             end = f.seek(0, os.SEEK_END)
             if end:
@@ -243,8 +296,9 @@ class HubLog:
     """One hub project's log plane: what this machine says of it up the
     stream, and how it takes what the hub sends of it."""
 
-    def __init__(self, project, cred):
+    def __init__(self, project, cred, coded=True):
         self.project = project
+        self.coded = coded   # DX2's codes; off on RL10, where the key is None
         self.key = cred["key"]
         self.machine = cred["machine"]
         self.files = {}      # path → (size, mtime_ns, writer, last): the vector's reads, kept while a file holds
@@ -444,8 +498,8 @@ class HubLog:
         log("the hub refused in %s: %s%s%s" % (
             self.project.name, reason, " %s:%s" % (writer, r.get("seq")) if writer else "",
             " — %s" % " ".join(str(r.get("message") or "").split())[:300] if r.get("message") else ""))
-        if isinstance(writer, str) and self.own(writer) and reason in ("conflict", "writer-not-yours", "bad-shape",
-                                                                        "too-large"):
+        stops = ("conflict", "writer-not-yours", "bad-shape", "too-large") + (() if self.coded else ("malformed",))
+        if isinstance(writer, str) and self.own(writer) and reason in stops:
             self.stuck.add(writer)
             seq = r.get("seq")
             at = seq if type(seq) is int and seq >= 1 else 0
@@ -472,7 +526,7 @@ class HubLog:
             for e in sorted((e for e in read_events(path) if e["seq"] > self.sent.get(writer, 0)),
                             key=lambda e: e["seq"]):
                 try:
-                    sealed = seal(self.key, self.project.id, e)
+                    sealed = seal(self.key, self.project.id, e) if self.coded else self.as_uploaded(e)
                     n = len(codes.canonical(sealed).encode("utf-8"))
                 except codes.NotCanonical as err:
                     log("%s:%d in %s has no canonical form (%s): it and the rest of its writer stay here"
@@ -487,6 +541,13 @@ class HubLog:
                 size += n
         if batch:
             yield frame()
+
+    @staticmethod
+    def as_uploaded(e):
+        """An event of this machine as it goes up RL10: as stored (this
+        machine's own carry no code and no `created`), but never with the
+        endpoint's verdict, which an echo kept here would carry."""
+        return {k: v for k, v in e.items() if k != "verified"}
 
     def next_upload(self):
         """The next upload, (frame, {writer: seq}), or None when nothing is
@@ -524,29 +585,52 @@ class HubLog:
                         self.nonces.setdefault(mac["nonce"], (e["writer"], e["seq"]))
         return self.nonces
 
+    def is_own(self, writer):
+        """Whether a writer is one of this machine's, under its name or a
+        former one (RL10: the endpoint returns those only as echoes)."""
+        return writer.split("/", 1)[0] in {self.machine, *sminos.machine_identity()[1]}
+
+    def same(self, held, e):
+        if self.coded:
+            return same_event(held, e)
+        return same_uncoded(held, e, self.is_own(e["writer"]))
+
     def take(self, events):
         """An `events` frame from the hub: each event verified and appended,
-        or refused. Returns (how many were appended, the `rejected` frames)."""
+        or refused. Returns (how many were appended, the `rejected` frames).
+        Uncoded (RL10), each arrives wrapped and verified by the endpoint
+        (`unwrapped`), and is appended with its `verified` key."""
         if not isinstance(events, list):
             log("an events frame for %s without a list of events: ignored" % self.project.name)
             return 0, []
         appended, out, spent = 0, [], self.spent()
         newly = {}
         for raw in events:
-            e = raw
-            reason, why = refusal(self.key, self.project, e)
+            if self.coded:
+                named, verified, (reason, why) = raw, None, refusal(self.key, self.project, raw)
+            else:
+                # What a rejection names is the event, not its wrapper.
+                named, verified, reason, why = unwrapped(raw)
+                if reason is None:
+                    reason, why = refusal(None, self.project, named, coded=False)
+            e = named
             if reason is None:
                 # JSON's 3.0 is the number 3; the log's readers take an int.
                 # The code's canonical form is the same for both.
                 e = {**e, "seq": int(e["seq"])}
-                at = self.nonce_index().get(e["mac"]["nonce"])
-                if at is not None and at != (e["writer"], e["seq"]):
-                    reason, why = "seen-nonce", "its nonce is held here by %s:%d" % at
+                if self.coded:
+                    at = self.nonce_index().get(e["mac"]["nonce"])
+                    if at is not None and at != (e["writer"], e["seq"]):
+                        reason, why = "seen-nonce", "its nonce is held here by %s:%d" % at
+                else:
+                    e["verified"] = verified
             if reason is None:
-                outcome = append_verbatim(self.project, e, spent.get(e["writer"], set()) | newly.get(e["writer"], set()))
+                outcome = append_verbatim(self.project, e, spent.get(e["writer"], set()) | newly.get(e["writer"], set()),
+                                          self.same)
                 if outcome == "appended":
                     appended += 1
-                    self.nonces.setdefault(e["mac"]["nonce"], (e["writer"], e["seq"]))
+                    if self.coded:
+                        self.nonces.setdefault(e["mac"]["nonce"], (e["writer"], e["seq"]))
                 elif outcome == "gap":
                     log("held back %s in %s: its seq is not one past the writer's last (the hub sends what is "
                         "missing at the next hello)" % (position(e), self.project.name))
@@ -557,14 +641,14 @@ class HubLog:
                         e["writer"], e["seq"])
             if reason is None:
                 continue
-            log("refused %s in %s: %s" % (position(raw), self.project.name, why))
-            out.append(rejected(self.project.id, raw, reason, why))
-            if isinstance(raw, dict) and isinstance(raw.get("writer"), str) and codes.is_log_seq(raw.get("seq")):
-                if self.allocated_here(raw["writer"]):
-                    if self.spend_own(raw["writer"], int(raw["seq"])):
-                        newly.setdefault(raw["writer"], set()).add(int(raw["seq"]))
+            log("refused %s in %s: %s" % (position(named), self.project.name, why))
+            out.append(rejected(self.project.id, named, reason, why))
+            if isinstance(named, dict) and isinstance(named.get("writer"), str) and codes.is_log_seq(named.get("seq")):
+                if self.allocated_here(named["writer"]):
+                    if self.spend_own(named["writer"], int(named["seq"])):
+                        newly.setdefault(named["writer"], set()).add(int(named["seq"]))
                 else:
-                    newly.setdefault(raw["writer"], set()).add(int(raw["seq"]))
+                    newly.setdefault(named["writer"], set()).add(int(named["seq"]))
         if out:
             d = self.state()
             held = d.get("spent") if isinstance(d.get("spent"), dict) else {}

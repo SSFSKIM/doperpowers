@@ -378,6 +378,10 @@ class Requests:
         return out
 
     def seal(self, kind, pid, draft):
+        """A body as it goes up: sealed under the org key (DX1), or, with no
+        key (RL10, where nothing carries a code), its draft as it is."""
+        if self.key is None:
+            return draft
         try:
             return codes.seal(self.key, kind, pid, draft, codes.b64url(os.urandom(codes.NONCE_BYTES)))
         except codes.NotCanonical as e:

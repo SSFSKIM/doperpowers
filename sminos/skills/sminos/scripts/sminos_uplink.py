@@ -82,8 +82,9 @@ On a machine cut over to its endpoint (sminos_rl10) the same Link runs with
 codes; one SocketLane in place of both senders, a frame written being a
 frame taken, so every continuation runs once its frame is written, and
 everything a reconnect restates goes again after each welcome. The
-endpoint's own frames down — its policy, its revocation set and its ask for
-the DX1 key — are handled there alone. Before the cutover the endpoint is
+endpoint's own frames down — its policy, its revocation set, its ask for
+the DX1 key, and a device's `query` and `tombstone` of an operation — are
+handled there alone. Before the cutover the endpoint is
 only probed (cmd_probe), beside the hub's stream.
 """
 
@@ -1401,7 +1402,7 @@ class Link:
         self.plane = plane.Plane(cred["machine"], wake, bridges, warmer=warmer)   # the warmer kept across streams
         self.requests = reqs or requests.Requests(cred["key"], cred["machine"])  # kept across streams by the uplink
         self.requests.wake = wake
-        self.rpcs = rpcs or rpc.Rpcs(cred["key"], cred["machine"])  # kept across streams by the uplink
+        self.rpcs = rpcs or rpc.Rpcs(cred["key"], cred["machine"], coded=coded)  # kept across streams by the uplink
         self.rpcs.wake = wake
         self.machine_sent = {}    # project id → the `machine` body last posted on this stream
         self.next_checkouts = 0.0
@@ -1426,7 +1427,8 @@ class Link:
             # What only the endpoint sends: its policy, its revocations, and
             # its ask for the machine's DX1 key (RL10, O10 Interfaces §D).
             self.handlers.update({"policy": self.on_policy, "revoked": self.on_revoked,
-                                  "legacy-key?": self.on_legacy_key})
+                                  "legacy-key?": self.on_legacy_key, "query": self.on_query,
+                                  "tombstone": self.on_tombstone})
 
     def post_session(self, messages):
         if messages:
@@ -1484,7 +1486,7 @@ class Link:
             return None
         hl = self.logs.get(pid)
         if hl is None:
-            hl = self.logs[pid] = hublog.HubLog(project, self.cred)
+            hl = self.logs[pid] = hublog.HubLog(project, self.cred, coded=self.coded)
         hl.project = project
         return hl
 
@@ -1606,6 +1608,26 @@ class Link:
             return
         self.session_lane.send([{"t": "legacy-key", "org": org, "key": key}])
         log("legacy-key?: answered with hub.json's DX1 key of org %s" % org)
+
+    def on_query(self, frame, _stream):
+        """RL4's `query {opId, opCreated}`, which the endpoint asks for a
+        device: the ledger's answer (Rpcs.query), up as `queried`."""
+        op = frame.get("opId")
+        if not (isinstance(op, str) and rpc.OP_ID_RE.fullmatch(op)):
+            log("a query for no operation id (%r): not answered" % (op,))
+            return
+        view = self.rpcs.query(op, rpc.created_at(frame.get("opCreated")))
+        self.session_lane.send([{"t": "queried", "opId": op, **view}])
+
+    def on_tombstone(self, frame, _stream):
+        """RL4's `tombstone {opId, opCreated?}`: the op given up, so a late
+        copy never runs (Rpcs.tombstone), answered `tombstoned`."""
+        op = frame.get("opId")
+        if not (isinstance(op, str) and rpc.OP_ID_RE.fullmatch(op)):
+            log("a tombstone for no operation id (%r): not answered" % (op,))
+            return
+        done = self.rpcs.tombstone(op, rpc.created_at(frame.get("opCreated")))
+        self.session_lane.send([{"t": "tombstoned", "opId": op, **done}])
 
     def on_hb(self, _frame, _stream):
         """Answered by the stream's acker (Stream), never here."""
@@ -2213,7 +2235,7 @@ class Kept:
             self.reqs.close()
         self.cred, self.logs = cred, {}
         self.reqs = requests.Requests(cred["key"], cred["machine"])
-        self.rpcs = rpc.Rpcs(cred["key"], cred["machine"])
+        self.rpcs = rpc.Rpcs(cred["key"], cred["machine"], coded=cred["key"] is not None)   # RL10's has no key
 
     def close(self):
         self.reqs.close()
