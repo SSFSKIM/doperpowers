@@ -59,7 +59,10 @@ is only said in daemon.log); so do 3's `tombstoned` and `expired`, which
 leave the ledger as it is. From 4 on, an op has one answer, kept. The hub
 knows an RPC by its nonce: `rpc-result` and `rpc-ack` carry the nonce, which
 an op's entry keeps (`nonce`, the latest copy's), and a copy asking again for
-an answered op has the answer sent again under its own nonce.
+an answered op has the answer sent again under its own nonce; a copy of an op
+still held by a worker or claimed runs nothing, and the op's answer, once it
+exists, goes up under the latest copy's nonce (the worker's `flight` record
+carries it until the claim does).
 
 At most once (DX6, RL4): `daemon/rpcs.json` claims the op before the RPC has
 any effect and records the outcome before the result goes up; entries are
@@ -73,8 +76,9 @@ between the two writes) is reconciled from the action's own trace — a
 spawned seat carries the op on its record (`rpc_nonce`); a steer carries
 it to the bridge, whose child keeps the mod's answer under it (DX5's kept
 file, `rpcs`), since a row's text alone cannot tell this steer from the same
-words sent another way — for as long as that trace may still appear, then
-answered `failed` `interrupted`.
+words sent another way, an observer's refusal reading `lane-b` there as it
+does live — for as long as that trace may still appear, then answered
+`failed` `interrupted`.
 
 What became of an op is asked of the ledger (RL4's `query`, carried over
 RL10 in a later phase): `done` or `refused` with its outcome, `in-progress`
@@ -488,15 +492,18 @@ class Ledger:
     def acked(self, op, value=True, nonce=None):
         """The op's result taken by the hub (or, `value` False, owed again);
         with `nonce`, owed under that copy's nonce (an opId's entry keeps the
-        latest)."""
+        latest): a claim's too, whose outcome goes up under it once it
+        exists (ticket 11a)."""
         with self.lock:
             e = self.entries.get(op)
             if e is None:
                 return
             renamed = nonce is not None and "nonce" in e and e["nonce"] != nonce
-            if e.get("acked") is value and not renamed:
+            answered = "outcome" in e
+            if not renamed and (not answered or e.get("acked") is value):
                 return
-            e["acked"] = value
+            if answered:
+                e["acked"] = value
             if renamed:
                 e["nonce"] = nonce
             try:
@@ -528,7 +535,8 @@ class Rpcs:
         self.clock = clock
         self.ledger = Ledger(clock)
         self.loose = {}           # nonce → (project id, outcome, at): refusals the ledger does not keep
-        self.flight = set()       # ops a worker holds
+        self.flight = {}          # op → {nonce}: ops a worker holds, each with the latest nonce a copy of it came
+        #                           with, which its claim or refusal is kept under (ticket 11a)
         self.op_lock = threading.Lock()   # `flight` and the ledger's admission, claim and tombstone, as one transition
         self.finished = queue.Queue()  # what workers finished, for the main thread
         self.sent_here = set()    # nonces whose result went up on this stream (the hub's key)
@@ -598,12 +606,17 @@ class Rpcs:
         if known is not None and known.get("tombstone"):
             return self.refuse_loose(rpc, "tombstoned", "%s was answered not-received and given up: it never runs" % op)
         if known is not None or op in self.flight:
-            if known is not None and "outcome" in known:
-                # Forwarded again (the hub lost it) or resealed: it goes again, under this copy's nonce.
+            # Forwarded again (the hub lost it) or resealed: it never runs
+            # again, and its one result goes up under this copy's nonce, the
+            # one the hub waits for — at once when the ledger holds it, else
+            # once it exists (in flight, or a claim being reconciled).
+            if op in self.flight:
+                self.flight[op]["nonce"] = nonce   # what the worker's claim, or its refusal, is kept under
+            if known is not None:
                 self.sent_here.discard(known.get("nonce", op))
                 self.sent_here.discard(nonce)
                 self.ledger.acked(op, False, nonce)
-            return                                  # in flight, or a claim being reconciled: its result follows
+            return
         born = op_created_of(rpc)
         if born is not None and self.clock() - born > OP_HORIZON:
             return self.refuse_loose(rpc, "expired", "%s was created %s, more than %d s ago: the ledger may no longer "
@@ -622,7 +635,7 @@ class Rpcs:
             seat = next((s for s in sminos.seats() if s["current"] == sid), None)
             facts.update(cwd=here.cwd(project, sid),
                          retired_seat=seat["alias"] if seat and seat["status"] == "retired" else None)
-        self.flight.add(op)
+        self.flight[op] = {"nonce": nonce}
         if name == "compact":
             self.compact_flight[op] = sid
         threading.Thread(target=self.run, args=(rpc, facts), name="rpc-" + name, daemon=True).start()
@@ -671,7 +684,9 @@ class Rpcs:
     def keep(self, rpc, outcome):
         """A refusal at admission, from freshness on: the op's one answer,
         `refused` (from a worker too, before its claim: what it cannot keep
-        reaches `loose` through the main thread)."""
+        reaches `loose` through the main thread), under the latest nonce a
+        copy of it came with. The caller holds the op lock."""
+        rpc = self.latest(rpc)
         now = self.clock()
         e = {**entry_of(rpc, now), "outcome": outcome, "refused": True, "done_at": now, "acked": False}
         try:
@@ -682,6 +697,12 @@ class Rpcs:
         if outcome["state"] == "failed":
             log("%s %s refused %s: %s" % (rpc["rpc"], rpc["nonce"], outcome["error"]["code"],
                                           outcome["error"]["message"]))
+
+    def latest(self, rpc):
+        """The RPC under the latest nonce a copy of its op came with while a
+        worker holds it (ticket 11a). The caller holds the op lock."""
+        held = self.flight.get(op_of(rpc))
+        return {**rpc, "nonce": held["nonce"]} if held is not None else rpc
 
     def ack(self, frame):
         nonce = frame.get("nonce")
@@ -738,15 +759,21 @@ class Rpcs:
             try:
                 act = self.plan(rpc, facts)
             except Refused as r:
-                self.keep(rpc, r.outcome)
-                return
+                refused = r.outcome
             except Exception as e:  # noqa: BLE001 — a check that broke is a refusal, said: nothing ran
-                self.keep(rpc, failed("failed", "%s: %s (nothing ran)" % (type(e).__name__, e)))
+                refused = failed("failed", "%s: %s (nothing ran)" % (type(e).__name__, e))
+            else:
+                refused = None
+            if refused is not None:
+                with self.op_lock:
+                    self.keep(rpc, refused)
                 return
             try:
-                claimed = self.ledger.claim(op, entry_of(rpc, self.clock()))
+                with self.op_lock:   # under the nonce a reseal left in flight; a later one finds the claim
+                    current = self.latest(rpc)
+                    claimed = self.ledger.claim(op, entry_of(current, self.clock()))
             except OSError as e:
-                self.finished.put(("loose", (rpc["nonce"], rpc["project"],
+                self.finished.put(("loose", (current["nonce"], rpc["project"],
                                              failed("failed", "the ledger could not be written: %s" % e))))
                 return
             if not claimed:   # the ledger's answer for the op stands; nothing here may change it
@@ -1004,7 +1031,7 @@ class Rpcs:
                 return
             if kind == "done":
                 with self.op_lock:
-                    self.flight.discard(data)
+                    self.flight.pop(data, None)
                 self.compact_flight.pop(data, None)
             elif kind == "loose":
                 nonce, pid, outcome = data
@@ -1241,7 +1268,7 @@ class Rpcs:
             if outcome is None and kept_job(e) and op not in self.copies_asked:
                 self.copies_asked.add(op)
                 with self.op_lock:
-                    self.flight.add(op)
+                    self.flight[op] = {"nonce": e.get("nonce", op)}
                 threading.Thread(target=self.check_copy, args=(op, e), name="rpc-resume-copy",
                                  daemon=True).start()
                 continue
@@ -1592,15 +1619,21 @@ def steered(out):
     """A steer's outcome from the mod's answer to its command."""
     if out.get("ok"):
         return done({"row": (out.get("result") or {}).get("row")})
+    if out.get("code") == LANE_B:
+        return refused_op(out)
     if IDLE in str(out.get("error") or ""):
         return failed("idle", "no turn is running to steer: send it instead")
     return failed("failed", refusal(out))
 
 
 def refused_op(out):
-    """An op the bridge refused, as the RPC's failure: its code the
-    message's first word, its reason after."""
+    """An op the bridge refused, as the RPC's failure: an observer's refusal
+    is `lane-b`, as `command()` answers it live, so a kept answer read back
+    after a restart (`trace`, `reconcile`) reads the same (ticket 11b); any
+    other code is the message's first word, its reason after."""
     code = out.get("code")
+    if code == LANE_B:
+        return failed(LANE_B, refusal(out))
     return failed("failed", "%s: %s" % (code, refusal(out)) if isinstance(code, str) and code else refusal(out))
 
 

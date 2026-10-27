@@ -130,7 +130,7 @@ def entries(rp, nonces, seconds):
         rp.next_reconcile = 0.0
         rp.due({project.id})
         got = [rp.ledger.get(n) for n in nonces]
-        if time.time() >= deadline or (all(e and "outcome" in e for e in got) and not rp.flight & set(nonces)):
+        if time.time() >= deadline or (all(e and "outcome" in e for e in got) and not rp.flight.keys() & set(nonces)):
             return got
         time.sleep(0.2)
 
