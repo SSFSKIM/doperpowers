@@ -414,6 +414,24 @@ class HubLog:
             "sub": None, "n": None,
             "body": {"online": True, "policy": machine_policy(), "checkouts": checkouts, "desk": desk()}}}
 
+    def host_sent(self):
+        """RL10: {writer: seq}, how far each writer of the project's host
+        store (sminos.HOST_STORE) went up as sub-less `host` messages: where
+        the uplink's next host pass starts."""
+        raw = self.state().get("host_sent")
+        return {w: s for w, s in raw.items() if isinstance(w, str) and type(s) is int} \
+            if isinstance(raw, dict) else {}
+
+    def keep_host_sent(self, reach):
+        """The host events up to `reach` ({writer: seq}) were written to the
+        endpoint: the cursor moves there, never back."""
+        d = self.state()
+        held = self.host_sent()
+        for w, seq in reach.items():
+            held[w] = max(seq, held.get(w, 0))
+        d["host_sent"] = held
+        self.save(d)
+
     def unreported(self):
         raw = self.state().get("unreported")
         return [f for f in raw if isinstance(f, dict)] if isinstance(raw, list) else []
