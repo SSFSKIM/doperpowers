@@ -92,6 +92,7 @@ import collections
 import errno
 import fcntl
 import functools
+import glob
 import http.client
 import itertools
 import json
@@ -1399,7 +1400,8 @@ class Link:
         self.passed = set()
         self.received = None      # when the reader took the frame being dispatched (epoch s), when known
         self.failing = self.plane_failing = ""
-        self.plane = plane.Plane(cred["machine"], wake, bridges, warmer=warmer)   # the warmer kept across streams
+        self.plane = plane.Plane(cred["machine"], wake, bridges, warmer=warmer,   # the warmer kept across streams
+                                 host=not coded)   # RL10: the host store rides the sessions' subscriptions
         self.requests = reqs or requests.Requests(cred["key"], cred["machine"])  # kept across streams by the uplink
         self.requests.wake = wake
         self.rpcs = rpcs or rpc.Rpcs(cred["key"], cred["machine"], coded=coded)  # kept across streams by the uplink
@@ -1417,6 +1419,7 @@ class Link:
         self.unrecorded = {}      # project id → rejections the hub took, their record not yet written
         self.undropped = {}       # project id → (outbox, lines) the hub took, their drop not yet done
         self.unsettled = {}       # (project id, what) → the failure last said (settle_marks)
+        self.host_queued = {}     # RL10: project id → {writer: seq} of host events queued on this connection
         self.handlers = {"welcome": self.on_welcome, "hb": self.on_hb, "have": self.on_have,
                          "events": self.on_events, "resend": self.on_resend, "refused": self.on_refused,
                          "part": self.on_part, "subscribe": self.on_subscribe, "unsubscribe": self.on_unsubscribe,
@@ -1522,6 +1525,7 @@ class Link:
         self.reporting.clear()
         self.delivering.clear()
         self.opening.clear()
+        self.host_queued.clear()
         if not self.coded:
             self.log_lane = self.session_lane = self.transport.lane()
             log("connected to the endpoint (RL10, local-only) as %s (connection %d)"
@@ -1865,6 +1869,8 @@ class Link:
         if not follow:
             self.machine_sent[pid] = machine["message"]["body"]
         self.deliveries(hl)
+        if not self.coded:
+            self.host_pass(hl, again=True)
 
     def report(self, hl, rejections):
         """Rejections up, reported once the hub answered them."""
@@ -1956,6 +1962,47 @@ class Link:
             self.settle_marks(hl)
 
         self.log_lane.send(frames, then=answered)
+
+    def host_pass(self, hl, again=False):
+        """RL10: what the project's sessions sent their person (its host
+        store, sminos.HOST_STORE) up the session lane, each event a sub-less
+        `host` message {id: {writer, seq}, event}, whether or not anyone
+        subscribes: the endpoint derives its `wrote` notification from these
+        (O10 M3), and a session nobody watches is the one whose person needs
+        it. What goes is what is past the project's cursor (HubLog.host_sent),
+        which moves once it is written; `again`, on a project opened on a
+        connection, adds each session's last plane.HOST_LAST whatever the
+        cursor, so an endpoint that died before keeping what it took loses
+        nothing. The endpoint deduplicates by the id."""
+        pid = hl.project.id
+        queued = self.host_queued.setdefault(pid, {})
+        sent = hl.host_sent()
+        by_writer = {}
+        for path in sorted(glob.glob(os.path.join(glob.escape(hl.project.home), sminos.HOST_STORE, "*.jsonl"))):
+            for e in sminos._log_file_events(path):
+                if hl.is_own(e["writer"]) and sminos.writer_session(e["writer"]):
+                    by_writer.setdefault(e["writer"], []).append(e)
+        due = {}
+        for writer, events in by_writer.items():
+            at = max(sent.get(writer, 0), queued.get(writer, 0))
+            due.update(((writer, e["seq"]), e) for e in events if e["seq"] > at)
+        if again:
+            by_session = {}
+            for writer, events in by_writer.items():
+                by_session.setdefault(sminos.writer_session(writer), []).extend(events)
+            for events in by_session.values():
+                events.sort(key=lambda e: (e["ts"], e["writer"], e["seq"]))
+                due.update(((e["writer"], e["seq"]), e) for e in events[-plane.HOST_LAST:])
+        if not due:
+            return
+        events = sorted(due.values(), key=lambda e: (e["ts"], e["writer"], e["seq"]))
+        reach = {}
+        for e in events:
+            reach[e["writer"]] = max(e["seq"], reach.get(e["writer"], 0))
+            queued[e["writer"]] = max(e["seq"], queued.get(e["writer"], 0))
+        self.session_lane.send([plane.frame(plane.envelope(pid, self.cred["machine"], sminos.writer_session(e["writer"]),
+                                                           "host", None, None, plane.host_body(e)))
+                                for e in events], then=lambda _refused: hl.keep_host_sent(reach))
 
     def machine_presence(self, now):
         """Each open project held or followed, as it is now, and the machine's
@@ -2078,6 +2125,8 @@ class Link:
                 for pid in sorted(self.opened):
                     self.upload(self.logs[pid])
                     self.deliveries(self.logs[pid])
+                    if not self.coded:
+                        self.host_pass(self.logs[pid])
             self.failing = ""
         except EndStream:
             raise

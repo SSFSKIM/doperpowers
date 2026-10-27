@@ -591,6 +591,84 @@ assert_equals "$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1])
   "{'url': 'https://hub.test', 'org': 'org-a'}" "the hub project is registered with its hub"
 rm -f "$SMINOS_HOME/daemon/hub.json"
 
+echo "a machine cut over to its endpoint (RL10): the host store:"
+# daemon/identity.json is what the first RL10 welcome writes: from then on a
+# hub project's host events stay on the machine, in its host store
+# (projects/<id>/host/), and never reach its log, which the hub carries; a
+# project with no hub keeps them in its log (O12 M8).
+printf '{"org": "org-a", "hub": "https://hub.test", "name": "testhost", "former": {}, "ref": "machine-ref", "enrolled": "2026-10-01T00:00:00Z", "cutover": "2026-10-27T00:00:00Z", "build": "x"}\n' \
+  > "$SMINOS_HOME/daemon/identity.json"
+chmod 600 "$SMINOS_HOME/daemon/identity.json"
+RC3="$T/cut"
+mkdir -p "$RC3"
+git -c init.defaultBranch=main init -q "$RC3"
+(cd "$RC3" && "$SMINOS" project init --hub --name cut >/dev/null)
+CUTP="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["project"])' "$RC3/.smns")"
+store_events() { # project-id file-stem → "kind[:src]" words of that writer's file in the host store
+  python3 -c 'import json, sys
+try:
+    lines = open(sys.argv[1]).read().splitlines()
+except OSError:
+    lines = []
+print(" ".join(json.loads(l)["kind"] + (":" + json.loads(l)["src"] if json.loads(l).get("src") else "") for l in lines))' \
+    "$SMINOS_HOME/projects/$1/host/$2.jsonl"
+}
+hook_in() { # cwd event session transcript
+  printf '{"session_id":"%s","cwd":"%s","transcript_path":"%s","hook_event_name":"%s","source":"startup"}' \
+    "$3" "$1" "$4" "$2" | "$SMINOS" record
+}
+SK=5b000001-0000-4000-8000-0000000000f1
+TK="$HOME/.claude/projects/x/$SK.jsonl"
+peer "$SK" excut interactive cli "$RC3"
+start_child "$SK"
+ctl post "$SMINOS_HOME/bridge/$SK.sock" "[{\"type\":\"session\",\"phase\":\"start\",\"session\":\"$SK\",\"cwd\":\"$RC3\",\"t\":1}]" >/dev/null
+ctl post "$SMINOS_HOME/bridge/$SK.sock" "$(rows export marks)" >/dev/null
+ctl post "$SMINOS_HOME/bridge/$SK.sock" "$(rows export ask)" >/dev/null
+store_has() { [[ " $(store_events "$CUTP" "testhost.$SK") " == *" question:toolu_ex_async "* ]]; }
+until_true 100 store_has || true
+CUT="message:e1#0 message:e1#1 question:toolu_ex_async"
+assert_equals "$(store_events "$CUTP" "testhost.$SK")" "$CUT" \
+  "the bridge's live export of a hub project's session goes to the host store, under the session's writer"
+assert_equals "$(writer_events "$CUTP" "testhost.$SK")" "joined" "and nothing of it to the log, which holds its join alone"
+hook_in "$RC3" SessionStart "$SK" "$TK"
+rows transcript "$TK" prompt marks ask
+hook_in "$RC3" Stop "$SK" "$TK"
+assert_equals "$(store_events "$CUTP" "testhost.$SK")" "$CUT" \
+  "the Stop hook's export of the same rows finds them in the store: one copy"
+assert_equals "$(writer_events "$CUTP" "testhost.$SK")" "joined" "and appends nothing to the log"
+# A session the bridge never saw answers the question SK asked: the answer
+# goes under SK's writer, in the store.
+SN=5b000001-0000-4000-8000-0000000000f2
+TN="$HOME/.claude/projects/x/$SN.jsonl"
+peer "$SN" excopy interactive cli "$RC3"
+hook_in "$RC3" SessionStart "$SN" "$TN"
+rows transcript "$TN" prompt answers
+hook_in "$RC3" Stop "$SN" "$TN"
+assert_equals "$(store_events "$CUTP" "testhost.$SK")" "$CUT answered:toolu_ex_async" \
+  "an answer to a question another session asked goes under the asker's writer, in the store"
+assert_equals "$(store_events "$CUTP" "testhost.$SN")" "answered:toolu_ex_ctx answered:toolu_ex_maws answered:toolu_ex_mid" \
+  "the answering session's other answers in its own store file"
+assert_equals "$(writer_events "$CUTP" "testhost.$SN")" "joined" "and nothing of them in the log"
+"$SMINOS" chat cut --host > "$T/host" 2>&1 || true
+assert_contains "$(cat "$T/host")" "excut: first to the host" "chat --host reads the store"
+# A git-mirrored project on the same machine keeps them in its log.
+RM="$T/mirrored"
+mkdir -p "$RM"
+git -c init.defaultBranch=main init -q "$RM"
+(cd "$RM" && "$SMINOS" project init --remote "$T/mirror.git" --name mirrored >/dev/null)
+MIRP="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["project"])' "$RM/.smns")"
+SR=5b000001-0000-4000-8000-0000000000f3
+peer "$SR" exmirror interactive cli "$RM"
+start_child "$SR"
+ctl post "$SMINOS_HOME/bridge/$SR.sock" "[{\"type\":\"session\",\"phase\":\"start\",\"session\":\"$SR\",\"cwd\":\"$RM\",\"t\":1}]" >/dev/null
+ctl post "$SMINOS_HOME/bridge/$SR.sock" "$(rows export marks)" >/dev/null
+mirror_has() { [[ " $(writer_events "$MIRP" "testhost.$SR") " == *" message:e1#1 "* ]]; }
+until_true 100 mirror_has || true
+assert_equals "$(writer_events "$MIRP" "testhost.$SR")" "joined message:e1#0 message:e1#1" \
+  "a git-mirrored project on a cut-over machine keeps its host events in its log, as today"
+assert_equals "$(ls "$SMINOS_HOME/projects/$MIRP/host" 2>/dev/null | wc -l | tr -d ' ')" "0" "and has no host store"
+rm -f "$SMINOS_HOME/daemon/identity.json"
+
 echo
 if [ "$FAILURES" -eq 0 ]; then
   echo "all $PASSES bridge export assertions passed"

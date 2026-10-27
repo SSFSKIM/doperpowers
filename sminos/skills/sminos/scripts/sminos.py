@@ -1758,7 +1758,14 @@ def event_ref(e):
 
 
 def writer_path(project, writer):
-    return project_path(project, "log", writer.replace("/", ".") + ".jsonl")
+    return store_path(project, "log", writer)
+
+
+def store_path(project, store, writer):
+    """A writer's file in one of the project's stores: `log` (the log, which
+    git and the hub carry) or HOST_STORE (a cut-over machine's to-human
+    events, host_store_holds)."""
+    return project_path(project, store, writer.replace("/", ".") + ".jsonl")
 
 
 @contextmanager
@@ -1819,16 +1826,18 @@ def spent_seqs(project, writer):
     return {s for s in ss if type(s) is int} if isinstance(ss, list) else set()
 
 
-def _append(project, writer, events, skip_src=False, guard=None):
+def _append(project, writer, events, skip_src=False, guard=None, store="log"):
     """Append events to the writer's file under `.sync.lock` shared (git never
     rewrites log/ while an appender writes) and the file's own lock (seq is the
     last line's plus one, past any position the uplink spent, which it spends
     under the same lock). With `guard`, the file's events are read under the
     lock and nothing is appended unless guard(events) holds — a check and its
-    append no other appender can come between. Returns the events as written."""
+    append no other appender can come between. `store`: the writer's file in
+    another of the project's stores (HOST_STORE), by the same rule in its own
+    directory, its seqs its own. Returns the events as written."""
     if any(e["kind"] in LIFECYCLE for e in events):
         _VIEWS.pop(project.id, None)
-    path = writer_path(project, writer)
+    path = store_path(project, store, writer)
     log = os.path.dirname(path)
     with flocked(os.path.join(log, ".sync.lock"), exclusive=False), flocked(path + ".lock"):
         fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_APPEND, 0o600)
@@ -1853,7 +1862,7 @@ def _append(project, writer, events, skip_src=False, guard=None):
             if not events:
                 return []
             seq = _last_seq(f)
-            spent = spent_seqs(project, writer)
+            spent = spent_seqs(project, writer) if store == "log" else set()
             out = []
             for fields in events:
                 seq += 1
@@ -1918,8 +1927,19 @@ def log_read(project, since=None, kinds=(), to_session=None):
     """The project's events: each writer's stream in seq order (authoritative
     within a writer), merged by taking the next line from whichever stream's
     head has the earlier (ts, writer). Only the top-level *.jsonl are read."""
+    return _store_read(project, "log", since, kinds, to_session)
+
+
+def host_read(project, since=None):
+    """The project's host store (HOST_STORE), read as log_read reads the log:
+    on a cut-over machine, what its sessions sent their person since the
+    cutover. Empty where the machine keeps them in the log."""
+    return _store_read(project, HOST_STORE, since)
+
+
+def _store_read(project, store, since=None, kinds=(), to_session=None):
     streams = {}
-    for path in sorted(glob.glob(os.path.join(project.home, "log", "*.jsonl"))):
+    for path in sorted(glob.glob(os.path.join(project.home, store, "*.jsonl"))):
         for e in _log_file_events(path):
             if ((since and e["seq"] <= int(since.get(e["writer"], 0)))
                     or (kinds and e["kind"] not in kinds) or (to_session and not addressed_to(e, to_session))):
@@ -4203,8 +4223,19 @@ def cmd_chat(a):
 # session's transcript past its export position (§4). Every event carries a
 # `src`, and the batch drops a (kind, src) already present, so replaying an
 # export appends nothing.
+#
+# On a machine cut over to its endpoint (RL10), a hub project's host events
+# stay on the machine (O12 M8): they go to its host store, HOST_STORE beside
+# log/, never to the log the hub carries — a writer's seqs are contiguous and
+# a withheld event a permanent gap, so they cannot sit in a writer's log file
+# and be left out of its upload. The store has the log's event shape and
+# writer names, its own seqs, and the same (kind, src) rule; the uplink sends
+# each event up RL10 itself (sminos_uplink's host pass), and a subscription
+# of the session carries them (sminos_plane). Events the log took before the
+# cutover stay there; `chat --host` reads both.
 
 HOST_KINDS = ("message", "question", "answered")
+HOST_STORE = "host"   # projects/<id>/host/<writer>.jsonl: a cut-over machine's to-human events of a hub project
 # The message tools a transcript may hold: the to-human plugin's
 # (to-human/hooks/mods/message.tsx), and MAWS's own, which a MAWS launch
 # registers in its place. A session sends its human a message before another
@@ -4788,9 +4819,9 @@ def export_host(project, session, tpath, alias):
         return len(events)
 
 
-def _writer_events(project, host, session):
+def _writer_events(project, host, session, store="log"):
     """The events of the writer `<host>/<session>`, read directly."""
-    path = os.path.join(project.home, "log", "%s.%s.jsonl" % (host, session))
+    path = os.path.join(project.home, store, "%s.%s.jsonl" % (host, session))
     try:
         with open(path, encoding="utf-8", errors="replace") as f:
             return [e for e in map(parse_event, f) if e]
@@ -4798,44 +4829,56 @@ def _writer_events(project, host, session):
         return []
 
 
-def _former_events(project, session):
+def _former_events(project, session, store="log"):
     """The session's events under the names this machine wrote under before
     it enrolled, for a session it held under them (is_self), oldest name
     first: still the session's own, though nothing appends to them any more."""
     return [e for host, held in machine_identity()[1].items() if session in held
-            for e in _writer_events(project, host, session)]
+            for e in _writer_events(project, host, session, store)]
 
 
-def _own_events(project, session):
+def _own_events(project, session, store="log"):
     """The session's own writer files, read directly (the hook reads nothing
     else of the log): under this machine's former names, then its name now."""
-    return _former_events(project, session) + _writer_events(project, host_name(), session)
+    return _former_events(project, session, store) + _writer_events(project, host_name(), session, store)
+
+
+def host_store_holds(project):
+    """Whether the project's host events go to its host store rather than its
+    log: on a machine cut over to its endpoint (RL10's first welcome), for
+    its own project and every hub project. A git-mirrored or local project
+    keeps them in its log, which git mirrors as before; so does every
+    project of a machine not cut over."""
+    return sibling_module("sminos_rl10").cut_over() and project_kind(project) != "local"
 
 
 def _askers(project, session, srcs):
     """{src: (writer, question)} for each src whose question another session
-    of this machine holds under its own writer, and the session's own does
+    of this machine holds under its own writer — in the log, or in the host
+    store (a question asked since the cutover) — and the session's own does
     not. Each file is read only if it holds one of the srcs."""
-    srcs = srcs - {e.get("src") for e in _own_events(project, session) if e["kind"] == "question"}
-    log, prefix = project_path(project, "log"), host_name() + "."
-    try:
-        names = os.listdir(log) if srcs else []
-    except OSError:
-        return {}
-    found = {}
-    for name in names:
-        other = name[len(prefix):-len(".jsonl")] if name.startswith(prefix) and name.endswith(".jsonl") else ""
-        if other == session or not UUID_RE.match(other):
-            continue
+    srcs = srcs - {e.get("src") for store in ("log", HOST_STORE) for e in _own_events(project, session, store)
+                   if e["kind"] == "question"}
+    prefix, found = host_name() + ".", {}
+    for store in ("log", HOST_STORE):
+        where = os.path.join(project.home, store)
         try:
-            with open(os.path.join(log, name), "rb") as f:
-                data = f.read()
+            names = sorted(os.listdir(where)) if srcs else []
         except OSError:
             continue
-        if any(s.encode() in data for s in srcs):
-            for e in map(parse_event, data.decode("utf-8", "replace").split("\n")):
-                if e and e["kind"] == "question" and e.get("src") in srcs:
-                    found.setdefault(e["src"], (writer_id(other), e))
+        for name in names:
+            other = name[len(prefix):-len(".jsonl")] if name.startswith(prefix) and name.endswith(".jsonl") else ""
+            if other == session or not UUID_RE.match(other):
+                continue
+            try:
+                with open(os.path.join(where, name), "rb") as f:
+                    data = f.read()
+            except OSError:
+                continue
+            if any(s.encode() in data for s in srcs):
+                for e in map(parse_event, data.decode("utf-8", "replace").split("\n")):
+                    if e and e["kind"] == "question" and e.get("src") in srcs:
+                        found.setdefault(e["src"], (writer_id(other), e))
     return found
 
 
@@ -4846,8 +4889,10 @@ def append_host(project, session, events):
     starts under a new id) answers the questions its original asked, and
     the hub counts a question open by (session, ask) from the writer its
     question came under; under the same writer and src, the original's own
-    later export of that answer appends nothing. Returns the events
-    appended."""
+    later export of that answer appends nothing. Where the host store holds
+    the project's host events (host_store_holds), they go there, and an event
+    whose (kind, src) the writer's log file took before the cutover is not
+    appended again. Returns the events appended."""
     asked = {e["src"] for e in events if e["kind"] == "question"}
     answers = {e["src"] for e in events if e["kind"] == "answered" and e.get("src") and e["src"] not in asked}
     askers = _askers(project, session, answers) if answers else {}
@@ -4858,7 +4903,28 @@ def append_host(project, session, events):
             batches[writer_id(session)].append(e)
         else:
             batches.setdefault(writer, []).append({**e, "from": question.get("from", e.get("from"))})
-    return [x for writer, batch in batches.items() if batch for x in log_append_batch(project, writer, batch)]
+    if not host_store_holds(project):
+        return [x for writer, batch in batches.items() if batch for x in log_append_batch(project, writer, batch)]
+    out = []
+    for writer, batch in batches.items():
+        logged = {(x["kind"], x["src"]) for x in _log_file_events(writer_path(project, writer))
+                  if x["kind"] in HOST_KINDS and x.get("src") is not None}
+        batch = [e for e in batch if (e["kind"], e.get("src")) not in logged]
+        if batch:
+            out += _append(project, writer, batch, skip_src=True, store=HOST_STORE)
+    return out
+
+
+def host_events_of(project, session):
+    """The session's events in the project's host store — its writer's file
+    under this machine's name now, and under each former name that held the
+    session — in (ts, writer, seq) order. Read as the log's files are read
+    (_log_file_events: again only once a file changed), for the uplink's
+    subscriptions, which look at it on every pump."""
+    names = [host for host, held in machine_identity()[1].items() if session in held] + [host_name()]
+    events = [e for host in dict.fromkeys(names)
+              for e in _log_file_events(os.path.join(project.home, HOST_STORE, "%s.%s.jsonl" % (host, session)))]
+    return sorted(events, key=lambda e: (e["ts"], e["writer"], e["seq"]))
 
 
 def record_session(project, session, tpath, event, last_message="", source=""):
@@ -5147,14 +5213,16 @@ def host_line(e, related=None):
 
 
 def chat_host(project, a):
-    """What the members sent their human: messages, questions, and answers.
+    """What the members sent their human: messages, questions, and answers,
+    from the log and, on a cut-over machine, the host store, merged by time.
     A view, not a cursor read: the last 30 host events (-n N), or those since
     a time (--since TS), chosen before anything is grouped; the reader's chat
     cursor never moves. A question shows its answer under it, or is marked
     open; an answer whose question falls outside the window is shown where it
     falls, its question beneath it as context (with --json, the question
     first)."""
-    events = log_read(project, kinds=HOST_KINDS)
+    events = list(heapq.merge(log_read(project, kinds=HOST_KINDS), host_read(project),
+                              key=lambda e: (e["ts"], e["writer"])))
     questions, answers = {}, {}
     for e in events:
         if e.get("src") and e["kind"] == "question":

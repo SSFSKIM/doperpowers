@@ -248,6 +248,18 @@ def envelope(project, machine, session, kind, sub, n, body):
             "body": body}
 
 
+# A session's to-human events on a cut-over machine (O12 M8; sminos's host
+# store): a `host` message's body is one of them with its stable id, its
+# (writer, seq) in the store. The uplink sends each sub-less as it is written
+# (sminos_uplink's host pass); a main subscription carries them in its own
+# stream, and its snapshot the session's last HOST_LAST.
+HOST_LAST = 50
+
+
+def host_body(event):
+    return {"id": {"writer": event["writer"], "seq": event["seq"]}, "event": event}
+
+
 def frame(message):
     return {"t": "session", "message": message}
 
@@ -1498,9 +1510,15 @@ class Subscription:
 
     def __init__(self, project, machine, session, agent, sub, locate, reader, presence, alive,
                  clock=time.monotonic, transcripts=None, wake=lambda: None, disk=None, received=None, wall=time.time,
-                 catalog_allowed=lambda: False):
+                 catalog_allowed=lambda: False, host=None):
         self.project, self.machine, self.session, self.agent, self.sub = project, machine, session, agent, sub
         self.locate = locate          # () → the session's main transcript path, "" while there is none
+        # () → the session's host events, in order (sminos.host_events_of),
+        # on a cut-over machine's main subscription; None where there are
+        # none to carry (DX2, a subagent's loop): its snapshot then has no
+        # `host`, and its stream no `host` message.
+        self.host = host
+        self.host_at = {}             # writer → the last seq of its host events this subscription carried
         self.reader = reader
         self.catalog_allowed = catalog_allowed  # the current stream negotiated DX4 catalog
         self.presence = presence      # () → DX4 presence body
@@ -1680,6 +1698,8 @@ class Subscription:
             if not self.ended:
                 self.answer(out)
             if not self.ended:
+                self.hosted(out)
+            if not self.ended:
                 self.subagents(now, out)
                 self.finish(now, out)
         except Reset as e:
@@ -1835,11 +1855,28 @@ class Subscription:
             body["usage"] = usage_of(self.snap.get("usage")) if self.bridged else None
             if self.bridged and isinstance(self.snap.get("catalog"), dict):
                 body["catalog"] = self.snap["catalog"]
+        if self.host is not None:
+            events = self.host()
+            body["host"] = [host_body(e) for e in events[-HOST_LAST:]]
+            self.carried_host(events)
         out.append(self.message("snapshot", body))
         self.noted("bridge snapshot" if self.bridged else "transcript-only (%s)" % self.no_bridge)
         self.n = 1
         out.extend(self.message("block-row", k) for k in kept)
         return True
+
+    def carried_host(self, events):
+        for e in events:
+            self.host_at[e["writer"]] = max(e["seq"], self.host_at.get(e["writer"], 0))
+
+    def hosted(self, out):
+        """The session's host events written since this subscription's
+        snapshot, each a `host` message of its stream."""
+        if self.host is None or self.n is None:
+            return
+        new = [e for e in self.host() if e["seq"] > self.host_at.get(e["writer"], 0)]
+        out.extend(self.message("host", host_body(e)) for e in new)
+        self.carried_host(new)
 
     def cut(self):
         if not self.bridged:
@@ -2510,9 +2547,10 @@ class Plane:
     subscriptions it serves. Made anew with every stream; `close` lets the
     readers go."""
 
-    def __init__(self, machine, wake, bridges=None, transcripts=None, disk=None, warmer=None):
+    def __init__(self, machine, wake, bridges=None, transcripts=None, disk=None, warmer=None, host=False):
         self.machine = machine
         self.wake = wake
+        self.host = host          # RL10: the sessions' host store is carried by their main subscriptions
         self.bridges = bridges or Bridges()   # kept across streams by the uplink: no answer is relearned
         self.bridges.wake = wake
         self.transcripts = transcripts or TRANSCRIPTS   # the process's: no index is rebuilt across streams
@@ -2705,7 +2743,8 @@ class Plane:
             locate=lambda: sminos.transcript_now(sid),   # asked until found, every LOCATE_EVERY
             presence=lambda: self.presence_of(sid, time.monotonic()), alive=lambda: self.running(sid),
             transcripts=self.transcripts, wake=self.wake, disk=self.disk, received=received,
-            catalog_allowed=lambda: "catalog" in self.kinds)
+            catalog_allowed=lambda: "catalog" in self.kinds,
+            host=(lambda: sminos.host_events_of(project, sid)) if self.host and agent is None else None)
         return out + self.pump_one(sub)
 
     def running(self, sid):

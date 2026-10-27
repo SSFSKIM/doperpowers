@@ -579,6 +579,191 @@ class LogPlane(Machine):
         self.assertEqual(got, (1, []))
 
 
+# ------------------------------------------------------------- the host store (M8)
+
+
+def to_host(i, src=None):
+    """A `<message>` as the export appends it."""
+    return {"kind": "message", "from": "a1", "to": "host", "text": "m%d" % i, "src": src or "r%d#0" % i}
+
+
+def lines_of(path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            return [json.loads(line) for line in f if line.strip()]
+    except FileNotFoundError:
+        return []
+
+
+class HostStore(Machine):
+    """What a session sends its person stays on the machine (O12 M8): on a
+    cut-over machine a hub project's host events go to its host store
+    (projects/<id>/host/), never to log/; the uplink sends each up RL10 once
+    as a sub-less `host` message carrying its {writer, seq}, the session's
+    last 50 again at each welcome, and a full subscription carries them in
+    its own stream and its snapshot."""
+
+    def setUp(self):
+        super().setUp()
+        self.hub_json()
+        self.own = sminos.machine_project("org-1", "testhost")
+        self.w1, self.w2 = "testhost/" + S1, "testhost/" + S2
+
+    def cut_over(self):
+        sminos.write_json(rl10.identity_path(), {
+            "org": "org-1", "hub": "http://127.0.0.1:9", "name": "testhost", "former": {}, "ref": "machine-ref-1",
+            "enrolled": "2026-10-01T00:00:00Z", "cutover": "2026-10-27T00:00:00Z", "build": "x"}, mode=0o600)
+        sminos.forget_caches()
+
+    def store(self, writer, project=None):
+        return os.path.join((project or self.own).home, "host", writer.replace("/", ".") + ".jsonl")
+
+    def hosts(self, ep, conn=None):
+        return [f["message"] for f in ep.frames("session", conn) if f["message"]["kind"] == "host"]
+
+    def host_sent(self):
+        try:
+            return read(os.path.join(self.own.home, "uplink.json")).get("host_sent")
+        except OSError:
+            return None
+
+    def test_a_cut_over_machine_keeps_a_hub_projects_host_events_in_the_store(self):
+        question = {"kind": "question", "from": "a0", "to": "host", "text": ["Which?"], "choices": ["A", "B"],
+                    "src": "toolu_q0"}
+        sminos.append_host(self.own, S1, [to_host(1)])
+        sminos.append_host(self.own, S0, [question])
+        self.assertEqual([e["text"] for e in lines_of(sminos.writer_path(self.own, self.w1))], ["m1"],
+                         "not cut over: the log, as today")
+        self.assertFalse(os.path.exists(os.path.join(self.own.home, "host")))
+
+        self.cut_over()
+        got = sminos.append_host(self.own, S1, [to_host(2), to_host(1)])
+        self.assertEqual([(e["writer"], e["seq"], e["text"]) for e in got], [(self.w1, 1, "m2")],
+                         "the store's own seqs, the writer's name; what the log already holds is not appended again")
+        self.assertEqual(lines_of(self.store(self.w1)), got)
+        self.assertEqual(stat.S_IMODE(os.stat(self.store(self.w1)).st_mode), 0o600)
+        self.assertEqual([e["text"] for e in lines_of(sminos.writer_path(self.own, self.w1))], ["m1"],
+                         "nothing more in the log")
+        self.assertEqual(sminos.append_host(self.own, S1, [to_host(2)]), [], "(kind, src) is kept once in the store")
+        self.assertEqual([e["text"] for e in sminos.host_read(self.own)], ["m2"])
+        self.assertEqual([e["text"] for e in sminos.log_read(self.own, kinds=sminos.HOST_KINDS) if e["kind"] == "message"],
+                         ["m1"])
+
+        # An answer goes under its asker's writer, in the store: to a question
+        # asked in the store, and to one asked before the cutover, in the log.
+        asked = sminos.append_host(self.own, S2, [{**question, "from": "a2", "src": "toolu_q2"}])
+        answers = sminos.append_host(self.own, S3, [{"kind": "answered", "from": "a3", "src": "toolu_q2", "text": "A"},
+                                                    {"kind": "answered", "from": "a3", "src": "toolu_q0", "text": "B"}])
+        self.assertEqual(asked[0]["writer"], self.w2)
+        self.assertEqual(sorted((e["writer"], e["src"], e["from"]) for e in answers),
+                         [("testhost/" + S0, "toolu_q0", "a0"), (self.w2, "toolu_q2", "a2")],
+                         "each under its asker's writer, as its alias's")
+        self.assertEqual([e["kind"] for e in lines_of(self.store(self.w2))], ["question", "answered"])
+        self.assertEqual([e["kind"] for e in lines_of(self.store("testhost/" + S0))], ["answered"])
+        self.assertFalse(os.path.exists(self.store("testhost/" + S3)), "nothing under the answering session")
+
+        # Not a hub project: a git-mirrored one keeps its host events in its log.
+        mirrored = sminos.make_project("6d000001-0000-4000-8000-0000000000d1", "mirrored",
+                                       os.path.join(BASE, "remote.git"), "", None)
+        sminos.append_host(mirrored, S1, [to_host(3)])
+        self.assertEqual([e["text"] for e in lines_of(sminos.writer_path(mirrored, self.w1))], ["m3"])
+        self.assertFalse(os.path.exists(os.path.join(mirrored.home, "host")))
+
+    def test_each_host_event_goes_up_once_and_nothing_of_the_log_plane_names_it(self):
+        ep = self.endpoint()
+        self.uplink()
+        ep.wait(lambda f: f["t"] == "hello" and f.get("project") == self.own.id)
+        sminos.forget_caches()
+        got = sminos.append_host(self.own, S1, [to_host(i) for i in range(1, 4)])
+        self.assertTrue(os.path.exists(self.store(self.w1)), "the welcome cut the machine over: the store")
+        ep.wait_until(lambda: len(self.hosts(ep)) == 3)
+        for m, e in zip(self.hosts(ep), got):
+            self.assertEqual(m, {"project": self.own.id, "machine": "testhost", "session": S1, "kind": "host",
+                                 "sub": None, "n": None, "body": {"id": {"writer": self.w1, "seq": e["seq"]}, "event": e}})
+        self.assertEqual(wait_for(lambda: self.host_sent() == {self.w1: 3} and self.host_sent()), {self.w1: 3},
+                         "the cursor in uplink.json")
+        ep.resend(self.own.id, self.w1, 1)
+        time.sleep(1.5)   # three upload passes
+        self.assertEqual(len(self.hosts(ep)), 3, "each once")
+        self.assertFalse([e for f in ep.frames("events") for e in f["events"] if e.get("writer") == self.w1],
+                         "no events frame, a resend's included, carries a host event")
+        self.assertNotIn(self.w1, ep.logs.get(self.own.id, {}))
+        self.assertFalse([f for f in ep.frames("hello") if self.w1 in (f.get("have") or {})],
+                         "the hello's vector names no writer of the store")
+
+    def test_a_reconnect_sends_each_sessions_last_50_again_and_a_pass_starts_at_the_cursor(self):
+        self.cut_over()
+        s1 = sminos.append_host(self.own, S1, [to_host(i) for i in range(1, 56)])
+        sminos.append_host(self.own, S2, [to_host(1)])
+        # An uplink before this one sent S1's first three, and nothing of S2's.
+        sminos.write_json(os.path.join(self.own.home, "uplink.json"), {"host_sent": {self.w1: 3}})
+        ep = self.endpoint()
+        self.uplink()
+
+        def ids(conn):
+            return sorted((m["body"]["id"]["writer"], m["body"]["id"]["seq"]) for m in self.hosts(ep, conn))
+
+        first = ep.wait(lambda f: f["t"] == "hello" and f.get("project") == self.own.id) and ep.hellos[-1][0]
+        want = [(self.w1, s) for s in range(4, 56)] + [(self.w2, 1)]
+        ep.wait_until(lambda: len(ids(first)) >= len(want))
+        self.assertEqual(ids(first), want, "past the cursor, with each session's last 50: each once")
+        self.assertEqual(wait_for(lambda: self.host_sent() == {self.w1: 55, self.w2: 1} and self.host_sent()),
+                         {self.w1: 55, self.w2: 1})
+
+        ep.drop()
+        second = wait_for(lambda: len(ep.hellos) > 1 and ep.hellos[-1][0])
+        want = [(self.w1, s) for s in range(6, 56)] + [(self.w2, 1)]
+        ep.wait_until(lambda: len(ids(second)) >= len(want))
+        self.assertEqual(ids(second), want, "the reconnect: each session's last 50 again, whatever the cursor")
+        late = sminos.append_host(self.own, S1, [to_host(56)])[0]
+        ep.wait_until(lambda: (self.w1, 56) in ids(second))
+        time.sleep(1.0)
+        self.assertEqual(ids(second), sorted(want + [(self.w1, 56)]), "and a new one once")
+        self.assertEqual([m["body"]["event"] for m in self.hosts(ep, second) if m["body"]["id"]["seq"] == 56], [late])
+        self.assertEqual(s1[-1]["seq"], 55)
+
+    def test_full_subscriptions_carry_host_events_in_their_own_streams(self):
+        # S1: a session of this machine in its own project, its transcript on disk.
+        cwd = os.environ["HOME"]
+        sminos.log_append(self.own, self.w1, "joined", session=S1, **sminos.joined_fields("a1", "user", cwd))
+        tx = os.path.join(os.environ["HOME"], ".claude", "projects", "x", S1 + ".jsonl")
+        os.makedirs(os.path.dirname(tx), exist_ok=True)
+        Path(tx).write_text(json.dumps({"type": "user", "uuid": "u1", "message": {"role": "user", "content": "go"}})
+                            + "\n")
+        ep = self.endpoint()
+        self.uplink()
+        ep.wait(lambda f: f["t"] == "hello" and f.get("project") == self.own.id)
+        sminos.forget_caches()
+        first = sminos.append_host(self.own, S1, [to_host(i) for i in range(1, 4)])
+        # With no subscriber (and a cards view, which reads the requests plane
+        # alone, is none here): each goes up once, sub-less.
+        ep.wait_until(lambda: len(self.hosts(ep)) == 3)
+        for sub in ("sub-a", "sub-b"):
+            ep.send({"t": "subscribe", "project": self.own.id, "session": S1, "agentId": None, "sub": sub})
+
+        def stream(sub):
+            return [f["message"] for f in ep.frames("session") if f["message"].get("sub") == sub]
+
+        for sub in ("sub-a", "sub-b"):
+            ep.wait_until(lambda: any(m["kind"] == "snapshot" for m in stream(sub)))
+            snap = next(m for m in stream(sub) if m["kind"] == "snapshot")
+            self.assertEqual(snap["body"]["host"], [{"id": {"writer": self.w1, "seq": e["seq"]}, "event": e}
+                                                    for e in first], "%s's snapshot carries the session's last 50" % sub)
+        fourth = sminos.append_host(self.own, S1, [to_host(4)])[0]
+        body = {"id": {"writer": self.w1, "seq": 4}, "event": fourth}
+        ep.wait_until(lambda: all(any(m["kind"] == "host" for m in stream(sub)) for sub in ("sub-a", "sub-b"))
+                      and len(self.hosts(ep)) >= 6)
+        time.sleep(1.0)
+        carried = [(m["sub"], m["body"]) for m in self.hosts(ep) if m["body"]["id"]["seq"] == 4]
+        self.assertEqual(sorted(carried, key=lambda x: str(x[0])), [(None, body), ("sub-a", body), ("sub-b", body)],
+                         "once sub-less, and once in each subscriber's own stream, the ids equal")
+        for sub in ("sub-a", "sub-b"):
+            hosted = [m for m in stream(sub) if m["kind"] == "host"]
+            self.assertEqual(len(hosted), 1)
+            self.assertIsInstance(hosted[0]["n"], int)
+        self.assertEqual(len([m for m in self.hosts(ep) if m["sub"] is None]), 4, "sub-less, each once")
+
+
 # ------------------------------------------------------------- the session lane's drafts
 
 
