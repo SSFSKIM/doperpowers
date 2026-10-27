@@ -1826,7 +1826,20 @@ def spent_seqs(project, writer):
     return {s for s in ss if type(s) is int} if isinstance(ss, list) else set()
 
 
-def _append(project, writer, events, skip_src=False, guard=None, store="log"):
+@contextmanager
+def writer_locks(path, held=False):
+    """A writer file's locks as _append takes them: its directory's
+    `.sync.lock` shared, then the file's own lock. `held`: the caller holds
+    them already (append_host, which decides a host event's route under the
+    log's)."""
+    if held:
+        yield
+        return
+    with flocked(os.path.join(os.path.dirname(path), ".sync.lock"), exclusive=False), flocked(path + ".lock"):
+        yield
+
+
+def _append(project, writer, events, skip_src=False, guard=None, store="log", held=False):
     """Append events to the writer's file under `.sync.lock` shared (git never
     rewrites log/ while an appender writes) and the file's own lock (seq is the
     last line's plus one, past any position the uplink spent, which it spends
@@ -1834,12 +1847,12 @@ def _append(project, writer, events, skip_src=False, guard=None, store="log"):
     lock and nothing is appended unless guard(events) holds — a check and its
     append no other appender can come between. `store`: the writer's file in
     another of the project's stores (HOST_STORE), by the same rule in its own
-    directory, its seqs its own. Returns the events as written."""
+    directory, its seqs its own; `held`, its locks are the caller's
+    (writer_locks). Returns the events as written."""
     if any(e["kind"] in LIFECYCLE for e in events):
         _VIEWS.pop(project.id, None)
     path = store_path(project, store, writer)
-    log = os.path.dirname(path)
-    with flocked(os.path.join(log, ".sync.lock"), exclusive=False), flocked(path + ".lock"):
+    with writer_locks(path, held):
         fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_APPEND, 0o600)
         with os.fdopen(fd, "r+b") as f:
             if guard is not None:
@@ -4892,7 +4905,12 @@ def append_host(project, session, events):
     later export of that answer appends nothing. Where the host store holds
     the project's host events (host_store_holds), they go there, and an event
     whose (kind, src) the writer's log file took before the cutover is not
-    appended again. Returns the events appended."""
+    appended again. Each writer's route is decided, that check made and the
+    append done under the writer's log locks (the store's own taken inside
+    them), so two exports of one event on either side of the cutover (the
+    bridge's and the Stop hook's) leave one copy: one that chose the log
+    before identity.json existed logs it, and one waiting behind it finds it
+    there. Returns the events appended."""
     asked = {e["src"] for e in events if e["kind"] == "question"}
     answers = {e["src"] for e in events if e["kind"] == "answered" and e.get("src") and e["src"] not in asked}
     askers = _askers(project, session, answers) if answers else {}
@@ -4903,15 +4921,24 @@ def append_host(project, session, events):
             batches[writer_id(session)].append(e)
         else:
             batches.setdefault(writer, []).append({**e, "from": question.get("from", e.get("from"))})
-    if not host_store_holds(project):
-        return [x for writer, batch in batches.items() if batch for x in log_append_batch(project, writer, batch)]
     out = []
     for writer, batch in batches.items():
-        logged = {(x["kind"], x["src"]) for x in _log_file_events(writer_path(project, writer))
-                  if x["kind"] in HOST_KINDS and x.get("src") is not None}
-        batch = [e for e in batch if (e["kind"], e.get("src")) not in logged]
-        if batch:
-            out += _append(project, writer, batch, skip_src=True, store=HOST_STORE)
+        if not batch:
+            continue
+        path = writer_path(project, writer)
+        with writer_locks(path):
+            if not host_store_holds(project):
+                out += _append(project, writer, batch, skip_src=True, held=True)
+                continue
+            try:
+                with open(path, encoding="utf-8", errors="replace") as f:
+                    logged = {(x["kind"], x["src"]) for x in map(parse_event, f)
+                              if x and x["kind"] in HOST_KINDS and x.get("src") is not None}
+            except FileNotFoundError:
+                logged = set()
+            batch = [e for e in batch if (e["kind"], e.get("src")) not in logged]
+            if batch:
+                out += _append(project, writer, batch, skip_src=True, store=HOST_STORE)
     return out
 
 

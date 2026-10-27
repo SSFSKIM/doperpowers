@@ -143,6 +143,7 @@ IDLE_CLOSE = 60.0         # a lane's connection idle this long is closed by the 
 SEND_QUEUE_MAX = 16 << 20  # a lane holding more unsent than this: the hub is not taking frames, the stream ends
 SLOW_POST_SECONDS = 5.0   # a lane's POST slower than this is said in daemon.log
 UPLOAD_AHEAD = POST_LIMIT  # an upload pass queues no more while the log lane holds this much unsent
+HOST_BATCH = 256 * 1024    # RL10: the host pass's frames queued as one lane entry, at most this many bytes
 CONNECTIONS = itertools.count(1)  # the lanes' connections, numbered across the process's streams
 # What a reused connection's send raises when the hub closed it while idle:
 # nothing of the request reached it, so it goes once more on a fresh one.
@@ -1420,6 +1421,7 @@ class Link:
         self.undropped = {}       # project id → (outbox, lines) the hub took, their drop not yet done
         self.unsettled = {}       # (project id, what) → the failure last said (settle_marks)
         self.host_queued = {}     # RL10: project id → {writer: seq} of host events queued on this connection
+        self.host_owed = {}       # RL10: project id → {(writer, seq): event} of an open's resend not queued yet
         self.handlers = {"welcome": self.on_welcome, "hb": self.on_hb, "have": self.on_have,
                          "events": self.on_events, "resend": self.on_resend, "refused": self.on_refused,
                          "part": self.on_part, "subscribe": self.on_subscribe, "unsubscribe": self.on_unsubscribe,
@@ -1526,6 +1528,7 @@ class Link:
         self.delivering.clear()
         self.opening.clear()
         self.host_queued.clear()
+        self.host_owed.clear()
         if not self.coded:
             self.log_lane = self.session_lane = self.transport.lane()
             log("connected to the endpoint (RL10, local-only) as %s (connection %d)"
@@ -1971,18 +1974,23 @@ class Link:
         (O10 M3), and a session nobody watches is the one whose person needs
         it. What goes is what is past the project's cursor (HubLog.host_sent),
         which moves once it is written; `again`, on a project opened on a
-        connection, adds each session's last plane.HOST_LAST whatever the
-        cursor, so an endpoint that died before keeping what it took loses
-        nothing. The endpoint deduplicates by the id."""
+        connection, owes each session's last plane.HOST_LAST again whatever
+        the cursor, so an endpoint that died before keeping what it took
+        loses nothing. The endpoint deduplicates by the id. Queued as the
+        upload is, in entries of at most HOST_BATCH, none while the lane holds
+        UPLOAD_AHEAD unsent: a backlog (the endpoint was down) goes across
+        passes, its cursor moving entry by entry, and never makes one entry
+        the lane must refuse."""
         pid = hl.project.id
         queued = self.host_queued.setdefault(pid, {})
+        owed = self.host_owed.setdefault(pid, {})
         sent = hl.host_sent()
         by_writer = {}
         for path in sorted(glob.glob(os.path.join(glob.escape(hl.project.home), sminos.HOST_STORE, "*.jsonl"))):
             for e in sminos._log_file_events(path):
                 if hl.is_own(e["writer"]) and sminos.writer_session(e["writer"]):
                     by_writer.setdefault(e["writer"], []).append(e)
-        due = {}
+        due = dict(owed)
         for writer, events in by_writer.items():
             at = max(sent.get(writer, 0), queued.get(writer, 0))
             due.update(((writer, e["seq"]), e) for e in events if e["seq"] > at)
@@ -1992,17 +2000,38 @@ class Link:
                 by_session.setdefault(sminos.writer_session(writer), []).extend(events)
             for events in by_session.values():
                 events.sort(key=lambda e: (e["ts"], e["writer"], e["seq"]))
-                due.update(((e["writer"], e["seq"]), e) for e in events[-plane.HOST_LAST:])
-        if not due:
-            return
-        events = sorted(due.values(), key=lambda e: (e["ts"], e["writer"], e["seq"]))
-        reach = {}
-        for e in events:
-            reach[e["writer"]] = max(e["seq"], reach.get(e["writer"], 0))
-            queued[e["writer"]] = max(e["seq"], queued.get(e["writer"], 0))
-        self.session_lane.send([plane.frame(plane.envelope(pid, self.cred["machine"], sminos.writer_session(e["writer"]),
-                                                           "host", None, None, plane.host_body(e)))
-                                for e in events], then=lambda _refused: hl.keep_host_sent(reach))
+                last = {(e["writer"], e["seq"]): e for e in events[-plane.HOST_LAST:]}
+                owed.update(last)
+                due.update(last)
+        batch, size = [], 0
+        for e in sorted(due.values(), key=lambda e: (e["ts"], e["writer"], e["seq"])):
+            if not batch and self.session_lane.queued() >= UPLOAD_AHEAD:
+                return   # the rest on a later pass, owed or past the cursor
+            frame = plane.frame(plane.envelope(pid, self.cred["machine"], sminos.writer_session(e["writer"]), "host",
+                                               None, None, plane.host_body(e)))
+            n = len(json.dumps(frame, ensure_ascii=False).encode("utf-8"))
+            if batch and size + n > HOST_BATCH:
+                self.host_send(hl, batch)
+                batch, size = [], 0
+                if self.session_lane.queued() >= UPLOAD_AHEAD:
+                    return
+            batch.append((e, frame))
+            size += n
+        if batch:
+            self.host_send(hl, batch)
+
+    def host_send(self, hl, batch):
+        """One entry of the host pass, [(event, frame)], queued: the events
+        no longer owed, their writers queued up to them, and the cursor moved
+        once it is written."""
+        pid = hl.project.id
+        queued, owed, reach = self.host_queued[pid], self.host_owed[pid], {}
+        for e, _ in batch:
+            key = (e["writer"], e["seq"])
+            owed.pop(key, None)
+            reach[key[0]] = max(key[1], reach.get(key[0], 0))
+            queued[key[0]] = max(key[1], queued.get(key[0], 0))
+        self.session_lane.send([frame for _, frame in batch], then=lambda _refused: hl.keep_host_sent(reach))
 
     def machine_presence(self, now):
         """Each open project held or followed, as it is now, and the machine's

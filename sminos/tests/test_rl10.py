@@ -669,6 +669,70 @@ class HostStore(Machine):
         self.assertEqual([e["text"] for e in lines_of(sminos.writer_path(mirrored, self.w1))], ["m3"])
         self.assertFalse(os.path.exists(os.path.join(mirrored.home, "host")))
 
+    def test_the_cutover_between_two_exports_of_one_event_leaves_one_copy(self):
+        """The bridge's live export chooses the log (not cut over yet) and is
+        held there; the cutover lands; the Stop hook's export of the same
+        event follows. The route and the cross-store check are decided under
+        the writer's log lock, so the Stop export waits, then finds the event
+        the live export logged: one copy, none in the store."""
+        chosen, go = threading.Event(), threading.Event()
+        real = sminos.host_store_holds
+        calls = []
+
+        def held_after_choosing(project):
+            got = real(project)
+            calls.append(got)
+            if len(calls) == 1:
+                chosen.set()
+                go.wait(10)
+            return got
+
+        done = {}
+        with mock.patch.object(sminos, "host_store_holds", side_effect=held_after_choosing):
+            live = threading.Thread(target=lambda: done.update(live=sminos.append_host(self.own, S1, [to_host(1)])))
+            live.start()
+            self.assertTrue(chosen.wait(10))
+            self.cut_over()
+            stop = threading.Thread(target=lambda: done.update(stop=sminos.append_host(self.own, S1, [to_host(1)])))
+            stop.start()
+            stop.join(0.5)
+            go.set()
+            live.join(10)
+            stop.join(10)
+        self.assertEqual(calls[0], False, "the live export chose the log before the cutover")
+        self.assertEqual(len(done["live"]), 1)
+        self.assertEqual(done["stop"], [], "the Stop export, after the cutover, found it logged")
+        self.assertEqual([e["text"] for e in lines_of(sminos.writer_path(self.own, self.w1))], ["m1"])
+        self.assertEqual(lines_of(self.store(self.w1)), [], "nothing in the store")
+
+    def test_a_backlog_past_the_lanes_bound_goes_up_across_passes(self):
+        """A backlog of host events larger than the lane holds (the endpoint
+        was down) is queued in bounded batches, its cursor moving batch by
+        batch, and the welcome's resend of each session's last 50 is bounded
+        the same way: no lane is closed, no connection is lost."""
+        self.cut_over()
+        big = "x" * (400 << 10)
+        sminos.append_host(self.own, S1, [{**to_host(i), "text": big} for i in range(1, 61)])
+        self.assertGreater(60 * len(big), uplink.SEND_QUEUE_MAX)
+        ep = self.endpoint()
+        self.uplink()
+
+        def seqs(conn):
+            return sorted(m["body"]["id"]["seq"] for m in self.hosts(ep, conn))
+
+        first = ep.wait(lambda f: f["t"] == "hello" and f.get("project") == self.own.id) and ep.hellos[-1][0]
+        ep.wait_until(lambda: len(seqs(first)) >= 60, timeout=60)
+        self.assertEqual(seqs(first), list(range(1, 61)), "the whole backlog, each once")
+        self.assertEqual(wait_for(lambda: self.host_sent() == {self.w1: 60} and self.host_sent()), {self.w1: 60})
+        self.assertEqual(len(ep.hellos), 1, "on one connection: no lane closed")
+        ep.drop()
+        second = wait_for(lambda: len(ep.hellos) > 1 and ep.hellos[-1][0])
+        ep.wait_until(lambda: len(seqs(second)) >= 50, timeout=60)
+        time.sleep(1.0)
+        self.assertEqual(seqs(second), list(range(11, 61)), "the last 50 again, bounded too")
+        self.assertEqual(len(ep.hellos), 2)
+        self.assertNotIn("more than", daemon_log())
+
     def test_each_host_event_goes_up_once_and_nothing_of_the_log_plane_names_it(self):
         ep = self.endpoint()
         self.uplink()
