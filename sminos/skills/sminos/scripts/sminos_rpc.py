@@ -9,11 +9,19 @@ boundary: an RPC runs only once every check below holds, in this order, and
 the first that fails is its answer, as DX6's error code:
 
 1. its code (DX1, `smns-hub-rpc-v1`, under the project it names): `bad-code`;
+   then its operation id (RL4, the remote layer's Decision Log 18): an
+   `opId` is 16-128 characters of base64url's alphabet (`bad-op-id`), and
+   carries `opCreated`, the app's time when it chose the id, kept across
+   reseals, no later than `created` by more than FRESH_S (`bad-op-created`);
 2. where it runs, since every enrolled machine holds the org key: `machine`
    is this machine's enrolled name (`wrong-machine`), `project` a hub project
    of this machine in its org (`unknown-project`), the session one that
    joined that project from this machine, ended or not (`no-session`);
-3. the ledger: a nonce it knows is answered from it and never run again;
+3. the ledger, keyed by the op: the `opId`, else the nonce (an RPC without
+   one, as DX6 sends it). An op it knows is answered from it and never run
+   again; one it holds a tombstone for is refused `tombstoned`; one whose
+   `opCreated` (a nonce-keyed RPC's `created`) is older than OP_HORIZON is
+   refused `expired`, since the ledger's day may have dropped it;
 4. freshness: `created` within 60 s of this machine's clock, either way
    (`stale`), so the ledger's day covers every nonce that could still pass;
    daemon.log says when it was created, when the stream's reader took it,
@@ -45,20 +53,35 @@ the first that fails is its answer, as DX6's error code:
 
 A refusal from 1 or 2 precedes the ledger and is not kept in it: it goes up
 while its project is open on the stream (an `unknown-project` never is, and
-is only said in daemon.log). From 3 on, a nonce has one answer, kept.
+is only said in daemon.log); so do 3's `tombstoned` and `expired`, which
+leave the ledger as it is. From 4 on, an op has one answer, kept. The hub
+knows an RPC by its nonce: `rpc-result` and `rpc-ack` carry the nonce, which
+an op's entry keeps (`nonce`, the latest copy's), and a copy asking again for
+an answered op has the answer sent again under its own nonce.
 
-At most once (DX6): `daemon/rpcs.json` claims the nonce before the RPC has
+At most once (DX6, RL4): `daemon/rpcs.json` claims the op before the RPC has
 any effect and records the outcome before the result goes up; entries are
-kept a day. Each keeps the RPC's `created` and the time its outcome was kept
+kept a day (KEPT_S), and an op's id expires an hour before that
+(OP_HORIZON), so a resealed copy of an op the ledger dropped is refused, never
+run again. Each keeps the RPC's `created` and the time its outcome was kept
 (`done_at`) beside its claim's `at` (and a Resume's `launched_at`), so one
 RPC's click, claim, launch and end read off its entry. An outcome whose write fails is held here, never sent, and
-written again until it is kept. A nonce left claimed (the uplink stopped
+written again until it is kept. An op left claimed (the uplink stopped
 between the two writes) is reconciled from the action's own trace — a
-spawned seat carries its nonce on its record (`rpc_nonce`); a steer carries
+spawned seat carries the op on its record (`rpc_nonce`); a steer carries
 it to the bridge, whose child keeps the mod's answer under it (DX5's kept
 file, `rpcs`), since a row's text alone cannot tell this steer from the same
 words sent another way — for as long as that trace may still appear, then
 answered `failed` `interrupted`.
+
+What became of an op is asked of the ledger (RL4's `query`, carried over
+RL10 in a later phase): `done` or `refused` with its outcome, `in-progress`
+(claimed, or held by a worker), `expired`, `not-received`, or `unavailable`
+while the ledger cannot be read. An app told `not-received` tombstones the
+op (`tombstone`), so a late copy is refused; claiming and tombstoning are one
+transition, under one lock with `flight`, so an op held by a worker or
+claimed is never tombstoned and a tombstoned one never runs. `sminos
+rpc-query` prints the ledger file's view of an op, without `flight`.
 
 Execution (§5) goes through the session's bridge (DC2's DX5): steer,
 interrupt, stop, model, compact, and a slash command (`command`, the desk
@@ -124,7 +147,7 @@ under the session's live working directory, read from its bridge, without
 following a link (sminos_media), and handed to the bridge, which reads each
 file into the conversation by a Read of its own; it is answered `queued` only
 once the bridge holds it, and its attachments' states follow as `op`, the
-upload being the nonce. Its root and files are kept on the claim before
+upload being the op. Its root and files are kept on the claim before
 anything is written, so a restart answers it from the child's kept answer.
 
 Checks 1-6 and the ledger's lookup run on the uplink's main thread, which
@@ -163,6 +186,7 @@ LEDGER_FILE = "rpcs.json"
 OWED_FILE = "rpcs-owed.json"  # daemon/: the compaction and op messages not yet the hub's (sminos_owed)
 FRESH_S = 60              # an RPC older (or younger) than this by the machine's clock is stale
 KEPT_S = 86400            # the ledger keeps an entry a day
+OP_HORIZON = KEPT_S - 3600   # an op whose opCreated is older is refused `expired`: pruning never reopens an id
 LOOSE_S = 600             # a refusal kept out of the ledger waits this long for its project to open
 STEER_TRACE_S = 30        # a claimed steer's answer is looked for this long after its claim
 SPAWN_TRACE_S = 420       # a claimed spawn's seat: `claude --bg` may take 300 s, its uuid poll more
@@ -180,6 +204,7 @@ AGENT_MAX = 128           # DX6 `stop-agent`, `tell`: an agent's id or name (a n
 SCOPE_DESTINATIONS = ("session", "localSettings")   # DX6 `decide.scope` (§11): nothing saved, or the checkout's own
 SCOPED_TYPES = ("addRules", "addDirectories")        # the suggestions a scoped allow takes (MW3)
 SHA256_RE = re.compile(r"[0-9a-f]{64}")
+OP_ID_RE = re.compile(r"[A-Za-z0-9_-]{16,128}")   # an opId: a file name and an alias seed (MW5's mod takes 1-128)
 RELOAD = "reload-plugins"
 RECONCILE_EVERY = 1.0     # how often claims left by a stop are looked at again
 SPAWN_TIMEOUT = 600
@@ -270,23 +295,105 @@ def sha256(text):
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def alias_for(nonce):
-    """A spawned seat's alias: where it came from, and its nonce's, so a
-    second launch under one nonce could only collide with the first."""
-    return "web-" + sha256(nonce)[:6]
+def alias_for(op):
+    """A spawned seat's alias: where it came from, and its op's, so a
+    second launch under one op could only collide with the first."""
+    return "web-" + sha256(op)[:6]
+
+
+def op_of(rpc):
+    """The RPC's operation id, the ledger's key (RL4): its `opId`, else its
+    nonce, which no reseal reuses. `receive` checks it first (op_refusal)."""
+    return rpc.get("opId") or rpc["nonce"]
+
+
+def op_refusal(rpc):
+    """Check 1's second half, the operation id (the remote layer's Decision
+    Log 18): (code, message) when the RPC's `opId` cannot key the ledger, or
+    None. An `opId` carries `opCreated`, the app's ISO 8601 time when it chose
+    the id, the same across reseals: without it a resealed copy of an id the
+    ledger dropped could not be told expired. One later than `created` by
+    more than FRESH_S is refused too: the ledger prunes by receipt, so an app
+    clock running ahead would otherwise reopen an id."""
+    op = rpc.get("opId")
+    if op is None:
+        return None
+    if not (isinstance(op, str) and OP_ID_RE.fullmatch(op)):
+        return "bad-op-id", "opId is 16-128 characters of A-Z, a-z, 0-9, _ and -"
+    born, created = created_at(rpc.get("opCreated")), created_at(rpc.get("created"))
+    if born is None:
+        return "bad-op-created", "an RPC with an opId carries opCreated, when the id was chosen (ISO 8601, UTC)"
+    if created is not None and born - created > FRESH_S:
+        return "bad-op-created", "opCreated %s is more than %d s after created %s" % (
+            rpc["opCreated"], FRESH_S, rpc["created"])
+    return None
+
+
+def op_created_of(rpc):
+    """When the RPC's op was chosen, in epoch seconds, or None: its
+    `opCreated`, or, for an RPC keyed by its nonce, its `created`."""
+    return created_at(rpc.get("opCreated") if rpc.get("opId") is not None else rpc.get("created"))
+
+
+def entry_of(rpc, at):
+    """A new ledger entry's own fields: the RPC's project, name and session,
+    its `created`, its claim's or refusal's `at`; for an op keyed by its
+    `opId`, the nonce the hub knows it by and `op_created`."""
+    e = {"project": rpc["project"], "rpc": rpc["rpc"], "session": rpc["args"].get("session"), **created_of(rpc),
+         "at": at}
+    if rpc.get("opId") is not None:
+        e.update(nonce=rpc["nonce"], op_created=op_created_of(rpc))
+    return e
+
+
+def ledger_view(entry, flying, op_created, now):
+    """RL4's `query` answer from an op's ledger entry (None: none) and whether
+    a worker holds it: `expired` past OP_HORIZON by `op_created` (else the
+    entry's own), whatever the ledger holds; `in-progress` while held or
+    claimed; `refused` or `done` with the outcome kept (refused: at
+    admission, before any claim); else `not-received`, a tombstone's too.
+    The caller answers `unavailable` while the ledger cannot be read."""
+    if op_created is None and entry is not None:
+        op_created = entry.get("op_created", entry.get("created"))
+    if isinstance(op_created, (int, float)) and not isinstance(op_created, bool) and now - op_created > OP_HORIZON:
+        return {"state": "expired"}
+    if flying or (entry is not None and not entry.get("tombstone") and "outcome" not in entry):
+        return {"state": "in-progress"}
+    if entry is None or entry.get("tombstone"):
+        return {"state": "not-received"}
+    return {"state": "refused" if entry.get("refused") else "done", "outcome": entry["outcome"]}
 
 
 # ------------------------------------------------------------- the ledger
 
 
+def read_ledger(path):
+    """The ledger file's entries ({} when there is none). Raises OSError or
+    ValueError when it exists and cannot be read."""
+    try:
+        with open(path) as f:
+            d = json.load(f)
+    except FileNotFoundError:
+        return {}
+    if not isinstance(d, dict):
+        raise ValueError("not an object")
+    return {n: e for n, e in d.items() if isinstance(e, dict)}
+
+
 class Ledger:
-    """`daemon/rpcs.json`: nonce → {project, rpc, session, created?, at,
-    launched_at?, job?, compact_id?, outcome?, done_at?, acked?}: `created`
-    is the RPC's own (epoch s, when it parses), `at` its claim, `done_at`
-    when its outcome was kept. An entry without `outcome` is a claim. Written whole at every change, under a lock (the main thread and
-    the workers write); entries older than KEPT_S go at every write. A
-    change whose write fails is not kept in memory either: what is here is
-    what the file holds.
+    """`daemon/rpcs.json`: op → {project, rpc, session, created?, at,
+    nonce?, op_created?, launched_at?, job?, compact_id?, outcome?, refused?,
+    done_at?, acked?} | {tombstone, at, op_created?}. The op is the RPC's
+    `opId`, else its nonce (op_of); `nonce` and `op_created` are an opId's
+    (the nonce the hub knows its latest copy by, and when the app chose the
+    id). `created` is the RPC's own (epoch s, when it parses), `at` its claim,
+    `done_at` when its outcome was kept, `refused` an outcome kept at
+    admission, before any claim: nothing ran. An entry without `outcome` is a
+    claim, unless it is a tombstone: an op the app was told was not received,
+    which never runs. Written whole at every change, under a lock (the main
+    thread and the workers write); entries older than KEPT_S go at every
+    write. A change whose write fails is not kept in memory either: what is
+    here is what the file holds.
 
     A ledger that exists and cannot be read could hold claims and answered
     nonces: it is never replaced (`broken` says why), and `readable` tries it
@@ -302,12 +409,7 @@ class Ledger:
 
     def load(self):
         try:
-            with open(self.path) as f:
-                d = json.load(f)
-            if not isinstance(d, dict):
-                raise ValueError("not an object")
-        except FileNotFoundError:
-            d = {}
+            d = read_ledger(self.path)
         except (OSError, ValueError) as e:
             if self.broken is None:
                 log("the ledger %s cannot be read (%s): no RPC runs until it can" % (self.path, e))
@@ -316,7 +418,7 @@ class Ledger:
         if self.broken is not None:
             log("the ledger %s can be read again" % self.path)
         self.broken = None
-        self.entries = {n: e for n, e in d.items() if isinstance(e, dict)}
+        self.entries = d
 
     def readable(self):
         """Whether the ledger is known: a broken one is read again first."""
@@ -336,50 +438,73 @@ class Ledger:
         os.makedirs(os.path.dirname(self.path), mode=0o700, exist_ok=True)
         sminos.write_json(self.path, self.entries)
 
-    def get(self, nonce):
+    def get(self, op):
         with self.lock:
-            e = self.entries.get(nonce)
+            e = self.entries.get(op)
             return dict(e) if e is not None else None
 
-    def put(self, nonce, entry):
+    def put(self, op, entry):
         """Raises OSError when the entry could not be written."""
         with self.lock:
-            self.change(nonce, entry)
+            self.change(op, entry)
 
-    def change(self, nonce, entry):
-        """The nonce's entry replaced and written, or, when the write fails,
+    def claim(self, op, entry):
+        """The op claimed before anything runs: True once written; False,
+        writing nothing, when the ledger holds it already (a tombstone, a
+        claim, an outcome). Raises OSError when it could not be written."""
+        with self.lock:
+            if op in self.entries:
+                return False
+            self.change(op, entry)
+            return True
+
+    def change(self, op, entry):
+        """The op's entry replaced and written, or, when the write fails,
         left as it was (OSError raised). The caller holds the lock."""
-        before = self.entries.get(nonce)
-        self.entries[nonce] = entry
+        before = self.entries.get(op)
+        self.entries[op] = entry
         try:
             self.save()
         except OSError:
             if before is None:
-                self.entries.pop(nonce, None)
+                self.entries.pop(op, None)
             else:
-                self.entries[nonce] = before
+                self.entries[op] = before
             raise
 
-    def answer(self, nonce, outcome):
+    def answer(self, op, outcome):
         """The outcome kept. Raises OSError when it could not be written:
         the claim stays as it was, so nothing can send the outcome, which the
         caller holds to write again (a restart reconciles the claim)."""
         with self.lock:
-            e = self.entries.get(nonce)
+            e = self.entries.get(op)
             now = self.clock()
-            self.change(nonce, {**(e if e is not None else {"at": now}), "outcome": outcome, "done_at": now,
+            self.change(op, {**(e if e is not None else {"at": now}), "outcome": outcome, "done_at": now,
                                 "acked": False})
 
-    def acked(self, nonce, value=True):
+    def acked(self, op, value=True, nonce=None):
+        """The op's result taken by the hub (or, `value` False, owed again);
+        with `nonce`, owed under that copy's nonce (an opId's entry keeps the
+        latest)."""
         with self.lock:
-            e = self.entries.get(nonce)
-            if e is None or e.get("acked") is value:
+            e = self.entries.get(op)
+            if e is None:
+                return
+            renamed = nonce is not None and "nonce" in e and e["nonce"] != nonce
+            if e.get("acked") is value and not renamed:
                 return
             e["acked"] = value
+            if renamed:
+                e["nonce"] = nonce
             try:
                 self.save()
             except OSError as err:
-                log("the ledger could not be written (%s): %s is sent again after the next connect" % (err, nonce))
+                log("the ledger could not be written (%s): %s is sent again after the next connect" % (err, op))
+
+    def op_of_nonce(self, nonce):
+        """The op whose result the hub knows by `nonce`, or None."""
+        with self.lock:
+            return next((op for op, e in self.entries.items() if e.get("nonce", op) == nonce), None)
 
     def items(self):
         with self.lock:
@@ -400,12 +525,13 @@ class Rpcs:
         self.clock = clock
         self.ledger = Ledger(clock)
         self.loose = {}           # nonce → (project id, outcome, at): refusals the ledger does not keep
-        self.flight = set()       # nonces a worker holds
+        self.flight = set()       # ops a worker holds
+        self.op_lock = threading.Lock()   # `flight` and the ledger's admission, claim and tombstone, as one transition
         self.finished = queue.Queue()  # what workers finished, for the main thread
-        self.sent_here = set()    # nonces whose result went up on this stream
+        self.sent_here = set()    # nonces whose result went up on this stream (the hub's key)
         self.compact_ids = {}     # a bridge's compact command id → (project id, session, nonce, at)
         self.compact_held = []    # [(project id, session, event, at)]: events whose command is not named yet
-        self.compact_flight = {}  # nonce → session: compact RPCs whose command's id is not known yet
+        self.compact_flight = {}  # op → session: compact RPCs whose command's id is not known yet
         self.model_locks = {}     # session → the lock its model and effort are read and changed under
         self.resume_locks = {}    # session → the lock a Resume of it runs under
         self.locks_lock = threading.Lock()
@@ -416,7 +542,7 @@ class Rpcs:
         self.flying = {}          # id(frame) → frame: compact and op messages on a lane, their POST not yet answered
         self.kept = owed.Kept(OWED_FILE, log)
         self.messages = [f for f in self.kept.load() if is_owed(f)]   # DX4 compact and op messages owed, as frames
-        self.unwritten = {}       # nonce → its outcome, whose ledger write failed: never sent until it is kept
+        self.unwritten = {}       # op → its outcome, whose ledger write failed: never sent until it is kept
         self.copies_asked = set()  # claimed Resumes whose kept job the harness was asked about (check_copy)
         self.next_reconcile = 0.0
         self.restore_compacts()
@@ -436,6 +562,10 @@ class Rpcs:
         nonce, pid, name = rpc.get("nonce"), rpc.get("project"), rpc.get("rpc")
         if not isinstance(pid, str) or codes.failure(self.key, "rpc", pid, rpc) is not None:
             return self.refuse_loose(rpc, "bad-code", "the RPC's code does not verify under the org key")
+        why = op_refusal(rpc)
+        if why is not None:
+            return self.refuse_loose(rpc, *why)
+        op = op_of(rpc)
         # A copy from here on: what the checks normalize is not the RPC the
         # code covered.
         args = dict(rpc["args"]) if isinstance(rpc.get("args"), dict) else {}
@@ -452,15 +582,29 @@ class Rpcs:
         if name != "spawn" and not (isinstance(sid, str) and sminos.UUID_RE.match(sid)
                                     and here.has_session(project, sid)):
             return self.refuse_loose(rpc, "no-session", "no session %s of %s on this machine" % (sid, project.name))
+        with self.op_lock:   # nothing tombstones the op between the ledger's look and `flight`
+            self.dispatch(rpc, op, project, args, here, received)
+
+    def dispatch(self, rpc, op, project, args, here, received):
+        """Checks 3-6, under the op lock, then the op's worker for the rest."""
+        nonce, name, sid = rpc["nonce"], rpc["rpc"], args.get("session")
         if not self.ledger.readable():
             return self.refuse_loose(rpc, "failed", "this machine's RPC ledger cannot be read (%s): no RPC runs "
                                      "until it can, so none runs twice" % self.ledger.broken)
-        known = self.ledger.get(nonce)
-        if known is not None or nonce in self.flight:
+        known = self.ledger.get(op)
+        if known is not None and known.get("tombstone"):
+            return self.refuse_loose(rpc, "tombstoned", "%s was answered not-received and given up: it never runs" % op)
+        if known is not None or op in self.flight:
             if known is not None and "outcome" in known:
-                self.sent_here.discard(nonce)       # forwarded again: the hub lost it, so it goes again
-                self.ledger.acked(nonce, False)
+                # Forwarded again (the hub lost it) or resealed: it goes again, under this copy's nonce.
+                self.sent_here.discard(known.get("nonce", op))
+                self.sent_here.discard(nonce)
+                self.ledger.acked(op, False, nonce)
             return                                  # in flight, or a claim being reconciled: its result follows
+        born = op_created_of(rpc)
+        if born is not None and self.clock() - born > OP_HORIZON:
+            return self.refuse_loose(rpc, "expired", "%s was created %s, more than %d s ago: the ledger may no longer "
+                                     "hold it, so it never runs" % (op, stamp(born), OP_HORIZON))
         try:
             self.admit(rpc, project, args, here, self.clock() if received is None else received)
         except Refused as r:
@@ -475,9 +619,9 @@ class Rpcs:
             seat = next((s for s in sminos.seats() if s["current"] == sid), None)
             facts.update(cwd=here.cwd(project, sid),
                          retired_seat=seat["alias"] if seat and seat["status"] == "retired" else None)
-        self.flight.add(nonce)
+        self.flight.add(op)
         if name == "compact":
-            self.compact_flight[nonce] = sid
+            self.compact_flight[op] = sid
         threading.Thread(target=self.run, args=(rpc, facts), name="rpc-" + name, daemon=True).start()
 
     def admit(self, rpc, project, args, here, received):
@@ -522,14 +666,13 @@ class Rpcs:
         self.loose[nonce] = (pid, failed(code, message), self.clock())
 
     def keep(self, rpc, outcome):
-        """A refusal from the ledger on: the nonce's one answer (from a
-        worker too: what it cannot keep reaches `loose` through the main
-        thread)."""
+        """A refusal at admission, from freshness on: the op's one answer,
+        `refused` (from a worker too, before its claim: what it cannot keep
+        reaches `loose` through the main thread)."""
         now = self.clock()
-        e = {"project": rpc["project"], "rpc": rpc["rpc"], "session": rpc["args"].get("session"),
-             **created_of(rpc), "at": now, "outcome": outcome, "done_at": now, "acked": False}
+        e = {**entry_of(rpc, now), "outcome": outcome, "refused": True, "done_at": now, "acked": False}
         try:
-            self.ledger.put(rpc["nonce"], e)
+            self.ledger.put(op_of(rpc), e)
         except OSError as err:
             log("the ledger could not be written (%s): %s answered without it" % (err, rpc["nonce"]))
             self.finished.put(("loose", (rpc["nonce"], rpc["project"], outcome)))
@@ -540,14 +683,54 @@ class Rpcs:
     def ack(self, frame):
         nonce = frame.get("nonce")
         if self.loose.pop(nonce, None) is None:
-            self.ledger.acked(nonce)
+            op = self.ledger.op_of_nonce(nonce)
+            if op is not None:
+                self.ledger.acked(op)
+
+    # ---------------------------------------------------- RL4's query and tombstone
+
+    def query(self, op, op_created=None):
+        """What became of an op (RL4's `query`; `op_created`, the app's, in
+        epoch seconds): {state: done|refused, outcome} | {state: in-progress |
+        expired | not-received | unavailable} (ledger_view). `unavailable`
+        while the ledger cannot be read: it is never `not-received` then."""
+        with self.op_lock:
+            if not self.ledger.readable():
+                return {"state": "unavailable"}
+            return ledger_view(self.ledger.get(op), op in self.flight, op_created, self.clock())
+
+    def tombstone(self, op, op_created=None):
+        """RL4's `not-received` tombstone, which the app sends once a query
+        answered `not-received`: the op kept as given up, so a late copy is
+        refused `tombstoned` and never runs. {ok: True}, again for one already
+        tombstoned; or {ok: False, state} with the query's answer for an op
+        that is not `not-received` — one a worker holds or that is claimed is
+        `in-progress`, never tombstoned — and `unavailable` when the ledger
+        cannot be read or written."""
+        with self.op_lock:
+            if not self.ledger.readable():
+                return {"ok": False, "state": "unavailable"}
+            e = self.ledger.get(op)
+            view = ledger_view(e, op in self.flight, op_created, self.clock())
+            if view["state"] != "not-received":
+                return {"ok": False, "state": view["state"]}
+            if e is not None:
+                return {"ok": True}
+            stone = {"tombstone": True, "at": self.clock(), **({"op_created": op_created} if op_created is not None else {})}
+            try:
+                self.ledger.claim(op, stone)
+            except OSError as err:
+                log("%s could not be tombstoned (%s)" % (op, err))
+                return {"ok": False, "state": "unavailable"}
+        log("%s tombstoned: a copy that arrives later is refused" % op)
+        return {"ok": True}
 
     # ---------------------------------------------------- a worker
 
     def run(self, rpc, facts):
         """Checks 7-8, the claim, the execution, the outcome kept: off the
         main thread, calling nothing of sminos's cached state."""
-        nonce = rpc["nonce"]
+        op = op_of(rpc)
         try:
             try:
                 act = self.plan(rpc, facts)
@@ -557,13 +740,14 @@ class Rpcs:
             except Exception as e:  # noqa: BLE001 — a check that broke is a refusal, said: nothing ran
                 self.keep(rpc, failed("failed", "%s: %s (nothing ran)" % (type(e).__name__, e)))
                 return
-            claim = {"project": rpc["project"], "rpc": rpc["rpc"], "session": rpc["args"].get("session"),
-                     **created_of(rpc), "at": self.clock()}
             try:
-                self.ledger.put(nonce, claim)
+                claimed = self.ledger.claim(op, entry_of(rpc, self.clock()))
             except OSError as e:
-                self.finished.put(("loose", (nonce, rpc["project"],
+                self.finished.put(("loose", (rpc["nonce"], rpc["project"],
                                              failed("failed", "the ledger could not be written: %s" % e))))
+                return
+            if not claimed:   # the ledger's answer for the op stands; nothing here may change it
+                log("%s %s: the ledger holds it already, so it does not run" % (rpc["rpc"], op))
                 return
             try:
                 outcome = act()
@@ -571,29 +755,29 @@ class Rpcs:
                 outcome = r.outcome
             except Exception as e:  # noqa: BLE001 — an execution that broke is a failure, said
                 outcome = failed("failed", "%s: %s" % (type(e).__name__, e))
-            self.record(nonce, outcome)
+            self.record(op, outcome)
             if outcome["state"] == "failed":
-                log("%s %s failed %s: %s" % (rpc["rpc"], nonce, outcome["error"]["code"], outcome["error"]["message"]))
+                log("%s %s failed %s: %s" % (rpc["rpc"], op, outcome["error"]["code"], outcome["error"]["message"]))
         finally:
-            self.finished.put(("done", nonce))
+            self.finished.put(("done", op))
             self.wake()
 
-    def record(self, nonce, outcome):
+    def record(self, op, outcome):
         """A worker's outcome, kept in the ledger before anything may send
         it. One whose write fails is handed to the main thread, which writes
         it again until it is kept (reconcile); until then it is sent nowhere."""
         try:
-            self.ledger.answer(nonce, outcome)
+            self.ledger.answer(op, outcome)
         except OSError as err:
             log("the outcome of %s could not be kept in %s (%s): it is sent once it is kept"
-                % (nonce, self.ledger.path, err))
-            self.finished.put(("unwritten", (nonce, outcome)))
+                % (op, self.ledger.path, err))
+            self.finished.put(("unwritten", (op, outcome)))
 
     def plan(self, rpc, facts):
         """The action an RPC runs once claimed, or Refused (checks 7-8)."""
-        name, args, nonce = rpc["rpc"], rpc["args"], rpc["nonce"]
+        name, args, op = rpc["rpc"], rpc["args"], op_of(rpc)
         if name == "spawn":
-            return lambda: spawn(args, nonce, facts["checkout"], rpc["member"])
+            return lambda: spawn(args, op, facts["checkout"], rpc["member"])
         sid = args["session"]
         if name == "resume":
             if facts["retired_seat"]:
@@ -610,7 +794,7 @@ class Rpcs:
                 # `claude --resume` would start an empty session under its id.
                 raise Refused("unsupported", "this machine holds no transcript of it, so there is nothing to resume")
             return lambda: resume(sid, facts["cwd"], self.lock_of(self.resume_locks, sid),
-                                  lambda **fields: self.note(nonce, fields))
+                                  lambda **fields: self.note(op, fields))
         path = bridge.endpoint(sid)
         status = bridge.probe(path)
         bridged = status is not None and status.get("session") == sid
@@ -628,7 +812,7 @@ class Rpcs:
             raise Refused("unsupported", "the session is not running: only Resume brings it back")
         if bridged:
             if name == "steer":
-                return lambda: steer(path, args["text"], nonce)
+                return lambda: steer(path, args["text"], op)
             if name == "interrupt":
                 return lambda: interrupt(path)
             if name == "model":
@@ -646,8 +830,8 @@ class Rpcs:
             if name in ("stop-agent", "tell"):
                 agent = resolve_agent(path, args["agentId"])
                 if name == "stop-agent":
-                    return lambda: stop_agent(path, args["agentId"], agent, nonce)
-                return lambda: tell(path, args["agentId"], agent, args["text"], nonce)
+                    return lambda: stop_agent(path, args["agentId"], agent, op)
+                return lambda: tell(path, args["agentId"], agent, args["text"], op)
             if name == "stop":
                 if not jobs.running_task(facts["transcript"], args["taskId"]):
                     raise Refused("unknown-task", "the session's jobs hold no background shell or monitor %s running"
@@ -661,16 +845,16 @@ class Rpcs:
         raise Refused("unsupported", "%s needs the session's bridge; %s has none (§5)" % (
             name, "this --bg job" if facts["bg"] else "this terminal session"))
 
-    def note(self, nonce, fields):
+    def note(self, op, fields):
         """The action's own evidence added to its claim before the effect it
         names (a Resume's launch, then its job), so a restart can tell that
         launch's trace from anything else. Raises OSError when it could not
         be kept."""
         with self.ledger.lock:
-            e = self.ledger.entries.get(nonce)
+            e = self.ledger.entries.get(op)
             if e is None or "outcome" in e:
                 return
-            self.ledger.change(nonce, {**e, **fields})
+            self.ledger.change(op, {**e, **fields})
 
     def lock_of(self, locks, sid):
         """The session's lock in `locks` (one RPC kind's)."""
@@ -686,11 +870,11 @@ class Rpcs:
             # Kept on the claim as well: a compaction held for its turn's end
             # may run after a restart, and still carries this nonce.
             try:
-                self.note(rpc["nonce"], {"compact_id": cid})
+                self.note(op_of(rpc), {"compact_id": cid})
             except OSError as e:
                 log("compact %s: its command %s could not be kept in the ledger (%s): a restart before it "
-                    "ends relays it unnamed" % (rpc["nonce"], cid, e))
-            self.finished.put(("compact", (cid, rpc["project"], sid, rpc["nonce"])))
+                    "ends relays it unnamed" % (op_of(rpc), cid, e))
+            self.finished.put(("compact", (cid, rpc["project"], sid, op_of(rpc))))
         r = result.get("result") or {}
         return done({"at": "turn-end" if r.get("queued") else "now"})
 
@@ -701,7 +885,7 @@ class Rpcs:
         the message's first word. Its id is kept on the claim until its end;
         a `/reload-plugins` also keeps the child that answered before it, by
         whose replacement it is done (`effects`)."""
-        args, nonce = rpc["args"], rpc["nonce"]
+        args, op = rpc["args"], op_of(rpc)
         name, text = args["name"], args.get("args") or ""
         child = None
         if name == RELOAD:
@@ -712,21 +896,21 @@ class Rpcs:
         try:
             # Before it goes: a restart that finds the claim answered by the
             # child knows what ran, and which child a reload replaces.
-            self.note(nonce, {"op_name": name, "op_args": text, **({"op_child": child} if child else {})})
+            self.note(op, {"op_name": name, "op_args": text, **({"op_child": child} if child else {})})
         except OSError as e:
-            log("command %s: what it runs could not be kept in the ledger (%s)" % (nonce, e))
-        out, cid = command(path, {"op": "command", "name": name, "args": text, "rpc": nonce, "from": "desk"})
+            log("command %s: what it runs could not be kept in the ledger (%s)" % (op, e))
+        out, cid = command(path, {"op": "command", "name": name, "args": text, "rpc": op, "from": "desk"})
         outcome = commanded(out)
         if outcome["state"] != "done":
-            self.forget(nonce, ("op_name", "op_args", "op_child"), "command")   # nothing ran: nothing follows
+            self.forget(op, ("op_name", "op_args", "op_child"), "command")   # nothing ran: nothing follows
             return outcome
         oid = outcome["result"]["id"] or cid
         try:
-            self.note(nonce, {"op_id": oid})
+            self.note(op, {"op_id": oid})
         except OSError as e:
             log("command %s: its id %s could not be kept in the ledger (%s): an end a restart misses is not "
-                "sent" % (nonce, oid, e))
-        self.finished.put(("op", (oid, rpc["project"], sid, nonce, name, text, child, "command")))
+                "sent" % (op, oid, e))
+        self.finished.put(("op", (oid, rpc["project"], sid, op, name, text, child, "command")))
         return done({**outcome["result"], "id": oid})
 
     def side_question(self, path, rpc, sid):
@@ -735,18 +919,18 @@ class Rpcs:
         as a desk command's run does. The bridge's refusal is the RPC's
         failure, its code the message's first word. Its id is kept on the
         claim until its end."""
-        nonce = rpc["nonce"]
-        out, cid = command(path, {"op": "btw", "prompt": rpc["args"]["prompt"], "rpc": nonce})
+        op = op_of(rpc)
+        out, cid = command(path, {"op": "btw", "prompt": rpc["args"]["prompt"], "rpc": op})
         outcome = started(out)
         if outcome["state"] != "done":
             return outcome
         oid = outcome["result"]["id"] or cid
         try:
-            self.note(nonce, {"op_id": oid})
+            self.note(op, {"op_id": oid})
         except OSError as e:
             log("btw %s: its id %s could not be kept in the ledger (%s): an end a restart misses is not sent"
-                % (nonce, oid, e))
-        self.finished.put(("op", (oid, rpc["project"], sid, nonce, None, "", None, "btw")))
+                % (op, oid, e))
+        self.finished.put(("op", (oid, rpc["project"], sid, op, None, "", None, "btw")))
         return done({"started": True, "id": oid})
 
     def media(self, path, rpc, sid):
@@ -756,43 +940,44 @@ class Rpcs:
         to the bridge, which reads each file into the conversation by a Read
         of its own. Answered `queued` only once the bridge holds the upload
         (a duplicate is held); a refusal removes the files saved for it. The
-        upload is the nonce: its root and files are kept on the claim before
+        upload is the op, which a reseal keeps (its nonce it does not), and
+        names the files: its root and files are kept on the claim before
         anything is written, so a restart answers from the child's kept
         answer, and its states follow on the stream as `op` (`ops`)."""
-        args, nonce = rpc["args"], rpc["nonce"]
+        args, op = rpc["args"], op_of(rpc)
         out, _ = command(path, {"op": "read", "what": "status"})
         cwd = (out.get("result") or {}).get("cwd") if out.get("ok") else None
         if not (isinstance(cwd, str) and os.path.isabs(cwd)):
             raise Refused("failed", "the session did not say where it works: %s" % (out.get("error") or cwd))
         base = os.path.realpath(cwd)
         root = media.root_of(base, sid)
-        names = [media.file_name(nonce, n, a["mediaType"]) for n, a in enumerate(args["attachments"])]
+        names = [media.file_name(op, n, a["mediaType"]) for n, a in enumerate(args["attachments"])]
         kept = {"media_root": root, "media_paths": names}
         try:
-            self.note(nonce, kept)
+            self.note(op, kept)
         except OSError as e:
             raise Refused("failed", "the upload could not be kept in the ledger (%s): nothing was saved" % e)
         try:
-            media.save(base, sid, nonce, args["attachments"])   # rolls back what it made its own
+            media.save(base, sid, op, args["attachments"])   # rolls back what it made its own
         except (media.Unsafe, OSError) as e:
             raise Refused("failed", "the upload was not saved: %s" % e)
         try:
             media.exclude(base)
         except (media.Unsafe, OSError, subprocess.SubprocessError) as e:
-            log("media %s: %s was not excluded from git (%s)" % (nonce, root, e))
+            log("media %s: %s was not excluded from git (%s)" % (op, root, e))
         files = [{"n": n, "path": os.path.join(root, name), "name": a["name"], "mediaType": a["mediaType"]}
                  for n, (name, a) in enumerate(zip(names, args["attachments"]))]
-        out, _ = command(path, {"op": "media", "upload": nonce, "root": root, "files": files, "rpc": nonce})
+        out, _ = command(path, {"op": "media", "upload": op, "root": root, "files": files, "rpc": op})
         outcome = media_held(out, kept)
         if outcome["state"] != "done":
             media.remove(root, names)
             return outcome
         try:
-            self.note(nonce, {"op_id": nonce})
+            self.note(op, {"op_id": op})
         except OSError as e:
             log("media %s: its upload could not be kept in the ledger (%s): an end a restart misses is not sent"
-                % (nonce, e))
-        self.finished.put(("op", (nonce, rpc["project"], sid, nonce, None, "", None, "media")))
+                % (op, e))
+        self.finished.put(("op", (op, rpc["project"], sid, op, None, "", None, "media")))
         return outcome
 
     # ---------------------------------------------------- frames up
@@ -804,7 +989,8 @@ class Rpcs:
             except queue.Empty:
                 return
             if kind == "done":
-                self.flight.discard(data)
+                with self.op_lock:
+                    self.flight.discard(data)
                 self.compact_flight.pop(data, None)
             elif kind == "loose":
                 nonce, pid, outcome = data
@@ -851,20 +1037,20 @@ class Rpcs:
     def restore_compacts(self):
         """The compact commands this daemon issued whose compaction has not
         ended, as their claims keep them (`compact_id`): what a restart
-        relays under their nonce."""
-        for nonce, e in self.ledger.items():
+        relays under their op."""
+        for op, e in self.ledger.items():
             cid = e.get("compact_id")
             if isinstance(cid, str) and cid and isinstance(e.get("at"), (int, float)):
-                self.compact_ids[cid] = (e.get("project"), e.get("session"), nonce, e["at"])
+                self.compact_ids[cid] = (e.get("project"), e.get("session"), op, e["at"])
 
-    def forget_compact(self, nonce):
+    def forget_compact(self, op):
         """A compaction ended: its command is no longer kept on the claim."""
-        self.forget(nonce, ("compact_id",), "compact")
+        self.forget(op, ("compact_id",), "compact")
 
-    def forget(self, nonce, fields, what):
+    def forget(self, op, fields, what):
         """`fields` of a claim no longer kept: what they named has ended."""
         with self.ledger.lock:
-            e = self.ledger.entries.get(nonce)
+            e = self.ledger.entries.get(op)
             if e is None or not any(f in e for f in fields):
                 return
             for f in fields:
@@ -873,7 +1059,7 @@ class Rpcs:
                 self.ledger.save()
             except OSError as err:
                 log("the ledger could not be written (%s): %s %s's command is kept until the entry goes"
-                    % (err, what, nonce))
+                    % (err, what, op))
 
     def owe(self, pid, sid, kind, body):
         """A DX4 session-wide message, owed until the hub takes it."""
@@ -971,7 +1157,7 @@ class Rpcs:
         for oid in [o for o, op in self.op_ids.items() if now - op["at"] >= KEPT_S]:
             del self.op_ids[oid]
 
-    def rearm(self, nonce):
+    def rearm(self, op):
         """A command or side question claim about to be reconciled `done`
         from the child's kept answer (the daemon stopped after the bridge
         answered it and before its id was kept): its id kept on the claim
@@ -981,10 +1167,10 @@ class Rpcs:
         kept it meanwhile, sent at once (recover_ops). False when the id
         could not be kept: the claim stays open, reconciled again."""
         with self.ledger.lock:
-            e = self.ledger.entries.get(nonce)
+            e = self.ledger.entries.get(op)
             if e is None or not e.get("session"):
                 return True
-            answered = (bridge.load_kept(e["session"]).get("rpcs") or {}).get(nonce) or {}
+            answered = (bridge.load_kept(e["session"]).get("rpcs") or {}).get(op) or {}
             oid = (answered.get("result") or {}).get("upload" if e.get("rpc") == "media" else "id")
             if not isinstance(oid, str) or not oid:
                 return True
@@ -992,13 +1178,13 @@ class Rpcs:
             e = {**e, "op_id": oid, "op_name": e.get("op_name") or end.get("name"),
                  "op_args": e["op_args"] if "op_args" in e else end.get("args") or ""}
             try:
-                self.ledger.change(nonce, e)
+                self.ledger.change(op, e)
             except OSError as err:
                 log("command %s, claimed before a stop: its id %s could not be kept (%s): it is reconciled again"
-                    % (nonce, oid, err))
+                    % (op, oid, err))
                 return False
         child = e.get("op_child")
-        self.op_ids[oid] = {"project": e.get("project"), "session": e["session"], "nonce": nonce, "at": e["at"],
+        self.op_ids[oid] = {"project": e.get("project"), "session": e["session"], "nonce": op, "at": e["at"],
                             "name": e["op_name"], "args": e["op_args"], "child": child if isinstance(child, list) else None,
                             "op": e["rpc"]}
         return True
@@ -1006,12 +1192,12 @@ class Rpcs:
     def restore_ops(self):
         """The commands this daemon issued whose end has not gone up, as
         their claims keep them (`op_id`): what a restart relays under their
-        nonce, and finishes by effect."""
-        for nonce, e in self.ledger.items():
+        op, and finishes by effect."""
+        for op, e in self.ledger.items():
             oid = e.get("op_id")
             if isinstance(oid, str) and oid and isinstance(e.get("at"), (int, float)):
                 child = e.get("op_child")
-                self.op_ids[oid] = {"project": e.get("project"), "session": e.get("session"), "nonce": nonce,
+                self.op_ids[oid] = {"project": e.get("project"), "session": e.get("session"), "nonce": op,
                                     "at": e["at"], "name": e.get("op_name"), "args": e.get("op_args") or "",
                                     "child": child if isinstance(child, list) else None,
                                     "op": e.get("rpc") if e.get("rpc") in EVENT_OF else "command"}
@@ -1026,22 +1212,23 @@ class Rpcs:
         whether that job is a copy (check_copy)."""
         now = self.clock()
         self.next_reconcile = now + RECONCILE_EVERY
-        for nonce, outcome in list(self.unwritten.items()):
+        for op, outcome in list(self.unwritten.items()):
             try:
-                self.ledger.answer(nonce, outcome)
+                self.ledger.answer(op, outcome)
             except OSError:
                 continue
-            del self.unwritten[nonce]
-            log("the outcome of %s is kept now: it is sent" % nonce)
+            del self.unwritten[op]
+            log("the outcome of %s is kept now: it is sent" % op)
         claims = self.ledger.items()
-        for nonce, e in claims:
-            if "outcome" in e or nonce in self.flight or nonce in self.unwritten:
+        for op, e in claims:
+            if "outcome" in e or e.get("tombstone") or op in self.flight or op in self.unwritten:
                 continue
-            outcome, window = trace(nonce, e, [x for n, x in claims if n != nonce])
-            if outcome is None and kept_job(e) and nonce not in self.copies_asked:
-                self.copies_asked.add(nonce)
-                self.flight.add(nonce)
-                threading.Thread(target=self.check_copy, args=(nonce, e), name="rpc-resume-copy",
+            outcome, window = trace(op, e, [x for n, x in claims if n != op])
+            if outcome is None and kept_job(e) and op not in self.copies_asked:
+                self.copies_asked.add(op)
+                with self.op_lock:
+                    self.flight.add(op)
+                threading.Thread(target=self.check_copy, args=(op, e), name="rpc-resume-copy",
                                  daemon=True).start()
                 continue
             if outcome is None and window and now - e.get("at", 0) < window:
@@ -1049,21 +1236,21 @@ class Rpcs:
             if outcome is None:
                 outcome = failed("interrupted", "the daemon stopped while it ran: it is not run again")
             if e.get("rpc") == "media" and outcome["state"] == "failed" and isinstance(e.get("media_root"), str) and \
-                    ((bridge.load_kept(e["session"]).get("rpcs") or {}).get(nonce) or {}).get("ok") is False:
+                    ((bridge.load_kept(e["session"]).get("rpcs") or {}).get(op) or {}).get("ok") is False:
                 media.remove(e["media_root"], e["media_paths"])   # the bridge refused it: its files go
-            if e.get("rpc") in EVENT_OF and outcome["state"] == "done" and not self.rearm(nonce):
+            if e.get("rpc") in EVENT_OF and outcome["state"] == "done" and not self.rearm(op):
                 continue
             try:
-                self.ledger.answer(nonce, outcome)
+                self.ledger.answer(op, outcome)
             except OSError as err:
                 log("%s %s, claimed before a stop, reconciled %s, could not be kept (%s): it is sent once it is"
-                    % (e.get("rpc"), nonce, outcome["state"], err))
-                self.unwritten[nonce] = outcome
+                    % (e.get("rpc"), op, outcome["state"], err))
+                self.unwritten[op] = outcome
                 continue
-            log("%s %s, claimed before a stop, reconciled: %s" % (e.get("rpc"), nonce, outcome["state"]))
+            log("%s %s, claimed before a stop, reconciled: %s" % (e.get("rpc"), op, outcome["state"]))
         self.recover_ops()
 
-    def check_copy(self, nonce, e):
+    def check_copy(self, op, e):
         """A claimed Resume's kept job, asked of the harness (a worker: it
         polls `claude agents`): a job it reports under another session is a
         copy the engine started, stopped now, the RPC failed `copy-started`.
@@ -1071,17 +1258,18 @@ class Rpcs:
         try:
             reported = job_session(e["job"])
             if reported is not None and reported != e["session"]:
-                self.record(nonce, copy_started(e["job"], sminos.claude_stop(e["job"])))
-                log("resume %s, claimed before a stop: its job %s is a copy (%s)" % (nonce, e["job"], reported))
+                self.record(op, copy_started(e["job"], sminos.claude_stop(e["job"])))
+                log("resume %s, claimed before a stop: its job %s is a copy (%s)" % (op, e["job"], reported))
         finally:
-            self.finished.put(("done", nonce))
+            self.finished.put(("done", op))
             self.wake()
 
     def results(self, pids, again):
         """`rpc-result` frames of these projects not yet acknowledged; with
         `again`, also those already sent on this stream."""
         out = []
-        for nonce, e in self.ledger.items():
+        for op, e in self.ledger.items():
+            nonce = e.get("nonce", op)
             if "outcome" in e and not e.get("acked") and e.get("project") in pids \
                     and (again or nonce not in self.sent_here):
                 out.append({"t": "rpc-result", "project": e["project"], "nonce": nonce, "outcome": e["outcome"]})
@@ -1376,10 +1564,10 @@ def refusal(out):
     return str(out.get("error") or "the session refused it")
 
 
-def steer(path, text, nonce):
-    """The steer as a bridge command carrying the RPC's nonce, under which the
+def steer(path, text, op):
+    """The steer as a bridge command carrying the RPC's op, under which the
     bridge's child keeps the mod's answer: the trace a restart finds it by."""
-    out, _ = command(path, {"op": "steer", "text": text, "rpc": nonce})
+    out, _ = command(path, {"op": "steer", "text": text, "rpc": op})
     return steered(out)
 
 
@@ -1464,13 +1652,13 @@ def resolve_agent(path, ref):
     return named[0]
 
 
-def stop_agent(path, ref, agent, nonce):
+def stop_agent(path, ref, agent, op):
     """One subagent stopped through the session's bridge, which stops the
     agent the tree resolved `ref` to (`agent`, refused if it no longer runs),
     runs TaskStop and leaves the parent its note (DX5 `stop-agent`),
-    carrying the RPC's nonce, under which the bridge's child keeps the
+    carrying the RPC's op, under which the bridge's child keeps the
     answer. The agent's end reaches browsers in the subagent tree."""
-    out, _ = command(path, {"op": "stop-agent", "agentId": ref, "resolvedAgentId": agent, "from": "desk", "rpc": nonce})
+    out, _ = command(path, {"op": "stop-agent", "agentId": ref, "resolvedAgentId": agent, "from": "desk", "rpc": op})
     return agent_stopped(out)
 
 
@@ -1485,11 +1673,11 @@ def agent_stopped(out):
     return done({"agentId": r.get("agentId"), "accepted": True, **extra})
 
 
-def tell(path, ref, agent, text, nonce):
+def tell(path, ref, agent, text, op):
     """A message to one subagent through the session's bridge, which sends
     it with the engine's own delivery to the agent the tree resolved `ref`
-    to (DX5 `tell`), carrying the RPC's nonce."""
-    out, _ = command(path, {"op": "tell", "agentId": ref, "resolvedAgentId": agent, "text": text, "rpc": nonce})
+    to (DX5 `tell`), carrying the RPC's op."""
+    out, _ = command(path, {"op": "tell", "agentId": ref, "resolvedAgentId": agent, "text": text, "rpc": op})
     return told(out)
 
 
@@ -1620,19 +1808,20 @@ def steer_without_bridge(sid, text, root):
     raise Refused("failed", last_line(err) or "sminos steer exited %d" % rc)
 
 
-def spawn(args, nonce, checkout, member):
-    """`sminos spawn` into the checkout, the RPC's nonce stamped on the
-    seat's record from its first write, the brief as its in-charge line."""
-    alias = alias_for(nonce)
+def spawn(args, op, checkout, member):
+    """`sminos spawn` into the checkout, the RPC's op stamped on the seat's
+    record from its first write (`rpc_nonce`), the brief as its in-charge
+    line."""
+    alias = alias_for(op)
     argv = ["spawn", "--cwd=" + checkout, "--brief=" + args["brief"], "--permission-mode=" + args["permission_mode"],
-            "--stamp=rpc_nonce=" + nonce]
+            "--stamp=rpc_nonce=" + op]
     for flag in ("worktree", "model", "effort"):
         if args.get(flag):
             argv.append("--%s=%s" % (flag, args[flag]))
     rc, out, err = run_verb(argv + ["--", alias, SPAWN_TASK], checkout, SPAWN_TIMEOUT, member)
     if rc != 0:
         raise Refused("failed", last_line(err) or "sminos spawn exited %d" % rc)
-    found = spawned(nonce)
+    found = spawned(op)
     if found is not None:
         return found
     m = SEAT_RE.search(out)
@@ -1641,14 +1830,14 @@ def spawn(args, nonce, checkout, member):
     raise Refused("failed", "sminos spawn named no session: %s" % last_line(out))
 
 
-def spawned(nonce):
-    """The outcome a seat stamped with this nonce stands for, or None when
+def spawned(op):
+    """The outcome a seat stamped with this op stands for, or None when
     there is none yet: no seat, or a provisional one still waiting for the
     harness to name its session (spawn_fresh polls for the uuid after the
     launch). Only a launch spawn_fresh gave up on (`status` error) has
     failed. Seat records are read from their files, no cache."""
     for s in sminos.seats():
-        if s.get("rpc_nonce") == nonce:
+        if s.get("rpc_nonce") == op:
             if s["current"] and sminos.UUID_RE.match(s["current"]):
                 return done({"session": s["current"], "alias": s["alias"]})
             if s["status"] == "error":
@@ -1828,20 +2017,20 @@ def resume_rivals(e, others):
     return out
 
 
-# The RPCs whose answer the bridge's child keeps under the nonce, each with how that answer reads as the outcome.
+# The RPCs whose answer the bridge's child keeps under the op, each with how that answer reads as the outcome.
 KEPT_READERS = {"steer": steered, "command": commanded, "btw": started, "stop-agent": agent_stopped, "tell": told}
 
 
-def trace(nonce, e, others=()):
+def trace(op, e, others=()):
     """(the outcome a claim's trace shows, or None; how long after its claim
     a trace may still appear). `others`: the ledger's other entries."""
     if e.get("rpc") == "spawn":
-        return spawned(nonce), SPAWN_TRACE_S
+        return spawned(op), SPAWN_TRACE_S
     if e.get("rpc") == "media" and e.get("session"):
-        answered = (bridge.load_kept(e["session"]).get("rpcs") or {}).get(nonce)
+        answered = (bridge.load_kept(e["session"]).get("rpcs") or {}).get(op)
         return (media_held(answered, e) if isinstance(answered, dict) else None), STEER_TRACE_S
     if e.get("rpc") in KEPT_READERS and e.get("session"):
-        answered = (bridge.load_kept(e["session"]).get("rpcs") or {}).get(nonce)
+        answered = (bridge.load_kept(e["session"]).get("rpcs") or {}).get(op)
         read = KEPT_READERS[e["rpc"]]
         outcome = read(answered) if isinstance(answered, dict) else None
         return outcome, STEER_TRACE_S
@@ -1857,3 +2046,31 @@ def trace(nonce, e, others=()):
         ran = any(launched_by(r, launched, job, rivals) for r in holders(e["session"]))
         return (done({"session": e["session"]}) if ran else None), RESUME_TRACE_S
     return None, 0
+
+
+# ------------------------------------------------------------- the CLI
+
+
+def cmd_rpc_query(a):
+    """`sminos rpc-query <op> [--created T]`: the ledger file's view of an op,
+    for diagnosis, as JSON (ledger_view, its entry beside it). It reads the
+    file alone: `flight` is the daemon's, so an op a worker holds before its
+    claim is written reads `not-received` here where the daemon's `query`
+    answers `in-progress`, and the output says so. It never tombstones.
+    Exits 1 when the ledger cannot be read (`unavailable`)."""
+    born = None
+    if a.created is not None:
+        born = created_at(a.created)
+        if born is None:
+            sminos.die("--created is the op's opCreated, an ISO 8601 UTC time (2026-10-27T09:00:00.000Z)")
+    path = os.path.join(sminos.root(), "daemon", LEDGER_FILE)
+    note = ("read from %s alone, without the daemon's in-flight set: an op a worker holds before its claim is "
+            "written reads not-received here, and in-progress to the daemon" % path)
+    try:
+        entry = read_ledger(path).get(a.op)
+    except (OSError, ValueError) as e:
+        print(json.dumps({"op": a.op, "state": "unavailable", "error": str(e) or type(e).__name__, "note": note},
+                         indent=2))
+        sys.exit(1)
+    view = ledger_view(entry, False, born, time.time())
+    print(json.dumps({"op": a.op, **view, **({"entry": entry} if entry is not None else {}), "note": note}, indent=2))

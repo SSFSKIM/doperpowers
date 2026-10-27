@@ -146,11 +146,22 @@ def iso(epoch):
     return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(epoch)) + ".%03dZ" % int((epoch % 1) * 1000)
 
 
-def sign(key, name, project, args, machine="testhost", created=None, nonce=None, member=MEMBER):
-    """An RPC as the browser seals it (DX6, DX1)."""
+def sign(key, name, project, args, machine="testhost", created=None, nonce=None, member=MEMBER, op_id=None,
+         op_created=None):
+    """An RPC as the browser seals it (DX6, DX1); with `op_id` (and
+    `op_created`), as an app keying it by an operation id (RL4) seals it."""
     draft = {"rpc": name, "project": project, "machine": machine, "member": member,
              "created": created or iso(time.time()), "nonce": nonce or codes.b64url(os.urandom(16)), "args": args}
+    if op_id is not None:
+        draft["opId"] = op_id
+    if op_created is not None:
+        draft["opCreated"] = op_created
     return codes.seal(key, "rpc", project, draft, None)
+
+
+def new_op():
+    """An operation id as an app chooses one: 128 random bits, base64url."""
+    return codes.b64url(os.urandom(16)) + "op"
 
 
 def digest_of(sid, rid, tool, tool_input):
@@ -2024,10 +2035,10 @@ class Checks(unittest.TestCase):
 
     # ------------------------------------------------ at most once, across a stop
 
-    def claim(self, nonce, name, session, at, **extra):
+    def claim(self, key, name, session, at, **extra):
         path = os.path.join(os.environ["SMINOS_HOME"], "daemon", rpcs.LEDGER_FILE)
         d = self.ledger()
-        d[nonce] = {"project": self.pid, "rpc": name, "session": session, "at": at, **extra}
+        d[key] = {"project": self.pid, "rpc": name, "session": session, "at": at, **extra}
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w") as f:
             json.dump(d, f)
@@ -2647,6 +2658,260 @@ class Checks(unittest.TestCase):
         self.assertEqual((o["state"], o["result"]["turnId"]), ("done", "turn-i2"), "the outcome it reached, kept now")
         self.assertEqual(self.ledger()[nonce]["outcome"], o)
         self.assertEqual(len(results(self.frames, nonce)), 1, "sent once")
+
+    # ------------------------------------------------ the opId ledger (P5-O12 M2)
+
+    def send_op(self, name, args, op=None, op_created=None, **kw):
+        """An RPC keyed by an operation id (RL4): a new one unless `op`, its
+        `opCreated` its `created` unless given."""
+        created = kw.setdefault("created", iso(time.time()))
+        return self.send(name, args, op_id=op or new_op(), op_created=op_created or created, **kw)
+
+    def test_o_an_op_id_keys_the_ledger_and_its_nonce_answers_the_hub(self):
+        """The opId is the ledger's key and the bridge command's `rpc`; the
+        hub's rpc-result and rpc-ack stay the nonce's, which the entry keeps.
+        An RPC without one is keyed by its nonce, as before."""
+        self.mod.turn = "t-o1"
+        rpc = self.send_op("steer", {"session": self.bridged.sid, "text": "by op"})
+        op = rpc["opId"]
+        o = self.outcome(rpc)
+        self.assertEqual(o["state"], "done", o)
+        self.assertEqual(self.mod.ops("steer")[-1]["rpc"], op, "the child keeps its answer under the op")
+        e = self.ledger()[op]
+        self.assertEqual(e["nonce"], rpc["nonce"])
+        self.assertAlmostEqual(e["op_created"], rpcs.created_at(rpc["opCreated"]), places=3)
+        self.assertNotIn(rpc["nonce"], self.ledger())
+        self.r.ack({"t": "rpc-ack", "project": self.pid, "nonce": rpc["nonce"]})
+        self.assertTrue(self.ledger()[op]["acked"], "acknowledged by its nonce")
+        legacy = self.send("interrupt", {"session": self.bridged.sid})
+        self.assertEqual(self.outcome(legacy)["state"], "done")
+        self.assertNotIn("nonce", self.ledger()[legacy["nonce"]], "keyed by its nonce, as today")
+
+    def test_o_a_reseal_of_an_answered_op_is_answered_from_the_ledger_under_its_own_nonce(self):
+        self.mod.turn = "t-o2"
+        first = self.send_op("steer", {"session": self.bridged.sid, "text": "once"})
+        o = self.outcome(first)
+        self.clock[0] += 30
+        again = self.send_op("steer", {"session": self.bridged.sid, "text": "once"}, op=first["opId"],
+                             op_created=first["opCreated"], created=iso(self.clock[0]))
+        self.assertNotEqual(again["nonce"], first["nonce"])
+        self.assertEqual(self.outcome(again), o, "the stored result, to the copy that waits for it")
+        self.assertEqual(len(self.mod.ops("steer")), 1, "run once")
+        self.assertEqual(self.ledger()[first["opId"]]["nonce"], again["nonce"])
+
+    def test_o_an_op_id_and_its_created_are_checked_before_the_ledger(self):
+        self.mod.turn = "t-o3"
+        session = {"session": self.bridged.sid}
+        now = iso(time.time())
+        for bad in ("short-op-id-15c", "x" * 129, "has.a.dot.in.it.0", "a/b" * 6, 12345678901234567, ["x" * 16]):
+            rpc = self.send("interrupt", session, op_id=bad, op_created=now)
+            self.refused(rpc, "bad-op-id")
+            self.assertNotIn(rpc["nonce"], self.ledger())
+        missing = self.send("interrupt", session, op_id=new_op())
+        self.refused(missing, "bad-op-created")
+        c = time.time()
+        for bad in ("yesterday", c, iso(c + rpcs.FRESH_S + 2)):
+            rpc = self.send("interrupt", session, op_id=new_op(), op_created=bad, created=iso(c))
+            self.refused(rpc, "bad-op-created")
+            self.assertNotIn(rpc["opId"], self.ledger(), "refused before the ledger")
+        self.assertEqual(self.mod.ops("interrupt"), [], "nothing ran")
+        bound = self.send_op("interrupt", session, op_created=iso(c + rpcs.FRESH_S), created=iso(c))
+        self.assertEqual(self.outcome(bound)["state"], "done", "opCreated up to FRESH_S after created")
+
+    def test_o_query_answers_by_state(self):
+        self.mod.turn = "t-o4"
+        session = {"session": self.bridged.sid}
+        ran = self.send_op("steer", {**session, "text": "asked about"})
+        o = self.outcome(ran)
+        self.assertEqual(self.r.query(ran["opId"]), {"state": "done", "outcome": o})
+        old = iso(self.clock[0] - 90)
+        stale = self.send_op("interrupt", session, created=old, op_created=old)
+        self.assertEqual(self.r.query(stale["opId"]), {"state": "refused", "outcome": self.refused(stale, "stale")})
+        claimed = new_op()
+        self.assertTrue(self.r.ledger.claim(claimed, {"project": self.pid, "rpc": "steer", "session": self.bridged.sid,
+                                                      "at": self.clock[0]}))
+        self.assertEqual(self.r.query(claimed), {"state": "in-progress"})
+        self.assertEqual(self.r.query(new_op()), {"state": "not-received"})
+        self.assertEqual(self.r.query(new_op(), self.clock[0] - 3600), {"state": "not-received"}, "inside the horizon")
+        self.assertEqual(self.r.query(new_op(), self.clock[0] - rpcs.OP_HORIZON - 1), {"state": "expired"})
+        loose = self.send_op("interrupt", session, machine="mini")
+        self.refused(loose, "wrong-machine")
+        self.assertEqual(self.r.query(loose["opId"]), {"state": "not-received"}, "a refusal before the ledger ran nothing")
+        self.clock[0] += rpcs.OP_HORIZON + 10
+        self.assertIn(ran["opId"], self.r.ledger.entries, "the ledger still holds it")
+        self.assertEqual(self.r.query(ran["opId"]), {"state": "expired"}, "past the horizon by its stored opCreated")
+        path = os.path.join(os.environ["SMINOS_HOME"], "daemon", rpcs.LEDGER_FILE)
+        with open(path, "w") as f:
+            f.write('{"half-written": ')
+        broken = rpcs.Rpcs(KEY, "testhost", clock=lambda: self.clock[0])
+        self.assertEqual(broken.query(new_op()), {"state": "unavailable"}, "never not-received")
+        self.assertEqual(broken.tombstone(new_op()), {"ok": False, "state": "unavailable"})
+
+    def test_o_an_op_tombstoned_before_it_arrives_is_refused_and_never_runs(self):
+        self.mod.turn = "t-o5"
+        op = new_op()
+        self.assertEqual(self.r.tombstone(op), {"ok": True})
+        self.assertEqual(self.r.tombstone(op), {"ok": True}, "again: the same answer")
+        self.assertEqual(self.r.query(op), {"state": "not-received"})
+        late = self.send_op("steer", {"session": self.bridged.sid, "text": "too late"}, op=op)
+        self.assertNotIn(op, self.r.flight, "it never reached flight")
+        self.refused(late, "tombstoned")
+        self.assertEqual(self.mod.ops("steer"), [], "nothing ran")
+        self.assertTrue(self.ledger()[op]["tombstone"])
+        self.assertNotIn("outcome", self.ledger()[op], "the tombstone stands")
+
+    def test_o_a_tombstone_is_refused_while_its_op_is_in_flight_or_claimed(self):
+        self.mod.turn = "t-o6"
+        reached, gate = threading.Event(), threading.Event()
+        plan = self.r.plan
+
+        def paused(rpc, facts):   # the worker, between admission and its claim
+            reached.set()
+            gate.wait(10)
+            return plan(rpc, facts)
+
+        self.r.plan = paused
+        rpc = self.send_op("steer", {"session": self.bridged.sid, "text": "in flight"})
+        op = rpc["opId"]
+        self.assertTrue(reached.wait(10))
+        self.assertEqual(self.r.tombstone(op), {"ok": False, "state": "in-progress"})
+        self.assertEqual(self.r.query(op), {"state": "in-progress"})
+        gate.set()
+        self.assertEqual(self.outcome(rpc)["state"], "done")
+        self.assertEqual(self.r.tombstone(op), {"ok": False, "state": "done"})
+        self.assertEqual(len(self.mod.ops("steer")), 1)
+        claimed = new_op()   # a claim a stop left, no worker holding it
+        self.claim(claimed, "steer", self.bridged.sid, self.clock[0], nonce=codes.b64url(os.urandom(16)))
+        restarted = rpcs.Rpcs(KEY, "testhost", clock=lambda: self.clock[0])
+        self.assertEqual(restarted.tombstone(claimed), {"ok": False, "state": "in-progress"})
+        self.assertNotIn("tombstone", self.ledger()[claimed])
+        old = iso(self.clock[0] - 90)
+        stale = self.send_op("interrupt", {"session": self.bridged.sid}, created=old, op_created=old)
+        self.refused(stale, "stale")
+        self.assertEqual(self.r.tombstone(stale["opId"]), {"ok": False, "state": "refused"})
+
+    def test_o_a_tombstone_survives_a_restart_and_is_never_answered_interrupted(self):
+        self.mod.turn = "t-o7"
+        op = new_op()
+        self.assertEqual(self.r.tombstone(op), {"ok": True})
+        self.clock[0] += rpcs.SPAWN_TRACE_S + rpcs.RESUME_TRACE_S   # past every trace's window
+        self.r = rpcs.Rpcs(KEY, "testhost", clock=lambda: self.clock[0])
+        self.assertEqual([f for f in self.r.due({self.pid}) if f.get("t") == "rpc-result"], [])
+        self.assertTrue(self.ledger()[op]["tombstone"])
+        self.assertNotIn("outcome", self.ledger()[op], "not reconciled as a claim")
+        late = self.send_op("steer", {"session": self.bridged.sid, "text": "after a restart"}, op=op,
+                            created=iso(self.clock[0]))
+        self.refused(late, "tombstoned")
+        self.assertEqual(self.mod.ops("steer"), [])
+
+    def test_o_a_reseal_of_a_pruned_op_is_refused_never_run(self):
+        self.mod.turn = "t-o8"
+        first = self.send_op("steer", {"session": self.bridged.sid, "text": "a day ago"})
+        self.assertEqual(self.outcome(first)["state"], "done")
+        op = first["opId"]
+        self.clock[0] += rpcs.KEPT_S + 1
+        later = self.send("interrupt", {"session": self.bridged.sid}, created=iso(self.clock[0]))
+        self.assertEqual(self.outcome(later)["state"], "done")
+        self.assertNotIn(op, self.ledger(), "pruned by the write after it")
+        reseal = self.send_op("steer", {"session": self.bridged.sid, "text": "a day ago"}, op=op,
+                              op_created=first["opCreated"], created=iso(self.clock[0]))
+        self.refused(reseal, "expired")
+        bare = self.send("steer", {"session": self.bridged.sid, "text": "a day ago"}, op_id=op,
+                         created=iso(self.clock[0]))
+        self.refused(bare, "bad-op-created")
+        self.assertEqual(len(self.mod.ops("steer")), 1, "never run again")
+        self.assertNotIn(op, self.ledger(), "nothing reopened it")
+        self.assertEqual(self.r.query(op, rpcs.created_at(first["opCreated"])), {"state": "expired"})
+        legacy = self.send("interrupt", {"session": self.bridged.sid},
+                           created=iso(self.clock[0] - rpcs.OP_HORIZON - 5))
+        self.refused(legacy, "expired")   # its created is its opCreated
+
+    def test_o_a_claim_left_by_a_stop_is_reconciled_by_its_op_and_answered_under_its_nonce(self):
+        self.mod.turn = "t-o9"
+        op, nonce = new_op(), codes.b64url(os.urandom(16))
+        self.claim(op, "steer", self.bridged.sid, time.time(), nonce=nonce)
+        landed = rpcs.steer(rpcs.bridge.endpoint(self.bridged.sid), "landed by op", op)
+        self.assertEqual(landed["state"], "done")
+        r = rpcs.Rpcs(KEY, "testhost", clock=lambda: self.clock[0])
+        self.assertEqual(results(r.due({self.pid}), nonce), [landed])
+
+    def test_o_the_op_names_the_upload_and_its_files(self):
+        asked = self.send_op("media", {"session": self.bridged.sid, "delivery": "queued-turn",
+                                       "attachments": self.attachments(("shot.png", "image/png", PNG))})
+        op = asked["opId"]
+        o = self.outcome(asked)
+        self.assertEqual((o["state"], o["result"]["upload"], o["result"]["paths"]), ("done", op, [op + ".0.png"]), o)
+        cmd = self.mod.ops("media")[-1]
+        self.assertEqual((cmd["upload"], cmd["rpc"]), (op, op))
+        self.assertEqual(self.uploads_of(self.root), [op + ".0.png"])
+        self.assertEqual(self.ledger()[op]["op_id"], op)
+
+    def test_o_a_spawn_by_op_is_stamped_and_named_by_it(self):
+        tpr.set_policy({"read_only": False, "ceiling": "acceptEdits"})
+        rpc = self.send_op("spawn", {"checkout": self.root, "brief": "keyed by op"})
+        op = rpc["opId"]
+        o = self.outcome(rpc, timeout=60)
+        self.assertEqual((o["state"], o["result"]["alias"]), ("done", rpcs.alias_for(op)), o)
+        self.assertEqual([s["current"] for s in sminos.seats() if s.get("rpc_nonce") == op], [o["result"]["session"]])
+
+    def test_o_rpc_query_prints_the_ledger_files_view(self):
+        self.mod.turn = "t-o10"
+        rpc = self.send_op("steer", {"session": self.bridged.sid, "text": "asked from the CLI"})
+        o = self.outcome(rpc)
+        path = os.path.join(os.environ["SMINOS_HOME"], "daemon", rpcs.LEDGER_FILE)
+        with open(path, "rb") as f:
+            before = f.read()
+
+        def view(*args):
+            p = cli("rpc-query", *args)
+            return p.returncode, json.loads(p.stdout)
+
+        rc, v = view(rpc["opId"])
+        self.assertEqual((rc, v["state"], v["outcome"], v["entry"]["nonce"]), (0, "done", o, rpc["nonce"]))
+        rc, v = view(new_op())
+        self.assertEqual((rc, v["state"]), (0, "not-received"))
+        self.assertIn("in-progress", v["note"], "it says what it cannot see")
+        rc, v = view(new_op(), "--created", iso(time.time() - rpcs.OP_HORIZON - 60))
+        self.assertEqual((rc, v["state"]), (0, "expired"))
+        with open(path, "rb") as f:
+            self.assertEqual(f.read(), before, "it reads the ledger, and writes nothing")
+        with open(path, "w") as f:
+            f.write('{"half-written": ')
+        rc, v = view(new_op())
+        self.assertEqual((rc, v["state"]), (1, "unavailable"))
+
+    def test_o_rpc_query_changes_nothing_but_reads_the_ledger(self):
+        """A diagnostic: it runs before the migration every other verb runs,
+        so a legacy record stays as it was, and no lock or record is made."""
+        self.mod.turn = "t-o11"
+        rpc = self.send_op("steer", {"session": self.bridged.sid, "text": "asked from a fresh home"})
+        o = self.outcome(rpc)
+        home = os.path.join(T, "rpc-query-" + uuidlib.uuid4().hex[:8])
+        state = os.path.join(home, "sminos")
+        os.makedirs(os.path.join(state, "daemon"), mode=0o700)
+        shutil.copy(os.path.join(os.environ["SMINOS_HOME"], "daemon", rpcs.LEDGER_FILE),
+                    os.path.join(state, "daemon", rpcs.LEDGER_FILE))
+        legacy = os.path.join(state, "legacy-worker.json")
+        with open(legacy, "w") as f:   # what migrate stamps a group on, retires, and tightens to 0600
+            json.dump({"engine": "codex", "status": "done", "alias": "old-worker", "cwd": self.root, "pid": 1}, f)
+        os.chmod(legacy, 0o644)
+
+        def tree():
+            out = {}
+            for d, _, names in os.walk(home):
+                for n in names:
+                    q = os.path.join(d, n)
+                    with open(q, "rb") as f:
+                        out[os.path.relpath(q, home)] = (f.read(), os.stat(q).st_mode)
+            return out
+
+        before = tree()
+        p = subprocess.run([CLI, "rpc-query", rpc["opId"]], capture_output=True, text=True,
+                           env={**os.environ, "HOME": home, "SMINOS_HOME": state})
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual((json.loads(p.stdout)["state"], json.loads(p.stdout)["outcome"]), ("done", o))
+        self.assertEqual(tree(), before, "no record rewritten, no lock or metadata made")
+        self.assertFalse(os.path.exists(os.path.join(home, ".claude")), "no migration lock")
 
 
 class CopyNames(unittest.TestCase):
