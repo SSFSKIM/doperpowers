@@ -241,6 +241,7 @@ class Mod(tpr.Bridge):
         self.cwd = "/"            # the session's live working directory, as `read status` answers it
         self.uploads = {}         # an upload the mod holds → its op
         self.refuse_media = None  # the bridge's refusal of an upload: (code, reason)
+        self.observer = False     # an observer's bridge (a MAWS lane B session, O12 M3): every control op refused lane-b
         self.rows = []
         super().__init__(sid)
 
@@ -258,7 +259,9 @@ class Mod(tpr.Bridge):
         time.sleep(self.hold)
         op = cmd["op"]
         after = []
-        if self.unknown and op in ("steer", "interrupt", "compact"):
+        if self.observer and op not in ("ping", "read"):
+            res = {"ok": False, "error": "MAWS controls this session", "code": "lane-b"}
+        elif self.unknown and op in ("steer", "interrupt", "compact"):
             res = {"ok": False, "error": TURN_UNKNOWN}
         elif op == "steer":
             if self.turn is None:
@@ -434,6 +437,68 @@ def results(frames, nonce):
     return [f["outcome"] for f in frames if f.get("t") == "rpc-result" and f.get("nonce") == nonce]
 
 
+class LaneVerdict(unittest.TestCase):
+    """O12 M3: the bridge child's lane verdict rests on one observation of
+    the session's parent, never two (a failed `ps` then a good one must not
+    read as another parent)."""
+
+    def setUp(self):
+        self.config = os.path.join(T, "lane-config")
+        os.makedirs(os.path.join(self.config, "sessions"), exist_ok=True)
+        self.sid = str(uuidlib.uuid4())
+        with open(os.path.join(self.config, "sessions", "4300.json"), "w") as f:
+            json.dump({"pid": 4300, "sessionId": self.sid}, f)
+
+    SESSION_STARTED = 1_000_000.0
+
+    def verdict(self, observations, host_alive=True, host_started=SESSION_STARTED - 60):
+        """The verdict over these parent observations, the marker's process
+        (4242) alive or not, started then; the session's at SESSION_STARTED."""
+        seen = list(observations)
+        started = {4300: self.SESSION_STARTED, 4242: host_started}
+        with mock.patch.dict(os.environ, {"SMNS_MEMBER": "4242", "CLAUDE_CONFIG_DIR": self.config}), \
+                mock.patch.object(bridgemod.S, "parent_pid", side_effect=lambda _pid: seen.pop(0)) as pp, \
+                mock.patch.object(bridgemod.S, "pid_alive", side_effect=lambda pid: int(pid) != 4242 or host_alive), \
+                mock.patch.object(bridgemod, "process_state", side_effect=lambda pid: "S" if host_alive else None), \
+                mock.patch.object(bridgemod, "process_started", side_effect=lambda pid: started.get(int(pid))):
+            got = bridgemod.lane_verdict(self.sid, 4300)
+        return got, pp.call_count
+
+    def test_lane_verdict_is_one_parent_observation(self):
+        self.assertEqual(self.verdict([None, 4242]), ("unresolved", 1), "a ps that failed is unresolved, whatever a second says")
+        self.assertEqual(self.verdict([4242, 77]), ("match", 1))
+        self.assertEqual(self.verdict([77, 4242]), ("mismatch", 1),
+                         "a claude a lane B session's Bash started: the host alive, older, not its parent")
+
+    def test_lane_verdict_mismatch_needs_a_live_older_host_that_is_not_the_parent(self):
+        """The host exited before a retry: the engine re-parented, to PID 1
+        or a subreaper, is no evidence of another spawner."""
+        for reparented in (1, 777):
+            self.assertEqual(self.verdict([None]), ("unresolved", 1))
+            self.assertEqual(self.verdict([reparented], host_alive=False)[0], "unresolved",
+                             "re-parented to %d, the host gone" % reparented)
+        self.assertEqual(self.verdict([777], host_started=self.SESSION_STARTED + 5)[0], "unresolved",
+                         "the marker's pid reused by a process younger than the session")
+        self.assertEqual(self.verdict([777], host_started=None)[0], "unresolved", "its start unreadable")
+        self.assertEqual(self.verdict([777], host_started=self.SESSION_STARTED)[0], "unresolved",
+                         "a host started in the session's own second is no evidence: only an earlier second is")
+
+    def test_lane_verdict_an_exited_unreaped_host_is_no_host(self):
+        """A host that exited and was not reaped (a zombie) still answers
+        kill(pid, 0) and keeps a readable start: it is gone all the same."""
+        zombie = subprocess.Popen(["true"])
+        try:
+            self.assertTrue(wait_for(lambda: bridgemod.process_state(zombie.pid) == "Z", 10), "the host is a zombie")
+            self.assertTrue(sminos.pid_alive(zombie.pid), "kill(pid, 0) still answers for it")
+            started = {4300: self.SESSION_STARTED, zombie.pid: self.SESSION_STARTED - 60}
+            with mock.patch.dict(os.environ, {"SMNS_MEMBER": str(zombie.pid), "CLAUDE_CONFIG_DIR": self.config}), \
+                    mock.patch.object(bridgemod.S, "parent_pid", return_value=1), \
+                    mock.patch.object(bridgemod, "process_started", side_effect=lambda pid: started.get(int(pid))):
+                self.assertEqual(bridgemod.lane_verdict(self.sid, 4300), "unresolved")
+        finally:
+            zombie.wait()
+
+
 class Checks(unittest.TestCase):
     """DX6's checks in order, and execution through the real bridge child."""
 
@@ -482,6 +547,7 @@ class Checks(unittest.TestCase):
         self.mod.uploads = {}
         shutil.rmtree(os.path.join(self.root, ".claude", "desk-uploads"), ignore_errors=True)   # an earlier test's
         self.mod.refuse_media = None
+        self.mod.observer = False
         self.mod.commands.clear()
         self.clock = [time.time()]
         self.r = rpcs.Rpcs(KEY, "testhost", clock=lambda: self.clock[0])
@@ -2331,6 +2397,48 @@ class Checks(unittest.TestCase):
         self.assertIn("running here", self.refused(again, "session-live")["error"]["message"])
         self.assertEqual(len(resumes(self.claude, sid)), 1, "launched once")
 
+    def test_j_a_session_whose_last_launch_was_lane_b_is_not_resumed_from_the_desk(self):
+        """O12 M3: reopening a MAWS lane B session is MAWS's. A session that
+        ran as lane A and was later reopened by MAWS as lane B, under the same
+        id, has its record's controller at B (each launch's bridge verdict),
+        and the desk's Resume of it after it ends is refused `lane-b`, nothing
+        launched; its controller back at A, it resumes as any ended session."""
+        sid = ended_session(self.root)
+        self.here.sessions.add(sid)
+        self.assertIsNotNone(sminos.session_record(sid), "the session has its record (O12 M1)")
+        self.assertTrue(sminos.set_session_controller(sid, "A"), "it ran as lane A")
+        self.assertTrue(sminos.set_session_controller(sid, "B"), "then MAWS reopened it as lane B")
+        rpc = self.send("resume", {"session": sid})
+        o = self.refused(rpc, "lane-b")
+        self.assertIn("MAWS", o["error"]["message"])
+        self.assertEqual(resumes(self.claude, sid), [], "nothing launched")
+        self.assertNotIn("launched_at", self.ledger()[rpc["nonce"]], "refused before the claim")
+        self.assertTrue(sminos.set_session_controller(sid, "A"))
+        self.assertEqual(self.outcome(self.send("resume", {"session": sid}), timeout=60),
+                         {"state": "done", "result": {"session": sid}})
+        for h in holders_of(sid):
+            os.kill(h["pid"], signal.SIGKILL)
+
+    def test_j_an_observers_refusal_is_the_rpcs_answer_lane_b(self):
+        """O12 M3: the bridge of a MAWS lane B session refuses every control
+        op `lane-b`, and its child refuses the decision route the same: the
+        RPC is answered with that code, not a generic failure."""
+        self.mod.observer = True
+        self.mod.turn = "t1"
+        for name, args in (("steer", {"text": "x"}), ("interrupt", {}), ("compact", {}),
+                           ("command", {"name": "rename", "args": "x"}), ("btw", {"prompt": "why?"})):
+            o = self.refused(self.send(name, {"session": self.bridged.sid, **args}), "lane-b")
+            self.assertIn("MAWS controls this session", o["error"]["message"])
+        asked = self.upload()
+        self.refused(asked, "lane-b")
+        self.assertEqual(len(self.mod.ops("media")), 1, "it reached the bridge")
+        self.assertEqual(self.uploads_of(self.root), [], "the files saved for a refused upload are removed")
+        with mock.patch.object(rpcs.bridge, "request",
+                               return_value=(409, {"error": "MAWS controls this session", "code": "lane-b"})):
+            with self.assertRaises(rpcs.Refused) as r:
+                rpcs.decide(rpcs.bridge.endpoint(self.bridged.sid), "toolu_x", {"behavior": "allow", "by": MEMBER})
+        self.assertEqual(r.exception.outcome["error"]["code"], "lane-b")
+
     def test_j_a_session_this_machine_holds_no_transcript_of_is_not_resumed(self):
         """A --bg copy that ended before it wrote a row: `claude --resume`
         would start an empty session under its id and call it done."""
@@ -2862,8 +2970,9 @@ class Checks(unittest.TestCase):
         with open(path, "rb") as f:
             before = f.read()
 
-        def view(*args):
-            p = cli("rpc-query", *args)
+        def view(op, *options):
+            # As the CLI documents it: `--` before the id, which may start with `-` (base64url).
+            p = cli("rpc-query", *options, "--", op)
             return p.returncode, json.loads(p.stdout)
 
         rc, v = view(rpc["opId"])
@@ -2879,6 +2988,22 @@ class Checks(unittest.TestCase):
             f.write('{"half-written": ')
         rc, v = view(new_op())
         self.assertEqual((rc, v["state"]), (1, "unavailable"))
+
+    def test_o_rpc_query_takes_an_op_id_that_starts_with_a_dash(self):
+        """A base64url op id may start with `-` (1 in 64 of them): `--`
+        before it, as the CLI's help says, keeps it from reading as an
+        option; without it, it does."""
+        self.mod.turn = "t-o12"
+        op = "-dashLeadingOp_0001"
+        rpc = self.send_op("steer", {"session": self.bridged.sid, "text": "a dash first"}, op=op)
+        o = self.outcome(rpc)
+        p = cli("rpc-query", "--", op)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual((json.loads(p.stdout)["op"], json.loads(p.stdout)["state"], json.loads(p.stdout)["outcome"]),
+                         (op, "done", o))
+        p = cli("rpc-query", "--created", rpc["opCreated"], "--", op)
+        self.assertEqual((p.returncode, json.loads(p.stdout)["state"]), (0, "done"))
+        self.assertNotEqual(cli("rpc-query", op).returncode, 0, "without `--`, it reads as an option")
 
     def test_o_rpc_query_changes_nothing_but_reads_the_ledger(self):
         """A diagnostic: it runs before the migration every other verb runs,
@@ -2906,7 +3031,7 @@ class Checks(unittest.TestCase):
             return out
 
         before = tree()
-        p = subprocess.run([CLI, "rpc-query", rpc["opId"]], capture_output=True, text=True,
+        p = subprocess.run([CLI, "rpc-query", "--", rpc["opId"]], capture_output=True, text=True,
                            env={**os.environ, "HOME": home, "SMINOS_HOME": state})
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertEqual((json.loads(p.stdout)["state"], json.loads(p.stdout)["outcome"]), ("done", o))

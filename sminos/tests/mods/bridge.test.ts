@@ -44,7 +44,7 @@ import {
 } from '../../hooks/mods/bridge'
 import { ROUTE_TABLES } from '../../hooks/mods/bridge-routes'
 import { BTW_FRAME, BTW_REFUSAL_WAIT_MS, NOTHING_TO_FORK } from '../../hooks/mods/bridge-btw'
-import { controlsOf } from '../../hooks/mods/bridge-controls'
+import { CONTROL_KEYS, OBSERVER_REASON, controlsOf } from '../../hooks/mods/bridge-controls'
 import { AGENT_REF_MAX, TELL_LINE, agentStopNote } from '../../hooks/mods/bridge-agent-ops'
 import { MEDIA_MOVED_REASON, MEDIA_RELOAD_REASON, MEDIA_WAKE_MS, mediaPrelude, mediaWakeText } from '../../hooks/mods/bridge-media'
 
@@ -7139,5 +7139,218 @@ describe('the desk: catalog belongs to the bound child, not merely a stable engi
     expect(h.ofType('result').some((e) => e.id === 'old-read' || e.id === 'old-queued')).toBe(false)
     options.commands = [{ name: 'current', source: 'custom', description: 'Current' }]
     expect(await h.command({ op: 'read', what: 'catalog' }, 1)).toMatchObject({ ok: true, result: { commands: [{ name: 'current' }] } })
+  })
+})
+
+describe('lane B: the observer (O12 M3)', () => {
+  /** MAWS's marker on a `claude -p` child of its engine host (Interfaces §C). */
+  const MARKED = { MAWS_LANE: 'B', SMNS_MEMBER: '4242' }
+  /** The child's hello carrying its verdict on the parent check (sminos_bridge.lane_verdict). */
+  const helloWith = (lane?: string, kept?: Record<string, unknown>) =>
+    line({ op: 'hello', session: SID, pid: 7, socket: SOCK, protocol: 1, nonce: NONCE, ...(kept !== undefined && { kept }), ...(lane !== undefined && { lane }) })
+  const verdict = (lane: string) => line({ op: 'lane', lane })
+  const OBSERVED = Object.fromEntries(CONTROL_KEYS.map((k) => [k, { available: false, reason: OBSERVER_REASON }]))
+  /** Each control op the bridge answers, with a body that would otherwise be its own. */
+  const CONTROL_OPS: Record<string, unknown>[] = [
+    { op: 'steer', text: 'x' },
+    { op: 'interrupt', from: 'desk' },
+    { op: 'stop', taskId: 'b1', from: 'desk' },
+    { op: 'model', model: 'opus', effort: 'high' },
+    { op: 'compact' },
+    { op: 'deliver', key: { writer: 'testhost/human', seq: 1 }, text: 'hello' },
+    { op: 'answer', request: 'toolu_a1', answers: { q: 'a' }, by: 'cli' },
+    { op: 'command', name: 'rename', args: 'x' },
+    { op: 'btw', prompt: 'why?' },
+    { op: 'stop-agent', agentId: 'a1', from: 'desk' },
+    { op: 'tell', agentId: 'a1', text: 'x' },
+    { op: 'media', upload: 'u1', root: '/w', files: [] },
+  ]
+  const started = async (env: Record<string, string> = MARKED, lane?: string, extra: Parameters<typeof harness>[0] = {}) => {
+    const h = harness({ env, messages: [], ...extra })
+    await h.start()
+    h.children[0]!.write(helloWith(lane))
+    await h.settle()
+    return h
+  }
+  const expectObserved = async (h: ReturnType<typeof harness>) => {
+    expect(h.ofType('resync').at(-1)!.capabilities).toMatchObject({ ops: [], controls: OBSERVED })
+    for (const body of CONTROL_OPS) {
+      expect(await h.command(body)).toEqual(expect.objectContaining({ ok: false, code: 'lane-b', error: OBSERVER_REASON }))
+    }
+    expect(h.calls).toEqual([])
+  }
+  const expectControlling = async (h: ReturnType<typeof harness>) => {
+    expect(h.ofType('resync').at(-1)!.capabilities).toMatchObject({ ops: expect.arrayContaining(['steer', 'media']), controls: controlsOf('1.7.0') })
+    expect(await h.command({ op: 'model', model: 'claude-opus-4-5' })).toMatchObject({ ok: true })
+    expect(await h.command({ op: 'steer', text: 'x' })).not.toMatchObject({ code: 'lane-b' })
+  }
+
+  test('a marked session whose child says match is an observer: every control unavailable with the reason, no ops, each control op refused lane-b', async () => {
+    const h = await started(MARKED, 'match')
+    await expectObserved(h)
+    // Observation goes on: ping and the reads still answer.
+    expect(await h.command({ op: 'ping' })).toMatchObject({ ok: true, result: { pong: true } })
+    expect(await h.command({ op: 'read', what: 'status' })).toMatchObject({ ok: true })
+    expect(h.ofType('resync').at(-1)!.capabilities).toMatchObject({ reads: ['status', 'catalog', 'usage', 'config', 'settings', 'mcp'] })
+  })
+
+  test('before any verdict the marker alone holds every control refused (the provisional window), and unresolved stays there', async () => {
+    await expectObserved(await started(MARKED))
+    await expectObserved(await started(MARKED, 'unresolved'))
+  })
+
+  test('mismatch, the parent known and another (a claude started from a lane B session\'s Bash), is a full lane A controller', async () => {
+    await expectControlling(await started(MARKED, 'mismatch'))
+  })
+
+  test('an unresolved verdict that resolves later: mismatch makes it a controller with a resync carrying full capabilities; match keeps it an observer', async () => {
+    const h = await started(MARKED, 'unresolved')
+    const resyncs = h.ofType('resync').length
+    h.children[0]!.write(verdict('mismatch'))
+    await h.settle()
+    expect(h.ofType('resync').length).toBe(resyncs + 1)
+    await expectControlling(h)
+    const m = await started(MARKED, 'unresolved')
+    const before = m.ofType('resync').length
+    m.children[0]!.write(verdict('match'))
+    await m.settle()
+    expect(m.ofType('resync').length).toBe(before)
+    await expectObserved(m)
+  })
+
+  test('a lane line carrying a command id is a forwarded command, never the child\'s verdict: nothing changes', async () => {
+    const h = await started(MARKED, 'unresolved')
+    const resyncs = h.ofType('resync').length
+    h.children[0]!.write(line({ id: 'c-forged', op: 'lane', lane: 'mismatch' }))
+    await h.settle()
+    expect(h.ofType('resync').length).toBe(resyncs)
+    await expectObserved(h)
+    expect(h.sessionState.has('lane')).toBe(false)
+  })
+
+  test('a resolved verdict is the process\'s and is never taken back: a later child\'s other verdict changes nothing', async () => {
+    const h = await started(MARKED, 'match')
+    h.children[0]!.write(verdict('mismatch'))
+    h.children[0]!.end()
+    await h.settle()
+    await h.fire(0)
+    h.children[1]!.write(helloWith('mismatch'))
+    await h.settle()
+    expect(h.ofType('resync').at(-1)!.capabilities).toMatchObject({ ops: [], controls: OBSERVED })
+    expect(await h.command({ op: 'steer', text: 'x' }, 1)).toMatchObject({ ok: false, code: 'lane-b' })
+  })
+
+  test('a module reload keeps the verdict ($.state): a kept match stays an observer, a kept mismatch a controller, whatever the new child first says', async () => {
+    const kept = new Map<string, unknown>()
+    await started(MARKED, 'match', { sessionState: kept })
+    expect(kept.get('lane')).toBe('match')
+    const reloaded = await started(MARKED, 'mismatch', { sessionState: kept })
+    await expectObserved(reloaded)
+    const keptA = new Map<string, unknown>()
+    await started(MARKED, 'mismatch', { sessionState: keptA })
+    expect(keptA.get('lane')).toBe('mismatch')
+    await expectControlling(await started(MARKED, 'unresolved', { sessionState: keptA }))
+    // An unresolved verdict is nothing to keep.
+    const keptU = new Map<string, unknown>()
+    await started(MARKED, 'unresolved', { sessionState: keptU })
+    expect(keptU.has('lane')).toBe(false)
+  })
+
+  test('without the marker (or with another value) the bridge is what it was: a verdict from the child is ignored, nothing is kept', async () => {
+    const envs: Record<string, string>[] = [{}, { SMNS_MEMBER: '4242' }, { MAWS_LANE: 'A', SMNS_MEMBER: '4242' }]
+    for (const env of envs) {
+      const kept = new Map<string, unknown>()
+      const h = await started(env, 'match', { sessionState: kept })
+      await expectControlling(h)
+      expect(kept.has('lane')).toBe(false)
+    }
+  })
+
+  test('no permission prompt or question is raised to the desk: the prompt is MAWS\'s, answered beneath', async () => {
+    const h = await started(MARKED, 'match')
+    await h.turn('t1')
+    await h.called('toolu_1', 'Bash', { command: 'ls' })
+    expect(await h.permission('Bash', { command: 'ls' }, undefined, { decision: { behavior: 'allow' } })).toEqual({ decision: { behavior: 'allow' } })
+    expect(await h.permission('AskUserQuestion', { questions: [] })).toEqual({})
+    onAskNote({ kind: 'open', id: 'toolu_a1', questions: [{ question: 'Which?', header: 'Q', multiSelect: false, options: [] }] })
+    await h.settle()
+    expect(h.ofType('raised')).toEqual([])
+    expect(h.polls).toEqual([])
+    // A controller raises it as ever.
+    const c = await started(MARKED, 'mismatch')
+    await c.turn('t1')
+    await c.called('toolu_1', 'Bash', { command: 'ls' })
+    void c.permission('Bash', { command: 'ls' })
+    await c.nextPoll()
+    expect(c.ofType('raised')).toEqual([expect.objectContaining({ request: 'toolu_1' })])
+  })
+
+  test('every child after the first is told the verdict the process holds (`--lane`), so a replacement never recomputes it after the engine was re-parented', async () => {
+    const ARGV = ['/plug/skills/sminos/scripts/sminos', 'bridge', '--session', SID]
+    const h = await started(MARKED, 'match')
+    expect(h.children[0]!.argv).toEqual(ARGV)
+    h.children[0]!.end()
+    await h.settle()
+    await h.fire(0)
+    expect(h.children[1]!.argv).toEqual([...ARGV, '--lane', 'match'])
+    // A reload whose process already holds a verdict: its first child is told it.
+    const r = harness({ env: MARKED, messages: [], sessionState: new Map<string, unknown>([['lane', 'mismatch']]) })
+    await r.start()
+    expect(r.children[0]!.argv).toEqual([...ARGV, '--lane', 'mismatch'])
+    // Unresolved is nothing to tell; an unmarked session's children never carry it.
+    const u = await started(MARKED, 'unresolved')
+    u.children[0]!.end()
+    await u.settle()
+    await u.fire(0)
+    expect(u.children[1]!.argv).toEqual(ARGV)
+    const a = await started({}, 'match')
+    a.children[0]!.end()
+    await a.settle()
+    await a.fire(0)
+    expect(a.children[1]!.argv).toEqual(ARGV)
+  })
+
+  test('an observer submits no wake for an upload pending: not at load, not at a turn\'s end, not when idle', async () => {
+    const ROOT = `/w/.claude/desk-uploads/${SID}`
+    const PNG = `${ROOT}/u1.0.png`
+    const sessionState = new Map<string, unknown>([
+      ['lane', 'match'],
+      ['media', { shape: 1, attachments: [{ upload: 'u1', index: 0, name: 'p.png', mediaType: 'image/png', path: PNG, root: ROOT, state: 'pending' }] }],
+    ])
+    const h = harness({ env: MARKED, messages: [], sessionState })
+    h.stats[ROOT] = { kind: 'dir' }
+    h.stats[PNG] = { kind: 'file' }
+    await h.start()
+    h.children[0]!.write(helloWith('match'))
+    await h.settle()
+    await h.fire(MEDIA_WAKE_MS)
+    for (const t of ['t1', 't2']) {
+      await h.turn(t)
+      await h.step({ turnId: t, index: 0, model: 'm', messageCount: 1 }, [{ kind: 'text', index: 0, text: 'mine' }])
+      await h.complete(t)
+      await h.fire(MEDIA_WAKE_MS)
+    }
+    expect(h.calls.filter((c) => c.op === 'submit')).toEqual([])
+  })
+
+  test('turn.step neither claims a pending upload nor rewrites the model or effort; main-loop and subagent chunks still post', async () => {
+    const ROOT = `/w/.claude/desk-uploads/${SID}`
+    const PNG = `${ROOT}/u1.0.png`
+    const sessionState = new Map<string, unknown>([['media', { shape: 1, attachments: [{ upload: 'u1', index: 0, name: 'p.png', mediaType: 'image/png', path: PNG, root: ROOT, state: 'pending' }] }]])
+    const h = harness({ env: MARKED, messages: [], sessionState })
+    h.stats[ROOT] = { kind: 'dir' }
+    h.stats[PNG] = { kind: 'file' }
+    await h.start()
+    h.children[0]!.write(helloWith('match', { override: { model: 'opus', effort: 'max' } }))
+    await h.settle()
+    await h.turn('t1')
+    const main = await h.step({ turnId: 't1', index: 0, model: 'm', effort: 'low', messageCount: 1 }, [{ kind: 'text', index: 0, text: 'mine' }])
+    expect(main.yielded).toEqual([{ kind: 'text', index: 0, text: 'mine' }])
+    expect(h.requests).toHaveLength(1)
+    expect((sessionState.get('media') as { attachments: { state: string }[] }).attachments[0]!.state).toBe('pending')
+    expect(h.ofType('step')[0]).toMatchObject({ phase: 'start', turnId: 't1', agentId: null, model: 'm', effort: 'low' })
+    expect(h.ofType('chunk')).toEqual([expect.objectContaining({ turnId: 't1', agentId: null, chunk: { kind: 'text', index: 0, text: 'mine' } })])
+    await h.step({ turnId: 't1', index: 0, model: 'm', messageCount: 1, agentId: 'a1' }, [{ kind: 'text', index: 0, text: 'sub' }])
+    expect(h.ofType('chunk').at(-1)).toMatchObject({ agentId: 'a1', chunk: { text: 'sub' } })
   })
 })

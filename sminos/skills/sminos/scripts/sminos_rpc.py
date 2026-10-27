@@ -40,7 +40,9 @@ the first that fails is its answer, as DX6's error code:
    that request by the bridge's own rule (`bad-shape`);
 8. the session's kind against §5's table (`unsupported`); a Resume, against
    the transcript this machine holds of the session (`unsupported` when it
-   holds none: `claude --resume` would start an empty session under its id);
+   holds none: `claude --resume` would start an empty session under its id),
+   and against its record's controller (`lane-b` when its last launch was
+   MAWS's lane B: reopening it is MAWS's, O12 M3);
 9. for a stop, the task: a background shell or monitor the session's jobs
    index holds as running, the main loop's or a subagent's, read from the
    rows as the plane reads them (sminos_jobs.running_task; `unknown-task`);
@@ -188,6 +190,7 @@ FRESH_S = 60              # an RPC older (or younger) than this by the machine's
 KEPT_S = 86400            # the ledger keeps an entry a day
 OP_HORIZON = KEPT_S - 3600   # an op whose opCreated is older is refused `expired`: pruning never reopens an id
 LOOSE_S = 600             # a refusal kept out of the ledger waits this long for its project to open
+LANE_B = bridge.LANE_B    # a MAWS lane B session's refusal: its controller is MAWS (O12 M3)
 STEER_TRACE_S = 30        # a claimed steer's answer is looked for this long after its claim
 SPAWN_TRACE_S = 420       # a claimed spawn's seat: `claude --bg` may take 300 s, its uuid poll more
 RESUME_TRACE_S = 420      # a claimed Resume's job: the same launch and poll
@@ -785,6 +788,10 @@ class Rpcs:
                 # sminos re-joins a retired seat only through its own verbs.
                 raise Refused("unsupported", "the seat %s holding it was retired: `sminos fill` or `sminos send` "
                                              "brings it back" % facts["retired_seat"])
+            controller = (sminos.session_record(sid) or {}).get("controller") or {}
+            if controller.get("lane") == "B":
+                raise Refused(LANE_B, "MAWS controls this session (its last launch was MAWS's lane B): "
+                                      "reopening it is MAWS's")
             live = holders(sid)
             if live:
                 raise Refused("session-live", "the session is running here (%s): only an ended session is resumed"
@@ -967,7 +974,14 @@ class Rpcs:
             log("media %s: %s was not excluded from git (%s)" % (op, root, e))
         files = [{"n": n, "path": os.path.join(root, name), "name": a["name"], "mediaType": a["mediaType"]}
                  for n, (name, a) in enumerate(zip(names, args["attachments"]))]
-        out, _ = command(path, {"op": "media", "upload": op, "root": root, "files": files, "rpc": op})
+        try:
+            out, _ = command(path, {"op": "media", "upload": op, "root": root, "files": files, "rpc": op})
+        except Refused as e:
+            # An observer's refusal is as definite as any other: nothing holds
+            # the files. A silence is not (it may have run): they stay.
+            if e.outcome["error"]["code"] == LANE_B:
+                media.remove(root, names)
+            raise
         outcome = media_held(out, kept)
         if outcome["state"] != "done":
             media.remove(root, names)
@@ -1540,7 +1554,8 @@ def unanswered(e):
 def command(path, body):
     """A command on the session's bridge, waiting for the mod's answer:
     ({ok, result?, error?}, the command's id). Refused `failed` when it did
-    not reach the mod, or reached it and no answer came."""
+    not reach the mod, or reached it and no answer came; refused `lane-b`
+    when the bridge only observes (a MAWS lane B session, O12 M3)."""
     try:
         r = control.post_command(path, body)
     except control.Unanswered as e:
@@ -1554,6 +1569,8 @@ def command(path, body):
             control.COMMAND_WAIT_MS // 1000))
     if status != 200:
         raise Refused("failed", "the bridge answered %d: %s" % (status, out.get("error")))
+    if out.get("ok") is False and out.get("code") == LANE_B:
+        raise Refused(LANE_B, refusal(out))
     return out, out.get("id")
 
 
@@ -1756,6 +1773,8 @@ def decide(path, rid, body):
     out = out if isinstance(out, dict) else {}
     if status == 200:
         return done({})
+    if status == 409 and out.get("code") == LANE_B:
+        raise Refused(LANE_B, str(out.get("error") or "MAWS controls this session"))
     if status == 400:
         raise Refused("bad-shape", str(out.get("error")))
     if status in (404, 409, 410):
@@ -2052,7 +2071,7 @@ def trace(op, e, others=()):
 
 
 def cmd_rpc_query(a):
-    """`sminos rpc-query <op> [--created T]`: the ledger file's view of an op,
+    """`sminos rpc-query [--created T] -- <op>`: the ledger file's view of an op,
     for diagnosis, as JSON (ledger_view, its entry beside it). It reads the
     file alone: `flight` is the daemon's, so an op a worker holds before its
     claim is written reads `not-received` here where the daemon's `query`

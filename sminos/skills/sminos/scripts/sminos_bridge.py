@@ -97,6 +97,26 @@ an `answer` command.
     GET  /requests/<id>                one pending request (404 none, 410 settled)
     GET  /requests/<id>/wait?ms=       the mod's poll (200 a decision, 204 none yet, 410 ended)
     POST /requests/<id>/decision       a client's decision (200, 409 too late, 400, 404)
+
+A MAWS lane B session (O12 M3; the remote layer's §3.1) has MAWS's engine
+host as its controller: it launches each `claude -p` with MAWS_LANE=B beside
+SMNS_MEMBER, its own pid. The child tells such a session from a `claude` its
+Bash started (which inherits both variables, under another parent) by
+sminos's parent check, which the mod cannot make: its hello carries the
+verdict (`lane`), `match`, `mismatch` (positive evidence of another spawner:
+the host alive, older than the session, and not its parent), or `unresolved`
+(the session's registry record or `ps` not answering yet, or the host gone),
+which
+it retries, every LANE_RETRY_S for LANE_RETRY_FOR_S, then every
+LANE_RETRY_LATER_S, saying the resolved verdict on a line of its own
+(`{"op": "lane", "lane": ...}`). The verdict is the process's: a module
+that holds one starts every later child with it (`--lane`), which that
+child takes as its own. Until a verdict of `mismatch` the session is
+an observer's: the mod refuses every control, and this child refuses every
+client's decision (409, code `lane-b`). Each launch's lane, B for `match`, A
+for `mismatch` or an unmarked session, is relayed to the session's record
+(sminos.set_session_controller, O12 M1) once the record exists; desk Resume
+reads it.
 """
 
 import collections
@@ -108,6 +128,7 @@ import queue
 import signal
 import socket
 import socketserver
+import subprocess
 import sys
 import threading
 import time
@@ -146,6 +167,11 @@ NONCE_HEADER = "X-Bridge-Nonce"       # this child's, from its hello: a post wit
 QUESTION_TOOLS = ("AskUserQuestion",)
 # Who answered, as a client may not claim it: the terminal and the bridge settle on their own.
 RESERVED_BY = ("terminal", "bridge")
+CHILD_LINES = ("hello", "lane")   # what only the child says to the mod: never a client's command
+LANE_MARK = "MAWS_LANE"        # MAWS's lane B marker, beside SMNS_MEMBER (sminos.MEMBER_MARK)
+LANE_B = "lane-b"              # an observer's refusal's code
+OBSERVER_REASON = "MAWS controls this session"
+LANE_RETRY_S, LANE_RETRY_FOR_S, LANE_RETRY_LATER_S = 2, 60, 30   # an unresolved verdict's retries, and the relay's
 # The rules a scoped allow adds at most (DX5's decision POST): the bound of
 # the suggestions a request carries, from which the daemon resolves them.
 PERMISSIONS_MAX = 8
@@ -379,6 +405,88 @@ def config_dir():
 def presence_path(session_pid):
     """The session record the engine writes for the session process."""
     return os.path.join(config_dir(), "sessions", "%d.json" % session_pid)
+
+
+def is_lane_marked():
+    return os.environ.get(LANE_MARK) == "B"
+
+
+def lane_verdict(session, session_pid):
+    """Whether the marked session `session`, whose process is `session_pid`
+    (this child's parent), is the one MAWS's engine host launched, by
+    sminos's parent rule (sminos.member_mark's) on one observation of its
+    parent: `match` when it is the SMNS_MEMBER pid. `mismatch` only on
+    positive evidence of another spawner: no mark to check it against, or
+    the mark's process running (alive, and not an exited, unreaped zombie),
+    started in an earlier whole second than the session, and not its parent
+    (a `claude` a lane B session's Bash started). Anything less is
+    `unresolved`, which keeps the session an observer: a parent that is
+    merely not the mark proves nothing (once the host exits the engine is
+    re-parented, to PID 1 or a subreaper, and a pid the mark names may be
+    reused by a younger process), nor does a state or a start that cannot
+    be read, a registry record that does not name the session yet, or a
+    `ps` that cannot tell. The start is compared in whole seconds, strictly:
+    a host started in the session's own second is no evidence. That loses
+    no real case, since a `claude` a lane B session's Bash starts exists
+    only after the host spawned the engine, the engine booted, ran a model
+    turn and called Bash, seconds at the least; and were one ever that
+    quick, it would be held an observer, the safe side."""
+    mark = os.environ.get(S.MEMBER_MARK, "")
+    if not (mark.isdigit() and int(mark) > 1):
+        return "mismatch"
+    try:
+        with open(presence_path(session_pid)) as f:
+            rec = json.load(f)
+    except (OSError, ValueError):
+        return "unresolved"
+    if not isinstance(rec, dict) or rec.get("sessionId") != session:
+        return "unresolved"
+    parent = S.parent_pid(session_pid)
+    if parent is None:
+        return "unresolved"
+    if parent == int(mark):
+        return "match"
+    if not S.pid_alive(int(mark)) or process_state(int(mark)) in (None, "Z", "X"):
+        return "unresolved"
+    host, session_started = process_started(int(mark)), process_started(session_pid)
+    if host is None or session_started is None or host >= session_started:
+        return "unresolved"
+    return "mismatch"
+
+
+def process_started(pid):
+    """When a live process started, in epoch seconds (ps's whole second),
+    or None when that cannot be read."""
+    st = S._parse_lstart(S.read_proc_start(pid))
+    return time.mktime(st) if st else None
+
+
+def process_state(pid):
+    """A process's state as `ps -o stat=` opens it (R, S, Z, ...), or None
+    when there is no such process or ps cannot tell."""
+    try:
+        out = subprocess.run(["ps", "-o", "stat=", "-p", str(int(pid))], capture_output=True, text=True,
+                             timeout=5).stdout.strip()
+    except (TypeError, ValueError, OSError, subprocess.SubprocessError):
+        return None
+    return out[:1] or None
+
+
+def relay_controller(session, lane):
+    """The session's record says `lane` as its controller (O12 M1): True
+    once it does, False while the session has no record yet (or it could
+    not be written). A record already saying it is left alone, its `since`
+    the launch that first said so."""
+    try:
+        rec = S.session_record(session)
+        if rec is None:
+            return False
+        if (rec.get("controller") or {}).get("lane") == lane:
+            return True
+        return bool(S.set_session_controller(session, lane))
+    except (OSError, ValueError) as e:
+        S.warn("the session's controller was not recorded (%s): tried again" % e)
+        return False
 
 
 def transcripts(session):
@@ -664,6 +772,38 @@ class Bridge:
         # after such a resync. The snapshot says it (`namedBlocks`).
         self.named_blocks = False
         self.failing = False     # the last write failed (said once, and again when one succeeds)
+        # The lane verdict (match | mismatch | unresolved) for a session
+        # MAWS marked as its lane B; None for one it did not (serve).
+        self.lane = None
+
+    def observing(self):
+        """Whether the session is an observer's (a MAWS lane B session, or a
+        marked one not yet known otherwise): no client decides for it."""
+        return self.lane is not None and self.lane != "mismatch"
+
+    def settle_lane(self, session_pid):
+        """Retries an unresolved verdict until it resolves, saying it to the
+        mod on a line of its own; and relays the launch's lane to the
+        session's record until the record holds it (a record the hook writes
+        after this child's hello). Never a lane for an unresolved verdict."""
+        started = time.monotonic()
+        relayed = False
+        while True:
+            if self.lane == "unresolved":
+                verdict = lane_verdict(self.session, session_pid)
+                if verdict != "unresolved":
+                    self.lane = verdict
+                    try:
+                        self.emit({"op": "lane", "lane": verdict})
+                    except OSError:
+                        return
+            if self.lane != "unresolved":
+                relayed = relayed or relay_controller(self.session, "B" if self.lane == "match" else "A")
+                if relayed:
+                    return
+            wait = LANE_RETRY_S if time.monotonic() - started < LANE_RETRY_FOR_S else LANE_RETRY_LATER_S
+            if self.closing.wait(wait):
+                return
 
     # -- the mod's events
 
@@ -1149,6 +1289,10 @@ class Bridge:
         request is pending, its dialog not answered in the terminal, and a
         background window not past its deadline; an async question's answer
         goes to the mod at once."""
+        # A session MAWS controls answers its own prompts: no client's
+        # decision, whatever the mod raised.
+        if self.observing():
+            return 409, {"error": OBSERVER_REASON, "code": LANE_B}
         # The record is read before the lock: a dialog the terminal closed
         # since the last look is the terminal's.
         status = presence_status(self.presence, self.session) if self.presence else None
@@ -1223,6 +1367,7 @@ class Bridge:
             return {"session": self.session, "pid": os.getpid(), "protocol": PROTOCOL, "socket": self.socket,
                     "started": self.started, "ready": self.ready, "subscribers": len(self.subscribers),
                     "mod": {"events": self.mod_events, "last": self.mod_last},
+                    **({"lane": self.lane} if self.lane is not None else {}),
                     **({"capabilities": self.capabilities} if self.capabilities is not None else {})}
 
     def agents_now(self):
@@ -1353,8 +1498,9 @@ class _Handler(BaseHTTPRequestHandler):
             return self._send(204)
         if url.path == "/command":
             if not isinstance(body, dict) or not isinstance(body.get("op"), str) or not body["op"] \
-                    or body["op"] == "hello":
-                return self._send(400, {"error": "a command is an object with an op (not hello)"})
+                    or body["op"] in CHILD_LINES:
+                return self._send(400, {"error": "a command is an object with an op (not %s: the child's own lines)"
+                                        % " or ".join(CHILD_LINES)})
             try:
                 wait = int((parse_qs(url.query).get("wait") or ["0"])[0])
             except ValueError:
@@ -1421,7 +1567,7 @@ class _Server(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
         super().handle_error(request, client_address)
 
 
-def serve(session):
+def serve(session, lane=None):
     """The child's life: bind beside the endpoint, listen, move the socket
     into place (so the path never names a socket nobody listens on yet), say
     hello, serve until the parent (the session) is gone, the path is another
@@ -1451,6 +1597,11 @@ def serve(session):
     bridge.child = [mine, os.getpid()]
     parent = os.getppid()
     bridge.presence = presence_path(parent)
+    if is_lane_marked():
+        # The process's verdict, when its module holds one (`--lane`): a
+        # replacement child after the engine host exited would find the
+        # engine re-parented, and its own check would say mismatch.
+        bridge.lane = lane if lane in ("match", "mismatch") else lane_verdict(session, parent)
 
     def watchdog():
         while not bridge.closing.wait(WATCHDOG_EVERY):
@@ -1474,8 +1625,10 @@ def serve(session):
                      "nonce": bridge.nonce, "kept": bridge.kept, "seed": read_seed(session),
                      # The session's engine record, which the mod reads for an idle
                      # session while it cannot know (a reload) whether a turn runs.
-                     "presence": bridge.presence})
+                     "presence": bridge.presence,
+                     **({"lane": bridge.lane} if bridge.lane is not None else {})})
         threading.Thread(target=watchdog, daemon=True).start()
+        threading.Thread(target=bridge.settle_lane, args=(parent,), daemon=True).start()
         threading.Thread(target=bridge.watch_presence, daemon=True).start()
         threading.Thread(target=bridge.run_exports, daemon=True).start()
         server.serve_forever(poll_interval=0.25)
@@ -1494,7 +1647,7 @@ def serve(session):
 def cmd_bridge(a):
     if not S.UUID_RE.match(a.session or ""):
         S.die("bridge: %r is not a session id" % (a.session or ""))
-    serve(a.session)
+    serve(a.session, getattr(a, "lane", None))
 
 
 # ------------------------------------------------------------------ watch

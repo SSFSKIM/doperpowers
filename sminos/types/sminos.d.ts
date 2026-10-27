@@ -67,8 +67,17 @@ export type MediaAttachment = {
 }
 export type MediaSnapshot = { shape: 1; attachments: MediaAttachment[] }
 
+/**
+ * `lane`: the bridge child's resolved verdict on whether this process is a
+ * MAWS lane B session (hooks/mods/bridge.tsx, O12 M3): `match`, the bridge
+ * only observes; `mismatch`, it controls. Kept so that the module that
+ * loads after a reload holds the verdict this process already has. Only
+ * sminos writes or reads it.
+ */
+export type LaneVerdictKept = 'match' | 'mismatch'
+
 declare module 'claude-code' {
   interface PluginState {
-    sminos: { ask: AskSnapshot; btw: string[]; media: MediaSnapshot }
+    sminos: { ask: AskSnapshot; btw: string[]; media: MediaSnapshot; lane: LaneVerdictKept }
   }
 }

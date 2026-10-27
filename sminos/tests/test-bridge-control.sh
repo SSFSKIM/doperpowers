@@ -98,7 +98,7 @@ print(n)' "$@"
 kept_rpc() { python3 -c 'import json, sys; print(json.dumps(json.load(open(sys.argv[1]))["rpcs"].get(sys.argv[2])))' "$KEPT" "$1"; }
 count_op() { python3 -c 'import json, sys; print(sum(1 for l in open(sys.argv[1]) if json.loads(l).get("op") == sys.argv[2]))' "$1" "$2"; }
 
-unset CLAUDE_CODE_SESSION_ID SMNS_INTERNAL DAEMON_HOME AGORA_HOME CLAUDE_CONFIG_DIR
+unset CLAUDE_CODE_SESSION_ID SMNS_INTERNAL DAEMON_HOME AGORA_HOME MAWS_LANE CLAUDE_CONFIG_DIR
 export HOME="$T/home"
 export SMINOS_HOME="$T/s"
 export DAEMON_HOST=testhost
@@ -178,6 +178,9 @@ if op == "post":            # sock events-json
 elif op == "get":           # sock url
     status, text = request(sys.argv[2], "GET", sys.argv[3])
     print(status, text)
+elif op == "postto":        # sock url body
+    status, text = request(sys.argv[2], "POST", sys.argv[3], sys.argv[4])
+    print(status, text)
 elif op == "command":       # sock body-json → the child's answer to a command, as the daemon posts one
     status, text = request(sys.argv[2], "POST", "/command?wait=5000", sys.argv[3])
     print(status, text)
@@ -202,7 +205,9 @@ elif op == "fakemod":       # sminos session lines-file mode-file
     CAPS = {"sminos": "1.7.0", "protocol": 2, "engine": "2.1.307", "ops": ["ping", "read", "command"],
             "reads": ["status"], "routes": {"measured": "2.1.307"}}
     # The child's stderr is the mod's debug log: kept beside the lines.
-    child = subprocess.Popen([sminos, "bridge", "--session", session], stdout=subprocess.PIPE,
+    # A module that holds the process's lane verdict tells each later child it (FAKEMOD_LANE).
+    lane = ["--lane", os.environ["FAKEMOD_LANE"]] if os.environ.get("FAKEMOD_LANE") else []
+    child = subprocess.Popen([sminos, "bridge", "--session", session] + lane, stdout=subprocess.PIPE,
                              stderr=open(out + ".err", "a"), text=True)
     sock = None
     delivered = {}
@@ -217,10 +222,15 @@ elif op == "fakemod":       # sminos session lines-file mode-file
                 delivered = dict((msg.get("kept") or {}).get("delivered") or {})
                 post(sock, [{"type": "resync", "turns": [], "streaming": [], "agents": [], "capabilities": CAPS}])
                 continue
+            if msg.get("op") == "lane":   # the child's lane verdict, resolved after its hello (kept in the lines)
+                continue
             mode = open(modefile).read().strip() if os.path.exists(modefile) else "busy"
             cid, o = msg["id"], msg["op"]
             events, result = [], None
-            if mode == "unknown" and o in ("steer", "interrupt", "compact"):
+            if mode == "observer" and o not in ("ping", "read"):
+                # As an observer's bridge answers (a MAWS lane B session, O12 M3).
+                result = {"ok": False, "error": "MAWS controls this session", "code": "lane-b"}
+            elif mode == "unknown" and o in ("steer", "interrupt", "compact"):
                 result = {"ok": False, "error": "turn state unknown since the bridge reloaded; retry after the next model request"}
             elif o == "steer":
                 result = {"ok": False, "error": "no turn is running to steer: send it instead"} if mode == "idle" \
@@ -797,6 +807,188 @@ assert_rc 0 "$RC" "a steer to a terminal session with no bridge exits 0"
 assert_contains "$OUT" "frame" "as a cross-session frame"
 until_true 100 test -s "$T/term-inbox" || true
 assert_contains "$(cat "$T/term-inbox" 2>/dev/null)" "mind the tabs" "which its inbox got"
+
+echo "a MAWS lane B session (O12 M3): the child's verdict and the record's controller:"
+# MAWS's engine host marks each `claude -p` it launches: MAWS_LANE=B beside
+# SMNS_MEMBER, its own pid. The child (whose parent is the session, here the
+# stand-in) says in its hello whether the session's parent is that pid, once
+# the session's registry record and `ps` let it tell; and relays the lane to
+# the session's record (O12 M1's controller), once the record exists.
+LA=5b000001-0000-4000-8000-0000000000c7
+LB=5b000001-0000-4000-8000-0000000000c8
+LM=5b000001-0000-4000-8000-0000000000c9
+LP=5b000001-0000-4000-8000-0000000000ca
+lane_record() { # session [lane] → its session record, as the hook writes one (with that controller)
+  python3 - "$SMINOS_HOME/session-records" "$1" "${2:-}" <<'PY2'
+import json, os, sys
+d, sid, lane = sys.argv[1:4]
+os.makedirs(d, mode=0o700, exist_ok=True)
+rec = {"session": sid, "source": "hook", "basis": "hook", "origin": {"kind": "maws"}, "owners": ["@machine"],
+       "ownersProof": [], "principal": "@machine", "inference": {"kind": "slot", "configDir": "/c"},
+       "created": "2026-10-27T00:00:00.000Z", "former": []}
+if lane:
+    rec["controller"] = {"lane": lane, "since": "2026-10-27T00:00:00.000Z"}
+with open(os.path.join(d, sid + ".json"), "w") as f:
+    json.dump(rec, f)
+PY2
+}
+controller_of() { # session → its record's controller lane, or none
+  python3 -c 'import json, sys
+try:
+    print((json.load(open(sys.argv[1])).get("controller") or {}).get("lane") or "none")
+except OSError:
+    print("none")' "$SMINOS_HOME/session-records/$1.json"
+}
+controller_is() { [ "$(controller_of "$1")" = "$2" ]; }
+registry() { # pid session → the engine's registry record for the session's process
+  printf '{"pid":%s,"sessionId":"%s","status":"busy","kind":"sdk-cli"}\n' "$1" "$2" > "$HOME/.claude/sessions/$1.json"
+}
+lanefake() { # session lines-file [env...] → the stand-in, under the given environment
+  local sid="$1" out="$2"; shift 2
+  env "$@" python3 "$T/ctl.py" fakemod "$SMINOS" "$sid" "$out" "$T/mode" &
+  LANEFAKE=$!
+  PIDS+=("$LANEFAKE")
+}
+lane_said() { grep -q '"op": "lane"' "$1"; }
+lane_of_lines() { # lines-file → the last lane the child said: its hello's, or a later line's
+  python3 -c 'import json, sys
+import os
+lane = "absent"
+for line in open(sys.argv[1]) if os.path.exists(sys.argv[1]) else []:
+    m = json.loads(line)
+    if m.get("op") in ("hello", "lane") and "lane" in m:
+        lane = m["lane"]
+print(lane)' "$1"
+}
+stopfake() { # session → the stand-in stopped and reaped, and its child gone (its socket removed)
+  kill "$LANEFAKE" 2>/dev/null || true
+  wait "$LANEFAKE" 2>/dev/null || true
+  until_true 100 test ! -e "$SMINOS_HOME/bridge/$1.sock" || true
+}
+lane_is() { [ "$(lane_of_lines "$1")" = "$2" ]; }
+hello_said() { test -s "$1"; }
+mode busy
+# A host for the Bash-launched case below: a live process that started
+# seconds before the session it marks.
+sleep 600 >/dev/null 2>&1 &
+HOST=$!
+PIDS+=("$HOST")
+
+# The /command boundary: a client cannot speak as the child, neither its
+# hello nor its lane verdict.
+LC=5b000001-0000-4000-8000-0000000000cd
+lanefake "$LC" "$T/lines-lc" MAWS_LANE=B SMNS_MEMBER=$$
+until_true 100 answers "$SMINOS_HOME/bridge/$LC.sock" || true
+run ctl command "$SMINOS_HOME/bridge/$LC.sock" '{"op":"lane","lane":"mismatch"}'
+assert_contains "$OUT" "400 " "a lane line posted to /command is refused, as a hello is"
+assert_not_contains "$(cat "$T/lines-lc")" '"mismatch"' "and never reaches the mod"
+stopfake "$LC"
+
+# Unmarked: no verdict, and the record says lane A.
+lane_record "$LA"
+lanefake "$LA" "$T/lines-la"
+until_true 100 answers "$SMINOS_HOME/bridge/$LA.sock" || true
+assert_equals "$(lane_of_lines "$T/lines-la")" "absent" "an unmarked session's hello carries no lane verdict"
+assert_not_contains "$(ctl get "$SMINOS_HOME/bridge/$LA.sock" /status)" '"lane"' "nor its status"
+until_true 100 controller_is "$LA" A || true
+assert_equals "$(controller_of "$LA")" "A" "its record's controller is lane A"
+stopfake "$LA"
+
+# Marked, the session's registry record not written yet: unresolved, then match
+# once it is; the record, written after the verdict, gets lane B on a retry.
+lanefake "$LB" "$T/lines-lb" MAWS_LANE=B SMNS_MEMBER=$$
+until_true 100 hello_said "$T/lines-lb" || true
+assert_equals "$(lane_of_lines "$T/lines-lb")" "unresolved" "a marked session whose pid is not in the registry yet: unresolved"
+assert_equals "$(controller_of "$LB")" "none" "no controller is relayed while unresolved"
+registry "$LANEFAKE" "$LB"
+until_true 100 lane_said "$T/lines-lb" || true
+assert_equals "$(lane_of_lines "$T/lines-lb")" "match" "once it is, the parent check resolves: match, said on its own line"
+assert_contains "$(ctl get "$SMINOS_HOME/bridge/$LB.sock" /status)" '"lane": "match"' "and the status says it"
+lane_record "$LB"
+until_true 100 controller_is "$LB" B || true
+assert_equals "$(controller_of "$LB")" "B" "a record written after the verdict gets lane B on the child's retry"
+mode observer
+run "$SMINOS" steer "$LB" "take over"
+assert_rc 1 "$RC" "a steer an observer's bridge refuses exits 1"
+assert_contains "$OUT" "lane-b" "naming the refusal's code"
+assert_contains "$OUT" "MAWS controls this session" "and its reason"
+mode busy
+stopfake "$LB"
+
+# Marked, but the mark is another process (a `claude` started from a lane B
+# session's Bash inherits both variables, its parent another): mismatch, lane A.
+# The mark names a live process older than the session by a whole second
+# (its host, started at the top of this section), not its parent.
+lane_record "$LM" B
+lanefake "$LM" "$T/lines-lm" MAWS_LANE=B SMNS_MEMBER=$HOST
+registry "$LANEFAKE" "$LM"
+until_true 100 lane_is "$T/lines-lm" mismatch || true
+assert_equals "$(lane_of_lines "$T/lines-lm")" "mismatch" "a parent known and not the mark: mismatch"
+until_true 100 controller_is "$LM" A || true
+assert_equals "$(controller_of "$LM")" "A" "its record's controller moves to lane A"
+stopfake "$LM"
+kill "$HOST" 2>/dev/null || true
+wait "$HOST" 2>/dev/null || true
+
+# Marked, but the host gone (it exited, and the engine was re-parented): no
+# evidence of another spawner, so unresolved, an observer, controller unset.
+LG=5b000001-0000-4000-8000-0000000000cc
+lane_record "$LG"
+# A pid whose process has exited and been reaped: a host gone.
+sh -c 'exit 0' >/dev/null 2>&1 &
+GONE=$!
+wait "$GONE" 2>/dev/null || true
+lanefake "$LG" "$T/lines-lg" MAWS_LANE=B SMNS_MEMBER=$GONE
+registry "$LANEFAKE" "$LG"
+until_true 100 hello_said "$T/lines-lg" || true
+sleep 2.5   # past one retry (every 2 s), the registry record written by then
+assert_equals "$(lane_of_lines "$T/lines-lg")" "unresolved" "a mark whose process is gone stays unresolved"
+assert_equals "$(controller_of "$LG")" "none" "and relays no controller"
+stopfake "$LG"
+
+# Marked, `ps` failing: unresolved, controller unset, until ps answers.
+mkdir -p "$T/psbin"
+printf '#!/bin/sh\n[ -e "%s" ] && exec /bin/ps "$@"\nexit 1\n' "$T/ps-ok" > "$T/psbin/ps"
+chmod +x "$T/psbin/ps"
+lane_record "$LP"
+lanefake "$LP" "$T/lines-lp" MAWS_LANE=B SMNS_MEMBER=$$ PATH="$T/psbin:$PATH"
+registry "$LANEFAKE" "$LP"
+until_true 100 hello_said "$T/lines-lp" || true
+sleep 2.5   # past one retry (every 2 s): nothing to wait on but the retry's clock
+assert_equals "$(lane_of_lines "$T/lines-lp")" "unresolved" "a session whose ps fails stays unresolved through a retry"
+assert_equals "$(controller_of "$LP")" "none" "and its record's controller unset"
+touch "$T/ps-ok"
+until_true 100 lane_said "$T/lines-lp" || true
+assert_equals "$(lane_of_lines "$T/lines-lp")" "match" "once ps answers, match"
+until_true 100 controller_is "$LP" B || true
+assert_equals "$(controller_of "$LP")" "B" "and lane B relayed"
+stopfake "$LP"
+
+# A replacement child (a reload, a restart) after the host exited and the
+# engine was re-parented: the parent check would now say mismatch, but the
+# module tells it the process's verdict, which it keeps for its decision
+# route and its relay; the record's lane B stands.
+LR=5b000001-0000-4000-8000-0000000000cb
+lane_record "$LR" B
+lanefake "$LR" "$T/lines-lr" MAWS_LANE=B SMNS_MEMBER=2 FAKEMOD_LANE=match
+registry "$LANEFAKE" "$LR"
+until_true 100 answers "$SMINOS_HOME/bridge/$LR.sock" || true
+assert_equals "$(lane_of_lines "$T/lines-lr")" "match" "a replacement child takes the verdict its module holds"
+run ctl postto "$SMINOS_HOME/bridge/$LR.sock" /requests/toolu_x/decision '{"behavior":"allow","by":"cli"}'
+assert_contains "$OUT" '"code": "lane-b"' "its decision route stays refused"
+sleep 2.5   # past one relay retry (every 2 s): nothing to wait on but its clock
+assert_equals "$(controller_of "$LR")" "B" "and the record's lane B stands"
+assert_equals "$(lane_of_lines "$T/lines-lr")" "match" "no later verdict line moves it"
+stopfake "$LR"
+
+# A lane-A session later reopened by MAWS as lane B, under the same id: the
+# new launch's verdict replaces the controller.
+assert_equals "$(controller_of "$LA")" "A" "the session ran as lane A"
+lanefake "$LA" "$T/lines-la2" MAWS_LANE=B SMNS_MEMBER=$$
+registry "$LANEFAKE" "$LA"
+until_true 100 controller_is "$LA" B || true
+assert_equals "$(controller_of "$LA")" "B" "reopened by MAWS, its record's controller is lane B"
+stopfake "$LA"
 
 echo
 if [ "$FAILURES" -eq 0 ]; then

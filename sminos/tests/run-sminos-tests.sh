@@ -98,7 +98,7 @@ banner_short() { printf '%s' "$1" | sed -n 's/.*\[\([0-9a-f]*\) \/ [0-9a-f-]*\].
 # calls.log and assertion failures print that log, so a real credential in the
 # runner's shell must never reach it.
 unset ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_SUBAGENT_MODEL UNRELATED_TRANSPORT_VAR
-unset DAEMON_CLAUDE_SETTINGS DAEMON_CLAUDE_EFFORT SMINOS_ALIAS RUNNER_TRACKING_ID DAEMON_HOME
+unset DAEMON_CLAUDE_SETTINGS DAEMON_CLAUDE_EFFORT SMINOS_ALIAS RUNNER_TRACKING_ID DAEMON_HOME MAWS_LANE
 # The harness exports CLAUDE_CODE_SESSION_ID to Bash tools; sminos derives the
 # sender identity from it. The suite is "a real terminal" unless a case sets it.
 unset CLAUDE_CODE_SESSION_ID
@@ -241,7 +241,7 @@ if [ $has_bg -eq 1 ]; then
   # keyed by the prompt's first line so tests can grep the exact launch.
   # `path=` records only whether PATH survived.
   first="${prompt%%$'\n'*}"
-  echo "bg-env:$first base=${ANTHROPIC_BASE_URL:-};token=${ANTHROPIC_AUTH_TOKEN:-};sub=${CLAUDE_CODE_SUBAGENT_MODEL:-};keep=${UNRELATED_TRANSPORT_VAR:-};runner=${RUNNER_TRACKING_ID:-};path=${PATH:+set}" >> "$STUB_STATE/log/calls.log"
+  echo "bg-env:$first base=${ANTHROPIC_BASE_URL:-};token=${ANTHROPIC_AUTH_TOKEN:-};sub=${CLAUDE_CODE_SUBAGENT_MODEL:-};keep=${UNRELATED_TRANSPORT_VAR:-};runner=${RUNNER_TRACKING_ID:-};path=${PATH:+set};lane=${MAWS_LANE:-}" >> "$STUB_STATE/log/calls.log"
   if [ "${STUB_FAIL_BG:-0}" = "1" ]; then
     echo "stub: simulated --bg launch failure" >&2
     exit 1
@@ -780,7 +780,7 @@ if [ -n "$(field "$NU_ID" pending_short)" ]; then pass "no-uuid launch records p
 GW="$TEST_ROOT/gw.json"
 printf '{"env":{"ANTHROPIC_BASE_URL":"http://gw","ANTHROPIC_AUTH_TOKEN":"tok","CLAUDE_CODE_SUBAGENT_MODEL":"m","PATH":"/nope"}}' > "$GW"
 mkdir -p "$HOME/.claude"; cp "$GW" "$HOME/.claude/clodex-settings.json"
-export ANTHROPIC_BASE_URL="http://gw" ANTHROPIC_AUTH_TOKEN="fixture-token" CLAUDE_CODE_SUBAGENT_MODEL="sub" UNRELATED_TRANSPORT_VAR="keep" RUNNER_TRACKING_ID="run-1"
+export ANTHROPIC_BASE_URL="http://gw" ANTHROPIC_AUTH_TOKEN="fixture-token" CLAUDE_CODE_SUBAGENT_MODEL="sub" UNRELATED_TRANSPORT_VAR="keep" RUNNER_TRACKING_ID="run-1" MAWS_LANE=B
 DAEMON_CLAUDE_SETTINGS="$GW" DAEMON_CLAUDE_EFFORT=high run "$SMINOS" spawn gwworker "GW-1"
 assert_rc 0 "$RC" "gateway spawn exits 0"
 G_UUID="$(banner_uuid "$OUT")"
@@ -806,13 +806,16 @@ assert_equals "$(settings_env "$GW_LAUNCH")" \
 assert_contains "$(grep -- '--bg' "$STUB_STATE/log/calls.log" | tail -1)" "--settings $GW_LAUNCH --effort high" "gateway flags reach the launch"
 assert_contains "$(grep 'bg-env:' "$STUB_STATE/log/calls.log" | tail -1)" "base=http://gw;token=fixture-token" "gateway route keeps the transport env"
 assert_contains "$(grep 'bg-env:' "$STUB_STATE/log/calls.log" | tail -1)" "runner=;" "RUNNER_TRACKING_ID is always stripped"
+assert_contains "$(grep 'bg-env:' "$STUB_STATE/log/calls.log" | tail -1)" ";lane=" "the launch's environment is recorded with its lane marker"
+assert_not_contains "$(grep 'bg-env:' "$STUB_STATE/log/calls.log" | tail -1)" "lane=B" \
+  "MAWS_LANE is always stripped: a seat a lane B session spawns is no observer (O12 M3)"
 run "$SMINOS" spawn plain2 "PLAIN-2"
 assert_contains "$(grep 'bg-env:' "$STUB_STATE/log/calls.log" | tail -1)" "base=;token=;sub=;keep=keep;runner=;path=set" "plain route scrubs the gateway env keys, keeps PATH and unrelated vars"
 PLAIN_LAUNCH="$(launch_settings_of)"
 assert_equals "$(settings_env "$PLAIN_LAUNCH")" "{\"SMINOS_HOME\": \"$SMINOS_HOME\"}" \
   "a plain-route seat's settings carry only the spawner's SMINOS_HOME (and its launch id), the route still the caller's"
 assert_equals "$(field "$(banner_uuid "$OUT")" settings)" "" "and its record keeps the plain route"
-unset ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_SUBAGENT_MODEL UNRELATED_TRANSPORT_VAR RUNNER_TRACKING_ID
+unset ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_SUBAGENT_MODEL UNRELATED_TRANSPORT_VAR RUNNER_TRACKING_ID MAWS_LANE
 # A caller's --settings given inline (a JSON object) is merged the same way.
 run "$SMINOS" spawn inlineset "IN-1" --settings '{"model": "x", "env": {"SMINOS_HOME": "/elsewhere"}}'
 assert_rc 0 "$RC" "spawn with inline JSON settings exits 0"

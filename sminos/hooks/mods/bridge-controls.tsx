@@ -42,15 +42,24 @@ export const STANDING: Readonly<Partial<Record<ControlKey, string>>> = {
   'elicitation.answer': "a mod's answer carries no action or content, so it cannot answer an MCP server's form: answer it in the terminal",
 }
 
+/** Why every control is unavailable in a MAWS lane B session, whose controller is MAWS (O12 M3). */
+export const OBSERVER_REASON = 'MAWS controls this session'
+
 /** What a control a later sminos adds says on this one. */
 export const notInVersion = (sminos: string) => `not in sminos ${sminos}: a later version of the plugin adds it`
 
-/** The whole map, every key present: the available ones, then each other with its reason. */
-export function controlsOf(sminos: string): Record<ControlKey, Control> {
+/**
+ * The whole map, every key present: the available ones, then each other with
+ * its reason; an observer's (a MAWS lane B session, O12 M3), every key
+ * unavailable with OBSERVER_REASON.
+ */
+export function controlsOf(sminos: string, isObserver = false): Record<ControlKey, Control> {
   const map = {} as Record<ControlKey, Control>
   for (const key of CONTROL_KEYS) {
     const standing = STANDING[key]
-    map[key] = AVAILABLE.has(key) ? { available: true } : { available: false, reason: standing ?? notInVersion(sminos) }
+    map[key] = isObserver
+      ? { available: false, reason: OBSERVER_REASON }
+      : AVAILABLE.has(key) ? { available: true } : { available: false, reason: standing ?? notInVersion(sminos) }
   }
   return map
 }

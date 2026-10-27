@@ -87,10 +87,11 @@ member too, seat-less, from the first call that reads its project.
     sminos hub      enroll [--name N] [--replace] | show   # this machine at the desk hub: its name
                    there is its name everywhere (the writer host of what it writes). The code is
                    pasted at a hidden prompt, or piped on stdin — never an argument: it carries the org key
-    sminos rpc-query <opId> [--created T]                 # what became of a desk RPC, as the daemon's ledger
+    sminos rpc-query [--created T] -- <opId>              # what became of a desk RPC, as the daemon's ledger
                    file holds it (RL4's query, JSON): done, refused, in-progress, expired, not-received;
-                   --created, its opCreated. The file alone: one a worker holds before its claim reads
-                   not-received here. It changes nothing
+                   --created, its opCreated. `--` before the id: a base64url id may start with `-`.
+                   The file alone: one a worker holds before its claim reads not-received here. It
+                   changes nothing
     sminos reply    <seat>                                # latest reply text
     sminos sync     [<seat>] [--all]                      # reconcile status from the harness
     sminos status   <member> <one line>                   # the member's own "now" line
@@ -6730,13 +6731,16 @@ def launch_env(settings):
     job env carries it and the runner's post-job cleanup kills any surviving
     process whose environ still has it — nohup/--bg detach the session, not
     the env. So is SMINOS_LAUNCH: a launch id is its own launch's, carried
-    in its settings, never one a spawning seat inherited. An EMPTY settings
+    in its settings, never one a spawning seat inherited. So is MAWS_LANE,
+    MAWS's lane B marker (O12 M3): a seat a lane B session spawns is sminos's
+    own, never an observer. An EMPTY settings
     value declares the PLAIN route, enforced below the argv by dropping the
     gateway transport env too.
     """
     env = dict(os.environ)
     env.pop("RUNNER_TRACKING_ID", None)
     env.pop(records_module().LAUNCH_ENV, None)
+    env.pop("MAWS_LANE", None)
     if not settings:
         for k in gateway_env_keys():
             env.pop(k, None)
@@ -10405,6 +10409,7 @@ def build_parser():
 
     br = sub.add_parser("bridge", add_help=False)
     br.add_argument("--session", default="")
+    br.add_argument("--lane", default=None)   # the process's lane verdict its module holds (O12 M3)
     br.set_defaults(fn=cmd_bridge)
 
     wa = sub.add_parser("watch", add_help=False)

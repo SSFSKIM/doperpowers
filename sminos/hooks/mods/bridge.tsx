@@ -5,7 +5,7 @@ import type {} from '../../../devcloud/types/devcloud'
 import { ASK_TOOL, PLUGIN, asyncAsks, observeAsks } from './ask'
 import { OFF_LINE, ON_LINE, isCuaEnabled, isLiveMarker, verdictOf } from './bridge-place'
 import type { Guard, Place, Verdict } from './bridge-place'
-import { EFFORTS, INTERRUPT_HOLD_MS, RESPAWN_FIRST_MS, RESPAWN_STEP_MS, WAKE_LINE, capped, isEffort, loopKey, message, parsed, state } from './bridge-state'
+import { EFFORTS, INTERRUPT_HOLD_MS, RESPAWN_FIRST_MS, RESPAWN_STEP_MS, WAKE_LINE, capped, isEffort, isLaneVerdict, isObserver, loopKey, message, parsed, state } from './bridge-state'
 import type { Answer, Capabilities, Command, Decision, DeliveryKey, DeskRun, Override, Readback, Request, Steer, Stops, Wake } from './bridge-state'
 import { adoptKept, adoptSeed, emit, emitOwed, emitTaken, endStep, forgetLive, poster, pump, releaseStepEnd, requeue, resyncEvents, stopChild } from './bridge-stream'
 import {
@@ -28,7 +28,7 @@ import { announceRow, commandRow, compacted, enteredRow, exportRow, noticeRow, o
 import { claimAgent, forgetAgents, refreshAgents, watchAgents } from './bridge-agents'
 import { measuredFor, routeOf } from './bridge-commands'
 import { catalogNow } from './bridge-catalog'
-import { controlsOf } from './bridge-controls'
+import { OBSERVER_REASON, controlsOf } from './bridge-controls'
 import { READ_KINDS, readKind } from './bridge-reads'
 import { endOrphanedSideQuestions, sideQuestion } from './bridge-btw'
 import { engineError, forNotes, notifiedStops, stopAgent, tellAgent } from './bridge-agent-ops'
@@ -81,6 +81,13 @@ export { FOLLOW_REASON, PANEL_REASON, SELF_REASON, UNKNOWN_REASON, UNMEASURED_RE
  * event waits, and no permission's input is raised (a native question is). A
  * bridge that finds a guard outside it turns itself off, stopping its child,
  * until a later dispatch sees the loaded guard beneath it (`judgePlace`).
+ *
+ * In a MAWS lane B session (O12 M3: MAWS_LANE=B, its parent the pid
+ * SMNS_MEMBER names) MAWS is the controller, and the bridge only observes:
+ * every control op is refused `lane-b`, nothing is raised, `turn.step`
+ * rewrites nothing, and the stream goes on. The mod reads the marker at its
+ * session start and observes until its child's verdict on the parent check
+ * (its hello's `lane`, or a later `lane` line) says `mismatch`.
  *
  * Code that takes `$` stays in this file: the hooks, the session start, the
  * child and the session it serves, control, the wait for a decision, and the
@@ -252,6 +259,15 @@ const TURN_OPS = new Set(['steer', 'interrupt', 'compact'])
 /** The ops this bridge answers (DX5 `capabilities.ops`), and the reads (`read`'s kinds). */
 export const OPS = ['ping', 'steer', 'interrupt', 'stop', 'model', 'compact', 'deliver', 'answer', 'read', 'command', 'btw', 'stop-agent', 'tell', 'media']
 export const READS = ['status', 'catalog', ...READ_KINDS]
+/**
+ * The ops an observer refuses (O12 M3): every op that acts on the session.
+ * `ping` and `read` only look, and go on answering.
+ */
+const CONTROL_OPS = new Set(OPS.filter((op) => op !== 'ping' && op !== 'read'))
+/** An observer's refusal: MAWS controls this session (its lane B), and two controllers on one session is what observing prevents. */
+export const LANE_B = 'lane-b'
+/** The lane verdict kept for a module reload (types/sminos.d.ts): the process's, so a reload never re-opens the provisional window. */
+const LANE = { plugin: 'sminos', key: 'lane' } as const
 /** The DX5 protocol the capabilities speak: 2 is the desk's control surface (capabilities, `read`, `command`). */
 export const CAPABILITIES_PROTOCOL = 2
 /**
@@ -308,7 +324,12 @@ async function runCommand($: EngineInterface, command: Command) {
   try {
     // A false idle would be a lie: interrupt saying there is nothing to stop,
     // a compaction run at once, while a turn the module did not see runs.
-    answer = TURN_OPS.has(command.op) && (await isTurnStillUnknown()) ? { ok: false, error: TURN_UNKNOWN, code: 'turn-unknown' } : await commandAnswer($, command)
+    answer =
+      isObserver() && CONTROL_OPS.has(command.op)
+        ? { ok: false, error: OBSERVER_REASON, code: LANE_B }
+        : TURN_OPS.has(command.op) && (await isTurnStillUnknown())
+          ? { ok: false, error: TURN_UNKNOWN, code: 'turn-unknown' }
+          : await commandAnswer($, command)
     if (catalogOwner !== undefined && !await catalogStillOwned($, catalogOwner)) {
       answer = { ok: false, error: CATALOG_MOVED }
     }
@@ -384,7 +405,38 @@ async function capabilitiesOf($: EngineInterface, engine: string): Promise<Capab
   } catch (error) {
     $.ui.log(`bridge: the plugin's version was not read: ${message(error)}`, { to: 'debug' })
   }
-  return { sminos, protocol: CAPABILITIES_PROTOCOL, engine, ops: [...OPS], reads: [...READS], routes: { measured: measuredFor(engine) }, controls: controlsOf(sminos) }
+  return laneCapabilities({ sminos, protocol: CAPABILITIES_PROTOCOL, engine, ops: [...OPS], reads: [...READS], routes: { measured: measuredFor(engine) }, controls: controlsOf(sminos) })
+}
+
+/** The capabilities as the lane leaves them: an observer has no ops and no control (O12 M3); its reads stay. */
+function laneCapabilities(c: Capabilities): Capabilities {
+  const isObserving = isObserver()
+  return { ...c, ops: isObserving ? [] : [...OPS], controls: controlsOf(c.sminos, isObserving) }
+}
+
+/**
+ * The child's verdict on the lane (O12 M3), taken for a marked session while
+ * none is resolved: a resolved one is the process's (its parent is what it
+ * was launched under) and stands, kept in `$.state` for a reload. True when
+ * it changed whether the bridge observes, its capabilities changed with it.
+ */
+function adoptVerdict($: EngineInterface, verdict: unknown): boolean {
+  if (!state.isLaneMarked || !isLaneVerdict(verdict) || (state.laneVerdict !== undefined && state.laneVerdict !== 'unresolved')) {
+    return false
+  }
+  const wasObserver = isObserver()
+  state.laneVerdict = verdict
+  if (verdict !== 'unresolved') {
+    $.state.set(LANE, verdict).catch((error: unknown) => $.ui.log(`bridge: the lane verdict is not kept for a reload: ${message(error)}`, { to: 'debug' }))
+  }
+  if (wasObserver === isObserver()) {
+    return false
+  }
+  $.ui.log(`bridge: lane verdict ${verdict}: ${isObserver() ? 'observing' : 'controlling'}`, { to: 'debug' })
+  if (state.capabilities !== undefined) {
+    state.capabilities = laneCapabilities(state.capabilities)
+  }
+  return true
 }
 
 /** DX5 `read`: what the desk shows of the session, answered from `$` (spec §5; `usage`, `config`, `settings` and `mcp` in bridge-reads.tsx). */
@@ -1317,10 +1369,23 @@ function onLine($: EngineInterface, generation: number, line: string) {
       adoptSeed(msg.seed)
       state.isSeeded = true
     }
+    // Before the resync below, which carries the capabilities it settles.
+    adoptVerdict($, msg.lane)
     // A new child knows nothing of the session: what it started as, then
     // where it stands. What was queued for no child is in that state.
     requeue([{ type: 'session', phase: 'start', session: state.session, ...state.info, t: Date.now() }, ...resyncEvents()])
     pump()
+    return
+  }
+  if (msg.op === 'lane' && msg.id === undefined) {
+    // A verdict the child resolved after its hello: a change of what the
+    // bridge may do reaches the child as a resync, which carries it. The
+    // child's own line carries no id; one that does is a client's command
+    // the child forwarded, never its verdict.
+    if (adoptVerdict($, msg.lane) && state.socket !== undefined) {
+      state.queue.push(...resyncEvents())
+      pump()
+    }
     return
   }
   if (typeof msg.id === 'string' && typeof msg.op === 'string') {
@@ -1352,7 +1417,11 @@ function startChild($: EngineInterface, session: string) {
   void (async () => {
     let pending = ''
     try {
-      const child = $.process.spawn({ argv: [`${$.plugin.root}/skills/sminos/scripts/sminos`, 'bridge', '--session', session] })
+      // A verdict this process holds goes to every child it starts: a
+      // replacement after the engine host exited would find the engine
+      // re-parented, and its own parent check would say mismatch.
+      const lane = state.isLaneMarked && (state.laneVerdict === 'match' || state.laneVerdict === 'mismatch') ? ['--lane', state.laneVerdict] : []
+      const child = $.process.spawn({ argv: [`${$.plugin.root}/skills/sminos/scripts/sminos`, 'bridge', '--session', session, ...lane] })
       state.child = child
       for await (const piece of child) {
         if (piece.stream === 'stderr') {
@@ -1575,6 +1644,19 @@ export async function bridgeStart($: EngineInterface, e: SessionStartInput) {
   // derive's headless fork of a session is never a member, and needs no bridge.
   if ((await $.env.get('SMNS_INTERNAL')) !== undefined) {
     return
+  }
+  // MAWS's lane B marker (O12 M3), read before anything is raised: until the
+  // child's verdict on the parent check, the marker alone holds the bridge to
+  // observing; a reload takes the verdict this process already has.
+  state.isLaneMarked = (await $.env.get('MAWS_LANE')) === 'B'
+  if (state.isLaneMarked && state.laneVerdict === undefined) {
+    const kept = await $.state.get(LANE).then(
+      (read) => read.value,
+      () => undefined,
+    )
+    if (kept === 'match' || kept === 'mismatch') {
+      state.laneVerdict = kept
+    }
   }
   state.post = (socketPath, nonce, body) =>
     $.http.fetch('http://bridge/events', {
@@ -1817,8 +1899,10 @@ export function registerBridge(on: On) {
       recoverMainTurn(e.turnId)
     }
     releaseStepEnd(loopKey(e.agentId))
-    // Only a step with an upload pending waits on anything here.
-    const synthetic = isMain && state.media.some((a) => a.state === 'pending')
+    // Only a step with an upload pending waits on anything here. An observer
+    // claims none, and rewrites no model or effort: those are MAWS's.
+    const isControlled = isMain && !isObserver()
+    const synthetic = isControlled && state.media.some((a) => a.state === 'pending')
       ? await claimMedia($, e).catch((error: unknown) => {
           $.ui.log(`bridge: no upload claimed: ${message(error)}`, { to: 'debug' })
           return undefined
@@ -1826,7 +1910,7 @@ export function registerBridge(on: On) {
       : undefined
     // The model chosen through the bridge is the main loop's: a subagent runs
     // on what its definition or its caller chose.
-    const o = isMain ? state.override : undefined
+    const o = isControlled ? state.override : undefined
     const input = o === undefined ? e : { ...e, ...(o.model !== null && { model: o.model }), ...(o.effort !== null && { effort: o.effort }) }
     if (isShown) {
       emit({ type: 'step', phase: 'start', ...tag, model: input.model, effort: input.effort ?? null, messageCount: e.messageCount })
@@ -1994,7 +2078,10 @@ export function registerBridge(on: On) {
   // module saw (claimCheck's `isSeen`), so nothing beneath restored
   // anything, and only within the bound the hub admits (boundedSuggestions).
   on('classic.PermissionRequest', { hook_event_name: 'PermissionRequest' }, async ($, e, next) => {
-    if (state.post === undefined) {
+    // An observer raises nothing: MAWS answers its session's prompts
+    // (--permission-prompt-tool stdio), and a desk card would be one it
+    // cannot.
+    if (state.post === undefined || isObserver()) {
       return next(e)
     }
     const agentId = e.agent_id ?? null
