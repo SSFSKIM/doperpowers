@@ -45,6 +45,8 @@ sys.path.insert(0, str(HERE))
 
 import endpoint_standin  # noqa: E402
 import sminos  # noqa: E402
+import sminos_control as control  # noqa: E402
+import sminos_daemon as daemon  # noqa: E402
 import sminos_hublog as hublog  # noqa: E402
 import sminos_outcomes as outcomes  # noqa: E402
 import sminos_plane as plane  # noqa: E402
@@ -116,6 +118,7 @@ class Machine(unittest.TestCase):
         os.environ.update(HOME=os.path.join(home, "h"), SMINOS_HOME=os.path.join(home, "s"),
                           MAWS_USER_DATA=os.path.join(home, "m"))
         self.home = home
+        self.inboxes = {}
         for d in (os.environ["HOME"] + "/.claude/sessions", os.environ["SMINOS_HOME"] + "/daemon"):
             os.makedirs(d, mode=0o700)
         self.epdir = os.path.join(os.environ["MAWS_USER_DATA"], "mawsd", "endpoint")
@@ -157,23 +160,45 @@ class Machine(unittest.TestCase):
         sminos.project_path(project, "log")   # registered: known here
         return project
 
-    def session(self, project, sid, name=None):
-        """A live session of this machine working in the project's checkout."""
+    def session(self, project, sid, name=None, inbox=False, bg=False):
+        """A live session of this machine working in the project's checkout;
+        with `inbox`, its inbox socket served (inbox_standin.py; what it took
+        is self.inbox(sid)); with `bg`, a --bg job's."""
         p = subprocess.Popen(["sleep", "600"])
         path = os.path.join(os.environ["HOME"], ".claude", "sessions", "%d.json" % p.pid)
+        rec = {"pid": p.pid, "sessionId": sid, "name": name or sid[:4], "nameSource": "derived",
+               "cwd": project.root, "kind": "bg" if bg else "interactive", "status": "idle"}
+        if bg:
+            rec["jobId"] = "0a1b2c3d"
+        server = None
+        if inbox:
+            sock = os.path.join(self.home, "in-%s.sock" % sid[:8])
+            self.inboxes[sid] = sock + ".received"
+            Path(self.inboxes[sid]).touch()
+            server = subprocess.Popen([sys.executable, "-B", str(HERE / "inbox_standin.py"), sock, self.inboxes[sid]])
+            wait_for(lambda: os.path.exists(sock), timeout=10)
+            rec["messagingSocketPath"] = sock
         with open(path, "w") as f:
-            json.dump({"pid": p.pid, "sessionId": sid, "name": name or sid[:4], "nameSource": "derived",
-                       "cwd": project.root, "kind": "interactive", "status": "idle"}, f)
+            json.dump(rec, f)
 
         def end():
-            if p.poll() is None:
-                p.kill()
-                p.wait(5)
+            for proc in (p, server):
+                if proc is not None and proc.poll() is None:
+                    proc.kill()
+                    proc.wait(5)
             if os.path.exists(path):
                 os.unlink(path)
         self.addCleanup(end)
         sminos.forget_caches()
         return end
+
+    def inbox(self, sid):
+        """The texts of the frames the session's inbox took, in order."""
+        try:
+            lines = Path(self.inboxes[sid]).read_text().splitlines()
+        except FileNotFoundError:
+            return []
+        return [json.loads(line)["message"]["content"] for line in lines if line.strip()]
 
     def endpoint(self, **fields):
         ep = endpoint_standin.Endpoint(self.epdir, **fields)
@@ -617,6 +642,383 @@ class Revoked(Machine):
         up = ep.wait(lambda f: f["t"] == "session" and f["message"]["kind"] == "delivery")
         self.assertEqual((up["message"]["body"]["event"], up["message"]["body"]["outcome"]),
                          ({"writer": OTHER, "seq": 1}, "refused-revoked"))
+
+
+
+# ------------------------------------------------------------- the words pass
+
+
+def sminos_cli(*args, cwd=None):
+    return subprocess.run([sys.executable, "-B", str(SCRIPTS / "sminos.py"), *args], cwd=cwd,
+                          capture_output=True, text=True, timeout=120)
+
+
+class WordsRig(Machine):
+    """A cut-over machine with a hub project, its sessions' bridges recorded
+    (self.bridge: the bridge's `deliver`, else None for a session in
+    self.no_bridge) and the engine supervisor's `reply` (self.supervisor);
+    inboxes are served by inbox_standin.py."""
+
+    def setUp(self):
+        super().setUp()
+        self.cut_over()
+        self.hp = self.project("hp", hub=True)
+        self.no_bridge = set()
+        self.bridge, self.supervisor = [], []
+
+        def deliver(session, project, event, text):
+            if session in self.no_bridge:
+                return None
+            self.bridge.append((session, project, event["writer"], event["seq"], text))
+            return True
+
+        def reply(short, text):
+            self.supervisor.append((short, text))
+            return True
+        for name, fake in (("deliver", deliver), ("supervisor_reply", reply)):
+            patcher = mock.patch.object(control, name, side_effect=fake)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def bridged(self):
+        return [(w, s) for _, _, w, s, _ in self.bridge]
+
+    def settled(self, project, sid, writer):
+        return self.record(project, sid).get(writer, {}).get("settled", 0)
+
+    def outcome_up(self, ep, writer, seq):
+        return ep.wait(lambda f: f["t"] == "session" and f["message"]["kind"] == "delivery"
+                       and f["message"]["body"]["event"] == {"writer": writer, "seq": seq})["message"]["body"]
+
+    def asks(self, ep, writer=None):
+        return [f for f in ep.frames("words?") if writer is None or f["event"]["writer"] == writer]
+
+
+class Words(WordsRig):
+    """On a cut-over machine a person's words reach a session on the
+    endpoint's verdict alone: the uplink asks `words?` for the first owed
+    event of each words-gated writer, and delivers it as the answer says —
+    `words` through the session's bridge, else a --bg job's supervisor;
+    `peer` as an inbox frame; `refuse` not at all."""
+
+    def test_words_is_submitted_through_the_bridge_once(self):
+        self.session(self.hp, S1, inbox=True)
+        e = self.arrive(self.hp, "hub/mem-1", 1, signer=DEV_A, text="read the plan")
+        ep = self.endpoint(verdict="words")
+        self.uplink()
+        ask = ep.wait(lambda f: f["t"] == "words?")
+        self.assertEqual(set(ask), {"t", "id", "session", "event"})
+        self.assertEqual(ask["session"], S1)
+        self.assertEqual(ask["event"], {k: v for k, v in e.items() if k != "verified"},
+                         "the event exactly as stored, the endpoint's verdict left out")
+        self.assertEqual(self.outcome_up(ep, "hub/mem-1", 1)["outcome"], "delivered")
+        self.assertEqual(self.settled(self.hp, S1, "hub/mem-1"), 1)
+        time.sleep(1.0)
+        self.assertEqual(self.bridged(), [("hub/mem-1", 1)], "once, through the bridge, keyed by the event")
+        self.assertIn("read the plan", self.bridge[0][4])
+        self.assertEqual(self.inbox(S1), [], "and nothing through the inbox")
+        self.assertEqual(len(self.asks(ep)), 1, "asked once")
+
+    def test_peer_is_an_inbox_frame_and_refuse_pushes_nothing(self):
+        self.session(self.hp, S1, inbox=True)
+        self.arrive(self.hp, "hub/mem-1", 1, signer=DEV_A, text="as a peer")
+        self.arrive(self.hp, "hub/mem-2", 1, signer={**DEV_A, "member": "mem-2"}, text="refused")
+        ep = self.endpoint(verdict=lambda f: "peer" if f["event"]["writer"] == "hub/mem-1" else "refuse")
+        self.uplink()
+        self.assertEqual(self.outcome_up(ep, "hub/mem-1", 1)["outcome"], "delivered")
+        refused = self.outcome_up(ep, "hub/mem-2", 1)
+        self.assertEqual((refused["outcome"], refused["reason"]),
+                         ("refused-words", outcomes.of_push(outcomes.REFUSED_WORDS, None)[1]))
+        self.assertEqual((self.settled(self.hp, S1, "hub/mem-1"), self.settled(self.hp, S1, "hub/mem-2")), (1, 1))
+        frames = wait_for(lambda: self.inbox(S1), timeout=10)
+        self.assertEqual(len(frames), 1, "one frame: the peer's")
+        self.assertIn("as a peer", frames[0])
+        self.assertNotIn("refused", "".join(self.inbox(S1)))
+        self.assertEqual(self.bridge, [], "neither went through the bridge")
+        self.assertIn("refused hub/mem-2:1", daemon_log())
+
+    def test_no_answer_stays_owed_counts_an_attempt_and_is_asked_again(self):
+        self.session(self.hp, S1, inbox=True)
+        self.arrive(self.hp, "hub/mem-1", 1, signer=DEV_A)
+        ep = self.endpoint()
+        with mock.patch.object(uplink, "WORDS_WAIT", 0.3):
+            self.uplink()
+            ep.wait_until(lambda: len(self.asks(ep)) >= 2)
+            first, second = self.asks(ep)[:2]
+            self.assertNotEqual(first["id"], second["id"], "asked again, under a new id")
+            self.assertEqual(first["event"], second["event"])
+            w = wait_for(lambda: self.record(self.hp, S1).get("hub/mem-1"))
+            self.assertEqual((w["settled"], w["pending"]), (0, 1), "owed, its attempts counted")
+            self.assertGreaterEqual(w["attempts"], 1)
+            self.assertEqual(self.bridge + [f for f in self.inbox(S1)], [], "nothing delivered meanwhile")
+            ep.send({"t": "words", "id": first["id"], "verdict": "words"})   # an answer to an ask that expired
+            time.sleep(0.5)
+            self.assertEqual(self.bridge, [], "an answer to an expired ask is no answer")
+            ep.set(verdict="words")
+            wait_for(lambda: self.bridge)
+            self.assertEqual(self.bridged(), [("hub/mem-1", 1)])
+
+    def test_one_writer_is_asked_in_order(self):
+        self.session(self.hp, S1, inbox=True)
+        self.arrive(self.hp, "hub/mem-1", 1, signer=DEV_A, text="first")
+        self.arrive(self.hp, "hub/mem-1", 2, signer=DEV_B, text="second")
+        ep = self.endpoint()
+        self.uplink()
+        ask = ep.wait(lambda f: f["t"] == "words?")
+        self.assertEqual(ask["event"]["seq"], 1)
+        time.sleep(1.0)
+        self.assertEqual([f["event"]["seq"] for f in self.asks(ep)], [1], "only the first, until it settles")
+        ep.set(verdict="words")
+        ep.send({"t": "words", "id": ask["id"], "verdict": "words"})
+        wait_for(lambda: len(self.bridge) == 2)
+        self.assertEqual(self.bridged(), [("hub/mem-1", 1), ("hub/mem-1", 2)], "the second follows, in order")
+        self.assertEqual(self.settled(self.hp, S1, "hub/mem-1"), 2)
+
+    def test_a_revocation_settles_an_asked_event_at_once_and_its_answer_changes_nothing(self):
+        self.session(self.hp, S1, inbox=True)
+        self.arrive(self.hp, "hub/mem-1", 1, signer=DEV_A)
+        ep = self.endpoint()
+        self.uplink()
+        ask = ep.wait(lambda f: f["t"] == "words?")
+        ep.send({"t": "revoked", "version": 3, "devices": ["dev-a"], "members": [], "keys": []})
+        self.assertEqual(self.outcome_up(ep, "hub/mem-1", 1)["outcome"], "refused-revoked")
+        ep.send({"t": "words", "id": ask["id"], "verdict": "words"})
+        time.sleep(1.0)
+        self.assertEqual((self.bridge, self.inbox(S1)), ([], []), "nothing a revoked device signed is delivered")
+        self.assertEqual(len(self.asks(ep)), 1, "and it is never asked again")
+        self.assertEqual(sminos.owed(self.hp, member(S1)), [])
+
+    def test_revoking_one_device_leaves_the_other_devices_earlier_event_deliverable(self):
+        """A member's devices share `hub/<member>`: seq 1 from device A asked
+        and gone unanswered once, seq 2 from device B; B revoked: seq 2 is
+        settled at once, seq 1 still asked and delivered, and the prefix
+        moves past both."""
+        self.session(self.hp, S1, inbox=True)
+        self.arrive(self.hp, "hub/mem-1", 1, signer=DEV_A, text="from device a")
+        self.arrive(self.hp, "hub/mem-1", 2, signer=DEV_B, text="from device b")
+        ep = self.endpoint()
+        patcher = mock.patch.object(uplink, "WORDS_WAIT", 0.3)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.uplink()
+        ep.wait_until(lambda: len(self.asks(ep)) >= 2)
+        self.assertEqual({f["event"]["seq"] for f in self.asks(ep)}, {1}, "seq 2 waits behind seq 1")
+        self.assertGreaterEqual(self.record(self.hp, S1)["hub/mem-1"]["attempts"], 1)
+        ep.send({"t": "revoked", "version": 3, "devices": ["dev-b"], "members": [], "keys": []})
+        self.assertEqual(self.outcome_up(ep, "hub/mem-1", 2)["outcome"], "refused-revoked")
+        ep.set(verdict="words")
+        wait_for(lambda: self.settled(self.hp, S1, "hub/mem-1") == 2)
+        self.assertEqual(self.bridged(), [("hub/mem-1", 1)], "seq 1 delivered, seq 2 never")
+        self.assertNotIn(2, {f["event"]["seq"] for f in self.asks(ep)}, "and seq 2 never asked")
+
+    def test_a_bg_job_takes_words_from_its_supervisor_and_a_peer_from_its_inbox(self):
+        self.no_bridge.add(S2)
+        self.session(self.hp, S2, inbox=True, bg=True)
+        self.arrive(self.hp, "hub/mem-1", 1, to=(S2,), signer=DEV_A, text="as words")
+        self.arrive(self.hp, "hub/mem-2", 1, to=(S2,), signer={**DEV_A, "member": "mem-2"}, text="as a peer")
+        self.endpoint(verdict=lambda f: "words" if f["event"]["writer"] == "hub/mem-1" else "peer")
+        self.uplink()
+        wait_for(lambda: self.supervisor and self.inbox(S2))
+        self.assertEqual(len(self.supervisor), 1)
+        self.assertEqual(self.supervisor[0][0], "0a1b2c3d")
+        self.assertIn("as words", self.supervisor[0][1])
+        self.assertEqual(len(self.inbox(S2)), 1)
+        self.assertIn("as a peer", self.inbox(S2)[0])
+
+    def test_a_projects_events_not_relayed_are_asked_and_its_log_not_opened(self):
+        """A local project (no hub): an own operator event with its receipt
+        is asked like any other, and the project never opened on RL10."""
+        lp = self.project("lp")
+        self.session(lp, S1, name="rover", inbox=True)
+        ep = self.endpoint(verdict="words")
+        self.uplink()
+        ep.wait_until(lambda: ep.frames("member"))
+        r = sminos_cli("say", "@rover from the terminal", cwd=lp.root)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("rover: recorded; the endpoint decides its delivery", r.stdout)
+        ask = ep.wait(lambda f: f["t"] == "words?")
+        self.assertEqual((ask["event"]["writer"], ask["event"]["text"]), ("testhost/human", "@rover from the terminal"))
+        wait_for(lambda: self.bridge)
+        self.assertEqual(self.bridged(), [("testhost/human", 1)])
+        self.assertNotIn(lp.id, {f.get("project") for f in ep.frames("hello")})
+
+    def test_the_operator_say_is_asked_after_its_upload_and_delivered_once(self):
+        self.session(self.hp, S1, name="rover", inbox=True)
+        ep = self.endpoint(verdict="words")
+        self.uplink()
+        ep.wait(lambda f: f["t"] == "member")
+        r = sminos_cli("say", "@rover hello there", cwd=self.hp.root)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("rover: recorded; the endpoint decides its delivery", r.stdout, "the fast path pushes nothing")
+        ep.wait(lambda f: f["t"] == "words?")
+        wait_for(lambda: self.bridge)
+        received = ep.frames()
+        upload = next(i for i, f in enumerate(received) if f["t"] == "events" and
+                      any(e["writer"] == "testhost/human" for e in f["events"]))
+        asked = next(i for i, f in enumerate(received) if f["t"] == "words?")
+        self.assertLess(upload, asked, "uploaded on the socket before it is asked")
+        time.sleep(1.0)
+        self.assertEqual(self.bridged(), [("testhost/human", 1)], "the bridge sees one deliver")
+        self.assertEqual(self.inbox(S1), [])
+
+    def test_an_operator_send_with_earlier_owed_events_goes_after_them(self):
+        """`send` on a cut-over machine records and pushes nothing; with the
+        endpoint absent the events stay owed; refused, they settle
+        refused-words; answered `words`, the earlier ones and the send arrive
+        in order, one bridge `deliver` each."""
+        self.session(self.hp, S1, name="rover", inbox=True)
+        for text in ("one", "two"):
+            r = sminos_cli("say", "@rover " + text, cwd=self.hp.root)
+            self.assertIn("rover: recorded; the endpoint decides its delivery", r.stdout, r.stderr)
+        r = sminos_cli("send", "rover", "the send", cwd=self.hp.root)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertRegex(r.stdout, r"recorded testhost/human:3 for rover; the endpoint decides its delivery")
+        self.assertEqual([e["seq"] for e in sminos.owed(self.hp, member(S1))], [1, 2, 3], "the endpoint absent: owed")
+        out = sminos_cli("chat", "hp", "-n", "10", cwd=self.hp.root).stdout
+        self.assertIn("the send", out)
+        self.assertEqual((self.bridge, self.inbox(S1)), ([], []), "nothing pushed")
+        ep = self.endpoint(verdict="words")
+        self.uplink()
+        wait_for(lambda: len(self.bridge) == 3)
+        self.assertEqual(self.bridged(), [("testhost/human", 1), ("testhost/human", 2), ("testhost/human", 3)])
+        self.assertIn("the send", self.bridge[2][4])
+        self.assertEqual([f["event"]["seq"] for f in self.asks(ep)], [1, 2, 3])
+
+    def test_an_operator_send_the_endpoint_refuses_settles_refused_words(self):
+        self.session(self.hp, S1, name="rover", inbox=True)
+        self.endpoint(verdict="refuse")
+        self.uplink()
+        r = sminos_cli("send", "rover", "refuse me", cwd=self.hp.root)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("the endpoint decides its delivery", r.stdout)
+        wait_for(lambda: self.settled(self.hp, S1, "testhost/human") == 1)
+        time.sleep(0.5)
+        self.assertEqual((self.bridge, self.inbox(S1)), ([], []))
+        self.assertIn("refused testhost/human:1", daemon_log())
+
+
+class Deliverers(WordsRig):
+    """What the daemon's tick and the CLI's fast path do on a cut-over
+    machine (deliver_next): a words-gated writer left owed for the uplink,
+    every other event delivered as today, each checked against the
+    revocation set; git-arrived and unreceipted operator events, and a
+    legacy signer's, as unverified peers, never asked."""
+
+    def deliver(self, project, sid=S1):
+        return daemon.deliver_owed(project, sminos.view_of(project, titles=False))
+
+    def test_a_words_gated_writer_is_left_owed_and_the_rest_delivered(self):
+        self.session(self.hp, S1, inbox=True)
+        self.arrive(self.hp, "hub/mem-1", 1, signer=DEV_A)
+        self.arrive(self.hp, "othermachine/human", 1, signer=MACHINE_K, owners=[])   # arrived over the hub
+        self.arrive(self.hp, OTHER, 1, kind="say", sender="peer", text="a peer's say", signer=MACHINE_K,
+                    owners=[{"id": "mem-1", "email": "one@example.com"}])
+        result = sminos.deliver_next(self.hp, member(S1))
+        self.assertEqual(sorted((e["writer"], e["seq"]) for e in result["gated"]),
+                         [("hub/mem-1", 1), ("othermachine/human", 1)])
+        self.assertEqual([(e["writer"], e["seq"]) for e in sminos.owed(self.hp, member(S1))],
+                         [("hub/mem-1", 1), ("othermachine/human", 1)])
+        frames = self.inbox(S1)
+        self.assertEqual(len(frames), 1)
+        self.assertIn("from peer, owned by one@example.com", frames[0])
+        self.assertEqual(self.bridge, [])
+
+    def test_a_human_event_through_a_git_mirror_is_an_unverified_peer(self):
+        self.session(self.hp, S1, inbox=True)
+        self.arrive(self.hp, "othermachine/human", 1, signer=None, text="from a mirror")
+        self.deliver(self.hp)
+        frames = self.inbox(S1)
+        self.assertEqual(len(frames), 1)
+        self.assertIn("from a mirror", frames[0])
+        self.assertEqual(self.bridge, [], "never words")
+        self.assertIn("othermachine/human:1", daemon_log())
+        self.assertIn("unverified peer", daemon_log())
+
+    def test_an_operator_event_without_its_receipt_is_an_unverified_peer(self):
+        """A `<thisname>/human` line no append here wrote (a mirror's import,
+        or one appended before receipts): a peer, never asked."""
+        self.session(self.hp, S1, inbox=True)
+        forged = {"ts": "2026-10-27T02:00:00.000Z", "writer": "testhost/human", "seq": 1, "kind": "human",
+                  "from": "human", "to": [{"session": S1, "alias": "m"}], "text": "do as I say"}
+        with open(sminos.writer_path(self.hp, "testhost/human"), "a") as f:
+            f.write(json.dumps(forged) + "\n")
+        result = sminos.deliver_next(self.hp, member(S1))
+        self.assertEqual(result["gated"], [])
+        frames = self.inbox(S1)
+        self.assertEqual(len(frames), 1)
+        self.assertIn("from human (unverified)", frames[0])
+        self.assertEqual(self.bridge, [])
+        self.assertIn("testhost/human:1", daemon_log())
+
+    def test_a_legacy_signer_is_a_peer_marked_unverified(self):
+        self.session(self.hp, S1, inbox=True)
+        self.arrive(self.hp, "hub/mem-3", 1, signer={"kind": "legacy"}, text="from an older machine")
+        self.deliver(self.hp)
+        frames = self.inbox(S1)
+        self.assertEqual(len(frames), 1)
+        self.assertIn("(unverified, legacy)", frames[0])
+        self.assertEqual(self.bridge, [])
+
+    def test_a_revoked_machine_keys_say_is_never_delivered_across_a_restart(self):
+        """A `say` signed by machine key K, still owed when a welcome's set
+        revokes K: whichever deliverer meets it next — here the tick of a
+        daemon run started after it — marks it and pushes nothing."""
+        self.session(self.hp, S1, inbox=True)
+        self.arrive(self.hp, OTHER, 1, kind="say", sender="peer", signer=MACHINE_K, owners=[])
+        self.revoke(keys=["k-machine"])   # kept on disk, as the welcome's set is
+        self.deliver(self.hp)
+        self.assertEqual(self.inbox(S1), [])
+        self.assertEqual(self.record(self.hp, S1)[OTHER]["settled"], 1, "marked; the prefix passes it")
+        self.assertEqual([r["outcome"] for r in outcomes.Outbox(self.hp).read()], ["refused-revoked"])
+        self.deliver(self.hp)
+        self.assertEqual(self.inbox(S1), [], "never delivered afterwards")
+
+    def test_an_unreadable_revocation_set_fails_closed(self):
+        self.session(self.hp, S1, inbox=True)
+        self.arrive(self.hp, OTHER, 1, kind="say", sender="peer", text="signed", signer=MACHINE_K, owners=[])
+        self.arrive(self.hp, "othermachine/" + S3, 1, kind="say", sender="git", text="unsigned", signer=None)
+        Path(rl10.revoked_path()).write_text("{not json")
+        self.deliver(self.hp)
+        frames = self.inbox(S1)
+        self.assertEqual(len(frames), 1, "what carries no signer goes; what does waits for a readable set")
+        self.assertIn("unsigned", frames[0])
+        self.assertEqual([e["writer"] for e in sminos.owed(self.hp, member(S1))], [OTHER])
+        self.revoke(version=5)
+        self.deliver(self.hp)
+        self.assertEqual(len(self.inbox(S1)), 2)
+
+    def test_push_live_never_decides_a_persons_words_by_the_writer(self):
+        e = {"ts": "2026-10-27T01:00:01.000Z", "writer": "hub/mem-1", "seq": 1, "kind": "human", "from": "alice",
+             "to": [{"session": S1, "alias": "m"}], "text": "x"}
+        peer = {"sessionId": S1, "messagingSocketPath": "/nonexistent"}
+        with self.assertRaises(sminos.SendFailed) as raised:
+            control.push_live(peer, S1, "x", e, self.hp.id)
+        self.assertEqual(raised.exception.phase, "before")
+        self.assertEqual(self.bridge, [])
+        control.push_live(peer, S1, "x", e, self.hp.id, words=True)
+        self.assertEqual(self.bridged(), [("hub/mem-1", 1)], "on the verdict, through the bridge")
+        Path(rl10.identity_path()).unlink()   # a machine not cut over: the writer decides, as today
+        control.push_live(peer, S1, "x", {**e, "seq": 2}, self.hp.id)
+        self.assertEqual(self.bridged(), [("hub/mem-1", 1), ("hub/mem-1", 2)])
+
+    def test_a_verdict_for_an_event_settled_meanwhile_changes_nothing(self):
+        self.session(self.hp, S1, inbox=True)
+        e = self.arrive(self.hp, "hub/mem-1", 1, signer=DEV_A)
+        self.revoke(devices=["dev-a"])
+        sminos.revoke_owed(self.hp, member(S1), rl10.revoked())
+        self.assertIsNone(sminos.deliver_verdict(self.hp, member(S1), e, "words"))
+        self.assertEqual((self.bridge, self.inbox(S1)), ([], []))
+
+    def test_a_machine_not_cut_over_delivers_as_today(self):
+        Path(rl10.identity_path()).unlink()
+        self.session(self.hp, S1, inbox=True)
+        self.arrive(self.hp, "hub/mem-1", 1, signer=None)
+        self.arrive(self.hp, "othermachine/human", 1, signer=None)
+        result = sminos.deliver_next(self.hp, member(S1))
+        self.assertEqual(result["delivered"], 2)
+        self.assertEqual(result.get("gated", []), [])
+        self.assertEqual(sorted(self.bridged()), [("hub/mem-1", 1), ("othermachine/human", 1)],
+                         "the owner's words by their writer, through the bridge")
 
 
 if __name__ == "__main__":

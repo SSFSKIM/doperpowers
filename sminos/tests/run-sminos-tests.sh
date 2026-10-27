@@ -370,8 +370,8 @@ run_suites() {
   if "$SCRIPT_DIR/test-hub.sh"; then pass "enrollment and hub projects (test-hub.sh)"; else fail "enrollment and hub projects (test-hub.sh)"; fi
   if python3 "$SCRIPT_DIR/test_rl10.py"; then pass "the endpoint (RL10): discovery, the cutover's identity, revocations, policy, the DX1 key (test_rl10.py)"; else
     fail "the endpoint (RL10): discovery, the cutover's identity, revocations, policy, the DX1 key (test_rl10.py)"; fi
-  if python3 "$SCRIPT_DIR/test_words.py"; then pass "a person's words on a cut-over machine: members, receipts, revocations, the label (test_words.py)"; else
-    fail "a person's words on a cut-over machine: members, receipts, revocations, the label (test_words.py)"; fi
+  if python3 "$SCRIPT_DIR/test_words.py"; then pass "a person's words on a cut-over machine: members, receipts, revocations, words?, the deliverers, the label (test_words.py)"; else
+    fail "a person's words on a cut-over machine: members, receipts, revocations, words?, the deliverers, the label (test_words.py)"; fi
   if "$SCRIPT_DIR/test-sync.sh"; then pass "sync through the hub, two machines (test-sync.sh)"; else fail "sync through the hub, two machines (test-sync.sh)"; fi
   if "$SCRIPT_DIR/test-archive.sh"; then pass "the archive of a hub project (test-archive.sh)"; else fail "the archive of a hub project (test-archive.sh)"; fi
   if "$SCRIPT_DIR/test-org.sh"; then pass "the org's directory: machine projects, follow-only hellos (test-org.sh)"; else
@@ -3079,6 +3079,73 @@ assert_equals "$(grep -c 'raced' "$TEST_ROOT/in-b.received")" 1 "the settled sen
 assert_contains "$(cat "$TEST_ROOT/race-wait.out")" "delivered by a concurrent delivery" "send says who delivered it"
 assert_contains "$(cat "$TEST_ROOT/race-wait.out")" "--- reply ---" "and still prints the reply block"
 assert_contains "$(cat "$TEST_ROOT/race-wait.out")" "RACED $RACE_ID" "with the turn's reply"
+# On a machine cut over to its endpoint (O12 M6) an operator's send and say
+# are a person's words, which only the endpoint's verdict delivers: both send
+# paths (a seat's, a seatless session's) and say's fast path record the event,
+# say so and push nothing — the uplink asks `words?` and delivers it
+# (test_words.py) — while a session's send is a peer's and goes as today.
+SENTINEL_ID="$SMINOS_HOME/daemon/identity.json"
+mkdir -p "$SMINOS_HOME/daemon"
+python3 - "$SENTINEL_ID" <<'PY_CUT'
+import json, os, sys
+with open(sys.argv[1], "w") as f:
+    json.dump({"org": "org-1", "hub": "http://127.0.0.1:9", "name": "testhost", "former": {}, "ref": "machine-ref-1",
+               "enrolled": "2026-10-27T00:00:00.000Z", "cutover": "2026-10-27T00:00:01.000Z", "build": "b"}, f)
+os.chmod(sys.argv[1], 0o600)
+PY_CUT
+start_inbox sl
+SSL=5e000005-0000-4000-8000-0000000000e5
+printf '{"pid":%s,"sessionId":"%s","name":"sl","nameSource":"user","kind":"interactive","status":"idle","cwd":"%s","messagingSocketPath":"%s"}\n' \
+  "$SOCK_PID" "$SSL" "$PR" "$TEST_ROOT/in-sl.sock" > "$HOME/.claude/sessions/pl-sl.json"
+: > "$TEST_ROOT/in-b.received"
+OWED_B="$(owed_count "$SB")"
+NUDGE_BEFORE="$(python3 -c 'import os, sys; print(os.stat(sys.argv[1]).st_mtime_ns if os.path.exists(sys.argv[1]) else 0)' "$SMINOS_HOME/daemon/nudge")"
+run_in "$PR" "$SMINOS" send demo/b "words held for b"
+assert_rc 0 "$RC" "on a cut-over machine an operator's send to a seat exits 0"
+assert_contains "$OUT" "for b; the endpoint decides its delivery" "saying it is recorded and the endpoint decides its delivery"
+assert_contains "$OUT" "recorded testhost/human:" "naming the event"
+assert_equals "$(inbox b)" "" "and pushing nothing"
+assert_equals "$(owed_count "$SB")" "$((OWED_B + 1))" "the send stays owed to b"
+assert_contains "$(tail -1 "$DEMO_HUMAN")" '"text": "words held for b"' "recorded in the project's log"
+assert_equals "$(python3 -c 'import os, sys; print(os.stat(sys.argv[1]).st_mtime_ns > int(sys.argv[2]))' "$SMINOS_HOME/daemon/nudge" "$NUDGE_BEFORE")" True \
+  "and the daemon nudged, whose uplink asks"
+run_in "$PR" "$SMINOS" send sl "words held for a seatless session"
+assert_rc 0 "$RC" "an operator's send to a seatless session exits 0"
+assert_contains "$OUT" "for sl; the endpoint decides its delivery" "recorded alike"
+assert_equals "$(inbox sl)" "" "and pushing nothing"
+assert_equals "$(owed_count "$SSL")" 1 "the send stays owed to it"
+run_in "$PR" "$SMINOS" say "@b a say held for b"
+assert_rc 0 "$RC" "an operator's say exits 0"
+assert_contains "$OUT" "b: recorded; the endpoint decides its delivery" "say's fast path leaves it to the endpoint"
+assert_equals "$(inbox b)" "" "and pushes nothing"
+run_in "$PR" "$SMINOS" chat demo -n 3
+assert_contains "$OUT" "a say held for b" "chat shows what is held, recorded"
+python3 - "$SMINOS_PY" "$DEMO" "$SB" > "$TEST_ROOT/cut-deliver.out" <<'PY_HELD'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("sminos", sys.argv[1]); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+p = mod.find_project(sys.argv[2])
+r = mod.deliver_next(p, next(m for m in mod.members(p) if m.session == sys.argv[3]))
+print(r["delivered"], [(e["writer"], e["text"]) for e in r["gated"]])
+PY_HELD
+assert_contains "$(cat "$TEST_ROOT/cut-deliver.out")" "0 [('testhost/human', 'words held for b')]" \
+  "the daemon's delivery leaves the writer owed for the endpoint, at its first held event"
+assert_equals "$(inbox b)" "" "nothing pushed by it either"
+CLAUDE_CODE_SESSION_ID="$SA" run_in "$PR" "$SMINOS" send demo/b "a peer's send"
+assert_rc 0 "$RC" "a session's send to a seat exits 0"
+assert_contains "$(inbox b)" "a peer's send" "a session's send is a peer's: pushed as today"
+# Back to a machine not cut over: what was held is delivered as it always was.
+rm -f "$SENTINEL_ID"
+python3 - "$SMINOS_PY" "$DEMO" "$SB" "$SSL" >/dev/null <<'PY_FLUSH'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("sminos", sys.argv[1]); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+p = mod.find_project(sys.argv[2])
+for sid in sys.argv[3:]:
+    mod.deliver_next(p, next(m for m in mod.members(p) if m.session == sid))
+PY_FLUSH
+assert_contains "$(inbox b)" "words held for b" "a machine not cut over delivers the held send"
+assert_contains "$(inbox sl)" "words held for a seatless session" "and the seatless one"
+assert_equals "$(owed_count "$SB")" 0 "settling them"
+rm -f "$HOME/.claude/sessions/pl-sl.json"
 # A pending @all is settled, not replayed, when a send resumes a stopped member.
 python3 - "$SMINOS_PY" "$DEMO" "$SB" <<'PY_WAKE'
 import importlib.util, sys

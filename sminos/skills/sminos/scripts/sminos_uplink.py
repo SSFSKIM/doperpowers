@@ -90,8 +90,12 @@ whether the endpoint relays it or not (the endpoint decides a person's
 words from them), the whole set after each welcome, then each one that
 changed, and `{session, gone: true}` for one that left. A revocation set
 from the endpoint marks every event owed here that a revoked signer signed
-(Link.mark_revoked: never delivered, its outcome up). Before the cutover
-the endpoint is only probed (cmd_probe), beside the hub's stream.
+(Link.mark_revoked: never delivered, its outcome up). And a person's words
+are delivered here alone, on the endpoint's verdict: each tick's words pass
+(Link.ask_words), behind its upload pass, asks `words?` about the first
+owed event of each words-gated writer, and the `words` answer is carried out
+at once (on_words, sminos.deliver_verdict). Before the cutover the endpoint
+is only probed (cmd_probe), beside the hub's stream.
 """
 
 import collections
@@ -148,6 +152,8 @@ IDLE_CLOSE = 60.0         # a lane's connection idle this long is closed by the 
 SEND_QUEUE_MAX = 16 << 20  # a lane holding more unsent than this: the hub is not taking frames, the stream ends
 SLOW_POST_SECONDS = 5.0   # a lane's POST slower than this is said in daemon.log
 UPLOAD_AHEAD = POST_LIMIT  # an upload pass queues no more while the log lane holds this much unsent
+WORDS_WAIT = 10.0         # RL10: how long a `words?` waits for its verdict; past it, a failed attempt (O12 M6)
+WORDS_EVERY = 10.0        # RL10: how often the words pass looks for owed words when nothing asked for one
 CONNECTIONS = itertools.count(1)  # the lanes' connections, numbered across the process's streams
 # What a reused connection's send raises when the hub closed it while idle:
 # nothing of the request reached it, so it goes once more on a fresh one.
@@ -1430,6 +1436,10 @@ class Link:
         self.member_read_for = None   # RL10: the running sessions the projects known here were last listed for
         self.next_member_read = 0.0   # RL10: when they are read again (monotonic) when none came or went
         self.member_known = {}    # RL10: project id → project, every project known here as last listed (members)
+        self.asks = {}            # RL10: a `words?` id → what it asked (ask_words), until its verdict or its deadline
+        self.asked = {}           # RL10: (project id, session, writer) → the id of the ask it has out
+        self.words_due = True     # RL10: the words pass runs at the next tick (and every WORDS_EVERY)
+        self.next_words = 0.0     # RL10: when it runs again unasked (monotonic)
         self.logs = logs          # project id → HubLog, kept across streams
         self.generation = None
         self.opened = set()       # the projects `hello`ed on this stream
@@ -1469,7 +1479,7 @@ class Link:
             # its ask for the machine's DX1 key (RL10, O10 Interfaces §D).
             self.handlers.update({"policy": self.on_policy, "revoked": self.on_revoked,
                                   "legacy-key?": self.on_legacy_key, "query": self.on_query,
-                                  "tombstone": self.on_tombstone})
+                                  "tombstone": self.on_tombstone, "words": self.on_words})
 
     def post_session(self, messages):
         if messages:
@@ -1564,6 +1574,9 @@ class Link:
         self.delivering.clear()
         self.opening.clear()
         self.members_sent = {}
+        self.asks.clear()         # an ask is answered on its own connection, or never
+        self.asked.clear()
+        self.words_due = True
         if not self.coded:
             self.log_lane = self.session_lane = self.transport.lane()
             log("connected to the endpoint (RL10, local-only) as %s (connection %d)"
@@ -1627,6 +1640,27 @@ class Link:
         whole, self.revoked_whole = self.revoked_whole, False
         if rl10.keep_revoked(frame, whole):
             self.revoked_due = True
+
+    def on_words(self, frame, _stream):
+        """The endpoint's verdict on a `words?` (O12 M6), carried out at once
+        (sminos.deliver_verdict: still the writer's first owed, its signer
+        not revoked since), and the writer's next owed event asked at the next
+        tick. An answer to no ask held here — one that expired and was asked
+        again, one a revocation dropped — is no answer; one naming no verdict
+        is a failed attempt, as silence is."""
+        held = self.asks.pop(frame.get("id"), None) if isinstance(frame.get("id"), str) else None
+        if held is None:
+            return
+        self.asked.pop(held["key"], None)
+        self.words_due = True
+        verdict = frame.get("verdict")
+        if verdict not in sminos.WORDS_VERDICTS:
+            log("the endpoint's answer on %s in %s names no verdict (%r): a failed attempt"
+                % (sminos.event_ref(held["event"]), held["project"].name, verdict))
+            sminos.words_unanswered(held["project"], held["member"], held["event"], "the endpoint named no verdict")
+            return
+        sminos.deliver_verdict(held["project"], held["member"], held["event"], verdict)
+        self.next_upload = 0.0   # its outcome goes up on the next pass
 
     def on_legacy_key(self, _frame, _stream):
         """`legacy-key?`: hub.json's DX1 key handed to the endpoint, which
@@ -1808,10 +1842,14 @@ class Link:
         whole log), then the tick loop nudged once. The nudge is the tick
         loop's and every sender's: this uplink takes its own as seen, so
         what it imported costs its next tick no project scan, only the upload
-        pass that sends what delivery made of it (`deliveries`)."""
+        pass that sends what delivery made of it (`deliveries`). On RL10 the
+        person's words it left owed are asked about by that tick's words
+        pass, behind its upload pass (ask_words)."""
         if not self.imported:
             return
         imported, self.imported = self.imported, {}
+        if not self.coded:
+            self.words_due = True
         for hl in imported.values():
             try:
                 hl.deliver()
@@ -2105,9 +2143,10 @@ class Link:
         """The revocation set kept since the last tick applied to what is
         owed here: every event owed to a local member (the plane's rows) whose
         stored signer it names is marked revoked, its `refused-revoked`
-        outcome recorded for the next upload pass (sminos.revoke_owed). The
-        deliverers check the set themselves before each push; this is what
-        stops an owed event at once, asked or not."""
+        outcome recorded for the next upload pass (sminos.revoke_owed), and
+        every `words?` out for an event it names dropped, so a verdict for
+        it is no answer. The deliverers check the set themselves before each
+        push; this is what stops an owed event at once, asked or not."""
         self.revoked_due = False
         try:
             revoked = rl10.revoked()
@@ -2116,6 +2155,10 @@ class Link:
             return
         if not any(revoked[k] for k in rl10.REVOKED_SETS):
             return
+        for ask, held in list(self.asks.items()):
+            if rl10.event_revoked(held["event"], revoked):
+                del self.asks[ask]   # a verdict for it is no answer now
+                self.asked.pop(held["key"], None)
         try:
             for pid, project in sorted(known.items()):
                 for sid, m in sorted(self.plane.member_rows.get(pid, {}).items()):
@@ -2127,14 +2170,88 @@ class Link:
             self.revoked_due = True   # the next tick tries again
             raise
 
+    def ask_words(self, known):
+        """The words pass (RL10, O12 M6), after the tick's upload pass, so an
+        own event that could go up has gone up on this socket before its
+        `words?`: for each local member of every project known here, the
+        first owed event of each words-gated writer not yet asked
+        (sminos.words_due) is sent as `words? {id, session, event}`, the
+        event as stored with the endpoint's verdict left out, and held with a
+        WORDS_WAIT deadline. A deadline passed is a failed attempt
+        (sminos.words_unanswered), the event asked again under a new id. One
+        whose signer is revoked is marked instead (sminos.revoke_owed), and
+        one carrying a signer is not asked while the set cannot be read."""
+        now = time.monotonic()
+        self.words_due, self.next_words = False, now + WORDS_EVERY
+        try:
+            self.expire_asks(now)
+            try:
+                revoked = rl10.revoked()
+            except rl10.RevokedUnreadable:
+                revoked = None
+            frames = []
+            for pid, project in sorted(known.items()):
+                rows = self.plane.member_rows.get(pid) or {}
+                if not rows:
+                    continue
+                for sid, due in sorted(sminos.words_due(project, [m for _, m in sorted(rows.items())]).items()):
+                    for e in due:
+                        key = (pid, sid, e["writer"])
+                        if key in self.asked:
+                            continue
+                        if isinstance(e.get("verified"), dict) and (revoked is None or rl10.event_revoked(e, revoked)):
+                            if revoked is not None:
+                                for x in sminos.revoke_owed(project, rows[sid], revoked):
+                                    log("%s in %s is signed by a revoked key: marked refused-revoked for %s, never "
+                                        "delivered" % (sminos.event_ref(x), project.name, sid[:8]))
+                                    self.next_upload = 0.0
+                            continue
+                        ask = os.urandom(12).hex()
+                        self.asks[ask] = {"key": key, "project": project, "member": rows[sid], "event": e,
+                                          "deadline": now + WORDS_WAIT}
+                        self.asked[key] = ask
+                        frames.append({"t": "words?", "id": ask, "session": sid,
+                                       "event": {k: v for k, v in e.items() if k != "verified"}})
+            if frames:
+                self.session_lane.send(frames)
+        except BaseException:
+            self.words_due = True   # the next tick tries again
+            raise
+
+    def expire_asks(self, now):
+        """Each ask past its deadline dropped and counted a failed attempt
+        (said in daemon.log at the first); its event is asked again."""
+        for ask, held in sorted(self.asks.items(), key=lambda kv: kv[1]["deadline"]):
+            if held["deadline"] > now:
+                break
+            del self.asks[ask]
+            self.asked.pop(held["key"], None)
+            attempts = sminos.words_unanswered(held["project"], held["member"], held["event"],
+                                               "the endpoint gave no verdict within %g s" % WORDS_WAIT)
+            if attempts == 1:
+                log("the endpoint gave no verdict on %s in %s within %g s: it stays owed, asked again each pass"
+                    % (sminos.event_ref(held["event"]), held["project"].name, WORDS_WAIT))
+            self.next_upload = 0.0   # an attempt given up has its outcome to send
+
+    def words_now(self, nudged):
+        """Whether this tick runs the words pass: one was asked for (a nudge,
+        an import, a verdict, a welcome), an ask's deadline passed, or
+        WORDS_EVERY went by."""
+        now = time.monotonic()
+        return self.words_due or nudged or now >= self.next_words \
+            or any(held["deadline"] <= now for held in self.asks.values())
+
     def tick(self):
         """Between frames: new hub projects opened, and what this machine's
-        writers appended uploaded — at once when a sender nudged the daemon."""
+        writers appended uploaded — at once when a sender nudged the daemon.
+        On RL10, the person's words owed here asked about after the upload
+        pass (ask_words)."""
         if self.generation is None:
             return
         now = time.time()
         nudge = daemon.nudged_at()
         nudged, self.nudge = nudge != self.nudge, nudge
+        words = not self.coded and self.words_now(nudged)
         try:
             if now >= self.next_scan or nudged:
                 self.next_scan = now + SCAN_EVERY
@@ -2173,7 +2290,7 @@ class Link:
                 self.next_confirm = now + every
                 for pid in sorted(self.opened):
                     self.log_lane.send([self.logs[pid].hello(self.follows.get(pid, False))])
-            if now >= self.next_upload or nudged:
+            if now >= self.next_upload or nudged or words:
                 self.next_upload = now + UPLOAD_EVERY
                 for pid in sorted(self.opened):
                     self.upload(self.logs[pid])
@@ -2193,6 +2310,8 @@ class Link:
                 known = self.members(time.monotonic())
                 if self.revoked_due:
                     self.mark_revoked(known)
+                if words:
+                    self.ask_words(known)
             self.plane_failing = ""
         except EndStream:
             raise

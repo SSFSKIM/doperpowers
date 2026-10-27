@@ -179,16 +179,25 @@ def supervisor_reply(short, text):
 # ------------------------------------------------------------------ delivery
 
 
-def push_live(peer, session, text, event=None, project=None):
+def push_live(peer, session, text, event=None, project=None, words=None):
     """A delivery's last hop to a live session, `event` the last log event the
     text carries (None for a frame no log holds; every event of one push is
     one writer's, so one side's) and `project` the id of the project whose
-    log holds it. Only the owner's events take the bridge or the supervisor,
+    log holds it. Only a person's words take the bridge or the supervisor,
     the human's channels; a peer's is the inbox frame, named by its sender
-    and closed by how to answer it (S.reply_line). Raises SendFailed as
-    send_frame does: "before" when nothing reached the session, "after" when
-    it may have."""
-    owner = event is not None and S.owner_event(event)
+    and closed by how to answer it (S.reply_line). What is a person's words
+    is `words`, the endpoint's verdict (O12 M6: True its words, False a
+    peer's); without one, the writer decides (S.owner_event) — on a machine
+    not cut over, or for a frame no log holds. On a cut-over machine nothing
+    decides a person's words but the verdict: a log-backed `human` event
+    with none raises SendFailed("before"), nothing pushed. Raises SendFailed
+    as send_frame does: "before" when nothing reached the session, "after"
+    when it may have."""
+    if words is None and event is not None and event.get("kind") == "human" \
+            and S.sibling_module("sminos_rl10").cut_over():
+        raise S.SendFailed("before", "%s is a person's words on a machine cut over to its endpoint: only its "
+                           "verdict delivers them" % S.event_ref(event))
+    owner = words if words is not None else event is not None and S.owner_event(event)
     if owner and deliver(session, project, event, text):
         return
     if owner and bg_job(peer):
