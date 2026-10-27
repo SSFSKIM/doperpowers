@@ -1825,7 +1825,9 @@ def _append(project, writer, events, skip_src=False, guard=None):
     last line's plus one, past any position the uplink spent, which it spends
     under the same lock). With `guard`, the file's events are read under the
     lock and nothing is appended unless guard(events) holds — a check and its
-    append no other appender can come between. Returns the events as written."""
+    append no other appender can come between. An own writer's `human`
+    events get their append receipts under the same lock, first
+    (_write_receipts). Returns the events as written."""
     if any(e["kind"] in LIFECYCLE for e in events):
         _VIEWS.pop(project.id, None)
     path = writer_path(project, writer)
@@ -1861,6 +1863,7 @@ def _append(project, writer, events, skip_src=False, guard=None):
                     seq += 1
                 rest = {k: v for k, v in fields.items() if k != "kind"}
                 out.append({"ts": now(ms=True), "writer": writer, "seq": seq, "kind": fields["kind"], **rest})
+            _write_receipts(project, writer, out)
             end = f.seek(0, os.SEEK_END)
             if end:
                 # An interrupted append can leave a fragment without its
@@ -1874,6 +1877,87 @@ def _append(project, writer, events, skip_src=False, guard=None):
 
 def log_append(project, writer, kind, **fields):
     return _append(project, writer, [{"kind": kind, **fields}])[0]
+
+
+# Append receipts (O12 M6): the provenance of this machine's operator words.
+# The writer name is not provenance — a git mirror's merge can bring a
+# `<thisname>/human` line no one here wrote — so each `human` event _append
+# stores under this machine's own writer gets a machine-private receipt,
+# `projects/<id>/receipts/<writer>.jsonl`, one `{seq, hash}` line, written in
+# the same append under the writer file's lock, before the event itself: an
+# event appended here always has one. The directory is outside log/, so git
+# never mirrors it and the uplink never uploads it; a receipt stays under the
+# writer name the append used, so a former name keeps its own. On a cut-over
+# machine the words gate asks the endpoint about an own-writer event only
+# when its receipt matches (receipted); any other goes as an unverified peer.
+
+RECEIPTS = "receipts"
+
+
+def event_hash(e):
+    """SHA-256 (hex) of an event's canonical body (RFC 8785) as stored, the
+    endpoint's verdict (`verified`) left out; None for one with no canonical
+    form (a lone surrogate), which no receipt can then name."""
+    codes = sibling_module("sminos_codes")
+    try:
+        text = codes.canonical({k: v for k, v in e.items() if k != "verified"})
+    except codes.NotCanonical:
+        return None
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def receipt_path(project, writer):
+    return os.path.join(project.home, RECEIPTS, writer.replace("/", ".") + ".jsonl")
+
+
+def _write_receipts(project, writer, events):
+    """The receipts of the `human` events an append stores under this
+    machine's own writer (its name now); the caller holds the writer file's
+    lock. One whose body has no canonical form gets none."""
+    if writer.rpartition("/")[0] != host_name():
+        return
+    lines = [{"seq": e["seq"], "hash": h} for e in events if e["kind"] == "human" and (h := event_hash(e))]
+    if not lines:
+        return
+    path = project_path(project, RECEIPTS, writer.replace("/", ".") + ".jsonl")
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    with os.fdopen(fd, "a") as f:
+        f.write("".join(json.dumps(r) + "\n" for r in lines))
+
+
+def receipt_of(project, writer, seq):
+    """The hash the append receipt holds for the writer's seq, or None. A
+    seq written twice (an append whose event could not be written after its
+    receipt was) is the last line's."""
+    try:
+        with open(receipt_path(project, writer)) as f:
+            lines = f.read().split("\n")
+    except OSError:
+        return None
+    for line in reversed(lines):
+        try:
+            r = json.loads(line) if line.strip() else None
+        except ValueError:
+            continue
+        if isinstance(r, dict) and type(r.get("seq")) is int and r["seq"] == seq and isinstance(r.get("hash"), str):
+            return r["hash"]
+    return None
+
+
+def receipted(project, e):
+    """Whether the stored event is the one this machine appended at its
+    position: its append receipt names its hash."""
+    h = receipt_of(project, e["writer"], e["seq"])
+    return h is not None and h == event_hash(e)
+
+
+def own_operator_event(e):
+    """Whether an event claims this machine's operator writer — a `human`
+    event of `<name>/human`, `name` this machine's name now or a former one
+    — which only its append receipt bears out (receipted)."""
+    head, _, tail = str(e.get("writer") or "").rpartition("/")
+    name, former = machine_identity()
+    return e.get("kind") == "human" and tail == "human" and (head == name or head in former)
 
 
 def log_append_batch(project, writer, events, skip_src=True):
@@ -1963,7 +2047,9 @@ def cursor_save(project, session_uuid, cursor):
 # with its attempt count — or that was pushed and could not be settled yet
 # (`pushed`: [seq, outcome], deliver_next). A deliverer never settles past an
 # unsettled event of the same writer, so a later success cannot bury an
-# earlier failure.
+# earlier failure. On a cut-over machine an owed event whose signer was
+# revoked is marked (`revoked`: its seqs above the prefix, delivered_revoke):
+# never delivered, and passed by the prefix only in order.
 
 
 def delivered_load(project, session_uuid):
@@ -1976,13 +2062,18 @@ def delivered_load(project, session_uuid):
     for w, v in (d.items() if isinstance(d, dict) else ()):
         if isinstance(v, dict):
             pending = v.get("pending")
-            out[str(w)] = {"settled": int(v.get("settled") or 0),
+            settled = int(v.get("settled") or 0)
+            out[str(w)] = {"settled": settled,
                            "pending": pending if type(pending) is int else None,
                            "attempts": int(v.get("attempts") or 0)}
             pushed = v.get("pushed")
             if isinstance(pushed, list) and len(pushed) == 2 and type(pushed[0]) is int and pushed[0] == pending \
                     and pushed[1] in PUSHED:
                 out[str(w)]["pushed"] = pushed
+            marked = v.get("revoked")
+            marked = sorted({s for s in marked if type(s) is int and s > settled}) if isinstance(marked, list) else []
+            if marked:
+                out[str(w)]["revoked"] = marked
     return out
 
 
@@ -1990,12 +2081,32 @@ def _delivery(record, writer):
     return record.get(writer) or {"settled": 0, "pending": None, "attempts": 0}
 
 
+def _entry(settled, pending=None, attempts=0, revoked=(), pushed=None):
+    """A writer's delivery entry as written: of its revoked seqs, those
+    directly above the settled prefix are passed by it (none is owed, so the
+    prefix moves over them in order), the rest kept; `revoked` only when it
+    holds one, so a record with none is written as before."""
+    marked = sorted({s for s in revoked if s > settled})
+    while marked and marked[0] == settled + 1 and marked[0] != pending:
+        settled = marked.pop(0)
+    w = {"settled": settled, "pending": pending, "attempts": attempts}
+    if pushed is not None:
+        w["pushed"] = pushed
+    if marked:
+        w["revoked"] = marked
+    return w
+
+
 def _next_check(record, writer, seq):
     w = _delivery(record, writer)
-    if seq <= w["settled"] or (w["pending"] is not None and seq != w["pending"]):
-        raise ValueError("delivery of %s:%d out of order (settled %d, pending %s)" % (
-            writer, seq, w["settled"], w["pending"]))
+    if seq <= w["settled"] or (w["pending"] is not None and seq != w["pending"]) or seq in w.get("revoked", ()):
+        raise ValueError("delivery of %s:%d out of order (settled %d, pending %s%s)" % (
+            writer, seq, w["settled"], w["pending"], ", revoked" if seq in w.get("revoked", ()) else ""))
     return w
+
+
+def _delivered_write(project, session_uuid, record):
+    write_json(project_path(project, "delivered", reader_key(session_uuid) + ".json"), record)
 
 
 def delivered_settle(project, session_uuid, writer, seq):
@@ -2003,9 +2114,9 @@ def delivered_settle(project, session_uuid, writer, seq):
     prefix and seq is not owed to this session, so the prefix moves to seq.
     The caller holds delivered/<session>.lock."""
     record = delivered_load(project, session_uuid)
-    _next_check(record, writer, seq)
-    record[writer] = {"settled": seq, "pending": None, "attempts": 0}
-    write_json(project_path(project, "delivered", reader_key(session_uuid) + ".json"), record)
+    w = _next_check(record, writer, seq)
+    record[writer] = _entry(seq, revoked=w.get("revoked", ()))
+    _delivered_write(project, session_uuid, record)
 
 
 def delivered_fail(project, session_uuid, writer, seq):
@@ -2013,8 +2124,8 @@ def delivered_fail(project, session_uuid, writer, seq):
     record = delivered_load(project, session_uuid)
     w = _next_check(record, writer, seq)
     attempts = w["attempts"] + 1 if w["pending"] == seq else 1
-    record[writer] = {"settled": w["settled"], "pending": seq, "attempts": attempts}
-    write_json(project_path(project, "delivered", reader_key(session_uuid) + ".json"), record)
+    record[writer] = _entry(w["settled"], seq, attempts, w.get("revoked", ()))
+    _delivered_write(project, session_uuid, record)
     return attempts
 
 
@@ -2026,12 +2137,66 @@ def delivered_pushed(project, session_uuid, writer, seq, outcome):
     try:
         record = delivered_load(project, session_uuid)
         w = _next_check(record, writer, seq)
-        record[writer] = {"settled": w["settled"], "pending": seq,
-                          "attempts": w["attempts"] if w["pending"] == seq else 0, "pushed": [seq, outcome]}
-        write_json(project_path(project, "delivered", reader_key(session_uuid) + ".json"), record)
+        record[writer] = _entry(w["settled"], seq, w["attempts"] if w["pending"] == seq else 0,
+                                w.get("revoked", ()), [seq, outcome])
+        _delivered_write(project, session_uuid, record)
     except OSError as err:
         daemon_log("delivery: the push of %s:%d to %s could not be noted (%s): a later pass pushes it again" % (
             writer, seq, session_uuid, err))
+
+
+def delivered_revoke(project, session_uuid, writer, seq):
+    """Mark the writer's owed event `seq` revoked (O12 M6): its signer's key,
+    device or member was revoked, so it is never delivered — _owed leaves it
+    out, _next_check refuses it — and its `refused-revoked` outcome is
+    recorded for the uplink first (an outside-origin event's, as
+    deliver_next records). It is not settled: a member's devices share its
+    `hub/<member>` writer, and settling seq 2 would move the prefix past an
+    owed seq 1 (P1-2), so the prefix passes a marked seq only in order — at
+    once when it is the writer's next, else when the events below it settle.
+    Revoking the pending event clears it and its attempts. Whether it was
+    marked: one whose outcome cannot be kept stays owed, for a later pass to
+    record and mark. The caller holds delivered/<session>.lock."""
+    record = delivered_load(project, session_uuid)
+    w = _delivery(record, writer)
+    if seq <= w["settled"]:
+        raise ValueError("revoking %s:%d, which is settled (settled %d)" % (writer, seq, w["settled"]))
+    if seq in w.get("revoked", ()):
+        return True
+    e = {"writer": writer, "seq": seq}
+    outcomes = sibling_module("sminos_outcomes")
+    if sibling_module("sminos_policy").outside_origin(e) \
+            and not outcomes.record(project, e, session_uuid, outcomes.REFUSED_REVOKED, None):
+        return False
+    revoked = list(w.get("revoked", ())) + [seq]
+    if w["pending"] == seq:
+        record[writer] = _entry(w["settled"], None, 0, revoked)
+    else:
+        record[writer] = _entry(w["settled"], w["pending"], w["attempts"], revoked, w.get("pushed"))
+    _delivered_write(project, session_uuid, record)
+    return True
+
+
+def revoke_owed(project, member, revoked):
+    """What a revocation stops at once: every event owed to the member whose
+    stored signer the set names (sminos_rl10.event_revoked), asked or not,
+    marked revoked (delivered_revoke), under its delivery lock. One whose
+    push is noted was delivered before the revocation, and is left to its
+    settlement. The events marked."""
+    session = member.session
+    if not session:
+        return []
+    rl10 = sibling_module("sminos_rl10")
+    marked = []
+    with flocked(project_path(project, "delivered", reader_key(session) + ".lock")):
+        record = delivered_load(project, session)
+        for e in _owed(log_read(project, to_session=session), session, record):
+            noted = _delivery(record, e["writer"]).get("pushed")
+            if not rl10.event_revoked(e, revoked) or (noted and noted[0] == e["seq"]):
+                continue
+            if delivered_revoke(project, session, e["writer"], e["seq"]):
+                marked.append(e)
+    return marked
 
 
 # --------------------------------------------------------------- the family
@@ -3377,10 +3542,16 @@ def _owed(events, session, record):
     # Imported history was delivered by the old chat: it is never owed; nor
     # is a copy, by its `copy` key alone (addressed_to), so a reader without
     # that rule owes it to no one either — its recipients are another log's.
-    return [e for e in events
-            if not e["writer"].startswith("legacy/")
-            and writer_session(e["writer"]) != session and addressed_to(e, session)
-            and e["seq"] > _delivery(record, e["writer"])["settled"]]
+    # An event marked revoked (delivered_revoke) is owed no more.
+    out = []
+    for e in events:
+        if e["writer"].startswith("legacy/") or writer_session(e["writer"]) == session \
+                or not addressed_to(e, session):
+            continue
+        w = _delivery(record, e["writer"])
+        if e["seq"] > w["settled"] and e["seq"] not in w.get("revoked", ()):
+            out.append(e)
+    return out
 
 
 def addressees(events):
@@ -3501,7 +3672,8 @@ def frame_of(project, e, events, session, cursor):
     unread = sum(1 for x in events if x is not e and x["kind"] in CHAT_KINDS and "copy" not in x and
                  writer_session(x["writer"]) != session and x["seq"] > cursor.get(x["writer"], 0))
     return compose_chat_frame(project.name, event_ref(e), str(e.get("from") or ""),
-                              target_label(e) if e.get("wake") else "@you", unread, str(e.get("text") or ""))
+                              target_label(e) if e.get("wake") else "@you", unread, str(e.get("text") or ""),
+                              sender_labels(project)(e))
 
 
 def push_event(project, member, session, e, events, cursor):
@@ -3517,9 +3689,65 @@ def push_event(project, member, session, e, events, cursor):
                        event=e, project=project.id)
 
 
-def compose_chat_frame(project_name, ref, sender, target, unread, text):
-    return "[sminos chat %s %s from %s → %s%s]\n%s" % (
-        project_name, ref, sender, target, (" | unread %d" % unread) if unread else "", text)
+def compose_chat_frame(project_name, ref, sender, target, unread, text, label=""):
+    """A chat event's frame; `label` is what follows the sender's alias
+    (sender_labels)."""
+    return "[sminos chat %s %s from %s%s → %s%s]\n%s" % (
+        project_name, ref, sender, label, target, (" | unread %d" % unread) if unread else "", text)
+
+
+def sender_labels(project):
+    """e → the clause after a sender's alias that says whose session sent
+    the event (the label, O12 M6), read from the stored line's `verified`
+    alone — the endpoint's verdict, never resolved through an alias:
+    `, owned by <email>[, <email>]` (an owner by its id where the endpoint
+    had no email for it), ` (owners unverified)` when the endpoint attested
+    none, ` (unverified, legacy)` for a legacy signer, and ` (signed by a
+    revoked key)` for a signer in the revocation set, however old the event,
+    never `owned by`; with the set unreadable nothing reads as owned. An
+    event claiming this machine's operator writer without its append receipt
+    (a git mirror's import, an event from before receipts) is
+    ` (unverified)`. Anything else, and everything on a machine not cut over,
+    carries none. The revocation set is read once, when first needed."""
+    rl10 = sibling_module("sminos_rl10")
+    if not rl10.cut_over():
+        return lambda e: ""
+    held = {}
+
+    def revoked():
+        if "set" not in held:
+            try:
+                held["set"] = rl10.revoked()
+            except rl10.RevokedUnreadable:
+                held["set"] = None
+        return held["set"]
+
+    def label(e):
+        verified = e.get("verified")
+        if not isinstance(verified, dict):
+            return " (unverified)" if own_operator_event(e) and not receipted(project, e) else ""
+        signer = verified.get("signer")
+        if isinstance(signer, dict) and signer.get("kind") == "legacy":
+            return " (unverified, legacy)"
+        if revoked() is None:
+            return " (owners unverified)"
+        if rl10.signer_revoked(signer, revoked()):
+            return " (signed by a revoked key)"
+        owners = verified.get("owners")
+        if not isinstance(owners, list):
+            return ""
+        names = [n for n in map(owner_name, owners) if n]
+        return ", owned by " + ", ".join(names) if names else " (owners unverified)"
+    return label
+
+
+def owner_name(owner):
+    """An attested owner as the label shows it: the email the endpoint
+    annotated, else its member id."""
+    if isinstance(owner, dict):
+        email, mid = owner.get("email"), owner.get("id")
+        return email if isinstance(email, str) and email else mid if isinstance(mid, str) else ""
+    return owner if isinstance(owner, str) else ""
 
 
 # ------------------------------------------------------------------ addressing
@@ -4115,16 +4343,17 @@ def is_moved(e):
     return e["kind"] == "retired" and e.get("reason") == "moved"
 
 
-def chat_line(e):
-    """`<ts> <ref> <from> → <target>  <text>`; a copy (record_copy) marked
-    `→ <project>, …` after its target, the projects whose logs delivered it."""
+def chat_line(e, label=""):
+    """`<ts> <ref> <from>[<label>] → <target>  <text>`; a copy (record_copy)
+    marked `→ <project>, …` after its target, the projects whose logs
+    delivered it. `label` follows the sender (sender_labels)."""
     lines = str(e.get("text") or "").split("\n")
     target = target_label(e)
     copy = e.get("copy")
     refs = [copy] if isinstance(copy, str) else [r for r in copy if isinstance(r, str)] if isinstance(copy, list) else []
     if refs:
         target += " → %s" % ", ".join(project_label(r.partition(":")[0]) for r in refs)
-    out = ["%s %s %s → %s  %s" % (e["ts"][11:19], event_ref(e), e.get("from", ""), target, lines[0])]
+    out = ["%s %s %s%s → %s  %s" % (e["ts"][11:19], event_ref(e), e.get("from", ""), label, target, lines[0])]
     out += ["    " + line for line in lines[1:]]
     return "\n".join(out)
 
@@ -4189,8 +4418,9 @@ def cmd_chat(a):
     print("chat %s · %s" % (project.name, head))
     if earlier:
         print("+%d earlier — sminos chat %s -n %d" % (earlier, project.name, len(window) + earlier))
+    label = sender_labels(project)
     for e in window:
-        print(moved_line(e, events) if is_moved(e) else chat_line(e))
+        print(moved_line(e, events) if is_moved(e) else chat_line(e, label(e)))
     if not window:
         print("(no new messages)" if a.since is None and a.n is None else "(no messages)")
 

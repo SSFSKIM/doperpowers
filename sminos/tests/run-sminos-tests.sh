@@ -370,6 +370,8 @@ run_suites() {
   if "$SCRIPT_DIR/test-hub.sh"; then pass "enrollment and hub projects (test-hub.sh)"; else fail "enrollment and hub projects (test-hub.sh)"; fi
   if python3 "$SCRIPT_DIR/test_rl10.py"; then pass "the endpoint (RL10): discovery, the cutover's identity, revocations, policy, the DX1 key (test_rl10.py)"; else
     fail "the endpoint (RL10): discovery, the cutover's identity, revocations, policy, the DX1 key (test_rl10.py)"; fi
+  if python3 "$SCRIPT_DIR/test_words.py"; then pass "a person's words on a cut-over machine: members, receipts, revocations, the label (test_words.py)"; else
+    fail "a person's words on a cut-over machine: members, receipts, revocations, the label (test_words.py)"; fi
   if "$SCRIPT_DIR/test-sync.sh"; then pass "sync through the hub, two machines (test-sync.sh)"; else fail "sync through the hub, two machines (test-sync.sh)"; fi
   if "$SCRIPT_DIR/test-archive.sh"; then pass "the archive of a hub project (test-archive.sh)"; else fail "the archive of a hub project (test-archive.sh)"; fi
   if "$SCRIPT_DIR/test-org.sh"; then pass "the org's directory: machine projects, follow-only hellos (test-org.sh)"; else
@@ -6202,6 +6204,63 @@ assert_rc 0 "$RC" "the retired seat is still found by its own name"
 rm -f "$HOME/.claude/sessions/fa-"*.json
 cd "$WORK"
 rm -f "$HOME/.claude/sessions/cn-"*.json
+
+# ---- the label on a cut-over machine ----------------------------------------------
+# On a machine cut over to its endpoint (O12 M6) a chat line says whose session
+# sent it, from the endpoint's verdict stored on the line alone: a signer since
+# revoked reads so however old the event, never `owned by`; an event under this
+# machine's operator writer with no append receipt (a git mirror's import) reads
+# unverified, while one `sminos say` appended here reads as it always did.
+echo "the label on a cut-over machine:"
+export SMINOS_HOME="$TEST_ROOT/label-registry"
+mkdir -m 700 "$SMINOS_HOME"
+LR="$TEST_ROOT/label-repo"
+mkdir -p "$LR"
+gitq init -q "$LR"
+(cd "$LR" && "$SMINOS" project init --name labels >/dev/null)
+LPLOG="$SMINOS_HOME/projects/$(smns_id "$LR")/log"
+cd "$LR"
+run "$SMINOS" say 'said here'
+assert_rc 0 "$RC" "(an operator say before the cutover)"
+python3 - "$SMINOS_HOME" "$LPLOG" <<'PY'
+import json, os, sys
+home, log = sys.argv[1:]
+def private(path, d):
+    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    with open(path, "w") as f:
+        json.dump(d, f)
+    os.chmod(path, 0o600)
+private(os.path.join(home, "daemon", "identity.json"), {
+    "org": "org-1", "hub": "http://127.0.0.1:9", "name": "testhost", "former": {}, "ref": "machine-ref-1",
+    "enrolled": "2026-10-27T00:00:00.000Z", "cutover": "2026-10-27T00:00:01.000Z", "build": "b"})
+private(os.path.join(home, "daemon", "revoked.json"), {"version": 2, "devices": [], "members": [], "keys": ["k-old"]})
+def machine(key):
+    return {"kind": "machine", "ref": "ref-other", "name": "othermachine", "keyId": key}
+one = [{"id": "mem-1", "email": "one@example.com"}]
+other = "othermachine/6e0000ff-0000-4000-8000-0000000000ff"
+lines = {other: [({"seq": 1, "text": "owned"}, machine("k-1"), one),
+                 ({"seq": 2, "text": "unattested"}, machine("k-1"), []),
+                 ({"seq": 3, "text": "before the revocation"}, machine("k-old"), one)],
+         "hub/mem-2": [({"seq": 1, "kind": "human", "from": "human", "text": "legacy"}, {"kind": "legacy"}, None)],
+         "testhost/human": [({"seq": 2, "kind": "human", "from": "human", "text": "from a mirror"}, None, None)]}
+for writer, events in lines.items():
+    with open(os.path.join(log, writer.replace("/", ".") + ".jsonl"), "a") as f:
+        for fields, signer, owners in events:
+            e = {"ts": "2026-10-27T01:00:%02d.000Z" % fields["seq"], "writer": writer, "kind": "say",
+                 "from": "peer", "to": "*", **fields}
+            if signer is not None:
+                e["verified"] = {"signer": signer, **({"owners": owners} if owners is not None else {})}
+            f.write(json.dumps(e) + "\n")
+PY
+run "$SMINOS" chat labels -n 10
+assert_contains "$OUT" "peer, owned by one@example.com → *  owned" "a verified sender's owners, by email"
+assert_contains "$OUT" "peer (owners unverified) → *  unattested" "an attestation that failed"
+assert_contains "$OUT" "human (unverified, legacy) → *  legacy" "a legacy signer"
+assert_contains "$OUT" "peer (signed by a revoked key) → *  before the revocation" "a revoked key's earlier event"
+assert_not_contains "$OUT" "owned by one@example.com → *  before" "and never owned by"
+assert_contains "$OUT" "human (unverified) → *  from a mirror" "an operator event no receipt bears out"
+assert_contains "$OUT" "human → *  said here" "an operator event appended here, as before"
+cd "$WORK"
 export SMINOS_HOME="$TEST_ROOT/hp-registry"
 
 # ---- the mirror and the daemon ----------------------------------------------------

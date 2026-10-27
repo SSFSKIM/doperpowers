@@ -14,7 +14,11 @@ the outcome here, in the project's `outcomes.jsonl`, before the settlement:
 session, or the stopped seat resumed with it), `uncertain` (the push was taken
 and its answer never came: settled, never pushed again), `recorded` (the
 recipient was not running and is pushed nothing), `refused-read-only` (the
-machine's policy), `failed` (given up after DELIVERY_ATTEMPTS). An owner's
+machine's policy), `failed` (given up after DELIVERY_ATTEMPTS); on a machine
+cut over to its endpoint (RL10, O12 M6) also `refused-words` (the endpoint
+refused a person's words into the session) and `refused-revoked` (the
+event's signer was revoked: it is marked, never delivered, and settles in
+order, sminos.delivered_revoke). An owner's
 event is pushed through the session's bridge, whose later refusal follows as
 below; a peer's is written to the session's inbox socket, which answers
 nothing more: its `delivered` says the frame was written, and the engine's
@@ -59,6 +63,8 @@ import sminos_codes as codes  # noqa: E402
 
 OUTBOX = "outcomes.jsonl"
 READ_ONLY = "refused-read-only"
+REFUSED_WORDS = "refused-words"       # the endpoint's verdict on a person's words: refuse (O12 M6)
+REFUSED_REVOKED = "refused-revoked"   # signed by a key, device or member since revoked (O12 M6)
 UNCERTAIN = {"sent?": "uncertain: the session took the message and its answer never came",
              "woken?": "uncertain: the stopped seat was resumed with it and reported no session id"}
 
@@ -68,6 +74,10 @@ def of_push(push, member):
     outcome (sminos.push_event's), or READ_ONLY for one the policy refused."""
     if push == READ_ONLY:
         return READ_ONLY, "this machine is read-only: nothing written outside it is delivered"
+    if push == REFUSED_WORDS:
+        return REFUSED_WORDS, "the endpoint refused it as words into this session: nothing was delivered"
+    if push == REFUSED_REVOKED:
+        return REFUSED_REVOKED, "its signer's key, device or member was revoked: it is never delivered"
     if push == "sent":
         return "delivered", "pushed to the live session"
     if push == "woken":
@@ -201,8 +211,9 @@ def report_one(project, box, sid, events):
     before = dict(reported)
     for e in sorted(events, key=lambda e: (e["writer"], e["seq"])):
         w = e["writer"]
-        if e["seq"] <= max(int(reported.get(w) or 0), sminos._delivery(settled, w)["settled"]):
-            continue
+        if e["seq"] <= max(int(reported.get(w) or 0), sminos._delivery(settled, w)["settled"]) \
+                or e["seq"] in sminos._delivery(settled, w).get("revoked", ()):
+            continue   # settled, reported, or marked revoked (its outcome is `refused-revoked`)
         try:
             box.record(e, sid, "recorded", CLOSED)
         except OSError as err:

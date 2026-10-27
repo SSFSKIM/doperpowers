@@ -84,8 +84,14 @@ frame taken, so every continuation runs once its frame is written, and
 everything a reconnect restates goes again after each welcome. The
 endpoint's own frames down — its policy, its revocation set, its ask for
 the DX1 key, and a device's `query` and `tombstone` of an operation — are
-handled there alone. Before the cutover the endpoint is
-only probed (cmd_probe), beside the hub's stream.
+handled there alone. Up the socket go `member` frames too (O12 M6,
+Link.members): every session of this machine, in every project known here
+whether the endpoint relays it or not (the endpoint decides a person's
+words from them), the whole set after each welcome, then each one that
+changed, and `{session, gone: true}` for one that left. A revocation set
+from the endpoint marks every event owed here that a revoked signer signed
+(Link.mark_revoked: never delivered, its outcome up). Before the cutover
+the endpoint is only probed (cmd_probe), beside the hub's stream.
 """
 
 import collections
@@ -1324,6 +1330,36 @@ def hub_project(pid, cred):
 # ------------------------------------------------------------- one stream
 
 
+def member_frame(pid, m):
+    """RL10's `member` for a local member's row (Plane.rows): its record's
+    provenance and ownership (sminos.session_record; the defaults, `@machine`
+    and a terminal origin, with no principal or inference, while it has
+    none), the lane — B when its controller says so, or when no controller
+    is set yet and the engine host launched it (origin `maws`), else A —
+    and what the row says of it. `launch` and O8's `access` and `shares` are
+    not sent yet. `principal` and `inference` cross because the endpoint is
+    this machine; they never ride a log event."""
+    rec = m.record or {}
+    origin = rec.get("origin") if isinstance(rec.get("origin"), dict) else dict(sminos.DEFAULT_ORIGIN)
+    controller = rec.get("controller") if isinstance(rec.get("controller"), dict) else None
+    lane = "B" if (controller or {}).get("lane") == "B" or (controller is None and origin.get("kind") == "maws") \
+        else "A"
+    frame = {"t": "member", "session": m.session, "alias": m.alias, "project": pid, "lane": lane,
+             "state": m.state}
+    if m.title:
+        frame["title"] = m.title
+    frame["cwd"] = m.cwd
+    if m.worktree:
+        frame["worktree"] = m.worktree
+    frame["owners"] = list(rec["owners"]) if isinstance(rec.get("owners"), list) else list(sminos.DEFAULT_OWNERS)
+    frame["ownersProof"] = list(rec["ownersProof"]) if isinstance(rec.get("ownersProof"), list) else []
+    frame["origin"] = origin
+    for key in ("principal", "inference", "controller"):
+        if rec.get(key) is not None:
+            frame[key] = rec[key]
+    return frame
+
+
 class Here:
     """What the uplink knows of this machine, as an RPC's checks ask it
     (sminos_rpc), on the main thread."""
@@ -1389,6 +1425,11 @@ class Link:
         self.coded = coded
         self.policy_asked = None  # RL10: the policy-set last sent on this connection, until the endpoint's `policy`
         self.revoked_whole = False  # RL10: the next revocation set is the welcome's, kept whole
+        self.revoked_due = False  # RL10: a revocation set was kept that the owed events have not been marked by
+        self.members_sent = {}    # RL10: session → the `member` frame last sent on this connection
+        self.member_read_for = None   # RL10: the running sessions the projects known here were last listed for
+        self.next_member_read = 0.0   # RL10: when they are read again (monotonic) when none came or went
+        self.member_known = {}    # RL10: project id → project, every project known here as last listed (members)
         self.logs = logs          # project id → HubLog, kept across streams
         self.generation = None
         self.opened = set()       # the projects `hello`ed on this stream
@@ -1522,6 +1563,7 @@ class Link:
         self.reporting.clear()
         self.delivering.clear()
         self.opening.clear()
+        self.members_sent = {}
         if not self.coded:
             self.log_lane = self.session_lane = self.transport.lane()
             log("connected to the endpoint (RL10, local-only) as %s (connection %d)"
@@ -1579,9 +1621,12 @@ class Link:
 
     def on_revoked(self, frame, _stream):
         """The endpoint's revocation set, kept in daemon/revoked.json: whole
-        the first after a welcome, merged into after that (sminos_rl10)."""
+        the first after a welcome, merged into after that (sminos_rl10);
+        the owed events it names are marked at the next tick (mark_revoked),
+        once the members' rows are read."""
         whole, self.revoked_whole = self.revoked_whole, False
-        rl10.keep_revoked(frame, whole)
+        if rl10.keep_revoked(frame, whole):
+            self.revoked_due = True
 
     def on_legacy_key(self, _frame, _stream):
         """`legacy-key?`: hub.json's DX1 key handed to the endpoint, which
@@ -2027,6 +2072,61 @@ class Link:
             self.rpcs.sending(frames)
             self.session_lane.send(frames, then=lambda refused, f=frames: self.rpcs.delivered(f, refused))
 
+    def members(self, now):
+        """RL10's `member` frames up (member_frame): this machine's sessions
+        in every project known here, from the plane's rows. When a session
+        came or went, and every MEMBERS_EVERY (`now`, monotonic), the
+        projects known here are listed again and those the plane does not
+        read itself (not open on the stream) are read, as is any never read;
+        between, what the plane's own reads changed is sent. The whole set
+        goes after each welcome (members_sent is new with the connection),
+        then each frame that changed, and `{session, gone: true}` for a
+        session no longer here; a session in two projects' rows is sent for
+        the first. The projects known here ({id: project}), as last listed."""
+        live = set(self.plane.live)
+        if live != self.member_read_for or now >= self.next_member_read:
+            self.member_read_for, self.next_member_read = live, now + plane.MEMBERS_EVERY
+            self.member_known = {p.id: p for p in sminos.known_projects()}
+            for pid, project in self.member_known.items():
+                if pid not in self.opened or pid not in self.plane.rows:
+                    self.plane.refresh(project)
+        current = {}
+        for pid in sorted(pid for pid, rows in self.plane.rows.items() if rows and pid in self.member_known):
+            for sid, m in sorted(self.plane.rows[pid].items()):
+                current.setdefault(sid, member_frame(pid, m))
+        frames = [f for sid, f in current.items() if self.members_sent.get(sid) != f]
+        frames += [{"t": "member", "session": sid, "gone": True} for sid in self.members_sent if sid not in current]
+        self.members_sent = current
+        if frames:
+            self.session_lane.send(frames)
+        return self.member_known
+
+    def mark_revoked(self, known):
+        """The revocation set kept since the last tick applied to what is
+        owed here: every event owed to a local member (the plane's rows) whose
+        stored signer it names is marked revoked, its `refused-revoked`
+        outcome recorded for the next upload pass (sminos.revoke_owed). The
+        deliverers check the set themselves before each push; this is what
+        stops an owed event at once, asked or not."""
+        self.revoked_due = False
+        try:
+            revoked = rl10.revoked()
+        except rl10.RevokedUnreadable as e:
+            log("the revocation set cannot be read (%s): nothing owed is marked until the endpoint's next" % e)
+            return
+        if not any(revoked[k] for k in rl10.REVOKED_SETS):
+            return
+        try:
+            for pid, project in sorted(known.items()):
+                for sid, m in sorted(self.plane.rows.get(pid, {}).items()):
+                    for e in sminos.revoke_owed(project, m, revoked):
+                        log("%s in %s is signed by a revoked key: marked refused-revoked for %s, never delivered"
+                            % (sminos.event_ref(e), project.name, sid[:8]))
+                        self.next_upload = 0.0
+        except BaseException:
+            self.revoked_due = True   # the next tick tries again
+            raise
+
     def tick(self):
         """Between frames: new hub projects opened, and what this machine's
         writers appended uploaded — at once when a sender nudged the daemon."""
@@ -2089,6 +2189,10 @@ class Link:
             self.post_session(self.plane.tick({pid: self.logs[pid].project for pid in self.opened}))
             self.relay_requests()
             self.relay_rpcs()
+            if not self.coded:
+                known = self.members(time.monotonic())
+                if self.revoked_due:
+                    self.mark_revoked(known)
             self.plane_failing = ""
         except EndStream:
             raise
