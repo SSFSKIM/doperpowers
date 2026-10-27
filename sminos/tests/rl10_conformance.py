@@ -27,22 +27,17 @@ below with its reason:
   revoked signer's event). Neither the probe nor the endpoint's answer to it
   is played here; what sminos does instead is checked over the whole
   conversation: it never sends such a line.
-- AMENDMENTS: lines whose world sminos cannot be in as the fixture writes it
-  (a member's record, a log without its members' `joined` events, DX4's
-  `raised` body, a request digest of nothing, a person's words to "*",
-  which sminos's log owes no one). Each is checked as amended and
-  printed `amend` with its reason from rl10-conversation.amendments.json,
-  the list O10 changes its fixture against (with the fixture's gaps the
-  replay stages around, `staged`).
+- No line is amended: O10's fixture is written to sminos's real frames
+  (MAWS 6d57a6160, which took M7b's amendment list), so a line sminos
+  cannot send as written fails.
 
-Prints one `ok`, `amend` or `FAIL` line per line of the conversation it
+Prints one `ok` or `FAIL` line per line of the conversation it
 plays, for run-sminos-tests.sh to count, and exits 1 when one fails.
 
     python3 -B rl10_conformance.py <skills/sminos/scripts> <rl10-conversation.json>
 """
 
 import copy
-import glob
 import hashlib
 import json
 import os
@@ -166,7 +161,7 @@ def subst(x):
     holding bindings has each replaced; a literal id a matched line bound
     (IDS) is the id sminos sent."""
     if isinstance(x, dict):
-        return {k: subst(v) for k, v in x.items()}
+        return {subst(k): subst(v) for k, v in x.items()}
     if isinstance(x, list):
         return [subst(v) for v in x]
     if not isinstance(x, str):
@@ -462,6 +457,7 @@ def stage_machine():
     sminos.forget_caches()
     P = project("maws", hub=True)
     Q = project("local", hub=False)
+    B.update({"repo": os.path.basename(P.root), "checkout:Q": Q.root, "configDir": os.path.join(os.environ["HOME"], ".claude")})
     B.update({"project:P": P.id, "project:Q": Q.id, "checkout": P.root,
               "project:machine": sminos.machine_project_id(B["org"], B["name"])})
     for name, alias in (("S1", "main"), ("S2", "bob"), ("S3", "lane-b"), ("S4", "unbridged")):
@@ -585,7 +581,7 @@ def stage_restart():
 
 STAGE = {(0, 3): stage_open_main, (2, 0): stage_read_only(True), (2, 2): stage_read_only(False),
          (4, 13): stage_whole_second, (6, 6): stage_operator_words, (6, 8): stage_unrelayed,
-         (8, 0): stage_host, (8, 4): stage_raise, (9, 5): stage_relaunch,
+         (8, 0): stage_host, (8, 2): stage_raise, (9, 5): stage_relaunch,
          (11, 3): stage_restart}
 
 
@@ -678,9 +674,9 @@ def check_spawn():
 CHECK = {(0, 2): check_no_identity, (0, 5): check_identity, (0, 6): check_revoked(3), (0, 7): check_org,
          (2, 1): check_policy(True), (2, 3): check_policy(False), (5, 1): check_present,
          (6, 1): check_delivered("S1", "run the tests"), (6, 7): check_delivered("S1", "asked while RL1 is down"),
-         (7, 13): check_delivered("S2", "from b1"), (11, 36): check_delivered("S2", "from b2"),
-         (11, 7): check_revoked(3), (11, 26): check_revoked(4),
-         (11, 29): check_revoked(5, ["b1"])}
+         (7, 13): check_delivered("S2", "from b1"), (11, 38): check_delivered("S2", "from b2"),
+         (11, 7): check_revoked(3), (11, 28): check_revoked(4),
+         (11, 31): check_revoked(5, ["b1"])}
 
 
 def late_checks(P):
@@ -688,8 +684,8 @@ def late_checks(P):
     CHECK.update({(5, 3): check_spent(P, own("human"), 7), (5, 7): check_spent(P, own("human"), 8),
                   (7, 1): check_stored(hub_b, 1, "device"), (7, 3): check_spent(P, hub_b, 2),
                   (7, 7): check_stored("old-mini/human", 1, "legacy"), (7, 9): check_spent(P, hub_b, 3),
-                  (9, 10): check_spawn, (11, 19): check_vector(hub_b, 5),
-                  (11, 27): check_stored(hub_b, 6, "device"), (11, 31): check_spent(P, hub_b, 7)})
+                  (9, 10): check_spawn, (11, 21): check_vector(hub_b, 5),
+                  (11, 29): check_stored(hub_b, 6, "device"), (11, 33): check_spent(P, hub_b, 7)})
 
 
 # ------------------------------------------------------------- probes and amendments
@@ -772,120 +768,17 @@ PROBES = {
     (6, 11): ("the endpoint's answer to it", None),
     (7, 16): ("a words? for a session with no member here", probe_members),
     (7, 17): ("the endpoint's answer to it", None),
-    (11, 33): ("a revoked signer's words asked again", probe_revoked),
-    (11, 34): ("the endpoint's answer to it", None),
+    (11, 35): ("a revoked signer's words asked again", probe_revoked),
+    (11, 36): ("the endpoint's answer to it", None),
 }
 
-RECORD = ("principal", "inference", "controller")
+# O10's fixture is written to sminos's real frames (MAWS 6d57a6160): no line
+# is amended, and a line sminos cannot send as written fails.
+AMENDMENTS = {}
 
-
-def amend_member(step):
-    return step, {"extra": RECORD}
-
-
-def amend_local_cwd(step):
-    step = copy.deepcopy(step)
-    step["up"]["cwd"] = Q_.root
-    return step, {"extra": RECORD}
-
-
-def stored_vector(p):
-    """{writer: seq}, P's log as stored, read here and not through sminos:
-    each writer file's last event's seq, carried past the positions spent
-    right after it (uplink.json's `spent`), and a writer spent from seq 1
-    with nothing stored at the last of those."""
-    out = {}
-    for path in glob.glob(os.path.join(sminos.project_path(p, "log"), "*.jsonl")):
-        with open(path, encoding="utf-8") as f:
-            events = [json.loads(line) for line in f if line.strip()]
-        if events:
-            out[events[-1]["writer"]] = events[-1]["seq"]
-    try:
-        with open(os.path.join(p.home, sminos.UPLINK_STATE)) as f:
-            spent = json.load(f).get("spent") or {}
-    except FileNotFoundError:
-        spent = {}
-    for w, seqs in spent.items():
-        at = out.get(w, 0)
-        while at + 1 in seqs:
-            at += 1
-        if at:
-            out[w] = at
-    return out
-
-
-def amend_have(step):
-    """The hello carries the vector of P's log as it is stored here: read
-    when the line is matched (nothing reaches the log between a connection's
-    hello and the conversation's next down line)."""
-    want = subst(step["up"])
-
-    def pred(f):
-        return f.get("t") == "hello" and f.get("project") == want["project"] and f.get("name") == want["name"] \
-            and f.get("have") == stored_vector(P_)
-    return step, {"pred": pred}
-
-
-def amend_first_upload(step):
-    """The first upload carries every own writer of P past the endpoint's
-    have, S1's joined and titled first, so S1's say is not its seq 1: the
-    line holds when an events frame of P carries the operator's words as the
-    fixture has them and S1's say as the fixture has it, at the seq it has
-    here."""
-    want = subst(step["up"])
-
-    def pred(f):
-        if f.get("t") != "events" or f.get("project") != want["project"]:
-            return False
-        human, say_ = want["events"]
-        drop = (lambda e: {k: v for k, v in e.items() if k != "seq"})
-        return human in f["events"] and any(drop(e) == drop(say_) and e["writer"] == say_["writer"]
-                                            for e in f["events"])
-    return step, {"pred": pred}
-
-
-def amend_raised(step):
-    step = copy.deepcopy(step)
-    body = step["up"]["message"]["body"]
-    step["up"]["message"]["body"] = {k: body[k] for k in ("session", "request", "tool", "input")}
-    return step, {}
-
-
-def amend_recipients(name, alias):
-    def amend(step):
-        step = copy.deepcopy(step)
-        step["up"]["event"]["to"] = [{"session": "{{session:%s}}" % name, "alias": alias}]
-        return step, {}
-    return amend
-
-
-
-
-def amend_digest(step):
-    step = copy.deepcopy(step)
-    step["down"]["rpc"]["args"]["digest"]["input_sha256"] = codes.input_sha256({"command": "ls"})
-    return step, {}
-
-
-AMEND = {(3, 2): amend_member, (3, 3): amend_member, (3, 4): amend_member, (3, 5): amend_member,
-         (3, 6): amend_local_cwd, (4, 0): amend_have, (4, 4): amend_first_upload,
-         (6, 6): amend_recipients("S1", "main"), (6, 8): amend_recipients("S5", "local"), (8, 4): amend_raised,
-         (9, 5): amend_digest, (9, 6): amend_member, (11, 10): amend_member, (11, 11): amend_member,
-         (11, 16): amend_have}
-
-# Each amended line's reason, in the list beside the fixture O10 takes them
-# from (rl10-conversation.amendments.json): the two must name the same lines.
-with open(os.path.join(os.path.dirname(FIXTURE), "rl10-conversation.amendments.json")) as f:
-    LISTED = {tuple(int(n) for n in e["line"].split(".")): e["reason"] for e in json.load(f)["amended"]}
-if set(LISTED) != set(AMEND):
-    say("FAIL", "the amendments listed and the amendments played differ: listed only %r, played only %r" % (
-        sorted(set(LISTED) - set(AMEND)), sorted(set(AMEND) - set(LISTED))))
-AMENDMENTS = {k: (LISTED.get(k, "unlisted"), fn) for k, fn in AMEND.items()}
-
-# A step whose line comes on the next connection: the fixture places it
-# where the endpoint's suite plays it.
-NEXT_CONNECTION = {(8, 2): "the last 50 host events go again after a reconnect: on the next connection's "
-                           "restatement, before its restated"}
+# A step whose line comes on the next connection: none since the fixture
+# places the host resend on the reconnect, before its restated.
+NEXT_CONNECTION = {}
 DEFERRED = []
 
 

@@ -373,11 +373,10 @@ run_suites() {
   if python3 "$SCRIPT_DIR/test_words.py"; then pass "a person's words on a cut-over machine: members, receipts, revocations, words?, the deliverers, the label (test_words.py)"; else
     fail "a person's words on a cut-over machine: members, receipts, revocations, words?, the deliverers, the label (test_words.py)"; fi
   # O10's RL10 conversation, MAWS's fixture copied byte for byte, replayed against sminos's own uplink
-  # (rl10_conformance.py): a line O10's fixture must change to fit sminos is played as amended and said so.
+  # (rl10_conformance.py): every line as written; an `amend` would mean a line sminos cannot send as written, and fails.
   while IFS= read -r line; do
     case "$line" in
       "ok "*) pass "rl10 conformance: ${line#ok }" ;;
-      "amend "*) pass "rl10 conformance (amended for O10): ${line#amend }" ;;
       *) fail "rl10 conformance: ${line#FAIL }" ;;
     esac
   done < <(python3 -B "$SCRIPT_DIR/rl10_conformance.py" "$PLUGIN_ROOT/skills/sminos/scripts" "$SCRIPT_DIR/rl10-conversation.json" 2>&1)
