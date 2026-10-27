@@ -2880,6 +2880,39 @@ class Checks(unittest.TestCase):
         rc, v = view(new_op())
         self.assertEqual((rc, v["state"]), (1, "unavailable"))
 
+    def test_o_rpc_query_changes_nothing_but_reads_the_ledger(self):
+        """A diagnostic: it runs before the migration every other verb runs,
+        so a legacy record stays as it was, and no lock or record is made."""
+        self.mod.turn = "t-o11"
+        rpc = self.send_op("steer", {"session": self.bridged.sid, "text": "asked from a fresh home"})
+        o = self.outcome(rpc)
+        home = os.path.join(T, "rpc-query-" + uuidlib.uuid4().hex[:8])
+        state = os.path.join(home, "sminos")
+        os.makedirs(os.path.join(state, "daemon"), mode=0o700)
+        shutil.copy(os.path.join(os.environ["SMINOS_HOME"], "daemon", rpcs.LEDGER_FILE),
+                    os.path.join(state, "daemon", rpcs.LEDGER_FILE))
+        legacy = os.path.join(state, "legacy-worker.json")
+        with open(legacy, "w") as f:   # what migrate stamps a group on, retires, and tightens to 0600
+            json.dump({"engine": "codex", "status": "done", "alias": "old-worker", "cwd": self.root, "pid": 1}, f)
+        os.chmod(legacy, 0o644)
+
+        def tree():
+            out = {}
+            for d, _, names in os.walk(home):
+                for n in names:
+                    q = os.path.join(d, n)
+                    with open(q, "rb") as f:
+                        out[os.path.relpath(q, home)] = (f.read(), os.stat(q).st_mode)
+            return out
+
+        before = tree()
+        p = subprocess.run([CLI, "rpc-query", rpc["opId"]], capture_output=True, text=True,
+                           env={**os.environ, "HOME": home, "SMINOS_HOME": state})
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual((json.loads(p.stdout)["state"], json.loads(p.stdout)["outcome"]), ("done", o))
+        self.assertEqual(tree(), before, "no record rewritten, no lock or metadata made")
+        self.assertFalse(os.path.exists(os.path.join(home, ".claude")), "no migration lock")
+
 
 class CopyNames(unittest.TestCase):
     """A seat-less session never takes, from its harness name, the alias of

@@ -10182,6 +10182,11 @@ def main(argv=None):
         # a session's start never waits here on the registry's lock.
         cmd_guide(a)
         return
+    if a.cmd == "rpc-query":
+        # A diagnostic: it reads the RPC ledger's file and changes nothing,
+        # so no migration rewrites a record or takes the registry's lock.
+        cmd_rpc_query(a)
+        return
     if a.cmd == "who" and not a.target:
         # The address mod's, before a session's model requests: it reads and
         # never migrates, and never waits on the registry's lock.
