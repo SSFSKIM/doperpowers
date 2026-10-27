@@ -1415,7 +1415,11 @@ function startChild($: EngineInterface, session: string) {
   void (async () => {
     let pending = ''
     try {
-      const child = $.process.spawn({ argv: [`${$.plugin.root}/skills/sminos/scripts/sminos`, 'bridge', '--session', session] })
+      // A verdict this process holds goes to every child it starts: a
+      // replacement after the engine host exited would find the engine
+      // re-parented, and its own parent check would say mismatch.
+      const lane = state.isLaneMarked && (state.laneVerdict === 'match' || state.laneVerdict === 'mismatch') ? ['--lane', state.laneVerdict] : []
+      const child = $.process.spawn({ argv: [`${$.plugin.root}/skills/sminos/scripts/sminos`, 'bridge', '--session', session, ...lane] })
       state.child = child
       for await (const piece of child) {
         if (piece.stream === 'stderr') {

@@ -7275,6 +7275,54 @@ describe('lane B: the observer (O12 M3)', () => {
     expect(c.ofType('raised')).toEqual([expect.objectContaining({ request: 'toolu_1' })])
   })
 
+  test('every child after the first is told the verdict the process holds (`--lane`), so a replacement never recomputes it after the engine was re-parented', async () => {
+    const ARGV = ['/plug/skills/sminos/scripts/sminos', 'bridge', '--session', SID]
+    const h = await started(MARKED, 'match')
+    expect(h.children[0]!.argv).toEqual(ARGV)
+    h.children[0]!.end()
+    await h.settle()
+    await h.fire(0)
+    expect(h.children[1]!.argv).toEqual([...ARGV, '--lane', 'match'])
+    // A reload whose process already holds a verdict: its first child is told it.
+    const r = harness({ env: MARKED, messages: [], sessionState: new Map<string, unknown>([['lane', 'mismatch']]) })
+    await r.start()
+    expect(r.children[0]!.argv).toEqual([...ARGV, '--lane', 'mismatch'])
+    // Unresolved is nothing to tell; an unmarked session's children never carry it.
+    const u = await started(MARKED, 'unresolved')
+    u.children[0]!.end()
+    await u.settle()
+    await u.fire(0)
+    expect(u.children[1]!.argv).toEqual(ARGV)
+    const a = await started({}, 'match')
+    a.children[0]!.end()
+    await a.settle()
+    await a.fire(0)
+    expect(a.children[1]!.argv).toEqual(ARGV)
+  })
+
+  test('an observer submits no wake for an upload pending: not at load, not at a turn\'s end, not when idle', async () => {
+    const ROOT = `/w/.claude/desk-uploads/${SID}`
+    const PNG = `${ROOT}/u1.0.png`
+    const sessionState = new Map<string, unknown>([
+      ['lane', 'match'],
+      ['media', { shape: 1, attachments: [{ upload: 'u1', index: 0, name: 'p.png', mediaType: 'image/png', path: PNG, root: ROOT, state: 'pending' }] }],
+    ])
+    const h = harness({ env: MARKED, messages: [], sessionState })
+    h.stats[ROOT] = { kind: 'dir' }
+    h.stats[PNG] = { kind: 'file' }
+    await h.start()
+    h.children[0]!.write(helloWith('match'))
+    await h.settle()
+    await h.fire(MEDIA_WAKE_MS)
+    for (const t of ['t1', 't2']) {
+      await h.turn(t)
+      await h.step({ turnId: t, index: 0, model: 'm', messageCount: 1 }, [{ kind: 'text', index: 0, text: 'mine' }])
+      await h.complete(t)
+      await h.fire(MEDIA_WAKE_MS)
+    }
+    expect(h.calls.filter((c) => c.op === 'submit')).toEqual([])
+  })
+
   test('turn.step neither claims a pending upload nor rewrites the model or effort; main-loop and subagent chunks still post', async () => {
     const ROOT = `/w/.claude/desk-uploads/${SID}`
     const PNG = `${ROOT}/u1.0.png`

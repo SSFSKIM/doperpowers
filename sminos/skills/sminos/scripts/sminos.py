@@ -10408,6 +10408,7 @@ def build_parser():
 
     br = sub.add_parser("bridge", add_help=False)
     br.add_argument("--session", default="")
+    br.add_argument("--lane", default=None)   # the process's lane verdict its module holds (O12 M3)
     br.set_defaults(fn=cmd_bridge)
 
     wa = sub.add_parser("watch", add_help=False)

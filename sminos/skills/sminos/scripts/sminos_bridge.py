@@ -107,7 +107,9 @@ verdict (`lane`), `match`, `mismatch` (the parent known and another), or
 `unresolved` (the session's registry record or `ps` not answering yet), which
 it retries, every LANE_RETRY_S for LANE_RETRY_FOR_S, then every
 LANE_RETRY_LATER_S, saying the resolved verdict on a line of its own
-(`{"op": "lane", "lane": ...}`). Until a verdict of `mismatch` the session is
+(`{"op": "lane", "lane": ...}`). The verdict is the process's: a module
+that holds one starts every later child with it (`--lane`), which that
+child takes as its own. Until a verdict of `mismatch` the session is
 an observer's: the mod refuses every control, and this child refuses every
 client's decision (409, code `lane-b`). Each launch's lane, B for `match`, A
 for `mismatch` or an unmarked session, is relayed to the session's record
@@ -407,11 +409,12 @@ def is_lane_marked():
 
 def lane_verdict(session, session_pid):
     """Whether the marked session `session`, whose process is `session_pid`
-    (this child's parent), is the one MAWS's engine host launched: `match`
-    when sminos's parent check (sminos.member_mark) confirms its parent is
-    the SMNS_MEMBER pid; `mismatch` only on positive evidence, its parent
-    known and another, or no mark to check it against; `unresolved` while
-    its registry record does not name it yet, or `ps` cannot tell."""
+    (this child's parent), is the one MAWS's engine host launched, by
+    sminos's parent rule (sminos.member_mark's) on one observation of its
+    parent: `match` when it is the SMNS_MEMBER pid; `mismatch` only on
+    positive evidence, its parent known and another, or no mark to check it
+    against; `unresolved` while its registry record does not name it yet,
+    or `ps` cannot tell."""
     mark = os.environ.get(S.MEMBER_MARK, "")
     if not (mark.isdigit() and int(mark) > 1):
         return "mismatch"
@@ -422,9 +425,10 @@ def lane_verdict(session, session_pid):
         return "unresolved"
     if not isinstance(rec, dict) or rec.get("sessionId") != session:
         return "unresolved"
-    if S.member_mark({"pid": session_pid}):
-        return "match"
-    return "unresolved" if S.parent_pid(session_pid) is None else "mismatch"
+    parent = S.parent_pid(session_pid)
+    if parent is None:
+        return "unresolved"
+    return "match" if parent == int(mark) else "mismatch"
 
 
 def relay_controller(session, lane):
@@ -1521,7 +1525,7 @@ class _Server(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
         super().handle_error(request, client_address)
 
 
-def serve(session):
+def serve(session, lane=None):
     """The child's life: bind beside the endpoint, listen, move the socket
     into place (so the path never names a socket nobody listens on yet), say
     hello, serve until the parent (the session) is gone, the path is another
@@ -1552,7 +1556,10 @@ def serve(session):
     parent = os.getppid()
     bridge.presence = presence_path(parent)
     if is_lane_marked():
-        bridge.lane = lane_verdict(session, parent)
+        # The process's verdict, when its module holds one (`--lane`): a
+        # replacement child after the engine host exited would find the
+        # engine re-parented, and its own check would say mismatch.
+        bridge.lane = lane if lane in ("match", "mismatch") else lane_verdict(session, parent)
 
     def watchdog():
         while not bridge.closing.wait(WATCHDOG_EVERY):
@@ -1598,7 +1605,7 @@ def serve(session):
 def cmd_bridge(a):
     if not S.UUID_RE.match(a.session or ""):
         S.die("bridge: %r is not a session id" % (a.session or ""))
-    serve(a.session)
+    serve(a.session, getattr(a, "lane", None))
 
 
 # ------------------------------------------------------------------ watch

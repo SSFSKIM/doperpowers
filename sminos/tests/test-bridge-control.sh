@@ -178,6 +178,9 @@ if op == "post":            # sock events-json
 elif op == "get":           # sock url
     status, text = request(sys.argv[2], "GET", sys.argv[3])
     print(status, text)
+elif op == "postto":        # sock url body
+    status, text = request(sys.argv[2], "POST", sys.argv[3], sys.argv[4])
+    print(status, text)
 elif op == "command":       # sock body-json → the child's answer to a command, as the daemon posts one
     status, text = request(sys.argv[2], "POST", "/command?wait=5000", sys.argv[3])
     print(status, text)
@@ -202,7 +205,9 @@ elif op == "fakemod":       # sminos session lines-file mode-file
     CAPS = {"sminos": "1.7.0", "protocol": 2, "engine": "2.1.307", "ops": ["ping", "read", "command"],
             "reads": ["status"], "routes": {"measured": "2.1.307"}}
     # The child's stderr is the mod's debug log: kept beside the lines.
-    child = subprocess.Popen([sminos, "bridge", "--session", session], stdout=subprocess.PIPE,
+    # A module that holds the process's lane verdict tells each later child it (FAKEMOD_LANE).
+    lane = ["--lane", os.environ["FAKEMOD_LANE"]] if os.environ.get("FAKEMOD_LANE") else []
+    child = subprocess.Popen([sminos, "bridge", "--session", session] + lane, stdout=subprocess.PIPE,
                              stderr=open(out + ".err", "a"), text=True)
     sock = None
     delivered = {}
@@ -916,6 +921,23 @@ until_true 100 lane_said "$T/lines-lp" || true
 assert_equals "$(lane_of_lines "$T/lines-lp")" "match" "once ps answers, match"
 until_true 100 controller_is "$LP" B || true
 assert_equals "$(controller_of "$LP")" "B" "and lane B relayed"
+kill "$LANEFAKE" 2>/dev/null || true
+
+# A replacement child (a reload, a restart) after the host exited and the
+# engine was re-parented: the parent check would now say mismatch, but the
+# module tells it the process's verdict, which it keeps for its decision
+# route and its relay; the record's lane B stands.
+LR=5b000001-0000-4000-8000-0000000000cb
+lane_record "$LR" B
+lanefake "$LR" "$T/lines-lr" MAWS_LANE=B SMNS_MEMBER=2 FAKEMOD_LANE=match
+registry "$LANEFAKE" "$LR"
+until_true 100 answers "$SMINOS_HOME/bridge/$LR.sock" || true
+assert_equals "$(lane_of_lines "$T/lines-lr")" "match" "a replacement child takes the verdict its module holds"
+run ctl postto "$SMINOS_HOME/bridge/$LR.sock" /requests/toolu_x/decision '{"behavior":"allow","by":"cli"}'
+assert_contains "$OUT" '"code": "lane-b"' "its decision route stays refused"
+sleep 2.5   # past one relay retry (every 2 s): nothing to wait on but its clock
+assert_equals "$(controller_of "$LR")" "B" "and the record's lane B stands"
+assert_equals "$(lane_of_lines "$T/lines-lr")" "match" "no later verdict line moves it"
 kill "$LANEFAKE" 2>/dev/null || true
 
 # A lane-A session later reopened by MAWS as lane B, under the same id: the

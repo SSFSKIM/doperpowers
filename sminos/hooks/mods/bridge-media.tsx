@@ -1,6 +1,6 @@
 import type { EngineInterface, HookStream, TurnStepChunk, TurnStepInput, TurnStepResult } from 'claude-code'
 import type { MediaAttachment, MediaSnapshot, MediaState } from '../../types/sminos'
-import { WAKE_LINE, isRecord, message, state } from './bridge-state'
+import { WAKE_LINE, isObserver, isRecord, message, state } from './bridge-state'
 import type { Answer } from './bridge-state'
 import { emitOwed } from './bridge-stream'
 
@@ -428,7 +428,8 @@ function armWake($: EngineInterface) {
  * bridge never reaches past that through the calls an Esc leaves open.
  */
 function submitWake($: EngineInterface) {
-  if (state.mediaWake.isSubmitted) {
+  // An observer submits nothing: the session's input is MAWS's (O12 M3).
+  if (state.mediaWake.isSubmitted || isObserver()) {
     return
   }
   const names = state.media.filter((a) => a.state === 'pending').map((a) => a.name)

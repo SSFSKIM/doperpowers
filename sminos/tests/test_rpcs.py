@@ -437,6 +437,31 @@ def results(frames, nonce):
     return [f["outcome"] for f in frames if f.get("t") == "rpc-result" and f.get("nonce") == nonce]
 
 
+class LaneVerdict(unittest.TestCase):
+    """O12 M3: the bridge child's lane verdict rests on one observation of
+    the session's parent, never two (a failed `ps` then a good one must not
+    read as another parent)."""
+
+    def setUp(self):
+        self.config = os.path.join(T, "lane-config")
+        os.makedirs(os.path.join(self.config, "sessions"), exist_ok=True)
+        self.sid = str(uuidlib.uuid4())
+        with open(os.path.join(self.config, "sessions", "4300.json"), "w") as f:
+            json.dump({"pid": 4300, "sessionId": self.sid}, f)
+
+    def verdict(self, observations):
+        seen = list(observations)
+        with mock.patch.dict(os.environ, {"SMNS_MEMBER": "4242", "CLAUDE_CONFIG_DIR": self.config}), \
+                mock.patch.object(bridgemod.S, "parent_pid", side_effect=lambda _pid: seen.pop(0)) as pp:
+            got = bridgemod.lane_verdict(self.sid, 4300)
+        return got, pp.call_count
+
+    def test_lane_verdict_is_one_parent_observation(self):
+        self.assertEqual(self.verdict([None, 4242]), ("unresolved", 1), "a ps that failed is unresolved, whatever a second says")
+        self.assertEqual(self.verdict([4242, 77]), ("match", 1))
+        self.assertEqual(self.verdict([77, 4242]), ("mismatch", 1))
+
+
 class Checks(unittest.TestCase):
     """DX6's checks in order, and execution through the real bridge child."""
 
