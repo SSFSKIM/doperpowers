@@ -977,7 +977,12 @@ e = {"ts": ts, "writer": w, "seq": last + 1, "kind": "human", "from": "human", "
 print(hublog.append_verbatim(p, e))
 PY
 assert_equals "$(python3 "$T/outside.py" "said from outside while read-only")" appended "an event from outside is in the log"
-refused_ro() { grep -rqF "refused-read-only" "$SMINOS_HOME/projects/$HP/" 2>/dev/null; }
+# Settled refused-read-only: the outcome kept in the project's outbox, or, once the uplink has sent it (and
+# dropped it from the outbox, at any moment), the `delivery` outcome the endpoint received.
+refused_ro() {
+  grep -rqF "refused-read-only" "$SMINOS_HOME/projects/$HP/" 2>/dev/null \
+    || [ "$(epq "any(f['frame'].get('t') == 'session' and f['frame']['message'].get('kind') == 'delivery' and f['frame']['message']['body'].get('outcome') == 'refused-read-only' for f in d['received'])")" = true ]
+}
 until_true 200 refused_ro || true
 assert_equals "$(refused_ro && echo yes)" yes "delivery settles it refused-read-only"
 assert_not_contains "$(cat "$INBOX")" "said from outside while read-only" "and m never gets it"
@@ -990,9 +995,13 @@ until_true 200 read_only_is no || true
 assert_equals "$(python3 -c 'import json, sys; print(json.dumps(json.load(open(sys.argv[1]))))' "$SMINOS_HOME/daemon/policy.json")" \
   '{"read_only": false, "ceiling": "default", "endpoint": {"read_only": false, "ceiling": "default"}}' \
   "and the policy settles on the endpoint's answer"
+# A person's words from outside are delivered on the endpoint's verdict (O12 M6): it answers words.
+ep set '{"verdict": "words"}' >/dev/null
 python3 "$T/outside.py" "said from outside after read-only" >/dev/null
 until_true 200 grep -q "said from outside after read-only" "$INBOX" || true
 assert_contains "$(cat "$INBOX")" "said from outside after read-only" "an event from outside is delivered again"
+assert_equals "$(epq "any(f['frame'].get('t') == 'words?' and f['frame']['event'].get('text') == 'said from outside after read-only' for f in d['received'])")" true \
+  "on the endpoint's verdict, asked with words?"
 
 echo "  for good:"
 printf '{"hub": "%s", "org": "org-1", "machine": "testhost", "client_id": "cid-1", "client_secret": "secret-1", "key": "%s", "enrolled": "%s"}\n' \

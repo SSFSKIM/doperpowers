@@ -1848,7 +1848,9 @@ def _append(project, writer, events, skip_src=False, guard=None, store="log", he
     append no other appender can come between. `store`: the writer's file in
     another of the project's stores (HOST_STORE), by the same rule in its own
     directory, its seqs its own; `held`, its locks are the caller's
-    (writer_locks). Returns the events as written."""
+    (writer_locks). An own writer's `human` events in the log get their
+    append receipts under the same lock, first (_write_receipts). Returns
+    the events as written."""
     if any(e["kind"] in LIFECYCLE for e in events):
         _VIEWS.pop(project.id, None)
     path = store_path(project, store, writer)
@@ -1883,6 +1885,8 @@ def _append(project, writer, events, skip_src=False, guard=None, store="log", he
                     seq += 1
                 rest = {k: v for k, v in fields.items() if k != "kind"}
                 out.append({"ts": now(ms=True), "writer": writer, "seq": seq, "kind": fields["kind"], **rest})
+            if store == "log":
+                _write_receipts(project, writer, out)   # the log's own writers' words alone (O12 M6)
             end = f.seek(0, os.SEEK_END)
             if end:
                 # An interrupted append can leave a fragment without its
@@ -1896,6 +1900,87 @@ def _append(project, writer, events, skip_src=False, guard=None, store="log", he
 
 def log_append(project, writer, kind, **fields):
     return _append(project, writer, [{"kind": kind, **fields}])[0]
+
+
+# Append receipts (O12 M6): the provenance of this machine's operator words.
+# The writer name is not provenance — a git mirror's merge can bring a
+# `<thisname>/human` line no one here wrote — so each `human` event _append
+# stores under this machine's own writer gets a machine-private receipt,
+# `projects/<id>/receipts/<writer>.jsonl`, one `{seq, hash}` line, written in
+# the same append under the writer file's lock, before the event itself: an
+# event appended here always has one. The directory is outside log/, so git
+# never mirrors it and the uplink never uploads it; a receipt stays under the
+# writer name the append used, so a former name keeps its own. On a cut-over
+# machine the words gate asks the endpoint about an own-writer event only
+# when its receipt matches (receipted); any other goes as an unverified peer.
+
+RECEIPTS = "receipts"
+
+
+def event_hash(e):
+    """SHA-256 (hex) of an event's canonical body (RFC 8785) as stored, the
+    endpoint's verdict (`verified`) left out; None for one with no canonical
+    form (a lone surrogate), which no receipt can then name."""
+    codes = sibling_module("sminos_codes")
+    try:
+        text = codes.canonical({k: v for k, v in e.items() if k != "verified"})
+    except codes.NotCanonical:
+        return None
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def receipt_path(project, writer):
+    return os.path.join(project.home, RECEIPTS, writer.replace("/", ".") + ".jsonl")
+
+
+def _write_receipts(project, writer, events):
+    """The receipts of the `human` events an append stores under this
+    machine's own writer (its name now); the caller holds the writer file's
+    lock. One whose body has no canonical form gets none."""
+    if writer.rpartition("/")[0] != host_name():
+        return
+    lines = [{"seq": e["seq"], "hash": h} for e in events if e["kind"] == "human" and (h := event_hash(e))]
+    if not lines:
+        return
+    path = project_path(project, RECEIPTS, writer.replace("/", ".") + ".jsonl")
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    with os.fdopen(fd, "a") as f:
+        f.write("".join(json.dumps(r) + "\n" for r in lines))
+
+
+def receipt_of(project, writer, seq):
+    """The hash the append receipt holds for the writer's seq, or None. A
+    seq written twice (an append whose event could not be written after its
+    receipt was) is the last line's."""
+    try:
+        with open(receipt_path(project, writer)) as f:
+            lines = f.read().split("\n")
+    except OSError:
+        return None
+    for line in reversed(lines):
+        try:
+            r = json.loads(line) if line.strip() else None
+        except ValueError:
+            continue
+        if isinstance(r, dict) and type(r.get("seq")) is int and r["seq"] == seq and isinstance(r.get("hash"), str):
+            return r["hash"]
+    return None
+
+
+def receipted(project, e):
+    """Whether the stored event is the one this machine appended at its
+    position: its append receipt names its hash."""
+    h = receipt_of(project, e["writer"], e["seq"])
+    return h is not None and h == event_hash(e)
+
+
+def own_operator_event(e):
+    """Whether an event claims this machine's operator writer — a `human`
+    event of `<name>/human`, `name` this machine's name now or a former one
+    — which only its append receipt bears out (receipted)."""
+    head, _, tail = str(e.get("writer") or "").rpartition("/")
+    name, former = machine_identity()
+    return e.get("kind") == "human" and tail == "human" and (head == name or head in former)
 
 
 def log_append_batch(project, writer, events, skip_src=True):
@@ -1996,7 +2081,9 @@ def cursor_save(project, session_uuid, cursor):
 # with its attempt count — or that was pushed and could not be settled yet
 # (`pushed`: [seq, outcome], deliver_next). A deliverer never settles past an
 # unsettled event of the same writer, so a later success cannot bury an
-# earlier failure.
+# earlier failure. On a cut-over machine an owed event whose signer was
+# revoked is marked (`revoked`: its seqs above the prefix, delivered_revoke):
+# never delivered, and passed by the prefix only in order.
 
 
 def delivered_load(project, session_uuid):
@@ -2009,13 +2096,18 @@ def delivered_load(project, session_uuid):
     for w, v in (d.items() if isinstance(d, dict) else ()):
         if isinstance(v, dict):
             pending = v.get("pending")
-            out[str(w)] = {"settled": int(v.get("settled") or 0),
+            settled = int(v.get("settled") or 0)
+            out[str(w)] = {"settled": settled,
                            "pending": pending if type(pending) is int else None,
                            "attempts": int(v.get("attempts") or 0)}
             pushed = v.get("pushed")
             if isinstance(pushed, list) and len(pushed) == 2 and type(pushed[0]) is int and pushed[0] == pending \
                     and pushed[1] in PUSHED:
                 out[str(w)]["pushed"] = pushed
+            marked = v.get("revoked")
+            marked = sorted({s for s in marked if type(s) is int and s > settled}) if isinstance(marked, list) else []
+            if marked:
+                out[str(w)]["revoked"] = marked
     return out
 
 
@@ -2023,12 +2115,32 @@ def _delivery(record, writer):
     return record.get(writer) or {"settled": 0, "pending": None, "attempts": 0}
 
 
+def _entry(settled, pending=None, attempts=0, revoked=(), pushed=None):
+    """A writer's delivery entry as written: of its revoked seqs, those
+    directly above the settled prefix are passed by it (none is owed, so the
+    prefix moves over them in order), the rest kept; `revoked` only when it
+    holds one, so a record with none is written as before."""
+    marked = sorted({s for s in revoked if s > settled})
+    while marked and marked[0] == settled + 1 and marked[0] != pending:
+        settled = marked.pop(0)
+    w = {"settled": settled, "pending": pending, "attempts": attempts}
+    if pushed is not None:
+        w["pushed"] = pushed
+    if marked:
+        w["revoked"] = marked
+    return w
+
+
 def _next_check(record, writer, seq):
     w = _delivery(record, writer)
-    if seq <= w["settled"] or (w["pending"] is not None and seq != w["pending"]):
-        raise ValueError("delivery of %s:%d out of order (settled %d, pending %s)" % (
-            writer, seq, w["settled"], w["pending"]))
+    if seq <= w["settled"] or (w["pending"] is not None and seq != w["pending"]) or seq in w.get("revoked", ()):
+        raise ValueError("delivery of %s:%d out of order (settled %d, pending %s%s)" % (
+            writer, seq, w["settled"], w["pending"], ", revoked" if seq in w.get("revoked", ()) else ""))
     return w
+
+
+def _delivered_write(project, session_uuid, record):
+    write_json(project_path(project, "delivered", reader_key(session_uuid) + ".json"), record)
 
 
 def delivered_settle(project, session_uuid, writer, seq):
@@ -2036,9 +2148,9 @@ def delivered_settle(project, session_uuid, writer, seq):
     prefix and seq is not owed to this session, so the prefix moves to seq.
     The caller holds delivered/<session>.lock."""
     record = delivered_load(project, session_uuid)
-    _next_check(record, writer, seq)
-    record[writer] = {"settled": seq, "pending": None, "attempts": 0}
-    write_json(project_path(project, "delivered", reader_key(session_uuid) + ".json"), record)
+    w = _next_check(record, writer, seq)
+    record[writer] = _entry(seq, revoked=w.get("revoked", ()))
+    _delivered_write(project, session_uuid, record)
 
 
 def delivered_fail(project, session_uuid, writer, seq):
@@ -2046,8 +2158,8 @@ def delivered_fail(project, session_uuid, writer, seq):
     record = delivered_load(project, session_uuid)
     w = _next_check(record, writer, seq)
     attempts = w["attempts"] + 1 if w["pending"] == seq else 1
-    record[writer] = {"settled": w["settled"], "pending": seq, "attempts": attempts}
-    write_json(project_path(project, "delivered", reader_key(session_uuid) + ".json"), record)
+    record[writer] = _entry(w["settled"], seq, attempts, w.get("revoked", ()))
+    _delivered_write(project, session_uuid, record)
     return attempts
 
 
@@ -2059,12 +2171,66 @@ def delivered_pushed(project, session_uuid, writer, seq, outcome):
     try:
         record = delivered_load(project, session_uuid)
         w = _next_check(record, writer, seq)
-        record[writer] = {"settled": w["settled"], "pending": seq,
-                          "attempts": w["attempts"] if w["pending"] == seq else 0, "pushed": [seq, outcome]}
-        write_json(project_path(project, "delivered", reader_key(session_uuid) + ".json"), record)
+        record[writer] = _entry(w["settled"], seq, w["attempts"] if w["pending"] == seq else 0,
+                                w.get("revoked", ()), [seq, outcome])
+        _delivered_write(project, session_uuid, record)
     except OSError as err:
         daemon_log("delivery: the push of %s:%d to %s could not be noted (%s): a later pass pushes it again" % (
             writer, seq, session_uuid, err))
+
+
+def delivered_revoke(project, session_uuid, writer, seq):
+    """Mark the writer's owed event `seq` revoked (O12 M6): its signer's key,
+    device or member was revoked, so it is never delivered — _owed leaves it
+    out, _next_check refuses it — and its `refused-revoked` outcome is
+    recorded for the uplink first (an outside-origin event's, as
+    deliver_next records). It is not settled: a member's devices share its
+    `hub/<member>` writer, and settling seq 2 would move the prefix past an
+    owed seq 1 (P1-2), so the prefix passes a marked seq only in order — at
+    once when it is the writer's next, else when the events below it settle.
+    Revoking the pending event clears it and its attempts. Whether it was
+    marked: one whose outcome cannot be kept stays owed, for a later pass to
+    record and mark. The caller holds delivered/<session>.lock."""
+    record = delivered_load(project, session_uuid)
+    w = _delivery(record, writer)
+    if seq <= w["settled"]:
+        raise ValueError("revoking %s:%d, which is settled (settled %d)" % (writer, seq, w["settled"]))
+    if seq in w.get("revoked", ()):
+        return True
+    e = {"writer": writer, "seq": seq}
+    outcomes = sibling_module("sminos_outcomes")
+    if sibling_module("sminos_policy").outside_origin(e) \
+            and not outcomes.record(project, e, session_uuid, outcomes.REFUSED_REVOKED, None):
+        return False
+    revoked = list(w.get("revoked", ())) + [seq]
+    if w["pending"] == seq:
+        record[writer] = _entry(w["settled"], None, 0, revoked)
+    else:
+        record[writer] = _entry(w["settled"], w["pending"], w["attempts"], revoked, w.get("pushed"))
+    _delivered_write(project, session_uuid, record)
+    return True
+
+
+def revoke_owed(project, member, revoked):
+    """What a revocation stops at once: every event owed to the member whose
+    stored signer the set names (sminos_rl10.event_revoked), asked or not,
+    marked revoked (delivered_revoke), under its delivery lock. One whose
+    push is noted was delivered before the revocation, and is left to its
+    settlement. The events marked."""
+    session = member.session
+    if not session:
+        return []
+    rl10 = sibling_module("sminos_rl10")
+    marked = []
+    with flocked(project_path(project, "delivered", reader_key(session) + ".lock")):
+        record = delivered_load(project, session)
+        for e in _owed(log_read(project, to_session=session), session, record):
+            noted = _delivery(record, e["writer"]).get("pushed")
+            if not rl10.event_revoked(e, revoked) or (noted and noted[0] == e["seq"]):
+                continue
+            if delivered_revoke(project, session, e["writer"], e["seq"]):
+                marked.append(e)
+    return marked
 
 
 # --------------------------------------------------------------- the family
@@ -3410,10 +3576,16 @@ def _owed(events, session, record):
     # Imported history was delivered by the old chat: it is never owed; nor
     # is a copy, by its `copy` key alone (addressed_to), so a reader without
     # that rule owes it to no one either — its recipients are another log's.
-    return [e for e in events
-            if not e["writer"].startswith("legacy/")
-            and writer_session(e["writer"]) != session and addressed_to(e, session)
-            and e["seq"] > _delivery(record, e["writer"])["settled"]]
+    # An event marked revoked (delivered_revoke) is owed no more.
+    out = []
+    for e in events:
+        if e["writer"].startswith("legacy/") or writer_session(e["writer"]) == session \
+                or not addressed_to(e, session):
+            continue
+        w = _delivery(record, e["writer"])
+        if e["seq"] > w["settled"] and e["seq"] not in w.get("revoked", ()):
+            out.append(e)
+    return out
 
 
 def addressees(events):
@@ -3465,7 +3637,8 @@ def deliver_next(project, member):
     the settlement: per writer, push the owed events in seq order, settling
     each, and stop that writer at the first failure (it stays pending, retried
     by the next call, and is settled with a daemon.log line after
-    DELIVERY_ATTEMPTS). Returns {"delivered", "pending", "outcomes"}.
+    DELIVERY_ATTEMPTS). Returns {"delivered", "pending", "outcomes"}, and
+    on a cut-over machine "gated" (below).
 
     The machine's policy is the boundary here, for every caller: on a
     read-only machine an event written outside it (another machine's, or the
@@ -3477,13 +3650,24 @@ def deliver_next(project, member):
     pass, which records it again; a push already made is noted in the
     delivery record (delivered_pushed), so that pass settles it on the same
     outcome without pushing it again (a peer's frame has no bridge key to
-    drop a second copy)."""
+    drop a second copy).
+
+    On a machine cut over to its endpoint (O12 M6) a person's words are the
+    endpoint's to decide, and its revocations bind every delivery
+    (WordsGate): a words-gated writer stops at its first owed such event,
+    which is left owed for the uplink to ask `words?` about and deliver on
+    the verdict (deliver_verdict) and is listed in `gated`; a `human` event
+    no one may ask about goes as a peer's; and an event whose stored signer
+    is revoked is marked, never pushed (delivered_revoke)."""
     session = member.session
     result = {"delivered": 0, "pending": 0, "outcomes": []}
     if not session:
         return result
     policy = sibling_module("sminos_policy")
     outcomes = sibling_module("sminos_outcomes")
+    gate = WordsGate(project) if sibling_module("sminos_rl10").cut_over() else None
+    if gate is not None:
+        result["gated"] = []
     with flocked(project_path(project, "delivered", reader_key(session) + ".lock")):
         events = log_read(project)
         record = delivered_load(project, session)
@@ -3497,62 +3681,363 @@ def deliver_next(project, member):
             for i, e in enumerate(queue):
                 if noted and noted[0] == e["seq"]:
                     outcome = noted[1]
-                elif outside and policy.read_only():
-                    outcome = outcomes.READ_ONLY
                 else:
-                    outcome = push_event(project, member, session, e, events, cursor)
-                result["outcomes"].append((e, outcome))
-                if outcome.startswith("failed"):
-                    if delivered_fail(project, session, writer, e["seq"]) < DELIVERY_ATTEMPTS:
+                    held = gate.held(e, session) if gate is not None else None
+                    if held == "revoked":
+                        result["outcomes"].append((e, outcomes.REFUSED_REVOKED))
+                        continue
+                    if held is not None:
                         result["pending"] += len(queue) - i
                         break
-                    daemon_log("gave up delivering %s (%s) to %s after %d attempts: %s" % (
-                        event_ref(e), project.name, session, DELIVERY_ATTEMPTS, outcome))
-                if outside and not outcomes.record(project, e, session, outcome, member):
-                    # Settled only once its outcome is kept: it stays pending,
-                    # and the next pass records it again — a push noted, so
-                    # never made twice.
-                    if outcome in PUSHED:
-                        delivered_pushed(project, session, writer, e["seq"], outcome)
+                    if outside and policy.read_only():
+                        outcome = outcomes.READ_ONLY
+                    elif gate is not None and gate.gated(e):
+                        result["gated"].append(e)
+                        result["pending"] += len(queue) - i
+                        break
+                    else:
+                        outcome = push_event(project, member, session, e, events, cursor,
+                                             words=gate.words(e) if gate is not None else None)
+                        if gate is not None:
+                            gate.said(e, outcome)
+                result["outcomes"].append((e, outcome))
+                if not _conclude(project, member, session, e, outcome, outside):
                     result["pending"] += len(queue) - i
                     break
                 if outcome in PUSHED:
                     result["delivered"] += 1
-                delivered_settle(project, session, writer, e["seq"])
     return result
+
+
+def _conclude(project, member, session, e, outcome, outside):
+    """A push's outcome, settled as deliver_next settles it; whether it
+    settled. A failure under DELIVERY_ATTEMPTS stays pending; one past it is
+    given up with a daemon.log line and settled. An outside-origin event is
+    settled only once its outcome is kept: else it stays pending and the
+    next pass records it again — a push noted, so never made twice. The
+    caller holds the session's delivery lock."""
+    outcomes = sibling_module("sminos_outcomes")
+    if outcome.startswith("failed"):
+        if delivered_fail(project, session, e["writer"], e["seq"]) < DELIVERY_ATTEMPTS:
+            return False
+        daemon_log("gave up delivering %s (%s) to %s after %d attempts: %s" % (
+            event_ref(e), project.name, session, DELIVERY_ATTEMPTS, outcome))
+    if outside and not outcomes.record(project, e, session, outcome, member):
+        if outcome in PUSHED:
+            delivered_pushed(project, session, e["writer"], e["seq"], outcome)
+        return False
+    delivered_settle(project, session, e["writer"], e["seq"])
+    return True
+
+
+# A person's words on a machine cut over to its endpoint (O12 M6). The
+# endpoint decides them (`words?`, answered on the socket the uplink holds),
+# and its revocation set (daemon/revoked.json) binds every delivery. Whose
+# `human` events are asked — the words-gated writers — and how the rest go:
+#   - `hub/<member>` (a device's), and another machine's `<name>/human` that
+#     arrived over the hub (it carries `verified`): asked;
+#   - this machine's own `<name>/human` (a current or former name): asked
+#     when its append receipt bears it out (receipted), else — a git mirror's
+#     import under this name, an event appended before receipts — an
+#     unverified peer's, never asked; the writer name is not provenance;
+#   - another machine's `<name>/human` with no `verified` (a git mirror's):
+#     an unverified peer's, never asked;
+#   - a legacy signer's: a peer's, marked so by its label, never asked.
+# The uplink alone asks and delivers on the verdict (deliver_verdict); every
+# other deliverer leaves a words-gated writer owed at its first such event,
+# so no writer's order is split.
+
+WORDS_VERDICTS = ("words", "peer", "refuse")
+WORDS_RECORDED = "recorded; the endpoint decides its delivery"
+
+
+def words_held(e):
+    """Whether a log event is a person's words this process may not push: a
+    `human` event on a machine cut over to its endpoint, whose delivery is
+    the uplink's, after `words?` (O12 M6)."""
+    return e.get("kind") == "human" and sibling_module("sminos_rl10").cut_over()
+
+
+def words_route(project, e):
+    """How a `human` event reaches a session on a cut-over machine: "ask"
+    (the endpoint's verdict decides), "unverified" (an unverified peer's: a
+    git mirror's, or an operator line no append receipt bears out), "legacy"
+    (a legacy signer's, a peer's); None for what is no person's words."""
+    if e.get("kind") != "human":
+        return None
+    verified = e.get("verified")
+    signer = verified.get("signer") if isinstance(verified, dict) else None
+    if isinstance(signer, dict) and signer.get("kind") == "legacy":
+        return "legacy"
+    if own_operator_event(e):
+        return "ask" if receipted(project, e) else "unverified"
+    if str(e.get("writer") or "").startswith("hub/") or isinstance(verified, dict):
+        return "ask"
+    return "unverified"
+
+
+_UNREADABLE = {"said": None}   # the unreadable revocation set's error, as last said (WordsGate.revoked)
+
+
+class WordsGate:
+    """What a deliverer on a cut-over machine checks of an owed event before
+    it pushes it: the revocation set (read again for each event that carries
+    a verdict, so a revocation kept mid-batch stops the events after it) and
+    the words rule (words_route)."""
+
+    def __init__(self, project):
+        self.project = project
+        self.rl10 = sibling_module("sminos_rl10")
+
+    def revoked(self):
+        """The revocation set as it is now; None when it cannot be read, said
+        in daemon.log once while it stays so."""
+        try:
+            got = self.rl10.revoked()
+        except self.rl10.RevokedUnreadable as e:
+            if _UNREADABLE["said"] != str(e):
+                _UNREADABLE["said"] = str(e)
+                daemon_log("delivery: %s — nothing that carries a signer is delivered until it can be read" % e)
+            return None
+        _UNREADABLE["said"] = None
+        return got
+
+    def held(self, e, session):
+        """What the revocation set says of an event: None when nothing holds
+        it; "revoked" when its stored signer is (marked: delivered_revoke),
+        "unmarked" when it is and its outcome could not be kept (it stays
+        owed), "unchecked" when it carries a signer and the set cannot be
+        read (it waits: fail-closed). An event with no `verified` (this
+        machine's own, a git mirror's) names no signer to check. The caller
+        holds the session's delivery lock."""
+        if not isinstance(e.get("verified"), dict):
+            return None
+        revoked = self.revoked()
+        if revoked is None:
+            return "unchecked"
+        if not self.rl10.event_revoked(e, revoked):
+            return None
+        if not delivered_revoke(self.project, session, e["writer"], e["seq"]):
+            return "unmarked"
+        daemon_log("%s (%s) is signed by a revoked key: marked refused-revoked for %s, never delivered"
+                   % (event_ref(e), self.project.name, session))
+        return "revoked"
+
+    def gated(self, e):
+        """Whether the endpoint's verdict decides the event (words_route
+        "ask"): left owed for the uplink."""
+        return words_route(self.project, e) == "ask"
+
+    def words(self, e):
+        """The verdict an event the gate let through is pushed under: a
+        `human` event as a peer's, anything else as push_live decides it
+        (None)."""
+        return False if words_route(self.project, e) else None
+
+    def said(self, e, outcome):
+        """A `human` event nothing verified, once it reached the session,
+        said in daemon.log."""
+        if outcome in PUSHED and words_route(self.project, e) == "unverified":
+            daemon_log("%s (%s) is delivered as an unverified peer message, never asked: %s" % (
+                event_ref(e), self.project.name,
+                "no append receipt bears it out" if own_operator_event(e) else "it came through a git mirror"))
+
+
+def _first_owed(session, writer, events, record):
+    return next((x for x in _owed(events, session, record) if x["writer"] == writer), None)
+
+
+def deliver_verdict(project, member, event, verdict):
+    """The endpoint's verdict on a words-gated event (`words`, `peer` or
+    `refuse`, O12 M6) carried out, as deliver_next carries out a push: under
+    the session's delivery lock, and only while the event is still its
+    writer's first owed, the same body (a revocation, another deliverer or
+    the attempts given up settled it meanwhile, or a git merge put another
+    line there: None, nothing done). `words` pushes it as the person's words
+    (the bridge, then a --bg job's supervisor), `peer` as an inbox frame,
+    `refuse` not at all: it settles `refused-words`, its outcome kept for
+    the uplink. The revocation set and the read-only policy are read again
+    first. The outcome, or None."""
+    session = member.session
+    if not session or verdict not in WORDS_VERDICTS:
+        return None
+    policy = sibling_module("sminos_policy")
+    outcomes = sibling_module("sminos_outcomes")
+    with flocked(project_path(project, "delivered", reader_key(session) + ".lock")):
+        events = log_read(project)
+        record = delivered_load(project, session)
+        e = _first_owed(session, event["writer"], events, record)
+        if e is None or e["seq"] != event["seq"] or event_hash(e) != event_hash(event):
+            return None
+        outside = policy.outside_origin(e)
+        noted = _delivery(record, e["writer"]).get("pushed")
+        if noted and noted[0] == e["seq"]:
+            outcome = noted[1]
+        else:
+            held = WordsGate(project).held(e, session)
+            if held == "revoked":
+                return outcomes.REFUSED_REVOKED
+            if held is not None:
+                return None
+            if outside and policy.read_only():
+                outcome = outcomes.READ_ONLY
+            elif verdict == "refuse":
+                outcome = outcomes.REFUSED_WORDS
+                daemon_log("the endpoint refused %s (%s) as words into %s: nothing delivered" % (
+                    event_ref(e), project.name, session))
+            else:
+                outcome = push_event(project, member, session, e, events, cursor_load(project, session),
+                                     words=verdict == "words")
+        _conclude(project, member, session, e, outcome, outside)
+        return outcome
+
+
+def words_unanswered(project, member, event, why):
+    """The endpoint gave no verdict on a words-gated event in time (O12 M6):
+    a failed attempt, as a failed push is (delivered_fail; given up after
+    DELIVERY_ATTEMPTS), when it is still its writer's first owed. The
+    attempts, or None."""
+    session = member.session
+    if not session:
+        return None
+    with flocked(project_path(project, "delivered", reader_key(session) + ".lock")):
+        record = delivered_load(project, session)
+        e = _first_owed(session, event["writer"], log_read(project), record)
+        if e is None or e["seq"] != event["seq"]:
+            return None
+        _conclude(project, member, session, e, "failed:%s" % why,
+                  sibling_module("sminos_policy").outside_origin(e))
+        return _delivery(delivered_load(project, session), e["writer"]).get("attempts")
+
+
+def words_due(project, members):
+    """{session: [event]}: for each of the members, the first owed event of
+    each words-gated writer (words_route "ask") that no deliverer holds —
+    none noted as pushed, none another event of its writer stands before.
+    The project's log read once. What the uplink asks `words?` about. An
+    outside event on a read-only machine is none: deliver_next settles it
+    `refused-read-only` unasked."""
+    policy = sibling_module("sminos_policy")
+    read_only = policy.read_only()
+    events = log_read(project)
+    out = {}
+    for m in members:
+        if not m.session:
+            continue
+        record = delivered_load(project, m.session)
+        firsts = {}
+        for e in _owed(events, m.session, record):
+            firsts.setdefault(e["writer"], e)
+        due = [e for w, e in sorted(firsts.items())
+               if words_route(project, e) == "ask" and (_delivery(record, w).get("pushed") or [None])[0] != e["seq"]
+               and not (read_only and policy.outside_origin(e))]
+        if due:
+            out[m.session] = due
+    return out
 
 
 def frame_of(project, e, events, session, cursor):
     """The frame an event is pushed as. A `send` keeps its own frame (its id
     is what `send --wait` looks for), its sender shown as the `--from`
-    override when it had one; anything else is a chat frame, whose target is
-    `@you`, or a broadcast's scope (target_label: `@all`, `@all on mini`).
+    override when it had one, then the label; anything else is a chat frame,
+    whose target is `@you`, or a broadcast's scope (target_label: `@all`,
+    `@all on mini`).
     Its unread count leaves out copies: each is a record of a message
     another log carries, not one spoken here."""
     if e.get("msg_id"):
-        return compose_frame(str(e.get("via") or e.get("from") or ""), e["msg_id"], str(e.get("text") or ""))
+        return compose_frame(str(e.get("via") or e.get("from") or ""), e["msg_id"], str(e.get("text") or ""),
+                             sender_labels(project)(e))
     unread = sum(1 for x in events if x is not e and x["kind"] in CHAT_KINDS and "copy" not in x and
                  writer_session(x["writer"]) != session and x["seq"] > cursor.get(x["writer"], 0))
     return compose_chat_frame(project.name, event_ref(e), str(e.get("from") or ""),
-                              target_label(e) if e.get("wake") else "@you", unread, str(e.get("text") or ""))
+                              target_label(e) if e.get("wake") else "@you", unread, str(e.get("text") or ""),
+                              sender_labels(project)(e))
 
 
-def push_event(project, member, session, e, events, cursor):
+def push_event(project, member, session, e, events, cursor, words=None):
     """Push one event to one member. An addressed event resumes a stopped
     member; an @all (`wake`) reaches only the live. A seat-less member's
     membership is read again from its own file first: `member` may be a
     snapshot taken before a `retire`, which leaves an interactive session's
     process running (§2), and a retired member is pushed nothing — the event
-    settles as recorded, as it does for a retired seat."""
+    settles as recorded, as it does for a retired seat. `words`: the
+    endpoint's verdict on a person's words (push_live)."""
     if member.seat is None and latest_membership(_own_events(project, session)) == "retired":
         return "recorded"
+    verdict = {} if words is None else {"words": words}   # a machine not cut over calls as it always has
     return push_member(member, frame_of(project, e, events, session, cursor), not e.get("wake"), session=session,
-                       event=e, project=project.id)
+                       event=e, project=project.id, **verdict)
 
 
-def compose_chat_frame(project_name, ref, sender, target, unread, text):
-    return "[sminos chat %s %s from %s → %s%s]\n%s" % (
-        project_name, ref, sender, target, (" | unread %d" % unread) if unread else "", text)
+def compose_chat_frame(project_name, ref, sender, target, unread, text, label=""):
+    """A chat event's frame; `label` is what follows the sender's alias
+    (sender_labels)."""
+    return "[sminos chat %s %s from %s%s → %s%s]\n%s" % (
+        project_name, ref, sender, label, target, (" | unread %d" % unread) if unread else "", text)
+
+
+def sender_labels(project):
+    """e → the clause after a sender's alias that says whose session sent
+    the event (the label, O12 M6), read from the stored line's `verified`
+    alone — the endpoint's verdict, never resolved through an alias:
+    `, owned by <email>[, <email>]` (an owner by its id where the endpoint
+    had no email for it), ` (owners unverified)` when the endpoint attested
+    none, ` (unverified, legacy)` for a legacy signer, and ` (signed by a
+    revoked key)` for a signer in the revocation set, however old the event,
+    never `owned by`; with the set unreadable nothing reads as owned. An
+    event claiming this machine's operator writer without its append receipt
+    (a git mirror's import, an event from before receipts) is
+    ` (unverified)` when it is later than the cutover (identity.json's
+    `cutover`; the owner's ruling): history from before it reads as it did
+    then, though delivery still never takes such an event as words. Anything
+    else, and everything on a machine not cut over, carries none. The
+    revocation set is read once, when first needed."""
+    rl10 = sibling_module("sminos_rl10")
+    if not rl10.cut_over():
+        return lambda e: ""
+    held = {}
+    since = _ts_epoch((rl10.cutover() or {}).get("cutover"))
+
+    def after_cutover(e):
+        """Whether the event is later than the cutover; when either time
+        cannot be read, so (the clause stays)."""
+        at = _ts_epoch(e.get("ts"))
+        return since is None or at is None or at > since
+
+    def revoked():
+        if "set" not in held:
+            try:
+                held["set"] = rl10.revoked()
+            except rl10.RevokedUnreadable:
+                held["set"] = None
+        return held["set"]
+
+    def label(e):
+        verified = e.get("verified")
+        if not isinstance(verified, dict):
+            return " (unverified)" if own_operator_event(e) and after_cutover(e) and not receipted(project, e) else ""
+        signer = verified.get("signer")
+        if isinstance(signer, dict) and signer.get("kind") == "legacy":
+            return " (unverified, legacy)"
+        if revoked() is None:
+            return " (owners unverified)"
+        if rl10.signer_revoked(signer, revoked()):
+            return " (signed by a revoked key)"
+        owners = verified.get("owners")
+        if not isinstance(owners, list):
+            return ""
+        names = [n for n in map(owner_name, owners) if n]
+        return ", owned by " + ", ".join(names) if names else " (owners unverified)"
+    return label
+
+
+def owner_name(owner):
+    """An attested owner as the label shows it: the email the endpoint
+    annotated, else its member id."""
+    if isinstance(owner, dict):
+        email, mid = owner.get("email"), owner.get("id")
+        return email if isinstance(email, str) and email else mid if isinstance(mid, str) else ""
+    return owner if isinstance(owner, str) else ""
 
 
 # ------------------------------------------------------------------ addressing
@@ -3846,7 +4331,7 @@ class ResumeRefused(Exception):
         self.code = code
 
 
-def push_member(member, text, tagged, session=None, event=None, project=None):
+def push_member(member, text, tagged, session=None, event=None, project=None, words=None):
     """Push one frame to a member: to the live session (push_live: an
     owner's event through its bridge, keyed by `event`, the log event the
     frame carries, and `project`, the id of the project whose log holds it,
@@ -3857,14 +4342,16 @@ def push_member(member, text, tagged, session=None, event=None, project=None):
     resumed: it is the human's to reopen, and reads the chat when it is back.
     Given `session`, a seat that now holds another session is not this
     message's recipient: delivery goes by session id, so a replacement cannot
-    misroute it."""
+    misroute it. `words`: the endpoint's verdict on a person's words, which
+    push_live takes in place of the writer on a cut-over machine."""
     session = session or member.session
+    verdict = {} if words is None else {"words": words}   # a machine not cut over calls as it always has
     if member.seat is None:
         peer = peer_for_session(session)
         if not peer:
             return "recorded"
         try:
-            control_module().push_live(peer, session, text, event, project)
+            control_module().push_live(peer, session, text, event, project, **verdict)
             return "sent"
         except SendFailed as e:
             return "sent?" if e.phase == "after" else "failed:%s" % e
@@ -3889,7 +4376,7 @@ def push_member(member, text, tagged, session=None, event=None, project=None):
     peer = peer_for_session(fresh["current"])
     if peer:
         try:
-            control_module().push_live(peer, fresh["current"], text, event, project)
+            control_module().push_live(peer, fresh["current"], text, event, project, **verdict)
             return "sent"
         except SendFailed as e:
             return "sent?" if e.phase == "after" else "failed:%s" % e
@@ -3952,7 +4439,9 @@ def deliver_say(dest, e, writer, recipients, name=lambda r: r["alias"]):
     """Deliver a recorded say (`e`, in `dest`'s log) to its recipients, a
     line each, the recipient as `name` gives it: one of this machine's now
     (deliver_next); another machine's by that machine's daemon, which this
-    machine's is asked to push it to at once."""
+    machine's is asked to push it to at once. On a cut-over machine a
+    person's words this pass leaves owed for the endpoint's verdict (O12 M6)
+    are said so, and the daemon nudged: its uplink asks."""
     by_session = {m.session: m for m in members(dest)}
     for r in recipients:
         member = by_session.get(r["session"])
@@ -3966,6 +4455,10 @@ def deliver_say(dest, e, writer, recipients, name=lambda r: r["alias"]):
         mine = [o for ev, o in result["outcomes"] if ev["writer"] == writer and ev["seq"] == e["seq"]]
         if mine:
             print("%s: %s" % (name(r), mine[0]))
+            continue
+        if any(ev["writer"] == writer for ev in result.get("gated", ())):
+            print("%s: %s" % (name(r), WORDS_RECORDED))
+            nudge_daemon()
             continue
         held = next((o for ev, o in result["outcomes"] if ev["writer"] == writer), "")
         print("%s: pending%s" % (name(r), " behind an earlier undelivered message (%s)" % held if held else ""))
@@ -4148,16 +4641,17 @@ def is_moved(e):
     return e["kind"] == "retired" and e.get("reason") == "moved"
 
 
-def chat_line(e):
-    """`<ts> <ref> <from> → <target>  <text>`; a copy (record_copy) marked
-    `→ <project>, …` after its target, the projects whose logs delivered it."""
+def chat_line(e, label=""):
+    """`<ts> <ref> <from>[<label>] → <target>  <text>`; a copy (record_copy)
+    marked `→ <project>, …` after its target, the projects whose logs
+    delivered it. `label` follows the sender (sender_labels)."""
     lines = str(e.get("text") or "").split("\n")
     target = target_label(e)
     copy = e.get("copy")
     refs = [copy] if isinstance(copy, str) else [r for r in copy if isinstance(r, str)] if isinstance(copy, list) else []
     if refs:
         target += " → %s" % ", ".join(project_label(r.partition(":")[0]) for r in refs)
-    out = ["%s %s %s → %s  %s" % (e["ts"][11:19], event_ref(e), e.get("from", ""), target, lines[0])]
+    out = ["%s %s %s%s → %s  %s" % (e["ts"][11:19], event_ref(e), e.get("from", ""), label, target, lines[0])]
     out += ["    " + line for line in lines[1:]]
     return "\n".join(out)
 
@@ -4222,8 +4716,9 @@ def cmd_chat(a):
     print("chat %s · %s" % (project.name, head))
     if earlier:
         print("+%d earlier — sminos chat %s -n %d" % (earlier, project.name, len(window) + earlier))
+    label = sender_labels(project)
     for e in window:
-        print(moved_line(e, events) if is_moved(e) else chat_line(e))
+        print(moved_line(e, events) if is_moved(e) else chat_line(e, label(e)))
     if not window:
         print("(no new messages)" if a.since is None and a.n is None else "(no messages)")
 
@@ -8404,10 +8899,11 @@ def cmd_wake(_a):
     die(WAKE_POINTER)
 
 
-def compose_frame(sender, msg_id, msg):
+def compose_frame(sender, msg_id, msg, label=""):
     """Every delivery — socket, resume, codex queue — opens with this line; the
-    id is what `--wait` looks for in the target's transcript."""
-    return "[sminos message from %s id=%s]\n%s" % (sender, msg_id, msg)
+    id is what `--wait` looks for in the target's transcript. `label` is what
+    follows the sender (sender_labels)."""
+    return "[sminos message from %s%s id=%s]\n%s" % (sender, label, msg_id, msg)
 
 
 def send_to_seat(s0, text, msg_id, wait, record=None, session="", sender=""):
@@ -8427,7 +8923,10 @@ def send_to_seat(s0, text, msg_id, wait, record=None, session="", sender=""):
     when the seat has no project): the push then carries every earlier event
     of the same writer still owed to the seat, in order, and the delivery
     record is settled on sent, woken, or uncertain and noted as failed
-    otherwise — so a send that dies on the way is the daemon's to retry."""
+    otherwise — so a send that dies on the way is the daemon's to retry. A
+    held send (SendDelivery.held: on a cut-over machine an operator's, which
+    the uplink delivers on the endpoint's verdict, or one behind an event the
+    revocation set cannot clear) is recorded and pushed nothing."""
     refuse_codex(s0)
     locks, s = locked_fresh(s0, "send", session)
     refuse_codex(s)
@@ -8447,16 +8946,22 @@ def send_to_seat(s0, text, msg_id, wait, record=None, session="", sender=""):
         # of the running session, so nothing is sent.
         die(quiet_inbox_refusal(ref), EXIT_UNKNOWN)
     delivery = record(s) if record else None
-    if delivery and not delivery.queue:
-        # A concurrent deliverer pushed it between the append and our lock: no
-        # second push, but --wait still waits on this message's id.
-        delivery.release()
+    if delivery and (delivery.held or not delivery.queue):
+        # A concurrent deliverer pushed it between the append and our lock, or
+        # it is held (O12 M6: a person's words the uplink delivers on the
+        # endpoint's verdict, or behind an event the revocation set cannot
+        # clear): no push here, but --wait still waits on this message's id.
         row = harness_row(s)
         was_idle = (normalize_state(row) not in ("working", "blocked")) if row else (
             not peer or peer.get("status") != "busy")
         guard = same_gen(current_gen(s["seat_id"]))
+        if delivery.held:
+            delivery.recorded_owed(s["alias"])
+        else:
+            delivery.release()
         unlock(locks)
-        print("sent to %s (delivered by a concurrent delivery)" % ref, flush=True)
+        if not delivery.held:
+            print("sent to %s (delivered by a concurrent delivery)" % ref, flush=True)
         if wait:
             wait_socket_turn(s, msg_id, was_idle, guard)
             print_reply_block(s["seat_id"])
@@ -8578,10 +9083,17 @@ class SendDelivery:
     """One `send` through the recipient's delivery record: holds
     delivered/<session>.lock from choosing to settling, and carries, in writer
     order, every event of the sender's writer still owed to the seat up to and
-    including this send — an earlier pending one goes first, in the same push."""
+    including this send — an earlier pending one goes first, in the same push.
+    On a cut-over machine (O12 M6) an operator's `send` is a person's words
+    (words_held): `held`, its sender pushes nothing and releases it at once
+    (recorded_owed); the uplink delivers the writer's owed events, this one
+    last, on the endpoint's verdict. A session's is checked as every
+    deliverer checks (checked): an earlier event signed by a revoked key is
+    marked and left out, and one whose signer the unreadable set cannot clear
+    holds the send owed (`held` too), for the daemon to deliver in order."""
 
     def __init__(self, project, session, writer, event):
-        self.project, self.session, self.writer = project, session, writer
+        self.project, self.session, self.writer, self.event = project, session, writer, event
         self.lock = open(project_path(project, "delivered", reader_key(session) + ".lock"), "a")
         fcntl.flock(self.lock, fcntl.LOCK_EX)
         self.events = log_read(project)
@@ -8589,6 +9101,27 @@ class SendDelivery:
                       if e["writer"] == writer and e["seq"] <= event["seq"]]
         self.cursor = cursor_load(project, session)
         self.skipped = []
+        self.held = "the endpoint decides its delivery" if words_held(event) else (
+            self.checked() if sibling_module("sminos_rl10").cut_over() else None)
+
+    def checked(self):
+        """The queue through the revocation set (WordsGate.held), under the
+        lock: a revoked event marked (delivered_revoke) and left out, the
+        valid ones kept. Why the send stays owed, when an event cannot be
+        cleared (fail-closed), else None. A held send's writer is the
+        operator's; a session's writer holds no person's words, so nothing
+        here is the endpoint's to ask."""
+        gate, kept = WordsGate(self.project), []
+        for e in self.queue:
+            held = gate.held(e, self.session)
+            if held == "unchecked":
+                return "it waits behind %s, whose signer the revocation set, unreadable, cannot clear" % event_ref(e)
+            if held == "unmarked":
+                return "it waits behind %s, signed by a revoked key, whose refusal could not be kept" % event_ref(e)
+            if held is None:
+                kept.append(e)
+        self.queue = kept
+        return None
 
     def payload(self, live):
         """The text of the one push. Ordinary delivery's policy applies: an
@@ -8618,6 +9151,13 @@ class SendDelivery:
     def release(self):
         if not self.lock.closed:
             self.lock.close()
+
+    def recorded_owed(self, alias):
+        """A held send (`held`) left owed — to the endpoint's verdict, or the
+        daemon's next pass: released, said why, and the daemon nudged."""
+        self.release()
+        print("recorded %s for %s; %s" % (event_ref(self.event), alias, self.held), flush=True)
+        nudge_daemon()
 
 
 def record_send(s, sender, via, text, msg_id):
@@ -8659,7 +9199,10 @@ def send_to_member(project, m, sender, via, text, msg_id):
     reached while it runs (push_live: the owner's through its bridge, a peer's
     through its inbox socket); a
     session sminos did not spawn is never resumed — it is the human's to
-    reopen."""
+    reopen. A held send (SendDelivery.held: on a cut-over machine an
+    operator's, which the uplink delivers on the endpoint's verdict, or one
+    behind an event the revocation set cannot clear) is recorded and pushed
+    nothing."""
     if not m.local:
         e = record_message(project, m.session, m.alias, sender, via, text, msg_id, deliver=False)
         print("recorded %s for %s on %s — its machine delivers it" % (event_ref(e), m.alias, m.machine))
@@ -8670,6 +9213,9 @@ def send_to_member(project, m, sender, via, text, msg_id):
         die("%s is not live (%s) — a session sminos did not spawn is reached only while it runs; "
             "sminos say records for it" % (m.alias, m.state), EXIT_UNKNOWN)
     delivery = record_message(project, m.session, m.alias, sender, via, text, msg_id)
+    if delivery.held:
+        delivery.recorded_owed(m.alias)
+        return
     if not delivery.queue:
         delivery.release()
         print("sent to %s (delivered by a concurrent delivery)" % m.alias)

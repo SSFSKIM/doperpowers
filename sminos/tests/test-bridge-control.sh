@@ -642,6 +642,33 @@ L="$(last_op "$T/lines-b" deliver)"
 assert_contains "$(field_of "$L" text)" "[sminos message from human id=" "send's own frame went through the bridge"
 SENDSEQ="$(field_of "$L" key.seq)"
 assert_equals "$(( SENDSEQ > SEQ ))" "1" "keyed by its own event"
+# On a machine cut over to its endpoint (O12 M6) the human's say is the
+# endpoint's to decide: the fast path pushes nothing, and the verdict `words`
+# (the uplink's deliver_verdict, test_words.py) takes the bridge, once per
+# event, keyed as before; a second verdict for it finds it settled.
+mkdir -p "$SMINOS_HOME/daemon"
+printf '{"org":"org-1","hub":"http://127.0.0.1:9","name":"testhost","former":{},"ref":"machine-ref-1","enrolled":"2026-10-27T00:00:00.000Z","cutover":"2026-10-27T00:00:01.000Z","build":"b"}\n' \
+  > "$SMINOS_HOME/daemon/identity.json"
+chmod 600 "$SMINOS_HOME/daemon/identity.json"
+N="$(count_op "$T/lines-b" deliver)"
+set +e; OUT="$(cd "$R" && "$SMINOS" say "@rover on the verdict" 2>&1)"; RC=$?; set -e
+assert_rc 0 "$RC" "on a cut-over machine a human's say to a bridged member exits 0"
+assert_contains "$OUT" "rover: recorded; the endpoint decides its delivery" "saying the endpoint decides its delivery"
+assert_equals "$(count_op "$T/lines-b" deliver)" "$N" "and the fast path takes no bridge"
+set +e; OUT="$(PYTHONPATH="$PLUGIN_ROOT/skills/sminos/scripts" python3 -c 'import sys, sminos
+p = sminos.find_project(sys.argv[1])
+m = next(m for m in sminos.members(p) if m.session == sys.argv[2])
+e = sminos.words_due(p, [m])[m.session][0]
+print(e["writer"], e["seq"], e["text"], sminos.deliver_verdict(p, m, e, "words"), sminos.deliver_verdict(p, m, e, "words"))' \
+  "$P1" "$SID" 2>&1)"; set -e
+assert_contains "$OUT" "testhost/human" "the say is its writer's first owed event, for the endpoint to decide"
+assert_contains "$OUT" "@rover on the verdict sent None" "its verdict sends it once; a second finds it settled"
+assert_equals "$(count_op "$T/lines-b" deliver)" "$((N + 1))" "through the bridge, once"
+L="$(last_op "$T/lines-b" deliver)"
+assert_contains "$(field_of "$L" text)" "on the verdict" "carrying the say"
+assert_equals "$(field_of "$L" key.writer):$(field_of "$L" key.project)" "testhost/human:$P1" "keyed by its writer and project"
+assert_equals "$(field_of "$L" key.seq)" "$(cut -d' ' -f2 <<<"$OUT")" "and its seq"
+rm -f "$SMINOS_HOME/daemon/identity.json"
 # A peer's say or send to a bridged member is a peer message: never the
 # bridge, but the inbox frame, in the engine's own peer envelope naming its
 # sender, so the engine delivers it as another session's.

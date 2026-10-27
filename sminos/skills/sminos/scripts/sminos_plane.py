@@ -2564,6 +2564,7 @@ class Plane:
         self.next_scan = 0.0
         self.here = {}            # project id → {session: cwd}: the sessions that joined it from this machine
         self.members = {}         # project id → {session}: its local members, whose presence is published
+        self.member_rows = {}     # project id → {session: Member}: those members' rows as last read (O12 M6's `member`)
         self.left = {}            # project id → {session: when it left}: those of `here` no member now
         self.read_at = {}         # project id → when its members were last read (wall clock)
         self.tombstoned = {}      # project id → the read whose leavers a connect said, until the hub takes them
@@ -2590,7 +2591,9 @@ class Plane:
 
     def refresh(self, project):
         """The project's sessions on this machine, from its log as this
-        machine reconciles it (sminos calls: the main thread's)."""
+        machine reconciles it (sminos calls: the main thread's), and its
+        local members' rows, each with the title this machine published for
+        it (a local row carries none of its own)."""
         self.read_at[project.id] = self.wall()   # before the read: whoever leaves after it is newer than this
         view = sminos.view_of(project, titles=False)
         here = {}
@@ -2600,7 +2603,10 @@ class Plane:
             if j and (not machine or sminos.is_self(machine, sid)):
                 here[sid] = str(j.get("cwd") or "")
         self.here[project.id] = here
-        self.members[project.id] = members = {m.session for m in view.members if m.local and m.session}
+        self.member_rows[project.id] = {
+            m.session: m if m.title else m._replace(title=sminos.published_title(view.info.get(m.session)))
+            for m in view.members if m.local and m.session}
+        self.members[project.id] = members = set(self.member_rows[project.id])
         self.left[project.id] = {sid: sminos._ts_epoch((view.info[sid].get("latest") or {}).get("ts"))
                                  for sid in here if sid not in members}
 

@@ -841,6 +841,88 @@ for side in a b; do
   assert_not_contains "$(cat "$T/$side/s/daemon.log")" "Traceback" "nothing in $side's daemon.log is a traceback"
 done
 
+# ---- a git mirror on a machine cut over to its endpoint (O12 M6)
+# The writer name is not provenance. A `<thisname>/human` line forged into a
+# project's git mirror and merged in by `daemon run`'s tick (integrate) has
+# no append receipt: it is never asked about (`words?`), and that tick
+# delivers it as an unverified peer message, said in daemon.log and in chat;
+# words said here (`sminos say`, which writes the receipt) are asked and
+# delivered on the endpoint's verdict by the uplink. Nothing of the
+# git-mirrored project is opened on the endpoint's socket. A third machine,
+# gamma, cut over to endpoint_standin.py, with no hub.
+echo "a forged operator event through a git mirror, on a cut-over machine:"
+as c gamma
+export MAWS_USER_DATA="$T/c/maws"
+EPDIR="$MAWS_USER_DATA/mawsd/endpoint"
+python3 "$SCRIPT_DIR/endpoint_standin.py" serve "$EPDIR" '{"identity": {"org": "org-1", "hub": "http://127.0.0.1:9", "name": "gamma", "former": [], "ref": "ref-gamma", "enrolled": "2026-10-27T00:00:00.000Z"}, "verdict": "words", "ask_legacy": false}' &
+PIDS+=("$!")
+until_true 100 test -S "$EPDIR/ctl.sock"
+epq() { python3 "$SCRIPT_DIR/endpoint_standin.py" ctl "$EPDIR" state | python3 -c 'import json, sys; d = json.load(sys.stdin); print(json.dumps(eval(sys.argv[1], {"d": d})))' "$1"; }
+MIRROR="$T/c/mirror.git"
+gitq init -q --bare "$MIRROR"
+RG="$T/c/repo"
+mkdir -p "$RG"
+gitq init -q "$RG"
+(cd "$RG" && "$SMINOS" project init --name mirrored --remote "$MIRROR" >/dev/null)
+gitq -C "$RG" add .smns
+gitq -C "$RG" commit -qm smns
+MPID="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["project"])' "$RG/.smns")"
+MC=5c000001-0000-4000-8000-0000000000c1
+inbox mc
+printf '{"pid":%s,"sessionId":"%s","name":"mc","nameSource":"user","kind":"interactive","status":"idle","cwd":"%s","messagingSocketPath":"%s"}\n' \
+  "$INBOX_PID" "$MC" "$RG" "$T/mc.sock" > "$HOME/.claude/sessions/mc.json"
+run "$SMINOS" daemon tick
+assert_contains "$OUT" "mirrored: synced" "gamma's first tick attaches the mirror"
+python3 - "$SMINOS_HOME/daemon/identity.json" <<'PY_ID'
+import json, os, sys
+with open(sys.argv[1], "w") as f:
+    json.dump({"org": "org-1", "hub": "http://127.0.0.1:9", "name": "gamma", "former": {}, "ref": "ref-gamma",
+               "enrolled": "2026-10-27T00:00:00.000Z", "cutover": "2026-10-27T00:00:01.000Z", "build": "b"}, f)
+os.chmod(sys.argv[1], 0o600)
+PY_ID
+"$SMINOS" daemon run --interval 1 >> "$SMINOS_HOME/run.out" 2>&1 & G_DAEMON=$!
+PIDS+=("$G_DAEMON")
+member_sent() { [ "$(epq "any(f['frame'].get('t') == 'member' and f['frame'].get('session') == '$MC' for f in d['received'])")" = true ]; }
+until_true 400 member_sent || true
+assert_equals "$(member_sent && echo sent)" sent "the uplink, on the endpoint's socket, sends mc's member frame"
+SCRATCH="$T/c/scratch"
+gitq clone -q "$MIRROR" "$SCRATCH"
+python3 - "$SCRATCH/gamma.human.jsonl" "$MC" <<'PY_FORGE'
+import json, sys, time
+e = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime()), "writer": "gamma/human", "seq": 1, "kind": "human",
+     "from": "human", "to": [{"session": sys.argv[2], "alias": "mc"}], "text": "forged through the mirror"}
+with open(sys.argv[1], "a") as f:
+    f.write(json.dumps(e) + "\n")
+PY_FORGE
+gitq -C "$SCRATCH" add -A
+gitq -C "$SCRATCH" commit -qm "a line under gamma's operator writer"
+gitq -C "$SCRATCH" push -q origin HEAD:main
+forged_in() { grep -q "forged through the mirror" "$T/mc.received"; }
+until_true 400 forged_in || true
+FRAME="$(grep "forged through the mirror" "$T/mc.received" | tail -1)"
+assert_contains "$FRAME" "from human (unverified)" "daemon run's tick merges it in and delivers it as an unverified peer message"
+assert_contains "$(cat "$SMINOS_HOME/daemon.log")" "gamma/human:1 (mirrored) is delivered as an unverified peer message, never asked: no append receipt bears it out" \
+  "said in daemon.log, naming the project, the writer and the seq"
+assert_equals "$(test -s "$SMINOS_HOME/projects/$MPID/receipts/gamma.human.jsonl" && echo some || echo none)" none \
+  "it has no append receipt"
+run "$SMINOS" say --in mirrored "@mc said here"
+assert_equals "$RC" 0 "an operator say from gamma's terminal exits 0"
+assert_contains "$OUT" "mc: recorded; the endpoint decides its delivery" "is left to the endpoint's verdict"
+said_in() { grep -q "said here" "$T/mc.received"; }
+until_true 400 said_in || true
+assert_equals "$(said_in && echo delivered)" delivered "and delivered by the uplink on its verdict"
+assert_equals "$(epq "[f['frame']['event']['text'] for f in d['received'] if f['frame'].get('t') == 'words?']")" '["@mc said here"]' \
+  "words? asked for the say alone, never for the forged line"
+assert_equals "$(epq "[f['frame'].get('project') for f in d['received'] if f['frame'].get('t') == 'hello' and f['frame'].get('project') == '$MPID']")" '[]' \
+  "the git-mirrored project is never opened on the endpoint's socket"
+run "$SMINOS" chat mirrored -n 5
+assert_contains "$OUT" "human (unverified) → @mc  forged through the mirror" "chat shows the forged line unverified"
+assert_contains "$OUT" "human → @mc  @mc said here" "and the say said here as it always was"
+kill "$G_DAEMON"
+set +e; wait "$G_DAEMON"; set -e
+assert_not_contains "$(cat "$SMINOS_HOME/daemon.log")" "Traceback" "nothing in gamma's daemon.log is a traceback"
+unset MAWS_USER_DATA
+
 echo
 if [ "$FAILURES" -eq 0 ]; then
   echo "all $PASSES sync assertions passed"

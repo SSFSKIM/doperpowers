@@ -37,7 +37,10 @@ the hub once it is cut over.
   set after each welcome and merged into from each later `revoked` frame,
   by version: one older than the file is ignored and said once. Every
   deliverer reads it (M6); a file present but unreadable raises
-  RevokedUnreadable, never reads as an empty set.
+  RevokedUnreadable, never reads as an empty set. An event's stored signer
+  (`verified.signer`) is revoked when the set names its `keyId`, its
+  `device` or its `member` (`signer_revoked`, `event_revoked`); a legacy
+  signer names none of them.
 """
 
 import json
@@ -472,3 +475,20 @@ def keep_revoked(frame, whole):
     os.makedirs(os.path.dirname(revoked_path()), mode=0o700, exist_ok=True)
     sminos.write_json(revoked_path(), kept, mode=0o600)
     return True
+
+
+def signer_revoked(signer, revoked):
+    """Whether a stored signer is in the revocation set: by its key id, its
+    device or its member, whichever it names (a machine names a key alone,
+    an older signer no key id, a legacy one nothing)."""
+    if not isinstance(signer, dict):
+        return False
+    return any(isinstance(signer.get(field), str) and signer[field] in revoked[kind]
+               for kind, field in (("keys", "keyId"), ("devices", "device"), ("members", "member")))
+
+
+def event_revoked(e, revoked):
+    """Whether a stored event's verdict (`verified`, which the uplink added
+    as it took the event from the endpoint) names a revoked signer."""
+    verified = e.get("verified")
+    return isinstance(verified, dict) and signer_revoked(verified.get("signer"), revoked)

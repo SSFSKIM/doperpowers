@@ -370,6 +370,8 @@ run_suites() {
   if "$SCRIPT_DIR/test-hub.sh"; then pass "enrollment and hub projects (test-hub.sh)"; else fail "enrollment and hub projects (test-hub.sh)"; fi
   if python3 "$SCRIPT_DIR/test_rl10.py"; then pass "the endpoint (RL10): discovery, the cutover's identity, revocations, policy, the DX1 key (test_rl10.py)"; else
     fail "the endpoint (RL10): discovery, the cutover's identity, revocations, policy, the DX1 key (test_rl10.py)"; fi
+  if python3 "$SCRIPT_DIR/test_words.py"; then pass "a person's words on a cut-over machine: members, receipts, revocations, words?, the deliverers, the label (test_words.py)"; else
+    fail "a person's words on a cut-over machine: members, receipts, revocations, words?, the deliverers, the label (test_words.py)"; fi
   if "$SCRIPT_DIR/test-sync.sh"; then pass "sync through the hub, two machines (test-sync.sh)"; else fail "sync through the hub, two machines (test-sync.sh)"; fi
   if "$SCRIPT_DIR/test-archive.sh"; then pass "the archive of a hub project (test-archive.sh)"; else fail "the archive of a hub project (test-archive.sh)"; fi
   if "$SCRIPT_DIR/test-org.sh"; then pass "the org's directory: machine projects, follow-only hellos (test-org.sh)"; else
@@ -3077,6 +3079,109 @@ assert_equals "$(grep -c 'raced' "$TEST_ROOT/in-b.received")" 1 "the settled sen
 assert_contains "$(cat "$TEST_ROOT/race-wait.out")" "delivered by a concurrent delivery" "send says who delivered it"
 assert_contains "$(cat "$TEST_ROOT/race-wait.out")" "--- reply ---" "and still prints the reply block"
 assert_contains "$(cat "$TEST_ROOT/race-wait.out")" "RACED $RACE_ID" "with the turn's reply"
+# On a machine cut over to its endpoint (O12 M6) an operator's send and say
+# are a person's words, which only the endpoint's verdict delivers: both send
+# paths (a seat's, a seatless session's) and say's fast path record the event,
+# say so and push nothing — the uplink asks `words?` and delivers it
+# (test_words.py) — while a session's send is a peer's and goes as today.
+SENTINEL_ID="$SMINOS_HOME/daemon/identity.json"
+mkdir -p "$SMINOS_HOME/daemon"
+python3 - "$SENTINEL_ID" <<'PY_CUT'
+import json, os, sys
+with open(sys.argv[1], "w") as f:
+    json.dump({"org": "org-1", "hub": "http://127.0.0.1:9", "name": "testhost", "former": {}, "ref": "machine-ref-1",
+               "enrolled": "2026-10-27T00:00:00.000Z", "cutover": "2026-10-27T00:00:01.000Z", "build": "b"}, f)
+os.chmod(sys.argv[1], 0o600)
+PY_CUT
+start_inbox sl
+SSL=5e000005-0000-4000-8000-0000000000e5
+printf '{"pid":%s,"sessionId":"%s","name":"sl","nameSource":"user","kind":"interactive","status":"idle","cwd":"%s","messagingSocketPath":"%s"}\n' \
+  "$SOCK_PID" "$SSL" "$PR" "$TEST_ROOT/in-sl.sock" > "$HOME/.claude/sessions/pl-sl.json"
+: > "$TEST_ROOT/in-b.received"
+OWED_B="$(owed_count "$SB")"
+NUDGE_BEFORE="$(python3 -c 'import os, sys; print(os.stat(sys.argv[1]).st_mtime_ns if os.path.exists(sys.argv[1]) else 0)' "$SMINOS_HOME/daemon/nudge")"
+run_in "$PR" "$SMINOS" send demo/b "words held for b"
+assert_rc 0 "$RC" "on a cut-over machine an operator's send to a seat exits 0"
+assert_contains "$OUT" "for b; the endpoint decides its delivery" "saying it is recorded and the endpoint decides its delivery"
+assert_contains "$OUT" "recorded testhost/human:" "naming the event"
+assert_equals "$(inbox b)" "" "and pushing nothing"
+assert_equals "$(owed_count "$SB")" "$((OWED_B + 1))" "the send stays owed to b"
+assert_contains "$(tail -1 "$DEMO_HUMAN")" '"text": "words held for b"' "recorded in the project's log"
+assert_equals "$(python3 -c 'import os, sys; print(os.stat(sys.argv[1]).st_mtime_ns > int(sys.argv[2]))' "$SMINOS_HOME/daemon/nudge" "$NUDGE_BEFORE")" True \
+  "and the daemon nudged, whose uplink asks"
+run_in "$PR" "$SMINOS" send sl "words held for a seatless session"
+assert_rc 0 "$RC" "an operator's send to a seatless session exits 0"
+assert_contains "$OUT" "for sl; the endpoint decides its delivery" "recorded alike"
+assert_equals "$(inbox sl)" "" "and pushing nothing"
+assert_equals "$(owed_count "$SSL")" 1 "the send stays owed to it"
+run_in "$PR" "$SMINOS" say "@b a say held for b"
+assert_rc 0 "$RC" "an operator's say exits 0"
+assert_contains "$OUT" "b: recorded; the endpoint decides its delivery" "say's fast path leaves it to the endpoint"
+assert_equals "$(inbox b)" "" "and pushes nothing"
+run_in "$PR" "$SMINOS" chat demo -n 3
+assert_contains "$OUT" "a say held for b" "chat shows what is held, recorded"
+python3 - "$SMINOS_PY" "$DEMO" "$SB" > "$TEST_ROOT/cut-deliver.out" <<'PY_HELD'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("sminos", sys.argv[1]); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+p = mod.find_project(sys.argv[2])
+r = mod.deliver_next(p, next(m for m in mod.members(p) if m.session == sys.argv[3]))
+print(r["delivered"], [(e["writer"], e["text"]) for e in r["gated"]])
+PY_HELD
+assert_contains "$(cat "$TEST_ROOT/cut-deliver.out")" "0 [('testhost/human', 'words held for b')]" \
+  "the daemon's delivery leaves the writer owed for the endpoint, at its first held event"
+assert_equals "$(inbox b)" "" "nothing pushed by it either"
+CLAUDE_CODE_SESSION_ID="$SA" run_in "$PR" "$SMINOS" send demo/b "a peer's send"
+assert_rc 0 "$RC" "a session's send to a seat exits 0"
+assert_contains "$(inbox b)" "a peer's send" "a session's send is a peer's: pushed as today"
+# The earlier events a session's send carries to a seat are checked against the
+# revocation set as every deliverer checks them: one signed by a revoked key is
+# marked and left out, and with the set unreadable a signed one holds the send.
+signed_by_a() { # text keyId... → appended to a's writer, to b, each carrying a machine signer
+  python3 - "$SMINOS_PY" "$DEMO" "$SA" "$SB" "$@" <<'PY_SIGNED'
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("sminos", sys.argv[1]); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+p = mod.find_project(sys.argv[2])
+writer = mod.writer_id(sys.argv[3])
+seq = max([e["seq"] for e in mod.log_read(p) if e["writer"] == writer] or [0])
+with open(mod.writer_path(p, writer), "a") as f:
+    for n, (text, key) in enumerate(zip(sys.argv[5::2], sys.argv[6::2]), 1):
+        f.write(json.dumps({"ts": "2026-10-27T01:00:00.000Z", "writer": writer, "seq": seq + n, "kind": "say",
+                            "from": "a", "to": [{"session": sys.argv[4], "alias": "b"}], "text": text,
+                            "verified": {"signer": {"kind": "machine", "keyId": key}, "owners": []}}) + "\n")
+PY_SIGNED
+}
+OWED_B="$(owed_count "$SB")"
+signed_by_a "signed by a revoked key" k-gone "signed and kept" k-kept
+printf '{"version": 3, "devices": [], "members": [], "keys": ["k-gone"]}\n' > "$SMINOS_HOME/daemon/revoked.json"
+: > "$TEST_ROOT/in-b.received"
+CLAUDE_CODE_SESSION_ID="$SA" run_in "$PR" "$SMINOS" send demo/b "after a revoked one"
+assert_rc 0 "$RC" "a session's send behind a revoked event exits 0"
+assert_contains "$(inbox b)" "after a revoked one" "the send is pushed"
+assert_contains "$(inbox b)" "signed and kept" "with the valid earlier event"
+assert_not_contains "$(inbox b)" "signed by a revoked key" "and without the revoked one"
+assert_equals "$(owed_count "$SB")" "$OWED_B" "all three leave b's owed events"
+signed_by_a "signed, set unreadable" k-kept
+printf '{not json' > "$SMINOS_HOME/daemon/revoked.json"
+: > "$TEST_ROOT/in-b.received"
+CLAUDE_CODE_SESSION_ID="$SA" run_in "$PR" "$SMINOS" send demo/b "behind an unclearable one"
+assert_rc 0 "$RC" "a session's send behind an event the set cannot clear exits 0"
+assert_contains "$OUT" "for b; it waits behind" "saying it is recorded and what it waits behind"
+assert_equals "$(inbox b)" "" "and pushing nothing"
+assert_equals "$(owed_count "$SB")" "$((OWED_B + 2))" "both stay owed"
+rm -f "$SMINOS_HOME/daemon/revoked.json"
+# Back to a machine not cut over: what was held is delivered as it always was.
+rm -f "$SENTINEL_ID"
+python3 - "$SMINOS_PY" "$DEMO" "$SB" "$SSL" >/dev/null <<'PY_FLUSH'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("sminos", sys.argv[1]); mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+p = mod.find_project(sys.argv[2])
+for sid in sys.argv[3:]:
+    mod.deliver_next(p, next(m for m in mod.members(p) if m.session == sid))
+PY_FLUSH
+assert_contains "$(inbox b)" "words held for b" "a machine not cut over delivers the held send"
+assert_contains "$(inbox sl)" "words held for a seatless session" "and the seatless one"
+assert_equals "$(owed_count "$SB")" 0 "settling them"
+rm -f "$HOME/.claude/sessions/pl-sl.json"
 # A pending @all is settled, not replayed, when a send resumes a stopped member.
 python3 - "$SMINOS_PY" "$DEMO" "$SB" <<'PY_WAKE'
 import importlib.util, sys
@@ -6239,6 +6344,63 @@ assert_rc 0 "$RC" "the retired seat is still found by its own name"
 rm -f "$HOME/.claude/sessions/fa-"*.json
 cd "$WORK"
 rm -f "$HOME/.claude/sessions/cn-"*.json
+
+# ---- the label on a cut-over machine ----------------------------------------------
+# On a machine cut over to its endpoint (O12 M6) a chat line says whose session
+# sent it, from the endpoint's verdict stored on the line alone: a signer since
+# revoked reads so however old the event, never `owned by`; an event under this
+# machine's operator writer with no append receipt (a git mirror's import) reads
+# unverified, while one `sminos say` appended here reads as it always did.
+echo "the label on a cut-over machine:"
+export SMINOS_HOME="$TEST_ROOT/label-registry"
+mkdir -m 700 "$SMINOS_HOME"
+LR="$TEST_ROOT/label-repo"
+mkdir -p "$LR"
+gitq init -q "$LR"
+(cd "$LR" && "$SMINOS" project init --name labels >/dev/null)
+LPLOG="$SMINOS_HOME/projects/$(smns_id "$LR")/log"
+cd "$LR"
+run "$SMINOS" say 'said here'
+assert_rc 0 "$RC" "(an operator say before the cutover)"
+python3 - "$SMINOS_HOME" "$LPLOG" <<'PY'
+import json, os, sys
+home, log = sys.argv[1:]
+def private(path, d):
+    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    with open(path, "w") as f:
+        json.dump(d, f)
+    os.chmod(path, 0o600)
+private(os.path.join(home, "daemon", "identity.json"), {
+    "org": "org-1", "hub": "http://127.0.0.1:9", "name": "testhost", "former": {}, "ref": "machine-ref-1",
+    "enrolled": "2026-10-27T00:00:00.000Z", "cutover": "2026-10-27T00:00:01.000Z", "build": "b"})
+private(os.path.join(home, "daemon", "revoked.json"), {"version": 2, "devices": [], "members": [], "keys": ["k-old"]})
+def machine(key):
+    return {"kind": "machine", "ref": "ref-other", "name": "othermachine", "keyId": key}
+one = [{"id": "mem-1", "email": "one@example.com"}]
+other = "othermachine/6e0000ff-0000-4000-8000-0000000000ff"
+lines = {other: [({"seq": 1, "text": "owned"}, machine("k-1"), one),
+                 ({"seq": 2, "text": "unattested"}, machine("k-1"), []),
+                 ({"seq": 3, "text": "before the revocation"}, machine("k-old"), one)],
+         "hub/mem-2": [({"seq": 1, "kind": "human", "from": "human", "text": "legacy"}, {"kind": "legacy"}, None)],
+         "testhost/human": [({"seq": 2, "kind": "human", "from": "human", "text": "from a mirror"}, None, None)]}
+for writer, events in lines.items():
+    with open(os.path.join(log, writer.replace("/", ".") + ".jsonl"), "a") as f:
+        for fields, signer, owners in events:
+            e = {"ts": "2026-10-27T01:00:%02d.000Z" % fields["seq"], "writer": writer, "kind": "say",
+                 "from": "peer", "to": "*", **fields}
+            if signer is not None:
+                e["verified"] = {"signer": signer, **({"owners": owners} if owners is not None else {})}
+            f.write(json.dumps(e) + "\n")
+PY
+run "$SMINOS" chat labels -n 10
+assert_contains "$OUT" "peer, owned by one@example.com → *  owned" "a verified sender's owners, by email"
+assert_contains "$OUT" "peer (owners unverified) → *  unattested" "an attestation that failed"
+assert_contains "$OUT" "human (unverified, legacy) → *  legacy" "a legacy signer"
+assert_contains "$OUT" "peer (signed by a revoked key) → *  before the revocation" "a revoked key's earlier event"
+assert_not_contains "$OUT" "owned by one@example.com → *  before" "and never owned by"
+assert_contains "$OUT" "human (unverified) → *  from a mirror" "an operator event no receipt bears out"
+assert_contains "$OUT" "human → *  said here" "an operator event appended here, as before"
+cd "$WORK"
 export SMINOS_HOME="$TEST_ROOT/hp-registry"
 
 # ---- the mirror and the daemon ----------------------------------------------------
