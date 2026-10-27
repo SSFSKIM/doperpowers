@@ -3038,6 +3038,118 @@ class Checks(unittest.TestCase):
         self.assertEqual(tree(), before, "no record rewritten, no lock or metadata made")
         self.assertFalse(os.path.exists(os.path.join(home, ".claude")), "no migration lock")
 
+    # ------------------------------------------------ ticket 11 (O12 M7a)
+
+    def test_q_a_reseal_in_flight_runs_once_and_is_answered_under_its_nonce(self):
+        """Ticket 11a: a reseal of an op a worker holds, before its claim (the
+        worker inside `plan`) and after it (the bridge holding the command),
+        runs nothing again, and the op's one outcome goes up under the
+        latest nonce, the one the hub waits for."""
+        self.mod.turn = "t-q1"
+        reached, gate = threading.Event(), threading.Event()
+        plan = self.r.plan
+
+        def paused(rpc, facts):   # the worker, between admission and its claim
+            reached.set()
+            gate.wait(10)
+            return plan(rpc, facts)
+
+        self.r.plan = paused
+        first = self.send_op("steer", {"session": self.bridged.sid, "text": "resealed before its claim"})
+        op = first["opId"]
+        self.assertTrue(reached.wait(10))
+        again = self.send_op("steer", {"session": self.bridged.sid, "text": "resealed before its claim"}, op=op,
+                             op_created=first["opCreated"])
+        self.assertNotIn(op, self.ledger(), "no claim yet")
+        self.assertEqual(self.r.flight[op]["nonce"], again["nonce"], "the in-flight op carries the latest nonce")
+        gate.set()
+        self.assertEqual(self.outcome(again)["state"], "done")
+        self.assertEqual(results(self.collect(), first["nonce"]), [], "nothing under the nonce the hub gave up")
+        self.assertEqual(len(self.mod.ops("steer")), 1, "run once")
+        self.assertEqual(self.ledger()[op]["nonce"], again["nonce"])
+        self.r.plan = plan
+
+        self.mod.hold = 1.5   # claimed, its command held at the bridge
+        held = self.send_op("steer", {"session": self.bridged.sid, "text": "resealed after its claim"})
+        op = held["opId"]
+        self.assertTrue(wait_for(lambda: "at" in self.ledger().get(op, {}), 10), "claimed")
+        self.assertNotIn("outcome", self.ledger()[op])
+        later = self.send_op("steer", {"session": self.bridged.sid, "text": "resealed after its claim"}, op=op,
+                             op_created=held["opCreated"])
+        self.assertEqual(self.ledger()[op]["nonce"], later["nonce"], "the claim takes the latest nonce")
+        self.assertEqual(self.outcome(later)["state"], "done")
+        self.assertEqual(results(self.collect(), held["nonce"]), [])
+        self.assertEqual(len(self.mod.ops("steer")), 2, "each op run once")
+
+    def test_q_a_reseal_of_an_op_its_worker_then_refuses_is_answered_under_its_nonce(self):
+        """Ticket 11a: the worker refuses the op inside `plan` (a live
+        session is not resumed) after a reseal arrived: the refusal is kept
+        under the reseal's nonce."""
+        reached, gate = threading.Event(), threading.Event()
+        plan = self.r.plan
+
+        def paused(rpc, facts):
+            reached.set()
+            gate.wait(10)
+            return plan(rpc, facts)
+
+        self.r.plan = paused
+        first = self.send_op("resume", {"session": self.plain.sid})
+        self.assertTrue(reached.wait(10))
+        again = self.send_op("resume", {"session": self.plain.sid}, op=first["opId"], op_created=first["opCreated"])
+        gate.set()
+        self.refused(again, "session-live")
+        self.assertEqual(results(self.collect(), first["nonce"]), [])
+        self.assertEqual(self.ledger()[first["opId"]]["nonce"], again["nonce"])
+
+    def test_q_a_reseal_of_a_claim_awaiting_reconciliation_is_answered_under_its_nonce(self):
+        """Ticket 11a: a claim a stop left, no trace of it yet, resealed after
+        the restart: nothing runs again, and once its trace answers it, the
+        outcome goes up under the reseal's nonce."""
+        self.mod.turn = "t-q2"
+        op, nonce, born = new_op(), codes.b64url(os.urandom(16)), iso(time.time())
+        self.claim(op, "steer", self.bridged.sid, time.time(), nonce=nonce, op_created=rpcs.created_at(born))
+        self.r = rpcs.Rpcs(KEY, "testhost", clock=lambda: self.clock[0])   # the restart: its trace not there yet
+        self.assertEqual(self.r.query(op), {"state": "in-progress"})
+        reseal = self.send_op("steer", {"session": self.bridged.sid, "text": "landed before the stop"}, op=op,
+                              op_created=born)
+        self.assertEqual(self.ledger()[op]["nonce"], reseal["nonce"])
+        self.assertNotIn("outcome", self.ledger()[op], "still the claim")
+        landed = rpcs.steer(rpcs.bridge.endpoint(self.bridged.sid), "landed before the stop", op)
+        self.assertEqual(self.reconciled(self.r, reseal["nonce"]), [landed], "reconciled once, under the reseal's nonce")
+        self.assertEqual(results(self.r.opening(self.pid), nonce), [], "nothing under the nonce the hub gave up")
+        self.assertEqual(len(self.mod.ops("steer")), 1, "the reseal ran nothing")
+
+    def test_q_an_observers_refusal_reconciled_after_a_restart_reads_lane_b(self):
+        """Ticket 11b: the bridge's child keeps an observer's refusal under
+        the op; a daemon that stopped before it kept the outcome reads it
+        back as `lane-b`, as `command()` answers it live, for every RPC whose
+        answer the child keeps."""
+        self.spawn_agent("aid00000000000q3", name="observed")
+        self.mod.observer = True
+        self.mod.turn = "t-q3"
+        sid = self.bridged.sid
+        asked = [self.send("steer", {"session": sid, "text": "x"}),
+                 self.send("command", {"session": sid, "name": "rename", "args": "x"}),
+                 self.send("btw", {"session": sid, "prompt": "why?"}),
+                 self.send("stop-agent", {"session": sid, "agentId": "observed"}),
+                 self.send("tell", {"session": sid, "agentId": "observed", "text": "hi"}),
+                 self.upload()]
+        for rpc in asked:
+            self.refused(rpc, "lane-b")
+        path = os.path.join(os.environ["SMINOS_HOME"], "daemon", rpcs.LEDGER_FILE)
+        entries = self.ledger()
+        for rpc in asked:   # each claim as a stop before its outcome was kept leaves it
+            n = rpc["nonce"]
+            self.assertEqual(((rpcs.bridge.load_kept(sid).get("rpcs") or {}).get(n) or {}).get("code"), "lane-b", rpc["rpc"])
+            entries[n] = {k: v for k, v in entries[n].items() if k not in ("outcome", "done_at", "acked")}
+        sminos.write_json(path, entries)
+        self.r = rpcs.Rpcs(KEY, "testhost", clock=lambda: self.clock[0])
+        self.frames = []
+        for rpc in asked:
+            o = self.refused(rpc, "lane-b")
+            self.assertEqual(o["error"]["message"], "MAWS controls this session", rpc["rpc"])
+
 
 class CopyNames(unittest.TestCase):
     """A seat-less session never takes, from its harness name, the alias of
