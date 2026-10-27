@@ -128,6 +128,7 @@ import queue
 import signal
 import socket
 import socketserver
+import subprocess
 import sys
 import threading
 import time
@@ -166,6 +167,7 @@ NONCE_HEADER = "X-Bridge-Nonce"       # this child's, from its hello: a post wit
 QUESTION_TOOLS = ("AskUserQuestion",)
 # Who answered, as a client may not claim it: the terminal and the bridge settle on their own.
 RESERVED_BY = ("terminal", "bridge")
+CHILD_LINES = ("hello", "lane")   # what only the child says to the mod: never a client's command
 LANE_MARK = "MAWS_LANE"        # MAWS's lane B marker, beside SMNS_MEMBER (sminos.MEMBER_MARK)
 LANE_B = "lane-b"              # an observer's refusal's code
 OBSERVER_REASON = "MAWS controls this session"
@@ -415,12 +417,20 @@ def lane_verdict(session, session_pid):
     sminos's parent rule (sminos.member_mark's) on one observation of its
     parent: `match` when it is the SMNS_MEMBER pid. `mismatch` only on
     positive evidence of another spawner: no mark to check it against, or
-    the mark's process alive, started no later than the session, and not its
-    parent (a `claude` a lane B session's Bash started). A parent that is
-    merely not the mark proves nothing: once the host exits, the engine is
-    re-parented (to PID 1, or a subreaper), and a pid the mark names may be
-    reused by a younger process. `unresolved` for those, while the session's
-    registry record does not name it yet, or while `ps` cannot tell."""
+    the mark's process running (alive, and not an exited, unreaped zombie),
+    started in an earlier whole second than the session, and not its parent
+    (a `claude` a lane B session's Bash started). Anything less is
+    `unresolved`, which keeps the session an observer: a parent that is
+    merely not the mark proves nothing (once the host exits the engine is
+    re-parented, to PID 1 or a subreaper, and a pid the mark names may be
+    reused by a younger process), nor does a state or a start that cannot
+    be read, a registry record that does not name the session yet, or a
+    `ps` that cannot tell. The start is compared in whole seconds, strictly:
+    a host started in the session's own second is no evidence. That loses
+    no real case, since a `claude` a lane B session's Bash starts exists
+    only after the host spawned the engine, the engine booted, ran a model
+    turn and called Bash, seconds at the least; and were one ever that
+    quick, it would be held an observer, the safe side."""
     mark = os.environ.get(S.MEMBER_MARK, "")
     if not (mark.isdigit() and int(mark) > 1):
         return "mismatch"
@@ -436,8 +446,10 @@ def lane_verdict(session, session_pid):
         return "unresolved"
     if parent == int(mark):
         return "match"
+    if not S.pid_alive(int(mark)) or process_state(int(mark)) in (None, "Z", "X"):
+        return "unresolved"
     host, session_started = process_started(int(mark)), process_started(session_pid)
-    if not S.pid_alive(int(mark)) or host is None or session_started is None or host > session_started:
+    if host is None or session_started is None or host >= session_started:
         return "unresolved"
     return "mismatch"
 
@@ -447,6 +459,17 @@ def process_started(pid):
     or None when that cannot be read."""
     st = S._parse_lstart(S.read_proc_start(pid))
     return time.mktime(st) if st else None
+
+
+def process_state(pid):
+    """A process's state as `ps -o stat=` opens it (R, S, Z, ...), or None
+    when there is no such process or ps cannot tell."""
+    try:
+        out = subprocess.run(["ps", "-o", "stat=", "-p", str(int(pid))], capture_output=True, text=True,
+                             timeout=5).stdout.strip()
+    except (TypeError, ValueError, OSError, subprocess.SubprocessError):
+        return None
+    return out[:1] or None
 
 
 def relay_controller(session, lane):
@@ -1475,8 +1498,9 @@ class _Handler(BaseHTTPRequestHandler):
             return self._send(204)
         if url.path == "/command":
             if not isinstance(body, dict) or not isinstance(body.get("op"), str) or not body["op"] \
-                    or body["op"] == "hello":
-                return self._send(400, {"error": "a command is an object with an op (not hello)"})
+                    or body["op"] in CHILD_LINES:
+                return self._send(400, {"error": "a command is an object with an op (not %s: the child's own lines)"
+                                        % " or ".join(CHILD_LINES)})
             try:
                 wait = int((parse_qs(url.query).get("wait") or ["0"])[0])
             except ValueError:

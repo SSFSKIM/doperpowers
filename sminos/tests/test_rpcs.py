@@ -459,6 +459,7 @@ class LaneVerdict(unittest.TestCase):
         with mock.patch.dict(os.environ, {"SMNS_MEMBER": "4242", "CLAUDE_CONFIG_DIR": self.config}), \
                 mock.patch.object(bridgemod.S, "parent_pid", side_effect=lambda _pid: seen.pop(0)) as pp, \
                 mock.patch.object(bridgemod.S, "pid_alive", side_effect=lambda pid: int(pid) != 4242 or host_alive), \
+                mock.patch.object(bridgemod, "process_state", side_effect=lambda pid: "S" if host_alive else None), \
                 mock.patch.object(bridgemod, "process_started", side_effect=lambda pid: started.get(int(pid))):
             got = bridgemod.lane_verdict(self.sid, 4300)
         return got, pp.call_count
@@ -479,6 +480,23 @@ class LaneVerdict(unittest.TestCase):
         self.assertEqual(self.verdict([777], host_started=self.SESSION_STARTED + 5)[0], "unresolved",
                          "the marker's pid reused by a process younger than the session")
         self.assertEqual(self.verdict([777], host_started=None)[0], "unresolved", "its start unreadable")
+        self.assertEqual(self.verdict([777], host_started=self.SESSION_STARTED)[0], "unresolved",
+                         "a host started in the session's own second is no evidence: only an earlier second is")
+
+    def test_lane_verdict_an_exited_unreaped_host_is_no_host(self):
+        """A host that exited and was not reaped (a zombie) still answers
+        kill(pid, 0) and keeps a readable start: it is gone all the same."""
+        zombie = subprocess.Popen(["true"])
+        try:
+            self.assertTrue(wait_for(lambda: bridgemod.process_state(zombie.pid) == "Z", 10), "the host is a zombie")
+            self.assertTrue(sminos.pid_alive(zombie.pid), "kill(pid, 0) still answers for it")
+            started = {4300: self.SESSION_STARTED, zombie.pid: self.SESSION_STARTED - 60}
+            with mock.patch.dict(os.environ, {"SMNS_MEMBER": str(zombie.pid), "CLAUDE_CONFIG_DIR": self.config}), \
+                    mock.patch.object(bridgemod.S, "parent_pid", return_value=1), \
+                    mock.patch.object(bridgemod, "process_started", side_effect=lambda pid: started.get(int(pid))):
+                self.assertEqual(bridgemod.lane_verdict(self.sid, 4300), "unresolved")
+        finally:
+            zombie.wait()
 
 
 class Checks(unittest.TestCase):

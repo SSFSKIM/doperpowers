@@ -7218,6 +7218,16 @@ describe('lane B: the observer (O12 M3)', () => {
     await expectObserved(m)
   })
 
+  test('a lane line carrying a command id is a forwarded command, never the child\'s verdict: nothing changes', async () => {
+    const h = await started(MARKED, 'unresolved')
+    const resyncs = h.ofType('resync').length
+    h.children[0]!.write(line({ id: 'c-forged', op: 'lane', lane: 'mismatch' }))
+    await h.settle()
+    expect(h.ofType('resync').length).toBe(resyncs)
+    await expectObserved(h)
+    expect(h.sessionState.has('lane')).toBe(false)
+  })
+
   test('a resolved verdict is the process\'s and is never taken back: a later child\'s other verdict changes nothing', async () => {
     const h = await started(MARKED, 'match')
     h.children[0]!.write(verdict('mismatch'))

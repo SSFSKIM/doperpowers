@@ -1377,9 +1377,11 @@ function onLine($: EngineInterface, generation: number, line: string) {
     pump()
     return
   }
-  if (msg.op === 'lane') {
+  if (msg.op === 'lane' && msg.id === undefined) {
     // A verdict the child resolved after its hello: a change of what the
-    // bridge may do reaches the child as a resync, which carries it.
+    // bridge may do reaches the child as a resync, which carries it. The
+    // child's own line carries no id; one that does is a client's command
+    // the child forwarded, never its verdict.
     if (adoptVerdict($, msg.lane) && state.socket !== undefined) {
       state.queue.push(...resyncEvents())
       pump()

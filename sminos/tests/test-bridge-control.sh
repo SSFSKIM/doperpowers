@@ -862,6 +862,21 @@ print(lane)' "$1"
 lane_is() { [ "$(lane_of_lines "$1")" = "$2" ]; }
 hello_said() { test -s "$1"; }
 mode busy
+# A host for the Bash-launched case below: a live process that started
+# seconds before the session it marks.
+sleep 600 &
+HOST=$!
+PIDS+=("$HOST")
+
+# The /command boundary: a client cannot speak as the child, neither its
+# hello nor its lane verdict.
+LC=5b000001-0000-4000-8000-0000000000cd
+lanefake "$LC" "$T/lines-lc" MAWS_LANE=B SMNS_MEMBER=$$
+until_true 100 answers "$SMINOS_HOME/bridge/$LC.sock" || true
+run ctl command "$SMINOS_HOME/bridge/$LC.sock" '{"op":"lane","lane":"mismatch"}'
+assert_contains "$OUT" "400 " "a lane line posted to /command is refused, as a hello is"
+assert_not_contains "$(cat "$T/lines-lc")" '"mismatch"' "and never reaches the mod"
+kill "$LANEFAKE" 2>/dev/null || true
 
 # Unmarked: no verdict, and the record says lane A.
 lane_record "$LA"
@@ -896,11 +911,9 @@ kill "$LANEFAKE" 2>/dev/null || true
 
 # Marked, but the mark is another process (a `claude` started from a lane B
 # session's Bash inherits both variables, its parent another): mismatch, lane A.
-# The mark names a live process older than the session (its host), not its parent.
+# The mark names a live process older than the session by a whole second
+# (its host, started at the top of this section), not its parent.
 lane_record "$LM" B
-sleep 600 &
-HOST=$!
-PIDS+=("$HOST")
 lanefake "$LM" "$T/lines-lm" MAWS_LANE=B SMNS_MEMBER=$HOST
 registry "$LANEFAKE" "$LM"
 until_true 100 lane_is "$T/lines-lm" mismatch || true
