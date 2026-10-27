@@ -49,7 +49,10 @@ verdict is the endpoint's to say), and what passes is stored with one key
 added, `verified: {signer, owners}`, `owners` only when the endpoint sent
 them. The endpoint returns an own event only as the echo of what it signed
 at that position, `created`, `sig` and `attest` added: `same_uncoded`
-reads it `present`, and another body there `conflict`, as on DX2.
+reads it `present`, and another body there `conflict`, as on DX2. An event
+the endpoint refused for good never comes down: its position does, as
+`spent {project, writer, seq, reason}`, recorded as a position refused here
+(`spend`), each said once in daemon.log.
 
 Its state between streams lives in the project's home, `uplink.json`: the
 spent positions, the rejections not yet reported (a report whose POST
@@ -715,6 +718,40 @@ class HubLog:
             held[writer] = sorted(set(held.get(writer) or []) | {seq})
             d["spent"] = held
             self.save(d)
+        return True
+
+    def spend(self, writer, seq, reason):
+        """RL10's `spent {project, writer, seq, reason}`: the endpoint refused
+        an arriving event for good (rejected up to the hub already) and sends
+        its position with no content (O10 M6). Recorded as a position refused
+        here is (`take`): an own writer's through `spend_own`, so a position
+        an event of this machine holds stays that event's (a lost endpoint
+        ledger answers this machine's own echoes `conflict`); any other's
+        added to the spent positions. Nothing is reported up. Each position
+        is said once in daemon.log, with its project and the endpoint's
+        reason. Whether it was spent now."""
+        if not (isinstance(writer, str) and "/" in writer.strip("/") and writer.isprintable() and " " not in writer
+                and codes.is_log_seq(seq)):
+            log("a spent frame for %s names no position (%r:%r): ignored" % (self.project.name, writer, seq))
+            return False
+        seq = int(seq)
+        why = " ".join(reason.split())[:100] if isinstance(reason, str) else "no reason given"
+        where = "%s:%d in %s (%s)" % (writer, seq, self.project.name, self.project.id)
+        if seq in self.spent().get(writer, ()):
+            return False   # said when it was spent
+        if self.allocated_here(writer):
+            if not self.spend_own(writer, seq):
+                log("the endpoint spent %s: %s; an event of this machine holds that position, so it is not spent"
+                    % (where, why))
+                return False
+        else:
+            d = self.state()
+            held = d.get("spent") if isinstance(d.get("spent"), dict) else {}
+            held[writer] = sorted(set(held.get(writer) or []) | {seq})
+            d["spent"] = held
+            self.save(d)
+        log("the endpoint spent %s: %s; refused for good, never stored or delivered here, and the writer's later "
+            "events are not held behind it" % (where, why))
         return True
 
     def deliver(self):

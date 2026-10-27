@@ -39,7 +39,9 @@ as sminos's reconnect does):
   unless `persist_legacy` is off (an endpoint that dies before keeping it);
   `rpc-result` with `rpc-ack {opId, nonce}` when `ack_results` is on;
   `words?` with `words {id, verdict}` when `verdicts` names one for its id,
-  or `verdict` is set (a callable in-process: (frame) → verdict or None).
+  or `verdict` is set (a callable in-process: (frame) → verdict or None),
+  and `refuse` for one naming no `project`, as the endpoint answers it;
+  `restated` (the end of sminos's restatement after a welcome) is kept.
   `handler`, in-process, is called with each frame first and may return
   frames to send (the later halves' hook).
 
@@ -54,7 +56,8 @@ one carrying another `created`, or a `ts` of neither form, is refused
 `lines`. Down, for a test to send: `echo` (an own event as the endpoint
 returns it, `created`, `sig` and `attest` added), `arriving` (another's
 event wrapped `{event, signer, owners?}`), `resend`; and `rpc`, `query`,
-`tombstone` (§D's frames, the RPC nested under `rpc` as DX2 nests it).
+`tombstone` (§D's frames, the RPC nested under `rpc` as DX2 nests it); a
+`spent {project, writer, seq, reason}` is sent as any frame (`send`).
 
 Fields (constructor keywords, `set`'s keys): token, identity, policy,
 revoked, org, build, state_version, refuse_reason, ask_legacy,
@@ -391,6 +394,8 @@ class Endpoint:
                 self.members.pop(frame["session"], None)
             else:
                 self.members[frame["session"]] = frame
+        elif t == "words?" and not isinstance(frame.get("project"), str):
+            out.append({"t": "words", "id": frame.get("id"), "verdict": "refuse"})   # O10 M6: no project, no words
         elif t == "words?":
             verdict = self.verdicts.get(frame.get("id"))
             if verdict is None and self.verdict is not None:

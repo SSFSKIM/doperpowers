@@ -1611,12 +1611,34 @@ def uplink_status():
     return lines
 
 
+def spent_positions(project):
+    """How many positions of the project's log are spent: events refused for
+    good, by the endpoint (RL10's `spent`) or on import here, never stored
+    (sminos_hublog keeps them in the project's uplink.json)."""
+    try:
+        with open(os.path.join(project.home, sminos.UPLINK_STATE)) as f:
+            spent = json.load(f).get("spent")
+    except (OSError, ValueError, AttributeError):
+        return 0
+    if not isinstance(spent, dict):
+        return 0
+    return sum(len({s for s in seqs if type(s) is int}) for seqs in spent.values() if isinstance(seqs, list))
+
+
 def cmd_status(_a):
     run = held_by(run_lock_path())
     print("daemon: running (%s)" % run if run else "daemon: not running here")
     for line in uplink_status():
         print(line)
-    for p in sorted(sminos.known_projects(), key=lambda p: (p.name, p.id)):
+    projects = sorted(sminos.known_projects(), key=lambda p: (p.name, p.id))
+    if rl10.cut_over():
+        # Each one is a line in daemon.log, with its writer, seq and reason.
+        for p in projects:
+            n = spent_positions(p)
+            if n:
+                print("%s: %d spent position%s (refused for good, never stored or delivered; daemon.log names each)"
+                      % (p.name, n, "" if n == 1 else "s"))
+    for p in projects:
         rec = daemon_record(p)
         if not rec.get("tick"):
             print("%s: never ticked" % p.name)
