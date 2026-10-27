@@ -733,6 +733,38 @@ class HostStore(Machine):
         self.assertEqual(len(ep.hellos), 2)
         self.assertNotIn("more than", daemon_log())
 
+    def test_a_clock_stepped_back_in_a_backlog_loses_no_seq(self):
+        """A writer's events past a clock stepped back (seq 61 on stamped
+        before seq 60): bounded passes still send each writer's events in seq
+        order, so the cursor never passes an unsent one, and every seq goes."""
+        self.cut_over()
+        big = "x" * (100 << 10)
+        path = self.store(self.w1)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            for seq in range(1, 121):
+                at = 3600 + seq if seq <= 60 else seq   # 61.. stamped an hour earlier than 1..60
+                f.write(json.dumps({"ts": "2026-10-27T%02d:%02d:%02d.000Z" % (at // 3600, at // 60 % 60, at % 60),
+                                    "writer": self.w1, "seq": seq, **to_host(seq), "text": big}) + "\n")
+        self.assertGreater(120 * len(big), uplink.UPLOAD_AHEAD)
+        ep = self.endpoint()
+        self.uplink()
+        first = ep.wait(lambda f: f["t"] == "hello" and f.get("project") == self.own.id) and ep.hellos[-1][0]
+
+        def seqs():
+            return [m["body"]["id"]["seq"] for m in self.hosts(ep, first)]
+
+        ep.wait_until(lambda: len(seqs()) >= 120, timeout=60)
+        self.assertEqual(sorted(seqs()), list(range(1, 121)), "every seq, once")
+        self.assertEqual(seqs(), list(range(1, 121)), "in the writer's seq order")
+        self.assertEqual(wait_for(lambda: self.host_sent() == {self.w1: 120} and self.host_sent()), {self.w1: 120})
+        ep.drop()
+        second = wait_for(lambda: len(ep.hellos) > 1 and ep.hellos[-1][0])
+        ep.wait_until(lambda: len(self.hosts(ep, second)) >= 50, timeout=60)
+        time.sleep(1.0)
+        self.assertEqual([m["body"]["id"]["seq"] for m in self.hosts(ep, second)], list(range(71, 121)),
+                         "the session's last 50 by seq, not by time")
+
     def test_each_host_event_goes_up_once_and_nothing_of_the_log_plane_names_it(self):
         ep = self.endpoint()
         self.uplink()

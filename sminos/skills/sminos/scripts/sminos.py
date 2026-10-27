@@ -4945,13 +4945,25 @@ def append_host(project, session, events):
 def host_events_of(project, session):
     """The session's events in the project's host store — its writer's file
     under this machine's name now, and under each former name that held the
-    session — in (ts, writer, seq) order. Read as the log's files are read
+    session. Read as the log's files are read
     (_log_file_events: again only once a file changed), for the uplink's
-    subscriptions, which look at it on every pump."""
+    subscriptions, which look at it on every pump. In host_order."""
     names = [host for host, held in machine_identity()[1].items() if session in held] + [host_name()]
-    events = [e for host in dict.fromkeys(names)
-              for e in _log_file_events(os.path.join(project.home, HOST_STORE, "%s.%s.jsonl" % (host, session)))]
-    return sorted(events, key=lambda e: (e["ts"], e["writer"], e["seq"]))
+    return host_order([e for host in dict.fromkeys(names)
+                       for e in _log_file_events(os.path.join(project.home, HOST_STORE, "%s.%s.jsonl" % (host, session)))])
+
+
+def host_order(events):
+    """Host events in the order they go: each writer's in seq order, the
+    writers merged by time. Never by time alone: a clock stepped back would
+    put a writer's later seq ahead of an earlier one, and the cursors that
+    follow them (the uplink's host_sent, a subscription's) are per writer
+    by seq."""
+    writers = {}
+    for e in events:
+        writers.setdefault(e["writer"], []).append(e)
+    return list(heapq.merge(*(sorted(es, key=lambda e: e["seq"]) for es in writers.values()),
+                            key=lambda e: (e["ts"], e["writer"])))
 
 
 def record_session(project, session, tpath, event, last_message="", source=""):

@@ -1980,7 +1980,9 @@ class Link:
         upload is, in entries of at most HOST_BATCH, none while the lane holds
         UPLOAD_AHEAD unsent: a backlog (the endpoint was down) goes across
         passes, its cursor moving entry by entry, and never makes one entry
-        the lane must refuse."""
+        the lane must refuse. Each writer's events go in seq order
+        (sminos.host_order), so a pass that stops never leaves an unsent seq
+        behind the cursor."""
         pid = hl.project.id
         queued = self.host_queued.setdefault(pid, {})
         owed = self.host_owed.setdefault(pid, {})
@@ -1999,12 +2001,11 @@ class Link:
             for writer, events in by_writer.items():
                 by_session.setdefault(sminos.writer_session(writer), []).extend(events)
             for events in by_session.values():
-                events.sort(key=lambda e: (e["ts"], e["writer"], e["seq"]))
-                last = {(e["writer"], e["seq"]): e for e in events[-plane.HOST_LAST:]}
+                last = {(e["writer"], e["seq"]): e for e in sminos.host_order(events)[-plane.HOST_LAST:]}
                 owed.update(last)
                 due.update(last)
         batch, size = [], 0
-        for e in sorted(due.values(), key=lambda e: (e["ts"], e["writer"], e["seq"])):
+        for e in sminos.host_order(due.values()):
             if not batch and self.session_lane.queued() >= UPLOAD_AHEAD:
                 return   # the rest on a later pass, owed or past the cursor
             frame = plane.frame(plane.envelope(pid, self.cred["machine"], sminos.writer_session(e["writer"]), "host",
