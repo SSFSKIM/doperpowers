@@ -5358,6 +5358,43 @@ assert_contains "$(printf '%s\n' "$OUT" | grep toolu_old | head -1)" '"kind": "q
 assert_contains "$(printf '%s\n' "$OUT" | grep toolu_old | tail -1)" '"kind": "answered"' "then the answer"
 assert_not_contains "$OUT" "filler" "and nothing else outside the window"
 rm -f "$HPLOG/testhost.$HQ.jsonl"
+# A machine cut over to its endpoint (RL10's first welcome writes
+# daemon/identity.json) keeps a hub project's host events in its host store
+# from then on (O12 M8): chat --host reads the store beside the log's older
+# ones, a question asked before the cutover with its answer after it beneath.
+mkdir -m 700 "$SMINOS_HOME/daemon"
+printf '{"org": "org-cut", "hub": "https://hub.test", "name": "testhost", "former": {}, "ref": "machine-ref", "enrolled": "2026-10-01T00:00:00Z", "cutover": "2026-10-27T00:00:00Z", "build": "x"}\n' \
+  > "$SMINOS_HOME/daemon/identity.json"
+chmod 600 "$SMINOS_HOME/daemon/identity.json"
+HXR="$TEST_ROOT/hx-repo"
+mkdir -p "$HXR"
+gitq init -q "$HXR"
+(cd "$HXR" && "$SMINOS" project init --hub --name hostcut >/dev/null)
+HXP="$(smns_id "$HXR")"
+HX=5f00000c-0000-4000-8000-00000000005f
+TX="$TXD/$HX.jsonl"
+python3 - "$SMINOS_HOME/projects/$HXP/log/testhost.$HX.jsonl" "$HX" <<'PY_CUTQ'
+import json, sys
+with open(sys.argv[1], "w") as f:
+    f.write(json.dumps({"ts": "2026-10-01T00:00:00.000Z", "writer": "testhost/" + sys.argv[2], "seq": 1, "kind": "question",
+                        "from": "hx", "to": "host", "text": ["Cut over?"], "choices": ["Yes", "No"], "src": "toolu_cut"}) + "\n")
+PY_CUTQ
+printf '{"pid":%s,"sessionId":"%s","name":"hx","nameSource":"user","kind":"interactive","status":"idle","cwd":"%s"}\n' \
+  "$SOCK_PID" "$HX" "$HXR" > "$HOME/.claude/sessions/hp-hx.json"
+hook_run SessionStart "$HX" "$HXR" "$TX" startup
+tx "$TX" prompt x1000001 "later"
+tx "$TX" deliver-att x1000002 toolu_cut 'Your questions have been answered: "Cut over?"="Yes".'
+tx "$TX" asst x1000003 '<message>cut over</message>'
+hook_run Stop "$HX" "$HXR" "$TX"
+assert_equals "$(python3 -c 'import json, sys; print(" ".join(json.loads(l)["kind"] for l in open(sys.argv[1])))' \
+  "$SMINOS_HOME/projects/$HXP/host/testhost.$HX.jsonl" 2>/dev/null)" "answered message" \
+  "after the cutover, a hub project's answer and message are in its host store"
+assert_not_contains "$(cat "$SMINOS_HOME/projects/$HXP/log/testhost.$HX.jsonl")" '"answered"' "and not in its log"
+run "$SMINOS" chat hostcut --host
+assert_contains "$OUT" "hx asks: Cut over?" "chat --host shows the question from the log, answered"
+assert_contains "$OUT" '    answered: Your questions have been answered: "Cut over?"="Yes".' "its answer from the store beneath it"
+assert_contains "$OUT" "hx: cut over" "and the store's message after it"
+rm -f "$SMINOS_HOME/daemon/identity.json" "$HOME/.claude/sessions/hp-hx.json"
 # Every reading chat reconciles first, the host view too.
 HR=7a00000b-0000-4000-8000-00000000007a
 hp_peer hr "$HR" derived interactive

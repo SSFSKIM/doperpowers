@@ -210,7 +210,7 @@ class Session(unittest.TestCase):
             s.close()
         self.fake.stop_bridge()
 
-    def subscribe(self, agent=None, bridge=True, fake=None, clock=None, received=None, redial=0.0):
+    def subscribe(self, agent=None, bridge=True, fake=None, clock=None, received=None, redial=0.0, host=None):
         """A subscription on the test's clock, which stands for the wall
         clock too: the subscribe's arrival (`received`, by default now) and
         the reader's stamps read it, and so does its redial window (`redial`,
@@ -225,7 +225,7 @@ class Session(unittest.TestCase):
                                  sub="sub-%d" % len(self.subs), locate=lambda: fake.path(None), reader=reader,
                                  presence=lambda: {"record": {"status": "busy"}, "bridge": bridge},
                                  alive=lambda: self.alive, clock=clock, transcripts=self.transcripts,
-                                 disk=self.disk, received=received, wall=clock)
+                                 disk=self.disk, received=received, wall=clock, host=host)
         self.subs.append(sub)
         return sub, dx4_consumer.Consumer(agent)
 
@@ -274,6 +274,66 @@ class Session(unittest.TestCase):
 
 class Engine(Session):
     """The Subscription, with the scripted endpoint and a clock the test moves."""
+
+    # ---------------------------------------------------- the host store (RL10, O12 M8)
+
+    def host_event(self, seq):
+        return {"ts": "2026-10-27T00:%02d:%02d.000Z" % divmod(seq, 60), "writer": "testhost/" + self.sid,
+                "seq": seq, "kind": "message", "from": "a", "to": "host", "text": "m%d" % seq, "src": "r%d#0" % seq}
+
+    def messages(self, sub, until, wait=3.0):
+        out, deadline = [], time.time() + wait
+        while time.time() < deadline:
+            out += sub.pump()
+            if until(out):
+                break
+            time.sleep(0.01)
+        return out
+
+    def test_a_main_subscription_carries_the_sessions_host_events(self):
+        held = [self.host_event(i) for i in (1, 2, 3)]
+        self.fake.user_row("before", post=False)
+        sub, _ = self.subscribe(bridge=False, host=lambda: list(held))
+        got = self.messages(sub, lambda out: any(m["kind"] == "snapshot" for m in out))
+        snap = next(m for m in got if m["kind"] == "snapshot")
+        self.assertEqual(snap["body"]["host"], [plane.host_body(e) for e in held],
+                         "a subscription made after three host events sees them in its snapshot")
+        self.assertEqual([m for m in got if m["kind"] == "host"], [], "and not again in its stream")
+        held.append(self.host_event(4))
+        got = self.messages(sub, lambda out: any(m["kind"] == "host" for m in out))
+        hosted = [m for m in got if m["kind"] == "host"]
+        self.assertEqual([(m["sub"], m["body"]) for m in hosted], [(sub.sub, plane.host_body(held[3]))],
+                         "a fourth as a host message of its stream")
+        self.assertEqual(hosted[0]["n"], sub.n - 1, "numbered as the stream's next message")
+        self.assertEqual([m for m in self.messages(sub, lambda out: False, wait=0.3) if m["kind"] == "host"], [],
+                         "once")
+
+    def test_a_snapshot_carries_the_last_50(self):
+        held = [self.host_event(i) for i in range(1, 56)]
+        self.fake.user_row("before", post=False)
+        sub, _ = self.subscribe(bridge=False, host=lambda: list(held))
+        got = self.messages(sub, lambda out: any(m["kind"] == "snapshot" for m in out))
+        snap = next(m for m in got if m["kind"] == "snapshot")
+        self.assertEqual([h["id"]["seq"] for h in snap["body"]["host"]], list(range(6, 56)))
+        self.assertEqual([m for m in self.messages(sub, lambda out: False, wait=0.3) if m["kind"] == "host"], [],
+                         "the older five are not sent after it")
+
+    def test_no_host_where_none_is_carried(self):
+        """DX2, and a subagent's loop: no `host` in the snapshot or the stream."""
+        self.fake.user_row("before", post=False)
+        sub, _ = self.subscribe(bridge=False)
+        got = self.messages(sub, lambda out: any(m["kind"] == "snapshot" for m in out))
+        self.assertNotIn("host", next(m for m in got if m["kind"] == "snapshot")["body"])
+        machine = plane.Plane("testhost", lambda: None, host=True)
+        self.addCleanup(machine.close)
+        project = types.SimpleNamespace(id=PROJECT, name="p")
+        machine.here[PROJECT] = {self.sid: ""}
+        with mock.patch.object(plane.sminos, "host_events_of", return_value=[]) as host_of:
+            machine.subscribe(project, {"session": self.sid, "agentId": "a1", "sub": "sub-agent"})
+            machine.subscribe(project, {"session": self.sid, "agentId": None, "sub": "sub-main"})
+            self.assertIsNone(machine.subs["sub-agent"].host, "a subagent's loop carries none")
+            machine.subs["sub-main"].host()
+            host_of.assert_called_once_with(project, self.sid)
 
     # ---------------------------------------------------- without a bridge
 
