@@ -782,6 +782,57 @@ class MembersFirst(Machine):
         ep.wait_until(lambda: len(ep.hellos) > 1)
         check(ep.hellos[-1][0])
 
+    def test_a_session_joining_as_the_upload_draws_is_a_member_before_its_events(self):
+        """The prerequisites are the drawn frame's own: a session that joins
+        and writes after anything was looked at, as the upload reads the
+        writer files, still has its member frame on the lane first."""
+        self.session(self.hp, S1)
+        link = self.opened_link()
+        hl = link.logs[self.hp.id]
+        draw, joined = hl.next_upload, []
+
+        def joining():
+            if not joined:
+                joined.append(True)
+                self.session(self.hp, S2)
+                sminos.forget_caches()
+                sminos.reconcile(self.hp)
+                sminos.lifecycle(self.hp, S2, "titled", title="first words")
+            return draw()
+        hl.next_upload = joining
+        link.upload(hl)
+        frames = link.session_lane.take()
+        events = self.first(frames, lambda f: self.carries(f, "testhost/" + S2))
+        self.assertIsNotNone(events, "its events went up")
+        member_at = self.first(frames, lambda f: f["t"] == "member" and f["session"] == S2)
+        self.assertIsNotNone(member_at, "its member frame went")
+        self.assertLess(member_at, events)
+
+    def test_a_member_set_past_the_lanes_bound_goes_in_entries_then_the_rest(self):
+        """170 sessions, each record with a 100 KiB proof (a lineage inherits
+        its spawn's): the welcome's set is more than the lane holds, so it
+        goes in bounded entries across passes, the lane stays open, and the
+        project's hello and uploads follow it."""
+        sids = ["6d0002%02x-0000-4000-8000-0000000002%02x" % (i // 256, i % 256) for i in range(170)]
+        proof = {"brief": "p" * (100 << 10)}
+        for i, sid in enumerate(sids):
+            self.session(self.hp, sid, name="r%03d" % i)
+            sminos.records_module().establish(sid, {**sminos.records_module().default_provenance("launch"),
+                                                    "owners": ["mem-1"], "ownersProof": [proof],
+                                                    "origin": {"kind": "maws", "requester": "mem-1"}})
+        sminos.reconcile(self.hp)
+        self.assertGreater(len(sids) * len(proof["brief"]), uplink.SEND_QUEUE_MAX)
+        ep = self.endpoint()
+        self.uplink()
+        ep.wait_until(lambda: ep.frames("events", conn=1), timeout=120)
+        frames = ep.frames(conn=1)
+        hello = self.first(frames, lambda f: f["t"] == "hello" and f.get("project") == self.hp.id)
+        self.assertIsNotNone(hello)
+        self.assertEqual({f["session"] for f in frames[:hello] if f["t"] == "member"}, set(sids),
+                         "every member before the project's hello")
+        self.assertEqual(len(ep.hellos), 1, "on one connection: the lane was never closed")
+        self.assertNotIn("more than", daemon_log())
+
 
 # ------------------------------------------------------------- revocations applied by the uplink
 

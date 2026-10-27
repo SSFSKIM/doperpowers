@@ -560,13 +560,10 @@ class HubLog:
         if batch:
             yield frame()
 
-    def owed_sessions(self):
-        """{session}: the sessions whose writers hold events `uploads` would
-        draw now (RL10's member frames go before them)."""
-        if self.have is None:
-            return set()
-        return {sminos.writer_session(writer) for writer, (last, _) in self.writers(own=True).items()
-                if self.own(writer) and writer not in self.stuck and last > self.sent.get(writer, 0)} - {""}
+    def undraw(self):
+        """The draw dropped: a frame drawn and not sent is drawn again, from
+        what was taken, at the next call (RL10's member frames held it)."""
+        self.drawing = None
 
     @staticmethod
     def as_uploaded(e):

@@ -1439,6 +1439,7 @@ class Link:
         self.revoked_whole = False  # RL10: the next revocation set is the welcome's, kept whole
         self.revoked_due = False  # RL10: a revocation set was kept that the owed events have not been marked by
         self.members_sent = {}    # RL10: session → the `member` frame last sent on this connection
+        self.members_unsent = set()   # RL10: the sessions whose frame is due and not yet queued (publish_members)
         self.member_read_for = None   # RL10: the running sessions the projects known here were last listed for
         self.next_member_read = 0.0   # RL10: when they are read again (monotonic) when none came or went
         self.member_known = {}    # RL10: project id → project, every project known here as last listed (members)
@@ -1585,6 +1586,7 @@ class Link:
         self.delivering.clear()
         self.opening.clear()
         self.members_sent = {}
+        self.members_unsent = set()
         self.asks.clear()         # an ask is answered on its own connection, or never
         self.asked.clear()
         self.words_due = True
@@ -2016,15 +2018,23 @@ class Link:
         bound. Each frame is drawn only once there is room for it, and the
         rest stays drawn where it was (HubLog.next_upload): a pass while the
         lane is full draws nothing, and no event is sealed twice. On RL10 the
-        member frames of the sessions whose events it draws go first
-        (members_before)."""
-        if not self.coded and self.log_lane.queued() < UPLOAD_AHEAD:
-            self.members_before(hl.project, hl.owed_sessions())
+        member frames of the sessions a drawn frame carries go first
+        (members_before); while one cannot be queued yet, the frame is drawn
+        again on a later pass (HubLog.undraw)."""
         while self.log_lane.queued() < UPLOAD_AHEAD:
             got = hl.next_upload()
             if got is None:
                 return
             frame, reach = got
+            if not self.coded:
+                try:
+                    out = self.members_before(hl.project, {sminos.writer_session(e["writer"]) for e in frame["events"]})
+                except BaseException:
+                    hl.undraw()
+                    raise
+                if not out:
+                    hl.undraw()
+                    return
             self.log_lane.send([frame])
             hl.took(reach)
 
@@ -2099,8 +2109,9 @@ class Link:
                 last = {(e["writer"], e["seq"]): e for e in sminos.host_order(events)[-plane.HOST_LAST:]}
                 owed.update(last)
                 due.update(last)
-        if due and self.session_lane.queued() < UPLOAD_AHEAD:
-            self.members_before(hl.project, {sminos.writer_session(w) for w, _ in due})
+        if due and (self.session_lane.queued() >= UPLOAD_AHEAD
+                    or not self.members_before(hl.project, {sminos.writer_session(w) for w, _ in due})):
+            return   # on a later pass, once the lane has room and its members are queued
         batch, size = [], 0
         for e in sminos.host_order(due.values()):
             if not batch and self.session_lane.queued() >= UPLOAD_AHEAD:
@@ -2227,7 +2238,11 @@ class Link:
     def publish_members(self, now):
         """The member frames of the plane's rows as they are now, each that
         differs from the last sent on this connection, and `gone` for each
-        session no longer among them (members)."""
+        session no longer among them (members). Queued as the host pass
+        queues, in entries of at most LANE_ENTRY, none while the lane holds
+        UPLOAD_AHEAD unsent (a frame carries the record's proofs, which a
+        lineage inherits): what is left is due at the next pass
+        (members_unsent), and what depends on it waits for it."""
         current = {}
         socks = plane.bridge_socks()
         for pid in sorted(pid for pid, rows in self.plane.member_rows.items() if rows and pid in self.member_known):
@@ -2240,13 +2255,33 @@ class Link:
                     current[sid] = member_frame(pid, m, self.plane.bridges.launch(sid))
         frames = [f for sid, f in current.items() if self.members_sent.get(sid) != f]
         frames += [{"t": "member", "session": sid, "gone": True} for sid in self.members_sent if sid not in current]
-        self.members_sent = current
-        if frames:
-            self.session_lane.send(frames)
+        batch, size, unsent = [], 0, set()
+        for f in frames:
+            n = len(json.dumps(f, ensure_ascii=False).encode("utf-8"))
+            if batch and size + n > LANE_ENTRY:
+                self.send_members(batch)
+                batch, size = [], 0
+            if unsent or (not batch and self.session_lane.queued() >= UPLOAD_AHEAD):
+                unsent.add(f["session"])
+                continue
+            batch.append(f)
+            size += n
+        if batch:
+            self.send_members(batch)
+        self.members_unsent = unsent
+
+    def send_members(self, batch):
+        """One entry of member frames queued, and taken as sent."""
+        self.session_lane.send(batch)
+        for f in batch:
+            if f.get("gone"):
+                self.members_sent.pop(f["session"], None)
+            else:
+                self.members_sent[f["session"]] = f
 
     def members_before(self, project, sessions):
-        """Each of these sessions' `member` frame on the socket, its record as
-        it is now, before anything of theirs that depends on it goes: the
+        """Whether each of these sessions' `member` frame is on the lane, its
+        record as it is now, so what of theirs depends on it may follow: the
         endpoint signs an upload when its `events` frame arrives, attesting
         it from the record its `member` frames gave it, and keeps that
         signature (O10 M6); it lists a host message's session, and decides a
@@ -2254,10 +2289,12 @@ class Link:
         was last read, or whose record changed since, would otherwise go up
         attested from no record or an older one. A session among no member
         sent is looked for in the project's rows, read again for it once per
-        listing (members); one not there (it left) has none to give."""
+        listing (members); one not there (it left) has none to give. False
+        while a frame is due and not queued (publish_members): the caller
+        holds what depends on it for a later pass."""
         sessions = {sid for sid in sessions if sid}
         if not sessions:
-            return
+            return True
         pid = project.id
         missing = {sid for sid in sessions if sid not in self.members_sent and (pid, sid) not in self.unlisted}
         if missing:
@@ -2265,12 +2302,17 @@ class Link:
             self.plane.refresh(project)
             self.member_known.setdefault(pid, project)
             self.unlisted.update((pid, sid) for sid in missing if sid not in self.plane.member_rows.get(pid, {}))
+        changed = bool(missing)
         for sid in sessions:
             at = self.members_sent[sid]["project"] if sid in self.members_sent else pid
             rows = self.plane.member_rows.get(at, {})
             if sid in rows:
                 rows[sid] = rows[sid]._replace(record=sminos.session_record(sid))
-        self.publish_members(time.monotonic())
+                changed = changed or self.members_sent.get(sid) != member_frame(at, rows[sid],
+                                                                                self.plane.bridges.launch(sid))
+        if changed or sessions & self.members_unsent:
+            self.publish_members(time.monotonic())
+        return not sessions & self.members_unsent
 
     def mark_revoked(self, known):
         """The revocation set kept since the last tick applied to what is
@@ -2337,8 +2379,11 @@ class Link:
                 if not rows:
                     continue
                 owed = sminos.words_due(project, [m for _, m in sorted(rows.items())])
-                if owed:
-                    self.members_before(project, owed)
+                if owed and not self.members_before(project, owed):
+                    if batch:
+                        self.queue_asks(batch)
+                    self.words_due = True   # asked once their members are queued
+                    return
                 for sid, due in sorted(owed.items()):
                     for e in due:
                         key = (pid, sid, e["writer"])
@@ -2405,8 +2450,9 @@ class Link:
         """Between frames: new hub projects opened, and what this machine's
         writers appended uploaded — at once when a sender nudged the daemon.
         On RL10, the member set first: every hello, upload and host message
-        after it depends on the records the endpoint holds (members_before
-        keeps each upload's and host message's sessions current too); and
+        after it depends on the records the endpoint holds, so none goes
+        while the set is not all queued (members_before keeps each upload's
+        and host message's sessions current too); and
         the person's words owed here asked about after the upload pass
         (ask_words), behind the member frames the plane's reads changed."""
         if self.generation is None:
@@ -2415,6 +2461,7 @@ class Link:
         nudge = daemon.nudged_at()
         nudged, self.nudge = nudge != self.nudge, nudge
         words = not self.coded and self.words_now(nudged)
+        held = not self.coded   # until the member set is published (a failure there holds the tick)
         try:
             scan = now >= self.next_scan or nudged
             if scan:
@@ -2422,7 +2469,12 @@ class Link:
                 sminos.forget_caches()
             if not self.coded:
                 self.members(time.monotonic())
-            if scan:
+                # The member set is published in bounded entries: until the
+                # rest of it is queued, nothing that depends on it goes.
+                held = bool(self.members_unsent)
+                if held and scan:
+                    self.next_scan = 0.0
+            if scan and not held:
                 if not self.coded:
                     self.sync_policy()
                 register_own(self.cred)
@@ -2445,7 +2497,7 @@ class Link:
                     self.open(self.log_of(pid, known))
                 self.machine_presence(time.monotonic())
             every = archive.archive_every()
-            if every > 0 and now >= self.next_confirm:
+            if every > 0 and now >= self.next_confirm and not held:
                 # The hub reads the archive designation at each hello: asked
                 # again, it answers with the designation as it is now. One
                 # project per POST, as `open` sends them (the log lane posts
@@ -2457,7 +2509,7 @@ class Link:
                 self.next_confirm = now + every
                 for pid in sorted(self.opened):
                     self.log_lane.send([self.logs[pid].hello(self.follows.get(pid, False))])
-            if now >= self.next_upload or nudged or words:
+            if (now >= self.next_upload or nudged or words) and not held:
                 self.next_upload = now + UPLOAD_EVERY
                 for pid in sorted(self.opened):
                     self.upload(self.logs[pid])
@@ -2479,8 +2531,8 @@ class Link:
                 known = self.members(time.monotonic())
                 if self.revoked_due:
                     self.mark_revoked(known)
-                if words:
-                    self.ask_words(known)
+                if words and not held:
+                    self.ask_words(known)   # behind the upload pass, which a held tick did not run
             self.plane_failing = ""
         except EndStream:
             raise
