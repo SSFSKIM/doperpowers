@@ -1331,7 +1331,7 @@ def hub_project(pid, cred):
 
 
 def member_frame(pid, m):
-    """RL10's `member` for a local member's row (Plane.rows): its record's
+    """RL10's `member` for a local member's row (Plane.member_rows): its record's
     provenance and ownership (sminos.session_record; the defaults, `@machine`
     and a terminal origin, with no principal or inference, while it has
     none), the lane — B when its controller says so, or when no controller
@@ -2088,11 +2088,11 @@ class Link:
             self.member_read_for, self.next_member_read = live, now + plane.MEMBERS_EVERY
             self.member_known = {p.id: p for p in sminos.known_projects()}
             for pid, project in self.member_known.items():
-                if pid not in self.opened or pid not in self.plane.rows:
+                if pid not in self.opened or pid not in self.plane.member_rows:
                     self.plane.refresh(project)
         current = {}
-        for pid in sorted(pid for pid, rows in self.plane.rows.items() if rows and pid in self.member_known):
-            for sid, m in sorted(self.plane.rows[pid].items()):
+        for pid in sorted(pid for pid, rows in self.plane.member_rows.items() if rows and pid in self.member_known):
+            for sid, m in sorted(self.plane.member_rows[pid].items()):
                 current.setdefault(sid, member_frame(pid, m))
         frames = [f for sid, f in current.items() if self.members_sent.get(sid) != f]
         frames += [{"t": "member", "session": sid, "gone": True} for sid in self.members_sent if sid not in current]
@@ -2118,7 +2118,7 @@ class Link:
             return
         try:
             for pid, project in sorted(known.items()):
-                for sid, m in sorted(self.plane.rows.get(pid, {}).items()):
+                for sid, m in sorted(self.plane.member_rows.get(pid, {}).items()):
                     for e in sminos.revoke_owed(project, m, revoked):
                         log("%s in %s is signed by a revoked key: marked refused-revoked for %s, never delivered"
                             % (sminos.event_ref(e), project.name, sid[:8]))
