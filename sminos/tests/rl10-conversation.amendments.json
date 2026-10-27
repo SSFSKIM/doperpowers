@@ -1,0 +1,95 @@
+{
+  "what": "The lines of rl10-conversation.json that sminos cannot play as written, each with the reason it is played amended (rl10_conformance.py prints each `amend` line's reason from here): O10's to take into its conversation.json, after which the copy is refreshed and an amended line fails.",
+  "fixture_blob": "2d247bdcd1f51a1125db30b87dd713d1330f1a7e",
+  "amended": [
+    {
+      "line": "3.2",
+      "is": "up member",
+      "reason": "its record's principal, inference and controller, which sminos sends whenever the session has a record (every joined session has one: ensure_record; a bridged one's child relays its controller)"
+    },
+    {
+      "line": "3.3",
+      "is": "up member",
+      "reason": "its record's principal, inference and controller, which sminos sends whenever the session has a record (every joined session has one: ensure_record; a bridged one's child relays its controller)"
+    },
+    {
+      "line": "3.4",
+      "is": "up member",
+      "reason": "its record's principal, inference and controller, which sminos sends whenever the session has a record (every joined session has one: ensure_record; a bridged one's child relays its controller)"
+    },
+    {
+      "line": "3.5",
+      "is": "up member",
+      "reason": "its record's principal, inference and controller, which sminos sends whenever the session has a record (every joined session has one: ensure_record; a bridged one's child relays its controller)"
+    },
+    {
+      "line": "3.6",
+      "is": "up member",
+      "reason": "its cwd, `/work/local`, is a path of the endpoint suite's machine that the fixture writes as a literal: a binding, as `checkout` is; and its record's principal, inference and controller, which sminos sends whenever the session has a record (every joined session has one: ensure_record; a bridged one's child relays its controller)"
+    },
+    {
+      "line": "4.0",
+      "is": "up hello",
+      "reason": "the log's vector: a member of P is a `joined` in P's log (and S1's title a `titled`), so P's vector names its members' writers; `have` is asserted as this machine's log holds it — each writer's last stored seq carried past the positions spent after it — not the fixture's"
+    },
+    {
+      "line": "4.4",
+      "is": "up events",
+      "reason": "S1's seq 1 is its `joined`, and the upload past an empty have carries every own writer of P: the say is at its seq here, the operator's words as the fixture has them"
+    },
+    {
+      "line": "6.6",
+      "is": "up words?",
+      "reason": "its event's `to` is \"*\": sminos's log owes a person's words only to the sessions its `to` lists (sminos.addressed_to), and \"*\" — a say's broadcast, read at the next chat — is owed to no one, so no words? is ever asked for it; amended to the one session it reaches"
+    },
+    {
+      "line": "6.8",
+      "is": "up words?",
+      "reason": "its event's `to` is \"*\": sminos's log owes a person's words only to the sessions its `to` lists (sminos.addressed_to), and \"*\" — a say's broadcast, read at the next chat — is owed to no one, so no words? is ever asked for it; amended to the one session it reaches"
+    },
+    {
+      "line": "8.4",
+      "is": "up session",
+      "reason": "a `raised` body is DX4's draft, {request, session, tool, input} (sminos_requests.raised_draft): no `kind`, no `at`"
+    },
+    {
+      "line": "9.5",
+      "is": "down rpc",
+      "reason": "its digest's input_sha256 is the SHA-256 of nothing (e3b0…): no request's input has it, so the decision is refused at sminos's digest check (check_digest) before its launch fence; amended to the raised request's"
+    },
+    {
+      "line": "9.6",
+      "is": "up member",
+      "reason": "its record's principal, inference and controller, which sminos sends whenever the session has a record (every joined session has one: ensure_record; a bridged one's child relays its controller)"
+    },
+    {
+      "line": "11.10",
+      "is": "up member",
+      "reason": "its record's principal, inference and controller, which sminos sends whenever the session has a record (every joined session has one: ensure_record; a bridged one's child relays its controller)"
+    },
+    {
+      "line": "11.11",
+      "is": "up member",
+      "reason": "its record's principal, inference and controller, which sminos sends whenever the session has a record (every joined session has one: ensure_record; a bridged one's child relays its controller)"
+    },
+    {
+      "line": "11.16",
+      "is": "up hello",
+      "reason": "the log's vector: a member of P is a `joined` in P's log (and S1's title a `titled`), so P's vector names its members' writers; `have` is asserted as this machine's log holds it — each writer's last stored seq carried past the positions spent after it — not the fixture's"
+    }
+  ],
+  "staged": [
+    {
+      "binding": "proof:spawn",
+      "reason": "case 9's spawn rpc uses {{proof:spawn}}, which the fixture's bindings do not hold: the replay binds it (a signed sminos.spawn action of member A's device a1)"
+    },
+    {
+      "line": "8.0",
+      "reason": "the host event it carries has no `src` or `to`, which the export writes on every line it appends: the replay stages it by writing the host store directly, and the line then holds as written"
+    },
+    {
+      "line": "8.2",
+      "reason": "the last 50 host events go again after a reconnect: sminos sends them on the next connection's restatement, before its restated, so the replay matches the line there"
+    }
+  ]
+}

@@ -699,12 +699,12 @@ class HubLog:
         return rest == "human" or bool(sminos.UUID_RE.match(rest))
 
     def spend_own(self, writer, seq):
-        """A refused position of one of this machine's own writers
-        (`allocated_here`), which its appenders allocate (sminos._append
-        skips spent positions): spent under the writer file's lock, as the
-        allocator reads it, and only while no event of this machine's holds
-        it — a position its own event took first is that event's. Whether it
-        was spent."""
+        """A refused position of one of this machine's own writers (is_own:
+        under its name, which its appenders allocate — sminos._append skips
+        spent positions — or a former one): spent under the writer file's
+        lock, as the allocator reads it, and only while no event of this
+        machine's holds it — a position its own event took first is that
+        event's. Whether it was spent."""
         path = sminos.writer_path(self.project, writer)
         with sminos.flocked(os.path.join(os.path.dirname(path), ".sync.lock"), exclusive=False), \
                 sminos.flocked(path + ".lock"):
@@ -726,9 +726,10 @@ class HubLog:
         """RL10's `spent {project, writer, seq, reason}`: the endpoint refused
         an arriving event for good (rejected up to the hub already) and sends
         its position with no content (O10 M6). Recorded as a position refused
-        here is (`take`): an own writer's through `spend_own`, so a position
-        an event of this machine holds stays that event's (a lost endpoint
-        ledger answers this machine's own echoes `conflict`); any other's
+        here is (`take`): an own writer's, under this machine's name or a
+        former one, through `spend_own`, so a position an event of this
+        machine holds stays that event's (a lost endpoint ledger answers this
+        machine's own echoes `conflict`); any other's
         added to the spent positions. Nothing is reported up. Each position
         is said once in daemon.log, with its project and the endpoint's
         reason. Whether it was spent now."""
@@ -741,7 +742,7 @@ class HubLog:
         where = "%s:%d in %s (%s)" % (writer, seq, self.project.name, self.project.id)
         if seq in self.spent().get(writer, ()):
             return False   # said when it was spent
-        if self.allocated_here(writer):
+        if self.is_own(writer):
             if not self.spend_own(writer, seq):
                 log("the endpoint spent %s: %s; an event of this machine holds that position, so it is not spent"
                     % (where, why))

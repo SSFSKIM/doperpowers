@@ -30,8 +30,10 @@ below with its reason:
 - AMENDMENTS: lines whose world sminos cannot be in as the fixture writes it
   (a member's record, a log without its members' `joined` events, DX4's
   `raised` body, a request digest of nothing, a person's words to "*",
-  which sminos's log owes no one). Each is checked as amended,
-  printed `amend`, and is O10's to change in the fixture.
+  which sminos's log owes no one). Each is checked as amended and
+  printed `amend` with its reason from rl10-conversation.amendments.json,
+  the list O10 changes its fixture against (with the fixture's gaps the
+  replay stages around, `staged`).
 
 Prints one `ok`, `amend` or `FAIL` line per line of the conversation it
 plays, for run-sminos-tests.sh to count, and exits 1 when one fails.
@@ -40,6 +42,7 @@ plays, for run-sminos-tests.sh to count, and exits 1 when one fails.
 """
 
 import copy
+import glob
 import hashlib
 import json
 import os
@@ -774,10 +777,6 @@ PROBES = {
 }
 
 RECORD = ("principal", "inference", "controller")
-RECORD_WHY = ("its record's principal, inference and controller, which sminos sends whenever the session has a "
-              "record (every joined session has one: ensure_record; a bridged one's child relays its controller)")
-HAVE_WHY = ("the log's vector: a member of P is a `joined` in P's log (and S1's title a `titled`), so P's vector "
-            "names its members' writers; `have` is this machine's log, not the fixture's")
 
 
 def amend_member(step):
@@ -790,10 +789,41 @@ def amend_local_cwd(step):
     return step, {"extra": RECORD}
 
 
+def stored_vector(p):
+    """{writer: seq}, P's log as stored, read here and not through sminos:
+    each writer file's last event's seq, carried past the positions spent
+    right after it (uplink.json's `spent`), and a writer spent from seq 1
+    with nothing stored at the last of those."""
+    out = {}
+    for path in glob.glob(os.path.join(sminos.project_path(p, "log"), "*.jsonl")):
+        with open(path, encoding="utf-8") as f:
+            events = [json.loads(line) for line in f if line.strip()]
+        if events:
+            out[events[-1]["writer"]] = events[-1]["seq"]
+    try:
+        with open(os.path.join(p.home, sminos.UPLINK_STATE)) as f:
+            spent = json.load(f).get("spent") or {}
+    except FileNotFoundError:
+        spent = {}
+    for w, seqs in spent.items():
+        at = out.get(w, 0)
+        while at + 1 in seqs:
+            at += 1
+        if at:
+            out[w] = at
+    return out
+
+
 def amend_have(step):
-    step = copy.deepcopy(step)
-    step["vary"] = list(step.get("vary", [])) + ["have"]
-    return step, {}
+    """The hello carries the vector of P's log as it is stored here: read
+    when the line is matched (nothing reaches the log between a connection's
+    hello and the conversation's next down line)."""
+    want = subst(step["up"])
+
+    def pred(f):
+        return f.get("t") == "hello" and f.get("project") == want["project"] and f.get("name") == want["name"] \
+            and f.get("have") == stored_vector(P_)
+    return step, {"pred": pred}
 
 
 def amend_first_upload(step):
@@ -829,9 +859,6 @@ def amend_recipients(name, alias):
     return amend
 
 
-STAR_WHY = ("its event's `to` is \"*\": sminos's log owes a person's words only to the sessions its `to` "
-            "lists (sminos.addressed_to), and \"*\" — a say's broadcast, read at the next chat — is owed to no "
-            "one, so no words? is ever asked for it; amended to the one session it reaches")
 
 
 def amend_digest(step):
@@ -840,22 +867,20 @@ def amend_digest(step):
     return step, {}
 
 
-AMENDMENTS = {
-    (3, 2): (RECORD_WHY, amend_member), (3, 3): (RECORD_WHY, amend_member), (3, 4): (RECORD_WHY, amend_member),
-    (3, 5): (RECORD_WHY, amend_member),
-    (3, 6): ("its cwd, `/work/local`, is a path of the endpoint suite's machine that the fixture writes as a "
-             "literal: a binding, as `checkout` is; and " + RECORD_WHY, amend_local_cwd),
-    (4, 0): (HAVE_WHY, amend_have), (11, 16): (HAVE_WHY, amend_have),
-    (4, 4): ("S1's seq 1 is its `joined`, and the upload past an empty have carries every own writer of P: "
-             "the say is at its seq here, the operator's words as the fixture has them", amend_first_upload),
-    (8, 4): ("a `raised` body is DX4's draft, {request, session, tool, input} (sminos_requests.raised_draft): "
-             "no `kind`, no `at`", amend_raised),
-    (9, 5): ("its digest's input_sha256 is the SHA-256 of nothing (e3b0…): no request's input has it, so the "
-             "decision is refused at sminos's digest check (check_digest) before its launch fence; amended to the "
-             "raised request's", amend_digest),
-    (6, 6): (STAR_WHY, amend_recipients("S1", "main")), (6, 8): (STAR_WHY, amend_recipients("S5", "local")),
-    (9, 6): (RECORD_WHY, amend_member), (11, 10): (RECORD_WHY, amend_member), (11, 11): (RECORD_WHY, amend_member),
-}
+AMEND = {(3, 2): amend_member, (3, 3): amend_member, (3, 4): amend_member, (3, 5): amend_member,
+         (3, 6): amend_local_cwd, (4, 0): amend_have, (4, 4): amend_first_upload,
+         (6, 6): amend_recipients("S1", "main"), (6, 8): amend_recipients("S5", "local"), (8, 4): amend_raised,
+         (9, 5): amend_digest, (9, 6): amend_member, (11, 10): amend_member, (11, 11): amend_member,
+         (11, 16): amend_have}
+
+# Each amended line's reason, in the list beside the fixture O10 takes them
+# from (rl10-conversation.amendments.json): the two must name the same lines.
+with open(os.path.join(os.path.dirname(FIXTURE), "rl10-conversation.amendments.json")) as f:
+    LISTED = {tuple(int(n) for n in e["line"].split(".")): e["reason"] for e in json.load(f)["amended"]}
+if set(LISTED) != set(AMEND):
+    say("FAIL", "the amendments listed and the amendments played differ: listed only %r, played only %r" % (
+        sorted(set(LISTED) - set(AMEND)), sorted(set(AMEND) - set(LISTED))))
+AMENDMENTS = {k: (LISTED.get(k, "unlisted"), fn) for k, fn in AMEND.items()}
 
 # A step whose line comes on the next connection: the fixture places it
 # where the endpoint's suite plays it.
@@ -1046,34 +1071,71 @@ def replay():
 
 
 def replay_beyond():
-    """M5's pinned case beyond the fixture's lines: an event `_append` wrote
-    with an older whole-second `ts` (case 4's seq 2, uploaded as stored)
-    comes back as the endpoint's echo, `created` derived with `.000`, `sig`
-    and `attest` added, and reads present; and it is asked as `words?` with
-    the stored line. Seq 2 is the fixture's, to "*" and so owed to no one:
-    the ask is pinned on a whole-second event addressed to S1."""
+    """M5's pinned case beyond the fixture's lines, for an event `_append`
+    writes now (`ts` with milliseconds) and one with an older whole-second
+    `ts`: each, addressed to S1, goes up as stored, goes again byte-identical
+    after a `resend`, comes back as the endpoint's echo (`created` derived
+    from its `ts`, `sig` and `attest` added) and reads present, and is asked
+    as `words?` with the stored line; answered `words`, S1's bridge takes it
+    as the person's words."""
+    for ts, created, what in (("2026-10-27T18:10:00.250Z", "2026-10-27T18:10:00.250Z", "with milliseconds"),
+                              ("2026-10-27T18:10:01Z", "2026-10-27T18:10:01.000Z", "of whole seconds")):
+        ok, said = round_trip(ts, created, "an event %s, addressed" % what)
+        say("ok" if ok else "FAIL", "beyond the fixture: an event _append wrote, ts %s and no created: %s" % (
+            what, said))
+        if not ok:
+            return
+
+
+def round_trip(ts, created, text):
     conn = CONNS["main"]
     writer = own("human")
-    stored = next(e for e in held(P_, writer) if e["seq"] == 2)
-    before = open(sminos.writer_path(P_, writer), "rb").read()
-    echo = {**stored, "created": "2026-10-27T18:02:13.000Z", "sig": {"kid": B["kid:machine"], "value": "AQ"},
+    seq = held(P_, writer)[-1]["seq"] + 1
+    PLANNED.add((P_.id, B["session:S1"], writer, seq))   # asked here, not refused by answer_unstaged
+    e = append_at(P_, writer, ts, "human", **{"from": "human", "to": recipients("S1", "main"), "text": text})
+    if e["seq"] != seq:
+        return False, "it went to seq %d, not %d" % (e["seq"], seq)
+    stored = held(P_, writer)[-1]
+    if "created" in stored or stored["ts"] != ts:
+        return False, "it is stored as %r" % stored
+
+    def carrying(f):
+        return f.get("t") == "events" and f.get("project") == P_.id and stored in f.get("events", [])
+
+    def body(i):
+        return next(json.dumps(x, ensure_ascii=False) for x in conn.frames[i]["events"] if x == stored)
+    first = find(conn, carrying)
+    if first is None:
+        return False, "it never went up as stored"
+    conn.write({"t": "resend", "project": P_.id, "writer": writer, "from": seq})
+    again = find(conn, carrying, after=first)
+    if again is None:
+        return False, "a resend from its seq never sent it again"
+    if body(again) != body(first):
+        return False, "the resend's body differs: %s, then %s" % (body(first), body(again))
+    path = sminos.writer_path(P_, writer)
+    before = open(path, "rb").read()
+    rejected = len([f for f in conn.frames if f.get("t") == "rejected"])
+    echo = {**stored, "created": created, "sig": {"kid": B["kid:machine"], "value": "AQ"},
             "attest": {"owners": [], "ownersProof": [], "origin": {"kind": "terminal"}, "stateVersion": 3}}
     conn.write({"t": "events", "project": P_.id, "events": [
         {"event": echo, "signer": {"kind": "machine", "ref": B["ref"], "name": B["name"], "keyId": B["kid:machine"]}}]})
-    time.sleep(0.5)
-    rejected = [f for f in conn.frames if f.get("t") == "rejected"]
-    ok = open(sminos.writer_path(P_, writer), "rb").read() == before and not rejected
-    say("ok" if ok else "FAIL", "beyond the fixture: the echo of a whole-second event _append wrote reads present "
-                                "(created derived with .000, sig and attest added)")
-    append_at(P_, writer, "2026-10-27T18:10:00Z", "human",
-              **{"from": "human", "to": recipients("S1", "main"), "text": "a whole second, addressed"})
-    stored = held(P_, writer)[-1]
-    i = find(conn, lambda f: f.get("t") == "words?" and f.get("event") == stored)
-    if i is not None:
-        MATCHED.add((conn.number, i))
-        conn.write({"t": "words", "id": conn.frames[i]["id"], "verdict": "refuse"})
-    say("ok" if i is not None else "FAIL", "beyond the fixture: a whole-second event _append wrote, addressed, is "
-                                           "asked as words? with the stored line, ts of whole seconds and no created")
+    # A query after it, answered read-only, is its barrier: the frames down
+    # are handled in order, and a `rejected` goes up before the `queried`.
+    barrier = "cm91bmQtdHJpcC1iYXJyaWVy%s" % seq
+    conn.write({"t": "query", "opId": barrier, "opCreated": iso()})
+    if find(conn, lambda f: f.get("t") == "queried" and f.get("opId") == barrier) is None:
+        return False, "the query behind its echo was never answered"
+    if open(path, "rb").read() != before or len([f for f in conn.frames if f.get("t") == "rejected"]) != rejected:
+        return False, "its echo did not read present"
+    asked = find(conn, lambda f: f.get("t") == "words?" and f.get("event") == stored)
+    if asked is None:
+        return False, "it was never asked as words? with the stored line"
+    MATCHED.add((conn.number, asked))
+    conn.write({"t": "words", "id": conn.frames[asked]["id"], "verdict": "words"})
+    if not wait_for(lambda: text in MODS["S1"].texts(), timeout=10):
+        return False, "answered words, S1's bridge never took it (it took %r)" % MODS["S1"].delivered
+    return True, "up as stored, resent byte-identical, its echo present, asked as words? and delivered as words"
 
 
 def main():

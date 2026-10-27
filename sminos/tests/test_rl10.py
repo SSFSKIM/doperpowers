@@ -718,6 +718,26 @@ class Spent(Machine):
         self.assertEqual(self.held(self.writer), [1, 2, 3])
         self.assertNotIn("spent position", self.status())
 
+    def test_a_spent_at_or_below_a_former_names_last_seq_is_a_no_op(self):
+        """A writer under a name this machine wrote under before is its own
+        too (is_own): a position one of its events holds stays that event's,
+        so the identical echo still reads present rather than `conflict`."""
+        old = "oldname/human"
+        for text in ("one", "two"):
+            sminos.log_append(self.own, old, "human", **{"from": "human", "to": [], "text": text})
+        before = Path(sminos.writer_path(self.own, old)).read_bytes()
+        ep = self.endpoint()
+        ep.identity = {**ep.identity, "former": ["oldname"]}
+        self.uplink()
+        ep.wait(lambda f: f["t"] == "hello" and f.get("project") == self.own.id)
+        self.spend(ep, old, 2, "conflict")
+        self.spend(ep, old, 5, "replayed")
+        wait_for(lambda: "%s:5 " % old in daemon_log())
+        self.assertEqual(self.hublog().spent(), {old: {5}}, "past its last event a former name's position is spent")
+        self.assertEqual(Path(sminos.writer_path(self.own, old)).read_bytes(), before)
+        line = next(x for x in daemon_log().splitlines() if "%s:2 " % old in x)
+        self.assertIn("not spent", line)
+
     def test_a_spent_frame_naming_no_position_is_ignored(self):
         ep = self.started()
         for bad in ({"writer": self.WRITER, "seq": 0}, {"writer": "nowriter", "seq": 2}, {"seq": 2},
