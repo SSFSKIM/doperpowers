@@ -87,10 +87,11 @@ member too, seat-less, from the first call that reads its project.
     sminos hub      enroll [--name N] [--replace] | show   # this machine at the desk hub: its name
                    there is its name everywhere (the writer host of what it writes). The code is
                    pasted at a hidden prompt, or piped on stdin — never an argument: it carries the org key
-    sminos rpc-query <opId> [--created T]                 # what became of a desk RPC, as the daemon's ledger
+    sminos rpc-query [--created T] -- <opId>              # what became of a desk RPC, as the daemon's ledger
                    file holds it (RL4's query, JSON): done, refused, in-progress, expired, not-received;
-                   --created, its opCreated. The file alone: one a worker holds before its claim reads
-                   not-received here. It changes nothing
+                   --created, its opCreated. `--` before the id: a base64url id may start with `-`.
+                   The file alone: one a worker holds before its claim reads not-received here. It
+                   changes nothing
     sminos reply    <seat>                                # latest reply text
     sminos sync     [<seat>] [--all]                      # reconcile status from the harness
     sminos status   <member> <one line>                   # the member's own "now" line

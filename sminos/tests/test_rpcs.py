@@ -2929,8 +2929,9 @@ class Checks(unittest.TestCase):
         with open(path, "rb") as f:
             before = f.read()
 
-        def view(*args):
-            p = cli("rpc-query", *args)
+        def view(op, *options):
+            # As the CLI documents it: `--` before the id, which may start with `-` (base64url).
+            p = cli("rpc-query", *options, "--", op)
             return p.returncode, json.loads(p.stdout)
 
         rc, v = view(rpc["opId"])
@@ -2946,6 +2947,22 @@ class Checks(unittest.TestCase):
             f.write('{"half-written": ')
         rc, v = view(new_op())
         self.assertEqual((rc, v["state"]), (1, "unavailable"))
+
+    def test_o_rpc_query_takes_an_op_id_that_starts_with_a_dash(self):
+        """A base64url op id may start with `-` (1 in 64 of them): `--`
+        before it, as the CLI's help says, keeps it from reading as an
+        option; without it, it does."""
+        self.mod.turn = "t-o12"
+        op = "-dashLeadingOp_0001"
+        rpc = self.send_op("steer", {"session": self.bridged.sid, "text": "a dash first"}, op=op)
+        o = self.outcome(rpc)
+        p = cli("rpc-query", "--", op)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual((json.loads(p.stdout)["op"], json.loads(p.stdout)["state"], json.loads(p.stdout)["outcome"]),
+                         (op, "done", o))
+        p = cli("rpc-query", "--created", rpc["opCreated"], "--", op)
+        self.assertEqual((p.returncode, json.loads(p.stdout)["state"]), (0, "done"))
+        self.assertNotEqual(cli("rpc-query", op).returncode, 0, "without `--`, it reads as an option")
 
     def test_o_rpc_query_changes_nothing_but_reads_the_ledger(self):
         """A diagnostic: it runs before the migration every other verb runs,
@@ -2973,7 +2990,7 @@ class Checks(unittest.TestCase):
             return out
 
         before = tree()
-        p = subprocess.run([CLI, "rpc-query", rpc["opId"]], capture_output=True, text=True,
+        p = subprocess.run([CLI, "rpc-query", "--", rpc["opId"]], capture_output=True, text=True,
                            env={**os.environ, "HOME": home, "SMINOS_HOME": state})
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertEqual((json.loads(p.stdout)["state"], json.loads(p.stdout)["outcome"]), ("done", o))

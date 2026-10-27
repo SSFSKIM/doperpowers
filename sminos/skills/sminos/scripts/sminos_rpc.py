@@ -2064,7 +2064,7 @@ def trace(op, e, others=()):
 
 
 def cmd_rpc_query(a):
-    """`sminos rpc-query <op> [--created T]`: the ledger file's view of an op,
+    """`sminos rpc-query [--created T] -- <op>`: the ledger file's view of an op,
     for diagnosis, as JSON (ledger_view, its entry beside it). It reads the
     file alone: `flight` is the daemon's, so an op a worker holds before its
     claim is written reads `not-received` here where the daemon's `query`
