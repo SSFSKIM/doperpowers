@@ -852,19 +852,25 @@ lanefake() { # session lines-file [env...] → the stand-in, under the given env
 lane_said() { grep -q '"op": "lane"' "$1"; }
 lane_of_lines() { # lines-file → the last lane the child said: its hello's, or a later line's
   python3 -c 'import json, sys
+import os
 lane = "absent"
-for line in open(sys.argv[1]):
+for line in open(sys.argv[1]) if os.path.exists(sys.argv[1]) else []:
     m = json.loads(line)
     if m.get("op") in ("hello", "lane") and "lane" in m:
         lane = m["lane"]
 print(lane)' "$1"
+}
+stopfake() { # session → the stand-in stopped and reaped, and its child gone (its socket removed)
+  kill "$LANEFAKE" 2>/dev/null || true
+  wait "$LANEFAKE" 2>/dev/null || true
+  until_true 100 test ! -e "$SMINOS_HOME/bridge/$1.sock" || true
 }
 lane_is() { [ "$(lane_of_lines "$1")" = "$2" ]; }
 hello_said() { test -s "$1"; }
 mode busy
 # A host for the Bash-launched case below: a live process that started
 # seconds before the session it marks.
-sleep 600 &
+sleep 600 >/dev/null 2>&1 &
 HOST=$!
 PIDS+=("$HOST")
 
@@ -876,7 +882,7 @@ until_true 100 answers "$SMINOS_HOME/bridge/$LC.sock" || true
 run ctl command "$SMINOS_HOME/bridge/$LC.sock" '{"op":"lane","lane":"mismatch"}'
 assert_contains "$OUT" "400 " "a lane line posted to /command is refused, as a hello is"
 assert_not_contains "$(cat "$T/lines-lc")" '"mismatch"' "and never reaches the mod"
-kill "$LANEFAKE" 2>/dev/null || true
+stopfake "$LC"
 
 # Unmarked: no verdict, and the record says lane A.
 lane_record "$LA"
@@ -886,7 +892,7 @@ assert_equals "$(lane_of_lines "$T/lines-la")" "absent" "an unmarked session's h
 assert_not_contains "$(ctl get "$SMINOS_HOME/bridge/$LA.sock" /status)" '"lane"' "nor its status"
 until_true 100 controller_is "$LA" A || true
 assert_equals "$(controller_of "$LA")" "A" "its record's controller is lane A"
-kill "$LANEFAKE" 2>/dev/null || true
+stopfake "$LA"
 
 # Marked, the session's registry record not written yet: unresolved, then match
 # once it is; the record, written after the verdict, gets lane B on a retry.
@@ -907,7 +913,7 @@ assert_rc 1 "$RC" "a steer an observer's bridge refuses exits 1"
 assert_contains "$OUT" "lane-b" "naming the refusal's code"
 assert_contains "$OUT" "MAWS controls this session" "and its reason"
 mode busy
-kill "$LANEFAKE" 2>/dev/null || true
+stopfake "$LB"
 
 # Marked, but the mark is another process (a `claude` started from a lane B
 # session's Bash inherits both variables, its parent another): mismatch, lane A.
@@ -920,22 +926,25 @@ until_true 100 lane_is "$T/lines-lm" mismatch || true
 assert_equals "$(lane_of_lines "$T/lines-lm")" "mismatch" "a parent known and not the mark: mismatch"
 until_true 100 controller_is "$LM" A || true
 assert_equals "$(controller_of "$LM")" "A" "its record's controller moves to lane A"
-kill "$LANEFAKE" 2>/dev/null || true
+stopfake "$LM"
+kill "$HOST" 2>/dev/null || true
+wait "$HOST" 2>/dev/null || true
 
 # Marked, but the host gone (it exited, and the engine was re-parented): no
 # evidence of another spawner, so unresolved, an observer, controller unset.
 LG=5b000001-0000-4000-8000-0000000000cc
 lane_record "$LG"
-sleep 600 &
+# A pid whose process has exited and been reaped: a host gone.
+sh -c 'exit 0' >/dev/null 2>&1 &
 GONE=$!
-kill "$GONE"; wait "$GONE" 2>/dev/null || true
+wait "$GONE" 2>/dev/null || true
 lanefake "$LG" "$T/lines-lg" MAWS_LANE=B SMNS_MEMBER=$GONE
 registry "$LANEFAKE" "$LG"
 until_true 100 hello_said "$T/lines-lg" || true
 sleep 2.5   # past one retry (every 2 s), the registry record written by then
 assert_equals "$(lane_of_lines "$T/lines-lg")" "unresolved" "a mark whose process is gone stays unresolved"
 assert_equals "$(controller_of "$LG")" "none" "and relays no controller"
-kill "$LANEFAKE" 2>/dev/null || true
+stopfake "$LG"
 
 # Marked, `ps` failing: unresolved, controller unset, until ps answers.
 mkdir -p "$T/psbin"
@@ -953,7 +962,7 @@ until_true 100 lane_said "$T/lines-lp" || true
 assert_equals "$(lane_of_lines "$T/lines-lp")" "match" "once ps answers, match"
 until_true 100 controller_is "$LP" B || true
 assert_equals "$(controller_of "$LP")" "B" "and lane B relayed"
-kill "$LANEFAKE" 2>/dev/null || true
+stopfake "$LP"
 
 # A replacement child (a reload, a restart) after the host exited and the
 # engine was re-parented: the parent check would now say mismatch, but the
@@ -970,7 +979,7 @@ assert_contains "$OUT" '"code": "lane-b"' "its decision route stays refused"
 sleep 2.5   # past one relay retry (every 2 s): nothing to wait on but its clock
 assert_equals "$(controller_of "$LR")" "B" "and the record's lane B stands"
 assert_equals "$(lane_of_lines "$T/lines-lr")" "match" "no later verdict line moves it"
-kill "$LANEFAKE" 2>/dev/null || true
+stopfake "$LR"
 
 # A lane-A session later reopened by MAWS as lane B, under the same id: the
 # new launch's verdict replaces the controller.
@@ -979,7 +988,7 @@ lanefake "$LA" "$T/lines-la2" MAWS_LANE=B SMNS_MEMBER=$$
 registry "$LANEFAKE" "$LA"
 until_true 100 controller_is "$LA" B || true
 assert_equals "$(controller_of "$LA")" "B" "reopened by MAWS, its record's controller is lane B"
-kill "$LANEFAKE" 2>/dev/null || true
+stopfake "$LA"
 
 echo
 if [ "$FAILURES" -eq 0 ]; then
