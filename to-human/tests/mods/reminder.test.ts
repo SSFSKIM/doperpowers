@@ -63,7 +63,7 @@ describe('the reminder', () => {
     expect(REMIND_AT).toEqual([150_000, 300_000, 450_000])
     expect([undefined, 0, 149_999, 150_000, 299_999, 300_000, 450_000, 900_000].map(pointOf)).toEqual([0, 0, 0, 1, 1, 2, 3, 3])
     expect(REMINDER).toContain('mcp__to-human__message')
-    expect(REMINDER).toContain('<message>')
+    expect(REMINDER).toContain('`final: true`')
   })
 
   test("a fresh session's first prompt carries nothing, since the style stands just before it", async ($, on) => {

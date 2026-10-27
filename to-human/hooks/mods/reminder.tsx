@@ -13,7 +13,7 @@ import { isMessageToolOn } from './message'
 export const REMIND_AT = [150_000, 300_000, 450_000] as const
 
 export const REMINDER =
-  "Output style active: the human reads only what you send them. Send it with the message tool (`mcp__to-human__message`) within a turn, or wrap the turn's final message in a `<message>` tag."
+  'Output style active: the human reads only what you send with the message tool (`mcp__to-human__message`). When a message ends your turn, send it with `final: true`.'
 
 /** How many of the reminder's points a context of `tokens` has passed: 0 below the first. */
 export function pointOf(tokens: number | undefined): number {

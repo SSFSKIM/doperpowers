@@ -1,7 +1,8 @@
 import type { On } from 'claude-code'
+import type { Engine } from 'claude-code/testing'
 import { describe, expect, mock, test, tier } from 'claude-code/testing'
 
-import { DESCRIPTION, EMPTY_REFUSAL, INPUT_SCHEMA, MESSAGE_TOOL, SENT, SUBAGENT_REFUSAL, TO_HUMAN_STYLE, readMessage } from '../../hooks/mods/message'
+import { DESCRIPTION, EMPTY_REFUSAL, FINAL_ANSWER, INPUT_SCHEMA, MESSAGE_TOOL, SENT, SUBAGENT_REFUSAL, TO_HUMAN_STYLE, readMessage } from '../../hooks/mods/message'
 
 tier('user')
 
@@ -59,7 +60,10 @@ describe('the message tool', () => {
     expect(DESCRIPTION).toBe('Send the human a message.')
     expect(INPUT_SCHEMA).toEqual({
       type: 'object',
-      properties: { text: { type: 'string', description: 'The message, in Markdown.' } },
+      properties: {
+        text: { type: 'string', description: 'The message, in Markdown.' },
+        final: { type: 'boolean', description: expect.any(String) },
+      },
       required: ['text'],
     })
   })
@@ -150,15 +154,159 @@ describe('the message tool', () => {
   })
 })
 
-describe('readMessage', () => {
-  test('reads a whole input, and a streaming one as the text so far, never as raw JSON', () => {
-    expect(readMessage({ text: 'Done.' })).toEqual({ text: 'Done.', isWhole: true })
-    expect(readMessage('{"text": "Line one.\\nLine \\"two\\"')).toEqual({ text: 'Line one.\nLine "two"', isWhole: false })
-    expect(readMessage('{"text":"caf\\u00e9 \\u')).toEqual({ text: 'café ', isWhole: false })
-    expect(readMessage('{"text":"ends in an escape\\')).toEqual({ text: 'ends in an escape', isWhole: false })
-    expect(readMessage('{"text":"whole"}')).toEqual({ text: 'whole', isWhole: true })
-    expect(readMessage('{"te')).toBeUndefined()
-    expect(readMessage({})).toBeUndefined()
-    expect(readMessage(undefined)).toBeUndefined()
+
+type Block = Record<string, unknown>
+
+const USAGE = { input_tokens: 40_000, output_tokens: 12, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, model: 'claude-haiku' }
+const CLOSING = 'Done, as the message says.'
+
+/**
+ * The model beneath the plugin, for `turn.step`: a request, recorded by its
+ * step, answered with a closing text. A row the test keeps is the kit's to
+ * keep, as the engine's is.
+ */
+function model(on: On) {
+  const requested: number[] = []
+  on('turn.step', async function* (_, e) {
+    requested.push(e.index)
+    yield { kind: 'text', index: 0, text: CLOSING }
+    yield { kind: 'stop', stopReason: 'end_turn', usage: USAGE }
+    return { turnId: e.turnId, index: e.index, answer: CLOSING, toolUses: [], stopReason: 'end_turn', usage: USAGE }
+  })
+  return { requested }
+}
+
+/** One step of turn `t1` through every hook: the chunks that came out, and its result. */
+async function step($: Engine, index: number, agentId?: string) {
+  const stream = $.turn.step({ turnId: 't1', index, model: 'haiku', messageCount: 3, ...(agentId !== undefined && { agentId }) })
+  const chunks: unknown[] = []
+  for (let read = await stream.next(); ; read = await stream.next()) {
+    if (read.done === true) {
+      return { chunks, result: read.value }
+    }
+    chunks.push(read.value)
+  }
+}
+
+let rows = 0
+/** A row the main loop keeps, raised as the engine raises it; `agentId` for a subagent's. */
+const kept = ($: Engine, door: string, message: Block, agentId?: string) =>
+  $.session.append({ door, uuid: `row-${++rows}`, origin: { kind: 'engine' }, message, ...(agentId !== undefined && { agentId }) } as never)
+const messageCall = (id: string, input: Block): Block => ({ type: 'tool_use', id, name: MESSAGE_TOOL, input })
+const response = (...blocks: Block[]): Block => ({ type: 'assistant', role: 'assistant', content: blocks })
+const results = (...blocks: Block[]): Block => ({ type: 'user', role: 'user', content: blocks })
+const toolResult = (id: string, content: unknown = SENT, extra: Block = {}): Block => ({ type: 'tool_result', tool_use_id: id, content, ...extra })
+const attachment = (name: string, text: string): Block => ({ type: 'attachment', name, role: 'user', isMeta: true, content: [{ type: 'text', text }] })
+// What the engine puts beside every request after a tool result under the style (2.1.312).
+const standing = async ($: Engine) => {
+  await kept($, 'attachment', attachment('total_tokens_reminder', '<total_tokens>14999792 tokens left</total_tokens>'))
+  await kept($, 'attachment', attachment('output_style', 'doperpowers:to-human output style is active.'))
+}
+
+/** A turn whose first response calls the message tool with `input`, its result `result`. */
+async function messageTurn($: Engine, input: Block, result: Block = toolResult('toolu_f1')) {
+  await step($, 0)
+  await kept($, 'response', response({ type: 'text', text: 'Telling them.' }, messageCall('toolu_f1', input)))
+  await kept($, 'tool-result', results(result))
+}
+
+describe('a final message', () => {
+  test('sent alone, it ends the turn: the step after it is answered here, made up, with no request', async ($, on) => {
+    engine(on)
+    const { requested } = model(on)
+    await messageTurn($, { text: 'All done: the report is in docs/.', final: true })
+    await standing($)
+
+    const { chunks, result } = await step($, 1)
+
+    expect(requested).toEqual([0])
+    expect(chunks).toEqual([
+      { kind: 'text', index: 0, text: FINAL_ANSWER },
+      { kind: 'stop', stopReason: 'end_turn', usage: null },
+    ])
+    expect(result).toEqual({ turnId: 't1', index: 1, answer: FINAL_ANSWER, toolUses: [], stopReason: 'end_turn', usage: null })
+    expect(FINAL_ANSWER).toBe('Message sent to the human.')
+    // The made-up response is kept as any response is, and the step after it is the model's again.
+    await kept($, 'response', response({ type: 'text', text: FINAL_ANSWER }))
+    await step($, 2)
+    expect(requested).toEqual([0, 2])
+  })
+
+  test('beside another tool, it lets the request go: the model reads that result', async ($, on) => {
+    engine(on)
+    const { requested } = model(on)
+    await step($, 0)
+    await kept($, 'response', response(messageCall('toolu_f1', { text: 'Building; my last word.', final: true }), { type: 'tool_use', id: 'toolu_b1', name: 'Bash', input: { command: 'make' } }))
+    await kept($, 'tool-result', results(toolResult('toolu_f1')))
+    await kept($, 'tool-result', results(toolResult('toolu_b1', 'make: done')))
+
+    const { result } = await step($, 1)
+
+    expect(requested).toEqual([0, 1])
+    expect(result).toMatchObject({ answer: CLOSING, usage: USAGE })
+  })
+
+  test('refused, or beside a message refused, it lets the request go: the model reads why', async ($, on) => {
+    engine(on)
+    const { requested } = model(on)
+    expect(await $.tool.call({ tool: MESSAGE_TOOL, tool_use_id: 'toolu_f1', text: '  ', final: true } as never)).toEqual({ deny: EMPTY_REFUSAL })
+    await messageTurn($, { text: '  ', final: true }, toolResult('toolu_f1', EMPTY_REFUSAL, { is_error: true }))
+    await step($, 1)
+    await step($, 0)
+    await kept($, 'response', response(messageCall('toolu_f1', { text: 'Done.', final: true }), messageCall('toolu_m2', { text: '' })))
+    await kept($, 'tool-result', results(toolResult('toolu_f1'), toolResult('toolu_m2', EMPTY_REFUSAL, { is_error: true })))
+    await step($, 1)
+
+    expect(requested).toEqual([0, 1, 0, 1])
+  })
+
+  test('with final false or absent, the request goes', async ($, on) => {
+    engine(on)
+    const { requested } = model(on)
+    await messageTurn($, { text: 'Halfway.', final: false })
+    await step($, 1)
+    await messageTurn($, { text: 'Halfway.' })
+    await step($, 1)
+
+    expect(requested).toEqual([0, 1, 0, 1])
+  })
+
+  test('anything else kept beside its result (a prompt typed mid-turn, a hook\'s context, more in the result) lets the request go', async ($, on) => {
+    engine(on)
+    const { requested } = model(on)
+    const final = { text: 'Done.', final: true }
+    await messageTurn($, final)
+    await standing($)
+    await kept($, 'attachment', attachment('queued_command', 'wait, one more thing'))
+    await step($, 1)
+    await messageTurn($, final)
+    await kept($, 'hook-context', attachment('hook_additional_context', 'An answer arrived: yes.'))
+    await step($, 1)
+    await messageTurn($, final, toolResult('toolu_f1', [{ type: 'text', text: SENT }, { type: 'text', text: 'An answer arrived: yes.' }]))
+    await step($, 1)
+    // A result as the engine may hold it, one text block, is still the message sent; a row no
+    // request carries, or one that carries no block, is nothing.
+    await messageTurn($, final, toolResult('toolu_f1', [{ type: 'text', text: SENT }]))
+    await kept($, 'notice', { type: 'system', name: 'turn_duration', content: [{ type: 'text', text: '3s' }] })
+    await kept($, 'hook-context', { type: 'attachment', name: 'hook_success', role: 'user', isMeta: true, content: [] })
+    await standing($)
+    await step($, 1)
+
+    expect(requested).toEqual([0, 1, 0, 1, 0, 1, 0])
+  })
+
+  test("a subagent's rows and steps pass through, and a turn's first step is never answered here", async ($, on) => {
+    engine(on)
+    const { requested } = model(on)
+    await messageTurn($, { text: 'Done.', final: true })
+    // A subagent's loop, running beside: its rows and its step are its own.
+    await kept($, 'response', response({ type: 'tool_use', id: 'toolu_a1', name: 'Bash', input: { command: 'ls' } }), 'agent-1')
+    await step($, 4, 'agent-1')
+    await step($, 1)
+    expect(requested).toEqual([0, 4])
+    // A turn cut short after the message: the next turn's first step follows the person's prompt.
+    await messageTurn($, { text: 'Done.', final: true })
+    await step($, 0)
+    expect(requested).toEqual([0, 4, 0, 0])
   })
 })
