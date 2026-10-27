@@ -528,7 +528,10 @@ def serve_main(directory, config):
                 answer = control(ep, req)
             except Exception as e:  # noqa: BLE001 — said to the test
                 answer = {"error": repr(e)}
-            sock.sendall((json.dumps(answer) + "\n").encode("utf-8"))
+            try:
+                sock.sendall((json.dumps(answer) + "\n").encode("utf-8"))
+            except OSError:
+                pass   # the test's ctl went away: the stand-in serves on
     ctl.close()
     os.unlink(ctl_path)
 
@@ -561,7 +564,17 @@ def ctl_main(directory, op, arg):
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     sock.connect(os.path.join(directory, "ctl.sock"))
     sock.sendall((json.dumps({"op": op, "arg": arg}) + "\n").encode("utf-8"))
-    print(Conn(0, sock).read_line(60))
+    # The answer is read whole, to the stand-in's close: a state holding the
+    # uploads of a machine's projects is past RL10's line bound, which is no
+    # bound of this test-only channel.
+    sock.settimeout(60)
+    data = bytearray()
+    while True:
+        chunk = sock.recv(1 << 16)
+        if not chunk:
+            break
+        data += chunk
+    print(data.decode("utf-8").rstrip("\n"))
     sock.close()
 
 
