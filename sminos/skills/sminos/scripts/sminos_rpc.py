@@ -974,7 +974,14 @@ class Rpcs:
             log("media %s: %s was not excluded from git (%s)" % (op, root, e))
         files = [{"n": n, "path": os.path.join(root, name), "name": a["name"], "mediaType": a["mediaType"]}
                  for n, (name, a) in enumerate(zip(names, args["attachments"]))]
-        out, _ = command(path, {"op": "media", "upload": op, "root": root, "files": files, "rpc": op})
+        try:
+            out, _ = command(path, {"op": "media", "upload": op, "root": root, "files": files, "rpc": op})
+        except Refused as e:
+            # An observer's refusal is as definite as any other: nothing holds
+            # the files. A silence is not (it may have run): they stay.
+            if e.outcome["error"]["code"] == LANE_B:
+                media.remove(root, names)
+            raise
         outcome = media_held(out, kept)
         if outcome["state"] != "done":
             media.remove(root, names)

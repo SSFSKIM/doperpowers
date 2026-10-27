@@ -449,17 +449,36 @@ class LaneVerdict(unittest.TestCase):
         with open(os.path.join(self.config, "sessions", "4300.json"), "w") as f:
             json.dump({"pid": 4300, "sessionId": self.sid}, f)
 
-    def verdict(self, observations):
+    SESSION_STARTED = 1_000_000.0
+
+    def verdict(self, observations, host_alive=True, host_started=SESSION_STARTED - 60):
+        """The verdict over these parent observations, the marker's process
+        (4242) alive or not, started then; the session's at SESSION_STARTED."""
         seen = list(observations)
+        started = {4300: self.SESSION_STARTED, 4242: host_started}
         with mock.patch.dict(os.environ, {"SMNS_MEMBER": "4242", "CLAUDE_CONFIG_DIR": self.config}), \
-                mock.patch.object(bridgemod.S, "parent_pid", side_effect=lambda _pid: seen.pop(0)) as pp:
+                mock.patch.object(bridgemod.S, "parent_pid", side_effect=lambda _pid: seen.pop(0)) as pp, \
+                mock.patch.object(bridgemod.S, "pid_alive", side_effect=lambda pid: int(pid) != 4242 or host_alive), \
+                mock.patch.object(bridgemod, "process_started", side_effect=lambda pid: started.get(int(pid))):
             got = bridgemod.lane_verdict(self.sid, 4300)
         return got, pp.call_count
 
     def test_lane_verdict_is_one_parent_observation(self):
         self.assertEqual(self.verdict([None, 4242]), ("unresolved", 1), "a ps that failed is unresolved, whatever a second says")
         self.assertEqual(self.verdict([4242, 77]), ("match", 1))
-        self.assertEqual(self.verdict([77, 4242]), ("mismatch", 1))
+        self.assertEqual(self.verdict([77, 4242]), ("mismatch", 1),
+                         "a claude a lane B session's Bash started: the host alive, older, not its parent")
+
+    def test_lane_verdict_mismatch_needs_a_live_older_host_that_is_not_the_parent(self):
+        """The host exited before a retry: the engine re-parented, to PID 1
+        or a subreaper, is no evidence of another spawner."""
+        for reparented in (1, 777):
+            self.assertEqual(self.verdict([None]), ("unresolved", 1))
+            self.assertEqual(self.verdict([reparented], host_alive=False)[0], "unresolved",
+                             "re-parented to %d, the host gone" % reparented)
+        self.assertEqual(self.verdict([777], host_started=self.SESSION_STARTED + 5)[0], "unresolved",
+                         "the marker's pid reused by a process younger than the session")
+        self.assertEqual(self.verdict([777], host_started=None)[0], "unresolved", "its start unreadable")
 
 
 class Checks(unittest.TestCase):
@@ -2392,6 +2411,10 @@ class Checks(unittest.TestCase):
                            ("command", {"name": "rename", "args": "x"}), ("btw", {"prompt": "why?"})):
             o = self.refused(self.send(name, {"session": self.bridged.sid, **args}), "lane-b")
             self.assertIn("MAWS controls this session", o["error"]["message"])
+        asked = self.upload()
+        self.refused(asked, "lane-b")
+        self.assertEqual(len(self.mod.ops("media")), 1, "it reached the bridge")
+        self.assertEqual(self.uploads_of(self.root), [], "the files saved for a refused upload are removed")
         with mock.patch.object(rpcs.bridge, "request",
                                return_value=(409, {"error": "MAWS controls this session", "code": "lane-b"})):
             with self.assertRaises(rpcs.Refused) as r:

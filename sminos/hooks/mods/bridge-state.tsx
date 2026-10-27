@@ -32,10 +32,11 @@ export type Effort = (typeof EFFORTS)[number]
 
 /**
  * The bridge child's verdict on whether this session is MAWS's lane B (O12
- * M3): `match`, its parent is the pid SMNS_MEMBER names; `mismatch`, its
- * parent is known and another (a `claude` a lane B session's Bash started,
- * the marker inherited); `unresolved`, not known yet (the session's pid not
- * in the registry, `ps` failing), which the child retries.
+ * M3): `match`, its parent is the pid SMNS_MEMBER names; `mismatch`, another
+ * spawner is evident (that pid's process alive, older than the session and
+ * not its parent: a `claude` a lane B session's Bash started, the marker
+ * inherited); `unresolved`, not known (the session's pid not in the
+ * registry, `ps` failing, the host gone), which the child retries.
  */
 export type LaneVerdict = 'match' | 'mismatch' | 'unresolved'
 export const isLaneVerdict = (value: unknown): value is LaneVerdict => value === 'match' || value === 'mismatch' || value === 'unresolved'

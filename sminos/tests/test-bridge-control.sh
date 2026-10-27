@@ -896,13 +896,32 @@ kill "$LANEFAKE" 2>/dev/null || true
 
 # Marked, but the mark is another process (a `claude` started from a lane B
 # session's Bash inherits both variables, its parent another): mismatch, lane A.
+# The mark names a live process older than the session (its host), not its parent.
 lane_record "$LM" B
-lanefake "$LM" "$T/lines-lm" MAWS_LANE=B SMNS_MEMBER=2
+sleep 600 &
+HOST=$!
+PIDS+=("$HOST")
+lanefake "$LM" "$T/lines-lm" MAWS_LANE=B SMNS_MEMBER=$HOST
 registry "$LANEFAKE" "$LM"
 until_true 100 lane_is "$T/lines-lm" mismatch || true
 assert_equals "$(lane_of_lines "$T/lines-lm")" "mismatch" "a parent known and not the mark: mismatch"
 until_true 100 controller_is "$LM" A || true
 assert_equals "$(controller_of "$LM")" "A" "its record's controller moves to lane A"
+kill "$LANEFAKE" 2>/dev/null || true
+
+# Marked, but the host gone (it exited, and the engine was re-parented): no
+# evidence of another spawner, so unresolved, an observer, controller unset.
+LG=5b000001-0000-4000-8000-0000000000cc
+lane_record "$LG"
+sleep 600 &
+GONE=$!
+kill "$GONE"; wait "$GONE" 2>/dev/null || true
+lanefake "$LG" "$T/lines-lg" MAWS_LANE=B SMNS_MEMBER=$GONE
+registry "$LANEFAKE" "$LG"
+until_true 100 hello_said "$T/lines-lg" || true
+sleep 2.5   # past one retry (every 2 s), the registry record written by then
+assert_equals "$(lane_of_lines "$T/lines-lg")" "unresolved" "a mark whose process is gone stays unresolved"
+assert_equals "$(controller_of "$LG")" "none" "and relays no controller"
 kill "$LANEFAKE" 2>/dev/null || true
 
 # Marked, `ps` failing: unresolved, controller unset, until ps answers.

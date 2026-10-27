@@ -103,8 +103,10 @@ host as its controller: it launches each `claude -p` with MAWS_LANE=B beside
 SMNS_MEMBER, its own pid. The child tells such a session from a `claude` its
 Bash started (which inherits both variables, under another parent) by
 sminos's parent check, which the mod cannot make: its hello carries the
-verdict (`lane`), `match`, `mismatch` (the parent known and another), or
-`unresolved` (the session's registry record or `ps` not answering yet), which
+verdict (`lane`), `match`, `mismatch` (positive evidence of another spawner:
+the host alive, older than the session, and not its parent), or `unresolved`
+(the session's registry record or `ps` not answering yet, or the host gone),
+which
 it retries, every LANE_RETRY_S for LANE_RETRY_FOR_S, then every
 LANE_RETRY_LATER_S, saying the resolved verdict on a line of its own
 (`{"op": "lane", "lane": ...}`). The verdict is the process's: a module
@@ -411,10 +413,14 @@ def lane_verdict(session, session_pid):
     """Whether the marked session `session`, whose process is `session_pid`
     (this child's parent), is the one MAWS's engine host launched, by
     sminos's parent rule (sminos.member_mark's) on one observation of its
-    parent: `match` when it is the SMNS_MEMBER pid; `mismatch` only on
-    positive evidence, its parent known and another, or no mark to check it
-    against; `unresolved` while its registry record does not name it yet,
-    or `ps` cannot tell."""
+    parent: `match` when it is the SMNS_MEMBER pid. `mismatch` only on
+    positive evidence of another spawner: no mark to check it against, or
+    the mark's process alive, started no later than the session, and not its
+    parent (a `claude` a lane B session's Bash started). A parent that is
+    merely not the mark proves nothing: once the host exits, the engine is
+    re-parented (to PID 1, or a subreaper), and a pid the mark names may be
+    reused by a younger process. `unresolved` for those, while the session's
+    registry record does not name it yet, or while `ps` cannot tell."""
     mark = os.environ.get(S.MEMBER_MARK, "")
     if not (mark.isdigit() and int(mark) > 1):
         return "mismatch"
@@ -428,7 +434,19 @@ def lane_verdict(session, session_pid):
     parent = S.parent_pid(session_pid)
     if parent is None:
         return "unresolved"
-    return "match" if parent == int(mark) else "mismatch"
+    if parent == int(mark):
+        return "match"
+    host, session_started = process_started(int(mark)), process_started(session_pid)
+    if not S.pid_alive(int(mark)) or host is None or session_started is None or host > session_started:
+        return "unresolved"
+    return "mismatch"
+
+
+def process_started(pid):
+    """When a live process started, in epoch seconds (ps's whole second),
+    or None when that cannot be read."""
+    st = S._parse_lstart(S.read_proc_start(pid))
+    return time.mktime(st) if st else None
 
 
 def relay_controller(session, lane):
