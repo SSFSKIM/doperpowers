@@ -63,7 +63,7 @@ for k in sys.argv[2].split("."):
 print(v if isinstance(v, str) else json.dumps(v))' "$1" "$2"
 }
 
-unset CLAUDE_CODE_SESSION_ID SMNS_INTERNAL DAEMON_HOME AGORA_HOME CLAUDE_CONFIG_DIR
+unset CLAUDE_CODE_SESSION_ID SMNS_INTERNAL DAEMON_HOME AGORA_HOME MAWS_LANE CLAUDE_CONFIG_DIR
 export HOME="$T/home"
 export SMINOS_HOME="$T/s"
 mkdir -p "$HOME/.claude/sessions"
@@ -197,6 +197,8 @@ elif op == "fakemod":       # sminos session lines-file decisions-file mode-file
                 keep_nonce(msg)
                 post(msg["socket"], [{"type": "resync", "turns": [], "streaming": [], "agents": []}])
                 sock = msg["socket"]
+                continue
+            if msg.get("op") == "lane":   # the child's lane verdict, resolved after its hello
                 continue
             cid, o = msg["id"], msg["op"]
             if o == "answer":
@@ -491,6 +493,33 @@ SNAP="$(snapshot "$SOCK")"
 assert_equals "$(field_of "$SNAP" pending.0.request)" "toolu_kept1" "a resync replaces the pending set with the mod's own"
 assert_contains "$(field_of "$SNAP" settled)" '"toolu_old1"' "and brings the mod's recent settlements"
 assert_contains "$(field_of "$SNAP" settled)" '"toolu_perm08"' "beside the child's own"
+
+echo "a MAWS lane B session (O12 M3): the decision route refused:"
+# The session MAWS controls answers its own prompts (--permission-prompt-tool
+# stdio): its child, an observer's, refuses every client's decision (409
+# lane-b), whatever the mod raised, before looking the request up.
+LSID=5b000001-0000-4000-8000-0000000000d7
+LSOCK="$SMINOS_HOME/bridge/$LSID.sock"
+MAWS_LANE=B SMNS_MEMBER=$$ python3 "$T/ctl.py" fakemod "$SMINOS" "$LSID" "$T/lines-l" "$T/decisions-l" "$T/mode" &
+LFAKE=$!
+PIDS+=("$LFAKE")
+printf '{"pid":%s,"sessionId":"%s","status":"waiting","kind":"sdk-cli"}\n' "$LFAKE" "$LSID" > "$HOME/.claude/sessions/$LFAKE.json"
+until_true answers "$LSOCK" || true
+ctl post "$LSOCK" '[{"type":"raised","request":"toolu_lane1","tool":"Bash","input":{"command":"rm -rf /tmp/x"},"agentId":null},
+ {"type":"raised","request":"toolu_laneq","tool":"AskUserQuestion","input":'"$QUESTIONS"',"agentId":null}]' >/dev/null
+run ctl postto "$LSOCK" /requests/toolu_lane1/decision '{"behavior":"allow","by":"cli"}'
+assert_contains "$OUT" "409 " "a client's decision on an observer's request is refused"
+assert_contains "$OUT" '"code": "lane-b"' "with the code lane-b"
+run ctl postto "$LSOCK" /requests/toolu_nothing/decision '{"behavior":"allow","by":"cli"}'
+assert_contains "$OUT" '"code": "lane-b"' "a request nobody raised is refused the same, before it is looked up"
+run "$SMINOS" decide "$LSID" toolu_lane1 allow
+assert_rc 1 "$RC" "sminos decide against it exits 1"
+assert_contains "$OUT" "lane-b" "naming lane-b"
+run "$SMINOS" answer "$LSID" toolu_laneq Apple Soup
+assert_rc 1 "$RC" "sminos answer against it exits 1"
+assert_contains "$OUT" "lane-b" "naming lane-b too"
+assert_equals "$(cat "$T/decisions-l" 2>/dev/null | grep -c toolu_lane || true)" "0" "the mod's poll was handed nothing"
+assert_not_contains "$(cat "$T/lines-l")" '"op": "answer"' "and no answer went to the mod"
 
 echo
 if [ "$FAILURES" -eq 0 ]; then

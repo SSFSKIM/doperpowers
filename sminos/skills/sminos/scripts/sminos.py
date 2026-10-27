@@ -6702,13 +6702,16 @@ def launch_env(settings):
     job env carries it and the runner's post-job cleanup kills any surviving
     process whose environ still has it — nohup/--bg detach the session, not
     the env. So is SMINOS_LAUNCH: a launch id is its own launch's, carried
-    in its settings, never one a spawning seat inherited. An EMPTY settings
+    in its settings, never one a spawning seat inherited. So is MAWS_LANE,
+    MAWS's lane B marker (O12 M3): a seat a lane B session spawns is sminos's
+    own, never an observer. An EMPTY settings
     value declares the PLAIN route, enforced below the argv by dropping the
     gateway transport env too.
     """
     env = dict(os.environ)
     env.pop("RUNNER_TRACKING_ID", None)
     env.pop(records_module().LAUNCH_ENV, None)
+    env.pop("MAWS_LANE", None)
     if not settings:
         for k in gateway_env_keys():
             env.pop(k, None)

@@ -2,7 +2,7 @@ import type { PermissionRequestDecision } from 'claude-code'
 
 import { ASK_TOOL, answerAsync } from './ask'
 import type { AskNote } from './ask'
-import { canonical, capped, isRecord, parsed, state, utf8Bytes } from './bridge-state'
+import { canonical, capped, isObserver, isRecord, parsed, state, utf8Bytes } from './bridge-state'
 import type { Answer, Capped, Check, Command, Decision, Outcome, Request } from './bridge-state'
 import { emit, raisedFields } from './bridge-stream'
 
@@ -310,7 +310,8 @@ export function onAskNote(note: AskNote) {
     return
   }
   if (note.kind === 'open') {
-    if (!state.requests.has(note.id)) {
+    // An observer raises no question (O12 M3): its session's are MAWS's to answer.
+    if (!state.requests.has(note.id) && !isObserver()) {
       const input = capped({ questions: note.questions })
       raise({ id: note.id, tool: ASK_TOOL, input: input.value, rawInput: { questions: note.questions }, isTruncated: input.cut, agentId: null, isAsync: true, isQuestion: true, t: Date.now(), isAborted: false })
     }

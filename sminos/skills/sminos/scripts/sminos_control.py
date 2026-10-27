@@ -489,7 +489,8 @@ def settle_decision(member, verb, path, events, raised, body):
         s = out["settled"]
         S.die("%s: request %s is already settled: %s (%s)" % (verb, rid, s.get("outcome"), s.get("by")), 1)
     if status != 200:
-        S.die("%s: request %s: %s" % (verb, rid, out.get("error") or "the bridge answered %d" % status), 1)
+        code = " refused (%s)" % out["code"] if isinstance(out.get("code"), str) and out["code"] else ""
+        S.die("%s: request %s%s: %s" % (verb, rid, code, out.get("error") or "the bridge answered %d" % status), 1)
     deadline = time.monotonic() + SETTLE_WAIT_S
     while True:
         try:

@@ -30,6 +30,16 @@ export const BLOCK_TAIL = 65_536
 export const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
 export type Effort = (typeof EFFORTS)[number]
 
+/**
+ * The bridge child's verdict on whether this session is MAWS's lane B (O12
+ * M3): `match`, its parent is the pid SMNS_MEMBER names; `mismatch`, its
+ * parent is known and another (a `claude` a lane B session's Bash started,
+ * the marker inherited); `unresolved`, not known yet (the session's pid not
+ * in the registry, `ps` failing), which the child retries.
+ */
+export type LaneVerdict = 'match' | 'mismatch' | 'unresolved'
+export const isLaneVerdict = (value: unknown): value is LaneVerdict => value === 'match' || value === 'mismatch' || value === 'unresolved'
+
 export type BridgeEvent = Record<string, unknown> & { type: string }
 export type Command = Record<string, unknown> & { id: string; op: string }
 /** A command's answer: the `result` event's fields; a refusal's `code` names its kind where DX5 gives one. */
@@ -373,8 +383,16 @@ export type BridgeState = {
    * resync carries them, so one whose post was lost still reaches the child.
    */
   refusals: Refusal[]
-  /** What this module can do, assembled at its session start; every resync carries it to the child. */
+  /** What this module can do, assembled at its session start (and again when the lane verdict moves it); every resync carries it to the child. */
   capabilities?: Capabilities
+  /**
+   * MAWS's lane B marker (MAWS_LANE=B) on the session's process, read at its
+   * session start: the bridge only observes until its child's verdict says
+   * `mismatch` (isObserver).
+   */
+  isLaneMarked: boolean
+  /** The child's verdict, once one came; a resolved one is the process's and stands. */
+  laneVerdict?: LaneVerdict
   catalog?: Catalog
   refreshCatalog?: () => Promise<Catalog>
   /** The desk command called and not yet read back: the next waits for it (one at a time, spec §6). */
@@ -458,6 +476,7 @@ const fresh = (): BridgeState => ({
   mediaWrites: Promise.resolve(),
   mediaWake: { isSubmitted: false },
   transitions: 0,
+  isLaneMarked: false,
   isUnreadSaid: false,
   generation: 0,
   respawnMs: RESPAWN_FIRST_MS,
@@ -485,6 +504,14 @@ export let state = fresh()
 export function resetBridge() {
   state = fresh()
 }
+
+/**
+ * Whether the bridge only observes (O12 M3): a marked session until its
+ * child's verdict says `mismatch`, so a lane B session that MAWS controls
+ * never has a second controller, and a marked one whose verdict is not in
+ * yet (or unresolved) is held to the safe side.
+ */
+export const isObserver = () => state.isLaneMarked && state.laneVerdict !== 'mismatch'
 
 export const message = (error: unknown) => (error instanceof Error ? error.message : String(error))
 

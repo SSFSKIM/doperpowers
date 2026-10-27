@@ -52,7 +52,7 @@ SCRIPTS = os.path.join(PLUGIN_ROOT, "skills", "sminos", "scripts")
 T = tempfile.mkdtemp(prefix="smp.", dir="/tmp")
 os.environ.update(HOME=os.path.join(T, "home"), SMINOS_HOME=os.path.join(T, "s"), DAEMON_HOST="testhost",
                   CLAUDE_CODE_TMPDIR=os.path.join(T, "tmp"))   # the engine's temp root: `output` reads under it
-for k in ("CLAUDE_CODE_SESSION_ID", "SMNS_INTERNAL", "DAEMON_HOME", "AGORA_HOME", "CLAUDE_CONFIG_DIR"):
+for k in ("CLAUDE_CODE_SESSION_ID", "SMNS_INTERNAL", "DAEMON_HOME", "AGORA_HOME", "CLAUDE_CONFIG_DIR", "MAWS_LANE"):
     os.environ.pop(k, None)
 os.makedirs(os.path.join(os.environ["HOME"], ".claude", "sessions"))
 os.makedirs(os.environ["SMINOS_HOME"])

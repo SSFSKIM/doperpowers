@@ -241,6 +241,7 @@ class Mod(tpr.Bridge):
         self.cwd = "/"            # the session's live working directory, as `read status` answers it
         self.uploads = {}         # an upload the mod holds → its op
         self.refuse_media = None  # the bridge's refusal of an upload: (code, reason)
+        self.observer = False     # an observer's bridge (a MAWS lane B session, O12 M3): every control op refused lane-b
         self.rows = []
         super().__init__(sid)
 
@@ -258,7 +259,9 @@ class Mod(tpr.Bridge):
         time.sleep(self.hold)
         op = cmd["op"]
         after = []
-        if self.unknown and op in ("steer", "interrupt", "compact"):
+        if self.observer and op not in ("ping", "read"):
+            res = {"ok": False, "error": "MAWS controls this session", "code": "lane-b"}
+        elif self.unknown and op in ("steer", "interrupt", "compact"):
             res = {"ok": False, "error": TURN_UNKNOWN}
         elif op == "steer":
             if self.turn is None:
@@ -482,6 +485,7 @@ class Checks(unittest.TestCase):
         self.mod.uploads = {}
         shutil.rmtree(os.path.join(self.root, ".claude", "desk-uploads"), ignore_errors=True)   # an earlier test's
         self.mod.refuse_media = None
+        self.mod.observer = False
         self.mod.commands.clear()
         self.clock = [time.time()]
         self.r = rpcs.Rpcs(KEY, "testhost", clock=lambda: self.clock[0])
@@ -2330,6 +2334,44 @@ class Checks(unittest.TestCase):
         again = self.send("resume", {"session": sid})
         self.assertIn("running here", self.refused(again, "session-live")["error"]["message"])
         self.assertEqual(len(resumes(self.claude, sid)), 1, "launched once")
+
+    def test_j_a_session_whose_last_launch_was_lane_b_is_not_resumed_from_the_desk(self):
+        """O12 M3: reopening a MAWS lane B session is MAWS's. A session that
+        ran as lane A and was later reopened by MAWS as lane B, under the same
+        id, has its record's controller at B (each launch's bridge verdict),
+        and the desk's Resume of it after it ends is refused `lane-b`, nothing
+        launched; its controller back at A, it resumes as any ended session."""
+        sid = ended_session(self.root)
+        self.here.sessions.add(sid)
+        self.assertIsNotNone(sminos.session_record(sid), "the session has its record (O12 M1)")
+        self.assertTrue(sminos.set_session_controller(sid, "A"), "it ran as lane A")
+        self.assertTrue(sminos.set_session_controller(sid, "B"), "then MAWS reopened it as lane B")
+        rpc = self.send("resume", {"session": sid})
+        o = self.refused(rpc, "lane-b")
+        self.assertIn("MAWS", o["error"]["message"])
+        self.assertEqual(resumes(self.claude, sid), [], "nothing launched")
+        self.assertNotIn("launched_at", self.ledger()[rpc["nonce"]], "refused before the claim")
+        self.assertTrue(sminos.set_session_controller(sid, "A"))
+        self.assertEqual(self.outcome(self.send("resume", {"session": sid}), timeout=60),
+                         {"state": "done", "result": {"session": sid}})
+        for h in holders_of(sid):
+            os.kill(h["pid"], signal.SIGKILL)
+
+    def test_j_an_observers_refusal_is_the_rpcs_answer_lane_b(self):
+        """O12 M3: the bridge of a MAWS lane B session refuses every control
+        op `lane-b`, and its child refuses the decision route the same: the
+        RPC is answered with that code, not a generic failure."""
+        self.mod.observer = True
+        self.mod.turn = "t1"
+        for name, args in (("steer", {"text": "x"}), ("interrupt", {}), ("compact", {}),
+                           ("command", {"name": "rename", "args": "x"}), ("btw", {"prompt": "why?"})):
+            o = self.refused(self.send(name, {"session": self.bridged.sid, **args}), "lane-b")
+            self.assertIn("MAWS controls this session", o["error"]["message"])
+        with mock.patch.object(rpcs.bridge, "request",
+                               return_value=(409, {"error": "MAWS controls this session", "code": "lane-b"})):
+            with self.assertRaises(rpcs.Refused) as r:
+                rpcs.decide(rpcs.bridge.endpoint(self.bridged.sid), "toolu_x", {"behavior": "allow", "by": MEMBER})
+        self.assertEqual(r.exception.outcome["error"]["code"], "lane-b")
 
     def test_j_a_session_this_machine_holds_no_transcript_of_is_not_resumed(self):
         """A --bg copy that ended before it wrote a row: `claude --resume`
