@@ -560,6 +560,11 @@ class HubLog:
         if batch:
             yield frame()
 
+    def undraw(self):
+        """The draw dropped: a frame drawn and not sent is drawn again, from
+        what was taken, at the next call (RL10's member frames held it)."""
+        self.drawing = None
+
     @staticmethod
     def as_uploaded(e):
         """An event of this machine as it goes up RL10: as stored (this

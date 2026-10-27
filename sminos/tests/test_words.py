@@ -105,6 +105,15 @@ class Lane:
     def posting(self):
         return False
 
+    def queued(self):
+        return 0   # written as taken: nothing waits
+
+    def hold(self, _project):
+        return None, []   # one ordered lane: no gate (SocketLane)
+
+    def release(self, _project):
+        pass
+
     def close(self):
         pass
 
@@ -674,6 +683,157 @@ class Members(Machine):
         ep.wait_until(lambda: {f["session"] for f in ep.frames("member", conn=2)} == {S1, S2})
 
 
+class MembersFirst(Machine):
+    """The endpoint signs an upload when its `events` frame arrives and
+    attests it from the session's record as `member` frames gave it (O10
+    M6): so a session's `member`, as its record is now, is on the socket
+    before any `events` frame carrying its writer, and at a welcome the
+    whole member set goes before any project's hello, upload or host
+    replay."""
+
+    def setUp(self):
+        super().setUp()
+        self.cut_over()
+        self.hp = self.project("hp", hub=True)
+
+    def opened_link(self):
+        """A Link with the hub project open and its `have` taken, its lane emptied."""
+        link = self.link()
+        link.tick()
+        self.assertIn(self.hp.id, link.opened)
+        link.dispatch({"t": "have", "project": self.hp.id, "have": {}}, None)
+        link.next_upload = 0.0
+        link.tick()
+        link.session_lane.take()
+        return link
+
+    @staticmethod
+    def first(frames, pred):
+        return next((i for i, f in enumerate(frames) if pred(f)), None)
+
+    @staticmethod
+    def carries(f, writer):
+        return f["t"] == "events" and any(e["writer"] == writer for e in f["events"])
+
+    def test_a_session_joining_an_open_project_is_a_member_before_its_events_go(self):
+        self.session(self.hp, S1)
+        link = self.opened_link()
+        self.session(self.hp, S2)
+        sminos.forget_caches()
+        sminos.reconcile(self.hp)   # its `joined`, as its hook writes it
+        sminos.lifecycle(self.hp, S2, "titled", title="first words")
+        link.next_upload = 0.0
+        link.tick()
+        frames = link.session_lane.take()
+        events = self.first(frames, lambda f: self.carries(f, "testhost/" + S2))
+        self.assertIsNotNone(events, "its events went up")
+        joined = self.first(frames, lambda f: f["t"] == "member" and f["session"] == S2)
+        self.assertIsNotNone(joined, "its member frame went")
+        self.assertLess(joined, events, "the member before the events the endpoint attests from it")
+
+    def test_a_changed_record_is_published_before_the_events_after_it(self):
+        self.session(self.hp, S1)
+        link = self.opened_link()
+        prov = {**sminos.records_module().default_provenance("launch"), "owners": ["mem-1"],
+                "origin": {"kind": "maws", "requester": "mem-1"}}
+        sminos.records_module().establish(S1, prov)
+        sminos.lifecycle(self.hp, S1, "titled", title="after the change")
+        link.next_upload = 0.0
+        link.tick()
+        frames = link.session_lane.take()
+        events = self.first(frames, lambda f: self.carries(f, "testhost/" + S1))
+        self.assertIsNotNone(events, "its event went up")
+        changed = self.first(frames, lambda f: f["t"] == "member" and f["session"] == S1
+                             and f["owners"] == ["mem-1"])
+        self.assertIsNotNone(changed, "the record as it is now was published")
+        self.assertLess(changed, events)
+        link.next_upload = 0.0
+        link.tick()
+        link.members(time.monotonic() + plane.MEMBERS_EVERY + 1)
+        self.assertEqual([f for f in link.session_lane.take() if f["t"] == "member"], [],
+                         "published once: no later pass sends an older copy")
+
+    def test_at_each_welcome_the_whole_set_goes_before_any_hello_upload_or_host_replay(self):
+        lp = self.project("lp")
+        self.session(self.hp, S1)
+        self.session(self.hp, S2)
+        self.session(lp, S3)
+        sminos.reconcile(self.hp)
+        sminos.reconcile(lp)
+        sminos.append_host(self.hp, S1, [{"kind": "message", "from": "m", "to": "host", "text": "to my person",
+                                          "src": "msg-1"}])
+        ep = self.endpoint()
+        self.uplink()
+
+        def check(conn):
+            def dependent(f):
+                return (f["t"] == "hello" and "project" in f) or f["t"] == "events" \
+                    or (f["t"] == "session" and f["message"]["kind"] == "host")
+            ep.wait_until(lambda: any(f["t"] == "session" and f["message"]["kind"] == "host"
+                                      for f in ep.frames(conn=conn)))
+            frames = ep.frames(conn=conn)
+            cut = self.first(frames, dependent)
+            self.assertEqual({f["session"] for f in frames[:cut] if f["t"] == "member"}, {S1, S2, S3},
+                             "connection %d: the whole set before anything that depends on it" % conn)
+
+        ep.wait_until(lambda: ep.frames("events", conn=1))
+        check(1)
+        ep.drop()
+        ep.wait_until(lambda: len(ep.hellos) > 1)
+        check(ep.hellos[-1][0])
+
+    def test_a_session_joining_as_the_upload_draws_is_a_member_before_its_events(self):
+        """The prerequisites are the drawn frame's own: a session that joins
+        and writes after anything was looked at, as the upload reads the
+        writer files, still has its member frame on the lane first."""
+        self.session(self.hp, S1)
+        link = self.opened_link()
+        hl = link.logs[self.hp.id]
+        draw, joined = hl.next_upload, []
+
+        def joining():
+            if not joined:
+                joined.append(True)
+                self.session(self.hp, S2)
+                sminos.forget_caches()
+                sminos.reconcile(self.hp)
+                sminos.lifecycle(self.hp, S2, "titled", title="first words")
+            return draw()
+        hl.next_upload = joining
+        link.upload(hl)
+        frames = link.session_lane.take()
+        events = self.first(frames, lambda f: self.carries(f, "testhost/" + S2))
+        self.assertIsNotNone(events, "its events went up")
+        member_at = self.first(frames, lambda f: f["t"] == "member" and f["session"] == S2)
+        self.assertIsNotNone(member_at, "its member frame went")
+        self.assertLess(member_at, events)
+
+    def test_a_member_set_past_the_lanes_bound_goes_in_entries_then_the_rest(self):
+        """170 sessions, each record with a 100 KiB proof (a lineage inherits
+        its spawn's): the welcome's set is more than the lane holds, so it
+        goes in bounded entries across passes, the lane stays open, and the
+        project's hello and uploads follow it."""
+        sids = ["6d0002%02x-0000-4000-8000-0000000002%02x" % (i // 256, i % 256) for i in range(170)]
+        proof = {"brief": "p" * (100 << 10)}
+        for i, sid in enumerate(sids):
+            self.session(self.hp, sid, name="r%03d" % i)
+            sminos.records_module().establish(sid, {**sminos.records_module().default_provenance("launch"),
+                                                    "owners": ["mem-1"], "ownersProof": [proof],
+                                                    "origin": {"kind": "maws", "requester": "mem-1"}})
+        sminos.reconcile(self.hp)
+        self.assertGreater(len(sids) * len(proof["brief"]), uplink.SEND_QUEUE_MAX)
+        ep = self.endpoint()
+        self.uplink()
+        ep.wait_until(lambda: ep.frames("events", conn=1), timeout=120)
+        frames = ep.frames(conn=1)
+        hello = self.first(frames, lambda f: f["t"] == "hello" and f.get("project") == self.hp.id)
+        self.assertIsNotNone(hello)
+        self.assertEqual({f["session"] for f in frames[:hello] if f["t"] == "member"}, set(sids),
+                         "every member before the project's hello")
+        self.assertEqual(len(ep.hellos), 1, "on one connection: the lane was never closed")
+        self.assertNotIn("more than", daemon_log())
+
+
 # ------------------------------------------------------------- revocations applied by the uplink
 
 
@@ -959,6 +1119,37 @@ class Words(WordsRig):
         time.sleep(0.5)
         self.assertEqual((self.bridge, self.inbox(S1)), ([], []))
         self.assertIn("refused testhost/human:1", daemon_log())
+
+    def test_a_broadcast_past_the_lanes_bound_is_asked_across_passes(self):
+        """One operator event of 256 KiB to 65 sessions is 65 asks, more
+        than the lane holds (SEND_QUEUE_MAX): they go in bounded entries
+        while the lane has room, the rest on later passes, so the lane stays
+        open; an ask not yet queued is no failed attempt, and every delivery
+        settles on its verdict."""
+        sids = ["6d0001%02x-0000-4000-8000-0000000001%02x" % (i, i) for i in range(65)]
+        for i, sid in enumerate(sids):
+            self.session(self.hp, sid, name="s%02d" % i)
+        sminos.reconcile(self.hp)
+        text = "y" * (256 << 10)
+        sminos.log_append(self.hp, sminos.writer_id(), "human",
+                          **{"from": "human", "to": [{"session": s, "alias": "s%02d" % i} for i, s in enumerate(sids)],
+                             "text": text})
+        self.assertGreater(len(sids) * len(text), uplink.SEND_QUEUE_MAX)
+        # Each session live to delivery without an inbox served for it: its
+        # bridge (self.bridge) takes the words.
+        patcher = mock.patch.object(sminos, "peer_for_session", side_effect=lambda sid: {"sessionId": sid})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        ep = self.endpoint(verdict="words")
+        self.uplink()
+        wait_for(lambda: all(self.settled(self.hp, s, "testhost/human") == 1 for s in sids), timeout=120)
+        self.assertEqual({s for s, *_ in self.bridge}, set(sids), "every session took the words")
+        self.assertEqual(len(self.bridge), len(sids), "each once")
+        self.assertEqual(len(ep.hellos), 1, "on one connection: the lane was never closed")
+        self.assertNotIn("more than", daemon_log())
+        self.assertEqual(sorted(f["session"] for f in self.asks(ep)), sorted(sids), "each asked once")
+        self.assertEqual([s for s in sids if self.record(self.hp, s).get("testhost/human", {}).get("attempts")], [],
+                         "no ask counted a failed attempt")
 
 
 class Deliverers(WordsRig):
