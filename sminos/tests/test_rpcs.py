@@ -62,6 +62,8 @@ cli = tpr.cli
 PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 24
 PDF = b"%PDF-1.4\n1 0 obj\n<<>>\nendobj\n"
 TURN_UNKNOWN = "turn state unknown since the bridge reloaded; retry after the next model request"
+LAUNCH = "-Lm7launch0000000000AA"   # the bridged session's launch (O12 M7): base64url, here starting with `-`
+STALE = "Lm7launch-before-reopen"  # a launch the session ran under before it was reopened
 
 
 def install_claude(name):
@@ -223,7 +225,7 @@ class Mod(tpr.Bridge):
     with `refuse_reload` the engine's refusal, its end failed after it, as
     bridge.tsx's reloadPlugins does)."""
 
-    def __init__(self, sid):
+    def __init__(self, sid, launch=None):
         self.commands = []
         self.turn = None
         self.hold = 0.0
@@ -243,7 +245,7 @@ class Mod(tpr.Bridge):
         self.refuse_media = None  # the bridge's refusal of an upload: (code, reason)
         self.observer = False     # an observer's bridge (a MAWS lane B session, O12 M3): every control op refused lane-b
         self.rows = []
-        super().__init__(sid)
+        super().__init__(sid, launch=launch)
 
     def drain(self):
         with self.proc.stdout:
@@ -510,7 +512,9 @@ class Checks(unittest.TestCase):
         cls.other_root, cls.other_pid = tpr.make_project("rpcother")
         cls.bridged = tpr.Session(cls.root)
         cls.plain = tpr.Session(cls.root)
-        cls.mod = Mod(cls.bridged.sid)
+        # The module names its process's launch, as bridge.tsx does (O12 M7):
+        # a DX2 RPC names none, and runs as it always did.
+        cls.mod = Mod(cls.bridged.sid, launch=LAUNCH)
         r = cli("daemon", "tick")
         assert r.returncode == 0, r.stderr
         cls.project = tpr.project_of(cls.root)
@@ -3149,6 +3153,236 @@ class Checks(unittest.TestCase):
         for rpc in asked:
             o = self.refused(rpc, "lane-b")
             self.assertEqual(o["error"]["message"], "MAWS controls this session", rpc["rpc"])
+
+
+    # ------------------------------------------------ a remote context (RL10, O12 M7)
+
+    def remote_mode(self):
+        """The RPCs as a machine cut over to its endpoint runs them (RL10):
+        no code, every RPC carrying who sent it."""
+        self.r = rpcs.Rpcs(None, "testhost", clock=lambda: self.clock[0], coded=False)
+
+    def remote(self, name, args, launch=LAUNCH, member=MEMBER, device="dev-1", fingerprint="fp-1", op=None,
+               op_created=None, nonce=None, **fields):
+        """An authorized lane A action as the endpoint sends it down (O10 §D):
+        DX6's Rpc with no code, its sender's member, device and the
+        operation's fingerprint, and on a session its context naming
+        `launch` (`context=False`: none at all)."""
+        created = iso(time.time())
+        rpc = {"rpc": name, "project": self.pid, "machine": "testhost", "member": member, "device": device,
+               "created": created, "nonce": nonce or codes.b64url(os.urandom(16)), "opId": op or new_op(),
+               "opCreated": op_created or created, "args": args, "fingerprint": fingerprint, **fields}
+        if name != "spawn" and "context" not in fields:
+            rpc["context"] = {"lane": "A", "session": args.get("session"), "launch": launch}
+        if rpc.get("context") is False:
+            del rpc["context"]
+        self.r.receive(rpc, self.here)
+        return rpc
+
+    def binding(self, sid, member=MEMBER, fingerprint="fp-1"):
+        return {"member": member, "device": "dev-1", "fingerprint": fingerprint,
+                "target": {"kind": "session", "session": sid}}
+
+    def test_r_a_remote_rpc_carries_its_launch_to_every_bridge_command(self):
+        """O12 M7's fence: `plan` passes the context's launch on each bridge
+        command it builds; the child refuses one sealed for another launch of
+        the session (`launch`), before the mod sees anything and before an
+        upload saves a file; under the session's own launch each runs."""
+        self.remote_mode()
+        self.mod.turn = "t-r1"
+        self.spawn_agent("aid00000000000r1", name="fenced")
+        sid = self.bridged.sid
+        cases = [("steer", {"text": "x"}), ("interrupt", {}), ("model", {"model": "opus", "effort": "high"}),
+                 ("compact", {}), ("command", {"name": "rename", "args": "x"}), ("btw", {"prompt": "why?"}),
+                 ("tell", {"agentId": "fenced", "text": "hi"}), ("stop-agent", {"agentId": "fenced"}),
+                 ("media", {"attachments": self.attachments(("shot.png", "image/png", PNG)),
+                            "delivery": "queued-turn"})]
+        for name, args in cases:
+            with self.subTest(name, launch="stale"):
+                before = len(self.mod.commands)
+                o = self.refused(self.remote(name, {"session": sid, **args}, launch=STALE), "launch")
+                self.assertIn(STALE, o["error"]["message"])
+                self.assertEqual(self.mod.commands[before:], [], "nothing reached the mod")
+        self.assertEqual(self.uploads_of(self.root), [], "an upload for another launch saved nothing")
+        for name, args in cases:
+            with self.subTest(name, launch="its own"):
+                o = self.outcome(self.remote(name, {"session": sid, **args}))
+                self.assertEqual(o["state"], "done", o)
+        self.assertTrue(all("launch" not in c for c in self.mod.commands), "the child passes no launch to the mod")
+
+    def test_r_a_remote_decision_carries_its_launch(self):
+        """A decision and an answer take the same fence at the child's
+        decision route: one sealed for another launch is refused `launch`
+        and leaves the request pending; under the session's own it is
+        taken."""
+        self.remote_mode()
+        sid = self.bridged.sid
+        tool_input = {"command": "make fence"}
+        self.mod.raise_("toolu_r2", input_=tool_input)
+        wait_for(lambda: self.request_info("toolu_r2")[0] == 200)
+        args = {"session": sid, "decision": "allow", "digest": digest_of(sid, "toolu_r2", "Bash", tool_input)}
+        self.refused(self.remote("decide", args, launch=STALE), "launch")
+        self.assertEqual(self.request_info("toolu_r2")[0], 200, "still pending: the stale decision was not taken")
+        self.assertEqual(self.outcome(self.remote("decide", args)), {"state": "done", "result": {}})
+        self.mod.settle("toolu_r2", outcome="allow", winner="web", by=MEMBER)
+        q = {"questions": [{"question": "Which?", "options": [{"label": "A"}, {"label": "B"}]}]}
+        self.mod.raise_("toolu_r3", tool="AskUserQuestion", input_=q)
+        wait_for(lambda: self.request_info("toolu_r3")[0] == 200)
+        answer = {"session": sid, "answers": {"Which?": "B"},
+                  "digest": digest_of(sid, "toolu_r3", "AskUserQuestion", q)}
+        self.refused(self.remote("answer", answer, launch=STALE), "launch")
+        self.assertEqual(self.outcome(self.remote("answer", answer)), {"state": "done", "result": {}})
+        self.mod.settle("toolu_r3", outcome="answered", winner="web", by=MEMBER)
+
+    def test_r_a_remote_rpc_never_takes_a_path_around_the_bridge(self):
+        """With a remote context nothing runs unfenced: a steer to a live
+        session with no bridge is refused `context`, never the supervisor's
+        reply or the inbox, and so is any other RPC with no bridge to fence
+        it; resume, retire and stop, which O10 does not offer, are
+        `unsupported`, a bridged stop too."""
+        self.remote_mode()
+        with mock.patch.object(rpcs, "steer_without_bridge", side_effect=AssertionError("unfenced")) as around, \
+                mock.patch.object(rpcs, "retire", side_effect=AssertionError("retired")), \
+                mock.patch.object(rpcs, "resume", side_effect=AssertionError("resumed")):
+            o = self.refused(self.remote("steer", {"session": self.plain.sid, "text": "x"}), "context")
+            self.assertIn("no bridge", o["error"]["message"])
+            self.refused(self.remote("interrupt", {"session": self.plain.sid}), "context")
+            self.refused(self.remote("resume", {"session": self.ended}), "unsupported")
+            self.refused(self.remote("retire", {"session": self.plain.sid}), "unsupported")
+            self.refused(self.remote("stop", {"session": self.bridged.sid, "taskId": "bremote1"}), "unsupported")
+        around.assert_not_called()
+        self.assertEqual(self.mod.ops("stop"), [], "the bridged stop never reached the bridge")
+
+    def test_r_a_remote_rpc_on_a_session_without_its_context_is_bad_shape(self):
+        """RL4: an action on a session carries its context, `{lane: 'A',
+        session: args.session, launch}`; one without it, or naming another
+        session, is refused `bad-shape` at admission and kept as its one
+        answer."""
+        self.remote_mode()
+        self.mod.turn = "t-r4"
+        sid = self.bridged.sid
+        for what, context in (("none", False), ("another session", {"lane": "A", "session": self.plain.sid,
+                                                                   "launch": LAUNCH}),
+                              ("lane B", {"lane": "B", "session": sid, "launch": LAUNCH}),
+                              ("no launch", {"lane": "A", "session": sid}),
+                              ("not an object", "A")):
+            with self.subTest(what):
+                rpc = self.remote("steer", {"session": sid, "text": "x"}, context=context)
+                self.refused(rpc, "bad-shape")
+                self.assertIn("outcome", self.ledger()[rpc["opId"]], "kept as its one answer")
+        self.assertEqual(self.mod.ops("steer"), [], "nothing reached the bridge")
+
+    def test_r_the_binding_is_held_from_dispatch_on(self):
+        """P1-4: the op's binding and latest nonce live in its in-flight
+        record from dispatch on. With the worker inside `plan` (before its
+        claim), a copy under another fingerprint, and one from another
+        member, is refused `op-conflict`, loose, under its own nonce,
+        revealing nothing of the op; an identical reseal under a new nonce
+        is taken, and the op runs once, answered under the reseal's nonce
+        and its opId. The same after the claim, and against the kept
+        entry, where an identical copy is answered from the ledger."""
+        self.remote_mode()
+        self.mod.turn = "t-r5"
+        sid = self.bridged.sid
+        other = "fedcba9876543210fedcba9876543210"
+        reached, gate = threading.Event(), threading.Event()
+        plan = self.r.plan
+
+        def paused(rpc, facts):   # the worker, between admission and its claim
+            reached.set()
+            gate.wait(10)
+            return plan(rpc, facts)
+
+        def conflicts(first):
+            for copy in (self.remote("steer", {"session": sid, "text": "x"}, op=first["opId"],
+                                     op_created=first["opCreated"], fingerprint="fp-2"),
+                         self.remote("steer", {"session": sid, "text": "x"}, op=first["opId"],
+                                     op_created=first["opCreated"], member=other)):
+                o = self.refused(copy, "op-conflict")
+                for stored in ("fp-1", MEMBER, "dev-1", first["nonce"]):
+                    self.assertNotIn(stored, o["error"]["message"], "nothing of the stored op revealed")
+
+        self.r.plan = paused
+        first = self.remote("steer", {"session": sid, "text": "bound"})
+        op = first["opId"]
+        self.assertTrue(reached.wait(10))
+        self.assertEqual({k: self.r.flight[op][k] for k in ("nonce", "member", "device", "fingerprint", "target")},
+                         {"nonce": first["nonce"], **self.binding(sid)}, "held from dispatch on")
+        conflicts(first)
+        reseal = self.remote("steer", {"session": sid, "text": "bound"}, op=op, op_created=first["opCreated"])
+        self.assertEqual(self.r.flight[op]["nonce"], reseal["nonce"], "an identical copy updates the nonce")
+        self.assertEqual(self.r.flight[op]["fingerprint"], "fp-1", "and nothing of the binding")
+        self.assertNotIn(op, self.ledger(), "no claim yet")
+        gate.set()
+        self.assertEqual(self.outcome(reseal)["state"], "done")
+        self.assertEqual(results(self.collect(), first["nonce"]), [], "nothing under the first nonce")
+        self.assertEqual([f["opId"] for f in self.frames if f.get("nonce") == reseal["nonce"]], [op])
+        self.assertEqual(len(self.mod.ops("steer")), 1, "run once")
+        self.assertEqual({k: self.ledger()[op][k] for k in ("nonce", "member", "device", "fingerprint", "target")},
+                         {"nonce": reseal["nonce"], **self.binding(sid)}, "the claim built from the record")
+        self.r.plan = plan
+
+        self.mod.hold = 1.5   # claimed, its command held at the bridge
+        held = self.remote("steer", {"session": sid, "text": "after its claim"})
+        op = held["opId"]
+        self.assertTrue(wait_for(lambda: "at" in self.ledger().get(op, {}), 10), "claimed")
+        conflicts(held)
+        later = self.remote("steer", {"session": sid, "text": "after its claim"}, op=op,
+                            op_created=held["opCreated"])
+        self.assertEqual(self.ledger()[op]["nonce"], later["nonce"], "the claim takes the latest nonce")
+        self.assertEqual(self.outcome(later)["state"], "done")
+        self.assertEqual(len(self.mod.ops("steer")), 2, "each op run once")
+
+        self.mod.hold = 0.0   # answered: the kept entry is the binding
+        conflicts(held)
+        again = self.remote("steer", {"session": sid, "text": "after its claim"}, op=op,
+                            op_created=held["opCreated"])
+        self.assertEqual(self.outcome(again)["state"], "done", "an identical copy answered from the ledger")
+        self.assertEqual(len(self.mod.ops("steer")), 2, "and run no more")
+
+    def test_r_query_and_tombstone_answer_the_binding(self):
+        """`query` and `tombstone` answer the op's binding (member, device,
+        fingerprint, target), from its entry, or from its in-flight record
+        before its claim; an entry an older daemon wrote answers without
+        one, and a not-received op has none."""
+        self.remote_mode()
+        sid = self.bridged.sid
+        tpr.set_policy({"read_only": True})
+        kept = self.remote("interrupt", {"session": sid})
+        self.refused(kept, "read-only")
+        q = self.r.query(kept["opId"])
+        self.assertEqual({k: v for k, v in q.items() if k != "outcome"}, {"state": "refused", **self.binding(sid)})
+        self.assertEqual(self.r.tombstone(kept["opId"]), {"ok": False, "state": "refused", **self.binding(sid)})
+        tpr.clear_policy()
+
+        reached, gate = threading.Event(), threading.Event()
+        plan = self.r.plan
+
+        def paused(rpc, facts):
+            reached.set()
+            gate.wait(10)
+            return plan(rpc, facts)
+
+        self.r.plan = paused
+        flying = self.remote("interrupt", {"session": sid}, fingerprint="fp-9")
+        self.assertTrue(reached.wait(10))
+        self.assertEqual(self.r.query(flying["opId"]), {"state": "in-progress", **self.binding(sid, fingerprint="fp-9")})
+        self.assertEqual(self.r.tombstone(flying["opId"]),
+                         {"ok": False, "state": "in-progress", **self.binding(sid, fingerprint="fp-9")})
+        gate.set()
+        self.assertEqual(self.outcome(flying)["state"], "done")
+        self.r.plan = plan
+
+        old, now = new_op(), time.time()
+        path = os.path.join(os.environ["SMINOS_HOME"], "daemon", rpcs.LEDGER_FILE)
+        entries = self.ledger()
+        entries[old] = {"project": self.pid, "rpc": "interrupt", "session": sid, "created": now, "at": now,
+                        "nonce": codes.b64url(os.urandom(16)), "op_created": now, "outcome": rpcs.done({}),
+                        "done_at": now, "acked": False}
+        sminos.write_json(path, entries)
+        self.remote_mode()
+        self.assertEqual(self.r.query(old), {"state": "done", "outcome": rpcs.done({})}, "no binding to answer")
+        self.assertEqual(self.r.query(new_op()), {"state": "not-received"})
 
 
 class CopyNames(unittest.TestCase):

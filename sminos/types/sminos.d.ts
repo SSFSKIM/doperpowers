@@ -76,8 +76,19 @@ export type MediaSnapshot = { shape: 1; attachments: MediaAttachment[] }
  */
 export type LaneVerdictKept = 'match' | 'mismatch'
 
+/**
+ * `launch`: this process's launch (hooks/mods/bridge.tsx, O12 M7), 16
+ * random bytes in base64url, minted at the process's first session start:
+ * what a remote lane A action is sealed for, which the bridge's child
+ * checks before the mod acts. Kept so that the module that loads after a
+ * reload names the launch this process already has; a new process (a
+ * `--resume`) starts with none and mints its own. Only sminos writes or
+ * reads it.
+ */
+export type LaunchKept = string
+
 declare module 'claude-code' {
   interface PluginState {
-    sminos: { ask: AskSnapshot; btw: string[]; media: MediaSnapshot; lane: LaneVerdictKept }
+    sminos: { ask: AskSnapshot; btw: string[]; media: MediaSnapshot; lane: LaneVerdictKept; launch: LaunchKept }
   }
 }

@@ -2289,9 +2289,9 @@ DEFAULT_ORIGIN = {"kind": "terminal"}
 def member_json(m, project=None, private=True):
     """A member as list --json carries it: no task body, no credential.
     `owners` and `origin` for every member with a session (the machine's
-    terminal default where nothing says otherwise); `principal`,
-    `inference` and `controller` too for one of this machine, from its
-    record (null when it has none), unless the view is the org's
+    terminal default where nothing says otherwise); `ownersProof`,
+    `principal`, `inference` and `controller` too for one of this machine,
+    from its record (null when it has none), unless the view is the org's
     (`private` False: the listing's public fields alone)."""
     d = {"alias": m.alias, "session": m.session, "short": m.short, "name_source": m.name_source,
          "kind": m.kind or None, "machine": m.machine, "local": m.local, "state": m.state,
@@ -2303,7 +2303,8 @@ def member_json(m, project=None, private=True):
          "origin": dict(m.origin or DEFAULT_ORIGIN) if m.session else None}
     if m.local and private:
         rec = m.record or {}
-        d.update(principal=rec.get("principal"), inference=rec.get("inference"), controller=rec.get("controller"))
+        d.update(ownersProof=rec.get("ownersProof"), principal=rec.get("principal"), inference=rec.get("inference"),
+                 controller=rec.get("controller"))
     rec = session_running(m.session) if m.local and m.session else None
     d["engine"] = engine_facts(rec) if rec else None
     if project is not None:
@@ -2327,6 +2328,7 @@ def internal_pids():
 
 
 DESK_MEMBER_ENV = "SMINOS_DESK_MEMBER"  # set by the daemon running a verb for a desk RPC: the member's id
+DESK_PROOF_ENV = "SMINOS_DESK_PROOF"    # and for a remote spawn, its signed action (canonical JSON, O12 M7)
 MEMBER_ID_RE = re.compile(r"[0-9a-f]{32}")
 
 
@@ -2335,6 +2337,25 @@ def desk_member():
     (32 hex, else nothing); never inside a session."""
     m = os.environ.get(DESK_MEMBER_ENV, "")
     return m if not os.environ.get("CLAUDE_CODE_SESSION_ID") and MEMBER_ID_RE.fullmatch(m) else ""
+
+
+def desk_proof():
+    """A remote desk spawn's proof (O12 M7), as the daemon handed it to the
+    verb: [the signed action], the new session's ownersProof; [] when the
+    daemon handed none (a DX2 spawn), or one that does not parse as a JSON
+    object, which daemon.log says. The endpoint authorized the spawn: a
+    proof it cannot keep is the attestation's loss, never a refusal."""
+    text = os.environ.get(DESK_PROOF_ENV)
+    if text is None:
+        return []
+    try:
+        proof = json.loads(text)
+    except ValueError:
+        proof = None
+    if not isinstance(proof, dict):
+        daemon_log("spawn: the desk spawn's proof does not parse as a JSON object: the session's ownersProof is []")
+        return []
+    return [proof]
 
 
 def caller_alias():
@@ -7345,7 +7366,8 @@ def launch_env(settings):
     the env. So is SMINOS_LAUNCH: a launch id is its own launch's, carried
     in its settings, never one a spawning seat inherited. So is MAWS_LANE,
     MAWS's lane B marker (O12 M3): a seat a lane B session spawns is sminos's
-    own, never an observer. An EMPTY settings
+    own, never an observer. So is SMINOS_DESK_PROOF, a desk spawn's proof
+    (O12 M7): its record keeps it, and no session inherits it. An EMPTY settings
     value declares the PLAIN route, enforced below the argv by dropping the
     gateway transport env too.
     """
@@ -7353,6 +7375,7 @@ def launch_env(settings):
     env.pop("RUNNER_TRACKING_ID", None)
     env.pop(records_module().LAUNCH_ENV, None)
     env.pop("MAWS_LANE", None)
+    env.pop(DESK_PROOF_ENV, None)
     if not settings:
         for k in gateway_env_keys():
             env.pop(k, None)
@@ -8499,7 +8522,8 @@ def spawn_provenance(settings, merged):
     caller = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
     if member:
         return {**records.default_provenance("launch"), "origin": {"kind": "maws", "requester": member},
-                "owners": [member], "principal": member, "inference": route or records.slot()}
+                "owners": [member], "ownersProof": desk_proof(), "principal": member,
+                "inference": route or records.slot()}
     if UUID_RE.fullmatch(caller):
         parent = records.read(caller) or records.default_provenance()
         return {**{k: parent[k] for k in records.PROVENANCE}, "origin": {"kind": "sminos-spawn", "spawnerSession": caller},
@@ -11073,6 +11097,7 @@ def build_parser():
     br = sub.add_parser("bridge", add_help=False)
     br.add_argument("--session", default="")
     br.add_argument("--lane", default=None)   # the process's lane verdict its module holds (O12 M3)
+    br.add_argument("--launch", default=None)   # the process's launch its module minted (O12 M7): `--launch=<id>`
     br.set_defaults(fn=cmd_bridge)
 
     wa = sub.add_parser("watch", add_help=False)

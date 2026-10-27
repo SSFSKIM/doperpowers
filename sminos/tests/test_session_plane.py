@@ -2260,6 +2260,28 @@ class Desk(unittest.TestCase):
         self.assertIsNone(self.bridges.capabilities(self.sid))
         self.assertEqual(p.presence_of(self.sid, self.now), {"record": None, "bridge": True})
 
+    def test_a_probe_keeps_the_launch_and_rl10s_presence_carries_it(self):
+        """O12 M7: the child's status names its process's launch; the probe
+        keeps it, a cut-over machine's presence carries it beside `bridge`
+        (the hub refuses a `bridge` that is not a boolean), and a relaunch's
+        child names another. A machine not cut over says presence as before."""
+        self.fake.launch = "launch-one"
+        self.fake.start_bridge()
+        self.assertTrue(self.probed(lambda: self.bridges.launch(self.sid) == "launch-one"))
+        rl10 = plane.Plane("testhost", lambda: None, self.bridges, launches=True)
+        self.assertEqual(rl10.presence_of(self.sid, self.now), {"record": None, "bridge": True, "launch": "launch-one"})
+        dx2 = plane.Plane("testhost", lambda: None, self.bridges)
+        self.assertEqual(dx2.presence_of(self.sid, self.now), {"record": None, "bridge": True})
+        self.fake.launch = "launch-two"   # the session relaunched: its new process's module names another
+        self.fake.kill_child()
+        self.fake.respawn_child()
+        self.assertTrue(self.probed(lambda: self.bridges.launch(self.sid) == "launch-two"))
+        self.assertEqual(rl10.presence_of(self.sid, self.now)["launch"], "launch-two")
+        self.fake.stop_bridge()
+        self.assertTrue(self.probed(lambda: not self.bridges.known(self.sid)))
+        self.assertIsNone(self.bridges.launch(self.sid), "no bridge, no launch")
+        self.assertNotIn("launch", rl10.presence_of(self.sid, self.now))
+
     def test_a_bridge_gone_answers_nothing(self):
         self.fake.capabilities = CAPS
         self.fake.start_bridge()

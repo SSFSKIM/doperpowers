@@ -207,7 +207,9 @@ elif op == "fakemod":       # sminos session lines-file mode-file
     # The child's stderr is the mod's debug log: kept beside the lines.
     # A module that holds the process's lane verdict tells each later child it (FAKEMOD_LANE).
     lane = ["--lane", os.environ["FAKEMOD_LANE"]] if os.environ.get("FAKEMOD_LANE") else []
-    child = subprocess.Popen([sminos, "bridge", "--session", session] + lane, stdout=subprocess.PIPE,
+    # The module's per-process launch (O12 M7), which it hands every child it starts (FAKEMOD_LAUNCH).
+    launch = ["--launch=" + os.environ["FAKEMOD_LAUNCH"]] if os.environ.get("FAKEMOD_LAUNCH") else []
+    child = subprocess.Popen([sminos, "bridge", "--session", session] + launch + lane, stdout=subprocess.PIPE,
                              stderr=open(out + ".err", "a"), text=True)
     sock = None
     delivered = {}
@@ -1016,6 +1018,47 @@ registry "$LANEFAKE" "$LA"
 until_true 100 controller_is "$LA" B || true
 assert_equals "$(controller_of "$LA")" "B" "reopened by MAWS, its record's controller is lane B"
 stopfake "$LA"
+
+echo "the launch fence (O12 M7):"
+# The module hands each child its process's launch; the child carries it in
+# its hello and status, and refuses a command or a decision naming another
+# (409 launch) before anything reaches the mod. One naming none is a local
+# caller's, and runs as ever.
+LF=5b000001-0000-4000-8000-0000000000cd
+LFS="$SMINOS_HOME/bridge/$LF.sock"
+mode busy
+lanefake "$LF" "$T/lines-lf" FAKEMOD_LAUNCH=-launch-one_AAAAAAAAAA
+until_true 100 answers "$LFS" || true
+assert_equals "$(field_of "$(sed -n 1p "$T/lines-lf")" launch)" "-launch-one_AAAAAAAAAA" \
+  "the hello carries the module's launch (an id that starts with - included)"
+assert_contains "$(ctl get "$LFS" /status)" '"launch": "-launch-one_AAAAAAAAAA"' "so does GET /status"
+run ctl command "$LFS" '{"op":"steer","text":"stale","launch":"launch-zero"}'
+assert_contains "$OUT" "409" "a command sealed for another launch is refused 409"
+assert_contains "$OUT" '"code": "launch"' "with the code launch"
+assert_equals "$(count_op "$T/lines-lf" steer)" "0" "and nothing reached the mod"
+run ctl command "$LFS" '{"op":"steer","text":"fenced","launch":"-launch-one_AAAAAAAAAA"}'
+assert_contains "$OUT" '"ok": true' "the same command under the child's launch runs"
+assert_equals "$(count_op "$T/lines-lf" steer)" "1" "once"
+assert_equals "$(field_of "$(last_op "$T/lines-lf" steer)" launch)" "null" "the mod's line carries no launch"
+run ctl command "$LFS" '{"op":"steer","text":"local"}'
+assert_contains "$OUT" '"ok": true' "a command naming no launch (a local caller's) runs as ever"
+run ctl postto "$LFS" /requests/toolu_x/decision '{"behavior":"allow","by":"cli","launch":"launch-zero"}'
+assert_contains "$OUT" "409" "a decision sealed for another launch is refused 409"
+assert_contains "$OUT" '"code": "launch"' "with the code launch"
+run ctl postto "$LFS" /requests/toolu_x/decision '{"behavior":"allow","by":"cli","launch":"-launch-one_AAAAAAAAAA"}'
+assert_contains "$OUT" "404" "one under the child's launch passes the fence (no such request)"
+run ctl postto "$LFS" /requests/toolu_x/decision '{"behavior":"allow","by":"cli"}'
+assert_contains "$OUT" "404" "and so does one naming none"
+stopfake "$LF"
+# A child its module started with no launch (a module from before M7) has
+# none to match: a command that names one is refused.
+lanefake "$LF" "$T/lines-lf0"
+until_true 100 answers "$LFS" || true
+assert_not_contains "$(ctl get "$LFS" /status)" '"launch"' "a child with no launch says none"
+run ctl command "$LFS" '{"op":"steer","text":"stale","launch":"-launch-one_AAAAAAAAAA"}'
+assert_contains "$OUT" '"code": "launch"' "and refuses a command that names one"
+assert_equals "$(count_op "$T/lines-lf0" steer)" "0" "nothing reached the mod"
+stopfake "$LF"
 
 echo
 if [ "$FAILURES" -eq 0 ]; then

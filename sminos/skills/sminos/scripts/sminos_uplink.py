@@ -1338,15 +1338,17 @@ def hub_project(pid, cred):
 # ------------------------------------------------------------- one stream
 
 
-def member_frame(pid, m):
+def member_frame(pid, m, launch=None):
     """RL10's `member` for a local member's row (Plane.member_rows): its record's
     provenance and ownership (sminos.session_record; the defaults, `@machine`
     and a terminal origin, with no principal or inference, while it has
     none), the lane — B when its controller says so, or when no controller
     is set yet and the engine host launched it (origin `maws`), else A —
-    and what the row says of it. `launch` and O8's `access` and `shares` are
-    not sent yet. `principal` and `inference` cross because the endpoint is
-    this machine; they never ride a log event."""
+    what the row says of it, and `launch`, the launch its bridge names (O12
+    M7: what a remote action's context is fenced to), absent with no bridge.
+    O8's `access` and `shares` are not sent yet. `principal` and `inference`
+    cross because the endpoint is this machine; they never ride a log
+    event."""
     rec = m.record or {}
     origin = rec.get("origin") if isinstance(rec.get("origin"), dict) else dict(sminos.DEFAULT_ORIGIN)
     controller = rec.get("controller") if isinstance(rec.get("controller"), dict) else None
@@ -1359,6 +1361,8 @@ def member_frame(pid, m):
     frame["cwd"] = m.cwd
     if m.worktree:
         frame["worktree"] = m.worktree
+    if launch is not None:
+        frame["launch"] = launch
     frame["owners"] = list(rec["owners"]) if isinstance(rec.get("owners"), list) else list(sminos.DEFAULT_OWNERS)
     frame["ownersProof"] = list(rec["ownersProof"]) if isinstance(rec.get("ownersProof"), list) else []
     frame["origin"] = origin
@@ -1453,7 +1457,8 @@ class Link:
         self.received = None      # when the reader took the frame being dispatched (epoch s), when known
         self.failing = self.plane_failing = ""
         self.plane = plane.Plane(cred["machine"], wake, bridges, warmer=warmer,   # the warmer kept across streams
-                                 host=not coded)   # RL10: the host store rides the sessions' subscriptions
+                                 host=not coded,   # RL10: the host store rides the sessions' subscriptions
+                                 launches=not coded)   # and a bridged session's presence names its launch
         self.requests = reqs or requests.Requests(cred["key"], cred["machine"])  # kept across streams by the uplink
         self.requests.wake = wake
         self.rpcs = rpcs or rpc.Rpcs(cred["key"], cred["machine"], coded=coded)  # kept across streams by the uplink
@@ -2189,7 +2194,8 @@ class Link:
 
     def members(self, now):
         """RL10's `member` frames up (member_frame): this machine's sessions
-        in every project known here, from the plane's rows. When a session
+        in every project known here, from the plane's rows, each with the
+        launch its bridge names. When a session
         came or went, and every MEMBERS_EVERY (`now`, monotonic), the
         projects known here are listed again and those the plane does not
         read itself (not open on the stream) are read, as is any never read;
@@ -2206,9 +2212,15 @@ class Link:
                 if pid not in self.opened or pid not in self.plane.member_rows:
                     self.plane.refresh(project)
         current = {}
+        socks = plane.bridge_socks()
         for pid in sorted(pid for pid, rows in self.plane.member_rows.items() if rows and pid in self.member_known):
             for sid, m in sorted(self.plane.member_rows[pid].items()):
-                current.setdefault(sid, member_frame(pid, m))
+                if sid not in current:
+                    # The bridge's probe keeps its launch (the plane's
+                    # presence carries it); asked here too, so a session of
+                    # a project not open on the stream has it as well.
+                    self.plane.bridges.answers(sid, now, socks)
+                    current[sid] = member_frame(pid, m, self.plane.bridges.launch(sid))
         frames = [f for sid, f in current.items() if self.members_sent.get(sid) != f]
         frames += [{"t": "member", "session": sid, "gone": True} for sid in self.members_sent if sid not in current]
         self.members_sent = current

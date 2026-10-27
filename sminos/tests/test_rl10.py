@@ -1030,10 +1030,14 @@ class Rpcs(Machine):
         time.sleep(0.5)
         self.assertEqual(len(self.result(ep, spawn["opId"])), 2, "acknowledged: not sent again")
 
-        # query and tombstone reach the ledger's own answers.
+        # query and tombstone reach the ledger's own answers, with the op's
+        # binding, which the endpoint authorizes the asker against (O12 M7).
+        binding = {"member": "mem-1", "device": "dev-1", "fingerprint": spawn["fingerprint"],
+                   "target": {"kind": "machine"}}
         ep.query(spawn["opId"], spawn["opCreated"])
         queried = ep.wait(lambda f: f["t"] == "queried")
-        self.assertEqual({k: queried[k] for k in ("opId", "state")}, {"opId": spawn["opId"], "state": "refused"})
+        self.assertEqual({k: v for k, v in queried.items() if k != "outcome"},
+                         {"t": "queried", "opId": spawn["opId"], "state": "refused", **binding})
         self.assertEqual(queried["outcome"]["error"]["code"], "read-only")
         lost = "op-never-arrived-0001"
         ep.query(lost, endpoint_standin.iso())
@@ -1044,7 +1048,7 @@ class Rpcs(Machine):
                          {"t": "tombstoned", "opId": lost, "ok": True})
         ep.tombstone(spawn["opId"])
         self.assertEqual(ep.wait(lambda f: f["t"] == "tombstoned" and f["opId"] == spawn["opId"]),
-                         {"t": "tombstoned", "opId": spawn["opId"], "ok": False, "state": "refused"})
+                         {"t": "tombstoned", "opId": spawn["opId"], "ok": False, "state": "refused", **binding})
         late = ep.rpc("spawn", self.own.id, {"checkout": "/nowhere"}, opId=lost)
         self.assertEqual(self.result(ep, lost)[0]["outcome"]["error"]["code"], "tombstoned")
         self.assertEqual(self.result(ep, lost)[0]["nonce"], late["nonce"])

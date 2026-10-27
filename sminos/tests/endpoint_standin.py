@@ -213,6 +213,7 @@ class Endpoint:
         self.ack_results = True
         self.verdicts = {}
         self.verdict = None
+        self.members = {}   # session → its last `member` frame (the member state an action's context is read from)
         self.relay = True
         self.handler = None
         self.set(**fields)
@@ -385,6 +386,11 @@ class Endpoint:
             write_private(os.path.join(self.dir, "legacy.json"), {"org": frame.get("org"), "key": frame.get("key")})
         elif t == "rpc-result" and self.ack_results:
             out.append({"t": "rpc-ack", "opId": frame.get("opId"), "nonce": frame.get("nonce")})
+        elif t == "member" and isinstance(frame.get("session"), str):
+            if frame.get("gone") is True:
+                self.members.pop(frame["session"], None)
+            else:
+                self.members[frame["session"]] = frame
         elif t == "words?":
             verdict = self.verdicts.get(frame.get("id"))
             if verdict is None and self.verdict is not None:
@@ -451,12 +457,20 @@ class Endpoint:
     def rpc(self, name, project, args, **fields):
         """An authorized lane A action as §D sends it down: DX6's Rpc nested
         under `rpc`, `machine` the welcome's name, a fresh `nonce`, `opId`,
-        `created` and `opCreated`; `fields` override any of them. Sent, and
-        returned."""
+        `created` and `opCreated`; on a session (`args.session`), its
+        context `{lane: 'A', session, launch}` with the launch the session's
+        last `member` frame named, as the endpoint reads it from the member
+        state (none there: no launch, which sminos refuses `bad-shape`);
+        `fields` override any of them. Sent, and returned."""
         now = iso()
         rpc = {"rpc": name, "project": project, "machine": self.identity.get("name"), "member": "mem-1",
                "device": "dev-1", "created": now, "nonce": b64url(os.urandom(16)), "opId": b64url(os.urandom(18)),
-               "opCreated": now, "args": args, "fingerprint": b64url(os.urandom(32)), **fields}
+               "opCreated": now, "args": args, "fingerprint": b64url(os.urandom(32))}
+        sid = args.get("session") if isinstance(args, dict) else None
+        if name != "spawn" and isinstance(sid, str):
+            launch = (self.members.get(sid) or {}).get("launch")
+            rpc["context"] = {"lane": "A", "session": sid, **({"launch": launch} if launch is not None else {})}
+        rpc.update(fields)
         self.send({"t": "rpc", "rpc": rpc})
         return rpc
 

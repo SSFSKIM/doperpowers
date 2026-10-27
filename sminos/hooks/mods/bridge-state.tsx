@@ -394,6 +394,12 @@ export type BridgeState = {
   isLaneMarked: boolean
   /** The child's verdict, once one came; a resolved one is the process's and stands. */
   laneVerdict?: LaneVerdict
+  /**
+   * The launch (O12 M7): this process's id, minted at its first session
+   * start and kept in `$.state` for a reload, handed to every child
+   * (`--launch`), which refuses a desk action sealed for another launch.
+   */
+  launch?: string
   catalog?: Catalog
   refreshCatalog?: () => Promise<Catalog>
   /** The desk command called and not yet read back: the next waits for it (one at a time, spec §6). */
