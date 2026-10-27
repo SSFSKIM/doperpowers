@@ -76,6 +76,16 @@ own were, so what was refused stays owed, and a project refused `not-open`
 refused going with or after that hello (sminos_owed). The stream's own
 `refused` of a frame the answer named is only said.
 Frames larger than a frame's bound travel as parts, both ways.
+
+On a machine cut over to its endpoint (sminos_rl10) the same Link runs with
+`coded` off over RL10's socket (SocketTransport): no hub, no generation, no
+codes; one SocketLane in place of both senders, a frame written being a
+frame taken, so every continuation runs once its frame is written, and
+everything a reconnect restates goes again after each welcome. The
+endpoint's own frames down — its policy, its revocation set, its ask for
+the DX1 key, and a device's `query` and `tombstone` of an operation — are
+handled there alone. Before the cutover the endpoint is
+only probed (cmd_probe), beside the hub's stream.
 """
 
 import collections
@@ -106,6 +116,7 @@ import sminos_outcomes as outcomes  # noqa: E402
 import sminos_plane as plane  # noqa: E402
 import sminos_policy as policy  # noqa: E402
 import sminos_requests as requests  # noqa: E402
+import sminos_rl10 as rl10  # noqa: E402
 import sminos_rpc as rpc  # noqa: E402
 
 STREAM_PATH = "/machine/stream"
@@ -1106,6 +1117,148 @@ class Sender(threading.Thread):
         log("%s lane closed connection #%d after %d POSTs (%s)" % (self.lane, self.number, self.posts, why))
 
 
+# ------------------------------------------------------------- RL10's lane
+
+
+class EveryKind(frozenset):
+    """RL10's kinds: the endpoint is on this machine and relays the session
+    lane whole, so every kind goes (DX2's `kinds` named those a hub took)."""
+
+    def __contains__(self, kind):
+        return True
+
+
+EVERY_KIND = EveryKind()
+
+
+class SocketLane(threading.Thread):
+    """RL10's one lane, the counterpart of DX2's two Senders: a thread that
+    writes, in FIFO order, what the main thread queues (`send`) on the
+    endpoint's socket. The socket is one ordered stream with no per-frame
+    answer, so a frame written is taken: once an entry's lines are written,
+    ("sent", [then, ...]) goes on the transport's items for the main loop to
+    run, each continuation told nothing was refused. A write that fails, or
+    more than SEND_QUEUE_MAX unsent, ends the lane: ("closed", NotDelivered)
+    is put once, and the connection ends as a lost POST ends a stream.
+    Being one stream, it needs no gate: a project's `hello` goes before
+    whatever is queued behind it, so `release` and `hold` change nothing."""
+
+    def __init__(self, conn, put, ended):
+        super().__init__(name="uplink-rl10-lane", daemon=True)
+        self.conn, self.put = conn, put
+        self.closing = threading.Event()
+        self.ended = lambda: ended() or self.closing.is_set()
+        self.cv = threading.Condition()
+        self.entries = collections.deque()   # (bytes, then or None), in the order they go
+        self.unsent = 0
+        self.state = "idle"                  # idle | writing | closed
+
+    def send(self, frames, then=None):
+        data = b"".join(line.encode("utf-8") + b"\n" for frame in frames for line in to_wire(frame))
+        with self.cv:
+            if self.state == "closed":
+                return
+            self.entries.append((data, then))
+            self.unsent += len(data)
+            over = self.unsent > SEND_QUEUE_MAX
+            self.cv.notify()
+        if over:
+            self.close()
+            raise NotDelivered("the RL10 lane holds more than %d MiB unsent: the endpoint is not taking frames"
+                               % (SEND_QUEUE_MAX >> 20))
+
+    def warm(self):
+        """Nothing to dial: the socket is open."""
+
+    def release(self, project):
+        """No gate on one ordered stream."""
+
+    def hold(self, project):
+        """No gate on one ordered stream: nothing in flight, nothing dropped."""
+        return None, []
+
+    def posting(self):
+        return self.state == "writing"
+
+    def queued(self):
+        return self.unsent
+
+    def close(self):
+        self.closing.set()
+        with self.cv:
+            self.state = "closed"
+            self.entries.clear()
+            self.unsent = 0
+            self.cv.notify()
+
+    def run(self):
+        while True:
+            with self.cv:
+                while not self.entries and self.state != "closed" and not self.ended():
+                    self.cv.wait(POLL)
+                if self.state == "closed" or self.ended():
+                    self.state = "closed"
+                    return
+                taken = list(self.entries)
+                self.entries.clear()
+                size = sum(len(data) for data, _ in taken)
+                self.state = "writing"
+            try:
+                self.conn.write(b"".join(data for data, _ in taken))
+            except OSError as e:
+                with self.cv:
+                    closed, self.state = self.state == "closed" or self.ended(), "closed"
+                    self.entries.clear()
+                    self.unsent = 0
+                if not closed:
+                    self.put(("closed", NotDelivered("a write to the endpoint failed: %s"
+                                                     % (" ".join(str(e).split()) or type(e).__name__))))
+                return
+            with self.cv:
+                self.unsent -= size
+                if self.state == "writing":
+                    self.state = "idle"
+            thens = [functools.partial(then, {}) for _, then in taken if then is not None]
+            if thens:
+                self.put(("sent", thens))
+
+
+class SocketTransport:
+    """RL10's transport for a Link: the endpoint's connection, read by
+    sminos_rl10's Reader onto `items` (the welcome already read is put first),
+    and written by one SocketLane, made at the welcome. `number` counts the
+    process's connections and stands for DX2's generation."""
+
+    numbers = itertools.count(1)
+
+    def __init__(self, conn, welcome, ended):
+        self.conn, self.ended = conn, ended
+        self.number = next(self.numbers)
+        self.reader = rl10.Reader(conn)
+        self.items = self.reader.items
+        self.items.put(("frame", "welcome", json.dumps(welcome), time.time()))
+        self.lane_ = None
+
+    def start(self):
+        self.reader.start()
+
+    def take_org(self):
+        """The org frame comes in its place on the one stream."""
+        return None
+
+    def lane(self):
+        if self.lane_ is not None:
+            self.lane_.close()
+        self.lane_ = SocketLane(self.conn, self.items.put, self.ended)
+        self.lane_.start()
+        return self.lane_
+
+    def close(self):
+        if self.lane_ is not None:
+            self.lane_.close()
+        self.conn.close()
+
+
 # ------------------------------------------------------------- the projects
 
 
@@ -1225,9 +1378,17 @@ class Link:
     now."""
 
     def __init__(self, cred, logs, ended=lambda: False, wake=lambda: None, bridges=None, reqs=None, rpcs=None,
-                 warmer=None):
+                 warmer=None, transport=None, coded=True):
         self.cred = cred
         self.ended = ended
+        # DX2 (coded: the hub's stream, its frames under the org key's codes,
+        # the lanes made on each frame's stream at its welcome) or RL10 (the
+        # endpoint's socket, `transport`, whose one lane carries everything,
+        # with no code on anything).
+        self.transport = transport
+        self.coded = coded
+        self.policy_asked = None  # RL10: the policy-set last sent on this connection, until the endpoint's `policy`
+        self.revoked_whole = False  # RL10: the next revocation set is the welcome's, kept whole
         self.logs = logs          # project id → HubLog, kept across streams
         self.generation = None
         self.opened = set()       # the projects `hello`ed on this stream
@@ -1241,7 +1402,7 @@ class Link:
         self.plane = plane.Plane(cred["machine"], wake, bridges, warmer=warmer)   # the warmer kept across streams
         self.requests = reqs or requests.Requests(cred["key"], cred["machine"])  # kept across streams by the uplink
         self.requests.wake = wake
-        self.rpcs = rpcs or rpc.Rpcs(cred["key"], cred["machine"])  # kept across streams by the uplink
+        self.rpcs = rpcs or rpc.Rpcs(cred["key"], cred["machine"], coded=coded)  # kept across streams by the uplink
         self.rpcs.wake = wake
         self.machine_sent = {}    # project id → the `machine` body last posted on this stream
         self.next_checkouts = 0.0
@@ -1262,6 +1423,12 @@ class Link:
                          "rows": self.on_rows, "diff": self.on_diff, "output": self.on_output, "read": self.on_read,
                          "rpc": self.on_rpc,
                          "rpc-ack": self.on_rpc_ack, "org": self.on_org}
+        if not coded:
+            # What only the endpoint sends: its policy, its revocations, and
+            # its ask for the machine's DX1 key (RL10, O10 Interfaces §D).
+            self.handlers.update({"policy": self.on_policy, "revoked": self.on_revoked,
+                                  "legacy-key?": self.on_legacy_key, "query": self.on_query,
+                                  "tombstone": self.on_tombstone})
 
     def post_session(self, messages):
         if messages:
@@ -1319,20 +1486,26 @@ class Link:
             return None
         hl = self.logs.get(pid)
         if hl is None:
-            hl = self.logs[pid] = hublog.HubLog(project, self.cred)
+            hl = self.logs[pid] = hublog.HubLog(project, self.cred, coded=self.coded)
         hl.project = project
         return hl
 
     # ---------------------------------------------------- frames down
 
     def on_welcome(self, frame, stream):
-        generation = frame.get("generation")
-        self.generation = generation if type(generation) is int else None
-        # The session kinds this hub relays (DX2 `welcome.kinds`): a kind added
-        # since (`read`, `op`) goes only to a hub that lists it, which one
-        # from before the list does not.
-        kinds = frame.get("kinds")
-        kinds = frozenset(k for k in kinds if isinstance(k, str)) if isinstance(kinds, list) else frozenset()
+        if self.coded:
+            generation = frame.get("generation")
+            self.generation = generation if type(generation) is int else None
+            # The session kinds this hub relays (DX2 `welcome.kinds`): a kind added
+            # since (`read`, `op`) goes only to a hub that lists it, which one
+            # from before the list does not.
+            kinds = frame.get("kinds")
+            kinds = frozenset(k for k in kinds if isinstance(k, str)) if isinstance(kinds, list) else frozenset()
+        else:
+            # RL10 has no generation and no kind filter: the endpoint, on
+            # this machine, relays the session lane whole.
+            self.generation = self.transport.number
+            kinds = EVERY_KIND
         self.plane.kinds = self.rpcs.kinds = kinds
         self.opened.clear()
         self.machine_sent.clear()
@@ -1349,6 +1522,12 @@ class Link:
         self.reporting.clear()
         self.delivering.clear()
         self.opening.clear()
+        if not self.coded:
+            self.log_lane = self.session_lane = self.transport.lane()
+            log("connected to the endpoint (RL10, local-only) as %s (connection %d)"
+                % (self.cred["machine"], self.generation))
+            self.welcomed_rl10(frame)
+            return
         if self.generation is not None:
             # The generation every POST names is known from here on: nothing is posted before it.
             self.log_lane, self.session_lane = (Sender(lane, self.cred, self.generation, stream.items.put, self.ended,
@@ -1356,6 +1535,99 @@ class Link:
             self.log_lane.start()
             self.session_lane.start()
         log("connected to %s as %s (stream %s)" % (self.cred["hub"], frame.get("machine"), generation))
+
+    # ---------------------------------------------------- RL10's own frames down
+
+    def welcomed_rl10(self, frame):
+        """What an RL10 welcome carries beside the identity (kept before the
+        Link was made, sminos_rl10.welcomed): the endpoint's policy, and the
+        revocation set when it rides on the welcome; the set that follows
+        is kept whole either way."""
+        self.policy_asked = None
+        self.revoked_whole = True
+        if isinstance(frame.get("revoked"), dict):
+            self.on_revoked(frame["revoked"], None)
+        self.on_policy(frame.get("policy"), None, welcome=True)
+
+    def on_policy(self, frame, _stream, welcome=False):
+        """The endpoint's policy, which is the machine's: kept in
+        daemon/policy.json, the file deliver_next and the RPCs' admission
+        read. A welcome's is not taken over a change made here since the
+        endpoint's last word (`sminos daemon policy` while it was away),
+        which goes up as policy-set instead and settles on its answer."""
+        got = policy.endpoint_policy(frame)
+        if got is None:
+            if not welcome or frame is not None:
+                log("a policy from the endpoint that is no policy: ignored")
+            return
+        if welcome and policy.unsent_change():
+            self.sync_policy()
+            return
+        self.policy_asked = None
+        policy.take_endpoint(got)
+        self.next_checkouts = 0.0   # the presence's policy goes again (machine_presence)
+
+    def sync_policy(self):
+        """A change made here (`sminos daemon policy`) that the endpoint has
+        not answered, sent up as policy-set with the fields that differ,
+        once a connection unless it changes again."""
+        change = policy.unsent_change()
+        if change and change != self.policy_asked:
+            self.policy_asked = change
+            self.session_lane.send([{"t": "policy-set", **change}])
+            log("the machine's policy changed here: asked the endpoint for %s" % json.dumps(change, sort_keys=True))
+
+    def on_revoked(self, frame, _stream):
+        """The endpoint's revocation set, kept in daemon/revoked.json: whole
+        the first after a welcome, merged into after that (sminos_rl10)."""
+        whole, self.revoked_whole = self.revoked_whole, False
+        rl10.keep_revoked(frame, whole)
+
+    def on_legacy_key(self, _frame, _stream):
+        """`legacy-key?`: hub.json's DX1 key handed to the endpoint, which
+        welcomed this machine for the key's own org, as often as it asks
+        while hub.json holds it (one logical handover: an endpoint that died
+        before keeping it asks again). The key is in no log line."""
+        try:
+            with open(credential_path()) as f:
+                held = json.load(f)
+        except FileNotFoundError:
+            log("legacy-key?: this machine holds no DX1 key (no hub.json): not answered")
+            return
+        except (OSError, ValueError) as e:
+            log("legacy-key?: hub.json cannot be read (%s): not answered" % type(e).__name__)
+            return
+        org = held.get("org") if isinstance(held, dict) else None
+        key = held.get("key") if isinstance(held, dict) else None
+        if not (isinstance(key, str) and codes.b64url_bytes(key, 32) is not None and isinstance(org, str)):
+            log("legacy-key?: hub.json holds no DX1 key of 32 bytes: not answered")
+            return
+        if org != self.cred["org"]:
+            log("legacy-key?: refused: the endpoint welcomed this machine for org %s, and hub.json's key is org %s's"
+                % (self.cred["org"], org))
+            return
+        self.session_lane.send([{"t": "legacy-key", "org": org, "key": key}])
+        log("legacy-key?: answered with hub.json's DX1 key of org %s" % org)
+
+    def on_query(self, frame, _stream):
+        """RL4's `query {opId, opCreated}`, which the endpoint asks for a
+        device: the ledger's answer (Rpcs.query), up as `queried`."""
+        op = frame.get("opId")
+        if not (isinstance(op, str) and rpc.OP_ID_RE.fullmatch(op)):
+            log("a query for no operation id (%r): not answered" % (op,))
+            return
+        view = self.rpcs.query(op, rpc.created_at(frame.get("opCreated")))
+        self.session_lane.send([{"t": "queried", "opId": op, **view}])
+
+    def on_tombstone(self, frame, _stream):
+        """RL4's `tombstone {opId, opCreated?}`: the op given up, so a late
+        copy never runs (Rpcs.tombstone), answered `tombstoned`."""
+        op = frame.get("opId")
+        if not (isinstance(op, str) and rpc.OP_ID_RE.fullmatch(op)):
+            log("a tombstone for no operation id (%r): not answered" % (op,))
+            return
+        done = self.rpcs.tombstone(op, rpc.created_at(frame.get("opCreated")))
+        self.session_lane.send([{"t": "tombstoned", "opId": op, **done}])
 
     def on_hb(self, _frame, _stream):
         """Answered by the stream's acker (Stream), never here."""
@@ -1767,6 +2039,8 @@ class Link:
             if now >= self.next_scan or nudged:
                 self.next_scan = now + SCAN_EVERY
                 sminos.forget_caches()
+                if not self.coded:
+                    self.sync_policy()
                 register_own(self.cred)
                 known = hub_projects(self.cred)
                 gone = sorted(self.opened - set(known))
@@ -1824,10 +2098,11 @@ class Link:
                 log("the session plane failed: %r" % e)
 
 
-def serve(stream, cred, ended, logs, bridges=None, reqs=None, rpcs=None, warmer=None):
+def serve(stream, cred, ended, logs, bridges=None, reqs=None, rpcs=None, warmer=None, coded=True):
     """Handle one stream's frames until it closes, a POST is not delivered,
     or the uplink ends; whether the hub welcomed it. A wake (the session
-    plane's readers) is a tick after the batch in hand; at most one waits."""
+    plane's readers) is a tick after the batch in hand; at most one waits.
+    Uncoded, `stream` is RL10's SocketTransport, its welcome first."""
     woken = threading.Event()
 
     def wake():
@@ -1835,7 +2110,7 @@ def serve(stream, cred, ended, logs, bridges=None, reqs=None, rpcs=None, warmer=
             woken.set()
             stream.items.put(("wake",))
 
-    link = Link(cred, logs, ended, wake, bridges, reqs, rpcs, warmer)
+    link = Link(cred, logs, ended, wake, bridges, reqs, rpcs, warmer, transport=None if coded else stream, coded=coded)
     try:
         return serve_link(link, stream, ended, woken)
     finally:
@@ -1941,24 +2216,176 @@ def supervisor():
     return int(said_) if said_.isdigit() else os.getppid()
 
 
+class Kept:
+    """What the uplink keeps across its connections: the projects' log
+    planes, the bridges' followers, the plane's warmer, the requests and the
+    RPCs, for the identity `cred` names. `adopt` takes another (RL10: a
+    welcome that renamed the machine): the log planes, which hold no thread
+    and no file of their own beyond each project's, start over under the new
+    name; the requests and the RPCs are renamed in place, never replaced,
+    since each is the one owner of its file under daemon/ (the RPC ledger,
+    what is owed) and of the threads that write it — an RPC's worker may be
+    inside its checks across the welcome, and a second owner would run its
+    op again."""
+
+    def __init__(self, cred):
+        self.bridges, self.warmer = plane.Bridges(), plane.Warmer()
+        self.cred = None
+        self.reqs = requests.Requests(cred["key"], cred["machine"])
+        self.rpcs = rpc.Rpcs(cred["key"], cred["machine"], coded=cred["key"] is not None)   # RL10's has no key
+        self.adopt(cred)
+
+    def adopt(self, cred):
+        if self.cred is not None and (self.cred["machine"], self.cred["org"]) == (cred["machine"], cred["org"]):
+            self.cred = cred
+            return
+        self.cred, self.logs = cred, {}
+        self.reqs.rename(cred["machine"])
+        self.rpcs.rename(cred["machine"])
+
+    def close(self):
+        self.reqs.close()
+
+
+def run_dx2(cred, ended, halt):
+    """The hub's streams (DX2), one at a time, reconnecting with backoff."""
+    log("started (pid %d) for %s as %s" % (os.getpid(), cred["hub"], cred["machine"]))
+    plane.sweep_builds()
+    backoff, kept = 1, Kept(cred)
+    while not ended():
+        stream = Stream(cred, ended)
+        stream.start()
+        welcomed = serve(stream, cred, ended, kept.logs, kept.bridges, kept.reqs, kept.rpcs, kept.warmer)
+        stream.close()
+        backoff = 1 if welcomed else min(backoff * 2, BACKOFF_MAX)
+        deadline = time.time() + backoff
+        while not ended() and time.time() < deadline:
+            halt.wait(POLL)
+    return kept
+
+
+def rl10_connection(info, kept, ended):
+    """One connection to the endpoint (RL10): dialled, `hello` and its
+    welcome, the identity kept (sminos_rl10.welcomed: the cutover), then its
+    frames served until it closes; whether it was welcomed. `kept` is
+    adopted for the identity the welcome gave."""
+    try:
+        conn = rl10.Connection.dial(info["socket"])
+    except OSError as e:
+        log("the endpoint does not answer at %s (%s)" % (info["socket"], " ".join(str(e).split()) or type(e).__name__))
+        return False
+    try:
+        welcome = conn.handshake(rl10.hello_frame(info["token"], hublog.desk()["sminos"], policy.machine_policy()))
+        identity = rl10.welcomed(welcome)
+    except (rl10.Refused, ValueError) as e:
+        log("the endpoint did not welcome this machine: %s" % e)
+        conn.close()
+        return False
+    except OSError as e:
+        log("the endpoint's welcome could not be kept (%s): the connection is closed" % e)
+        conn.close()
+        return False
+    cred = rl10.credential(identity)
+    if kept is None:
+        kept = Kept(cred)
+    else:
+        kept.adopt(cred)
+    transport = SocketTransport(conn, welcome, ended)
+    transport.start()
+    try:
+        serve(transport, cred, ended, kept.logs, kept.bridges, kept.reqs, kept.rpcs, kept.warmer, coded=False)
+    finally:
+        transport.close()
+    return kept
+
+
+def run_rl10(ended, halt):
+    """The endpoint's connections (RL10), one at a time, reconnecting with
+    backoff from 1 s to BACKOFF_MAX (reset by a welcome), while rl10.json
+    names an endpoint; the uplink ends once it names none (the supervisor
+    says what follows: waiting for it). The daemon runs it on a cut-over
+    machine only; its welcome would cut one over, as a probe's does."""
+    log("started (pid %d) for the endpoint (RL10, local-only)" % os.getpid())
+    plane.sweep_builds()
+    backoff, kept = 1, None
+    while not ended():
+        info, why = rl10.check()   # the supervisor says what is wrong with it
+        if info is None:
+            log("no endpoint (%s): nothing to connect" % (why or "none at %s" % rl10.path()))
+            break
+        got = rl10_connection(info, kept, ended)
+        if got:
+            kept, backoff = got, 1
+        else:
+            backoff = min(backoff * 2, BACKOFF_MAX)
+        deadline = time.time() + backoff
+        while not ended() and time.time() < deadline:
+            halt.wait(POLL)
+    return kept
+
+
+def cmd_probe(_a):
+    """`daemon probe`, the supervisor's look at an endpoint before the
+    cutover, beside the hub's uplink and never in its place: the endpoint
+    rl10.json names dialled, `hello`, and its welcome; a whole welcome cuts
+    the machine over (sminos_rl10.welcomed) and exits 0, anything else exits
+    1, and nothing else is done on the connection either way. The outcome is
+    one line on stdout, which the supervisor says in daemon.log."""
+    if rl10.cut_over():
+        print("this machine is cut over already")
+        return
+    info, why = rl10.check()
+    if info is None:
+        print("no endpoint: %s" % (why or "none at %s" % rl10.path()))
+        sys.exit(1)
+    try:
+        conn = rl10.Connection.dial(info["socket"])
+    except OSError as e:
+        print("it does not answer at %s (%s)" % (info["socket"], " ".join(str(e).split()) or type(e).__name__))
+        sys.exit(1)
+    try:
+        welcome = conn.handshake(rl10.hello_frame(info["token"], hublog.desk()["sminos"], policy.machine_policy()))
+        identity = rl10.welcomed(welcome)
+    except rl10.NotEnrolled as e:
+        print("present but not enrolled (%s): this machine is not cut over" % e)
+        sys.exit(1)
+    except (rl10.Refused, ValueError, OSError) as e:
+        print("it did not welcome this machine (%s): this machine is not cut over" % e)
+        sys.exit(1)
+    finally:
+        conn.close()
+    print("welcomed as %s of org %s: this machine is cut over" % (identity["name"], identity["org"]))
+
+
 def cmd_uplink(_a):
-    """The uplink's process: one stream at a time, reconnecting with backoff
-    (from 1 s, doubling to a minute, reset by a welcome), until SIGTERM or
-    until its parent is not the `daemon run` that spawned it — an uplink
-    outlives no `daemon run`, even one gone before this process could look."""
+    """The uplink's process: one connection at a time, reconnecting with
+    backoff (from 1 s, doubling to a minute, reset by a welcome), until
+    SIGTERM or until its parent is not the `daemon run` that spawned it — an
+    uplink outlives no `daemon run`, even one gone before this process could
+    look. On a machine cut over to its endpoint (sminos_rl10) it speaks
+    RL10 to the endpoint, and never DX2 again; else DX2 to the hub on the
+    machine's credential (an endpoint there is the supervisor's to probe,
+    cmd_probe, and only its whole welcome cuts the machine over)."""
     parent = supervisor()
     if os.getppid() != parent:
         log("not started (pid %d): its daemon (pid %d) is gone" % (os.getpid(), parent))
         return
     lf = take_lock()  # noqa: F841 — held for the process's life
-    try:
-        cred = load_credential()
-    except CredentialBad as e:
-        log(str(e))
-        sminos.die(str(e), 1)
-    if cred is None:
-        log("no credential (%s): nothing to connect" % credential_path())
-        return
+    cred = None
+    if rl10.cut_over():
+        if rl10.check()[0] is None:
+            log("this machine is cut over to its endpoint, which is not running (no endpoint at %s): nothing to "
+                "connect" % rl10.path())
+            return
+    else:
+        try:
+            cred = load_credential()
+        except CredentialBad as e:
+            log(str(e))
+            sminos.die(str(e), 1)
+        if cred is None:
+            log("no credential (%s): nothing to connect" % credential_path())
+            return
     halt = threading.Event()
     # SIGTERM from its supervisor; SIGINT from a terminal's ^C, which reaches a
     # foreground `daemon run`'s whole process group.
@@ -1968,23 +2395,11 @@ def cmd_uplink(_a):
     def ended():
         return halt.is_set() or os.getppid() != parent
 
-    log("started (pid %d) for %s as %s" % (os.getpid(), cred["hub"], cred["machine"]))
-    plane.sweep_builds()
-    backoff, logs, bridges, warmer = 1, {}, plane.Bridges(), plane.Warmer()
-    reqs = requests.Requests(cred["key"], cred["machine"])
-    rpcs = rpc.Rpcs(cred["key"], cred["machine"])
-    while not ended():
-        stream = Stream(cred, ended)
-        stream.start()
-        welcomed = serve(stream, cred, ended, logs, bridges, reqs, rpcs, warmer)
-        stream.close()
-        backoff = 1 if welcomed else min(backoff * 2, BACKOFF_MAX)
-        deadline = time.time() + backoff
-        while not ended() and time.time() < deadline:
-            halt.wait(POLL)
-    reqs.close()
+    kept = run_rl10(ended, halt) if cred is None else run_dx2(cred, ended, halt)
+    if kept is not None:
+        kept.close()
     at = time.monotonic()
     saved, held = plane.TRANSCRIPTS.save_all()
     if held:
         log("the builds held: %d of %d saved or already current in %.2f s" % (saved, held, time.monotonic() - at))
-    log("stopped (pid %d)%s" % (os.getpid(), "" if halt.is_set() else ": its daemon is gone"))
+    log("stopped (pid %d)%s" % (os.getpid(), "" if halt.is_set() or not ended() else ": its daemon is gone"))

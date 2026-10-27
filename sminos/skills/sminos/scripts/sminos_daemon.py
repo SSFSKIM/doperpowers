@@ -72,6 +72,7 @@ from xml.sax.saxutils import escape
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import sminos  # noqa: E402
+import sminos_rl10 as rl10  # noqa: E402
 
 # The fetch and the push wait on the network, never under .sync.lock, each at
 # most this long; SMINOS_GIT_TIMEOUT overrides it (tests).
@@ -631,8 +632,12 @@ def rejoin_former(project, view=None):
 
 
 def enrolled_at():
-    """When this machine enrolled at its hub (daemon/hub.json's `enrolled`,
+    """When this machine enrolled at its hub (daemon/identity.json's
+    `enrolled` on a machine cut over to its endpoint, else daemon/hub.json's,
     whole seconds), in epoch seconds; None when it is not known."""
+    ident = rl10.cutover()
+    if ident is not None:
+        return sminos._ts_epoch(ident.get("enrolled"))
     try:
         with open(daemon_path("hub.json")) as f:
             d = json.load(f)
@@ -1137,30 +1142,143 @@ def credential_bytes():
 
 
 LEFT_THE_HUB = "this machine left the hub (hub.json is gone): the uplink stays stopped until the machine is enrolled again"
+ENDPOINT_DOWN = ("this machine is cut over to its endpoint, which is not running (no endpoint at %s): no uplink runs "
+                 "until it does, and none to the hub again")
+ENDPOINT_DOWN_EVERY = 3600
+
+
+PROBE_TIMEOUT = 30   # a probe is the dial (5 s) and the welcome's wait (10 s): one past this is stopped
+
+
+def uplink_wanted():
+    """The uplink this machine runs, and what it runs on. A machine cut over
+    to its endpoint (identity.json) runs ("rl10", the endpoint) while
+    rl10.json names one, else ("waiting", None): the hub is never dialled
+    again. Any other machine runs ("dx2", hub.json's bytes) while it holds a
+    hub credential, else (None, None); an endpoint there is only probed
+    (UplinkSupervisor.probe), and only its complete welcome cuts over."""
+    if rl10.cut_over():
+        info = rl10.find()
+        return ("rl10", info) if info is not None else ("waiting", None)
+    held = credential_bytes()
+    return ("dx2", held) if held is not None else (None, None)
+
+
+def uplink_change(was, now):
+    """daemon.log's words for a change of what the uplink runs on."""
+    if was[0] == "dx2" and now[0] is None:
+        return LEFT_THE_HUB
+    if was[0] == now[0] == "dx2":
+        return "hub.json changed; restarting it on the credential as it is now"
+    if now[0] == "rl10":
+        return ("rl10.json changed; restarting it on the endpoint as it is now" if was[0] == "rl10"
+                else "the endpoint welcomed this machine, which is cut over: restarting it on RL10 (local-only)")
+    if now[0] == "waiting":
+        return "rl10.json is gone, and this machine is cut over: no uplink runs until the endpoint does"
+    if was[0] == "rl10" and now[0] == "dx2":
+        return "identity.json is gone, which undoes the cutover: restarting it on the hub (DX2)"
+    return "identity.json is gone, which undoes the cutover, and this machine holds no hub credential: the uplink " \
+           "stays stopped"
 
 
 class UplinkSupervisor(threading.Thread):
-    """`daemon run`'s keeper of the uplink: while the machine holds a hub
-    credential (daemon/hub.json), one `daemon uplink` child runs, restarted
-    with backoff whenever it exits, and at once on the credential it holds
-    when hub.json changes (an enrollment replaced, or a first one). Once
-    hub.json is gone (`sminos hub leave`), the child is stopped and none
-    starts until an enrollment writes it again, which daemon.log says.
-    `stop` ends it (SIGTERM, then a kill). The child's output goes to
-    daemon.log."""
+    """`daemon run`'s keeper of the uplink: one `daemon uplink` child runs
+    while there is something for it to connect to (uplink_wanted), restarted
+    with backoff whenever it exits, and at once on what it should run on when
+    that changes.
+
+    Before the cutover the child holds the hub's stream (DX2) while the
+    machine holds a hub credential (daemon/hub.json), restarted on the
+    credential when hub.json changes; once hub.json is gone (`sminos hub
+    leave`), the child is stopped and none starts until an enrollment writes
+    it again, which daemon.log says. An endpoint rl10.json names meanwhile is
+    probed beside it (`daemon probe`, backing off from 1 s to a minute),
+    never in its place: only a probe's complete welcome cuts the machine over
+    (identity.json), and only then is the hub's stream stopped. A wrong
+    token, a refusal, an endpoint not enrolled yet (a welcome without the
+    identity) or one that does not answer leaves the hub's stream as it is.
+
+    From the cutover on the child speaks RL10 to the endpoint, and no DX2
+    uplink starts again; while the endpoint is not running none does, said
+    at once and every hour. `stop` ends it (SIGTERM, then a kill). The
+    children's output goes to daemon.log, but for a probe's, whose outcome
+    is said there once while it stays the same."""
 
     def __init__(self):
         super().__init__(name="uplink-supervisor", daemon=True)
         self.halt = threading.Event()
         self.proc = None
+        self.down_said = 0.0    # when the endpoint's absence was last said (ENDPOINT_DOWN_EVERY)
+        self.prober = None      # the probe running, (process, started), or None
+        self.probe_at = 0.0     # when the next probe may start (monotonic)
+        self.probe_backoff = 1
+        self.probe_said = None  # the last probe outcome said in daemon.log
+        self.probe_info = None  # the endpoint rl10.json named at the last look
+
+    def waiting(self):
+        """No uplink to run: on a cut-over machine, said now and every hour."""
+        if not rl10.cut_over():
+            self.down_said = 0.0
+            return
+        if time.time() - self.down_said >= ENDPOINT_DOWN_EVERY:
+            self.down_said = time.time()
+            sminos.daemon_log("uplink: " + ENDPOINT_DOWN % rl10.path())
+
+    def probe(self):
+        """The endpoint probed, before the cutover, beside whatever uplink
+        runs: a `daemon probe` child at a time while rl10.json names an
+        endpoint, the next one after a backoff (1 s, doubling to a minute,
+        and from 1 s again when rl10.json names another) unless the last cut
+        the machine over. Called every supervisor pass."""
+        if self.prober is not None:
+            proc, started = self.prober
+            if proc.poll() is None:
+                if time.monotonic() - started > PROBE_TIMEOUT:
+                    proc.kill()
+                    proc.wait()
+                else:
+                    return
+            self.prober = None
+            said = " ".join((proc.stdout.read() or "").split())[:300] or "exited with %s" % proc.returncode
+            proc.stdout.close()
+            if proc.returncode == 0:
+                self.probe_backoff, self.probe_said = 1, None
+            else:
+                self.probe_at = time.monotonic() + self.probe_backoff
+                self.probe_backoff = min(self.probe_backoff * 2, UPLINK_BACKOFF_MAX)
+            if said != self.probe_said:
+                self.probe_said = said
+                sminos.daemon_log("uplink: the endpoint, probed: %s" % said)
+            return
+        info = None if rl10.cut_over() else rl10.find()
+        if info != self.probe_info:
+            # Another endpoint, or none: probed at once, from the first backoff.
+            self.probe_info, self.probe_backoff, self.probe_at = info, 1, 0.0
+        if info is None or time.monotonic() < self.probe_at:
+            return
+        self.prober = (subprocess.Popen(
+            [sys.executable, os.path.join(sminos.SCRIPT_DIR, "sminos.py"), "daemon", "probe"],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True), time.monotonic())
+
+    def stop_probe(self):
+        if self.prober is not None:
+            proc = self.prober[0]
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+            proc.stdout.close()
+            self.prober = None
 
     def run(self):
         backoff = 1
         while not self.halt.is_set():
-            held = credential_bytes()
-            if held is None:
-                self.halt.wait(1)
+            self.probe()
+            want = uplink_wanted()
+            if want[0] not in ("rl10", "dx2"):
+                self.waiting()
+                self.halt.wait(0.2)
                 continue
+            self.down_said = 0.0
             started = time.time()
             with open(os.path.join(sminos.root(), "daemon.log"), "a") as out:
                 # The child is told who spawned it: an uplink whose parent is
@@ -1171,13 +1289,10 @@ class UplinkSupervisor(threading.Thread):
                     stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
                     env={**os.environ, UPLINK_PARENT_ENV: str(os.getpid())})
             while self.proc.poll() is None and not self.halt.wait(0.2):
-                now = credential_bytes()
-                if now != held:
-                    if now is None:
-                        sminos.daemon_log("uplink (pid %d): %s" % (self.proc.pid, LEFT_THE_HUB))
-                    else:
-                        sminos.daemon_log("uplink (pid %d): hub.json changed; restarting it on the credential as "
-                                          "it is now" % self.proc.pid)
+                self.probe()
+                now = uplink_wanted()
+                if now != want:
+                    sminos.daemon_log("uplink (pid %d): %s" % (self.proc.pid, uplink_change(want, now)))
                     self.stop_child()
                     backoff = 1
                     break
@@ -1186,17 +1301,24 @@ class UplinkSupervisor(threading.Thread):
                     break
                 rc = self.proc.returncode
                 how = "on signal %d" % -rc if rc < 0 else "with %d" % rc
-                if credential_bytes() is None:
-                    # Gone while the child ended: nothing is restarted.
-                    sminos.daemon_log("uplink (pid %d) exited %s; %s" % (self.proc.pid, how, LEFT_THE_HUB))
+                now = uplink_wanted()
+                if now != want:
+                    # Changed while the child ended: nothing is restarted on
+                    # what it ran on; the loop starts what is wanted now.
+                    sminos.daemon_log("uplink (pid %d) exited %s; %s" % (self.proc.pid, how, uplink_change(want, now)))
                     backoff = 1
                     continue
                 if time.time() - started > UPLINK_BACKOFF_MAX:
                     backoff = 1
                 sminos.daemon_log("uplink (pid %d) exited %s; restarting in %ds" % (self.proc.pid, how, backoff))
-                if self.halt.wait(backoff):
+                deadline = time.monotonic() + backoff
+                while not self.halt.is_set() and time.monotonic() < deadline:
+                    self.probe()
+                    self.halt.wait(0.2)
+                if self.halt.is_set():
                     break
                 backoff = min(backoff * 2, UPLINK_BACKOFF_MAX)
+        self.stop_probe()
         self.stop_child()
 
     def stop_child(self):
@@ -1468,12 +1590,32 @@ def held_by(path):
             return lf.read().strip() or "pid unknown"
 
 
+def uplink_status():
+    """`daemon status`'s uplink lines: on a machine cut over to its endpoint,
+    RL10 (local-only) or the endpoint's absence; before, the hub's stream
+    (DX2) while a credential is held, and an endpoint rl10.json names that
+    has not welcomed this machine yet."""
+    info, why = rl10.check()
+    if rl10.cut_over():
+        if info is None:
+            return ["uplink: cut over; the endpoint is not running (%s)" % (why or "no endpoint at %s" % rl10.path())]
+        up = held_by(daemon_path("uplink.lock"))
+        return ["uplink: RL10 (local-only), %s" % ("running (%s)" % up if up else "not running")]
+    lines = []
+    if os.path.exists(daemon_path("hub.json")):
+        up = held_by(daemon_path("uplink.lock"))
+        lines.append("uplink: running (%s)" % up if up else "uplink: not running")
+    if info is not None:
+        lines.append("endpoint: present at %s but not enrolled: no complete welcome yet, so this machine is not cut "
+                     "over%s" % (rl10.path(), " and stays on the hub" if lines else ""))
+    return lines
+
+
 def cmd_status(_a):
     run = held_by(run_lock_path())
     print("daemon: running (%s)" % run if run else "daemon: not running here")
-    if os.path.exists(daemon_path("hub.json")):
-        up = held_by(daemon_path("uplink.lock"))
-        print("uplink: running (%s)" % up if up else "uplink: not running")
+    for line in uplink_status():
+        print(line)
     for p in sorted(sminos.known_projects(), key=lambda p: (p.name, p.id)):
         rec = daemon_record(p)
         if not rec.get("tick"):
@@ -1493,6 +1635,9 @@ def cmd_daemon(a):
     os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
     if a.op == "uplink":
         sminos.sibling_module("sminos_uplink").cmd_uplink(a)
+        return
+    if a.op == "probe":
+        sminos.sibling_module("sminos_uplink").cmd_probe(a)
         return
     if a.op == "policy":
         sminos.sibling_module("sminos_policy").cmd_policy(a)

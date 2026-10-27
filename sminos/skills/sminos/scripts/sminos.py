@@ -796,10 +796,15 @@ _SAID = set()    # (marker, project id) said or checked in this invocation
 
 
 def enrollment():
-    """This machine's enrollment as resolution reads it, {url, org, machine},
-    or None when it is not enrolled (daemon/hub.json absent, unreadable, or
-    lacking one of the three)."""
+    """This machine's enrollment as resolution reads it, {url, org, machine}:
+    on a machine cut over to its endpoint, daemon/identity.json's (RL10's
+    welcome, sminos_rl10.cutover); else daemon/hub.json's; None when it is
+    not enrolled (hub.json absent, unreadable, or lacking one of the three)."""
     if not _ENROLLED:
+        ident = sibling_module("sminos_rl10").cutover()
+        if ident is not None:
+            _ENROLLED.append({"url": ident["hub"], "org": ident["org"], "machine": ident["name"]})
+            return _ENROLLED[0]
         try:
             with open(os.path.join(root(), "daemon", "hub.json")) as f:
                 d = json.load(f)
@@ -6632,13 +6637,18 @@ _SELF = None  # (this machine's name, {former name: its sessions}), per invocati
 
 
 def machine_identity():
-    """(name, former): this installation's machine name — the name it enrolled
-    under at a desk hub (daemon/hub.json, written by `hub enroll`), else
-    DAEMON_HOST, else the system's host name — and, for each name it wrote
-    under before it enrolled, the sessions it held under that name then
-    ({name: frozenset}, oldest name first)."""
+    """(name, former): this installation's machine name — the name its
+    endpoint gave it (daemon/identity.json, on a machine cut over to RL10),
+    else the name it enrolled under at a desk hub (daemon/hub.json, written by
+    `hub enroll`), else DAEMON_HOST, else the system's host name — and, for
+    each name it wrote under before, the sessions it held under that name
+    then ({name: frozenset}, oldest name first)."""
     global _SELF
     if _SELF is None:
+        ident = sibling_module("sminos_rl10").cutover()
+        if ident is not None:
+            _SELF = (ident["name"], {n: frozenset(ss) for n, ss in ident["former"].items()})
+            return _SELF
         try:
             with open(os.path.join(root(), "daemon", "hub.json")) as f:
                 d = json.load(f)
@@ -10387,7 +10397,7 @@ def build_parser():
     dsub = dm.add_subparsers(dest="op")
     dr = dsub.add_parser("run", add_help=False)
     dr.add_argument("--interval", type=float, default=5.0)
-    for op in ("tick", "install", "status", "uplink"):
+    for op in ("tick", "install", "status", "uplink", "probe"):
         dsub.add_parser(op, add_help=False)
     dp = dsub.add_parser("policy", add_help=False)
     dp.add_argument("--read-only", dest="read_only", choices=("on", "off"), default=None)
