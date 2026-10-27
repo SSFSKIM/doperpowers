@@ -583,6 +583,18 @@ class Rpcs:
         self.restore_ops()
         self.reconcile()
 
+    def rename(self, machine):
+        """The machine renamed (RL10's welcome), this controller kept: its
+        workers, `flight` and the ledger stay one owner's, so an op held
+        across the rename runs once. RPCs are checked against the new name,
+        and the messages owed go under it."""
+        if machine == self.machine:
+            return
+        self.machine = machine
+        for f in self.messages:
+            f["message"]["machine"] = machine
+        self.kept.save(self.messages)
+
     # ---------------------------------------------------- frames down
 
     def receive(self, rpc, here, received=None):

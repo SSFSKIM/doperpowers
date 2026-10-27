@@ -595,6 +595,28 @@ class Drafts(unittest.TestCase):
                          {"event": r["event"], "session": S1, "outcome": "delivered", "reason": None})
 
 
+    def test_settlements_a_dx2_uplink_left_owed_go_as_drafts(self):
+        """A cutover with settlements still owed (daemon/requests-owed.json,
+        kept by the hub's uplink, sealed): the RL10 child sends them with no
+        code; restored on DX2 they are as they were kept."""
+        home = tempfile.mkdtemp(dir=BASE)
+        os.environ.update(HOME=os.path.join(home, "h"), SMINOS_HOME=os.path.join(home, "s"))
+        sminos.forget_caches()
+        settled = {"request": "r1", "t": 1, "winner": "desk", "outcome": "allow", "by": "mem-1"}
+        keyed = requests.Requests(bytes(range(32)), "testhost")
+        keyed.settled(S1, "p1", settled)
+        keyed.close()
+        sealed = keyed.outbox[0][1]["message"]["body"]
+        self.assertIn("mac", sealed, "kept sealed by the hub's uplink")
+        again = requests.Requests(bytes(range(32)), "testhost")
+        self.assertEqual(again.opening("p1")[0]["message"]["body"], sealed, "DX2 restores it as it was kept")
+        again.close()
+        rl = requests.Requests(None, "testhost")
+        body = rl.opening("p1")[0]["message"]["body"]
+        rl.close()
+        self.assertEqual(body, {k: v for k, v in sealed.items() if k != "mac"}, "RL10 sends its draft")
+
+
 # ------------------------------------------------------------- the RPCs over RL10
 
 
@@ -659,6 +681,45 @@ class Rpcs(Machine):
         self.assertEqual(sorted((f["opId"], f["nonce"]) for f in frames),
                          sorted([("op-spawn-0000000001", spawn["nonce"]), ("op-steer-0000000001", steer["nonce"])]),
                          "rpc-result carries the opId beside the nonce")
+
+    def test_an_op_in_flight_across_a_renaming_welcome_runs_once(self):
+        """A welcome that renames the machine while a worker is inside
+        `plan`, before its claim: the RPCs keep one owner of the ledger, so
+        a reseal under the new name joins the op in flight, which runs once
+        and is answered under the latest nonce."""
+        kept = uplink.Kept(rl10.credential({"hub": "h", "org": "org-1", "name": "oldname"}))
+        rpcs = kept.rpcs
+        self.addCleanup(kept.close)
+        project = sminos.machine_project("org-1", "oldname")
+        here = FakeHere(project, {S1})
+        inside, release, runs = threading.Event(), threading.Event(), []
+
+        def plan(_self, _rpc, _facts):
+            inside.set()
+            release.wait(30)
+            return lambda: runs.append(1) or rpc.done({})
+
+        now = endpoint_standin.iso()
+        first = {"rpc": "interrupt", "project": project.id, "machine": "oldname", "member": "mem-1",
+                 "device": "dev-1", "created": now, "opCreated": now, "fingerprint": "fp-1",
+                 "nonce": endpoint_standin.b64url(b"\x01" * 16), "opId": "op-renamed-0000001",
+                 "args": {"session": S1}, "context": {"lane": "A", "session": S1, "launch": "L1"}}
+        with mock.patch.object(rpc.Rpcs, "plan", plan):
+            kept.rpcs.receive(first, here)
+            self.assertTrue(inside.wait(10), "the worker is inside plan")
+            kept.adopt(rl10.credential({"hub": "h", "org": "org-1", "name": "newname"}))
+            self.assertIs(kept.rpcs, rpcs, "one owner of the ledger across the rename")
+            self.assertEqual(kept.rpcs.machine, "newname")
+            resealed = {**first, "machine": "newname", "nonce": endpoint_standin.b64url(b"\x02" * 16)}
+            kept.rpcs.receive(resealed, here)
+            release.set()
+            self.assertTrue(wait_for(lambda: "outcome" in self.ledger().get(first["opId"], {})))
+        time.sleep(0.3)
+        self.assertEqual(len(runs), 1, "the op ran once")
+        self.assertEqual(self.ledger()[first["opId"]]["nonce"], resealed["nonce"], "under the latest nonce")
+        kept.rpcs.take()
+        self.assertEqual([(f["opId"], f["nonce"]) for f in kept.rpcs.due({project.id})],
+                         [(first["opId"], resealed["nonce"])])
 
     def test_an_rpc_down_rl10(self):
         ep = self.endpoint(policy={"read_only": True, "ceiling": "default"}, ack_results=False)

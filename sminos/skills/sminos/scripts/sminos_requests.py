@@ -253,7 +253,9 @@ class Requests:
 
     def restore(self):
         """The settlements a stopped uplink still owed, back in the outbox
-        in their order, but those done with since."""
+        in their order, but those done with since. With no key (RL10) each
+        goes as this machine's draft, whatever the hub's uplink sealed and
+        kept before the cutover."""
         for item in self.kept.load():
             try:
                 key, pid, frame = (item["session"], item["request"], item["t"]), item["project"], item["frame"]
@@ -267,8 +269,29 @@ class Requests:
             if not ok:
                 log("an owed settlement in %s that is none: passed by" % self.kept.path)
             elif not self.seen(key):
+                if self.key is None:
+                    frame = self.uncoded(frame)
                 self.queued[key] = frame
                 self.outbox.append((pid, frame))
+
+    def uncoded(self, frame):
+        """A kept message as RL10 sends it: its body with no DX1 code, under
+        this machine's name now."""
+        m = frame["message"]
+        body = m.get("body")
+        if isinstance(body, dict) and "mac" in body:
+            body = {k: v for k, v in body.items() if k != "mac"}
+        return {**frame, "message": {**m, "machine": self.machine, "body": body}}
+
+    def rename(self, machine):
+        """The machine renamed (RL10's welcome): what is owed goes under
+        the new name, kept so."""
+        if machine == self.machine:
+            return
+        self.machine = machine
+        for _, f in self.outbox:
+            f["message"]["machine"] = machine
+        self.keep()
 
     def keep(self):
         """The settlements owed now, kept as they stand (sminos_owed)."""

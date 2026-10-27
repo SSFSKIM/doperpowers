@@ -2219,23 +2219,29 @@ def supervisor():
 class Kept:
     """What the uplink keeps across its connections: the projects' log
     planes, the bridges' followers, the plane's warmer, the requests and the
-    RPCs, all of them for one identity (`cred`); `adopt` starts them over
-    for another (RL10: a welcome that renamed the machine)."""
+    RPCs, for the identity `cred` names. `adopt` takes another (RL10: a
+    welcome that renamed the machine): the log planes, which hold no thread
+    and no file of their own beyond each project's, start over under the new
+    name; the requests and the RPCs are renamed in place, never replaced,
+    since each is the one owner of its file under daemon/ (the RPC ledger,
+    what is owed) and of the threads that write it — an RPC's worker may be
+    inside its checks across the welcome, and a second owner would run its
+    op again."""
 
     def __init__(self, cred):
         self.bridges, self.warmer = plane.Bridges(), plane.Warmer()
-        self.cred = self.reqs = self.rpcs = None
+        self.cred = None
+        self.reqs = requests.Requests(cred["key"], cred["machine"])
+        self.rpcs = rpc.Rpcs(cred["key"], cred["machine"], coded=cred["key"] is not None)   # RL10's has no key
         self.adopt(cred)
 
     def adopt(self, cred):
         if self.cred is not None and (self.cred["machine"], self.cred["org"]) == (cred["machine"], cred["org"]):
             self.cred = cred
             return
-        if self.reqs is not None:
-            self.reqs.close()
         self.cred, self.logs = cred, {}
-        self.reqs = requests.Requests(cred["key"], cred["machine"])
-        self.rpcs = rpc.Rpcs(cred["key"], cred["machine"], coded=cred["key"] is not None)   # RL10's has no key
+        self.reqs.rename(cred["machine"])
+        self.rpcs.rename(cred["machine"])
 
     def close(self):
         self.reqs.close()
