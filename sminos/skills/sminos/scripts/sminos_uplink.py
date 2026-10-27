@@ -2174,7 +2174,7 @@ class Link:
         drops it); the checkouts are read again every CHECKOUTS_EVERY, or at
         once when the policy changed (a `daemon policy` nudges one), and
         `machine` goes again for each held project whose body changed."""
-        current = policy.machine_policy()
+        current = policy.machine_policy() if self.coded else policy.wire_policy()   # as HubLog.presence says it
         fresh = now >= self.next_checkouts or any(self.machine_sent.get(pid, {}).get("policy") != current
                                                   for pid in self.opened if not self.follows.get(pid))
         if fresh:
@@ -2766,7 +2766,7 @@ def rl10_connection(info, kept, ended):
         log("the endpoint does not answer at %s (%s)" % (info["socket"], " ".join(str(e).split()) or type(e).__name__))
         return False
     try:
-        welcome = conn.handshake(rl10.hello_frame(info["token"], hublog.desk()["sminos"], policy.machine_policy()))
+        welcome = conn.handshake(rl10.hello_frame(info["token"], hublog.desk()["sminos"], policy.wire_policy()))
         identity = rl10.welcomed(welcome)
     except (rl10.Refused, ValueError) as e:
         log("the endpoint did not welcome this machine: %s" % e)
@@ -2835,7 +2835,7 @@ def cmd_probe(_a):
         print("it does not answer at %s (%s)" % (info["socket"], " ".join(str(e).split()) or type(e).__name__))
         sys.exit(1)
     try:
-        welcome = conn.handshake(rl10.hello_frame(info["token"], hublog.desk()["sminos"], policy.machine_policy()))
+        welcome = conn.handshake(rl10.hello_frame(info["token"], hublog.desk()["sminos"], policy.wire_policy()))
         identity = rl10.welcomed(welcome)
     except rl10.NotEnrolled as e:
         print("present but not enrolled (%s): this machine is not cut over" % e)

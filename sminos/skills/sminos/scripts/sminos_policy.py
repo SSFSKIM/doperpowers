@@ -30,7 +30,8 @@ endpoint sends is written whole (`take_endpoint`), with the endpoint's last
 word kept beside it (`endpoint`). `sminos daemon policy` writes the file as
 everywhere, and the uplink, finding it differs from that last word
 (`unsent_change`), asks the endpoint (`policy-set`), whose answer writes the
-file again.
+file again. RL10 names the ceiling as O10 does (`wire_policy`): a mode, or
+`settings` for the user's settings' defaultMode — a file naming no ceiling.
 
 The known checkouts of a project (where a spawn from outside may run) are
 the working directories its sessions joined from on this machine, and the
@@ -105,6 +106,15 @@ def machine_policy():
     return {"read_only": p["read_only"], "ceiling": p["ceiling"]}
 
 
+def wire_policy():
+    """The policy as RL10 says it (O10's): the ceiling a permission mode, or
+    `settings` while the file names none — the user's settings' defaultMode,
+    which the endpoint reads as `settings` too, so a later change to them
+    still holds; DX2's hub takes the mode it resolves to (machine_policy)."""
+    p = load()
+    return {"read_only": p["read_only"], "ceiling": p["ceiling"] if p["ceiling_from"] == "policy" else FROM_SETTINGS}
+
+
 def read_only():
     return load()["read_only"]
 
@@ -174,15 +184,19 @@ ENDPOINT = "endpoint"   # the policy file's record of the endpoint's last word (
 
 def endpoint_policy(frame):
     """An endpoint's policy (a `policy` frame, a welcome's), checked:
-    {read_only, ceiling}; None when it is none."""
-    if not (isinstance(frame, dict) and isinstance(frame.get("read_only"), bool) and frame.get("ceiling") in MODES):
+    {read_only, ceiling}, the ceiling a mode or `settings`; None when it is
+    none."""
+    if not (isinstance(frame, dict) and isinstance(frame.get("read_only"), bool)
+            and frame.get("ceiling") in MODES + (FROM_SETTINGS,)):
         return None
     return {"read_only": frame["read_only"], "ceiling": frame["ceiling"]}
 
 
 def take_endpoint(p):
-    """The endpoint's policy written as the machine's, with its record."""
-    write({"read_only": p["read_only"], "ceiling": p["ceiling"], ENDPOINT: dict(p)})
+    """The endpoint's policy written as the machine's, with its record: a
+    ceiling of `settings` is the file naming none."""
+    write({"read_only": p["read_only"], **({} if p["ceiling"] == FROM_SETTINGS else {"ceiling": p["ceiling"]}),
+           ENDPOINT: dict(p)})
 
 
 def unsent_change():
@@ -194,7 +208,7 @@ def unsent_change():
     heard = endpoint_policy(d.get(ENDPOINT)) if d else None
     if heard is None:
         return {}
-    now = machine_policy()
+    now = wire_policy()
     return {k: now[k] for k in ("read_only", "ceiling") if now[k] != heard[k]}
 
 

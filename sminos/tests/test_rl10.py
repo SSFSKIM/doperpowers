@@ -425,6 +425,41 @@ class Policy(Machine):
         self.assertEqual(len(ep.frames("policy-set", conn=ep.hellos[1][0])), 1)
         self.assertTrue(policy.read_only())
 
+    def test_the_ceiling_settings_is_the_users_defaultmode_both_ways(self):
+        """O10's ceiling is a permission mode or `settings`, the machine's
+        settings' defaultMode (its default policy's): the hello and the
+        machine's presence on RL10 say `settings` while the file names no
+        ceiling, and an endpoint's `settings` is taken as the file naming
+        none, read as the settings give it (O12 M7b, found by the
+        conformance replay)."""
+        self.hub_json()
+        ep = self.endpoint()   # holds no policy: it takes the hello's
+        self.uplink()
+        hello = ep.wait(lambda f: f["t"] == "hello")
+        self.assertEqual(hello["policy"], {"read_only": False, "ceiling": "settings"})
+        self.assertEqual(ep.policy, {"read_only": False, "ceiling": "settings"})
+        wait_for(lambda: policy.stored().get("endpoint"))
+        self.assertNotIn("a policy from the endpoint that is no policy", daemon_log())
+        self.assertNotIn("ceiling", policy.stored(), "settings: the file names none")
+        self.assertEqual(policy.machine_policy(), {"read_only": False, "ceiling": "default"},
+                         "read as the user's settings give it")
+        machine = ep.wait(lambda f: f["t"] == "session" and f["message"]["kind"] == "machine")
+        self.assertEqual(machine["message"]["body"]["policy"], {"read_only": False, "ceiling": "settings"})
+        ep.send({"t": "policy", "read_only": True, "ceiling": "settings"})
+        wait_for(lambda: policy.read_only())
+        self.assertEqual(policy.stored(), {"read_only": True, "endpoint": {"read_only": True, "ceiling": "settings"}})
+        self.assertEqual(policy.unsent_change(), {}, "nothing differs from the endpoint's word")
+        out = self.cli_policy("--ceiling", "plan")
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertEqual(ep.wait(lambda f: f["t"] == "policy-set"), {"t": "policy-set", "ceiling": "plan"})
+        wait_for(lambda: policy.stored().get("endpoint", {}).get("ceiling") == "plan")
+        self.cli_policy("--ceiling", "settings")
+        self.assertEqual(ep.wait(lambda f: f["t"] == "policy-set" and f.get("ceiling") == "settings"),
+                         {"t": "policy-set", "ceiling": "settings"})
+        time.sleep(1.0)
+        presences = [f for f in ep.frames("session") if f["message"]["kind"] == "machine"]
+        self.assertLessEqual(len(presences), 6, "the presence goes when its policy changes, not every pass")
+
 
 # ------------------------------------------------------------- the DX1 key
 

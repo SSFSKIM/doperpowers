@@ -404,8 +404,9 @@ class HubLog:
 
     def presence(self):
         """DX4's `machine` message for this project: online (the hub's word,
-        from the lease), the policy, the project's known checkouts here, and
-        what this machine's daemon can do itself (`desk`)."""
+        from the lease), the policy (on RL10 as RL10 says it, wire_policy),
+        the project's known checkouts here, and what this machine's daemon
+        can do itself (`desk`)."""
         try:
             checkouts = policy.known_checkouts(self.project)
         except (OSError, SystemExit) as e:
@@ -415,7 +416,8 @@ class HubLog:
         return {"t": "session", "message": {
             "project": self.project.id, "machine": self.machine, "session": None, "kind": "machine",
             "sub": None, "n": None,
-            "body": {"online": True, "policy": machine_policy(), "checkouts": checkouts, "desk": desk()}}}
+            "body": {"online": True, "policy": machine_policy() if self.coded else policy.wire_policy(),
+                     "checkouts": checkouts, "desk": desk()}}}
 
     def host_sent(self):
         """RL10: {writer: seq}, how far each writer of the project's host
