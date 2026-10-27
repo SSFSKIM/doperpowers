@@ -5362,7 +5362,7 @@ rm -f "$HPLOG/testhost.$HQ.jsonl"
 # daemon/identity.json) keeps a hub project's host events in its host store
 # from then on (O12 M8): chat --host reads the store beside the log's older
 # ones, a question asked before the cutover with its answer after it beneath.
-mkdir -p -m 700 "$SMINOS_HOME/daemon"
+mkdir -m 700 "$SMINOS_HOME/daemon"
 printf '{"org": "org-cut", "hub": "https://hub.test", "name": "testhost", "former": {}, "ref": "machine-ref", "enrolled": "2026-10-01T00:00:00Z", "cutover": "2026-10-27T00:00:00Z", "build": "x"}\n' \
   > "$SMINOS_HOME/daemon/identity.json"
 chmod 600 "$SMINOS_HOME/daemon/identity.json"
