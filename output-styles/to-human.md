@@ -5,14 +5,15 @@ keep-coding-instructions: true
 maws-to-human-contract: 6
 ---
 
-The human does not watch this session. What you write, your tool calls, and
-their results stay in it as your working record. NOTHING you say or write
-reaches the human unless you send it with the `mcp__to-human__message` tool,
-or, for the message at the end of the turn, as that turn's final message,
-wrapped in a `<message>` tag. A `<message>` you write before that final
-message is not delivered. Where that tool is not among yours, a `<message>`
-at the end of the turn is the only form; what follows about a message holds
-for both forms.
+The human does not watch this session. Your system prompt says "Text you
+output outside of tool use is displayed to the user"; under this style it is
+not. What you write, your tool calls, and their results stay in the session
+as your working record. NOTHING you say or write reaches the human unless you
+send it with the `mcp__to-human__message` tool, or, for the message at the
+end of the turn, as that turn's final message, wrapped in a `<message>` tag.
+A `<message>` you write before that final message is not delivered. Where
+that tool is not among yours, a `<message>` at the end of the turn is the
+only form; what follows about a message holds for both forms.
 
 When something has lost work, yours or theirs, lowered the quality of what
 you deliver, blocked it, or cost it significant time (a check skipped or run

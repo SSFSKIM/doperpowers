@@ -93,6 +93,11 @@ function partialText(json: string): { text: string; isWhole: boolean } | undefin
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error))
 
+let isRegistered = false
+
+/** Whether this session registered the tool under its contract name: the reminder names it. */
+export const isMessageToolOn = () => isRegistered
+
 /**
  * Registers the tool and serves it. It is registered as an interactive
  * session starts under the to-human style (nobody reads a headless session's
@@ -108,6 +113,7 @@ const message = (error: unknown) => (error instanceof Error ? error.message : St
  */
 export function registerMessage(on: On) {
   on('session.start', { isInteractive: true }, async ($, e, next) => {
+    isRegistered = false
     const maws = await $.env.get('MAWS_NATIVE_TO_HUMAN')
     let style: unknown
     try {
@@ -118,6 +124,7 @@ export function registerMessage(on: On) {
     if ((maws === undefined || maws === '') && style === TO_HUMAN_STYLE) {
       try {
         const { tool } = await $.tool.register({ name: 'message', description: DESCRIPTION, inputSchema: INPUT_SCHEMA })
+        isRegistered = tool === MESSAGE_TOOL
         if (tool !== MESSAGE_TOOL) {
           $.ui.log(`to-human: the message tool registered as ${tool}, not ${MESSAGE_TOOL}: the view and the export know it by ${MESSAGE_TOOL}`, { to: 'debug' })
         }
