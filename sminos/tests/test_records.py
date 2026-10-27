@@ -19,6 +19,7 @@ import re
 import shutil
 import subprocess
 import sys
+import fcntl
 import tempfile
 import time
 import unittest
@@ -28,12 +29,14 @@ HERE = Path(__file__).resolve().parent
 SCRIPTS = HERE.parent / "skills" / "sminos" / "scripts"
 CLI = SCRIPTS / "sminos.py"
 MEMBER = "0123456789abcdef0123456789abcdef"
+OTHER = "fedcba9876543210fedcba9876543210"
 SECRET = "sk-test-not-a-real-token-5b1e"
 SEAT_RE = re.compile(r"\[[0-9a-f]+ / ([0-9a-f-]{36})\]")
 
 T0 = "7a000001-0000-4000-8000-00000000007a"
 TB = "7b000002-0000-4000-8000-00000000007b"
 TX = "7c000003-0000-4000-8000-00000000007c"
+TD = "7d000004-0000-4000-8000-00000000007d"
 
 # The `claude` stand-in: `agents` lists its launches, and a `--bg` launch
 # registers one row. With REC_STUB_HOOK_FIRST set, the launched session runs
@@ -189,6 +192,24 @@ class Machine:
         return m.group(1)
 
     # ---- reading it
+
+    def write_record(self, sid, **fields):
+        """A record as a launch would have left it (a fixture), on top of the defaults."""
+        rec = {"session": sid, "source": "launch", "basis": "launch", "origin": {"kind": "terminal"},
+               "owners": ["@machine"], "ownersProof": [], "principal": "@machine",
+               "inference": slot(self), "created": "2026-10-27T00:00:00Z", "former": [], **fields}
+        self.record_path(sid).parent.mkdir(parents=True, exist_ok=True)
+        self.record_path(sid).write_text(json.dumps(rec))
+
+    def continued(self, old, new):
+        """The `continued` retirement a hand-off writes, naming the session it went on in."""
+        self.py("p = sminos.resolve_project(sys.argv[1])\n"
+                "sminos.lifecycle(p, sys.argv[2], 'retired', by='', reason='continued', to=sys.argv[3])",
+                str(self.repo), old, new)
+
+    def publications(self, sid):
+        return [{k: j[k] for k in ("owners", "origin") if k in j} for j in self.own_joined(sid)
+                if "owners" in j or "origin" in j]
 
     def record_path(self, sid):
         return self.reg / "session-records" / (sid + ".json")
@@ -577,6 +598,122 @@ class TheRecord(unittest.TestCase):
         self.assertEqual(rec["inference"], slot(m))
 
 
+class TheFixes(unittest.TestCase):
+    """Fix 2 of the review: the launch's binding, precedence, publication, the org's view."""
+
+    def test_a_claim_the_lock_held_up_cannot_be_stolen_by_a_descendant(self):
+        m = Machine(self)
+        launch = "a" * 32
+        m.py("import sminos_records as R\nR.write_pending(sys.argv[1], dict(R.default_provenance('launch'), "
+             "owners=[sys.argv[2]], principal=sys.argv[2], origin={'kind': 'maws', 'requester': sys.argv[2]}))",
+             launch, MEMBER)
+        lock = m.reg / "session-records" / ".lock"
+        with open(lock, "a") as lf:
+            fcntl.flock(lf, fcntl.LOCK_EX)
+            m.hook("SessionStart", TD, env={"SMINOS_LAUNCH": launch, "SMNS_RECORD_TIMEOUT": "1"})
+            fcntl.flock(lf, fcntl.LOCK_UN)
+        self.assertEqual(len(m.pending()), 1, "the lock held the seat's claim off")
+        bound = (m.reg / "session-records" / "pending" / (launch + ".session")).read_text().strip()
+        self.assertEqual(bound, TD, "but its SessionStart bound the launch to it, taking no lock")
+        # The spawner is gone; the seat's Bash starts a `claude` that inherits the variable.
+        m.peer(TX, "descendant")
+        m.hook("SessionStart", TX, env={"SMINOS_LAUNCH": launch, "CLAUDE_CODE_SESSION_ID": TX})
+        self.assertEqual(len(m.pending()), 1, "the descendant claims nothing")
+        self.assertEqual((m.record(TX)["origin"], m.record(TX)["owners"]), ({"kind": "terminal"}, ["@machine"]))
+        m.py("import sminos_records as R\nprint(R.bind(sys.argv[1], sys.argv[2]))", launch, TX)
+        self.assertEqual(len(m.pending()), 1, "nor does a spawner naming another session")
+        # The seat's next hook claims it.
+        m.hook("Stop", TD, source="", env={"SMINOS_LAUNCH": launch})
+        self.assertEqual(m.pending(), [])
+        rec = m.record(TD)
+        self.assertEqual((rec["owners"], rec["source"], rec["basis"]), ([MEMBER], "launch", "launch"))
+
+    def test_a_provisional_intermediate_never_hides_a_final_ancestor(self):
+        m = Machine(self)
+        m.write_record(T0, owners=[MEMBER], principal=MEMBER, origin={"kind": "maws", "requester": MEMBER})
+        m.write_record(TB, source="default", basis="lineage", former=[T0])
+        m.continued(T0, TB)
+        m.continued(TB, TX)
+        m.peer(TX, "grandchild", kind="bg", name_source="auto")
+        m.transcript(TX)
+        m.rows()
+        rec = m.record(TX)
+        self.assertEqual((rec["owners"], rec["source"], rec["former"]), ([MEMBER], "lineage", [TB, T0]))
+
+    def test_a_claimed_spawn_keeps_its_launch_against_the_hook(self):
+        m = Machine(self)
+        launch = "b" * 32
+        m.py("import sminos_records as R\nR.write_pending(sys.argv[1], dict(R.default_provenance(), basis='launch', "
+             "origin={'kind': 'sminos-spawn', 'spawnerSession': sys.argv[2]}, "
+             "inference={'kind': 'route', 'settingsRef': '/x/settings.json'}))", launch, T0)
+        m.peer(TD, "seatless")   # no seat binds it: its seat record lost, say
+        m.hook("SessionStart", TD, env={"SMINOS_LAUNCH": launch})
+        before = m.record(TD)
+        self.assertEqual((before["origin"]["kind"], before["source"], before["basis"]),
+                         ("sminos-spawn", "default", "launch"), "claimed, provisional as its parent was")
+        m.hook("Stop", TD, source="", env={"SMINOS_LAUNCH": launch})
+        m.hook("Stop", TD, source="")
+        m.rows()
+        self.assertEqual(m.record(TD), before, "the hook's evidence never replaces a launch's")
+
+    def test_a_job_whose_hook_ran_before_its_hand_off_takes_its_lineage(self):
+        a = Machine(self)
+        a.write_record(T0, owners=[MEMBER], principal=MEMBER, origin={"kind": "maws", "requester": MEMBER})
+        a.peer(TB, "job", kind="bg", name_source="auto")
+        a.hook("SessionStart", TB)
+        self.assertEqual((a.record(TB)["source"], a.publications(TB)), ("hook", [{"origin": {"kind": "terminal"}}]))
+        a.continued(T0, TB)   # the hand-off recorded after the job's hook
+        a.rows()
+        rec = a.record(TB)
+        self.assertEqual((rec["owners"], rec["source"], rec["former"]), ([MEMBER], "lineage", [T0]),
+                         "lineage outranks the hook")
+        self.assertEqual(a.publications(TB), [{"origin": {"kind": "terminal"}},
+                                              {"owners": [MEMBER], "origin": {"kind": "maws", "requester": MEMBER}}],
+                         "and the replacement is published")
+        b = Machine(self, host="otherhost", project_from=a)
+        a.copy_log_to(b)
+        self.assertEqual(b.row(TB)["owners"], [MEMBER], "another machine reads the latest publication")
+        # Equal evidence never flips it back: a second lineage read with other owners, a second hook.
+        a.write_record(T0, owners=[OTHER], principal=OTHER, origin={"kind": "maws", "requester": OTHER})
+        a.rows()
+        a.hook("Stop", TB, source="")
+        self.assertEqual(a.record(TB), rec)
+        self.assertEqual(len(a.publications(TB)), 2, "nothing more to publish")
+        a.assert_private()
+
+    def test_a_publication_that_failed_is_made_on_the_next_pass(self):
+        m = Machine(self)
+        m.peer(T0, "late")
+        m.transcript(T0)
+        m.rows()
+        self.assertEqual((m.record(T0)["source"], m.publications(T0)), ("default", []))
+        m.py("p = sminos.resolve_project(sys.argv[1])\n"
+             "real = sminos._append\n"
+             "def failing(*a, **k):\n    raise OSError('injected: the log is unwritable')\n"
+             "sminos._append = failing\n"
+             "sminos.ensure_record(p, sys.argv[2], evidence=sminos.records_module().hook_provenance(False))\n"
+             "sminos._append = real",
+             str(m.repo), T0)
+        self.assertEqual((m.record(T0)["source"], m.publications(T0)), ("hook", []),
+                         "final, its publication lost to the append")
+        m.py("sminos.ensure_record(sminos.resolve_project(sys.argv[1]), sys.argv[2])", str(m.repo), T0)
+        self.assertEqual(m.publications(T0), [{"origin": {"kind": "terminal"}}], "published on the next pass")
+        m.rows()
+        self.assertEqual(len(m.publications(T0)), 1, "once")
+
+    def test_the_orgs_listing_carries_no_private_field(self):
+        m = Machine(self)
+        m.peer(T0, "mine")
+        m.hook("SessionStart", T0)
+        rows = [r for r in json.loads(m.cli("list", "--org", "--json").stdout) if r.get("session") == T0]
+        self.assertEqual(len(rows), 1)
+        self.assertTrue(rows[0]["local"])
+        for k in ("principal", "inference", "controller"):
+            self.assertNotIn(k, rows[0])
+        self.assertEqual((rows[0]["owners"], rows[0]["origin"]), (["@machine"], {"kind": "terminal"}))
+        self.assertIn("principal", m.row(T0), "the project's own listing keeps them")
+
+
 class TheStore(unittest.TestCase):
     """sminos_records in process, against a temporary registry."""
 
@@ -600,6 +737,7 @@ class TheStore(unittest.TestCase):
         self.assertIsNone(R.read(T0))
         rec, changed = R.establish(T0, R.default_provenance(source="hook"))
         self.assertTrue(changed)
+        self.assertEqual(rec["basis"], "hook")
         before = {k: v for k, v in rec.items()}
         self.assertTrue(R.set_controller(T0, "B", since="2026-10-27T00:00:00Z"))
         after = R.read(T0)
@@ -610,10 +748,10 @@ class TheStore(unittest.TestCase):
         self.assertTrue(R.read(T0)["controller"]["since"].endswith("Z"))
         with self.assertRaises(ValueError):
             R.set_controller(T0, "C")
-        # Written once: a second establish changes nothing.
-        again, changed = R.establish(T0, dict(R.default_provenance(source="launch"), owners=[MEMBER]))
+        # Replaced only by strictly stronger evidence: a second hook's changes nothing.
+        again, changed = R.establish(T0, dict(R.default_provenance(source="hook"), origin={"kind": "maws"}))
         self.assertFalse(changed)
-        self.assertEqual(again["owners"], ["@machine"])
+        self.assertEqual(again["origin"], {"kind": "terminal"})
 
     def test_a_provisional_record_is_replaced_by_final_evidence_keeping_its_controller(self):
         R = self.R
@@ -626,26 +764,54 @@ class TheStore(unittest.TestCase):
         self.assertEqual((rec["owners"], rec["source"]), ([MEMBER], "lineage"))
         self.assertEqual(rec["controller"], {"lane": "A", "since": "2026-10-27T00:00:00Z"})
 
+    def test_replacement_is_strictly_upward(self):
+        R = self.R
+        lineage = dict(R.default_provenance(source="lineage"), owners=[MEMBER])
+        R.establish(T0, R.default_provenance(source="hook"))
+        self.assertTrue(R.establish(T0, lineage)[1], "lineage outranks the hook")
+        self.assertFalse(R.establish(T0, dict(lineage, owners=[OTHER]))[1], "a second lineage read never flips it")
+        self.assertFalse(R.establish(T0, R.default_provenance(source="hook"))[1], "nor does a hook")
+        self.assertFalse(R.establish(T0, R.default_provenance())[1])
+        self.assertEqual(R.read(T0)["owners"], [MEMBER])
+        launched = dict(R.default_provenance(source="launch"), owners=[OTHER])
+        self.assertTrue(R.establish(T0, launched)[1], "a launch outranks a lineage")
+        provisional = dict(R.default_provenance(), basis="lineage")
+        self.assertFalse(R.establish(T0, provisional)[1])
+        # A provisional launch (a spawn of a provisional parent) is never replaced by a final lineage or hook.
+        R.establish(TB, dict(R.default_provenance(), basis="launch", origin={"kind": "sminos-spawn"}))
+        self.assertFalse(R.establish(TB, lineage)[1])
+        self.assertFalse(R.establish(TB, R.default_provenance(source="hook"))[1])
+        self.assertEqual(R.read(TB)["origin"], {"kind": "sminos-spawn"})
+        self.assertEqual(R.strength(R.read(TB)), (3, False))
+
     def test_pending_launches_older_than_a_day_are_swept(self):
         R = self.R
         R.write_pending("a" * 32, R.default_provenance())
         R.write_pending("b" * 32, R.default_provenance())
+        R.bind("a" * 32, T0)
         old = time.time() - 2 * 86400
         os.utime(R.pending_path("a" * 32), (old, old))
+        os.utime(R.binding_path("a" * 32), (old, old))
         self.assertEqual(R.sweep_pending(), ["a" * 32])
         self.assertFalse(os.path.exists(R.pending_path("a" * 32)))
+        self.assertFalse(os.path.exists(R.binding_path("a" * 32)), "and its binding")
         self.assertTrue(os.path.exists(R.pending_path("b" * 32)))
 
     def test_a_claim_is_one_rename(self):
         R = self.R
         R.write_pending("c" * 32, dict(R.default_provenance(source="launch"), owners=[MEMBER]))
         self.assertEqual(os.stat(R.pending_path("c" * 32)).st_mode & 0o777, 0o600)
+        self.assertIsNone(R.claim("c" * 32, T0), "an unbound launch is claimed by no one")
+        self.assertEqual(R.bind("c" * 32, T0), T0)
+        self.assertEqual(R.bind("c" * 32, TB), T0, "the first session to bind it keeps it")
+        self.assertEqual(os.stat(R.binding_path("c" * 32)).st_mode & 0o777, 0o600)
         got = R.claim("c" * 32, T0)
         self.assertEqual((got["session"], got["owners"], got["source"]), (T0, [MEMBER], "launch"))
-        self.assertIsNone(R.claim("c" * 32, TB), "a second claimant finds it gone")
+        self.assertIsNone(R.claim("c" * 32, TB), "another session is refused")
         self.assertIsNone(R.read(TB))
         R.write_pending("d" * 32, R.default_provenance(source="launch"))
-        self.assertIsNone(R.claim("d" * 32, T0), "a session with a final record claims nothing")
+        R.bind("d" * 32, T0)
+        self.assertIsNone(R.claim("d" * 32, T0), "a session a launch established claims nothing more")
         self.assertTrue(os.path.exists(R.pending_path("d" * 32)))
         self.assertIsNone(R.claim("../x", T0))
 
@@ -670,6 +836,7 @@ class TheStore(unittest.TestCase):
         os.makedirs(os.path.dirname(R.pending_path("a" * 32)), exist_ok=True)
         with open(R.pending_path("a" * 32), "w") as f:
             json.dump(mixed, f)
+        R.bind("a" * 32, TB)
         got = R.claim("a" * 32, TB)
         self.assertEqual((got["owners"], got["source"]), (["@machine"], "default"))
 

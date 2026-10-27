@@ -2061,7 +2061,7 @@ class Member(NamedTuple):
     charge_age: float | None = None   # seconds since its in-charge line's event; None for a line with none
     active_age: float | None = None   # seconds since its engine record's updatedAt here, its last state remotely
     title: str = ""       # another machine's session: the title its machine published (here, the transcript's)
-    owners: tuple = ()    # whose session it is (RL6): its record's here, else the first joined along its lineage carrying them
+    owners: tuple = ()    # whose session it is (RL6): its record's here, else the latest joined along its lineage publishing them
     origin: dict | None = None   # how it started, beside `owners`
     record: dict | None = None   # its record on this machine (session_record), for a local member that has one
 
@@ -2081,12 +2081,13 @@ DEFAULT_OWNERS = ("@machine",)
 DEFAULT_ORIGIN = {"kind": "terminal"}
 
 
-def member_json(m, project=None):
+def member_json(m, project=None, private=True):
     """A member as list --json carries it: no task body, no credential.
     `owners` and `origin` for every member with a session (the machine's
     terminal default where nothing says otherwise); `principal`,
     `inference` and `controller` too for one of this machine, from its
-    record (null when it has none)."""
+    record (null when it has none), unless the view is the org's
+    (`private` False: the listing's public fields alone)."""
     d = {"alias": m.alias, "session": m.session, "short": m.short, "name_source": m.name_source,
          "kind": m.kind or None, "machine": m.machine, "local": m.local, "state": m.state,
          "state_age": m.state_age, "active_age": m.active_age, "charge": m.charge,
@@ -2095,7 +2096,7 @@ def member_json(m, project=None):
          "seat": public_seat(m.seat) if m.seat else None, "former": list(m.former),
          "owners": list(m.owners or DEFAULT_OWNERS) if m.session else None,
          "origin": dict(m.origin or DEFAULT_ORIGIN) if m.session else None}
-    if m.local:
+    if m.local and private:
         rec = m.record or {}
         d.update(principal=rec.get("principal"), inference=rec.get("inference"), controller=rec.get("controller"))
     rec = session_running(m.session) if m.local and m.session else None
@@ -2219,27 +2220,37 @@ def published_provenance(sid):
     return {**({"owners": owners} if records.MACHINE not in owners else {}), "origin": dict(rec["origin"])}
 
 
-_LINEAGE_INDEX = [None, -1, None]   # the events last indexed, their count, (continuations, first owned)
+_LINEAGE_INDEX = [None, -1, None]   # the events last indexed, their count, (continuations, publications)
+
+
+def publication(event):
+    """What a `joined` publishes of its session's record, in
+    published_provenance's shape, or None for a joined that publishes nothing."""
+    if not publishes(event):
+        return None
+    owners = owners_of(event)
+    origin = event.get("origin") if isinstance(event.get("origin"), dict) else None
+    return {**({"owners": owners} if owners else {}), **({"origin": origin} if origin else {})}
 
 
 def _lineage_index(events):
-    """({session: the session it continues}, {session: its first own joined
-    carrying owners}) of a log as read: each `continued` retirement in its
+    """({session: the session it continues}, {session: its latest own joined
+    that publishes}) of a log as read: each `continued` retirement in its
     writer's own file, the latest naming a session winning. Kept for the
     events last asked about, so a reconciliation indexes its log once."""
     if _LINEAGE_INDEX[0] is events and _LINEAGE_INDEX[1] == len(events):
         return _LINEAGE_INDEX[2]
-    conts, owned = {}, {}
+    conts, published = {}, {}
     for e in events:
         sid = e.get("session")
         if not isinstance(sid, str) or writer_session(e["writer"]) != sid:
             continue
         if e["kind"] == "retired" and e.get("reason") == "continued" and UUID_RE.match(str(e.get("to") or "")):
             conts[e["to"]] = sid
-        elif sid not in owned and publishes(e):
-            owned[sid] = e
-    _LINEAGE_INDEX[:] = [events, len(events), (conts, owned)]
-    return conts, owned
+        elif publishes(e):
+            published[sid] = e
+    _LINEAGE_INDEX[:] = [events, len(events), (conts, published)]
+    return conts, published
 
 
 def lineage_of(project, sid, peer=None, events=None):
@@ -2258,77 +2269,104 @@ def lineage_of(project, sid, peer=None, events=None):
     return chain
 
 
-def first_owned(project, sid, events=None):
-    """The first `joined` in the session's own file that carries its final
-    provenance (publishes), or None."""
+def own_events_of(project, sid, events=None):
+    """The session's own events: from `events` (a log as read) when given,
+    else read from its writer files (_own_events)."""
+    if events is None:
+        return _own_events(project, sid)
+    return [e for e in events if e.get("session") == sid and writer_session(e["writer"]) == sid]
+
+
+def last_published(project, sid, events=None):
+    """The latest `joined` in the session's own file that publishes, or None."""
     if events is not None:
         return _lineage_index(events)[1].get(sid)
-    return next((e for e in _own_events(project, sid) if publishes(e)), None)
+    return next((e for e in reversed(_own_events(project, sid)) if publishes(e)), None)
 
 
 def lineage_provenance(project, sid, peer=None, former=None, events=None):
-    """A provenance from the session's lineage, or None: its nearest
-    predecessor's record (provisional when that one is), else the first
-    `joined` along it, its own first, that carries a final provenance (its
-    owners the machine's when it names none)."""
+    """A provenance from the session's lineage, or None. The first final
+    record along it wins; else the latest `joined` along it, its own first,
+    that publishes (its owners the machine's when it names none); else the
+    first provisional record, the fallback, so a provisional session between
+    it and a final ancestor never hides the ancestor."""
     records = records_module()
     chain = list(former) if former else (lineage_of(project, sid, peer, events) if project is not None else [])
+    fallback = None
     for i, old in enumerate(chain):
         rec = records.read(old)
         if rec is not None:
-            return records.inherited(rec, chain[:i + 1])
+            if records.is_final(rec):
+                return records.inherited(rec, chain[:i + 1])
+            fallback = fallback or records.inherited(rec, chain[:i + 1])
     if project is not None:
         for s in [sid] + chain:
-            j = first_owned(project, s, events)
+            j = last_published(project, s, events)
             if j is not None:
                 return records.from_joined({"owners": owners_of(j) or [records.MACHINE], "origin": j.get("origin")},
                                            chain)
-    return None
+    return fallback
 
 
 def ensure_record(project, sid, seat=None, peer=None, evidence=None, former=None, events=None):
-    """The session's record, written if it has none, and its provisional one
-    replaced once final evidence appears. Tried in order: its lineage
-    (lineage_provenance; `former`, a hand-off's predecessor, when the caller
-    knows it), then `evidence` (the hook's: the session's own environment),
-    then the machine's defaults, provisional. A record that becomes final
-    while the session is a member is published (publish_owners). A record
-    that cannot be written is a warning: membership never waits on it.
-    Returns the record, or None."""
+    """The session's record: written if it has none, and replaced only by
+    strictly stronger evidence (sminos_records.stronger: launch, then
+    lineage, then the hook's, then the defaults; final over provisional).
+    The candidate is its lineage (lineage_provenance; `former`, a hand-off's
+    predecessor, when the caller knows it), else `evidence` (the hook's:
+    the session's own environment), else the machine's defaults. A record a
+    launch established, or a final lineage, has nothing stronger to look
+    for but a claim (sminos_records.claim); a final hook record looks for a
+    lineage only where one can appear, a background job or a hand-off. Then,
+    whether or not it changed, a member whose `joined` does not carry what
+    its record publishes is joined again (publish_owners). A record that
+    cannot be written is a warning: membership never waits on it. Returns
+    the record, or None."""
     records = records_module()
-    have = records.read(sid)
-    if records.is_final(have):
-        return have
-    try:
-        prov = lineage_provenance(project, sid, peer, former, events) \
-            or evidence or records.default_provenance()
-        if have is not None and not records.is_final(prov):
-            return have
-        rec, changed = records.establish(sid, prov, _RECORD_DEADLINE)
-    except (OSError, LockBusy, ValueError) as e:
-        warn("the record of session %s could not be written: %s" % (sid[:8], e))
-        return have
-    if changed and records.is_final(rec) and project is not None:
-        publish_owners(project, sid)
+    rec = records.read(sid)
+    settled = rec is not None and (records.basis(rec) == "launch" or records.strength(rec) == (2, True)
+                                   or (records.strength(rec) == (1, True) and not former
+                                       and str((peer or {}).get("kind") or "") != "bg"))
+    if not settled:
+        try:
+            prov = lineage_provenance(project, sid, peer, former, events) \
+                or evidence or records.default_provenance()
+            if records.stronger(prov, rec):
+                rec = records.establish(sid, prov, _RECORD_DEADLINE)[0]
+        except (OSError, LockBusy, ValueError) as e:
+            warn("the record of session %s could not be written: %s" % (sid[:8], e))
+    if rec is not None and records.is_final(rec) and project is not None:
+        publish_owners(project, sid, events)
     return rec
 
 
-def publish_owners(project, sid):
-    """A member whose record became final after it joined is joined again,
-    once, carrying what the record publishes (published_provenance): its alias
-    as the log holds it, the rest as its last `joined` had them, `by`
-    empty. Written only while its latest membership is `joined` and none of
-    its own joins publishes, checked again under the session file's lock.
-    Returns the events appended."""
-    if not published_provenance(sid):
+def publish_owners(project, sid, events=None):
+    """A member whose latest publishing `joined` does not carry what its
+    record publishes now (published_provenance: it became final after the
+    member joined, its record was replaced by stronger evidence since, or an
+    earlier publication's append failed) is joined again, carrying it: its
+    alias as the log holds it, the rest as its last `joined` had them, `by`
+    empty. Once per change of the record, which only moves up (default,
+    hook, lineage, launch). Written only while its latest membership is
+    `joined` and the publication is still missing, checked again under the
+    session file's lock. Returns the events appended."""
+    pub = published_provenance(sid)
+    if not pub:
         return []
-    own = _own_events(project, sid)
+    own = own_events_of(project, sid, events)
     last = next((e for e in reversed(own) if e["kind"] == "joined"), None)
-    if last is None:
+    if last is None or latest_membership(own) != "joined":
+        return []
+
+    def missing(evs):
+        latest = next((e for e in reversed(evs) if publishes(e)), None)
+        return latest is None or publication(latest) != pub
+
+    if not missing(own):
         return []
 
     def guard(evs):
-        return latest_membership(evs) == "joined" and not any(publishes(e) for e in evs)
+        return latest_membership(evs) == "joined" and missing(evs)
 
     alias, source = own_alias(own, sid)
     fields = joined_fields(alias or str(last.get("alias") or sid[:8]),
@@ -2994,10 +3032,10 @@ def _projection(events):
     latest joined (by seq, in its own file), the first non-empty `by`, its
     latest rename, published state, and published title (its own file), its
     in-charge events (for charge_of), and its status: each writer's latest by
-    seq, the later ts between writers (§3). `owned`: its first joined that
-    carries its final provenance (publishes: RL6's listing fields, read as
-    `by` is: a later joined without them, an older binary's, never erases
-    them). And its hand-offs: `to`, the
+    seq, the later ts between writers (§3). `owned`: its latest joined that
+    publishes its record (RL6's listing fields: a record moves only up, and
+    each move is published again; a later joined that publishes nothing, an
+    older binary's, never erases them). And its hand-offs: `to`, the
     session it continues in (the latest `retired` reason `continued` of its
     own, unless it joined again since: a session resumed after it was handed
     off is its own member, and the job keeps what its own events hold), and
@@ -3031,7 +3069,7 @@ def _projection(events):
                     r["to"] = ""
                     if not r["by"] and e.get("by"):
                         r["by"] = str(e["by"])
-                    if r["owned"] is None and publishes(e):
+                    if publishes(e):
                         r["owned"] = e
                 elif e.get("reason") == "continued" and UUID_RE.match(str(e.get("to") or "")):
                     r["to"] = str(e["to"])
@@ -4818,7 +4856,7 @@ def record_session(project, session, tpath, event, last_message="", source=""):
         return
     # A session nobody launched through sminos is what its own environment,
     # the hook's, says; a seat's provenance came with its launch.
-    evidence = None if seat else records_module().hook_provenance(marked)
+    evidence = None if seat or launch_pending(session) else records_module().hook_provenance(marked)
     if event == "SessionStart":
         position_init(project, session, tpath, since)
     ensure_record(project, session, seat, peer, evidence)
@@ -4887,7 +4925,7 @@ def export_live(cwd, session, records):
     marked = seen is not None and member_mark(seen[1])
     if seen is None or not joinable(*seen, marked):
         return []
-    evidence = None if seen[0] else records_module().hook_provenance(marked)
+    evidence = None if seen[0] or launch_pending(session) else records_module().hook_provenance(marked)
     ensure_record(project, session, *seen, evidence)
     alias = _member_alias(project, session, *seen, marked, evidence)
     events = host_events(records, alias) if alias is not None else []
@@ -4978,25 +5016,44 @@ def hook_payload():
 
 
 def claim_launch(payload, deadline=None):
-    """A spawned session's claim of the provenance its spawner left for it
-    (sminos_records.claim): at its SessionStart, a startup, under the launch
-    id its merged settings' env carries (SMINOS_LAUNCH). The claim is one
-    rename, refused to a session that already has a final record, so a
+    """A spawned session's claim of the provenance its spawner left for it,
+    under the launch id its merged settings' env carries (SMINOS_LAUNCH).
+    Its first SessionStart, a startup, binds the launch to its own session
+    id (sminos_records.bind: no lock, so it holds even when the records'
+    lock does not come in time) unless it has a final record already; every
+    hook of the session the launch is bound to then claims it until one
+    succeeds (sminos_records.claim, honoured for that session alone). A
     resume, a /reload-plugins' hooks, or a `claude` started from the seat's
     Bash with the variable inherited (its SessionStart comes after the
-    seat's own) claims nothing. A failure is a daemon.log line."""
+    seat's own, which bound it) claims nothing. A failure is a daemon.log
+    line."""
     records = records_module()
     launch, session = os.environ.get(records.LAUNCH_ENV, ""), str(payload.get("session_id") or "")
-    if not (launch and payload.get("hook_event_name") == "SessionStart" and payload.get("source") == "startup"):
+    if not (records.LAUNCH_RE.fullmatch(launch) and UUID_RE.fullmatch(session)):
         return
     try:
-        if records.claim(launch, session, deadline) is not None:
+        bound = records.bound_to(launch)
+        if not bound and payload.get("hook_event_name") == "SessionStart" and payload.get("source") == "startup" \
+                and not records.is_final(records.read(session)):
+            bound = records.bind(launch, session)
+        if bound == session and os.path.exists(records.pending_path(launch)) \
+                and records.claim(launch, session, deadline) is not None:
             daemon_log("record: session %s claimed launch %s" % (session[:8], launch[:8]))
     except (OSError, LockBusy) as e:
         try:
             daemon_log("record: session %s could not claim launch %s: %s" % (session[:8], launch[:8], e))
         except OSError:
             pass
+
+
+def launch_pending(session):
+    """Whether the launch in this process's environment is bound to the
+    session and still waits for its claim: the session is a spawn's, and its
+    own environment is no evidence of a terminal."""
+    records = records_module()
+    launch = os.environ.get(records.LAUNCH_ENV, "")
+    return bool(records.LAUNCH_RE.fullmatch(launch)) and records.bound_to(launch) == session \
+        and os.path.exists(records.pending_path(launch))
 
 
 def cmd_record(_a, payload=None):
@@ -7728,7 +7785,10 @@ def spawn_fresh(seat_id, alias, group, role, brief, task, cwd, worktree,
                           "boot_id": boot_id(), "updated": now()})
     project = seat_project({"cwd": runcwd or cwd, "group": group})
     try:
-        records.claim(launch_id, uuid)   # unless its own SessionStart did
+        # Bound to the session the harness names for this launch, unless its
+        # own SessionStart bound it already; claimed unless it claimed.
+        if records.bind(launch_id, uuid) == uuid:
+            records.claim(launch_id, uuid)
     except (OSError, LockBusy) as e:
         warn("the record of session %s could not be claimed: %s" % (uuid[:8], e))
     if project is not None:
@@ -7799,7 +7859,8 @@ def spawn_provenance(settings, merged):
     if UUID_RE.fullmatch(caller):
         parent = records.read(caller) or records.default_provenance()
         return {**{k: parent[k] for k in records.PROVENANCE}, "origin": {"kind": "sminos-spawn", "spawnerSession": caller},
-                "inference": route or parent["inference"], "source": "launch" if records.is_final(parent) else "default"}
+                "inference": route or parent["inference"], "source": "launch" if records.is_final(parent) else "default",
+                "basis": "launch"}
     return {**records.default_provenance("launch"), "origin": {"kind": "sminos-spawn"},
             "inference": route or records.slot()}
 
@@ -9248,7 +9309,7 @@ def cmd_list(a):
         members_known |= {m.session for m in every if m.session}
         rows = [m for m in every if row_matches(m, p, a, words)]
         if a.json:
-            out += [member_json(m, p) for m in rows]
+            out += [member_json(m, p, private=not a.org) for m in rows]
             continue
         # Visibility options only affect text; --json keeps every matching row.
         # An explicit --state also reveals the words it selects.
@@ -9268,7 +9329,8 @@ def cmd_list(a):
         others = other_live_sessions(members_known | {m.session for m in loose})
     notes = peer_notes() if (a.here or a.org or not projects) else []
     if a.json:
-        out += [{"project": None, "project_id": None, "project_kind": None, **member_json(m)} for m in loose]
+        out += [{"project": None, "project_id": None, "project_kind": None, **member_json(m, private=not a.org)}
+                for m in loose]
         out += [{"project": None, "project_id": None, "project_kind": None, "alias": o["name"],
                  "session": o["session"], "short": o["short"], "machine": host_name(), "local": True,
                  "member": False, "state": None, "engine": {k: o[k] for k in
