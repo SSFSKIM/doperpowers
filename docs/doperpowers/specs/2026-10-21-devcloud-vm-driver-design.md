@@ -2680,6 +2680,8 @@ commit 5168e433 on its branch, 2026-10-21):
     without recording when none are live. The measured fallback is therefore creator tag, project
     broadcast, then untagged `say --in` on that exit 4 to leave a durable note, else journal and
     `wall`. The main session approved the correction; both idle notices and lease warnings use it.
+    The live proof also showed that sminos labels a host-shell message `from human`; both texts
+    now start `devcloud on <name>:` to identify their automated origin (2026-10-28).
   - The lifetime cap (`lease_max`, 72 h) is removed rather than kept: once a session may keep a VM
     without a yes, capping a lease's length bounds nothing, and the skill would have to explain
     why a 4-day lease needs the person while no end at all does not. `lease` loses `--confirmed`

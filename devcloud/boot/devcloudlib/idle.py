@@ -71,7 +71,7 @@ def text(d, state, current, found):
         spent = d.hourly_price * max(0, current - d.created) / 3600
         cost = f"; estimated cost so far {spent:.2f}" + (f" {d.currency}" if d.currency else "")
     unpushed = ", ".join(f"{repo} ({what})" for repo, what in found) if found else "none"
-    return (f"{d.name} has been idle {duration}; last active {iso(state['active_at'])}; {lifetime}{cost}; "
+    return (f"devcloud on {d.name}: idle {duration}; last active {iso(state['active_at'])}; {lifetime}{cost}; "
             f"unpushed: {unpushed}; end it with devcloud vm down {d.name}")
 
 

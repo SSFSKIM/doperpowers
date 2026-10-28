@@ -477,7 +477,9 @@ message and noninteractive SSH probes do not count. The first check starts
 the clock; `/var/lib/devcloud/idle.json` keeps the last check, last activity
 and last notice times across reboots. Adopted machines are excluded.
 
-The notice names the VM, its idle time and last activity, its lease end (or
+The notice starts `devcloud on <name>:` to identify its automated origin,
+since sminos labels a host-shell message as `from human`. It names the VM,
+its idle time and last activity, its lease end (or
 that it runs until `down`), its estimated cost at the creation-time list
 price when known, and every checkout with unpushed work. It gives
 `devcloud vm down <name>` to end it; **idleness never stops or deletes a VM**.

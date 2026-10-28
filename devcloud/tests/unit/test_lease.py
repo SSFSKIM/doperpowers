@@ -412,7 +412,7 @@ class WarningTest(LeaseBase):
     def test_says_to_the_creator_as_the_user_naming_the_end_and_the_unpushed_work(self):
         self.warn()
         (argv, user), = self.calls
-        text = f"dc-build-7f3a's lease ends at {lease.iso(NOW)}; unpushed: app (2 unpushed commits), lib " \
+        text = f"devcloud on dc-build-7f3a: lease ends at {lease.iso(NOW)}; unpushed: app (2 unpushed commits), lib " \
                "(uncommitted changes)"
         self.assertEqual(lease.iso(NOW), "2026-10-14T17:46Z")
         self.assertEqual(lease.warning_text("dc-build-7f3a", NOW, [("app", "2 unpushed commits"),

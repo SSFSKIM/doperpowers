@@ -47,6 +47,7 @@ class IdleTest(IdleBase):
         self.assertEqual(len(self.sent), 1)
         self.tick(NOW + 6 * DAY)
         self.assertEqual(len(self.sent), 2)
+        self.assertTrue(self.sent[-1].startswith(f"devcloud on {self.d.name}:"))
         self.assertIn("6d", self.sent[-1])
         self.assertIn(lease.iso(NOW), self.sent[-1])
         self.assertIn("runs until down", self.sent[-1])
@@ -187,6 +188,7 @@ class DeliveryTest(IdleBase):
         d = dataclasses.replace(self.d, expires=NOW)
         with mock.patch.object(notices, "deliver") as send:
             lease.warn_creator(self.user, d, scan=lambda: [("app", "uncommitted changes")])
+        self.assertTrue(send.call_args.args[2].startswith(f"devcloud on {d.name}:"))
         self.assertIn("lease ends", send.call_args.args[2])
         self.assertIn("app", send.call_args.args[2])
 

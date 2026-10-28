@@ -241,7 +241,7 @@ def tick(user, desc_path=descriptor.PATH, lock_path=None, status_path=None, stat
 
 def warning_text(name, expires, found):
     unpushed = ", ".join(f"{repo} ({what})" for repo, what in found) if found else "none"
-    return f"{name}'s lease ends at {iso(expires)}; unpushed: {unpushed}"
+    return f"devcloud on {name}: lease ends at {iso(expires)}; unpushed: {unpushed}"
 
 
 def warn_creator(user, d, call=proc.call, say=print, scan=None):
