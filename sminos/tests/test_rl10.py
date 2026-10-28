@@ -1225,6 +1225,103 @@ class Rpcs(Machine):
         self.assertEqual(self.result(ep, lost)[0]["nonce"], late["nonce"])
 
 
+class Raised(Machine):
+    """#149 on RL10: a pending request's input past the session lane's bound
+    goes up the endpoint's socket cut, marked `truncated`, on the connection
+    it was raised on, and is decided from that draw remotely and here."""
+
+    LAUNCH = "launch-raised-1"
+
+    def setUp(self):
+        super().setUp()
+        self.hub_json()
+        self.own = sminos.machine_project("org-1", "testhost")
+        work = os.path.join(os.environ["HOME"], "work")
+        os.makedirs(work)
+        holder = subprocess.Popen(["sleep", "600"])
+        self.addCleanup(lambda: (holder.kill(), holder.wait()))
+        sminos.write_json(os.path.join(os.environ["HOME"], ".claude", "sessions", "%d.json" % holder.pid),
+                          {"pid": holder.pid, "sessionId": S1, "cwd": work, "kind": "interactive", "name": "s1",
+                           "nameSource": "derived", "status": "idle"})
+        sminos.forget_caches()
+        sminos.reconcile(self.own)
+        self.child = subprocess.Popen([sys.executable, "-B", str(SCRIPTS / "sminos.py"), "bridge", "--session", S1,
+                                       "--launch=" + self.LAUNCH], stdout=subprocess.PIPE,
+                                      stderr=subprocess.DEVNULL, text=True)
+        self.addCleanup(lambda: (self.child.terminate(), self.child.wait(10)))
+        hello = json.loads(self.child.stdout.readline())
+        self.sock, self.nonce = hello["socket"], hello["nonce"]
+        threading.Thread(target=lambda: [None for _ in self.child.stdout], daemon=True).start()
+        self.post({"type": "session", "phase": "start", "session": S1, "cwd": work, "t": 0},
+                  {"type": "resync", "turns": [], "streaming": [], "agents": [], "cut": hello.get("seed") or {},
+                   "t": 0})
+
+    def post(self, *events):
+        import sminos_bridge as bridge
+        c = bridge._UnixConnection(self.sock, 30)
+        try:
+            c.request("POST", "/events", body=json.dumps(list(events)).encode(),
+                      headers={"content-type": "application/json", bridge.NONCE_HEADER: self.nonce})
+            self.assertEqual(c.getresponse().status, 204)
+        finally:
+            c.close()
+
+    def raise_(self, rid, tool_input):
+        self.post({"type": "raised", "request": rid, "tool": "Write", "input": tool_input, "agentId": None,
+                   "t": int(time.time() * 1000)})
+
+    def settle(self, rid, outcome, by):
+        self.post({"type": "settled", "request": rid, "winner": by, "outcome": outcome, "by": by,
+                   "t": int(time.time() * 1000)})
+
+    def decision(self, rid):
+        import sminos_bridge as bridge
+        return bridge.request(self.sock, "GET", "/requests/%s/wait?ms=10000" % rid)
+
+    @staticmethod
+    def raised(ep, rid):
+        """The input and marker of the request as the endpoint got it: a raise, or the complete set."""
+        for f in reversed(ep.frames()):
+            bodies = [f["message"]["body"]] if f["t"] == "session" and f["message"]["kind"] == "raised" else \
+                f.get("raised", []) if f["t"] == "pending" else []
+            for b in bodies:
+                if b.get("request") == rid:
+                    return b
+        return None
+
+    def test_a_raise_past_the_lanes_bound_keeps_the_socket_and_is_decided_from_its_draw(self):
+        ep = self.endpoint(policy={"read_only": False, "ceiling": "default"})
+        self.uplink()
+        ep.wait(lambda f: f["t"] == "member" and f.get("session") == S1 and f.get("launch") == self.LAUNCH)
+        whole = {"file_path": "/w/huge", "content": "y" * (17 << 20)}
+        for rid in ("toolu_huge1", "toolu_huge2"):
+            self.raise_(rid, whole)
+        bodies = [wait_for(lambda rid=rid: self.raised(ep, rid)) for rid in ("toolu_huge1", "toolu_huge2")]
+        for body in bodies:
+            self.assertIsNotNone(body, "the raise reached the endpoint")
+            self.assertEqual((body["input"], body["truncated"]), ({"file_path": "/w/huge", "content": "y" * 1024},
+                                                                  True))
+            self.assertNotIn("mac", body, "a draft on RL10")
+        self.assertEqual(ep.state()["conns"], 1, "on the connection it was raised on")
+        digest = {"session": S1, "request": "toolu_huge1", "tool": "Write",
+                  "input_sha256": requests.codes.input_sha256(bodies[0]["input"])}
+        member = "4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c"
+        op = ep.rpc("decide", self.own.id, {"session": S1, "decision": "allow", "digest": digest}, member=member)
+        ep.wait_until(lambda: any(f.get("opId") == op["opId"] for f in ep.frames("rpc-result")))
+        result = next(f for f in ep.frames("rpc-result") if f.get("opId") == op["opId"])
+        self.assertEqual(result["outcome"], {"state": "done", "result": {}})
+        status, got = self.decision("toolu_huge1")
+        self.assertEqual((status, got["decision"]["behavior"], got["by"]), (200, "allow", member))
+        self.settle("toolu_huge1", "allow", member)
+        local = subprocess.Popen([sys.executable, "-B", str(SCRIPTS / "sminos.py"), "decide", S1, "toolu_huge2",
+                                  "deny"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        status, got = self.decision("toolu_huge2")
+        self.assertEqual((status, got["decision"]["behavior"], got["by"]), (200, "deny", "cli"))
+        self.settle("toolu_huge2", "deny", "cli")
+        self.assertEqual(local.wait(30), 0, local.communicate()[1])
+        self.assertEqual(ep.state()["conns"], 1, "the socket never dropped")
+
+
 def tearDownModule():
     shutil.rmtree(BASE, ignore_errors=True)
 
