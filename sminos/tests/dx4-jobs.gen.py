@@ -1,6 +1,8 @@
 """Writes dx4-jobs.json: the shared vectors of DX4's widened `subagents` body and its
 `output` answer (the desk composite, DX4 "Jobs and agent status", "`output`"), which
-jobs_parity.py pins sminos_jobs to and DC9's fake machine vendors.
+jobs_parity.py pins sminos_jobs to and DC9's fake machine vendors. MAWS's local
+lane A (src/main/lane-a/jobs.ts, P5 O9 M5) ports the rules and holds a copy of
+the file: a change to it goes to the MAWS architect, who re-syncs that copy.
 
 Every expected body here is written by hand from DX4's rules, never computed by
 sminos_jobs: the file is the contract both producers are held to. Rows are shaped as
