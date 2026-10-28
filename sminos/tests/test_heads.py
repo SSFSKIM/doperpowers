@@ -340,6 +340,23 @@ class Renamed(Machine):
         self.assertEqual([e["text"] for e in sminos.log_read(self.p) if e["writer"] == "renamed/human"], ["late"])
         self.assertEqual(sminos.queued_operators(self.p), {})
 
+    def test_an_uplink_outliving_a_reenrolment_under_another_name_drains_nothing(self):
+        """`hub enroll --replace --name renamed` while the old uplink runs: until its
+        supervisor restarts it, that stream is testhost's and leaves renamed's queue alone."""
+        self.enrol()
+        old = hublog.HubLog(self.p, {"key": base64.urlsafe_b64decode(KEY + "="), "machine": "testhost"})
+        sminos.write_json(os.path.join(os.environ["SMINOS_HOME"], "daemon", "hub.json"),
+                          {"hub": "http://127.0.0.1:9", "org": "org-1", "machine": "renamed", "client_id": "c",
+                           "client_secret": "s", "key": KEY, "former": {"testhost": []},
+                           "enrolled": "2026-10-29T00:00:00Z"}, mode=0o600)
+        sminos.mark_enrolled("renamed", "2026-10-29T00:00:00Z")
+        sminos.forget_caches()
+        self.assertIsNone(sminos.log_append(self.p, "renamed/human", "human",
+                                            **{"from": "human", "to": "*", "text": "as renamed"})["seq"])
+        old.on_have({"have": {}})
+        self.assertEqual(sminos.log_read(self.p), [], "nothing drained into the old name's writer")
+        self.assertEqual([e["text"] for e in sminos.queued_read(self.p, "renamed/human")], ["as renamed"])
+
     def test_a_fragment_a_queue_was_left_with_does_not_swallow_the_next_append(self):
         self.enrol()
         self.say("early")
