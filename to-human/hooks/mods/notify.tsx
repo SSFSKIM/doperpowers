@@ -45,7 +45,7 @@ export function previewOf(content: readonly { type: string; [field: string]: unk
  * Whether this session tells the person of a message itself. A sminos
  * internal fork (`SMNS_INTERNAL`, a headless session under the person's
  * settings that nobody reads) does not, nor does a MAWS launch
- * (`MAWS_NATIVE_TO_HUMAN` set, at any value, as for the view): MAWS is the
+ * (`MAWS_NATIVE_TO_HUMAN` set to any non-empty value, as the view reads it): MAWS is the
  * notification surface there, banners only for what it marks essential, when
  * the person is not viewing that session, under their settings, and it never
  * edits the person's `Notification` hooks that would ring for this one.
