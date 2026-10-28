@@ -81,6 +81,10 @@ member too, seat-less, from the first call that reads its project.
                    .smns names the org alone, each machine's enrollment the hub's URL; in a repository
                    that resolves by its remote it pins that project's id. show: its source, or why none
     sminos daemon   run [--interval 5] | tick | install | status   # mirror sync and delivery, per machine
+    sminos daemon   owed                                  # what this machine still owes, a line per
+                   project: deliveries and words not yet made, its own events and kept messages not
+                   yet taken upstream; exit 0 only when nothing is (events waiting for closed
+                   sessions owe nothing). Reads beside a running daemon; never a message body
     sminos daemon   policy [--read-only on|off] [--ceiling MODE|settings]   # the owner's setting: what this
                    machine admits from outside. Read-only records what is written elsewhere and delivers
                    none of it; the ceiling bounds a spawn. A session reports it, never changes it unasked
@@ -10871,7 +10875,7 @@ def tick(project):
 
 def cmd_daemon(a):
     if not a.op:
-        die("usage: sminos daemon run [--interval N] | tick | install | status | policy [--read-only on|off] "
+        die("usage: sminos daemon run [--interval N] | tick | install | status | owed | policy [--read-only on|off] "
             "[--ceiling MODE|settings]")
     daemon_module().cmd_daemon(a)
 
@@ -11090,7 +11094,7 @@ def build_parser():
     dsub = dm.add_subparsers(dest="op")
     dr = dsub.add_parser("run", add_help=False)
     dr.add_argument("--interval", type=float, default=5.0)
-    for op in ("tick", "install", "status", "uplink", "probe"):
+    for op in ("tick", "install", "status", "owed", "uplink", "probe"):
         dsub.add_parser(op, add_help=False)
     dp = dsub.add_parser("policy", add_help=False)
     dp.add_argument("--read-only", dest="read_only", choices=("on", "off"), default=None)
@@ -11292,6 +11296,11 @@ def main(argv=None):
         # A diagnostic: it reads the RPC ledger's file and changes nothing,
         # so no migration rewrites a record or takes the registry's lock.
         cmd_rpc_query(a)
+        return
+    if a.cmd == "daemon" and a.op == "owed":
+        # B2's gate on a machine about to cut over (O14), run beside its
+        # daemon: it reads what is owed and never migrates or takes a lock.
+        cmd_daemon(a)
         return
     if a.cmd == "who" and not a.target:
         # The address mod's, before a session's model requests: it reads and

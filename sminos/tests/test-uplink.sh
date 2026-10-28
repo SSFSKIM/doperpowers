@@ -1032,10 +1032,66 @@ sleep 1
 assert_equals "$(epq "len(d['hellos']) - $HELLOS")" 1 "rl10.json back: the uplink speaks to the endpoint again, once"
 assert_equals "$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["cutover"])' "$SMINOS_HOME/daemon/identity.json")" \
   "$CUTOVER" "the cutover's time is kept"
+assert_equals "$(epq 'd["legacy"]["key"]')" "\"$KEY\"" "the endpoint holds the DX1 key"
+
+# ---- the cutover undone (O12 M7c, O14's undo): which order the two local
+# steps take decides where the machine ends. identity.json removed while the
+# endpoint still serves RL10 cuts it over again at once, through the probe;
+# the endpoint taken out first (rl10.json and its socket gone, as `mawsd
+# endpoint unenroll` leaves it), then identity.json, leaves RL10 for good:
+# DX2 from hub.json when one is there, no uplink when none is.
+echo "  the cutover undone:"
+cutover_at() { python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["cutover"])' "$SMINOS_HOME/daemon/identity.json"; }
+status_has() { "$SMINOS" daemon status | grep -Fq "$1"; }
+until_true 200 status_has "uplink: RL10 (local-only), running" || true
+UP="$(uplink_pid)"
+CUTOVER="$(cutover_at)"
+rm "$SMINOS_HOME/daemon/identity.json"
+until_true 200 cut_over || true
+assert_equals "$(cut_over && echo there || echo none)" there \
+  "identity.json removed while the endpoint serves RL10: the probe cuts the machine over again"
+assert_contains "$(cat "$DLOG")" "uplink (pid $UP): identity.json is gone, which undoes the cutover: restarting it on the hub (DX2)" \
+  "the supervisor left RL10 for the hub first (daemon.log)"
+if [ "$(cutover_at)" != "$CUTOVER" ]; then pass "at a new cutover time"; else fail "at a new cutover time"; fi
+until_true 200 status_has "uplink: RL10 (local-only), running" || true
+UP="$(uplink_pid)"
+run "$SMINOS" daemon status
+assert_contains "$OUT" "uplink: RL10 (local-only), running (pid $UP" "and the uplink is back on RL10"
+cp "$SMINOS_HOME/daemon/identity.json" "$T/identity.kept"
+
+ep stop >/dev/null
+until_true 100 dead "$UP" || true
+if dead "$UP"; then pass "the endpoint taken out (rl10.json and its socket gone): the RL10 uplink exits"; else
+  fail "the endpoint taken out (rl10.json and its socket gone): the RL10 uplink exits"; fi
+until_true 200 status_has "uplink: cut over; the endpoint is not running" || true
+assert_equals "$(status_has "uplink: cut over; the endpoint is not running" && echo yes)" yes \
+  "daemon status: cut over; the endpoint is not running"
+rm "$SMINOS_HOME/daemon/identity.json"
+on_dx2() { local p; p="$(uplink_pid)"; [[ -n "$p" && "$p" != "$UP" ]] && alive "$p" && [ "$(ctl opened "$HP")" = yes ]; }
+until_true 200 on_dx2 || true
+UP="$(uplink_pid)"
+dx2_holds "then identity.json removed"
+run "$SMINOS" daemon status
+assert_contains "$OUT" "uplink: running (pid $UP" "daemon status shows the hub's uplink"
+assert_not_contains "$OUT" "RL10" "and nothing of RL10"
+sleep 2
+assert_equals "$(cut_over && echo there || echo none)" none "nothing cuts it over again: no endpoint is there to probe"
+assert_equals "$(uplink_pid)" "$UP" "and the hub's uplink runs on"
+
+mv "$SMINOS_HOME/daemon/hub.json" "$T/hub.kept"
+until_true 100 dead "$UP" || true
+cp "$T/identity.kept" "$SMINOS_HOME/daemon/identity.json"
+until_true 200 status_has "uplink: cut over; the endpoint is not running" || true
+assert_equals "$(status_has "uplink: cut over; the endpoint is not running" && echo yes)" yes \
+  "cut over again with no hub.json and no endpoint: the endpoint is not running"
+rm "$SMINOS_HOME/daemon/identity.json"
+sleep 2
+run "$SMINOS" daemon status
+assert_not_contains "$OUT" "uplink" "then identity.json removed with no hub.json: no uplink runs, local-only, as on a machine never enrolled"
+assert_equals "$(cut_over && echo there || echo none)" none "and nothing cuts it over again"
 kill "$RUN"
 set +e; wait "$RUN"; set -e
 assert_not_contains "$(cat "$DLOG")" "$KEY" "the DX1 key handed to the endpoint is in no log line"
-assert_equals "$(epq 'd["legacy"]["key"]')" "\"$KEY\"" "the endpoint holds it"
 
 echo
 if [ "$FAILURES" -eq 0 ]; then

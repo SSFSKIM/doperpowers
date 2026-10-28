@@ -134,6 +134,7 @@ start (the `smns-guide.sh` hook).
     sminos daemon tick                 # one iteration over every project known here
     sminos daemon install              # write the machine's service: a launchd agent (macOS), a systemd user unit (Linux)
     sminos daemon status               # whether a loop and its uplink run; each project's last tick
+    sminos daemon owed                 # what this machine still owes, per project; exit 0 when nothing
 
 Install it on every machine whose sessions should reach, and be reached
 by, other machines. Each tick, per project: sync the mirror (projects
@@ -143,6 +144,20 @@ deliveries (a failed push is retried each tick and given up after 60
 with a line in `$SMINOS_HOME/daemon.log`); every five minutes, `derive --all`. On an
 enrolled machine the loop also keeps its `uplink` child, the one stream
 to the hub that carries every hub project both ways.
+
+`daemon owed` prints a line for each project that still owes something —
+the count of each kind and the oldest item's age, and at most three
+references a kind (`writer:seq → recipient`), never a message body: `deliveries` owed
+to a session of this machine not yet made; `words`, those a cut-over
+machine's endpoint has yet to decide; and what has not reached the hub or
+the endpoint yet — `upload` (this machine's own events), `kept` (the
+settlements and RPC messages kept under `daemon/`), `host` (a cut-over
+machine's unsent host events) and `outcomes` (delivery outcomes). It
+prints `nothing owed` and exits 0 when no project owes anything, else
+exits 1. Events owed to a closed terminal session are on a line of their
+own and owe nothing: they are in the log, delivered if the session comes
+back. It only reads, so it runs beside the daemon; O14's cutover gate
+runs it before a machine moves to its endpoint.
 
 `daemon install` writes, on macOS,
 `~/Library/LaunchAgents/com.doperpowers.sminos-daemon.plist` and prints

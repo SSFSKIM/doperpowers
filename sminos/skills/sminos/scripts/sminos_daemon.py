@@ -58,6 +58,7 @@ on Linux (it loads nothing); `status` prints the last tick per project.
 
 import contextlib
 import fcntl
+import glob
 import hashlib
 import json
 import os
@@ -67,6 +68,7 @@ import subprocess
 import sys
 import threading
 import time
+import types
 import uuid as uuidlib
 from xml.sax.saxutils import escape
 
@@ -1651,6 +1653,169 @@ def cmd_status(_a):
                                                  ", still running" if derive_running(d) else ""))
 
 
+# `daemon owed`: what this machine still owes, read beside a running daemon
+# from what it and its uplink keep on disk, never from their memory. Each
+# kind, in the order a line names them:
+#   deliveries  events owed to a member of this machine (a session joined
+#               from here), from its delivery record's settled prefix
+#               (delivered/<session>.json), the revoked marks left out
+#   words       those of them a cut-over machine's endpoint decides (a
+#               person's words, sminos.words_route "ask"), asked or not: an
+#               ask out is the uplink's memory, the event owed is its record
+#   upload      this machine's own events (its writers under its name now)
+#               past `taken` in the project's uplink.json (sminos_hublog)
+#   kept        the settlements (requests-owed.json, but those relayed) and
+#               the compaction and op messages (rpcs-owed.json) kept under
+#               daemon/ (sminos_owed), by the project each names
+#   host        a cut-over machine's host store past `host_sent`
+#   outcomes    delivery outcomes not yet posted (outcomes.jsonl)
+# The last four only for a project of this machine's upstream (a hub project
+# of the org it is enrolled in, or cut over to): with none, nothing is owed
+# up. Events owed to a closed terminal session (sminos_outcomes.closed_
+# sessions: reported `recorded`, delivered if it comes back) are counted on
+# their own line and owed by no one: they are in the log, which nothing loses.
+OWED_KINDS = ("deliveries", "words", "upload", "kept", "host", "outcomes")
+OWED_REFS = 3   # references printed per kind, at most
+
+
+def uplink_state(project):
+    """The project's uplink.json as the uplink last wrote it; {} when none."""
+    try:
+        with open(os.path.join(project.home, sminos.UPLINK_STATE)) as f:
+            d = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return d if isinstance(d, dict) else {}
+
+
+def seq_vector(raw):
+    return {w: s for w, s in raw.items() if isinstance(w, str) and type(s) is int} if isinstance(raw, dict) else {}
+
+
+def file_age(path):
+    """A kept file's last write (epoch s): its items are at least as old."""
+    try:
+        return os.stat(path).st_mtime
+    except OSError:
+        return None
+
+
+def owed_kept():
+    """{project id: [(at, ref)]} of the messages kept under daemon/ that no
+    hub or endpoint has taken yet."""
+    out = {}
+    owed, reqs = sminos.sibling_module("sminos_owed"), sminos.sibling_module("sminos_requests")
+
+    def said(line):
+        print("sminos: " + line, file=sys.stderr)
+
+    relayed = reqs.load_relayed()
+    for item in owed.Kept(reqs.OWED_FILE, said).load():
+        if not (isinstance(item, dict) and isinstance(item.get("project"), str)):
+            continue
+        sid = str(item.get("session") or "")
+        if (item.get("request"), item.get("t")) in relayed.get(sid, ()):
+            continue   # done with: a restarted uplink passes it by
+        out.setdefault(item["project"], []).append((file_age(daemon_path(reqs.OWED_FILE)), "settled %s" % sid[:8]))
+    rpcs = "rpcs-owed.json"   # sminos_rpc.OWED_FILE, not imported for a name
+    for frame in owed.Kept(rpcs, said).load():
+        m = frame.get("message") if isinstance(frame, dict) else None
+        if isinstance(m, dict) and isinstance(m.get("project"), str):
+            out.setdefault(m["project"], []).append(
+                (file_age(daemon_path(rpcs)), "%s %s" % (m.get("kind"), str(m.get("session") or "")[:8])))
+    return out
+
+
+def owed_in(project, upstream, kept):
+    """({kind: [(at, ref)]}, [(at, ref)] owed to closed sessions) of one
+    project; `upstream`, whether it is a project of this machine's upstream."""
+    outcomes = sminos.sibling_module("sminos_outcomes")
+    out = {k: [] for k in OWED_KINDS}
+    events = sminos.log_read(project)
+    info = sminos._projection(events)
+    to = sminos.addressees(events)
+    closed = outcomes.closed_sessions(types.SimpleNamespace(info=info))
+    cut, gone = rl10.cut_over(), []
+    for sid, r in sorted(info.items()):
+        joined = r["joined"] or {}
+        member = bool(r["latest"]) and r["latest"]["kind"] == "joined" \
+            and sminos.is_self(str(joined.get("machine") or ""), sid)
+        if sid not in to or not (member or sid in closed):
+            continue
+        alias = str((r["renamed"] or joined).get("alias") or sid[:8])
+        for e in sminos._owed(to[sid], sid, sminos.delivered_load(project, sid)):
+            item = (sminos._ts_epoch(e.get("ts")), "%s → %s" % (sminos.event_ref(e), alias))
+            if not member:
+                gone.append(item)
+            elif cut and sminos.words_route(project, e) == "ask":
+                out["words"].append(item)
+            else:
+                out["deliveries"].append(item)
+    if not upstream:
+        return out, gone
+    state = uplink_state(project)
+    me = sminos.host_name()
+    for store, sent, kind in (("log", seq_vector(state.get("taken")), "upload"),
+                              (sminos.HOST_STORE, seq_vector(state.get("host_sent")), "host")):
+        prefix = glob.escape(me.replace("/", ".") + ".")
+        for path in sorted(glob.glob(os.path.join(glob.escape(project.home), store, prefix + "*.jsonl"))):
+            for e in sminos._log_file_events(path):
+                # The host pass sends a session's events alone (sminos_uplink.host_pass).
+                if e["writer"].startswith(me + "/") and e["seq"] > sent.get(e["writer"], 0) \
+                        and (kind == "upload" or sminos.writer_session(e["writer"])):
+                    out[kind].append((sminos._ts_epoch(e.get("ts")), sminos.event_ref(e)))
+    out["kept"] = list(kept.get(project.id, ()))
+    box = outcomes.Outbox(project)
+    for rec in box.read():
+        ev = rec.get("event") if isinstance(rec.get("event"), dict) else {}
+        if isinstance(ev.get("writer"), str) and type(ev.get("seq")) is int:
+            out["outcomes"].append((file_age(box.path), "%s → %s" % (sminos.event_ref(ev),
+                                                                     str(rec.get("session") or "")[:8])))
+    return out, gone
+
+
+def owed_line(name, items, what):
+    """`<project>: <what> N, oldest A — <kind> N [refs, …], …`: the counts
+    and at most OWED_REFS references a kind, never a body."""
+    ats = [at for got in items.values() for at, _ in got if at is not None]
+    oldest = ", oldest %s" % sminos.short_age(max(0, time.time() - min(ats))) if ats else ""
+    kinds = []
+    for kind, got in items.items():
+        if got:
+            refs = [ref for _, ref in got[:OWED_REFS]] + (["…"] if len(got) > OWED_REFS else [])
+            kinds.append("%s %d [%s]" % (kind, len(got), ", ".join(refs)))
+    return "%s: %s %d%s — %s" % (name, what, sum(len(got) for got in items.values()), oldest, ", ".join(kinds))
+
+
+def cmd_owed(_a):
+    """`daemon owed`: a line per project that owes anything, one per project
+    with events waiting for closed sessions, "nothing owed" when none owes;
+    exit 1 when anything is owed, else 0. It only reads: no lock, no write,
+    no migration (sminos.main routes it before one)."""
+    e = sminos.enrollment()
+    kept = owed_kept() if e is not None else {}
+    owing, names = False, {}
+    for p in sorted(sminos.known_projects(all_seats=[]), key=lambda p: (p.name, p.id)):
+        names[p.id] = p.name
+        upstream = e is not None and isinstance(p.hub, dict) and p.hub.get("org") == e["org"] \
+            and not sminos.org_retired(p.id)
+        items, gone = owed_in(p, upstream, kept)
+        if upstream:
+            kept.pop(p.id, None)
+        if any(items.values()):
+            owing = True
+            print(owed_line(p.name, items, "owed"))
+        if gone:
+            print(owed_line(p.name, {"closed sessions": gone}, "waiting") +
+                  " (in the log, delivered if they come back: not owed)")
+    for pid, got in sorted(kept.items()):
+        owing = True   # kept for a project not known here, or no longer an upstream one: still not taken
+        print(owed_line(names.get(pid, pid), {"kept": got}, "owed"))
+    if not owing:
+        print("nothing owed")
+    sys.exit(1 if owing else 0)
+
+
 def cmd_daemon(a):
     # The daemon acts for the machine, never as a session: a `by`, a sender,
     # or a derivation fork must not take the identity of whoever started it.
@@ -1664,4 +1829,5 @@ def cmd_daemon(a):
     if a.op == "policy":
         sminos.sibling_module("sminos_policy").cmd_policy(a)
         return
-    {"run": cmd_run, "tick": cmd_tick, "install": cmd_install, "status": cmd_status}[a.op](a)
+    {"run": cmd_run, "tick": cmd_tick, "install": cmd_install, "status": cmd_status,
+     "owed": cmd_owed}[a.op](a)

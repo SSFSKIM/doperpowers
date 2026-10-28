@@ -6,8 +6,8 @@ with `git archive`), so a change is measured before and after.
 
     python3 bench_scale.py tick    <scripts-dir> [--ticks N]
     python3 bench_scale.py profile <scripts-dir> <out.prof>
-    python3 bench_scale.py run     <scripts-dir> [--seconds S] [--warmup W] [--import-events N]
-                                                 [--profile-uplink OUT]
+    python3 bench_scale.py run     <scripts-dir> [--rl10 [--words W]] [--seconds S] [--warmup W]
+                                                 [--import-events N] [--profile-uplink OUT]
     python3 bench_scale.py verbs   <scripts-dir>
     python3 bench_scale.py opens   <scripts-dir> [--large G] [--large-rows N] [--warm-after S]
 
@@ -37,6 +37,22 @@ LOCAL local projects kept as history.
   then, with --import-events, how long N events of the other machine take
   from the hub, one `events` frame each, into the log here.
   --profile-uplink runs the uplink alone under cProfile instead.
+  With --rl10 (O14's B2 step 2, O12 M7c), against the endpoint stand-in
+  (endpoint_standin.py) in place of the hub's: the machine is cut over by
+  the stand-in's complete welcome to a probe (`daemon probe`, the
+  supervisor's) before `daemon run` starts, its uplink the RL10 child. Each live session in a hub checkout is owed W `human` events,
+  one from each of W members (`hub/mem-<k>`, stored with their `verified`
+  signer as an arrival over RL10 is), which the stand-in never answers: each
+  stays owed through the window, asked `words?` again at every pass once its
+  ask's deadline passed, so every pass has the words-gated work of that
+  count to do. The uplink appends a line per words pass to the file
+  SMINOS_WORDS_TIMES names; the run reports each process's CPU, the passes
+  in the window (count, p50, p95, max wall time) and the longest gap
+  between passes (the window's ends included), and checks B2's gate: p95
+  under 1 s, the uplink under 5 % of a core, a pass at least every 10 s (its
+  period, WORDS_EVERY, plus one second for the tick loop's poll and the
+  tick itself). --import-events N then arrive as RL10 `events` frames, one
+  event each. Exits 1 when the gate fails.
 - `verbs`: the wall and CPU time of `list --org` and `projects`.
 - `opens` (the desk open-fast spec's A3): G of the live sessions in hub
   checkouts get a transcript of N rows (15,000, shaped as bench_rig.py
@@ -230,6 +246,18 @@ class Env:
         for pid in self.hub_ids:
             n = a.mini if pid == mini else a.remote
             self.remote_members(pid, n, a.says if pid != mini else 0)
+        # RL10 (run --rl10): a person's words owed to each live session in a hub checkout, one event from each
+        # of WORDS members' devices, stored as an arrival over RL10 is (its signer under `verified`).
+        self.words_owed = 0
+        if getattr(a, "rl10", False):
+            for i, s in enumerate(x for x in self.live_sessions if x["project"] in project_of.values()):
+                self.words_owed += a.words
+                for k in range(a.words):
+                    self.log(s["project"], "hub/mem-%d" % k, [{
+                        "kind": "human", "from": "member %d" % k, "member": "mem-%d" % k,
+                        "to": [{"session": s["sid"], "alias": "live%d" % i}], "text": "words %d for %d" % (k, i),
+                        "verified": {"signer": {"kind": "device", "member": "mem-%d" % k, "device": "dev-%d" % k,
+                                                "keyId": "k-dev-%d" % k}}}])
         write(os.path.join(self.sh, "daemon", "hub.json"), {
             "hub": hub_url, "org": ORG, "machine": MACHINE, "client_id": "cid-1", "client_secret": "secret-1",
             "key": KEY, "enrolled": "2026-10-01T00:00:00Z"})
@@ -382,6 +410,8 @@ def import_burst(a, env, url, n, give_up=120.0):
 
 
 def cmd_run(a, env):
+    if a.rl10:
+        return cmd_run_rl10(a, env)
     port_file = os.path.join(env.root, "hub.port")
     hub = subprocess.Popen([sys.executable, os.path.join(HERE, "hub_standin.py"), port_file, "cid-1", "secret-1",
                             "15000"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -445,6 +475,200 @@ def cmd_run(a, env):
                 run.kill()
         hub.kill()
         hub.wait()
+
+
+class EndpointStandin:
+    """endpoint_standin.py serving the machine's RL10 socket, its identity
+    complete (so its welcome cuts the machine over), answering no `words?`;
+    `ctl` speaks to its control socket directly (a `send` is one frame
+    down the live connection)."""
+
+    IDENTITY = {"org": ORG, "hub": "http://127.0.0.1:9", "name": MACHINE, "former": [], "ref": "ref-" + MACHINE,
+                "enrolled": "2026-10-01T00:00:00.000Z"}
+
+    def __init__(self, env):
+        self.dir = os.path.join(env.root, "ep")
+        self.proc = subprocess.Popen([sys.executable, os.path.join(HERE, "endpoint_standin.py"), "serve", self.dir,
+                                      json.dumps({"identity": self.IDENTITY})],
+                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            deadline = time.time() + 10
+            while not os.path.exists(os.path.join(self.dir, "ctl.sock")):
+                if time.time() > deadline or self.proc.poll() is not None:
+                    raise RuntimeError("the endpoint stand-in did not start in 10 s")
+                time.sleep(0.05)
+        except BaseException:
+            self.stop()
+            raise
+        env.env["SMINOS_RL10"] = os.path.join(self.dir, "rl10.json")
+        env.env.pop("MAWS_USER_DATA", None)
+
+    def ctl(self, op, arg=None):
+        import socket
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.settimeout(60)
+        try:
+            sock.connect(os.path.join(self.dir, "ctl.sock"))
+            sock.sendall((json.dumps({"op": op, "arg": arg or {}}) + "\n").encode())
+            data = bytearray()
+            while chunk := sock.recv(1 << 16):
+                data += chunk
+        finally:
+            sock.close()
+        answer = json.loads(data.decode())
+        if "error" in answer:
+            raise RuntimeError("the endpoint stand-in's %s: %s" % (op, answer["error"]))
+        return answer
+
+    def stop(self):
+        self.proc.kill()
+        self.proc.wait()
+
+
+def import_burst_rl10(env, ep, n, give_up=120.0):
+    """`n` events of a new session of the other machine, sent down the RL10
+    socket by the stand-in, one `events` frame each, each wrapped as the
+    endpoint sends another's event (`{event, signer}`), into the other
+    machine's project; (seconds until the last is in the log here, how many
+    arrived)."""
+    pid, sid = machine_project_id(ORG, OTHER), str(uuid.uuid4())
+    writer = "%s/%s" % (OTHER, sid)
+    path = os.path.join(env.sh, "projects", pid, "log", writer.replace("/", ".") + ".jsonl")
+    signer = {"kind": "machine", "ref": "ref-" + OTHER, "name": OTHER, "keyId": "k-" + OTHER}
+
+    def arrived():
+        try:
+            with open(path) as f:
+                return sum(1 for line in f if line.strip())
+        except OSError:
+            return 0
+
+    t0 = time.time()
+    for seq in range(1, n + 1):
+        ts = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime())
+        e = {"ts": ts, "writer": writer, "seq": seq, "kind": "say", "session": sid, "to": [], "text": "burst %d" % seq}
+        ep.ctl("send", {"frames": [{"t": "events", "project": pid, "events": [{"event": e, "signer": signer}]}]})
+    while arrived() < n and time.time() - t0 < give_up:
+        time.sleep(0.1)
+    return time.time() - t0, arrived()
+
+
+def percentile(xs, q):
+    """The nearest-rank q-th percentile of xs (sorted ascending)."""
+    import math
+    return xs[max(0, math.ceil(q / 100 * len(xs)) - 1)]
+
+
+WORDS_EVERY, POLL_SLACK = 10.0, 1.0   # sminos_uplink.WORDS_EVERY; the tick loop's poll and the tick itself
+GATE_P95, GATE_CPU = 1.0, 5.0         # O14 B2 step 2: p95 per pass under 1 s, the uplink under 5 % of a core
+
+
+def words_passes(path, t0, t1):
+    """The words passes the uplink timed (SMINOS_WORDS_TIMES) that began in [t0, t1]."""
+    try:
+        with open(path) as f:
+            rows = [json.loads(line) for line in f if line.strip()]
+    except OSError:
+        return []
+    return [r for r in rows if t0 <= r["at"] <= t1]
+
+
+def cut_over(env):
+    return os.path.exists(os.path.join(env.sh, "daemon", "identity.json"))
+
+
+def cmd_run_rl10(a, env):
+    """`run --rl10`: see the module's docstring. Exit status 1 when B2's gate fails."""
+    ep = EndpointStandin(env)
+    times = os.path.join(env.root, "words-passes.jsonl")
+    env.env["SMINOS_WORDS_TIMES"] = times
+    run = None
+    try:
+        log = open(os.path.join(env.root, "run.out"), "w")
+        # Cut over first, by the stand-in's welcome to a probe (what `daemon run`'s supervisor runs): a first
+        # tick on DX2 would deliver the owed words as a machine not cut over does, before the probe's welcome.
+        subprocess.run([sys.executable, os.path.join(a.scripts, "sminos.py"), "daemon", "probe"], env=env.env,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if not cut_over(env):
+            print("the endpoint stand-in's welcome did not cut the machine over")
+            return 1
+        if a.profile_uplink:
+            # Joined by a tick, then the uplink alone under cProfile.
+            subprocess.run([sys.executable, os.path.join(a.scripts, "sminos.py"), "daemon", "tick"], env=env.env,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            run = subprocess.Popen([sys.executable, os.path.abspath(__file__), "_profiled", a.scripts,
+                                    a.profile_uplink, "daemon", "uplink"], env=env.env, stdout=log,
+                                   stderr=subprocess.STDOUT)
+            time.sleep(a.warmup + a.seconds)
+            return 0
+        run = subprocess.Popen([sys.executable, os.path.join(a.scripts, "sminos.py"), "daemon", "run", "--interval",
+                                "5"], env=env.env, stdout=log, stderr=subprocess.STDOUT)
+        time.sleep(a.warmup)
+        status = subprocess.run([sys.executable, os.path.join(a.scripts, "sminos.py"), "daemon", "status"],
+                                env=env.env, capture_output=True, text=True).stdout
+        if not cut_over(env) or "uplink: RL10 (local-only), running" not in status:
+            print("after the %.0f s warm-up the machine is not on RL10: %s" % (
+                a.warmup, next((x for x in status.splitlines() if x.startswith("uplink")), "no uplink line")))
+            return 1
+        up = int(open(os.path.join(env.sh, "daemon", "uplink.lock")).read().split()[1])
+        r0, u0, e0, t0, seen = cpu_seconds(run.pid), cpu_seconds(up), cpu_seconds(ep.proc.pid), time.time(), \
+            ticks_ended(env)
+        stamps = set()
+        while time.time() - t0 < a.seconds:
+            time.sleep(0.5)
+            stamps |= ticks_ended(env) - seen
+        r1, u1, e1, t1 = cpu_seconds(run.pid), cpu_seconds(up), cpu_seconds(ep.proc.pid), time.time()
+        dt = t1 - t0
+        per_project = {}
+        for pid, _ in stamps:
+            per_project[pid] = per_project.get(pid, 0) + 1
+        owed = env.words_owed
+        print("window %.0f s after a %.0f s warm-up; %d ticks ended in it (interval 5 s); the uplink on RL10 "
+              "(local-only), cut over by the endpoint stand-in's welcome; %d words-gated events owed, never answered"
+              % (dt, a.warmup, max(per_project.values(), default=0), owed))
+        uplink_share = 100 * (u1 - u0) / dt
+        print("daemon run: %.1f CPU-s, %.1f%% of a core" % (r1 - r0, 100 * (r1 - r0) / dt))
+        print("uplink:     %.1f CPU-s, %.1f%% of a core" % (u1 - u0, uplink_share))
+        print("endpoint stand-in: %.1f CPU-s, %.1f%% of a core (not gated)" % (e1 - e0, 100 * (e1 - e0) / dt))
+        passes = words_passes(times, t0, t1)
+        walls = sorted(r["wall"] for r in passes)
+        ats = [t0] + sorted(r["at"] for r in passes) + [t1]
+        gap = max(b - x for x, b in zip(ats, ats[1:]))
+        if walls:
+            p95 = percentile(walls, 95)
+            print("words pass: %d passes; per pass p50 %.3f s, p95 %.3f s, max %.3f s (CPU p95 %.3f s); longest gap "
+                  "between passes %.2f s; asks out after the last: %d" % (
+                      len(walls), percentile(walls, 50), p95, walls[-1],
+                      percentile(sorted(r["cpu"] for r in passes), 95), gap, passes[-1]["asks"] if passes else 0))
+        else:
+            p95 = None
+            print("words pass: no pass in the window (longest gap %.2f s)" % gap)
+        if a.import_events:
+            took, got = import_burst_rl10(env, ep, a.import_events)
+            print("import: %d of %d events from the endpoint, one RL10 events frame each, in the log after %.1f s%s"
+                  % (got, a.import_events, took, "" if got == a.import_events else " (gave up)"))
+        with open(os.path.join(env.sh, "daemon.log")) as f:
+            failed = [line for line in f if "failed" in line]
+        if failed:
+            print("daemon.log says %d failures, the first: %s" % (len(failed), failed[0].strip()))
+        checks = [("words pass p95 under %g s" % GATE_P95, p95 is not None and p95 < GATE_P95,
+                   "no pass" if p95 is None else "%.3f s" % p95),
+                  ("uplink under %g%% of a core" % GATE_CPU, uplink_share < GATE_CPU, "%.1f%%" % uplink_share),
+                  ("a words pass at least every %g s" % WORDS_EVERY, gap <= WORDS_EVERY + POLL_SLACK,
+                   "longest gap %.2f s, %g s allowed past the period for the tick loop" % (gap, POLL_SLACK))]
+        for what, ok, said in checks:
+            print("gate: %s: %s (%s)" % (what, "ok" if ok else "FAILED", said))
+        ok = all(c[1] for c in checks)
+        print("gate (O14 B2 step 2): %s" % ("PASS" if ok else "FAIL"))
+        return 0 if ok else 1
+    finally:
+        if run is not None:
+            run.send_signal(signal.SIGTERM)
+            try:
+                run.wait(60)
+            except subprocess.TimeoutExpired:
+                run.kill()
+        ep.stop()
 
 
 def standin(env):
@@ -645,6 +869,11 @@ def main():
                                     help="after the window, time N events from the hub, one frame each, into the log")
     sub.choices["run"].add_argument("--profile-uplink", metavar="OUT",
                                     help="run the uplink alone under cProfile for warmup + seconds, its profile to OUT")
+    sub.choices["run"].add_argument("--rl10", action="store_true",
+                                    help="against the RL10 endpoint stand-in, the machine cut over; B2's gate checked")
+    sub.choices["run"].add_argument("--words", type=int, default=2, metavar="W",
+                                    help="--rl10: words-gated events owed to each live session in a hub checkout, "
+                                         "one from each of W members, never answered")
     sub.choices["opens"].add_argument("--large", type=int, default=6, metavar="G",
                                       help="live sessions in hub checkouts given a large transcript")
     sub.choices["opens"].add_argument("--large-rows", type=int, default=15000, metavar="N")

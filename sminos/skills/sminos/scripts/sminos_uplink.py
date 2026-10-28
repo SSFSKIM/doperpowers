@@ -160,6 +160,9 @@ UPLOAD_AHEAD = POST_LIMIT  # an upload pass queues no more while the log lane ho
 LANE_ENTRY = 256 * 1024    # RL10: the host and words passes queue lane entries of at most this many bytes
 WORDS_WAIT = 10.0         # RL10: how long a `words?` waits for its verdict; past it, a failed attempt (O12 M6)
 WORDS_EVERY = 10.0        # RL10: how often the words pass looks for owed words when nothing asked for one
+# RL10: a file each words pass appends one line to ({at, wall, cpu, asks}), when set: the measurement
+# O14's B2 gates the cutover on (sminos/tests/bench_scale.py run --rl10), and nothing else's
+WORDS_TIMES = "SMINOS_WORDS_TIMES"
 CONNECTIONS = itertools.count(1)  # the lanes' connections, numbered across the process's streams
 # What a reused connection's send raises when the hub closed it while idle:
 # nothing of the request reached it, so it goes once more on a fresh one.
@@ -2059,8 +2062,17 @@ class Link:
                 if not out:
                     hl.undraw()
                     return
-            self.log_lane.send([frame])
+            self.log_lane.send([frame], then=lambda refused, frame=frame, reach=reach: self.uploaded(
+                hl, frame, reach, refused))
             hl.took(reach)
+
+    @staticmethod
+    def uploaded(hl, frame, reach, refused):
+        """An upload answered (DX2: the hub's 200; RL10: written to the
+        endpoint): taken, unless the answer refused it whole (`taken`, what
+        `daemon owed` reads)."""
+        if id(frame) not in refused:
+            hl.keep_taken(reach)
 
     def deliveries(self, hl):
         """What delivery made of the events from outside, as DX4 `delivery`
@@ -2442,6 +2454,19 @@ class Link:
             self.words_due = True   # the next tick tries again
             raise
 
+    def words_pass(self, known):
+        """ask_words, timed into WORDS_TIMES's file when it names one."""
+        path = os.environ.get(WORDS_TIMES)
+        if not path:
+            return self.ask_words(known)
+        at, wall, cpu = time.time(), time.perf_counter(), time.thread_time()   # the main thread's own CPU
+        try:
+            self.ask_words(known)
+        finally:
+            with open(path, "a") as f:
+                f.write(json.dumps({"at": at, "wall": time.perf_counter() - wall, "cpu": time.thread_time() - cpu,
+                                    "asks": len(self.asks)}) + "\n")
+
     def queue_asks(self, batch):
         """One entry of the words pass, [(id, what it asks, frame)], queued,
         and each ask held from now until its verdict or its deadline."""
@@ -2576,7 +2601,7 @@ class Link:
                 if self.revoked_due:
                     self.mark_revoked(known)
                 if words and not held:
-                    self.ask_words(known)   # behind the upload pass, which a held tick did not run
+                    self.words_pass(known)   # behind the upload pass, which a held tick did not run
                 if self.restating and self.restated_due():
                     self.session_lane.send([{"t": "restated"}])
                     self.restating = False

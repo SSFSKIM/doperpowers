@@ -56,9 +56,13 @@ the endpoint refused for good never comes down: its position does, as
 
 Its state between streams lives in the project's home, `uplink.json`: the
 spent positions, the rejections not yet reported (a report whose POST
-failed is sent again after the next `hello`), and whether the hub's latest
+failed is sent again after the next `hello`), whether the hub's latest
 `have` named this machine the project's archive machine, with when it said
-so (`archive`, `archive_at`: what sminos_archive runs on).
+so (`archive`, `archive_at`: what sminos_archive runs on), and how far each
+of this machine's writers is known taken (`taken`: the hub's `have` for it,
+each upload the hub answered without refusing it or the endpoint's socket
+took, back only to below a writer it refused), which `sminos daemon owed`
+reads beside the running uplink.
 """
 
 import glob
@@ -437,6 +441,26 @@ class HubLog:
         d["host_sent"] = held
         self.save(d)
 
+    def taken(self):
+        """{writer: seq}: how far each of this machine's writers is known
+        taken upstream (the module's `taken`)."""
+        raw = self.state().get("taken")
+        return {w: s for w, s in raw.items() if isinstance(w, str) and type(s) is int} \
+            if isinstance(raw, dict) else {}
+
+    def keep_taken(self, reach, d=None):
+        """The writers in `reach` ({writer: seq}) taken up to there: each
+        moves forward only, written when one moved (into `d`, the state the
+        caller writes, when given)."""
+        held = self.taken()
+        moved = {w: s for w, s in reach.items() if self.own(w) and s > held.get(w, 0)}
+        if not moved:
+            return
+        state = self.state() if d is None else d
+        state["taken"] = {**held, **moved}
+        if d is None:
+            self.save(state)
+
     def unreported(self):
         raw = self.state().get("unreported")
         return [f for f in raw if isinstance(f, dict)] if isinstance(raw, list) else []
@@ -479,6 +503,7 @@ class HubLog:
         # The designation as the hub said it now: the tick loop's archive
         # duty (sminos_archive) runs on it.
         d = self.state()
+        self.keep_taken(have, d)   # what the hub holds of this machine's writers is taken
         if d.get("archive") != self.archive:
             log("the hub says this machine %s the archive of %s" % ("writes" if self.archive else "does not write",
                                                                    self.project.name))
@@ -527,6 +552,12 @@ class HubLog:
             seq = r.get("seq")
             at = seq if type(seq) is int and seq >= 1 else 0
             self.refused[writer] = min(at, self.refused.get(writer, at))
+            taken = self.taken()
+            if taken.get(writer, 0) >= max(at, 1):
+                # What it refused was taken as written: owed again from there.
+                d = self.state()
+                d["taken"] = {**taken, writer: max(at - 1, 0)}
+                self.save(d)
 
     def own(self, writer):
         return writer.startswith(self.machine + "/") or (self.archive and writer.startswith(LEGACY))
