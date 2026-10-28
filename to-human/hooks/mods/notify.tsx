@@ -42,6 +42,18 @@ export function previewOf(content: readonly { type: string; [field: string]: unk
 }
 
 /**
+ * Whether this session tells the person of a message itself. A sminos
+ * internal fork (`SMNS_INTERNAL`, a headless session under the person's
+ * settings that nobody reads) does not, nor does a MAWS launch
+ * (`MAWS_NATIVE_TO_HUMAN` set, at any value, as for the view): MAWS is the
+ * notification surface there, banners only for what it marks essential, when
+ * the person is not viewing that session, under their settings, and it never
+ * edits the person's `Notification` hooks that would ring for this one.
+ */
+export const isNotifying = (maws: string | undefined, internal: string | undefined) =>
+  (maws === undefined || maws === '') && internal === undefined
+
+/**
  * Tells the person when the model sends them a message: each response row
  * of the main conversation that carries one raises a native notification
  * through their own channel (`$.ui.notify`), which their `Notification`
@@ -50,13 +62,12 @@ export function previewOf(content: readonly { type: string; [field: string]: unk
  * turn that sends none raises nothing. Not awaited: the hooks it runs (a
  * settings hook calling out to a terminal app) would hold the row's append,
  * and the engine waits for each row's append before it passes the block on.
- * A sminos internal fork (`SMNS_INTERNAL`, a headless session under the
- * person's settings that nobody reads) raises none.
+ * None where the session does not notify (`isNotifying`).
  */
 export function registerNotify(on: On) {
   on('session.append', { door: 'response' }, async ($, e, next) => {
     const stored = await next(e)
-    if (e.agentId === undefined && stored.deny === undefined && (await $.env.get('SMNS_INTERNAL')) === undefined) {
+    if (e.agentId === undefined && stored.deny === undefined && isNotifying(await $.env.get('MAWS_NATIVE_TO_HUMAN'), await $.env.get('SMNS_INTERNAL'))) {
       const preview = previewOf(stored.message.content)
       if (preview !== undefined) {
         $.ui.notify(preview).catch((error) => $.ui.log(`to-human: a message's notification failed (${String(error)})`, { to: 'debug' }))

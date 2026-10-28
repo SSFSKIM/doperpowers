@@ -154,6 +154,16 @@ describe('the message tool', () => {
     expect(notified).toEqual([])
   })
 
+  test('in a MAWS session, whose notification surface is MAWS, a call is sent and notifies no one', async ($, on) => {
+    const { clock, registered, notified } = engine(on, { env: { MAWS_NATIVE_TO_HUMAN: '8' } })
+    await $.session.start({ cwd: '/w', surface: null, isInteractive: true })
+    expect(registered.map((r) => r.tool)).toEqual([MESSAGE_TOOL])
+    expect(await $.tool.call(call('Done.'))).toEqual({ result: SENT })
+    await clock.settle()
+
+    expect(notified).toEqual([])
+  })
+
   test('a notification that never settles does not hold the call', async ($, on) => {
     const { clock } = engine(on, { notify: () => new Promise<never>(() => {}) })
 

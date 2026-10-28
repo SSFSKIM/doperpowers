@@ -1,6 +1,6 @@
 import type { ApiContentBlock, On } from 'claude-code'
 
-import { previewLine } from './notify'
+import { isNotifying, previewLine } from './notify'
 
 /**
  * The message tool: how a session under the to-human output style sends its
@@ -212,7 +212,7 @@ const mawsHasOwnTool =(advertised: string | undefined) =>
  * this one). The style is read once, at the start: a session that
  * switches to the style in `/config` gets the tool at its next start. It is always loaded, so the first message costs no
  * ToolSearch. A call from the main conversation raises the person's
- * notification and returns `sent`; a subagent's is refused, since only the
+ * notification where the session notifies (`isNotifying`) and returns `sent`; a subagent's is refused, since only the
  * main conversation reaches the human. The notification is raised here, not
  * from the call's row, because the row is kept before the call runs and a
  * refused call sends nothing.
@@ -272,7 +272,7 @@ export function registerMessage(on: On) {
     }
     // Not awaited, as a span's notification is not: the person's hooks it runs would hold the call.
     const preview = previewLine(text)
-    if (preview !== undefined && (await $.env.get('SMNS_INTERNAL')) === undefined) {
+    if (preview !== undefined && isNotifying(await $.env.get('MAWS_NATIVE_TO_HUMAN'), await $.env.get('SMNS_INTERNAL'))) {
       $.ui.notify(preview).catch((error) => $.ui.log(`to-human: a message's notification failed (${String(error)})`, { to: 'debug' }))
     }
     return { result: SENT }
