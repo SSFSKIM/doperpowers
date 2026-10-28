@@ -13,6 +13,7 @@ import json
 import os
 import queue
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -383,6 +384,135 @@ class BenchOpens(unittest.TestCase):
                 bench_scale.standin(env)
         self.assertEqual(len(started), 1)
         self.assertIsNotNone(started[0].poll(), "the stand-in did not outlive its failed setup")
+
+
+def processes():
+    """{pid: (ppid, command)} of every live process on the machine (zombies left out)."""
+    out = subprocess.run(["ps", "-A", "-o", "pid=,ppid=,stat=,command="], capture_output=True, text=True).stdout
+    table = {}
+    for line in out.splitlines():
+        pid, ppid, stat, command = (line.split(None, 3) + [""])[:4]
+        if not stat.startswith("Z"):
+            table[int(pid)] = (int(ppid), command)
+    return table
+
+
+def descendants(root):
+    """{pid: command} of every live process under `root`."""
+    table, found, todo = processes(), {}, [root]
+    while todo:
+        parent = todo.pop()
+        for pid, (ppid, command) in table.items():
+            if ppid == parent and pid not in found:
+                found[pid] = command
+                todo.append(pid)
+    return found
+
+
+class BenchStops(unittest.TestCase):
+    """bench_scale.py stopped by SIGTERM or SIGINT (a timeout, a harness):
+    every process it started — the sessions, `daemon run` and its uplink,
+    the stand-in — is stopped, the synthetic machine removed, and it exits
+    128 + the signal."""
+
+    SCALE = ["--dirs", "3", "--per-dir", "1", "--seats", "4", "--local", "2", "--remote", "1", "--mini", "1",
+             "--says", "2", "--live", "3"]
+
+    def stopped(self, sig, argv, ready):
+        """Runs bench_scale.py `argv`, signals it once `ready(commands, output)`
+        holds of its descendants' command lines and its output, and checks
+        what it leaves."""
+        out_path = os.path.join(tempfile.mkdtemp(dir=T), "bench.out")
+        with open(out_path, "w") as out_file:
+            bench = subprocess.Popen([sys.executable, os.path.join(HERE, "bench_scale.py"), *argv, *self.SCALE],
+                                     stdout=out_file, stderr=subprocess.STDOUT,
+                                     env={k: v for k, v in os.environ.items() if k not in ("HOME", "SMINOS_HOME")})
+        started = {}
+
+        def output():
+            with open(out_path) as f:
+                return f.read()
+
+        def left():
+            table = processes()
+            return {pid: c for pid, c in started.items() if table.get(pid, (0, None))[1] == c}
+        try:
+            deadline = time.time() + 120
+            while time.time() < deadline and bench.poll() is None:
+                started = descendants(bench.pid)
+                if ready(list(started.values()), output()):
+                    break
+                time.sleep(0.2)
+            else:
+                self.fail("the bench never got there: %s\n%s" % (sorted(started.values()), output()))
+            bench.send_signal(sig)
+            bench.wait(90)
+            self.assertEqual(bench.returncode, 128 + sig, output())
+            deadline = time.time() + 15
+            while left() and time.time() < deadline:
+                time.sleep(0.2)
+            self.assertEqual(left(), {}, "left running after the bench's %s:\n%s" % (sig.name, output()))
+            built = next(line.split()[1] for line in output().splitlines() if line.startswith("built "))
+            self.assertFalse(os.path.exists(built), "the synthetic machine was left on disk")
+        finally:
+            if bench.poll() is None:
+                bench.kill()
+                bench.wait()
+            for pid in left():
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except OSError:
+                    pass
+            for line in output().splitlines():
+                if line.startswith("built /tmp/smb-"):
+                    shutil.rmtree(line.split()[1], ignore_errors=True)
+
+    def mid_warmup(self, sig, *mode):
+        standin = "endpoint_standin.py" if mode else "hub_standin.py"
+        self.stopped(sig, ["run", SCRIPTS, *mode, "--warmup", "120", "--seconds", "60"], lambda commands, _: (
+            any("daemon uplink" in c for c in commands) and any(standin in c for c in commands)
+            and sum(c.startswith("sleep 86399") for c in commands) == 3))
+
+    def test_sigterm_on_dx2(self):
+        self.mid_warmup(signal.SIGTERM)
+
+    def test_sigterm_on_rl10(self):
+        self.mid_warmup(signal.SIGTERM, "--rl10")
+
+    def test_sigint_on_rl10(self):
+        self.mid_warmup(signal.SIGINT, "--rl10")
+
+    def test_sigterm_mid_tick_in_process(self):
+        """`tick` runs the daemon's tick_all in the bench's own process,
+        which takes a SystemExit as one project's failure: the stop still
+        ends the run there, not after every tick asked for."""
+        self.stopped(signal.SIGTERM, ["tick", SCRIPTS, "--ticks", "100000"], lambda commands, out: (
+            "steady tick" in out and sum(c.startswith("sleep 86399") for c in commands) == 3))
+
+    def test_a_signal_while_a_child_starts_unwinds_only_once_it_is_known(self):
+        """A signal that lands while spawn (or run_child, which waits for its
+        child) starts a child is raised only once the child is in STARTED,
+        so the end's sweep finds it."""
+        sys.path.insert(0, HERE)
+        import bench_scale
+        real = subprocess.Popen
+        self.addCleanup(bench_scale._SIGNAL.update, got=None, raised=False, shield=0)
+
+        def popen(*args, **kwargs):
+            p = real(*args, **kwargs)
+            bench_scale._on_signal(signal.SIGTERM, None)
+            return p
+        for start in (bench_scale.spawn, bench_scale.run_child):
+            with self.subTest(start.__name__):
+                bench_scale._SIGNAL.update(got=None, raised=False, shield=0)
+                with mock.patch.object(bench_scale.subprocess, "Popen", popen):
+                    with self.assertRaises(bench_scale.Stopped):
+                        start(["sleep", "86399"])
+                child = bench_scale.STARTED[-1]
+                self.assertEqual(child.args, ["sleep", "86399"])
+                self.addCleanup(child.kill)
+                bench_scale.end_started()
+                self.assertIsNotNone(child.poll(), "the sweep ended it")
 
 
 if __name__ == "__main__":
