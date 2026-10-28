@@ -15,7 +15,9 @@ Every mode takes the scale's flags (--dirs, --seats, ...; --help lists them)
 and --joined-by <scripts-dir>, which makes the first tick, the one that joins
 every live session and seat, with another copy: the same events whichever
 copy writes them, so a slow copy's steady state is measured without waiting
-out its first tick.
+out its first tick. SIGTERM or SIGINT, in any mode, ends every process it
+started (the sessions, `daemon run` and its uplink, the stand-in), removes
+the synthetic machine unless --keep, and exits 128 + the signal.
 
 The machine (`testhost`, enrolled in org `org-1`): DIRS engine project
 directories under ~/.claude/projects, PER_DIR transcripts each; SEATS seat
@@ -236,7 +238,8 @@ class Env:
                 self.transcript(cwd, sid, "live work %d" % i)
                 size = "small"
             self.live_sessions.append({"sid": sid, "cwd": cwd, "size": size, "project": project_of.get(cwd, own)})
-            p = subprocess.Popen(["sleep", "86399"], start_new_session=True)
+            p = spawn(["sleep", "86399"], start_new_session=True, stdin=subprocess.DEVNULL,
+                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             self.sleepers.append(p)
             write(os.path.join(self.home, ".claude", "sessions", "%d.json" % p.pid), {
                 "pid": p.pid, "sessionId": sid, "cwd": cwd, "kind": "interactive", "entrypoint": "cli",
@@ -349,7 +352,7 @@ def cmd_profile(a, env):
 
 def cpu_seconds(pid):
     """A process's CPU time so far (user + system), from ps."""
-    out = subprocess.run(["ps", "-o", "time=", "-p", str(pid)], capture_output=True, text=True).stdout.strip()
+    out = run_child(["ps", "-o", "time=", "-p", str(pid)], capture_output=True, text=True).stdout.strip()
     if not out:
         return None
     days, _, rest = out.rpartition("-")
@@ -413,8 +416,8 @@ def cmd_run(a, env):
     if a.rl10:
         return cmd_run_rl10(a, env)
     port_file = os.path.join(env.root, "hub.port")
-    hub = subprocess.Popen([sys.executable, os.path.join(HERE, "hub_standin.py"), port_file, "cid-1", "secret-1",
-                            "15000"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    hub = spawn([sys.executable, os.path.join(HERE, "hub_standin.py"), port_file, "cid-1", "secret-1",
+                 "15000"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     run = None
     try:
         while not (os.path.exists(port_file) and open(port_file).read().strip()):
@@ -434,15 +437,15 @@ def cmd_run(a, env):
         if a.profile_uplink:
             # The uplink alone, this process its parent, under cProfile, once a
             # tick has joined the live sessions: no tick loop beside it.
-            subprocess.run([sys.executable, os.path.join(a.scripts, "sminos.py"), "daemon", "tick"], env=env.env,
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            run = subprocess.Popen([sys.executable, os.path.abspath(__file__), "_profiled", a.scripts,
-                                    a.profile_uplink, "daemon", "uplink"], env=env.env, stdout=log,
-                                   stderr=subprocess.STDOUT)
+            run_child([sys.executable, os.path.join(a.scripts, "sminos.py"), "daemon", "tick"], env=env.env,
+                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            run = spawn([sys.executable, os.path.abspath(__file__), "_profiled", a.scripts,
+                         a.profile_uplink, "daemon", "uplink"], env=env.env, stdout=log,
+                        stderr=subprocess.STDOUT)
             time.sleep(a.warmup + a.seconds)
             return
-        run = subprocess.Popen([sys.executable, os.path.join(a.scripts, "sminos.py"), "daemon", "run", "--interval",
-                                "5"], env=env.env, stdout=log, stderr=subprocess.STDOUT)
+        run = spawn([sys.executable, os.path.join(a.scripts, "sminos.py"), "daemon", "run", "--interval",
+                     "5"], env=env.env, stdout=log, stderr=subprocess.STDOUT)
         time.sleep(a.warmup)
         up = int(open(os.path.join(env.sh, "daemon", "uplink.lock")).read().split()[1])
         r0, u0, t0, seen = cpu_seconds(run.pid), cpu_seconds(up), time.time(), ticks_ended(env)
@@ -488,9 +491,9 @@ class EndpointStandin:
 
     def __init__(self, env):
         self.dir = os.path.join(env.root, "ep")
-        self.proc = subprocess.Popen([sys.executable, os.path.join(HERE, "endpoint_standin.py"), "serve", self.dir,
-                                      json.dumps({"identity": self.IDENTITY})],
-                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.proc = spawn([sys.executable, os.path.join(HERE, "endpoint_standin.py"), "serve", self.dir,
+                           json.dumps({"identity": self.IDENTITY})],
+                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         try:
             deadline = time.time() + 10
             while not os.path.exists(os.path.join(self.dir, "ctl.sock")):
@@ -587,25 +590,25 @@ def cmd_run_rl10(a, env):
         log = open(os.path.join(env.root, "run.out"), "w")
         # Cut over first, by the stand-in's welcome to a probe (what `daemon run`'s supervisor runs): a first
         # tick on DX2 would deliver the owed words as a machine not cut over does, before the probe's welcome.
-        subprocess.run([sys.executable, os.path.join(a.scripts, "sminos.py"), "daemon", "probe"], env=env.env,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        run_child([sys.executable, os.path.join(a.scripts, "sminos.py"), "daemon", "probe"], env=env.env,
+                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         if not cut_over(env):
             print("the endpoint stand-in's welcome did not cut the machine over")
             return 1
         if a.profile_uplink:
             # Joined by a tick, then the uplink alone under cProfile.
-            subprocess.run([sys.executable, os.path.join(a.scripts, "sminos.py"), "daemon", "tick"], env=env.env,
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            run = subprocess.Popen([sys.executable, os.path.abspath(__file__), "_profiled", a.scripts,
-                                    a.profile_uplink, "daemon", "uplink"], env=env.env, stdout=log,
-                                   stderr=subprocess.STDOUT)
+            run_child([sys.executable, os.path.join(a.scripts, "sminos.py"), "daemon", "tick"], env=env.env,
+                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            run = spawn([sys.executable, os.path.abspath(__file__), "_profiled", a.scripts,
+                         a.profile_uplink, "daemon", "uplink"], env=env.env, stdout=log,
+                        stderr=subprocess.STDOUT)
             time.sleep(a.warmup + a.seconds)
             return 0
-        run = subprocess.Popen([sys.executable, os.path.join(a.scripts, "sminos.py"), "daemon", "run", "--interval",
-                                "5"], env=env.env, stdout=log, stderr=subprocess.STDOUT)
+        run = spawn([sys.executable, os.path.join(a.scripts, "sminos.py"), "daemon", "run", "--interval",
+                     "5"], env=env.env, stdout=log, stderr=subprocess.STDOUT)
         time.sleep(a.warmup)
-        status = subprocess.run([sys.executable, os.path.join(a.scripts, "sminos.py"), "daemon", "status"],
-                                env=env.env, capture_output=True, text=True).stdout
+        status = run_child([sys.executable, os.path.join(a.scripts, "sminos.py"), "daemon", "status"],
+                           env=env.env, capture_output=True, text=True).stdout
         if not cut_over(env) or "uplink: RL10 (local-only), running" not in status:
             print("after the %.0f s warm-up the machine is not on RL10: %s" % (
                 a.warmup, next((x for x in status.splitlines() if x.startswith("uplink")), "no uplink line")))
@@ -677,8 +680,8 @@ def standin(env):
     start fails, so a setup that raises leaves none behind."""
     import urllib.request
     port_file = os.path.join(env.root, "hub.port")
-    hub = subprocess.Popen([sys.executable, os.path.join(HERE, "hub_standin.py"), port_file, "cid-1", "secret-1",
-                            "15000"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    hub = spawn([sys.executable, os.path.join(HERE, "hub_standin.py"), port_file, "cid-1", "secret-1",
+                 "15000"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
         deadline, port = time.time() + 10, ""
         while not port:
@@ -712,8 +715,8 @@ def cmd_opens(a, env):
     hub, url = standin(env)
     up = [None]
     try:
-        subprocess.run([sys.executable, os.path.join(a.scripts, "sminos.py"), "daemon", "tick"], env=env.env,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        run_child([sys.executable, os.path.join(a.scripts, "sminos.py"), "daemon", "tick"], env=env.env,
+                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         lives = env.live_sessions
         own = machine_project_id(ORG, MACHINE)
         small = next(s for s in lives if s["size"] == "small" and s["project"] != own)
@@ -772,8 +775,8 @@ def cmd_opens(a, env):
             if up[0] is not None:
                 generation = rig.call(url, "GET", "/control/state")[1]["generation"]
                 stop(up[0])
-            up[0] = subprocess.Popen([sys.executable, os.path.join(a.scripts, "sminos.py"), "daemon", "uplink"],
-                                     env=env.env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            up[0] = spawn([sys.executable, os.path.join(a.scripts, "sminos.py"), "daemon", "uplink"],
+                          env=env.env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             started = time.time()
             moment = "+0.5 s" if phase == "start" else "restart +0.5 s"
             projects = [s["project"] for s in pair]
@@ -827,8 +830,8 @@ def cmd_verbs(a, env):
     for verb in (["list", "--org"], ["projects"]):
         t = time.perf_counter()
         before = os.times()
-        subprocess.run([sys.executable, os.path.join(a.scripts, "sminos.py")] + verb, env=env.env,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        run_child([sys.executable, os.path.join(a.scripts, "sminos.py")] + verb, env=env.env,
+                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         after = os.times()
         cpu = (after.children_user - before.children_user) + (after.children_system - before.children_system)
         print("%-10s %.2f s wall, %.2f s CPU" % (" ".join(verb), time.perf_counter() - t, cpu))
@@ -849,6 +852,73 @@ def profiled(scripts, out, argv):
     finally:
         pr.disable()
         pr.dump_stats(out)
+
+
+class Stopped(BaseException):
+    """SIGTERM or SIGINT, raised where this process is (stop_on_signals).
+    Neither SystemExit nor KeyboardInterrupt: `tick` and `profile` run the
+    daemon's tick_all here, which takes those as one project's failure."""
+
+
+STARTED = []   # every child this process started (spawn), for the end's sweep
+_SIGNAL = {"got": None, "raised": False, "shield": 0}
+
+
+def _on_signal(signum, _frame):
+    if _SIGNAL["got"] is None:
+        _SIGNAL["got"] = signum
+    if not (_SIGNAL["raised"] or _SIGNAL["shield"]):
+        _SIGNAL["raised"] = True
+        raise Stopped(signum)
+
+
+def stop_on_signals():
+    """SIGTERM or SIGINT (a timeout, a harness, ^C) raises Stopped where this
+    process is, once, so every `finally` runs and stops what it started; a
+    later one changes nothing. Inside spawn, and once main's end has begun,
+    a signal is only noted: spawn raises it after its child is in STARTED,
+    and the end kills whatever of STARTED an unwind left running."""
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(sig, _on_signal)
+
+
+def spawn(argv, **kw):
+    """subprocess.Popen, its child in STARTED before a signal can unwind past it."""
+    _SIGNAL["shield"] += 1
+    try:
+        p = subprocess.Popen(argv, **kw)
+        STARTED.append(p)
+    finally:
+        _SIGNAL["shield"] -= 1
+    if _SIGNAL["got"] is not None and not _SIGNAL["raised"]:
+        _SIGNAL["raised"] = True
+        raise Stopped(_SIGNAL["got"])
+    return p
+
+
+def run_child(argv, capture_output=False, **kw):
+    """subprocess.run through spawn: its child in STARTED from its start, and
+    killed if this process is stopped while it waits for it."""
+    if capture_output:
+        kw.update(stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    p = spawn(argv, **kw)
+    try:
+        out, err = p.communicate()
+    except BaseException:
+        p.kill()
+        p.wait()
+        raise
+    return subprocess.CompletedProcess(argv, p.returncode, out, err)
+
+
+def end_started():
+    """Every child of STARTED still running killed, then reaped: what an
+    unwind cut short of its own stop (an uplink ends with its `daemon run`)."""
+    for p in STARTED:
+        if p.poll() is None:
+            p.kill()
+    for p in STARTED:
+        p.wait()
 
 
 def main():
@@ -880,27 +950,37 @@ def main():
     sub.choices["opens"].add_argument("--warm-after", type=float, default=30.0, metavar="S",
                                       help="when, after the uplink's start, every live session is opened in sequence")
     a = p.parse_args()
-    root = tempfile.mkdtemp(prefix="smb-", dir="/tmp")
-    t = time.perf_counter()
-    env = Env(root, a)
-    print("built %s in %.1f s: %d engine project dirs, %d seats (%d0%% without a transcript), %d live sessions, "
-          "%d hub projects, %d local" % (root, time.perf_counter() - t, a.dirs, a.seats, a.missing, a.live,
-                                         len(env.hub_ids), a.local), flush=True)
+    stop_on_signals()
+    root = env = None
+    status = 0
     try:
+        root = tempfile.mkdtemp(prefix="smb-", dir="/tmp")
+        t = time.perf_counter()
+        env = Env(root, a)
+        print("built %s in %.1f s: %d engine project dirs, %d seats (%d0%% without a transcript), %d live sessions, "
+              "%d hub projects, %d local" % (root, time.perf_counter() - t, a.dirs, a.seats, a.missing, a.live,
+                                             len(env.hub_ids), a.local), flush=True)
         if a.joined_by:
             # The first tick's joins made by another copy of the scripts (the
             # same events any copy writes), so a slow copy's steady state is
             # measured without waiting out its first tick.
             t = time.perf_counter()
-            subprocess.run([sys.executable, os.path.join(a.joined_by, "sminos.py"), "daemon", "tick"], env=env.env,
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            run_child([sys.executable, os.path.join(a.joined_by, "sminos.py"), "daemon", "tick"], env=env.env,
+                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             print("joined by %s's first tick in %.1f s" % (a.joined_by, time.perf_counter() - t), flush=True)
         status = {"tick": cmd_tick, "profile": cmd_profile, "run": cmd_run, "verbs": cmd_verbs,
                   "opens": cmd_opens}[a.mode](a, env)
+    except Stopped:
+        pass
     finally:
-        env.close()
-        if not a.keep:
+        _SIGNAL["shield"] += 1   # from here a signal unwinds nothing: the end below always runs whole
+        if env is not None:
+            env.close()
+        end_started()
+        if root is not None and not a.keep:
             shutil.rmtree(root, ignore_errors=True)
+    if _SIGNAL["got"] is not None:
+        sys.exit(128 + _SIGNAL["got"])
     if status:
         sys.exit(status)   # opens: a moment it could not sample (its summary says which)
 
