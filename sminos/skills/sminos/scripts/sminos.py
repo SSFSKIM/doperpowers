@@ -1843,6 +1843,149 @@ def writer_locks(path, held=False):
         yield
 
 
+# An own writer of no session waits for its upstream's head (#147). A machine
+# that enrols, is cut over or is renamed may hold none of what its upstream
+# holds already under the name it now writes as (a VM recreated under its old
+# name, an enrolment with --replace, the endpoint's welcome). Its session
+# writers are new UUIDs and never collide; its operator writer, `<name>/human`,
+# would take seqs from 1 that the upstream holds: never uploaded (the
+# uplink's `sent` starts at the upstream's head) and a fork of the log. So
+# from that moment — daemon/heads.json names the enrolment, written by `hub
+# enroll` and by a welcome that cuts over or renames — an append to it in a
+# project of the upstream waits in projects/<id>/queued/ until the uplink has
+# seen the upstream's head for the writer and the log has reached it, an
+# import or positions spent (sminos_hublog.HubLog.release_heads); the
+# project's heads.json then names the writer known for the enrolment, and what
+# waited is appended above that head, in order and with the ts it was said
+# at, and goes up with the next upload. A machine enrolled before this rule
+# has no mark, and nothing of it waits.
+HEADS_FILE = "heads.json"
+QUEUED = "queued"
+
+
+def enrolment_stamp():
+    """(name, enrolled) of this machine's enrolment now: identity.json's on a
+    cut-over machine, else hub.json's; None when it is not enrolled."""
+    ident = sibling_module("sminos_rl10").cutover()
+    if ident is not None:
+        return ident["name"], ident.get("enrolled")
+    try:
+        with open(os.path.join(root(), "daemon", "hub.json")) as f:
+            d = json.load(f)
+    except (OSError, ValueError):
+        return None
+    return (d["machine"], d.get("enrolled")) if isinstance(d, dict) and isinstance(d.get("machine"), str) else None
+
+
+def mark_enrolled(name, enrolled):
+    """A new enrolment under `name` (enrol, a cutover, a rename): from now on
+    the operator writer of each upstream project waits for its head."""
+    os.makedirs(os.path.join(root(), "daemon"), mode=0o700, exist_ok=True)
+    write_json(os.path.join(root(), "daemon", HEADS_FILE), {"name": name, "enrolled": enrolled})
+
+
+def _stamped(path, now):
+    """The heads file at `path` when it names the enrolment `now`, else None."""
+    try:
+        with open(path) as f:
+            d = json.load(f)
+    except (OSError, ValueError):
+        return None
+    return d if isinstance(d, dict) and (d.get("name"), d.get("enrolled")) == now else None
+
+
+def waits_for_head(project, writer):
+    """Whether an append to `writer` in `project` waits for the upstream's
+    head (the rule above): this machine's operator writer, in a project of
+    its upstream, under a marked enrolment, not yet known for it."""
+    if writer != writer_id():
+        return False
+    e = enrollment()
+    if e is None or not (isinstance(project.hub, dict) and project.hub.get("org") == e["org"]):
+        return False
+    now = enrolment_stamp()
+    if now is None or _stamped(os.path.join(root(), "daemon", HEADS_FILE), now) is None:
+        return False
+    known = _stamped(os.path.join(project.home, HEADS_FILE), now)
+    return not (known is not None and writer in (known.get("known") or []))
+
+
+def queued_path(project, writer):
+    return os.path.join(project.home, QUEUED, writer.replace("/", ".") + ".jsonl")
+
+
+def queued_events(path):
+    """A queued file's events, in order, each without a seq; [] for none."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            lines = f.read().split("\n")
+    except FileNotFoundError:
+        return []
+    out = []
+    for line in lines:
+        try:
+            e = json.loads(line) if line.strip() else None
+        except ValueError:
+            continue
+        if isinstance(e, dict) and isinstance(e.get("writer"), str) and isinstance(e.get("kind"), str):
+            out.append(e)
+    return out
+
+
+def queued_read(project, writer):
+    """What waits for the writer's head, in order."""
+    return [e for e in queued_events(queued_path(project, writer)) if e["writer"] == writer]
+
+
+def release_queued(project, writer):
+    """The upstream's head for `writer` is known and the log reached it: the
+    writer known for this enrolment, and what waited for it appended above
+    that head, in order and with the ts it was said at. Under the writer
+    file's locks, which an append that would queue takes too, so nothing
+    queues after the release. What the log holds already (a release cut
+    short after its append) is not appended again. The events appended."""
+    path = writer_path(project, writer)
+    with writer_locks(path):
+        now = enrolment_stamp()
+        if now is None:
+            return []
+        known = _stamped(os.path.join(project.home, HEADS_FILE), now) or {"name": now[0], "enrolled": now[1]}
+        if writer not in (known.get("known") or []):
+            known["known"] = sorted(set(known.get("known") or []) | {writer})
+            write_json(project_path(project, HEADS_FILE), known)
+        waiting = [{k: v for k, v in e.items() if k not in ("writer", "seq")} for e in queued_read(project, writer)]
+        if waiting:
+            held = {json.dumps({k: v for k, v in e.items() if k not in ("writer", "seq")}, sort_keys=True)
+                    for e in _log_file_events(path) if e["ts"] >= min(x.get("ts", "") for x in waiting)}
+            waiting = [e for e in waiting if json.dumps(e, sort_keys=True) not in held]
+        out = _append(project, writer, waiting, held=True) if waiting else []
+        try:
+            os.unlink(queued_path(project, writer))
+        except FileNotFoundError:
+            pass
+    return out
+
+
+def _queue(project, writer, events):
+    """An append that waits for its writer's head (waits_for_head), kept
+    under the writer file's locks: each event as it would be written, its
+    seq None."""
+    out = [{"ts": now(ms=True), "writer": writer, "seq": None, **e} for e in events]
+    os.makedirs(os.path.join(project.home, QUEUED), mode=0o700, exist_ok=True)
+    fd = os.open(queued_path(project, writer), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    with os.fdopen(fd, "a", encoding="utf-8") as f:
+        f.write("".join(json.dumps({k: v for k, v in e.items() if k != "seq"}, ensure_ascii=False) + "\n"
+                        for e in out))
+    return out
+
+
+def waits_line(project, writer):
+    """What a verb says of an append that waits for its writer's head."""
+    nudge_daemon()
+    return ("it waits in %s for the upstream's head of %s (this machine's enrolment is new): it is recorded, and "
+            "delivered, once the uplink has seen it" % (project.name, writer))
+
+
 def _append(project, writer, events, skip_src=False, guard=None, store="log", held=False):
     """Append events to the writer's file under `.sync.lock` shared (git never
     rewrites log/ while an appender writes) and the file's own lock (seq is the
@@ -1880,6 +2023,8 @@ def _append(project, writer, events, skip_src=False, guard=None, store="log", he
                 events = kept
             if not events:
                 return []
+            if store == "log" and waits_for_head(project, writer):
+                return _queue(project, writer, events)
             seq = _last_seq(f)
             spent = spent_seqs(project, writer) if store == "log" else set()
             out = []
@@ -4581,12 +4726,16 @@ def say_scoped(a, home, sender, writer, kind, sid):
         if home is not None and home.id != dest.id:
             fields["from_project"] = home.id  # the sender's own project, where a reply finds it
         try:
-            delivered.append((dest, log_append(dest, writer, kind, **fields)))
+            e = log_append(dest, writer, kind, **fields)
         except OSError as err:
             warn("not recorded in %s, so not sent to its %d: %s" % (dest.name, len(ms), err))
             lost = True
             continue
-        print("recorded %s in %s" % (event_ref(delivered[-1][1]), dest.name))
+        if e["seq"] is None:
+            print(waits_line(dest, writer))
+            continue
+        delivered.append((dest, e))
+        print("recorded %s in %s" % (event_ref(e), dest.name))
     if home is not None and delivered and all(p.id != home.id for p, _ in groups):
         record_copy(home, delivered)
     for dest, e in delivered:
@@ -4635,6 +4784,9 @@ def cmd_say(a):
         e = log_append(dest, writer, kind, **fields)
     except OSError as err:
         die("say could not be recorded: %s" % err, 1)
+    if e["seq"] is None:
+        print(waits_line(dest, writer))
+        return
     print("recorded %s in %s" % (event_ref(e), dest.name))
     if "from_project" in fields:
         record_copy(home, [(dest, e)])
@@ -5908,10 +6060,12 @@ def cmd_charge(a):
         else:
             # Another machine's session file is that machine's to write (§3).
             try:
-                _append(project, writer_id(sid or None),
-                        [{"kind": "in-charge", "session": m.session, "text": line, "source": "set"}])
+                got = _append(project, writer_id(sid or None),
+                              [{"kind": "in-charge", "session": m.session, "text": line, "source": "set"}])
             except OSError as e:
                 die("the line of %s was not recorded in %s's log: %s" % (m.alias, project.name, e), 1)
+            if got and got[0]["seq"] is None:
+                print(waits_line(project, writer_id(sid or None)))
         name = m.alias
     print("%s in charge of: %s" % (name, line or "(cleared)"))
 
@@ -9206,6 +9360,22 @@ class SendDelivery:
         nudge_daemon()
 
 
+class WaitingSend:
+    """A `send` whose append waits for its writer's head (waits_for_head):
+    held, as a held SendDelivery is — nothing pushed, nothing to release —
+    and delivered by the daemon once it is recorded."""
+
+    def __init__(self, project, writer, event):
+        self.project, self.writer, self.event = project, writer, event
+        self.held, self.queue = waits_line(project, writer), []
+
+    def release(self):
+        pass
+
+    def recorded_owed(self, alias):
+        print("for %s: %s" % (alias, self.held), flush=True)
+
+
 def record_send(s, sender, via, text, msg_id):
     """`send` is recorded in the target's project log — `human` from the
     operator, `say` from a session — to the one session it reaches, then
@@ -9232,6 +9402,8 @@ def record_message(project, session, alias, sender, via, text, msg_id, deliver=T
         fields["from_project"] = home.id  # the sender's own project, where a reply finds it
     try:
         event = log_append(project, writer, "say" if sid else "human", **fields)
+        if event["seq"] is None:
+            return WaitingSend(project, writer, event)
         if "from_project" in fields:
             record_copy(home, [(project, event)])
         return SendDelivery(project, session, writer, event) if deliver else event
@@ -9251,6 +9423,9 @@ def send_to_member(project, m, sender, via, text, msg_id):
     nothing."""
     if not m.local:
         e = record_message(project, m.session, m.alias, sender, via, text, msg_id, deliver=False)
+        if isinstance(e, WaitingSend):
+            e.recorded_owed(m.alias)
+            return
         print("recorded %s for %s on %s — its machine delivers it" % (event_ref(e), m.alias, m.machine))
         nudge_daemon()
         return
@@ -9486,11 +9661,13 @@ def cmd_status(a):
         else:
             # Another machine's session file is that machine's to write: the
             # line goes in this caller's own file, and the later ts wins (§3).
+            writer = writer_id(os.environ.get("CLAUDE_CODE_SESSION_ID") or None)
             try:
-                _append(project, writer_id(os.environ.get("CLAUDE_CODE_SESSION_ID") or None),
-                        [{"kind": "status", "session": m.session, "text": line}])
+                got = _append(project, writer, [{"kind": "status", "session": m.session, "text": line}])
             except OSError as e:
                 die("status of %s not recorded in %s's log: %s" % (m.alias, project.name, e), 1)
+            if got and got[0]["seq"] is None:
+                print(waits_line(project, writer))
         print("%s now: %s" % (m.alias, line or "(cleared)"))
         return
     s = target[1]

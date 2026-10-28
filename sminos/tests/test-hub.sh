@@ -236,6 +236,9 @@ assert_contains "$OUT" "code proposed proposed-a" "saying which name the code pr
 assert_contains "$OUT" "--name proposed-a" "and how to claim it instead"
 assert_not_contains "$OUT" "no longer as" "no rename: nothing is said of one"
 assert_equals "$(mode_of "$(cred)")" "0o600" "the credential is stored at mode 0600"
+assert_equals "$(json_get "$SMINOS_HOME/daemon/heads.json" '[d["name"], d["enrolled"]]')" \
+  "$(json_get "$(cred)" '[d["machine"], d["enrolled"]]')" \
+  "the enrolment is marked: its operator writer waits for the hub's head of it (#147)"
 assert_equals "$(json_get "$(cred)" '[d[k] for k in ("hub", "org", "machine", "key", "former")]')" \
   "[\"$HUB\", \"org-1\", \"alpha\", \"$KEY\", {}]" "with the hub, the org, the name, the key, and no former name"
 assert_equals "$(json_get "$(cred)" 'd["client_id"]')" "$(ctl state '[m["client_id"] for m in d["machines"] if m["name"] == "alpha"][0]')" \

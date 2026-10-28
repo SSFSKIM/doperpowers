@@ -384,6 +384,10 @@ def welcomed(frame):
                    "build": frame.get("build") if isinstance(frame.get("build"), str) else ""}
         os.makedirs(os.path.dirname(identity_path()), mode=0o700, exist_ok=True)
         sminos.write_json(identity_path(), written, mode=0o600)
+        if held is None or local != ident["name"] or held.get("enrolled") != ident["enrolled"]:
+            # A new enrolment of this machine's name: its operator writer
+            # waits for the endpoint's head of it (sminos.waits_for_head).
+            sminos.mark_enrolled(ident["name"], ident["enrolled"])
     sminos.forget_caches()
     if held is None:
         log("cut over: this machine is %s of org %s through its endpoint from now on (%s)"
