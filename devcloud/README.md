@@ -524,8 +524,11 @@ reconcile` runs the step again; the periodic jobs do not. At its departure
 itself — `mawsd endpoint retire` signs the retirement with the delegation's
 key, posts it, frees the hub row so a recreated VM may take the name, and
 destroys the keys — before its logout, and `mawsd.service` stops with
-devcloud's services. When it cannot, the departure goes on and names the
-command the owner runs from a MAWS worktree on a Mac: `zsh
+devcloud's services. When it cannot (or the endpoint holds a member's
+attended enrollment, whose key only an admin retires), the departure goes on
+and names, at that run and every rerun until a retirement succeeds
+(`/var/lib/devcloud/desk-residue`), the command the owner runs from a MAWS
+worktree on a Mac: `zsh
 apps/desk-hub/deploy/production-run.sh admin machine drop <name>`, which the
 driver also names after a delete whose departure was not confirmed. A VM
 created without the MAWS project boots as before.

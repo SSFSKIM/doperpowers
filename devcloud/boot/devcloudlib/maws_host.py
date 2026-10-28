@@ -31,8 +31,16 @@ PROVISION_WAIT = 120
 PROVISION_TIMEOUT = PROVISION_WAIT + 60
 KEYS_TIMEOUT = 60
 RETIRE_TIMEOUT = 120
+# The departure's word when the desk confirmed it (driver.hostctl.LEFT_DESK reads it).
+LEFT = "left the desk"
 # O2's exit codes for `mawsd`.
 DONE, REFUSED, NOT_HERE, NOT_RUNNING, NOT_LISTED = 0, 1, 2, 3, 4
+
+
+class Refused(StepError):
+    """`mawsd endpoint provision`'s own outcome, which no rerun mends (a
+    refusal, a mawsd without the endpoint): unlike a failed fetch of the code
+    or a token, it ends a deferral."""
 
 
 def wrapper(user, env):
@@ -41,6 +49,13 @@ def wrapper(user, env):
     profile on Linux."""
     config = env.get("XDG_CONFIG_HOME") or str(user.home / ".config")
     return pathlib.Path(config) / "MAWS/mawsd/bin/mawsd"
+
+
+def unit_files(user, env):
+    """Where `mawsd install` may have written the user unit: under
+    `${XDG_CONFIG_HOME:-~/.config}/systemd/user`, and the default directory."""
+    config = env.get("XDG_CONFIG_HOME") or str(user.home / ".config")
+    return [pathlib.Path(config) / "systemd/user" / UNIT, user.home / ".config/systemd/user" / UNIT]
 
 
 def present(program):
@@ -82,8 +97,8 @@ def provision(user, desc, env, fetch_code, call=proc.call):
         return Provisioned("deferred", f"mawsd did not answer ({err or f'exit {exit_code}'}); devcloud-enroll runs "
                                        "the provision again")
     if exit_code == REFUSED:
-        raise StepError(f"mawsd endpoint provision refused: {err or 'exit 1'}")
-    raise StepError(f"mawsd endpoint provision exited {exit_code}" + (f": {err}" if err else "")
+        raise Refused(f"mawsd endpoint provision refused: {err or 'exit 1'}")
+    raise Refused(f"mawsd endpoint provision exited {exit_code}" + (f": {err}" if err else "")
                     + (" (a mawsd without the endpoint module)" if exit_code == NOT_HERE else ""))
 
 
@@ -126,7 +141,7 @@ def retire(user, env, name, call=proc.call, timeout=RETIRE_TIMEOUT):
     except (ValueError, IndexError, AttributeError):
         kind = None
     if kind in ("retired", "uncertified", "nothing"):
-        return "left the desk"
+        return LEFT
     if kind == "orphaned":
         raise StepError("retired here, but the hub no longer took the machine's credential, so its row and "
                         f"certificate are an admin's to drop; run: {drop_command(name)}")

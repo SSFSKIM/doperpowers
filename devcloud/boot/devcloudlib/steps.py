@@ -807,7 +807,8 @@ def maws(r):
     (step 11), so the first welcome cuts sminos over within seconds of the
     listing. Under the lifecycle lock, shared, as step 11's enrollment is:
     once a departure has started nothing is provisioned. A deferral is kept
-    in the status for the devcloud-enroll service; a refusal ends it."""
+    in the status for the devcloud-enroll service; a refusal ends it, a
+    failed fetch of the code does not."""
     r.load()
     with lease.locked(shared=True):
         if services.admission(status.lifecycle()) != "open":
@@ -815,7 +816,8 @@ def maws(r):
         try:
             result = maws_host.provision(r.user, r.desc, r.user.env(_read_env(ENV_PATH)),
                                          fetch_code=lambda name: _fetch_text(r, name))
-        except StepError:
+        except maws_host.Refused:
+            # A definite outcome; a failed fetch of the code (another StepError) keeps the deferral.
             status.set_maws_deferred(False)
             raise
     status.set_maws_deferred(result.state == "deferred")

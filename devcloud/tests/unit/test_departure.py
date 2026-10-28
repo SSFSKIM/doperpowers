@@ -1017,13 +1017,23 @@ class RetireTest(DepartureBase):
                 self.assertEqual(self.leave_step()["detail"], "not enrolled")
                 self.assertFalse(any(r[-2:] == ["hub", "leave"] for r in self.world.runs()))
 
-    def test_an_attended_endpoint_is_not_retired_by_the_machine(self):
-        # A member's enrollment is an admin's to retire (M1's `not-delegated`); a VM on DX2 still leaves.
-        (self.home / ".claude/sminos/daemon/identity.json").unlink()
-        self.world.mawsd[KEYS] = keys(delegated=False)
-        departure.depart(self.host(), no_poweroff=True)
-        self.assertNotIn((list(RETIRE), self.user.name), self.mawsd_calls())
-        self.assertTrue(any(r[-2:] == ["hub", "leave"] for r in self.world.runs()))
+    def test_an_attended_endpoint_is_not_retired_and_names_the_admin_command(self):
+        # A member's enrollment is an admin's to retire (M1's `not-delegated`): never a left-the-desk line.
+        from driver import hostctl
+        for cut_over in (True, False):
+            with self.subTest(cut_over=cut_over):
+                self.world.events.clear()
+                (self.tmp / "status.json").unlink(missing_ok=True)
+                if not cut_over:
+                    (self.home / ".claude/sminos/daemon/identity.json").unlink()
+                self.world.mawsd[KEYS] = keys(delegated=False)
+                departure.depart(self.host(), no_poweroff=True)
+                self.assertNotIn((list(RETIRE), self.user.name), self.mawsd_calls())
+                step = self.leave_step()
+                self.assertEqual(step["state"], "failed")
+                self.assertIn(ADMIN, step["detail"])
+                said = "\n".join(e[1] for e in self.world.events if e[0] == "say")
+                self.assertFalse(hostctl.LEFT_DESK.search(said), "the driver would read the desk as left")
 
     def test_a_dx2_vm_with_no_mawsd_leaves_as_before(self):
         self.descriptor_extra = ()
@@ -1041,6 +1051,60 @@ class RetireTest(DepartureBase):
         step = self.leave_step()
         self.assertEqual(step["state"], "failed")
         self.assertIn(ADMIN, step["detail"])
+
+    def test_an_unresolved_retirement_keeps_naming_the_admin_command_on_a_rerun(self):
+        # `orphaned` destroyed the keys here; the endpoint then says none, but the hub row is still an admin's.
+        from driver import hostctl
+        self.world.mawsd[RETIRE] = retired("orphaned")
+        departure.depart(self.host(), no_poweroff=True)
+        self.world.events.clear()
+        (self.tmp / "status.json").unlink()
+        self.world.mawsd[KEYS] = keys("none", delegated=False)
+        departure.depart(self.host(), no_poweroff=True)
+        step = self.leave_step()
+        self.assertEqual(step["state"], "failed")
+        self.assertIn(ADMIN, step["detail"])
+        said = "\n".join(e[1] for e in self.world.events if e[0] == "say")
+        self.assertFalse(hostctl.LEFT_DESK.search(said))
+
+    def test_a_retirement_that_succeeds_on_a_rerun_clears_the_reminder(self):
+        self.world.mawsd[RETIRE] = (1, "", "503 busy")
+        departure.depart(self.host(), no_poweroff=True)
+        self.world.mawsd[RETIRE] = retired()
+        (self.tmp / "status.json").unlink()     # a departure stopped part way runs again from its start
+        departure.depart(self.host(), no_poweroff=True)
+        self.assertEqual(self.leave_step()["detail"], "left the desk")
+        self.world.mawsd[KEYS] = keys("none", delegated=False)
+        (self.tmp / "status.json").unlink()
+        departure.depart(self.host(), no_poweroff=True)
+        self.assertEqual(self.leave_step()["detail"], "not enrolled")
+
+    def test_a_resumed_release_after_an_orphaned_retirement_keeps_naming_it(self):
+        self.adopted = True
+        self.write_descriptor(EXPIRED)
+        (self.units / "devcloud-inbound.service").write_text("")
+        (self.tmp / "adopt").mkdir()
+        (self.tmp / "adopt/keys.json").write_text(json.dumps({"keys": []}))
+        self.world.mawsd[RETIRE] = retired("orphaned")
+        self.world.failing[("nft", "delete")] = "nft exited 1"
+        self.world.calls["devcloud"] = (0, "table inet devcloud {}", "")
+        self.assertEqual(departure.release(self.host()), departure.FAILED)
+        del self.world.failing[("nft", "delete")]
+        self.world.mawsd[KEYS] = keys("none", delegated=False)
+        self.world.events.clear()
+        self.assertEqual(departure.release(self.host()), departure.DONE)
+        leaves = [e[1] for e in self.world.events if e[0] == "say" and e[1].startswith("devcloud release: leave:")]
+        self.assertTrue(leaves and all(ADMIN in line for line in leaves), leaves)
+
+    def test_mawsd_stops_under_xdg_config_home_too(self):
+        config = self.tmp / "xdg"
+        unit = config / "systemd/user/mawsd.service"
+        unit.parent.mkdir(parents=True)
+        unit.write_text("")
+        host = self.host()
+        host.user_env = lambda: self.user.env({"XDG_CONFIG_HOME": str(config)})
+        departure.depart(host, no_poweroff=True)
+        self.assertIn(["systemctl", "--user", "stop", "mawsd.service"], self.world.runs())
 
     def test_mawsd_stops_with_the_services_as_the_user(self):
         unit = self.home / ".config/systemd/user/mawsd.service"

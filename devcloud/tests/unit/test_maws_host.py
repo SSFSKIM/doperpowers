@@ -180,6 +180,18 @@ class StepTest(MawsBase):
         self.assertEqual(entry["state"], "failed")
         self.assertIn("other-delegation", entry["detail"])
 
+    def test_a_failed_fetch_keeps_the_deferral(self):
+        # A transient Secret Manager or token failure is no outcome: the timer must ask again.
+        self.exits("4")
+        self.step()
+        since = status.maws_deferred(self.status)
+
+        def unreachable(r, name):
+            raise StepError(f"{name}: the metadata server did not answer")
+        with mock.patch.object(steps, "_fetch_text", unreachable):
+            self.assertEqual(steps.enroll(), 1)
+        self.assertEqual(status.maws_deferred(self.status), since, "a fetch failure ended the deferral")
+
     def test_a_rerun_of_a_provisioned_host_runs_the_same_command_again(self):
         # M1's `provision` is the idempotent one: on an org-listed endpoint it posts nothing and exits 0.
         self.assertEqual(self.step()["state"], "ok")

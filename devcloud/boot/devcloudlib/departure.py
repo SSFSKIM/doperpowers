@@ -61,6 +61,11 @@ INBOUND_UNIT = "devcloud-inbound.service"
 SHIPPER_UNIT = "devcloud-session-mirror.service"
 INBOUND_NFT = pathlib.Path("/etc/devcloud/inbound.nft")
 UNIT_DIR = pathlib.Path("/etc/systemd/system")
+# The desk word a departure could not settle (a retirement the hub did not
+# take, an attended key, an endpoint that could not be asked), kept across
+# reruns and a resumed release: once the endpoint's keys are gone it would
+# otherwise read as nothing to leave. Removed when a retirement succeeds.
+DESK_RESIDUE = "desk-residue"
 # The spot reclaim's window: steps 0-4 within 25 of the provider's ~30 seconds.
 PREEMPT_BUDGET = 25
 
@@ -335,20 +340,41 @@ def leave(run, d, timeout=LEAVE_TIMEOUT):
     the desk", the line the driver reads as confirmed. When it cannot, or the
     endpoint cannot be asked on a machine that provisions or is cut over,
     the step fails naming the owner's `machine drop`, and the departure goes
-    on. A machine cut over whose endpoint holds nothing is not enrolled. A
-    machine on DX2 runs `sminos hub leave`; 0 and 1 both go on. The desk
-    revokes nothing for being offline, so on 1 the machine stays in its
-    Machines until someone removes it, which the driver tells the person."""
+    on. So does an attended enrollment (a member's code), whose key only an
+    admin retires. Such an unsettled word is kept (DESK_RESIDUE) and said
+    again by every rerun until a retirement succeeds. A machine cut over
+    whose endpoint holds nothing is not enrolled. A machine on DX2 runs
+    `sminos hub leave`; 0 and 1 both go on. The desk revokes nothing for
+    being offline, so on 1 the machine stays in its Machines until someone
+    removes it, which the driver tells the person."""
     host = run.host
     env = host.user_env()
+    residue = host.state_dir / DESK_RESIDUE
+    try:
+        return _endpoint_leave(run, d, env, timeout, residue)
+    except StepError as error:
+        if maws_host.drop_command(d.name) in str(error):
+            proc.write_file(residue, str(error) + "\n", mode=0o600, dir_mode=0o755)
+        raise
+
+
+def _endpoint_leave(run, d, env, timeout, residue):
+    host = run.host
     cut_over = sminos_host.cut_over(host.user, env)
     provisioned = d.maws_secret and maws_host.present(maws_host.wrapper(host.user, env))
     endpoint, why = maws_host.keys(host.user, env, call=host.call, timeout=run.bound(maws_host.KEYS_TIMEOUT))
     if maws_host.certified(endpoint):
-        return maws_host.retire(host.user, env, d.name, call=host.call, timeout=run.bound(timeout))
+        said = maws_host.retire(host.user, env, d.name, call=host.call, timeout=run.bound(timeout))
+        residue.unlink(missing_ok=True)
+        return said
     if endpoint is None and (cut_over or provisioned):
         raise StepError(f"whether the endpoint holds a certificate is unknown ({why}); "
                         f"run: {maws_host.drop_command(d.name)}")
+    if endpoint is not None and endpoint.get("enrollment", "none") != "none":
+        raise StepError(f"the endpoint is enrolled by a member's code ({endpoint['enrollment']}), whose key only an "
+                        f"admin retires; run: {maws_host.drop_command(d.name)}")
+    if residue.exists():
+        raise StepError(residue.read_text().strip())
     if cut_over:
         return "not enrolled"
     if not (sminos_host.sminos_home(host.user, env) / "daemon/hub.json").is_file():
@@ -469,8 +495,9 @@ def stop_services(run):
             units.append(f"devcloud-{s.name}.timer")
     units = [unit for unit in units if host.installed(unit)]
     stopped, failed = list(units), []
-    if (host.user.home / ".config/systemd/user" / maws_host.UNIT).exists():
-        env = dict(host.user_env(), XDG_RUNTIME_DIR=f"/run/user/{host.user.uid}")
+    user_env = host.user_env()
+    if any(path.exists() for path in maws_host.unit_files(host.user, user_env)):
+        env = dict(user_env, XDG_RUNTIME_DIR=f"/run/user/{host.user.uid}")
         try:
             host.run(["systemctl", "--user", "stop", maws_host.UNIT], user=host.user, env=env, log="lifecycle",
                      timeout=run.bound(60))
