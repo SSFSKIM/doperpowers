@@ -115,7 +115,10 @@ teardown runs it) and removes `hub.json`, after which the daemon stops its
 uplink within a second: exit 0 when it left, when the hub had already
 revoked the credential (the same reading as `check`'s), or when nothing
 was enrolled here; exit 1, the credential kept, when the hub could not be
-told — run it again, or let the key's offline auto-revoke finish it.
+told — run it again, or let the key's offline auto-revoke finish it. An operator
+event still queued for the hub's head (a new enrollment's, before its
+first `have`) stays queued, never in the log: leave names it per project,
+`daemon owed` counts it, and enrolling under this name again releases it.
 
 `project init --hub` writes the enrolled org into `.smns` —
 `"hub": {"org": "<org>"}`, no URL: each machine reaches the hub its own

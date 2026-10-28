@@ -163,6 +163,57 @@ class Dx2(Machine):
         self.assertIn("queued 1", line[0])
         self.assertNotIn("early", out.stdout, "no body")
 
+    def owed(self):
+        out = subprocess.run([sys.executable, "-B", str(SCRIPTS / "sminos.py"), "daemon", "owed"],
+                             capture_output=True, text=True, timeout=60)
+        return out.returncode, out.stdout + out.stderr
+
+    def leave(self):
+        """`hub leave`, the hub accepting it."""
+        import sminos_hub
+        out = []
+        with mock.patch.object(sminos_hub, "authenticated", return_value=("accepted", "")), \
+                mock.patch("builtins.print", side_effect=lambda *a, **k: out.append(" ".join(map(str, a)))):
+            sminos_hub.leave(None)
+        self.assertFalse(os.path.exists(os.path.join(os.environ["SMINOS_HOME"], "daemon", "hub.json")))
+        return "\n".join(out)
+
+    def test_a_leave_before_the_first_have_leaves_what_waits_named(self):
+        """With no upstream, no `have` releases what waits, and appending it
+        here could take a seq the hub holds: it stays queued, for an
+        enrolment under this name to release, and leave and `daemon owed`
+        name it."""
+        self.enrol()
+        self.say("early")
+        said = self.leave()
+        self.assertIn("work: 1 operator event", said)
+        self.assertIn("daemon owed", said)
+        self.assertNotIn("early", said, "no body")
+        rc, out = self.owed()
+        self.assertEqual(rc, 1, out)
+        line = [x for x in out.splitlines() if x.startswith("work: ")]
+        self.assertEqual(len(line), 1, out)
+        self.assertIn("queued 1 [testhost/human (no upstream releases it)]", line[0])
+        self.assertNotIn("early", out, "no body")
+        self.assertEqual(self.log(), [], "nothing appended at a seq the hub may hold")
+        self.enrol(enrolled="2026-10-29T00:00:00Z")
+        hl = hublog.HubLog(self.p, {"key": base64.urlsafe_b64decode(KEY + "="), "machine": "testhost"})
+        hl.on_have({"have": {W: 2}})
+        self.assertEqual(hl.take(self.hub_events(2)), (2, []))
+        self.assertEqual([(e["seq"], e["text"]) for e in self.log()], [(1, "old 1"), (2, "old 2"), (3, "early")],
+                         "an enrolment under the name again releases it above the hub's head")
+
+    def test_a_leave_after_the_first_have_leaves_it_in_the_log(self):
+        self.enrol()
+        self.say("early")
+        hublog.HubLog(self.p, {"key": base64.urlsafe_b64decode(KEY + "="), "machine": "testhost"}).on_have(
+            {"have": {}})
+        said = self.leave()
+        self.assertNotIn("operator event", said)
+        self.assertEqual([(e["seq"], e["text"]) for e in self.log()], [(1, "early")])
+        rc, out = self.owed()
+        self.assertEqual((rc, out.strip()), (0, "nothing owed"))
+
     def test_an_operators_say_says_it_waits(self):
         self.enrol()
         out = subprocess.run([sys.executable, "-B", str(SCRIPTS / "sminos.py"), "say", "--in", "work", "hello"],
@@ -270,6 +321,33 @@ class Renamed(Machine):
                          [(3, "as testhost"), (4, "as renamed")])
         self.assertEqual([e["seq"] for frame, _ in hl.uploads() for e in frame["events"]], [3, 4])
         self.assertEqual(sminos.queued_operators(self.p), {}, "no queue is left behind")
+
+    def test_appends_said_in_one_millisecond_across_a_rename_land_in_the_order_said(self):
+        """ts has milliseconds alone, so an append as the former name and one
+        as the name now can tie. On a tie the former name's goes first (a
+        rename comes between them), and within one queue its file order
+        holds, whatever the queues' names sort as."""
+        self.enrol(fresh=False)
+        rl10.welcomed(Rl10.WELCOME)
+        with mock.patch.object(sminos, "now", return_value="2026-10-28T02:00:00.000Z"):
+            self.say("testhost 1")
+            self.say("testhost 2")
+            rl10.welcomed({**Rl10.WELCOME, "identity": {**Rl10.WELCOME["identity"], "name": "renamed"}})
+            for text in ("renamed 1", "renamed 2"):
+                self.assertIsNone(sminos.log_append(self.p, "renamed/human", "human",
+                                                    **{"from": "human", "to": "*", "text": text})["seq"])
+        hublog.HubLog(self.p, {"key": None, "machine": "renamed"}, coded=False).on_have({"have": {}})
+        self.assertEqual([(e["seq"], e["text"]) for e in sminos.log_read(self.p) if e["writer"] == "renamed/human"],
+                         [(1, "testhost 1"), (2, "testhost 2"), (3, "renamed 1"), (4, "renamed 2")])
+
+    def test_within_one_queue_its_file_order_holds_against_a_clock_stepped_back(self):
+        self.enrol()
+        for ts, text in (("2026-10-28T02:00:01.000Z", "first"), ("2026-10-28T02:00:00.000Z", "second")):
+            with mock.patch.object(sminos, "now", return_value=ts):
+                self.say(text)
+        hublog.HubLog(self.p, {"key": base64.urlsafe_b64decode(KEY + "="), "machine": "testhost"}).on_have(
+            {"have": {}})
+        self.assertEqual([e["text"] for e in self.log()], ["first", "second"])
 
     def rename_after_first_welcome(self):
         self.enrol(fresh=False)

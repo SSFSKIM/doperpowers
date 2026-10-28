@@ -616,6 +616,13 @@ def leave(_a):
         sminos.die("%s, but another enrollment replaced this machine's credential while leave ran (as %s): it is "
                    "kept — run sminos hub leave again to end that one" % (line, now.get("machine") or "?"), 1)
     print(line if outcome == "accepted" else line + "; the stale credential is removed")
+    # What waited for the hub's head (#147) has nothing to release it now,
+    # and appending it here could take a seq the hub holds: it stays queued,
+    # for an enrolment under this name again, and is named where the
+    # operator looks.
+    for name, n in sminos.queued_counts():
+        print("%s: %d operator event%s queued for the hub's head, not in the log: an enrolment under this name "
+              "releases what is queued, and sminos daemon owed names it" % (name, n, "" if n == 1 else "s"))
 
 
 def add_hub(path, smns, hub, a):

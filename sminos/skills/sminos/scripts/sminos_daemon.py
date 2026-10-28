@@ -1675,11 +1675,15 @@ def cmd_status(_a):
 #               daemon/ (sminos_owed), by the project each names
 #   host        a cut-over machine's host store past `host_sent`
 #   outcomes    delivery outcomes not yet posted (outcomes.jsonl)
-# The last six only for a project of this machine's upstream (a hub project
-# of the org it is enrolled in, or cut over to): with none, nothing is owed
-# up. Events owed to a closed terminal session (sminos_outcomes.closed_
-# sessions: reported `recorded`, delivered if it comes back) are counted on
-# their own line and owed by no one: they are in the log, which nothing loses.
+# Upload, refused, kept, host and outcomes only for a project of this
+# machine's upstream (a hub project of the org it is enrolled in, or cut over
+# to): with none, nothing is owed up. Queued is counted in any project: what
+# waits after the machine left its upstream (a `hub leave` before the first
+# `have`) has nothing to release it but an enrolment under its name again,
+# and appending it here could take a seq the hub holds. Events owed to a
+# closed terminal session (sminos_outcomes.closed_sessions: reported
+# `recorded`, delivered if it comes back) are counted on their own line and
+# owed by no one: they are in the log, which nothing loses.
 OWED_KINDS = ("deliveries", "words", "upload", "queued", "refused", "kept", "host", "outcomes")
 OWED_REFS = 3   # references printed per kind, at most
 
@@ -1820,6 +1824,16 @@ def owed_in(project, upstream, kept, failed):
                 out["words"].append(item)
             else:
                 out["deliveries"].append(item)
+    # With or without an upstream (the kinds above).
+    for path in store_files(project, sminos.QUEUED):
+        try:
+            readable(path)
+        except Uninspectable as e:
+            failed.append(e)
+            continue
+        for e in sminos.queued_events(path):
+            out["queued"].append((sminos._ts_epoch(e.get("ts")), "%s (%s)" % (
+                e["writer"], "waits for its head" if upstream else "no upstream releases it")))
     if not upstream:
         return out, gone
     try:
@@ -1865,14 +1879,6 @@ def owed_in(project, upstream, kept, failed):
                 for e in sminos._log_file_events(path):
                     if own(e["writer"]) and e["seq"] > sent.get(e["writer"], 0):
                         out[kind].append((sminos._ts_epoch(e.get("ts")), sminos.event_ref(e)))
-    for path in store_files(project, sminos.QUEUED):
-        try:
-            readable(path)
-        except Uninspectable as e:
-            failed.append(e)
-            continue
-        for e in sminos.queued_events(path):
-            out["queued"].append((sminos._ts_epoch(e.get("ts")), "%s (waits for its head)" % e["writer"]))
     out["kept"] = list(kept.get(project.id, ()))
     box = outcomes.Outbox(project)
     try:
