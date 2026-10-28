@@ -664,10 +664,38 @@ class Members(Machine):
                          "a changed title sent alone")
         end2()
         sminos.forget_caches()
+        link.plane.live = link.plane.records.scan()   # the plane's look at the engine's records (PRESENCE_EVERY)
         link.members(now + 3 * plane.MEMBERS_EVERY + 3)
         self.assertEqual(link.session_lane.take(), [{"t": "member", "session": S2, "gone": True}])
         link.members(now + 4 * plane.MEMBERS_EVERY + 4)
         self.assertEqual(link.session_lane.take(), [])
+
+    def test_a_read_draws_on_records_as_new_as_its_inputs(self):
+        """A project not open on the stream is read again once its inputs
+        moved (Plane.stale), among them its members' engine records as the
+        plane last scanned them. The tick reads before the plane renews the
+        cache generation, so the read renews it: the state the plane saw is
+        the state sent, at the first look and not only at MEMBERS_WHOLE."""
+        p = self.project("alpha")
+        self.session(p, S1)
+        link = self.link()
+        link.plane.live = link.plane.records.scan()
+        now = 1000.0
+        link.members(now)
+        self.assertEqual([(f["session"], f["state"]) for f in link.session_lane.take()], [(S1, "idle")])
+        sessions = os.path.join(os.environ["HOME"], ".claude", "sessions")
+        path = next(os.path.join(sessions, n) for n in os.listdir(sessions)
+                    if json.loads(Path(sessions, n).read_text()).get("sessionId") == S1)
+        rec = json.loads(Path(path).read_text())
+        rec["status"] = "busy"
+        Path(path).write_text(json.dumps(rec))
+        link.plane.live = link.plane.records.scan()   # the plane's look at the engine's records (PRESENCE_EVERY)
+        link.members(now + plane.MEMBERS_EVERY + 1)
+        self.assertEqual([(f["session"], f["state"]) for f in link.session_lane.take()], [(S1, "busy")])
+        with mock.patch.object(sminos, "forget_caches", wraps=sminos.forget_caches) as forget:
+            link.members(now + 2 * plane.MEMBERS_EVERY + 2)
+        self.assertEqual(link.session_lane.take(), [])
+        self.assertEqual(forget.call_count, 0, "nothing moved: the generation is kept")
 
     def test_whole_after_each_welcome_in_every_project_known_here(self):
         hp, lp = self.project("hp", hub=True), self.project("lp")
@@ -791,14 +819,14 @@ class MembersFirst(Machine):
         hl = link.logs[self.hp.id]
         draw, joined = hl.next_upload, []
 
-        def joining():
+        def joining(*a):
             if not joined:
                 joined.append(True)
                 self.session(self.hp, S2)
                 sminos.forget_caches()
                 sminos.reconcile(self.hp)
                 sminos.lifecycle(self.hp, S2, "titled", title="first words")
-            return draw()
+            return draw(*a)
         hl.next_upload = joining
         link.upload(hl)
         frames = link.session_lane.take()

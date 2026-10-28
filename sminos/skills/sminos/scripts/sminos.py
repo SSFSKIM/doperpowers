@@ -1416,20 +1416,39 @@ def register_if_absent(project):
         write_json(path, info)
 
 
+_REGISTRATION_FILES = {}  # project.json → ((st_ino, st_size, st_mtime_ns), its JSON), for known_projects
+
+
+def _registration_at(path):
+    """A project.json's JSON, read again only once it changed (it is written
+    whole, by rename: a new inode); None when it cannot be read. The daemon
+    and the uplink list every project several times a minute."""
+    try:
+        st = os.stat(path)
+        key = (st.st_ino, st.st_size, st.st_mtime_ns)
+        held = _REGISTRATION_FILES.get(path)
+        if held is None or held[0] != key:
+            with open(path) as f:
+                held = _REGISTRATION_FILES[path] = (key, json.load(f))
+    except (OSError, ValueError):
+        _REGISTRATION_FILES.pop(path, None)
+        return None
+    return held[1]
+
+
 def known_projects(all_seats=None):
     """Every project this machine knows: those with a home here, and those of
     the seats it holds (`all_seats`: a seat read the caller already made)."""
     out = {}
     for path in sorted(glob.glob(os.path.join(projects_root(), "*", "project.json"))):
+        d = _registration_at(path)
         try:
-            with open(path) as f:
-                d = json.load(f)
             pid = str(d["project"])
-        except (OSError, ValueError, KeyError, TypeError):
+        except (KeyError, TypeError):
             continue
         if valid_name(pid) and os.path.basename(os.path.dirname(path)) == pid:
             out[pid] = make_project(pid, str(d.get("name") or pid), str(d.get("remote") or ""), str(d.get("root") or ""),
-                                    d["hub"] if isinstance(d.get("hub"), dict) else None)
+                                    dict(d["hub"]) if isinstance(d.get("hub"), dict) else None)
     for s in seats() if all_seats is None else all_seats:
         p = seat_project(s)
         if p:
@@ -2233,12 +2252,21 @@ def addressed_to(e, session):
 
 
 _LOG_FILES = {}  # writer file → ((st_ino, st_size, st_mtime_ns), its well-formed events)
+# (project home, store) → (its files' (path, key) as last read whole, their events merged in log order — the
+# _LOG_FILES dicts themselves, copied for each reader): a whole read, merged again only once a file of it moved
+_MERGED = {}
+_PROJECTED = {}  # project id → (its log's files' keys, _projection of that log): view_of's, while no file moved
 
 
 def _log_file_events(path):
     """A writer file's well-formed events, parsed again only once its inode,
     size or mtime moved: the daemon and the uplink read every project's
     whole log many times a minute. [] for a file that cannot be read."""
+    return _log_file_held(path)[1]
+
+
+def _log_file_held(path):
+    """(the file's (inode, size, mtime) or None, _log_file_events)."""
     try:
         st = os.stat(path)
         key = (st.st_ino, st.st_size, st.st_mtime_ns)
@@ -2248,8 +2276,8 @@ def _log_file_events(path):
                 held = _LOG_FILES[path] = (key, [e for e in map(parse_event, f) if e is not None])
     except OSError:
         _LOG_FILES.pop(path, None)
-        return []
-    return held[1]
+        return None, []
+    return held
 
 
 def log_read(project, since=None, kinds=(), to_session=None):
@@ -2267,6 +2295,8 @@ def host_read(project, since=None):
 
 
 def _store_read(project, store, since=None, kinds=(), to_session=None):
+    if not (since or kinds or to_session):
+        return _store_whole(project, store)[1]
     streams = {}
     for path in sorted(glob.glob(os.path.join(project.home, store, "*.jsonl"))):
         for e in _log_file_events(path):
@@ -2274,9 +2304,31 @@ def _store_read(project, store, since=None, kinds=(), to_session=None):
                     or (kinds and e["kind"] not in kinds) or (to_session and not addressed_to(e, to_session))):
                 continue
             streams.setdefault(e["writer"], []).append(dict(e))
+    return _merge(streams)
+
+
+def _merge(streams):
     for stream in streams.values():
         stream.sort(key=lambda e: e["seq"])
     return list(heapq.merge(*streams.values(), key=lambda e: (e["ts"], e["writer"])))
+
+
+def _store_whole(project, store):
+    """(the store's files' (path, key), every event of it as _store_read
+    returns them, each a copy of its own): merged again only once a file
+    moved. A machine's history is tens of thousands of events that do not
+    change, and the daemon's tick merged every project's every 5 s."""
+    files = tuple((path, *_log_file_held(path))
+                  for path in sorted(glob.glob(os.path.join(project.home, store, "*.jsonl"))))
+    sig = tuple((path, key) for path, key, _ in files)
+    held = _MERGED.get((project.home, store))
+    if held is None or held[0] != sig:
+        streams = {}
+        for _, _, events in files:
+            for e in events:
+                streams.setdefault(e["writer"], []).append(e)
+        held = _MERGED[(project.home, store)] = (sig, _merge(streams))
+    return sig, [dict(e) for e in held[1]]
 
 
 def reader_key(session_uuid):
@@ -3769,14 +3821,22 @@ def view_of(project, all_seats=None, titles=True):
     all_seats = seats() if all_seats is None else all_seats
     by_session = seats_by_session(project, all_seats)
     local = _local_sessions(project, all_seats)
-    events = log_read(project)
+    sig, events = _store_whole(project, "log")
     appended = _reconcile(project, events, local, by_session)
     if appended:   # a hand-off may have moved a seat to the session it continues in
         all_seats = seats()
         by_session = seats_by_session(project, all_seats)
         local = _local_sessions(project, all_seats)
     events = events + appended
-    info = _projection(events)
+    # The projection of a log no file of which moved is the one made last:
+    # a read-only View, as the generation's cache (_VIEWS) shares it too.
+    held = None if appended else _PROJECTED.get(project.id)
+    if held is not None and held[0] == sig:
+        info = held[1]
+    else:
+        info = _projection(events)
+        if not appended:
+            _PROJECTED[project.id] = (sig, info)
     internal = internal_pids()
     forks = {r.get("sessionId") for r in peer_records() if str(r.get("pid")) in internal}
     joined = [(sid, r) for sid, r in info.items()

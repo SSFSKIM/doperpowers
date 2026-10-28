@@ -1342,6 +1342,14 @@ def hub_project(pid, cred):
     return hub_projects(cred).get(pid)
 
 
+def joined_dirs(here):
+    """The directories a project's sessions joined from here, in order, as
+    the plane's read holds them ({session: cwd}, Plane.here): what of that
+    read the machine presence's checkouts are drawn from
+    (policy.known_checkouts). None for a project not read."""
+    return None if here is None else tuple(dict.fromkeys(here.values()))
+
+
 # ------------------------------------------------------------- one stream
 
 
@@ -1449,6 +1457,7 @@ class Link:
         self.members_unsent = set()   # RL10: the sessions whose frame is due and not yet queued (publish_members)
         self.member_read_for = None   # RL10: the running sessions the projects known here were last listed for
         self.next_member_read = 0.0   # RL10: when they are read again (monotonic) when none came or went
+        self.next_member_whole = 0.0  # RL10: when every one is read again, whatever its inputs (Plane.stale)
         self.member_known = {}    # RL10: project id → project, every project known here as last listed (members)
         self.unlisted = set()     # RL10: (project id, session) a writer named and its rows did not, since that listing
         self.asks = {}            # RL10: a `words?` id → what it asked (ask_words), until its verdict or its deadline
@@ -1463,6 +1472,7 @@ class Link:
         self.opened = set()       # the projects `hello`ed on this stream
         self.parts = Parts()
         self.next_scan = self.next_upload = 0.0
+        self.look_whole = True    # the next upload pass looks at every own writer (tick)
         self.next_confirm = 0.0   # when the opened projects are `hello`ed again (sminos_archive)
         self.nudge = daemon.nudged_at()
         self.passed = set()
@@ -1480,6 +1490,7 @@ class Link:
         self.own = sminos.machine_project_id(cred["org"], cred["machine"])  # always held: its strays are its members
         self.follows = {}         # project id → whether its last `hello` on this stream said `follow`
         self.checkouts = {}       # project id → whether it had a known checkout here when last read
+        self.checkouts_from = {}  # project id → the joined_dirs its checkouts were last drawn from (draw_machine)
         self.imported = {}        # project id → HubLog: imports not yet delivered (deliver_imports)
         self.log_lane = self.session_lane = None  # the stream's senders, from its welcome on
         self.reporting = collections.Counter()   # project id → POSTs of its rejections not yet answered
@@ -1587,12 +1598,14 @@ class Link:
         self.machine_sent.clear()
         self.follows.clear()
         self.checkouts.clear()
+        self.checkouts_from.clear()
         for hl in self.logs.values():
             hl.reset()
         self.plane.close()
         self.requests.reset()
         self.rpcs.reset()
         self.next_scan = 0.0
+        sminos.forget_caches()   # a new stream's first scan reads the machine as it is now
         self.next_confirm = time.time() + archive.archive_every()
         self.close_lanes()
         self.reporting.clear()
@@ -1913,6 +1926,19 @@ class Link:
         known checkout here (as last read)."""
         return pid == self.own or bool(self.plane.members.get(pid)) or self.checkouts.get(pid, False)
 
+    def draw_machine(self, hl):
+        """The project's `machine` presence (HubLog.presence), its checkouts
+        drawn from the sessions the plane's last read found joined from here
+        (Plane.here), so the view is not read again for them. Whether it has
+        a checkout here is kept for holds, and the directories they were
+        drawn from for machine_presence."""
+        pid = hl.project.id
+        here = self.plane.here.get(pid)
+        machine = hl.presence(here)
+        self.checkouts[pid] = bool(machine["message"]["body"]["checkouts"])
+        self.checkouts_from[pid] = joined_dirs(here)
+        return machine
+
     def open(self, hl):
         """`hello` for a project on this stream, with what DX2 republishes
         after every connect that is this child's — the machine's presence,
@@ -1946,8 +1972,7 @@ class Link:
         unreported = [] if self.reporting[pid] else [f for f in hl.unreported()
                                                        if f not in self.unrecorded.get(pid, ())]
         self.plane.refresh(hl.project)
-        machine = hl.presence()
-        self.checkouts[hl.project.id] = bool(machine["message"]["body"]["checkouts"])
+        machine = self.draw_machine(hl)
         follow = not self.holds(hl.project.id)
         sessions = [plane.frame(m) for m in self.plane.presence(hl.project.id, force=True)]
         read = self.plane.take_read(pid)
@@ -2038,7 +2063,7 @@ class Link:
             self.unsettled[key] = line
             log(line)
 
-    def upload(self, hl):
+    def upload(self, hl, live=None):
         """The project's uploads queued, each its own entry, as far as the log
         lane holds less than UPLOAD_AHEAD unsent: the rest go on a later pass,
         so a long backlog paces itself instead of filling the lane past its
@@ -2049,7 +2074,7 @@ class Link:
         (members_before); while one cannot be queued yet, the frame is drawn
         again on a later pass (HubLog.undraw)."""
         while self.log_lane.queued() < UPLOAD_AHEAD:
-            got = hl.next_upload()
+            got = hl.next_upload(live)
             if got is None:
                 return
             frame, reach = got
@@ -2186,8 +2211,10 @@ class Link:
         came or went is hello'ed again — `follow` as it is now — with the
         machine's presence when it is held now (a follower posts none: the hub
         drops it); the checkouts are read again every CHECKOUTS_EVERY, or at
-        once when the policy changed (a `daemon policy` nudges one), and
-        `machine` goes again for each held project whose body changed."""
+        once when the policy changed (a `daemon policy` nudges one), and a
+        project's at once when the plane's read moved the directories its
+        sessions joined from since they were drawn; `machine` goes again for
+        each held project whose body changed."""
         current = policy.machine_policy() if self.coded else policy.wire_policy()   # as HubLog.presence says it
         fresh = now >= self.next_checkouts or any(self.machine_sent.get(pid, {}).get("policy") != current
                                                   for pid in self.opened if not self.follows.get(pid))
@@ -2196,14 +2223,17 @@ class Link:
         for pid in sorted(self.opened):
             hl = self.logs[pid]
             machine = None
-            if fresh:
-                machine = hl.presence()
-                self.checkouts[pid] = bool(machine["message"]["body"]["checkouts"])
+            # The checkouts come from the plane's last read (draw_machine),
+            # which the plane's tick, after this scan, renews: a session's
+            # new directory read since the last draw is drawn at this scan,
+            # not left until the deadline that may have just gone by.
+            if fresh or joined_dirs(self.plane.here.get(pid)) != self.checkouts_from.get(pid):
+                machine = self.draw_machine(hl)
             follow = not self.holds(pid)
             if follow != self.follows.get(pid):
                 frames = [hl.hello(follow)]
                 if not follow:
-                    machine = machine or hl.presence()
+                    machine = machine or self.draw_machine(hl)
                     frames.append(machine)
                 self.log_lane.send(frames)
                 self.follows[pid] = follow
@@ -2256,20 +2286,33 @@ class Link:
         launch its bridge names. When a session
         came or went, and every MEMBERS_EVERY (`now`, monotonic), the
         projects known here are listed again and those the plane does not
-        read itself (not open on the stream) are read, as is any never read;
-        between, what the plane's own reads changed is sent. The whole set
+        read itself (not open on the stream) are read — at MEMBERS_EVERY only
+        those whose inputs moved (Plane.stale), every one when a session came
+        or went or MEMBERS_WHOLE went by — as is any never read; between,
+        what the plane's own reads changed is sent. The whole set
         goes after each welcome (members_sent is new with the connection),
         then each frame that changed, and `{session, gone: true}` for a
         session no longer here; a session in two projects' rows is sent for
         the first. The projects known here ({id: project}), as last listed."""
         live = set(self.plane.live)
         if live != self.member_read_for or now >= self.next_member_read:
+            whole = live != self.member_read_for or now >= self.next_member_whole
             self.member_read_for, self.next_member_read = live, now + plane.MEMBERS_EVERY
+            if whole:
+                self.next_member_whole = now + plane.MEMBERS_WHOLE
             self.member_known = {p.id: p for p in sminos.known_projects()}
             self.unlisted.clear()
-            for pid, project in self.member_known.items():
-                if pid not in self.opened or pid not in self.plane.member_rows:
-                    self.plane.refresh(project)
+            # Those whose inputs moved, as the plane reads its own (Plane.stale).
+            stale = self.plane.stale({pid: p for pid, p in self.member_known.items()
+                                      if pid not in self.opened or pid not in self.plane.member_rows}, whole)
+            if stale:
+                # Their inputs hold the engine's records as the plane last
+                # scanned them, which the cache generation can predate (the
+                # plane renews it in its tick, after this): a read kept
+                # against them draws on records at least as new.
+                sminos.forget_caches()
+            for project, inputs in stale:
+                self.plane.reread(project, inputs)
         self.publish_members(now)
         return self.member_known
 
@@ -2536,7 +2579,17 @@ class Link:
             scan = now >= self.next_scan or nudged
             if scan:
                 self.next_scan = now + SCAN_EVERY
-                sminos.forget_caches()
+                self.look_whole = True
+                if nudged:
+                    # A sender asked: what it did is read as it is now. A
+                    # scan it did not ask for reads within the cache
+                    # generation the session plane renews (once a session
+                    # came or went, else every MEMBERS_EVERY): forgetting
+                    # every cache at each scan re-resolved every seat's
+                    # project, launch directory and checkout every 2 s,
+                    # most of an idle uplink's work on a machine with a
+                    # history (2026-10-28).
+                    sminos.forget_caches()
             if not self.coded:
                 self.members(time.monotonic())
                 # The member set is published in bounded entries: until the
@@ -2582,8 +2635,12 @@ class Link:
                     self.log_lane.send([self.logs[pid].hello(self.follows.get(pid, False))])
             if (now >= self.next_upload or nudged or words) and not held:
                 self.next_upload = now + UPLOAD_EVERY
+                # Every own writer looked at once after each scan, a nudge
+                # and a words pass; the hot ones alone between (HubLog.hot).
+                live = None if self.look_whole or nudged or words else set(self.plane.live)
+                self.look_whole = False
                 for pid in sorted(self.opened):
-                    self.upload(self.logs[pid])
+                    self.upload(self.logs[pid], live)
                     self.deliveries(self.logs[pid])
                     if not self.coded:
                         self.host_pass(self.logs[pid])

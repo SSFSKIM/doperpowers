@@ -26,8 +26,11 @@ transcripts the engine cleaned up); LIVE running sessions (each a `sleep`
 this script starts, under an engine record); four hub projects with a
 checkout here, three without (this machine's own project, the `mini`
 machine's, a hub project with no checkout here), each holding REMOTE
-members of the `mini` machine (MINI in mini's own project) and chatter;
-LOCAL local projects kept as history.
+members of the `mini` machine (MINI in mini's own project) and chatter,
+and OWN ended sessions of this machine in each hub project with a checkout
+(its history there: one writer file each, which the uplink's upload pass
+looks over; the MacBook held about 600 on 2026-10-28); LOCAL local projects
+kept as history.
 
 - `tick`: `daemon tick`'s work in one long-lived process, as `daemon run`
   does it (sminos_daemon.tick_all), its first tick (which joins the live
@@ -245,6 +248,16 @@ class Env:
                 "pid": p.pid, "sessionId": sid, "cwd": cwd, "kind": "interactive", "entrypoint": "cli",
                 "status": "idle", "name": "live%d" % i, "nameSource": "derived",
                 "updatedAt": int(time.time() * 1000)})
+        # This machine's own history in its hub checkouts: sessions that joined, worked and ended.
+        for pid, d in hubs.values():
+            for _ in range(a.own):
+                sid = self.uid()
+                self.log(pid, "%s/%s" % (MACHINE, sid), [
+                    {"kind": "joined", "session": sid, "alias": "past", "name_source": "derived",
+                     "machine": MACHINE, "cwd": d, "session_kind": "interactive"},
+                    {"kind": "state", "session": sid, "state": "working", "machine": MACHINE},
+                    {"kind": "say", "session": sid, "to": [], "text": "done " + "x" * 120},
+                    {"kind": "retired", "session": sid, "by": "", "reason": "ended"}])
         # Members of the other machine, in every hub project (its own project most of all).
         for pid in self.hub_ids:
             n = a.mini if pid == mini else a.remote
@@ -298,6 +311,7 @@ def scale(p):
     p.add_argument("--remote", type=int, default=40)
     p.add_argument("--mini", type=int, default=100)
     p.add_argument("--says", type=int, default=300)
+    p.add_argument("--own", type=int, default=150, help="this machine's ended sessions in each hub checkout")
     p.add_argument("--keep", action="store_true", help="leave the synthetic machine on disk")
     p.add_argument("--joined-by", metavar="SCRIPTS", help="make the first tick with this copy of the scripts")
 

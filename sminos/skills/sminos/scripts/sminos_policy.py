@@ -128,13 +128,17 @@ def outside_origin(e):
     return not (head and sminos.is_self(head, sminos.writer_session(e.get("writer") or "")))
 
 
-def known_checkouts(project):
+def known_checkouts(project, here=None):
     """[{path, branch}]: the project's root while it is still a directory of
     the project (its .smns still names it), and every working directory a
     session of the project joined from on this machine that is still a
     directory of this project — the checkouts a spawn from outside may run
     in (sminos_rpc), as DX4's `machine` presence offers them. None for a
-    machine project: a stray's directory resolves to it, and is no checkout."""
+    machine project: a stray's directory resolves to it, and is no checkout.
+    `here`: {session: the directory it joined from} of those sessions, as a
+    reader that just read the project's view holds it (the uplink's session
+    plane); else the view is read. Each directory is looked at once, however
+    many sessions joined from it."""
     if sminos.project_kind(project) == "machine":
         return []
     paths = []
@@ -142,12 +146,15 @@ def known_checkouts(project):
         root = sminos.resolve_project(project.root)
         if root is not None and root.id == project.id:
             paths.append(project.root)
-    view = sminos.view_of(project, titles=False)
-    for sid, r in view.info.items():
-        j = (r or {}).get("joined") or {}
-        cwd = str(j.get("cwd") or "")
-        machine = str(j.get("machine") or "")
-        if not cwd or not os.path.isdir(cwd) or (machine and not sminos.is_self(machine, sid)):
+    if here is None:
+        here = {}
+        for sid, r in sminos.view_of(project, titles=False).info.items():
+            j = (r or {}).get("joined") or {}
+            machine = str(j.get("machine") or "")
+            if not machine or sminos.is_self(machine, sid):
+                here[sid] = str(j.get("cwd") or "")
+    for cwd in dict.fromkeys(here.values()):
+        if not cwd or not os.path.isdir(cwd):
             continue
         p = sminos.resolve_project(cwd)
         if p is not None and p.id == project.id:

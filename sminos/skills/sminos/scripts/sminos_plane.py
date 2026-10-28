@@ -203,7 +203,8 @@ PRESENCE_EVERY = 0.2      # s: how often the engine's records are looked at
 BRIDGE_RECHECK = 2.0      # s: how often a bridge that answered is asked again
 METAS_EVERY = 0.5         # s: how often a main subscription's subagent tree is looked at
 LOCATE_EVERY = 1.0        # s: how often a transcript not found yet is looked for
-MEMBERS_EVERY = 10.0      # s: how often the members are read again when no session came or went
+MEMBERS_EVERY = 10.0      # s: how often the members are looked at again when no session came or went
+MEMBERS_WHOLE = 60.0      # s: how often they are read again whatever their inputs say (Plane.stale)
 IDENTITY_EVERY = 10.0     # s: how stale a running pid's identity may be (its start time read this often)
 TOMBSTONE_FILE = "presence.json"  # under daemon/: project id → the time its sessions' leaving was last said and taken
 TOMBSTONE_MARGIN = 60.0   # s: a session that left this long before that time is said again (clock steps, a write in flight)
@@ -2523,6 +2524,15 @@ class Bridges:
             return h[7] if h and h[1] else None
 
 
+def _stat_key(path):
+    """(path, inode, size, mtime) of a file as it is now, or (path,) when it is not there."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return (path,)
+    return path, st.st_ino, st.st_size, st.st_mtime_ns
+
+
 def bridge_socks():
     """The sessions with a socket in the bridges' directory, from one listing."""
     try:
@@ -2590,6 +2600,8 @@ class Plane:
         self.kinds = frozenset()  # the session kinds the stream's welcome listed (DX2): `read` goes only if listed
         self.read_for = None      # the running sessions the members were last read for
         self.next_members = 0.0
+        self.next_whole = 0.0     # when every project's members are read again, whatever their inputs (stale)
+        self.inputs_read = {}     # project id → its inputs as its members were last read (stale)
 
     def close(self):
         for s in self.subs.values():
@@ -2620,6 +2632,60 @@ class Plane:
         self.members[project.id] = members = set(self.member_rows[project.id])
         self.left[project.id] = {sid: sminos._ts_epoch((view.info[sid].get("latest") or {}).get("ts"))
                                  for sid in here if sid not in members}
+
+    def stale(self, projects, whole):
+        """[(project, its inputs now)] of `projects` ({id: project}) whose
+        members are to be read again (reread): every one
+        when `whole` — a session came or went, or MEMBERS_WHOLE went by —
+        else those never read or whose inputs moved since their last read.
+        Most of an idle machine's projects have not changed in ten seconds,
+        and a read of each was most of an idle uplink's work once its upload
+        pass stopped looking at the whole history (2026-10-28)."""
+        seats = tuple(_stat_key(p) for p in sminos.record_files())
+        internal = _stat_key(os.path.join(sminos.root(), "internal"))
+        out = []
+        for pid, project in projects.items():
+            inputs = self.inputs(project, seats, internal)
+            if whole or inputs is None or self.inputs_read.get(pid) != inputs:
+                out.append((project, inputs))
+        return out
+
+    def inputs(self, project, seats, internal):
+        """What a read of the project's members draws on that can move while
+        no session comes or goes: its log's files (a member joined, retired,
+        renamed, published its state — the daemon's tick writes there what
+        it reconciles), the seats, its members' engine records (their state
+        words, their names) and session records (RL10's member frames), and
+        the internal forks. None when its log cannot be listed."""
+        files = []
+        try:
+            with os.scandir(os.path.join(project.home, "log")) as it:
+                for e in it:
+                    if e.name.endswith(".jsonl"):
+                        try:
+                            st = e.stat()
+                        except OSError:
+                            continue
+                        files.append((e.name, st.st_ino, st.st_size, st.st_mtime_ns))
+        except OSError:
+            return None
+        return sorted(files), seats, self.member_inputs(project.id), internal
+
+    def member_inputs(self, pid):
+        records = sminos.records_module()
+        return tuple((sid, self.live.get(sid), _stat_key(records.record_path(sid)))
+                     for sid in sorted(self.members.get(pid, ())))
+
+    def reread(self, project, inputs):
+        """refresh, its inputs (stale's) kept as taken before it, so what
+        moved during the read is read at the next look; their members' part
+        taken again when the read changed who the members are, so a read is
+        not repeated for what it found itself."""
+        before = self.members.get(project.id)
+        self.refresh(project)
+        if inputs is not None and self.members.get(project.id) != before:
+            inputs = inputs[:2] + (self.member_inputs(project.id),) + inputs[3:]
+        self.inputs_read[project.id] = inputs
 
     # ---------------------------------------------------- presence
 
@@ -2864,20 +2930,24 @@ class Plane:
         project}): presence that changed, each subscription's messages,
         finished diffs and reads. Envelopes, in the order to post them. The members are
         read again — a reconciling read of each log, which reads the start
-        time of every live session — when a session came or went, and every
-        MEMBERS_EVERY for what only the log changes (a seat retired). The
-        warmer is handed the live members of those projects, and whether an
-        open awaits its snapshot."""
+        time of every live session — when a session came or went; every
+        MEMBERS_EVERY those of a project whose inputs moved (a seat retired,
+        a member's state published: stale), and every MEMBERS_WHOLE all of
+        them. The warmer is handed the live members of those projects, and
+        whether an open awaits its snapshot."""
         now = time.monotonic()
         out = []
         if now >= self.next_scan:
             self.next_scan = now + PRESENCE_EVERY
             self.live = self.records.scan()
         if set(self.live) != self.read_for or now >= self.next_members:
+            whole = set(self.live) != self.read_for or now >= self.next_whole
             sminos.forget_caches()  # the engine's records as they are now, not as sminos last read them
-            for project in projects.values():
-                self.refresh(project)
+            for project, inputs in self.stale(projects, whole):
+                self.reread(project, inputs)
             self.read_for, self.next_members = set(self.live), now + MEMBERS_EVERY
+            if whole:
+                self.next_whole = now + MEMBERS_WHOLE
         socks = bridge_socks()
         for pid in sorted(projects):
             out += self.presence(pid, now=now, socks=socks)
