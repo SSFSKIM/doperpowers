@@ -36,8 +36,9 @@ export const INPUT_SCHEMA = {
 
 /**
  * The response the plugin answers in place of the request that would follow
- * a final message: what the transcript keeps as the turn's last row, which
- * the view folds into the working record.
+ * a final message: what the transcript keeps as the turn's last row (no
+ * request id, the engine's `answeredWithoutRequest` flag), which the view
+ * draws as nothing (`isMadeUp`).
  */
 export const FINAL_ANSWER = 'Message sent to the human.'
 
@@ -171,6 +172,19 @@ export const endsOnFinal = (since: Since) => since.finals > 0 && since.sent === 
 let isRegistered = false
 // The main loop's rows since its last step began.
 let since = fresh()
+// Whether a made-up response streamed and its row is still to be kept; and the rows kept for one.
+let isMakingUp = false
+const madeUpRows = new Set<string>()
+
+const isFinalAnswer = (text: string) => text.trim() === FINAL_ANSWER
+
+/**
+ * Whether the assistant row `id`, which reads `text`, is the response this
+ * module made up after a final message, not a model's saying the same: a row
+ * kept as one, or, while the made-up response's row is still to be kept, a
+ * row with its text. The view reads a resumed transcript's for itself.
+ */
+export const isMadeUp = (id: string, text: string) => isFinalAnswer(text) && (madeUpRows.has(id) || isMakingUp)
 
 /** Whether this session registered the tool under its contract name: the reminder names it. */
 export const isMessageToolOn = () => isRegistered
@@ -200,8 +214,8 @@ export const isMessageToolOn = () => isRegistered
  * engine's standing reminders lets the request go. A subagent's step is
  * never answered here (its calls are refused), nor a turn's first. The step
  * answered here reaches no hook beneath, so sminos' bridge streams no step
- * for it; the call's rows and the made-up response's are kept, drawn and
- * exported as any row is.
+ * for it; the call's rows and the made-up response's are kept and exported
+ * as any row is, and the view draws the made-up one as nothing.
  */
 export function registerMessage(on: On) {
   on('session.start', { isInteractive: true }, async ($, e, next) => {
@@ -252,6 +266,11 @@ export function registerMessage(on: On) {
   on('session.append', { door: /^/ }, async (_, e, next) => {
     const result = await next(e)
     if (e.agentId === undefined && result.deny === undefined) {
+      const [block, ...rest] = result.message.content
+      if (isMakingUp && e.door === 'response' && rest.length === 0 && block?.type === 'text' && isFinalAnswer(String(block.text))) {
+        madeUpRows.add(result.uuid)
+        isMakingUp = false
+      }
       since = note(since, e.door, result.message)
     }
     return result
@@ -261,6 +280,8 @@ export function registerMessage(on: On) {
     if (e.agentId !== undefined) {
       return yield* next(e)
     }
+    // A made-up response's row is kept before the main loop's next step.
+    isMakingUp = false
     const before = since
     since = fresh()
     // A turn's first step follows the person's prompt, not a message (a turn cut short after one).
@@ -272,6 +293,7 @@ export function registerMessage(on: On) {
       return yield* next(e)
     }
     $.ui.log('to-human: a final message ends the turn, with no request after it', { to: 'debug' })
+    isMakingUp = true
     yield { kind: 'text', index: 0, text: FINAL_ANSWER }
     yield { kind: 'stop', stopReason: 'end_turn', usage: null }
     return { turnId: e.turnId, index: e.index, answer: FINAL_ANSWER, toolUses: [], stopReason: 'end_turn', usage: null }

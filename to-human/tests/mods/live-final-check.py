@@ -17,9 +17,10 @@ It prints PASS or FAIL for each item:
 2. turn two made one request, its next step answered by to-human with no
    request, and ended `answer`;
 3. the transcript's rows for turn two: the call, its result `sent`, and the
-   made-up response as the turn's last assistant row, with no request id;
-4. the terminal draws the message as a message row and nothing of the
-   made-up response outside the working record;
+   made-up response as the turn's last assistant row, with no request id and
+   the engine's `answeredWithoutRequest` flag, which the view reads on a resume;
+4. the terminal draws the message as a message row and nothing after it:
+   no text of the made-up response, and no `› working record` for it;
 5. sminos exports the final message to the project's log once, word for word.
 
 It spends model calls (about 4, haiku unless --model says otherwise), so no
@@ -193,19 +194,22 @@ class Final(base.Live):
         assistants = [r for r in tail if r.get("type") == "assistant"]
         last = assistants[-1] if assistants else {}
         texts = [b.get("text") for b in last.get("message", {}).get("content") or [] if isinstance(b, dict)]
-        self.check("3 the rows: the call (final), its result sent, then the made-up response, no request id",
+        self.check("3 the rows: the call (final), its result sent, then the made-up response, no request id, flagged",
                    use is not None and use.get("input", {}).get("final") is True and result is not None
                    and self.result_text(result).strip() == "sent" and texts == [FINAL_ANSWER]
-                   and not last.get("requestId"),
+                   and not last.get("requestId") and last.get("answeredWithoutRequest") is True,
                    "\n    " + "\n    ".join(repr(s) for s in summary))
 
-        # 4. The terminal.
+        # 4. The terminal: the message, and nothing of the made-up response, not even a fold.
         below = frame[frame.find("write nothing else."):]
         drawn = TEXT_TWO in below and below.rfind(base.LABEL, 0, below.find(TEXT_TWO)) >= 0
+        after = below[below.find(TEXT_TWO):] if drawn else below
         shown = FINAL_ANSWER in below
-        self.check("4 the terminal draws the message as a message row, the made-up response folded",
-                   drawn and not shown, "message row %s, made-up text drawn %s; frame below the prompt:\n%s" % (
-                       drawn, shown, "\n".join("    | " + line for line in below.splitlines()[:30])))
+        folded = "working record" in after
+        self.check("4 the terminal draws the message as a message row, and nothing after it",
+                   drawn and not shown and not folded,
+                   "message row %s, made-up text drawn %s, a working record after it %s; frame below the prompt:\n%s" % (
+                       drawn, shown, folded, "\n".join("    | " + line for line in below.splitlines()[:16])))
 
         # 5. The export.
         exported = [e for e in events if use and e.get("src") == use["id"]]
