@@ -14,7 +14,7 @@ import re
 import shlex
 
 from .compose import SEED_PATH, SRC, STAGE, recipe_tar
-from .errors import CAP, FAILED, DriverError
+from .errors import FAILED, DriverError
 
 READY = "devcloud-depart: ready-to-logout"
 BOOT_ENV = "/etc/devcloud/boot.env"
@@ -171,7 +171,6 @@ def lifecycle(ctx, host, user="root"):
     return record.get("state")
 
 
-OVER_CAP = 4    # `lease set --cap`'s refusal (M2's host command, I16)
 KIND = "/var/lib/devcloud/tailnet.json"     # the node's kind as the host joined it (§4.1)
 
 
@@ -181,20 +180,14 @@ class LeaseSet:
     rejoin: str | None      # the kind the node is rejoining as, when the lease changed it
 
 
-def lease_set(ctx, host, unix, cap=None):
+def lease_set(ctx, host, unix):
     """`devcloud lease set` under the host's lock (`keep` for `unix` None);
     the lease it printed, which is the one in force (§4.1), and the kind its
-    tailnet node is rejoining as when the write changed it. With `cap` the
-    host itself refuses, under the same lock as the write, a lease past the
-    cap that is later than the one in force: the check cannot be overtaken by
-    another Mac's write."""
-    command = f"devcloud lease set {'keep' if unix is None else int(unix)}" + (
-        f" --cap {int(cap)}" if cap is not None else "")
+    tailnet node is rejoining as when the write changed it."""
+    command = f"devcloud lease set {'keep' if unix is None else int(unix)}"
     result = ctx.remote.run(host.name, host.alias, command, timeout=60)
     if result.code == 3:
         raise DriverError(FAILED, f"{host.name}'s departure has started; its lease stays as it is")
-    if result.code == OVER_CAP and cap is not None:
-        raise DriverError(CAP, f"{host.name}'s lease would end past the lifetime cap, later than the lease in force")
     lines = (result.out or "").strip().splitlines()
     rejoin = next((line.split(" ", 1)[1] for line in lines[:-1] if line.startswith("rejoin ")), None)
     try:

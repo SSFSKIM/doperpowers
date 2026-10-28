@@ -110,6 +110,9 @@ desk no longer counts it.
     then `down --force`; an adoption released by `down`. Every node was gone from the API and every
     VM was deleted by 06:30Z.
   - Report: `docs/doperpowers/plans/2026-10-22-devcloud-node-removal-report.md`.
+- [ ] (2026-10-27) M7 — Kept by default, and the idle notice (the person's decision, Decision Log
+  2026-10-27). M7a, the driver: the default lifetime, one count cap over every unconfirmed VM, no
+  lifetime cap. M7b, the host: the idle notice, and `ls`'s idle column.
 
 Human steps this initiative needs. The executor prepares each (the exact command, the page, what to
 check) and escalates it at the milestone named; the person runs it when an automated attempt is
@@ -150,8 +153,10 @@ session store). New here:
 - **Account**: one provider login the person registered in the profile's `driver.toml` (Interfaces
   I10): a provider, the Secret Manager ids of its credentials, its settings and defaults. A project
   chooses among accounts by name; it never supplies one.
-- **Lifetime**: `ttl` — the host has a lease and departs when it ends — or `keep` — no lease. This
-  is independent of the parent's role: every VM the driver makes has role `persistent` (systemd, its
+- **Lifetime**: `keep` — no lease; the VM runs until `down` — or `ttl` — the host has a lease and
+  departs when it ends. `keep` is the default (the profile's `[caps] lease_default`), since a VM is
+  usually made for sustained work (Decision Log, 2026-10-27). This is independent of the parent's
+  role: every VM the driver makes has role `persistent` (systemd, its
   own machine identity), whatever its lifetime. The parent's definition of `persistent` ("long-lived")
   is narrowed accordingly (Decision Log).
 - **Lease**: a host's expiry, a Unix time. The host's descriptor (`DEVCLOUD_EXPIRES`) holds the
@@ -172,15 +177,17 @@ session store). New here:
   `~/.local/state/devcloud/adopted/<name>.json` — the one piece of lifecycle state the driver keeps
   locally (§6.5).
 - **Reaper**: `devcloud vm reap`, which deletes what outlived its lease, its purpose or its
-  retention, and unconfirmed throwaway VMs above the cap (§4.3).
+  retention, and unconfirmed VMs above the count cap made in the last 2 hours (§4.3).
 - **Image**: a provider-side disk image with the parent's `image/setup.sh` already applied, so a VM
   starts in minutes rather than installing everything (§7).
 - **Recipe hash**: a short digest of `devcloud/image/` and `devcloud/boot/` at the plugin version in
   use; an image is current when its recorded hash equals the driver's.
 - **Confirmed request**: `--confirmed` on a `devcloud vm` command. It says the person approved this
-  specific request; the driver requires it for anything beyond the caps, for `keep`, for `adopt`,
-  and for registering a profile provider (§2, §6.2). A VM created with it carries
-  `devcloud-confirmed=1` and does not count toward the throwaway cap.
+  specific request; the driver requires it for anything beyond the caps, for `adopt`, and for
+  registering a profile provider (§2, §6.2). A VM created with it carries `devcloud-confirmed=1`
+  and does not count toward the count cap.
+- **Idle notice**: the message a VM sends after three days without a Claude session, a login or
+  load, naming itself, its idle time and what it has cost (§4.5).
 - **Provisioning key**: a desk credential, reusable and revocable, that lets a machine enroll at the
   desk without a person (§10). The desk builds it; this work consumes it.
 
@@ -210,14 +217,14 @@ parts of checks 1, 3, 5 and 7 need sminos 1.4.1 or later on the VM and the desk'
    it on machine `<n>`; `session-mirror ls --host <n>` lists its session. From the desk, a prompt
    sent to a fresh session on `<n>` runs in it, and a permission request that session raises is
    answered from the desk and its tool call proceeds.
-4. **Limits hold without the person, and give way with them.** With three unconfirmed throwaway VMs
-   up, a fourth `devcloud vm up` exits 4 and its message names the cap and `--confirmed`;
-   `devcloud vm up --ttl 100h --dry-run` exits 4 naming the lifetime cap;
-   `devcloud vm up --type <a 16-vCPU type> --dry-run` exits 4 naming the size cap;
+4. **Limits hold without the person, and give way with them.** With three unconfirmed VMs up
+   (kept or leased), a fourth `devcloud vm up` exits 4 and its message names the cap and
+   `--confirmed`; `devcloud vm up --type <a 16-vCPU type> --dry-run` exits 4 naming the size cap;
    `devcloud vm up --type <a type of at most 8 vCPU, its own disk under 500 GB> --disk 500 --dry-run`
-   exits 4 naming the disk cap; `--keep --dry-run` and `adopt --dry-run` without `--confirmed` exit 4. The fourth `up` with
-   `--confirmed` creates the VM, labeled `devcloud-confirmed=1`, and `devcloud vm ls` still counts
-   three of three throwaway VMs (then deleted).
+   exits 4 naming the disk cap; `adopt --dry-run` without `--confirmed` exits 4. A `devcloud vm up
+   --dry-run` with no `--ttl` shows lifetime `keep`, and one with `--ttl 100h` passes its caps. The
+   fourth `up` with `--confirmed` creates the VM, labeled `devcloud-confirmed=1`, and `devcloud vm
+   ls` still counts three of three unconfirmed VMs (then deleted).
 5. **A lease ends cleanly.** In `<n>`'s project checkout an unpushed commit is made; then
    `devcloud vm lease <n> 35m`. Within 10 minutes the creating session receives a sminos message
    naming `<n>`, its lease end, and the repository with unpushed work. After the lease ends: within
@@ -309,27 +316,31 @@ handling is better tested than a hand-written API client.
 
 ### 2. Lifetimes and caps: who has to say yes
 
-A session may create a **throwaway** VM (lifetime `ttl`) without asking anyone when the request is
-within every cap; anything else needs the person's approval of that specific request, which the
-session obtains first and then passes as `--confirmed`. The caps live in the profile (I10) with
-these values the person chose:
+A session may create a VM without asking anyone when the request is within every cap, kept or
+leased alike; anything else needs the person's approval of that specific request, which the session
+obtains first and then passes as `--confirmed`. The caps live in the profile (I10) with these values
+the person chose:
 
 | Cap | Value | Beyond it |
 |---|---|---|
-| Unconfirmed throwaway VMs alive at once, all accounts together | 3 | `--confirmed` |
-| Lease at creation, and total lifetime through `lease` | default 12 h, at most 72 h | `--confirmed` (no upper bound) |
+| Unconfirmed VMs alive at once, kept and leased, all accounts together (`unconfirmed`) | 3 | `--confirmed` |
 | Size | at most 8 vCPU | `--confirmed` |
 | Disk requested beyond the type's own | at most 200 GB | `--confirmed` |
-| Lifetime `keep` | — | always `--confirmed` |
 | `adopt` (sends a key to a machine the driver did not make) | — | always `--confirmed` |
+
+A VM's lifetime is `keep` unless the request gives `--ttl` (the profile's `lease_default`, `keep`
+when unset, may name a duration instead). Neither the lifetime nor a lease's length is capped: a VM
+is usually made for sustained work, so it runs until `down` (Decision Log, 2026-10-27). What bounds
+a forgotten VM's cost is the count cap and the idle notice (§4.5), not an expiry. `lease <n>
+<duration|keep>` therefore needs no yes either: it changes when a VM ends, never how many are alive.
 
 `--confirmed` is not verified by the driver — it cannot see the person — so it is a contract with
 the session, stated in the skill: ask through the ask tool with the specification and its cost,
 and pass the flag only for what was approved. The alternative, requiring a terminal the person
 types into, was rejected: sessions run without one, and the person approves from the desk or a
 phone as often as from a terminal. The caps are the enforcement for everything a session does
-alone; they bound the worst case to three 8-vCPU machines, each with its type's own disk or at most
-200 GB, for 72 hours.
+alone; they bound the worst case to three 8-vCPU machines alive at once, each with its type's own
+disk or at most 200 GB, each announcing itself every three idle days (§4.5).
 
 The disk cap bounds only a disk the request adds: `--disk`, else `host.toml`'s `disk_gb`, when it
 is larger than the type's own disk (the `disk_gb` the provider's `types` reports). A type's own disk
@@ -338,14 +349,16 @@ when its requested disk is above both the type's disk and `max_disk_gb`. It is c
 other caps, before anything is created.
 
 A VM created with `--confirmed` carries `devcloud-confirmed=1` and does not count toward the
-throwaway cap: it is an extra the person approved, and counting it would let the person's yes use up
-a session's room. The count is checked before creation and again after it: two drivers (the two
-Macs) racing past a count of 2 would otherwise make 4. After `create` returns, the driver lists
-again; if unconfirmed throwaway VMs now exceed the cap and its own is the newest, it deletes its own
-and exits 4. A driver killed between the create and the recount leaves the excess behind, so the
-reaper, at each run, deletes the newest unconfirmed throwaway VMs above the cap — departing each
-first, as `down` does, when it is reachable — until three remain (§4.3). Confirmed VMs are never
-touched by this. Adopted machines and `keep` VMs do not count toward the throwaway cap.
+count cap: it is an extra the person approved, and counting it would let the person's yes use up
+a session's room. Nothing else sets or clears that label; a later `lease` leaves it as it is. The
+count is checked before creation and again after it: two drivers (the two Macs) racing past a
+count of 2 would otherwise make 4. After `create` returns, the driver lists again; if unconfirmed
+VMs now exceed the cap and its own is the newest, it deletes its own and exits 4. A driver killed
+between the create and the recount leaves the excess behind, so the reaper, at each run, deletes the
+newest unconfirmed VMs above the cap that were created in the last 2 hours — departing each first,
+as `down` does, when it is reachable — until three remain (§4.3). An older one is never deleted for
+the count: it may hold days of work, and a cap lowered in the profile is the person's to settle, so
+the reaper logs it instead. Confirmed VMs are never touched by this. Adopted machines do not count.
 
 ### 3. `up`, step by step
 
@@ -574,8 +587,8 @@ comes from the descriptor because the driver knows it for certain; the metadata 
     drop before that line: the outcome is unknown, and the VM is skipped this run. Exit 3, "lease
     not over": the label was stale (a lease write reached the host but not the label), so the reaper
     sets the label to the host's value and skips the VM. A host with no lease at all (kept by
-    `lease <n> keep --confirmed`, board #115) is relabeled kept instead: `devcloud-lifetime=keep`
-    and `devcloud-confirmed=1`, with `devcloud-expires` dropped. Exit 4, held:
+    `lease <n> keep`, board #115) is relabeled kept instead: `devcloud-lifetime=keep`, with
+    `devcloud-expires` dropped and `devcloud-confirmed` left as it is. Exit 4, held:
     it labels the VM `devcloud-held=1` and leaves it, until 24 hours past its lease end; then it
     deletes it, with a `reap.log` line naming the unshipped loss.
   - Unreachable: the label can trail the host's lease — two Macs renewing at once whose label
@@ -591,10 +604,10 @@ comes from the descriptor because the driver knows it for certain; the metadata 
     past its stale label can be deleted before its lease ends. A crash between the host's write and
     the label's write while a lease is being shortened leaves the label later than the host's lease;
     the host departs and powers off at its own end, and the reaper deletes it only at the old label
-    end plus 15 minutes, so a powered-off server bills until then at most, which the lifetime cap
-    bounds.
-- **Excess**: unconfirmed throwaway VMs above the cap, newest first, departed (`--force`) when
-  reachable and deleted, until three remain (§2).
+    end plus 15 minutes, so a powered-off server bills until then at most.
+- **Excess**: unconfirmed VMs above the cap created in the last 2 hours, newest first, departed
+  (`--force`) when reachable and deleted, until three remain; an older one above the cap is logged,
+  never deleted (§2).
 - **Leftovers**: builders (§7) and `provider test` servers (§6.2) of usable accounts older than 2
   hours; per account, failed images, and ready images beyond the newest two (current recipe first);
   pending images are their build's, and an image with no state is neither deleted nor chosen. The reaper never runs an unregistered provider or
@@ -634,8 +647,44 @@ the desk's Machines until someone removes it there (§10; no key has an offline 
 | Host hung or crashed, then lease ends | lost since the last ship (seconds, the shipper is continuous) | stays in the desk's Machines, offline, until removed there by hand (no key has an offline revoke, H4); the reaper's log line for its deletion names it | ephemeral expiry, about an hour | reaper deletes 15 min past the label's lease when the provider reports it not running, 6 h past when it reports it running |
 | `devcloud vm down` | as a healthy lease end; held → `down` exits 1, `--force` proceeds | `hub leave` | `logout`, then the node removed through the API by the host (a kept host's) and by the driver after the delete | deleted at once |
 | GCE spot reclaimed | best-effort fast departure, no hold | best-effort `hub leave`, else stays until removed by hand | best-effort `logout`, else ephemeral expiry | provider deletes |
-| `keep` VM | never departs | stays; if the desk revoked it meanwhile, re-enrolls at its next boot (`hub check` 3, `--replace`) | stays; `down`, even `--force` on an unreachable VM, removes its node (board #118) | only `down` |
+| `keep` VM (the default) | never departs; three days idle, it sends the idle notice (§4.5) | stays; if the desk revoked it meanwhile, re-enrolls at its next boot (`hub check` 3, `--replace`) | stays; `down`, even `--force` on an unreachable VM, removes its node (board #118) | only `down` |
 | Adopted machine, lease ends or `down` | the release ships, as a departure | `hub leave` | `logout`, then the node removed through the API by the machine, and by the driver once `down` verified the release | keeps running, devcloud removed (§6.5) |
+
+**4.5 The idle notice.** A kept VM has no end, so what guards against one nobody uses any more is
+that it says so, to the session that made it. Nothing is deleted or stopped for being idle: the VM
+runs until `down` (Decision Log, 2026-10-27).
+
+- **Where.** On every VM host, kept or leased, at each run of the lease service (every 5 minutes).
+  Not on an adopted machine: it is the person's server and bills the same with devcloud on it or
+  not.
+- **Active.** A run finds the host active when any of these holds:
+  - a transcript under the user's `~/.claude/projects` was written since the previous run (a
+    running session writes; a resident seat waiting for a message does not, so a process count
+    would keep the host busy forever);
+  - a login session with a terminal is open (`loginctl`): `devcloud vm ssh <n>` with no command, or
+    any interactive login. Sessions without a terminal do not count. The driver's own probes
+    (`ls`'s idle column, the reaper, `lease`) are such sessions, and counting them would make every
+    `ls` reset the clock;
+  - the 15-minute load average is at least 0.5: a build or a soak someone left running.
+
+  Each active run records its time as `active_at` in `/var/lib/devcloud/idle.json`; the first run
+  after the file is missing records the run itself as active.
+- **The notice.** When the host has been idle three days (`now - active_at`), and no notice of this
+  idle stretch went out in the last three days, the host sends one and records `noticed_at`. One
+  stretch therefore gives a notice at 3, 6, 9… days; an active run ends the stretch. The text names
+  the VM, its idle time and the time it was last active, its lease end or that it runs until `down`,
+  what it has cost (its hourly price times its age, from I12's `DEVCLOUD_HOURLY_PRICE` and
+  `DEVCLOUD_CREATED`; left out when they are absent), each checkout with unpushed work (the lease
+  warning's scan), and `devcloud vm down <n>` as the way to end it.
+- **To whom.** The creator, `sminos say "<DEVCLOUD_CREATOR> …"`, as the lease warning. When that
+  reaches no live session (the creator's session ended, or there is no creator), the sessions of the
+  creator's sminos project, `sminos say --project <DEVCLOUD_CREATOR_PROJECT> …`, which the project's
+  next session reads even when none is live. Else, as the warning: the journal and `wall`. The lease
+  warning gains the same fallback. How `sminos say` reports a tag that reaches nobody is M7b's to
+  establish against the sminos CLI.
+- **In `ls`.** `devcloud vm ls` shows each VM's age, its cost so far (the type's list price times
+  its age), and its idle time read from `idle.json` over the tailnet, all hosts at once within a 10 s
+  bound; a host that does not answer in time shows `-`.
 
 ### 5. Exposure: the public port closes once the tailnet is up
 
@@ -769,7 +818,7 @@ machine and runs `setup.sh` (which renames the machine to the `dc-` name and cre
 delivers the seed; writes the descriptor with `DEVCLOUD_ADOPTED=1`; and starts the boot. Lifetime
 defaults to `keep`; `--ttl` gives it a lease. `devcloud vm lease` on an adopted machine writes
 `DEVCLOUD_EXPIRES` on the host only (under its lock; there are no labels) and updates the record, and
-`lease <name> keep --confirmed` removes it; either way the node rejoins as the kind its lease wants
+`lease <name> keep` removes it; either way the node rejoins as the kind its lease wants
 (§4.1);
 at the lease end the host's lease service runs the release. `devcloud vm down <name>` runs the
 release over the tailnet when the machine is reachable, else over the recorded public address; the
@@ -1433,6 +1482,43 @@ Decisions:
 
 Proves: acceptance 1–13, with the full `devcloud` gate green.
 
+### M7 — Kept by default, and the idle notice
+
+The person's decision of 2026-10-27 (Decision Log). Two parts, built in parallel on their own
+branches; M7b's `ls` column lands after M7a merges.
+
+**M7a — The driver** (the main session). What exists at its end: `up` without `--ttl` makes a kept
+VM; the count cap covers every unconfirmed VM, kept or leased; there is no lifetime cap, and `lease`
+takes no `--confirmed`; the reaper deletes an excess VM only within 2 hours of its creation and
+relabels a lease-less host without touching `devcloud-confirmed`; `ls` heads with the unconfirmed
+count and shows each VM's age and cost so far; the profile's `[caps]` has `unconfirmed` and
+`lease_default` (`keep` or a duration), and a profile that still names `throwaway` or `lease_max`
+is refused with a message that says what replaced it; the skill, the README and this spec say so.
+
+Touches: `devcloud/driver/{caps,profile,up,ops,reaper,adopt,cli}.py`, their unit tests,
+`devcloud/skills/vm/SKILL.md`, `devcloud/README.md`.
+
+Proves: the unit suite; acceptance 4 by `--dry-run`s against the person's profile (no VM).
+
+**M7b — The host** (an executor). What exists at its end: §4.5 on the host — `idle.json` kept by
+the lease service on VM hosts, the notice sent through the creator, the project fallback and the
+journal, the lease warning on the same delivery; `up` writes I12's four new keys (the creator's
+project from `sminos who`); the driver reads a host's idle state (`hostctl`), and `ls` shows an
+IDLE column from it within its 10 s bound.
+
+Touches: `devcloud/boot/devcloudlib/{lease,descriptor}.py` (a new module for the activity check if
+that reads better), `devcloud/driver/{compose,up,context,hostctl,ops}.py`, their unit tests, the
+README's host section.
+
+Decisions: the activity signals are §4.5's three, read from `/proc`, `loginctl` and the projects
+directory with no new dependency; what `sminos say` does with a tag that reaches nobody is
+established against the sminos CLI first, and the routing follows it.
+
+Proves: the unit suite, with the idle clock driven by an injected time; one live kept VM on the
+person's default account, made by `up` within the caps, with `idle.json`'s `active_at` set back
+three days by hand, delivers the notice to the creating session at the next lease-service run, and
+is then `down`ed.
+
 ### Concrete Steps
 
 Working directory: the `devcloud-vm` worktree.
@@ -1447,17 +1533,17 @@ Live (from a MacBook session; the profile's accounts):
     # info ok · types ok · create ok · list ok · get ok · set-labels ok · images ok · delete ok · gone ok
     # pass recorded (sha256 …)
     devcloud vm up --label acc --project <owner/repo> --dry-run
-    # account   hetzner-…  location …  type …  disk … GB  lifetime ttl 12h  price €…/h
-    # caps      throwaway 0/3 ok, lease 12h/72h ok, size 4/8 vCPU ok, disk …/200 GB ok
+    # account   hetzner-…  location …  type …  disk … GB  lifetime keep  price €…/h
+    # caps      unconfirmed 0/3 ok, size 4/8 vCPU ok, disk …/200 GB ok
     devcloud vm up --label acc --project <owner/repo>
-    # dc-acc-7f3a  hetzner  … ready in 4m12s  tailnet dc-acc-7f3a  lease ends 2026-…  image dc-img-…
+    # dc-acc-7f3a  hetzner  … ready in 4m12s  tailnet dc-acc-7f3a  lease none (keep)  image dc-img-…
     devcloud vm ssh dc-acc-7f3a -- devcloud status
     devcloud vm ls
     devcloud vm lease dc-acc-7f3a 35m
     devcloud vm down dc-acc-7f3a
 
-Expected failure shapes (I16): a cap → exit 4, `devcloud vm: over the throwaway cap (3 alive,
-cap 3): ask the person, then pass --confirmed`; the disk cap → exit 4, `devcloud vm: 500 GB is over
+Expected failure shapes (I16): a cap → exit 4, `devcloud vm: over the count cap (3 unconfirmed
+alive, cap 3): ask the person, then pass --confirmed`; the disk cap → exit 4, `devcloud vm: 500 GB is over
 the disk cap (200 GB): ask the person, then pass --confirmed`; the down guard → exit 5,
 `devcloud vm: <name> has unpushed work in <repo>: push it, or pass --force`; a profile provider not
 usable → exit 7, `devcloud vm: provider <name> of account <account> is not registered (the person
@@ -1469,9 +1555,8 @@ runs devcloud vm provider register <account> --confirmed, then devcloud vm provi
 private):
 
     [caps]
-    throwaway = 3            # unconfirmed throwaway VMs alive at once, all accounts
-    lease_default = "12h"
-    lease_max = "72h"        # lifetime from creation, through `lease` too
+    unconfirmed = 3          # VMs made without --confirmed alive at once, kept or leased, all accounts
+    lease_default = "keep"   # the lifetime without --ttl: keep (the default) or a duration like "12h"
     vcpu_max = 8
     max_disk_gb = 200        # a requested disk beyond the type's own; the type's own is never capped
 
@@ -1537,6 +1622,10 @@ and its pass record, with the copy's sha256, in `providers/<account>.pass.json` 
     DEVCLOUD_ADOPTED=1                     # optional; lease end runs release; down runs release
     DEVCLOUD_SMINOS_SECRET=<Secret Manager id>   # optional; the desk provisioning key
     DEVCLOUD_SPOT=1                        # optional, set by the driver for a spot VM; enables the shutdown unit
+    DEVCLOUD_CREATED=<Unix seconds>        # set by up: the VM's creation, for the idle notice's cost (§4.5)
+    DEVCLOUD_HOURLY_PRICE=<decimal>        # optional, set by up from the type's list price; with
+    DEVCLOUD_CURRENCY=<ISO 4217 code>      # optional, the price's currency when the provider gives one
+    DEVCLOUD_CREATOR_PROJECT=<sminos project>   # optional; the idle notice's and the lease warning's fallback (§4.5)
 
 **I13 — The provider protocol** (shipped providers in `devcloud/driver/providers/<name>`, profile
 providers in `<profile>/providers/<name>`):
@@ -1586,7 +1675,7 @@ provider):
     devcloud-creator=<session short id>
     devcloud-recipe=<12 hex>
     devcloud-arch=x86|arm                    # an image's architecture, from its builder (the account's default type); up uses only a matching image
-    devcloud-confirmed=1                     # created with --confirmed; not counted toward the throwaway cap
+    devcloud-confirmed=1                     # created with --confirmed; not counted toward the count cap
     devcloud-enroll=key|code                 # how the VM enrolls at the desk; absent: it does not
     devcloud-held=1                          # its departure is held on a failed ship (§4.3)
     devcloud-bake=failed-<step>              # a builder whose bake failed (M4)
@@ -1633,7 +1722,7 @@ commit 5168e433 on its branch, 2026-10-21):
     devcloud vm adopt <user@address> [--label L] [--project …]... [--ttl D] [--confirmed] [--dry-run]
     devcloud vm ls [--json]
     devcloud vm ssh <name> [--root] [-- command...]      # refused (exit 1) once the host's departure started, unless --root
-    devcloud vm lease <name> <duration|keep> [--confirmed]      # keep: always --confirmed; waits for a rejoin (§4.1)
+    devcloud vm lease <name> <duration|keep>      # waits for a rejoin (§4.1)
     devcloud vm down <name> [--force]
     devcloud vm image build [--account A] | image ls
     devcloud vm reap [--install]
@@ -2576,6 +2665,34 @@ commit 5168e433 on its branch, 2026-10-21):
   - Out of scope, as the ticket's open question: sweeping `tag:devcloud` nodes that match no live
     host. That is a deletion by inference, and the person has not approved one.
   Date/Author: 2026-10-22, the #118 executor.
+
+- Decision: VMs are kept by default (no lease; they run until `down`), and a session may make one
+  without the person, within one count cap of 3 unconfirmed VMs, kept and leased together. There is
+  no lifetime cap any more, and the guard against a forgotten VM is the idle notice (§4.5): after
+  three days with no Claude transcript written, no terminal login and no load, the VM tells the
+  session that made it (else that session's project) its idle time and what it has cost, every
+  three idle days, and deletes nothing. `--ttl` remains for work that should end on its own.
+  - The person's reasoning, 2026-10-27: a VM is usually made for sustained work in the cloud, so
+    ephemerality should not be the assumption. Both forks were theirs, answered through the main
+    session: kept VMs without their yes within the cap of 3, and the idle notice alone.
+  - The lifetime cap (`lease_max`, 72 h) is removed rather than kept: once a session may keep a VM
+    without a yes, capping a lease's length bounds nothing, and the skill would have to explain
+    why a 4-day lease needs the person while no end at all does not. `lease` loses `--confirmed`
+    for the same reason.
+  - The profile key `throwaway` becomes `unconfirmed`, since what it counts is no longer
+    throwaway; `lease_default` takes `keep`, its default. A profile with an old key is refused
+    with a message naming its replacement rather than read silently: the profile is the person's,
+    and a key that changed meaning should not go on looking set.
+  - The reaper's excess deletion is bounded to VMs made in the last 2 hours. It exists for a
+    driver killed between its create and its recount, which leaves a young VM; applied to kept VMs
+    without the bound, lowering the cap in the profile would delete the newest VM with days of work
+    on it.
+  - Rejected: deleting or powering off an idle VM after N days (contradicts "until `down`", and a
+    powered-off Hetzner server bills in full); keeping a yes for each kept VM (the default would
+    then change nothing for a session working alone); counting a running `claude` process as
+    activity (a resident sminos seat waits for messages indefinitely, so the host would never be
+    idle).
+  Date/Author: 2026-10-27, the person, through the main session.
 
 ## Outcomes & Retrospective
 

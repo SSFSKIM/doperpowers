@@ -22,9 +22,7 @@ KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMadeUpDriverKeyForTestsOnly000000000
 
 DRIVER_TOML = """\
 [caps]
-throwaway = 3
-lease_default = "12h"
-lease_max = "72h"
+unconfirmed = 3
 vcpu_max = 8
 max_disk_gb = 200
 

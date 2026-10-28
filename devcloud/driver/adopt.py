@@ -313,13 +313,11 @@ def _finished(ctx, host):
 
 # --- the adopted machine's later life (ops dispatches here) ---------------------------------
 
-def lease(ctx, record, wanted, confirmed):
+def lease(ctx, record, wanted):
     """The lease on the host alone, under its lock, then the record: there
-    are no labels (§6.5). Past the lifetime cap from the adoption, only with
-    the person's yes, as for a VM; `wanted` None keeps it (the caller holds
-    that yes). Returns the host's LeaseSet."""
-    cap = None if confirmed or wanted is None else record.created + ctx.profile.caps.lease_max
-    done = hostctl.lease_set(ctx, record.host, wanted, cap=cap)
+    are no labels (§6.5); `wanted` None keeps it. Returns the host's
+    LeaseSet."""
+    done = hostctl.lease_set(ctx, record.host, wanted)
     record.expires, record.lifetime = done.expires, "keep" if done.expires is None else "ttl"
     save(ctx, record)
     return done

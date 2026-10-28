@@ -1,5 +1,6 @@
 """The reaper (§4.3), `devcloud vm reap`: deletes what outlived its lease, its
-purpose or its retention, and unconfirmed throwaway VMs above the cap.
+purpose or its retention, and unconfirmed VMs above the count cap made in
+the last 2 hours.
 
 Its decisions are pure functions of (the servers with their labels and
 states, the hosts' answers, now) → actions; `run` is a thin layer of side
@@ -34,6 +35,7 @@ GRACE = 15 * 60                 # past the label's lease before anything is done
 UNREACHABLE_RUNNING = 6 * 3600  # a running host that does not answer is given this long
 HELD_MAX = 24 * 3600            # a held departure is retried this long past the lease end
 LEFTOVER = 2 * 3600             # builders and provider-test servers
+EXCESS_WINDOW = 2 * 3600        # an unconfirmed VM above the cap is deleted only this young (§2)
 KEEP_IMAGES = 2
 DEPART_TIMEOUT = 6 * 60
 LABEL = "com.doperpowers.devcloud-reap"
@@ -82,9 +84,9 @@ def decide(vm, now, answer=None, host_expires=None):
         if host_expires is None:
             return Action("keep", "the host says its lease is not over, and gave no lease to repair the label with")
         if host_expires == hostctl.KEPT:
-            # Only a confirmed `up --keep` or `lease keep` leaves a host without a lease.
+            # A `lease keep` whose label write did not land; devcloud-confirmed stays as `up` set it.
             return Action("label", "the host is kept without a lease: label repaired",
-                          {"devcloud-lifetime": "keep", "devcloud-confirmed": "1"}, drop=("devcloud-expires",))
+                          {"devcloud-lifetime": "keep"}, drop=("devcloud-expires",))
         return Action("label", "the host's lease is later: label repaired", {"devcloud-expires": str(host_expires)})
     if answer == hostctl.HELD:
         if held:
@@ -99,10 +101,16 @@ def decide(vm, now, answer=None, host_expires=None):
     return Action("keep", f"departure outcome {answer}: tried again next run")
 
 
-def excess(vms, cap):
-    """The newest unconfirmed throwaway VMs above the cap, newest first."""
-    counted = sorted(caps.throwaway(vms), key=lambda vm: (vm["created"], vm["id"]), reverse=True)
-    return counted[:max(0, len(counted) - cap)]
+def excess(vms, cap, now):
+    """The newest unconfirmed VMs above the cap, newest first, as (made in the
+    last EXCESS_WINDOW: deleted, older: only named). The excess a driver
+    killed between its create and its recount leaves is young; an older one
+    may hold days of work, and is over the cap because the cap was lowered,
+    which is the person's to settle (§2)."""
+    counted = sorted(caps.unconfirmed(vms), key=lambda vm: (vm["created"], vm["id"]), reverse=True)
+    above = counted[:max(0, len(counted) - cap)]
+    young = [vm for vm in above if now - vm["created"] <= EXCESS_WINDOW]
+    return young, [vm for vm in above if vm not in young]
 
 
 def leftovers(vms, now):
@@ -273,11 +281,15 @@ def _run(ctx, bounded):
             ctx.warn(f"devcloud vm reap: account {account.name} images: {error}")
             failed = True
     if not bounded:
-        for vm in excess([dict(e.vm, _entry=e) for e in survivors], ctx.profile.caps.throwaway):
+        young, old = excess([dict(e.vm, _entry=e) for e in survivors], ctx.profile.caps.unconfirmed, ctx.clock())
+        if old:
+            tell(ctx, bounded, f"over the count cap ({ctx.profile.caps.unconfirmed}) but older than "
+                               f"{EXCESS_WINDOW // 3600} h, so not deleted: {', '.join(vm['name'] for vm in old)}")
+        for vm in young:
             entry = vm["_entry"]
             try:
                 answer = hostctl.depart(ctx, entry.host, force=True, timeout=DEPART_TIMEOUT)
-                _delete(ctx, entry, f"over the throwaway cap (newest first; its departure: {answer})",
+                _delete(ctx, entry, f"over the count cap (newest first; its departure: {answer})",
                         left_desk=getattr(answer, "left_desk", False), decided=False)
             except DriverError as error:
                 ctx.warn(f"devcloud vm reap: {entry.vm['name']}: {error}")

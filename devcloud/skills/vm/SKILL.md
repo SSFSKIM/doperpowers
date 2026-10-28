@@ -33,18 +33,20 @@ its default branch, so work that exists only in this checkout never
 reaches it: commit and push it to a branch, then name the branch,
 `--project owner/repo@<branch>`. The boot sets each project up through its
 `devenv/`; a repository without one needs it first (`devcloud:devenv`
-writes it). Lease by the work: the default is 12 h, and a shorter `--ttl`
-costs less if the session forgets to `down`.
+writes it). A VM runs until `devcloud vm down`: it is usually made for
+sustained work, so it is kept by default. Give it `--ttl` when the work
+has a known end (a test matrix, a soak), so it deletes itself even if
+nobody downs it.
 
 ## What needs the person's yes
 
-Within the caps a session creates a VM on its own. The caps are the
-person's, in their profile: at most 3 unconfirmed throwaway VMs alive at
-once (across every account and every session), a lease of at most 72 h
-from creation, at most 8 vCPU, and no disk added beyond the type's own
-over 200 GB. Beyond any of them `up` exits 4; `--dry-run`'s caps line
-gives each cap's verdict. `--keep`
-(no lease), `adopt`, and registering a provider always need the person.
+Within the caps a session creates a VM on its own, kept or leased. The
+caps are the person's, in their profile: at most 3 VMs made without
+their yes alive at once (across every account and every session, kept
+and leased together), at most 8 vCPU, and no disk added beyond the
+type's own over 200 GB. Beyond any of them `up` exits 4; `--dry-run`'s
+caps line gives each cap's verdict. `adopt` and registering a provider
+always need the person.
 
 `--confirmed` tells the driver the person approved this exact request; it
 cannot check, so the flag is honest only when they did. Get the
@@ -68,18 +70,22 @@ pushed lives only on the VM.
 
 ## Its end
 
-A VM is deleted at its lease end with everything on it. Thirty minutes
-before, the session that created it gets a sminos message naming the
+A kept VM costs its hourly price until someone downs it. After three
+days with no Claude session, no terminal login and no load, it sends
+the session that created it a sminos message with its idle time, what
+it has cost, and its unpushed work, and again every three idle days;
+down it when its work is done, or tell the person why it stays. A
+leased VM is deleted at its lease end with everything on it; thirty
+minutes before, its creator gets a sminos message naming the
 repositories with unpushed work. `devcloud vm lease <name> <duration>`
-sets the end to now plus the duration (past the 72 h lifetime only with
-the person's yes); `lease <name> keep --confirmed` removes the lease, with
-the person's yes as for `--keep`. A change between kept and leased makes
-the host rejoin the tailnet under the same name, and `lease` waits until
-it is back. When the work is done, push it and `devcloud vm down
-<name>`: it refuses (exit 5) while a checkout under `~/Developer/GitHub`
-has unpushed or uncommitted work, and `--force` discards that work, so
-use it only for work nobody needs. `devcloud vm ls` shows every VM, its
-lease and price, and the throwaway count against the cap.
+sets the end to now plus the duration, and `lease <name> keep` removes
+it. A change between kept and leased makes the host rejoin the tailnet
+under the same name, and `lease` waits until it is back. When the work
+is done, push it and `devcloud vm down <name>`: it refuses (exit 5)
+while a checkout under `~/Developer/GitHub` has unpushed or uncommitted
+work, and `--force` discards that work, so use it only for work nobody
+needs. `devcloud vm ls` shows every VM, its lease, age, price and cost
+so far, and the unconfirmed count against the cap.
 
 ## A cloud devcloud does not ship
 

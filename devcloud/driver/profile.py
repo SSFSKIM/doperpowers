@@ -48,9 +48,8 @@ def format_duration(seconds):
 
 @dataclasses.dataclass(frozen=True)
 class Caps:
-    throwaway: int = 3
-    lease_default: int = 12 * 3600
-    lease_max: int = 72 * 3600
+    unconfirmed: int = 3
+    lease_default: int | None = None   # seconds of a VM's lease without --ttl; None: kept
     vcpu_max: int = 8
     max_disk_gb: int = 200
 
@@ -126,20 +125,29 @@ def _string(table, key, where, pattern=None, required=True):
     return value
 
 
+# Keys whose meaning changed when VMs became kept by default (spec Decision Log, 2026-10-27): refused
+# by name rather than read, so a profile does not go on looking set.
+_REPLACED = {"throwaway": "renamed unconfirmed, which counts kept VMs as well as leased ones",
+             "lease_max": "leases have no lifetime cap any more; remove it"}
+
+
 def _caps(table):
-    _only(table, ("throwaway", "lease_default", "lease_max", "vcpu_max", "max_disk_gb"), "[caps]")
+    replaced = sorted(set(table) & set(_REPLACED)) if isinstance(table, dict) else []
+    if replaced:
+        raise _bad("; ".join(f"[caps].{key} is gone: {_REPLACED[key]}" for key in replaced))
+    _only(table, ("unconfirmed", "lease_default", "vcpu_max", "max_disk_gb"), "[caps]")
     values = {}
-    for key in ("throwaway", "vcpu_max", "max_disk_gb"):
+    for key in ("unconfirmed", "vcpu_max", "max_disk_gb"):
         if key in table:
             if not isinstance(table[key], int) or isinstance(table[key], bool) or table[key] < 0:
                 raise _bad(f"[caps].{key} is not a whole number")
             values[key] = table[key]
-    for key in ("lease_default", "lease_max"):
-        if key in table:
-            try:
-                values[key] = duration(table[key]) if isinstance(table[key], str) else duration("")
-            except ValueError:
-                raise _bad(f"[caps].{key} is not a duration like 12h") from None
+    if "lease_default" in table and table["lease_default"] != "keep":
+        try:
+            values["lease_default"] = duration(table["lease_default"]) if isinstance(table["lease_default"], str) \
+                else duration("")
+        except ValueError:
+            raise _bad("[caps].lease_default is not keep or a duration like 12h") from None
     return Caps(**values)
 
 

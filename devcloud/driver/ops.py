@@ -5,7 +5,7 @@ import json
 import shlex
 
 from . import adopt, caps, hostctl, reaper, tailnet
-from .errors import CAP, FAILED, GUARD, USAGE, DriverError
+from .errors import FAILED, GUARD, USAGE, DriverError
 from .profile import duration, format_duration
 from .up import iso, price_text
 
@@ -18,6 +18,22 @@ def _relative(expires, now):
         f"ended {format_duration(-delta // 60 * 60 or 60)} ago"
 
 
+def _age(created, now):
+    """`3d4h`, `5h10m` or `12m`: how long a VM has run, to the minute."""
+    minutes = max(0, int(now - created)) // 60
+    days, rest = divmod(minutes, 1440)
+    hours, minutes = divmod(rest, 60)
+    return f"{days}d{hours}h" if days else f"{hours}h{minutes}m" if hours else f"{minutes}m"
+
+
+def _spent(type_, created, now):
+    """The type's list price times the VM's age, or None without a price."""
+    price = (type_ or {}).get("hourly_price")
+    if price is None:
+        return None
+    return price * max(0, now - created) / 3600
+
+
 def _expires(vm):
     try:
         return int(vm["labels"]["devcloud-expires"])
@@ -26,8 +42,9 @@ def _expires(vm):
 
 
 def ls(ctx, as_json=False):
-    """Every usable account's VMs and the tailnet's devcloud nodes that no VM
-    accounts for, the throwaway count against the cap at the head."""
+    """Every usable account's VMs, each with its age and what it has cost at
+    its type's list price, and the tailnet's devcloud nodes that no VM
+    accounts for; the unconfirmed count against the cap at the head."""
     try:
         reaper.run(ctx, bounded=True)
     except DriverError as error:
@@ -48,7 +65,9 @@ def ls(ctx, as_json=False):
         state = "held" if labels.get("devcloud-held") == "1" else e.vm["state"]
         rows.append({"name": e.vm["name"], "account": e.account.name, "provider": e.account.provider,
                      "lifetime": labels.get("devcloud-lifetime", "?"), "expires": _expires(e.vm), "state": state,
-                     "price": price_text(type_) if type_ else "-", "creator": labels.get("devcloud-creator", "-"),
+                     "price": price_text(type_) if type_ else "-", "created": e.vm["created"],
+                     "spent": _spent(type_, e.vm["created"], now), "currency": (type_ or {}).get("currency"),
+                     "creator": labels.get("devcloud-creator", "-"),
                      "confirmed": labels.get("devcloud-confirmed") == "1", "id": e.vm["id"]})
     nodes = ctx.tailnet()
     online = {node["name"]: node.get("online") for node in nodes}
@@ -67,22 +86,25 @@ def ls(ctx, as_json=False):
             rows.append({"name": node["name"], "account": None, "provider": None, "lifetime": None, "expires": None,
                          "state": "online" if node.get("online") else "offline", "price": "-", "creator": "-",
                          "confirmed": False, "id": None, "tailnet_only": True})
-    alive = len(caps.throwaway([e.vm for e in entries]))
-    cap = ctx.profile.caps.throwaway
+    alive = len(caps.unconfirmed([e.vm for e in entries]))
+    cap = ctx.profile.caps.unconfirmed
     if as_json:
-        ctx.say(json.dumps({"throwaway": {"alive": alive, "cap": cap}, "vms": rows}, indent=1))
+        ctx.say(json.dumps({"unconfirmed": {"alive": alive, "cap": cap}, "vms": rows}, indent=1))
         return 0
-    ctx.say(f"throwaway {alive}/{cap}")
-    table = [("NAME", "ACCOUNT", "LIFETIME", "LEASE", "STATE", "PRICE", "CREATOR")]
+    ctx.say(f"unconfirmed {alive}/{cap}")
+    table = [("NAME", "ACCOUNT", "LIFETIME", "LEASE", "STATE", "AGE", "PRICE", "SPENT", "CREATOR")]
     for row in rows:
         if row.get("tailnet_only"):
-            table.append((row["name"], "tailnet only", "-", "-", row["state"], "-", "-"))
+            table.append((row["name"], "tailnet only", "-", "-", row["state"], "-", "-", "-", "-"))
         elif row.get("adopted"):
             table.append((row["name"], "adopted", row["lifetime"], _relative(row["expires"], now), row["state"], "-",
-                          row["creator"]))
+                          "-", "-", row["creator"]))
         else:
+            spent = "-" if row["spent"] is None else f"{row['spent']:.2f}" + (
+                f" {row['currency']}" if row["currency"] else "")
             table.append((row["name"], f"{row['provider']}/{row['account']}", row["lifetime"],
-                          _relative(row["expires"], now), row["state"], row["price"], row["creator"]))
+                          _relative(row["expires"], now), row["state"], _age(row["created"], now), row["price"],
+                          spent, row["creator"]))
     widths = [max(len(r[i]) for r in table) for i in range(len(table[0]))]
     for r in table:
         ctx.say("  ".join(cell.ljust(width) for cell, width in zip(r, widths)).rstrip())
@@ -104,55 +126,33 @@ def ssh(ctx, name, root, command):
     return ctx.remote.interactive(host.name, host.alias, line, user="root" if root else ctx.user())
 
 
-def lease(ctx, name, text, confirmed):
-    """The lease end set to now + duration, or removed (`keep`, only with the
-    person's yes): the host first (under its lock), then the label with the
-    lease the host printed back (§4.1). When that changed the kind of the
-    host's tailnet node, the host rejoins as the other kind under the same
-    name, and the driver waits for it to come back."""
+def lease(ctx, name, text):
+    """The lease end set to now + duration, or removed (`keep`): the host
+    first (under its lock), then the label with the lease the host printed
+    back (§4.1). When that changed the kind of the host's tailnet node, the
+    host rejoins as the other kind under the same name, and the driver waits
+    for it to come back. No cap applies: a lease changes when a VM ends,
+    never how many are alive (§2)."""
     keep = text == "keep"
-    if keep and not confirmed:
-        raise DriverError(CAP, f"keeping {name} without a lease needs the person's yes: ask them, then pass "
-                               "--confirmed")
     try:
         seconds = None if keep else duration(text)
     except ValueError as error:
         raise DriverError(USAGE, str(error)) from None
     now = int(ctx.clock())
     wanted = None if keep else now + seconds
-    lease_max = ctx.profile.caps.lease_max
     record = adopt.load(ctx, name)
     if record is not None:
-        try:
-            done = adopt.lease(ctx, record, wanted, confirmed)
-        except DriverError as error:
-            if error.code != CAP:
-                raise
-            raise DriverError(CAP, f"{name} would stay adopted {format_duration(wanted - record.created)}, over the "
-                                   f"lifetime cap ({format_duration(lease_max)}), and its lease in force ends sooner: "
-                                   "ask the person, then pass --confirmed") from None
+        done = adopt.lease(ctx, record, wanted)
         ctx.say(f"{name} is kept, without a lease" if done.expires is None else
                 f"{name} lease ends {iso(done.expires)} ({_relative(done.expires, now)}); then it releases itself")
         _follow(ctx, record.host, done)
         return 0
     entry = ctx.find(name)
     vm = entry.vm
-    # Without the person's yes the lease may pass the lifetime cap only to
-    # shorten the lease in force; the host decides that under its lock, with
-    # the write, so nothing read here can be overtaken.
-    cap = None if confirmed else vm["created"] + lease_max
-    try:
-        done = hostctl.lease_set(ctx, entry.host, wanted, cap=cap)
-    except DriverError as error:
-        if error.code != CAP:
-            raise
-        raise DriverError(CAP, f"{name} would live {format_duration(wanted - vm['created'])} from its creation, over "
-                               f"the lifetime cap ({format_duration(lease_max)}), and its lease in force ends "
-                               "sooner: ask the person, then pass --confirmed") from None
+    done = hostctl.lease_set(ctx, entry.host, wanted)
     if done.expires is None:
-        # Kept with the person's yes, as `up --keep --confirmed` labels it.
-        entry.client.set_labels(vm["id"], {"devcloud-lifetime": "keep", "devcloud-confirmed": "1"}, merge=True,
-                                drop=("devcloud-expires",))
+        # Kept; devcloud-confirmed stays as `up` set it, so the count cap still sees the VM.
+        entry.client.set_labels(vm["id"], {"devcloud-lifetime": "keep"}, merge=True, drop=("devcloud-expires",))
         ctx.say(f"{name} is kept, without a lease")
     else:
         entry.client.set_labels(vm["id"], {"devcloud-expires": str(done.expires), "devcloud-lifetime": "ttl"},

@@ -405,7 +405,7 @@ class LsLeaseTest(AdoptBase):
         [row] = [r for r in data["vms"] if r["name"] == NAME]
         self.assertTrue(row["adopted"])
         self.assertEqual(row["phase"], "seeded")
-        self.assertEqual(data["throwaway"]["alive"], 0, "an adopted machine is not a throwaway VM")
+        self.assertEqual(data["unconfirmed"]["alive"], 0, "an adopted machine is not counted")
         self.out.truncate(0)
         self.out.seek(0)
         ops.ls(self.ctx)
@@ -417,10 +417,10 @@ class LsLeaseTest(AdoptBase):
     def test_lease_writes_the_host_and_the_record_and_no_label(self):
         self.write_record("booted", ready=NOW - 60, lifetime="keep", expires=None)
         self.remote.m.update(tailnet=True)
-        self.assertEqual(ops.lease(self.ctx, NAME, "3h", confirmed=False), 0)
+        self.assertEqual(ops.lease(self.ctx, NAME, "3h"), 0)
         self.assertEqual(self.remote.m["lease"], NOW + 3 * 3600)
         self.assertEqual(self.remote.targets_of("devcloud lease set"), [NAME])
-        self.assertIn(f"--cap {NOW - 600 + 72 * 3600}", self.remote.commands("lease set")[0])
+        self.assertNotIn("--cap", self.remote.commands("lease set")[0])
         record = self.record()
         self.assertEqual((record["expires"], record["lifetime"]), (NOW + 3 * 3600, "ttl"))
         self.assertEqual(self.ops(), [], "no provider call, no label")
@@ -428,20 +428,16 @@ class LsLeaseTest(AdoptBase):
     def test_a_kept_adoption_given_a_lease_waits_for_its_ephemeral_rejoin(self):
         self.write_record("booted", ready=NOW - 60, lifetime="keep", expires=None)
         self.remote.m.update(tailnet=True, ephemeral=False)
-        self.assertEqual(ops.lease(self.ctx, NAME, "3h", confirmed=False), 0)
+        self.assertEqual(ops.lease(self.ctx, NAME, "3h"), 0)
         self.assertTrue(self.remote.m["ephemeral"])
         self.assertEqual(self.remote.targets_of("tailnet.json"), [NAME])
         self.assertIn("back on the tailnet as an ephemeral node", self.out.getvalue())
         self.assertEqual(self.record()["lifetime"], "ttl")
 
-    def test_keep_on_an_adoption_needs_the_persons_yes_and_rejoins_non_ephemeral(self):
+    def test_keep_on_an_adoption_rejoins_non_ephemeral(self):
         self.write_record("booted", ready=NOW - 60, lifetime="ttl", expires=NOW + 3600)
         self.remote.m.update(tailnet=True, ephemeral=True, lease=NOW + 3600)
-        with self.assertRaises(DriverError) as caught:
-            ops.lease(self.ctx, NAME, "keep", confirmed=False)
-        self.assertEqual(caught.exception.code, 4)
-        self.assertEqual(self.remote.commands("lease set"), [])
-        self.assertEqual(ops.lease(self.ctx, NAME, "keep", confirmed=True), 0)
+        self.assertEqual(ops.lease(self.ctx, NAME, "keep"), 0)
         self.assertEqual(self.remote.commands("lease set"), ["devcloud lease set keep"])
         record = self.record()
         self.assertEqual((record["expires"], record["lifetime"]), (None, "keep"))
