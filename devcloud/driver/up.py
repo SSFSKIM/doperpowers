@@ -84,13 +84,11 @@ def resolve(ctx, opts, wanted=None):
         raise DriverError(REFUSED, f"provider {account.provider} has no spot capability{why}")
     if opts.keep and opts.ttl:
         raise DriverError(USAGE, "--ttl and --keep exclude each other")
-    lifetime = "keep" if opts.keep else "ttl"
-    lease = None
-    if lifetime == "ttl":
-        try:
-            lease = duration(opts.ttl) if opts.ttl else profile.caps.lease_default
-        except ValueError as error:
-            raise DriverError(USAGE, f"--ttl: {error}") from None
+    try:
+        lease = None if opts.keep else duration(opts.ttl) if opts.ttl else profile.caps.lease_default
+    except ValueError as error:
+        raise DriverError(USAGE, f"--ttl: {error}") from None
+    lifetime = "keep" if lease is None else "ttl"
     if opts.disk is not None and opts.disk <= 0:
         raise DriverError(USAGE, "--disk must be a positive number of GB")
     disk = opts.disk if opts.disk is not None else wanted.disk_gb
@@ -108,8 +106,8 @@ def resolve(ctx, opts, wanted=None):
 
 def verdict(ctx, r, servers):
     request = caps.Request(type=r.type["type"], vcpus=r.type["vcpus"], type_disk_gb=r.type["disk_gb"],
-                           disk_gb=r.disk_gb, lifetime=r.lifetime, lease=r.lease, confirmed=r.confirmed)
-    return caps.check(request, ctx.profile.caps, alive=len(caps.throwaway(servers)))
+                           disk_gb=r.disk_gb, confirmed=r.confirmed)
+    return caps.check(request, ctx.profile.caps, alive=len(caps.unconfirmed(servers)))
 
 
 def describe(r):
@@ -208,25 +206,25 @@ def run(ctx, opts):
 
 def recount(ctx, entry, r):
     """§2: two drivers racing past the count would make one too many; the
-    newest unconfirmed throwaway VM above the cap, when it is this one, goes."""
-    if r.lifetime != "ttl" or r.confirmed:
+    newest unconfirmed VM above the cap, when it is this one, goes."""
+    if r.confirmed:
         return
     try:
-        counted = caps.throwaway([e.vm for e in ctx.fleet(quiet=True, strict=True)])
+        counted = caps.unconfirmed([e.vm for e in ctx.fleet(quiet=True, strict=True)])
     except DriverError as error:
         # A recount that cannot be made cannot show this VM is within the cap.
         gone = ctx.delete(entry)
         raise DriverError(FAILED, f"the recount after the create failed: {error}; "
                                   + (f"deleted {entry.vm['name']}" if gone else
                                      f"{entry.vm['name']} could not be deleted: down it, or the reaper will")) from None
-    cap = ctx.profile.caps.throwaway
+    cap = ctx.profile.caps.unconfirmed
     if len(counted) <= cap:
         return
     newest = max(counted, key=lambda vm: (vm["created"], vm["id"]))
     if newest["id"] != entry.vm["id"] or newest["name"] != entry.vm["name"]:
         return
     ctx.delete(entry)
-    raise DriverError(CAP, f"over the throwaway cap ({len(counted)} alive after the create, cap {cap}: another "
+    raise DriverError(CAP, f"over the count cap ({len(counted)} unconfirmed alive after the create, cap {cap}: another "
                            f"driver created one meanwhile); deleted {entry.vm['name']}: ask the person, then pass "
                            "--confirmed")
 

@@ -51,10 +51,10 @@ class DecisionTest(unittest.TestCase):
         self.assertEqual(action.labels["devcloud-expires"], str(NOW + 5 * HOUR))
 
     def test_lease_not_over_on_a_host_kept_since_relabels_it_kept(self):
-        # `lease keep --confirmed` removed the host's lease, but its label write failed.
+        # `lease keep` removed the host's lease, but its label write failed.
         action = self.decide(vm(NOW - 16 * MIN), hostctl.NOT_OVER, host_expires=hostctl.KEPT)
         self.assertEqual(action.kind, "label")
-        self.assertEqual(action.labels, {"devcloud-lifetime": "keep", "devcloud-confirmed": "1"})
+        self.assertEqual(action.labels, {"devcloud-lifetime": "keep"}, "devcloud-confirmed is left as it is")
         self.assertEqual(action.drop, ("devcloud-expires",))
 
     def test_held_is_labeled_and_kept_until_24h_then_deleted_naming_the_loss(self):
@@ -81,13 +81,23 @@ class DecisionTest(unittest.TestCase):
         self.assertEqual(self.decide(vm(NOW - 7 * HOUR, **{"devcloud-held": "1"}), hostctl.UNREACHABLE).kind,
                          "keep")
 
-    def test_excess_newest_first_down_to_the_cap(self):
-        fleet = [{"id": str(i), "name": f"v{i}", "labels": vm_labels(expires=NOW + HOUR), "created": NOW - 100 + i}
-                 for i in range(5)]
-        fleet.append({"id": "9", "name": "conf", "labels": vm_labels(expires=NOW + HOUR, confirmed=True),
+    def test_excess_newest_first_down_to_the_cap_kept_or_leased(self):
+        fleet = [{"id": str(i), "name": f"v{i}", "labels": vm_labels(expires=NOW + HOUR) if i % 2 else
+                  vm_labels(lifetime="keep"), "created": NOW - 100 + i} for i in range(5)]
+        fleet.append({"id": "9", "name": "conf", "labels": vm_labels(lifetime="keep", confirmed=True),
                       "created": NOW})
-        self.assertEqual([v["name"] for v in reaper.excess(fleet, 3)], ["v4", "v3"])
-        self.assertEqual(reaper.excess(fleet[:3], 3), [])
+        self.assertEqual([[v["name"] for v in part] for part in reaper.excess(fleet, 3, NOW)], [["v4", "v3"], []])
+        self.assertEqual(reaper.excess(fleet[:3], 3, NOW), ([], []))
+
+    def test_an_excess_vm_older_than_the_window_is_only_named(self):
+        # The cap was lowered to 1: the newest of three is days old and may hold work.
+        fleet = [{"id": str(i), "name": f"v{i}", "labels": vm_labels(lifetime="keep"), "created": created}
+                 for i, created in enumerate((NOW - 5 * 24 * HOUR, NOW - 3 * 24 * HOUR, NOW - 2 * HOUR - MIN))]
+        young, old = reaper.excess(fleet, 1, NOW)
+        self.assertEqual((young, [v["name"] for v in old]), ([], ["v2", "v1"]))
+        fleet[2]["created"] = NOW - 2 * HOUR
+        young, old = reaper.excess(fleet, 1, NOW)
+        self.assertEqual(([v["name"] for v in young], [v["name"] for v in old]), (["v2"], ["v1"]))
 
     def test_leftovers_and_images(self):
         servers = [{"id": "1", "name": "b-old", "labels": {"devcloud": "builder"}, "created": NOW - 3 * HOUR},
@@ -129,6 +139,19 @@ class RunTest(DriverBase):
     def depart_answers(self, code=0, marker=False, target=None):
         self.remote.on("devcloud depart", code=code, marker=marker, target=target)
 
+    def test_excess_a_young_vm_is_departed_and_deleted_an_old_one_named(self):
+        # Five unconfirmed VMs against a cap of 3: the newest, minutes old, is a driver's lost race;
+        # the next, a week old, is over the cap only because of the count, and keeps running.
+        for i, created in enumerate((NOW - 9 * 24 * HOUR, NOW - 8 * 24 * HOUR, NOW - 7 * 24 * HOUR - 1,
+                                     NOW - 7 * 24 * HOUR, NOW - 30 * MIN)):
+            self.add_server(f"dc-k-000{i}", vm_labels(lifetime="keep"), created=created)
+        self.depart_answers(code=255, marker=True)
+        self.run_reaper()
+        self.assertEqual(sorted(self.servers()), ["dc-k-0000", "dc-k-0001", "dc-k-0002", "dc-k-0003"])
+        self.assertIn("over the count cap (3) but older than 2 h, so not deleted: dc-k-0003", self.out.getvalue())
+        self.assertEqual([c["target"] for c in self.remote.calls if "devcloud depart" in c["command"]],
+                         ["dc-k-0004"])
+
     def test_a_departed_host_is_deleted_and_logged(self):
         self.add_server("dc-a-0001", vm_labels(expires=NOW - 20 * MIN), sid="501")
         self.depart_answers(code=255, marker=True)
@@ -159,7 +182,7 @@ class RunTest(DriverBase):
         self.assertNotIn("delete", self.ops())
 
     def test_a_host_kept_since_is_relabeled_kept_and_a_failed_read_changes_nothing(self):
-        # `lease keep --confirmed` removed the host's lease; the label write after it failed.
+        # `lease keep` removed the host's lease; the label write after it failed.
         self.add_server("dc-a-0001", vm_labels(expires=NOW - 20 * MIN))
         self.depart_answers(code=3)
         self.remote.on("DEVCLOUD_EXPIRES", code=255, times=1)
@@ -169,7 +192,8 @@ class RunTest(DriverBase):
         self.remote.on("DEVCLOUD_EXPIRES", out="")
         self.run_reaper()
         labels = self.servers()["dc-a-0001"]["labels"]
-        self.assertEqual((labels["devcloud-lifetime"], labels["devcloud-confirmed"]), ("keep", "1"))
+        self.assertEqual(labels["devcloud-lifetime"], "keep")
+        self.assertNotIn("devcloud-confirmed", labels)
         self.assertNotIn("devcloud-expires", labels)
         self.assertNotIn("delete", self.ops())
 

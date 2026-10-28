@@ -530,7 +530,7 @@ refuses with exit 6: hosts never drive. A session learns it from
     devcloud vm adopt <user@address> [--label L] [--project …]... [--ttl D] [--confirmed] [--dry-run]
     devcloud vm ls [--json]
     devcloud vm ssh <name> [--root] [-- command...]
-    devcloud vm lease <name> <duration|keep> [--confirmed]
+    devcloud vm lease <name> <duration|keep>
     devcloud vm down <name> [--force]
     devcloud vm reap [--install]
     devcloud vm provider register <account> --confirmed | provider test <account>
@@ -551,13 +551,16 @@ its own token request with it (RS256 in the standard library; no gcloud
 configuration is touched) and reads each credential from Secret Manager on
 every provider call. Without a seed every command exits 6.
 
-**Caps.** A session may create a throwaway VM (a lease) within the profile's
-caps without asking anyone: at most three unconfirmed throwaway VMs alive
-across accounts, a lease of at most 72 h from creation (12 h by default), at
-most 8 vCPU, and no disk added beyond the type's own above 200 GB. Anything
-beyond, `--keep`, and registering a provider need the person's yes for that
-request, passed as `--confirmed`; a VM so made carries `devcloud-confirmed=1`
-and is not counted.
+**Caps.** A VM is kept (no lease; it runs until `down`) unless `--ttl`
+gives it one, or the profile's `[caps] lease_default` names a duration. A
+session may create one, kept or leased, within the profile's caps without
+asking anyone: at most three unconfirmed VMs alive across accounts
+(`unconfirmed`), at most 8 vCPU, and no disk added beyond the type's own
+above 200 GB. A lease's length is not capped. Anything beyond, and
+registering a provider, need the person's yes for that request, passed as
+`--confirmed`; a VM so made carries `devcloud-confirmed=1` and is not
+counted. A profile that still names the old keys `throwaway` or `lease_max`
+is refused, naming what replaced them.
 
 **`up`** checks the caps (`--dry-run` stops there, printing the request,
 each cap's verdict and the hourly price), names the VM `dc-<label>-<4 hex>`
@@ -603,11 +606,9 @@ builder of the account is alive.
 argument after `--` is a shell line as given, several are an argument list,
 each quoted. A host whose departure has started is refused except to root.
 **`lease`** writes the host's lease first (`devcloud lease set`, under its
-lock), then the provider label with the value the host printed; past the
-lifetime cap it needs `--confirmed` unless it shortens the lease the host
-itself holds, which the host decides under its lock with the write
-(`devcloud lease set <unix> --cap <unix>`, exit 4). `lease <name> keep
---confirmed` removes the lease. A change between kept and leased makes the
+lock), then the provider label with the value the host printed; `lease
+<name> keep` removes the lease, and leaves `devcloud-confirmed` as `up` set
+it, so the VM stays counted. A change between kept and leased makes the
 host's tailnet node rejoin as the other kind, ephemeral while leased, under
 the same name (`devcloud-rejoin`; a non-ephemeral node is removed through the
 Tailscale API, so the OAuth client needs the `devices:core` scope), and
@@ -629,8 +630,10 @@ node is removed by its id, and the deletion's line names that id.
 **The reaper**, `devcloud vm reap`, deletes what outlived its lease (a
 reachable host departs first; a label older than the host's lease is
 repaired, not acted on; a running host that does not answer gets 6 hours; a
-held departure 24 hours, logged as unshipped loss), unconfirmed throwaway
-VMs above the cap (newest first), builders and `provider test` servers older
+held departure 24 hours, logged as unshipped loss), unconfirmed VMs above
+the cap made in the last 2 hours (newest first; an older one over the cap,
+which a lowered cap can leave, is named, never deleted, since it may hold
+days of work), builders and `provider test` servers older
 than 2 hours, and images beyond the newest two. It never touches a resource
 without the `devcloud` label. Every delete and relabel, the reaper's and
 every command's, reads its target again first: a server with a `get` (its
@@ -641,7 +644,7 @@ run it bounded first: no departures, 60 seconds in all, its lines on stderr;
 `reap --install` writes a launchd agent that runs it every 10 minutes, on the
 always-on Mac; the agent runs the marketplace clone's `bin/devcloud` when
 there is one, else the copy that installed it, and each of its runs ends
-with one dated line in `~/.local/state/devcloud/reap.out`. `up` counts the throwaway cap only from lists that answered:
+with one dated line in `~/.local/state/devcloud/reap.out`. `up` counts the unconfirmed VMs only from lists that answered:
 an account whose list fails stops the `up` before anything is created.
 
 **Providers** are executables speaking one JSON request on stdin and one JSON
@@ -684,7 +687,7 @@ path of `up` does. Its record, `~/.local/state/devcloud/adopted/<name>.json`,
 holds the address, the login user, the lease and the phase, written before
 the step it names (`preparing`, `seeded`, `booted`, `released`); `adopt` run
 again for the same target resumes from it. `ls` lists adopted machines
-(an unfinished adoption with its phase), never counted as throwaway VMs, and
+(an unfinished adoption with its phase), never counted against the cap, and
 the reaper never touches them. `lease` writes the host's lease and the
 record; there are no labels. `down` (and the host's own lease end) runs
 `devcloud release`: the machine leaves the desk and the tailnet, devcloud's

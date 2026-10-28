@@ -23,8 +23,7 @@ GOOD = DRIVER_TOML.replace("{state}", "/tmp/x").replace("{registered}", "ab" * 3
 class ProfileTest(unittest.TestCase):
     def test_reads_every_section(self):
         p = load(GOOD)
-        self.assertEqual(p.caps, profile.Caps(throwaway=3, lease_default=12 * 3600, lease_max=72 * 3600,
-                                              vcpu_max=8, max_disk_gb=200))
+        self.assertEqual(p.caps, profile.Caps(unconfirmed=3, lease_default=None, vcpu_max=8, max_disk_gb=200))
         self.assertEqual(p.default_account, "main")
         self.assertEqual(p.host.sm_project, "example-project")
         self.assertEqual(p.host.config_branch, "main")
@@ -61,12 +60,27 @@ class ProfileTest(unittest.TestCase):
         self.assertIn("driver.toml", str(caught.exception))
 
     def test_bad_values(self):
-        for old, new in (('lease_default = "12h"', 'lease_default = "soon"'), ("throwaway = 3", 'throwaway = "3"'),
+        for old, new in (("unconfirmed = 3", 'unconfirmed = 3\nlease_default = "soon"'),
+                         ("unconfirmed = 3", 'unconfirmed = "3"'),
                          ('sm_project = "example-project"', ""), ('name = "main"', 'name = "Main Account"'),
                          ('provider = "fake"', 'provider = "../evil"')):
             with self.subTest(new=new), self.assertRaises(DriverError) as caught:
                 load(GOOD.replace(old, new))
             self.assertEqual(caught.exception.code, 2)
+
+    def test_lease_default_is_keep_unless_it_names_a_duration(self):
+        self.assertIsNone(load(GOOD).caps.lease_default)
+        self.assertIsNone(load(GOOD.replace("unconfirmed = 3", 'unconfirmed = 3\nlease_default = "keep"')).caps.lease_default)
+        self.assertEqual(load(GOOD.replace("unconfirmed = 3", 'unconfirmed = 3\nlease_default = "12h"')).caps.lease_default,
+                         12 * 3600)
+
+    def test_a_replaced_cap_key_is_refused_naming_what_replaced_it(self):
+        for old, new, says in (("unconfirmed = 3", "throwaway = 3", "renamed unconfirmed"),
+                               ("unconfirmed = 3", 'unconfirmed = 3\nlease_max = "72h"', "no lifetime cap")):
+            with self.subTest(new=new), self.assertRaises(DriverError) as caught:
+                load(GOOD.replace(old, new))
+            self.assertEqual(caught.exception.code, 2)
+            self.assertIn(says, str(caught.exception))
 
     def test_build_env(self):
         d = pathlib.Path(tempfile.mkdtemp())
@@ -108,41 +122,38 @@ class LabelsTest(unittest.TestCase):
         self.assertEqual(labels.machine("Kim's Mac_Book"), "kim-s-mac-book")
 
 
-def vm(lifetime="ttl", confirmed=False, kind="vm", **labels_):
+def vm(lifetime="keep", confirmed=False, kind="vm", **labels_):
     lab = {"devcloud": kind, "devcloud-lifetime": lifetime, **labels_}
     if confirmed:
         lab["devcloud-confirmed"] = "1"
     return {"id": "1", "name": "n", "labels": lab, "created": 0}
 
 
-CAPS = profile.Caps(throwaway=3, lease_default=12 * 3600, lease_max=72 * 3600, vcpu_max=8, max_disk_gb=200)
+CAPS = profile.Caps(unconfirmed=3, vcpu_max=8, max_disk_gb=200)
 
 
 def request(**kw):
-    base = dict(type="medium", vcpus=4, type_disk_gb=160, disk_gb=None, lifetime="ttl", lease=12 * 3600,
-                confirmed=False)
+    base = dict(type="medium", vcpus=4, type_disk_gb=160, disk_gb=None, confirmed=False)
     base.update(kw)
     return caps.Request(**base)
 
 
 class CapsTest(unittest.TestCase):
-    def test_only_unconfirmed_throwaway_vms_count(self):
-        fleet = [vm(), vm(), vm(confirmed=True), vm(lifetime="keep", confirmed=True), vm(kind="builder"),
-                 vm(kind="test")]
-        self.assertEqual(len(caps.throwaway(fleet)), 2)
+    def test_unconfirmed_vms_count_kept_or_leased(self):
+        fleet = [vm(), vm(lifetime="ttl"), vm(confirmed=True), vm(lifetime="ttl", confirmed=True),
+                 vm(kind="builder"), vm(kind="test")]
+        self.assertEqual(len(caps.unconfirmed(fleet)), 2)
 
     def test_within_every_cap(self):
         verdict = caps.check(request(), CAPS, alive=2)
         self.assertIsNone(verdict.refusal)
-        self.assertEqual(verdict.line, "throwaway 2/3 ok, lease 12h/72h ok, size 4/8 vCPU ok, disk 160/200 GB ok")
+        self.assertEqual(verdict.line, "unconfirmed 2/3 ok, size 4/8 vCPU ok, disk 160/200 GB ok")
 
     def test_each_cap_refuses_and_names_itself_and_confirmed(self):
         cases = (
-            (dict(), 3, "over the throwaway cap (3 alive, cap 3)"),
-            (dict(lease=100 * 3600), 0, "over the lifetime cap (72h)"),
+            (dict(), 3, "over the count cap (3 unconfirmed alive, cap 3)"),
             (dict(type="big", vcpus=16, type_disk_gb=360), 0, "over the size cap (8 vCPU)"),
             (dict(type="small", vcpus=2, type_disk_gb=40, disk_gb=500), 0, "500 GB is over the disk cap (200 GB)"),
-            (dict(lifetime="keep", lease=None), 0, "keep"),
         )
         for kw, alive, text in cases:
             with self.subTest(text=text):
@@ -152,9 +163,9 @@ class CapsTest(unittest.TestCase):
                 self.assertIn("--confirmed", verdict.refusal)
                 self.assertIsNone(caps.check(request(confirmed=True, **kw), CAPS, alive=alive).refusal)
 
-    def test_the_throwaway_message_is_the_one_the_spec_shows(self):
+    def test_the_count_message_is_the_one_the_spec_shows(self):
         self.assertEqual(caps.check(request(), CAPS, alive=3).refusal,
-                         "over the throwaway cap (3 alive, cap 3): ask the person, then pass --confirmed")
+                         "over the count cap (3 unconfirmed alive, cap 3): ask the person, then pass --confirmed")
         self.assertEqual(caps.check(request(type="small", vcpus=2, type_disk_gb=40, disk_gb=500), CAPS, 0).refusal,
                          "500 GB is over the disk cap (200 GB): ask the person, then pass --confirmed")
 
@@ -167,9 +178,10 @@ class CapsTest(unittest.TestCase):
         # Above the type's own, within the cap.
         self.assertIsNone(caps.check(request(type="small", vcpus=2, type_disk_gb=40, disk_gb=200), CAPS, 0).refusal)
 
-    def test_a_keep_vm_does_not_meet_the_throwaway_cap(self):
-        verdict = caps.check(request(lifetime="keep", lease=None, confirmed=True), CAPS, alive=3)
+    def test_a_confirmed_request_passes_a_full_count(self):
+        verdict = caps.check(request(confirmed=True), CAPS, alive=3)
         self.assertIsNone(verdict.refusal)
+        self.assertEqual(verdict.line, "unconfirmed 3/3 confirmed, size 4/8 vCPU ok, disk 160/200 GB ok")
 
 
 if __name__ == "__main__":

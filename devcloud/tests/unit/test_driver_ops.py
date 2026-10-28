@@ -20,18 +20,20 @@ class OpsBase(DriverBase):
 
 
 class LsTest(OpsBase):
-    def test_rows_and_the_throwaway_count(self):
+    def test_rows_and_the_unconfirmed_count(self):
         self.add_server("dc-a-0001", vm_labels(expires=NOW + 2 * HOUR, **{"devcloud-creator": "abcd1234"}))
         self.add_server("dc-b-0002", vm_labels(expires=NOW - 600, **{"devcloud-held": "1"}))
         self.add_server("dc-k-0003", vm_labels(lifetime="keep", confirmed=True))
+        self.add_server("dc-u-0005", vm_labels(lifetime="keep"), created=NOW - 50 * HOUR)
         self.add_server("dc-bake-0004", {"devcloud": "builder"}, created=NOW - 60)
         self.tailnet_nodes += [{"name": "dc-a-0001", "online": True, "tags": ["tag:devcloud"]},
                                {"name": "dc-gone-0009", "online": False, "tags": ["tag:devcloud"]},
                                {"name": "macbook", "online": True, "tags": []}]
         self.assertEqual(ops.ls(self.ctx), 0)
         out = self.out.getvalue()
-        self.assertTrue(out.startswith("throwaway 2/3"), out)
-        self.assertRegex(out, r"dc-a-0001\s+fake/main\s+ttl\s+in 2h\s+running\s+0.1178 EUR/h\s+abcd1234")
+        self.assertTrue(out.startswith("unconfirmed 3/3"), out)
+        self.assertRegex(out, r"dc-a-0001\s+fake/main\s+ttl\s+in 2h\s+running\s+1h0m\s+0.1178 EUR/h\s+0.12 EUR\s+abcd1234")
+        self.assertRegex(out, r"dc-u-0005\s+fake/main\s+keep\s+-\s+running\s+2d2h\s+0.1178 EUR/h\s+5.89 EUR")
         self.assertRegex(out, r"dc-b-0002 .*ended 10m ago\s+held")
         self.assertRegex(out, r"dc-k-0003\s+fake/main\s+keep\s+-")
         self.assertRegex(out, r"dc-gone-0009\s+tailnet only")
@@ -42,7 +44,8 @@ class LsTest(OpsBase):
         self.add_server("dc-a-0001", vm_labels(expires=NOW + HOUR))
         self.assertEqual(ops.ls(self.ctx, as_json=True), 0)
         data = json.loads(self.out.getvalue())
-        self.assertEqual(data["throwaway"], {"alive": 1, "cap": 3})
+        self.assertEqual(data["unconfirmed"], {"alive": 1, "cap": 3})
+        self.assertEqual(data["vms"][0]["created"], NOW - 3600)
         self.assertEqual(data["vms"][0]["name"], "dc-a-0001")
         self.assertEqual(data["vms"][0]["expires"], NOW + HOUR)
 
@@ -104,7 +107,7 @@ class LeaseTest(OpsBase):
     def test_writes_the_host_then_the_label_with_the_value_the_host_printed(self):
         printed = NOW + 2 * HOUR + 7
         self.remote.on("devcloud lease set", out=f"{printed}\n")
-        self.assertEqual(ops.lease(self.ctx, "dc-a-0001", "2h", confirmed=False), 0)
+        self.assertEqual(ops.lease(self.ctx, "dc-a-0001", "2h"), 0)
         self.assertIn(f"devcloud lease set {NOW + 2 * HOUR}", self.remote.commands()[-1])
         self.assertEqual(self.servers()["dc-a-0001"]["labels"]["devcloud-expires"], str(printed))
         self.assertEqual(self.servers()["dc-a-0001"]["labels"]["devcloud-by"], "testmac", "the full set kept")
@@ -114,7 +117,7 @@ class LeaseTest(OpsBase):
             with self.subTest(code=code):
                 self.remote.rules = []
                 self.remote.on("devcloud lease set", code=code)
-                self.assertEqual(self.fails(lambda: ops.lease(self.ctx, "dc-a-0001", "2h", confirmed=False))[0], 1)
+                self.assertEqual(self.fails(lambda: ops.lease(self.ctx, "dc-a-0001", "2h"))[0], 1)
                 self.assertEqual(self.servers()["dc-a-0001"]["labels"]["devcloud-expires"], str(NOW + HOUR))
         self.assertNotIn("set-labels", self.ops())
 
@@ -149,57 +152,23 @@ class LeaseTest(OpsBase):
             0, f"{descriptor.load(desc).expires or ''}\n", "", False))
         return lambda: descriptor.load(desc).expires
 
-    def test_longer_is_capped_from_the_creation_time_shorter_never(self):
+    def test_any_lease_needs_no_yes_and_sends_no_cap(self):
         held = self.real_host(NOW + HOUR)
-        # Created 10 h ago: 63 h more reaches 73 h of life, over 72 h.
-        code, message = self.fails(lambda: ops.lease(self.ctx, "dc-a-0001", "63h", confirmed=False))
-        self.assertEqual(code, 4)
-        self.assertIn("--confirmed", message)
-        self.assertIn(f"--cap {NOW - 10 * HOUR + 72 * HOUR}", self.remote.commands()[-1])
-        self.assertEqual(held(), NOW + HOUR)
-        self.assertEqual(ops.lease(self.ctx, "dc-a-0001", "63h", confirmed=True), 0)
-        self.assertNotIn("--cap", self.remote.commands()[-1], "the person's yes: no cap")
-        self.assertEqual(held(), NOW + 63 * HOUR)
-        # Shortening the host's own lease past the cap needs no confirmation.
-        self.assertEqual(ops.lease(self.ctx, "dc-a-0001", "62h", confirmed=False), 0)
-        self.assertEqual(held(), NOW + 62 * HOUR)
-        self.assertEqual(ops.lease(self.ctx, "dc-a-0001", "30m", confirmed=False), 0)
-
-    def test_past_the_cap_unconfirmed_is_decided_by_the_host_not_the_label(self):
-        # Confirmed earlier to 100 h of life; then `lease 1h` set the host but its label write failed, so the
-        # label still says 100 h while the host says 1 h.
-        state = self.state()
-        state["servers"][0]["labels"]["devcloud-expires"] = str(NOW + 90 * HOUR)
-        self.state_file.write_text(json.dumps(state))
-        held = self.real_host(NOW + 90 * HOUR)
-        self.behave(fail={"set-labels": 1})
-        self.assertEqual(self.fails(lambda: ops.lease(self.ctx, "dc-a-0001", "1h", confirmed=False))[0], 1)
-        self.assertEqual(held(), NOW + HOUR)
-        self.assertEqual(self.servers()["dc-a-0001"]["labels"]["devcloud-expires"], str(NOW + 90 * HOUR))
-        self.behave(fail={})
-        # 70 h more is 80 h of life: within the stale label, past the host's lease, so it needs --confirmed.
-        code, message = self.fails(lambda: ops.lease(self.ctx, "dc-a-0001", "70h", confirmed=False))
-        self.assertEqual(code, 4)
-        self.assertEqual(held(), NOW + HOUR, "the host untouched")
-
-    def test_a_shortening_on_another_mac_between_the_decision_and_the_write(self):
-        # The host's lease is 85 h of life, so `lease 70h` (80 h) would only shorten it; but another Mac's
-        # `lease 1h` lands just before this driver's write. The host decides under its lock: refused.
-        held = self.real_host(NOW + 75 * HOUR,
-                              before_write=lambda host_set: host_set(NOW + HOUR))
-        code, message = self.fails(lambda: ops.lease(self.ctx, "dc-a-0001", "70h", confirmed=False))
-        self.assertEqual(code, 4)
-        self.assertEqual(held(), NOW + HOUR, "no lifetime past the cap was installed")
-        self.assertNotIn("set-labels", self.ops())
+        # Created 10 h ago: 100 h more is far past the old 72 h lifetime cap, which is gone (§2).
+        self.assertEqual(ops.lease(self.ctx, "dc-a-0001", "100h"), 0)
+        self.assertNotIn("--cap", self.remote.commands()[-1])
+        self.assertEqual(held(), NOW + 100 * HOUR)
+        self.assertEqual(ops.lease(self.ctx, "dc-a-0001", "30m"), 0)
+        self.assertEqual(held(), NOW + 30 * 60)
 
     def test_the_label_write_goes_through_the_gate(self):
         self.remote.on("devcloud lease set", out=f"{NOW + 2 * HOUR}\n")
         self.behave(drop_on_get="devcloud")
-        self.assertEqual(self.fails(lambda: ops.lease(self.ctx, "dc-a-0001", "2h", confirmed=False))[0], 1)
+        self.assertEqual(self.fails(lambda: ops.lease(self.ctx, "dc-a-0001", "2h"))[0], 1)
         self.assertNotIn("set-labels", self.ops())
 
     def test_a_bad_duration_is_usage(self):
-        self.assertEqual(self.fails(lambda: ops.lease(self.ctx, "dc-a-0001", "soon", confirmed=False))[0], 2)
+        self.assertEqual(self.fails(lambda: ops.lease(self.ctx, "dc-a-0001", "soon"))[0], 2)
 
 
 def kind(ephemeral, state="joined", name="dc-a-0001", detail=""):
@@ -208,25 +177,20 @@ def kind(ephemeral, state="joined", name="dc-a-0001", detail=""):
 
 
 class LeaseKeepAndRejoinTest(OpsBase):
-    """`lease <n> keep --confirmed`, and the wait for the rejoin a lease write
+    """`lease <n> keep`, and the wait for the rejoin a lease write
     starts when it changes the kind of the host's tailnet node (§4.1)."""
 
     def setUp(self):
         super().setUp()
         self.add_server("dc-a-0001", vm_labels(expires=NOW + HOUR), created=NOW - 10 * HOUR)
 
-    def test_keep_needs_the_persons_yes(self):
-        code, message = self.fails(lambda: ops.lease(self.ctx, "dc-a-0001", "keep", confirmed=False))
-        self.assertEqual(code, 4)
-        self.assertIn("--confirmed", message)
-        self.assertEqual(self.remote.commands("lease set"), [])
-
     def test_keep_removes_the_lease_on_the_host_then_relabels_it_kept(self):
         self.remote.on("devcloud lease set", out="keep\n")
-        self.assertEqual(ops.lease(self.ctx, "dc-a-0001", "keep", confirmed=True), 0)
+        self.assertEqual(ops.lease(self.ctx, "dc-a-0001", "keep"), 0)
         self.assertEqual(self.remote.commands("lease set"), ["devcloud lease set keep"])
         labels = self.servers()["dc-a-0001"]["labels"]
-        self.assertEqual((labels["devcloud-lifetime"], labels["devcloud-confirmed"]), ("keep", "1"))
+        self.assertEqual(labels["devcloud-lifetime"], "keep")
+        self.assertNotIn("devcloud-confirmed", labels, "keeping it does not take it out of the count")
         self.assertNotIn("devcloud-expires", labels)
         self.assertEqual(labels["devcloud-by"], "testmac", "the full set kept")
         self.assertIn("is kept, without a lease", self.out.getvalue())
@@ -237,7 +201,7 @@ class LeaseKeepAndRejoinTest(OpsBase):
         self.remote.on("tailnet.json", code=255, times=2)                       # the rejoin cut the connection
         self.remote.on("tailnet.json", out=kind(True, state="rejoining"), times=1)
         self.remote.on("tailnet.json", out=kind(False))
-        self.assertEqual(ops.lease(self.ctx, "dc-a-0001", "keep", confirmed=True), 0)
+        self.assertEqual(ops.lease(self.ctx, "dc-a-0001", "keep"), 0)
         self.assertEqual(len(self.remote.commands("tailnet.json")), 4)
         self.assertEqual({c["target"] for c in self.remote.calls}, {"dc-a-0001"}, "reached it by another name")
         self.assertIn("back on the tailnet as a non-ephemeral node, under the same name", self.out.getvalue())
@@ -252,20 +216,20 @@ class LeaseKeepAndRejoinTest(OpsBase):
                 self.state_file.write_text(json.dumps(state))
                 self.remote.on("devcloud lease set", code=code, out="rejoin non-ephemeral\nkeep\n")
                 self.remote.on("tailnet.json", out=kind(False))
-                self.assertEqual(ops.lease(self.ctx, "dc-a-0001", "keep", confirmed=True), 0)
+                self.assertEqual(ops.lease(self.ctx, "dc-a-0001", "keep"), 0)
                 labels = self.servers()["dc-a-0001"]["labels"]
                 self.assertEqual((labels["devcloud-lifetime"], labels.get("devcloud-expires")), ("keep", None))
                 self.assertIn("back on the tailnet as a non-ephemeral node", self.out.getvalue())
 
     def test_a_cut_off_answer_without_a_rejoin_line_is_still_a_failure(self):
         self.remote.on("devcloud lease set", code=255, out=f"{NOW + 2 * HOUR}\n")
-        self.assertEqual(self.fails(lambda: ops.lease(self.ctx, "dc-a-0001", "2h", confirmed=False))[0], 1)
+        self.assertEqual(self.fails(lambda: ops.lease(self.ctx, "dc-a-0001", "2h"))[0], 1)
         self.assertEqual(self.servers()["dc-a-0001"]["labels"]["devcloud-expires"], str(NOW + HOUR))
 
     def test_a_kept_host_given_a_lease_rejoins_as_ephemeral(self):
         self.remote.on("devcloud lease set", out=f"rejoin ephemeral\n{NOW + 2 * HOUR}\n")
         self.remote.on("tailnet.json", out=kind(True))
-        self.assertEqual(ops.lease(self.ctx, "dc-a-0001", "2h", confirmed=False), 0)
+        self.assertEqual(ops.lease(self.ctx, "dc-a-0001", "2h"), 0)
         self.assertEqual(self.servers()["dc-a-0001"]["labels"]["devcloud-expires"], str(NOW + 2 * HOUR),
                          "the label waits on the rejoin")
         self.assertIn("back on the tailnet as an ephemeral node, under the same name", self.out.getvalue())
@@ -273,7 +237,7 @@ class LeaseKeepAndRejoinTest(OpsBase):
     def test_a_failed_rejoin_names_its_reason_and_the_retry(self):
         self.remote.on("devcloud lease set", out=f"rejoin ephemeral\n{NOW + 2 * HOUR}\n")
         self.remote.on("tailnet.json", out=kind(True, state="failed", detail="lacks the devices:core scope"))
-        code, message = self.fails(lambda: ops.lease(self.ctx, "dc-a-0001", "2h", confirmed=False))
+        code, message = self.fails(lambda: ops.lease(self.ctx, "dc-a-0001", "2h"))
         self.assertEqual(code, 1)
         self.assertIn("devices:core", message)
         self.assertIn("every 5 minutes", message)
@@ -283,7 +247,7 @@ class LeaseKeepAndRejoinTest(OpsBase):
     def test_a_host_back_under_another_name_is_a_failure_naming_it(self):
         self.remote.on("devcloud lease set", out=f"rejoin ephemeral\n{NOW + 2 * HOUR}\n")
         self.remote.on("tailnet.json", out=kind(True, name="dc-a-0001-1", detail="an older node holds the name"))
-        code, message = self.fails(lambda: ops.lease(self.ctx, "dc-a-0001", "2h", confirmed=False))
+        code, message = self.fails(lambda: ops.lease(self.ctx, "dc-a-0001", "2h"))
         self.assertEqual(code, 1)
         self.assertIn("dc-a-0001-1", message)
 
@@ -291,7 +255,7 @@ class LeaseKeepAndRejoinTest(OpsBase):
         self.remote.on("devcloud lease set", out=f"rejoin ephemeral\n{NOW + 2 * HOUR}\n")
         self.remote.on("tailnet.json", code=255)
         start = self.clock()
-        code, message = self.fails(lambda: ops.lease(self.ctx, "dc-a-0001", "2h", confirmed=False))
+        code, message = self.fails(lambda: ops.lease(self.ctx, "dc-a-0001", "2h"))
         self.assertEqual(code, 1)
         self.assertIn("did not come back", message)
         self.assertGreaterEqual(self.clock() - start, 10 * 60)

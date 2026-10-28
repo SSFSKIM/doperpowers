@@ -192,7 +192,7 @@ class Context:
                 entries += self.fleet_of(account, client, kinds)
             except DriverError as error:
                 if strict:
-                    raise DriverError(FAILED, f"account {account.name}'s VMs could not be listed, so the throwaway "
+                    raise DriverError(FAILED, f"account {account.name}'s VMs could not be listed, so the count "
                                               f"cap cannot be counted ({error})") from None
                 self.warn(f"devcloud vm: account {account.name}: {error}")
         return entries

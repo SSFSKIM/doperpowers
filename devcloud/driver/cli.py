@@ -5,7 +5,7 @@
   devcloud vm adopt <user@address> [--label L] [--project …]... [--ttl D] [--confirmed] [--dry-run]
   devcloud vm ls [--json]
   devcloud vm ssh <name> [--root] [-- command...]
-  devcloud vm lease <name> <duration|keep> [--confirmed]
+  devcloud vm lease <name> <duration|keep>
   devcloud vm down <name> [--force]
   devcloud vm image build [--account A] | image ls
   devcloud vm reap [--install]
@@ -74,10 +74,9 @@ def parser():
                        description="One argument after -- is a shell line as given; several are quoted as words.")
     p.add_argument("name")
     p.add_argument("--root", action="store_true")
-    p = sub.add_parser("lease", help="set a host's lease end to now + duration, or keep it (--confirmed)")
+    p = sub.add_parser("lease", help="set a host's lease end to now + duration, or keep it without one")
     p.add_argument("name")
     p.add_argument("duration")
-    p.add_argument("--confirmed", action="store_true")
     p = sub.add_parser("down", help="depart and delete a host")
     p.add_argument("name")
     p.add_argument("--force", action="store_true")
@@ -113,7 +112,7 @@ def _dispatch(ctx, args, command, stdin):
     if args.command == "ssh":
         return ops.ssh(ctx, args.name, root=args.root, command=command)
     if args.command == "lease":
-        return ops.lease(ctx, args.name, args.duration, confirmed=args.confirmed)
+        return ops.lease(ctx, args.name, args.duration)
     if args.command == "down":
         return ops.down(ctx, args.name, force=args.force)
     if args.command == "image":

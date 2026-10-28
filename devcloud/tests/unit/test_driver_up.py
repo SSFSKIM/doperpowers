@@ -51,9 +51,9 @@ class ResolveTest(UpBase):
         out = self.out.getvalue()
         self.assertIn("account   main (fake)", out)
         self.assertIn("type medium (4 vCPU, 8 GB, 160 GB disk)", out)
-        self.assertIn("lifetime ttl 12h", out)
+        self.assertIn("lifetime keep", out)
         self.assertIn("0.1178 EUR/h", out)
-        self.assertIn("caps      throwaway 0/3 ok, lease 12h/72h ok, size 4/8 vCPU ok, disk 160/200 GB ok", out)
+        self.assertIn("caps      unconfirmed 0/3 ok, size 4/8 vCPU ok, disk 160/200 GB ok", out)
         self.assertNotIn("create", self.ops())
         self.assertEqual(self.remote.calls, [])
 
@@ -70,10 +70,33 @@ class ResolveTest(UpBase):
         self.assertNotIn("create", self.ops())
 
     def test_the_messages_name_their_cap(self):
-        self.assertIn("lifetime cap", self.refused(ttl="100h", dry_run=True)[1])
         self.assertIn("size cap", self.refused(type="big", dry_run=True)[1])
         self.assertEqual(self.refused(type="small", disk=500, dry_run=True)[1],
                          "500 GB is over the disk cap (200 GB): ask the person, then pass --confirmed")
+
+    def test_the_count_counts_kept_and_leased_vms(self):
+        self.add_server("dc-x-0000", vm_labels(expires=NOW + HOUR))
+        self.add_server("dc-x-0001", vm_labels(lifetime="keep"))
+        self.add_server("dc-x-0002", vm_labels(lifetime="keep"))
+        self.add_server("dc-x-0003", vm_labels(lifetime="keep", confirmed=True))
+        self.assertEqual(self.refused(dry_run=True)[1],
+                         "over the count cap (3 unconfirmed alive, cap 3): ask the person, then pass --confirmed")
+
+    def test_kept_by_default_and_no_lease_length_needs_the_person(self):
+        self.assertEqual(self.up(dry_run=True), 0)
+        self.assertIn("lifetime keep", self.out.getvalue())
+        self.assertEqual(self.up(ttl="100h", dry_run=True), 0)
+        self.assertIn("lifetime ttl 100h", self.out.getvalue())
+        self.assertEqual(self.up(keep=True, dry_run=True), 0)
+
+    def test_the_profile_may_lease_by_default(self):
+        toml = self.paths.profile / "driver.toml"
+        toml.write_text(toml.read_text().replace("unconfirmed = 3", 'unconfirmed = 3\nlease_default = "6h"'))
+        self.ctx = self.make_ctx()
+        self.assertEqual(self.up(dry_run=True), 0)
+        self.assertIn("lifetime ttl 6h", self.out.getvalue())
+        self.assertEqual(self.up(keep=True, dry_run=True), 0)
+        self.assertTrue(self.out.getvalue().rstrip().splitlines()[-2].endswith("lifetime keep  price 0.1178 EUR/h"))
 
     def test_a_types_own_large_disk_needs_no_confirmation(self):
         self.assertEqual(self.up(type="bigdisk", dry_run=True), 0)
@@ -125,7 +148,7 @@ class CreateTest(UpBase):
         self.addCleanup(os.environ.pop, "DEVCLOUD_TEST_RUN")
         self.ctx = self.make_ctx(token_hex=lambda: "7f3a", env={"PATH": os.environ["PATH"],
                                                                  "DEVCLOUD_TEST_RUN": "m3-unit"})
-        self.assertEqual(self.up(label="build", project=["example/repo"], confirmed=True), 0)
+        self.assertEqual(self.up(label="build", project=["example/repo"], ttl="12h", confirmed=True), 0)
         create = [c for c in self.state()["calls"] if c["op"] == "create"][0]["input"]
         self.assertEqual(create["name"], "dc-build-7f3a")
         self.assertEqual(create["labels"], {
@@ -446,8 +469,9 @@ class CountTest(UpBase):
 
 class RecountTest(UpBase):
     def test_racing_past_the_cap_deletes_its_own_vm_and_exits_4(self):
-        for i in range(2):
-            self.add_server(f"dc-x-000{i}", vm_labels(expires=NOW + HOUR), created=NOW - 60)
+        # One leased, one kept: the count is of unconfirmed VMs, whatever their lifetime.
+        self.add_server("dc-x-0000", vm_labels(expires=NOW + HOUR), created=NOW - 60)
+        self.add_server("dc-x-0001", vm_labels(lifetime="keep"), created=NOW - 60)
 
         def racing(state):
             # Another driver created one between this driver's count and its create.
