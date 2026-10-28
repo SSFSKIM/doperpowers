@@ -29,10 +29,11 @@ class IdleBase(unittest.TestCase):
         d = d or self.d
         observed = idle.observe(self.user, d, path=self.state, now=lambda: now,
                                 activity=lambda user, since: active)
-        pending = idle.reserve(d, observed, path=self.state, now=lambda: now)
+        pending = idle.check(d, observed, path=self.state, now=lambda: now)
         if pending is not None:
             idle.send(self.user, d, pending, notify=self.sent.append,
                       scan=lambda: [("app", "2 unpushed commits")])
+            idle.delivered(pending, path=self.state, now=lambda: now)
 
     def read(self):
         return json.loads(self.state.read_text())

@@ -186,10 +186,10 @@ def start_transient(unit, argv, run=proc.run, environ=os.environ, what="at the l
 
 def tick(user, desc_path=descriptor.PATH, lock_path=None, status_path=None, state_path=None, now=time.time,
          active=unit_active, start=start_transient, warn=None, allow_http=False, say=_stderr, kind_path=None):
-    """Decide departure first, reserve notices under the lifecycle lock,
-    then scan and deliver outside it. Activity probes also run unlocked:
-    re-read the descriptor and clock afterwards before reserving anything.
-    A notice must never keep a spot departure or a lease write off the lock.
+    """Queue any tailnet recovery before deciding departure. Activity probes,
+    checkout scans and delivery run outside the lifecycle lock. A separate
+    nonblocking lock serializes sends; delivery markers advance only after
+    each notice completes, so an interrupted or failed send stays retryable.
     """
     status_kw = {"path": status_path} if status_path else {}
     state_path = state_path or STATE
@@ -223,8 +223,6 @@ def tick(user, desc_path=descriptor.PATH, lock_path=None, status_path=None, stat
         if d is None:
             return 1
         proc.know_host(user, d.seed_path if d.seed_kind == "file" else None, env_path=ENV_PATH)
-        if departure_due(d)[0]:
-            return 0
         if nodekind.behind(d, kind_path) and not status.departure_started(**status_kw) \
                 and not active(nodekind.UNIT):
             try:
@@ -233,6 +231,8 @@ def tick(user, desc_path=descriptor.PATH, lock_path=None, status_path=None, stat
                     f"{nodekind.UNIT} started")
             except StepError as error:
                 say(f"devcloud lease: {nodekind.UNIT} did not start ({error})")
+        if departure_due(d)[0]:
+            return 0
         observe = not status.departure_started(**status_kw)
 
     observation = None
@@ -242,39 +242,52 @@ def tick(user, desc_path=descriptor.PATH, lock_path=None, status_path=None, stat
         except (OSError, ValueError, IndexError, StepError) as error:
             say(f"devcloud lease: idle check failed ({error}); will retry")
 
-    with locked(path=lock_path):
-        d = load()
-        if d is None:
-            return 1
-        done, current = departure_due(d)
-        if done:
-            return 0
-        pending = None
-        if not status.departure_started(**status_kw):
-            try:
-                pending = idle.reserve(d, observation, now=lambda: current)
-            except (OSError, ValueError, IndexError, StepError) as error:
-                say(f"devcloud lease: idle check failed ({error}); will retry")
-        warning = False
-        if d.leased:
-            state = _read_state(state_path)
-            warning = current >= d.expires - WARN_BEFORE and state.get("warned_for") != d.expires
-            if warning:
-                _write_state({**state, "warned_for": d.expires}, state_path)
+    # Acquire this before deciding which notices are due: otherwise a sender
+    # that finished between our decision and acquisition would be repeated.
+    # Never wait for it, and never hold the lifecycle lock while delivering.
+    with contextlib.ExitStack() as sending_lock:
+        sending = True
+        try:
+            sending_lock.enter_context(locked(path=pathlib.Path(lock_path or LOCK).with_name("notices.lock"),
+                                              timeout=0))
+        except TimeoutError:
+            sending = False
+        with locked(path=lock_path):
+            d = load()
+            if d is None:
+                return 1
+            done, current = departure_due(d)
+            if done:
+                return 0
+            pending = None
+            if not status.departure_started(**status_kw):
+                try:
+                    pending = idle.check(d, observation, now=lambda: current)
+                except (OSError, ValueError, IndexError, StepError) as error:
+                    say(f"devcloud lease: idle check failed ({error}); will retry")
+            warning = d.leased and current >= d.expires - WARN_BEFORE and (
+                _read_state(state_path).get("warned_for") != d.expires)
 
-    try:
-        if warning:
-            (warn or (lambda desc: warn_creator(user, desc, say=say)))(d)
-        if pending is not None:
-            try:
-                idle.send(user, d, pending, say=say)
-            except (OSError, ValueError, IndexError, StepError) as error:
-                say(f"devcloud lease: idle notice failed ({error})")
-    finally:
-        # A send can outlast the lease. Another tick or a spot departure can
-        # take the lock meanwhile; if none did, do not leave an expired host
-        # waiting for the next timer with our earlier, stale decision.
-        if d.leased and now() >= d.expires:
+        try:
+            if sending and warning:
+                try:
+                    (warn or (lambda desc: warn_creator(user, desc, say=say)))(d)
+                    with locked(path=lock_path):
+                        # A release may have removed the host while delivery ran.
+                        if pathlib.Path(desc_path).exists():
+                            _write_state({**_read_state(state_path), "warned_for": d.expires}, state_path)
+                except Exception as error:  # either notice can fail without suppressing the other
+                    say(f"devcloud lease: warning failed ({error}); will retry")
+            if sending and pending is not None:
+                try:
+                    idle.send(user, d, pending, say=say)
+                    with locked(path=lock_path):
+                        idle.delivered(pending, now=now)
+                except Exception as error:
+                    say(f"devcloud lease: idle notice failed ({error}); will retry")
+        finally:
+            # A lease can be added or shortened while a send runs. Always
+            # reload its authority; the pre-delivery descriptor is stale.
             with locked(path=lock_path):
                 if not status.departure_started(**status_kw):
                     fresh = load()

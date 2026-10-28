@@ -258,11 +258,11 @@ class NodeKindFollowsTheLeaseTest(LeaseBase):
                    start=start, warn=lambda d: None, say=lambda m: None, kind_path=self.kind, **self.paths)
         self.assertEqual(started, ["devcloud-depart"])
 
-    def test_an_expired_host_departs_without_starting_a_rejoin_first(self):
+    def test_an_expired_host_retries_its_tailnet_before_departure(self):
         self.write(NOW)
-        self.joined_as(False)
+        nodekind.record(False, True, nodekind.FAILED, "up failed after logout", path=self.kind)
         self.tick(NOW)
-        self.assertEqual([unit for unit, _ in self.started], ["devcloud-depart"])
+        self.assertEqual([unit for unit, _ in self.started], ["devcloud-rejoin", "devcloud-depart"])
 
 
 class TickTest(LeaseBase):

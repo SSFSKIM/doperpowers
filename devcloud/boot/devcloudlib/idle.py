@@ -1,7 +1,7 @@
 """A VM's idle clock and three-day notice (§4.5).
 
-Observe activity outside the lifecycle lock; reserve the notice under it;
-scan checkouts and deliver only after releasing it.
+Observe activity outside the lifecycle lock; record the check under it;
+scan and deliver unlocked, then record successful delivery.
 
 Only activity resets the clock; a resident session waiting for a message
 and the driver's noninteractive SSH probes do not. Nothing is stopped.
@@ -95,10 +95,11 @@ def observe(user, d, path=None, now=time.time, activity=None):
     return state, is_active, checked_at
 
 
-def reserve(d, observation, path=None, now=time.time):
-    """Under the lifecycle lock, record the check and reserve any notice.
+def check(d, observation, path=None, now=time.time):
+    """Under the lifecycle lock, record activity and return any due notice.
     Another tick may have updated the clock during our observation; leave
-    that newer state alone. The returned snapshot is delivered unlocked.
+    that newer state alone. Delivery is serialized separately and only a
+    completed send advances noticed_at.
     """
     if observation is None or d.adopted or d.kind != "vm" or d.role != "persistent":
         return None
@@ -113,7 +114,6 @@ def reserve(d, observation, path=None, now=time.time):
         state = {"active_at": current, "noticed_at": None}
     elif current - state["active_at"] >= INTERVAL and (
             state.get("noticed_at") is None or current - state["noticed_at"] >= INTERVAL):
-        state["noticed_at"] = current
         owed = True
     state["checked_at"] = checked_at
     proc.write_file(path, json.dumps(state) + "\n", mode=0o644, dir_mode=0o755)
@@ -121,9 +121,21 @@ def reserve(d, observation, path=None, now=time.time):
 
 
 def send(user, d, pending, notify=None, scan=None, say=print):
-    """Scan and deliver a reserved notice, without the lifecycle lock."""
+    """Scan and deliver a due notice, without the lifecycle lock."""
     from .lease import unpushed
     state, current = pending
     found = (scan or (lambda: unpushed(user)))()
     message = text(d, state, current, found)
     (notify or (lambda message: notices.deliver(user, d, message, say=say)))(message)
+
+
+def delivered(pending, path=None, now=time.time):
+    """Record delivery under the lifecycle lock, for the same idle stretch.
+    Activity observed during a slow send must not have its new clock marked.
+    """
+    path = path or STATE
+    sent, _ = pending
+    state = read(path)
+    if state is not None and state["active_at"] == sent["active_at"]:
+        state["noticed_at"] = now()
+        proc.write_file(path, json.dumps(state) + "\n", mode=0o644, dir_mode=0o755)

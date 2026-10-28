@@ -476,10 +476,11 @@ closing, or the 15-minute load average is at least 0.5. A logged-out session
 kept closing by remaining processes, a resident session waiting for a
 message, and noninteractive SSH probes do not count. The first check starts
 the clock; `/var/lib/devcloud/idle.json` keeps the last check, last activity
-and last notice reservation times across reboots. Adopted machines are
+and last delivered notice times across reboots. Adopted machines are
 excluded. Activity probes, checkout scans and delivery run outside the
-lifecycle lock, so they cannot block a lease write or a spot departure;
-the lease decision and notice reservations are made under the lock.
+lifecycle lock, so they cannot block a lease write or a spot departure.
+A separate nonblocking notice lock prevents concurrent sends; a failed or
+interrupted send stays due, and each notice is marked only after delivery.
 
 The notice starts `devcloud on <name>:` to identify its automated origin,
 since sminos labels a host-shell message as `from human`. It names the VM,
