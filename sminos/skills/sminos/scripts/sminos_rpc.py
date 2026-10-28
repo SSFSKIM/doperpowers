@@ -1987,9 +1987,9 @@ class DeliveryStream:
         self.sock = self.r = None
         self.open()
 
-    def open(self):
+    def open(self, timeout=SNAPSHOT_TIMEOUT):
         self.close()
-        c = bridge._UnixConnection(self.path, SNAPSHOT_TIMEOUT)
+        c = bridge._UnixConnection(self.path, timeout)
         try:
             c.request("GET", "/events")
             sock = c.sock   # a close-delimited stream: the connection lets go of it once the response begins
@@ -2013,7 +2013,10 @@ class DeliveryStream:
                 return None
             if self.r is None:
                 time.sleep(min(left, 0.25))
-                self.open()
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    return None
+                self.open(left)   # the snapshot is read within what the send has left
                 continue
             try:
                 self.sock.settimeout(left)

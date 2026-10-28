@@ -3439,6 +3439,50 @@ class Checks(unittest.TestCase):
         with open(os.path.join(os.environ["SMINOS_HOME"], "daemon.log")) as f:
             self.assertNotIn("please look at the flake", f.read(), "the person's words are never logged")
 
+    def test_s_a_stream_slow_to_give_its_snapshot_does_not_hold_a_send_past_its_deadline(self):
+        """A send waits for its outcome until its deadline: resubscribing to
+        a stream gone away reads the snapshot within what is left of that,
+        not within the snapshot's own bound."""
+        import socket
+        path = os.path.join(tsp.T, "ds-%s.sock" % uuidlib.uuid4().hex[:6])
+        srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        srv.bind(path)
+        srv.listen(4)
+        stop = threading.Event()
+        held = []
+
+        def serve():
+            while not stop.is_set():
+                try:
+                    conn, _ = srv.accept()
+                except OSError:
+                    return
+                held.append(conn)
+                conn.recv(4096)
+                conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: application/x-ndjson\r\n\r\n")
+                stop.wait(2)   # the snapshot, well past the deadline
+                try:
+                    conn.sendall(b'{"type":"snapshot"}\n')
+                except OSError:
+                    pass
+
+        t = threading.Thread(target=serve, daemon=True)
+        t.start()
+        try:
+            ds = rpcs.DeliveryStream.__new__(rpcs.DeliveryStream)
+            ds.path = path
+            ds.sock = ds.r = None
+            began = time.monotonic()
+            self.assertIsNone(ds.outcome(1, began + 0.3))
+            self.assertLess(time.monotonic() - began, 0.3 + 0.5)
+        finally:
+            stop.set()
+            ds.close()
+            srv.close()
+            for c in held:
+                c.close()
+            t.join(5)
+
     def test_s_the_shape_of_a_send(self):
         """`text` is a non-blank string of at most SEND_TEXT_MAX characters
         whose first non-whitespace character is not `/` (the endpoint grades
