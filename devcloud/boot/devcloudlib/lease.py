@@ -186,55 +186,101 @@ def start_transient(unit, argv, run=proc.run, environ=os.environ, what="at the l
 
 def tick(user, desc_path=descriptor.PATH, lock_path=None, status_path=None, state_path=None, now=time.time,
          active=unit_active, start=start_transient, warn=None, allow_http=False, say=_stderr, kind_path=None):
-    """One run of the lease service: at the lease end (and at every later run
-    while a departure is held or was cut short) it starts the departure, or
-    the release, as a transient unit — unless one is already under way; 30
-    minutes before the end it warns the creator, once per lease value. On a
-    kept host as on a leased one, while the tailnet node's kind does not
-    follow the lease (a rejoin that failed, or never started), it starts the
-    rejoin again."""
+    """Decide departure first, reserve notices under the lifecycle lock,
+    then scan and deliver outside it. Activity probes also run unlocked:
+    re-read the descriptor and clock afterwards before reserving anything.
+    A notice must never keep a spot departure or a lease write off the lock.
+    """
     status_kw = {"path": status_path} if status_path else {}
     state_path = state_path or STATE
-    with locked(path=lock_path):
+
+    def departure_due(d):
+        # Called under the lock. Sample time after the potentially blocking
+        # unit query, never before activity checks or notice delivery.
+        record = status.lifecycle(**status_kw)
+        if record and record.get("state") == "departed":
+            return True, now()
+        unit, op = (RELEASE_UNIT, "release") if d.adopted else (DEPART_UNIT, "depart")
+        if d.leased and active(unit):
+            say(f"devcloud lease: {unit} is already under way")
+            return True, now()
+        current = now()
+        if d.leased and current >= d.expires:
+            start(unit, [DEVCLOUD, op])
+            say(f"devcloud lease: the lease ended at {iso(d.expires)}; {unit} started")
+            return True, current
+        return False, current
+
+    def load():
         try:
-            d = descriptor.load(desc_path, allow_http=allow_http)
+            return descriptor.load(desc_path, allow_http=allow_http)
         except descriptor.DescriptorError as error:
             say(f"devcloud lease: {error}")
+            return None
+
+    with locked(path=lock_path):
+        d = load()
+        if d is None:
             return 1
+        proc.know_host(user, d.seed_path if d.seed_kind == "file" else None, env_path=ENV_PATH)
+        if departure_due(d)[0]:
+            return 0
         if nodekind.behind(d, kind_path) and not status.departure_started(**status_kw) \
                 and not active(nodekind.UNIT):
             try:
                 start(nodekind.UNIT, [DEVCLOUD, "rejoin"], what="so the tailnet node follows its lease")
                 say(f"devcloud lease: the tailnet node is not {nodekind.name(nodekind.wanted(d))}; "
                     f"{nodekind.UNIT} started")
-            except StepError as error:     # never in the way of the departure below
+            except StepError as error:
                 say(f"devcloud lease: {nodekind.UNIT} did not start ({error})")
-        # A process of its own: the host's secrets known before any child runs.
-        proc.know_host(user, d.seed_path if d.seed_kind == "file" else None, env_path=ENV_PATH)
-        record = status.lifecycle(**status_kw)
-        if record and record.get("state") == "departed":
+        observe = not status.departure_started(**status_kw)
+
+    observation = None
+    if observe:
+        try:
+            observation = idle.observe(user, d, now=now)
+        except (OSError, ValueError, IndexError, StepError) as error:
+            say(f"devcloud lease: idle check failed ({error}); will retry")
+
+    with locked(path=lock_path):
+        d = load()
+        if d is None:
+            return 1
+        done, current = departure_due(d)
+        if done:
             return 0
-        current = now()
-        if not status.departure_started(**status_kw) and (not d.leased or current < d.expires):
+        pending = None
+        if not status.departure_started(**status_kw):
             try:
-                idle.tick(user, d, now=lambda: current, say=say)
+                pending = idle.reserve(d, observation, now=lambda: current)
             except (OSError, ValueError, IndexError, StepError) as error:
                 say(f"devcloud lease: idle check failed ({error}); will retry")
-        if not d.leased:
-            return 0
-        unit, op = (RELEASE_UNIT, "release") if d.adopted else (DEPART_UNIT, "depart")
-        if active(unit):
-            say(f"devcloud lease: {unit} is already under way")
-            return 0
-        if current >= d.expires:
-            start(unit, [DEVCLOUD, op])
-            say(f"devcloud lease: the lease ended at {iso(d.expires)}; {unit} started")
-            return 0
-        state = _read_state(state_path)
-        if current >= d.expires - WARN_BEFORE and state.get("warned_for") != d.expires:
+        warning = False
+        if d.leased:
+            state = _read_state(state_path)
+            warning = current >= d.expires - WARN_BEFORE and state.get("warned_for") != d.expires
+            if warning:
+                _write_state({**state, "warned_for": d.expires}, state_path)
+
+    try:
+        if warning:
             (warn or (lambda desc: warn_creator(user, desc, say=say)))(d)
-            _write_state({**state, "warned_for": d.expires}, state_path)
-        return 0
+        if pending is not None:
+            try:
+                idle.send(user, d, pending, say=say)
+            except (OSError, ValueError, IndexError, StepError) as error:
+                say(f"devcloud lease: idle notice failed ({error})")
+    finally:
+        # A send can outlast the lease. Another tick or a spot departure can
+        # take the lock meanwhile; if none did, do not leave an expired host
+        # waiting for the next timer with our earlier, stale decision.
+        if d.leased and now() >= d.expires:
+            with locked(path=lock_path):
+                if not status.departure_started(**status_kw):
+                    fresh = load()
+                    if fresh is not None:
+                        departure_due(fresh)
+    return 0
 
 
 # --- the warning -----------------------------------------------------------------

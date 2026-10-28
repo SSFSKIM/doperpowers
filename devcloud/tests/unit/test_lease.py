@@ -247,20 +247,22 @@ class NodeKindFollowsTheLeaseTest(LeaseBase):
         self.write(NOW)
         self.joined_as(False)
         started = []
+        clock = [NOW - 1]
 
         def start(unit, argv, what=""):
             if unit == "devcloud-rejoin":
+                clock[0] = NOW  # the lease ends while the attempted rejoin starts
                 raise lease.StepError("systemd-run failed")
             started.append(unit)
-        lease.tick(self.user, state_path=self.tmp / "lease.json", now=lambda: NOW, active=lambda unit: False,
+        lease.tick(self.user, state_path=self.tmp / "lease.json", now=lambda: clock[0], active=lambda unit: False,
                    start=start, warn=lambda d: None, say=lambda m: None, kind_path=self.kind, **self.paths)
         self.assertEqual(started, ["devcloud-depart"])
 
-    def test_a_leased_host_behind_rejoins_before_its_lease_end_departs(self):
+    def test_an_expired_host_departs_without_starting_a_rejoin_first(self):
         self.write(NOW)
         self.joined_as(False)
         self.tick(NOW)
-        self.assertEqual([unit for unit, _ in self.started], ["devcloud-rejoin", "devcloud-depart"])
+        self.assertEqual([unit for unit, _ in self.started], ["devcloud-depart"])
 
 
 class TickTest(LeaseBase):

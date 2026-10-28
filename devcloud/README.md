@@ -471,11 +471,15 @@ its own SIGTERM it forwards the signal to every child and waits up to 8 s
 **The idle notice.** A VM, kept or leased, sends a notice after three days
 without activity, and every three days of that idle stretch thereafter.
 Activity means a transcript under the user's `~/.claude/projects` changed
-since the previous check, a `loginctl` session has a terminal, or the
-15-minute load average is at least 0.5. A resident session waiting for a
-message and noninteractive SSH probes do not count. The first check starts
+since the previous check, a `loginctl` session has a terminal and is not
+closing, or the 15-minute load average is at least 0.5. A logged-out session
+kept closing by remaining processes, a resident session waiting for a
+message, and noninteractive SSH probes do not count. The first check starts
 the clock; `/var/lib/devcloud/idle.json` keeps the last check, last activity
-and last notice times across reboots. Adopted machines are excluded.
+and last notice reservation times across reboots. Adopted machines are
+excluded. Activity probes, checkout scans and delivery run outside the
+lifecycle lock, so they cannot block a lease write or a spot departure;
+the lease decision and notice reservations are made under the lock.
 
 The notice starts `devcloud on <name>:` to identify its automated origin,
 since sminos labels a host-shell message as `from human`. It names the VM,

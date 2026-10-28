@@ -26,9 +26,13 @@ class IdleBase(unittest.TestCase):
 
     def tick(self, now, active=False, d=None):
         from devcloudlib import idle
-        return idle.tick(self.user, d or self.d, path=self.state, now=lambda: now,
-                         activity=lambda user, since: active, notify=lambda text: self.sent.append(text),
-                         scan=lambda: [("app", "2 unpushed commits")])
+        d = d or self.d
+        observed = idle.observe(self.user, d, path=self.state, now=lambda: now,
+                                activity=lambda user, since: active)
+        pending = idle.reserve(d, observed, path=self.state, now=lambda: now)
+        if pending is not None:
+            idle.send(self.user, d, pending, notify=self.sent.append,
+                      scan=lambda: [("app", "2 unpushed commits")])
 
     def read(self):
         return json.loads(self.state.read_text())
@@ -86,7 +90,7 @@ class IdleTest(IdleBase):
         desc = self.root / "boot.env"
         desc.write_text(BASE + f"DEVCLOUD_EXPIRES={NOW + 600}\n")
         warned, started = [], []
-        with mock.patch.object(idle, "tick", side_effect=OSError("probe failed")):
+        with mock.patch.object(idle, "observe", side_effect=OSError("probe failed")):
             for now in (NOW, NOW + 600):
                 self.assertEqual(lease.tick(self.user, desc_path=desc, lock_path=self.root / "lock",
                                  state_path=self.root / "lease.json", status_path=self.root / "status.json",
@@ -100,7 +104,7 @@ class IdleTest(IdleBase):
         desc = self.root / "boot.env"
         paths = dict(desc_path=desc, lock_path=self.root / "lock", status_path=self.root / "status.json",
                      state_path=self.root / "lease.json")
-        with mock.patch.object(idle, "tick") as check:
+        with mock.patch.object(idle, "observe", return_value=None) as check:
             for tail in ("", f"DEVCLOUD_EXPIRES={NOW + 7200}\n"):
                 desc.write_text(BASE + tail)
                 lease.tick(self.user, now=lambda: NOW, active=lambda unit: False, **paths)
@@ -118,12 +122,19 @@ class ActivityTest(IdleBase):
         self.projects = self.user.home / ".claude/projects"
         self.projects.mkdir(parents=True)
 
-    def active(self, since=NOW, terminals=()):
+    def active(self, since=NOW, terminals=(), states=()):
         from devcloudlib import idle
         def call(argv, **kw):
             if "list-sessions" in argv:
                 return 0, "\n".join(f"{i} 1000 worker seat0" for i in range(len(terminals))), ""
-            return 0, terminals[int(argv[2])] + "\n", ""
+            index = int(argv[2])
+            tty = terminals[index]
+            state = states[index] if states else "active"
+            properties = {"TTY": tty, "State": state}
+            selected = [arg.removeprefix("--property=") for arg in argv if arg.startswith("--property=")]
+            output = "\n".join(properties[key] if "--value" in argv else f"{key}={properties[key]}"
+                               for key in selected)
+            return 0, output + "\n", ""
         return idle.active(self.user, since, load_path=self.load, call=call)
 
     def test_only_transcript_writes_since_previous_check_count(self):
@@ -141,6 +152,10 @@ class ActivityTest(IdleBase):
     def test_interactive_terminal_but_not_noninteractive_ssh_counts(self):
         self.assertFalse(self.active(terminals=("", "")))
         self.assertTrue(self.active(terminals=("", "pts/0")))
+
+    def test_a_logged_out_session_with_remaining_processes_is_not_activity(self):
+        self.assertFalse(self.active(terminals=("pts/0",), states=("closing",)))
+        self.assertTrue(self.active(terminals=("pts/0", "pts/1"), states=("closing", "online")))
 
     def test_load_uses_fifteen_minutes_and_includes_half(self):
         self.assertFalse(self.active())
