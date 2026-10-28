@@ -2062,17 +2062,19 @@ class Link:
                 if not out:
                     hl.undraw()
                     return
-            self.log_lane.send([frame], then=lambda refused, frame=frame, reach=reach: self.uploaded(
-                hl, frame, reach, refused))
+            epochs = {w: hl.epoch(w) for w in reach}
+            self.log_lane.send([frame], then=lambda refused, frame=frame, reach=reach, epochs=epochs: self.uploaded(
+                hl, frame, reach, epochs, refused))
             hl.took(reach)
 
     @staticmethod
-    def uploaded(hl, frame, reach, refused):
+    def uploaded(hl, frame, reach, epochs, refused):
         """An upload answered (DX2: the hub's 200; RL10: written to the
-        endpoint): taken, unless the answer refused it whole (`taken`, what
-        `daemon owed` reads)."""
+        endpoint): taken (`taken`, what `daemon owed` reads), unless the
+        answer refused it whole, and for no writer the upstream refused or
+        asked again for since it was sent (HubLog.keep_taken's epochs)."""
         if id(frame) not in refused:
-            hl.keep_taken(reach)
+            hl.keep_taken(reach, epochs=epochs)
 
     def deliveries(self, hl):
         """What delivery made of the events from outside, as DX4 `delivery`

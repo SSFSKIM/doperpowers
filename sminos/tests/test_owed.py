@@ -59,12 +59,21 @@ class Lane:
     told the frames `refuse` names refused (by id), else nothing."""
 
     def __init__(self):
-        self.sent, self.refuse = [], {}
+        self.sent, self.refuse, self.held, self.hold_thens = [], {}, [], False
 
     def send(self, frames, then=None):
         self.sent += frames
         if then is not None:
-            then({id(f): self.refuse[f["t"]] for f in frames if f["t"] in self.refuse})
+            answer = {id(f): self.refuse[f["t"]] for f in frames if f["t"] in self.refuse}
+            if self.hold_thens:
+                self.held.append(lambda: then(answer))   # the main loop runs it later
+            else:
+                then(answer)
+
+    def run_held(self):
+        held, self.held = self.held, []
+        for then in held:
+            then()
 
     def posting(self):
         return False
@@ -394,6 +403,173 @@ class Taken(Machine):
         self.assertEqual([e["seq"] for f in link.log_lane.sent[-1:] for e in f["events"]], [2, 3])
         self.assertEqual(hl.taken(), {w: 3}, "an upload answered is taken")
         self.assertEqual(self.owed(), (0, "nothing owed\n"))
+
+
+class TakenBounds(Machine):
+    """A writer the upstream refused, or asked again from a seq, bounds
+    `taken` against an upload's continuation that runs after it: the 200 (or
+    the socket's write) says the frame arrived, not that every event in it
+    was taken."""
+
+    def setUp(self):
+        super().setUp()
+        self.p = self.project("work")
+        self.w = "testhost/" + S1
+        for _ in range(3):
+            sminos.log_append(self.p, self.w, "say", to=[], text="x")
+        self.hl = hublog.HubLog(self.p, {"key": base64.urlsafe_b64decode(KEY + "="), "machine": "testhost"})
+        self.hl.on_have({"have": {}})
+        self.lane = self.link().log_lane
+        self.lane.hold_thens = True
+
+    link = Taken.link
+
+    def upload(self):
+        link = self.link()
+        link.log_lane = link.session_lane = self.lane
+        link.upload(self.hl)
+
+    def test_a_refusal_before_the_continuation_holds(self):
+        self.upload()
+        self.hl.on_refused({"refusal": {"reason": "conflict", "writer": self.w, "seq": 1}})
+        self.lane.run_held()
+        self.assertEqual(self.hl.taken().get(self.w, 0), 0, "the refused writer is not taken past its refusal")
+        rc, out = self.owed()
+        self.assertEqual(rc, 1)
+        self.assertIn("upload 3", self.line(out, "work"))
+
+    def test_a_refusal_after_the_continuation_lowers_it(self):
+        self.upload()
+        self.lane.run_held()
+        self.assertEqual(self.hl.taken(), {self.w: 3})
+        self.hl.on_refused({"refusal": {"reason": "conflict", "writer": self.w, "seq": 2}})
+        self.assertEqual(self.hl.taken(), {self.w: 1})
+
+    def test_a_resend_lowers_it_and_an_older_continuation_cannot_raise_it(self):
+        self.upload()
+        self.lane.run_held()
+        self.assertEqual(self.hl.taken(), {self.w: 3})
+        self.hl.on_resend({"writer": self.w, "from": 2})
+        self.assertEqual(self.hl.taken(), {self.w: 1}, "the upstream lacks it from 2")
+        rc, out = self.owed()
+        self.assertIn("upload 2 [%s:2, %s:3]" % (S1[:8], S1[:8]), self.line(out, "work"))
+        self.upload()   # the resend's upload
+        self.hl.on_resend({"writer": self.w, "from": 2})   # asked again before its answer
+        self.lane.run_held()
+        self.assertEqual(self.hl.taken(), {self.w: 1}, "an upload sent before the latest resend takes nothing")
+        self.upload()
+        self.lane.run_held()
+        self.assertEqual(self.hl.taken(), {self.w: 3}, "the one sent after it does")
+
+    def test_a_later_have_does_not_pass_an_unresolved_bound(self):
+        self.upload()
+        self.hl.on_refused({"refusal": {"reason": "conflict", "writer": self.w, "seq": 2}})
+        self.lane.run_held()
+        self.hl.on_have({"have": {self.w: 3}})   # a vector the upstream drew before it refused
+        self.assertEqual(self.hl.taken(), {self.w: 1})
+        self.hl.reset()
+        self.hl.on_have({"have": {self.w: 3}})   # a new stream's handshake: what it holds now
+        self.assertEqual(self.hl.taken(), {self.w: 3})
+
+
+class FormerNames(Machine):
+    def test_a_host_event_under_a_former_name(self):
+        self.cut_over()
+        ident = json.loads(Path(rl10.identity_path()).read_text())
+        ident["former"] = {"oldhost": [S1]}
+        sminos.write_json(rl10.identity_path(), ident, mode=0o600)
+        sminos.forget_caches()
+        p = self.project("work")
+        sminos._append(p, "oldhost/" + S1, [{"kind": "message", "session": S1, "text": SECRET}],
+                       store=sminos.HOST_STORE)
+        rc, out = self.owed()
+        self.assertEqual(rc, 1)
+        self.assertIn("host 1 [%s:1]" % S1[:8], self.line(out, "work"))
+        self.uplink_state(p, host_sent={"oldhost/" + S1: 1})
+        self.assertEqual(self.owed(), (0, "nothing owed\n"))
+
+    def test_the_archives_legacy_writers_while_it_writes_the_archive(self):
+        p = self.project("work")
+        sminos.log_append(p, "legacy/old-chat", "say", to=[], text=SECRET)
+        self.assertEqual(self.owed(), (0, "nothing owed\n"), "not uploaded while another machine writes it")
+        self.uplink_state(p, archive=True)
+        rc, out = self.owed()
+        self.assertIn("upload 1 [legacy/old-chat:1]", self.line(out, "work"))
+        self.uplink_state(p, taken={"legacy/old-chat": 1})
+        self.assertEqual(self.owed(), (0, "nothing owed\n"))
+
+
+class Uninspectable(Machine):
+    """A state file that is there and cannot be read is no evidence that
+    nothing is owed: named, never its body, and the exit is 1."""
+
+    def assert_named(self, path):
+        rc, out = self.owed()
+        self.assertEqual(rc, 1, out)
+        self.assertIn("%s: cannot be inspected" % path, out)
+        self.assertNotIn("nothing owed", out)
+
+    def unreadable(self, path):
+        os.chmod(path, 0)
+        self.addCleanup(os.chmod, path, 0o600)
+
+    def compaction(self, p):
+        return {"t": "session", "message": {"project": p.id, "machine": "testhost", "session": S2, "kind": "compact",
+                                            "sub": None, "n": None, "body": {"summary": SECRET}}}
+
+    def test_an_unreadable_rpcs_file(self):
+        p = self.project("work")
+        path = os.path.join(os.environ["SMINOS_HOME"], "daemon", "rpcs-owed.json")
+        sminos.write_json(path, {"version": 1, "owed": [self.compaction(p)]})
+        self.unreadable(path)
+        self.assert_named(path)
+
+    def test_a_settlements_file_of_another_version_or_not_json(self):
+        p = self.project("work")
+        path = os.path.join(os.environ["SMINOS_HOME"], "daemon", "requests-owed.json")
+        sminos.write_json(path, {"version": 9, "owed": [{"session": S1, "project": p.id, "text": SECRET}]})
+        self.assert_named(path)
+        Path(path).write_text('{"version": 1, "owed": [' + SECRET)
+        self.assert_named(path)
+
+    def test_an_absent_file_is_nothing(self):
+        self.project("work")
+        self.assertEqual(self.owed(), (0, "nothing owed\n"))
+
+    def test_an_unreadable_uplink_state(self):
+        p = self.project("work")
+        self.uplink_state(p, taken={})
+        self.unreadable(os.path.join(p.home, sminos.UPLINK_STATE))
+        self.assert_named(os.path.join(p.home, sminos.UPLINK_STATE))
+
+    def test_an_unreadable_outbox(self):
+        p = self.project("work")
+        outcomes.Outbox(p).record({"writer": "hub/mem-1", "seq": 4}, S1, "delivered", SECRET)
+        self.unreadable(outcomes.Outbox(p).path)
+        self.assert_named(outcomes.Outbox(p).path)
+
+    def test_an_unreadable_delivery_record(self):
+        p = self.project("work")
+        self.member(p, S1, "alpha")
+        self.arrive(p, "hub/mem-1", 1, [S1])
+        self.settle(p, S1, "hub/mem-1", 1)
+        path = os.path.join(p.home, "delivered", S1 + ".json")
+        Path(path).write_text("{" + SECRET)
+        self.assert_named(path)
+
+    def test_an_unreadable_log_file(self):
+        p = self.project("work")
+        self.member(p, S1, "alpha")
+        self.arrive(p, "hub/mem-1", 1, [S1])
+        path = sminos.writer_path(p, "hub/mem-1")
+        self.unreadable(path)
+        self.assert_named(path)
+
+    def test_an_unreadable_project_registration(self):
+        p = self.project("work")
+        path = os.path.join(p.home, "project.json")
+        self.unreadable(path)
+        self.assert_named(path)
 
 
 def tearDownModule():

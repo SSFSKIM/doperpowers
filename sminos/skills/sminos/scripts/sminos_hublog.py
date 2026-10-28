@@ -61,8 +61,9 @@ failed is sent again after the next `hello`), whether the hub's latest
 so (`archive`, `archive_at`: what sminos_archive runs on), and how far each
 of this machine's writers is known taken (`taken`: the hub's `have` for it,
 each upload the hub answered without refusing it or the endpoint's socket
-took, back only to below a writer it refused), which `sminos daemon owed`
-reads beside the running uplink.
+took, lowered to below a writer it refused or asks again for and held there
+on the stream against answers and vectors that predate it: `bound`), which
+`sminos daemon owed` reads beside the running uplink.
 """
 
 import glob
@@ -310,6 +311,7 @@ class HubLog:
         self.machine = cred["machine"]
         self.files = {}      # path → (size, mtime_ns, writer, last): the vector's reads, kept while a file holds
         self.nonces = None   # nonce → (writer, seq) of every coded event the log holds, read on first import
+        self.epochs = {}     # own writer → how many bounds were set on it (bound), across streams: an upload's mark
         self.reset()
 
     def reset(self):
@@ -320,6 +322,8 @@ class HubLog:
         self.refused = {}    # own writer → the lowest seq the hub refused on this stream (0: the writer itself)
         self.archive = False
         self.drawing = None  # the uploads drawn and not yet taken (next_upload), kept between the uplink's passes
+        self.bounds = {}     # own writer → the seq `taken` may not pass on this stream (bound), until an upload sent
+        #                      after it is answered
 
     # ---------------------------------------------------- what is held here
 
@@ -448,18 +452,53 @@ class HubLog:
         return {w: s for w, s in raw.items() if isinstance(w, str) and type(s) is int} \
             if isinstance(raw, dict) else {}
 
-    def keep_taken(self, reach, d=None):
+    def epoch(self, writer):
+        return self.epochs.get(writer, 0)
+
+    def keep_taken(self, reach, d=None, epochs=None):
         """The writers in `reach` ({writer: seq}) taken up to there: each
         moves forward only, written when one moved (into `d`, the state the
-        caller writes, when given)."""
+        caller writes, when given). An upload's answer passes `epochs`, each
+        writer's epoch when the upload was sent: a writer bounded since takes
+        nothing from it (the answer says the frame arrived, not that the
+        upstream kept every event in it), and one bounded before has its
+        bound resolved up to there. A vector (a `have`) passes none, and
+        moves no writer past its bound."""
         held = self.taken()
-        moved = {w: s for w, s in reach.items() if self.own(w) and s > held.get(w, 0)}
+        moved = {}
+        for w, s in reach.items():
+            if not self.own(w):
+                continue
+            if epochs is not None:
+                if epochs.get(w, 0) != self.epoch(w):
+                    continue
+                if w in self.bounds:
+                    self.bounds[w] = max(self.bounds[w], s)
+            elif w in self.bounds:
+                s = min(s, self.bounds[w])
+            if s > held.get(w, 0):
+                moved[w] = s
         if not moved:
             return
         state = self.state() if d is None else d
         state["taken"] = {**held, **moved}
         if d is None:
             self.save(state)
+
+    def bound(self, writer, seq):
+        """The upstream refused the writer at seq + 1 or asks it again from
+        there (a refusal, a `resend`): `taken` is lowered to seq and held
+        there on this stream, whatever an upload sent before it answers
+        (its epoch moved) or a vector says, until an upload sent after it
+        is answered, or a new stream's handshake says what the upstream
+        holds."""
+        self.epochs[writer] = self.epoch(writer) + 1
+        self.bounds[writer] = min(seq, self.bounds.get(writer, seq))
+        taken = self.taken()
+        if taken.get(writer, 0) > seq:
+            d = self.state()
+            d["taken"] = {**taken, writer: seq}
+            self.save(d)
 
     def unreported(self):
         raw = self.state().get("unreported")
@@ -489,7 +528,7 @@ class HubLog:
         if opening:
             # The handshake: upload from the hub's vector, every writer free.
             self.sent = {w: s for w, s in have.items() if self.own(w)}
-            self.stuck, self.refused = set(), {}
+            self.stuck, self.refused, self.bounds = set(), {}, {}
         else:
             # A `have` answering a `hello` repeated on an open stream (the
             # uplink's periodic one, which refreshes the designation): the
@@ -519,6 +558,7 @@ class HubLog:
         on this stream; a resend from before it is followed."""
         writer, start = frame.get("writer"), frame.get("from")
         if isinstance(writer, str) and self.own(writer) and type(start) is int and start >= 1:
+            self.bound(writer, start - 1)   # the hub lacks it from `start`, whatever an answer said before
             if writer in self.refused and start >= self.refused[writer]:
                 log("the hub asks %s of %s again from %d, where it refused it or past that (at %d): not followed on "
                     "this stream" % (writer, self.project.name, start, self.refused[writer]))
@@ -552,12 +592,7 @@ class HubLog:
             seq = r.get("seq")
             at = seq if type(seq) is int and seq >= 1 else 0
             self.refused[writer] = min(at, self.refused.get(writer, at))
-            taken = self.taken()
-            if taken.get(writer, 0) >= max(at, 1):
-                # What it refused was taken as written: owed again from there.
-                d = self.state()
-                d["taken"] = {**taken, writer: max(at - 1, 0)}
-                self.save(d)
+            self.bound(writer, max(at - 1, 0))   # owed again from what it refused
 
     def own(self, writer):
         return writer.startswith(self.machine + "/") or (self.archive and writer.startswith(LEGACY))

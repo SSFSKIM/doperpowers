@@ -154,7 +154,9 @@ the endpoint yet — `upload` (this machine's own events), `kept` (the
 settlements and RPC messages kept under `daemon/`), `host` (a cut-over
 machine's unsent host events) and `outcomes` (delivery outcomes). It
 prints `nothing owed` and exits 0 when no project owes anything, else
-exits 1. Events owed to a closed terminal session are on a line of their
+exits 1. A state file it cannot read (unreadable, not JSON, another
+version's) is named on a line of its own, never its content, and makes it
+exit 1 too: it cannot say nothing is owed. Events owed to a closed terminal session are on a line of their
 own and owe nothing: they are in the log, delivered if the session comes
 back. It only reads, so it runs beside the daemon; O14's cutover gate
 runs it before a machine moves to its endpoint.

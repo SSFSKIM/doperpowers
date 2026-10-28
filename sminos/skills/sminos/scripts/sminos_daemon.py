@@ -1678,14 +1678,41 @@ OWED_KINDS = ("deliveries", "words", "upload", "kept", "host", "outcomes")
 OWED_REFS = 3   # references printed per kind, at most
 
 
-def uplink_state(project):
-    """The project's uplink.json as the uplink last wrote it; {} when none."""
+class Uninspectable(Exception):
+    """A state file `daemon owed` reads is there and cannot be read as one:
+    no evidence that nothing is owed (an absent file is, where absence means
+    nothing is kept)."""
+
+    def __init__(self, path, why):
+        super().__init__("%s: %s" % (path, why))
+        self.path, self.why = path, why
+
+
+def inspected(path):
+    """A JSON state file as written, or None when there is none; Uninspectable
+    when it is there and unreadable or not JSON (the reason names no byte of
+    it)."""
     try:
-        with open(os.path.join(project.home, sminos.UPLINK_STATE)) as f:
-            d = json.load(f)
-    except (OSError, ValueError):
-        return {}
-    return d if isinstance(d, dict) else {}
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return None
+    except OSError as e:
+        raise Uninspectable(path, "unreadable: %s" % (e.strerror or type(e).__name__))
+    except ValueError:
+        raise Uninspectable(path, "not JSON")
+
+
+def readable(path):
+    """Uninspectable unless the file can be opened to read (a log or host
+    store file, which the readers would otherwise pass by as empty)."""
+    try:
+        with open(path, "rb"):
+            pass
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        raise Uninspectable(path, "unreadable: %s" % (e.strerror or type(e).__name__))
 
 
 def seq_vector(raw):
@@ -1700,37 +1727,66 @@ def file_age(path):
         return None
 
 
-def owed_kept():
+def kept_items(name):
+    """The items of a file under daemon/ that sminos_owed keeps, [] when there
+    is none; Uninspectable when it is there and is not one this version
+    reads (sminos_owed.Kept passes such a file by: no evidence here)."""
+    path = daemon_path(name)
+    d = inspected(path)
+    if d is None:
+        return path, []
+    version = sminos.sibling_module("sminos_owed").VERSION
+    if not (isinstance(d, dict) and d.get("version") == version and isinstance(d.get("owed"), list)):
+        raise Uninspectable(path, "not a version %d file of what is owed" % version)
+    return path, d["owed"]
+
+
+def owed_kept(failed):
     """{project id: [(at, ref)]} of the messages kept under daemon/ that no
-    hub or endpoint has taken yet."""
+    hub or endpoint has taken yet; a file that cannot be inspected goes to
+    `failed`."""
     out = {}
-    owed, reqs = sminos.sibling_module("sminos_owed"), sminos.sibling_module("sminos_requests")
-
-    def said(line):
-        print("sminos: " + line, file=sys.stderr)
-
-    relayed = reqs.load_relayed()
-    for item in owed.Kept(reqs.OWED_FILE, said).load():
-        if not (isinstance(item, dict) and isinstance(item.get("project"), str)):
-            continue
-        sid = str(item.get("session") or "")
-        if (item.get("request"), item.get("t")) in relayed.get(sid, ()):
-            continue   # done with: a restarted uplink passes it by
-        out.setdefault(item["project"], []).append((file_age(daemon_path(reqs.OWED_FILE)), "settled %s" % sid[:8]))
-    rpcs = "rpcs-owed.json"   # sminos_rpc.OWED_FILE, not imported for a name
-    for frame in owed.Kept(rpcs, said).load():
-        m = frame.get("message") if isinstance(frame, dict) else None
-        if isinstance(m, dict) and isinstance(m.get("project"), str):
-            out.setdefault(m["project"], []).append(
-                (file_age(daemon_path(rpcs)), "%s %s" % (m.get("kind"), str(m.get("session") or "")[:8])))
+    reqs = sminos.sibling_module("sminos_requests")
+    relayed = reqs.load_relayed()   # unreadable: none relayed, so more counted, never less
+    try:
+        path, items = kept_items(reqs.OWED_FILE)
+        for item in items:
+            if not (isinstance(item, dict) and isinstance(item.get("project"), str)):
+                continue
+            sid = str(item.get("session") or "")
+            if (item.get("request"), item.get("t")) in relayed.get(sid, ()):
+                continue   # done with: a restarted uplink passes it by
+            out.setdefault(item["project"], []).append((file_age(path), "settled %s" % sid[:8]))
+    except Uninspectable as e:
+        failed.append(e)
+    try:
+        path, items = kept_items("rpcs-owed.json")   # sminos_rpc.OWED_FILE, not imported for a name
+        for frame in items:
+            m = frame.get("message") if isinstance(frame, dict) else None
+            if isinstance(m, dict) and isinstance(m.get("project"), str):
+                out.setdefault(m["project"], []).append(
+                    (file_age(path), "%s %s" % (m.get("kind"), str(m.get("session") or "")[:8])))
+    except Uninspectable as e:
+        failed.append(e)
     return out
 
 
-def owed_in(project, upstream, kept):
+def store_files(project, store):
+    return sorted(glob.glob(os.path.join(glob.escape(project.home), store, "*.jsonl")))
+
+
+def owed_in(project, upstream, kept, failed):
     """({kind: [(at, ref)]}, [(at, ref)] owed to closed sessions) of one
-    project; `upstream`, whether it is a project of this machine's upstream."""
+    project; `upstream`, whether it is a project of this machine's upstream.
+    A file it cannot inspect goes to `failed`, and what it holds is not
+    counted."""
     outcomes = sminos.sibling_module("sminos_outcomes")
     out = {k: [] for k in OWED_KINDS}
+    for path in store_files(project, "log") + store_files(project, sminos.HOST_STORE):
+        try:
+            readable(path)
+        except Uninspectable as e:
+            failed.append(e)
     events = sminos.log_read(project)
     info = sminos._projection(events)
     to = sminos.addressees(events)
@@ -1740,7 +1796,14 @@ def owed_in(project, upstream, kept):
         joined = r["joined"] or {}
         member = bool(r["latest"]) and r["latest"]["kind"] == "joined" \
             and sminos.is_self(str(joined.get("machine") or ""), sid)
-        if sid not in to or not (member or sid in closed):
+        if sid not in to or not (member or sid in closed) or not sminos.valid_name(sid):
+            continue
+        try:
+            record = inspected(os.path.join(project.home, "delivered", sid + ".json"))
+            if record is not None and not isinstance(record, dict):
+                raise Uninspectable(os.path.join(project.home, "delivered", sid + ".json"), "not a delivery record")
+        except Uninspectable as e:
+            failed.append(e)
             continue
         alias = str((r["renamed"] or joined).get("alias") or sid[:8])
         for e in sminos._owed(to[sid], sid, sminos.delivered_load(project, sid)):
@@ -1753,21 +1816,51 @@ def owed_in(project, upstream, kept):
                 out["deliveries"].append(item)
     if not upstream:
         return out, gone
-    state = uplink_state(project)
-    me = sminos.host_name()
-    for store, sent, kind in (("log", seq_vector(state.get("taken")), "upload"),
-                              (sminos.HOST_STORE, seq_vector(state.get("host_sent")), "host")):
-        prefix = glob.escape(me.replace("/", ".") + ".")
-        for path in sorted(glob.glob(os.path.join(glob.escape(project.home), store, prefix + "*.jsonl"))):
-            for e in sminos._log_file_events(path):
-                # The host pass sends a session's events alone (sminos_uplink.host_pass).
-                if e["writer"].startswith(me + "/") and e["seq"] > sent.get(e["writer"], 0) \
-                        and (kind == "upload" or sminos.writer_session(e["writer"])):
-                    out[kind].append((sminos._ts_epoch(e.get("ts")), sminos.event_ref(e)))
+    try:
+        state = inspected(os.path.join(project.home, sminos.UPLINK_STATE))
+        if state is not None and not isinstance(state, dict):
+            raise Uninspectable(os.path.join(project.home, sminos.UPLINK_STATE), "not the uplink's state")
+        state = state or {}   # none yet: nothing taken, nothing sent
+    except Uninspectable as e:
+        failed.append(e)   # its upload and host kinds are not counted
+        state = None
+    if state is not None:
+        me, former = sminos.machine_identity()
+        # The uplink's own rules: it uploads this machine's writers under its
+        # name now, and `legacy/` ones while the hub names it the archive
+        # (HubLog.own; a former name's events are rejoined under the new
+        # name, never uploaded), and sends a session's host events under its
+        # name now or a former one (HubLog.is_own, host_pass).
+        names = {me, *former}
+
+        def uploads(w):
+            return w.startswith(me + "/") or (state.get("archive") is True and w.startswith("legacy/"))
+
+        def hosts(w):
+            return w.split("/", 1)[0] in names and bool(sminos.writer_session(w))
+
+        for store, sent, kind, own in (("log", seq_vector(state.get("taken")), "upload", uploads),
+                                       (sminos.HOST_STORE, seq_vector(state.get("host_sent")), "host", hosts)):
+            for path in store_files(project, store):
+                for e in sminos._log_file_events(path):
+                    if own(e["writer"]) and e["seq"] > sent.get(e["writer"], 0):
+                        out[kind].append((sminos._ts_epoch(e.get("ts")), sminos.event_ref(e)))
     out["kept"] = list(kept.get(project.id, ()))
     box = outcomes.Outbox(project)
-    for rec in box.read():
-        ev = rec.get("event") if isinstance(rec.get("event"), dict) else {}
+    try:
+        with open(box.path, encoding="utf-8", errors="replace") as f:
+            lines = f.read().split("\n")
+    except FileNotFoundError:
+        lines = []
+    except OSError as e:
+        failed.append(Uninspectable(box.path, "unreadable: %s" % (e.strerror or type(e).__name__)))
+        lines = []
+    for line in lines:
+        try:
+            rec = json.loads(line) if line.strip() else None
+        except ValueError:
+            continue   # the uplink passes such a line by too (Outbox.take)
+        ev = rec.get("event") if isinstance(rec, dict) and isinstance(rec.get("event"), dict) else {}
         if isinstance(ev.get("writer"), str) and type(ev.get("seq")) is int:
             out["outcomes"].append((file_age(box.path), "%s → %s" % (sminos.event_ref(ev),
                                                                      str(rec.get("session") or "")[:8])))
@@ -1789,17 +1882,25 @@ def owed_line(name, items, what):
 
 def cmd_owed(_a):
     """`daemon owed`: a line per project that owes anything, one per project
-    with events waiting for closed sessions, "nothing owed" when none owes;
-    exit 1 when anything is owed, else 0. It only reads: no lock, no write,
-    no migration (sminos.main routes it before one)."""
+    with events waiting for closed sessions, one per state file it could not
+    inspect, "nothing owed" when none owes and every file was read; exit 1
+    unless that, else 0. It only reads: no lock, no write, no migration
+    (sminos.main routes it before one)."""
+    failed = []
+    for path in sorted(glob.glob(os.path.join(glob.escape(sminos.projects_root()), "*", "project.json"))):
+        try:
+            if not isinstance(inspected(path), dict):
+                raise Uninspectable(path, "not a project's registration")
+        except Uninspectable as e:
+            failed.append(e)   # known_projects passes it by: its project is not read at all
     e = sminos.enrollment()
-    kept = owed_kept() if e is not None else {}
+    kept = owed_kept(failed) if e is not None else {}
     owing, names = False, {}
     for p in sorted(sminos.known_projects(all_seats=[]), key=lambda p: (p.name, p.id)):
         names[p.id] = p.name
         upstream = e is not None and isinstance(p.hub, dict) and p.hub.get("org") == e["org"] \
             and not sminos.org_retired(p.id)
-        items, gone = owed_in(p, upstream, kept)
+        items, gone = owed_in(p, upstream, kept, failed)
         if upstream:
             kept.pop(p.id, None)
         if any(items.values()):
@@ -1811,9 +1912,11 @@ def cmd_owed(_a):
     for pid, got in sorted(kept.items()):
         owing = True   # kept for a project not known here, or no longer an upstream one: still not taken
         print(owed_line(names.get(pid, pid), {"kept": got}, "owed"))
-    if not owing:
+    for f in failed:
+        print("%s: cannot be inspected (%s): what it holds is not counted" % (f.path, f.why))
+    if not owing and not failed:
         print("nothing owed")
-    sys.exit(1 if owing else 0)
+    sys.exit(1 if owing or failed else 0)
 
 
 def cmd_daemon(a):
