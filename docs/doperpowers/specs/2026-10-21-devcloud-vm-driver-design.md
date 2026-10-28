@@ -110,9 +110,17 @@ desk no longer counts it.
     then `down --force`; an adoption released by `down`. Every node was gone from the API and every
     VM was deleted by 06:30Z.
   - Report: `docs/doperpowers/plans/2026-10-22-devcloud-node-removal-report.md`.
-- [ ] (2026-10-27) M7 — Kept by default, and the idle notice (the person's decision, Decision Log
-  2026-10-27). M7a, the driver: the default lifetime, one count cap over every unconfirmed VM, no
-  lifetime cap. M7b, the host: the idle notice, and `ls`'s idle column.
+- [x] (2026-10-28) M7 — Kept by default, and the idle notice (the person's decision, Decision Log
+  2026-10-27).
+  - M7a, the driver: #420, with #421 bumping it to devcloud 0.14.0, because another change had taken
+    0.13.0 first. One high review, clean. The person's profile moved to the new caps keys.
+  - M7b, the host: #422 (devcloud 0.15.0). Three high review rounds: the first found a closing logind
+    session counted as a login, and notice delivery held under the lifecycle lock; the second found
+    three defects in that fix (the rejoin retry skipped before a departure, notices marked as sent
+    before delivery, the post-send expiry check reading a stale lease); the third was clean.
+  - Live: a GCE VM made within the caps without `--confirmed`, with `active_at` set back three days,
+    delivered the notice to its creating session at the lease service's next scheduled run. `vm ls`
+    showed IDLE `3d0h`, and the VM was downed.
 
 Human steps this initiative needs. The executor prepares each (the exact command, the page, what to
 check) and escalates it at the milestone named; the person runs it when an automated attempt is
