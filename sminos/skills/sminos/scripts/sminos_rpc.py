@@ -182,6 +182,23 @@ bridge (`context`), and `resume`, `retire` and `stop`, outside the bridge's
 fence, are `unsupported`. A spawn's `proof` reaches the new session's
 record as its `ownersProof` (SMINOS_DESK_PROOF).
 
+`send` (MAWS O9 §E) is offered there alone (DX2 refuses it `unsupported`):
+a person's message into the session, as the bridge's `deliver` in either
+turn state, keyed `{writer: SEND_WRITER, seq}` — a writer no log has, so
+the delivery's mark and the log's never meet. Its text is non-blank, at
+most SEND_TEXT_MAX characters, and no slash command (its first
+non-whitespace character is not `/`, as the endpoint grades one), and is
+never logged. Sends to one session go in the order their frames arrived:
+the seq is reserved in `dispatch`, kept in `daemon/sends.json` before the
+worker starts (Sends), and kept on the claim (`send_seq`), so a copy of the
+op is answered from the ledger and never takes another; the post waits its
+turn behind every lower seq of the session, one `deliver` in flight, since
+the bridge drops a key at or below its mark. It answers `{entered, uuid}`
+from the stream subscribed before the post, `refused-delivery` with the
+bridge's reason, or, after SEND_WAIT_S without either, `{submitted: true}`;
+a `duplicate` to its fresh key fails `duplicate`. A claim left by a stop is
+answered from the child's kept answer, as a steer's is.
+
 Checks 1-6 and the ledger's lookup run on the uplink's main thread, which
 alone may call sminos (its caches are module globals); the digest, the kind,
 the claim, and the execution run on a worker of their own, since a bridge
@@ -191,6 +208,7 @@ queued, and the main thread posts it.
 
 import calendar
 import collections
+import contextlib
 import glob
 import hashlib
 import http.client
@@ -254,6 +272,13 @@ DECISION_TIMEOUT = 15     # an async question's answer is relayed to the mod, wh
 SPAWN_TASK = "Begin with your brief."
 RPC_NAMES = ("steer", "interrupt", "answer", "decide", "model", "compact", "spawn", "retire", "resume", "stop",
              "command", "btw", "stop-agent", "tell", "media")
+RL10_ONLY = ("send",)     # offered by the endpoint alone (MAWS O9 §E): DX2 does not carry them
+RL10_RPC_NAMES = RPC_NAMES + RL10_ONLY
+SEND_TEXT_MAX = 65536     # O9 §E `send`: a person's message, in characters (MAWS bounds a typed prompt at 65,536)
+SEND_WAIT_S = 10          # how long a send waits for its key's `delivered` outcome before it answers `submitted`
+SEND_WRITER = "rl10-send"  # a send's delivery key: no log writer (each is `<machine>/…`, `hub/…` or `legacy/…`)
+SENDS_FILE = "sends.json"  # daemon/: the last seq reserved per session under SEND_WRITER
+SLASH_RE = re.compile(r"[\s\ufeff]*/")   # a slash command, read behind leading whitespace as the endpoint grades it
 TASK_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")   # DX6 `stop`'s taskId, as the engine spells task ids
 CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
 OP_OF = {"run": "command", "btw": "btw", "media": "media"}  # a bridge's event → the DX4 `op` it reports
@@ -590,6 +615,80 @@ class Ledger:
             return [(n, dict(e)) for n, e in self.entries.items()]
 
 
+class Sends:
+    """The delivery keys of `send` (O9 §E): `{writer: SEND_WRITER, seq}`, one
+    seq a send, per session, in the order the sends' frames arrived. The
+    bridge drops a key at or below the last it took under that writer (its
+    mark, which its child keeps on disk across the session's launches), so
+    the seqs only grow, and each is posted only once every lower seq
+    reserved for its session has finished.
+
+    `daemon/sends.json`, `{version: 1, seq: {session: last seq reserved}}`
+    (0600, replaced whole), is written before a seq is handed out, so a
+    restart goes on past every seq handed out before it, never reusing one,
+    and a seq reserved but never posted is a gap the mark passes over. A
+    seq is also above the mark the session's bridge kept, so a file lost
+    with the daemon's state does not put a send below it. A file that
+    exists and cannot be read is never replaced: every send is refused
+    until it can be."""
+
+    def __init__(self):
+        self.path = os.path.join(sminos.root(), "daemon", SENDS_FILE)
+        self.cv = threading.Condition()
+        self.last = None     # {session: seq} as the file holds it; None until it is read
+        self.waiting = {}    # session → the seqs reserved whose worker has not finished
+
+    def read(self):
+        """The file's seqs. Raises OSError or ValueError when it exists and
+        cannot be read as this version's."""
+        try:
+            with open(self.path) as f:
+                d = json.load(f)
+        except FileNotFoundError:
+            return {}
+        if not (isinstance(d, dict) and d.get("version") == 1 and isinstance(d.get("seq"), dict)):
+            raise ValueError("not version 1's {version, seq}")
+        return {str(sid): n for sid, n in d["seq"].items() if type(n) is int}
+
+    def reserve(self, sid):
+        """The session's next seq, kept on disk and queued before it is
+        returned. Raises OSError or ValueError when it cannot be kept."""
+        with self.cv:
+            if self.last is None:
+                self.last = self.read()
+            mark = bridge.load_kept(sid)["delivered"].get(SEND_WRITER, 0)
+            seq = max(self.last.get(sid, 0), mark) + 1
+            last = {**self.last, sid: seq}
+            os.makedirs(os.path.dirname(self.path), mode=0o700, exist_ok=True)
+            sminos.write_json(self.path, {"version": 1, "seq": last})
+            self.last = last
+            self.waiting.setdefault(sid, set()).add(seq)
+            return seq
+
+    @contextlib.contextmanager
+    def turn(self, sid, seq):
+        """Held while the send of `seq` posts: entered once every lower seq
+        reserved for the session has finished, left by finishing it."""
+        with self.cv:
+            while min(self.waiting.get(sid) or {seq}) < seq:
+                self.cv.wait()
+        try:
+            yield
+        finally:
+            self.release(sid, seq)
+
+    def release(self, sid, seq):
+        """The send of `seq` finished, or never to post: the next may go.
+        Once more for the same seq changes nothing."""
+        with self.cv:
+            left = self.waiting.get(sid)
+            if left is not None:
+                left.discard(seq)
+                if not left:
+                    del self.waiting[sid]
+            self.cv.notify_all()
+
+
 # ------------------------------------------------------------- the RPCs
 
 
@@ -604,6 +703,7 @@ class Rpcs:
         self.wake = wake
         self.clock = clock
         self.ledger = Ledger(clock)
+        self.sends = Sends()      # each session's send seqs: reserved on receipt, posted in their order
         self.loose = {}           # nonce → (project id, outcome, at, opId): refusals the ledger does not keep
         self.flight = {}          # op → {nonce}: ops a worker holds, each with the latest nonce a copy of it came
         #                           with, which its claim or refusal is kept under (ticket 11a)
@@ -666,8 +766,9 @@ class Rpcs:
         # code covered.
         args = dict(rpc["args"]) if isinstance(rpc.get("args"), dict) else {}
         rpc = {**rpc, "args": args}
-        if name not in RPC_NAMES:
-            return self.refuse_loose(rpc, "unsupported", "no RPC %r on this machine" % (name,))
+        if name not in (RPC_NAMES if self.coded else RL10_RPC_NAMES):
+            return self.refuse_loose(rpc, "unsupported", "no RPC %r on this machine%s" % (
+                name, " from the hub: it is offered through the endpoint alone" if name in RL10_ONLY else ""))
         if rpc.get("machine") != self.machine:
             return self.refuse_loose(rpc, "wrong-machine", "this is %s, not %s" % (self.machine, rpc.get("machine")))
         project = here.project(pid)
@@ -734,10 +835,28 @@ class Rpcs:
         # binding, held from here on, so a copy arriving while the worker is
         # still inside `plan` is checked against it, and the claim or the
         # refusal the worker keeps is built from it.
+        if name == "send":
+            # Its place among the session's sends, in the order the frames
+            # arrived, kept on disk before any worker runs (O9 §E).
+            try:
+                facts["seq"] = self.sends.reserve(sid)
+            except (OSError, ValueError) as e:
+                self.keep(rpc, failed("failed", "this machine's sends (%s) cannot be kept (%s): no send runs until "
+                                                "they can, so no delivery key is used twice"
+                                      % (self.sends.path, str(e) or type(e).__name__)))
+                return
         self.flight[op] = {"nonce": nonce, **({} if self.coded else binding_of(rpc))}
         if name == "compact":
             self.compact_flight[op] = sid
-        threading.Thread(target=self.run, args=(rpc, facts), name="rpc-" + name, daemon=True).start()
+        try:
+            threading.Thread(target=self.run, args=(rpc, facts), name="rpc-" + name, daemon=True).start()
+        except RuntimeError:
+            # No worker: its seq leaves the session's queue, or the sends behind it would wait for it.
+            self.flight.pop(op, None)
+            self.compact_flight.pop(op, None)
+            if "seq" in facts:
+                self.sends.release(sid, facts["seq"])
+            raise
 
     def admit(self, rpc, project, args, here, received):
         """Checks 4-6: freshness, the policy, the args' shape. Refused, or
@@ -887,7 +1006,10 @@ class Rpcs:
             try:
                 with self.op_lock:   # under the nonce a reseal left in flight; a later one finds the claim
                     current = self.latest(rpc)
-                    claimed = self.ledger.claim(op, entry_of(current, self.clock(), not self.coded))
+                    entry = entry_of(current, self.clock(), not self.coded)
+                    if "seq" in facts:
+                        entry["send_seq"] = facts["seq"]   # its delivery key, chosen before the claim
+                    claimed = self.ledger.claim(op, entry)
             except OSError as e:
                 self.finished.put(("loose", (current["nonce"], rpc["project"],
                                              failed("failed", "the ledger could not be written: %s" % e),
@@ -906,6 +1028,8 @@ class Rpcs:
             if outcome["state"] == "failed":
                 log("%s %s failed %s: %s" % (rpc["rpc"], op, outcome["error"]["code"], outcome["error"]["message"]))
         finally:
+            if "seq" in facts:
+                self.sends.release(rpc["args"]["session"], facts["seq"])
             self.finished.put(("done", op))
             self.wake()
 
@@ -978,6 +1102,9 @@ class Rpcs:
         if not facts["running"]:
             raise Refused("unsupported", "the session is not running: only Resume brings it back")
         if bridged:
+            if name == "send":
+                return lambda: send(path, sid, args["text"], op, facts["seq"], launch,
+                                    self.sends.turn(sid, facts["seq"]))
             if name == "steer":
                 return lambda: steer(path, args["text"], op, launch)
             if name == "interrupt":
@@ -1593,6 +1720,11 @@ def shape(name, args, member):
 
     if name == "steer":
         need(is_text(args.get("text")), "text is the steer's text")
+    elif name == "send":
+        t = args.get("text")
+        need(is_text(t), "text is the message's text")
+        need(len(t) <= SEND_TEXT_MAX, "text is at most %d characters" % SEND_TEXT_MAX)
+        need(not SLASH_RE.match(t), "text starting with / is a slash command: it goes as a command, not a send")
     elif name in ("answer", "decide"):
         need(isinstance(member, str) and codes.MEMBER_RE.fullmatch(member), "the member is a member's id")
         need(is_digest(args.get("digest")), "digest is {session, request, tool, input_sha256}")
@@ -1785,6 +1917,125 @@ def steered(out):
     if IDLE in str(out.get("error") or ""):
         return failed("idle", "no turn is running to steer: send it instead")
     return failed("failed", refusal(out))
+
+
+def send(path, sid, text, op, seq, launch, turn):
+    """A person's message into the session (O9 §E): the bridge's `deliver`
+    under the key `{writer: SEND_WRITER, seq}`, posted in its turn among the
+    session's sends (`turn`), carrying the op, under which the child keeps
+    the answer (the trace a restart reads), and the launch it was sealed
+    for. The stream is subscribed before the post, so the key's `delivered`
+    outcome cannot pass unseen: `{entered, uuid}`, or failed
+    `refused-delivery` with the bridge's reason, waited for SEND_WAIT_S;
+    past that, `{submitted: true}`. The text is never logged."""
+    key = {"writer": SEND_WRITER, "seq": seq}
+    stream = DeliveryStream(path)
+    try:
+        with turn:
+            out, _ = command(path, {"op": "deliver", "key": key, "text": text, "rpc": op, **fence(launch)})
+        taken = delivery_taken(out, seq)
+        if taken is not None:
+            return taken
+        e = stream.outcome(seq, time.monotonic() + SEND_WAIT_S)
+    finally:
+        stream.close()
+    if e is not None and e.get("outcome") == "entered":
+        return done({"entered": True, "uuid": e.get("uuid")})
+    if e is not None:
+        return failed("refused-delivery", str(e.get("reason") or "the session did not take it"))
+    return delivery_answered(out, sid, seq)
+
+
+def delivery_taken(out, seq):
+    """The bridge's answer to a send's `deliver` when it ends the send: its
+    refusal, or a `duplicate`, which for a key never posted before means
+    the bridge's mark is past it and nothing entered; None once it took
+    the key (`submitted`)."""
+    if not out.get("ok"):
+        return refused_op(out)
+    r = out.get("result") or {}
+    if r.get("duplicate") is True:
+        return failed("duplicate", "the session's bridge had already taken a delivery at or past %s:%d: this send "
+                                   "did not enter" % (SEND_WRITER, seq))
+    if r.get("submitted") is not True:
+        return failed("failed", "the session's bridge did not say it took the send")
+    return None
+
+
+def delivery_answered(out, sid, seq):
+    """A send's outcome without its stream (past SEND_WAIT_S, or read back
+    after a stop from the answer the child kept): as the bridge answered
+    the `deliver`, a refusal the child kept for its key `refused-delivery`,
+    else `{submitted: true}`."""
+    taken = delivery_taken(out, seq)
+    if taken is not None:
+        return taken
+    for r in bridge.load_kept(sid).get("refused") or []:
+        if r["key"] == {"writer": SEND_WRITER, "seq": seq}:
+            return failed("refused-delivery", str(r.get("reason") or "the session did not take it"))
+    return done({"submitted": True})
+
+
+class DeliveryStream:
+    """The bridge's stream, read for one send's `delivered` outcome. A
+    stream that cannot be had, or ends (a module reload, a gap), is
+    subscribed again until the deadline; an outcome that came between two
+    subscriptions is then not seen, and the send answers without it."""
+
+    def __init__(self, path):
+        self.path = path
+        self.sock = self.r = None
+        self.open()
+
+    def open(self):
+        self.close()
+        c = bridge._UnixConnection(self.path, SNAPSHOT_TIMEOUT)
+        try:
+            c.request("GET", "/events")
+            sock = c.sock   # a close-delimited stream: the connection lets go of it once the response begins
+            r = c.getresponse()
+            if r.status != 200:
+                raise OSError("the bridge answered %d" % r.status)
+            snap = json.loads(r.readline())
+            if not isinstance(snap, dict) or snap.get("type") != "snapshot":
+                raise ValueError("the bridge's stream began without a snapshot")
+        except (OSError, http.client.HTTPException, ValueError):
+            c.close()
+            return
+        self.sock, self.r = sock, r
+
+    def outcome(self, seq, deadline):
+        """The `delivered` event naming the send's key, `entered` or
+        `refused`, by `deadline` (monotonic s), or None."""
+        while True:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                return None
+            if self.r is None:
+                time.sleep(min(left, 0.25))
+                self.open()
+                continue
+            try:
+                self.sock.settimeout(left)
+                line = self.r.readline()
+            except (OSError, http.client.HTTPException):
+                line = b""   # timed out at the deadline, or the stream broke
+            if not line:
+                self.close()
+                continue
+            try:
+                e = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(e, dict) and e.get("type") == "delivered" and e.get("outcome") in ("entered", "refused") \
+                    and e.get("key") == {"writer": SEND_WRITER, "seq": seq}:
+                return e
+
+    def close(self):
+        if self.r is not None:
+            self.r.close()
+            self.sock.close()
+        self.sock = self.r = None
 
 
 def refused_op(out):
@@ -2251,6 +2502,12 @@ def trace(op, e, others=()):
     if e.get("rpc") == "media" and e.get("session"):
         answered = (bridge.load_kept(e["session"]).get("rpcs") or {}).get(op)
         return (media_held(answered, e) if isinstance(answered, dict) else None), STEER_TRACE_S
+    if e.get("rpc") == "send" and e.get("session"):
+        answered = (bridge.load_kept(e["session"]).get("rpcs") or {}).get(op)
+        seq = e.get("send_seq")
+        outcome = delivery_answered(answered, e["session"], seq) if isinstance(answered, dict) and type(seq) is int \
+            else None
+        return outcome, STEER_TRACE_S
     if e.get("rpc") in KEPT_READERS and e.get("session"):
         answered = (bridge.load_kept(e["session"]).get("rpcs") or {}).get(op)
         read = KEPT_READERS[e["rpc"]]

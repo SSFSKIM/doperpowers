@@ -292,17 +292,18 @@ PLUGIN_MANIFEST = os.path.join(os.path.dirname(os.path.realpath(__file__)), ".."
                                "plugin.json")
 
 
-def desk():
+def desk(rl10=False):
     """What this machine's daemon can do itself for the desk (DX4
     `machine.desk`, the desk control surface's M0): the sminos version it
-    runs from, the RPCs it executes, and the reads it answers without a
+    runs from, the RPCs it executes on this path (`rl10`: the endpoint's,
+    which offers some the hub does not), and the reads it answers without a
     bridge (none yet)."""
     try:
         with open(PLUGIN_MANIFEST) as f:
             version = json.load(f).get("version")
     except (OSError, ValueError, AttributeError):
         version = None
-    return {"sminos": version if isinstance(version, str) else "unknown", "rpcs": list(rpc.RPC_NAMES), "reads": []}
+    return {"sminos": version if isinstance(version, str) else "unknown", "rpcs": list(rpc.RL10_RPC_NAMES if rl10 else rpc.RPC_NAMES), "reads": []}
 
 
 def machine_policy():
@@ -437,7 +438,7 @@ class HubLog:
             "project": self.project.id, "machine": self.machine, "session": None, "kind": "machine",
             "sub": None, "n": None,
             "body": {"online": True, "policy": machine_policy() if self.coded else policy.wire_policy(),
-                     "checkouts": checkouts, "desk": desk()}}}
+                     "checkouts": checkouts, "desk": desk(not self.coded)}}}
 
     def host_sent(self):
         """RL10: {writer: seq}, how far each writer of the project's host
