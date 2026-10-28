@@ -62,6 +62,12 @@ class User:
         env.update(extra or {})
         return env
 
+    def bus_env(self, env):
+        """`env` with XDG_RUNTIME_DIR, where `systemctl --user` finds the user
+        manager's bus. Nothing run as the user here sets it, and without it
+        the call fails ("Failed to connect to bus: No medium found")."""
+        return dict(env, XDG_RUNTIME_DIR=f"/run/user/{self.uid}")
+
 
 def _drops(user):
     return user is not None and os.geteuid() == 0 and user.uid != 0
@@ -176,6 +182,17 @@ def call(argv, *, user=None, env=None, log=None, input=None, timeout=600, cwd=No
         _write_log(log, argv, (result.stdout or b"") + (result.stderr or b""))
     err = [line for line in KNOWN.scrub(result.stderr or b"").decode(errors="replace").splitlines() if line.strip()]
     return result.returncode, KNOWN.scrub(result.stdout or b"").decode(errors="replace"), err[-1] if err else ""
+
+
+def start_user_manager(user, env, log, run=run):
+    """The user's systemd manager lingering (so it runs from boot with nobody
+    logged in) and running, for what runs as the user next and talks to it;
+    returns `env` with its bus (User.bus_env). Started, and waited for, here:
+    lingering starts the manager, but not necessarily before the next call
+    needs it."""
+    run(["loginctl", "enable-linger", user.name], log=log, timeout=60)
+    run(["systemctl", "start", f"user@{user.uid}.service"], log=log, timeout=120)
+    return user.bus_env(env)
 
 
 def write_file(path, data, mode=0o600, dir_mode=0o700):

@@ -798,7 +798,8 @@ def _devcloud_services(r, lifecycle=None):
 
 
 def projects(r):
-    return projects_mod.set_up(r.user, r.desc, r.user.env(_read_env(ENV_PATH)))
+    return projects_mod.set_up(r.user, r.desc, r.user.env(_read_env(ENV_PATH)),
+                               user_manager=services.systemd_is_init())
 
 
 def maws(r):

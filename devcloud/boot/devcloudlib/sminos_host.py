@@ -287,11 +287,7 @@ def converge(user, role, env, env_changed, run=proc.run, pending=PENDING, provis
     if (_read(unit), _read(dropin)) != before:
         write_file(pending, "", mode=0o644, dir_mode=0o755)
 
-    run(["loginctl", "enable-linger", user.name], log="services", timeout=60)
-    # Started (and waited for) here: lingering starts the user manager, but
-    # not necessarily before the next call needs it.
-    run(["systemctl", "start", f"user@{user.uid}.service"], log="services", timeout=120)
-    user_env = dict(install_env, XDG_RUNTIME_DIR=f"/run/user/{user.uid}")
+    user_env = proc.start_user_manager(user, install_env, log="services", run=run)
 
     def systemctl(*args):
         run(["systemctl", "--user", *args], user=user, env=user_env, log="services", timeout=60)

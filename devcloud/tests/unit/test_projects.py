@@ -1,6 +1,7 @@
 """Boot step 12 (Design §7): descriptor entries bridged to `devenv up`, run as
-the user with the host's environment, and the mirror cache a persistent host
-keeps. A fake `devenv` records its calls; git runs for real against local
+the user with the host's environment and, under systemd, the user's manager,
+and the mirror cache a persistent host keeps. A fake `devenv` records its
+calls, as do fake `loginctl` and `systemctl`; git runs for real against local
 repositories that stand in for GitHub (an insteadOf rule)."""
 import json
 import os
@@ -11,17 +12,21 @@ import unittest
 from unittest import mock
 
 import _path  # noqa: F401
-from devcloudlib import descriptor, proc, projects
+from devcloudlib import descriptor, proc, projects, steps
 from devcloudlib.proc import User
 
 FAKE_DEVENV = """#!/bin/sh
 # records each call; `up` fails for a project named broken; `show` answers from
 # $FAKE_SHOW/<name>.json
-echo "$* | mirror=${DEVENV_MIRROR_DIR-unset} probe=${PROBE-unset}" >> "$FAKE_CALLS"
+echo "$* | mirror=${DEVENV_MIRROR_DIR-unset} probe=${PROBE-unset} bus=${XDG_RUNTIME_DIR-unset}" >> "$FAKE_CALLS"
 case "$1" in
   up) [ "$2" = broken ] && { echo "setup failed for broken"; exit 2; }; exit 0 ;;
   show) cat "$FAKE_SHOW/$2.json" ;;
 esac
+"""
+# loginctl and systemctl, run as root: each call recorded beside devenv's
+FAKE_SYSTEMD = """#!/bin/sh
+echo "$(basename "$0") $*" >> "$FAKE_CALLS"
 """
 
 
@@ -73,7 +78,9 @@ class SetUpTest(unittest.TestCase):
         (self.root / "gitconfig").write_text(f'[url "{self.root}/github/"]\n\tinsteadOf = https://github.com/\n')
 
     def env(self, **extra):
-        return dict(os.environ, **self.git_env, FAKE_CALLS=str(self.calls), FAKE_SHOW=str(self.show),
+        # The test host's own user bus is not one step 12 gave.
+        base = {k: v for k, v in os.environ.items() if k != "XDG_RUNTIME_DIR"}
+        return dict(base, **self.git_env, FAKE_CALLS=str(self.calls), FAKE_SHOW=str(self.show),
                     PROBE="from-the-host-env", **extra)
 
     def desc(self, projects_="", role="sandbox", mirror=None):
@@ -88,6 +95,23 @@ class SetUpTest(unittest.TestCase):
 
     def set_up(self, desc):
         return projects.set_up(self.user, desc, self.env(), mirrors=self.mirrors)
+
+    def step(self, desc, systemd):
+        """Step 12 as the boot runs it, on a host whose init is systemd or not:
+        the user's login environment and the host's, and the root commands'
+        PATH reaching the fake loginctl and systemctl."""
+        bin_ = self.root / "bin"
+        bin_.mkdir(exist_ok=True)
+        for name in ("loginctl", "systemctl"):
+            (bin_ / name).write_text(FAKE_SYSTEMD)
+            (bin_ / name).chmod(0o755)
+        r = steps.Run("boot")
+        r.user, r.desc = self.user, desc
+        host = {"FAKE_CALLS": str(self.calls), "FAKE_SHOW": str(self.show), "PROBE": "from-the-host-env"}
+        with mock.patch.object(steps, "_read_env", lambda path: host), \
+                mock.patch.object(steps.services, "systemd_is_init", lambda: systemd), \
+                mock.patch.dict(os.environ, {"PATH": f"{bin_}:{os.environ['PATH']}", "FAKE_CALLS": str(self.calls)}):
+            return steps.projects(r)
 
     def recorded(self):
         return self.calls.read_text().splitlines() if self.calls.exists() else []
@@ -108,9 +132,29 @@ class SetUpTest(unittest.TestCase):
         state, detail = self.set_up(self.desc("doperpowers@devcloud example/app", mirror="/srv/host-mirrors"))
         self.assertEqual(state, "ok", detail)
         self.assertEqual(self.recorded(), [
-            "up doperpowers --ref devcloud | mirror=/srv/host-mirrors probe=from-the-host-env",
-            "up app --url https://github.com/example/app.git | mirror=/srv/host-mirrors probe=from-the-host-env"])
+            "up doperpowers --ref devcloud | mirror=/srv/host-mirrors probe=from-the-host-env bus=unset",
+            "up app --url https://github.com/example/app.git | mirror=/srv/host-mirrors probe=from-the-host-env "
+            "bus=unset"])
         self.assertEqual(detail, "doperpowers@devcloud ok; example/app ok")
+
+    def test_under_systemd_devenv_gets_the_users_manager_started_first(self):
+        # A project's setup may install a user unit (MAWS's mawsd): with no bus,
+        # `systemctl --user` reaches no manager and the setup takes its container branch.
+        (self.show / "maws.json").write_text(json.dumps({"repos": []}))
+        state, detail = self.step(self.desc("maws", role="persistent"), systemd=True)
+        self.assertEqual(state, "ok", detail)
+        uid = self.user.uid
+        self.assertEqual(self.recorded(), [
+            "loginctl enable-linger dev",
+            f"systemctl start user@{uid}.service",
+            f"up maws | mirror=unset probe=from-the-host-env bus=/run/user/{uid}",
+            f"show maws | mirror=unset probe=from-the-host-env bus=/run/user/{uid}"])
+
+    def test_without_systemd_no_user_manager_is_started(self):
+        # A container has none: the setup's own no-manager branch is the right one there.
+        state, detail = self.step(self.desc("maws"), systemd=False)
+        self.assertEqual(state, "ok", detail)
+        self.assertEqual(self.recorded(), ["up maws | mirror=unset probe=from-the-host-env bus=unset"])
 
     def test_one_failing_project_fails_the_step_after_every_project_ran(self):
         state, detail = self.set_up(self.desc("broken other"))
