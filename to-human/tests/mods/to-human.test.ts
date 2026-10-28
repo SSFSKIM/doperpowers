@@ -3,8 +3,8 @@ import type { Engine } from 'claude-code/testing'
 import { describe, expect, mock, test, tier } from 'claude-code/testing'
 
 import type { RowKind } from '../../hooks/mods/to-human'
-import { MESSAGE_TOOL } from '../../hooks/mods/message'
-import { START_WAIT_MS, editorUrl, errorsIn, fileLinks, isRead, markdownBlocks, newView, parse, placeAll, placeArgs, placesIn, promptRow, registerToHuman, reorder, runEnd, runStart, sessionPlaceArgs } from '../../hooks/mods/to-human'
+import { FINAL_ANSWER, MESSAGE_TOOL } from '../../hooks/mods/message'
+import { START_WAIT_MS, editorUrl, errorsIn, fileLinks, isRead, markdownBlocks, newView, parse, placeAll, placeArgs, placesIn, promptRow, registerToHuman, reorder, runEnd, runStart, sessionPlaceArgs, unrequestedIn } from '../../hooks/mods/to-human'
 
 // The kit runs tests with the timer the hooks' declarations leave out.
 declare const setTimeout: (callback: (value?: unknown) => void, ms: number) => unknown
@@ -384,6 +384,14 @@ describe('transcript order', () => {
     const stdout = ['"isApiErrorMessage":true', '"uuid":"u1"', '"type":"tool_use","id":"toolu_1"', '"uuid":"e1"', '"isApiErrorMessage":true', '"uuid":"u2"'].join('\n')
 
     expect(errorsIn(stdout)).toEqual(['e1'])
+  })
+
+  test('the search names a response answered without a request by the row whose line flags it', async () => {
+    const stdout = ['"uuid":"u1"', '"uuid":"h1"', '"answeredWithoutRequest":true', '"uuid":"e1"', '"isApiErrorMessage":true', '"uuid":"u2"'].join('\n')
+
+    expect(unrequestedIn(stdout)).toEqual(['h1'])
+    expect(errorsIn(stdout)).toEqual(['e1'])
+    expect(placesIn(stdout)).toEqual(['u1', 'h1', 'e1', 'u2'])
   })
 
   test('drawn rows sort by their places; a row with none keeps its spot after them', async () => {
@@ -1429,5 +1437,106 @@ describe('the message tool', () => {
     const row = await message($, 'r1', 'Reading.')
 
     expect(await row.find({ type: 'Text', text: 'Reading.' })).toBeDefined()
+  })
+
+  /** The rows a turn keeps up to a final message: its call and its result, then the step after it, which the message mod makes up. */
+  const finalTurn = async ($: Engine) => {
+    await $.session.append({
+      door: 'response', uuid: 'a1', origin: { kind: 'model', model: 'claude-haiku' },
+      message: { type: 'assistant', role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_m1', name: MESSAGE_TOOL, input: { text: 'Done.', final: true } }] },
+    } as never)
+    await $.session.append({
+      door: 'tool-result', uuid: 'u1', origin: { kind: 'tool', tool: MESSAGE_TOOL },
+      message: { type: 'user', role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_m1', content: 'sent' }] },
+    } as never)
+    const step = $.turn.step({ turnId: 't1', index: 1, model: 'haiku', messageCount: 3 })
+    for (let read = await step.next(); read.done !== true; read = await step.next()) {
+      // The made-up response streams; the engine keeps its row after the step.
+    }
+  }
+  const madeUpKept = ($: Engine, uuid: string) =>
+    $.session.append({
+      door: 'response', uuid, origin: { kind: 'model', model: 'claude-haiku' },
+      message: { type: 'assistant', role: 'assistant', content: [{ type: 'text', text: FINAL_ANSWER }] },
+    } as never)
+  const isBlank = async (row: Awaited<ReturnType<typeof message>>) =>
+    (await row.find({ type: 'Text' })) === undefined && (await row.find({ type: 'Markdown' })) === undefined && (await row.find({ type: 'Button' })) === undefined
+
+  test('the response made up after a final message draws nothing in the report, and the run before the message folds as before', async ($, on) => {
+    mock.env(on, {})
+    mock.store(on)
+    engineDrawing(on)
+    const before = await message($, 'r1', 'Reading the logs.')
+    await finalTurn($)
+    await callRow($, 'toolu_m1', { input: { text: 'Done.', final: true }, output: 'sent' })
+    await resultRow($, 'toolu_m1', 'sent')
+    // Drawn as it streams, before its row is kept, and again once it is.
+    const streaming = await message($, 'x1', FINAL_ANSWER)
+    expect(await isBlank(streaming)).toBe(true)
+    await madeUpKept($, 'x1')
+    await streaming.unmount()
+    const made = await message($, 'x1', FINAL_ANSWER)
+    const next = await bash($, 'toolu_b1')
+
+    expect(await isBlank(made)).toBe(true)
+    expect(await before.find({ type: 'Button', text: 'working record' })).toBeDefined()
+    expect(await before.find({ type: 'Text', text: 'Reading the logs.' })).toBeUndefined()
+    // It stands in no run: the next turn's record opens one of its own, behind its own button.
+    expect(await next.find({ type: 'Button', text: 'working record' })).toBeDefined()
+  })
+
+  test('in the full transcript the made-up response draws nothing too, as the message\'s result row does', async ($, on) => {
+    mock.env(on, {})
+    mock.store(on)
+    engineDrawing(on)
+    await finalTurn($)
+    await callRow($, 'toolu_m1', { input: { text: 'Done.', final: true }, output: 'sent' })
+    await madeUpKept($, 'x1')
+    const band = await $.ui.mount({
+      plugin: PLUGIN, surface: 'terminal', component: 'AbovePrompt',
+      props: { hasSurvey: false, isWorking: false, maxRows: 5, bodyColumns: 80, scroll: { offset: 0, bodyRows: 5 }, view: {} },
+    })
+    await band.press({ key: 'to-human-mode' })
+    expect(await band.find({ type: 'Button', text: 'report only' })).toBeDefined()
+    const made = await message($, 'x1', FINAL_ANSWER)
+    const record = await message($, 'r2', 'Reading more.')
+
+    expect(await isBlank(made)).toBe(true)
+    expect(await record.find({ type: 'Text', text: 'Reading more.' })).toBeDefined()
+  })
+
+  test('a model that writes the same sentence is drawn as ever', async ($, on) => {
+    mock.env(on, {})
+    mock.store(on)
+    engineDrawing(on)
+    await message($, 'm0', '<message>Starting.</message>')
+    await $.session.append({
+      door: 'response', uuid: 'w1', origin: { kind: 'model', model: 'claude-haiku' },
+      message: { type: 'assistant', role: 'assistant', content: [{ type: 'text', text: FINAL_ANSWER }] },
+    } as never)
+    const written = await message($, 'w1', FINAL_ANSWER)
+
+    expect(await written.find({ type: 'Button', text: 'working record' })).toBeDefined()
+  })
+
+  test("a resumed transcript's made-up response draws nothing, known by the engine's flag and its text", async ($, on) => {
+    mock.env(on, {})
+    mock.store(on)
+    engineDrawing(on)
+    // The made-up row, a model's row saying the same, and another hook's own response (sminos' synthetic Read).
+    const transcript = ['"uuid":"m1"', '"uuid":"h1"', '"answeredWithoutRequest":true', '"uuid":"w1"', '"uuid":"m2"', '"uuid":"h2"', '"answeredWithoutRequest":true', '"uuid":"p2"'].join('\n')
+    on('process.run', async () => ({ value: { exitCode: 0, stdout: transcript, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
+    on('classic.SessionStart', () => ({}))
+    await $.classic.SessionStart({ source: 'resume', transcript_path: '/t.jsonl' })
+    await message($, 'm1', '<message>Starting.</message>')
+    const made = await message($, 'h1', FINAL_ANSWER)
+    const written = await message($, 'w1', FINAL_ANSWER)
+    await message($, 'm2', '<message>Next.</message>')
+    const other = await message($, 'h2', 'The person attached a file from the desk.')
+
+    expect(await isBlank(made)).toBe(true)
+    // Each of the others opens a run of working record, as any unmarked response does.
+    expect(await written.find({ type: 'Button', text: 'working record' })).toBeDefined()
+    expect(await other.find({ type: 'Button', text: 'working record' })).toBeDefined()
   })
 })
