@@ -374,6 +374,8 @@ run_suites() {
     fail "a person's words on a cut-over machine: members, receipts, revocations, words?, the deliverers, the label (test_words.py)"; fi
   if python3 "$SCRIPT_DIR/test_owed.py"; then pass "what a machine still owes: daemon owed's kinds, its bound and exit, the uplink's taken (test_owed.py)"; else
     fail "what a machine still owes: daemon owed's kinds, its bound and exit, the uplink's taken (test_owed.py)"; fi
+  if python3 "$SCRIPT_DIR/test_heads.py"; then pass "an own writer of no session waits for its upstream's head on a new enrolment, DX2 and RL10 (test_heads.py)"; else
+    fail "an own writer of no session waits for its upstream's head on a new enrolment, DX2 and RL10 (test_heads.py)"; fi
   # O10's RL10 conversation, MAWS's fixture copied byte for byte, replayed against sminos's own uplink
   # (rl10_conformance.py): every line as written; an `amend` would mean a line sminos cannot send as written, and fails.
   while IFS= read -r line; do

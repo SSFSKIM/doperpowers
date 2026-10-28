@@ -1664,6 +1664,9 @@ def cmd_status(_a):
 #               ask out is the uplink's memory, the event owed is its record
 #   upload      this machine's own events (the writers the uplink uploads)
 #               past `taken` in the project's uplink-taken.json (sminos_hublog)
+#   queued      its operator writer's appends that wait for the upstream's
+#               head of it (projects/<id>/queued/, sminos.waits_for_head):
+#               not in the log yet, so neither uploaded nor delivered
 #   refused     the positions of those writers where the upstream holds
 #               another event (its `conflicts`): no handshake resolves one,
 #               so the owner looks at it before a cutover
@@ -1672,12 +1675,12 @@ def cmd_status(_a):
 #               daemon/ (sminos_owed), by the project each names
 #   host        a cut-over machine's host store past `host_sent`
 #   outcomes    delivery outcomes not yet posted (outcomes.jsonl)
-# The last four only for a project of this machine's upstream (a hub project
+# The last six only for a project of this machine's upstream (a hub project
 # of the org it is enrolled in, or cut over to): with none, nothing is owed
 # up. Events owed to a closed terminal session (sminos_outcomes.closed_
 # sessions: reported `recorded`, delivered if it comes back) are counted on
 # their own line and owed by no one: they are in the log, which nothing loses.
-OWED_KINDS = ("deliveries", "words", "upload", "refused", "kept", "host", "outcomes")
+OWED_KINDS = ("deliveries", "words", "upload", "queued", "refused", "kept", "host", "outcomes")
 OWED_REFS = 3   # references printed per kind, at most
 
 
@@ -1862,6 +1865,14 @@ def owed_in(project, upstream, kept, failed):
                 for e in sminos._log_file_events(path):
                     if own(e["writer"]) and e["seq"] > sent.get(e["writer"], 0):
                         out[kind].append((sminos._ts_epoch(e.get("ts")), sminos.event_ref(e)))
+    for path in store_files(project, sminos.QUEUED):
+        try:
+            readable(path)
+        except Uninspectable as e:
+            failed.append(e)
+            continue
+        for e in sminos.queued_events(path):
+            out["queued"].append((sminos._ts_epoch(e.get("ts")), "%s (waits for its head)" % e["writer"]))
     out["kept"] = list(kept.get(project.id, ()))
     box = outcomes.Outbox(project)
     try:
