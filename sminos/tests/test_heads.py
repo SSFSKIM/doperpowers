@@ -27,6 +27,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 HERE = Path(__file__).resolve().parent
 SCRIPTS = HERE.parent / "skills" / "sminos" / "scripts"
@@ -203,6 +204,54 @@ class Rl10(Machine):
         rl10.welcomed({**self.WELCOME, "identity": {**self.WELCOME["identity"], "name": "renamed"}})
         e = sminos.log_append(self.p, "renamed/human", "human", **{"from": "human", "to": "*", "text": "as renamed"})
         self.assertIsNone(e["seq"], "the new name's operator writer waits for its head")
+
+
+class Publication(Machine):
+    """The mark goes before the enrolment it names: an appender that reads
+    the new identity reads its mark too, and a mark that cannot be written
+    leaves the identity unwritten, so the next welcome writes both."""
+
+    def test_the_welcome_marks_before_it_writes_the_identity(self):
+        self.enrol(fresh=False)
+        seen, real = [], sminos.write_json
+
+        def write_json(path, data, mode=0o600):
+            if path == rl10.identity_path():
+                seen.append(json.loads(Path(os.environ["SMINOS_HOME"], "daemon", sminos.HEADS_FILE).read_text()))
+            return real(path, data, mode)
+        with mock.patch.object(sminos, "write_json", write_json):
+            rl10.welcomed(Rl10.WELCOME)
+        self.assertEqual(seen, [{"name": "testhost", "enrolled": Rl10.WELCOME["identity"]["enrolled"]}])
+
+    def test_a_mark_that_fails_leaves_the_cutover_to_the_next_welcome(self):
+        self.enrol(fresh=False)
+        with mock.patch.object(sminos, "mark_enrolled", side_effect=OSError(28, "No space left on device")):
+            with self.assertRaises(OSError):
+                rl10.welcomed(Rl10.WELCOME)
+        self.assertFalse(rl10.cut_over(), "no identity without its mark")
+        rl10.welcomed(Rl10.WELCOME)
+        self.assertIsNone(self.say("early")["seq"], "the next welcome cut over, marked")
+
+
+class Renamed(Machine):
+    def test_what_waited_under_a_former_name_lands_under_the_name_now(self):
+        """A welcome renames the machine while an append waits: the
+        operator's words are not abandoned under a writer no upload takes;
+        once the new name's head is reached they land under it, in order."""
+        self.enrol(fresh=False)
+        rl10.welcomed(Rl10.WELCOME)
+        self.assertIsNone(self.say("as testhost")["seq"])
+        rl10.welcomed({**Rl10.WELCOME, "identity": {**Rl10.WELCOME["identity"], "name": "renamed"}})
+        self.assertIsNone(sminos.log_append(self.p, "renamed/human", "human",
+                                            **{"from": "human", "to": "*", "text": "as renamed"})["seq"])
+        hl = hublog.HubLog(self.p, {"key": None, "machine": "renamed"}, coded=False)
+        hl.on_have({"have": {"renamed/human": 2}})
+        for seq in (1, 2):
+            hl.spend("renamed/human", seq, "conflict")
+        self.assertEqual([(e["seq"], e["text"]) for e in sminos.log_read(self.p) if e["writer"] == "renamed/human"],
+                         [(3, "as testhost"), (4, "as renamed")])
+        self.assertEqual([e["seq"] for frame, _ in hl.uploads() for e in frame["events"]], [3, 4])
+        self.assertEqual(sminos.queued_operators(self.p), {}, "no queue is left behind")
 
 
 def tearDownModule():

@@ -403,13 +403,15 @@ def enroll(a):
     path = uplink.credential_path()
     enrolled = sminos.now()
     with credential_lock():
+        # The hub may hold what this machine lacks under `machine` (a machine
+        # recreated under its old name, a --replace): its operator writer
+        # waits for the hub's head of it (sminos.waits_for_head). Marked
+        # before the credential, so an appender that reads the enrolment
+        # reads its mark too.
+        sminos.mark_enrolled(machine, enrolled)
         sminos.write_json(path, {"hub": code["hub"], "org": code["org"], "machine": machine,
                                  "client_id": answer["client_id"], "client_secret": answer["client_secret"],
                                  "key": code["key"], "former": former, "enrolled": enrolled}, mode=0o600)
-        # The hub may hold what this machine lacks under `machine` (a machine
-        # recreated under its old name, a --replace): its operator writer
-        # waits for the hub's head of it (sminos.waits_for_head).
-        sminos.mark_enrolled(machine, enrolled)
     sminos.forget_caches()
     sminos.daemon_log("hub: enrolled as %s at %s (org %s)%s" % (
         machine, code["hub"], code["org"], "" if machine == old else ", no longer as %s" % old))

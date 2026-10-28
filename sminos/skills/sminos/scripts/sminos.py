@@ -1937,6 +1937,20 @@ def queued_read(project, writer):
     return [e for e in queued_events(queued_path(project, writer)) if e["writer"] == writer]
 
 
+def queued_operators(project):
+    """{writer: path} of the project's queues of this machine's operator
+    writer, under its name now or a former one (a welcome that renamed the
+    machine while an append waited)."""
+    me, former = machine_identity()
+    names = {me, *former}
+    out = {}
+    for path in glob.glob(os.path.join(glob.escape(project.home), QUEUED, "*.jsonl")):
+        got = queued_events(path)
+        if got and got[0]["writer"].endswith("/human") and got[0]["writer"].rpartition("/")[0] in names:
+            out[got[0]["writer"]] = path
+    return out
+
+
 def release_queued(project, writer):
     """The upstream's head for `writer` is known and the log reached it: the
     writer known for this enrolment, and what waited for it appended above
@@ -1953,16 +1967,23 @@ def release_queued(project, writer):
         if writer not in (known.get("known") or []):
             known["known"] = sorted(set(known.get("known") or []) | {writer})
             write_json(project_path(project, HEADS_FILE), known)
-        waiting = [{k: v for k, v in e.items() if k not in ("writer", "seq")} for e in queued_read(project, writer)]
+        # What waited under a former name too: never sequenced, so never seen by
+        # anyone, it is the operator's now under this name (a former name's
+        # writer is no upload's).
+        queues = queued_operators(project)
+        waiting = sorted(({k: v for k, v in e.items() if k not in ("writer", "seq")}
+                          for w, p in queues.items() for e in queued_events(p) if e["writer"] == w),
+                         key=lambda e: str(e.get("ts") or ""))
         if waiting:
             held = {json.dumps({k: v for k, v in e.items() if k not in ("writer", "seq")}, sort_keys=True)
                     for e in _log_file_events(path) if e["ts"] >= min(x.get("ts", "") for x in waiting)}
             waiting = [e for e in waiting if json.dumps(e, sort_keys=True) not in held]
         out = _append(project, writer, waiting, held=True) if waiting else []
-        try:
-            os.unlink(queued_path(project, writer))
-        except FileNotFoundError:
-            pass
+        for p in queues.values():
+            try:
+                os.unlink(p)
+            except FileNotFoundError:
+                pass
     return out
 
 

@@ -664,7 +664,7 @@ class HubLog:
         writer = self.machine + "/human"
         if self.have is None or not self.head_waits:
             return
-        if not (sminos.waits_for_head(self.project, writer) or os.path.exists(sminos.queued_path(self.project, writer))):
+        if not (sminos.waits_for_head(self.project, writer) or sminos.queued_operators(self.project)):
             self.head_waits = False   # nothing makes it wait again on this stream: an enrolment restarts the uplink
             return
         last = self.writers(own=True).get(writer, (0, None))[0]
