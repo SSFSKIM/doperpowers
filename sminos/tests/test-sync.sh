@@ -390,8 +390,28 @@ export SKIP
 # after the host, as that plugin did.
 echo "a member joined as betaold on an open stream:"
 B_GEN="$(ctl gen beta)"
-python3 - "$RB" "$OB" "$OB_PID" "$HOME/.claude/sessions/ob.json" <<'PY'
-import json, os, sys, time
+# ob's engine record moves to syncproj first, and only once two of beta's
+# ticks have read it does the joined land: a reconciliation that read the
+# joined beside the record still naming ob's other checkout would retire ob
+# here as `moved` (the uplink's runs as soon as an append lands). The record
+# is an SDK run's, which no reconciliation joins on sight, so nothing joins
+# ob as beta before its betaold joined: what joins it again is the daemon's
+# rejoin of a former name, which says so.
+python3 - "$OB" "$OB_PID" "$RB" "$HOME/.claude/sessions/ob.json" <<'PY'
+import json, os, sys
+tmp = sys.argv[4] + ".tmp"
+with open(tmp, "w") as f:   # replaced whole: a record read mid-write would be no record, and ob ended
+    json.dump({"pid": int(sys.argv[2]), "sessionId": sys.argv[1], "name": "ob", "nameSource": "derived",
+               "kind": "interactive", "entrypoint": "sdk-cli", "status": "idle", "cwd": sys.argv[3]}, f)
+os.replace(tmp, sys.argv[4])
+PY
+tick_b() { python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get("tick", ""))' "$T/b/s/projects/$PID/daemon.json" 2>/dev/null || true; }
+for _ in 1 2; do
+  B_TICK="$(tick_b)"
+  until_true 200 test "$(tick_b)" != "$B_TICK" || true
+done
+python3 - "$RB" "$OB" <<'PY'
+import os, sys, time
 sys.path.insert(0, os.environ["SCRIPTS"])
 import sminos
 project, ob = sminos.resolve_project(sys.argv[1]), sys.argv[2]
@@ -400,26 +420,15 @@ project, ob = sminos.resolve_project(sys.argv[1]), sys.argv[2]
 since = sminos.daemon_module().enrolled_at()
 if since is not None:
     time.sleep(max(0.0, since + 1.05 - time.time()))
-# ob's engine record names syncproj before its joined lands, as a session's
-# record names where it runs before its hook writes there, and is replaced
-# whole: a reconciliation that read the joined beside a record still naming
-# ob's other checkout retires ob here as `moved` (the uplink's runs as soon
-# as the append lands), and one that read the record mid-write would find
-# it ended.
-tmp = sys.argv[4] + ".tmp"
-with open(tmp, "w") as f:
-    json.dump({"pid": int(sys.argv[3]), "sessionId": ob, "name": "ob", "nameSource": "derived", "kind": "interactive",
-               "status": "idle", "cwd": sys.argv[1]}, f)
-os.replace(tmp, sys.argv[4])
 sminos._append(project, "betaold/" + ob, [{"kind": "joined", "session": ob, "alias": "ob", "name_source": "derived",
                                             "machine": "betaold", "cwd": sys.argv[1], "worktree": "", "role": "",
                                             "seat": "", "by": ""}])
 PY
-# What the daemon records of it, its notice and the upload of the joined
-# again, rather than the hub's first beta/ob event, which a retirement would
-# also be.
+# What the daemon records of it, its rejoin and its notice, then the upload.
 until_true 200 grep -Fq "ob in syncproj still writes as betaold" "$T/b/s/daemon.log" || true
 until_true 200 hub_has "beta/$OB" 1 || true
+assert_contains "$(cat "$T/b/s/daemon.log")" "ob in syncproj joined again as beta (it had joined as betaold)" \
+  "the daemon's rejoin of the former name is what joins ob as beta"
 assert_equals "$(ctl state "[(e['kind'], e.get('alias')) for e in d['projects']['$PID']['writers'].get('beta/$OB', [])[:1]]")" \
   '[["joined", "ob"]]' "ob joins again as beta"
 assert_equals "$(ctl gen beta)" "$B_GEN" "on the stream already open"
