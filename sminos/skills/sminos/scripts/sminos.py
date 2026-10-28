@@ -3939,19 +3939,21 @@ def words_due(project, members):
     """{session: [event]}: for each of the members, the first owed event of
     each words-gated writer (words_route "ask") that no deliverer holds —
     none noted as pushed, none another event of its writer stands before.
-    The project's log read once. What the uplink asks `words?` about. An
-    outside event on a read-only machine is none: deliver_next settles it
-    `refused-read-only` unasked."""
+    The project's log read once, and split by addressee once (addressees),
+    as the daemon's delivery pass splits it: each member's owed events are
+    read from its own share, not from the whole log again. What the uplink
+    asks `words?` about. An outside event on a read-only machine is none:
+    deliver_next settles it `refused-read-only` unasked."""
     policy = sibling_module("sminos_policy")
     read_only = policy.read_only()
-    events = log_read(project)
+    to = addressees(log_read(project))
     out = {}
     for m in members:
-        if not m.session:
+        if not m.session or m.session not in to:
             continue
         record = delivered_load(project, m.session)
         firsts = {}
-        for e in _owed(events, m.session, record):
+        for e in _owed(to[m.session], m.session, record):
             firsts.setdefault(e["writer"], e)
         due = [e for w, e in sorted(firsts.items())
                if words_route(project, e) == "ask" and (_delivery(record, w).get("pushed") or [None])[0] != e["seq"]
