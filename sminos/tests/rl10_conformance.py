@@ -677,12 +677,24 @@ def check_spawn():
         got and {k: got.get(k) for k in want})
 
 
+def check_send_entered():
+    """The send's outcome (a `vary` the fixture leaves open) is the row it
+    became: S1's bridge took the text once, under the send's writer, and
+    the result names the uuid its `delivered` gave."""
+    conn, i = STEPS[(9, 13)]
+    got = CONNS["main"].frames[i]["outcome"] if CONNS["main"].number == conn else None
+    mod = MODS["S1"]
+    want = {"state": "done", "result": {"entered": True, "uuid": mod.entered[-1] if mod.entered else None}}
+    return got == want and mod.delivered.count("and count them") == 1, \
+        "answered %r, S1 took %r" % (got, mod.delivered)
+
+
 CHECK = {(0, 2): check_no_identity, (0, 5): check_identity, (0, 6): check_revoked(3), (0, 7): check_org,
          (2, 1): check_policy(True), (2, 3): check_policy(False), (5, 1): check_present,
          (6, 1): check_delivered("S1", "run the tests"), (6, 7): check_delivered("S1", "asked while RL1 is down"),
          (7, 13): check_delivered("S2", "from b1"), (11, 38): check_delivered("S2", "from b2"),
          (11, 7): check_revoked(3), (11, 28): check_revoked(4),
-         (11, 31): check_revoked(5, ["b1"])}
+         (11, 31): check_revoked(5, ["b1"]), (9, 13): check_send_entered}
 
 
 def late_checks(P):
