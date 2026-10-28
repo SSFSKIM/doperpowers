@@ -437,6 +437,7 @@ the services without a reboot. Untracked files are left alone.
 | `refresh-mirrors` | `devcloud refresh-mirrors`: fetches the mirror cache, every 30 min; nothing on a sandbox | root (git as the user) |
 | `session-mirror` | `~/.claude/tools/session-mirror ship`, continuously, when the configuration has it | the user |
 | `sminos-daemon` | `sminos daemon run`, on a persistent host that is a sminos machine only | the user (a systemd user unit) |
+| `lease` | `devcloud lease tick`, every 5 min on persistent hosts: lease warning and departure, tailnet rejoin retries, and the VM idle notice | root |
 
 Under systemd they are units `devcloud-<service>` (the jobs as timers), except
 the sminos daemon, which is the user's own unit `sminos-daemon.service` in
@@ -466,6 +467,32 @@ forwards another byte). A service it stops for a reconcile — removed, or
 restarted for a new environment — gets SIGTERM and, 8 s later, SIGKILL. On
 its own SIGTERM it forwards the signal to every child and waits up to 8 s
 (the shipper's final pass) before it exits.
+
+**The idle notice.** A VM, kept or leased, sends a notice after three days
+without activity, and every three days of that idle stretch thereafter.
+Activity means a transcript under the user's `~/.claude/projects` changed
+since the previous check, a `loginctl` session has a terminal and is not
+closing, or the 15-minute load average is at least 0.5. A logged-out session
+kept closing by remaining processes, a resident session waiting for a
+message, and noninteractive SSH probes do not count. The first check starts
+the clock; `/var/lib/devcloud/idle.json` keeps the last check, last activity
+and last delivered notice times across reboots. Adopted machines are
+excluded. Activity probes, checkout scans and delivery run outside the
+lifecycle lock, so they cannot block a lease write or a spot departure.
+A separate nonblocking notice lock prevents concurrent sends; a failed or
+interrupted send stays due, and each notice is marked only after delivery.
+
+The notice starts `devcloud on <name>:` to identify its automated origin,
+since sminos labels a host-shell message as `from human`. It names the VM,
+its idle time and last activity, its lease end (or
+that it runs until `down`), its estimated cost at the creation-time list
+price when known, and every checkout with unpushed work. It gives
+`devcloud vm down <name>` to end it; **idleness never stops or deletes a VM**.
+Delivery tries the creating session, then its sminos project's live
+sessions. If none are live, it leaves an untagged note in that project's
+log for the next session. Without a usable route it goes to the journal
+and `wall`. The lease warning uses the same fallback. `devcloud vm ls`
+reads the host's idle clock over the tailnet; an unavailable clock shows `-`.
 
 **sminos.** Step 11 first links `/usr/local/bin/sminos` to the launcher in
 the doperpowers marketplace clone, at every boot and reconcile, so any shell

@@ -20,7 +20,7 @@ import subprocess
 import sys
 import time
 
-from . import descriptor, envfile, nodekind, proc, sminos_host, status
+from . import descriptor, idle, nodekind, notices, proc, status
 from .proc import StepError
 
 LOCK = pathlib.Path("/run/devcloud/lifecycle.lock")
@@ -186,89 +186,127 @@ def start_transient(unit, argv, run=proc.run, environ=os.environ, what="at the l
 
 def tick(user, desc_path=descriptor.PATH, lock_path=None, status_path=None, state_path=None, now=time.time,
          active=unit_active, start=start_transient, warn=None, allow_http=False, say=_stderr, kind_path=None):
-    """One run of the lease service: at the lease end (and at every later run
-    while a departure is held or was cut short) it starts the departure, or
-    the release, as a transient unit — unless one is already under way; 30
-    minutes before the end it warns the creator, once per lease value. On a
-    kept host as on a leased one, while the tailnet node's kind does not
-    follow the lease (a rejoin that failed, or never started), it starts the
-    rejoin again."""
+    """Queue any tailnet recovery before deciding departure. Activity probes,
+    checkout scans and delivery run outside the lifecycle lock. A separate
+    nonblocking lock serializes sends; delivery markers advance only after
+    each notice completes, so an interrupted or failed send stays retryable.
+    """
     status_kw = {"path": status_path} if status_path else {}
     state_path = state_path or STATE
-    with locked(path=lock_path):
+
+    def departure_due(d):
+        # Called under the lock. Sample time after the potentially blocking
+        # unit query, never before activity checks or notice delivery.
+        record = status.lifecycle(**status_kw)
+        if record and record.get("state") == "departed":
+            return True, now()
+        unit, op = (RELEASE_UNIT, "release") if d.adopted else (DEPART_UNIT, "depart")
+        if d.leased and active(unit):
+            say(f"devcloud lease: {unit} is already under way")
+            return True, now()
+        current = now()
+        if d.leased and current >= d.expires:
+            start(unit, [DEVCLOUD, op])
+            say(f"devcloud lease: the lease ended at {iso(d.expires)}; {unit} started")
+            return True, current
+        return False, current
+
+    def load():
         try:
-            d = descriptor.load(desc_path, allow_http=allow_http)
+            return descriptor.load(desc_path, allow_http=allow_http)
         except descriptor.DescriptorError as error:
             say(f"devcloud lease: {error}")
+            return None
+
+    with locked(path=lock_path):
+        d = load()
+        if d is None:
             return 1
+        proc.know_host(user, d.seed_path if d.seed_kind == "file" else None, env_path=ENV_PATH)
         if nodekind.behind(d, kind_path) and not status.departure_started(**status_kw) \
                 and not active(nodekind.UNIT):
             try:
                 start(nodekind.UNIT, [DEVCLOUD, "rejoin"], what="so the tailnet node follows its lease")
                 say(f"devcloud lease: the tailnet node is not {nodekind.name(nodekind.wanted(d))}; "
                     f"{nodekind.UNIT} started")
-            except StepError as error:     # never in the way of the departure below
+            except StepError as error:
                 say(f"devcloud lease: {nodekind.UNIT} did not start ({error})")
-        if not d.leased:
+        if departure_due(d)[0]:
             return 0
-        # A process of its own: the host's secrets known before any child runs.
-        proc.know_host(user, d.seed_path if d.seed_kind == "file" else None, env_path=ENV_PATH)
-        record = status.lifecycle(**status_kw)
-        if record and record.get("state") == "departed":
-            return 0
-        unit, op = (RELEASE_UNIT, "release") if d.adopted else (DEPART_UNIT, "depart")
-        if active(unit):
-            say(f"devcloud lease: {unit} is already under way")
-            return 0
-        current = now()
-        if current >= d.expires:
-            start(unit, [DEVCLOUD, op])
-            say(f"devcloud lease: the lease ended at {iso(d.expires)}; {unit} started")
-            return 0
-        state = _read_state(state_path)
-        if current >= d.expires - WARN_BEFORE and state.get("warned_for") != d.expires:
-            (warn or (lambda desc: warn_creator(user, desc, say=say)))(d)
-            _write_state({**state, "warned_for": d.expires}, state_path)
-        return 0
+        observe = not status.departure_started(**status_kw)
+
+    observation = None
+    if observe:
+        try:
+            observation = idle.observe(user, d, now=now)
+        except (OSError, ValueError, IndexError, StepError) as error:
+            say(f"devcloud lease: idle check failed ({error}); will retry")
+
+    # Acquire this before deciding which notices are due: otherwise a sender
+    # that finished between our decision and acquisition would be repeated.
+    # Never wait for it, and never hold the lifecycle lock while delivering.
+    with contextlib.ExitStack() as sending_lock:
+        sending = True
+        try:
+            sending_lock.enter_context(locked(path=pathlib.Path(lock_path or LOCK).with_name("notices.lock"),
+                                              timeout=0))
+        except TimeoutError:
+            sending = False
+        with locked(path=lock_path):
+            d = load()
+            if d is None:
+                return 1
+            done, current = departure_due(d)
+            if done:
+                return 0
+            pending = None
+            if not status.departure_started(**status_kw):
+                try:
+                    pending = idle.check(d, observation, now=lambda: current)
+                except (OSError, ValueError, IndexError, StepError) as error:
+                    say(f"devcloud lease: idle check failed ({error}); will retry")
+            warning = d.leased and current >= d.expires - WARN_BEFORE and (
+                _read_state(state_path).get("warned_for") != d.expires)
+
+        try:
+            if sending and warning:
+                try:
+                    (warn or (lambda desc: warn_creator(user, desc, say=say)))(d)
+                    with locked(path=lock_path):
+                        # A release may have removed the host while delivery ran.
+                        if pathlib.Path(desc_path).exists():
+                            _write_state({**_read_state(state_path), "warned_for": d.expires}, state_path)
+                except Exception as error:  # either notice can fail without suppressing the other
+                    say(f"devcloud lease: warning failed ({error}); will retry")
+            if sending and pending is not None:
+                try:
+                    idle.send(user, d, pending, say=say)
+                    with locked(path=lock_path):
+                        idle.delivered(pending, now=now)
+                except Exception as error:
+                    say(f"devcloud lease: idle notice failed ({error}); will retry")
+        finally:
+            # A lease can be added or shortened while a send runs. Always
+            # reload its authority; the pre-delivery descriptor is stale.
+            with locked(path=lock_path):
+                if not status.departure_started(**status_kw):
+                    fresh = load()
+                    if fresh is not None:
+                        departure_due(fresh)
+    return 0
 
 
 # --- the warning -----------------------------------------------------------------
 
 def warning_text(name, expires, found):
     unpushed = ", ".join(f"{repo} ({what})" for repo, what in found) if found else "none"
-    return f"{name}'s lease ends at {iso(expires)}; unpushed: {unpushed}"
+    return f"devcloud on {name}: lease ends at {iso(expires)}; unpushed: {unpushed}"
 
 
-def _host_env(user):
-    try:
-        env = envfile.parse(pathlib.Path(ENV_PATH).read_text())
-    except (FileNotFoundError, ValueError):
-        env = {}
-    return user.env(env)
-
-
-def warn_creator(user, d, run=proc.run, say=print, scan=None):
-    """`sminos say "@<creator> …"` as the user, naming the lease end and each
-    checkout with unpushed or uncommitted work; without a creator, off the org
-    (neither enrolled nor cut over), or when the say fails, the journal and
-    `wall`."""
+def warn_creator(user, d, call=proc.call, say=print, scan=None):
+    """The lease end and unpushed work, through the idle notice's delivery."""
     found = (scan or (lambda: unpushed(user)))()
-    text = warning_text(d.name, d.expires, found)
-    env = _host_env(user)
-    program = sminos_host.cli(user)
-    if d.creator and sminos_host.at_hub(user, env) and program:
-        try:
-            run([sminos_host.PYTHON, str(program), "say", f"{d.creator} {text}"], user=user, env=env,
-                log="lease", cwd=str(user.home), timeout=120)
-            say(f"devcloud lease: warned {d.creator}: {text}")
-            return
-        except StepError as error:
-            say(f"devcloud lease: the warning to {d.creator} failed ({error})")
-    say(f"devcloud lease: {text}")
-    try:
-        run(["wall", f"devcloud: {text}"], log="lease", timeout=30)
-    except StepError:
-        pass
+    notices.deliver(user, d, warning_text(d.name, d.expires, found), call=call, say=say)
 
 
 # --- unpushed work ----------------------------------------------------------------

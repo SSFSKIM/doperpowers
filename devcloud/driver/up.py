@@ -159,7 +159,9 @@ def run(ctx, opts):
         raise DriverError(REFUSED, f"provider {r.client.name} has metadata_seed without user_data: nothing could "
                                    "start its first boot")
     desc = compose.descriptor(name=name, profile=ctx.profile, projects=list(opts.project or []), expires=expires,
-                              creator=tag, spot=r.spot, seed="gce-metadata" if metadata_seed else "file")
+                              creator=tag, spot=r.spot, seed="gce-metadata" if metadata_seed else "file",
+                              created=int(started), hourly_price=r.type.get("hourly_price"),
+                              currency=r.type.get("currency"), creator_project=ctx.creator_project())
     enroll = "code" if code else ("key" if ctx.profile.desk_secret or provisions else None)
     recipe = compose.recipe_hash(ctx.plugin)
     labels = compose.labels(kind="vm", lifetime=r.lifetime, expires=expires, by=ctx.machine, creator=short,

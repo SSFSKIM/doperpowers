@@ -8,6 +8,7 @@ surfacing as a default much later.
 a host rebooted after its lease still boots, and then departs."""
 
 import dataclasses
+import math
 import re
 
 from . import envfile
@@ -20,7 +21,8 @@ OPTIONAL = ("DEVCLOUD_TS_SECRET", "DEVCLOUD_TS_AUTHKEY_FILE", "DEVCLOUD_CONFIG_B
             # I12, the driver's: the lease and who hears of its end, the inbound policy, adoption,
             # the desk's provisioning key, a spot VM; MAWS's provisioning code and its delegation (P5 O14).
             "DEVCLOUD_EXPIRES", "DEVCLOUD_CREATOR", "DEVCLOUD_INBOUND", "DEVCLOUD_ADOPTED", "DEVCLOUD_SMINOS_SECRET",
-            "DEVCLOUD_SPOT", "DEVCLOUD_MAWS_SECRET", "DEVCLOUD_MAWS_DELEGATION_ID")
+            "DEVCLOUD_SPOT", "DEVCLOUD_MAWS_SECRET", "DEVCLOUD_MAWS_DELEGATION_ID",
+            "DEVCLOUD_CREATED", "DEVCLOUD_HOURLY_PRICE", "DEVCLOUD_CURRENCY", "DEVCLOUD_CREATOR_PROJECT")
 
 _HOSTNAME = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\Z")
 _PROJECT = re.compile(r"[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)?(?:@\S+)?\Z")
@@ -60,6 +62,11 @@ class Descriptor:
     spot: bool = False               # a spot VM: the reclaim unit is enabled
     maws_secret: str | None = None   # the MAWS provisioning code's Secret Manager id (boot step 13)
     maws_delegation_id: str | None = None  # its delegation's id, the prefix of the machine's ref
+
+    created: int | None = None
+    hourly_price: float | None = None
+    currency: str | None = None
+    creator_project: str | None = None
 
     @property
     def leased(self):
@@ -139,7 +146,7 @@ def parse(text, allow_http=False):
         seed_kind=seed_kind, seed_path=seed_path, sm_project=values["DEVCLOUD_SM_PROJECT"],
         config_repo=repo, config_branch=values.get("DEVCLOUD_CONFIG_BRANCH") or "main",
         config_token_secret=token_secret, projects=projects,
-        mirror_dir=mirror_dir, **lifecycle,
+        mirror_dir=mirror_dir, **lifecycle, **_notice(values),
     )
 
 
@@ -204,6 +211,26 @@ def _maws(values, sminos_secret):
         raise DescriptorError("DEVCLOUD_SMINOS_SECRET enrolls sminos on DX2, whose row under the name refuses the "
                               "certificate DEVCLOUD_MAWS_SECRET provisions: name one of them")
     return secret, delegation
+
+
+def _notice(values):
+    created = values.get("DEVCLOUD_CREATED") or None
+    if created is not None:
+        if not _UNIX.fullmatch(created):
+            raise DescriptorError("DEVCLOUD_CREATED must be Unix seconds")
+        created = int(created)
+    price = values.get("DEVCLOUD_HOURLY_PRICE") or None
+    if price is not None:
+        if not re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", price) or not math.isfinite(float(price)):
+            raise DescriptorError("DEVCLOUD_HOURLY_PRICE must be a nonnegative finite decimal")
+        price = float(price)
+    currency = values.get("DEVCLOUD_CURRENCY") or None
+    if currency is not None and not re.fullmatch(r"[A-Z]{3}", currency):
+        raise DescriptorError("DEVCLOUD_CURRENCY must be a three-letter ISO currency code")
+    project = values.get("DEVCLOUD_CREATOR_PROJECT") or None
+    if project is not None and (not re.fullmatch(r"[^\s(),]+", project) or project.startswith("-")):
+        raise DescriptorError("DEVCLOUD_CREATOR_PROJECT must name one sminos project")
+    return dict(created=created, hourly_price=price, currency=currency, creator_project=project)
 
 
 def set_expires(text, expires):

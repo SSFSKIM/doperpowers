@@ -9,6 +9,7 @@ tailnet by its name (§5)."""
 
 import dataclasses
 import json
+import math
 import pathlib
 import re
 import shlex
@@ -153,6 +154,24 @@ def deliver_code(ctx, target, key_alias, code):
 
 
 # --- over the tailnet -----------------------------------------------------------
+
+def idle(ctx, host, timeout=10):
+    """The host's idle record, or None when absent, invalid or unreachable.
+    This is a noninteractive SSH probe: it must not reset the host's clock.
+    """
+    result = ctx.remote.run(host.name, host.alias, "cat /var/lib/devcloud/idle.json 2>/dev/null",
+                            timeout=timeout, connect_timeout=max(1, math.ceil(timeout)))
+    if result.code != 0:
+        return None
+    try:
+        data = json.loads(result.out)
+    except ValueError:
+        return None
+    value = data.get("active_at") if isinstance(data, dict) else None
+    if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
+        return None
+    return data
+
 
 def reachable(ctx, host, timeout=10):
     return ctx.remote.run(host.name, host.alias, "true", timeout=timeout + 5, connect_timeout=timeout).code == 0

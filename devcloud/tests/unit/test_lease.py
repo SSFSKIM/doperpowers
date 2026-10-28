@@ -16,7 +16,7 @@ import unittest
 from unittest import mock
 
 import _path  # noqa: F401
-from devcloudlib import departure, descriptor, lease, nodekind, proc, redact, status
+from devcloudlib import departure, descriptor, idle, lease, nodekind, notices, proc, redact, status
 from devcloudlib.proc import User
 
 from test_departure import DepartureBase
@@ -30,6 +30,9 @@ BASE = ("DEVCLOUD_NAME=dc-build-7f3a\nDEVCLOUD_KIND=vm\nDEVCLOUD_ROLE=persistent
 class LeaseBase(unittest.TestCase):
     def setUp(self):
         self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="devcloud-lease-"))
+        self.patch_idle = mock.patch.object(idle, "STATE", self.tmp / "idle.json")
+        self.patch_idle.start()
+        self.addCleanup(self.patch_idle.stop)
         self.desc = self.tmp / "boot.env"
         self.paths = dict(desc_path=self.desc, lock_path=self.tmp / "lifecycle.lock",
                           status_path=self.tmp / "status.json")
@@ -244,18 +247,20 @@ class NodeKindFollowsTheLeaseTest(LeaseBase):
         self.write(NOW)
         self.joined_as(False)
         started = []
+        clock = [NOW - 1]
 
         def start(unit, argv, what=""):
             if unit == "devcloud-rejoin":
+                clock[0] = NOW  # the lease ends while the attempted rejoin starts
                 raise lease.StepError("systemd-run failed")
             started.append(unit)
-        lease.tick(self.user, state_path=self.tmp / "lease.json", now=lambda: NOW, active=lambda unit: False,
+        lease.tick(self.user, state_path=self.tmp / "lease.json", now=lambda: clock[0], active=lambda unit: False,
                    start=start, warn=lambda d: None, say=lambda m: None, kind_path=self.kind, **self.paths)
         self.assertEqual(started, ["devcloud-depart"])
 
-    def test_a_leased_host_behind_rejoins_before_its_lease_end_departs(self):
+    def test_an_expired_host_retries_its_tailnet_before_departure(self):
         self.write(NOW)
-        self.joined_as(False)
+        nodekind.record(False, True, nodekind.FAILED, "up failed after logout", path=self.kind)
         self.tick(NOW)
         self.assertEqual([unit for unit, _ in self.started], ["devcloud-rejoin", "devcloud-depart"])
 
@@ -391,6 +396,7 @@ class WarningTest(LeaseBase):
 
     def run_(self, argv, **kwargs):
         self.calls.append((list(argv), kwargs.get("user")))
+        return 0, "", ""
 
     def warn(self, creator="@build#4f2a", enrolled=True, cut_over=False):
         hub = self.user.home / ".claude/sminos/daemon/hub.json"
@@ -400,15 +406,15 @@ class WarningTest(LeaseBase):
         identity.write_text("{}\n") if cut_over else identity.unlink(missing_ok=True)
         d = descriptor.parse(BASE + f"DEVCLOUD_EXPIRES={NOW}\n" + (f"DEVCLOUD_CREATOR={creator}\n" if creator else ""))
         said = []
-        with mock.patch.object(lease, "ENV_PATH", str(self.tmp / "env")):
-            lease.warn_creator(self.user, d, run=self.run_, say=said.append,
+        with mock.patch.object(notices, "ENV_PATH", str(self.tmp / "env")):
+            lease.warn_creator(self.user, d, call=self.run_, say=said.append,
                                scan=lambda: [("app", "2 unpushed commits"), ("lib", "uncommitted changes")])
         return said
 
     def test_says_to_the_creator_as_the_user_naming_the_end_and_the_unpushed_work(self):
         self.warn()
         (argv, user), = self.calls
-        text = f"dc-build-7f3a's lease ends at {lease.iso(NOW)}; unpushed: app (2 unpushed commits), lib " \
+        text = f"devcloud on dc-build-7f3a: lease ends at {lease.iso(NOW)}; unpushed: app (2 unpushed commits), lib " \
                "(uncommitted changes)"
         self.assertEqual(lease.iso(NOW), "2026-10-14T17:46Z")
         self.assertEqual(lease.warning_text("dc-build-7f3a", NOW, [("app", "2 unpushed commits"),

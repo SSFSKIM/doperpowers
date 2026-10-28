@@ -6,6 +6,7 @@ Nothing composed here is secret: the descriptor carries Secret Manager ids,
 never values, and a provider keeps user-data readable for the server's life."""
 
 import base64
+import decimal
 import gzip
 import hashlib
 import io
@@ -44,7 +45,8 @@ def provisions(profile, projects):
         host_projects.devenv_args(entry)[0].lower() == MAWS_PROJECT for entry in projects)
 
 
-def descriptor(name, profile, projects, expires, creator, spot, seed, adopted=False):
+def descriptor(name, profile, projects, expires, creator, spot, seed, adopted=False, *,
+               created=None, hourly_price=None, currency=None, creator_project=None):
     """The descriptor's text. `seed` is `file` (the driver delivers the key
     file) or `gce-metadata`; `expires` None means keep (no lease); `adopted`
     marks a machine the driver did not make (§6.5), released at its end."""
@@ -72,6 +74,11 @@ def descriptor(name, profile, projects, expires, creator, spot, seed, adopted=Fa
     if provisions(profile, projects):
         pairs += [("DEVCLOUD_MAWS_SECRET", profile.maws_secret),
                   ("DEVCLOUD_MAWS_DELEGATION_ID", profile.delegation_id)]
+    for key, value in (("CREATED", created), ("HOURLY_PRICE", hourly_price),
+                       ("CURRENCY", currency), ("CREATOR_PROJECT", creator_project)):
+        if value is not None:
+            rendered = format(decimal.Decimal(str(value)), "f") if key == "HOURLY_PRICE" else str(value)
+            pairs.append((f"DEVCLOUD_{key}", rendered))
     text = envfile.format(pairs)
     try:
         host_descriptor.parse(text)
