@@ -99,6 +99,12 @@ LEGACY = "legacy/"
 # event travels alone (and as parts, past a frame's bound).
 BATCH_BYTES = 256 * 1024
 MESSAGE_MAX = 2000  # a rejection's message, as the hub admits it
+# The upload pass's hot looks (HubLog.writers): an own writer file changed, or
+# whose session ran here, within HOT_FOR is looked at on every pass; a listing
+# of the log directory is kept once the directory held still RACY_NS before it.
+HOT_FOR = 600.0
+RACY_NS = 1_000_000_000
+RAN_KEEP = 256   # sessions past HOT_FOR the hot look's memory may hold before it is pruned
 # The reason an event that verifies is refused for its position (another event
 # holds it here, or it is spent): DX2's `conflict`, which the hub admits since
 # DC3 M3.
@@ -322,6 +328,8 @@ class HubLog:
         self.key = cred["key"]
         self.machine = cred["machine"]
         self.files = {}      # path → (size, mtime_ns, writer, last): the vector's reads, kept while a file holds
+        self.listing = None  # (log dir mtime_ns, prefixes, paths): the own writers' files as last listed (own_paths)
+        self.ran = {}        # session → when (monotonic) a hot look last found it running here
         self.nonces = None   # nonce → (writer, seq) of every coded event the log holds, read on first import
         self.epochs = {}     # own writer → how many bounds were set on it (bound), across streams: an upload's mark
         self.taken_failing = None   # TAKEN_FILE's write failure as last said (keep)
@@ -371,26 +379,45 @@ class HubLog:
         return {w: {s for s in ss if type(s) is int} for w, ss in raw.items() if isinstance(ss, list)} \
             if isinstance(raw, dict) else {}
 
-    def writers(self, own=False):
+    def writers(self, own=False, live=None):
         """{writer: (last seq, path)} of the writer files the log holds (each
         read from its end, again only once it changed); `own`: only the files
         named as this machine's writers would be (and the legacy ones, while
         it writes the archive) — every UPLOAD_EVERY, the others' are no
-        upload's, and a project another machine is busy in holds hundreds."""
+        upload's, and a project another machine is busy in holds hundreds.
+
+        `live` (own only: the sessions running here) makes it a hot look: a
+        file is looked at again only while it is hot (hot), the rest read as
+        last looked at. A machine's history is hundreds of writers of sessions
+        that ended long ago, which nothing appends to; looking at every one of
+        them every UPLOAD_EVERY was most of an idle uplink's work. The caller
+        alternates: a whole look at every scan, hot looks between. A look
+        that lists the directory again (it changed) is whole too: a file
+        there may have been replaced."""
+        whole = live is None
         if own:
-            prefixes = [self.machine.replace("/", ".") + "."] + ([LEGACY.replace("/", ".")] if self.archive else [])
-            paths = [p for prefix in prefixes
-                     for p in glob.glob(os.path.join(glob.escape(self.log_dir), glob.escape(prefix) + "*.jsonl"))]
+            paths, listed = self.own_paths()
+            whole = whole or listed
         else:
             paths = glob.glob(os.path.join(glob.escape(self.log_dir), "*.jsonl"))
+        if live is not None:
+            mono = time.monotonic()
+            self.ran.update(dict.fromkeys(live, mono))
+            if len(self.ran) > len(live) + RAN_KEEP:
+                self.ran = {s: at for s, at in self.ran.items() if mono - at < HOT_FOR}
+            wall = time.time_ns()
         out, seen = {}, set()
         for path in paths:
             seen.add(path)
+            held = self.files.get(path)
+            if not whole and held is not None and not self.hot(held, wall, mono):
+                if held[2]:
+                    out[held[2]] = (held[3], path)
+                continue
             try:
                 st = os.stat(path)
             except OSError:
                 continue
-            held = self.files.get(path)
             if not held or held[:2] != (st.st_size, st.st_mtime_ns):
                 held = self.files[path] = (st.st_size, st.st_mtime_ns, *writer_and_last(path))
             if held[2]:
@@ -399,6 +426,43 @@ class HubLog:
             for path in set(self.files) - seen:
                 del self.files[path]
         return out
+
+    def own_paths(self):
+        """(The own writers' files (writers' `own`), whether they were listed
+        just now): listed again only once the directory changed, since a
+        file made or removed there moves its mtime. A listing is kept only
+        when the directory had held still RACY before it, so an entry made in
+        the same tick of a coarse clock (Linux takes a file's times from the
+        timer tick) is never hidden behind an unchanged mtime."""
+        prefixes = [self.machine.replace("/", ".") + "."] + ([LEGACY.replace("/", ".")] if self.archive else [])
+        before = time.time_ns()
+        try:
+            mtime = os.stat(self.log_dir).st_mtime_ns
+        except OSError:
+            mtime = None
+        held = self.listing
+        if held is not None and held[:2] == (mtime, prefixes):
+            return held[2], False
+        paths = [p for prefix in prefixes
+                 for p in glob.glob(os.path.join(glob.escape(self.log_dir), glob.escape(prefix) + "*.jsonl"))]
+        self.listing = (mtime, prefixes, paths) if mtime is not None and before - mtime >= RACY_NS else None
+        return paths, True
+
+    def hot(self, held, wall, mono):
+        """Whether a look between scans looks at this own writer file again:
+        one it holds nothing of yet, one of no session (the operator's
+        `<name>/human`), one of a session that ran here within HOT_FOR (an
+        ended session's last events — the daemon's `retired` — come after it
+        stopped), or one that changed within HOT_FOR. Any other append, to a
+        writer quiet longer than that, is seen by the next scan's whole look,
+        or at once when its sender nudged the daemon."""
+        _, mtime_ns, writer, _ = held
+        session = sminos.writer_session(writer) if writer else ""
+        if not session:
+            return True
+        if mono - self.ran.get(session, -HOT_FOR) < HOT_FOR:
+            return True
+        return wall - mtime_ns < HOT_FOR * 1e9
 
     def vector(self):
         """{writer: max seq} as `hello` carries it: each writer's last seq
@@ -424,13 +488,14 @@ class HubLog:
             frame["follow"] = True
         return frame
 
-    def presence(self):
+    def presence(self, here=None):
         """DX4's `machine` message for this project: online (the hub's word,
         from the lease), the policy (on RL10 as RL10 says it, wire_policy),
         the project's known checkouts here, and what this machine's daemon
-        can do itself (`desk`)."""
+        can do itself (`desk`). `here`: known_checkouts' sessions, when the
+        caller holds them."""
         try:
-            checkouts = policy.known_checkouts(self.project)
+            checkouts = policy.known_checkouts(self.project, here)
         except (OSError, SystemExit) as e:
             log("the checkouts of %s could not be read: %r" % (self.project.name, e))
             checkouts = [{"path": self.project.root, "branch": policy.git_branch(self.project.root)}] \
@@ -732,11 +797,12 @@ class HubLog:
     def own(self, writer):
         return writer.startswith(self.machine + "/") or (self.archive and writer.startswith(LEGACY))
 
-    def uploads(self):
+    def uploads(self, live=None):
         """`events` frames of this machine's writers the hub lacks, each with
         the (writer, seq) it brings the hub to, drawn as they are taken: each
         writer's file is read, and its events sealed, only once the frames
-        before them were taken. Yields (frame, {writer: seq})."""
+        before them were taken. Yields (frame, {writer: seq}). `live`: a hot
+        look (writers)."""
         if self.have is None:
             return
         batch, reach, size = [], {}, 0
@@ -744,7 +810,7 @@ class HubLog:
         def frame():
             return {"t": "events", "project": self.project.id, "events": batch}, reach
 
-        for writer, (last, path) in sorted(self.writers(own=True).items()):
+        for writer, (last, path) in sorted(self.writers(own=True, live=live).items()):
             if not self.own(writer) or writer in self.stuck or last <= self.sent.get(writer, 0):
                 continue
             for e in sorted((e for e in read_events(path) if e["seq"] > self.sent.get(writer, 0)),
@@ -778,15 +844,16 @@ class HubLog:
         endpoint's verdict, which an echo kept here would carry."""
         return {k: v for k, v in e.items() if k != "verified"}
 
-    def next_upload(self):
+    def next_upload(self, live=None):
         """The next upload, (frame, {writer: seq}), or None when nothing is
         owed now. A pass the uplink paces (it stops while its lane is full)
         leaves the rest of its draw here, not yet read or sealed, and the
         next pass goes on from there, so a long backlog is read and sealed
         once, not once a pass. What would change the draw — a `have`, a `resend`, a refusal,
-        a new stream — drops it, and the next call draws afresh."""
+        a new stream — drops it, and the next call draws afresh. `live`: a
+        fresh draw looks at the hot writers alone (writers)."""
         if self.drawing is None:
-            self.drawing = self.uploads()
+            self.drawing = self.uploads(live)
         try:
             got = next(self.drawing, None)
         except BaseException:

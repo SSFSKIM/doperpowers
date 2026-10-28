@@ -296,6 +296,213 @@ class SharedRefresh(unittest.TestCase):
             sminos.transcripts_now()
 
 
+class HotLooks(unittest.TestCase):
+    """The upload pass between scans (HubLog.writers with `live`): a machine's
+    history is hundreds of own writers of sessions long ended, and the pass
+    runs every UPLOAD_EVERY. It looks again only at the hot ones — a running
+    session's, the operator's, one that changed lately, one it holds nothing
+    of — and lists the log directory again only once it changed; the scan's
+    whole look sees the rest (2026-10-28: an idle uplink at 5–16 % of a core)."""
+
+    HOUR_AGO = time.time() - 3600
+
+    def setUp(self):
+        hublog = sminos.sibling_module("sminos_hublog")
+        pid = str(uuid.uuid4())
+        checkout("hot-%s" % pid[:8], pid)
+        self.project = sminos.known_project(pid)
+        self.log_dir = os.path.join(self.project.home, "log")
+        os.makedirs(self.log_dir, exist_ok=True)
+        self.sids = [str(uuid.uuid4()) for _ in range(40)]
+        for sid in self.sids:
+            self.write("%s/%s" % (MACHINE, sid), sid, 1)
+        self.write(MACHINE + "/human", None, 1)
+        self.write("%s/%s" % (OTHER, uuid.uuid4()), None, 1)   # another machine's: no upload's
+        for name in os.listdir(self.log_dir):
+            os.utime(os.path.join(self.log_dir, name), (self.HOUR_AGO, self.HOUR_AGO))
+        self.still()
+        self.hl = hublog.HubLog(self.project, {"key": b"k" * 32, "machine": MACHINE})
+        self.hl.writers(own=True)   # the whole look: every own writer read
+
+    def write(self, writer, sid, seq):
+        path = os.path.join(self.log_dir, writer.replace("/", ".") + ".jsonl")
+        with open(path, "a") as f:
+            f.write(json.dumps({"ts": "2026-10-28T00:00:%02d.000Z" % seq, "writer": writer, "seq": seq,
+                                "kind": "say", "session": sid or "", "to": [], "text": "x"}) + "\n")
+        return path
+
+    def still(self):
+        """The log directory as it is after an hour of no file made or removed."""
+        os.utime(self.log_dir, (self.HOUR_AGO, self.HOUR_AGO))
+
+    def looked(self, live):
+        """(what a hot look returns, the own writer files it looked at, whether it listed the directory)."""
+        real_stat, real_glob = os.stat, glob.glob
+        stats, globs = [], []
+
+        def stat(path, *a, **k):
+            if str(path).startswith(self.log_dir + os.sep):
+                stats.append(os.path.basename(path))
+            return real_stat(path, *a, **k)
+
+        def counted(pattern, *a, **k):
+            globs.append(pattern)
+            return real_glob(pattern, *a, **k)
+        with mock.patch.object(os, "stat", stat), mock.patch.object(glob, "glob", counted):
+            got = self.hl.writers(own=True, live=live)
+        return got, sorted(stats), bool(globs)
+
+    def name(self, sid):
+        return "%s.%s.jsonl" % (MACHINE, sid)
+
+    def test_a_hot_look_passes_the_quiet_history_by(self):
+        running = self.sids[0]
+        recent = self.write("%s/%s" % (MACHINE, self.sids[1]), self.sids[1], 2)   # changed a moment ago
+        self.hl.writers(own=True)
+        got, stats, listed = self.looked({running})
+        self.assertEqual(stats, sorted([self.name(running), os.path.basename(recent), MACHINE + ".human.jsonl"]))
+        self.assertFalse(listed, "an unchanged directory is not listed again")
+        self.assertEqual(len(got), len(self.sids) + 1, "every own writer is still in what it returns")
+        self.assertEqual(got["%s/%s" % (MACHINE, self.sids[1])][0], 2)
+
+    def test_what_a_hot_look_passes_by_the_whole_look_sees(self):
+        quiet, running = self.sids[2], self.sids[3]
+        self.write("%s/%s" % (MACHINE, quiet), quiet, 2)
+        self.write("%s/%s" % (MACHINE, running), running, 2)
+        self.still()
+        got, _, _ = self.looked({running})
+        self.assertEqual(got["%s/%s" % (MACHINE, running)][0], 2, "a running session's append: the next pass")
+        self.assertEqual(got["%s/%s" % (MACHINE, quiet)][0], 1, "a writer quiet for an hour waits for the scan")
+        self.assertEqual(self.hl.writers(own=True)["%s/%s" % (MACHINE, quiet)][0], 2, "the scan's whole look")
+
+    def test_a_session_that_stopped_stays_hot_for_its_last_events(self):
+        sid = self.sids[4]
+        self.looked({sid})
+        self.write("%s/%s" % (MACHINE, sid), sid, 2)   # the daemon's `retired`, after the process ended
+        self.still()
+        got, _, _ = self.looked(set())
+        self.assertEqual(got["%s/%s" % (MACHINE, sid)][0], 2)
+
+    def test_a_new_writer_is_listed_and_read(self):
+        sid = str(uuid.uuid4())
+        self.write("%s/%s" % (MACHINE, sid), sid, 1)
+        got, stats, listed = self.looked(set())
+        self.assertTrue(listed, "a file made there moves the directory's mtime")
+        self.assertIn(self.name(sid), stats)
+        self.assertEqual(got["%s/%s" % (MACHINE, sid)][0], 1)
+
+    def test_a_look_that_lists_again_is_whole(self):
+        """A file replaced by rename moves the directory, not the quiet
+        writer's hotness: the look that lists again looks at every file."""
+        quiet = self.sids[5]
+        path = os.path.join(self.log_dir, self.name(quiet))
+        with open(path) as f:
+            first = f.read()
+        with open(path + ".tmp", "w") as f:
+            f.write(first + json.dumps({"ts": "2026-10-28T00:00:02.000Z", "writer": "%s/%s" % (MACHINE, quiet),
+                                        "seq": 2, "kind": "say", "session": quiet, "to": [], "text": "x"}) + "\n")
+        os.utime(path + ".tmp", (self.HOUR_AGO, self.HOUR_AGO))
+        os.replace(path + ".tmp", path)
+        got, _, listed = self.looked(set())
+        self.assertTrue(listed)
+        self.assertEqual(got["%s/%s" % (MACHINE, quiet)][0], 2)
+
+    def test_a_listing_taken_as_the_directory_changed_is_not_kept(self):
+        """On a coarse clock a file made in the tick of the listing leaves
+        the directory's mtime as the listing saw it: a listing is kept only
+        once the directory held still RACY before it."""
+        now = time.time()
+        os.utime(self.log_dir, (now, now))
+        self.looked(set())
+        sid = str(uuid.uuid4())
+        self.write("%s/%s" % (MACHINE, sid), sid, 1)
+        os.utime(self.log_dir, (now, now))   # the same mtime: made within the same tick
+        got, _, listed = self.looked(set())
+        self.assertTrue(listed)
+        self.assertIn("%s/%s" % (MACHINE, sid), got)
+
+
+class QuietReads(unittest.TestCase):
+    """The session plane reads a project's members again at MEMBERS_EVERY
+    only once what that read draws on moved (Plane.stale): its log, the
+    seats, its members' engine and session records; every project when a
+    session came or went, and at MEMBERS_WHOLE."""
+
+    def setUp(self):
+        pid = str(uuid.uuid4())
+        self.root = checkout("quiet-%s" % pid[:8], pid)
+        self.project = sminos.known_project(pid)
+        self.sid = live_session(self.root)
+        quietly(daemon.tick_all)   # joins it
+        self.plane = sminos.sibling_module("sminos_plane").Plane(MACHINE, lambda: None)
+        self.addCleanup(self.plane.close)
+        self.projects = {pid: self.project}
+        self.plane.tick(self.projects)
+        self.assertIn(self.sid, self.plane.members[pid], "the first read: its live member")
+
+    def reads(self, whole=False):
+        """How many projects the plane reads at its next look (MEMBERS_EVERY gone by; `whole`, MEMBERS_WHOLE too)."""
+        self.plane.next_scan = self.plane.next_members = 0.0
+        if whole:
+            self.plane.next_whole = 0.0
+        with mock.patch.object(self.plane, "refresh", wraps=self.plane.refresh) as refresh:
+            self.plane.tick(self.projects)
+        return refresh.call_count
+
+    def test_an_unmoved_project_is_not_read_again(self):
+        self.assertEqual(self.reads(), 0)
+        self.assertEqual(self.reads(), 0)
+
+    def test_an_append_to_its_log_is_read(self):
+        self.assertEqual(self.reads(), 0)
+        sminos.log_append(self.project, "%s/%s" % (OTHER, uuid.uuid4()), "say", to=[], text="hi")
+        self.assertEqual(self.reads(), 1)
+        self.assertEqual(self.reads(), 0)
+
+    def test_a_members_engine_record_is_read(self):
+        """Its state word comes from there, not the log."""
+        self.assertEqual(self.reads(), 0)
+        path = next(os.path.join(HOME, ".claude", "sessions", n) for n in os.listdir(os.path.join(HOME, ".claude", "sessions"))
+                    if json.load(open(os.path.join(HOME, ".claude", "sessions", n))).get("sessionId") == self.sid)
+        rec = json.load(open(path))
+        rec["status"] = "busy"
+        write(path, rec)
+        self.assertEqual(self.reads(), 1)
+
+    def test_every_project_is_read_at_members_whole(self):
+        self.assertEqual(self.reads(), 0)
+        self.assertEqual(self.reads(whole=True), 1)
+
+
+class WholeReads(unittest.TestCase):
+    """A whole read of a log is merged, and view_of's projection made, again
+    only once a file of it moved; each reader still has events of its own."""
+
+    def setUp(self):
+        pid = str(uuid.uuid4())
+        checkout("whole-%s" % pid[:8], pid)
+        self.project = sminos.known_project(pid)
+        for i, sid in enumerate(uuid.uuid4() for _ in range(5)):
+            remote_member(self.project, str(sid), i)
+
+    def test_a_reader_changes_no_other_readers_events(self):
+        first = sminos.log_read(self.project)
+        first[0]["kind"] = "changed by a reader"
+        second = sminos.log_read(self.project)
+        self.assertEqual(second[0]["kind"], "joined")
+        self.assertEqual(len(first), len(second))
+
+    def test_an_append_is_read_and_projected(self):
+        before = sminos.view_of(self.project, titles=False)
+        sid = str(uuid.uuid4())
+        remote_member(self.project, sid, 9)
+        after = sminos.view_of(self.project, titles=False)
+        self.assertNotIn(sid, before.info)
+        self.assertIn(sid, after.info)
+        self.assertEqual(len(after.events), len(before.events) + 3)
+        self.assertEqual(sminos.log_read(self.project)[-1]["session"], after.events[-1]["session"])
+
+
 class OrgAhead(unittest.TestCase):
     """The org's directory is handled before the frames queued ahead of it."""
 
@@ -333,7 +540,8 @@ class BenchOpens(unittest.TestCase):
     def test_the_opens_at_their_moments(self):
         r = subprocess.run([sys.executable, os.path.join(HERE, "bench_scale.py"), "opens", SCRIPTS, "--dirs", "3",
                             "--per-dir", "1", "--seats", "4", "--local", "2", "--remote", "1", "--mini", "1",
-                            "--says", "2", "--live", "5", "--large", "1", "--large-rows", "600", "--warm-after", "1"],
+                            "--says", "2", "--own", "2", "--live", "5", "--large", "1", "--large-rows", "600",
+                            "--warm-after", "1"],
                            capture_output=True, text=True, timeout=300,
                            env={k: v for k, v in os.environ.items() if k not in ("HOME", "SMINOS_HOME")})
         lines = [json.loads(line) for line in r.stdout.splitlines() if line.startswith("{")]
@@ -416,7 +624,7 @@ class BenchStops(unittest.TestCase):
     128 + the signal."""
 
     SCALE = ["--dirs", "3", "--per-dir", "1", "--seats", "4", "--local", "2", "--remote", "1", "--mini", "1",
-             "--says", "2", "--live", "3"]
+             "--says", "2", "--own", "2", "--live", "3"]
 
     def stopped(self, sig, argv, ready):
         """Runs bench_scale.py `argv`, signals it once `ready(commands, output)`

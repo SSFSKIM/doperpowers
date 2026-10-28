@@ -664,6 +664,7 @@ class Members(Machine):
                          "a changed title sent alone")
         end2()
         sminos.forget_caches()
+        link.plane.live = link.plane.records.scan()   # the plane's look at the engine's records (PRESENCE_EVERY)
         link.members(now + 3 * plane.MEMBERS_EVERY + 3)
         self.assertEqual(link.session_lane.take(), [{"t": "member", "session": S2, "gone": True}])
         link.members(now + 4 * plane.MEMBERS_EVERY + 4)
@@ -791,14 +792,14 @@ class MembersFirst(Machine):
         hl = link.logs[self.hp.id]
         draw, joined = hl.next_upload, []
 
-        def joining():
+        def joining(*a):
             if not joined:
                 joined.append(True)
                 self.session(self.hp, S2)
                 sminos.forget_caches()
                 sminos.reconcile(self.hp)
                 sminos.lifecycle(self.hp, S2, "titled", title="first words")
-            return draw()
+            return draw(*a)
         hl.next_upload = joining
         link.upload(hl)
         frames = link.session_lane.take()
