@@ -68,8 +68,26 @@ describe('the message tool', () => {
     })
   })
 
-  test('a headless session registers none', async ($, on) => {
-    const { registered } = engine(on)
+  for (const env of [{}, { SMNS_INTERNAL: '1' } as Record<string, string>, { MAWS_NATIVE_TO_HUMAN: '7' }, { MAWS_NATIVE_TO_HUMAN: '' }, { MAWS_NATIVE_TO_HUMAN: 'native' }]) {
+    test(`a headless session registers none: nobody reads its report (${JSON.stringify(env)})`, async ($, on) => {
+      const { registered } = engine(on, { env })
+      await $.session.start({ cwd: '/w', surface: null, isInteractive: false })
+
+      expect(registered).toEqual([])
+    })
+  }
+
+  for (const advertised of ['8', '9']) {
+    test(`a headless launch of a MAWS that advertises ${advertised}, which offers no tool of its own and reads the report, registers it`, async ($, on) => {
+      const { registered } = engine(on, { env: { MAWS_NATIVE_TO_HUMAN: advertised } })
+      await $.session.start({ cwd: '/w', surface: null, isInteractive: false })
+
+      expect(registered.map((r) => r.tool)).toEqual([MESSAGE_TOOL])
+    })
+  }
+
+  test('a headless MAWS launch under another output style registers none', async ($, on) => {
+    const { registered } = engine(on, { env: { MAWS_NATIVE_TO_HUMAN: '8' }, style: 'default' })
     await $.session.start({ cwd: '/w', surface: null, isInteractive: false })
 
     expect(registered).toEqual([])
