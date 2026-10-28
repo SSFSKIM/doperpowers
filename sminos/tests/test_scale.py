@@ -410,20 +410,23 @@ def descendants(root):
 
 
 class BenchStops(unittest.TestCase):
-    """bench_scale.py run, stopped by SIGTERM or SIGINT mid-warm-up (a
-    timeout, a harness), stops every process it started — the sessions,
-    `daemon run` and its uplink, the stand-in — and exits non-zero."""
+    """bench_scale.py stopped by SIGTERM or SIGINT (a timeout, a harness):
+    every process it started — the sessions, `daemon run` and its uplink,
+    the stand-in — is stopped, the synthetic machine removed, and it exits
+    128 + the signal."""
 
-    def stopped(self, sig, *mode):
+    SCALE = ["--dirs", "3", "--per-dir", "1", "--seats", "4", "--local", "2", "--remote", "1", "--mini", "1",
+             "--says", "2", "--live", "3"]
+
+    def stopped(self, sig, argv, ready):
+        """Runs bench_scale.py `argv`, signals it once `ready(commands, output)`
+        holds of its descendants' command lines and its output, and checks
+        what it leaves."""
         out_path = os.path.join(tempfile.mkdtemp(dir=T), "bench.out")
         with open(out_path, "w") as out_file:
-            bench = subprocess.Popen(
-                [sys.executable, os.path.join(HERE, "bench_scale.py"), "run", SCRIPTS, *mode, "--dirs", "3",
-                 "--per-dir", "1", "--seats", "4", "--local", "2", "--remote", "1", "--mini", "1", "--says", "2",
-                 "--live", "3", "--warmup", "120", "--seconds", "60"],
-                stdout=out_file, stderr=subprocess.STDOUT,
-                env={k: v for k, v in os.environ.items() if k not in ("HOME", "SMINOS_HOME")})
-        standin = "endpoint_standin.py" if mode else "hub_standin.py"
+            bench = subprocess.Popen([sys.executable, os.path.join(HERE, "bench_scale.py"), *argv, *self.SCALE],
+                                     stdout=out_file, stderr=subprocess.STDOUT,
+                                     env={k: v for k, v in os.environ.items() if k not in ("HOME", "SMINOS_HOME")})
         started = {}
 
         def output():
@@ -437,16 +440,14 @@ class BenchStops(unittest.TestCase):
             deadline = time.time() + 120
             while time.time() < deadline and bench.poll() is None:
                 started = descendants(bench.pid)
-                commands = list(started.values())
-                if (any("daemon uplink" in c for c in commands) and any(standin in c for c in commands)
-                        and sum(c.startswith("sleep 86399") for c in commands) == 3):
+                if ready(list(started.values()), output()):
                     break
                 time.sleep(0.2)
             else:
-                self.fail("the bench never reached its window: %s\n%s" % (sorted(started.values()), output()))
+                self.fail("the bench never got there: %s\n%s" % (sorted(started.values()), output()))
             bench.send_signal(sig)
             bench.wait(90)
-            self.assertNotEqual(bench.returncode, 0, output())
+            self.assertEqual(bench.returncode, 128 + sig, output())
             deadline = time.time() + 15
             while left() and time.time() < deadline:
                 time.sleep(0.2)
@@ -466,14 +467,48 @@ class BenchStops(unittest.TestCase):
                 if line.startswith("built /tmp/smb-"):
                     shutil.rmtree(line.split()[1], ignore_errors=True)
 
+    def mid_warmup(self, sig, *mode):
+        standin = "endpoint_standin.py" if mode else "hub_standin.py"
+        self.stopped(sig, ["run", SCRIPTS, *mode, "--warmup", "120", "--seconds", "60"], lambda commands, _: (
+            any("daemon uplink" in c for c in commands) and any(standin in c for c in commands)
+            and sum(c.startswith("sleep 86399") for c in commands) == 3))
+
     def test_sigterm_on_dx2(self):
-        self.stopped(signal.SIGTERM)
+        self.mid_warmup(signal.SIGTERM)
 
     def test_sigterm_on_rl10(self):
-        self.stopped(signal.SIGTERM, "--rl10")
+        self.mid_warmup(signal.SIGTERM, "--rl10")
 
     def test_sigint_on_rl10(self):
-        self.stopped(signal.SIGINT, "--rl10")
+        self.mid_warmup(signal.SIGINT, "--rl10")
+
+    def test_sigterm_mid_tick_in_process(self):
+        """`tick` runs the daemon's tick_all in the bench's own process,
+        which takes a SystemExit as one project's failure: the stop still
+        ends the run there, not after every tick asked for."""
+        self.stopped(signal.SIGTERM, ["tick", SCRIPTS, "--ticks", "100000"], lambda commands, out: (
+            "steady tick" in out and sum(c.startswith("sleep 86399") for c in commands) == 3))
+
+    def test_a_signal_while_a_child_starts_unwinds_only_once_it_is_known(self):
+        """A signal that lands while spawn starts a child is raised only once
+        the child is in STARTED, so the end's sweep finds it."""
+        sys.path.insert(0, HERE)
+        import bench_scale
+        real = subprocess.Popen
+        self.addCleanup(bench_scale._SIGNAL.update, got=None, raised=False, shield=0)
+
+        def popen(*args, **kwargs):
+            p = real(*args, **kwargs)
+            bench_scale._on_signal(signal.SIGTERM, None)
+            return p
+        with mock.patch.object(bench_scale.subprocess, "Popen", popen):
+            with self.assertRaises(bench_scale.Stopped):
+                bench_scale.spawn(["sleep", "86399"])
+        child = bench_scale.STARTED[-1]
+        self.assertEqual(child.args, ["sleep", "86399"])
+        self.addCleanup(child.kill)
+        bench_scale.end_started()
+        self.assertIsNotNone(child.poll(), "the sweep ended it")
 
 
 if __name__ == "__main__":
