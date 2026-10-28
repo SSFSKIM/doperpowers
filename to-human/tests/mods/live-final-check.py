@@ -12,6 +12,7 @@ and do nothing else:
 A probe plugin, loaded outermost through `prependPlugins`, records each step
 it sees (whether the engine's bottom ran, so whether a request was made, and
 the step's stop and usage) and each turn's `turn.complete` (reason, usage).
+It records too what the model reads for each of the engine's style reminders.
 It prints PASS or FAIL for each item:
 1. turn one made two requests and ended `answer`;
 2. turn two made one request, its next step answered by to-human with no
@@ -21,7 +22,9 @@ It prints PASS or FAIL for each item:
    the engine's `answeredWithoutRequest` flag, which the view reads on a resume;
 4. the terminal draws the message as a message row and nothing after it:
    no text of the made-up response, and no `› working record` for it;
-5. sminos exports the final message to the project's log once, word for word.
+5. sminos exports the final message to the project's log once, word for word;
+6. the engine's style reminder, which every request of the main loop carries,
+   reads the rule for a final message after the engine's words.
 
 It spends model calls (about 4, haiku unless --model says otherwise), so no
 suite runs it: run it by hand with the model gateway's keys in the
@@ -47,6 +50,7 @@ _spec.loader.exec_module(base)
 
 MESSAGE_TOOL = base.MESSAGE_TOOL
 FINAL_ANSWER = "Message sent to the human."
+STYLE_FINAL = "When a message is the last thing you do in a turn, send it alone with `final: true`."
 TEXT_ONE = "Baseline bravo: no final flag."
 TEXT_TWO = "Closing charlie: the work is done."
 PROMPT_ONE = ("This is a test of your tools. Call the tool %s once, with its text exactly `%s` and no other field. "
@@ -78,6 +82,12 @@ export function register(on: On) {
         blocks: e.message.content.map((b) => b.type) }))
       await $.fs.write(OUT, lines.join('\n') + '\n')
     }
+    return result
+  })
+  on('prompt.attachment', { type: 'output_style' }, async ($, e, next) => {
+    const result = await next(e)
+    lines.push(JSON.stringify({ ev: 'style', agentId: e.agentId ?? null, text: result.text }))
+    await $.fs.write(OUT, lines.join('\n') + '\n')
     return result
   })
   on('turn.complete', async ($, e, next) => {
@@ -216,6 +226,12 @@ class Final(base.Live):
         self.check("5 sminos exports the final message once, word for word",
                    len(exported) == 1 and exported[0].get("kind") == "message" and exported[0].get("text") == TEXT_TWO,
                    "%d event(s): %s" % (len(exported), [{k: e.get(k) for k in ("kind", "src", "text")} for e in exported]))
+
+        # 6. The engine's style reminder, as the model reads it.
+        styles = [r["text"] for r in self.probe() if r["ev"] == "style" and r["agentId"] is None]
+        self.check("6 the engine's style reminder reads the rule for a final message after its own words",
+                   len(styles) >= 2 and all(t and t.startswith(base.STYLE) and t.endswith(" " + STYLE_FINAL) for t in styles),
+                   "%d reminder(s): %s" % (len(styles), sorted(set(styles))))
 
         print("debug log, to-human's final lines: %s" % [line[-110:] for line in debug.splitlines()
                                                       if "final message" in line])

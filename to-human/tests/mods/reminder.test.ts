@@ -2,7 +2,7 @@ import type { On } from 'claude-code'
 import { describe, expect, mock, test, tier } from 'claude-code/testing'
 
 import { TO_HUMAN_STYLE } from '../../hooks/mods/message'
-import { REMINDER, REMIND_AT, pointOf } from '../../hooks/mods/reminder'
+import { REMINDER, REMIND_AT, STYLE_FINAL, pointOf } from '../../hooks/mods/reminder'
 
 tier('user')
 
@@ -38,6 +38,7 @@ function engine(on: On, { env = {}, style = TO_HUMAN_STYLE }: { env?: Record<str
     entered.push(e.context ?? [])
     return { text: e.text, context: e.context } as never
   })
+  on('prompt.attachment', (_, e) => ({ text: e.text }))
   on('ui.log', () => ({ value: undefined }))
   /**
    * Holds the prompt of this text beneath: `arrived` resolves once it is
@@ -216,5 +217,40 @@ describe('the reminder', () => {
     await $.prompt.submit(prompt('next'))
 
     expect(reminded(other.entered)).toEqual([false, false])
+  })
+})
+
+const STYLE_REMINDER = 'doperpowers:to-human output style is active. Remember to follow the specific guidelines for this style.'
+const styleReminder = (extra: Record<string, unknown> = {}) => ({ type: 'output_style', text: STYLE_REMINDER, origin: { kind: 'engine' }, ...extra }) as never
+
+describe("the engine's style reminder", () => {
+  test('on the main loop it carries the rule for a final message after its own words', async ($, on) => {
+    engine(on)
+    await $.session.start({ cwd: '/w', surface: null, isInteractive: true })
+
+    expect((await $.prompt.attachment(styleReminder())).text).toBe(`${STYLE_REMINDER} ${STYLE_FINAL}`)
+    expect(STYLE_FINAL).toContain('`final: true`')
+  })
+
+  test("a subagent's reads the same text as main's: the engine caches the answer by the attachment's UUID, which a fork shares", async ($, on) => {
+    engine(on)
+    await $.session.start({ cwd: '/w', surface: null, isInteractive: true })
+
+    const main = (await $.prompt.attachment(styleReminder())).text
+    expect((await $.prompt.attachment(styleReminder({ agentId: 'a1' }))).text).toBe(main)
+  })
+
+  test('where the message tool is not registered (MAWS before 8) it is left as the engine wrote it', async ($, on) => {
+    engine(on, { env: { MAWS_NATIVE_TO_HUMAN: '1' } })
+    await $.session.start({ cwd: '/w', surface: null, isInteractive: true })
+
+    expect((await $.prompt.attachment(styleReminder())).text).toBe(STYLE_REMINDER)
+  })
+
+  test('another attachment is left alone', async ($, on) => {
+    engine(on)
+    await $.session.start({ cwd: '/w', surface: null, isInteractive: true })
+
+    expect((await $.prompt.attachment({ type: 'todo_reminder', text: 'Todos.', origin: { kind: 'engine' } } as never)).text).toBe('Todos.')
   })
 })

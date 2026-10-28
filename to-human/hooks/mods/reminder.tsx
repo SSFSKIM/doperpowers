@@ -15,6 +15,21 @@ export const REMIND_AT = [150_000, 300_000, 450_000] as const
 export const REMINDER =
   'Output style active: the human reads only what you send with the message tool (`mcp__to-human__message`). When a message ends your turn, send it with `final: true`.'
 
+/**
+ * What the engine's own style reminder gains: the `output_style` attachment
+ * (`<style> output style is active. Remember to follow the specific guidelines
+ * for this style.`), which the engine puts beside every request of the main
+ * loop, the turn's prompt and each tool result alike, so it stands where the
+ * model decides whether its turn ends. It names no rule of the style; this one
+ * saves a request each turn: a final message ends the turn with none after it
+ * (the message mod), and only one sent alone. The engine caches an
+ * attachment's answer process-wide by its UUID, and a fork inherits main's, so
+ * the answer cannot depend on the loop that asks first; it depends on the
+ * engine's text and on whether the message tool is registered, which hold for
+ * every loop.
+ */
+export const STYLE_FINAL = 'When a message is the last thing you do in a turn, send it alone with `final: true`.'
+
 /** How many of the reminder's points a context of `tokens` has passed: 0 below the first. */
 export function pointOf(tokens: number | undefined): number {
   return REMIND_AT.filter((at) => tokens !== undefined && tokens >= at).length
@@ -35,7 +50,9 @@ export function pointOf(tokens: number | undefined): number {
  * below one without the event (a `/clear`). Only where the message tool is
  * registered, since the reminder names it. A prompt that runs a slash command
  * carries none. A prompt dropped beneath gives the reminder to the next one,
- * unless a newer prompt moved the point while it waited.
+ * unless a newer prompt moved the point while it waited. The engine's style
+ * reminder carries `STYLE_FINAL` after its own words wherever the message tool
+ * is registered, the same text for every loop (see `STYLE_FINAL`).
  */
 export function registerReminder(on: On) {
   // The highest point reminded in this window; undefined until the first
@@ -43,7 +60,16 @@ export function registerReminder(on: On) {
   // the point is still the one it set.
   let reached: { point: number } | undefined
 
-  on('session.compact', { trigger: /^/ }, async (_, e, next) => {
+  // Loop-independent: see STYLE_FINAL.
+  on('prompt.attachment', { type: 'output_style' }, async (_, e, next) => {
+    const result = await next(e)
+    if (result.text === null || !isMessageToolOn()) {
+      return result
+    }
+    return { ...result, text: `${result.text} ${STYLE_FINAL}` }
+  })
+
+  on('session.compact',{ trigger: /^/ }, async (_, e, next) => {
     const result = await next(e)
     if (e.agentId === undefined && e.trigger !== 'precompute' && result.skip === undefined) {
       reached = { point: 0 }
