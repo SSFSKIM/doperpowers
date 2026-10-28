@@ -1,6 +1,9 @@
 """Boot step 12 (Design §7): each DEVCLOUD_PROJECTS entry set up by the
 person's `devenv` runner, run as the user with the host's environment; and the
-mirror cache sandboxes clone from.
+mirror cache sandboxes clone from. Where systemd is init, the user's manager
+is started first and every entry gets its bus, since a project's setup may
+install a user unit (MAWS's mawsd) and `systemctl --user` reaches no manager
+without it.
 
 An entry `<name>` runs `devenv up <name>` against the registry; `<owner>/<repo>`
 runs `devenv up <repo> --url https://github.com/<owner>/<repo>.git`, which
@@ -18,7 +21,7 @@ import os
 import pathlib
 import re
 
-from .proc import StepError, as_user, run
+from .proc import StepError, as_user, run, start_user_manager
 
 MIRRORS = pathlib.Path("/srv/devcloud/mirrors")
 # devenv's own limit on setup.sh is 30 minutes; a clone and a mirror come on top.
@@ -84,10 +87,11 @@ def _keep_mirrors(user, env, devenv, name, mirrors):
     return kept
 
 
-def set_up(user, desc, env, mirrors=MIRRORS):
+def set_up(user, desc, env, mirrors=MIRRORS, user_manager=False):
     """Runs `devenv up` for every entry, then (on a persistent host) keeps its
-    mirrors. Every entry is tried; the step fails when any failed. Returns
-    (state, detail)."""
+    mirrors; with `user_manager` (systemd is init), the user's manager is
+    started first. Every entry is tried; the step fails when any failed.
+    Returns (state, detail)."""
     if not desc.projects:
         return ("skipped", "no projects named")
     devenv = user.home / ".local/bin/devenv"
@@ -96,6 +100,8 @@ def set_up(user, desc, env, mirrors=MIRRORS):
     env = dict(env)
     if desc.mirror_dir:
         env["DEVENV_MIRROR_DIR"] = desc.mirror_dir
+    if user_manager:
+        env = start_user_manager(user, env, log="projects")
     parts, mirrored, failed = [], [], False
     for entry in desc.projects:
         name, args = devenv_args(entry)

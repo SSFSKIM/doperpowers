@@ -250,7 +250,7 @@ def close_admission(run):
             failed.append(f"{unit} ({error})")
     unit_file = host.user.home / ".config/systemd/user" / sminos_host.UNIT
     if unit_file.exists():
-        env = dict(host.user_env(), XDG_RUNTIME_DIR=f"/run/user/{host.user.uid}")
+        env = host.user.bus_env(host.user_env())
         try:
             host.run(["systemctl", "--user", "disable", "--now", sminos_host.UNIT], user=host.user, env=env,
                      log="lifecycle", timeout=run.bound(60))
@@ -502,7 +502,7 @@ def stop_services(run):
     stopped, failed = list(units), []
     user_env = host.user_env()
     if any(path.exists() for path in maws_host.unit_files(host.user, user_env)):
-        env = dict(user_env, XDG_RUNTIME_DIR=f"/run/user/{host.user.uid}")
+        env = host.user.bus_env(user_env)
         try:
             host.run(["systemctl", "--user", "stop", maws_host.UNIT], user=host.user, env=env, log="lifecycle",
                      timeout=run.bound(60))

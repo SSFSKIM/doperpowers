@@ -343,7 +343,11 @@ entry to it: `<name>` runs `devenv up <name>` against the person's registry;
 `<owner>/<repo>` runs `devenv up <repo> --url https://github.com/<owner>/<repo>.git`;
 `@<ref>` on either adds `--ref <ref>`, which picks the ref for this host's
 clone. Every entry is tried, with the user's login environment and
-`/etc/devcloud/env`; the output goes to `/var/log/devcloud/projects.log`. A
+`/etc/devcloud/env`; the output goes to `/var/log/devcloud/projects.log`.
+Where systemd is init, the step first turns lingering on and starts the
+user's manager, and every entry gets its bus (`XDG_RUNTIME_DIR`), so a
+project's setup that installs a user unit (MAWS's `mawsd`) reaches
+`systemctl --user` as it would from a login. A
 reconcile does not run projects; `devenv up` is run when the work needs it.
 
 **The mirror cache.** A persistent host keeps a bare mirror of each GitHub
