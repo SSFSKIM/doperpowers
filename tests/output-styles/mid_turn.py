@@ -20,7 +20,12 @@ went can be read back.
   final message     a span in the response that ends the turn (no tool call),
                     or a message-tool call in a response that calls nothing
                     else and is followed by that one (the tool used for the
-                    turn's last word)
+                    turn's last word). A response of message calls alone, one
+                    of them `final: true`, ends the turn live: the plugin
+                    answers the next step itself with FINAL_ANSWER and no
+                    request; an eval that replays this keeps that made-up
+                    answer as a last step marked `synthetic`, so the calls
+                    count as final here
   cut off           a message-tool call in the run's last response when that
                     response calls nothing else and the run stopped before
                     the next: it could be either kind, so it is counted as
@@ -30,10 +35,17 @@ Spans are read as the to-human view reads them (sminos_marks.parse, the port
 of the view's grammar): a tag inside inline code or a fenced block is
 literal, and an unclosed mark runs to the end of the text.
 
+The model is reached through the local gateway (`gateway_client`): the
+stored ANTHROPIC_API_KEY has no credit. The gateway answers a Claude model
+only for a request shaped as Claude Code's, its first system block the
+identity line (`CC_SYSTEM`, `claude_code_system`) and the `claude-code` beta
+(`CC_BETA`); anything else gets `429 rate_limit_error`. Every judge here
+sends that shape, whichever client an eval passes.
+
 Design: docs/doperpowers/specs/2026-10-20-to-human-message-tool-design.md
 (acceptance 6).
 """
-import json, re, sys
+import json, os, re, sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
@@ -68,8 +80,38 @@ def shipped_message_tool(path=MESSAGE_TSX):
 
 
 MESSAGE_TOOL, MESSAGE_TOOL_DEF, MESSAGE_RESULT = shipped_message_tool()
+FINAL_ANSWER = _const(MESSAGE_TSX.read_text(), "FINAL_ANSWER")  # the plugin's made-up answer after a final message
 
 THINKING = {"thinking": {"type": "adaptive", "display": "updates"}, "betas": ["thinking-display-updates-2026-08-18"]}
+
+CC_IDENTITY = "You are Claude Code, Anthropic's official CLI for Claude."
+CC_SYSTEM = [{"type": "text", "text": CC_IDENTITY}]
+CC_BETA = "claude-code-20250219"
+
+
+def gateway_client():
+    """A client of the local gateway the sessions use (ANTHROPIC_BASE_URL, ANTHROPIC_AUTH_TOKEN)."""
+    import anthropic
+    return anthropic.Anthropic(base_url=os.environ["ANTHROPIC_BASE_URL"], auth_token=os.environ["ANTHROPIC_AUTH_TOKEN"],
+                               api_key=None, max_retries=4)
+
+
+def claude_code_system(text):
+    """A system prompt that opens with the identity line, as Claude Code sends it: that line its own first block."""
+    if not text.startswith(CC_IDENTITY + " "):
+        raise SystemExit("mid_turn: the system prompt does not open with %r" % CC_IDENTITY)
+    return CC_SYSTEM + [{"type": "text", "text": text[len(CC_IDENTITY) + 1:]}]
+
+
+def ask_judge(client, prompt):
+    """One judge's verdict (claude-opus-5-5 at low effort), its JSON answer parsed."""
+    resp = client.beta.messages.create(model="claude-opus-5-5", max_tokens=4000, output_config={"effort": "low"},
+                                       system=CC_SYSTEM, betas=[CC_BETA], messages=[{"role": "user", "content": prompt}])
+    out = "".join(b.text for b in resp.content if b.type == "text")
+    m = re.search(r"\{.*\}", out, re.S)
+    if m is None:
+        raise ValueError("the judge gave no JSON (stop %s)" % resp.stop_reason)
+    return json.loads(m.group(0))
 
 SPAN = re.compile(r"<message>(.*?)</message>", re.S)  # for stripping marks from prose, not for counting
 
@@ -83,6 +125,15 @@ def message_only(blocks):
     """Whether a response's tool calls are all message-tool calls (and it makes one)."""
     uses = [b for b in blocks if b["type"] == "tool_use"]
     return bool(uses) and all(b["name"] == MESSAGE_TOOL for b in uses)
+
+
+def is_final_call(b):
+    return b["type"] == "tool_use" and b["name"] == MESSAGE_TOOL and b["input"].get("final") is True
+
+
+def ends_on_final(blocks):
+    """Whether the plugin ends the turn after this response: message calls alone, one of them final."""
+    return message_only(blocks) and any(is_final_call(b) for b in blocks)
 
 # doperpowers-f7's criterion (their audit, 2026-10-20), word for word.
 JUDGE = """A coding agent works for a human who is away from the screen; the human reads only what the agent wraps in <message> tags. The API returned the text below as a short summary of a note the agent wrote between two tool calls; the summary may have dropped any <message> tags.
@@ -117,10 +168,7 @@ def notes_to_judge(steps):
 
 
 def judge_note(client, note):
-    resp = client.messages.create(model="claude-opus-5-5", max_tokens=4000, output_config={"effort": "low"},
-                                  messages=[{"role": "user", "content": JUDGE.replace("{note}", note)}])
-    out = "".join(b.text for b in resp.content if b.type == "text")
-    return json.loads(re.search(r"\{.*\}", out, re.S).group(0))
+    return ask_judge(client, JUDGE.replace("{note}", note))
 
 
 def judge_runs(client, runs, pool):
