@@ -427,6 +427,9 @@ run_suites() {
   else fail "list --subagents: each agent's lifecycle from the engine or the disk, the tree, --done (test_subagents.py)"; fi
   if python3 "$SCRIPT_DIR/test_jobs.py"; then pass "the jobs ledger: rows in any batches, copies (test_jobs.py)"; else
     fail "the jobs ledger: rows in any batches, copies (test_jobs.py)"; fi
+  if python3 "$SCRIPT_DIR/test_reply.py"; then
+    pass "a seat's reply is the last thing it said, a final message through the tool included (test_reply.py)"
+  else fail "a seat's reply is the last thing it said, a final message through the tool included (test_reply.py)"; fi
 }
 summary() {
   echo

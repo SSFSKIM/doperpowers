@@ -7651,23 +7651,37 @@ def transcript_contains(session_id, marker):
         return False
 
 
+def _said(record, results):
+    """What an assistant record said: its text, else what it sent its human
+    through a message tool (MESSAGE_TOOLS), whose text is in the call's input,
+    each call once its result is no error (_sent_text). "" for neither."""
+    c = (record.get("message") or {}).get("content")
+    if not isinstance(c, list):
+        return str(c or "").strip()
+    text = " ".join(b.get("text", "") for b in c if isinstance(b, dict) and b.get("type") == "text").strip()
+    if text:
+        return text
+    sent = (_sent_text(b, results) for b in c if isinstance(b, dict))
+    return "\n\n".join(t.strip() for t in sent if t and t.strip())
+
+
 def transcript_reply(session_id, seat_ref="<seat>"):
-    """The last assistant text of a session's transcript, plus a rendering of a
-    pending AskUserQuestion (a turn can end blocked on it; the question lives
-    in the tool_use INPUT, not in text — without rendering it the reply would
-    be empty and the orchestrator would have to dig the transcript by hand)."""
-    rows = transcript_rows(session_id)
+    """The last thing a session's transcript says (_said: an assistant's text,
+    or a message it sent its human through a message tool), plus a rendering
+    of a pending AskUserQuestion (a turn can end blocked on it; the question
+    lives in the tool_use INPUT, not in text — without rendering it the reply
+    would be empty and the orchestrator would have to dig the transcript by
+    hand). A response a hook answered in place of a request
+    (`answeredWithoutRequest`: to-human's `Message sent to the human.` after a
+    final message) says nothing of the session's own and is passed over, so
+    a turn that ended on a final message replies with that message."""
+    rows = [r for r in transcript_rows(session_id) if r.get("answeredWithoutRequest") is not True]
+    results = {str(b.get("tool_use_id") or ""): b for r in rows if r.get("type") == "user" for b in _blocks(r, "tool_result")}
     text = ""
     for r in reversed(rows):
         if r.get("type") == "assistant":
-            c = r.get("message", {}).get("content")
-            t = ""
-            if isinstance(c, list):
-                t = " ".join(b.get("text", "") for b in c if isinstance(b, dict) and b.get("type") == "text")
-            elif c:
-                t = str(c)
-            if t.strip():
-                text = t.strip()
+            text = _said(r, results)
+            if text:
                 break
     pending = []
     last = next((r for r in reversed(rows) if r.get("type") == "assistant"), None)
