@@ -490,8 +490,9 @@ class BenchStops(unittest.TestCase):
             "steady tick" in out and sum(c.startswith("sleep 86399") for c in commands) == 3))
 
     def test_a_signal_while_a_child_starts_unwinds_only_once_it_is_known(self):
-        """A signal that lands while spawn starts a child is raised only once
-        the child is in STARTED, so the end's sweep finds it."""
+        """A signal that lands while spawn (or run_child, which waits for its
+        child) starts a child is raised only once the child is in STARTED,
+        so the end's sweep finds it."""
         sys.path.insert(0, HERE)
         import bench_scale
         real = subprocess.Popen
@@ -501,14 +502,17 @@ class BenchStops(unittest.TestCase):
             p = real(*args, **kwargs)
             bench_scale._on_signal(signal.SIGTERM, None)
             return p
-        with mock.patch.object(bench_scale.subprocess, "Popen", popen):
-            with self.assertRaises(bench_scale.Stopped):
-                bench_scale.spawn(["sleep", "86399"])
-        child = bench_scale.STARTED[-1]
-        self.assertEqual(child.args, ["sleep", "86399"])
-        self.addCleanup(child.kill)
-        bench_scale.end_started()
-        self.assertIsNotNone(child.poll(), "the sweep ended it")
+        for start in (bench_scale.spawn, bench_scale.run_child):
+            with self.subTest(start.__name__):
+                bench_scale._SIGNAL.update(got=None, raised=False, shield=0)
+                with mock.patch.object(bench_scale.subprocess, "Popen", popen):
+                    with self.assertRaises(bench_scale.Stopped):
+                        start(["sleep", "86399"])
+                child = bench_scale.STARTED[-1]
+                self.assertEqual(child.args, ["sleep", "86399"])
+                self.addCleanup(child.kill)
+                bench_scale.end_started()
+                self.assertIsNotNone(child.poll(), "the sweep ended it")
 
 
 if __name__ == "__main__":
