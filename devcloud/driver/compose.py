@@ -14,7 +14,7 @@ import shlex
 import tarfile
 
 from devcloudlib import descriptor as host_descriptor
-from devcloudlib import envfile
+from devcloudlib import envfile, projects as host_projects
 
 from .errors import FAILED, DriverError
 
@@ -32,6 +32,16 @@ BOOT_ENV = "/etc/devcloud/boot.env"
 SETUP_INPUTS = ("DEVCLOUD_USER", "DEVCLOUD_UID", "DEVCLOUD_HOME")
 SEED_PATH = "/etc/devcloud/seed/seed.json"
 RECIPE_DIRS = ("image", "boot")
+# The project whose `devenv up` installs `mawsd`, which provisions the host's endpoint (boot step 13).
+MAWS_PROJECT = "maws"
+
+
+def provisions(profile, projects):
+    """Whether a host with `projects` provisions MAWS's endpoint at boot: the
+    profile names the v2 code and the projects set up MAWS (by registry name
+    or as <owner>/MAWS, any ref). Any other host boots as before."""
+    return bool(profile.maws_secret) and any(
+        host_projects.devenv_args(entry)[0].lower() == MAWS_PROJECT for entry in projects)
 
 
 def descriptor(name, profile, projects, expires, creator, spot, seed, adopted=False):
@@ -59,6 +69,9 @@ def descriptor(name, profile, projects, expires, creator, spot, seed, adopted=Fa
         pairs.append(("DEVCLOUD_ADOPTED", "1"))
     if profile.desk_secret:
         pairs.append(("DEVCLOUD_SMINOS_SECRET", profile.desk_secret))
+    if provisions(profile, projects):
+        pairs += [("DEVCLOUD_MAWS_SECRET", profile.maws_secret),
+                  ("DEVCLOUD_MAWS_DELEGATION_ID", profile.delegation_id)]
     text = envfile.format(pairs)
     try:
         host_descriptor.parse(text)

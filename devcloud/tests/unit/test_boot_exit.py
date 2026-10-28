@@ -1,6 +1,7 @@
 """devcloud-boot's exit status: 0 when every step is ok, 1 when a step of 1-11
-failed (step 12 then never runs), 3 when only step 12 (projects) failed — the
-code the container entrypoint and the boot unit read as "start the services"."""
+failed (steps 12 and 13 then never run), 3 when only step 12 (projects) or 13
+(maws) failed — the code the container entrypoint and the boot unit read as
+"start the services"."""
 import contextlib
 import pathlib
 import tempfile
@@ -20,7 +21,7 @@ class BootExitTest(unittest.TestCase):
         self.status_path = tmp / "status.json"
         self.lock_path = tmp / "lifecycle.lock"
 
-    def boot(self, failing=None, projects_state="ok", during=None):
+    def boot(self, failing=None, projects_state="ok", during=None, maws_state="skipped"):
         """`during`: a step's label and what happens on the host while it runs."""
         recorded = []
         with contextlib.ExitStack() as stack:
@@ -43,20 +44,31 @@ class BootExitTest(unittest.TestCase):
             stack.enter_context(mock.patch.object(steps, "BOOT", tuple(
                 (label, getattr(steps, fn)) for (label, _), fn in zip(steps.BOOT, HOST_STEPS))))
             stack.enter_context(mock.patch.object(steps, "projects", lambda r: (projects_state, "made up")))
+            stack.enter_context(mock.patch.object(steps, "maws", lambda r: (maws_state, "made up")))
             with contextlib.redirect_stdout(None):
                 code = steps.boot()
         return code, recorded
 
     def test_every_step_ok_exits_0(self):
-        code, recorded = self.boot()
+        code, recorded = self.boot(maws_state="ok")
         self.assertEqual(code, 0)
-        self.assertEqual(recorded[-1], ("projects", "ok"))
+        self.assertEqual(recorded[-2:], [("projects", "ok"), ("maws", "ok")])
 
-    def test_only_projects_failed_exits_3(self):
+    def test_only_projects_failed_exits_3_and_maws_still_runs(self):
+        # The project that installs mawsd may have come through where another failed.
         code, recorded = self.boot(projects_state="failed")
         self.assertEqual(code, steps.PROJECTS_FAILED)
         self.assertEqual(code, 3)
-        self.assertEqual(recorded[-1], ("projects", "failed"))
+        self.assertEqual(recorded[-2:], [("projects", "failed"), ("maws", "skipped")])
+
+    def test_maws_failing_exits_3(self):
+        # The host is made: the services start all the same.
+        code, recorded = self.boot(maws_state="failed")
+        self.assertEqual(code, steps.PROJECTS_FAILED)
+        self.assertEqual(recorded[-1], ("maws", "failed"))
+
+    def test_a_deferred_maws_exits_0(self):
+        self.assertEqual(self.boot(maws_state="deferred")[0], 0)
 
     def test_skipped_projects_exit_0(self):
         self.assertEqual(self.boot(projects_state="skipped")[0], 0)
@@ -65,6 +77,7 @@ class BootExitTest(unittest.TestCase):
         code, recorded = self.boot(failing="apply")
         self.assertEqual(code, 1)
         self.assertNotIn("projects", [name for name, _ in recorded])
+        self.assertNotIn("maws", [name for name, _ in recorded])
 
 
 class ReleaseStartedTest(BootExitTest):
@@ -103,7 +116,7 @@ class ReleaseStartedTest(BootExitTest):
     def test_only_an_adopted_machines_steps_wait_on_the_lifecycle_lock(self):
         """A VM's departure must not wait for a long step (apply runs up to 30
         minutes; the reaper's and down's departure are bounded below that)."""
-        for adopted, locks in ((False, 0), (True, len(steps.BOOT) + 1)):
+        for adopted, locks in ((False, 0), (True, len(steps.BOOT) + 2)):  # + projects and maws
             with self.subTest(adopted=adopted):
                 taken = []
                 host = mock.Mock(desc=mock.Mock(adopted=adopted))
@@ -120,7 +133,7 @@ class ReleaseStartedTest(BootExitTest):
         status.set_lifecycle("depart", "departing", "started", steps=[], path=self.status_path)
         code, recorded = self.boot()
         self.assertEqual(code, 0)
-        self.assertEqual(recorded[-1], ("projects", "ok"))
+        self.assertEqual(recorded[-1], ("maws", "skipped"))
 
 
 if __name__ == "__main__":

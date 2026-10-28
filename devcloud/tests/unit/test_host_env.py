@@ -6,7 +6,7 @@ or boot id it carries would make hosts share one."""
 import unittest
 
 import _path  # noqa: F401
-from devcloudlib import steps
+from devcloudlib import descriptor, steps
 
 RENDERER = ("WEB_CHROME", "/usr/local/bin/chrome-headless-shell")
 
@@ -33,6 +33,22 @@ class HostEnvTest(unittest.TestCase):
         self.assertEqual(pairs, {RENDERER[0]: RENDERER[1], "SESSION_MIRROR_HOST": "sbx-a1",
                                  "DAEMON_BOOT_ID": "0b6c-host-own", "TZ": "UTC"})
         self.assertEqual(ignored, ["DAEMON_BOOT_ID", "DAEMON_HOST", "SESSION_MIRROR_HOST"])
+
+    def test_the_delegation_id_is_the_descriptors_not_the_profiles(self):
+        # Step 12's `devenv up maws` mints the machine's ref under it, before mawsd's first start.
+        identity = {"SESSION_MIRROR_HOST": "dc-a-0001", "MAWS_DELEGATION_ID": "0123456789abcdef" * 2}
+        pairs, ignored = steps.host_env(identity, {"MAWS_DELEGATION_ID": "f" * 32}, {})
+        self.assertEqual(pairs["MAWS_DELEGATION_ID"], "0123456789abcdef" * 2)
+        self.assertEqual(ignored, ["MAWS_DELEGATION_ID"])
+
+    def test_the_identity_carries_the_delegation_id_when_the_descriptor_names_one(self):
+        base = ("DEVCLOUD_NAME=dc-a-0001\nDEVCLOUD_KIND=vm\nDEVCLOUD_ROLE=persistent\nDEVCLOUD_TAILSCALE=none\n"
+                "DEVCLOUD_SEED=gce-metadata\nDEVCLOUD_SM_PROJECT=example-project\n"
+                "DEVCLOUD_CONFIG_REPO=https://github.com/example/config.git\nDEVCLOUD_CONFIG_TOKEN_SECRET=config-token\n")
+        self.assertEqual(steps.identity_pairs(descriptor.parse(base)), {"SESSION_MIRROR_HOST": "dc-a-0001"})
+        maws = base + f"DEVCLOUD_MAWS_SECRET=desk-provisioning-v2\nDEVCLOUD_MAWS_DELEGATION_ID={'ab' * 16}\n"
+        self.assertEqual(steps.identity_pairs(descriptor.parse(maws)),
+                         {"SESSION_MIRROR_HOST": "dc-a-0001", "MAWS_DELEGATION_ID": "ab" * 16})
 
     def test_a_vm_keeps_its_kernel_boot_id(self):
         # A VM's identity has no DAEMON_BOOT_ID (sminos reads the kernel's); the profile cannot add one.

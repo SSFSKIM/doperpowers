@@ -35,6 +35,7 @@ class World:
         self.clock = 0.0
         self.next_pid = 4000
         self.node = None            # the node tailscaled holds, {"ID": …}, for a stateful `tailscale status`
+        self.mawsd = {}             # a `mawsd` call's arguments, as a tuple -> (exit, stdout, stderr)
 
     def spawn(self, stubborn=False):
         self.next_pid += 1
@@ -62,6 +63,8 @@ class World:
         self.events.append(("call", list(argv), user.name if user else "root"))
         if list(argv) == ["tailscale", "status", "--json"] and self.node is not None:
             return 0, json.dumps({"BackendState": "Running" if self.node else "NeedsLogin", "Self": self.node}), ""
+        if os.path.basename(argv[0]) == "mawsd":
+            return self.mawsd.get(tuple(argv[1:]), (3, "", "mawsd is not running"))
         return self.calls.get(argv[-1], (0, "", ""))
 
     def runs(self):
@@ -127,6 +130,7 @@ class FakeApi:
 
 class DepartureBase(unittest.TestCase):
     adopted = False
+    descriptor_extra = ()
 
     def setUp(self):
         self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="devcloud-depart-"))
@@ -180,6 +184,7 @@ class DepartureBase(unittest.TestCase):
             lines.append(f"DEVCLOUD_EXPIRES={expires}")
         if self.adopted:
             lines.append("DEVCLOUD_ADOPTED=1")
+        lines += self.descriptor_extra
         (self.tmp / "boot.env").write_text("\n".join(lines) + "\n")
 
     def host(self, **over):
@@ -902,6 +907,167 @@ class ReleaseNodeRemovalTest(NodeRemovalBase):
         self.assertEqual(departure.release(self.host()), departure.DONE)
         self.assertNotIn(["tailscale", "logout"], self.world.runs(), "logged out again")
         self.assertEqual(self.api_calls(), [("token", True), ("delete", self.NODE)])
+
+
+ADMIN = "run: zsh apps/desk-hub/deploy/production-run.sh admin machine drop dc-build-7f3a"
+KEYS = ("keys", "--json")
+RETIRE = ("endpoint", "retire", "--json")
+
+
+def keys(enrollment="org-listed", delegated=True):
+    return 0, json.dumps({"enrollment": enrollment, "name": "dc-build-7f3a", "ref": f"{'0' * 32}_made-up",
+                          "delegated": delegated}), ""
+
+
+def retired(kind="retired"):
+    return 0, json.dumps({"kind": kind, "name": "dc-build-7f3a", "keyId": "made-up-key-id",
+                          "notAfter": "2026-10-28T12:01:00.000Z"}), ""
+
+
+class RetireTest(DepartureBase):
+    """A VM certified under the devcloud delegation retires its certificate at
+    its departure (`mawsd endpoint retire`), the desk word a DX2 machine says
+    with `sminos hub leave`; the driver reads the same success line."""
+
+    descriptor_extra = ("DEVCLOUD_MAWS_SECRET=desk-provisioning-v2",
+                        f"DEVCLOUD_MAWS_DELEGATION_ID={'0' * 32}")
+
+    def setUp(self):
+        super().setUp()
+        self.write_descriptor(EXPIRED)
+        self.mawsd = self.home / ".config/MAWS/mawsd/bin/mawsd"
+        self.mawsd.parent.mkdir(parents=True)
+        self.mawsd.write_text("#!/bin/sh\n")
+        self.mawsd.chmod(0o755)
+        # Cut over (O12's switch), its hub.json kept until the final brief.
+        (self.home / ".claude/sminos/daemon/identity.json").write_text("{}\n")
+        self.world.mawsd[KEYS] = keys()
+        self.world.mawsd[RETIRE] = retired()
+
+    def mawsd_calls(self):
+        return [(e[1][1:], e[2]) for e in self.world.events if e[0] == "call" and e[1][0] == str(self.mawsd)]
+
+    def leave_step(self):
+        return {s["name"]: s for s in self.lifecycle()["steps"]}["leave"]
+
+    def test_a_certified_vm_retires_before_its_logout_and_says_it_left_the_desk(self):
+        from driver import hostctl
+        self.assertEqual(departure.depart(self.host(), no_poweroff=True), departure.DONE)
+        self.assertEqual(self.mawsd_calls(), [(list(KEYS), self.user.name), (list(RETIRE), self.user.name)])
+        w = self.world
+        retire = w.index(lambda e: e[0] == "call" and e[1][1:] == list(RETIRE))
+        logout = w.index(lambda e: e[0] == "run" and e[1] == ["tailscale", "logout"])
+        self.assertLess(retire, logout)
+        self.assertFalse(any(r[-2:] == ["hub", "leave"] for r in w.runs()), "a cut-over machine asked DX2 to leave")
+        line = "devcloud depart: leave: ok — left the desk"
+        self.assertIn(("say", line), w.events)
+        self.assertTrue(hostctl.LEFT_DESK.search(line + "\n"), "the driver would not read it as left")
+
+    def test_a_retirement_the_hub_did_not_take_names_the_admin_command(self):
+        self.world.mawsd[RETIRE] = (1, "", "the hub refused the certificate's retirement: 503 busy")
+        self.assertEqual(departure.depart(self.host(), no_poweroff=True), departure.DONE)
+        step = self.leave_step()
+        self.assertEqual(step["state"], "failed")
+        self.assertIn("did not answer the retirement (the hub refused the certificate's retirement: 503 busy)",
+                      step["detail"])
+        self.assertIn(ADMIN, step["detail"])
+        self.assertIn(["tailscale", "logout"], self.world.runs(), "a failed retirement kept the host alive")
+
+    def test_a_timed_out_retirement_names_it_too(self):
+        self.world.mawsd[RETIRE] = (124, "", "timed out after 120s")
+        departure.depart(self.host(), no_poweroff=True)
+        self.assertIn(ADMIN, self.leave_step()["detail"])
+
+    def test_a_retirement_the_hub_could_no_longer_reach_names_the_admin_command(self):
+        # `orphaned`: the keys are destroyed here, the hub row and certificate are an admin's.
+        self.world.mawsd[RETIRE] = retired("orphaned")
+        departure.depart(self.host(), no_poweroff=True)
+        step = self.leave_step()
+        self.assertEqual(step["state"], "failed")
+        self.assertIn(ADMIN, step["detail"])
+
+    def test_a_certificate_the_hub_never_held_still_left_the_desk(self):
+        self.world.mawsd[RETIRE] = retired("uncertified")
+        departure.depart(self.host(), no_poweroff=True)
+        self.assertEqual((self.leave_step()["state"], self.leave_step()["detail"]), ("ok", "left the desk"))
+
+    def test_a_pending_redemption_is_retired_too(self):
+        # M1: a redemption whose write set is not yet whole shows hub-confirmed and delegated.
+        self.world.mawsd[KEYS] = keys("hub-confirmed")
+        departure.depart(self.host(), no_poweroff=True)
+        self.assertIn((list(RETIRE), self.user.name), self.mawsd_calls())
+
+    def test_an_endpoint_that_cannot_be_asked_names_the_admin_command(self):
+        del self.world.mawsd[KEYS]          # mawsd is not running: exit 3
+        departure.depart(self.host(), no_poweroff=True)
+        step = self.leave_step()
+        self.assertEqual(step["state"], "failed")
+        self.assertIn("mawsd is not running", step["detail"])
+        self.assertIn(ADMIN, step["detail"])
+        self.assertNotIn((list(RETIRE), self.user.name), self.mawsd_calls())
+
+    def test_an_endpoint_holding_nothing_retires_nothing_and_left_nothing(self):
+        for answer in (keys("none", delegated=False), keys("none", delegated=True)):
+            with self.subTest(answer=answer):
+                self.world.events.clear()
+                (self.tmp / "status.json").unlink(missing_ok=True)
+                self.world.mawsd[KEYS] = answer
+                departure.depart(self.host(), no_poweroff=True)
+                self.assertEqual(self.mawsd_calls(), [(list(KEYS), self.user.name)])
+                self.assertEqual(self.leave_step()["detail"], "not enrolled")
+                self.assertFalse(any(r[-2:] == ["hub", "leave"] for r in self.world.runs()))
+
+    def test_an_attended_endpoint_is_not_retired_by_the_machine(self):
+        # A member's enrollment is an admin's to retire (M1's `not-delegated`); a VM on DX2 still leaves.
+        (self.home / ".claude/sminos/daemon/identity.json").unlink()
+        self.world.mawsd[KEYS] = keys(delegated=False)
+        departure.depart(self.host(), no_poweroff=True)
+        self.assertNotIn((list(RETIRE), self.user.name), self.mawsd_calls())
+        self.assertTrue(any(r[-2:] == ["hub", "leave"] for r in self.world.runs()))
+
+    def test_a_dx2_vm_with_no_mawsd_leaves_as_before(self):
+        self.descriptor_extra = ()
+        self.write_descriptor(EXPIRED)
+        (self.home / ".claude/sminos/daemon/identity.json").unlink()
+        self.mawsd.unlink()
+        departure.depart(self.host(), no_poweroff=True)
+        self.assertEqual(self.mawsd_calls(), [])
+        self.assertEqual(self.leave_step()["detail"], "left the desk")
+        self.assertTrue(any(r[-2:] == ["hub", "leave"] for r in self.world.runs()))
+
+    def test_a_cut_over_vm_without_its_mawsd_names_the_admin_command(self):
+        self.mawsd.unlink()
+        departure.depart(self.host(), no_poweroff=True)
+        step = self.leave_step()
+        self.assertEqual(step["state"], "failed")
+        self.assertIn(ADMIN, step["detail"])
+
+    def test_mawsd_stops_with_the_services_as_the_user(self):
+        unit = self.home / ".config/systemd/user/mawsd.service"
+        unit.write_text("")
+        departure.depart(self.host(), no_poweroff=True)
+        w = self.world
+        stop = w.index(lambda e: e[0] == "run" and e[1] == ["systemctl", "--user", "stop", "mawsd.service"])
+        self.assertEqual(w.events[stop][2], self.user.name)
+        self.assertGreater(stop, w.index(lambda e: e[0] == "call" and e[1][1:] == list(RETIRE)),
+                           "mawsd stopped before it could retire")
+        self.assertIn("mawsd.service (user)", {s["name"]: s for s in self.lifecycle()["steps"]}["stop-services"]["detail"])
+
+    def test_the_spot_reclaim_retires_within_its_window(self):
+        self.write_descriptor(LATER)
+        self.world.preempted = True
+        self.assertEqual(departure.depart_preempted(self.host()), departure.DONE)
+        self.assertIn((list(RETIRE), self.user.name), self.mawsd_calls())
+
+    def test_a_release_retires_too(self):
+        self.adopted = True
+        self.write_descriptor(EXPIRED)
+        (self.units / "devcloud-inbound.service").write_text("")
+        (self.tmp / "adopt").mkdir()
+        (self.tmp / "adopt/keys.json").write_text(json.dumps({"keys": []}))
+        self.assertEqual(departure.release(self.host()), departure.DONE)
+        self.assertIn((list(RETIRE), self.user.name), self.mawsd_calls())
+        self.assertIn(("say", "devcloud release: leave: ok — left the desk"), self.world.events)
 
 
 if __name__ == "__main__":

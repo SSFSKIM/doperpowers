@@ -9,12 +9,19 @@ asks the desk first (`sminos hub check`) and enrolls only on its 1 (not
 enrolled here) or 3 (rejected: `--replace`); on 4, undecided, it keeps the
 credential it has and defers, for the `devcloud-enroll` service to finish.
 The key is held in memory and handed to the enroll on stdin, never written
-to disk or an argument list. Enrolled, step 11
-runs `sminos daemon install` as the user (it only writes the systemd user
-unit), turns lingering on so the user manager runs with nobody logged in
-and from boot, reloads the user manager, and enables and starts the unit —
-restarting it when its unit or the host environment changed. Unenrolled,
-the host's projects run local-only and nothing is installed.
+to disk or an argument list. A machine cut over to its MAWS endpoint
+(`daemon/identity.json`, written at the endpoint's first complete welcome)
+enrolls nothing: its enrollment is its endpoint's, and sminos refuses
+`hub check` and `hub enroll` there.
+
+A sminos machine — enrolled (hub.json), cut over (identity.json), or about
+to be cut over by step 13's provisioning, which needs the daemon up for the
+endpoint's welcome — gets the daemon: step 11 runs `sminos daemon install`
+as the user (it only writes the systemd user unit), turns lingering on so
+the user manager runs with nobody logged in and from boot, reloads the user
+manager, and enables and starts the unit — restarting it when its unit or
+the host environment changed. Otherwise the host's projects run local-only
+and nothing is installed.
 
 A sandbox is never a sminos machine: one carrying a machine identity (an
 enrollment, or an instance claim a daemon wrote) shares it with the machine
@@ -33,9 +40,10 @@ from .proc import StepError, as_user, write_file
 from .services import DEVCLOUD
 
 UNIT = "sminos-daemon.service"
-# What names a machine under $SMINOS_HOME/daemon/: the enrollment and the
-# instance claim. Locks and the tick's state name nothing.
-IDENTITY = ("hub.json", "machine.json")
+# What names a machine under $SMINOS_HOME/daemon/: the enrollment, the
+# instance claim and the cutover's identity. Locks and the tick's state name
+# nothing.
+IDENTITY = ("hub.json", "machine.json", "identity.json")
 # The interpreter the unit pins (`daemon install` records its own).
 PYTHON = "/usr/bin/python3"
 ENV_PATH = "/etc/devcloud/env"
@@ -85,6 +93,16 @@ def sminos_home(user, env):
 def _identity(user, env):
     daemon = sminos_home(user, env) / "daemon"
     return [name for name in IDENTITY if (daemon / name).is_file()]
+
+
+def at_hub(user, env):
+    """Whether sminos reaches the org here: enrolled on DX2 (hub.json) or cut
+    over to the endpoint (identity.json)."""
+    return bool({"hub.json", "identity.json"} & set(_identity(user, env)))
+
+
+def cut_over(user, env):
+    return "identity.json" in _identity(user, env)
 
 
 def check_role(user, role, env):
@@ -157,7 +175,7 @@ FATAL_REASONS = ("key-revoked", "key-expired", "key-exhausted")
 
 @dataclasses.dataclass(frozen=True)
 class Enrollment:
-    state: str        # none | accepted | enrolled | deferred
+    state: str        # none | accepted | enrolled | deferred | cutover
     detail: str
 
 
@@ -175,6 +193,8 @@ def enroll(user, desc, env, fetch_key, call=proc.call, code_file=CODE_FILE, ledg
     has_code = code_file.exists()
     if desc.role == "sandbox" or not (desc.sminos_secret or has_code):
         return Enrollment("none", "")
+    if cut_over(user, env):
+        return Enrollment("cutover", "cut over to its endpoint, whose enrollment it is: nothing to enroll")
     program = cli(user)
     if program is None:
         raise StepError("this host enrolls at the desk, but the doperpowers marketplace clone that holds sminos is "
@@ -234,18 +254,20 @@ def _read(path):
         return None
 
 
-def converge(user, role, env, env_changed, run=proc.run, pending=PENDING):
+def converge(user, role, env, env_changed, run=proc.run, pending=PENDING, provisions=False):
     """Step 11's sminos part; returns its status detail. `env` is the host
     environment (/etc/devcloud/env); `env_changed`, whether this run changed it;
-    `pending`, the root-owned flag that carries an owed restart across runs."""
+    `pending`, the root-owned flag that carries an owed restart across runs;
+    `provisions`, whether step 13 provisions this host's endpoint."""
     if role == "sandbox":
         return "sminos: a sandbox, not a sminos machine"
-    if "hub.json" not in _identity(user, env):
+    if not (at_hub(user, env) or provisions):
         return "sminos: not enrolled, local-only"
     program = cli(user)
     if program is None:
-        raise StepError("this host is enrolled at a sminos hub, but the doperpowers marketplace clone that holds "
-                        "sminos is absent (~/.claude/plugins/known_marketplaces.json)")
+        raise StepError("this host is a sminos machine (enrolled, cut over or provisioning its endpoint), but the "
+                        "doperpowers marketplace clone that holds sminos is absent "
+                        "(~/.claude/plugins/known_marketplaces.json)")
     # The default user unit directory: the user manager does not read
     # /etc/devcloud/env, so a profile's XDG_CONFIG_HOME would hide the unit from it.
     install_env = {k: v for k, v in user.env(env).items() if k != "XDG_CONFIG_HOME"}

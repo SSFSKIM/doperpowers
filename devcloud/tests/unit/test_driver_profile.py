@@ -33,6 +33,28 @@ class ProfileTest(unittest.TestCase):
         self.assertEqual(account.env, {"FAKE_TOKEN": "fake-token-secret"})
         self.assertEqual(account.registered, "ab" * 32)
         self.assertIsNone(p.desk_secret)
+        self.assertEqual((p.maws_secret, p.delegation_id, p.name_prefix), (None, None, "dc-"))
+
+    def test_the_desk_names_the_v2_code_its_delegation_and_a_name_prefix(self):
+        delegation = "0123456789abcdef" * 2
+        p = load(GOOD + f'\n[desk]\nprovisioning_secret_v2 = "desk-provisioning-v2"\ndelegation_id = "{delegation}"\n'
+                 'name_prefix = "dc2-"\n')
+        self.assertEqual((p.desk_secret, p.maws_secret, p.delegation_id, p.name_prefix),
+                         (None, "desk-provisioning-v2", delegation, "dc2-"))
+
+    def test_the_desk_keys_that_cannot_work_are_refused(self):
+        v2 = f'provisioning_secret_v2 = "desk-provisioning-v2"\ndelegation_id = "{"ab" * 16}"\n'
+        for desk, said in (('provisioning_secret_v2 = "desk-provisioning-v2"\n', "together"),
+                           (f'delegation_id = "{"ab" * 16}"\n', "together"),
+                           (f'provisioning_secret = "desk-key"\n{v2}', "provisioning_secret"),
+                           ('provisioning_secret_v2 = "desk-provisioning-v2"\ndelegation_id = "ABC"\n', "delegation_id"),
+                           (f'{v2}name_prefix = "Dc-"\n', "name_prefix"),
+                           (f'{v2}name_prefix = "-dc"\n', "name_prefix"),
+                           (f'{v2}name_prefix = "{"d" * 21}"\n', "name_prefix")):
+            with self.subTest(desk=desk), self.assertRaises(DriverError) as caught:
+                load(GOOD + "\n[desk]\n" + desk)
+            self.assertEqual(caught.exception.code, 2)
+            self.assertIn(said, str(caught.exception))
 
     def test_unknown_keys_are_refused_naming_them(self):
         for text, key in ((GOOD + "\n[mystery]\nx = 1\n", "mystery"),

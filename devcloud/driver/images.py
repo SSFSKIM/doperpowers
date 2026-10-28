@@ -114,7 +114,7 @@ def build(ctx, account, client):
     type_ = builder_type(types, arch)
     keys = ctx.driver_keys()
     taken = {vm["name"] for vm in client.list()}
-    name = names.draw("bake", taken, ctx.token_hex)
+    name = names.draw("bake", taken, ctx.token_hex, ctx.profile.name_prefix)
     test_run = ctx.env.get("DEVCLOUD_TEST_RUN")
     labels = {"devcloud": "builder", "devcloud-by": ctx.machine, "devcloud-recipe": recipe}
     if test_run:

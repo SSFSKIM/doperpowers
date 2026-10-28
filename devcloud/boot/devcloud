@@ -2,12 +2,15 @@
 """devcloud: a host's status, its jobs, and its lifecycle.
 
   devcloud status            one line per boot step: name, state, when, detail;
-                             a deferred enrollment and a departure, when there is one
-  devcloud reconcile         boot steps 5-11 against the configuration as fetched now
+                             a deferred enrollment or provisioning and a departure, when
+                             there is one
+  devcloud reconcile         boot steps 5-11 against the configuration as fetched now,
+                             then 13 (the MAWS endpoint's provisioning)
   devcloud pull-config       fetch and reset ~/.claude; reconcile when the commit moved
   devcloud refresh-secrets   materialize secrets.toml again (steps 7, 10, 11)
   devcloud refresh-mirrors   fetch the mirrors a persistent host keeps for its sandboxes
-  devcloud enroll            finish an enrollment step 11 deferred (the devcloud-enroll service)
+  devcloud enroll            finish an enrollment step 11 or a provisioning step 13 deferred
+                             (the devcloud-enroll service)
   devcloud lease set <unix> [--cap <unix>] | lease set keep
                              set the lease end, or remove it; prints `rejoin <kind>`
                              when the tailnet node must change kind (the rejoin then

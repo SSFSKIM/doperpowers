@@ -248,8 +248,9 @@ class OwedRestartTest(unittest.TestCase):
             stack.enter_context(mock.patch.object(steps.sminos_host, "check_role", lambda *a: None))
             stack.enter_context(mock.patch.object(steps, "_devcloud_services", mock.Mock(
                 side_effect=StepError("systemctl exited 1"))))
-            stack.enter_context(mock.patch.object(steps.sminos_host, "converge", lambda user, role, env, changed:
-                                                  seen.append(changed) or "sminos: fine"))
+            stack.enter_context(mock.patch.object(
+                steps.sminos_host, "converge",
+                lambda user, role, env, changed, provisions=False: seen.append(changed) or "sminos: fine"))
             with self.assertRaises(StepError) as caught:
                 steps.services_step(r)
         self.assertEqual(seen, [True])

@@ -69,6 +69,31 @@ class LeaseKeysTest(unittest.TestCase):
                            ("DEVCLOUD_SMINOS_SECRET", "desk-provisioning-key"), ("DEVCLOUD_SPOT", "1")):
             with self.subTest(key=key), self.assertRaisesRegex(descriptor.DescriptorError, f"{key}.*sandbox"):
                 descriptor.parse(text(SANDBOX, **{key: value}))
+        with self.assertRaisesRegex(descriptor.DescriptorError, "DEVCLOUD_MAWS_SECRET.*sandbox"):
+            descriptor.parse(text(SANDBOX, DEVCLOUD_MAWS_SECRET="desk-provisioning-v2",
+                                  DEVCLOUD_MAWS_DELEGATION_ID="0123456789abcdef" * 2))
+
+    def test_the_maws_provisioning_code_and_its_delegation_are_optional_and_go_together(self):
+        d = descriptor.parse(text())
+        self.assertEqual((d.maws_secret, d.maws_delegation_id), (None, None))
+        maws = dict(DEVCLOUD_MAWS_SECRET="desk-provisioning-v2", DEVCLOUD_MAWS_DELEGATION_ID="0123456789abcdef" * 2)
+        d = descriptor.parse(text(**maws))
+        self.assertEqual((d.maws_secret, d.maws_delegation_id), ("desk-provisioning-v2", "0123456789abcdef" * 2))
+        for key in maws:
+            with self.subTest(alone=key), self.assertRaisesRegex(descriptor.DescriptorError, "together"):
+                descriptor.parse(text(**{key: maws[key]}))
+        for key, value in (("DEVCLOUD_MAWS_SECRET", "projects/x/secrets/y"),
+                           ("DEVCLOUD_MAWS_DELEGATION_ID", "0123456789ABCDEF" * 2),
+                           ("DEVCLOUD_MAWS_DELEGATION_ID", "0123")):
+            with self.subTest(key=key, value=value), self.assertRaisesRegex(descriptor.DescriptorError, key):
+                descriptor.parse(text(**dict(maws, **{key: value})))
+
+    def test_a_host_provisions_its_endpoint_or_enrolls_sminos_on_dx2_not_both(self):
+        # A DX2 row under the name refuses the certificate (409 name-taken) at every boot.
+        with self.assertRaisesRegex(descriptor.DescriptorError, "DEVCLOUD_SMINOS_SECRET"):
+            descriptor.parse(text(DEVCLOUD_SMINOS_SECRET="desk-provisioning-key",
+                                  DEVCLOUD_MAWS_SECRET="desk-provisioning-v2",
+                                  DEVCLOUD_MAWS_DELEGATION_ID="0123456789abcdef" * 2))
 
     def test_unknown_keys_stay_refused(self):
         with self.assertRaisesRegex(descriptor.DescriptorError, "DEVCLOUD_LEASE"):

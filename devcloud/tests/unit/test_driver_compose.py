@@ -16,11 +16,16 @@ from driver_fixtures import DRIVER_TOML, KEY, NOW, TOKEN
 SEED_PRIVATE = "-----BEGIN PRIVATE KEY-----\nmadeUpSeedKeyBodyForTheScanOnly0123456789\n-----END PRIVATE KEY-----\n"
 
 
-def a_profile(desk=False):
+DELEGATION = "0123456789abcdef" * 2
+
+
+def a_profile(desk=False, maws=False):
     d = pathlib.Path(tempfile.mkdtemp(prefix="devcloud-compose-"))
     text = DRIVER_TOML.replace("{state}", "/tmp/x").replace("{registered}", "ab" * 32)
     if desk:
         text += '\n[desk]\nprovisioning_secret = "desk-key"\n'
+    if maws:
+        text += f'\n[desk]\nprovisioning_secret_v2 = "desk-provisioning-v2"\ndelegation_id = "{DELEGATION}"\n'
     (d / "driver.toml").write_text(text)
     return profile.load(d)
 
@@ -42,6 +47,18 @@ class DescriptorTest(unittest.TestCase):
         self.assertEqual((d.sm_project, d.config_token_secret), ("example-project", "config-token"))
         self.assertFalse(d.spot or d.adopted)
         self.assertIsNone(d.sminos_secret)
+
+    def test_a_vm_with_the_maws_project_carries_the_v2_code_and_its_delegation(self):
+        for projects in (["maws"], ["SSFSKIM/MAWS@main"], ["example/repo", "maws@p5"]):
+            with self.subTest(projects=projects):
+                d = descriptor.parse(self.compose(profile=a_profile(maws=True), projects=projects))
+                self.assertEqual((d.maws_secret, d.maws_delegation_id), ("desk-provisioning-v2", DELEGATION))
+                self.assertTrue(compose.provisions(a_profile(maws=True), projects))
+
+    def test_a_vm_without_it_boots_as_before(self):
+        d = descriptor.parse(self.compose(profile=a_profile(maws=True), projects=["example/repo", "mawsish"]))
+        self.assertEqual((d.maws_secret, d.maws_delegation_id), (None, None))
+        self.assertFalse(compose.provisions(a_profile(), ["maws"]), "no v2 code in the profile")
 
     def test_an_adopted_machine(self):
         d = descriptor.parse(self.compose(adopted=True, expires=None))

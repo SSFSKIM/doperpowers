@@ -138,7 +138,7 @@ class ServicesStepTest(unittest.TestCase):
                       mock.patch.object(steps, "_devcloud_services", lambda r, record: f"systemd ({record})"),
                       mock.patch.object(steps, "_enroll", lambda r, env: self.enrolled.append(1) or
                                         sminos_host.Enrollment("none", "")),
-                      mock.patch.object(sminos_host, "converge", lambda *a: self.converged.append(1) or "daemon")):
+                      mock.patch.object(sminos_host, "converge", lambda *a, **kw: self.converged.append(1) or "daemon")):
             patch.start()
             self.addCleanup(patch.stop)
         self.r = mock.Mock(user=USER, env_changed=False)

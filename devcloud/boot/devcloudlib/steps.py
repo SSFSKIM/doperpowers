@@ -1,6 +1,7 @@
-"""The boot steps (Design §4) and the runs made of them: a boot (1-12), a
-reconcile (5-11), the config pull job (5, then 6-11 when the commit moved),
-the secrets refresh (7, 10, 11) and the mirror refresh (no step of its own).
+"""The boot steps (Design §4) and the runs made of them: a boot (1-13), a
+reconcile (5-11, then 13), the config pull job (5, then 6-11 when the commit
+moved), the secrets refresh (7, 10, 11), the mirror refresh (no step of its
+own) and the enroll job (what 11 or 13 deferred).
 Each step is recorded in the status file; a failed step stops the run, and the
 next run retries from its top. Runs hold one lock, so a job never interleaves
 with a boot. Every job also takes the lifecycle lock shared and does nothing
@@ -22,15 +23,16 @@ import urllib.error
 import urllib.request
 import uuid
 
-from . import descriptor, envfile, inbound, lease, ledger, nodekind, plugins, proc, profile as profile_mod, \
-    projects as projects_mod, secrets, services, sminos_host, status, tsapi
+from . import descriptor, envfile, inbound, lease, ledger, maws_host, nodekind, plugins, proc, \
+    profile as profile_mod, projects as projects_mod, secrets, services, sminos_host, status, tsapi
 from .descriptor import DescriptorError
 from .proc import StepError, User, as_user, run, write_file
 from .secretmanager import AccessError, Tokens
 
 RUN_DIR = pathlib.Path("/run/devcloud")
 # devcloud-boot's exit status when steps 1-11 made the host and only step 12
-# (projects) failed: the entrypoint and the boot unit still start the services.
+# (projects) or 13 (maws) failed: the entrypoint and the boot unit still start
+# the services.
 PROJECTS_FAILED = 3
 STATE_DIR = pathlib.Path("/var/lib/devcloud")
 IDENTITY_ENV = STATE_DIR / "identity.env"
@@ -157,7 +159,7 @@ def identity(r):
             run(["hostname", d.name], log="identity", timeout=60)
     if d.kind != "container":
         _hosts_entry(d.name)
-    ident = {"SESSION_MIRROR_HOST": d.name}
+    ident = identity_pairs(d)
     if d.kind == "container":
         ident["DAEMON_BOOT_ID"] = _boot_id(d.name)
     write_file(IDENTITY_ENV, envfile.format(ident.items()), mode=0o644, dir_mode=0o755)
@@ -165,6 +167,16 @@ def identity(r):
     merged.update(ident)
     _write_env_file(merged.items(), r.user.gid)
     return f"{d.name} ({d.kind}, {d.role})"
+
+
+def identity_pairs(d):
+    """The host's identity from its descriptor: the session store's host
+    name, and the MAWS delegation's id when the descriptor names one (step
+    12's `devenv up maws` mints the machine's ref under it)."""
+    ident = {"SESSION_MIRROR_HOST": d.name}
+    if d.maws_delegation_id:
+        ident["MAWS_DELEGATION_ID"] = d.maws_delegation_id
+    return ident
 
 
 def _hosts_entry(name):
@@ -636,8 +648,9 @@ def apply(r):
 
 
 # Per-host identity: the session store's host name, sminos's machine name
-# and boot id. Only boot step 1 sets them; the profile is every host's.
-IDENTITY_KEYS = ("SESSION_MIRROR_HOST", "DAEMON_HOST", "DAEMON_BOOT_ID")
+# and boot id, the MAWS delegation the machine's ref is minted under. Only
+# boot step 1 sets them; the profile is every host's.
+IDENTITY_KEYS = ("SESSION_MIRROR_HOST", "DAEMON_HOST", "DAEMON_BOOT_ID", "MAWS_DELEGATION_ID")
 # What the image installed for every session to find, here rather than in a
 # shell's startup so that a session a service starts (a sminos seat) finds it
 # too: the web plugin's renderer (image/packages.sh, part chromium).
@@ -745,7 +758,8 @@ def services_step(r):
             except StepError as error:
                 failures.append(str(error))
             try:
-                parts.append(sminos_host.converge(r.user, r.desc.role, env, r.env_changed))
+                parts.append(sminos_host.converge(r.user, r.desc.role, env, r.env_changed,
+                                                  provisions=bool(r.desc.maws_secret)))
             except StepError as error:
                 failures.append(str(error))
     if failures:
@@ -761,7 +775,7 @@ def _enroll(r, env):
                                 ledger_add=ledger.add)
     if result.state == "deferred":
         status.set_enroll_deferred(True)
-    elif result.state in ("accepted", "enrolled"):
+    elif result.state in ("accepted", "enrolled", "cutover"):
         status.set_enroll_deferred(False)
     if result.state == "enrolled":
         sminos_host.owe_restart()
@@ -785,6 +799,27 @@ def _devcloud_services(r, lifecycle=None):
 
 def projects(r):
     return projects_mod.set_up(r.user, r.desc, r.user.env(_read_env(ENV_PATH)))
+
+
+def maws(r):
+    """Step 13 (maws_host): the endpoint provisioned under the descriptor's
+    code, after the projects (which install `mawsd`) and the sminos daemon
+    (step 11), so the first welcome cuts sminos over within seconds of the
+    listing. Under the lifecycle lock, shared, as step 11's enrollment is:
+    once a departure has started nothing is provisioned. A deferral is kept
+    in the status for the devcloud-enroll service; a refusal ends it."""
+    r.load()
+    with lease.locked(shared=True):
+        if services.admission(status.lifecycle()) != "open":
+            return ("skipped", "the departure has started: nothing is provisioned")
+        try:
+            result = maws_host.provision(r.user, r.desc, r.user.env(_read_env(ENV_PATH)),
+                                         fetch_code=lambda name: _fetch_text(r, name))
+        except StepError:
+            status.set_maws_deferred(False)
+            raise
+    status.set_maws_deferred(result.state == "deferred")
+    return (result.state, result.detail)
 
 
 # --- runs ----------------------------------------------------------------------
@@ -859,10 +894,13 @@ def boot():
         try:
             guard = lambda: _unless_released(r)  # noqa: E731
             code = _run(BOOT, r, done=lambda: _mark_applied(r), guard=guard)
-            if code == 0 and _run((("projects", projects),), r, guard=guard):
-                # The host works without a project: the failure is recorded, and
-                # its own exit status lets the services start all the same.
-                code = PROJECTS_FAILED
+            # The host works without a project or its endpoint: a failure is
+            # recorded, and its own exit status lets the services start all the
+            # same. Step 13 runs whatever step 12 did: the project that installs
+            # mawsd may have come through where another failed.
+            for name, fn in (("projects", projects), ("maws", maws)):
+                if code in (0, PROJECTS_FAILED) and _run(((name, fn),), r, guard=guard):
+                    code = PROJECTS_FAILED
         except ReleaseStarted:
             _say(RELEASE_NOTE)
             return 0
@@ -889,11 +927,17 @@ def _job(name):
 
 
 def reconcile():
+    """The configuration and the host steps, then, once they made the host,
+    the provisioning, which is idempotent (a failure of it leaves the
+    configuration applied). The periodic jobs leave step 13 to the boot, a
+    reconcile and the enroll job: a brief that took a VM off the desk by hand
+    must find it still off at the next half hour."""
     with _job("reconcile") as admitted:
         if not admitted:
             return 0
         r = Run("reconcile")
-        return _run((("configuration", configuration),) + RECONCILE, r, done=lambda: _mark_applied(r))
+        code = _run((("configuration", configuration),) + RECONCILE, r, done=lambda: _mark_applied(r))
+        return code or _run((("maws", maws),), r)
 
 
 def pull_config():
@@ -956,10 +1000,17 @@ def refresh_secrets():
 
 def enroll():
     """The `devcloud-enroll` service's run (§10): nothing unless step 11's
-    enrollment was deferred; then the desk asked again, and on its 0, 1 or 3
-    the step finished as step 11 would, the daemon (re)started."""
+    enrollment or step 13's provisioning was deferred. A deferred enrollment:
+    the desk asked again, and on its 0, 1 or 3 the step finished as step 11
+    would, the daemon (re)started. A deferred provisioning: step 13 run
+    again, the same command, which resumes without redeeming. Each is tried
+    whatever the other did."""
     with _job("enroll") as admitted:
-        if not admitted or not status.enroll_deferred():
+        if not admitted:
+            return 0
+        owed = [name for name, deferred in (("services", status.enroll_deferred()),
+                                            ("maws", status.maws_deferred())) if deferred]
+        if not owed:
             return 0
         r = Run("enroll")
 
@@ -969,8 +1020,10 @@ def enroll():
             result = _enroll(r, env)
             if result.state == "deferred":
                 return ("deferred", f"sminos: {result.detail}")
-            return f"sminos: {result.detail}; {sminos_host.converge(r.user, r.desc.role, env, False)}"
-        return _run((("services", finish),), r)
+            converged = sminos_host.converge(r.user, r.desc.role, env, False, provisions=bool(r.desc.maws_secret))
+            return f"sminos: {result.detail}; {converged}"
+        runs = {"services": finish, "maws": maws}
+        return max(_run(((name, runs[name]),), r) for name in owed)
 
 
 REJOIN_TRIES, REJOIN_PAUSE = 3, 20

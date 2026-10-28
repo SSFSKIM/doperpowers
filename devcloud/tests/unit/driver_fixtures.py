@@ -262,7 +262,8 @@ def vm_labels(expires=None, lifetime="ttl", confirmed=False, **extra):
     return labels
 
 
-def status_json(steps_ok=12, failed=None, lifecycle=None):
+def status_json(steps_ok=None, failed=None, lifecycle=None):
+    """A host's status.json: its first `steps_ok` steps ok (every step when None)."""
     from devcloudlib import status
     steps = [{"name": n, "state": "ok", "at": "t", "detail": ""} for n in status.STEPS[:steps_ok]]
     if failed:

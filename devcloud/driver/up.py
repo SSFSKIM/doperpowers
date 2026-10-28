@@ -11,6 +11,8 @@ import dataclasses
 import datetime
 import json
 
+from devcloudlib import status
+
 from . import caps, compose, hostctl, hostfile, images, names, reaper
 from .errors import CAP, FAILED, REFUSED, USAGE, DriverError
 from .profile import duration, format_duration
@@ -125,6 +127,10 @@ def run(ctx, opts):
     begun = ctx.clock()
     label = names.check_label(opts.label or "vm")
     code = opts.enroll_code
+    provisions = compose.provisions(ctx.profile, list(opts.project or []))
+    if code and provisions:
+        raise DriverError(USAGE, "--enroll-code enrolls sminos on DX2, whose row under the VM's name would refuse the "
+                                 "certificate it provisions with the MAWS project at boot: leave the code out")
     # A project's file is checked before anything runs: a bad one is exit 2 with nothing done.
     wanted = hostfile.governing(ctx, list(opts.project or []))
     if wanted is not None:
@@ -147,7 +153,7 @@ def run(ctx, opts):
 
     started = ctx.clock()
     keys = pushed_driver_keys(ctx, "up")
-    name = names.draw(label, ctx.taken_names(servers), ctx.token_hex)
+    name = names.draw(label, ctx.taken_names(servers), ctx.token_hex, ctx.profile.name_prefix)
     tag, short = ctx.creator()
     expires = int(started) + r.lease if r.lifetime == "ttl" else None
     metadata_seed = r.client.has("metadata_seed")
@@ -156,7 +162,7 @@ def run(ctx, opts):
                                    "start its first boot")
     desc = compose.descriptor(name=name, profile=ctx.profile, projects=list(opts.project or []), expires=expires,
                               creator=tag, spot=r.spot, seed="gce-metadata" if metadata_seed else "file")
-    enroll = "code" if code else ("key" if ctx.profile.desk_secret else None)
+    enroll = "code" if code else ("key" if ctx.profile.desk_secret or provisions else None)
     recipe = compose.recipe_hash(ctx.plugin)
     labels = compose.labels(kind="vm", lifetime=r.lifetime, expires=expires, by=ctx.machine, creator=short,
                             recipe=recipe, confirmed=r.confirmed, enroll=enroll,
@@ -193,9 +199,12 @@ def run(ctx, opts):
         hostctl.start_boot(ctx, address, host.alias)
     else:
         address = None
-    wait_boot(ctx, host, address, started + BOOT_WAIT)
+    booted = wait_boot(ctx, host, address, started + BOOT_WAIT)
     if code:
         enroll_with_code(ctx, host, code)
+    maws = next((s for s in booted.get("steps", []) if s["name"] == "maws"), None)
+    if maws is not None and maws["state"] == "deferred":
+        ctx.say(f"maws      deferred: {maws['detail']}")
     elapsed = int(ctx.clock() - begun)
     ctx.say(f"{name}  ready in {elapsed // 60}m{elapsed % 60:02d}s")
     ctx.say(f"  provider  {r.client.name}  location {r.location}  type {r.type['type']}")
@@ -248,9 +257,8 @@ def wait_boot(ctx, host, address, deadline):
             if states.get("tailnet-attach") == "ok":
                 attached = True
             failed = [s for s in steps if s["state"] == "failed"]
-            if unit != "activating" and (failed or len(states) == 12):
+            if unit != "activating" and (failed or len(states) == len(status.STEPS)):
                 if failed:
-                    from devcloudlib import status
                     ctx.warn(status.render(data).rstrip())
                     raise DriverError(FAILED, f"the boot failed at step {failed[0]['name']} ({failed[0]['detail']}); "
                                               f"the VM {host.name} is kept for inspection, its lease bounds it")

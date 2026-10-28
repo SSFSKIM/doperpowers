@@ -1,5 +1,7 @@
-"""VM names (§3 step 2): `dc-<label>-<4 hex>`, drawn again until no live
-server in any account, adoption record, tailnet node or desk machine has it."""
+"""VM names (§3 step 2): `<prefix><label>-<4 hex>`, the prefix the profile's
+(`[desk] name_prefix`, `dc-` by default: the devcloud delegation's), drawn
+again until no live server in any account, adoption record, tailnet node or
+desk machine has it."""
 
 import re
 
@@ -14,9 +16,9 @@ def check_label(label):
     return label
 
 
-def draw(label, taken, token_hex, tries=64):
+def draw(label, taken, token_hex, prefix, tries=64):
     for _ in range(tries):
-        name = f"dc-{label}-{token_hex()}"
+        name = f"{prefix}{label}-{token_hex()}"
         if name not in taken:
             return name
     raise DriverError(USAGE, f"no free name for label {label} after {tries} draws")
