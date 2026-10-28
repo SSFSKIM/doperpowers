@@ -337,6 +337,7 @@ class HubLog:
         self.drawing = None  # the uploads drawn and not yet taken (next_upload), kept between the uplink's passes
         self.bounds = {}     # own writer → the seq `taken` may not pass on this stream (bound), until an upload sent
         #                      after it is answered
+        self.head_waits = True   # the operator writer may wait for its head (release_heads): False once it is not
 
     # ---------------------------------------------------- what is held here
 
@@ -652,6 +653,35 @@ class HubLog:
                                                                    self.project.name))
         d.update(archive=self.archive, archive_at=time.time())
         self.save(d)
+        self.release_heads()
+
+    def release_heads(self):
+        """This machine's operator writer, waiting for the upstream's head
+        (sminos.waits_for_head, #147), is released once this stream's `have`
+        said the head and the log reached it — the hub's backlog imported
+        (DX2), or the positions the endpoint refused spent (RL10): what
+        waited is appended above the head, and the next upload carries it.
+        Run after a `have`, an import and a spent position."""
+        writer = self.machine + "/human"
+        if self.have is None or sminos.host_name() != self.machine:
+            return   # an uplink outliving a re-enrolment under another name releases nothing of the new one
+        if self.head_waits and not sminos.waits_for_head(self.project, writer):
+            self.head_waits = False   # the enrolment's rule, which only an enrolment (a new uplink) changes
+        # A queue can still appear: a command that began before a rename
+        # queues under the name it read then.
+        if not (self.head_waits or sminos.queued_operators(self.project)):
+            return
+        last = self.writers(own=True).get(writer, (0, None))[0]
+        head = self.have.get(writer, 0)
+        if frontier(last, self.spent().get(writer, set())) < head:
+            return
+        released = sminos.release_queued(self.project, writer)
+        self.drawing = None
+        log("%s of %s is at the upstream's head (%d): it takes its seqs here from now on%s" % (
+            writer, self.project.name, head,
+            "; the %d that waited for it are appended above it" % len(released) if released else ""))
+        if released:
+            sminos.nudge_daemon()   # their delivery here, which waited with them
 
     def on_resend(self, frame):
         """The hub lacks a writer's events from `from` on. Every batch is
@@ -858,6 +888,7 @@ class HubLog:
             d["spent"] = held
             d["unreported"] = self.unreported() + out
             self.save(d)
+        self.release_heads()
         return appended, out
 
     def allocated_here(self, writer):
@@ -928,6 +959,7 @@ class HubLog:
             self.save(d)
         log("the endpoint spent %s: %s; refused for good, never stored or delivered here, and the writer's later "
             "events are not held behind it" % (where, why))
+        self.release_heads()
         return True
 
     def deliver(self):
