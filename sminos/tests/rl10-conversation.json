@@ -60,6 +60,10 @@
     "created:spawn": "2026-10-27T18:05:02.000Z",
     "fingerprint:spawn": "ZmluZ2VycHJpbnQtb2Ytc3Bhd24tYWN0aW9uLTAwMDA",
     "proof:spawn": "<the spawn's signed action (Interfaces §C), carried as its rpc's proof: each side's run binds its own>",
+    "opId:send": "c2VuZC1vcC1pZC0wMDAwMDAx",
+    "nonce:send": "AAAAAAAAAAAAAAAAAAAABA",
+    "created:send": "2026-10-27T18:05:03.000Z",
+    "fingerprint:send": "ZmluZ2VycHJpbnQtb2Ytc2VuZC1hY3Rpb24tMDAwMDA",
     "device:a1": "a1",
     "words:b1": "<the arriving words of b1, as the endpoint sent them down: the event with its sig>",
     "words:b2": "<the arriving words of b2, likewise>",
@@ -247,6 +251,15 @@
         { "down": { "t": "rpc-ack", "opId": "{{opId:decide}}", "nonce": "{{nonce:decide}}" } },
         { "scene": "act", "action": "sminos.spawn", "args": { "checkout": "{{checkout}}", "brief": "fix the flake" }, "as": "spawn" },
         { "down": { "t": "rpc", "rpc": { "rpc": "spawn", "project": "{{project:P}}", "machine": "{{name}}", "member": "{{member:A}}", "device": "{{device:a1}}", "created": "{{created:spawn}}", "nonce": "{{nonce:spawn}}", "opId": "{{opId:spawn}}", "opCreated": "{{created:spawn}}", "args": { "checkout": "{{checkout}}", "brief": "fix the flake" }, "fingerprint": "{{fingerprint:spawn}}", "proof": "{{proof:spawn}}" } }, "note": "no context; its signed action rides as proof, kept as the new session's ownersProof" },
+        { "scene": "act", "action": "sminos.send", "session": "{{session:S1}}", "launch": "{{launch:L1b}}", "args": { "session": "{{session:S1}}", "text": "and count them" }, "as": "send" },
+        {
+          "down": { "t": "rpc", "rpc": { "rpc": "send", "project": "{{project:P}}", "machine": "{{name}}", "member": "{{member:A}}", "device": "{{device:a1}}", "created": "{{created:send}}", "nonce": "{{nonce:send}}", "opId": "{{opId:send}}", "opCreated": "{{created:send}}", "args": { "session": "{{session:S1}}", "text": "and count them" }, "context": { "lane": "A", "session": "{{session:S1}}", "launch": "{{launch:L1b}}" }, "fingerprint": "{{fingerprint:send}}" } },
+          "note": "a person's message to the session (MAWS's O9 M1 and its Interfaces §E): sminos runs it through the bridge's deliver op in either turn state, under a writer that is no log writer, fenced to the launch"
+        },
+        { "up": { "t": "rpc-result", "project": "{{project:P}}", "opId": "{{opId:send}}", "nonce": "{{nonce:send}}", "outcome": { "state": "done", "result": { "entered": true, "uuid": "9a3e5c1d-2b4f-4a6e-8c0d-1e2f3a4b5c6d" } } }, "vary": ["outcome"], "note": "the bridge's delivered outcome for its key, waited up to 10 s: {entered: true, uuid}; failed refused-delivery with the bridge's reason; or {submitted: true} past the bound" },
+        { "down": { "t": "rpc-ack", "opId": "{{opId:send}}", "nonce": "{{nonce:send}}" } },
+        { "scene": "act", "action": "sminos.send", "session": "{{session:S1}}", "launch": "{{launch:L1b}}", "args": { "session": "{{session:S1}}", "text": "and count them" }, "member": "{{member:B}}", "device": "{{device:b1}}", "shares": [{ "member": "{{member:B}}", "grade": "converse" }], "note": "decided by the endpoint as B, who may converse here, and never sent: plain text takes converse. The share is the endpoint's side alone (sminos sends none until O8)" },
+        { "scene": "act", "action": "sminos.send", "session": "{{session:S1}}", "launch": "{{launch:L1b}}", "args": { "session": "{{session:S1}}", "text": "/clear" }, "member": "{{member:B}}", "device": "{{device:b1}}", "shares": [{ "member": "{{member:B}}", "grade": "converse" }], "refused": "grade", "note": "a text starting with / takes its slash command's grade (manage for /clear), above B's: refused at the endpoint, so nothing goes down. sminos refuses a / text on its own as well (bad-shape)" },
         { "scene": "act", "action": "sminos.steer", "session": "{{session:S4}}", "launch": "no-bridge", "args": { "session": "{{session:S4}}", "text": "hello?" }, "refused": "unavailable", "note": "no launch: no bridge to fence it" },
         { "scene": "act", "action": "sminos.steer", "session": "{{session:S1}}", "launch": "{{launch:L1b}}", "args": { "session": "{{session:S2}}", "text": "the other one" }, "refused": "malformed", "note": "its own session is not args.session" },
         { "quiet": ["rpc"], "ms": 400 }

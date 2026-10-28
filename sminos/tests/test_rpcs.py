@@ -245,6 +245,8 @@ class Mod(tpr.Bridge):
         self.refuse_media = None  # the bridge's refusal of an upload: (code, reason)
         self.observer = False     # an observer's bridge (a MAWS lane B session, O12 M3): every control op refused lane-b
         self.rows = []
+        self.deliver_as = "entered"   # a delivery's fate: entered, refused, duplicate, or None (nothing follows)
+        self.entered = []         # the uuids of the rows deliveries became
         super().__init__(sid, launch=launch)
 
     def drain(self):
@@ -305,8 +307,20 @@ class Mod(tpr.Bridge):
                           "tokensAfter": 1200}]
         elif op == "deliver":
             self.delivered.append(cmd["text"])
-            self.post({"type": "delivered", "key": cmd["key"], "outcome": "submitted"})
-            res = {"ok": True, "result": {"submitted": True}}
+            if self.deliver_as == "duplicate":
+                self.post({"type": "delivered", "key": cmd["key"], "outcome": "duplicate"})
+                res = {"ok": True, "result": {"duplicate": True}}
+            else:
+                self.post({"type": "delivered", "key": cmd["key"], "outcome": "submitted"})
+                res = {"ok": True, "result": {"submitted": True}}
+                # Its fate on the stream after the answer, as bridge.tsx's prompt or row reports it.
+                if self.deliver_as == "entered":
+                    self.entered.append(str(uuidlib.uuid4()))
+                    after = [None, {"type": "delivered", "key": cmd["key"], "outcome": "entered",
+                                    "uuid": self.entered[-1]}]
+                elif self.deliver_as == "refused":
+                    after = [None, {"type": "delivered", "key": cmd["key"], "outcome": "refused",
+                                    "reason": "the session was stopped and nobody has sent input since"}]
         elif op == "btw":
             if self.refuse_btw:
                 code, why = self.refuse_btw
@@ -552,6 +566,7 @@ class Checks(unittest.TestCase):
         shutil.rmtree(os.path.join(self.root, ".claude", "desk-uploads"), ignore_errors=True)   # an earlier test's
         self.mod.refuse_media = None
         self.mod.observer = False
+        self.mod.deliver_as = "entered"
         self.mod.commands.clear()
         self.clock = [time.time()]
         self.r = rpcs.Rpcs(KEY, "testhost", clock=lambda: self.clock[0])
@@ -3196,7 +3211,8 @@ class Checks(unittest.TestCase):
                  ("compact", {}), ("command", {"name": "rename", "args": "x"}), ("btw", {"prompt": "why?"}),
                  ("tell", {"agentId": "fenced", "text": "hi"}), ("stop-agent", {"agentId": "fenced"}),
                  ("media", {"attachments": self.attachments(("shot.png", "image/png", PNG)),
-                            "delivery": "queued-turn"})]
+                            "delivery": "queued-turn"}),
+                 ("send", {"text": "fenced words"})]
         for name, args in cases:
             with self.subTest(name, launch="stale"):
                 before = len(self.mod.commands)
@@ -3383,6 +3399,275 @@ class Checks(unittest.TestCase):
         self.remote_mode()
         self.assertEqual(self.r.query(old), {"state": "done", "outcome": rpcs.done({})}, "no binding to answer")
         self.assertEqual(self.r.query(new_op()), {"state": "not-received"})
+
+
+    # ------------------------------------------------ send (MAWS O9 §E)
+
+    def sends_path(self):
+        return os.path.join(os.environ["SMINOS_HOME"], "daemon", rpcs.SENDS_FILE)
+
+    def seq_of(self, rpc):
+        return self.ledger()[rpc["opId"]]["send_seq"]
+
+    def test_s_a_send_enters_once_and_a_reseal_is_answered_from_the_ledger(self):
+        """A person's message goes in as the bridge's `deliver`, idle (a
+        prompt of its own) or while a turn runs (a row), keyed by a writer no
+        log has and the send's seq, carrying its op and none of the launch
+        past the child; it answers with the row it became. A reseal of the
+        op is answered from the ledger and delivers nothing; the text is in
+        no log line."""
+        self.remote_mode()
+        sid = self.bridged.sid
+        for turn in (None, "t-s1"):
+            with self.subTest(turn=turn):
+                self.mod.turn = turn
+                text = "please look at the flake (%s)" % turn
+                rpc = self.remote("send", {"session": sid, "text": text})
+                o = self.outcome(rpc)
+                self.assertEqual(o, {"state": "done", "result": {"entered": True, "uuid": self.mod.entered[-1]}})
+                d = self.mod.ops("deliver")[-1]
+                self.assertEqual(d["key"], {"writer": rpcs.SEND_WRITER, "seq": self.seq_of(rpc)})
+                self.assertEqual((d["text"], d["rpc"]), (text, rpc["opId"]))
+                self.assertNotIn("launch", d, "the child checks the launch and passes none to the mod")
+                n = len(self.mod.ops("deliver"))
+                again = self.remote("send", {"session": sid, "text": text}, op=rpc["opId"],
+                                    op_created=rpc["opCreated"])
+                self.assertEqual(self.outcome(again), o, "answered from the ledger")
+                self.assertEqual(len(self.mod.ops("deliver")), n, "and delivered nothing")
+        seqs = [c["key"]["seq"] for c in self.mod.ops("deliver")]
+        self.assertEqual(seqs, sorted(set(seqs)), "each send a seq above the last")
+        with open(os.path.join(os.environ["SMINOS_HOME"], "daemon.log")) as f:
+            self.assertNotIn("please look at the flake", f.read(), "the person's words are never logged")
+
+    def test_s_a_stream_slow_to_give_its_snapshot_does_not_hold_a_send_past_its_deadline(self):
+        """A send waits for its outcome until its deadline: resubscribing to
+        a stream gone away reads the snapshot within what is left of that,
+        not within the snapshot's own bound."""
+        import socket
+        path = os.path.join(tsp.T, "ds-%s.sock" % uuidlib.uuid4().hex[:6])
+        srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        srv.bind(path)
+        srv.listen(4)
+        stop = threading.Event()
+        held = []
+
+        def serve():
+            while not stop.is_set():
+                try:
+                    conn, _ = srv.accept()
+                except OSError:
+                    return
+                held.append(conn)
+                conn.recv(4096)
+                conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: application/x-ndjson\r\n\r\n")
+                stop.wait(2)   # the snapshot, well past the deadline
+                try:
+                    conn.sendall(b'{"type":"snapshot"}\n')
+                except OSError:
+                    pass
+
+        t = threading.Thread(target=serve, daemon=True)
+        t.start()
+        try:
+            ds = rpcs.DeliveryStream.__new__(rpcs.DeliveryStream)
+            ds.path = path
+            ds.sock = ds.r = None
+            began = time.monotonic()
+            self.assertIsNone(ds.outcome(1, began + 0.3))
+            self.assertLess(time.monotonic() - began, 0.3 + 0.5)
+        finally:
+            stop.set()
+            ds.close()
+            srv.close()
+            for c in held:
+                c.close()
+            t.join(5)
+
+    def test_s_the_shape_of_a_send(self):
+        """`text` is a non-blank string of at most SEND_TEXT_MAX characters
+        whose first non-whitespace character is not `/` (the endpoint grades
+        a command behind leading whitespace); else `bad-shape`, kept, and
+        nothing reaches the bridge."""
+        self.remote_mode()
+        sid = self.bridged.sid
+        for what, text in (("a slash command", "/clear"), ("behind spaces", "   /clear"),
+                           ("behind a newline and a tab", "\n\t/compact now"), ("behind a BOM", "﻿/clear"),
+                           ("behind a no-break space", " /model opus"), ("empty", ""), ("blank", "  \n "),
+                           ("not text", 7), ("none at all", None),
+                           ("past the bound", "x" * (rpcs.SEND_TEXT_MAX + 1))):
+            with self.subTest(what):
+                args = {"session": sid, **({} if text is None else {"text": text})}
+                rpc = self.remote("send", args)
+                self.refused(rpc, "bad-shape")
+                self.assertIn("outcome", self.ledger()[rpc["opId"]], "kept as its one answer")
+        self.assertEqual(self.mod.ops("deliver"), [], "nothing reached the bridge")
+        for what, text in (("at the bound", "x" * rpcs.SEND_TEXT_MAX), ("a slash further in", "see a/b and /tmp")):
+            with self.subTest(what):
+                self.assertEqual(self.outcome(self.remote("send", {"session": sid, "text": text}))["state"], "done")
+        self.assertEqual([len(c["text"]) for c in self.mod.ops("deliver")], [rpcs.SEND_TEXT_MAX, 16])
+
+    def test_s_send_is_offered_through_the_endpoint_alone(self):
+        """DX2 does not carry `send`: from the hub it is `unsupported`, loose,
+        and never runs; the machine's desk lists it on RL10 alone."""
+        import sminos_hublog as hublog
+        rpc = self.send("send", {"session": self.bridged.sid, "text": "hello"})
+        o = self.refused(rpc, "unsupported")
+        self.assertIn("endpoint", o["error"]["message"])
+        self.assertNotIn(rpc["nonce"], self.ledger(), "a refusal before the ledger")
+        self.assertEqual(self.mod.ops("deliver"), [])
+        self.assertNotIn("send", hublog.desk()["rpcs"])
+        self.assertEqual(hublog.desk(True)["rpcs"], list(rpcs.RPC_NAMES) + ["send"])
+
+    def test_s_a_send_needs_the_sessions_bridge_its_launch_and_the_project(self):
+        """Fenced as every bridge command (O12 M7): a session with no bridge is
+        refused `context` (never the inbox or the supervisor), one sealed for
+        another launch `launch` at the child, before the mod sees it; a
+        session that is not the project's is `no-session`, loose."""
+        self.remote_mode()
+        with mock.patch.object(rpcs.control, "supervisor_reply", side_effect=AssertionError("unfenced")):
+            o = self.refused(self.remote("send", {"session": self.plain.sid, "text": "hi"}), "context")
+        self.assertIn("no bridge", o["error"]["message"])
+        self.assertNotIn("hi", self.plain.inbox.texts())
+        o = self.refused(self.remote("send", {"session": self.bridged.sid, "text": "hi"}, launch=STALE), "launch")
+        self.assertIn(STALE, o["error"]["message"])
+        stranger = self.remote("send", {"session": str(uuidlib.uuid4()), "text": "hi"})
+        self.refused(stranger, "no-session")
+        self.assertNotIn(stranger["opId"], self.ledger())
+        self.assertEqual(self.mod.ops("deliver"), [], "nothing reached the mod")
+
+    def test_s_the_bridges_fate_of_a_send_is_its_answer(self):
+        """A delivery the engine dropped is `refused-delivery` with the
+        bridge's reason; a `duplicate` to a fresh key is a failure, never a
+        success; no fate within SEND_WAIT_S is `submitted`."""
+        self.remote_mode()
+        sid = self.bridged.sid
+        self.mod.deliver_as = "refused"
+        self.assertEqual(self.outcome(self.remote("send", {"session": sid, "text": "after an Esc"})),
+                         rpcs.failed("refused-delivery", "the session was stopped and nobody has sent input since"))
+        self.mod.deliver_as = "duplicate"
+        o = self.refused(self.remote("send", {"session": sid, "text": "again?"}), "duplicate")
+        self.assertIn(rpcs.SEND_WRITER, o["error"]["message"])
+        self.mod.deliver_as = None
+        with mock.patch.object(rpcs, "SEND_WAIT_S", 1):
+            started = time.monotonic()
+            self.assertEqual(self.outcome(self.remote("send", {"session": sid, "text": "quiet"})),
+                             {"state": "done", "result": {"submitted": True}})
+            self.assertGreaterEqual(time.monotonic() - started, 1.0, "waited its bound for the fate")
+
+    def test_s_two_sends_enter_in_the_order_they_arrived(self):
+        """Two devices send to one session. Each send's seq is kept on disk
+        as its frame arrives, before its worker runs; the first's worker is
+        stalled before its lock, and the second, claimed, waits behind it:
+        nothing is delivered until the first goes, then both, in arrival
+        order, under rising seqs."""
+        self.remote_mode()
+        sid = self.bridged.sid
+        reached, gate = threading.Event(), threading.Event()
+        plan = self.r.plan
+
+        def paused(rpc, facts):   # the first send's worker, before its claim and its lock
+            if rpc["args"].get("text") == "first":
+                reached.set()
+                gate.wait(10)
+            return plan(rpc, facts)
+
+        self.r.plan = paused
+        try:
+            first = self.remote("send", {"session": sid, "text": "first"}, device="dev-1")
+            self.assertTrue(reached.wait(10))
+            on_disk = json.load(open(self.sends_path()))["seq"][sid]
+            second = self.remote("send", {"session": sid, "text": "second"}, device="dev-2")
+            self.assertEqual(json.load(open(self.sends_path()))["seq"][sid], on_disk + 1,
+                             "the second's seq kept as its frame arrived")
+            self.assertTrue(wait_for(lambda: second["opId"] in self.ledger(), 10), "the second is claimed")
+            time.sleep(1.0)
+            self.assertEqual(self.mod.ops("deliver"), [], "and waits for the first")
+            self.assertNotIn("outcome", self.ledger()[second["opId"]])
+            gate.set()
+            for rpc in (first, second):
+                self.assertTrue(self.outcome(rpc)["result"]["entered"])
+        finally:
+            gate.set()
+            self.r.plan = plan
+        self.assertEqual([c["text"] for c in self.mod.ops("deliver")], ["first", "second"])
+        self.assertEqual([c["key"]["seq"] for c in self.mod.ops("deliver")], [on_disk, on_disk + 1])
+        self.assertEqual((self.seq_of(first), self.seq_of(second)), (on_disk, on_disk + 1))
+
+    def test_s_a_refused_send_lets_the_next_one_go(self):
+        """A send refused before its post (its session's bridge gone from
+        under it, here a launch the child refuses) leaves its place: the
+        sends behind it are not held."""
+        self.remote_mode()
+        sid = self.bridged.sid
+        self.refused(self.remote("send", {"session": sid, "text": "stale"}, launch=STALE), "launch")
+        self.assertEqual(self.outcome(self.remote("send", {"session": sid, "text": "fresh"}))["state"], "done")
+        self.assertEqual(self.r.sends.waiting, {}, "no seq left waiting")
+
+    def test_s_the_seq_outlives_a_restart_and_the_file(self):
+        """sends.json (0600) keeps the last seq reserved per session, so a
+        restart goes on past it; with the file gone, the bridge's own mark
+        keeps the next seq above every key it took; a file that cannot be
+        read refuses every send and is never replaced."""
+        self.remote_mode()
+        sid = self.bridged.sid
+        a = self.seq_of(self.remote_sent(sid, "one"))
+        with open(self.sends_path()) as f:
+            self.assertEqual(json.load(f)["seq"][sid], a)
+        self.assertEqual(os.stat(self.sends_path()).st_mode & 0o777, 0o600)
+        self.remote_mode()   # a restart
+        self.assertEqual(self.seq_of(self.remote_sent(sid, "two")), a + 1)
+        os.unlink(self.sends_path())
+        self.remote_mode()
+        self.assertEqual(self.seq_of(self.remote_sent(sid, "three")), a + 2, "above the bridge's mark")
+        with open(self.sends_path(), "w") as f:
+            f.write("{")
+        try:
+            self.remote_mode()
+            n = len(self.mod.ops("deliver"))
+            o = self.refused(self.remote("send", {"session": sid, "text": "four"}), "failed")
+            self.assertIn("no delivery key is used twice", o["error"]["message"])
+            self.assertEqual(len(self.mod.ops("deliver")), n)
+            with open(self.sends_path()) as f:
+                self.assertEqual(f.read(), "{", "never replaced")
+        finally:
+            os.unlink(self.sends_path())
+
+    def remote_sent(self, sid, text):
+        rpc = self.remote("send", {"session": sid, "text": text})
+        self.assertEqual(self.outcome(rpc)["state"], "done")
+        return rpc
+
+    def test_s_a_send_claimed_before_a_stop_is_answered_from_the_childs_kept_answer(self):
+        """The daemon stopped between the post and its answer: the child kept
+        the bridge's answer under the op, so a restart answers `submitted`,
+        or `refused-delivery` when the child kept the engine's refusal of
+        that key; a claim the bridge never saw is `interrupted` once its
+        trace can no longer come."""
+        sid = self.bridged.sid
+        path = rpcs.bridge.endpoint(sid)
+        now = time.time()
+        base = rpcs.bridge.load_kept(sid)["delivered"].get(rpcs.SEND_WRITER, 0) + 10
+        cases = (("SSSSSSSSSSSSSSSSSSSSSA", base, "entered", rpcs.done({"submitted": True})),
+                 ("SSSSSSSSSSSSSSSSSSSSSB", base + 1, "refused",
+                  rpcs.failed("refused-delivery", "the session was stopped and nobody has sent input since")))
+        for op, seq, fate, _ in cases:
+            self.mod.deliver_as = fate
+            self.claim(op, "send", sid, now, send_seq=seq)
+            status, _ = rpcs.control.post_command(path, {"op": "deliver", "key": {"writer": rpcs.SEND_WRITER,
+                                                                                 "seq": seq},
+                                                         "text": "kept", "rpc": op})
+            self.assertEqual(status, 200)
+            self.assertTrue(wait_for(lambda: (rpcs.bridge.load_kept(sid).get("rpcs") or {}).get(op), 10))
+        self.assertTrue(wait_for(lambda: rpcs.bridge.load_kept(sid).get("refused"), 10))
+        self.claim("SSSSSSSSSSSSSSSSSSSSSC", "send", sid, now, send_seq=base + 2)
+        self.remote_mode()   # the restart
+        frames = self.r.due({self.pid})
+        for op, _, _, outcome in cases:
+            self.assertEqual(results(frames, op), [outcome], op)
+        self.assertEqual(results(frames, "SSSSSSSSSSSSSSSSSSSSSC"), [], "its answer may still come")
+        self.clock[0] = now + rpcs.STEER_TRACE_S + 1
+        self.assertEqual([o["error"]["code"] for o in self.reconciled(self.r, "SSSSSSSSSSSSSSSSSSSSSC")],
+                         ["interrupted"])
 
 
 class CopyNames(unittest.TestCase):

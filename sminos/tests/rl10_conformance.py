@@ -41,6 +41,7 @@ import copy
 import hashlib
 import json
 import os
+import re
 import shutil
 import signal
 import socket
@@ -149,7 +150,9 @@ CASES = CONVERSATION["cases"]
 B = dict(CONVERSATION["bindings"])   # the sample values; this run's replace them where they are its own
 B.update(token=os.urandom(32).hex(), wrongToken=os.urandom(32).hex(),
          legacyKey=codes.b64url(os.urandom(32)))
-LAZY = ("created:steer", "created:decide", "created:spawn")   # an RPC's time: its own when it goes down
+# An RPC's time (`created:<as>`): its own when it goes down.
+LAZY = tuple(sorted({k for k in B if k.startswith("created:")} |
+                    {m.decode() for m in re.findall(rb"\{\{(created:[^}]+)\}\}", RAW)}))
 for k in LAZY:
     B.pop(k, None)
 IDS = {}   # a literal id the fixture names in a `vary`'d path → the id sminos sent
@@ -314,11 +317,12 @@ def find(conn, pred, timeout=WAIT, after=-1):
 class Mod:
     """A session's bridge module, as test_rpcs' stands in for bridge.tsx:
     the real bridge child (`sminos bridge --session --launch`), its commands
-    answered — a delivery submitted, a steer taken."""
+    answered — a delivery submitted, then entered as a row, a steer taken."""
 
     def __init__(self, sid, launch):
         self.sid, self.launch = sid, launch
         self.delivered = []
+        self.entered = []   # the uuid of the row each delivery became
         self.ops = []
         self.proc = subprocess.Popen([CLI, "bridge", "--session", sid, "--launch=" + launch],
                                      stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
@@ -340,6 +344,8 @@ class Mod:
                     self.delivered.append(cmd["text"])
                     self.post({"type": "delivered", "key": cmd["key"], "outcome": "submitted"},
                               {"type": "result", "id": cmd["id"], "op": op, "ok": True, "result": {"submitted": True}})
+                    self.entered.append(str(uuid.uuid4()))
+                    self.post({"type": "delivered", "key": cmd["key"], "outcome": "entered", "uuid": self.entered[-1]})
                 elif op == "steer":
                     self.post({"type": "result", "id": cmd["id"], "op": op, "ok": True,
                                "result": {"row": str(uuid.uuid4())}})
@@ -671,12 +677,24 @@ def check_spawn():
         got and {k: got.get(k) for k in want})
 
 
+def check_send_entered():
+    """The send's outcome (a `vary` the fixture leaves open) is the row it
+    became: S1's bridge took the text once, under the send's writer, and
+    the result names the uuid its `delivered` gave."""
+    conn, i = STEPS[(9, 13)]
+    got = CONNS["main"].frames[i]["outcome"] if CONNS["main"].number == conn else None
+    mod = MODS["S1"]
+    want = {"state": "done", "result": {"entered": True, "uuid": mod.entered[-1] if mod.entered else None}}
+    return got == want and mod.delivered.count("and count them") == 1, \
+        "answered %r, S1 took %r" % (got, mod.delivered)
+
+
 CHECK = {(0, 2): check_no_identity, (0, 5): check_identity, (0, 6): check_revoked(3), (0, 7): check_org,
          (2, 1): check_policy(True), (2, 3): check_policy(False), (5, 1): check_present,
          (6, 1): check_delivered("S1", "run the tests"), (6, 7): check_delivered("S1", "asked while RL1 is down"),
          (7, 13): check_delivered("S2", "from b1"), (11, 38): check_delivered("S2", "from b2"),
          (11, 7): check_revoked(3), (11, 28): check_revoked(4),
-         (11, 31): check_revoked(5, ["b1"])}
+         (11, 31): check_revoked(5, ["b1"]), (9, 13): check_send_entered}
 
 
 def late_checks(P):
@@ -978,6 +996,68 @@ def replay_beyond():
             what, said))
         if not ok:
             return
+    ok, said = sends_in_order()
+    say("ok" if ok else "FAIL", "beyond the fixture: two devices' sends to S1, the first stalled before its lock: %s"
+        % said)
+
+
+def send_down(text, device):
+    """A lane A `send` as O9 §E has the endpoint send it down, to S1 under
+    its launch now; its opId."""
+    created = iso()
+    op = codes.b64url(os.urandom(18))
+    CONNS["main"].write({"t": "rpc", "rpc": {
+        "rpc": "send", "project": B["project:P"], "machine": B["name"], "member": B["member:A"], "device": device,
+        "created": created, "nonce": codes.b64url(os.urandom(16)), "opId": op, "opCreated": created,
+        "args": {"session": B["session:S1"], "text": text},
+        "context": {"lane": "A", "session": B["session:S1"], "launch": B["launch:L1b"]},
+        "fingerprint": "fp-" + op[:8]}})
+    return op
+
+
+def sends_in_order():
+    """O9 §E's order through the RL10 receive path: each send's seq is
+    reserved as its frame arrives; the first's worker is stalled before its
+    claim and its lock, and the second, from another device, waits behind
+    it; released, both enter, in arrival order, each answered with its
+    row."""
+    import sminos_rpc
+    conn, mod = CONNS["main"], MODS["S1"]
+    reached, gate = threading.Event(), threading.Event()
+    plan = sminos_rpc.Rpcs.plan
+
+    def stalled(self, rpc, facts):
+        if rpc["args"].get("text") == "the first send":
+            reached.set()
+            gate.wait(20)
+        return plan(self, rpc, facts)
+
+    before = len(mod.delivered)
+    with mock.patch.object(sminos_rpc.Rpcs, "plan", stalled):
+        try:
+            first = send_down("the first send", B["device:b1"])
+            if not reached.wait(WAIT):
+                return False, "the first send's worker never ran"
+            second = send_down("the second send", B["device:b2"])
+            time.sleep(1.5)
+            if mod.delivered[before:]:
+                return False, "the second went ahead of the stalled first: %r" % mod.delivered[before:]
+        finally:
+            gate.set()
+        got = {}
+        for op in (first, second):
+            i = find(conn, lambda f, op=op: f.get("t") == "rpc-result" and f.get("opId") == op)
+            if i is None:
+                return False, "no rpc-result for %s" % op
+            MATCHED.add((conn.number, i))
+            got[op] = conn.frames[i]["outcome"]
+            conn.write({"t": "rpc-ack", "opId": op, "nonce": conn.frames[i]["nonce"]})
+    if mod.delivered[before:] != ["the first send", "the second send"]:
+        return False, "delivered %r" % mod.delivered[before:]
+    want = [{"state": "done", "result": {"entered": True, "uuid": u}} for u in mod.entered[-2:]]
+    if [got[first], got[second]] != want:
+        return False, "answered %r, not %r" % ([got[first], got[second]], want)
+    return True, "the second waited, then both entered in arrival order, each answered with its row"
 
 
 def round_trip(ts, created, text):
