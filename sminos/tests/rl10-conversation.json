@@ -7,7 +7,7 @@
     "  {open: conn} / {closed: conn}   a connection to the socket opened, or closed by the endpoint with nothing written on it;",
     "  {quiet: [t...], ms}    no line of these kinds comes down within ms (the endpoint refused, held, or sent nothing);",
     "  {scene: name, ...}     what happens on the endpoint's side (the hub, a device, the org state, a restart); sminos's replay skips it.",
-    "conn names the connection a step is on ('main' when absent). Frames are matched whole: {{name}} is a binding (the header's 'bindings' give sample values, each side substitutes its own run's), and each path in a step's 'vary' (dot-separated, array indexes as numbers) holds a value neither side can predict (a signature, a time, a version), compared only for presence. A down step matches the first line of its kind not matched before it, in order; lines of other kinds may come between.",
+    "conn names the connection a step is on ('main' when absent). Frames are matched whole: {{name}} is a binding, in an object's key as in a value (the header's 'bindings' give sample values, each side substitutes its own run's), and each path in a step's 'vary' (dot-separated, array indexes as numbers) holds a value neither side can predict (a signature, a time, a version), compared only for presence. A down step matches the first line of its kind not matched before it, in order; lines of other kinds may come between.",
     "note: what the step proves, or what sminos's side does with it."
   ],
   "bindings": {
@@ -44,6 +44,9 @@
     "launch:L1b": "launch-1-e902",
     "launch:L2": "launch-2-51fd",
     "checkout": "/work/maws",
+    "repo": "maws",
+    "checkout:Q": "/work/local",
+    "configDir": "/home/operator/.claude",
     "opId:steer": "c3RlZXItb3AtaWQtMDAwMDAx",
     "nonce:steer": "AAAAAAAAAAAAAAAAAAAAAQ",
     "created:steer": "2026-10-27T18:05:00.000Z",
@@ -56,6 +59,7 @@
     "nonce:spawn": "AAAAAAAAAAAAAAAAAAAAAw",
     "created:spawn": "2026-10-27T18:05:02.000Z",
     "fingerprint:spawn": "ZmluZ2VycHJpbnQtb2Ytc3Bhd24tYWN0aW9uLTAwMDA",
+    "proof:spawn": "<the spawn's signed action (Interfaces §C), carried as its rpc's proof: each side's run binds its own>",
     "device:a1": "a1",
     "words:b1": "<the arriving words of b1, as the endpoint sent them down: the event with its sig>",
     "words:b2": "<the arriving words of b2, likewise>",
@@ -108,11 +112,11 @@
           "vary": ["message.body.desk"],
           "note": "the machine's presence is a session-lane message of kind machine, one per project"
         },
-        { "up": { "t": "member", "session": "{{session:S1}}", "alias": "main", "project": "{{project:P}}", "lane": "A", "state": "idle", "title": "the main session", "cwd": "{{checkout}}", "launch": "{{launch:L1}}", "owners": ["@machine"], "ownersProof": [], "origin": { "kind": "terminal" } } },
-        { "up": { "t": "member", "session": "{{session:S2}}", "alias": "bob", "project": "{{project:P}}", "lane": "A", "state": "idle", "cwd": "{{checkout}}", "launch": "{{launch:L2}}", "owners": ["{{member:B}}"], "ownersProof": [], "origin": { "kind": "maws", "requester": "{{member:B}}" } } },
-        { "up": { "t": "member", "session": "{{session:S3}}", "alias": "lane-b", "project": "{{project:P}}", "lane": "B", "state": "idle", "cwd": "{{checkout}}", "owners": ["@machine"], "ownersProof": [], "origin": { "kind": "maws" } }, "note": "lane B: joined to its appSessionId through engine.sessions" },
-        { "up": { "t": "member", "session": "{{session:S4}}", "alias": "unbridged", "project": "{{project:P}}", "lane": "A", "state": "idle", "cwd": "{{checkout}}", "owners": ["@machine"], "ownersProof": [], "origin": { "kind": "terminal" } }, "note": "no bridge: no launch" },
-        { "up": { "t": "member", "session": "{{session:S5}}", "alias": "local", "project": "{{project:Q}}", "lane": "A", "state": "idle", "cwd": "/work/local", "owners": ["@machine"], "ownersProof": [], "origin": { "kind": "terminal" } }, "note": "in a project the endpoint doesn't relay" },
+        { "up": { "t": "member", "session": "{{session:S1}}", "alias": "main", "project": "{{project:P}}", "lane": "A", "state": "idle", "title": "the main session", "cwd": "{{checkout}}", "launch": "{{launch:L1}}", "owners": ["@machine"], "ownersProof": [], "origin": { "kind": "terminal" }, "principal": "@machine", "inference": { "kind": "slot", "configDir": "{{configDir}}" }, "controller": { "lane": "A", "since": "2026-10-27T18:01:00Z" } }, "vary": ["controller.since"] },
+        { "up": { "t": "member", "session": "{{session:S2}}", "alias": "bob", "project": "{{project:P}}", "lane": "A", "state": "idle", "cwd": "{{checkout}}", "launch": "{{launch:L2}}", "owners": ["{{member:B}}"], "ownersProof": [], "origin": { "kind": "maws", "requester": "{{member:B}}" }, "principal": "{{member:B}}", "inference": { "kind": "slot", "configDir": "{{configDir}}" }, "controller": { "lane": "A", "since": "2026-10-27T18:01:00Z" } }, "vary": ["controller.since"] },
+        { "up": { "t": "member", "session": "{{session:S3}}", "alias": "lane-b", "project": "{{project:P}}", "lane": "B", "state": "idle", "cwd": "{{checkout}}", "owners": ["@machine"], "ownersProof": [], "origin": { "kind": "maws" }, "principal": "@machine", "inference": { "kind": "slot", "configDir": "{{configDir}}" } }, "note": "lane B: joined to its appSessionId through engine.sessions" },
+        { "up": { "t": "member", "session": "{{session:S4}}", "alias": "unbridged", "project": "{{project:P}}", "lane": "A", "state": "idle", "cwd": "{{checkout}}", "owners": ["@machine"], "ownersProof": [], "origin": { "kind": "terminal" }, "principal": "@machine", "inference": { "kind": "slot", "configDir": "{{configDir}}" } }, "note": "no bridge: no launch, and no controller" },
+        { "up": { "t": "member", "session": "{{session:S5}}", "alias": "local", "project": "{{project:Q}}", "lane": "A", "state": "idle", "cwd": "{{checkout:Q}}", "owners": ["@machine"], "ownersProof": [], "origin": { "kind": "terminal" }, "principal": "@machine", "inference": { "kind": "slot", "configDir": "{{configDir}}" } }, "note": "in a project the endpoint doesn't relay" },
         { "up": { "t": "pending", "project": "{{project:P}}", "raised": [] } },
         { "up": { "t": "restated" }, "note": "the restatement after the welcome is whole: nothing held before it to withdraw" }
       ]
@@ -120,19 +124,25 @@
     {
       "name": "the log plane: an own event as _append writes it (ts, no created) signed once in its upload form, dual-coded, a session writer's attested, resent byte-identical, another body refused",
       "steps": [
-        { "up": { "t": "hello", "project": "{{project:P}}", "name": "maws", "have": {} } },
+        { "up": { "t": "hello", "project": "{{project:P}}", "name": "maws", "have": { "{{name}}/{{session:S1}}": 3, "{{name}}/{{session:S2}}": 1, "{{name}}/{{session:S3}}": 1, "{{name}}/{{session:S4}}": 1, "{{name}}/human": 1 } }, "note": "the machine's vector of P: each member's joined, S1's titled and say, the operator's words" },
         { "down": { "t": "have", "project": "{{project:P}}", "have": {}, "archive": false }, "vary": ["archive"] },
         { "scene": "listed", "session": "{{session:S1}}", "note": "the session is listed at the hub once its project is relayed" },
         { "scene": "listed", "session": "{{app:S3}}", "note": "a lane B session is listed under its appSessionId" },
         {
           "up": { "t": "events", "project": "{{project:P}}", "events": [
-            { "ts": "2026-10-27T18:02:11.482Z", "writer": "{{name}}/human", "seq": 1, "kind": "human", "from": "human", "to": [{ "session": "{{session:S1}}", "alias": "main" }], "text": "run the tests" },
-            { "ts": "2026-10-27T18:02:12.001Z", "writer": "{{name}}/{{session:S1}}", "seq": 1, "kind": "say", "from": "main", "to": "*", "text": "tests pass" }
+            { "ts": "2026-10-27T18:01:00.100Z", "writer": "{{name}}/{{session:S1}}", "seq": 1, "kind": "joined", "session": "{{session:S1}}", "alias": "main", "name_source": "user", "machine": "{{name}}", "cwd": "{{checkout}}", "worktree": "", "role": "", "seat": "", "by": "", "session_kind": "interactive", "repo": "{{repo}}", "branch": "main" },
+            { "ts": "2026-10-27T18:01:00.200Z", "writer": "{{name}}/{{session:S1}}", "seq": 2, "kind": "titled", "session": "{{session:S1}}", "title": "the main session" },
+            { "ts": "2026-10-27T18:02:12.001Z", "writer": "{{name}}/{{session:S1}}", "seq": 3, "kind": "say", "from": "main", "to": "*", "text": "tests pass" },
+            { "ts": "2026-10-27T18:01:00.300Z", "writer": "{{name}}/{{session:S2}}", "seq": 1, "kind": "joined", "session": "{{session:S2}}", "alias": "bob", "name_source": "user", "machine": "{{name}}", "cwd": "{{checkout}}", "worktree": "", "role": "", "seat": "", "by": "", "session_kind": "interactive", "repo": "{{repo}}", "branch": "main", "owners": ["{{member:B}}"], "origin": { "kind": "maws", "requester": "{{member:B}}" } },
+            { "ts": "2026-10-27T18:01:00.400Z", "writer": "{{name}}/{{session:S3}}", "seq": 1, "kind": "joined", "session": "{{session:S3}}", "alias": "lane-b", "name_source": "user", "machine": "{{name}}", "cwd": "{{checkout}}", "worktree": "", "role": "", "seat": "", "by": "", "session_kind": "interactive", "repo": "{{repo}}", "branch": "main", "origin": { "kind": "maws" } },
+            { "ts": "2026-10-27T18:01:00.500Z", "writer": "{{name}}/{{session:S4}}", "seq": 1, "kind": "joined", "session": "{{session:S4}}", "alias": "unbridged", "name_source": "user", "machine": "{{name}}", "cwd": "{{checkout}}", "worktree": "", "role": "", "seat": "", "by": "", "session_kind": "interactive", "repo": "{{repo}}", "branch": "main" },
+            { "ts": "2026-10-27T18:02:11.482Z", "writer": "{{name}}/human", "seq": 1, "kind": "human", "from": "human", "to": [{ "session": "{{session:S1}}", "alias": "main" }], "text": "run the tests" }
           ] },
-          "note": "events as stored: ts and no created, no mac"
+          "vary": ["events.0.ts", "events.1.ts", "events.3.ts", "events.4.ts", "events.5.ts"],
+          "note": "events as stored: ts and no created, no mac; the first upload past an empty have, every own writer of P in writer order from its seq 1: the members' joined (a joined publishes owners and origin only from a final record, never @machine), S1's titled and say, the operator's words"
         },
         { "scene": "hub-holds", "writer": "{{name}}/human", "seq": 1, "created": "2026-10-27T18:02:11.482Z", "note": "the hub verifies its v2 sig; its DX1 mac verifies under the legacy key" },
-        { "scene": "hub-holds", "writer": "{{name}}/{{session:S1}}", "seq": 1, "created": "2026-10-27T18:02:12.001Z", "attest": ["{{member:A}}"], "note": "attest {owners: @machine resolved}, inside the v2 signature" },
+        { "scene": "hub-holds", "writer": "{{name}}/{{session:S1}}", "seq": 3, "created": "2026-10-27T18:02:12.001Z", "attest": ["{{member:A}}"], "note": "attest {owners: @machine resolved}, inside the v2 signature" },
         { "scene": "hub-resend", "writer": "{{name}}/human", "from": 1 },
         { "down": { "t": "resend", "project": "{{project:P}}", "writer": "{{name}}/human", "from": 1 } },
         { "up": { "t": "events", "project": "{{project:P}}", "events": [{ "ts": "2026-10-27T18:02:11.482Z", "writer": "{{name}}/human", "seq": 1, "kind": "human", "from": "human", "to": [{ "session": "{{session:S1}}", "alias": "main" }], "text": "run the tests" }] } },
@@ -176,9 +186,9 @@
         { "down": { "t": "words", "id": "w-own-2", "verdict": "peer" } },
         { "up": { "t": "words?", "id": "w-own-3", "project": "{{project:P}}", "session": "{{session:S1}}", "event": { "ts": "2026-10-27T18:02:11.482Z", "writer": "{{name}}/human", "seq": 1, "kind": "human", "from": "human", "to": [{ "session": "{{session:S1}}", "alias": "main" }], "text": "run the tests now" } }, "vary": ["id"] },
         { "down": { "t": "words", "id": "w-own-3", "verdict": "refuse" } },
-        { "up": { "t": "words?", "id": "w-own-4", "project": "{{project:P}}", "session": "{{session:S1}}", "event": { "ts": "2026-10-27T18:03:00.000Z", "writer": "{{name}}/human", "seq": 9, "kind": "human", "from": "human", "to": "*", "text": "asked while RL1 is down" } }, "vary": ["id"], "note": "nothing signed at seq 9: the record alone decides" },
+        { "up": { "t": "words?", "id": "w-own-4", "project": "{{project:P}}", "session": "{{session:S1}}", "event": { "ts": "2026-10-27T18:03:00.000Z", "writer": "{{name}}/human", "seq": 9, "kind": "human", "from": "human", "to": [{ "session": "{{session:S1}}", "alias": "main" }], "text": "asked while RL1 is down" } }, "vary": ["id"], "note": "nothing signed at seq 9: the record alone decides; asked only for a session the event's to lists (never for \"*\", which owes no one words)" },
         { "down": { "t": "words", "id": "w-own-4", "verdict": "words" } },
-        { "up": { "t": "words?", "id": "w-own-5", "project": "{{project:Q}}", "session": "{{session:S5}}", "event": { "ts": "2026-10-27T18:03:01.000Z", "writer": "{{name}}/human", "seq": 1, "kind": "human", "from": "human", "to": "*", "text": "a project the endpoint doesn't relay" } }, "vary": ["id"] },
+        { "up": { "t": "words?", "id": "w-own-5", "project": "{{project:Q}}", "session": "{{session:S5}}", "event": { "ts": "2026-10-27T18:03:01.000Z", "writer": "{{name}}/human", "seq": 1, "kind": "human", "from": "human", "to": [{ "session": "{{session:S5}}", "alias": "local" }], "text": "a project the endpoint doesn't relay" } }, "vary": ["id"] },
         { "down": { "t": "words", "id": "w-own-5", "verdict": "words" } },
         { "up": { "t": "words?", "id": "w-own-6", "session": "{{session:S1}}", "event": { "ts": "2026-10-27T18:02:11.482Z", "writer": "{{name}}/human", "seq": 1, "kind": "human", "from": "human", "to": [{ "session": "{{session:S1}}", "alias": "main" }], "text": "run the tests" } }, "vary": ["id"], "note": "no project: the log the event is in is unknown (say copies one message into two projects' logs)" },
         { "down": { "t": "words", "id": "w-own-6", "verdict": "refuse" } }
@@ -211,13 +221,11 @@
       ]
     },
     {
-      "name": "a to-human host message raises one notify wrote, however often it comes again; a raised draft is taken without a mac",
+      "name": "a to-human host message raises one notify wrote, however often it comes again (its resend after the reconnect is case 11's); a raised draft is taken without a mac",
       "steps": [
         { "up": { "t": "session", "message": { "project": "{{project:P}}", "machine": "{{name}}", "session": "{{session:S1}}", "kind": "host", "sub": null, "n": null, "body": { "id": { "writer": "{{name}}/{{session:S1}}", "seq": 1 }, "event": { "ts": "2026-10-27T18:06:00.000Z", "writer": "{{name}}/{{session:S1}}", "seq": 1, "kind": "message", "from": "main", "text": "the build is green" } } } } },
         { "scene": "notified", "session": "{{session:S1}}", "kind": "wrote", "count": 1 },
-        { "up": { "t": "session", "message": { "project": "{{project:P}}", "machine": "{{name}}", "session": "{{session:S1}}", "kind": "host", "sub": null, "n": null, "body": { "id": { "writer": "{{name}}/{{session:S1}}", "seq": 1 }, "event": { "ts": "2026-10-27T18:06:00.000Z", "writer": "{{name}}/{{session:S1}}", "seq": 1, "kind": "message", "from": "main", "text": "the build is green" } } } }, "note": "the last 50 again after a reconnect" },
-        { "scene": "notified", "session": "{{session:S1}}", "kind": "wrote", "count": 1 },
-        { "up": { "t": "session", "message": { "project": "{{project:P}}", "machine": "{{name}}", "session": "{{session:S1}}", "kind": "raised", "sub": null, "n": null, "body": { "session": "{{session:S1}}", "request": "req-1", "kind": "permission", "tool": "Bash", "input": { "command": "ls" }, "at": "2026-10-27T18:06:01.000Z" } } }, "note": "a draft: no mac on RL10" },
+        { "up": { "t": "session", "message": { "project": "{{project:P}}", "machine": "{{name}}", "session": "{{session:S1}}", "kind": "raised", "sub": null, "n": null, "body": { "session": "{{session:S1}}", "request": "req-1", "tool": "Bash", "input": { "command": "ls" } } } }, "note": "DX4's draft (sminos_requests.raised_draft): no kind, no at, and no mac on RL10" },
         { "scene": "heard", "kind": "raised" }
       ]
     },
@@ -230,11 +238,11 @@
         },
         { "up": { "t": "rpc-result", "project": "{{project:P}}", "opId": "{{opId:steer}}", "nonce": "{{nonce:steer}}", "outcome": { "state": "done", "result": {} } }, "vary": ["outcome"] },
         { "down": { "t": "rpc-ack", "opId": "{{opId:steer}}", "nonce": "{{nonce:steer}}" } },
-        { "scene": "act", "action": "sminos.decide", "session": "{{session:S1}}", "launch": "{{launch:L1}}", "args": { "session": "{{session:S1}}", "request": "req-1", "decision": "allow", "digest": { "session": "{{session:S1}}", "request": "req-1", "tool": "Bash", "input_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" } }, "as": "decide" },
+        { "scene": "act", "action": "sminos.decide", "session": "{{session:S1}}", "launch": "{{launch:L1}}", "args": { "session": "{{session:S1}}", "request": "req-1", "decision": "allow", "digest": { "session": "{{session:S1}}", "request": "req-1", "tool": "Bash", "input_sha256": "4cf29611a66934862f29acfcc817e30b905c1ab73d5e65831413eb6b454d49db" } }, "as": "decide" },
         {
-          "down": { "t": "rpc", "rpc": { "rpc": "decide", "project": "{{project:P}}", "machine": "{{name}}", "member": "{{member:A}}", "device": "{{device:a1}}", "created": "{{created:decide}}", "nonce": "{{nonce:decide}}", "opId": "{{opId:decide}}", "opCreated": "{{created:decide}}", "args": { "session": "{{session:S1}}", "request": "req-1", "decision": "allow", "digest": { "session": "{{session:S1}}", "request": "req-1", "tool": "Bash", "input_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" } }, "context": { "lane": "A", "session": "{{session:S1}}", "launch": "{{launch:L1}}" }, "fingerprint": "{{fingerprint:decide}}" } }
+          "down": { "t": "rpc", "rpc": { "rpc": "decide", "project": "{{project:P}}", "machine": "{{name}}", "member": "{{member:A}}", "device": "{{device:a1}}", "created": "{{created:decide}}", "nonce": "{{nonce:decide}}", "opId": "{{opId:decide}}", "opCreated": "{{created:decide}}", "args": { "session": "{{session:S1}}", "request": "req-1", "decision": "allow", "digest": { "session": "{{session:S1}}", "request": "req-1", "tool": "Bash", "input_sha256": "4cf29611a66934862f29acfcc817e30b905c1ab73d5e65831413eb6b454d49db" } }, "context": { "lane": "A", "session": "{{session:S1}}", "launch": "{{launch:L1}}" }, "fingerprint": "{{fingerprint:decide}}" } }
         },
-        { "up": { "t": "member", "session": "{{session:S1}}", "alias": "main", "project": "{{project:P}}", "lane": "A", "state": "idle", "title": "the main session", "cwd": "{{checkout}}", "launch": "{{launch:L1b}}", "owners": ["@machine"], "ownersProof": [], "origin": { "kind": "terminal" } }, "note": "the session relaunched after the decision was admitted" },
+        { "up": { "t": "member", "session": "{{session:S1}}", "alias": "main", "project": "{{project:P}}", "lane": "A", "state": "idle", "title": "the main session", "cwd": "{{checkout}}", "launch": "{{launch:L1b}}", "owners": ["@machine"], "ownersProof": [], "origin": { "kind": "terminal" }, "principal": "@machine", "inference": { "kind": "slot", "configDir": "{{configDir}}" }, "controller": { "lane": "A", "since": "2026-10-27T18:01:00Z" } }, "vary": ["controller.since"], "note": "the session relaunched after the decision was admitted" },
         { "up": { "t": "rpc-result", "project": "{{project:P}}", "opId": "{{opId:decide}}", "nonce": "{{nonce:decide}}", "outcome": { "state": "failed", "error": { "code": "launch", "message": "sealed for another launch of the session" } } }, "vary": ["outcome.error.message"], "note": "the bridge's child refuses a launch other than its own (O12 M7); sminos reports it" },
         { "down": { "t": "rpc-ack", "opId": "{{opId:decide}}", "nonce": "{{nonce:decide}}" } },
         { "scene": "act", "action": "sminos.spawn", "args": { "checkout": "{{checkout}}", "brief": "fix the flake" }, "as": "spawn" },
@@ -277,13 +285,15 @@
         { "down": { "t": "revoked", "version": 3, "devices": [], "members": [], "keys": [] }, "vary": ["version"] },
         { "quiet": ["legacy-key?"], "ms": 300, "note": "the key is held: not asked again" },
         { "up": { "t": "session", "message": { "project": "{{project:P}}", "machine": "{{name}}", "session": null, "kind": "machine", "sub": null, "n": null, "body": { "online": true, "policy": { "read_only": false, "ceiling": "settings" }, "checkouts": [{ "path": "{{checkout}}", "branch": "main" }], "desk": { "sminos": "1.25.0", "rpcs": [], "reads": [] } } } }, "vary": ["message.body.desk"] },
-        { "up": { "t": "member", "session": "{{session:S1}}", "alias": "main", "project": "{{project:P}}", "lane": "A", "state": "idle", "title": "the main session", "cwd": "{{checkout}}", "launch": "{{launch:L1b}}", "owners": ["@machine"], "ownersProof": [], "origin": { "kind": "terminal" } } },
-        { "up": { "t": "member", "session": "{{session:S2}}", "alias": "bob", "project": "{{project:P}}", "lane": "A", "state": "idle", "cwd": "{{checkout}}", "launch": "{{launch:L2}}", "owners": ["{{member:B}}"], "ownersProof": [], "origin": { "kind": "maws", "requester": "{{member:B}}" } } },
+        { "up": { "t": "member", "session": "{{session:S1}}", "alias": "main", "project": "{{project:P}}", "lane": "A", "state": "idle", "title": "the main session", "cwd": "{{checkout}}", "launch": "{{launch:L1b}}", "owners": ["@machine"], "ownersProof": [], "origin": { "kind": "terminal" }, "principal": "@machine", "inference": { "kind": "slot", "configDir": "{{configDir}}" }, "controller": { "lane": "A", "since": "2026-10-27T18:01:00Z" } }, "vary": ["controller.since"] },
+        { "up": { "t": "member", "session": "{{session:S2}}", "alias": "bob", "project": "{{project:P}}", "lane": "A", "state": "idle", "cwd": "{{checkout}}", "launch": "{{launch:L2}}", "owners": ["{{member:B}}"], "ownersProof": [], "origin": { "kind": "maws", "requester": "{{member:B}}" }, "principal": "{{member:B}}", "inference": { "kind": "slot", "configDir": "{{configDir}}" }, "controller": { "lane": "A", "since": "2026-10-27T18:01:00Z" } }, "vary": ["controller.since"] },
         { "up": { "t": "pending", "project": "{{project:P}}", "raised": [] } },
+        { "up": { "t": "session", "message": { "project": "{{project:P}}", "machine": "{{name}}", "session": "{{session:S1}}", "kind": "host", "sub": null, "n": null, "body": { "id": { "writer": "{{name}}/{{session:S1}}", "seq": 1 }, "event": { "ts": "2026-10-27T18:06:00.000Z", "writer": "{{name}}/{{session:S1}}", "seq": 1, "kind": "message", "from": "main", "text": "the build is green" } } } }, "note": "the last 50 host events again after a reconnect, before its restated: the endpoint's durable host mark (hosts.json) outlived its restart, so no second wrote" },
+        { "scene": "notified", "session": "{{session:S1}}", "kind": "wrote", "count": 1, "note": "still the one wrote of case 8" },
         { "up": { "t": "restated" }, "note": "sminos's restatement after the welcome is whole: what it left out left" },
         { "scene": "withdrawn", "session": "{{session:S4}}", "within": 2000, "note": "S4 and S3 left while the endpoint was down: their listings are withdrawn at once" },
         { "scene": "withdrawn", "session": "{{app:S3}}", "within": 2000 },
-        { "up": { "t": "hello", "project": "{{project:P}}", "name": "maws", "have": { "{{name}}/human": 2, "{{name}}/{{session:S1}}": 1, "hub/{{member:B}}": 4, "old-mini/human": 1 } } },
+        { "up": { "t": "hello", "project": "{{project:P}}", "name": "maws", "have": { "{{name}}/{{session:S1}}": 3, "{{name}}/{{session:S2}}": 1, "{{name}}/{{session:S3}}": 2, "{{name}}/{{session:S4}}": 2, "{{name}}/human": 9, "hub/{{member:B}}": 4, "old-mini/human": 1 } }, "note": "the machine's vector: S3's and S4's left after their joined, the operator's words to 9" },
         { "down": { "t": "have", "project": "{{project:P}}", "have": {}, "archive": false }, "vary": ["have", "archive"] },
         { "scene": "hub-repost", "writer": "hub/{{member:B}}", "from": 1, "to": 5, "note": "the inbound index survived the restart" },
         { "down": { "t": "spent", "project": "{{project:P}}", "writer": "hub/{{member:B}}", "seq": 5, "reason": "replayed" } },
