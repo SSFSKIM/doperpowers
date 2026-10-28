@@ -3674,7 +3674,8 @@ class SendsPruned(unittest.TestCase):
     """sends.json keeps only the sessions that matter: at a reserve, at most
     once every SENDS_PRUNE_S, an entry goes when its session is gone (not
     running), its bridge holds no socket and none of its seqs is in flight.
-    Its next send still goes above the bridge's mark."""
+    What it held stays the file's floor: its next send goes above every seq
+    it was handed, its bridge's kept file swept or not."""
 
     GONE, RUNNING, BRIDGED, FLYING, NEXT = ("5e000000-0000-4000-8000-00000000000%d" % i for i in range(1, 6))
 
@@ -3706,13 +3707,17 @@ class SendsPruned(unittest.TestCase):
         with open(self.path) as f:
             return json.load(f)["seq"]
 
-    def test_a_gone_sessions_entry_goes_and_its_next_send_is_above_the_bridges_mark(self):
+    def test_a_gone_sessions_entry_goes_and_its_next_send_is_above_every_seq_it_was_handed(self):
         self.sends.waiting[self.FLYING] = {9}   # reserved, its worker not finished
         self.assertEqual(self.sends.reserve(self.NEXT), 1)
         self.assertEqual(sorted(self.kept()), sorted([self.RUNNING, self.BRIDGED, self.FLYING, self.NEXT]),
                          "the running, the bridged, the in-flight and the one reserved now stay")
         self.assertEqual(os.stat(self.path).st_mode & 0o777, 0o600)
-        self.assertEqual(self.sends.reserve(self.GONE), 8, "above the mark its bridge kept, 7")
+        os.unlink(rpcs.bridge.kept_path(self.GONE))   # its bridge's kept file swept, a day idle
+        self.sends = rpcs.Sends(lambda: self.clock[0])   # a restart
+        self.assertEqual(self.sends.reserve(self.GONE), 10, "above every seq it was handed, 9: the file's floor")
+        with open(self.path) as f:
+            self.assertEqual(json.load(f)["floor"], 9)
 
     def test_pruned_at_most_once_an_interval(self):
         self.sends.reserve(self.NEXT)

@@ -624,8 +624,9 @@ class Sends:
     the seqs only grow, and each is posted only once every lower seq
     reserved for its session has finished.
 
-    `daemon/sends.json`, `{version: 1, seq: {session: last seq reserved}}`
-    (0600, replaced whole), is written before a seq is handed out, so a
+    `daemon/sends.json`, `{version: 2, floor, seq: {session: last seq
+    reserved}}` (0600, replaced whole), is written before a seq is handed
+    out, so a
     restart goes on past every seq handed out before it, never reusing one,
     and a seq reserved but never posted is a gap the mark passes over. A
     seq is also above the mark the session's bridge kept, so a file lost
@@ -633,45 +634,53 @@ class Sends:
     exists and cannot be read is never replaced: every send is refused
     until it can be.
 
-    That mark is also why an entry can go (pruned): once a session is gone,
-    its bridge holds no socket and none of its seqs is in flight, the mark
-    its bridge kept on disk is every key it took, and a later send to it
-    goes above that. A reserve drops such entries, at most once every
-    SENDS_PRUNE_S, in the write it makes anyway, so the file stays the size
-    of the sessions that matter."""
+    An entry goes once its session is gone: not running, no bridge socket,
+    none of its seqs in flight. A reserve drops such entries, at most once
+    every SENDS_PRUNE_S, in the write it makes anyway, so the file stays the
+    size of the sessions that matter. What it held is kept as `floor`, the
+    highest seq ever dropped, and a session with no entry starts above it:
+    the bridge's mark alone is no floor, since the daemon sweeps a kept
+    file a day idle and a child's failed save leaves it behind the mod's.
+    Version 1's file (no floor, nothing dropped) is read as floor 0; a
+    daemon from before the floor refuses version 2's rather than reuse a
+    key below it."""
 
     def __init__(self, clock=time.time):
         self.path = os.path.join(sminos.root(), "daemon", SENDS_FILE)
         self.cv = threading.Condition()
         self.clock = clock
         self.last = None     # {session: seq} as the file holds it; None until it is read
+        self.floor = 0       # the highest seq a dropped entry held: a session with no entry starts above it
         self.waiting = {}    # session → the seqs reserved whose worker has not finished
         self.pruned = None   # when a reserve last pruned (clock), None before the first
 
     def read(self):
-        """The file's seqs. Raises OSError or ValueError when it exists and
-        cannot be read as this version's."""
+        """The file's (seqs, floor). Raises OSError or ValueError when it
+        exists and cannot be read as version 2's or 1's."""
         try:
             with open(self.path) as f:
                 d = json.load(f)
         except FileNotFoundError:
-            return {}
-        if not (isinstance(d, dict) and d.get("version") == 1 and isinstance(d.get("seq"), dict)):
-            raise ValueError("not version 1's {version, seq}")
-        return {str(sid): n for sid, n in d["seq"].items() if type(n) is int}
+            return {}, 0
+        if not (isinstance(d, dict) and isinstance(d.get("seq"), dict)
+                and (d.get("version") == 1 or (d.get("version") == 2 and type(d.get("floor")) is int))):
+            raise ValueError("not version 2's {version, floor, seq} nor version 1's {version, seq}")
+        return {str(sid): n for sid, n in d["seq"].items() if type(n) is int}, d.get("floor", 0)
 
     def reserve(self, sid):
         """The session's next seq, kept on disk and queued before it is
         returned. Raises OSError or ValueError when it cannot be kept."""
         with self.cv:
             if self.last is None:
-                self.last = self.read()
+                self.last, self.floor = self.read()
             mark = bridge.load_kept(sid)["delivered"].get(SEND_WRITER, 0)
-            seq = max(self.last.get(sid, 0), mark) + 1
-            last = {**self.pruned_of(self.last, sid), sid: seq}
+            seq = max(self.last.get(sid, self.floor), mark) + 1
+            kept = self.pruned_of(self.last, sid)
+            floor = max([self.floor] + [n for s, n in self.last.items() if s not in kept])
+            last = {**kept, sid: seq}
             os.makedirs(os.path.dirname(self.path), mode=0o700, exist_ok=True)
-            sminos.write_json(self.path, {"version": 1, "seq": last})
-            self.last = last
+            sminos.write_json(self.path, {"version": 2, "floor": floor, "seq": last})
+            self.last, self.floor = last, floor
             self.waiting.setdefault(sid, set()).add(seq)
             return seq
 
