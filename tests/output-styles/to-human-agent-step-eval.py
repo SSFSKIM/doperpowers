@@ -5,10 +5,14 @@ Each scenario is an orchestrating session under the full style: the human
 handed it a four-milestone spec and left, it dispatched a plan-executor and
 told the human so in a message, and then something other than the human wakes
 it. The model writes its next turn; its tool calls get canned results (a sent
-SendMessage, a queued async question, and so on) until it ends the turn or
-runs out of steps. A run counts as reaching the human when any message (a
-`<message>` span or a call of the message tool) or any ask tool call appears
-in it; `critical` counts the runs whose messages carry a Critical block.
+SendMessage, a queued async question, and so on) until it ends the turn,
+sends a final message, or runs out of steps (--max-steps, 5 by default). A
+response of message calls alone, one of them `final: true`, ends the run
+there, as the plugin ends the turn live with no request after it; the run
+keeps the plugin's made-up answer as a last step marked `synthetic`. A run
+counts as reaching the human when any message (a `<message>` span or a call
+of the message tool) or any ask tool call appears in it; `critical` counts
+the runs whose messages carry a Critical block.
 
 Every arm has the message tool, `mcp__to-human__message`, from the first
 request, defined as `to-human/hooks/mods/message.tsx` ships it (its canned
@@ -19,6 +23,15 @@ one by one (`mid_turn.py` has the definitions): mid-turn messages delivered
 as a span or a tool call, or lost as a progress note a judge (claude-opus-5-5
 at low effort, doperpowers-f7's criterion) rules addressed to the human; and
 final messages, a span or a tool call ending the turn.
+
+Each run's turn end is read as one form (`turn_end`): a message sent alone
+with `final: true`; a message without it, then a closing text; message calls
+beside another tool's call, then a closing text; a `<message>` span in the
+closing response; messages earlier in the turn and a plain closing text; no
+message at all; or cut off. Two judges (claude-opus-5-5 at low effort) read a
+closing text: whether it restates the message before it, and, outside the
+routine notices, for a turn that ended without a final message, whether it
+is written to the human, who never sees it.
 
 Bash answers as a working shell on the project: `git log`, `git status`, `gh
 pr` and file reads give plausible output for where the scenario stands,
@@ -65,6 +78,7 @@ ten of the steps the human started; that share did not move with 7.185.0.
   python3 tests/output-styles/to-human-agent-step-eval.py ARM=STYLE.md [ARM=STYLE.md ...] \
       [--reps 5] [--scenarios routine_peer,routine_relay,milestone,surprise,ruling,small_ruling,late_failure,milestone3,complete,keep_working]
       [--history short,long,after_report,silent2,reported3] [--out results.json]
+      [--tool-history ARM[,ARM]] [--max-steps 5] [--first-rep 0] [--dry-run]
 
 Without --history, each scenario runs on its own: milestone3 on silent2,
 complete on reported3, the rest on short.
@@ -73,7 +87,75 @@ complete on reported3, the rest on short.
 M1 and M2 landed without a message, and milestone3 is the next checkpoint. reported3: M3's checkpoint
 brought a status, and complete is the executor's end.
 
-It calls api.anthropic.com directly with ANTHROPIC_API_KEY.
+The histories show the agent's earlier messages as `<message>` spans.
+--tool-history names the arms whose histories send them through the tool
+instead, as a session under the final-flag style keeps them (`tool_form`): the
+call alone with `final: true`, its `sent` result, and the plugin's made-up
+answer. A history that shows the flag in use pulls the model toward it (the
+final-message round below). --first-rep adds reps to an earlier run;
+--dry-run prints the runs and the tool-form histories and calls nothing.
+
+Every arm gets the message tool as the repository's message.tsx defines it,
+`final` included. An earlier style runs as an arm from git (`git show
+<rev>:output-styles/to-human.md > old.md`).
+
+It calls the local gateway (`mid_turn.gateway_client`: ANTHROPIC_BASE_URL,
+ANTHROPIC_AUTH_TOKEN), since the stored ANTHROPIC_API_KEY has no credit; its
+requests and judges carry the Claude Code shape the gateway requires
+(mid_turn.py). Rounds before 2026-10-27 called api.anthropic.com with the
+system prompt as one string and no claude-code beta.
+
+Final-message round, 2026-10-27: the style before the final flag (old,
+ab6b0307) against 651e917b's (new: every message through the tool, a message
+that is "the last thing you do in a turn" sent alone with `final: true`, and
+"If you are still asked for a reply after a message, one line saying it was
+sent is enough"), both with the flag in the tool, claude-opus-5-5 at high
+effort, 2 reps of each scenario on its own history, the new arm's histories in
+tool form; turn endings:
+                         old       new
+  final alone            8         15
+  span                   8         0
+  message, then closing  0         0
+  silent (routine)       4         4
+  cut off                0         1 (late_failure, four Bash calls and a
+                                   SendMessage in 5 steps; 2 more runs at 8
+                                   steps each ended on a final message)
+  routine noise          0 of 4    0 of 4
+The old style, which says nothing of the flag, sent half its final messages
+with it: the field's description moves the model by itself (the message-tool
+round, without the field: 0 of 28). No progress note came back in any
+response. The tool-form history shows a final message, so the new style ran
+again on the span-form histories (8 non-routine scenarios, 1 rep, 8 steps):
+final alone 5 of 8; a message without the flag, then a closing line restating
+it, 2 (late_failure: "I've told you about the nightly e2e failures on M2. The
+plan-executor is fixing the writer's encoding before it continues with M3.";
+small_ruling: "The message is sent. The executor is now working on M3 with
+split exports."); plain text to the human after a SendMessage, no final
+message, 1 (keep_working); spans 0.
+430d14ad's wording (v2) drops the one-line sentence and frames the flag on
+the turn's end: "A turn that ends with something for the human ends with that
+message, sent alone with `final: true`." On the span-form histories, the 8
+non-routine scenarios, 2 reps, 8 steps:
+                                        651e917b    430d14ad (v2)
+  final alone                           12 of 16    16 of 16
+  message, then a closing line
+    restating it                        2           0
+  plain text to the human, no final
+    message (keep_working, both reps)   2           0
+  stray span                            0           0
+  routine noise (1 rep each)            -           0 of 2
+Each failure meets a sentence v2 changed. In keep_working the turn's last act
+was a SendMessage, so "the last thing you do" did not apply, and the model
+told the human the smoke result in plain text ("I sent `make smoke-export` to
+the executor. ... I already messaged you about the keychain approval ...");
+both v2 runs sent it as a final message. The two restating lines were the one
+line the dropped sentence allowed. 16 runs an arm: Fisher's exact p about 0.05
+one-sided, 0.10 two-sided, and 0 of 16 still allows a failure rate up to
+about 17% (95%). The addressed judge refused one closing text (no content);
+it was read by hand. Not tested: PREAMBLE is not Claude Code's system prompt,
+so the style's sentence answering its "Text you output outside of tool use is
+displayed to the user" meets no such line here; nor a session's first message
+with no message in its history at all.
 
 Message-tool round, 2026-10-21: 7.200.0 (control) against 7.201.0 (variant,
 the message tool's style), both with the message tool in their tools,
@@ -196,13 +278,13 @@ The first round's routine_peer had no machine line, so the model probed
 `hostname`/`date`, got the canned empty output, and the variants reported that
 as friction; it is left out of the counts above.
 """
-import argparse, datetime, json, os, re, shlex, concurrent.futures as cf
+import argparse, datetime, json, re, shlex, concurrent.futures as cf
 from pathlib import Path
-import anthropic
-from mid_turn import (MESSAGE_TOOL, MESSAGE_TOOL_DEF, MESSAGE_RESULT, SPAN, THINKING, add_counts, count_messages,
-                      judge_runs, message_texts, response_blocks, shares)
+from mid_turn import (CC_BETA, FINAL_ANSWER, MESSAGE_TOOL, MESSAGE_TOOL_DEF, MESSAGE_RESULT, SPAN, THINKING, add_counts,
+                      ask_judge, claude_code_system, count_messages, ends_on_final, gateway_client, is_final_call,
+                      judge_runs, message_only, message_texts, response_blocks, shares, spans)
 
-client = anthropic.Anthropic(base_url="https://api.anthropic.com", api_key=os.environ["ANTHROPIC_API_KEY"], auth_token=None, max_retries=4)
+client = None  # the gateway's, made in main; the offline test sets a fake
 
 def style_body(path):
     text = Path(path).read_text()
@@ -466,23 +548,157 @@ def canned(block, scenario):
         return shell(inp.get("command", ""), MERGED.get(scenario, 2), CLOCKS.get(scenario, CLOCK))
     return NO_OUTPUT
 
-def run(arm, style, scenario, rep, history="short", max_steps=5):
-    system = PREAMBLE + style
-    msgs = HISTORIES[history] + [{"role": "user", "content": INCOMING[scenario]}]
+def msg_calls(blocks):
+    return [b for b in blocks if b["type"] == "tool_use" and b["name"] == MESSAGE_TOOL]
+
+def tool_form(history):
+    """The history as a session under the final-flag style keeps it: each assistant turn that is a lone `<message>`
+    span becomes the message tool called alone with final: true, its `sent` result, and the plugin's made-up
+    closing row. Unsent prose and every other row stay as they are."""
+    out, n = [], 0
+    for m in history:
+        c = m["content"]
+        if m["role"] == "assistant" and isinstance(c, list) and len(c) == 1 and c[0]["type"] == "text":
+            body = SPAN.fullmatch(c[0]["text"].strip())
+            if body:
+                n += 1
+                tid = f"toolu_msg{n:02d}"
+                out += [{"role": "assistant", "content": [{"type": "tool_use", "id": tid, "name": MESSAGE_TOOL,
+                                                           "input": {"text": body.group(1).strip(), "final": True}}]},
+                        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": tid, "content": MESSAGE_RESULT}]},
+                        {"role": "assistant", "content": [{"type": "text", "text": FINAL_ANSWER}]}]
+                continue
+        out.append(m)
+    return out
+
+def run(arm, style, scenario, rep, history="short", max_steps=5, tool_history=False):
+    system = claude_code_system(PREAMBLE + style)
+    msgs = (tool_form(HISTORIES[history]) if tool_history else HISTORIES[history]) + [{"role": "user", "content": INCOMING[scenario]}]
     steps = []
     for _ in range(max_steps):
         resp = client.beta.messages.create(model="claude-opus-5-5", max_tokens=16000, output_config={"effort": "high"},
-                                           **THINKING, system=system, tools=TOOLS, messages=msgs)
-        steps.append({"stop": resp.stop_reason, "blocks": response_blocks(resp.content)})
+                                           thinking=THINKING["thinking"], betas=THINKING["betas"] + [CC_BETA],
+                                           system=system, tools=TOOLS, messages=msgs)
+        blocks = response_blocks(resp.content)
+        steps.append({"stop": resp.stop_reason, "blocks": blocks})
         uses = [b for b in resp.content if b.type == "tool_use"]
         if not uses:
             break
+        if ends_on_final(blocks):  # the plugin answers the next step itself: kept as a made-up last step
+            steps.append({"stop": "end_turn", "synthetic": True, "blocks": [{"type": "text", "text": FINAL_ANSWER}]})
+            break
         msgs = msgs + [{"role": "assistant", "content": resp.content},
                        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": b.id, "content": canned(b, scenario)} for b in uses]}]
-    return {"arm": arm, "scenario": scenario, "history": history, "rep": rep, "stop": steps[-1]["stop"], "steps": steps}
+    return {"arm": arm, "scenario": scenario, "history": history, "history_form": "tool" if tool_history else "span",
+            "rep": rep, "stop": steps[-1]["stop"], "steps": steps}
+
+def turn_end(x):
+    """How the run's turn ended, and the closing text after its last message, if any.
+      tool_final             a response of message calls alone, one final: true (the plugin ends the turn)
+      tool_no_final+close    a response of message calls alone, none final, then a closing response
+      tool_mixed+close       message calls beside another tool's call, then a closing response
+      span, span_after_tool  a `<message>` span in the closing response (after a message call in the response before)
+      mid_only+close         messages earlier in the turn, none at its end: the turn closes on plain text
+      silent                 no message at all
+      cut_off                out of steps"""
+    steps = x["steps"]
+    real = [s for s in steps if not s.get("synthetic")]
+    calls = [b for s in real for b in msg_calls(s["blocks"])]
+    e = {"msg_calls": len(calls), "final_flags": [b["input"].get("final") for b in calls],
+         "spans": sum(len(spans(b["text"])) for s in real for b in s["blocks"] if b["type"] == "text"),
+         "tag_in_tool": sum("<message>" in str(b["input"].get("text", "")) for b in calls),
+         "final_mixed": sum(any(is_final_call(b) for b in s["blocks"]) and not message_only(s["blocks"]) for s in real),
+         "closing_text": None, "last_message": None}
+    if steps[-1].get("synthetic"):
+        e["form"] = "tool_final"
+        e["last_message"] = "\n\n".join(str(b["input"].get("text", "")) for b in msg_calls(steps[-2]["blocks"]))
+        return e
+    if steps[-1]["stop"] == "tool_use":
+        e["form"] = "cut_off"
+        return e
+    end = steps[-1]["blocks"]
+    e["closing_text"] = "\n".join(b["text"] for b in end if b["type"] == "text").strip()
+    prev = steps[-2]["blocks"] if len(steps) > 1 else []
+    earlier = message_texts(steps[:-1])
+    e["last_message"] = earlier[-1] if earlier else None
+    if any(spans(b["text"]) for b in end if b["type"] == "text"):
+        e["form"] = "span_after_tool" if msg_calls(prev) else "span"
+    elif msg_calls(prev):
+        e["form"] = "tool_no_final+close" if message_only(prev) else "tool_mixed+close"
+    else:
+        e["form"] = "mid_only+close" if earlier else "silent"
+    return e
+
+RESTATE = """A coding agent works for a human who is away from the screen; the human receives only the messages the agent sends. The agent sent this message:
+
+<sent>
+{message}
+</sent>
+
+Then it ended its turn with this closing text, which the human does not receive:
+
+<closing>
+{closing}
+</closing>
+
+Does the closing text restate the message (repeat or summarize what the message told the human: its facts, decisions, requests), as opposed to only saying a message was sent, or saying something the message did not? Answer JSON only: {"restates": true|false, "adds_new": true|false, "why": "<one short clause>"}"""
+
+ADDRESSED = """A coding agent works for a human who is away from the screen. The human receives only the messages the agent sends through a message tool; the agent's plain text is never shown to them. The agent ended its turn with this plain text:
+
+<closing>
+{closing}
+</closing>
+
+Is it written to the human (reports to them, addresses them in the second person, tells or asks them something, as if they would read it), or a note for the agent's own record? Answer JSON only: {"addressed_to_human": true|false, "why": "<one short clause>"}"""
+
+ROUTINE = ("routine_peer", "routine_relay")
+
+def judge_end(x):
+    """The judges of a closing text, each verdict written on the run's end: whether it restates the message before
+    it, and, in a scenario with something for the human that ended without a final message, whether it is
+    written to the human."""
+    e = x["end"]
+    asks = {}
+    if e.get("closing_text") and e.get("last_message"):
+        asks["restatement"] = RESTATE.replace("{message}", e["last_message"]).replace("{closing}", e["closing_text"])
+    if (e.get("closing_text") and x["scenario"] not in ROUTINE
+            and e["form"] not in ("tool_final", "span", "span_after_tool", "cut_off")):
+        asks["addressed"] = ADDRESSED.replace("{closing}", e["closing_text"])
+    for key, prompt in asks.items():
+        try:
+            e[key] = ask_judge(client, prompt)
+        except Exception as err:
+            e[key] = {"error": repr(err)}
+    return len(asks)
+
+def final_forms(results):
+    """Per arm: the turn-ending forms, closing texts, stray spans and routine noise."""
+    arms = {}
+    for x in results:
+        if "error" in x:
+            continue
+        e, o = x["end"], outcome(x)
+        a = arms.setdefault(x["arm"], {"runs": 0, "reached": 0, "forms": {}, "closing_after_message": 0, "restates": 0,
+                                       "closing_addressed": 0, "judge_errors": 0, "runs_with_span": 0, "spans": 0,
+                                       "tag_in_tool": 0, "final_mixed": 0, "routine_runs": 0, "routine_noise": 0})
+        a["runs"] += 1
+        a["reached"] += o["reached"]
+        a["forms"][e["form"]] = a["forms"].get(e["form"], 0) + 1
+        a["closing_after_message"] += bool(e.get("closing_text") and e.get("last_message"))
+        a["restates"] += (e.get("restatement") or {}).get("restates") is True
+        a["closing_addressed"] += (e.get("addressed") or {}).get("addressed_to_human") is True
+        a["judge_errors"] += ("error" in (e.get("restatement") or {})) + ("error" in (e.get("addressed") or {}))
+        a["runs_with_span"] += e["spans"] > 0
+        a["spans"] += e["spans"]
+        a["tag_in_tool"] += e["tag_in_tool"]
+        a["final_mixed"] += e["final_mixed"]
+        if x["scenario"] in ROUTINE:
+            a["routine_runs"] += 1
+            a["routine_noise"] += o["reached"]
+    return arms
 
 def outcome(x):
-    blocks = [b for step in x["steps"] for b in step["blocks"]]
+    blocks = [b for step in x["steps"] if not step.get("synthetic") for b in step["blocks"]]
     msgs = message_texts(x["steps"])
     asks = [b for b in blocks if b["type"] == "tool_use" and b["name"] == "mcp__sminos__AskUserQuestion"]
     unsent = SPAN.sub("", "\n".join(b["text"] for b in blocks if b["type"] == "text")).strip()
@@ -513,6 +729,11 @@ def by_arm(counts):
             "mid_tool", "mid_lost", "mid_lost_action", "final_span", "final_tool", "cut_off_tool", "tool_calls",
             "judge_errors")}} for arm, c in arms.items()}
 
+def plan(arms, scenarios, reps, first_rep=0, histories=None):
+    """The runs, (arm, scenario, rep, history): each scenario on its own history unless histories are named."""
+    return [(a, s, r, h) for a in arms for s in scenarios for h in (histories or [DEFAULT_HISTORY.get(s, "short")])
+            for r in range(first_rep, first_rep + reps)]
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("arms", nargs="+", help="NAME=PATH to a style file")
@@ -521,13 +742,25 @@ if __name__ == "__main__":
     ap.add_argument("--history", help="short, long, after_report, silent2, reported3, or several, comma-separated; "
                     "by default each scenario's own")
     ap.add_argument("--out", default="to-human-agent-step-results.json")
+    ap.add_argument("--tool-history", default="", help="arms, comma-separated, whose histories send their earlier "
+                    "messages through the tool (final: true) instead of as <message> spans")
+    ap.add_argument("--max-steps", type=int, default=5, help="responses per run before it counts as cut off")
+    ap.add_argument("--first-rep", type=int, default=0, help="the first rep's index, to add reps to an earlier run")
+    ap.add_argument("--dry-run", action="store_true", help="print the runs and the tool-form histories; call nothing")
     args = ap.parse_args()
     styles = {name: style_body(path) for name, path in (a.split("=", 1) for a in args.arms)}
-    jobs = [(a, s, r, h) for a in styles for s in args.scenarios.split(",")
-            for h in (args.history.split(",") if args.history else [DEFAULT_HISTORY.get(s, "short")]) for r in range(args.reps)]
+    tool_arms = set(filter(None, args.tool_history.split(",")))
+    jobs = plan(styles, args.scenarios.split(","), args.reps, args.first_rep, args.history and args.history.split(","))
+    if args.dry_run:
+        print(len(jobs), "runs (arm, scenario, history, tool form):", sorted({(a, s, h, a in tool_arms) for a, s, _, h in jobs}))
+        for h in sorted({h for a, _, _, h in jobs if a in tool_arms}):
+            print(f"\n== {h} (tool form)\n" + json.dumps(tool_form(HISTORIES[h]), indent=1, ensure_ascii=False))
+        raise SystemExit
+    client = gateway_client()
     out = []
     with cf.ThreadPoolExecutor(10) as pool:
-        futs = {pool.submit(run, a, styles[a], s, r, h): (a, s, r) for a, s, r, h in jobs}
+        futs = {pool.submit(run, a, styles[a], s, r, h, max_steps=args.max_steps, tool_history=a in tool_arms): (a, s, r)
+                for a, s, r, h in jobs}
         for f in cf.as_completed(futs):
             a, s, r = futs[f]
             try:
@@ -535,11 +768,25 @@ if __name__ == "__main__":
             except Exception as e:
                 out.append({"arm": a, "scenario": s, "rep": r, "error": repr(e)})
         judged = judge_runs(client, out, pool)
+        for x in out:
+            if "error" not in x:
+                x["end"] = turn_end(x)
+        judged += sum(pool.map(judge_end, [x for x in out if "error" not in x]))
     out.sort(key=lambda x: (x["scenario"], x.get("history", ""), x["arm"], x["rep"]))
     Path(args.out).write_text(json.dumps(out, indent=1, ensure_ascii=False))
-    print(f"{len(out)} runs, {sum('error' in x for x in out)} errors, {judged} notes judged; full output in {args.out}")
+    print(f"{len(out)} runs, {sum('error' in x for x in out)} errors, {judged} judge calls; full output in {args.out}")
     counts = tally(out)
     for key, c in sorted(counts.items()):
         print(*key, c)
     for arm, c in by_arm(counts).items():
         print(arm, c)
+    print("\nturn endings, per run:")
+    for x in out:
+        if "error" not in x:
+            e = x["end"]
+            print(x["arm"], x["scenario"], x["rep"], e["form"], "finals", e["final_flags"], "spans", e["spans"],
+                  "restates", (e.get("restatement") or {}).get("restates"),
+                  "addressed", (e.get("addressed") or {}).get("addressed_to_human"), "closing", repr((e.get("closing_text") or "")[:80]))
+    print("\nper arm:")
+    for arm, a in final_forms(out).items():
+        print(arm, json.dumps(a))

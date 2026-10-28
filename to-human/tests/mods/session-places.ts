@@ -1,4 +1,5 @@
-// The searches for a transcript's order and its API errors, proved by
+// The searches for a transcript's order, its API errors and the responses a
+// hook answered without a request, proved by
 // execution, by rg where the machine has it and by grep where it has not: the
 // resumed session's
 // (placeArgs) lists the rows of the file it is given; the one a module that
@@ -12,7 +13,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { errorsIn, placeArgs, placesIn, sessionPlaceArgs } from '../../hooks/mods/to-human'
+import { errorsIn, placeArgs, placesIn, sessionPlaceArgs, unrequestedIn } from '../../hooks/mods/to-human'
 
 const root = mkdtempSync(join(tmpdir(), 'to-human-places-'))
 const failures: string[] = []
@@ -22,7 +23,7 @@ try {
     mkdirSync(join(root, dir, 'projects', '-work'), { recursive: true })
     writeFileSync(join(root, dir, 'projects', '-work', '0b6f.jsonl'), rows)
   }
-  transcript('home/.claude', '{"uuid":"a","message":{"content":[{"type":"tool_use","id":"t1"}]}}\n{"uuid":"b"}\n{"uuid":"e","message":{"model":"<synthetic>"},"error":"server_error","isApiErrorMessage":true}\n')
+  transcript('home/.claude', '{"uuid":"a","message":{"content":[{"type":"tool_use","id":"t1"}]}}\n{"uuid":"b"}\n{"uuid":"e","message":{"model":"<synthetic>"},"error":"server_error","isApiErrorMessage":true}\n{"type":"assistant","uuid":"h","message":{"id":"msg_hook_1","content":[{"type":"text","text":"Message sent to the human.","citations":null}]},"isApiErrorMessage":false,"answeredWithoutRequest":true}\n')
   transcript('config', '{"uuid":"c"}\n')
   mkdirSync(join(root, 'empty'))
   // The search takes rg wherever PATH finds it, so with rg's directory first
@@ -36,19 +37,19 @@ try {
     console.log('session-places: no rg on this machine; the grep searches alone')
   }
   for (const [tool, PATH] of paths) {
-    const check = (name: string, argv: string[], env: Record<string, string>, ids: string[], code: number, errors: string[] = []) => {
+    const check = (name: string, argv: string[], env: Record<string, string>, ids: string[], code: number, errors: string[] = [], unrequested: string[] = []) => {
       const [shell, ...args] = argv
       const found = spawnSync(shell!, args, { env: { PATH, ...env }, encoding: 'utf8' })
-      const got = [placesIn(found.stdout), errorsIn(found.stdout)]
-      if (found.status !== code || JSON.stringify(got) !== JSON.stringify([ids, errors])) {
-        failures.push(`${tool}, ${name}: exit ${found.status} ${JSON.stringify(got)} ${found.stderr.trim()}, wanted exit ${code} ${JSON.stringify([ids, errors])}`)
+      const got = [placesIn(found.stdout), errorsIn(found.stdout), unrequestedIn(found.stdout)]
+      if (found.status !== code || JSON.stringify(got) !== JSON.stringify([ids, errors, unrequested])) {
+        failures.push(`${tool}, ${name}: exit ${found.status} ${JSON.stringify(got)} ${found.stderr.trim()}, wanted exit ${code} ${JSON.stringify([ids, errors, unrequested])}`)
       }
     }
     const session = sessionPlaceArgs('0b6f')
-    check('~/.claude', session, { HOME: join(root, 'home') }, ['a', 't1', 'b', 'e'], 0, ['e'])
+    check('~/.claude', session, { HOME: join(root, 'home') }, ['a', 't1', 'b', 'e', 'h'], 0, ['e'], ['h'])
     check('CLAUDE_CONFIG_DIR', session, { HOME: join(root, 'home'), CLAUDE_CONFIG_DIR: join(root, 'config') }, ['c'], 0)
     check('no transcript yet', session, { HOME: join(root, 'empty') }, [], 1)
-    check('a resumed transcript', placeArgs(join(root, 'home/.claude/projects/-work/0b6f.jsonl')), {}, ['a', 't1', 'b', 'e'], 0, ['e'])
+    check('a resumed transcript', placeArgs(join(root, 'home/.claude/projects/-work/0b6f.jsonl')), {}, ['a', 't1', 'b', 'e', 'h'], 0, ['e'], ['h'])
     checks += 4
   }
 } finally {

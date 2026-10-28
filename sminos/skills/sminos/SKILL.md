@@ -99,10 +99,10 @@ arrived, `sminos daemon policy` there may say read-only — the owner's
 setting: report it rather than change it (`references/setup.md`).
 
 **Your human partner.** No tag reaches the human: what they should know
-goes in a `<message>` in your reply, or, sent before a tool call, in a
-call of `mcp__to-human__message` where you have it; a question goes in an
-async `mcp__sminos__AskUserQuestion`; a hook records each, and `sminos
-chat --host` shows what every session sent them.
+goes in a call of `mcp__to-human__message` where you have it (`final:
+true` when it ends your turn), else in a `<message>` ending your reply; a
+question goes in an async `mcp__sminos__AskUserQuestion`; a hook records
+each, and `sminos chat --host` shows what every session sent them.
 
 **SendMessage** is the harness's: it reaches your own subagents, by
 their agent ids; other sessions are reached through sminos.

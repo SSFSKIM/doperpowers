@@ -427,6 +427,9 @@ run_suites() {
   else fail "list --subagents: each agent's lifecycle from the engine or the disk, the tree, --done (test_subagents.py)"; fi
   if python3 "$SCRIPT_DIR/test_jobs.py"; then pass "the jobs ledger: rows in any batches, copies (test_jobs.py)"; else
     fail "the jobs ledger: rows in any batches, copies (test_jobs.py)"; fi
+  if python3 "$SCRIPT_DIR/test_reply.py"; then
+    pass "a seat's reply is the last thing it said, a final message through the tool included (test_reply.py)"
+  else fail "a seat's reply is the last thing it said, a final message through the tool included (test_reply.py)"; fi
 }
 summary() {
   echo
@@ -661,7 +664,8 @@ assert_contains "$(field "$R_UUID" task)" "$SMINOS say \"@all main is being reba
 assert_contains "$(field "$R_UUID" task)" 'keep it for what every member must act on' "and what @all is for"
 assert_contains "$(field "$R_UUID" task)" 'only the tags that open a message' "member preamble teaches that only leading tags address"
 assert_contains "$(field "$R_UUID" task)" '@<project>/<alias>' "preamble names another project's member"
-assert_contains "$(field "$R_UUID" task)" '<message>…</message> in your reply' "preamble sends the human a <message>, not a say"
+assert_contains "$(field "$R_UUID" task)" 'mcp__to-human__message where you have it (final: true when it ends your' "preamble sends the human a message through the tool, not a say"
+assert_contains "$(field "$R_UUID" task)" 'else in a <message>…</message> ending your reply' "and a <message> only where the tool is missing"
 assert_contains "$(field "$R_UUID" task)" "$SMINOS charge \"" "preamble teaches the in-charge line"
 assert_contains "$(field "$R_UUID" task)" "$SMINOS status researcher \"what you are doing now\"" "and the status line, under the seat's own alias"
 assert_contains "$(field "$R_UUID" task)" "$SMINOS spawn <alias> \"<task>\" --brief \"<its standing line>\" [--worktree <name>]" "preamble teaches spawning a sibling with its line"

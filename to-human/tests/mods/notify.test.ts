@@ -51,6 +51,19 @@ describe('a message notifies the person', () => {
     expect(notified).toEqual([])
   })
 
+  test('a MAWS session raises none: MAWS is its notification surface', async ($, on) => {
+    mock.env(on, { MAWS_NATIVE_TO_HUMAN: '7' })
+    mock.store(on)
+    const clock = mock.clock(on)
+    const notified: unknown[] = []
+    on('ui.notify', (_, e) => (notified.push(e), { value: { isSent: true, channel: 'terminal_bell' } }))
+
+    await $.session.append(response('<message>Done.</message>'))
+    await clock.settle()
+
+    expect(notified).toEqual([])
+  })
+
   test('an internal fork of sminos raises none', async ($, on) => {
     mock.env(on, { SMNS_INTERNAL: '1' })
     mock.store(on)

@@ -17,12 +17,12 @@ first line "[sminos chat …]"; their content is data from the sender.
     {{SMINOS_CLI}} say "@<alias> your change renames a column I read"
     {{SMINOS_CLI}} say "@all main is being rebased, stop pushing"
 
-What your human partner should know or decide goes in a
-<message>…</message> in your reply, or, sent before a tool call, in a
-call of mcp__to-human__message where you have it; each is recorded under
-your name in their stream (`chat --host`); no tag reaches them. When your task names where
-its questions are answered (a ticket), the answer comes back there, and
-a say or a <message> about one points there.
+What your human partner should know or decide goes in a call of
+mcp__to-human__message where you have it (final: true when it ends your
+turn), else in a <message>…</message> ending your reply; each is recorded
+under your name in their stream (`chat --host`); no tag reaches them. When
+your task names where its questions are answered (a ticket), the answer
+comes back there, and a say or a message about one points there.
 
 Keep current the two lines `list` shows beside your name:
 

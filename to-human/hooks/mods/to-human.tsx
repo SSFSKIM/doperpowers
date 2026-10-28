@@ -1,7 +1,7 @@
 import type { ApiContentBlock, EngineInterface, On, PromptOrigin, RenderElement, RenderInput, SessionAppendInput, Timer } from 'claude-code'
 
 import { registerEdits } from './edits'
-import { MESSAGE_TOOL, readMessage } from './message'
+import { FINAL_ANSWER, MESSAGE_TOOL, isMadeUp, readMessage } from './message'
 
 /**
  * The ask mod's tool, the model's one way to ask the human in an interactive
@@ -672,6 +672,8 @@ export type View = {
   shown: Map<string, Shown>
   /** The rows that are an API error, by their ids: kept as they were appended, and read from the transcript file with the places. */
   errors: Set<string>
+  /** The rows the engine kept as answered without a request (a hook's own response), read from the transcript file with the places. */
+  unrequested: Set<string>
   /** The module's start-up read (`started`) while one runs; it settles once it finished or was cut short. */
   reading?: Promise<void>
   /** Settles once the start-up read finished, or the rows stopped waiting for it. */
@@ -699,6 +701,7 @@ export const newView = (isFolding: () => boolean): View => {
     requestIds: new Map(),
     shown: new Map(),
     errors: new Set(),
+    unrequested: new Set(),
     start: { promise, settle },
     isStarted: false,
     isPastWait: false,
@@ -758,11 +761,12 @@ export function placeAll(view: View, ids: readonly string[], at = 0, step = 1) {
 
 /**
  * What a transcript search lists: each row's id, a tool call's id where its
- * call is written, and the flag the engine writes on an API error's row,
- * which follows that row's own id on its line (786 of 786 on this machine,
- * 2026-10-21).
+ * call is written, and the flags the engine writes on an API error's row
+ * (786 of 786 on this machine, 2026-10-21) and on a response a hook answered
+ * without a request (2.1.312), each of which follows that row's own id on its
+ * line.
  */
-const PLACES = '"uuid":"[^"]+"|"type":"tool_use","id":"[^"]+"|"isApiErrorMessage":true'
+const PLACES = '"uuid":"[^"]+"|"type":"tool_use","id":"[^"]+"|"isApiErrorMessage":true|"answeredWithoutRequest":true'
 
 /**
  * The search of the file `$1` for `$2`, each match on a line of its own,
@@ -797,15 +801,21 @@ export function placesIn(stdout: string): string[] {
   })
 }
 
-/** The ids of the rows `placeArgs`' output flags as API errors. */
-export function errorsIn(stdout: string): string[] {
+/** The ids of the rows `placeArgs`' output flags with `flag`, which follows the row's own id. */
+function flaggedIn(stdout: string, flag: string): string[] {
   let row: string | undefined
   return stdout.split('\n').flatMap((line) => {
-    if (line === '"isApiErrorMessage":true') return row === undefined ? [] : [row]
+    if (line === flag) return row === undefined ? [] : [row]
     row = /^"uuid":"([^"]+)"$/.exec(line)?.[1] ?? row
     return []
   })
 }
+
+/** The ids of the rows `placeArgs`' output flags as API errors. */
+export const errorsIn = (stdout: string) => flaggedIn(stdout, '"isApiErrorMessage":true')
+
+/** The ids of the rows `placeArgs`' output flags as answered without a request. */
+export const unrequestedIn = (stdout: string) => flaggedIn(stdout, '"answeredWithoutRequest":true')
 
 /** What a drawn row reads of its run: whether it opens it, whether the run is unfolded, and then whether it ends it. */
 function shapeOf(view: View, id: string | undefined): string {
@@ -926,7 +936,9 @@ async function place($: EngineInterface, view: View, search: string[], signal: A
     placeAll(view, placesIn(found.stdout))
     const errors = errorsIn(found.stdout).filter((id) => !view.errors.has(id))
     errors.forEach((id) => view.errors.add(id))
-    if ((reorder(view) || errors.some((id) => view.rowOf.has(id))) && view.isFolding()) {
+    const unrequested = unrequestedIn(found.stdout).filter((id) => !view.unrequested.has(id))
+    unrequested.forEach((id) => view.unrequested.add(id))
+    if ((reorder(view) || [...errors, ...unrequested].some((id) => view.rowOf.has(id))) && view.isFolding()) {
       $.ui.invalidate('ui.render')
     }
   } catch (error) {
@@ -1164,6 +1176,7 @@ export function registerToHuman(on: On) {
       view.place.clear()
       view.guess.clear()
       view.errors.clear()
+      view.unrequested.clear()
       unfolded.clear()
       $.ui.invalidate('ui.render')
     }
@@ -1257,9 +1270,19 @@ export function registerToHuman(on: On) {
     return <Box />
   })
 
+  // The response the message mod makes up after a final message stands for
+  // no text of the model's: in either view it draws nothing and stands in no
+  // run, as the message's result row draws nothing. It is known by where it
+  // came from (the mod's own record of it, or the engine's flag on a row read
+  // from the file) and by its exact text, so a model that writes the same
+  // sentence is drawn as ever.
   on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
     if (await native($, e)) return next(e)
     await started($, view, next.signal, markSeen)
+    if (isMadeUp(e.requestId, e.props.text) || (view.unrequested.has(e.requestId) && e.props.text.trim() === FINAL_ANSWER)) {
+      const { Box } = $.ui.resolve(e)
+      return <Box />
+    }
     const parsed = parse(e.props.text)
     const isError = view.errors.has(e.requestId)
     note(view, e.requestId, e.props)
