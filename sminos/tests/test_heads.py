@@ -310,6 +310,36 @@ class Renamed(Machine):
                          "the former writer's log holds it: not appended again under the new name")
         self.assertEqual(sminos.queued_operators(self.p), {})
 
+    def test_an_enrolment_published_during_a_release_does_not_queue_what_it_releases(self):
+        """`hub enroll` publishes another enrolment under this name while a
+        release runs (after it marked the writer known): what the release
+        found its head for is appended, never queued again and removed."""
+        self.enrol()
+        self.say("early")
+        real = sminos.write_json
+
+        def write_json(path, data, mode=0o600):
+            real(path, data, mode)
+            if path == os.path.join(self.p.home, sminos.HEADS_FILE) and not getattr(write_json, "done", False):
+                write_json.done = True
+                self.enrol(enrolled="2026-10-29T00:00:00Z")   # the --replace, landing in between
+        hl = hublog.HubLog(self.p, {"key": base64.urlsafe_b64decode(KEY + "="), "machine": "testhost"})
+        with mock.patch.object(sminos, "write_json", write_json):
+            hl.on_have({"have": {}})
+        self.assertEqual([(e["seq"], e["text"]) for e in self.log()], [(1, "early")])
+        self.assertEqual(sminos.queued_read(self.p, W), [])
+
+    def test_a_queue_made_after_the_release_by_a_command_from_before_a_rename_is_drained(self):
+        self.rename_after_first_welcome()
+        rl10.welcomed({**Rl10.WELCOME, "identity": {**Rl10.WELCOME["identity"], "name": "renamed"}})
+        hl = hublog.HubLog(self.p, {"key": None, "machine": "renamed"}, coded=False)
+        hl.on_have({"have": {}})
+        hl.on_have({"have": {}})   # a periodic have: nothing waits now
+        sminos._queue(self.p, W, [{"kind": "human", "from": "human", "to": "*", "text": "late"}])   # still as testhost
+        hl.on_have({"have": {"renamed/human": 0}})
+        self.assertEqual([e["text"] for e in sminos.log_read(self.p) if e["writer"] == "renamed/human"], ["late"])
+        self.assertEqual(sminos.queued_operators(self.p), {})
+
     def test_a_fragment_a_queue_was_left_with_does_not_swallow_the_next_append(self):
         self.enrol()
         self.say("early")

@@ -2003,7 +2003,9 @@ def release_queued(project, writer):
                         for w in {writer, *queues} for e in _log_file_events(writer_path(project, w))
                         if e["ts"] >= since}
                 waiting = [e for e in waiting if json.dumps(e, sort_keys=True) not in held]
-            out = _append(project, writer, waiting, held=True) if waiting else []
+            # Appended whatever the enrolment says meanwhile (a `hub enroll`
+            # publishing another under this name): its head was found reached.
+            out = _append(project, writer, waiting, held=True, released=True) if waiting else []
             for p in queues.values():
                 try:
                     os.unlink(p)
@@ -2039,7 +2041,7 @@ def waits_line(project, writer):
             "delivered, once the uplink has seen it" % (project.name, writer))
 
 
-def _append(project, writer, events, skip_src=False, guard=None, store="log", held=False):
+def _append(project, writer, events, skip_src=False, guard=None, store="log", held=False, released=False):
     """Append events to the writer's file under `.sync.lock` shared (git never
     rewrites log/ while an appender writes) and the file's own lock (seq is the
     last line's plus one, past any position the uplink spent, which it spends
@@ -2076,7 +2078,7 @@ def _append(project, writer, events, skip_src=False, guard=None, store="log", he
                 events = kept
             if not events:
                 return []
-            if store == "log" and waits_for_head(project, writer):
+            if store == "log" and not released and waits_for_head(project, writer):
                 return _queue(project, writer, events)
             seq = _last_seq(f)
             spent = spent_seqs(project, writer) if store == "log" else set()

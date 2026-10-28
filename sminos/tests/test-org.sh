@@ -221,6 +221,13 @@ run_in "$RO" "$SMINOS" project show
 assert_contains "$OUT" "hub      $HUB (org org-1)" "a .smns with hub {org} resolves with the enrollment's URL"
 assert_contains "$OUT" "kind     hub" "a hub project"
 run_in "$RO" "$SMINOS" say "hub words"
+# A machine just enrolled: the operator's words wait for the hub's head of its
+# writer (#147), here released as the uplink's handshake releases them.
+assert_contains "$OUT" "it waits in orgproj for the upstream's head" "on a new enrolment the operator's say waits for the hub's head"
+OPID="$OPID" python3 -c 'import os, sys
+sys.path.insert(0, os.environ["SCRIPTS"])
+import sminos, sminos_hublog as hublog
+hublog.HubLog(sminos.find_project(os.environ["OPID"]), {"key": None, "machine": sminos.host_name()}).on_have({"have": {}})'
 run_in "$BARE" "$SMINOS" chat orgproj -n 5
 assert_contains "$OUT" "hub words" "chat <name> reads the hub project, though local-orgproj has the same name"
 assert_not_contains "$OUT" "local words" "and not the local one"

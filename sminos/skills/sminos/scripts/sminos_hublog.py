@@ -662,10 +662,13 @@ class HubLog:
         waited is appended above the head, and the next upload carries it.
         Run after a `have`, an import and a spent position."""
         writer = self.machine + "/human"
-        if self.have is None or not self.head_waits:
+        if self.have is None:
             return
-        if not (sminos.waits_for_head(self.project, writer) or sminos.queued_operators(self.project)):
-            self.head_waits = False   # nothing makes it wait again on this stream: an enrolment restarts the uplink
+        if self.head_waits and not sminos.waits_for_head(self.project, writer):
+            self.head_waits = False   # the enrolment's rule, which only an enrolment (a new uplink) changes
+        # A queue can still appear: a command that began before a rename
+        # queues under the name it read then.
+        if not (self.head_waits or sminos.queued_operators(self.project)):
             return
         last = self.writers(own=True).get(writer, (0, None))[0]
         head = self.have.get(writer, 0)
