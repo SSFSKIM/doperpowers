@@ -1308,6 +1308,72 @@ class Requests(unittest.TestCase):
         self.assertEqual([(m["body"]["request"], m["body"].get("truncated")) for m in messages(frames, "raised")],
                          [("toolu_new", True)], "only the request the child had not held is raised")
 
+    def raised_of(self, frames, rid):
+        return next(m["body"] for m in messages(frames, "raised") if m["body"]["request"] == rid)
+
+    def test_an_input_past_the_lanes_bound_goes_cut_and_marked_and_its_draw_decides_it(self):
+        """#149: a permission's input past RAISED_INPUT_MAX goes up as the
+        mod's resync cuts one — each string held to RESYNC_INPUT_CAP (1,024
+        UTF-16 units, a pair never split) and the request marked
+        `truncated` — in its `raised` and in the complete set, sealed
+        (DX2) or as a draft (RL10). The child keeps the input whole; a
+        decision's digest drawn from the input shown, or from the whole
+        one, finds the request pending, and any other is refused."""
+        whole = {"file_path": "/w/huge", "content": "y" * (17 << 20), "tail": "x" + "\U0001F600" * 600}
+        shown = {"file_path": "/w/huge", "content": "y" * 1024, "tail": "x" + "\U0001F600" * 511}
+        self.bridge.raise_("toolu_huge", tool="Write", input_=whole)
+        frames = self.due(lambda fs: messages(fs, "raised"))
+        body = self.raised_of(frames, "toolu_huge")
+        self.assertEqual(body["input"], shown)
+        self.assertIs(body["truncated"], True, "resync's marker")
+        self.assertTrue(codes.verifies(KEY, "raised", self.PID, body), "the code covers the input as it goes")
+        self.assertLess(len(json.dumps(body).encode()), requests.RAISED_INPUT_MAX)
+        self.r.sent(frames)
+        self.assertEqual(self.r.pending_frame(self.PID)["raised"], [body], "the complete set carries it so")
+        drafts = requests.Requests(None, "testhost")
+        self.addCleanup(drafts.close)
+        drafts.follow({self.sid: self.PID})
+        got = wait_for(lambda: drafts.take() or messages(drafts.due({self.PID}), "raised"))
+        self.assertEqual(messages(drafts.due({self.PID}), "raised")[0]["body"],
+                         {k: v for k, v in body.items() if k != "mac"}, "RL10: the same body, as a draft")
+        self.assertTrue(got)
+        status, held = rpc.bridge.request(self.bridge.sock, "GET", "/requests/toolu_huge")
+        self.assertEqual((status, held["input"]), (200, whole), "the child holds the input whole")
+        allow = {"behavior": "allow", "by": MEMBER}
+
+        def digest(tool_input):
+            return {"session": self.sid, "request": "toolu_huge", "tool": "Write",
+                    "input_sha256": codes.input_sha256(tool_input)}
+        rpc.check_digest(self.bridge.sock, self.sid, digest(shown), allow)
+        rpc.check_digest(self.bridge.sock, self.sid, digest(whole), allow)
+        for other in ({**shown, "file_path": "/w/elsewhere"}, {**shown, "content": "y" * 1023}):
+            with self.assertRaises(rpc.Refused) as e:
+                rpc.check_digest(self.bridge.sock, self.sid, digest(other), allow)
+            self.assertEqual(e.exception.outcome["error"]["code"], "digest-mismatch")
+
+    def test_within_the_bound_an_input_goes_whole_and_a_question_always_does(self):
+        """An input within RAISED_INPUT_MAX goes as the bridge raised it, and
+        a question's whole whatever its size (its answers are matched
+        against its questions, as the resync keeps it); one whose strings
+        are short but too many to fit even cut goes as `{}`, marked."""
+        near = {"file_path": "/w/f", "content": "y" * (requests.RAISED_INPUT_MAX - 64)}
+        asked = {"questions": [{"question": "q" * (requests.RAISED_INPUT_MAX + 1), "options": [{"label": "a"}]}]}
+        many = {"rows": ["r%d" % i for i in range(requests.RAISED_INPUT_MAX // 4)]}
+        self.bridge.raise_("toolu_near", tool="Write", input_=near)
+        self.bridge.raise_("toolu_asked", tool="AskUserQuestion", input_=asked)
+        self.bridge.raise_("toolu_many", tool="mcp__db__insert", input_=many)
+        frames = self.due(lambda fs: len(messages(fs, "raised")) == 3)
+        self.assertEqual(self.raised_of(frames, "toolu_near")["input"], near)
+        self.assertNotIn("truncated", self.raised_of(frames, "toolu_near"))
+        self.assertEqual(self.raised_of(frames, "toolu_asked")["input"], asked)
+        self.assertNotIn("truncated", self.raised_of(frames, "toolu_asked"))
+        self.assertEqual((self.raised_of(frames, "toolu_many")["input"], self.raised_of(frames, "toolu_many")["truncated"]),
+                         ({}, True))
+        allow = {"behavior": "allow", "by": MEMBER}
+        rpc.check_digest(self.bridge.sock, self.sid, {"session": self.sid, "request": "toolu_many",
+                                                      "tool": "mcp__db__insert", "input_sha256": codes.input_sha256({})},
+                         allow)
+
 
 # ---------------------------------------------------------------- the uplink
 

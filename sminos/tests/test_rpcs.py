@@ -3659,6 +3659,47 @@ class Uplink(unittest.TestCase):
         return self.hub.wait(lambda ms: [m for m in ms[since:] if m["kind"] == "presence" and m["session"] == self.sid],
                              timeout=30)
 
+    def decision_of(self, rid):
+        import sminos_bridge as bridge
+        return bridge.request(bridge.endpoint(self.sid), "GET", "/requests/%s/wait?ms=5000" % rid)
+
+    def test_i_a_raise_past_the_lanes_bound_keeps_the_stream_and_is_decided_from_its_draw(self):
+        """#149 on DX2: a Write whose input passes the session lane's 16 MiB
+        bound reaches the hub cut, marked `truncated`, on the stream it was
+        raised on; a decision whose digest is drawn from what the hub got
+        is taken (remote), and so is one made here (`sminos decide`)."""
+        whole = {"file_path": "/w/huge", "content": "y" * (17 << 20)}
+        count = len(self.hub.messages())
+        generation = None if self.local() else self.hub.state()["generation"]
+        for rid in ("toolu_huge1", "toolu_huge2"):
+            self.mod.raise_(rid, tool="Write", input_=whole)
+
+        def raised(rid):
+            got = [m["body"] for m in self.hub.messages()[count:] if m["kind"] == "raised"
+                   and m["session"] == self.sid and m["body"]["request"] == rid]
+            return got[-1] if got else None
+        bodies = [wait_for(lambda rid=rid: raised(rid), 30) for rid in ("toolu_huge1", "toolu_huge2")]
+        for body in bodies:
+            self.assertIsNotNone(body, "the raise reached the hub")
+            self.assertEqual((body["input"], body["truncated"]),
+                             ({"file_path": "/w/huge", "content": "y" * 1024}, True))
+        if generation is not None:
+            self.assertEqual(self.hub.state()["generation"], generation, "on the stream it was raised on")
+        remote = self.send(self.rpc("decide", {"session": self.sid, "decision": "allow",
+                                               "digest": digest_of(self.sid, "toolu_huge1", "Write", bodies[0]["input"])}))
+        self.assertEqual(self.outcome(remote), {"state": "done", "result": {}})
+        status, got = self.decision_of("toolu_huge1")
+        self.assertEqual((status, got["decision"]["behavior"], got["by"]), (200, "allow", self.member))
+        self.mod.settle("toolu_huge1", outcome="allow", winner="web", by=self.member)
+        local = subprocess.Popen([tpr.CLI, "decide", self.sid, "toolu_huge2", "deny"], stdout=subprocess.PIPE,
+                                 stderr=subprocess.PIPE, text=True)
+        status, got = self.decision_of("toolu_huge2")
+        self.assertEqual((status, got["decision"]["behavior"], got["by"]), (200, "deny", "cli"))
+        self.mod.settle("toolu_huge2", outcome="deny", winner="cli", by="cli")
+        self.assertEqual(local.wait(30), 0, local.communicate()[1])
+        if generation is not None:
+            self.assertEqual(self.hub.state()["generation"], generation, "the stream never dropped")
+
     def test_a_steer_and_its_refusals_reach_the_hub(self):
         self.mod.turn = "turn-a"
         steer = self.send(self.rpc("steer", {"session": self.sid, "text": "look at the failing test first"}))

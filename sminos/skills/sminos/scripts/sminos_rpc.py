@@ -213,6 +213,7 @@ import sminos_jobs as jobs  # noqa: E402
 import sminos_media as media  # noqa: E402
 import sminos_owed as owed  # noqa: E402
 import sminos_policy as policy  # noqa: E402
+import sminos_requests as requests  # noqa: E402
 
 LEDGER_FILE = "rpcs.json"
 OWED_FILE = "rpcs-owed.json"  # daemon/: the compaction and op messages not yet the hub's (sminos_owed)
@@ -1671,13 +1672,18 @@ def check_digest(path, sid, digest, decision, scope=None):
                       **who_won(body if isinstance(body, dict) else {}))
     if status != 200 or not isinstance(body, dict):
         raise Refused("not-pending", "no request %s is pending in the session" % rid)
+    # What a viewer can have drawn: the input the request's raise carried
+    # (requests.shown_input: cut past the lanes' bound, #149), or the input
+    # whole, as the bridge holds it and as it went up while within the bound.
     tool_input = body.get("input")
-    try:
-        drawn = codes.input_sha256(tool_input)
-    except codes.NotCanonical:
-        drawn = None
-    if (body.get("session"), body.get("request"), body.get("tool"), drawn) != \
-            (sid, rid, digest["tool"], digest["input_sha256"]):
+    drawn = set()
+    for shown in (tool_input, requests.shown_input(body)[0] if isinstance(tool_input, dict) else tool_input):
+        try:
+            drawn.add(codes.input_sha256(shown))
+        except codes.NotCanonical:
+            pass
+    if (body.get("session"), body.get("request"), body.get("tool")) != (sid, rid, digest["tool"]) \
+            or digest["input_sha256"] not in drawn:
         raise Refused("digest-mismatch", "the request pending is not the one shown")
     if scope is not None:
         if bridge.is_question(body):
