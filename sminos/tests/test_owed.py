@@ -137,8 +137,20 @@ class Machine(unittest.TestCase):
                                              reason=reason))
 
     def took(self, project, e):
-        held = self.held(project).get("taken") or {}
-        self.uplink_state(project, taken={**held, e["writer"]: e["seq"]})
+        held = self.taken_held(project).get("taken") or {}
+        self.taken_state(project, taken={**held, e["writer"]: e["seq"]})
+
+    def taken_path(self, project):
+        return os.path.join(project.home, hublog.TAKEN_FILE)
+
+    def taken_held(self, project):
+        try:
+            return json.loads(Path(self.taken_path(project)).read_text())
+        except OSError:
+            return {}
+
+    def taken_state(self, project, **d):
+        Path(self.taken_path(project)).write_text(json.dumps({**self.taken_held(project), **d}))
 
     def held(self, project):
         try:
@@ -273,10 +285,10 @@ class Upload(Machine):
         self.assertEqual(rc, 1)
         self.assertIn("upload 2 [%s:2, %s:3]" % (S1[:8], S1[:8]), self.line(out, "work"),
                       "the joined the uplink took is not owed")
-        self.uplink_state(p, taken={"testhost/" + S1: 2})
+        self.taken_state(p, taken={"testhost/" + S1: 2})
         rc, out = self.owed()
         self.assertIn("upload 1 [%s:3]" % S1[:8], self.line(out, "work"))
-        self.uplink_state(p, taken={"testhost/" + S1: 3})
+        self.taken_state(p, taken={"testhost/" + S1: 3})
         self.assertEqual(self.owed(), (0, "nothing owed\n"))
 
     def test_a_project_with_no_upstream_owes_none(self):
@@ -296,7 +308,7 @@ class Upload(Machine):
         self.own(p)
         rc, out = self.owed()
         self.assertIn("upload 1 [%s:2]" % S1[:8], self.line(out, "work"))
-        self.uplink_state(p, taken={"testhost/" + S1: 2})
+        self.taken_state(p, taken={"testhost/" + S1: 2})
         self.assertEqual(self.owed(), (0, "nothing owed\n"))
 
 
@@ -463,7 +475,7 @@ class TakenBounds(Machine):
 
     def test_a_later_have_does_not_pass_an_unresolved_bound(self):
         self.upload()
-        self.hl.on_refused({"refusal": {"reason": "conflict", "writer": self.w, "seq": 2}})
+        self.hl.on_refused({"refusal": {"reason": "too-large", "writer": self.w, "seq": 2}})
         self.lane.run_held()
         self.hl.on_have({"have": {self.w: 3}})   # a vector the upstream drew before it refused
         self.assertEqual(self.hl.taken(), {self.w: 1})
@@ -495,7 +507,7 @@ class FormerNames(Machine):
         self.uplink_state(p, archive=True)
         rc, out = self.owed()
         self.assertIn("upload 1 [legacy/old-chat:1]", self.line(out, "work"))
-        self.uplink_state(p, taken={"legacy/old-chat": 1})
+        self.taken_state(p, taken={"legacy/old-chat": 1})
         self.assertEqual(self.owed(), (0, "nothing owed\n"))
 
 
@@ -538,7 +550,7 @@ class Uninspectable(Machine):
 
     def test_an_unreadable_uplink_state(self):
         p = self.project("work")
-        self.uplink_state(p, taken={})
+        self.uplink_state(p, host_sent={})
         self.unreadable(os.path.join(p.home, sminos.UPLINK_STATE))
         self.assert_named(os.path.join(p.home, sminos.UPLINK_STATE))
 
@@ -570,6 +582,145 @@ class Uninspectable(Machine):
         path = os.path.join(p.home, "project.json")
         self.unreadable(path)
         self.assert_named(path)
+
+
+class TakenRig(Machine):
+    """A hub project with three events of one of this machine's writers, its
+    log plane opened (an empty `have`), and a lane."""
+
+    def setUp(self):
+        super().setUp()
+        self.p = self.project("work")
+        self.w = "testhost/" + S1
+        for _ in range(3):
+            sminos.log_append(self.p, self.w, "say", to=[], text="x")
+        self.hl = hublog.HubLog(self.p, {"key": base64.urlsafe_b64decode(KEY + "="), "machine": "testhost"})
+        self.hl.on_have({"have": {}})
+        self.lane = Taken.link(self).log_lane
+
+    def upload(self):
+        link = Taken.link(self)
+        link.log_lane = link.session_lane = self.lane
+        link.upload(self.hl)
+
+
+class TakenResumes(TakenRig):
+    """`taken` is the uplink's own view of what it no longer has to send:
+    never more than its resume state, down as well as up."""
+
+    def test_an_opening_have_sets_it_down_as_well(self):
+        self.upload()
+        self.assertEqual(self.hl.taken(), {self.w: 3}, "written to the endpoint")
+        self.hl.reset()   # the endpoint died before it kept them; a new connection
+        self.hl.on_have({"have": {}})
+        self.assertEqual(self.hl.taken(), {}, "the handshake is the resume point")
+        self.assertIsNotNone(self.hl.next_upload(), "which re-offers them")
+        rc, out = self.owed()
+        self.assertEqual(rc, 1)
+        self.assertIn("upload 3", self.line(out, "work"))
+
+    def test_a_periodic_have_only_raises_it(self):
+        self.upload()
+        self.hl.on_have({"have": {self.w: 1}})
+        self.assertEqual(self.hl.taken(), {self.w: 3})
+
+    def test_a_conflict_survives_a_reconnect_and_is_its_own_kind(self):
+        self.lane.hold_thens = True
+        self.upload()
+        self.hl.on_refused({"refusal": {"reason": "conflict", "writer": self.w, "seq": 2}})
+        self.lane.run_held()
+        self.hl.reset()
+        self.hl.on_have({"have": {self.w: 3}})   # the upstream holds another event at 2
+        self.assertEqual(self.hl.taken(), {self.w: 1})
+        rc, out = self.owed()
+        self.assertEqual(rc, 1)
+        line = self.line(out, "work")
+        self.assertIn("refused 1 [%s:2]" % S1[:8], line)
+        self.assertIn("upload 2 [%s:2, %s:3]" % (S1[:8], S1[:8]), line)
+        hublog.HubLog(self.p, {"key": None, "machine": "testhost"}).on_have({"have": {self.w: 3}})
+        self.assertIn("refused 1", self.line(self.owed()[1], "work"), "persisted: another process, another stream")
+
+    def test_another_refusal_is_not_kept_past_the_stream(self):
+        self.upload()
+        self.hl.on_refused({"refusal": {"reason": "too-large", "writer": self.w, "seq": 2}})
+        self.hl.reset()
+        self.hl.on_have({"have": {self.w: 1}})
+        rc, out = self.owed()
+        self.assertNotIn("refused", out)
+        self.assertIn("upload 2", self.line(out, "work"))
+
+    def test_the_upstream_holding_the_same_event_resolves_a_conflict(self):
+        ep = __import__("endpoint_standin")
+        hl = hublog.HubLog(self.p, {"key": None, "machine": "testhost"}, coded=False)
+        hl.on_have({"have": {}})
+        hl.on_refused({"refusal": {"reason": "conflict", "writer": self.w, "seq": 2}})
+        self.assertIn("refused 1", self.line(self.owed()[1], "work"))
+        stored = [e for e in sminos.log_read(self.p) if e["writer"] == self.w and e["seq"] == 2][0]
+        echo = {"event": {**ep.upload_form(stored), "sig": {"kid": "k", "sig": "AQ"}, "attest": {}},
+                "signer": {"kind": "machine", "name": "testhost", "ref": "r", "keyId": "k"}, "owners": []}
+        self.assertEqual(hl.take([echo])[0], 0)
+        self.assertNotIn("refused", self.owed()[1])
+
+
+class TakenWrites(TakenRig):
+    """A write of `taken` that fails never changes what the uplink does, and
+    never leaves the file saying less is owed than is."""
+
+    def failing(self):
+        return mock.patch.object(hublog.HubLog, "write_taken", side_effect=OSError(28, "No space left on device"))
+
+    def test_a_resend_happens_whatever_the_write_does_and_fails_safe(self):
+        self.upload()
+        self.assertEqual(self.hl.taken(), {self.w: 3})
+        with self.failing():
+            self.hl.on_resend({"writer": self.w, "from": 2})
+        self.assertEqual(self.hl.sent[self.w], 1, "the resend is followed")
+        self.assertIsNone(self.hl.drawing)
+        self.assertFalse(os.path.exists(self.taken_path(self.p)), "a lowering not written takes the file away")
+        rc, out = self.owed()
+        self.assertIn("upload 3", self.line(out, "work"))
+        self.assertIn("could not be written", Path(os.environ["SMINOS_HOME"], "daemon.log").read_text())
+
+    def test_a_refusal_whatever_the_write_does(self):
+        self.upload()
+        with self.failing():
+            self.hl.on_refused({"refusal": {"reason": "conflict", "writer": self.w, "seq": 2}})
+        self.assertIn(self.w, self.hl.stuck)
+        self.assertEqual(self.owed()[0], 1)
+
+    def test_a_raise_not_written_leaves_it_lower(self):
+        self.lane.hold_thens = True
+        self.upload()
+        with self.failing():
+            self.lane.run_held()
+            self.hl.on_have({"have": {self.w: 3}})
+        self.assertEqual(self.owed()[0], 1)
+
+
+class Enrollment(Machine):
+    def assert_named(self, path):
+        rc, out = self.owed()
+        self.assertEqual(rc, 1, out)
+        self.assertIn("%s: cannot be inspected" % path, out)
+
+    def test_an_unreadable_hub_credential(self):
+        self.project("work")
+        path = os.path.join(os.environ["SMINOS_HOME"], "daemon", "hub.json")
+        os.chmod(path, 0)
+        self.addCleanup(os.chmod, path, 0o600)
+        self.assert_named(path)
+
+    def test_a_hub_credential_without_its_fields(self):
+        self.project("work")
+        path = os.path.join(os.environ["SMINOS_HOME"], "daemon", "hub.json")
+        Path(path).write_text(json.dumps({"hub": 1, "key": SECRET}))
+        self.assert_named(path)
+
+    def test_an_identity_that_is_not_one(self):
+        self.project("work")
+        self.cut_over()
+        Path(rl10.identity_path()).write_text("{" + SECRET)
+        self.assert_named(rl10.identity_path())
 
 
 def tearDownModule():

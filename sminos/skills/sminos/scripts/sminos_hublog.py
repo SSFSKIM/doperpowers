@@ -58,12 +58,19 @@ Its state between streams lives in the project's home, `uplink.json`: the
 spent positions, the rejections not yet reported (a report whose POST
 failed is sent again after the next `hello`), whether the hub's latest
 `have` named this machine the project's archive machine, with when it said
-so (`archive`, `archive_at`: what sminos_archive runs on), and how far each
-of this machine's writers is known taken (`taken`: the hub's `have` for it,
-each upload the hub answered without refusing it or the endpoint's socket
-took, lowered to below a writer it refused or asks again for and held there
-on the stream against answers and vectors that predate it: `bound`), which
-`sminos daemon owed` reads beside the running uplink.
+so (`archive`, `archive_at`: what sminos_archive runs on). Beside it,
+`uplink-taken.json` (TAKEN_FILE) holds what `sminos daemon owed` reads:
+how far each of this machine's writers no longer has to be sent (`taken`),
+never more than the uplink's own resume state — each opening `have` sets it
+to what the upstream holds, down as well as up; each upload answered and not
+refused whole (on RL10, once written) and each later `have` raises it;
+a writer the upstream refuses or asks again for (`resend`) is lowered and
+bounded on the stream against answers and vectors that predate it (`bound`)
+— and the positions where the upstream holds another event (`conflicts`,
+from a `conflict` refusal: no handshake resolves one, so it is kept until
+the upstream's echo of this machine's own event there reads `present`).
+Its writes are best effort, never stopping the frame in hand; one that would
+have lowered it removes the file instead (`keep`).
 """
 
 import glob
@@ -83,6 +90,10 @@ import sminos_rpc as rpc  # noqa: E402
 
 NONCE_DOMAIN = "smns-hub-nonce-v1"
 STATE_FILE = sminos.UPLINK_STATE
+# What the uplink no longer has to send of this machine's writers, beside the
+# state file: {"taken": {writer: seq}, "conflicts": {writer: seq}} (`taken`,
+# what `sminos daemon owed` reads).
+TAKEN_FILE = "uplink-taken.json"
 LEGACY = "legacy/"
 # Event JSON per `events` frame up, as the hub batches its own; a larger
 # event travels alone (and as parts, past a frame's bound).
@@ -312,6 +323,7 @@ class HubLog:
         self.files = {}      # path → (size, mtime_ns, writer, last): the vector's reads, kept while a file holds
         self.nonces = None   # nonce → (writer, seq) of every coded event the log holds, read on first import
         self.epochs = {}     # own writer → how many bounds were set on it (bound), across streams: an upload's mark
+        self.taken_failing = None   # TAKEN_FILE's write failure as last said (keep)
         self.reset()
 
     def reset(self):
@@ -445,26 +457,90 @@ class HubLog:
         d["host_sent"] = held
         self.save(d)
 
-    def taken(self):
-        """{writer: seq}: how far each of this machine's writers is known
-        taken upstream (the module's `taken`)."""
-        raw = self.state().get("taken")
+    # ---------------------------------------------------- taken (daemon owed's evidence)
+
+    def taken_held(self):
+        try:
+            with open(os.path.join(self.project.home, TAKEN_FILE)) as f:
+                d = json.load(f)
+        except (OSError, ValueError):
+            return {}
+        return d if isinstance(d, dict) else {}
+
+    @staticmethod
+    def seqs(raw):
         return {w: s for w, s in raw.items() if isinstance(w, str) and type(s) is int} \
             if isinstance(raw, dict) else {}
+
+    def taken(self):
+        """{writer: seq}: how far each of this machine's writers no longer has
+        to be sent (the module's `taken`)."""
+        return self.seqs(self.taken_held().get("taken"))
+
+    def conflicts(self):
+        """{writer: seq}: the lowest position of each of this machine's
+        writers where the upstream holds another event (a `conflict`
+        refusal): no handshake resolves it, so it is kept until the
+        upstream is seen holding this machine's own event there."""
+        return self.seqs(self.taken_held().get("conflicts"))
+
+    def write_taken(self, d):
+        path = sminos.project_path(self.project, TAKEN_FILE)
+        tmp = "%s.%d.tmp" % (path, os.getpid())
+        with open(tmp, "w", encoding="ascii") as f:
+            json.dump(d, f, ensure_ascii=True)
+            f.write("\n")
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+
+    def keep(self, taken, conflicts, lowering):
+        """The file written whole, best effort: a write that fails is said
+        once while it keeps failing and never stops the frame being handled.
+        One that would have said more is owed (`lowering`) takes the file
+        away instead, so it never says less is owed than is: with none,
+        nothing is taken (an unlink needs no room)."""
+        try:
+            self.write_taken({"taken": taken, "conflicts": conflicts})
+            if self.taken_failing is not None:
+                log("%s of %s is written again" % (TAKEN_FILE, self.project.name))
+            self.taken_failing = None
+            return
+        except OSError as e:
+            why = "%s: %s" % (type(e).__name__, e.strerror or e)
+        gone = ""
+        if lowering:
+            try:
+                os.unlink(os.path.join(self.project.home, TAKEN_FILE))
+                gone = ", so it is removed: nothing reads as taken until it is written again"
+            except FileNotFoundError:
+                gone = ""
+            except OSError as e:
+                gone = ", and it could not be removed (%s): `daemon owed` may read too little owed" % e
+        if self.taken_failing != why:
+            log("%s of %s could not be written (%s)%s" % (TAKEN_FILE, self.project.name, why, gone))
+        self.taken_failing = why
 
     def epoch(self, writer):
         return self.epochs.get(writer, 0)
 
-    def keep_taken(self, reach, d=None, epochs=None):
+    def ceiling(self, writer, conflicts):
+        """How far the writer may read as taken: below its unresolved bound
+        on this stream and below a conflict kept."""
+        out = self.bounds.get(writer)
+        if writer in conflicts:
+            out = min(conflicts[writer] - 1, conflicts[writer] - 1 if out is None else out)
+        return out
+
+    def keep_taken(self, reach, epochs=None):
         """The writers in `reach` ({writer: seq}) taken up to there: each
-        moves forward only, written when one moved (into `d`, the state the
-        caller writes, when given). An upload's answer passes `epochs`, each
+        moves forward only. An upload's answer passes `epochs`, each
         writer's epoch when the upload was sent: a writer bounded since takes
         nothing from it (the answer says the frame arrived, not that the
         upstream kept every event in it), and one bounded before has its
-        bound resolved up to there. A vector (a `have`) passes none, and
-        moves no writer past its bound."""
-        held = self.taken()
+        bound resolved up to there. A vector (a periodic `have`) passes
+        none, and moves no writer past its bound. Neither passes a
+        conflict kept."""
+        held, conflicts = self.taken(), self.conflicts()
         moved = {}
         for w, s in reach.items():
             if not self.own(w):
@@ -474,31 +550,56 @@ class HubLog:
                     continue
                 if w in self.bounds:
                     self.bounds[w] = max(self.bounds[w], s)
-            elif w in self.bounds:
-                s = min(s, self.bounds[w])
+            top = self.ceiling(w, conflicts)
+            if top is not None:
+                s = min(s, top)
             if s > held.get(w, 0):
                 moved[w] = s
-        if not moved:
-            return
-        state = self.state() if d is None else d
-        state["taken"] = {**held, **moved}
-        if d is None:
-            self.save(state)
+        if moved:
+            self.keep({**held, **moved}, conflicts, lowering=False)
 
-    def bound(self, writer, seq):
+    def resume_taken(self, have):
+        """An opening `have`, the stream's resume point: each of this
+        machine's writers reads as taken exactly as far as the upstream says
+        it holds it — down as well as up (an endpoint that died before
+        keeping what was written to it) — but never past a conflict kept."""
+        held, conflicts = self.taken(), self.conflicts()
+        now = {}
+        for w in set(held) | {w for w in have if self.own(w)}:
+            s = have.get(w, 0) if self.own(w) else held[w]
+            if w in conflicts:
+                s = min(s, conflicts[w] - 1)
+            if s > 0:
+                now[w] = s
+        if now != held:
+            self.keep(now, conflicts, lowering=any(now.get(w, 0) < s for w, s in held.items()))
+
+    def bound(self, writer, seq, conflict=False):
         """The upstream refused the writer at seq + 1 or asks it again from
         there (a refusal, a `resend`): `taken` is lowered to seq and held
         there on this stream, whatever an upload sent before it answers
         (its epoch moved) or a vector says, until an upload sent after it
         is answered, or a new stream's handshake says what the upstream
-        holds."""
+        holds. A `conflict` is kept past the stream (conflicts)."""
         self.epochs[writer] = self.epoch(writer) + 1
         self.bounds[writer] = min(seq, self.bounds.get(writer, seq))
-        taken = self.taken()
-        if taken.get(writer, 0) > seq:
-            d = self.state()
-            d["taken"] = {**taken, writer: seq}
-            self.save(d)
+        held, conflicts = self.taken(), self.conflicts()
+        add = conflict and conflicts.get(writer, seq + 2) > seq + 1
+        if add:
+            conflicts = {**conflicts, writer: seq + 1}
+        if held.get(writer, 0) > seq or add:
+            self.keep({**held, writer: min(seq, held.get(writer, 0))} if writer in held else held, conflicts,
+                      lowering=True)
+
+    def resolved(self, writer, seq):
+        """The upstream is seen holding this machine's own event at a
+        conflict kept (its echo read `present`): the conflict is gone."""
+        conflicts = self.conflicts()
+        if conflicts.get(writer) == seq:
+            del conflicts[writer]
+            log("%s:%d of %s is held upstream as written here: its conflict is resolved"
+                % (writer, seq, self.project.name))
+            self.keep(self.taken(), conflicts, lowering=False)
 
     def unreported(self):
         raw = self.state().get("unreported")
@@ -529,6 +630,7 @@ class HubLog:
             # The handshake: upload from the hub's vector, every writer free.
             self.sent = {w: s for w, s in have.items() if self.own(w)}
             self.stuck, self.refused, self.bounds = set(), {}, {}
+            self.resume_taken(have)
         else:
             # A `have` answering a `hello` repeated on an open stream (the
             # uplink's periodic one, which refreshes the designation): the
@@ -541,8 +643,9 @@ class HubLog:
                     self.sent[w] = s
         # The designation as the hub said it now: the tick loop's archive
         # duty (sminos_archive) runs on it.
+        if not opening:
+            self.keep_taken(have)   # what the hub holds of this machine's writers is taken, up to its bounds
         d = self.state()
-        self.keep_taken(have, d)   # what the hub holds of this machine's writers is taken
         if d.get("archive") != self.archive:
             log("the hub says this machine %s the archive of %s" % ("writes" if self.archive else "does not write",
                                                                    self.project.name))
@@ -558,15 +661,15 @@ class HubLog:
         on this stream; a resend from before it is followed."""
         writer, start = frame.get("writer"), frame.get("from")
         if isinstance(writer, str) and self.own(writer) and type(start) is int and start >= 1:
-            self.bound(writer, start - 1)   # the hub lacks it from `start`, whatever an answer said before
             if writer in self.refused and start >= self.refused[writer]:
                 log("the hub asks %s of %s again from %d, where it refused it or past that (at %d): not followed on "
                     "this stream" % (writer, self.project.name, start, self.refused[writer]))
-                return
-            self.sent[writer] = start - 1
-            self.stuck.discard(writer)
-            self.drawing = None
-            log("the hub asks %s of %s again from %d" % (writer, self.project.name, start))
+            else:
+                self.sent[writer] = start - 1
+                self.stuck.discard(writer)
+                self.drawing = None
+                log("the hub asks %s of %s again from %d" % (writer, self.project.name, start))
+            self.bound(writer, start - 1)   # the hub lacks it from `start`, whatever an answer said before
 
     def closed(self):
         """The hub no longer holds the project open on this stream (it
@@ -592,7 +695,8 @@ class HubLog:
             seq = r.get("seq")
             at = seq if type(seq) is int and seq >= 1 else 0
             self.refused[writer] = min(at, self.refused.get(writer, at))
-            self.bound(writer, max(at - 1, 0))   # owed again from what it refused
+            # Owed again from what it refused; a conflict (the upstream holds another event there) past the stream.
+            self.bound(writer, max(at - 1, 0), conflict=reason == "conflict")
 
     def own(self, writer):
         return writer.startswith(self.machine + "/") or (self.archive and writer.startswith(LEGACY))
@@ -698,7 +802,7 @@ class HubLog:
             log("an events frame for %s without a list of events: ignored" % self.project.name)
             return 0, []
         appended, out, spent = 0, [], self.spent()
-        newly = {}
+        newly, conflicts = {}, self.conflicts()
         for raw in events:
             if self.coded:
                 named, verified, (reason, why) = raw, None, refusal(self.key, self.project, raw)
@@ -728,6 +832,8 @@ class HubLog:
                 elif outcome == "gap":
                     log("held back %s in %s: its seq is not one past the writer's last (the hub sends what is "
                         "missing at the next hello)" % (position(e), self.project.name))
+                elif outcome == "present" and conflicts.get(e["writer"]) == e["seq"] and self.is_own(e["writer"]):
+                    self.resolved(e["writer"], e["seq"])
                 elif outcome == "conflict":
                     reason, why = CONFLICT_REASON, "%s:%d holds another event here" % (e["writer"], e["seq"])
                 elif outcome == "spent":

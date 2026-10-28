@@ -1046,6 +1046,8 @@ status_has() { "$SMINOS" daemon status | grep -Fq "$1"; }
 until_true 200 status_has "uplink: RL10 (local-only), running" || true
 UP="$(uplink_pid)"
 CUTOVER="$(cutover_at)"
+RECUT="uplink (pid [0-9]*): the endpoint welcomed this machine, which is cut over: restarting it on RL10"
+RECUTS="$(grep -c "$RECUT" "$DLOG" || true)"
 rm "$SMINOS_HOME/daemon/identity.json"
 until_true 200 cut_over || true
 assert_equals "$(cut_over && echo there || echo none)" there \
@@ -1053,7 +1055,12 @@ assert_equals "$(cut_over && echo there || echo none)" there \
 assert_contains "$(cat "$DLOG")" "uplink (pid $UP): identity.json is gone, which undoes the cutover: restarting it on the hub (DX2)" \
   "the supervisor left RL10 for the hub first (daemon.log)"
 if [ "$(cutover_at)" != "$CUTOVER" ]; then pass "at a new cutover time"; else fail "at a new cutover time"; fi
-until_true 200 status_has "uplink: RL10 (local-only), running" || true
+# The hub's uplink the supervisor started meanwhile holds uplink.lock until the RL10 one replaces it.
+recut() { [ "$(grep -c "$RECUT" "$DLOG" || true)" -gt "$RECUTS" ]; }
+until_true 200 recut || true
+DX2_UP="$(grep "$RECUT" "$DLOG" | tail -1 | sed 's/.*uplink (pid \([0-9]*\)).*/\1/')"
+back_on_rl10() { local p; p="$(uplink_pid)"; [[ -n "$p" && "$p" != "$DX2_UP" ]] && alive "$p" && status_has "uplink: RL10 (local-only), running (pid $p"; }
+until_true 200 back_on_rl10 || true
 UP="$(uplink_pid)"
 run "$SMINOS" daemon status
 assert_contains "$OUT" "uplink: RL10 (local-only), running (pid $UP" "and the uplink is back on RL10"

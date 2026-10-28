@@ -150,7 +150,9 @@ the count of each kind and the oldest item's age, and at most three
 references a kind (`writer:seq → recipient`), never a message body: `deliveries` owed
 to a session of this machine not yet made; `words`, those a cut-over
 machine's endpoint has yet to decide; and what has not reached the hub or
-the endpoint yet — `upload` (this machine's own events), `kept` (the
+the endpoint yet — `upload` (this machine's own events), `refused`
+(positions of them where the hub or the endpoint holds another event:
+nothing resolves one unattended, so look before a cutover), `kept` (the
 settlements and RPC messages kept under `daemon/`), `host` (a cut-over
 machine's unsent host events) and `outcomes` (delivery outcomes). It
 prints `nothing owed` and exits 0 when no project owes anything, else

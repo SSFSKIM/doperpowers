@@ -1662,8 +1662,11 @@ def cmd_status(_a):
 #   words       those of them a cut-over machine's endpoint decides (a
 #               person's words, sminos.words_route "ask"), asked or not: an
 #               ask out is the uplink's memory, the event owed is its record
-#   upload      this machine's own events (its writers under its name now)
-#               past `taken` in the project's uplink.json (sminos_hublog)
+#   upload      this machine's own events (the writers the uplink uploads)
+#               past `taken` in the project's uplink-taken.json (sminos_hublog)
+#   refused     the positions of those writers where the upstream holds
+#               another event (its `conflicts`): no handshake resolves one,
+#               so the owner looks at it before a cutover
 #   kept        the settlements (requests-owed.json, but those relayed) and
 #               the compaction and op messages (rpcs-owed.json) kept under
 #               daemon/ (sminos_owed), by the project each names
@@ -1674,7 +1677,7 @@ def cmd_status(_a):
 # up. Events owed to a closed terminal session (sminos_outcomes.closed_
 # sessions: reported `recorded`, delivered if it comes back) are counted on
 # their own line and owed by no one: they are in the log, which nothing loses.
-OWED_KINDS = ("deliveries", "words", "upload", "kept", "host", "outcomes")
+OWED_KINDS = ("deliveries", "words", "upload", "refused", "kept", "host", "outcomes")
 OWED_REFS = 3   # references printed per kind, at most
 
 
@@ -1824,6 +1827,18 @@ def owed_in(project, upstream, kept, failed):
     except Uninspectable as e:
         failed.append(e)   # its upload and host kinds are not counted
         state = None
+    taken_path = os.path.join(project.home, sminos.sibling_module("sminos_hublog").TAKEN_FILE)
+    try:
+        taken = inspected(taken_path)
+        if taken is not None and not isinstance(taken, dict):
+            raise Uninspectable(taken_path, "not the uplink's record of what was taken")
+        taken = taken or {}   # none: nothing taken, no conflict
+    except Uninspectable as e:
+        failed.append(e)   # its upload kind is not counted
+        taken = None
+    if taken is not None:
+        for w, at in sorted(seq_vector(taken.get("conflicts")).items()):
+            out["refused"].append((file_age(taken_path), sminos.event_ref({"writer": w, "seq": at})))
     if state is not None:
         me, former = sminos.machine_identity()
         # The uplink's own rules: it uploads this machine's writers under its
@@ -1839,8 +1854,10 @@ def owed_in(project, upstream, kept, failed):
         def hosts(w):
             return w.split("/", 1)[0] in names and bool(sminos.writer_session(w))
 
-        for store, sent, kind, own in (("log", seq_vector(state.get("taken")), "upload", uploads),
+        for store, sent, kind, own in (("log", seq_vector((taken or {}).get("taken")), "upload", uploads),
                                        (sminos.HOST_STORE, seq_vector(state.get("host_sent")), "host", hosts)):
+            if kind == "upload" and taken is None:
+                continue
             for path in store_files(project, store):
                 for e in sminos._log_file_events(path):
                     if own(e["writer"]) and e["seq"] > sent.get(e["writer"], 0):
@@ -1880,6 +1897,29 @@ def owed_line(name, items, what):
     return "%s: %s %d%s — %s" % (name, what, sum(len(got) for got in items.values()), oldest, ", ".join(kinds))
 
 
+def enrollment_inspected(failed):
+    """sminos.enrollment(), once the file it is read from is inspected: a
+    cut-over machine's identity.json, else hub.json. One there that cannot be
+    read as one goes to `failed`, and no upstream is read (sminos.enrollment
+    would read an unreadable identity as none, and fall back to hub.json);
+    only absence is "not enrolled"."""
+    try:
+        if rl10.cut_over():
+            path = rl10.identity_path()
+            if not rl10.valid_identity(inspected(path)):
+                raise Uninspectable(path, "not an identity")
+        else:
+            path = daemon_path("hub.json")
+            d = inspected(path)
+            if d is not None and not (isinstance(d, dict) and all(isinstance(d.get(k), str) and d[k]
+                                                                  for k in ("hub", "org", "machine"))):
+                raise Uninspectable(path, "not a hub credential")
+    except Uninspectable as e:
+        failed.append(e)
+        return None
+    return sminos.enrollment()
+
+
 def cmd_owed(_a):
     """`daemon owed`: a line per project that owes anything, one per project
     with events waiting for closed sessions, one per state file it could not
@@ -1893,7 +1933,7 @@ def cmd_owed(_a):
                 raise Uninspectable(path, "not a project's registration")
         except Uninspectable as e:
             failed.append(e)   # known_projects passes it by: its project is not read at all
-    e = sminos.enrollment()
+    e = enrollment_inspected(failed)
     kept = owed_kept(failed) if e is not None else {}
     owing, names = False, {}
     for p in sorted(sminos.known_projects(all_seats=[]), key=lambda p: (p.name, p.id)):
