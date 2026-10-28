@@ -20,7 +20,9 @@ they reported it:
   deadline?, async?, toolUseId?}` (composite 6fa2252d, 43a27604): the
   bridge's fields; `agentId` only for a subagent's request, `truncated` only
   as true, `toolUseId` (the call an ask mod's dialog belongs to) only where
-  it differs from `request`; a background
+  it differs from `request`; a permission's input past RAISED_INPUT_MAX cut
+  as the mod's resync cuts one (`shown_input`, #149), so no one raise, nor
+  the complete set carrying it, can pass a lane's bound; a background
   subagent's `deadline` (epoch ms on DX5) as ISO 8601 UTC with
   milliseconds, after which the hub marks the request `terminal_only`;
 - DX4 `settled` `{request, winner, outcome, by}` as the bridge settled it,
@@ -91,6 +93,13 @@ RELAYED_SESSIONS = 1000
 TOOL_USE_ID_MAX = 512      # the hub's bound on `raised.toolUseId` (DC3, MAWS 4b5d0a67)
 SUGGESTIONS_MAX = 8        # the hub's bound on `raised.suggestions` (the desk control surface's MW3): this many,
 SUGGESTION_BYTES_MAX = 2048  # each at most this many bytes of canonical UTF-8 JSON, the bridge's bound too
+# A permission's input, as UTF-8 JSON, a raise carries whole: past it, each string is held to INPUT_CAP and the
+# request marked `truncated`, as the mod's resync shortens one (bridge-stream.tsx's RESYNC_INPUT_CAP), and if
+# that is still past it the input goes as {}. Under it a string the mod capped at its TEXT_CAP (65,536 UTF-16
+# units, at most 192 KiB of UTF-8) goes whole. One raise is then far from a lane's 16 MiB; a project's complete
+# set carries every request pending in it, so it passes that bound only with some sixty at the bound at once.
+RAISED_INPUT_MAX = 256 * 1024
+INPUT_CAP = 1024           # UTF-16 code units a cut input keeps of each string: the mod's RESYNC_INPUT_CAP
 WANTED = (b'"raised"', b'"settled"', b'"resync"', b'"compact"', b'"run"', b'"btw"', b'"media"')   # a line carrying none of these is no line of ours
 
 
@@ -120,6 +129,44 @@ def within_bound(suggestions):
     return True
 
 
+def capped(value, cap=INPUT_CAP):
+    """(value, cut): each string of `value` held to its first `cap` UTF-16
+    code units, never splitting a surrogate pair (a str holds code points,
+    so the cut is the longest prefix within `cap`): the mod's `capped`."""
+    if isinstance(value, str):
+        units = 0
+        for i, ch in enumerate(value):   # at most cap + 1 characters looked at
+            units += 2 if ord(ch) > 0xFFFF else 1
+            if units > cap:
+                return value[:i], True
+        return value, False
+    if isinstance(value, list):
+        items = [capped(v, cap) for v in value]
+        return [v for v, _ in items], any(c for _, c in items)
+    if isinstance(value, dict):
+        items = {k: capped(v, cap) for k, v in value.items()}
+        return {k: v for k, (v, _) in items.items()}, any(c for _, c in items.values())
+    return value, False
+
+
+def input_size(value):
+    return len(json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8", "surrogatepass"))
+
+
+def shown_input(e):
+    """(input, cut): the input a raise of the bridge's request `e` carries,
+    which is what a viewer is shown and draws a decision's digest from, and
+    whether this cut it. A function of `e`'s tool, kind and input alone, so
+    the digest check (sminos_rpc.check_digest) draws the same from the
+    request the bridge holds. A question's input stays whole: its answers
+    are matched against its questions, as the mod's resync keeps them."""
+    tool_input = e.get("input")
+    if bridge.is_question(e) or input_size(tool_input) <= RAISED_INPUT_MAX:
+        return tool_input, False
+    short, _ = capped(tool_input)
+    return (short if input_size(short) <= RAISED_INPUT_MAX else {}), True
+
+
 def raised_draft(sid, e):
     """DX4's `raised` for a request as the bridge reported it, without its
     code; None for one that names no request, tool, or input. Its suggestions
@@ -128,7 +175,8 @@ def raised_draft(sid, e):
     rid, tool, tool_input = e.get("request"), e.get("tool"), e.get("input")
     if not (isinstance(rid, str) and rid and isinstance(tool, str) and tool and isinstance(tool_input, dict)):
         return None
-    d = {"request": rid, "session": sid, "tool": tool, "input": tool_input}
+    shown, cut = shown_input(e)
+    d = {"request": rid, "session": sid, "tool": tool, "input": shown}
     deadline = e.get("deadline")
     if isinstance(deadline, (int, float)) and not isinstance(deadline, bool) and deadline >= 0:
         d["deadline"] = iso_ms(deadline)
@@ -136,7 +184,7 @@ def raised_draft(sid, e):
         d["async"] = True
     if isinstance(e.get("agentId"), str) and e["agentId"]:
         d["agentId"] = e["agentId"]
-    if e.get("truncated") is True:
+    if cut or e.get("truncated") is True:
         d["truncated"] = True
     call = e.get("toolUseId")
     if isinstance(call, str) and call and call != rid and len(call) <= TOOL_USE_ID_MAX:
