@@ -23,8 +23,7 @@ def deliver(user, d, text, call=proc.call, say=print):
     # the operator form and refuses a session's environment.
     env.pop("CLAUDE_CODE_SESSION_ID", None)
     program = sminos_host.cli(user)
-    enrolled = (sminos_host.sminos_home(user, env) / "daemon/hub.json").is_file()
-    if program and enrolled:
+    if program and sminos_host.at_hub(user, env):
         def send(args):
             code, _, error = call([sminos_host.PYTHON, str(program), "say", *args], user=user, env=env,
                                   log="lease", cwd=str(user.home), timeout=120)

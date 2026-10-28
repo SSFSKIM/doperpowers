@@ -160,7 +160,7 @@ def idle(ctx, host, timeout=10):
     This is a noninteractive SSH probe: it must not reset the host's clock.
     """
     result = ctx.remote.run(host.name, host.alias, "cat /var/lib/devcloud/idle.json 2>/dev/null",
-                            timeout=timeout, connect_timeout=timeout)
+                            timeout=timeout, connect_timeout=max(1, math.ceil(timeout)))
     if result.code != 0:
         return None
     try:

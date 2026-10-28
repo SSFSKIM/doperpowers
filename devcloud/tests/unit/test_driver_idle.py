@@ -96,3 +96,50 @@ class HostIdleTest(DriverBase):
                 self.remote.rules.clear()
                 self.remote.on("idle.json", code=code, out=text)
                 self.assertIsNone(hostctl.idle(ctx, host))
+
+
+class ListingIdleTest(DriverBase):
+    def test_listing_shows_idle_duration_and_unknown_without_changing_age_or_cost(self):
+        from driver import ops
+        from driver_fixtures import vm_labels
+        self.add_server("dc-idle-abcd", vm_labels(lifetime="keep"), created=NOW - 4 * 86400)
+        self.add_server("dc-unknown-abcd", vm_labels(lifetime="keep"))
+        self.remote.on("idle.json", out=json.dumps({"active_at": NOW - 3 * 86400 - 3600}), target="dc-idle-abcd")
+        self.remote.on("idle.json", code=255, target="dc-unknown-abcd")
+        ops.ls(self.ctx)
+        lines = self.out.getvalue().splitlines()
+        self.assertIn("IDLE", lines[1])
+        self.assertRegex(next(line for line in lines if line.startswith("dc-idle-abcd")), r"3d1h\s*$")
+        self.assertRegex(next(line for line in lines if line.startswith("dc-unknown-abcd")), r"-\s*$")
+        self.out.seek(0)
+        self.out.truncate()
+        ops.ls(self.ctx, as_json=True)
+        rows = {row["name"]: row for row in json.loads(self.out.getvalue())["vms"]}
+        self.assertEqual(rows["dc-idle-abcd"]["idle_seconds"], 3 * 86400 + 3600)
+        self.assertEqual(rows["dc-idle-abcd"]["created"], NOW - 4 * 86400)
+        self.assertAlmostEqual(rows["dc-idle-abcd"]["spent"], 96 * 0.1178)
+        self.assertIsNone(rows["dc-unknown-abcd"]["idle_seconds"])
+
+    def test_all_hosts_are_probed_together_with_one_deadline(self):
+        import threading
+        import time
+        from driver import ops
+        from driver_fixtures import vm_labels
+        for i in range(3):
+            self.add_server(f"dc-idle-000{i}", vm_labels(lifetime="keep"))
+        entries = self.ctx.fleet()
+        together = threading.Barrier(3)
+        budgets = []
+        def probe(ctx, host, timeout):
+            budgets.append(timeout)
+            together.wait(timeout=1)
+            threading.Event().wait(timeout)
+            return None
+        begun = time.monotonic()
+        with mock.patch.object(hostctl, "idle", side_effect=probe):
+            records = ops.idle_states(self.ctx, entries, timeout=0.2)
+        elapsed = time.monotonic() - begun
+        self.assertEqual(records, {e.vm["name"]: None for e in entries})
+        self.assertEqual(len(budgets), 3)
+        self.assertTrue(all(0 < n <= 0.2 for n in budgets))
+        self.assertLess(elapsed, 0.5, "serial probes spent a timeout for each host")

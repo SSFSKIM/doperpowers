@@ -1,6 +1,7 @@
 """`ls`, `ssh`, `lease` and `down` (M3's decisions in the driver spec), for VMs
 and, through `adopt`, for adopted machines."""
 
+import concurrent.futures
 import json
 import shlex
 
@@ -41,6 +42,32 @@ def _expires(vm):
         return None
 
 
+def idle_states(ctx, entries, timeout=10):
+    """Read every VM at once, giving SSH only the shared deadline's remainder.
+    The SSH runner bounds the entire subprocess, not just its connection.
+    Adopted and tailnet-only rows have no VM idle clock to probe.
+    """
+    if not entries:
+        return {}
+    # Initialize the lazy transport on the calling thread.
+    _ = ctx.remote
+    deadline = ctx.monotonic() + timeout
+
+    def read(entry):
+        left = deadline - ctx.monotonic()
+        return hostctl.idle(ctx, entry.host, timeout=left) if left > 0 else None
+
+    states = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(entries)) as pool:
+        pending = {pool.submit(read, entry): entry.vm["name"] for entry in entries}
+        for future, name in pending.items():
+            try:
+                states[name] = future.result()
+            except (OSError, DriverError):
+                states[name] = None
+    return states
+
+
 def ls(ctx, as_json=False):
     """Every usable account's VMs, each with its age and what it has cost at
     its type's list price, and the tailnet's devcloud nodes that no VM
@@ -50,6 +77,7 @@ def ls(ctx, as_json=False):
     except DriverError as error:
         ctx.warn(f"devcloud vm ls: the reaper's run: {error}")
     entries = ctx.fleet()
+    idle = idle_states(ctx, entries)
     now = ctx.clock()
     prices = {}
     rows = []
@@ -63,12 +91,14 @@ def ls(ctx, as_json=False):
         type_ = prices[key].get(e.vm["type"])
         labels = e.vm["labels"]
         state = "held" if labels.get("devcloud-held") == "1" else e.vm["state"]
+        idle_at = (idle.get(e.vm["name"]) or {}).get("active_at")
         rows.append({"name": e.vm["name"], "account": e.account.name, "provider": e.account.provider,
                      "lifetime": labels.get("devcloud-lifetime", "?"), "expires": _expires(e.vm), "state": state,
                      "price": price_text(type_) if type_ else "-", "created": e.vm["created"],
                      "spent": _spent(type_, e.vm["created"], now), "currency": (type_ or {}).get("currency"),
                      "creator": labels.get("devcloud-creator", "-"),
-                     "confirmed": labels.get("devcloud-confirmed") == "1", "id": e.vm["id"]})
+                     "confirmed": labels.get("devcloud-confirmed") == "1", "id": e.vm["id"],
+                     "idle_seconds": max(0, now - idle_at) if idle_at is not None else None})
     nodes = ctx.tailnet()
     online = {node["name"]: node.get("online") for node in nodes}
     for record in adopt.records(ctx):
@@ -92,19 +122,20 @@ def ls(ctx, as_json=False):
         ctx.say(json.dumps({"unconfirmed": {"alive": alive, "cap": cap}, "vms": rows}, indent=1))
         return 0
     ctx.say(f"unconfirmed {alive}/{cap}")
-    table = [("NAME", "ACCOUNT", "LIFETIME", "LEASE", "STATE", "AGE", "PRICE", "SPENT", "CREATOR")]
+    table = [("NAME", "ACCOUNT", "LIFETIME", "LEASE", "STATE", "AGE", "PRICE", "SPENT", "CREATOR", "IDLE")]
     for row in rows:
         if row.get("tailnet_only"):
-            table.append((row["name"], "tailnet only", "-", "-", row["state"], "-", "-", "-", "-"))
+            table.append((row["name"], "tailnet only", "-", "-", row["state"], "-", "-", "-", "-", "-"))
         elif row.get("adopted"):
             table.append((row["name"], "adopted", row["lifetime"], _relative(row["expires"], now), row["state"], "-",
-                          "-", "-", row["creator"]))
+                          "-", "-", row["creator"], "-"))
         else:
             spent = "-" if row["spent"] is None else f"{row['spent']:.2f}" + (
                 f" {row['currency']}" if row["currency"] else "")
             table.append((row["name"], f"{row['provider']}/{row['account']}", row["lifetime"],
                           _relative(row["expires"], now), row["state"], _age(row["created"], now), row["price"],
-                          spent, row["creator"]))
+                          spent, row["creator"],
+                          "-" if row["idle_seconds"] is None else _age(now - row["idle_seconds"], now)))
     widths = [max(len(r[i]) for r in table) for i in range(len(table[0]))]
     for r in table:
         ctx.say("  ".join(cell.ljust(width) for cell, width in zip(r, widths)).rstrip())
