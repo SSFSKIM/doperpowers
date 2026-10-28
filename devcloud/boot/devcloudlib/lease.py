@@ -20,7 +20,7 @@ import subprocess
 import sys
 import time
 
-from . import descriptor, envfile, nodekind, proc, sminos_host, status
+from . import descriptor, idle, nodekind, notices, proc, status
 from .proc import StepError
 
 LOCK = pathlib.Path("/run/devcloud/lifecycle.lock")
@@ -209,18 +209,23 @@ def tick(user, desc_path=descriptor.PATH, lock_path=None, status_path=None, stat
                     f"{nodekind.UNIT} started")
             except StepError as error:     # never in the way of the departure below
                 say(f"devcloud lease: {nodekind.UNIT} did not start ({error})")
-        if not d.leased:
-            return 0
         # A process of its own: the host's secrets known before any child runs.
         proc.know_host(user, d.seed_path if d.seed_kind == "file" else None, env_path=ENV_PATH)
         record = status.lifecycle(**status_kw)
         if record and record.get("state") == "departed":
             return 0
+        current = now()
+        if not status.departure_started(**status_kw) and (not d.leased or current < d.expires):
+            try:
+                idle.tick(user, d, now=lambda: current, say=say)
+            except (OSError, ValueError, IndexError, StepError) as error:
+                say(f"devcloud lease: idle check failed ({error}); will retry")
+        if not d.leased:
+            return 0
         unit, op = (RELEASE_UNIT, "release") if d.adopted else (DEPART_UNIT, "depart")
         if active(unit):
             say(f"devcloud lease: {unit} is already under way")
             return 0
-        current = now()
         if current >= d.expires:
             start(unit, [DEVCLOUD, op])
             say(f"devcloud lease: the lease ended at {iso(d.expires)}; {unit} started")
@@ -239,36 +244,10 @@ def warning_text(name, expires, found):
     return f"{name}'s lease ends at {iso(expires)}; unpushed: {unpushed}"
 
 
-def _host_env(user):
-    try:
-        env = envfile.parse(pathlib.Path(ENV_PATH).read_text())
-    except (FileNotFoundError, ValueError):
-        env = {}
-    return user.env(env)
-
-
-def warn_creator(user, d, run=proc.run, say=print, scan=None):
-    """`sminos say "@<creator> …"` as the user, naming the lease end and each
-    checkout with unpushed or uncommitted work; without a creator, off the org
-    (neither enrolled nor cut over), or when the say fails, the journal and
-    `wall`."""
+def warn_creator(user, d, call=proc.call, say=print, scan=None):
+    """The lease end and unpushed work, through the idle notice's delivery."""
     found = (scan or (lambda: unpushed(user)))()
-    text = warning_text(d.name, d.expires, found)
-    env = _host_env(user)
-    program = sminos_host.cli(user)
-    if d.creator and sminos_host.at_hub(user, env) and program:
-        try:
-            run([sminos_host.PYTHON, str(program), "say", f"{d.creator} {text}"], user=user, env=env,
-                log="lease", cwd=str(user.home), timeout=120)
-            say(f"devcloud lease: warned {d.creator}: {text}")
-            return
-        except StepError as error:
-            say(f"devcloud lease: the warning to {d.creator} failed ({error})")
-    say(f"devcloud lease: {text}")
-    try:
-        run(["wall", f"devcloud: {text}"], log="lease", timeout=30)
-    except StepError:
-        pass
+    notices.deliver(user, d, warning_text(d.name, d.expires, found), call=call, say=say)
 
 
 # --- unpushed work ----------------------------------------------------------------

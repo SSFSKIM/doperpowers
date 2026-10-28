@@ -678,10 +678,11 @@ runs until `down` (Decision Log, 2026-10-27).
   warning's scan), and `devcloud vm down <n>` as the way to end it.
 - **To whom.** The creator, `sminos say "<DEVCLOUD_CREATOR> …"`, as the lease warning. When that
   reaches no live session (the creator's session ended, or there is no creator), the sessions of the
-  creator's sminos project, `sminos say --project <DEVCLOUD_CREATOR_PROJECT> …`, which the project's
-  next session reads even when none is live. Else, as the warning: the journal and `wall`. The lease
-  warning gains the same fallback. How `sminos say` reports a tag that reaches nobody is M7b's to
-  establish against the sminos CLI.
+  creator's sminos project, `sminos say --project <DEVCLOUD_CREATOR_PROJECT> …`. When that exits 4
+  because no session is live, an untagged `sminos say --in <DEVCLOUD_CREATOR_PROJECT> …` records the
+  note for the project's next session. Else, as the warning: the journal and `wall`. The lease
+  warning gains the same fallback. M7b measured the CLI: a tag to an ended interactive session
+  exits 4, and a project broadcast with no live recipient also exits 4, recording nothing.
 - **In `ls`.** `devcloud vm ls` shows each VM's age, its cost so far (the type's list price times
   its age), and its idle time read from `idle.json` over the tailnet, all hosts at once within a 10 s
   bound; a host that does not answer in time shows `-`.
@@ -2675,6 +2676,10 @@ commit 5168e433 on its branch, 2026-10-21):
   - The person's reasoning, 2026-10-27: a VM is usually made for sustained work in the cloud, so
     ephemerality should not be the assumption. Both forks were theirs, answered through the main
     session: kept VMs without their yes within the cap of 3, and the idle notice alone.
+  - M7b's routing correction, 2026-10-27: `say --project` reaches live sessions only and exits 4
+    without recording when none are live. The measured fallback is therefore creator tag, project
+    broadcast, then untagged `say --in` on that exit 4 to leave a durable note, else journal and
+    `wall`. The main session approved the correction; both idle notices and lease warnings use it.
   - The lifetime cap (`lease_max`, 72 h) is removed rather than kept: once a session may keep a VM
     without a yes, capping a lease's length bounds nothing, and the skill would have to explain
     why a 4-day lease needs the person while no end at all does not. `lease` loses `--confirmed`

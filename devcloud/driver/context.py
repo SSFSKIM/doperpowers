@@ -5,6 +5,7 @@ from stand-ins."""
 
 import contextlib
 import dataclasses
+import functools
 import json
 import os
 import pathlib
@@ -95,7 +96,9 @@ class Context:
         self.tailnet_api = tailnet_api or tailnet_mod.Api()
         # `sminos machines`' stdout, or None when there is no answer; the argument is its timeout.
         self.sminos_machines = sminos_machines or (lambda timeout: run_sminos_machines(self.env, timeout))
-        self.creator = creator or (lambda: session_creator(self.env))
+        identity = functools.cache(lambda: session_creator(self.env))
+        self.creator = creator or (lambda: identity()[:2])
+        self.creator_project = (lambda: None) if creator else (lambda: identity()[2])
         self.key_pushed = key_pushed or (lambda: key_in_remote(self))
         self.token_hex = token_hex or (lambda: secrets_mod.token_hex(2))
         self.monotonic = monotonic
@@ -335,20 +338,24 @@ def run_sminos_machines(env, timeout):
 
 
 def session_creator(env):
-    """(sminos tag, session short id) of the session the driver runs in, or
-    (None, None) outside one."""
+    """(tag, short, project) from one `sminos who --session` address line.
+    The unnamed form has no alias# prefix; both carry the project in the
+    same parenthesized address, so neither lookup needs a second CLI call.
+    """
     session = env.get("CLAUDE_CODE_SESSION_ID")
     cli = _sminos(env)
     if not session or not cli:
-        return None, None
+        return None, None, None
     try:
         done = subprocess.run([cli, "who", "--session", session], capture_output=True, text=True, timeout=30)
     except (OSError, subprocess.TimeoutExpired):
-        return None, None
-    match = re.search(r"#([0-9a-f]{4,})\b", done.stdout)
+        return None, None, None
+    match = re.search(r"^Sminos-Session: (?:[^\n#]+#)?([0-9a-f]{8}) \(([^\s()]+) on [^\s()]+\)$",
+                      done.stdout.strip(), re.MULTILINE)
     if done.returncode != 0 or not match:
-        return None, None
-    return f"@{match.group(1)}", match.group(1)
+        return None, None, None
+    short, project = match.groups()
+    return f"@{short}", short, project
 
 
 def key_in_remote(ctx):
