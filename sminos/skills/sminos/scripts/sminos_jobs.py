@@ -14,7 +14,11 @@ the bridge's agent state, the agent files' facts, the parents' ledgers and
 whether the session's process runs; `output_answer` reads a task's output file
 under the canonical roots its caller derives. The plane feeds these (M4); the
 shared vectors (tests/dx4-jobs.json, vendored by DC9's fake machine)
-pin them, with the rules spelled out in their `about`.
+pin them, with the rules spelled out in their `about`. MAWS's local lane A
+ports these rules (src/main/lane-a/jobs.ts, P5 O9 M5) and holds a copy of the
+vectors, so the rules and the vectors are a contract between the two
+repositories: a change to either goes to the MAWS architect, who re-syncs
+MAWS's copy.
 """
 
 import copy
