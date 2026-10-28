@@ -8,6 +8,7 @@ the move (F3); and the uplink takes the org's directory ahead of the frames
 queued before it. Hermetic: HOME and SMINOS_HOME are temporary.
 """
 
+import errno
 import glob
 import json
 import os
@@ -337,8 +338,8 @@ class HotLooks(unittest.TestCase):
 
     def looked(self, live):
         """(what a hot look returns, the own writer files it looked at, whether it listed the directory)."""
-        real_stat, real_glob = os.stat, glob.glob
-        stats, globs = [], []
+        real_stat, real_glob, real_listdir = os.stat, glob.glob, os.listdir
+        stats, lists = [], []
 
         def stat(path, *a, **k):
             if str(path).startswith(self.log_dir + os.sep):
@@ -346,11 +347,28 @@ class HotLooks(unittest.TestCase):
             return real_stat(path, *a, **k)
 
         def counted(pattern, *a, **k):
-            globs.append(pattern)
+            lists.append(pattern)
             return real_glob(pattern, *a, **k)
-        with mock.patch.object(os, "stat", stat), mock.patch.object(glob, "glob", counted):
+
+        def listdir(path=".", *a, **k):
+            if path == self.log_dir:
+                lists.append(path)
+            return real_listdir(path, *a, **k)
+        with mock.patch.object(os, "stat", stat), mock.patch.object(glob, "glob", counted), \
+                mock.patch.object(os, "listdir", listdir):
             got = self.hl.writers(own=True, live=live)
-        return got, sorted(stats), bool(globs)
+        return got, sorted(stats), bool(lists)
+
+    def unlistable(self):
+        """The log directory's listing failing as it does in a process out of
+        descriptors (many threads and sockets), its stat still answering."""
+        def failing(real):
+            def call(path=".", *a, **k):
+                if path == self.log_dir:
+                    raise OSError(errno.EMFILE, os.strerror(errno.EMFILE), path)
+                return real(path, *a, **k)
+            return call
+        return mock.patch.multiple(os, scandir=failing(os.scandir), listdir=failing(os.listdir))
 
     def name(self, sid):
         return "%s.%s.jsonl" % (MACHINE, sid)
@@ -421,6 +439,40 @@ class HotLooks(unittest.TestCase):
         self.assertTrue(listed)
         self.assertIn("%s/%s" % (MACHINE, sid), got)
 
+    def test_a_listing_that_failed_is_not_kept(self):
+        """A directory that could not be listed is no empty directory: the
+        look keeps nothing of it, and the next one lists it again, though
+        the directory held still and nothing in it changed since."""
+        sid = str(uuid.uuid4())
+        self.write("%s/%s" % (MACHINE, sid), sid, 1)
+        os.utime(self.log_dir, (self.HOUR_AGO - 60, self.HOUR_AGO - 60))   # moved since setUp's listing, and still
+        with self.unlistable():
+            self.hl.writers(own=True, live=set())
+        got, _, listed = self.looked(set())
+        self.assertTrue(listed, "listed again")
+        self.assertEqual(len(got), len(self.sids) + 2, "every own writer, the new one too")
+        self.assertIn("%s/%s" % (MACHINE, sid), got)
+
+    def test_the_own_files_are_those_glob_matches(self):
+        """The listing matches as glob matched `<prefix>*.jsonl`: the prefix
+        taken literally, a hidden name only for a hidden prefix."""
+        hublog = sminos.sibling_module("sminos_hublog")
+        for machine in ("testhost", "we[ir]d*?", ".dot", "org/host"):
+            home = tempfile.mkdtemp(dir=T)
+            d = os.path.join(home, "log")
+            os.mkdir(d)
+            prefix = machine.replace("/", ".") + "."
+            for name in (prefix + "a.jsonl", prefix + ".jsonl", prefix + "jsonl", prefix + "a.jsonl.tmp",
+                         "." + prefix + "a.jsonl", "x" + prefix + "a.jsonl", "legacy.a.jsonl", ".legacy.a.jsonl",
+                         prefix.upper() + "a.jsonl", prefix + "a\nb.jsonl"):
+                open(os.path.join(d, name), "w").close()
+            hl = hublog.HubLog(types.SimpleNamespace(home=home), {"key": b"k" * 32, "machine": machine})
+            for archive in (False, True):
+                hl.archive, hl.listing = archive, None
+                want = [p for prefix_ in [prefix] + (["legacy."] if archive else [])
+                        for p in glob.glob(os.path.join(glob.escape(d), glob.escape(prefix_) + "*.jsonl"))]
+                self.assertEqual(sorted(hl.own_paths()[0]), sorted(want), (machine, archive))
+
 
 class QuietReads(unittest.TestCase):
     """The session plane reads a project's members again at MEMBERS_EVERY
@@ -472,6 +524,94 @@ class QuietReads(unittest.TestCase):
     def test_every_project_is_read_at_members_whole(self):
         self.assertEqual(self.reads(), 0)
         self.assertEqual(self.reads(whole=True), 1)
+
+
+class CheckoutsFromTheRead(unittest.TestCase):
+    """Machine presence takes a project's checkouts from the plane's last
+    read of who joined it from here (Plane.here). The scan that draws them
+    comes before the plane's tick, so a draw at CHECKOUTS_EVERY can precede
+    the read that finds a session's new directory: they are drawn again once
+    the plane's read moved them, at the next scan — the checkouts posted, and
+    whether the project is held or followed."""
+
+    class Lane:
+        def __init__(self):
+            self.sent = []
+
+        def send(self, frames, then=None):
+            self.sent += frames
+
+        def take(self):
+            out, self.sent = self.sent, []
+            return out
+
+        def posting(self):
+            return False
+
+        def close(self):
+            pass
+
+    def setUp(self):
+        self.cred = {"key": b"k" * 32, "machine": MACHINE, "org": ORG, "hub": "http://127.0.0.1:9"}
+        self.link = uplink.Link(self.cred, {})
+        self.addCleanup(self.link.close)
+        self.link.log_lane = self.Lane()
+        self.sid = str(uuid.uuid4())
+
+    def opened(self, root_here):
+        """A project open on the stream, with its root checked out here or not:
+        (its id, its root, two directories of it a session may work in)."""
+        pid = str(uuid.uuid4())
+        root = checkout("co-%s" % pid[:8], pid)
+        if not root_here:
+            shutil.rmtree(root)
+        dirs = []
+        for i in (1, 2):
+            d = os.path.join(T, "r", "co-%s-wt%d" % (pid[:8], i))
+            os.makedirs(os.path.join(d, ".git"))
+            write(os.path.join(d, ".smns"), {"project": pid, "name": "co-%s" % pid[:8], "hub": {"org": ORG}})
+            dirs.append(d)
+        sminos.forget_caches()
+        self.link.logs[pid] = sminos.sibling_module("sminos_hublog").HubLog(sminos.known_project(pid), self.cred)
+        self.link.opened.add(pid)
+        return pid, root, dirs
+
+    def scan(self, pid, now, here):
+        """What the scan at `now` posts, the plane's last read having found `here` ({session: cwd})."""
+        self.link.plane.here[pid] = here
+        self.link.machine_presence(now)
+        return self.link.log_lane.take()
+
+    @staticmethod
+    def posted(frames):
+        """[(t, follow, the checkouts' paths)] of the frames."""
+        return [(f["t"], f.get("follow", False),
+                 [c["path"] for c in f["message"]["body"]["checkouts"]] if f["t"] == "session" else None)
+                for f in frames]
+
+    def test_a_new_worktree_goes_at_the_scan_after_the_read(self):
+        pid, root, (w1, w2) = self.opened(root_here=True)
+        now = 1000.0
+        self.assertEqual(self.posted(self.scan(pid, now, {self.sid: w1})),
+                         [("hello", False, None), ("session", False, [root, w1])])
+        # The session moved to w2 and the daemon appended its `joined`; the
+        # deadline's scan comes before the plane read it.
+        self.assertEqual(self.scan(pid, now + uplink.CHECKOUTS_EVERY, {self.sid: w1}), [])
+        self.assertEqual(self.posted(self.scan(pid, now + uplink.CHECKOUTS_EVERY + uplink.SCAN_EVERY,
+                                               {self.sid: w2})),
+                         [("session", False, [root, w2])], "at the next scan, not at the next deadline")
+        self.assertEqual(self.scan(pid, now + uplink.CHECKOUTS_EVERY + 2 * uplink.SCAN_EVERY, {self.sid: w2}), [])
+
+    def test_a_followed_project_is_held_at_the_scan_after_the_read(self):
+        """A session that joined from a directory of the project and ended
+        between two of the plane's reads leaves no member, only its
+        directory: a checkout, so the project is held."""
+        pid, _, (w1, _) = self.opened(root_here=False)
+        now = 1000.0
+        self.assertEqual(self.posted(self.scan(pid, now, {})), [("hello", True, None)])
+        self.assertEqual(self.posted(self.scan(pid, now + uplink.SCAN_EVERY, {self.sid: w1})),
+                         [("hello", False, None), ("session", False, [w1])])
+        self.assertTrue(self.link.holds(pid))
 
 
 class WholeReads(unittest.TestCase):

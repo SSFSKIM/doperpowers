@@ -73,6 +73,7 @@ Its writes are best effort, never stopping the frame in hand; one that would
 have lowered it removes the file instead (`keep`).
 """
 
+import fnmatch
 import glob
 import hashlib
 import hmac
@@ -117,6 +118,16 @@ ENDPOINT_ADDS = ("created", "mac", "sig", "attest")
 
 def log(line):
     sminos.daemon_log("uplink: " + line)
+
+
+def glob_names(names, prefix):
+    """The names of a directory listing that glob's `<prefix>*.jsonl` matches
+    (the prefix literal), by glob's rule for hidden names: one is matched
+    only by a hidden pattern."""
+    pattern = glob.escape(prefix) + "*.jsonl"
+    if not pattern.startswith("."):
+        names = [n for n in names if not n.startswith(".")]
+    return fnmatch.filter(names, pattern)
 
 
 def nonce_for(key, project, event):
@@ -433,7 +444,10 @@ class HubLog:
         file made or removed there moves its mtime. A listing is kept only
         when the directory had held still RACY before it, so an entry made in
         the same tick of a coarse clock (Linux takes a file's times from the
-        timer tick) is never hidden behind an unchanged mtime."""
+        timer tick) is never hidden behind an unchanged mtime. A listing
+        that failed is no empty directory (glob would take EMFILE, in a
+        process of many threads and sockets, for one): nothing of it is
+        kept, and the next look lists again."""
         prefixes = [self.machine.replace("/", ".") + "."] + ([LEGACY.replace("/", ".")] if self.archive else [])
         before = time.time_ns()
         try:
@@ -443,8 +457,12 @@ class HubLog:
         held = self.listing
         if held is not None and held[:2] == (mtime, prefixes):
             return held[2], False
-        paths = [p for prefix in prefixes
-                 for p in glob.glob(os.path.join(glob.escape(self.log_dir), glob.escape(prefix) + "*.jsonl"))]
+        try:
+            names = os.listdir(self.log_dir)
+        except OSError:
+            self.listing = None
+            return [], True
+        paths = [os.path.join(self.log_dir, name) for prefix in prefixes for name in glob_names(names, prefix)]
         self.listing = (mtime, prefixes, paths) if mtime is not None and before - mtime >= RACY_NS else None
         return paths, True
 

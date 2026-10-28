@@ -1342,6 +1342,14 @@ def hub_project(pid, cred):
     return hub_projects(cred).get(pid)
 
 
+def joined_dirs(here):
+    """The directories a project's sessions joined from here, in order, as
+    the plane's read holds them ({session: cwd}, Plane.here): what of that
+    read the machine presence's checkouts are drawn from
+    (policy.known_checkouts). None for a project not read."""
+    return None if here is None else tuple(dict.fromkeys(here.values()))
+
+
 # ------------------------------------------------------------- one stream
 
 
@@ -1482,6 +1490,7 @@ class Link:
         self.own = sminos.machine_project_id(cred["org"], cred["machine"])  # always held: its strays are its members
         self.follows = {}         # project id → whether its last `hello` on this stream said `follow`
         self.checkouts = {}       # project id → whether it had a known checkout here when last read
+        self.checkouts_from = {}  # project id → the joined_dirs its checkouts were last drawn from (draw_machine)
         self.imported = {}        # project id → HubLog: imports not yet delivered (deliver_imports)
         self.log_lane = self.session_lane = None  # the stream's senders, from its welcome on
         self.reporting = collections.Counter()   # project id → POSTs of its rejections not yet answered
@@ -1589,6 +1598,7 @@ class Link:
         self.machine_sent.clear()
         self.follows.clear()
         self.checkouts.clear()
+        self.checkouts_from.clear()
         for hl in self.logs.values():
             hl.reset()
         self.plane.close()
@@ -1916,6 +1926,19 @@ class Link:
         known checkout here (as last read)."""
         return pid == self.own or bool(self.plane.members.get(pid)) or self.checkouts.get(pid, False)
 
+    def draw_machine(self, hl):
+        """The project's `machine` presence (HubLog.presence), its checkouts
+        drawn from the sessions the plane's last read found joined from here
+        (Plane.here), so the view is not read again for them. Whether it has
+        a checkout here is kept for holds, and the directories they were
+        drawn from for machine_presence."""
+        pid = hl.project.id
+        here = self.plane.here.get(pid)
+        machine = hl.presence(here)
+        self.checkouts[pid] = bool(machine["message"]["body"]["checkouts"])
+        self.checkouts_from[pid] = joined_dirs(here)
+        return machine
+
     def open(self, hl):
         """`hello` for a project on this stream, with what DX2 republishes
         after every connect that is this child's — the machine's presence,
@@ -1949,8 +1972,7 @@ class Link:
         unreported = [] if self.reporting[pid] else [f for f in hl.unreported()
                                                        if f not in self.unrecorded.get(pid, ())]
         self.plane.refresh(hl.project)
-        machine = hl.presence(self.plane.here.get(pid))
-        self.checkouts[hl.project.id] = bool(machine["message"]["body"]["checkouts"])
+        machine = self.draw_machine(hl)
         follow = not self.holds(hl.project.id)
         sessions = [plane.frame(m) for m in self.plane.presence(hl.project.id, force=True)]
         read = self.plane.take_read(pid)
@@ -2189,8 +2211,10 @@ class Link:
         came or went is hello'ed again — `follow` as it is now — with the
         machine's presence when it is held now (a follower posts none: the hub
         drops it); the checkouts are read again every CHECKOUTS_EVERY, or at
-        once when the policy changed (a `daemon policy` nudges one), and
-        `machine` goes again for each held project whose body changed."""
+        once when the policy changed (a `daemon policy` nudges one), and a
+        project's at once when the plane's read moved the directories its
+        sessions joined from since they were drawn; `machine` goes again for
+        each held project whose body changed."""
         current = policy.machine_policy() if self.coded else policy.wire_policy()   # as HubLog.presence says it
         fresh = now >= self.next_checkouts or any(self.machine_sent.get(pid, {}).get("policy") != current
                                                   for pid in self.opened if not self.follows.get(pid))
@@ -2199,16 +2223,17 @@ class Link:
         for pid in sorted(self.opened):
             hl = self.logs[pid]
             machine = None
-            if fresh:
-                # The sessions the plane's last read of the project found
-                # joined from here: the view is not read again for them.
-                machine = hl.presence(self.plane.here.get(pid))
-                self.checkouts[pid] = bool(machine["message"]["body"]["checkouts"])
+            # The checkouts come from the plane's last read (draw_machine),
+            # which the plane's tick, after this scan, renews: a session's
+            # new directory read since the last draw is drawn at this scan,
+            # not left until the deadline that may have just gone by.
+            if fresh or joined_dirs(self.plane.here.get(pid)) != self.checkouts_from.get(pid):
+                machine = self.draw_machine(hl)
             follow = not self.holds(pid)
             if follow != self.follows.get(pid):
                 frames = [hl.hello(follow)]
                 if not follow:
-                    machine = machine or hl.presence(self.plane.here.get(pid))
+                    machine = machine or self.draw_machine(hl)
                     frames.append(machine)
                 self.log_lane.send(frames)
                 self.follows[pid] = follow
@@ -2278,9 +2303,15 @@ class Link:
             self.member_known = {p.id: p for p in sminos.known_projects()}
             self.unlisted.clear()
             # Those whose inputs moved, as the plane reads its own (Plane.stale).
-            for project, inputs in self.plane.stale({pid: p for pid, p in self.member_known.items()
-                                                     if pid not in self.opened or pid not in self.plane.member_rows},
-                                                    whole):
+            stale = self.plane.stale({pid: p for pid, p in self.member_known.items()
+                                      if pid not in self.opened or pid not in self.plane.member_rows}, whole)
+            if stale:
+                # Their inputs hold the engine's records as the plane last
+                # scanned them, which the cache generation can predate (the
+                # plane renews it in its tick, after this): a read kept
+                # against them draws on records at least as new.
+                sminos.forget_caches()
+            for project, inputs in stale:
                 self.plane.reread(project, inputs)
         self.publish_members(now)
         return self.member_known
