@@ -190,11 +190,26 @@ export const isMadeUp = (id: string, text: string) => isFinalAnswer(text) && (ma
 export const isMessageToolOn = () => isRegistered
 
 /**
+ * The MAWS contract version from which MAWS offers no message tool of its
+ * own, its sessions sending through this one (MAWS's Decision Log 92).
+ */
+const MAWS_WITHOUT_TOOL = 8
+
+/**
+ * Whether the launch is MAWS's and MAWS registers its own message tool:
+ * `MAWS_NATIVE_TO_HUMAN`, the contract version MAWS advertises, is a number
+ * below `MAWS_WITHOUT_TOOL`. Unset, empty or from 8 on, this one registers.
+ */
+const mawsHasOwnTool =(advertised: string | undefined) =>
+  advertised !== undefined && advertised.trim() !== '' && Number(advertised) < MAWS_WITHOUT_TOOL
+
+/**
  * Registers the tool and serves it. It is registered as an interactive
  * session starts under the to-human style (nobody reads a headless session's
- * report, and only the style says when to use the tool), except under MAWS
- * (`MAWS_NATIVE_TO_HUMAN`), whose launches register their own
- * `mcp__maws__message`. The style is read once, at the start: a session that
+ * report, and only the style says when to use the tool), except under a MAWS
+ * that registers its own `mcp__maws__message` (`mawsHasOwnTool`: so a
+ * session never has two message tools, or none, across MAWS's switch to
+ * this one). The style is read once, at the start: a session that
  * switches to the style in `/config` gets the tool at its next start. It is always loaded, so the first message costs no
  * ToolSearch. A call from the main conversation raises the person's
  * notification and returns `sent`; a subagent's is refused, since only the
@@ -227,7 +242,7 @@ export function registerMessage(on: On) {
     } catch (error) {
       $.ui.log(`to-human: the message tool is not registered: the output style could not be read (${message(error)})`, { to: 'debug' })
     }
-    if ((maws === undefined || maws === '') && style === TO_HUMAN_STYLE) {
+    if (!mawsHasOwnTool(maws) && style === TO_HUMAN_STYLE) {
       try {
         const { tool } = await $.tool.register({ name: 'message', description: DESCRIPTION, inputSchema: INPUT_SCHEMA })
         isRegistered = tool === MESSAGE_TOOL

@@ -75,12 +75,23 @@ describe('the message tool', () => {
     expect(registered).toEqual([])
   })
 
-  test('an interactive MAWS launch registers none: MAWS registers its own', async ($, on) => {
-    const { registered } = engine(on, { env: { MAWS_NATIVE_TO_HUMAN: '1' } })
-    await $.session.start({ cwd: '/w', surface: null, isInteractive: true })
+  for (const advertised of ['1', '7', ' 7 ']) {
+    test(`an interactive launch of a MAWS that advertises ${JSON.stringify(advertised)} registers none: it registers its own`, async ($, on) => {
+      const { registered } = engine(on, { env: { MAWS_NATIVE_TO_HUMAN: advertised } })
+      await $.session.start({ cwd: '/w', surface: null, isInteractive: true })
 
-    expect(registered).toEqual([])
-  })
+      expect(registered).toEqual([])
+    })
+  }
+
+  for (const advertised of ['8', '9', '', 'native']) {
+    test(`an interactive launch whose MAWS_NATIVE_TO_HUMAN is ${JSON.stringify(advertised)} registers it: from 8 on MAWS offers none of its own`, async ($, on) => {
+      const { registered } = engine(on, { env: { MAWS_NATIVE_TO_HUMAN: advertised } })
+      await $.session.start({ cwd: '/w', surface: null, isInteractive: true })
+
+      expect(registered.map((r) => r.tool)).toEqual([MESSAGE_TOOL])
+    })
+  }
 
   test('an interactive session under another output style registers none: the rule for the tool is the style\'s', async ($, on) => {
     const { registered } = engine(on, { style: 'default' })
