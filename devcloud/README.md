@@ -287,6 +287,8 @@ the driver also passes `--dns 100.100.100.100`. Its entrypoint runs
     DEVCLOUD_CONFIG_TOKEN_SECRET=<Secret Manager id of the GitHub token>
     DEVCLOUD_PROJECTS="<entry> ..."            # optional; <name>[@ref] | <owner>/<repo>[@ref]
     DEVCLOUD_MIRROR_DIR=<absolute path>        # optional; sandboxes: where the host's mirrors are mounted
+    DEVCLOUD_MAWS_SECRET=<Secret Manager id>   # optional, persistent: MAWS's provisioning code (step 13)
+    DEVCLOUD_MAWS_DELEGATION_ID=<32 hex>       # with it: the delegation the machine's ref is minted under
 
 The seed is a Google Cloud service-account key file the driver mounts (or,
 on GCE, the VM's attached account through the metadata server). The boot
@@ -300,7 +302,7 @@ boot with the step named, and the next run starts again from the top:
 
 | # | step | what it does |
 |---|---|---|
-| 1 | `identity` | refuses `persistent` without systemd as PID 1; sets the host name (VM) or checks it (container); writes `SESSION_MIRROR_HOST`, and for a container a `DAEMON_BOOT_ID` of its own, fresh at each container start |
+| 1 | `identity` | refuses `persistent` without systemd as PID 1; sets the host name (VM) or checks it (container); writes `SESSION_MIRROR_HOST`, `MAWS_DELEGATION_ID` when the descriptor names one, and for a container a `DAEMON_BOOT_ID` of its own, fresh at each container start |
 | 2 | `seed` | activates the seed and takes an access token |
 | 3 | `bootstrap-secrets` | reads the GitHub token `DEVCLOUD_CONFIG_TOKEN_SECRET` names, and the Tailscale OAuth client `DEVCLOUD_TS_SECRET` names |
 | 4 | `tailnet-attach` | `join`, unless the node is already joined: `tailscale up --advertise-tags=tag:devcloud` with the OAuth client as its auth key (tagged, pre-authorized; ephemeral while the host has a lease, and rejoined as the other kind when the lease changes, the VM driver's §4.1), handed over as `--auth-key=file:<root-only file>` and deleted after, never in an argument list; or, the fallback, with the auth key file, which is deleted |
@@ -310,11 +312,12 @@ boot with the step named, and the next run starts again from the top:
 | 8 | `home` | as the user: copies the profile's `home/`; the seed as gcloud's account and ADC, the Secret Manager project as gcloud's default; `gh auth setup-git` when gh has a `hosts.yml` |
 | 9 | `apply` | runs the configuration's `sync/apply.py` as the user |
 | 10 | `settings-and-env` | writes `/etc/claude-code/managed-settings.json` and `/etc/devcloud/env`; `TZ` sets the system time zone |
-| 11 | `services` | installs or starts the services; restarts one whose unit or environment changed; on an enrolled persistent host, the sminos daemon (below); refuses a sandbox that carries a sminos machine identity |
+| 11 | `services` | installs or starts the services; restarts one whose unit or environment changed; on a persistent host that is a sminos machine, the sminos daemon (below); refuses a sandbox that carries a sminos machine identity |
 | 12 | `projects` | `devenv up` per `DEVCLOUD_PROJECTS` entry, as the user; `skipped` when none (see "Projects") |
+| 13 | `maws` | provisions MAWS's endpoint with the code `DEVCLOUD_MAWS_SECRET` names; `skipped` without it or without `mawsd`, `deferred` while its certificate is not yet listed (see "MAWS's endpoint") |
 
 `devcloud-boot` exits 0 when every step is `ok`, 1 when a step of 1–11
-failed, and 3 when the host is made and only step 12 failed: the host works
+failed, and 3 when the host is made and only step 12 or 13 failed: the host works
 without a project, so the container entrypoint starts its services on 3 as on
 0, and the boot unit counts 3 as success (`SuccessExitStatus=3`) so the units
 ordered after it start. A driver sees a non-zero exit, the step records which
@@ -433,7 +436,7 @@ the services without a reboot. Untracked files are left alone.
 | `refresh-secrets` | `devcloud refresh-secrets` (steps 7, 10, 11), every 30 min | root |
 | `refresh-mirrors` | `devcloud refresh-mirrors`: fetches the mirror cache, every 30 min; nothing on a sandbox | root (git as the user) |
 | `session-mirror` | `~/.claude/tools/session-mirror ship`, continuously, when the configuration has it | the user |
-| `sminos-daemon` | `sminos daemon run`, on an enrolled persistent host only | the user (a systemd user unit) |
+| `sminos-daemon` | `sminos daemon run`, on a persistent host that is a sminos machine only | the user (a systemd user unit) |
 
 Under systemd they are units `devcloud-<service>` (the jobs as timers), except
 the sminos daemon, which is the user's own unit `sminos-daemon.service` in
@@ -488,12 +491,48 @@ enables and starts `sminos-daemon.service`, restarting it when its unit or
 the environment changed (an owed restart is kept in
 `/var/lib/devcloud/sminos-restart-pending` until one succeeds, so a failed
 attempt's retry still makes it); lingering starts it again after a reboot.
-Unenrolled, nothing is installed and the host's projects run local-only.
+A host is a sminos machine as well once it is cut over to its MAWS endpoint
+(`daemon/identity.json`, which the endpoint's first complete welcome writes;
+its sminos then speaks only to the endpoint and holds no `hub.json` at all
+when the host was born under the v2 code), and before that, from its first
+boot, when its descriptor names MAWS's code: step 11 starts the daemon so
+that step 13's listing cuts it over within seconds. A cut-over host enrolls
+nothing at step 11 (its enrollment is its endpoint's). Otherwise nothing is
+installed and the host's projects run local-only.
 A sandbox is never a sminos machine: one whose `$SMINOS_HOME/daemon/` holds
-`hub.json` or `machine.json` (an enrollment, or the instance claim a daemon
-writes) fails step 11 — it shares the identity of the machine it was copied
+`hub.json`, `machine.json` or `identity.json` (an enrollment, the instance
+claim a daemon writes, a cutover) fails step 11 — it shares the identity of the machine it was copied
 from — and is left as it is, since the directory may be that machine's own,
 mounted. A container's `DAEMON_BOOT_ID` is its own (step 1), never its host's.
+
+**MAWS's endpoint.** A VM created with the MAWS project (`--project maws`, or
+`<owner>/MAWS`) under a driver profile that names MAWS's v2 provisioning code
+(`[desk] provisioning_secret_v2` and `delegation_id`) carries both in its
+descriptor. Step 1 puts the delegation's id in `/etc/devcloud/env` as
+`MAWS_DELEGATION_ID`, so step 12's `devenv up maws` installs `mawsd` with its
+machine ref minted under the delegation (`<id>_…`). Step 13 fetches the code
+and pipes it, on stdin only, to `mawsd endpoint provision --name
+<DEVCLOUD_NAME> --wait 120` as the user, which redeems it into a certificate
+under the delegation and is `org-listed` with no hand in it; sminos's daemon,
+already running, is cut over at the endpoint's first welcome. An endpoint the
+hub confirmed whose certificate is not yet live (exit 4), or a `mawsd` that
+does not answer yet, defers the step: the `devcloud-enroll` service runs the
+same command every 5 minutes until it is listed, and the provisioning resumes
+without redeeming again. A refusal fails the step with its reason. `devcloud
+reconcile` runs the step again; the periodic jobs do not. At its departure
+(and an adopted machine's release) such a host retires its certificate
+itself — `mawsd endpoint retire` signs the retirement with the delegation's
+key, posts it, frees the hub row so a recreated VM may take the name, and
+destroys the keys — before its logout, and `mawsd.service` stops with
+devcloud's services. When it cannot (or the endpoint holds a member's
+attended enrollment, whose key only an admin retires), the departure goes on
+and names, at that run and every rerun until a retirement succeeds
+(`/var/lib/devcloud/desk-residue`, written before a retirement starts and
+removed only once one is confirmed), the command the owner runs from a MAWS
+worktree on a Mac: `zsh
+apps/desk-hub/deploy/production-run.sh admin machine drop <name>`, which the
+driver also names after a delete whose departure was not confirmed. A VM
+created without the MAWS project boots as before.
 
 **Status.** `devcloud status` prints `/var/lib/devcloud/status.json` one line
 per step — name, state (`ok`, `failed`, `skipped`, `missing`), when, detail —
@@ -542,8 +581,11 @@ guard (unpushed work), 6 not a driver here (no seed key, or a devcloud host),
 
 **What it needs.** The profile's `driver.toml` (beside the host profile in
 `~/.claude/devcloud/`, or `$DEVCLOUD_PROFILE`): the caps, the default
-account, the descriptor fields every host gets (`[host]`), the desk's
-provisioning key (`[desk]`), and the accounts, each a provider with the
+account, the descriptor fields every host gets (`[host]`), the desk
+(`[desk]`: the v1 `provisioning_secret` that enrolls sminos on DX2, or MAWS's
+`provisioning_secret_v2` with its `delegation_id`, never both, and the
+`name_prefix` VM names are drawn under, `dc-` by default, the delegation's
+own), and the accounts, each a provider with the
 Secret Manager ids of its credentials (`env`) and its settings (`vars`);
 never a value, and unknown keys are refused. The seed key file,
 `$DEVCLOUD_SEED_FILE` or `~/.config/devcloud/seed.json`: the driver signs
@@ -560,7 +602,7 @@ request, passed as `--confirmed`; a VM so made carries `devcloud-confirmed=1`
 and is not counted.
 
 **`up`** checks the caps (`--dry-run` stops there, printing the request,
-each cap's verdict and the hourly price), names the VM `dc-<label>-<4 hex>`
+each cap's verdict and the hourly price), names the VM `<prefix><label>-<4 hex>`
 (no live server, tailnet node or desk machine of that name), composes the
 boot descriptor (ids, never values) and user-data that stages it at
 `/var/lib/devcloud-stage/boot.env` and authorizes every driver key for root,
@@ -581,7 +623,8 @@ the recipe as a gzipped tarball and a first-boot script that runs
 prints `devcloud status` and exits 1, keeping the VM for inspection.
 `--enroll-code -` reads a one-time desk code from stdin and, after the boot,
 writes it to the host and reconciles, for when the profile has no
-provisioning key. With `--project`, the first project's `devenv/host.toml`
+provisioning key; it is refused for a VM that provisions MAWS's endpoint,
+whose name a DX2 row would hold. With `--project`, the first project's `devenv/host.toml`
 (`account`, `type`, `location`, `disk_gb`, `spot`; read from the session's
 checkout when it is that repository, else from GitHub with `gh api`) sits
 between the flags and the profile's defaults; an unknown key or an account

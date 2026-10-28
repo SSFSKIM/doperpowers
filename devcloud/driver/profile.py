@@ -18,6 +18,11 @@ _PROVIDER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
 _SECRET_ID = re.compile(r"[A-Za-z0-9_-]{1,255}\Z")
 _VAR = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 _SHA = re.compile(r"[0-9a-f]{64}\Z")
+_DELEGATION_ID = re.compile(r"[0-9a-f]{32}\Z")
+# What a VM's name starts with (`<prefix><label>-<4 hex>`, a host name): the
+# devcloud delegation's prefix, which the org state reserves for good once used.
+_NAME_PREFIX = re.compile(r"[a-z][a-z0-9-]{0,19}\Z")
+DEFAULT_NAME_PREFIX = "dc-"
 _DURATION = re.compile(r"(?:(\d+)d)?(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?\Z")
 
 
@@ -80,9 +85,12 @@ class Profile:
     caps: Caps
     default_account: str
     host: Host
-    desk_secret: str | None
+    desk_secret: str | None          # [desk] provisioning_secret: the v1 code, sminos on DX2 (step 11)
     accounts: dict
     build: dict
+    maws_secret: str | None = None   # [desk] provisioning_secret_v2: MAWS's code, provisioned at step 13
+    delegation_id: str | None = None  # [desk] delegation_id: its delegation, the machine ref's prefix
+    name_prefix: str = DEFAULT_NAME_PREFIX
 
     def account(self, name):
         if name not in self.accounts:
@@ -182,8 +190,7 @@ def load(directory):
     defaults = data.get("defaults", {})
     _only(defaults, ("account",), "[defaults]")
     host = _host(data.get("host", {}))
-    desk = data.get("desk", {})
-    _only(desk, ("provisioning_secret",), "[desk]")
+    desk = _desk(data.get("desk", {}))
     accounts = {}
     raw = data.get("account", [])
     if not isinstance(raw, list) or not raw:
@@ -196,9 +203,26 @@ def load(directory):
     default = _string(defaults, "account", "[defaults]")
     if default not in accounts:
         raise _bad(f"[defaults].account names {default!r}, which no [[account]] is")
-    return Profile(dir=directory, caps=caps, default_account=default, host=host,
-                   desk_secret=_string(desk, "provisioning_secret", "[desk]", _SECRET_ID, required=False),
-                   accounts=accounts, build=_build(directory))
+    return Profile(dir=directory, caps=caps, default_account=default, host=host, accounts=accounts,
+                   build=_build(directory), **desk)
+
+
+def _desk(table):
+    """[desk]: the v1 code that enrolls sminos on DX2, or MAWS's v2 code with
+    its delegation's id (public: the boot needs it before it has the code),
+    never both — a DX2 row under a VM's name refuses its certificate; and the
+    prefix VM names are drawn under, which the delegation's must be."""
+    _only(table, ("provisioning_secret", "provisioning_secret_v2", "delegation_id", "name_prefix"), "[desk]")
+    v1 = _string(table, "provisioning_secret", "[desk]", _SECRET_ID, required=False)
+    v2 = _string(table, "provisioning_secret_v2", "[desk]", _SECRET_ID, required=False)
+    delegation = _string(table, "delegation_id", "[desk]", _DELEGATION_ID, required=False)
+    if (v2 is None) != (delegation is None):
+        raise _bad("[desk].provisioning_secret_v2 and [desk].delegation_id go together")
+    if v1 is not None and v2 is not None:
+        raise _bad("[desk].provisioning_secret (sminos on DX2) and provisioning_secret_v2 (MAWS's endpoint) are "
+                   "exclusive: a DX2 row under a VM's name refuses its certificate; remove the v1 one")
+    prefix = _string(table, "name_prefix", "[desk]", _NAME_PREFIX, required=False) or DEFAULT_NAME_PREFIX
+    return dict(desk_secret=v1, maws_secret=v2, delegation_id=delegation, name_prefix=prefix)
 
 
 def _build(directory):

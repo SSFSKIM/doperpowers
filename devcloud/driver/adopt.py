@@ -24,6 +24,8 @@ import pathlib
 import re
 import shlex
 
+from devcloudlib import status
+
 from . import compose, hostctl, names, reaper, tailnet
 from .errors import CAP, FAILED, USAGE, DriverError
 from .hostctl import Host
@@ -60,7 +62,7 @@ class Record:
     created: int
     ready: int | None = None
     creator: str | None = None  # the creating session's short id
-    enroll: str | None = None   # "key" when its boot enrolls at the desk with the provisioning key
+    enroll: str | None = None   # "key" when its boot enrolls at the desk with a provisioning key (v1 or MAWS's v2)
 
     @property
     def host(self):
@@ -163,7 +165,8 @@ def run(ctx, opts):
     record = next((r for r in records(ctx) if r.address == address and r.user == user), None)
     life = f"ttl {format_duration(lease)}" if lease else "keep"
     if opts.dry_run:
-        what = f"resumes {record.name} from phase {record.phase}" if record else f"as a new dc-{label}-…"
+        what = (f"resumes {record.name} from phase {record.phase}" if record
+                else f"as a new {ctx.profile.name_prefix}{label}-…")
         ctx.say(f"adopt     {user}@{address} {what}  lifetime {life}  projects {' '.join(opts.project) or '-'}")
         ctx.say("caps      adopt always needs the person's yes: confirmed")
         return 0
@@ -174,10 +177,12 @@ def run(ctx, opts):
         servers = [e.vm for e in ctx.fleet(quiet=True)]
         _, short = ctx.creator()
         now = int(ctx.clock())
-        record = Record(name=names.draw(label, ctx.taken_names(servers), ctx.token_hex), address=address, user=user,
-                        lifetime="ttl" if lease else "keep", expires=now + lease if lease else None,
-                        projects=list(opts.project or []), phase="preparing", created=now, creator=short,
-                        enroll="key" if ctx.profile.desk_secret else None)
+        projects = list(opts.project or [])
+        enrolls = ctx.profile.desk_secret or compose.provisions(ctx.profile, projects)
+        record = Record(name=names.draw(label, ctx.taken_names(servers), ctx.token_hex, ctx.profile.name_prefix),
+                        address=address, user=user, lifetime="ttl" if lease else "keep",
+                        expires=now + lease if lease else None, projects=projects, phase="preparing", created=now,
+                        creator=short, enroll="key" if enrolls else None)
     elif record.phase == "released":
         raise DriverError(FAILED, f"{record.name} ({user}@{address}) is being released: devcloud vm down "
                                   f"{record.name} finishes that, and a later adopt starts afresh")
@@ -303,7 +308,7 @@ def _finished(ctx, host):
         return False
     data, unit = answer
     steps = data.get("steps", [])
-    return unit != "activating" and len(steps) == 12 and all(s["state"] != "failed" for s in steps)
+    return unit != "activating" and len(steps) == len(status.STEPS) and all(s["state"] != "failed" for s in steps)
 
 
 # --- the adopted machine's later life (ops dispatches here) ---------------------------------

@@ -63,7 +63,7 @@ def service_list(user, interval=INTERVAL, persistent=False):
         Service("lease", (DEVCLOUD, "lease", "tick"), False, LIFECYCLE_INTERVAL,
                 "devcloud: the lease: warn its creator, depart at its end"),
         Service("enroll", (DEVCLOUD, "enroll"), False, LIFECYCLE_INTERVAL,
-                "devcloud: finish an enrollment the desk left undecided"),
+                "devcloud: finish an enrollment or a MAWS provisioning left undecided"),
     ] if persistent else []
     return [
         Service("pull-config", (DEVCLOUD, "pull-config"), False, interval,

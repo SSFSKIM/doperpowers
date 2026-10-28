@@ -50,7 +50,7 @@ class BootOrderTest(unittest.TestCase):
             "secrets", "home", "apply", "settings-and-env", "services"])
 
     def test_the_status_file_keeps_the_boot_order(self):
-        self.assertEqual(status.STEPS, tuple(name for name, _ in steps.BOOT) + ("projects",))
+        self.assertEqual(status.STEPS, tuple(name for name, _ in steps.BOOT) + ("projects", "maws"))
 
 
 class TailnetBase(unittest.TestCase):

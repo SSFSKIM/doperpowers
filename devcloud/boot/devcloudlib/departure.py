@@ -5,12 +5,14 @@ lease end, or when `devcloud vm down` asks.
 host alive: 0 close admission (every periodic timer but the lease's, and the
 sminos daemon, stopped and disabled); 1 end the user's `claude` processes;
 2 stop the continuous shipper and ship once, then end and ship again while
-sessions keep appearing, three rounds at most; 3 `sminos hub leave`; 4 the
-flushed line `devcloud-depart: ready-to-logout`, then `tailscale logout`, and
-the node's removal through the Tailscale API when the logout leaves it listed
-(a node not known to be ephemeral: its id is read before the logout, board
-#118); 5 stop devcloud's services (not the transient unit this runs in);
-6 power off.
+sessions keep appearing, three rounds at most; 3 leave the desk: a machine
+MAWS's endpoint certified under the devcloud delegation retires its
+certificate and frees its hub row (`mawsd endpoint retire`), one on DX2 runs
+`sminos hub leave`; 4 the flushed line `devcloud-depart: ready-to-logout`,
+then `tailscale logout`, and the node's removal through the Tailscale API
+when the logout leaves it listed (a node not known to be ephemeral: its id is
+read before the logout, board #118); 5 stop devcloud's services (not the
+transient unit this runs in) and `mawsd`; 6 power off.
 A failed ship, or sessions still there after the third round, holds the
 departure before step 3 — no leave, no logout, no power-off — and exits 4; the
 lease service's next run starts again, step 0 re-applied first.
@@ -44,8 +46,8 @@ import sys
 import time
 import urllib.request
 
-from . import descriptor, envfile, ledger, lease, nodekind, proc, secretmanager, services, sminos_host, status, \
-    steps, tsapi
+from . import descriptor, envfile, ledger, lease, maws_host, nodekind, proc, secretmanager, services, sminos_host, \
+    status, steps, tsapi
 from .proc import StepError
 
 DONE, FAILED, USAGE, NOT_OVER, HELD = 0, 1, 2, 3, 4
@@ -59,6 +61,12 @@ INBOUND_UNIT = "devcloud-inbound.service"
 SHIPPER_UNIT = "devcloud-session-mirror.service"
 INBOUND_NFT = pathlib.Path("/etc/devcloud/inbound.nft")
 UNIT_DIR = pathlib.Path("/etc/systemd/system")
+# The desk word a departure could not settle (a retirement started and not
+# confirmed, one the hub did not take, an attended key, an endpoint that could
+# not be asked), kept across reruns and a resumed release: once the
+# endpoint's keys are gone it would otherwise read as nothing to leave.
+# Written before a retirement starts; removed only when one is confirmed.
+DESK_RESIDUE = "desk-residue"
 # The spot reclaim's window: steps 0-4 within 25 of the provider's ~30 seconds.
 PREEMPT_BUDGET = 25
 
@@ -323,12 +331,57 @@ def sessions_and_ship(run, no_hold, grace=SESSION_GRACE, rounds=ROUNDS, ship_tim
         run.record("final-check", "ok", f"a session appeared after the ship; round {number + 1} of {rounds}")
 
 
-def leave(run, timeout=LEAVE_TIMEOUT):
-    """Step 3: `sminos hub leave` as the user; 0 and 1 both go on. The desk
-    revokes nothing for being offline, so on 1 the machine stays in its
-    Machines until someone removes it, which the driver tells the person."""
+def leave(run, d, timeout=LEAVE_TIMEOUT):
+    """Step 3, the machine's word to the desk, which it says as the user.
+
+    A machine whose endpoint holds an enrollment under the devcloud
+    delegation (`mawsd keys --json`: `delegated`, not `none`) retires it:
+    `mawsd endpoint retire` signs the certificate's retirement, posts it, and
+    frees the hub row, so a recreated VM may take the name; it answers "left
+    the desk", the line the driver reads as confirmed. When it cannot, or the
+    endpoint cannot be asked on a machine that provisions or is cut over,
+    the step fails naming the owner's `machine drop`, and the departure goes
+    on. So does an attended enrollment (a member's code), whose key only an
+    admin retires. Such an unsettled word is kept (DESK_RESIDUE) and said
+    again by every rerun until a retirement succeeds. A machine cut over
+    whose endpoint holds nothing is not enrolled. A machine on DX2 runs
+    `sminos hub leave`; 0 and 1 both go on. The desk revokes nothing for
+    being offline, so on 1 the machine stays in its Machines until someone
+    removes it, which the driver tells the person."""
     host = run.host
     env = host.user_env()
+    residue = host.state_dir / DESK_RESIDUE
+    try:
+        return _endpoint_leave(run, d, env, timeout, residue)
+    except StepError as error:
+        if maws_host.drop_command(d.name) in str(error):
+            proc.write_file(residue, str(error) + "\n", mode=0o600, dir_mode=0o755)
+        raise
+
+
+def _endpoint_leave(run, d, env, timeout, residue):
+    host = run.host
+    cut_over = sminos_host.cut_over(host.user, env)
+    provisioned = d.maws_secret and maws_host.present(maws_host.wrapper(host.user, env))
+    endpoint, why = maws_host.keys(host.user, env, call=host.call, timeout=run.bound(maws_host.KEYS_TIMEOUT))
+    if maws_host.certified(endpoint):
+        # Written first: `retire` may destroy the endpoint's state (M1's `orphaned`) before it answers, and a
+        # departure killed in between would otherwise find nothing to leave on its rerun.
+        proc.write_file(residue, f"a retirement was started and not confirmed; run: {maws_host.drop_command(d.name)}\n",
+                        mode=0o600, dir_mode=0o755)
+        said = maws_host.retire(host.user, env, d.name, call=host.call, timeout=run.bound(timeout))
+        residue.unlink(missing_ok=True)
+        return said
+    if endpoint is None and (cut_over or provisioned):
+        raise StepError(f"whether the endpoint holds a certificate is unknown ({why}); "
+                        f"run: {maws_host.drop_command(d.name)}")
+    if endpoint is not None and endpoint.get("enrollment", "none") != "none":
+        raise StepError(f"the endpoint is enrolled by a member's code ({endpoint['enrollment']}), whose key only an "
+                        f"admin retires; run: {maws_host.drop_command(d.name)}")
+    if residue.exists():
+        raise StepError(residue.read_text().strip())
+    if cut_over:
+        return "not enrolled"
     if not (sminos_host.sminos_home(host.user, env) / "daemon/hub.json").is_file():
         return "not enrolled"
     program = sminos_host.cli(host.user)
@@ -436,7 +489,9 @@ def remove_node(run, d):
 
 def stop_services(run):
     """Step 5: every devcloud unit stopped — the lease service among them —
-    but not the transient unit the departure runs in."""
+    but not the transient unit the departure runs in; and `mawsd`'s user
+    unit, which the retirement needed running until now, so no engine host
+    outlives the departure."""
     host = run.host
     units = []
     for s in services.service_list(host.user, persistent=True):
@@ -444,9 +499,22 @@ def stop_services(run):
         if s.every is not None:
             units.append(f"devcloud-{s.name}.timer")
     units = [unit for unit in units if host.installed(unit)]
+    stopped, failed = list(units), []
+    user_env = host.user_env()
+    if any(path.exists() for path in maws_host.unit_files(host.user, user_env)):
+        env = dict(user_env, XDG_RUNTIME_DIR=f"/run/user/{host.user.uid}")
+        try:
+            host.run(["systemctl", "--user", "stop", maws_host.UNIT], user=host.user, env=env, log="lifecycle",
+                     timeout=run.bound(60))
+            stopped.append(f"{maws_host.UNIT} (user)")
+        except StepError as error:
+            failed.append(f"{maws_host.UNIT} ({error})")
     if units:
         host.run(["systemctl", "stop", *units], log="lifecycle", timeout=run.bound(120))
-    return f"stopped {', '.join(units) or 'no unit'}"
+    detail = f"stopped {', '.join(stopped) or 'no unit'}"
+    if failed:
+        raise StepError(detail + "; failed: " + "; ".join(failed))
+    return detail
 
 
 # --- the departure ------------------------------------------------------------------
@@ -507,7 +575,7 @@ def depart(host, force=False, no_hold=False, no_poweroff=False):
                                  path=host.status_path)
             host.say(f"devcloud depart: held ({held.reason}); the lease service tries again at its next run")
             return HELD
-        run.step("leave", lambda: leave(run))
+        run.step("leave", lambda: leave(run, d))
         run.step("logout", lambda: logout(run, d))
         run.step("remove-node", lambda: remove_node(run, d))
         run.step("stop-services", lambda: stop_services(run))
@@ -547,7 +615,7 @@ def depart_preempted(host):
         status.set_lifecycle("depart", "departing", "reclaimed by the provider", steps=[], path=host.status_path)
         run.step("close-admission", lambda: close_admission(run))
         sessions_and_ship(run, no_hold=True, grace=5, rounds=1, ship_timeout=max(1, PREEMPT_BUDGET - 15))
-        run.step("leave", lambda: leave(run, timeout=5))
+        run.step("leave", lambda: leave(run, d, timeout=5))
         run.step("logout", lambda: logout(run, d))
         run.step("remove-node", lambda: remove_node(run, d))
         status.set_lifecycle("depart", "departed", "departed (reclaimed)", steps=run.steps, path=host.status_path)
@@ -672,7 +740,7 @@ def release(host, force=False, no_hold=False):
         # OAuth client, which the seed among the credentials reads, so it
         # comes before them; it fails alone (the driver's `down` removes the
         # node too).
-        for name, fn, stops in (("leave", lambda: leave(run), False),
+        for name, fn, stops in (("leave", lambda: leave(run, d), False),
                                 ("firewall", lambda: remove_firewall(run), True),
                                 ("restore-keys", lambda: restore_keys(run), True),
                                 ("logout", lambda: logout(run, d, confirm=True), True),

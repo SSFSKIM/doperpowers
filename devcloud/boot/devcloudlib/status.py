@@ -3,11 +3,13 @@
 it — a boot, a reconcile, or a job. `detail` never holds a value: callers
 pass names, counts, exit codes and log paths only.
 
-Beside the steps, two records a boot's reset keeps, since they outlive a
+Beside the steps, three records a boot's reset keeps, since they outlive a
 reboot: `lifecycle`, the departure or release once one has started (§4.2:
 `{"op", "state", "at", "detail", "steps": [...]}`, state `departing`, `held`
-or `departed`), and `enroll`, a deferred enrollment (§10: `{"state":
-"deferred", "since"}`), cleared once the desk has decided."""
+or `departed`); `enroll`, a deferred enrollment (§10: `{"state":
+"deferred", "since"}`), cleared once the desk has decided; and `maws`, step
+13's provisioning deferred while its certificate is not yet live, in the same
+shape, cleared once it is (or refused)."""
 
 import datetime
 import json
@@ -30,13 +32,17 @@ STEPS = (
     "settings-and-env",   # 10
     "services",           # 11
     "projects",           # 12
+    "maws",               # 13
 )
-# deferred: step 11's enrollment waits on an undecided desk, which counts as ok.
+# deferred: step 11's enrollment waits on an undecided desk, or step 13's
+# certificate on its listing, which counts as ok.
 STATES = ("ok", "failed", "skipped", "missing", "deferred")
 # Once a departure has started, admission stays closed: the periodic jobs exit
 # at once, `lease set` refuses, and a boot starts no daemon (§4.1, §4.2).
 DEPARTURE_STARTED = ("departing", "held", "departed")
 LIFECYCLE_STATES = DEPARTURE_STARTED
+# What the devcloud-enroll service finishes: step 11's enrollment, step 13's provisioning.
+DEFERRALS = ("enroll", "maws")
 
 
 def load(path=None):
@@ -63,9 +69,9 @@ def now():
 
 def reset(path=None):
     """A boot starts its steps from nothing; the lifecycle and a deferred
-    enrollment stay."""
+    enrollment or provisioning stay."""
     data = load(path)
-    _write({"steps": [], **{k: data[k] for k in ("lifecycle", "enroll") if k in data}}, path)
+    _write({"steps": [], **{k: data[k] for k in ("lifecycle",) + DEFERRALS if k in data}}, path)
 
 
 def record(name, state, detail, path=None):
@@ -110,21 +116,39 @@ def set_lifecycle(op, state, detail, steps=None, path=None):
     _write(data, path)
 
 
+def _deferred(key, path):
+    record = load(path).get(key)
+    return record.get("since") if record and record.get("state") == "deferred" else None
+
+
+def _set_deferred(key, deferred, path):
+    data = load(path)
+    if deferred:
+        data[key] = {"state": "deferred", "since": _deferred(key, path) or now()}
+    else:
+        data.pop(key, None)
+    _write(data, path)
+
+
 def enroll_deferred(path=None):
     """When the enrollment was first deferred, or None."""
-    record = load(path).get("enroll")
-    return record.get("since") if record and record.get("state") == "deferred" else None
+    return _deferred("enroll", path)
 
 
 def set_enroll_deferred(deferred, path=None):
     """Marks the enrollment deferred (keeping the first deferral's time) or
     decided (the record removed)."""
-    data = load(path)
-    if deferred:
-        data["enroll"] = {"state": "deferred", "since": enroll_deferred(path) or now()}
-    else:
-        data.pop("enroll", None)
-    _write(data, path)
+    _set_deferred("enroll", deferred, path)
+
+
+def maws_deferred(path=None):
+    """When step 13's provisioning was first deferred, or None."""
+    return _deferred("maws", path)
+
+
+def set_maws_deferred(deferred, path=None):
+    """Marks the provisioning deferred (keeping the first time) or settled."""
+    _set_deferred("maws", deferred, path)
 
 
 def healthy(data):
@@ -137,9 +161,10 @@ def render(data):
     width = max(len(n) for n in STEPS)
     out = "".join(f"{s['name']:<{width}}  {s['state']:<7}  {s['at']}  {s['detail']}\n"
                   for s in data.get("steps", []))
-    enroll = data.get("enroll")
-    if enroll and enroll.get("state") == "deferred":
-        out += f"enroll deferred since {enroll['since']}\n"
+    for key, what in (("enroll", "enroll"), ("maws", "maws provisioning")):
+        record = data.get(key)
+        if record and record.get("state") == "deferred":
+            out += f"{what} deferred since {record['since']}\n"
     record = data.get("lifecycle")
     if record:
         out += f"{record['op']:<{width}}  {record['state']:<7}  {record['at']}  {record['detail']}\n"

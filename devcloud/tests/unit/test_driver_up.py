@@ -108,7 +108,11 @@ class NamesTest(UpBase):
     def test_names_never_collide(self):
         taken = {"dc-vm-0001", "dc-vm-0002", "dc-vm-0003"}
         hexes = iter(["0001", "0002", "0003", "0004"])
-        self.assertEqual(names.draw("vm", taken, lambda: next(hexes)), "dc-vm-0004")
+        self.assertEqual(names.draw("vm", taken, lambda: next(hexes), "dc-"), "dc-vm-0004")
+
+    def test_names_are_drawn_under_the_prefix_given(self):
+        # A replacement delegation under another prefix (a dropped one's stays reserved for good).
+        self.assertEqual(names.draw("vm", set(), lambda: "0001", "dc2-"), "dc2-vm-0001")
 
     def test_up_avoids_servers_tailnet_nodes_and_desk_machines(self):
         self.add_server("dc-vm-7f3a", vm_labels(lifetime="keep", confirmed=True))
@@ -116,6 +120,58 @@ class NamesTest(UpBase):
         self.desk_machines.append("dc-vm-7f3c")
         self.assertEqual(self.up(), 0)
         self.assertIn("dc-vm-7f3d", self.servers())
+
+
+class MawsTest(UpBase):
+    """A VM created with the MAWS project under the profile's v2 code enrolls
+    itself at boot (step 13): its descriptor names the code and the delegation,
+    its label says it is enrolled, its name is drawn under the profile's prefix."""
+
+    DELEGATION = "0123456789abcdef" * 2
+
+    def setUp(self):
+        super().setUp()
+        toml = self.profile_dir / "driver.toml"
+        toml.write_text(toml.read_text() + f'\n[desk]\nprovisioning_secret_v2 = "desk-provisioning-v2"\n'
+                        f'delegation_id = "{self.DELEGATION}"\nname_prefix = "dc2-"\n')
+        self.ctx = self.make_ctx(token_hex=lambda: next(self.hexes))
+
+    def created(self):
+        create = [c for c in self.state()["calls"] if c["op"] == "create"][0]["input"]
+        staged = [base64.b64decode(b).decode() for b in re.findall(r"content: (\S+)", create["user_data"])]
+        return create, descriptor.parse(staged[1])
+
+    def test_a_maws_vm_carries_the_code_the_delegation_and_the_enroll_label(self):
+        self.assertEqual(self.up(project=["maws"]), 0)
+        create, desc = self.created()
+        self.assertEqual(create["name"], "dc2-vm-7f3a")
+        self.assertEqual(create["labels"]["devcloud-enroll"], "key")
+        self.assertEqual((desc.maws_secret, desc.maws_delegation_id, desc.sminos_secret),
+                         ("desk-provisioning-v2", self.DELEGATION, None))
+
+    def test_a_vm_without_the_maws_project_is_not_enrolled(self):
+        self.assertEqual(self.up(project=["example/repo"]), 0)
+        create, desc = self.created()
+        self.assertNotIn("devcloud-enroll", create["labels"])
+        self.assertIsNone(desc.maws_secret)
+        self.assertEqual(create["name"], "dc2-vm-7f3a", "the prefix is every name's")
+
+    def test_a_one_time_dx2_code_is_refused_for_a_vm_that_provisions(self):
+        code, message = self.refused(project=["maws"], enroll_code=b"smns-enroll-v1.madeup\n")
+        self.assertEqual(code, 2)
+        self.assertIn("--enroll-code", message)
+        self.assertEqual(self.servers(), {}, "a VM was created for a boot that would fail")
+
+    def test_a_deferred_provisioning_is_said(self):
+        from devcloudlib import status
+        steps = [{"name": n, "state": "ok", "at": "t", "detail": ""} for n in status.STEPS]
+        steps[-1] = {"name": "maws", "state": "deferred", "at": "t",
+                     "detail": "hub-confirmed, its certificate not yet live; devcloud-enroll runs the same provision again"}
+        self.remote.rules = [r for r in self.remote.rules if "status.json" not in r["needle"]]
+        self.remote.on("status.json", out=json.dumps({"steps": steps}) + "\nactive")
+        self.assertEqual(self.up(project=["maws"]), 0)
+        self.assertIn("maws      deferred: hub-confirmed, its certificate not yet live; devcloud-enroll runs the same "
+                      "provision again", self.out.getvalue())
 
 
 class CreateTest(UpBase):

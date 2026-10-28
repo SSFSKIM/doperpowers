@@ -248,6 +248,14 @@ class RefusalTest(AdoptBase):
 
 
 class AdoptionTest(AdoptBase):
+    def test_a_machine_adopted_with_the_maws_project_under_the_v2_code_is_recorded_enrolled(self):
+        toml = self.profile_dir / "driver.toml"
+        toml.write_text(toml.read_text() + f'\n[desk]\nprovisioning_secret_v2 = "desk-provisioning-v2"\n'
+                        f'delegation_id = "{"ab" * 16}"\n')
+        self.ctx = self.make_ctx(token_hex=lambda: next(self.hexes))
+        self.assertEqual(self.adopt(project=["maws"]), 0)
+        self.assertEqual(self.record()["enroll"], "key", "its release's note would stay silent")
+
     def test_each_phase_is_recorded_before_the_step_it_names(self):
         self.assertEqual(self.adopt(ttl="2h", project=["example/repo"]), 0)
         self.assertEqual(self.remote.phases, {"save-keys": "preparing", "authorize": "preparing",
@@ -578,7 +586,7 @@ class DownTest(AdoptBase):
         self.assertEqual(ops.down(self.ctx, NAME, force=False), 0)
         self.assertIsNone(self.record())
         line = next(l for l in self.out.getvalue().splitlines() if "released" in l)
-        self.assertIn("may still be in the desk's Machines: remove it by hand if so", line)
+        self.assertIn(f"may still be in the desk's Machines; if so, run `zsh apps/desk-hub/deploy/production-run.sh admin machine drop {NAME}`", line)
 
     def test_a_confirmed_leave_or_an_unenrolled_machine_needs_no_note(self):
         for enroll, out in (("key", "devcloud release: leave: ok — left the desk\n"),

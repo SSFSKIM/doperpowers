@@ -249,14 +249,14 @@ def _host_env(user):
 
 def warn_creator(user, d, run=proc.run, say=print, scan=None):
     """`sminos say "@<creator> …"` as the user, naming the lease end and each
-    checkout with unpushed or uncommitted work; without a creator, unenrolled,
-    or when the say fails, the journal and `wall`."""
+    checkout with unpushed or uncommitted work; without a creator, off the org
+    (neither enrolled nor cut over), or when the say fails, the journal and
+    `wall`."""
     found = (scan or (lambda: unpushed(user)))()
     text = warning_text(d.name, d.expires, found)
     env = _host_env(user)
     program = sminos_host.cli(user)
-    enrolled = (sminos_host.sminos_home(user, env) / "daemon/hub.json").is_file()
-    if d.creator and enrolled and program:
+    if d.creator and sminos_host.at_hub(user, env) and program:
         try:
             run([sminos_host.PYTHON, str(program), "say", f"{d.creator} {text}"], user=user, env=env,
                 log="lease", cwd=str(user.home), timeout=120)

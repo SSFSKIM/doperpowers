@@ -112,6 +112,16 @@ class CheckTableTest(EnrollBase):
         with self.assertRaisesRegex(StepError, "hub check exited 2"):
             self.enroll()
 
+    def test_a_cut_over_machine_enrolls_nothing(self):
+        # O12's switch refuses `hub check` and `hub enroll` there, whose 1 would read as "not enrolled".
+        (self.hub.parent).mkdir(parents=True)
+        (self.hub.parent / "identity.json").write_text("{}\n")
+        self.code_file.write_text(CODE + "\n")
+        result = self.enroll()
+        self.assertEqual(result.state, "cutover")
+        self.assertEqual((self.calls(), self.fetched), ([], []))
+        self.assertTrue(self.code_file.exists(), "a code was spent on a machine that enrolls nothing")
+
     def test_no_secret_and_no_code_enrolls_nothing(self):
         self.assertEqual(self.enroll(secret=False).state, "none")
         self.assertEqual(self.calls(), [])
@@ -181,7 +191,7 @@ class DeferredTest(EnrollBase):
                       mock.patch.object(steps.ledger, "add", self.ledgered.append),
                       mock.patch.object(sminos_host, "CODE_FILE", self.code_file),
                       mock.patch.object(sminos_host, "PENDING", self.tmp / "restart-pending"),
-                      mock.patch.object(sminos_host, "converge", lambda user, role, env, changed:
+                      mock.patch.object(sminos_host, "converge", lambda user, role, env, changed, provisions=False:
                                         self.converged.append(changed) or "sminos daemon: running"),
                       mock.patch.object(steps, "_fetch_text", lambda r, name: self.fetch(name)),
                       mock.patch.object(steps, "_say", lambda message: None)):   # the job's status lines
@@ -224,6 +234,16 @@ class DeferredTest(EnrollBase):
             self.assertEqual(steps.enroll(), 0)
         self.assertEqual(self.verbs(), ["hub check"])
         self.assertIsNone(status.enroll_deferred(self.status))
+
+    def test_a_machine_cut_over_meanwhile_ends_the_deferral(self):
+        status.set_enroll_deferred(True, self.status)
+        (self.hub.parent).mkdir(parents=True)
+        (self.hub.parent / "identity.json").write_text("{}\n")
+        with mock.patch.object(steps.Run, "load", lambda r: setattr(r, "desc", self.desc()) or setattr(
+                r, "user", self.user)):
+            self.assertEqual(steps.enroll(), 0)
+        self.assertEqual(self.calls(), [])
+        self.assertIsNone(status.enroll_deferred(self.status), "the timer would ask a cut-over machine forever")
 
     def test_devcloud_enroll_stays_deferred_on_another_4(self):
         status.set_enroll_deferred(True, self.status)

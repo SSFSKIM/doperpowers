@@ -51,8 +51,9 @@ class ParseTest(unittest.TestCase):
 
 
 class DeskNoteTest(DriverBase):
-    LISTED = "stays in the desk's Machines until someone removes it"
-    UNKNOWN = "may still be in the desk's Machines: remove it by hand if so"
+    LISTED = ("stays in the desk's Machines until an admin drops it: run `zsh apps/desk-hub/deploy/production-run.sh admin machine drop dc-a-0001` "
+              "(the owner, in a MAWS worktree)")
+    UNKNOWN = "may still be in the desk's Machines; if so, run `zsh apps/desk-hub/deploy/production-run.sh admin machine drop "
 
     def setUp(self):
         super().setUp()

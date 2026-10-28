@@ -3,8 +3,8 @@
 root at every boot; reads /etc/devcloud/boot.env; idempotent. Each step is
 recorded in /var/lib/devcloud/status.json (`devcloud status`); a failed step
 stops the boot with the step named, and the next run retries from the top.
-Exit 0: every step ok; 3: the host is made and only step 12 (projects) failed,
-so the services start all the same; 1: a step of 1-11 failed."""
+Exit 0: every step ok; 3: the host is made and only step 12 (projects) or 13
+(maws) failed, so the services start all the same; 1: a step of 1-11 failed."""
 import os
 import sys
 

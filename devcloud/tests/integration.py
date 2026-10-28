@@ -350,7 +350,7 @@ def stand_ins():
 
 # --- acceptance 3: one boot, a working host -----------------------------------------
 
-@case("a container boots to every step ok, projects skipped (acceptance 3)", "host")
+@case("a container boots to every step ok, projects and maws skipped (acceptance 3)", "host")
 def boot():
     docker("run", "-d", "--name", HOST, "--hostname", "sbx-test", "--network", NET, *ENV,
            "-e", "DEVCLOUD_JOB_INTERVAL=40", "-v", f"{descriptor()}:/etc/devcloud/boot.env:ro", IMAGE)
@@ -359,10 +359,10 @@ def boot():
     print(f"  (healthy after {time.monotonic() - started:.0f}s)")
     got = {name: s["state"] for name, s in steps(HOST).items()}
     want = {name: "ok" for name in got}
-    want["projects"] = "skipped"
-    check(got == want and len(got) == 12, f"states {got}")
+    want["projects"] = want["maws"] = "skipped"
+    check(got == want and len(got) == 13, f"states {got}")
     lines = out(HOST, "devcloud status").splitlines()
-    check(len(lines) == 12 and lines[0].startswith("identity"), "devcloud status prints a line per step")
+    check(len(lines) == 13 and lines[0].startswith("identity"), "devcloud status prints a line per step")
 
 
 @case("identity and the environment file", "host")
@@ -616,7 +616,8 @@ def project_fails():
     projects = got.get("projects", {})
     check(rc == 3 and projects.get("state") == "failed", f"rc={rc} projects={projects}")
     check(projects["detail"].startswith("example/app ok; example/missing failed (devenv up exited"), projects["detail"])
-    check(all(s["state"] == "ok" for name, s in got.items() if name != "projects"), str(got))
+    check(all(s["state"] == "ok" for name, s in got.items() if name not in ("projects", "maws")), str(got))
+    check(got.get("maws", {}).get("state") == "skipped", str(got.get("maws")))
     # Through the image's own entrypoint: the supervisor runs after a boot that exited 3.
     name = f"{TAG}-noproj"
     docker("run", "-d", "--name", name, "--hostname", "sbx-noproj2", "--network", NET, *ENV,

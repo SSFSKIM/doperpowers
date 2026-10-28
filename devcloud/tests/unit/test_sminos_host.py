@@ -73,10 +73,17 @@ class SminosHostTest(unittest.TestCase):
                              "installLocation": str(clone)}}))
         return cli
 
-    def converge(self, role="persistent", env_changed=False, recorder=None):
+    def converge(self, role="persistent", env_changed=False, recorder=None, provisions=False):
         recorder = recorder or Recorder(self.unit)
-        detail = sminos_host.converge(self.user, role, self.env, env_changed, run=recorder, pending=self.pending)
+        detail = sminos_host.converge(self.user, role, self.env, env_changed, run=recorder, pending=self.pending,
+                                      provisions=provisions)
         return detail, recorder
+
+    def cut_over(self):
+        """O12's switch: the first complete RL10 welcome writes identity.json."""
+        daemon = self.home / ".claude/sminos/daemon"
+        daemon.mkdir(parents=True, exist_ok=True)
+        (daemon / "identity.json").write_text('{"name": "devbox-a"}\n')
 
     # --- a sandbox -----------------------------------------------------------------
 
@@ -87,7 +94,7 @@ class SminosHostTest(unittest.TestCase):
         self.assertIn("sandbox", detail)
 
     def test_a_sandbox_carrying_a_machine_identity_is_refused(self):
-        for name in ("hub.json", "machine.json"):
+        for name in ("hub.json", "machine.json", "identity.json"):
             with self.subTest(name=name):
                 daemon = self.home / ".claude/sminos/daemon"
                 daemon.mkdir(parents=True, exist_ok=True)
@@ -123,6 +130,20 @@ class SminosHostTest(unittest.TestCase):
         detail, recorder = self.converge()
         self.assertEqual(recorder.calls, [])
         self.assertIn("not enrolled", detail)
+
+    def test_cut_over_with_no_hub_json_it_runs_the_daemon(self):
+        # A VM born under the v2 code never holds hub.json; its sminos speaks RL10 to the endpoint.
+        self.cut_over()
+        self.marketplace()
+        detail, recorder = self.converge()
+        self.assertIn("sminos daemon: sminos-daemon.service enabled", detail)
+        self.assertIn(["systemctl", "--user", "enable", "sminos-daemon.service"], [c["argv"] for c in recorder.calls])
+
+    def test_a_host_that_provisions_its_endpoint_runs_the_daemon_before_it_is_cut_over(self):
+        # Step 11 comes before step 13: the daemon is up for the endpoint's first welcome.
+        self.marketplace()
+        detail, _ = self.converge(provisions=True)
+        self.assertIn("sminos daemon: sminos-daemon.service enabled", detail)
 
     def test_enrolled_without_the_sminos_cli_fails(self):
         self.enroll()

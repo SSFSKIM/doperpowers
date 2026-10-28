@@ -25,6 +25,8 @@ import plistlib
 import subprocess
 import sys
 
+from devcloudlib import maws_host
+
 from . import caps, compose, hostctl, images as images_mod, tailnet
 from .errors import FAILED, DriverError, NotOwned, Spent
 
@@ -142,7 +144,11 @@ def log(ctx, line, bounded=False):
 def desk_note(ctx, vm, left_desk):
     """What a deletion leaves at the desk. The desk revokes nothing for being
     offline (H4), so an enrolled VM whose departure did not confirm its leave
-    is named for removal by hand, unless the desk shows it gone. A VM that
+    (or its certificate's retirement) is named, with the owner's command that
+    drops it — a phase-1 row, an attended key or a certificate alike (O14 M2's
+    `machine drop`) — unless the desk shows it gone. The driver signs
+    nothing: a retirement needs the certificate's key id and a P-256
+    signature, the VM's own work at its departure. A VM that
     departed on its own at its lease end is deleted without contact, so the
     desk is asked; its absence counts only from the org's directory, read
     through this driver's enrollment, and only when that directory is newer
@@ -152,17 +158,18 @@ def desk_note(ctx, vm, left_desk):
     if not how or left_desk:
         return ""
     by = "a provisioning key" if how == "key" else "a one-time code"
+    drop = f"`{maws_host.drop_command(vm['name'])}` (the owner, in a MAWS worktree)"
     ended = _expires(vm)
     since = ctx.clock() - ended if ended is not None and ended <= ctx.clock() else None
     listing = ctx.desk_listing()
     if listing is not None and listing.org:
         if vm["name"] in listing.names:
             return (f"; it was enrolled at the desk by {by}, its leave was not confirmed and the desk still "
-                    "lists it, so it stays in the desk's Machines until someone removes it")
+                    f"lists it, so it stays in the desk's Machines until an admin drops it: run {drop}")
         if since is not None and listing.age < since:
             return ""
     return (f"; it was enrolled at the desk by {by} and neither its departure nor the desk confirmed its leave, "
-            "so it may still be in the desk's Machines: remove it by hand if so")
+            f"so it may still be in the desk's Machines; if so, run {drop}")
 
 
 def _delete(ctx, entry, reason, left_desk, decided=True, bounded=False):
