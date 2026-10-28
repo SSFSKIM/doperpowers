@@ -157,6 +157,27 @@ so the style's sentence answering its "Text you output outside of tool use is
 displayed to the user" meets no such line here; nor a session's first message
 with no message in its history at all.
 
+Last-activity round, 2026-10-27: v2 against v3, which keeps v2's "A turn that
+ends with something for the human ends with that message" and adds "Whenever
+a message is the last thing you do in a turn, send it alone with `final:
+true`" (the owner's line, against a reading of the flag as the session's last
+word), all 10 scenarios, 5 reps, span-form histories, 5 steps:
+                                        v2          v3
+  final alone (non-routine)             39 of 40    39 of 40
+  stray span                            1           0
+  cut off                               0           1
+  message, then a closing line          0           0
+  routine noise                         0 of 10     0 of 10
+v2's span was complete's report written as a `<message>` span, the form of
+the history before it. v3's cut-off run was late_failure still reading the
+code in its fifth step; 3 more v3 runs at 8 steps ended on a final message.
+keep_working, the run v3's sentence could cost (its turn's last act a
+SendMessage, which "the last thing you do" alone did not cover in 651e917b):
+v3 5 of 5 sent the dialog request mid-turn without the flag and ended on a
+final message, v2 likewise 3 of 5 and with the final message alone 2 of 5.
+The control already ends on the flag here, executor still running included,
+so the round shows v3 costs nothing, not that it fixes a miss.
+
 Message-tool round, 2026-10-21: 7.200.0 (control) against 7.201.0 (variant,
 the message tool's style), both with the message tool in their tools,
 claude-opus-5-5 at high effort, judge at low, 4 reps of each scenario on its
