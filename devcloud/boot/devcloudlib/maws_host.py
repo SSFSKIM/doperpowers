@@ -128,8 +128,9 @@ def certified(answer):
 
 def retire(user, env, name, call=proc.call, timeout=RETIRE_TIMEOUT):
     """`mawsd endpoint retire` as the user; returns "left the desk", the line
-    the driver reads as the desk confirming it, or raises StepError naming
-    the owner's command when the hub side may remain."""
+    the driver reads as the desk confirming it, only for a confirmed outcome
+    (`retired`, or `uncertified` with the row gone); otherwise raises
+    StepError naming the owner's command, the hub side possibly remaining."""
     program = wrapper(user, env)
     exit_code, out, err = call([str(program), "endpoint", "retire", "--json"], user=user, env=env, log="lifecycle",
                                timeout=timeout, cwd=str(user.home))
@@ -140,8 +141,11 @@ def retire(user, env, name, call=proc.call, timeout=RETIRE_TIMEOUT):
         kind = json.loads(out.strip().splitlines()[-1]).get("kind")
     except (ValueError, IndexError, AttributeError):
         kind = None
-    if kind in ("retired", "uncertified", "nothing"):
+    if kind in ("retired", "uncertified"):
         return LEFT
+    if kind == "nothing":
+        raise StepError("mawsd endpoint retire found nothing to retire after its keys said a delegated enrollment, so "
+                        f"what became of the hub side is unknown; run: {drop_command(name)}")
     if kind == "orphaned":
         raise StepError("retired here, but the hub no longer took the machine's credential, so its row and "
                         f"certificate are an admin's to drop; run: {drop_command(name)}")

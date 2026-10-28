@@ -64,7 +64,8 @@ class World:
         if list(argv) == ["tailscale", "status", "--json"] and self.node is not None:
             return 0, json.dumps({"BackendState": "Running" if self.node else "NeedsLogin", "Self": self.node}), ""
         if os.path.basename(argv[0]) == "mawsd":
-            return self.mawsd.get(tuple(argv[1:]), (3, "", "mawsd is not running"))
+            answer = self.mawsd.get(tuple(argv[1:]), (3, "", "mawsd is not running"))
+            return answer() if callable(answer) else answer
         return self.calls.get(argv[-1], (0, "", ""))
 
     def runs(self):
@@ -1066,6 +1067,30 @@ class RetireTest(DepartureBase):
         self.assertIn(ADMIN, step["detail"])
         said = "\n".join(e[1] for e in self.world.events if e[0] == "say")
         self.assertFalse(hostctl.LEFT_DESK.search(said))
+
+    def test_a_departure_killed_after_the_endpoint_destroyed_its_state_still_names_it_on_the_rerun(self):
+        # M1's `orphaned` destroys the enrollment and keys before it answers; the departure dies before the answer.
+        from driver import hostctl
+
+        def retire_then_die():
+            self.world.mawsd[KEYS] = keys("none", delegated=False)
+            raise KeyboardInterrupt("the departure was killed")
+        self.world.mawsd[RETIRE] = retire_then_die
+        with self.assertRaises(KeyboardInterrupt):
+            departure.depart(self.host(), no_poweroff=True)
+        self.world.events.clear()
+        departure.depart(self.host(), no_poweroff=True)     # resumes the `departing` record
+        step = self.leave_step()
+        self.assertEqual(step["state"], "failed")
+        self.assertIn(ADMIN, step["detail"])
+        said = "\n".join(e[1] for e in self.world.events if e[0] == "say")
+        self.assertFalse(hostctl.LEFT_DESK.search(said))
+
+    def test_a_retirement_that_holds_nothing_keeps_the_reminder(self):
+        # `nothing` after the keys said certified: what became of the hub side is unknown.
+        self.world.mawsd[RETIRE] = retired("nothing")
+        departure.depart(self.host(), no_poweroff=True)
+        self.assertIn(ADMIN, self.leave_step()["detail"])
 
     def test_a_retirement_that_succeeds_on_a_rerun_clears_the_reminder(self):
         self.world.mawsd[RETIRE] = (1, "", "503 busy")

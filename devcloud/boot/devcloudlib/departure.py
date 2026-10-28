@@ -61,10 +61,11 @@ INBOUND_UNIT = "devcloud-inbound.service"
 SHIPPER_UNIT = "devcloud-session-mirror.service"
 INBOUND_NFT = pathlib.Path("/etc/devcloud/inbound.nft")
 UNIT_DIR = pathlib.Path("/etc/systemd/system")
-# The desk word a departure could not settle (a retirement the hub did not
-# take, an attended key, an endpoint that could not be asked), kept across
-# reruns and a resumed release: once the endpoint's keys are gone it would
-# otherwise read as nothing to leave. Removed when a retirement succeeds.
+# The desk word a departure could not settle (a retirement started and not
+# confirmed, one the hub did not take, an attended key, an endpoint that could
+# not be asked), kept across reruns and a resumed release: once the
+# endpoint's keys are gone it would otherwise read as nothing to leave.
+# Written before a retirement starts; removed only when one is confirmed.
 DESK_RESIDUE = "desk-residue"
 # The spot reclaim's window: steps 0-4 within 25 of the provider's ~30 seconds.
 PREEMPT_BUDGET = 25
@@ -364,6 +365,10 @@ def _endpoint_leave(run, d, env, timeout, residue):
     provisioned = d.maws_secret and maws_host.present(maws_host.wrapper(host.user, env))
     endpoint, why = maws_host.keys(host.user, env, call=host.call, timeout=run.bound(maws_host.KEYS_TIMEOUT))
     if maws_host.certified(endpoint):
+        # Written first: `retire` may destroy the endpoint's state (M1's `orphaned`) before it answers, and a
+        # departure killed in between would otherwise find nothing to leave on its rerun.
+        proc.write_file(residue, f"a retirement was started and not confirmed; run: {maws_host.drop_command(d.name)}\n",
+                        mode=0o600, dir_mode=0o755)
         said = maws_host.retire(host.user, env, d.name, call=host.call, timeout=run.bound(timeout))
         residue.unlink(missing_ok=True)
         return said
