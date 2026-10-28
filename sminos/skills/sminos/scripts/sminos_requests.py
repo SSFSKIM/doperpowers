@@ -96,7 +96,8 @@ SUGGESTION_BYTES_MAX = 2048  # each at most this many bytes of canonical UTF-8 J
 # A permission's input, as UTF-8 JSON, a raise carries whole: past it, each string is held to INPUT_CAP and the
 # request marked `truncated`, as the mod's resync shortens one (bridge-stream.tsx's RESYNC_INPUT_CAP), and if
 # that is still past it the input goes as {}. Under it a string the mod capped at its TEXT_CAP (65,536 UTF-16
-# units, at most 192 KiB of UTF-8) goes whole, and 64 such raises in a complete set stay within a lane's 16 MiB.
+# units, at most 192 KiB of UTF-8) goes whole. One raise is then far from a lane's 16 MiB; a project's complete
+# set carries every request pending in it, so it passes that bound only with some sixty at the bound at once.
 RAISED_INPUT_MAX = 256 * 1024
 INPUT_CAP = 1024           # UTF-16 code units a cut input keeps of each string: the mod's RESYNC_INPUT_CAP
 WANTED = (b'"raised"', b'"settled"', b'"resync"', b'"compact"', b'"run"', b'"btw"', b'"media"')   # a line carrying none of these is no line of ours
