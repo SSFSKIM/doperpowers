@@ -15,7 +15,9 @@ Every mode takes the scale's flags (--dirs, --seats, ...; --help lists them)
 and --joined-by <scripts-dir>, which makes the first tick, the one that joins
 every live session and seat, with another copy: the same events whichever
 copy writes them, so a slow copy's steady state is measured without waiting
-out its first tick.
+out its first tick. SIGTERM or SIGINT, in any mode, ends every process it
+started (the sessions, `daemon run` and its uplink, the stand-in), removes
+the synthetic machine unless --keep, and exits 128 + the signal.
 
 The machine (`testhost`, enrolled in org `org-1`): DIRS engine project
 directories under ~/.claude/projects, PER_DIR transcripts each; SEATS seat
@@ -118,7 +120,11 @@ class Env:
         self.sleepers = []
         self.n = 0
         self.seqs = {}
-        self.build(hub_url)
+        try:
+            self.build(hub_url)
+        except BaseException:
+            self.close()
+            raise
 
     def uid(self):
         return str(uuid.UUID(int=self.rnd.getrandbits(128), version=4))
@@ -236,7 +242,8 @@ class Env:
                 self.transcript(cwd, sid, "live work %d" % i)
                 size = "small"
             self.live_sessions.append({"sid": sid, "cwd": cwd, "size": size, "project": project_of.get(cwd, own)})
-            p = subprocess.Popen(["sleep", "86399"], start_new_session=True)
+            p = subprocess.Popen(["sleep", "86399"], start_new_session=True, stdin=subprocess.DEVNULL,
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             self.sleepers.append(p)
             write(os.path.join(self.home, ".claude", "sessions", "%d.json" % p.pid), {
                 "pid": p.pid, "sessionId": sid, "cwd": cwd, "kind": "interactive", "entrypoint": "cli",
@@ -282,6 +289,7 @@ class Env:
     def close(self):
         for p in self.sleepers:
             p.kill()
+        for p in self.sleepers:
             p.wait()
 
 
@@ -467,14 +475,12 @@ def cmd_run(a, env):
         if failed:
             print("daemon.log says %d failures, the first: %s" % (len(failed), failed[0].strip()))
     finally:
-        if run is not None:
-            run.send_signal(signal.SIGTERM)
-            try:
-                run.wait(60)
-            except subprocess.TimeoutExpired:
-                run.kill()
-        hub.kill()
-        hub.wait()
+        try:
+            if run is not None:
+                stop(run, 60)
+        finally:
+            hub.kill()
+            hub.wait()
 
 
 class EndpointStandin:
@@ -662,13 +668,11 @@ def cmd_run_rl10(a, env):
         print("gate (O14 B2 step 2): %s" % ("PASS" if ok else "FAIL"))
         return 0 if ok else 1
     finally:
-        if run is not None:
-            run.send_signal(signal.SIGTERM)
-            try:
-                run.wait(60)
-            except subprocess.TimeoutExpired:
-                run.kill()
-        ep.stop()
+        try:
+            if run is not None:
+                stop(run, 60)
+        finally:
+            ep.stop()
 
 
 def standin(env):
@@ -808,16 +812,18 @@ def cmd_opens(a, env):
             print(json.dumps({"summary": "opens", "complete": False, "incomplete": missed}), flush=True)
             return 3
     finally:
-        if up[0] is not None:
-            stop(up[0])
-        hub.kill()
-        hub.wait()
+        try:
+            if up[0] is not None:
+                stop(up[0])
+        finally:
+            hub.kill()
+            hub.wait()
 
 
-def stop(p):
+def stop(p, grace=30):
     p.send_signal(signal.SIGTERM)
     try:
-        p.wait(30)
+        p.wait(grace)
     except subprocess.TimeoutExpired:
         p.kill()
         p.wait()
@@ -851,6 +857,20 @@ def profiled(scripts, out, argv):
         pr.dump_stats(out)
 
 
+def stop_on_signals():
+    """SIGTERM or SIGINT (a timeout, a harness, ^C) raises SystemExit(128 +
+    the signal) where this process is, so every `finally` runs and ends what
+    it started: the sessions, `daemon run` (its uplink with it) and the
+    stand-in. A signal after the first is ignored: the cleanup it started
+    finishes, not cut short a second time."""
+    def stopped(signum, _frame):
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            signal.signal(sig, signal.SIG_IGN)
+        raise SystemExit(128 + signum)
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(sig, stopped)
+
+
 def main():
     if sys.argv[1:2] == ["_profiled"]:
         return profiled(sys.argv[2], sys.argv[3], sys.argv[4:])
@@ -880,13 +900,15 @@ def main():
     sub.choices["opens"].add_argument("--warm-after", type=float, default=30.0, metavar="S",
                                       help="when, after the uplink's start, every live session is opened in sequence")
     a = p.parse_args()
+    stop_on_signals()
     root = tempfile.mkdtemp(prefix="smb-", dir="/tmp")
-    t = time.perf_counter()
-    env = Env(root, a)
-    print("built %s in %.1f s: %d engine project dirs, %d seats (%d0%% without a transcript), %d live sessions, "
-          "%d hub projects, %d local" % (root, time.perf_counter() - t, a.dirs, a.seats, a.missing, a.live,
-                                         len(env.hub_ids), a.local), flush=True)
+    env = None
     try:
+        t = time.perf_counter()
+        env = Env(root, a)
+        print("built %s in %.1f s: %d engine project dirs, %d seats (%d0%% without a transcript), %d live sessions, "
+              "%d hub projects, %d local" % (root, time.perf_counter() - t, a.dirs, a.seats, a.missing, a.live,
+                                             len(env.hub_ids), a.local), flush=True)
         if a.joined_by:
             # The first tick's joins made by another copy of the scripts (the
             # same events any copy writes), so a slow copy's steady state is
@@ -898,9 +920,12 @@ def main():
         status = {"tick": cmd_tick, "profile": cmd_profile, "run": cmd_run, "verbs": cmd_verbs,
                   "opens": cmd_opens}[a.mode](a, env)
     finally:
-        env.close()
-        if not a.keep:
-            shutil.rmtree(root, ignore_errors=True)
+        try:
+            if env is not None:
+                env.close()
+        finally:
+            if not a.keep:
+                shutil.rmtree(root, ignore_errors=True)
     if status:
         sys.exit(status)   # opens: a moment it could not sample (its summary says which)
 
