@@ -3670,6 +3670,69 @@ class Checks(unittest.TestCase):
                          ["interrupted"])
 
 
+class SendsPruned(unittest.TestCase):
+    """sends.json keeps only the sessions that matter: at a reserve, at most
+    once every SENDS_PRUNE_S, an entry goes when its session is gone (not
+    running), its bridge holds no socket and none of its seqs is in flight.
+    Its next send still goes above the bridge's mark."""
+
+    GONE, RUNNING, BRIDGED, FLYING, NEXT = ("5e000000-0000-4000-8000-00000000000%d" % i for i in range(1, 6))
+
+    def setUp(self):
+        self.path = os.path.join(os.environ["SMINOS_HOME"], "daemon", rpcs.SENDS_FILE)
+        os.makedirs(os.path.dirname(self.path), mode=0o700, exist_ok=True)
+        os.makedirs(rpcs.bridge.bridge_dir(), mode=0o700, exist_ok=True)
+        self.made = [self.path]
+        sminos.write_json(self.path, {"version": 1, "seq": {s: 9 for s in (self.GONE, self.RUNNING, self.BRIDGED,
+                                                                           self.FLYING)}})
+        with open(rpcs.bridge.kept_path(self.GONE), "w") as f:
+            json.dump({"delivered": {rpcs.SEND_WRITER: 7}}, f)
+        open(rpcs.bridge.endpoint(self.BRIDGED), "w").close()
+        self.made += [rpcs.bridge.kept_path(self.GONE), rpcs.bridge.endpoint(self.BRIDGED)]
+        self.clock = [1000.0]
+        self.sends = rpcs.Sends(lambda: self.clock[0])
+        patch = mock.patch.object(sminos, "session_running", lambda sid: {} if sid == self.RUNNING else None)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def tearDown(self):
+        for p in self.made:
+            try:
+                os.unlink(p)
+            except FileNotFoundError:
+                pass
+
+    def kept(self):
+        with open(self.path) as f:
+            return json.load(f)["seq"]
+
+    def test_a_gone_sessions_entry_goes_and_its_next_send_is_above_the_bridges_mark(self):
+        self.sends.waiting[self.FLYING] = {9}   # reserved, its worker not finished
+        self.assertEqual(self.sends.reserve(self.NEXT), 1)
+        self.assertEqual(sorted(self.kept()), sorted([self.RUNNING, self.BRIDGED, self.FLYING, self.NEXT]),
+                         "the running, the bridged, the in-flight and the one reserved now stay")
+        self.assertEqual(os.stat(self.path).st_mode & 0o777, 0o600)
+        self.assertEqual(self.sends.reserve(self.GONE), 8, "above the mark its bridge kept, 7")
+
+    def test_pruned_at_most_once_an_interval(self):
+        self.sends.reserve(self.NEXT)
+        sminos.write_json(self.path, {"version": 1, "seq": {**self.kept(), self.GONE: 9}})
+        self.sends.last = None   # read again, as after a restart: the interval is this process's
+        self.sends.reserve(self.NEXT)
+        self.assertIn(self.GONE, self.kept(), "not again within the interval")
+        self.clock[0] += rpcs.SENDS_PRUNE_S
+        self.sends.reserve(self.NEXT)
+        self.assertNotIn(self.GONE, self.kept())
+
+    def test_an_unreadable_file_is_never_pruned(self):
+        with open(self.path, "w") as f:
+            f.write("{")
+        with self.assertRaises(ValueError):
+            self.sends.reserve(self.NEXT)
+        with open(self.path) as f:
+            self.assertEqual(f.read(), "{")
+
+
 class CopyNames(unittest.TestCase):
     """A seat-less session never takes, from its harness name, the alias of
     a seat or of another current member of its project: a `--bg` copy

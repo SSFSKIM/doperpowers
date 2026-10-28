@@ -190,7 +190,7 @@ most SEND_TEXT_MAX characters, and no slash command (its first
 non-whitespace character is not `/`, as the endpoint grades one), and is
 never logged. Sends to one session go in the order their frames arrived:
 the seq is reserved in `dispatch`, kept in `daemon/sends.json` before the
-worker starts (Sends), and kept on the claim (`send_seq`), so a copy of the
+worker starts (Sends, which drops a session gone from it), and kept on the claim (`send_seq`), so a copy of the
 op is answered from the ledger and never takes another; the post waits its
 turn behind every lower seq of the session, one `deliver` in flight, since
 the bridge drops a key at or below its mark. It answers `{entered, uuid}`
@@ -278,6 +278,7 @@ SEND_TEXT_MAX = 65536     # O9 §E `send`: a person's message, in characters (MA
 SEND_WAIT_S = 10          # how long a send waits for its key's `delivered` outcome before it answers `submitted`
 SEND_WRITER = "rl10-send"  # a send's delivery key: no log writer (each is `<machine>/…`, `hub/…` or `legacy/…`)
 SENDS_FILE = "sends.json"  # daemon/: the last seq reserved per session under SEND_WRITER
+SENDS_PRUNE_S = 3600      # how often, at most, a reserve drops the sends.json entries of sessions gone
 SLASH_RE = re.compile(r"[\s\ufeff]*/")   # a slash command, read behind leading whitespace as the endpoint grades it
 TASK_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")   # DX6 `stop`'s taskId, as the engine spells task ids
 CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
@@ -630,13 +631,22 @@ class Sends:
     seq is also above the mark the session's bridge kept, so a file lost
     with the daemon's state does not put a send below it. A file that
     exists and cannot be read is never replaced: every send is refused
-    until it can be."""
+    until it can be.
 
-    def __init__(self):
+    That mark is also why an entry can go (pruned): once a session is gone,
+    its bridge holds no socket and none of its seqs is in flight, the mark
+    its bridge kept on disk is every key it took, and a later send to it
+    goes above that. A reserve drops such entries, at most once every
+    SENDS_PRUNE_S, in the write it makes anyway, so the file stays the size
+    of the sessions that matter."""
+
+    def __init__(self, clock=time.time):
         self.path = os.path.join(sminos.root(), "daemon", SENDS_FILE)
         self.cv = threading.Condition()
+        self.clock = clock
         self.last = None     # {session: seq} as the file holds it; None until it is read
         self.waiting = {}    # session → the seqs reserved whose worker has not finished
+        self.pruned = None   # when a reserve last pruned (clock), None before the first
 
     def read(self):
         """The file's seqs. Raises OSError or ValueError when it exists and
@@ -658,12 +668,24 @@ class Sends:
                 self.last = self.read()
             mark = bridge.load_kept(sid)["delivered"].get(SEND_WRITER, 0)
             seq = max(self.last.get(sid, 0), mark) + 1
-            last = {**self.last, sid: seq}
+            last = {**self.pruned_of(self.last, sid), sid: seq}
             os.makedirs(os.path.dirname(self.path), mode=0o700, exist_ok=True)
             sminos.write_json(self.path, {"version": 1, "seq": last})
             self.last = last
             self.waiting.setdefault(sid, set()).add(seq)
             return seq
+
+    def pruned_of(self, last, sid):
+        """`last` without the sessions gone (Sends), when an interval has
+        passed since the last prune; `sid`, reserved now, stays. Under the
+        lock, on the uplink's main thread (it calls sminos)."""
+        t = self.clock()
+        if self.pruned is not None and t - self.pruned < SENDS_PRUNE_S:
+            return last
+        self.pruned = t
+        return {s: n for s, n in last.items()
+                if s == sid or s in self.waiting or os.path.exists(bridge.endpoint(s))
+                or sminos.session_running(s) is not None}
 
     @contextlib.contextmanager
     def turn(self, sid, seq):
@@ -703,7 +725,7 @@ class Rpcs:
         self.wake = wake
         self.clock = clock
         self.ledger = Ledger(clock)
-        self.sends = Sends()      # each session's send seqs: reserved on receipt, posted in their order
+        self.sends = Sends(clock)  # each session's send seqs: reserved on receipt, posted in their order
         self.loose = {}           # nonce → (project id, outcome, at, opId): refusals the ledger does not keep
         self.flight = {}          # op → {nonce}: ops a worker holds, each with the latest nonce a copy of it came
         #                           with, which its claim or refusal is kept under (ticket 11a)
