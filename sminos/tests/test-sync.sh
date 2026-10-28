@@ -406,9 +406,10 @@ with open(tmp, "w") as f:   # replaced whole: a record read mid-write would be n
 os.replace(tmp, sys.argv[4])
 PY
 tick_b() { python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get("tick", ""))' "$T/b/s/projects/$PID/daemon.json" 2>/dev/null || true; }
+tick_b_moved() { [ "$(tick_b)" != "$1" ]; }
 for _ in 1 2; do
   B_TICK="$(tick_b)"
-  until_true 200 test "$(tick_b)" != "$B_TICK" || true
+  until_true 200 tick_b_moved "$B_TICK" || true
 done
 python3 - "$RB" "$OB" <<'PY'
 import os, sys, time
