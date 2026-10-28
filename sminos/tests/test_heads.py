@@ -25,6 +25,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -221,7 +223,23 @@ class Publication(Machine):
             return real(path, data, mode)
         with mock.patch.object(sminos, "write_json", write_json):
             rl10.welcomed(Rl10.WELCOME)
-        self.assertEqual(seen, [{"name": "testhost", "enrolled": Rl10.WELCOME["identity"]["enrolled"]}])
+        self.assertEqual(seen, [{"marks": [{"name": "testhost", "enrolled": Rl10.WELCOME["identity"]["enrolled"]}]}])
+
+    def test_a_renaming_welcome_keeps_the_old_enrolment_marked_until_it_is_replaced(self):
+        """While a welcome publishes a new enrolment, the one still current
+        stays marked: an append as it waits as before."""
+        self.enrol(fresh=False)
+        rl10.welcomed(Rl10.WELCOME)
+        seen, real = [], sminos.write_json
+
+        def write_json(path, data, mode=0o600):
+            if path == rl10.identity_path():
+                sminos.forget_caches()
+                seen.append(sminos.waits_for_head(self.p, W))
+            return real(path, data, mode)
+        with mock.patch.object(sminos, "write_json", write_json):
+            rl10.welcomed({**Rl10.WELCOME, "identity": {**Rl10.WELCOME["identity"], "name": "renamed"}})
+        self.assertEqual(seen, [True], "testhost/human still waits while the rename is published")
 
     def test_a_mark_that_fails_leaves_the_cutover_to_the_next_welcome(self):
         self.enrol(fresh=False)
@@ -252,6 +270,53 @@ class Renamed(Machine):
                          [(3, "as testhost"), (4, "as renamed")])
         self.assertEqual([e["seq"] for frame, _ in hl.uploads() for e in frame["events"]], [3, 4])
         self.assertEqual(sminos.queued_operators(self.p), {}, "no queue is left behind")
+
+    def rename_after_first_welcome(self):
+        self.enrol(fresh=False)
+        rl10.welcomed(Rl10.WELCOME)
+
+    def test_a_queue_is_drained_under_its_own_writers_lock(self):
+        """An appender still running as the former name queues under that
+        writer's lock: the release drains that queue under the same lock, so
+        what it queues meanwhile is either drained or left for the next
+        release, never removed unread."""
+        self.rename_after_first_welcome()
+        self.say("first")
+        rl10.welcomed({**Rl10.WELCOME, "identity": {**Rl10.WELCOME["identity"], "name": "renamed"}})
+        hl = hublog.HubLog(self.p, {"key": None, "machine": "renamed"}, coded=False)
+        old = sminos.writer_path(self.p, W)
+        stale = sminos.writer_locks(old)
+        stale.__enter__()
+        done = threading.Event()
+        threading.Thread(target=lambda: (hl.on_have({"have": {}}), done.set()), daemon=True).start()
+        self.assertFalse(done.wait(0.5), "the release waits for the former writer's lock")
+        sminos._queue(self.p, W, [{"kind": "human", "from": "human", "to": "*", "text": "second"}])
+        stale.__exit__(None, None, None)
+        self.assertTrue(done.wait(10))
+        self.assertEqual([e["text"] for e in sminos.log_read(self.p) if e["writer"] == "renamed/human"],
+                         ["first", "second"])
+        self.assertEqual(sminos.queued_operators(self.p), {})
+
+    def test_a_release_cut_short_under_a_former_name_is_not_appended_again(self):
+        self.rename_after_first_welcome()
+        self.say("early")
+        kept = Path(sminos.queued_path(self.p, W)).read_text()
+        hublog.HubLog(self.p, {"key": None, "machine": "testhost"}, coded=False).on_have({"have": {}})
+        self.assertEqual([(e["writer"], e["text"]) for e in sminos.log_read(self.p)], [(W, "early")])
+        Path(sminos.queued_path(self.p, W)).write_text(kept)   # a crash before the queue's removal
+        rl10.welcomed({**Rl10.WELCOME, "identity": {**Rl10.WELCOME["identity"], "name": "renamed"}})
+        hublog.HubLog(self.p, {"key": None, "machine": "renamed"}, coded=False).on_have({"have": {}})
+        self.assertEqual([(e["writer"], e["text"]) for e in sminos.log_read(self.p)], [(W, "early")],
+                         "the former writer's log holds it: not appended again under the new name")
+        self.assertEqual(sminos.queued_operators(self.p), {})
+
+    def test_a_fragment_a_queue_was_left_with_does_not_swallow_the_next_append(self):
+        self.enrol()
+        self.say("early")
+        with open(sminos.queued_path(self.p, W), "a") as f:
+            f.write('{"ts": "2026-10-28T00:00:00.000Z", "writer": "testhost/hu')   # an interrupted write
+        self.say("after it")
+        self.assertEqual([e["text"] for e in sminos.queued_read(self.p, W)], ["early", "after it"])
 
 
 def tearDownModule():

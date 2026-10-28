@@ -205,7 +205,7 @@ import threading
 import time
 import unicodedata
 import uuid as uuidlib
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from typing import NamedTuple, NoReturn, Optional
 
 # The oldest Python sminos runs on (its annotations are evaluated: `float |
@@ -1860,6 +1860,7 @@ def writer_locks(path, held=False):
 # at, and goes up with the next upload. A machine enrolled before this rule
 # has no mark, and nothing of it waits.
 HEADS_FILE = "heads.json"
+HEADS_KEPT = 8   # enrolments daemon/heads.json keeps marked: one replacing another leaves the other marked
 QUEUED = "queued"
 
 
@@ -1877,11 +1878,26 @@ def enrolment_stamp():
     return (d["machine"], d.get("enrolled")) if isinstance(d, dict) and isinstance(d.get("machine"), str) else None
 
 
+def _marks():
+    """[(name, enrolled)] daemon/heads.json marks, oldest first."""
+    try:
+        with open(os.path.join(root(), "daemon", HEADS_FILE)) as f:
+            d = json.load(f)
+    except (OSError, ValueError):
+        return []
+    raw = d.get("marks") if isinstance(d, dict) else None
+    return [(m.get("name"), m.get("enrolled")) for m in raw if isinstance(m, dict)] if isinstance(raw, list) else []
+
+
 def mark_enrolled(name, enrolled):
     """A new enrolment under `name` (enrol, a cutover, a rename): from now on
-    the operator writer of each upstream project waits for its head."""
+    the operator writer of each upstream project waits for its head. Added
+    to the enrolments marked, so the one it replaces stays marked until it
+    is replaced in fact."""
     os.makedirs(os.path.join(root(), "daemon"), mode=0o700, exist_ok=True)
-    write_json(os.path.join(root(), "daemon", HEADS_FILE), {"name": name, "enrolled": enrolled})
+    marks = [m for m in _marks() if m != (name, enrolled)] + [(name, enrolled)]
+    write_json(os.path.join(root(), "daemon", HEADS_FILE),
+               {"marks": [{"name": n, "enrolled": e} for n, e in marks[-HEADS_KEPT:]]})
 
 
 def _stamped(path, now):
@@ -1904,7 +1920,7 @@ def waits_for_head(project, writer):
     if e is None or not (isinstance(project.hub, dict) and project.hub.get("org") == e["org"]):
         return False
     now = enrolment_stamp()
-    if now is None or _stamped(os.path.join(root(), "daemon", HEADS_FILE), now) is None:
+    if now is None or now not in _marks():
         return False
     known = _stamped(os.path.join(project.home, HEADS_FILE), now)
     return not (known is not None and writer in (known.get("known") or []))
@@ -1967,23 +1983,32 @@ def release_queued(project, writer):
         if writer not in (known.get("known") or []):
             known["known"] = sorted(set(known.get("known") or []) | {writer})
             write_json(project_path(project, HEADS_FILE), known)
-        # What waited under a former name too: never sequenced, so never seen by
-        # anyone, it is the operator's now under this name (a former name's
-        # writer is no upload's).
-        queues = queued_operators(project)
-        waiting = sorted(({k: v for k, v in e.items() if k not in ("writer", "seq")}
-                          for w, p in queues.items() for e in queued_events(p) if e["writer"] == w),
-                         key=lambda e: str(e.get("ts") or ""))
-        if waiting:
-            held = {json.dumps({k: v for k, v in e.items() if k not in ("writer", "seq")}, sort_keys=True)
-                    for e in _log_file_events(path) if e["ts"] >= min(x.get("ts", "") for x in waiting)}
-            waiting = [e for e in waiting if json.dumps(e, sort_keys=True) not in held]
-        out = _append(project, writer, waiting, held=True) if waiting else []
-        for p in queues.values():
-            try:
-                os.unlink(p)
-            except FileNotFoundError:
-                pass
+        # What waited under a former name too, the operator's now under this
+        # name (a former name's writer is no upload's). Each queue is drained
+        # under its own writer's locks, which an appender still running as a
+        # former name takes to queue there.
+        with ExitStack() as stack:
+            queues = queued_operators(project)
+            for w in sorted(queues):
+                if w != writer:
+                    stack.enter_context(writer_locks(writer_path(project, w)))
+            waiting = sorted(({k: v for k, v in e.items() if k not in ("writer", "seq")}
+                              for w, p in queues.items() for e in queued_events(p) if e["writer"] == w),
+                             key=lambda e: str(e.get("ts") or ""))
+            if waiting:
+                # A release cut short after its append, under this name or a
+                # former one, left its queue: what a log holds is not appended again.
+                since = min(str(x.get("ts") or "") for x in waiting)
+                held = {json.dumps({k: v for k, v in e.items() if k not in ("writer", "seq")}, sort_keys=True)
+                        for w in {writer, *queues} for e in _log_file_events(writer_path(project, w))
+                        if e["ts"] >= since}
+                waiting = [e for e in waiting if json.dumps(e, sort_keys=True) not in held]
+            out = _append(project, writer, waiting, held=True) if waiting else []
+            for p in queues.values():
+                try:
+                    os.unlink(p)
+                except FileNotFoundError:
+                    pass
     return out
 
 
@@ -1993,10 +2018,17 @@ def _queue(project, writer, events):
     seq None."""
     out = [{"ts": now(ms=True), "writer": writer, "seq": None, **e} for e in events]
     os.makedirs(os.path.join(project.home, QUEUED), mode=0o700, exist_ok=True)
-    fd = os.open(queued_path(project, writer), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-    with os.fdopen(fd, "a", encoding="utf-8") as f:
+    fd = os.open(queued_path(project, writer), os.O_RDWR | os.O_CREAT | os.O_APPEND, 0o600)
+    with os.fdopen(fd, "r+b") as f:
+        end = f.seek(0, os.SEEK_END)
+        if end:
+            # An interrupted append can leave a fragment without its newline,
+            # as in the log: end it, so this event is a line of its own.
+            f.seek(end - 1)
+            if f.read(1) != b"\n":
+                f.write(b"\n")
         f.write("".join(json.dumps({k: v for k, v in e.items() if k != "seq"}, ensure_ascii=False) + "\n"
-                        for e in out))
+                        for e in out).encode("utf-8"))
     return out
 
 
