@@ -1967,6 +1967,35 @@ def queued_operators(project):
     return out
 
 
+def queued_counts():
+    """[(project name, events)] of every project with appends that wait for a
+    head, in name order."""
+    out = []
+    for p in sorted(known_projects(all_seats=[]), key=lambda p: (p.name, p.id)):
+        n = sum(len(queued_events(path)) for path in glob.glob(os.path.join(glob.escape(p.home), QUEUED, "*.jsonl")))
+        if n:
+            out.append((p.name, n))
+    return out
+
+
+def said_order(queues):
+    """The events of queued_operators' `queues`, in the order they were said.
+    Within one queue its file order is that order: appends to it are
+    serialized by its writer's locks, whatever the clock says. Across queues
+    the ts is the only signal, and it carries milliseconds alone, so two
+    appends in one millisecond tie; on a tie a former name's event goes
+    before a later name's (oldest name first, the name now last), since the
+    rename that made the later name came between them. So the queues are
+    merged, not sorted: each keeps its own order, and no tie is left to the
+    order the queues were found in (each name has one queue, one rank)."""
+    me, former = machine_identity()
+    rank = {n: i for i, n in enumerate(former)}
+    rank[me] = len(rank)
+    runs = [[(str(e.get("ts") or ""), rank[w.rpartition("/")[0]], e) for e in queued_events(p) if e["writer"] == w]
+            for w, p in queues.items()]
+    return [e for _, _, e in heapq.merge(*runs, key=lambda x: x[:2])]
+
+
 def release_queued(project, writer):
     """The upstream's head for `writer` is known and the log reached it: the
     writer known for this enrolment, and what waited for it appended above
@@ -1992,9 +2021,7 @@ def release_queued(project, writer):
             for w in sorted(queues):
                 if w != writer:
                     stack.enter_context(writer_locks(writer_path(project, w)))
-            waiting = sorted(({k: v for k, v in e.items() if k not in ("writer", "seq")}
-                              for w, p in queues.items() for e in queued_events(p) if e["writer"] == w),
-                             key=lambda e: str(e.get("ts") or ""))
+            waiting = [{k: v for k, v in e.items() if k not in ("writer", "seq")} for e in said_order(queues)]
             if waiting:
                 # A release cut short after its append, under this name or a
                 # former one, left its queue: what a log holds is not appended again.
