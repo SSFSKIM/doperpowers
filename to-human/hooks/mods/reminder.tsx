@@ -22,7 +22,11 @@ export const REMINDER =
  * loop, the turn's prompt and each tool result alike, so it stands where the
  * model decides whether its turn ends. It names no rule of the style; this one
  * saves a request each turn: a final message ends the turn with none after it
- * (the message mod), and only one sent alone.
+ * (the message mod), and only one sent alone. The engine caches an
+ * attachment's answer process-wide by its UUID, and a fork inherits main's, so
+ * the answer cannot depend on the loop that asks first; it depends on the
+ * engine's text and on whether the message tool is registered, which hold for
+ * every loop.
  */
 export const STYLE_FINAL = 'When a message is the last thing you do in a turn, send it alone with `final: true`.'
 
@@ -47,8 +51,8 @@ export function pointOf(tokens: number | undefined): number {
  * registered, since the reminder names it. A prompt that runs a slash command
  * carries none. A prompt dropped beneath gives the reminder to the next one,
  * unless a newer prompt moved the point while it waited. The engine's style
- * reminder carries `STYLE_FINAL` after its own words, on the main loop where
- * the message tool is registered.
+ * reminder carries `STYLE_FINAL` after its own words wherever the message tool
+ * is registered, the same text for every loop (see `STYLE_FINAL`).
  */
 export function registerReminder(on: On) {
   // The highest point reminded in this window; undefined until the first
@@ -56,9 +60,10 @@ export function registerReminder(on: On) {
   // the point is still the one it set.
   let reached: { point: number } | undefined
 
+  // Loop-independent: see STYLE_FINAL.
   on('prompt.attachment', { type: 'output_style' }, async (_, e, next) => {
     const result = await next(e)
-    if (e.agentId !== undefined || result.text === null || !isMessageToolOn()) {
+    if (result.text === null || !isMessageToolOn()) {
       return result
     }
     return { ...result, text: `${result.text} ${STYLE_FINAL}` }

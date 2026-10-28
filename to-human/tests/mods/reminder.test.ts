@@ -232,11 +232,12 @@ describe("the engine's style reminder", () => {
     expect(STYLE_FINAL).toContain('`final: true`')
   })
 
-  test("a subagent's is left as the engine wrote it: a subagent cannot send a message", async ($, on) => {
+  test("a subagent's reads the same text as main's: the engine caches the answer by the attachment's UUID, which a fork shares", async ($, on) => {
     engine(on)
     await $.session.start({ cwd: '/w', surface: null, isInteractive: true })
 
-    expect((await $.prompt.attachment(styleReminder({ agentId: 'a1' }))).text).toBe(STYLE_REMINDER)
+    const main = (await $.prompt.attachment(styleReminder())).text
+    expect((await $.prompt.attachment(styleReminder({ agentId: 'a1' }))).text).toBe(main)
   })
 
   test('where the message tool is not registered (MAWS before 8) it is left as the engine wrote it', async ($, on) => {
