@@ -196,20 +196,29 @@ export const isMessageToolOn = () => isRegistered
 const MAWS_WITHOUT_TOOL = 8
 
 /**
- * Whether the launch is MAWS's and MAWS registers its own message tool:
- * `MAWS_NATIVE_TO_HUMAN`, the contract version MAWS advertises, is a number
- * below `MAWS_WITHOUT_TOOL`. Unset, empty or from 8 on, this one registers.
+ * The contract version a MAWS launch advertises in `MAWS_NATIVE_TO_HUMAN`;
+ * NaN where none is set, or what is set is no number.
  */
-const mawsHasOwnTool =(advertised: string | undefined) =>
-  advertised !== undefined && advertised.trim() !== '' && Number(advertised) < MAWS_WITHOUT_TOOL
+const mawsVersion = (advertised: string | undefined) =>
+  advertised === undefined || advertised.trim() === '' ? NaN : Number(advertised)
 
 /**
- * Registers the tool and serves it. It is registered as an interactive
- * session starts under the to-human style (nobody reads a headless session's
- * report, and only the style says when to use the tool), except under a MAWS
- * that registers its own `mcp__maws__message` (`mawsHasOwnTool`: so a
- * session never has two message tools, or none, across MAWS's switch to
- * this one). The style is read once, at the start: a session that
+ * Whether a session starting so gets the tool, under the to-human style
+ * (only the style says when to use it). An interactive one does, except
+ * under a MAWS that registers its own `mcp__maws__message` (a version below
+ * `MAWS_WITHOUT_TOOL`), so a session never has two message tools, or none,
+ * across MAWS's switch to this one. A headless one does only under a MAWS
+ * that offers none (from `MAWS_WITHOUT_TOOL` on): every MAWS launch is
+ * headless (`claude -p`, stream-json both ways) and MAWS reads its report,
+ * where nobody reads another headless session's (a script's, a sminos
+ * internal fork's).
+ */
+const getsTool = (isInteractive: boolean, advertised: string | undefined) =>
+  isInteractive ? !(mawsVersion(advertised) < MAWS_WITHOUT_TOOL) : mawsVersion(advertised) >= MAWS_WITHOUT_TOOL
+
+/**
+ * Registers the tool and serves it, in a session that gets it (`getsTool`),
+ * as the session starts. The style is read once, at the start: a session that
  * switches to the style in `/config` gets the tool at its next start. It is always loaded, so the first message costs no
  * ToolSearch. A call from the main conversation raises the person's
  * notification where the session notifies (`isNotifying`) and returns `sent`; a subagent's is refused, since only the
@@ -233,16 +242,19 @@ const mawsHasOwnTool =(advertised: string | undefined) =>
  * as any row is, and the view draws the made-up one as nothing.
  */
 export function registerMessage(on: On) {
-  on('session.start', { isInteractive: true }, async ($, e, next) => {
+  // Every start, headless ones included (a MAWS launch is headless): `cwd` matches any.
+  on('session.start', { cwd: /^/ }, async ($, e, next) => {
     isRegistered = false
-    const maws = await $.env.get('MAWS_NATIVE_TO_HUMAN')
+    if (!getsTool(e.isInteractive, await $.env.get('MAWS_NATIVE_TO_HUMAN'))) {
+      return next(e)
+    }
     let style: unknown
     try {
       style = (await $.config.list()).find((row) => row.key === 'outputStyle')?.value
     } catch (error) {
       $.ui.log(`to-human: the message tool is not registered: the output style could not be read (${message(error)})`, { to: 'debug' })
     }
-    if (!mawsHasOwnTool(maws) && style === TO_HUMAN_STYLE) {
+    if (style === TO_HUMAN_STYLE) {
       try {
         const { tool } = await $.tool.register({ name: 'message', description: DESCRIPTION, inputSchema: INPUT_SCHEMA })
         isRegistered = tool === MESSAGE_TOOL
