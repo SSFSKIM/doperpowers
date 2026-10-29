@@ -378,8 +378,14 @@ def cpu_seconds(pid):
 
 
 def ticks_ended(env):
-    """The tick stamps every project's daemon.json holds now."""
+    """The tick stamps now: daemon/ticked's mtime (each tick's end, from
+    sminos 1.27.11), and every project's daemon.json's `tick` (each tick's,
+    before: a copy of the scripts from then is measured too)."""
     out = set()
+    try:
+        out.add(("daemon/ticked", os.stat(os.path.join(env.sh, "daemon", "ticked")).st_mtime_ns))
+    except OSError:
+        pass
     root = os.path.join(env.sh, "projects")
     for pid in os.listdir(root):
         try:

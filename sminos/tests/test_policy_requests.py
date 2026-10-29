@@ -488,12 +488,17 @@ class Delivery(unittest.TestCase):
             view = sminos.view_of(project, titles=False)
             read, go = threading.Event(), threading.Event()
             real = sminos.delivered_load
+            reads = []
 
             def paused(project_, session):
                 got = real(project_, session)
                 if threading.current_thread().name == "reporter" and session == sid:
-                    read.set()
-                    go.wait(10)
+                    # The first read is the look without the lock (owes_report); the
+                    # second, the one under it that the record rests on.
+                    reads.append(session)
+                    if len(reads) == 2:
+                        read.set()
+                        go.wait(10)
                 return got
 
             with mock.patch.object(sminos, "delivered_load", side_effect=paused):

@@ -38,7 +38,6 @@ the working directories its sessions joined from on this machine, and the
 project's own root.
 """
 
-import json
 import os
 import sys
 
@@ -60,8 +59,8 @@ def settings_mode():
     `permissions.defaultMode` as written, else the engine's `default`
     (missing or malformed settings included, as the engine reads them)."""
     try:
-        with open(os.path.join(sminos.home_dir(), ".claude", "settings.json")) as f:
-            mode = ((json.load(f) or {}).get("permissions") or {}).get("defaultMode")
+        mode = ((sminos.json_at(os.path.join(sminos.home_dir(), ".claude", "settings.json")) or {})
+                .get("permissions") or {}).get("defaultMode")
     except (OSError, ValueError, AttributeError):
         mode = None
     return mode if isinstance(mode, str) and mode else "default"
@@ -71,8 +70,7 @@ def stored():
     """The policy file as the owner left it: {} when there is none; None when
     it is no policy (unreadable, not JSON, or fields of the wrong kind)."""
     try:
-        with open(policy_path()) as f:
-            d = json.load(f)
+        d = sminos.json_at(policy_path())
     except FileNotFoundError:
         return {}
     except (OSError, ValueError):
@@ -175,12 +173,12 @@ def git_branch(path):
             return ""
         d = parent
     try:
+        # Asked for every member each tick; git writes these files whole, by
+        # rename, so a stat tells one unchanged (sminos.file_bytes).
         if os.path.isfile(dot):
-            with open(dot) as f:
-                line = f.read().strip()
+            line = sminos.file_bytes(dot).decode().strip()
             dot = os.path.join(d, line[len("gitdir:"):].strip()) if line.startswith("gitdir:") else ""
-        with open(os.path.join(dot, "HEAD")) as f:
-            head = f.read().strip()
+        head = sminos.file_bytes(os.path.join(dot, "HEAD")).decode().strip()
     except OSError:
         return ""
     return head[len("ref: refs/heads/"):] if head.startswith("ref: refs/heads/") else ""

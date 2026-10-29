@@ -306,7 +306,9 @@ rm -f "$T/ssh-entered"
 touch "$T/ssh-gate" "$SMINOS_HOME/daemon/nudge"
 until_true 200 test -f "$T/ssh-entered" || true
 assert_equals "$(test -f "$T/ssh-entered" && echo in)" in "the tick loop is inside a fetch of the hub-less project that hangs"
-TICKED="$(cat "$SMINOS_HOME/projects/$HP/daemon.json")"
+# The loop marks each tick's end on daemon/ticked's mtime; a quiet project's record is not written.
+ticked() { python3 -c 'import os, sys; print(os.stat(sys.argv[1]).st_mtime_ns)' "$SMINOS_HOME/daemon/ticked" 2>/dev/null || true; }
+TICKED="$(ticked)"
 read -r STATUS BURST_TOOK <<<"$(ctl burst 4000 1000)"
 assert_equals "$STATUS" 200 "4 MB of frames from the hub are drained while the fetch hangs"
 assert_within "$BURST_TOOK" 5.0 "promptly"
@@ -326,10 +328,10 @@ assert_contains "$(cat "$DLOG")" "fails its shape" "by its shape, though its cod
 assert_contains "$(cat "$DLOG")" "its code or nonce is not the canonical base64url of 32 and 16 bytes" "a code in another spelling of its bytes is refused before any HMAC"
 assert_equals "$(grep -c "its code does not verify" "$DLOG")" 3 "a changed field, an uncovered field (via), and an event of another project all fail the code"
 assert_contains "$(cat "$DLOG")" "events for project '$OTHER_PROJECT', which is no hub project of org org-1 known here: ignored" "a frame for a project not known here is ignored"
-assert_equals "$(cat "$SMINOS_HOME/projects/$HP/daemon.json")" "$TICKED" "the tick loop is still in the fetch all along"
+assert_equals "$(ticked)" "$TICKED" "the tick loop is still in the fetch all along"
 if alive "$RUN"; then pass "and daemon run is alive"; else fail "and daemon run is alive"; fi
 rm -f "$T/ssh-gate"
-ticked_since() { [ "$(cat "$SMINOS_HOME/projects/$HP/daemon.json")" != "$1" ]; }
+ticked_since() { [ "$(ticked)" != "$1" ]; }
 until_true 200 ticked_since "$TICKED" || true
 if ticked_since "$TICKED"; then pass "released, the tick loop goes on"; else fail "released, the tick loop goes on"; fi
 
@@ -354,11 +356,11 @@ sleep 0.5
 assert_not_contains "$(cat "$INBOX")" "said from the web mid-delivery" "and waits on m's delivery lock"
 rm -f "$INBOX.hold"
 until_true 100 grep -q "said from the web mid-delivery" "$INBOX" || true
-TICKED="$(cat "$SMINOS_HOME/projects/$HP/daemon.json")"
+TICKED="$(ticked)"
 touch "$SMINOS_HOME/daemon/nudge"
 until_true 200 ticked_since "$TICKED" || true
 touch "$SMINOS_HOME/daemon/nudge"
-TICKED="$(cat "$SMINOS_HOME/projects/$HP/daemon.json")"
+TICKED="$(ticked)"
 until_true 200 ticked_since "$TICKED" || true
 assert_equals "$(grep -o "said from the web mid-delivery" "$INBOX" | wc -l | tr -d ' ')" 1 "the human reaches m once, two ticks later"
 assert_equals "$(grep -o "a say the tick delivers" "$INBOX" | wc -l | tr -d ' ')" 1 "and the say once"
@@ -387,7 +389,7 @@ NEW_UP="$(uplink_pid)"
 if [[ -n "$NEW_UP" && "$NEW_UP" != "$UP" ]] && alive "$NEW_UP"; then pass "a new uplink process ($NEW_UP)"; else
   fail "a new uplink process"; echo "    uplink pid '$NEW_UP', was $UP"; fi
 assert_contains "$(cat "$DLOG")" "uplink (pid $UP) exited on signal 9; restarting in 1s" "daemon.log says so"
-TICKED="$(cat "$SMINOS_HOME/projects/$HP/daemon.json")"
+TICKED="$(ticked)"
 until_true 200 ticked_since "$TICKED" || true
 if ticked_since "$TICKED" && alive "$RUN"; then pass "the tick loop goes on"; else fail "the tick loop goes on"; fi
 TOOK="$(deliver_time 6 "said from the web to the new uplink")"

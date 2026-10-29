@@ -115,6 +115,7 @@ UNIT = "sminos-daemon.service"
 UNIT_TEMPLATE = os.path.join(sminos.SCRIPT_DIR, "..", "references", UNIT)
 REJECTED_RE = re.compile(r"\[rejected\]|non-fast-forward|fetch first|\[remote rejected\].*(?:stale|lock)")
 _DERIVE = None  # the derivation child this process started, while it may run
+_DERIVE_SEEN = [0.0]  # the latest derivation start this process knows of (derive_duty)
 # A bridge's kept file outlives its session's end this long (Resume soon after
 # keeps the session's model choice); the sweep runs at most this often.
 BRIDGE_QUIET_S = 86400
@@ -239,11 +240,10 @@ def clear_stale_locks(log):
 def instance_id():
     """This machine's random instance id, written on first use
     ($SMINOS_HOME/daemon/machine.json)."""
-    path = daemon_path("machine.json")
+    path = os.path.join(sminos.root(), "daemon", "machine.json")
     for _ in range(2):
         try:
-            with open(path) as f:
-                got = str(json.load(f).get("instance") or "")
+            got = str(sminos.json_at(path).get("instance") or "")   # made once, never rewritten
             if got:
                 return got
         except FileNotFoundError:
@@ -251,7 +251,7 @@ def instance_id():
         except (OSError, ValueError, AttributeError):
             break
         try:
-            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            fd = os.open(daemon_path("machine.json"), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         except FileExistsError:
             continue
         mine = str(uuidlib.uuid4())
@@ -322,6 +322,72 @@ def attached(project, log):
         return False
     url = git(log, "remote", "get-url", "origin")
     return url.returncode == 0 and url.stdout.strip() == project.remote
+
+
+# The mirrors' state as their last sync left them — nothing to commit, nothing
+# to push, the remote's main merged (sync_out) — keyed by log directory:
+# (mirror_state, the remote it was attached to). A tick whose fetch finds the
+# same state, and whose duties appended nothing, has nothing to integrate or
+# push, and spends two git processes (the fetch, one look at the refs)
+# instead of fourteen.
+_SETTLED = {}
+_LOOKED = {}   # log directory → the mirror_state this tick's sync_in took after its fetch, for its sync_out
+
+
+def mirror_state(log, refs=None):
+    """What a sync of the mirror reads, as it is now: the remote's main and
+    the local branches (one git process, unless `refs` is the look this tick
+    took after its fetch), HEAD itself, the work tree as `git add -A` sees
+    it (every file but .git and the locks git ignores, by stat), the git
+    config (its remote), and the machine's name and instance (the claim)."""
+    if refs is None:
+        look = git(log, "for-each-ref", "--format=%(refname) %(objectname)", "refs/remotes/origin/main", "refs/heads/")
+        if look.returncode != 0:
+            return None
+        refs = look.stdout
+    tree = []
+    for d, dirs, files in os.walk(log):
+        if d == log and ".git" in dirs:
+            dirs.remove(".git")
+        dirs.sort()
+        for f in sorted(files):
+            if f.endswith(".lock"):
+                continue
+            path = os.path.join(d, f)
+            try:
+                st = os.lstat(path)
+            except OSError:
+                return None
+            tree.append((os.path.relpath(path, log), st.st_ino, st.st_size, st.st_mtime_ns))
+    try:
+        head = sminos.file_bytes(os.path.join(log, ".git", "HEAD"))
+    except OSError:
+        return None
+    config = config_key(log)
+    return None if config is None else (refs, head, tuple(tree), config, sminos.host_name(), instance_id())
+
+
+def config_key(log):
+    """The mirror's git config by stat (git rewrites it whole, by rename), or None."""
+    try:
+        st = os.stat(os.path.join(log, ".git", "config"))
+    except OSError:
+        return None
+    return st.st_ino, st.st_size, st.st_mtime_ns
+
+
+def level(state):
+    """Whether a mirror_state's HEAD names a branch at the remote's main, by
+    the refs it holds: nothing of it is left to push, whoever committed."""
+    head = state[1].decode(errors="replace").strip()
+    refs = dict(line.split(" ", 1) for line in state[0].splitlines() if " " in line)
+    return head.startswith("ref: ") and bool(refs.get("refs/remotes/origin/main")) \
+        and refs.get(head[len("ref: "):]) == refs["refs/remotes/origin/main"]
+
+
+def settled(project, log, state):
+    """Whether the mirror is as its last sync left it (`state`, mirror_state now)."""
+    return state is not None and _SETTLED.get(log) == (state, project.remote)
 
 
 def prepare(project, log):
@@ -425,13 +491,27 @@ def sync_in(project):
     try:
         with sync_op(log):
             ensure_mirrored(project)
-            if not attached(project, log):
+            # Attached as the last sync left it, its config untouched since: no git needed to tell.
+            held = _SETTLED.get(log)
+            if not (held and held[1] == project.remote and held[0][3] == config_key(log)) \
+                    and not attached(project, log):
                 prepare(project, log)
             fetch(log)
-            integrate(project, log)
+            # Nothing new from the remote, nothing appended here, the claim as
+            # it was: the claim's check, the commit and the merge would each
+            # find nothing to do.
+            state = mirror_state(log)
+            _LOOKED[log] = state
+            if not settled(project, log, state):
+                _SETTLED.pop(log, None)
+                integrate(project, log)
     except BecameHub as e:
+        _SETTLED.pop(log, None)
         sminos.daemon_log("sync %s: %s" % (project.name, e))
         return False
+    except BaseException:
+        _SETTLED.pop(log, None)
+        raise
     return True
 
 
@@ -441,10 +521,32 @@ def sync_out(project):
     log = log_dir(project)
     try:
         with sync_op(log):
-            return push(project, log)
+            # The refs as this tick's sync_in saw them after its fetch: no git
+            # of ours ran since, and one of another process's (an attach, under
+            # the same lock) is seen by the next tick's look.
+            looked = _LOOKED.pop(log, None)
+            if looked is not None and settled(project, log, mirror_state(log, refs=looked[0])):
+                return False   # this tick appended nothing, and nothing was left to push
+            _SETTLED.pop(log, None)
+            pushed = push(project, log)
+            if not pushed:
+                # Committed, merged, nothing ahead of the remote's main: settled,
+                # once the tree is seen clean under the appenders' lock, so what
+                # is kept is the committed state and an append meanwhile is not
+                # (push commits, then looks at the remote, without the lock).
+                with lock(log, ".sync.lock"):
+                    if not git_ok(log, "status", "--porcelain").stdout.strip():
+                        state = mirror_state(log)
+                        if state is not None and level(state):
+                            _SETTLED[log] = (state, project.remote)
+            return pushed
     except BecameHub as e:
+        _SETTLED.pop(log, None)
         sminos.daemon_log("sync %s: %s" % (project.name, e))
         return False
+    except BaseException:
+        _SETTLED.pop(log, None)
+        raise
 
 
 def attach(project):
@@ -479,14 +581,31 @@ def attach(project):
 
 
 def daemon_record(project):
-    """This machine's own notes on a project, never mirrored: the last tick,
-    and which members' state differed from the published word last tick."""
+    """This machine's own notes on a project, never mirrored: the last tick's
+    result and error, what its duties keep between ticks (the members' words
+    that differed from the published one, the former writers said, the
+    archive's last run), and `tick`, when the record last changed (tick
+    writes it only then; the loop's last tick is last_tick's)."""
     try:
-        with open(os.path.join(project.home, "daemon.json")) as f:
-            d = json.load(f)
+        d = sminos.json_at(os.path.join(project.home, "daemon.json"))
         return d if isinstance(d, dict) else {}
     except (OSError, ValueError):
         return {}
+
+
+def record_changed(record, held):
+    """Whether a project's record differs from the one read (`held`) in
+    anything but its `tick`, as written (JSON: a tuple reads back a list)."""
+    def body(d):
+        return json.dumps({k: v for k, v in d.items() if k != "tick"}, sort_keys=True, ensure_ascii=False)
+    return body(record) != body(held)
+
+
+def keep_record(project, record, held):
+    """The record written when it changed from `held`, stamped with when."""
+    if record_changed(record, held):
+        record["tick"] = sminos.now(ms=True)
+        sminos.write_json(sminos.project_path(project, "daemon.json"), record)
 
 
 def publish_state(project, view, record):
@@ -666,14 +785,10 @@ def notice_former_writers(project, view, record):
         return
     said = record.get("former_writers")
     said = [w for w in said if isinstance(w, str)] if isinstance(said, list) else []
-    late = {}
-    for e in view.events:
-        w = e["writer"]
-        if w.partition("/")[0] in former and "mac" not in e and w not in said:
-            t = sminos._ts_epoch(e.get("ts"))
-            # `enrolled` is whole seconds: only an event a second past it is surely later.
-            if t is not None and t >= since + 1:
-                late[w] = e
+    names = tuple(sorted(former))
+    late = sminos.log_memo(view.events, ("former writers", names, since),
+                           lambda events: late_former_writers(events, names, since))
+    late = {w: e for w, e in late.items() if w not in said}
     if not late:
         return
     me = sminos.host_name()
@@ -688,6 +803,20 @@ def notice_former_writers(project, view, record):
                e.get("ts"), me))
         said.append(w)
     record["former_writers"] = said
+
+
+def late_former_writers(events, former, since):
+    """{writer: its latest event}: the writers under a former name (`former`)
+    with an event of this machine's (no code: none came from the hub) a
+    second past the enrollment (`since`, whole seconds)."""
+    late = {}
+    for e in events:
+        w = e["writer"]
+        if w.partition("/")[0] in former and "mac" not in e:
+            t = sminos._ts_epoch(e.get("ts"))
+            if t is not None and t >= since + 1:
+                late[w] = e
+    return late
 
 
 def deliver_owed(project, view):
@@ -733,13 +862,16 @@ def shared(project):
     return bool(project.remote) or project.hub is not None
 
 
-def tick(project, all_seats=None):
+def tick(project, all_seats=None, record=None):
     """One tick of one project, its duties in §8's order. `all_seats` is the
-    seat read the caller shares across projects."""
+    seat read the caller shares across projects; `record`, the project's
+    record as the caller read it (daemon_record). The record is written only
+    when the tick changed it: a quiet project's tick writes nothing."""
     out = {"integrated": False, "reconciled": 0, "published": 0, "delivered": 0, "pushed": False,
            "archived": False, "to": [], "error": ""}
     errors = []
-    record = daemon_record(project)
+    record = daemon_record(project) if record is None else record
+    held = json.loads(json.dumps(record))
     if mirrored(project):
         try:
             out["integrated"] = sync_in(project)
@@ -771,8 +903,12 @@ def tick(project, all_seats=None):
     if out["error"] and out["error"] != record.get("error"):
         # Logged when it changes: an unreachable remote is one line, not one a tick.
         sminos.daemon_log("sync %s: %s" % (project.name, out["error"]))
-    record.update({"tick": sminos.now(ms=True), "result": out, "error": out["error"]})
-    sminos.write_json(sminos.project_path(project, "daemon.json"), record)
+    record.update({"result": out, "error": out["error"]})
+    # The project registered as this tick read it off its .smns (project.json,
+    # written only when that moved): the uplink's hub_projects reads it, so a
+    # checkout whose .smns leaves the hub is taken off the stream.
+    sminos.project_path(project, "daemon.json")
+    keep_record(project, record, held)
     return out
 
 
@@ -805,8 +941,10 @@ def worth_saying(out, before):
 def tick_all(quiet=False):
     """One tick over every project known here: the caches forgotten first, one
     seat read and one harness-session read shared across the projects, then
-    the derivation duty. A project whose tick fails is logged and skipped; a
-    claimed machine name stops everything (MachineClaimed)."""
+    the derivation duty, and the tick's end marked (mark_tick). A project
+    whose tick fails is skipped, the failure kept as its record's error and
+    said (daemon.log, and the loop's output) when it is a new one; a claimed
+    machine name stops everything (MachineClaimed)."""
     sminos.forget_caches()
     all_seats = sminos.seats()
     map_sessions()
@@ -816,20 +954,64 @@ def tick_all(quiet=False):
         fresh = sminos.resolve_project(p.root) if p.root and os.path.isdir(p.root) else None
         projects[p.id] = fresh if fresh is not None and fresh.id == p.id else p
     for p in sorted(projects.values(), key=lambda p: (p.name, p.id)):
-        before = daemon_record(p).get("error", "")
+        record = daemon_record(p)
+        before = record.get("error", "")
         try:
-            out = tick(p, all_seats)
+            out = tick(p, all_seats, record)
         except MachineClaimed:
             raise
         except (Exception, SystemExit) as e:  # noqa: BLE001 — one project's failure is not the daemon's
-            sminos.daemon_log("tick %s failed: %r" % (p.name, e))
-            print("%s: tick failed: %s" % (p.name, e), file=sys.stderr)
+            failed = "tick failed: %r" % (e,)
+            if failed != before:
+                sminos.daemon_log("tick %s failed: %r" % (p.name, e))
+            if not quiet or failed != before:
+                print("%s: tick failed: %s" % (p.name, e), file=sys.stderr)
+            kept = daemon_record(p)
+            try:
+                keep_record(p, {**kept, "error": failed}, kept)
+            except OSError:
+                pass   # said again next tick
             continue
         if not quiet or worth_saying(out, before):
             print(("%s " % sminos.now() if quiet else "") + tick_line(p, out))
     derive_duty()
     bridge_duty()
     override_duty()
+    mark_tick()
+
+
+TICKED = "ticked"   # under daemon/: its mtime is when a tick last ended here
+_TICKED_NS = [0]    # the last mark this process made
+
+
+def mark_tick():
+    """The tick's end, as daemon/ticked's mtime: one utime a tick, the file
+    made once, its content never written, so `daemon status` and anything
+    waiting on the loop see it tick while a quiet tick writes nothing else.
+    Each mark is later than this process's last, at the clock's whole
+    resolution (a coarse file clock would give two quick ticks one mtime)."""
+    path = os.path.join(sminos.root(), "daemon", TICKED)
+    ns = _TICKED_NS[0] = max(time.time_ns(), _TICKED_NS[0] + 1)
+    try:
+        os.utime(path, ns=(ns, ns))
+    except FileNotFoundError:
+        try:
+            with open(daemon_path(TICKED), "a"):
+                pass
+            os.utime(path, ns=(ns, ns))
+        except OSError:
+            pass
+    except OSError:
+        pass
+
+
+def last_tick():
+    """When a tick last ended here (daemon/ticked's mtime), in epoch
+    seconds; None before the first."""
+    try:
+        return os.stat(os.path.join(sminos.root(), "daemon", TICKED)).st_mtime
+    except OSError:
+        return None
 
 
 def map_sessions():
@@ -900,10 +1082,17 @@ def derive_duty():
     every = derive_every()
     if every <= 0:
         return
+    if _DERIVE is not None and _DERIVE.poll() is not None:
+        _DERIVE = None   # reaped as it ends, not when the next start is looked for
+    # A start is due only `every` after the latest one, and the latest only
+    # moves later: until then nothing is looked at.
+    if time.time() - _DERIVE_SEEN[0] < every:
+        return
     with sminos.flocked(daemon_path("derive.lock")):
         rec = machine_record()
         d = rec.get("derive") or {}
-        if derive_running(d) or time.time() - float(d.get("started") or 0) < every:
+        _DERIVE_SEEN[0] = float(d.get("started") or 0)
+        if derive_running(d) or time.time() - _DERIVE_SEEN[0] < every:
             return
         with open(os.path.join(sminos.root(), "daemon.log"), "a") as out:
             _DERIVE = subprocess.Popen([sys.executable, os.path.join(sminos.SCRIPT_DIR, "sminos.py"), "derive", "--all",
@@ -912,6 +1101,7 @@ def derive_duty():
                                        start_new_session=True)
         rec["derive"] = {"pid": _DERIVE.pid, "start": sminos.proc_start(_DERIVE.pid), "started": time.time()}
         sminos.write_json(daemon_path("state.json"), rec)
+        _DERIVE_SEEN[0] = rec["derive"]["started"]
     sminos.daemon_log("derive --all started (pid %d)" % _DERIVE.pid)
 
 
@@ -1127,18 +1317,20 @@ def restart_in_place():
 
 
 def nudged_at():
-    """When a sender last asked for a tick now (sminos.nudge_daemon); 0 if never."""
+    """When a sender last asked for a tick now (sminos.nudge_daemon); 0 if
+    never. Polled every 50 ms between ticks: one stat, nothing made."""
     try:
-        return os.stat(daemon_path("nudge")).st_mtime_ns
+        return os.stat(os.path.join(sminos.root(), "daemon", "nudge")).st_mtime_ns
     except OSError:
         return 0
 
 
 def credential_bytes():
-    """daemon/hub.json as it is on disk, or None when there is none."""
+    """daemon/hub.json as it is on disk, or None when there is none: the
+    supervisor asks five times a second, a stat while it is unchanged (it is
+    written whole, by rename: sminos.file_bytes)."""
     try:
-        with open(daemon_path("hub.json"), "rb") as f:
-            return f.read()
+        return sminos.file_bytes(os.path.join(sminos.root(), "daemon", "hub.json"))
     except OSError:
         return None
 
@@ -1574,11 +1766,6 @@ def install_systemd():
           "           loginctl enable-linger" % ((path, cli, python) + tuple(sys.version_info[:2]) + (UNIT, UNIT)))
 
 
-def age(ts):
-    seconds = sminos.ts_age(ts)
-    return sminos.short_age(seconds) if seconds is not None else "?"
-
-
 def held_by(path):
     """What a lock file's holder wrote in it ("pid N since T"), or "" when no
     process holds it."""
@@ -1629,7 +1816,9 @@ def spent_positions(project):
 
 def cmd_status(_a):
     run = held_by(run_lock_path())
-    print("daemon: running (%s)" % run if run else "daemon: not running here")
+    ticked = last_tick()
+    print(("daemon: running (%s)" % run if run else "daemon: not running here")
+          + (", last tick %s ago" % sminos.short_age(max(0.0, time.time() - ticked)) if ticked else ""))
     for line in uplink_status():
         print(line)
     projects = sorted(sminos.known_projects(), key=lambda p: (p.name, p.id))
@@ -1645,8 +1834,13 @@ def cmd_status(_a):
         if not rec.get("tick"):
             print("%s: never ticked" % p.name)
             continue
-        print("%s: last tick %s ago — %s" % (p.name, age(rec["tick"]),
-                                             tick_line(p, rec.get("result") or {}).split(": ", 1)[1]))
+        # The record changes only with what a tick finds; every tick since
+        # found the same (its result, or its failure, is the record's).
+        changed = sminos._ts_epoch(rec["tick"])
+        last = max(t for t in (changed, ticked, 0.0) if t is not None)
+        print("%s: last tick %s ago — %s" % (p.name, sminos.short_age(max(0.0, time.time() - last)),
+                                             tick_line(p, {**(rec.get("result") or {}), "error": rec.get("error")})
+                                             .split(": ", 1)[1]))
     d = machine_record().get("derive") or {}
     if d.get("started"):
         print("derive: last started %s ago%s" % (sminos.short_age(max(0, time.time() - float(d["started"]))),

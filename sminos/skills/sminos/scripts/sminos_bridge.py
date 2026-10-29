@@ -225,8 +225,7 @@ def load_kept(session):
     last REFUSED_KEPT, which the daemon reports
     (sminos_outcomes.report_refused); nothing kept reads as none."""
     try:
-        with open(kept_path(session)) as f:
-            d = json.load(f)
+        d = S.json_at(kept_path(session))   # written whole, by rename (_save)
     except (OSError, ValueError):
         return _no_kept()
     if not isinstance(d, dict):

@@ -526,6 +526,364 @@ class QuietReads(unittest.TestCase):
         self.assertEqual(self.reads(whole=True), 1)
 
 
+class FileOps:
+    """Every file operation this process makes while it is held, by kind
+    (the audit hook's events): `writes` are opens for writing, renames,
+    removals, directories made, chmods and truncations; `locks` the opens
+    for appending of a `*.lock` (flocked's, which write nothing); `opens`
+    every other open, by path. /dev/null (a child's stdin) is none."""
+
+    WRITE_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_APPEND | os.O_TRUNC
+    on = None
+
+    @classmethod
+    def hook(cls, event, args):
+        held = cls.on
+        if held is None:
+            return
+        if event == "open" and not isinstance(args[0], int):
+            path, mode, flags = args
+            written = any(c in mode for c in "wax+") if isinstance(mode, str) else bool(flags & cls.WRITE_FLAGS)
+            if str(path) == os.devnull:
+                return
+            if written and mode == "a" and str(path).endswith(".lock"):
+                held.locks.append(str(path))
+            else:
+                (held.writes if written else held.opens).append(str(path))
+        elif event in ("os.rename", "os.remove", "os.mkdir", "os.chmod", "os.truncate"):
+            held.writes.append("%s %s" % (event, args[0]))
+        elif event == "os.utime":
+            held.utimes.append(str(args[0]))
+
+    def __enter__(self):
+        self.writes, self.opens, self.locks, self.utimes = [], [], [], []
+        FileOps.on = self
+        return self
+
+    def __exit__(self, *_):
+        FileOps.on = None
+
+
+sys.addaudithook(FileOps.hook)
+
+
+class QuietTick(unittest.TestCase):
+    """A tick of a machine where nothing moved writes nothing, and opens
+    nothing of its history: what it reads again is what a stat shows
+    unchanged (each project's record, the registrations, the session
+    records, the delivery records, the policy, the .smns and git files), so
+    only the engine's records of the running sessions are opened; the
+    tick's end is one utime of daemon/ticked. Between ticks the loop's polls
+    (the nudge, hub.json, the endpoint's rl10.json) make nothing and open
+    nothing unchanged. Measured on the MacBook's state on 2026-10-28, a
+    quiet tick did 84 renames of project records changed only in their
+    stamp, 193 failed mkdirs and 1100 opens."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.env = mock.patch.dict(os.environ, {"SMINOS_DERIVE_EVERY": "300"})
+        cls.env.start()
+        # A derivation started a minute ago, by a process long gone: none is due.
+        write(os.path.join(SH, "daemon", "state.json"),
+              {"derive": {"pid": 999999, "start": "", "started": time.time() - 60}})
+        write(os.path.join(SH, "daemon", "policy.json"), {"read_only": False})
+        write(os.path.join(HOME, ".claude", "settings.json"), {"permissions": {"defaultMode": "default"}})
+        cls.projects = []
+        for k in range(3):
+            pid = str(uuid.uuid4())
+            root = checkout("quiet-tick-%d" % k, pid)
+            project = sminos.known_project(pid)
+            cls.projects.append(project)
+            for i in range(10):
+                remote_member(project, str(uuid.uuid4()), i)
+            # This machine's history there: sessions that joined and ended, one
+            # owed a say from the other machine after it closed.
+            for i in range(20):
+                sid = str(uuid.uuid4())
+                w = "%s/%s" % (MACHINE, sid)
+                path = os.path.join(project.home, "log", w.replace("/", ".") + ".jsonl")
+                with open(path, "w") as f:
+                    for seq, e in enumerate([
+                            {"kind": "joined", "alias": "past%d" % i, "name_source": "derived", "machine": MACHINE,
+                             "cwd": root, "session_kind": "interactive"},
+                            {"kind": "retired", "by": "", "reason": "ended"}], 1):
+                        f.write(json.dumps({"ts": "2026-10-18T01:00:%02d.000Z" % i, "writer": w, "seq": seq,
+                                            "session": sid, **e}) + "\n")
+                if i == 0:
+                    sminos.log_append(project, "%s/%s" % (OTHER, uuid.uuid4()), "say",
+                                      to=[{"session": sid, "alias": "past0"}], text="for a closed session")
+            live_session(root)
+        for _ in range(3):   # joins the live sessions, publishes their words, reports what the closed sessions are owed
+            quietly(daemon.tick_all, quiet=True)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.env.stop()
+
+    def test_a_quiet_tick_writes_nothing(self):
+        with FileOps() as ops:
+            quietly(daemon.tick_all, quiet=True)
+        self.assertEqual(ops.writes, [])
+        self.assertEqual(ops.utimes, [os.path.join(SH, "daemon", daemon.TICKED)], "the tick's end, marked")
+        self.assertEqual([p for p in ops.locks if not p.endswith(os.sep + ".sync-op.lock")], [],
+                         "no lock is taken but a git mirror's, whose fetch is the tick's")
+        engine = os.path.join(HOME, ".claude", "sessions") + os.sep
+        running = len(os.listdir(engine))
+        # On Linux a running session's process start is read off /proc (macOS asks sysctl).
+        procs = [p for p in ops.opens if p.startswith(sminos.PROC + os.sep)]
+        self.assertEqual([p for p in ops.opens if not p.startswith(engine) and p not in procs], [],
+                         "nothing but the engine's records of the running sessions, and their processes, is opened")
+        self.assertLessEqual(len(ops.opens) - len(procs), running)
+        self.assertLessEqual(len(procs), running + 1, "one look at each running session's process, and the boot time")
+
+    def test_a_quiet_tick_leaves_every_record_as_it_was(self):
+        quietly(daemon.tick_all, quiet=True)
+        records = {p.id: open(os.path.join(p.home, "daemon.json")).read() for p in self.projects}
+        quietly(daemon.tick_all, quiet=True)
+        self.assertEqual({p.id: open(os.path.join(p.home, "daemon.json")).read() for p in self.projects}, records)
+
+    def test_a_change_is_still_seen(self):
+        """What a quiet tick skips is only what did not move: a say to the
+        closed session is reported, so its record moves, and the tick after
+        is quiet again."""
+        project = self.projects[1]
+        closed = next(e["session"] for e in sminos.log_read(project)
+                      if e["kind"] == "retired" and e["writer"].startswith(MACHINE + "/"))
+        path = os.path.join(project.home, "recorded", closed + ".json")
+        before = json.load(open(path)) if os.path.exists(path) else {}
+        sminos.log_append(project, "%s/%s" % (OTHER, uuid.uuid4()), "say",
+                          to=[{"session": closed, "alias": "x"}], text="later")
+        quietly(daemon.tick_all, quiet=True)
+        self.assertEqual(len(json.load(open(path))), len(before) + 1, "the new say is reported for the closed session")
+        with FileOps() as ops:
+            quietly(daemon.tick_all, quiet=True)
+        self.assertEqual(ops.writes, [])
+
+    def test_a_project_is_registered_as_its_smns_reads_now(self):
+        """The tick re-registers each project off its .smns, whose record
+        it no longer writes: a checkout whose .smns stops naming the hub is
+        registered without it (the uplink's hub_projects reads project.json),
+        though nothing of the project's log moved."""
+        project = self.projects[2]
+        smns = os.path.join(project.root, ".smns")
+        d = json.load(open(smns))
+        try:
+            d.pop("hub")
+            write(smns, d)
+            quietly(daemon.tick_all, quiet=True)
+            self.assertNotIn("hub", json.load(open(os.path.join(project.home, "project.json"))))
+        finally:
+            d["hub"] = {"org": ORG}
+            write(smns, d)
+            quietly(daemon.tick_all, quiet=True)
+        self.assertEqual(json.load(open(os.path.join(project.home, "project.json"))).get("hub", {}).get("org"), ORG)
+
+    def test_a_policy_made_unreadable_reads_read_only(self):
+        """A file read by stat is opened again once its permissions moved
+        (its ctime): the policy that can no longer be read is no policy."""
+        policy = sminos.sibling_module("sminos_policy")
+        path = os.path.join(SH, "daemon", "policy.json")
+        self.assertFalse(policy.read_only())
+        os.chmod(path, 0)
+        try:
+            if os.access(path, os.R_OK):
+                self.skipTest("this user reads a file of mode 000")
+            self.assertTrue(policy.read_only())
+        finally:
+            os.chmod(path, 0o600)
+        self.assertFalse(policy.read_only())
+
+    def test_a_boot_time_moved_is_read_at_the_next_generation(self):
+        """Linux's boot time is read once a cache generation, not once a
+        process: a step of the wall clock moves it."""
+        proc = tempfile.mkdtemp(dir=T)
+        os.makedirs(os.path.join(proc, "4242"))
+        hz = os.sysconf("SC_CLK_TCK")
+        with open(os.path.join(proc, "4242", "stat"), "w") as f:
+            f.write("4242 (x) S 1 4242 4242 0 -1 4194560 0 0 0 0 0 0 0 0 20 0 1 0 %d 0 0\n" % (60 * hz))
+
+        def boot(t):
+            with open(os.path.join(proc, "stat"), "w") as f:
+                f.write("cpu  0 0 0 0\nbtime %d\n" % t)
+
+        with mock.patch.object(sminos, "PROC", proc):
+            boot(1000000)
+            sminos.forget_caches()
+            self.assertEqual(sminos._linux_start(4242), 1000060)
+            boot(1000030)
+            self.assertEqual(sminos._linux_start(4242), 1000060, "within a generation, the boot time read")
+            sminos.forget_caches()
+            self.assertEqual(sminos._linux_start(4242), 1000090)
+
+    def test_a_fork_that_starts_within_a_generation_never_joins(self):
+        """The fork markers are listed after the engine's records are read,
+        never before: a derive fork whose marker and record both land
+        between a listing and that read would otherwise be a session of the
+        generation's records with no marker, and join."""
+        project = self.projects[0]
+        sminos.forget_caches()
+        sminos.internal_pids()   # asked first in the generation, as most callers ask
+        sid = live_session(project.root)
+        marker = os.path.join(SH, "internal", str(PROCS[sid].pid))
+        os.makedirs(os.path.dirname(marker), exist_ok=True)
+        open(marker, "w").close()
+        try:
+            sminos.reconcile(project)
+            quietly(daemon.tick_all, quiet=True)
+            joined = [e for e in sminos.log_read(project) if e["kind"] == "joined" and e.get("session") == sid]
+            self.assertEqual(joined, [], "the internal fork never joined")
+        finally:
+            PROCS[sid].kill()
+            PROCS[sid].wait()
+            os.unlink(marker)
+            for n in os.listdir(os.path.join(HOME, ".claude", "sessions")):
+                path = os.path.join(HOME, ".claude", "sessions", n)
+                if json.load(open(path)).get("sessionId") == sid:
+                    os.unlink(path)
+            quietly(daemon.tick_all, quiet=True)
+
+    def test_the_polls_between_ticks_make_and_open_nothing(self):
+        rl10 = sminos.sibling_module("sminos_rl10")
+
+        def poll():
+            daemon.nudged_at()
+            daemon.uplink_wanted()
+            rl10.find()
+
+        for _ in range(2):
+            poll()
+        with FileOps() as ops:
+            for _ in range(10):
+                poll()
+        self.assertEqual((ops.writes, ops.opens), ([], []))
+
+
+def gitq(*args, cwd=None):
+    return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "init.defaultBranch=main", *args],
+                          cwd=cwd, check=True, capture_output=True, text=True).stdout
+
+
+class QuietMirror(unittest.TestCase):
+    """A git-mirrored project's quiet tick runs two git processes, the fetch
+    and one look at the refs, where it ran fourteen (2026-10-28: 0.13 s of
+    git a mirror every tick): when neither the remote's main nor anything in
+    the mirror moved since the last sync left it settled, the claim's check,
+    the commits and the merge have nothing to do. Either side moving is
+    synced at the next tick, and the tick after is quiet again."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.remote = os.path.join(T, "mirror-remote.git")
+        gitq("init", "-q", "--bare", cls.remote)
+        pid = str(uuid.uuid4())
+        cls.root = os.path.join(T, "r", "mirrored")
+        os.makedirs(os.path.join(cls.root, ".git"))
+        write(os.path.join(cls.root, ".smns"), {"project": pid, "name": "mirrored", "remote": cls.remote})
+        write(os.path.join(SH, "projects", pid, "project.json"),
+              {"project": pid, "name": "mirrored", "remote": cls.remote, "root": cls.root})
+        cls.project = sminos.known_project(pid)
+        sminos.log_append(cls.project, "%s/%s" % (MACHINE, uuid.uuid4()), "say", to=[], text="first")
+        for _ in range(3):   # attaches, commits and pushes, then settles
+            quietly(daemon.tick_all, quiet=True)
+        cls.log = daemon.log_dir(cls.project)
+
+    def gits(self):
+        """The git processes of one tick in the mirror."""
+        spawned = []
+        real = subprocess.Popen
+
+        def counted(argv, *a, **k):
+            if argv and argv[0] == "git" and self.log in argv:
+                spawned.append(argv[argv.index(self.log) + 1])
+            return real(argv, *a, **k)
+
+        with mock.patch.object(subprocess, "Popen", counted):
+            quietly(daemon.tick_all, quiet=True)
+        return spawned
+
+    def remote_files(self):
+        return gitq("--git-dir", self.remote, "ls-tree", "-r", "--name-only", "main").split()
+
+    def test_a_quiet_tick_fetches_and_looks(self):
+        self.gits()
+        self.assertEqual(self.gits(), ["fetch", "for-each-ref"])
+
+    def test_an_append_here_is_pushed(self):
+        self.gits()
+        w = "%s/%s" % (MACHINE, uuid.uuid4())
+        sminos.log_append(self.project, w, "say", to=[], text="later here")
+        self.assertIn("push", self.gits())
+        self.assertIn(w.replace("/", ".") + ".jsonl", self.remote_files())
+        self.gits()
+        self.assertEqual(self.gits(), ["fetch", "for-each-ref"])
+
+    def test_an_append_while_it_settles_is_pushed(self):
+        """push commits, then looks at the remote without the appenders'
+        lock: an append in that window is in no commit, and the state the
+        sync keeps as settled must not take it in, or every later tick
+        would pass it by."""
+        self.gits()
+        w = "%s/%s" % (MACHINE, uuid.uuid4())
+        sminos.log_append(self.project, "%s/%s" % (MACHINE, uuid.uuid4()), "say", to=[], text="moves the tree")
+        real = daemon.ahead
+
+        def append_then_look(log):
+            if not os.path.exists(sminos.writer_path(self.project, w)):
+                sminos.log_append(self.project, w, "say", to=[], text="in the window")
+            return real(log)
+
+        self.assertIn("push", self.gits())   # the first pushed: the next tick syncs whole, and settles
+        with mock.patch.object(daemon, "ahead", append_then_look):
+            self.gits()   # nothing ahead, as the second is appended while it looks
+        for _ in range(3):
+            self.gits()
+        self.assertIn(w.replace("/", ".") + ".jsonl", self.remote_files())
+
+    def test_a_commit_of_another_process_is_pushed(self):
+        """A commit made in the mirror by another hand after the push phase
+        found nothing ahead leaves HEAD past the remote's main: never kept
+        as settled, so the next tick pushes it."""
+        self.gits()
+        sminos.log_append(self.project, "%s/%s" % (MACHINE, uuid.uuid4()), "say", to=[], text="moves the tree")
+        self.assertIn("push", self.gits())
+        name = "%s.%s.jsonl" % (MACHINE, uuid.uuid4())
+        real = daemon.ahead
+
+        def commit_then_look(log):
+            got = real(log)
+            if not os.path.exists(os.path.join(log, name)):
+                with open(os.path.join(log, name), "w") as f:
+                    f.write(json.dumps({"ts": "2026-10-28T00:00:00.000Z", "writer": name[:-6].replace(".", "/", 1),
+                                        "seq": 1, "kind": "say", "session": name[len(MACHINE) + 1:-6], "to": [],
+                                        "text": "committed by hand"}) + "\n")
+                gitq("add", name, cwd=log)
+                gitq("commit", "-q", "-m", "by hand", cwd=log)
+            return got
+
+        with mock.patch.object(daemon, "ahead", commit_then_look):
+            self.gits()
+        for _ in range(3):
+            self.gits()
+        self.assertIn(name, self.remote_files())
+
+    def test_a_push_from_elsewhere_is_merged(self):
+        self.gits()
+        other = os.path.join(T, "mirror-other-%s" % uuid.uuid4().hex[:6])
+        gitq("clone", "-q", self.remote, other)
+        name = "%s.%s.jsonl" % (OTHER, uuid.uuid4())
+        with open(os.path.join(other, name), "w") as f:
+            f.write(json.dumps({"ts": "2026-10-28T00:00:00.000Z", "writer": name[:-6].replace(".", "/", 1), "seq": 1,
+                                "kind": "say", "session": name[len(OTHER) + 1:-6], "to": [], "text": "from mini"})
+                    + "\n")
+        gitq("add", name, cwd=other)
+        gitq("commit", "-q", "-m", "mini", cwd=other)
+        gitq("push", "-q", "origin", "HEAD:main", cwd=other)
+        self.assertIn("merge", self.gits())
+        self.assertTrue(os.path.exists(os.path.join(self.log, name)), "the other machine's writer is in the log")
+        self.gits()
+        self.assertEqual(self.gits(), ["fetch", "for-each-ref"])
+
+
 class CheckoutsFromTheRead(unittest.TestCase):
     """Machine presence takes a project's checkouts from the plane's last
     read of who joined it from here (Plane.here). The scan that draws them
