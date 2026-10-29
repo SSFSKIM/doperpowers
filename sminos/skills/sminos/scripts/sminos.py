@@ -2677,19 +2677,23 @@ def member_label(m, rows):
     return "%s#%s" % (m.alias, m.short) if shared and m.short else m.alias
 
 
-_INTERNAL = []   # [internal_pids as listed], per cache generation
+_INTERNAL = []   # [(the peer_records read it was listed after, internal_pids as listed then)]
 
 
 def internal_pids():
     """Pids `derive` marked as its own headless forks: never members (§5).
-    Listed once per cache generation, as the engine's records are
-    (peer_records): every view asks."""
-    if not _INTERNAL:
+    Listed once for each read of the engine's records (peer_records), and
+    after it: derive marks a fork before the fork can start its engine, so
+    every fork whose record that read holds is in a listing taken after it.
+    Every view asks."""
+    peers = peer_records()
+    if not (_INTERNAL and _INTERNAL[0][0] is peers):
         try:
-            _INTERNAL.append(frozenset(n for n in os.listdir(os.path.join(root(), "internal")) if n.isdigit()))
+            listed = frozenset(n for n in os.listdir(os.path.join(root(), "internal")) if n.isdigit())
         except OSError:
-            _INTERNAL.append(frozenset())
-    return _INTERNAL[0]
+            listed = frozenset()
+        _INTERNAL[:] = [(peers, listed)]
+    return _INTERNAL[0][1]
 
 
 DESK_MEMBER_ENV = "SMINOS_DESK_MEMBER"  # set by the daemon running a verb for a desk RPC: the member's id
@@ -7162,7 +7166,6 @@ def forget_caches():
     _ENROLLED.clear()
     _ORG_DIR.clear()
     _SEAT_PIDS.clear()
-    _INTERNAL.clear()
     _ROOTS.clear()
     _BOOT.clear()
     _GENERATION[0] += 1
@@ -7448,7 +7451,6 @@ def running_now(session_id):
     invocation's copy: what a route about to resume a session asks last."""
     global _PEERS
     _PEERS = None
-    _INTERNAL.clear()   # listed with them, so a fork's record is never read beside an older listing
     return session_running(session_id)
 
 
@@ -10773,7 +10775,6 @@ def guide_text(session, launch, source="", title=""):
     while seen == (None, None) and time.time() < until:
         time.sleep(0.1)
         _PEERS = None
-        _INTERNAL.clear()
         seen = _on_sight(project, session)
     if seen is None or not joinable(*seen, member_mark(seen[1])):
         return ""

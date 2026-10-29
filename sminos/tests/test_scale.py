@@ -715,6 +715,33 @@ class QuietTick(unittest.TestCase):
             sminos.forget_caches()
             self.assertEqual(sminos._linux_start(4242), 1000090)
 
+    def test_a_fork_that_starts_within_a_generation_never_joins(self):
+        """The fork markers are listed after the engine's records are read,
+        never before: a derive fork whose marker and record both land
+        between a listing and that read would otherwise be a session of the
+        generation's records with no marker, and join."""
+        project = self.projects[0]
+        sminos.forget_caches()
+        sminos.internal_pids()   # asked first in the generation, as most callers ask
+        sid = live_session(project.root)
+        marker = os.path.join(SH, "internal", str(PROCS[sid].pid))
+        os.makedirs(os.path.dirname(marker), exist_ok=True)
+        open(marker, "w").close()
+        try:
+            sminos.reconcile(project)
+            quietly(daemon.tick_all, quiet=True)
+            joined = [e for e in sminos.log_read(project) if e["kind"] == "joined" and e.get("session") == sid]
+            self.assertEqual(joined, [], "the internal fork never joined")
+        finally:
+            PROCS[sid].kill()
+            PROCS[sid].wait()
+            os.unlink(marker)
+            for n in os.listdir(os.path.join(HOME, ".claude", "sessions")):
+                path = os.path.join(HOME, ".claude", "sessions", n)
+                if json.load(open(path)).get("sessionId") == sid:
+                    os.unlink(path)
+            quietly(daemon.tick_all, quiet=True)
+
     def test_the_polls_between_ticks_make_and_open_nothing(self):
         rl10 = sminos.sibling_module("sminos_rl10")
 
