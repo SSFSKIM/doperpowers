@@ -290,6 +290,31 @@ function resyncAlone(): BridgeEvent[] {
   ]
 }
 
+/**
+ * The session's permission mode, as `read status`, the heartbeat and every
+ * resync carry it: `permissionMode`, the engine's word as the main loop last
+ * reported it; `permissionModeAt`, when the bridge read that report
+ * (`$.clock.now()`'s milliseconds); `permissionModeFrom`, the event it came
+ * in. All three are absent until the session has reported a mode: the engine
+ * has no getter for it (2.1.312), and nothing is inferred from the settings
+ * or the launch flags.
+ *
+ * What reports it (bridge.tsx's observeMode and its callers): the engine's
+ * own `permission_mode_changed` record, raised at every switch its mode
+ * transition makes (Shift+Tab in the terminal, plan mode's exit, auto mode's
+ * fallback, a mode set from the SDK or Remote Control), so a switch is here
+ * as it happens and posted at once; and the mode a prompt (classic
+ * UserPromptSubmit) or a permission prompt (PermissionRequest) was made
+ * under. A change no record reports stays unseen until the next prompt or
+ * permission prompt. The session's start reports none (the classic
+ * SessionStart input carries no mode), so a session that has neither
+ * switched nor taken a prompt has no `permissionMode` yet.
+ */
+export function modeFields() {
+  const r = state.permissionMode
+  return r === undefined ? {} : { permissionMode: r.mode, permissionModeAt: r.at, permissionModeFrom: r.from }
+}
+
 function wholeResync(): BridgeEvent {
   return {
     type: 'resync',
@@ -316,6 +341,9 @@ function wholeResync(): BridgeEvent {
     // What this module can do (DX5 `capabilities`): the child answers it in its status.
     ...(state.capabilities !== undefined && { capabilities: state.capabilities }),
     ...(state.catalog !== undefined && { catalog: state.catalog }),
+    // The mode the session last reported: a new child says it in its status
+    // from here, not from the first beat.
+    ...modeFields(),
     t: Date.now(),
   }
 }

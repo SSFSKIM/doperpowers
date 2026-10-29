@@ -508,6 +508,7 @@ class FakeSession:
     real = False          # start_bridge spawns the real child, not the script
     capabilities = None   # what the mod's resyncs say it can do (DX5): none, as a mod from before sminos 1.7.0
     launch = None         # the process's launch the scripted child says (O12 M7): none, as a mod from before it
+    mode = None           # the mode fields the mod's resyncs carry (permissionMode, …At, …From): none, as before a report
     legacy = False        # the mod (and the scripted child) from before the open-fast spec's M5: named blocks dropped, nothing declared
     child_env = None
 
@@ -616,7 +617,8 @@ class FakeSession:
         streaming = [m.entry() for m in self.messages if m.live()]
         self.post([{"type": "resync", "turns": [], "streaming": streaming, "agents": [dict(a) for a in self.agents],
                     "cut": dict(self.cut), **({} if self.legacy else {"namedBlocks": True}),
-                    **({"capabilities": self.capabilities} if self.capabilities is not None else {}), "t": 0}])
+                    **({"capabilities": self.capabilities} if self.capabilities is not None else {}),
+                    **(self.mode or {}), "t": 0}])
 
     def agent(self, phase, agent_id, **fields):
         """An `agent` spawn or stop event (DX5), as the mod posts it."""

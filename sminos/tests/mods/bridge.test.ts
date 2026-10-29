@@ -7727,6 +7727,18 @@ describe("the session's permission mode, as the engine reports it", () => {
     expect(await beat(h)).toMatchObject({ permissionMode: 'acceptEdits', permissionModeAt: h.now(), permissionModeFrom: 'permission_mode_changed' })
   })
 
+  test('a switch is posted as it happens, not at the next beat: an idle session’s presence follows its child', async () => {
+    const h = harness()
+    await h.ready()
+    await prompted(h, 'default')
+    h.advance(1_000)
+    const beats = h.ofType('heartbeat').length
+    await record(h, 'permission_mode_changed', { from_mode: 'default', to_mode: 'acceptEdits', trigger: 'shift_tab' })
+    expect(h.ofType('heartbeat').slice(beats)).toEqual([
+      expect.objectContaining({ state: expect.objectContaining({ permissionMode: 'acceptEdits', permissionModeAt: h.now(), permissionModeFrom: 'permission_mode_changed' }) }),
+    ])
+  })
+
   test("a permission decision's record is no report: its mode is the one the check began under, which a switch since may have left", async () => {
     // Accepting ExitPlanMode switches plan to default before its dialog
     // settles, and the decision's record that follows still says plan.
@@ -7779,12 +7791,15 @@ describe("the session's permission mode, as the engine reports it", () => {
     const at = before.now()
     const reloaded = harness({ sessionState: kept, messages: [{ type: 'user' }] })
     await reloaded.ready()
+    // Its child knows it from the first resync, before any beat.
+    expect(reloaded.ofType('resync')[0]).toMatchObject({ permissionMode: 'acceptEdits', permissionModeAt: at, permissionModeFrom: 'UserPromptSubmit' })
     expect(await beat(reloaded)).toMatchObject({ permissionMode: 'acceptEdits', permissionModeAt: at, permissionModeFrom: 'UserPromptSubmit' })
     await record(reloaded, 'permission_mode_changed', { from_mode: 'acceptEdits', to_mode: 'plan', trigger: 'shift_tab' })
     expect(await beat(reloaded)).toMatchObject({ permissionMode: 'plan', permissionModeFrom: 'permission_mode_changed' })
     // A new process (a --resume) holds nothing: absent until it reports.
     const relaunched = harness()
     await relaunched.ready()
+    expect(MODE_KEYS.filter((k) => k in relaunched.ofType('resync')[0]!)).toEqual([])
     const fresh = await beat(relaunched)
     expect(MODE_KEYS.filter((k) => k in fresh)).toEqual([])
   })

@@ -313,9 +313,7 @@ def sweep_pending(now=None):
 def slot(env=None):
     """The config-dir slot an environment runs on: CLAUDE_CONFIG_DIR, else
     the default `~/.claude`."""
-    env = os.environ if env is None else env
-    d = env.get("CLAUDE_CONFIG_DIR") or os.path.join(sminos.home_dir(), ".claude")
-    return {"kind": "slot", "configDir": os.path.abspath(os.path.expanduser(d))}
+    return {"kind": "slot", "configDir": sminos.config_dir(env)}
 
 
 def base_url_ref(url):

@@ -33,6 +33,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import unittest
@@ -2469,6 +2470,27 @@ class Checks(unittest.TestCase):
         self.assertIn("no transcript", o["error"]["message"])
         self.assertEqual(resumes(self.claude, sid), [], "nothing launched")
         self.assertNotIn("launched_at", self.ledger()[rpc["nonce"]], "refused before the claim")
+
+    def test_j_a_session_under_another_config_dir_is_not_resumed_from_here(self):
+        """Its engine ran under a config dir of its own, which its hook
+        recorded, and its transcript is there: `claude --resume` launched
+        from here would look in this process's own config dir and run on its
+        credentials. Refused, nothing launched."""
+        sid = ended_session(self.root)
+        cfg = tempfile.mkdtemp(prefix="cfg.", dir=T)
+        moved = os.path.join(cfg, "projects", "-rpc-test", sid + ".jsonl")
+        os.makedirs(os.path.dirname(moved))
+        os.replace(transcript(sid), moved)
+        payload = {"session_id": sid, "transcript_path": moved, "cwd": self.root, "hook_event_name": "SessionStart",
+                   "source": "resume"}
+        subprocess.run([CLI, "record"], input=json.dumps(payload), text=True, capture_output=True,
+                       env={**os.environ, "CLAUDE_CONFIG_DIR": cfg}, check=True)
+        sminos.forget_caches()
+        self.here.sessions.add(sid)
+        rpc = self.send("resume", {"session": sid})
+        o = self.refused(rpc, "unsupported")
+        self.assertIn("runs under %s" % cfg, o["error"]["message"])
+        self.assertEqual(resumes(self.claude, sid), [], "nothing launched")
 
     def test_j_resume_is_refused_while_the_session_is_live(self):
         self.refused(self.send("resume", {"session": self.plain.sid}), "session-live")

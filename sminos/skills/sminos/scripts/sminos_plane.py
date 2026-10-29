@@ -32,7 +32,7 @@ the facts as they stand, the look is asked right after it, and the first
 `subagents` carries what it found.
 
 Presence. For every session of a hub project on this machine, its record in
-the engine's registry (`~/.claude/sessions/<pid>.json`: `status`,
+the engine's registry (`<config dir>/sessions/<pid>.json`: `status`,
 `waitingFor`, `needs`, verbatim; null once no process holds it) and whether
 its bridge answers (DX5's `GET /status`) reach the hub as DX4 `presence`
 when either changes, and all of them after every connect. The log's
@@ -160,7 +160,8 @@ process whose transcript this machine does not hold ends `session-ended`, at
 
 What the desk can do with a session (the desk control surface's M0): its
 presence carries the `capabilities` its bridge's status says (absent from a
-bridge that says none: one from before sminos 1.7.0), and a `read` frame is
+bridge that says none: one from before sminos 1.7.0) and the permission mode
+it last read (`mode`, mode_reading), and a `read` frame is
 the bridge's answer to the read, asked on a thread of its own (at most
 READS_IN_FLIGHT per subscription; the rest answered `busy`), answered on the
 sub as DX4 `read` — after its snapshot, if it came before — or as why there
@@ -169,7 +170,6 @@ only to a hub whose welcome lists it (`kinds`).
 """
 
 import collections
-import glob
 import hashlib
 import http.client
 import itertools
@@ -232,6 +232,7 @@ NOT_READY_WINDOW = 5.0    # s: a 503 (not ready) is asked again this long, as `s
 STALE_WAIT = 3.0
 REDIAL_EVERY = 0.05       # s: between two dials of a socket that refused
 RECORD_FIELDS = ("status", "waitingFor", "needs")
+MODE_WORD = re.compile(r"^[A-Za-z]{1,32}$")   # a permission mode as the engine words it (the bridge mod's MODE_WORD)
 AGENT_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 TASK_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")   # DX3 `output`'s taskId, as the engine spells task ids
 OUTPUT_TAIL_MAX = 524288  # bytes an `output` may ask for: the answer fits one frame (DX3)
@@ -2216,11 +2217,11 @@ class Subscription:
         return [self.message("read", body)]
 
 
-def read_answer(path, rid, what, args, cwd=""):
+def read_answer(path, rid, what, args, cwd="", cfg=None):
     """DX4 `read`'s body: the session's bridge's answer to the read (DX5),
     or why there is none; an `mcp` answer with the servers the session's
     project disables added (`with_disabled`, from its working directory
-    `cwd`)."""
+    `cwd` and its config dir `cfg`)."""
     def error(code, message):
         return {"id": rid, "what": what, "error": {"code": code, "message": message}}
 
@@ -2238,21 +2239,25 @@ def read_answer(path, rid, what, args, cwd=""):
         return error("failed", "the bridge answered %d: %s" % (status, out.get("error")))
     if out.get("ok"):
         result = out.get("result")
-        return {"id": rid, "what": what, "result": with_disabled(result, cwd) if what == "mcp" else result}
+        return {"id": rid, "what": what, "result": with_disabled(result, cwd, cfg) if what == "mcp" else result}
     why = str(out.get("error") or "the session refused the read")
     # A kind the mod does not serve, or a mod from before reads.
     return error("unsupported" if why.startswith(("no read ", "unknown op")) else "failed", why)
 
 
-def global_config():
+def global_config(cfg=None):
     """The engine's global config file, chosen as 2.1.310 chooses it (`y_`
     in its cli): `<config dir>/.config.json` while that legacy file is a
     nonempty file, or an empty writable one with no `.claude.json` beside
     it; else `.claude.json` (`.claude-custom-oauth.json` under a custom OAuth
-    URL) in CLAUDE_CONFIG_DIR when it is set, else in the home directory."""
+    URL) in CLAUDE_CONFIG_DIR when it is set, else in the home directory.
+    `cfg`: the config dir a session's hook recorded (sminos.recorded_config_dirs:
+    its CLAUDE_CONFIG_DIR), the file its engine reads; None, this process's
+    environment's."""
     suffix = "-custom-oauth" if os.environ.get("CLAUDE_CODE_CUSTOM_OAUTH_URL") else ""
-    main = os.path.join(os.environ.get("CLAUDE_CONFIG_DIR") or sminos.home_dir(), ".claude%s.json" % suffix)
-    legacy = os.path.join(bridge.config_dir(), ".config.json")
+    named, cfg = (cfg, cfg) if cfg else (os.environ.get("CLAUDE_CONFIG_DIR"), bridge.config_dir())
+    main = os.path.join(named or sminos.home_dir(), ".claude%s.json" % suffix)
+    legacy = os.path.join(cfg, ".config.json")
     try:
         st = os.stat(legacy)
     except OSError:
@@ -2313,15 +2318,16 @@ def _canonical_root(root):
     return os.path.dirname(common)
 
 
-def disabled_mcp(cwd):
+def disabled_mcp(cwd, cfg=None):
     """The MCP servers the engine keeps disabled for the project `cwd` is in
-    (`/mcp disable`): `projects[<key>].disabledMcpServers` of `.claude.json`,
-    the one key of that file read, names alone. [] when there are none or the
-    file cannot be read."""
+    (`/mcp disable`): `projects[<key>].disabledMcpServers` of `.claude.json`
+    (global_config's, `cfg` the session's config dir), the one key of that
+    file read, names alone. [] when there are none or the file cannot be
+    read."""
     if not cwd:
         return []
     try:
-        with open(global_config(), encoding="utf-8") as f:
+        with open(global_config(cfg), encoding="utf-8") as f:
             config = json.load(f)
     except (OSError, ValueError):
         return []
@@ -2333,14 +2339,14 @@ def disabled_mcp(cwd):
     return [n for n in names if isinstance(n, str) and 0 < len(n) <= DISABLED_NAME_MAX][:DISABLED_MAX]
 
 
-def with_disabled(result, cwd):
+def with_disabled(result, cwd, cfg=None):
     """`read mcp`'s answer with each server the project disables added as
     `{name, status: "disabled"}`, unless the bridge already named it: the
     bridge sees only servers whose tools the model has."""
     if not (isinstance(result, dict) and isinstance(result.get("servers"), list)):
         return result
     named = {s.get("name") for s in result["servers"] if isinstance(s, dict)}
-    added = [{"name": n, "status": "disabled"} for n in disabled_mcp(cwd) if n not in named]
+    added = [{"name": n, "status": "disabled"} for n in disabled_mcp(cwd, cfg) if n not in named]
     return {**result, "servers": result["servers"] + added}
 
 
@@ -2417,7 +2423,7 @@ class Records:
     def scan(self):
         live = {}
         seen = set()
-        for path in glob.glob(os.path.join(glob.escape(sminos.home_dir()), ".claude", "sessions", "*.json")):
+        for path, owners in sminos.engine_record_paths(fresh=True):
             seen.add(path)
             try:
                 st = os.stat(path)
@@ -2433,7 +2439,7 @@ class Records:
                 held = self.files[path] = (st.st_mtime_ns, st.st_size, rec if isinstance(rec, dict) else None)
             rec = held[2]
             sid = rec.get("sessionId") if rec else None
-            if isinstance(sid, str) and self.running(rec):
+            if isinstance(sid, str) and sminos.speaks_for(owners, rec) and self.running(rec):
                 old = live.get(sid)
                 if old is None or (rec.get("updatedAt") or 0) > (old.get("updatedAt") or 0):
                     live[sid] = rec
@@ -2476,7 +2482,8 @@ class Bridges:
     def __init__(self):
         self.lock = threading.Lock()
         # session → [socket inode, answered, probed at, probing, the child that answered (inode, pid), its
-        # capabilities, the number of the probe that answered, the launch it named (O12 M7)]
+        # capabilities, the number of the probe that answered, the launch it named (O12 M7), the mode it
+        # read (DX4 ModeReading)]
         self.held = {}
         self.probes = 0   # probes begun
         self.wake = lambda: None
@@ -2494,7 +2501,7 @@ class Bridges:
                 self.held.pop(sid, None)
             return False
         with self.lock:
-            h = self.held.setdefault(sid, [ino, False, None, False, None, None, 0, None])
+            h = self.held.setdefault(sid, [ino, False, None, False, None, None, 0, None, None])
             if not h[3] and (h[0] != ino or h[2] is None or now - h[2] >= BRIDGE_RECHECK):
                 h[3] = True
                 self.probes += 1
@@ -2503,7 +2510,7 @@ class Bridges:
             return h[1]
 
     def probe(self, sid, path, ino, now, number):
-        answered, child, caps, launch = False, None, None, None
+        answered, child, caps, launch, mode = False, None, None, None, None
         try:
             status, body = bridge.request(path, "GET", "/status", timeout=PROBE_TIMEOUT)
             answered = status == 200 and isinstance(body, dict) and body.get("session") == sid
@@ -2511,14 +2518,15 @@ class Bridges:
                 child = [ino, body.get("pid")]
                 caps = body["capabilities"] if isinstance(body.get("capabilities"), dict) else None
                 launch = body["launch"] if isinstance(body.get("launch"), str) and body["launch"] else None
+                mode = mode_reading(body)
         except (OSError, ValueError, http.client.HTTPException):
             pass
         with self.lock:
             h = self.held.get(sid)
             if h is None:
                 return
-            changed = h[1] != answered or h[5] != caps or h[7] != launch
-            h[:] = [ino, answered, now, False, child, caps, number, launch]
+            changed = h[1] != answered or h[5] != caps or h[7] != launch or h[8] != mode
+            h[:] = [ino, answered, now, False, child, caps, number, launch, mode]
         if changed:
             self.wake()
 
@@ -2551,6 +2559,28 @@ class Bridges:
         with self.lock:
             h = self.held.get(sid)
             return h[7] if h and h[1] else None
+
+    def mode(self, sid):
+        """The session's permission mode as its bridge last read it
+        (mode_reading), when it answered and had read one."""
+        with self.lock:
+            h = self.held.get(sid)
+            return h[8] if h and h[1] else None
+
+
+def mode_reading(status):
+    """DX4's ModeReading `{mode, at}` from a bridge's status: the mode the
+    session last reported and when the bridge read that report (epoch ms on
+    this machine's clock), both the bridge's own, so the body moves only
+    when the session reports, never as the probe asks again; the same `at`
+    its `read status` and heartbeat carry (`permissionModeAt`). None when it
+    names none, or a word that is no mode."""
+    mode, at = status.get("permissionMode"), status.get("permissionModeAt")
+    if not (isinstance(mode, str) and MODE_WORD.match(mode)):
+        return None
+    if isinstance(at, bool) or not isinstance(at, (int, float)) or at != at or at in (float("inf"), float("-inf")):
+        return None
+    return {"mode": mode, "at": at}
 
 
 def _stat_key(path):
@@ -2728,6 +2758,11 @@ class Plane:
         launch = self.bridges.launch(sid) if self.launches and body["bridge"] else None
         if launch is not None:
             body["launch"] = launch
+        # Absent until the bridge has read one, so an older reader sees the
+        # body it always did (desk-hub's SessionPresence `mode?`).
+        mode = self.bridges.mode(sid) if body["bridge"] else None
+        if mode is not None:
+            body["mode"] = mode
         return body
 
     def presence(self, pid, force=False, now=None, socks=None):
@@ -2935,9 +2970,10 @@ class Plane:
         self.reading[s.sub] += 1
         path = bridge.endpoint(s.session)
         cwd = str((self.live.get(s.session) or {}).get("cwd") or self.here.get(s.project, {}).get(s.session) or "")
+        cfg = sminos.recorded_config_dirs().get(s.session)   # none recorded: as the engine would under this environment
 
         def run(sub=s.sub):
-            self.read_answers.put((sub, read_answer(path, rid, what, args, cwd)))
+            self.read_answers.put((sub, read_answer(path, rid, what, args, cwd, cfg)))
             self.wake()
 
         threading.Thread(target=run, name="plane-read", daemon=True).start()

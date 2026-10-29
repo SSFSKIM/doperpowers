@@ -1010,7 +1010,7 @@ class WordsRig(Machine):
             self.bridge.append((session, project, event["writer"], event["seq"], text))
             return True
 
-        def reply(short, text):
+        def reply(short, text, session=""):
             self.supervisor.append((short, text))
             return True
         for name, fake in (("deliver", deliver), ("supervisor_reply", reply)):
