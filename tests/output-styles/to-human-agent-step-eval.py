@@ -151,6 +151,28 @@ late_failure arm's mechanics opening is a Critical block whose first clause
 names the merged M2 before the failure. At 5 steps late_failure was cut off
 in 1 control and 2 v1 runs still reading the code; at 8, none.
 
+Status-rule round, 2026-10-28, after 7.211.0: whether the cadence can stay.
+"owner": 7.210.0's paragraph plus the owner's draft, "However, try to report
+less often on expected routine progress or merges; try to focus on "here's
+what you should know" than "plan proceeded as expecting"." v3: 7.211.0 with
+the cadence back and "A message opens with what the human should know from
+it". v4: 7.211.0 with the cadence back as "send where the work stands in a
+line or two", its opening sentence unchanged. Same reading as above:
+                                   owner        v3           v4
+  milestone (after_report)         0            0            0
+  milestone3 (silent2)             5, 5         5, 5         5, 5
+  significant (after_report)       0            5, 0         5, 0
+  good_surprise (after_report)     5, 5         5, 4         5, 1
+  complete (reported3)             5, 2         5, 0         5, 0
+The draft's added sentence moved nothing from the control: the explicit
+cadence wins over a softer sentence after it. With the cadence, a status after
+milestones that landed as planned has only the merges to say, in every
+wording ("M1 to M3 of the CSV export spec are merged, all on green CI: #47
+(query layer), ..."); "a line or two" shortened it (271 characters against
+v3's 363 and the control's 396) without changing what it says. v3's
+good_surprise regression came mostly from its opening sentence, not the
+cadence (v4 1 of 5). The owner chose no cadence: 7.211.0 stands.
+
 Final-message round, 2026-10-27: the style before the final flag (old,
 ab6b0307) against 651e917b's (new: every message through the tool, a message
 that is "the last thing you do in a turn" sent alone with `final: true`, and
