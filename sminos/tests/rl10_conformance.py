@@ -585,10 +585,20 @@ def stage_restart():
         end_session(B["session:" + name])
 
 
+def stage_ask(rid):
+    """Case 12: S1 raises a question with its project open, each going up alone."""
+    return lambda: MODS["S1"].raise_(rid, "Bash", {"command": "ls"}, time.time())
+
+
+def stage_answer(rid):
+    return lambda: MODS["S1"].settle(rid)
+
+
 STAGE = {(0, 3): stage_open_main, (2, 0): stage_read_only(True), (2, 2): stage_read_only(False),
          (4, 13): stage_whole_second, (6, 6): stage_operator_words, (6, 8): stage_unrelayed,
          (8, 0): stage_host, (8, 2): stage_raise, (9, 5): stage_relaunch,
-         (11, 3): stage_restart}
+         (11, 3): stage_restart, (12, 0): stage_ask("req-3"), (12, 2): stage_ask("req-4"),
+         (12, 4): stage_answer("req-3"), (12, 6): stage_answer("req-4")}
 
 
 # ------------------------------------------------------------- what sminos did with a down line
