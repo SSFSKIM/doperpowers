@@ -847,8 +847,7 @@ def org_directory():
     latest `org` frame — or None before the first (or when it is unreadable)."""
     if not _ORG_DIR:
         try:
-            with open(org_path()) as f:
-                d = json.load(f)
+            d = json_at(org_path())   # the uplink writes it whole, by rename
         except (OSError, ValueError):
             d = None
         ok = isinstance(d, dict) and isinstance(d.get("projects"), list) and isinstance(d.get("machines"), list)
@@ -1457,13 +1456,14 @@ def _registration_at(path):
     return held[1]
 
 
-_FILE_BYTES = {}  # path → ((st_ino, st_size, st_mtime_ns), its bytes), for file_bytes
+_FILE_BYTES = {}  # path → ((st_ino, st_size, st_mtime_ns, st_ctime_ns), its bytes), for file_bytes
 
 
 def file_bytes(path):
-    """A small file's bytes, read again only once its inode, size or mtime
-    moved (every file read through here is written whole, by rename: a new
-    inode); OSError as open raises it. The daemon's loop asks for the same
+    """A small file's bytes, read again only once its inode, size, mtime or
+    ctime moved (every file read through here is written whole, by rename: a
+    new inode; a chmod moves the ctime, so a file made unreadable is opened
+    again and fails as it would have); OSError as open raises it. The daemon's loop asks for the same
     records, registrations and settings every tick, most of them unchanged
     for days: a stat instead of an open. Callers parse the bytes each time,
     so nothing they hold is shared."""
@@ -1472,7 +1472,7 @@ def file_bytes(path):
     except OSError:
         _FILE_BYTES.pop(path, None)
         raise
-    key = (st.st_ino, st.st_size, st.st_mtime_ns)
+    key = (st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
     held = _FILE_BYTES.get(path)
     if held is None or held[0] != key:
         with open(path, "rb") as f:
@@ -7337,6 +7337,9 @@ def proc_started_at(pid):
         return None
 
 
+_BOOT = {}   # a /proc's btime, as _linux_start read it once
+
+
 def _linux_start(pid):
     """A process's start, in whole epoch seconds, as Linux's ps reckons it
     (procps's pr_lstart): /proc/stat's boot time, a whole second, plus the
@@ -7345,9 +7348,16 @@ def _linux_start(pid):
     harness records ps's reading (same_process). proc_started_at's truer
     instant can fall in the second after. 0 when there is no such process;
     None when /proc cannot tell (no Linux /proc), for ps to answer."""
+    # The boot time holds until the machine reboots, which ends this process:
+    # read once (the kernel writes all of /proc/stat out for each read), the
+    # file's presence still asked each time.
+    boot = _BOOT.get(PROC)
     try:
-        with open(os.path.join(PROC, "stat")) as f:
-            boot = next(int(line.split()[1]) for line in f if line.startswith("btime "))
+        if boot is None:
+            with open(os.path.join(PROC, "stat")) as f:
+                boot = _BOOT[PROC] = next(int(line.split()[1]) for line in f if line.startswith("btime "))
+        else:
+            os.stat(os.path.join(PROC, "stat"))
     except (OSError, ValueError, IndexError, StopIteration):
         return None
     try:

@@ -521,10 +521,15 @@ def sync_out(project):
             _SETTLED.pop(log, None)
             pushed = push(project, log)
             if not pushed:
-                # Committed, merged, and nothing ahead of the remote's main: settled.
-                state = mirror_state(log)
-                if state is not None:
-                    _SETTLED[log] = (state, project.remote)
+                # Committed, merged, nothing ahead of the remote's main: settled,
+                # once the tree is seen clean under the appenders' lock, so what
+                # is kept is the committed state and an append meanwhile is not
+                # (push commits, then looks at the remote, without the lock).
+                with lock(log, ".sync.lock"):
+                    if not git_ok(log, "status", "--porcelain").stdout.strip():
+                        state = mirror_state(log)
+                        if state is not None:
+                            _SETTLED[log] = (state, project.remote)
             return pushed
     except BecameHub as e:
         _SETTLED.pop(log, None)

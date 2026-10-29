@@ -628,9 +628,13 @@ class QuietTick(unittest.TestCase):
         self.assertEqual([p for p in ops.locks if not p.endswith(os.sep + ".sync-op.lock")], [],
                          "no lock is taken but a git mirror's, whose fetch is the tick's")
         engine = os.path.join(HOME, ".claude", "sessions") + os.sep
-        self.assertEqual([p for p in ops.opens if not p.startswith(engine)], [],
-                         "nothing but the engine's records of the running sessions is opened")
-        self.assertLessEqual(len(ops.opens), len(os.listdir(engine)))
+        running = len(os.listdir(engine))
+        # On Linux a running session's process start is read off /proc (macOS asks sysctl).
+        procs = [p for p in ops.opens if p.startswith(sminos.PROC + os.sep)]
+        self.assertEqual([p for p in ops.opens if not p.startswith(engine) and p not in procs], [],
+                         "nothing but the engine's records of the running sessions, and their processes, is opened")
+        self.assertLessEqual(len(ops.opens) - len(procs), running)
+        self.assertLessEqual(len(procs), running, "one look at each running session's process")
 
     def test_a_quiet_tick_leaves_every_record_as_it_was(self):
         quietly(daemon.tick_all, quiet=True)
@@ -673,6 +677,21 @@ class QuietTick(unittest.TestCase):
             write(smns, d)
             quietly(daemon.tick_all, quiet=True)
         self.assertEqual(json.load(open(os.path.join(project.home, "project.json"))).get("hub", {}).get("org"), ORG)
+
+    def test_a_policy_made_unreadable_reads_read_only(self):
+        """A file read by stat is opened again once its permissions moved
+        (its ctime): the policy that can no longer be read is no policy."""
+        policy = sminos.sibling_module("sminos_policy")
+        path = os.path.join(SH, "daemon", "policy.json")
+        self.assertFalse(policy.read_only())
+        os.chmod(path, 0)
+        try:
+            if os.access(path, os.R_OK):
+                self.skipTest("this user reads a file of mode 000")
+            self.assertTrue(policy.read_only())
+        finally:
+            os.chmod(path, 0o600)
+        self.assertFalse(policy.read_only())
 
     def test_the_polls_between_ticks_make_and_open_nothing(self):
         rl10 = sminos.sibling_module("sminos_rl10")
@@ -748,6 +767,28 @@ class QuietMirror(unittest.TestCase):
         self.assertIn(w.replace("/", ".") + ".jsonl", self.remote_files())
         self.gits()
         self.assertEqual(self.gits(), ["fetch", "for-each-ref"])
+
+    def test_an_append_while_it_settles_is_pushed(self):
+        """push commits, then looks at the remote without the appenders'
+        lock: an append in that window is in no commit, and the state the
+        sync keeps as settled must not take it in, or every later tick
+        would pass it by."""
+        self.gits()
+        w = "%s/%s" % (MACHINE, uuid.uuid4())
+        sminos.log_append(self.project, "%s/%s" % (MACHINE, uuid.uuid4()), "say", to=[], text="moves the tree")
+        real = daemon.ahead
+
+        def append_then_look(log):
+            if not os.path.exists(sminos.writer_path(self.project, w)):
+                sminos.log_append(self.project, w, "say", to=[], text="in the window")
+            return real(log)
+
+        self.assertIn("push", self.gits())   # the first pushed: the next tick syncs whole, and settles
+        with mock.patch.object(daemon, "ahead", append_then_look):
+            self.gits()   # nothing ahead, as the second is appended while it looks
+        for _ in range(3):
+            self.gits()
+        self.assertIn(w.replace("/", ".") + ".jsonl", self.remote_files())
 
     def test_a_push_from_elsewhere_is_merged(self):
         self.gits()
