@@ -77,6 +77,7 @@ as() { # a|b|c host — one machine: its HOME, its SMINOS_HOME, its host name
 
 cat > "$T/bin/claude" <<'STUB'
 #!/usr/bin/env bash
+printf '%s\n' "$*" >> "$STUB_STATE/calls"
 case "${1:-}" in
   agents) cat "$STUB_STATE/agents.json" 2>/dev/null || echo "[]"; exit 0 ;;
 esac
@@ -123,13 +124,14 @@ print(json.dumps({"project": str(uuid.uuid4()), "name": sys.argv[1], "remote": "
     "$2" > "$1/.smns"
 }
 live_pid() { sleep 600 & LIVE_PID=$!; PIDS+=("$LIVE_PID"); }
+# ENGINE_DIR: the config dir the session's engine runs under, ~/.claude when unset.
 session_record() { # name session pid cwd [kind] [nameSource] — an engine record for a running session
   printf '{"pid":%s,"sessionId":"%s","name":"%s","nameSource":"%s","kind":"%s","status":"idle","cwd":"%s"}\n' \
-    "$3" "$2" "$1" "${6:-user}" "${5:-interactive}" "$4" > "$HOME/.claude/sessions/$1.json"
+    "$3" "$2" "$1" "${6:-user}" "${5:-interactive}" "$4" > "${ENGINE_DIR:-$HOME/.claude}/sessions/$1.json"
 }
 transcript() { # session cwd... — a transcript whose rows ran in each cwd in turn (the first: where it launched)
   local sid=$1; shift
-  local tx="$HOME/.claude/projects/p-$sid/$sid.jsonl"
+  local tx="${ENGINE_DIR:-$HOME/.claude}/projects/p-$sid/$sid.jsonl"
   mkdir -p "$(dirname "$tx")"
   : > "$tx"
   local n=0
@@ -468,6 +470,114 @@ assert_equals "$(override_of 1a000009-0000-4000-8000-000000000009)" "none" "one 
 assert_equals "$(override_of 1a000010-0000-4000-8000-000000000010)" "$OPID" "one 29 days quiet is kept"
 assert_equals "$(override_of "$S4")" "$OPID" "and a live one"
 assert_contains "$(cat "$SMINOS_HOME/daemon.log")" "1a000008" "each sweep is a daemon.log line naming the session"
+
+echo "a session whose engine runs under another config dir:"
+# The engine writes a session's records and transcript under its own
+# process's config dir (CLAUDE_CONFIG_DIR); only the session's own hook runs
+# in that environment, and every other reader learns the directory from it.
+CFG="$T/a/engine-config"
+mkdir -p "$CFG/sessions"
+CR="$T/a/configured"
+gitq init -q "$CR"
+write_smns "$CR" configured
+CRP="$(smns_id "$CR")"
+S17=1a000017-0000-4000-8000-000000000017   # its engine under CFG
+S18=1a000018-0000-4000-8000-000000000018   # beside it, its engine under the default
+tool_calls() { # transcript — twelve tool calls by the session's own model, past derive's threshold
+  python3 - "$1" <<'PY'
+import json, sys
+blocks = [{"type": "tool_use", "id": "toolu_%02d" % i, "name": "Bash", "input": {}} for i in range(12)]
+with open(sys.argv[1], "a") as f:
+    f.write(json.dumps({"type": "assistant", "uuid": "calls", "isSidechain": False,
+                        "message": {"role": "assistant", "content": blocks}}) + "\n")
+PY
+}
+live_pid
+ENGINE_DIR="$CFG" session_record s17 "$S17" "$LIVE_PID" "$CR"
+ENGINE_DIR="$CFG" transcript "$S17" "$CR"
+S17_TX=$TX
+tool_calls "$S17_TX"
+live_pid
+session_record s18 "$S18" "$LIVE_PID" "$CR"
+transcript "$S18" "$CR"
+S18_TX=$TX
+tool_calls "$S18_TX"
+hook_payload SessionStart "$S17" "$CR" "$S17_TX" | CLAUDE_CONFIG_DIR="$CFG" CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" "$HOOK"
+hook_payload SessionStart "$S18" "$CR" "$S18_TX" | CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" "$HOOK"
+assert_equals "$(events_of "$CRP" "$S17")" "joined - - - $CR" "its SessionStart hook joins it, its engine record read under its config dir"
+assert_equals "$(events_of "$CRP" "$S18")" "joined - - - $CR" "as the hook joins a session under the default"
+"$SMINOS" daemon tick >/dev/null 2>&1 || true
+assert_equals "$(members_of configured)" "s17 s18" "a tick, which runs under the default, keeps both: neither reads as ended"
+run_in "$T/x" "$SMINOS" list configured --json
+assert_equals "$(printf '%s\n' "$OUT" | python3 -c 'import json, sys
+print(sorted((r["alias"], r["state"]) for r in json.load(sys.stdin)))')" "[('s17', 'idle'), ('s18', 'idle')]" \
+  "and lists each in the state its engine record says"
+assert_equals "$(python3 - "$S17" "$S18" <<'PY'
+import os, sys
+sys.path.insert(0, os.environ["SCRIPTS"])
+import sminos
+print(" ".join(sminos.transcript_path(sid) for sid in sys.argv[1:]))
+PY
+)" "$S17_TX $S18_TX" "each one's transcript is found where its engine wrote it"
+: > "$STUB_STATE/calls"
+run_in "$CR" "$SMINOS" derive s17
+assert_contains "$OUT" "s17: not derived — its engine runs under $CFG" \
+  "derive refuses it: a fork from here would resume it under this process's config dir and credentials"
+assert_not_contains "$(cat "$STUB_STATE/calls")" "$S17" "starting no fork"
+run_in "$CR" "$SMINOS" derive s18
+assert_contains "$(cat "$STUB_STATE/calls")" "-p --resume $S18" "while a session under the default is forked as before"
+
+echo "a seat whose session runs under another config dir:"
+S19=1a000019-0000-4000-8000-000000000019
+run_in "$CR" "$SMINOS" seat add crew tuned --session "$S19"
+ENGINE_DIR="$CFG" transcript "$S19" "$CR"
+S19_TX=$TX
+hook_payload SessionStart "$S19" "$CR" "$S19_TX" | CLAUDE_CONFIG_DIR="$CFG" CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" "$HOOK"
+: > "$STUB_STATE/calls"
+run_in "$CR" "$SMINOS" resume crew/tuned "go on"
+assert_contains "$OUT" "runs under $CFG" "is not resumed from a process under another config dir"
+assert_not_contains "$(cat "$STUB_STATE/calls")" "--resume $S19" "nothing launched"
+run_in "$CR" in_session "$S18" "$SMINOS" say "@tuned are you there"
+assert_contains "$OUT" "tuned: recorded" "a message to it is recorded for it, not pushed"
+assert_not_contains "$(cat "$STUB_STATE/calls")" "--resume $S19" "the delivery resumes nothing either"
+run_in "$CR" env CLAUDE_CONFIG_DIR="$CFG" "$SMINOS" resume crew/tuned "go on"
+assert_contains "$(cat "$STUB_STATE/calls")" "--bg --resume $S19" "a process under its own config dir resumes it"
+S20=1a000020-0000-4000-8000-000000000020   # running under CFG, its engine yet to write a transcript
+live_pid
+S20_PID=$LIVE_PID
+ENGINE_DIR="$CFG" session_record s20 "$S20" "$S20_PID" "$CR"
+hook_payload SessionStart "$S20" "$CR" "$CFG/projects/p-$S20/$S20.jsonl" \
+  | CLAUDE_CONFIG_DIR="$CFG" CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" "$HOOK"
+rm -r "$CFG/projects/p-$S19"
+"$SMINOS" daemon tick >/dev/null 2>&1 || true
+[ ! -e "$SMINOS_HOME/config-dirs/$S19.json" ] && [ -e "$SMINOS_HOME/config-dirs/$S17.json" ] \
+  && pass "the daemon forgets a session's config dir once its transcript is gone, and keeps a live one's" \
+  || fail "the daemon forgets a session's config dir once its transcript is gone, and keeps a live one's"
+[ -e "$SMINOS_HOME/config-dirs/$S20.json" ] && pass "and a running session's that has written no transcript yet" \
+  || fail "and a running session's that has written no transcript yet"
+kill "$S20_PID"; wait "$S20_PID" 2>/dev/null || true
+"$SMINOS" daemon tick >/dev/null 2>&1 || true
+[ ! -e "$SMINOS_HOME/config-dirs/$S20.json" ] && pass "until it ends with none" || fail "until it ends with none"
+S21=1a000021-0000-4000-8000-000000000021   # ended under CFG a month ago, its transcript kept
+run_in "$CR" "$SMINOS" seat add crew aged --session "$S21"
+ENGINE_DIR="$CFG" transcript "$S21" "$CR"
+S21_TX=$TX
+hook_payload SessionStart "$S21" "$CR" "$S21_TX" | CLAUDE_CONFIG_DIR="$CFG" CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" "$HOOK"
+python3 -c 'import os, sys, time; t = time.time() - 31 * 86400; os.utime(sys.argv[1], (t, t))' "$S21_TX"
+"$SMINOS" daemon tick >/dev/null 2>&1 || true
+[ -e "$SMINOS_HOME/config-dirs/$S21.json" ] && pass "an ended session's is kept while its transcript is there, however quiet" \
+  || fail "an ended session's is kept while its transcript is there, however quiet"
+assert_equals "$(python3 - "$S21" <<'PY'
+import os, sys
+sys.path.insert(0, os.environ["SCRIPTS"])
+import sminos
+print(sminos.transcript_path(sys.argv[1]))
+PY
+)" "$S21_TX" "so its transcript is still found"
+: > "$STUB_STATE/calls"
+run_in "$CR" "$SMINOS" resume crew/aged "back"
+assert_contains "$OUT" "runs under $CFG" "and a resume from here still refused"
+assert_not_contains "$(cat "$STUB_STATE/calls")" "--resume $S21" "launching nothing"
 
 echo "the hook's cheap look, on a machine not enrolled:"
 as c gamma

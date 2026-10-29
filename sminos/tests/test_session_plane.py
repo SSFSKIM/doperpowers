@@ -1763,6 +1763,151 @@ class StaleSocket(unittest.TestCase):
         self.assertLess(took, plane.STALE_WAIT, "no redial for a session that does not run")
 
 
+class ConfigDirSession(unittest.TestCase):
+    """A session whose engine runs under another config dir (CLAUDE_CONFIG_DIR):
+    its engine record and its transcript live there, and its own hook, the
+    one process run in its environment, records the directory. Presence reads
+    the record there and a subscription serves the transcript's rows from
+    there, as for a session under the default; a subscription that could not
+    find them ended `discontinuity` once the bridge's snapshot came."""
+
+    def setUp(self):
+        self.cfg = tempfile.mkdtemp(prefix="cfg.", dir=T)
+        self.sid = new_session()
+        self.fake = fake_session.FakeSession(os.environ["HOME"], os.environ["SMINOS_HOME"], self.sid)
+        self.fake.dir = os.path.join(self.cfg, "projects", "proj")
+        os.makedirs(self.fake.dir)
+        os.makedirs(os.path.join(self.cfg, "sessions"))
+        self.holder = subprocess.Popen(["sleep", "3600"])
+        self.record = os.path.join(self.cfg, "sessions", "%d.json" % self.holder.pid)
+        with open(self.record, "w") as f:
+            json.dump({"pid": self.holder.pid, "sessionId": self.sid, "cwd": self.fake.dir, "kind": "interactive",
+                       "status": "busy"}, f)
+        self.hook(self.sid, self.fake.path(None), self.cfg)
+        plane.sminos.forget_caches()   # a new cache generation, as the plane's next members read begins one
+        self.p = plane.Plane("testhost", lambda: None, transcripts=plane.Transcripts(), disk=plane.Disk())
+        self.p.here = {PROJECT: {self.sid: self.fake.dir}}
+        self.project = types.SimpleNamespace(id=PROJECT, name="configured")
+
+    def tearDown(self):
+        self.p.close()
+        self.fake.stop_bridge()
+        self.holder.terminate()
+        self.holder.wait(5)
+        os.unlink(self.record)   # the machine's other tests read every recorded dir's records
+        if os.path.exists(plane.sminos.config_dir_path(self.sid)):
+            os.unlink(plane.sminos.config_dir_path(self.sid))
+        plane.sminos.forget_caches()
+
+    def hook(self, sid, transcript, cfg=None):
+        """The session's record hook, run in its environment: under `cfg`, else the default."""
+        env = {k: v for k, v in os.environ.items() if k != "CLAUDE_CONFIG_DIR"}
+        if cfg:
+            env["CLAUDE_CONFIG_DIR"] = cfg
+        payload = {"session_id": sid, "transcript_path": transcript, "cwd": self.fake.dir,
+                   "hook_event_name": "SessionStart", "source": "startup"}
+        subprocess.run([os.path.join(SCRIPTS, "sminos"), "record"], input=json.dumps(payload), text=True, env=env,
+                       capture_output=True, check=True)
+
+    def test_a_session_back_under_the_default_is_read_there(self):
+        """Its hook, run under the default again, drops the record: the
+        transcript found under the recorded dir is looked for again, under
+        the default, once the presence poll reads the registry."""
+        self.fake.user_row("before", post=False)
+        self.assertEqual(plane.sminos.transcript_now(self.sid), self.fake.path(None))
+        back = os.path.join(os.environ["HOME"], ".claude", "projects", "back", self.sid + ".jsonl")
+        os.makedirs(os.path.dirname(back), exist_ok=True)
+        shutil.copy(self.fake.path(None), back)
+        self.addCleanup(os.unlink, back)
+        self.hook(self.sid, back)
+        self.p.records.scan()
+        self.assertEqual(plane.sminos.transcript_now(self.sid), back)
+
+    def test_the_registry_is_read_again_only_once_it_moved(self):
+        """The presence poll asks for the registry as it is now five times a
+        second: a stat while its directory holds still, a read once a hook
+        recorded another session there."""
+        d = os.path.dirname(plane.sminos.config_dir_path(self.sid))
+        past = time.time() - 5
+        os.utime(d, (past, past))
+        real, reads = plane.sminos._read_registry, []
+        with mock.patch.object(plane.sminos, "_read_registry", side_effect=lambda at: reads.append(at) or real(at)):
+            for _ in range(5):
+                self.p.records.scan()
+            self.assertEqual(len(reads), 1, "read once while it holds still")
+            other = new_session()
+            self.addCleanup(lambda: os.path.exists(plane.sminos.config_dir_path(other))
+                            and os.unlink(plane.sminos.config_dir_path(other)))
+            self.hook(other, os.path.join(self.cfg, "projects", "proj", other + ".jsonl"), self.cfg)
+            self.p.records.scan()
+            self.assertEqual(len(reads), 2)
+        self.assertEqual(plane.sminos.recorded_config_dirs().get(other), self.cfg, "the next poll finds it")
+
+    def test_a_registered_dir_speaks_only_for_the_sessions_registered_to_it(self):
+        """A dir copied from ~/.claude carries other sessions' records, a
+        live one with a listening inbox among them: none of them is read as
+        that session's — no delivery is routed to it, no presence, no holder."""
+        import sminos_rpc as rpcs
+        other, inbox = new_session(), os.path.join(self.cfg, "in.sock")
+        listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        listener.bind(inbox)
+        listener.listen(1)
+        self.addCleanup(listener.close)
+        holder = subprocess.Popen(["sleep", "3600"])
+        self.addCleanup(holder.wait)
+        self.addCleanup(holder.kill)
+        planted = os.path.join(self.cfg, "sessions", "%d.json" % holder.pid)
+        with open(planted, "w") as f:
+            json.dump({"pid": holder.pid, "sessionId": other, "cwd": self.fake.dir, "kind": "interactive",
+                       "status": "busy", "messagingSocketPath": inbox}, f)
+        self.addCleanup(os.unlink, planted)
+        plane.sminos.forget_caches()
+        self.assertIsNone(plane.sminos.peer_for_session(other), "no delivery is routed to it")
+        self.assertNotIn(other, self.p.records.scan(), "no presence")
+        self.assertEqual(rpcs.holders(other), [], "no holder")
+        self.assertIsNotNone(plane.sminos.session_running(self.sid), "while the session registered there is read")
+        self.assertIn(self.sid, self.p.records.scan())
+        self.assertEqual([r["sessionId"] for r in rpcs.holders(self.sid)], [self.sid])
+
+    def test_its_presence_and_its_rows_are_read_under_its_config_dir(self):
+        self.fake.start_bridge()
+        before = self.fake.user_row("before")
+        self.assertEqual((self.p.records.scan().get(self.sid) or {}).get("status"), "busy",
+                         "presence reads its engine record under its config dir")
+        b = dx4_consumer.Consumer(None)
+
+        def pump(until):
+            deadline = time.monotonic() + 10
+            while not until() and b.end is None and time.monotonic() < deadline:
+                for env in self.p.pump_one("s1"):
+                    b.take(env)
+                time.sleep(0.02)
+
+        for env in self.p.subscribe(self.project, {"session": self.sid, "agentId": None, "sub": "s1"}):
+            b.take(env)
+        pump(lambda: b.snapshot is not None)
+        self.assertIsNotNone(b.snapshot, "the snapshot came: %s" % b.end)
+        self.assertEqual([r["uuid"] for r in b.snapshot["rows"]], [before], "holding the row on disk there")
+        after = self.fake.user_row("after")
+        pump(lambda: after in b.uuids())
+        self.assertIsNone(b.end, "the stream goes on")
+        self.assertEqual(b.uuids(), [before, after], "a row written since streams in its order")
+        self.assertEqual(b.errors, [])
+
+    def test_an_mcp_read_adds_what_the_file_in_its_config_dir_disables(self):
+        """`read mcp`'s disabled servers come from the `.claude.json` the
+        session's engine reads: the one in its config dir."""
+        with open(os.path.join(self.cfg, ".claude.json"), "w") as f:
+            json.dump({"projects": {self.fake.dir: {"disabledMcpServers": ["parked"]}}}, f)
+        self.fake.start_bridge()
+        self.fake.user_row("before")
+        self.p.kinds = frozenset({"read"})
+        self.p.subscribe(self.project, {"session": self.sid, "agentId": None, "sub": "s1"})
+        self.p.read({"sub": "s1", "id": "r1", "what": "mcp"})
+        _, body = self.p.read_answers.get(timeout=10)
+        self.assertIn({"name": "parked", "status": "disabled"}, body["result"]["servers"], body)
+
+
 class Jobs(Session):
     """What the session runs (DC8 M4; DX4 "Jobs and agent status" and
     `output`): the widened `subagents` body derived from the rows the
