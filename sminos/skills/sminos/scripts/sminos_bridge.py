@@ -5,7 +5,8 @@
 session's endpoint, HTTP over the Unix socket $SMINOS_HOME/bridge/<id>.sock
 in an owner-only directory:
 
-    GET  /status          who serves here: session, pid, protocol, the mod's last word
+    GET  /status          who serves here: session, pid, protocol, the mod's last word, and
+                          the session's permission mode as the mod last posted it
     POST /events          the mod's events, a JSON array in the order they happened, with
                           the hello's nonce (X-Bridge-Nonce; 409 without it)
     GET  /events          a subscription: one snapshot line, then every event, numbered n from 1
@@ -179,6 +180,7 @@ CHILD_LINES = ("hello", "lane")   # what only the child says to the mod: never a
 LANE_MARK = "MAWS_LANE"        # MAWS's lane B marker, beside SMNS_MEMBER (sminos.MEMBER_MARK)
 LANE_B = "lane-b"              # an observer's refusal's code
 LAUNCH = "launch"              # a command or decision sealed for another launch of the session: its refusal's code
+MODE_FIELDS = ("permissionMode", "permissionModeAt", "permissionModeFrom")   # the mod's report of the mode (1.27.14)
 OBSERVER_REASON = "MAWS controls this session"
 LANE_RETRY_S, LANE_RETRY_FOR_S, LANE_RETRY_LATER_S = 2, 60, 30   # an unresolved verdict's retries, and the relay's
 # The rules a scoped allow adds at most (DX5's decision POST): the bound of
@@ -382,6 +384,14 @@ def subscribe(path):
 
 def _key(e):
     return "%s|%s|%s" % (e.get("turnId"), e.get("agentId"), e.get("step"))
+
+
+def _mode_of(fields):
+    """The mode fields a heartbeat's state or a resync carries, as they are;
+    none when it carries no `permissionMode` (no report yet, or a mod older
+    than the report). The daemon judges their shape (sminos_plane)."""
+    fields = fields if isinstance(fields, dict) else {}
+    return {k: fields[k] for k in MODE_FIELDS if k in fields} if "permissionMode" in fields else {}
 
 
 # Who the bridge's wake is from, as its inbox frame's envelope names it.
@@ -735,6 +745,10 @@ class Bridge:
         self.session_info = None
         self.catalog = None       # the latest live commands/models (DX5 M1)
         self.capabilities = None  # what the loaded mod can do (DX5), as its last resync said
+        # The session's permission mode as the mod's last heartbeat or resync
+        # carried it (MODE_FIELDS, sminos 1.27.14's report): the daemon's
+        # probe reads it here for the session's presence (P5 O9).
+        self.mode = {}
         self.child = None        # [its socket's inode, its pid]: this child, as a reload's start names it
         self.usage = None
         self.mod_events = 0
@@ -962,6 +976,7 @@ class Bridge:
             # from before sminos 1.7.0), since a resync is its whole state.
             self.catalog = e["catalog"] if isinstance(e.get("catalog"), dict) else None
             self.capabilities = e["capabilities"] if isinstance(e.get("capabilities"), dict) else None
+            self.mode = _mode_of(e)
             self.turns = {t.get("turnId"): dict(t) for t in e.get("turns") or []}
             streaming = {}
             for entry in e.get("streaming") or []:
@@ -1062,6 +1077,8 @@ class Bridge:
             self.session_info = {**(self.session_info or {}), "ended": e.get("reason")}
         elif kind == "usage":
             self.usage = dict(e)
+        elif kind == "heartbeat":
+            self.mode = _mode_of(e.get("state"))
         elif kind == "result":
             r = e.get("result") if isinstance(e.get("result"), dict) else {}
             # An op answered at once, its outcome to follow, keeps its nonce
@@ -1394,7 +1411,8 @@ class Bridge:
                     "mod": {"events": self.mod_events, "last": self.mod_last},
                     **({"lane": self.lane} if self.lane is not None else {}),
                     **({"launch": self.launch} if self.launch is not None else {}),
-                    **({"capabilities": self.capabilities} if self.capabilities is not None else {})}
+                    **({"capabilities": self.capabilities} if self.capabilities is not None else {}),
+                    **self.mode}
 
     def agents_now(self):
         """GET /agents: the session's subagents as this child keeps them —

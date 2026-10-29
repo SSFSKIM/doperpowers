@@ -2496,6 +2496,70 @@ class Desk(unittest.TestCase):
         self.assertIsNone(self.bridges.launch(self.sid), "no bridge, no launch")
         self.assertNotIn("launch", rl10.presence_of(self.sid, self.now))
 
+    def test_a_probe_keeps_the_mode_the_bridge_read_and_presence_carries_it(self):
+        """P5 O9 (a remote session's mode): the real child keeps the mode the
+        mod's latest heartbeat or resync carries and says it in its status;
+        the probe keeps it, and every presence carries it as DX4's
+        ModeReading, `at` the bridge's own reading: a re-read moves nothing,
+        a switch moves the body and wakes the uplink. A heartbeat carrying
+        none (a new process, a mod older than the report), a word that is no
+        mode, and no bridge carry none."""
+        self.fake.real = True
+        self.fake.start_bridge()
+        self.assertTrue(self.probed(lambda: self.bridges.known(self.sid)))
+        dx2 = plane.Plane("testhost", lambda: None, self.bridges)
+        rl10 = plane.Plane("testhost", lambda: None, self.bridges, launches=True)
+        self.assertEqual(dx2.presence_of(self.sid, self.now), {"record": None, "bridge": True}, "no report yet")
+        woken = []
+        self.bridges.wake = lambda: woken.append(1)
+
+        def beat(mode=None, at=None):
+            fields = {} if mode is None else {"permissionMode": mode, "permissionModeAt": at,
+                                              "permissionModeFrom": "permission_mode_changed"}
+            self.fake.post([{"type": "heartbeat", "state": {"mainTurn": None, "isStreaming": False, "tools": [],
+                                                            **fields}, "t": 0}])
+
+        beat("acceptEdits", 1761000000000)
+        self.assertTrue(self.probed(lambda: self.bridges.mode(self.sid) is not None))
+        reading = {"mode": "acceptEdits", "at": 1761000000000}
+        self.assertEqual(dx2.presence_of(self.sid, self.now), {"record": None, "bridge": True, "mode": reading})
+        self.assertEqual(rl10.presence_of(self.sid, self.now)["mode"], reading, "a cut-over machine's too")
+        self.assertTrue(woken, "a probe whose answer moved by the mode alone wakes the uplink")
+
+        # The next beats of an idle session say the same reading: however
+        # often it is read again, the body holds still.
+        woken.clear()
+        beat("acceptEdits", 1761000000000)
+        begun = self.bridges.answering(self.sid)[2]
+        self.assertTrue(self.probed(lambda: self.bridges.answering(self.sid)[1] > begun + 1), "two probes since")
+        self.assertEqual(dx2.presence_of(self.sid, self.now)["mode"], reading)
+        self.assertEqual(woken, [], "a re-read of the same reading wakes nothing")
+
+        beat("plan", 1761000004000)   # Shift+Tab
+        self.assertTrue(self.probed(lambda: (self.bridges.mode(self.sid) or {}).get("mode") == "plan"))
+        self.assertEqual(dx2.presence_of(self.sid, self.now)["mode"], {"mode": "plan", "at": 1761000004000})
+        self.assertTrue(woken)
+
+        beat("not a mode!", 1761000005000)
+        self.assertTrue(self.probed(lambda: self.bridges.mode(self.sid) is None), "a word that is no mode")
+        beat()
+        self.assertTrue(self.probed(lambda: self.bridges.mode(self.sid) is None))
+        self.assertNotIn("mode", dx2.presence_of(self.sid, self.now), "a heartbeat with none carries none")
+
+        # A module reload: its child knows the mode from the first resync,
+        # not five seconds later at the first beat.
+        self.fake.mode = {"permissionMode": "auto", "permissionModeAt": 1761000006000,
+                          "permissionModeFrom": "UserPromptSubmit"}
+        self.addCleanup(setattr, self.fake, "mode", None)
+        self.fake.kill_child()
+        self.fake.respawn_child()
+        self.assertTrue(self.probed(lambda: self.bridges.mode(self.sid) == {"mode": "auto", "at": 1761000006000}))
+
+        self.fake.stop_bridge()
+        self.assertTrue(self.probed(lambda: not self.bridges.known(self.sid)))
+        self.assertIsNone(self.bridges.mode(self.sid), "no bridge, no mode")
+        self.assertNotIn("mode", dx2.presence_of(self.sid, self.now))
+
     def test_a_bridge_gone_answers_nothing(self):
         self.fake.capabilities = CAPS
         self.fake.start_bridge()
@@ -6324,6 +6388,40 @@ class Uplink(unittest.TestCase):
         self.assertFalse({"bad", "r4"} & set(got), "a malformed frame is passed by")
         self.assertEqual(b.errors, [])
         self.hub.send({"t": "unsubscribe", "project": self.project, "sub": b.sub})
+
+    def test_k_an_idle_sessions_switch_reaches_its_presence_within_a_probe(self):
+        """P5 O9 (a remote session's mode): the mode the session's bridge
+        read rides its presence. An idle session's switch, nothing else
+        moving (its record says idle throughout), reaches the hub within one
+        BRIDGE_RECHECK of the child holding it, the probe's cadence; and the
+        same reading said again by every beat sends no presence again."""
+        count = len(self.hub.messages())
+        self.fake.start_bridge(real=True)
+        self.assertIsNotNone(self.hub.wait(lambda ms: any(p["bridge"] for p in self.presences(ms[count:])), timeout=5))
+
+        def beat(mode, at):
+            self.fake.post([{"type": "heartbeat", "state": {
+                "mainTurn": None, "isStreaming": False, "tools": [],
+                "permissionMode": mode, "permissionModeAt": at, "permissionModeFrom": "permission_mode_changed"},
+                "t": 0}])
+
+        def reaches(mode, at):
+            count = len(self.hub.messages())
+            began = time.monotonic()
+            beat(mode, at)
+            got = self.hub.wait(lambda ms: any(p.get("mode") == {"mode": mode, "at": at}
+                                               for p in self.presences(ms[count:])), timeout=plane.BRIDGE_RECHECK + 5)
+            self.assertIsNotNone(got, "%s reached the session's presence" % mode)
+            return time.monotonic() - began
+
+        self.assertLess(reaches("acceptEdits", 1761000000000), plane.BRIDGE_RECHECK + 1.5)
+        count = len(self.hub.messages())
+        for _ in range(2):
+            beat("acceptEdits", 1761000000000)
+            time.sleep(plane.BRIDGE_RECHECK + 0.3)
+        self.assertEqual(self.presences(self.hub.messages()[count:]), [],
+                         "the same reading, read again, sends no presence")
+        self.assertLess(reaches("plan", 1761000004000), plane.BRIDGE_RECHECK + 1.5)
 
 
 if __name__ == "__main__":
