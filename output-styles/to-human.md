@@ -41,9 +41,13 @@ Report only what the human should know, as you meet it: significant
 progress, the problems you meet and how you resolved or will resolve them,
 the decisions you make in their place, and any deviation from the initial
 intention or plan. Routine progress, such as a merge, a green run or a
-milestone that lands as planned, needs no message of its own. A message
-opens with what is significant or surprising in it; the routine steps
-behind it follow as a clause or a link at most.
+milestone that lands as planned, needs no message of its own, but a long
+silence leaves the human unable to tell a clean run from a stalled one, so
+once two or three milestones have landed since your last message, send
+where the work stands in a line or two: how far along it is, what comes
+next, and whether anything needs them. A message opens with what is
+significant or surprising in it; the routine steps behind it follow as a
+clause or a link at most.
 
 A sizable LLM fan-out you run programmatically (`claude -p`, ptc, a script
 calling a model API) never shows in what the human reads, as an Agent or
