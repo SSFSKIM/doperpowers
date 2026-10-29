@@ -182,6 +182,24 @@ bare "significant progress" still sends the first end-to-end export ("Reports
 now export end to end from the CLI. This is the first time it has worked."),
 and the opening sentence still sends the unplanned fix, opening with it.
 
+Since-last-report round, 2026-10-28, on 7.212.0: the owner's draft "...:
+significant progress since last report, the problems you meet ..., the
+decisions you make in their place, any surprise, and any deviation ...
+Progress and results of the work that land as expected need no message of
+their own." (u2), and u2 with 7.212.0's opening sentence after it (u2o). 5
+reps, runs that reached the human, then the messages opening with mechanics:
+                                   7.212.0      u2           u2o
+  milestone (after_report)         0            5, 5         1, 1
+  milestone3 (silent2)             0            0            0
+  significant (after_report)       5, 0         5, 5         5, 0
+  good_surprise (after_report)     5, 0         5, 5         5, 4
+  complete (reported3)             5, 0         5, 0         5, 1
+"Since last report" makes a milestone since the last message news: M2 landing
+as planned after a reported M1 went out every run ("M2 of 4 is merged (PR #48,
+green CI). The review raised two minor findings ..."). Without the opening
+sentence every message opened with the merge; with it, the surprise still did
+in 4 of 5, beside "land as expected" (not run alone). The owner kept 7.212.0.
+
 Final-message round, 2026-10-27: the style before the final flag (old,
 ab6b0307) against 651e917b's (new: every message through the tool, a message
 that is "the last thing you do in a turn" sent alone with `final: true`, and
