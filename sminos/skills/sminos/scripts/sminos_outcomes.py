@@ -202,18 +202,10 @@ def report_one(project, box, sid, events):
     if not project.hub:
         return 0
     path = sminos.project_path(project, "recorded", sminos.reader_key(sid) + ".json")
-    try:
-        with open(path) as f:
-            reported = json.load(f)
-    except (OSError, ValueError):
-        reported = {}
-    reported = reported if isinstance(reported, dict) else {}
+    reported = recorded_load(path)
     before = dict(reported)
-    for e in sorted(events, key=lambda e: (e["writer"], e["seq"])):
+    for e in unreported(events, reported, settled):
         w = e["writer"]
-        if e["seq"] <= max(int(reported.get(w) or 0), sminos._delivery(settled, w)["settled"]) \
-                or e["seq"] in sminos._delivery(settled, w).get("revoked", ()):
-            continue   # settled, reported, or marked revoked (its outcome is `refused-revoked`)
         try:
             box.record(e, sid, "recorded", CLOSED)
         except OSError as err:
@@ -225,6 +217,44 @@ def report_one(project, box, sid, events):
     if reported != before:
         sminos.write_json(path, reported)
     return n
+
+
+def recorded_load(path):
+    """A closed session's `recorded/<session>.json`: {writer: the last seq
+    reported}, {} for none (written whole, by rename: sminos.json_at)."""
+    try:
+        reported = sminos.json_at(path)
+    except (OSError, ValueError):
+        return {}
+    return reported if isinstance(reported, dict) else {}
+
+
+def unreported(events, reported, settled):
+    """Those of `events` (owed to one closed session) neither settled for it,
+    reported, nor marked revoked (its outcome is `refused-revoked`), each
+    writer's in seq order."""
+    out = []
+    for e in sorted(events, key=lambda e: (e["writer"], e["seq"])):
+        w = sminos._delivery(settled, e["writer"])
+        if e["seq"] <= max(int(reported.get(e["writer"]) or 0), w["settled"]) or e["seq"] in w.get("revoked", ()):
+            continue
+        out.append(e)
+    return out
+
+
+def owes_report(project, sid, events):
+    """Whether report_one has anything to do for the session, looked at
+    without its delivery lock: what is settled and what is reported only
+    grow, so nothing to do now is nothing to do under the lock. The tick
+    asks for every closed session each pass, and almost always the answer
+    is no."""
+    settled = sminos.delivered_load(project, sid)
+    if sminos.sibling_module("sminos_policy").read_only():
+        return bool(sminos._owed(events, sid, settled))
+    if not project.hub:
+        return False
+    reported = recorded_load(os.path.join(project.home, "recorded", sminos.reader_key(sid) + ".json"))
+    return bool(unreported(events, reported, settled))
 
 
 def refuse_owed(project, sid, events, settled):
@@ -258,16 +288,14 @@ def report_closed(project, view):
     closed = closed_sessions(view)
     if not closed:
         return 0
-    owed = {}
-    for e in view.events:
-        to = e.get("to")
-        if not isinstance(to, list) or "copy" in e or not policy.outside_origin(e):
-            continue   # a copy is owed to no one (sminos.addressed_to)
-        for sid in {r.get("session") for r in to if isinstance(r, dict)} & closed:
-            owed.setdefault(sid, []).append(e)
+    # A copy is owed to no one (sminos.addressed_to), and addressees leaves it out.
+    to = sminos.addressees(view.events)
     n = 0
     box = Outbox(project)
-    for sid, events in owed.items():
+    for sid in [s for s in to if s in closed]:
+        events = [e for e in to[sid] if policy.outside_origin(e)]
+        if not (events and owes_report(project, sid, events)):
+            continue
         # Under the session's delivery lock, as deliver_next holds it: a
         # session back meanwhile is either delivered first (its settled
         # prefix then covers the event) or after this record, never between.
@@ -295,9 +323,8 @@ def report_refused(project, view):
     if not project.hub:
         return 0
     bridge = sminos.sibling_module("sminos_bridge")
-    try:
-        names = os.listdir(bridge.bridge_dir())
-    except OSError:
+    names = bridge_names(bridge)
+    if names is None:
         return 0
     found = {}
     for name in names:
@@ -320,6 +347,21 @@ def report_refused(project, view):
         with sminos.flocked(sminos.project_path(project, "delivered", sminos.reader_key(sid) + ".lock")):
             n += report_refusals(project, box, sid, refused, events)
     return n
+
+
+_BRIDGE_NAMES = [None, None]   # [the cache generation, the bridge directory's names then, or None]
+
+
+def bridge_names(bridge):
+    """The bridge directory's names, listed once per cache generation
+    (sminos.forget_caches): the tick asks for every hub project."""
+    if _BRIDGE_NAMES[0] != sminos._GENERATION[0]:
+        try:
+            names = os.listdir(bridge.bridge_dir())
+        except OSError:
+            names = None
+        _BRIDGE_NAMES[:] = [sminos._GENERATION[0], names]
+    return _BRIDGE_NAMES[1]
 
 
 def report_refusals(project, box, sid, refused, events):

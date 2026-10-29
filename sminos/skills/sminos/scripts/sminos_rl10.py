@@ -93,45 +93,76 @@ def path():
     return os.path.join(base, "mawsd", "endpoint", "rl10.json")
 
 
+_CHECKED = {}   # rl10.json's path → (its file's identity, as fstat gave it, when checked; check's answer)
+
+
+def _identity(st):
+    return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns, st.st_mode, st.st_uid)
+
+
 def check():
     """(info, why): the endpoint rl10.json names — {socket, token, protocol,
     pid, build} — or None and why not; `why` is None when there is no file,
-    the state of every machine without an endpoint."""
+    the state of every machine without an endpoint. The supervisor asks
+    several times a second: a file whose identity (inode, size, times, mode,
+    owner, by lstat: a link is never the file checked) is the one last
+    checked is answered as it was, without an open."""
     where = path()
+    try:
+        st = os.lstat(where)
+    except FileNotFoundError:
+        _CHECKED.pop(where, None)
+        return None, None
+    except OSError:
+        st = None
+    held = _CHECKED.pop(where, None)
+    if held is not None and st is not None and _identity(st) == held[0]:
+        _CHECKED[where] = held
+        info, why = held[1]
+        return (dict(info) if info is not None else None), why
+    answer, st = _check(where)
+    if st is not None:
+        _CHECKED[where] = (_identity(st), answer)
+    return (dict(answer[0]) if answer[0] is not None else None), answer[1]
+
+
+def _check(where):
+    """check, read as the file is now: (its answer, the file's fstat or None)."""
+    st = None
     try:
         fd = os.open(where, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except FileNotFoundError:
-        return None, None
+        return (None, None), None
     except OSError as e:
-        return None, "%s cannot be opened (%s)" % (where, e.strerror or e)
+        return (None, "%s cannot be opened (%s)" % (where, e.strerror or e)), None
     try:
         st = os.fstat(fd)
         if not stat.S_ISREG(st.st_mode):
-            return None, "%s is not a regular file" % where
+            return (None, "%s is not a regular file" % where), st
         if stat.S_IMODE(st.st_mode) != 0o600:
-            return None, "%s is mode %o, not 600" % (where, stat.S_IMODE(st.st_mode))
+            return (None, "%s is mode %o, not 600" % (where, stat.S_IMODE(st.st_mode))), st
         if st.st_uid != os.getuid():
-            return None, "%s is owned by uid %d, not this one (%d)" % (where, st.st_uid, os.getuid())
+            return (None, "%s is owned by uid %d, not this one (%d)" % (where, st.st_uid, os.getuid())), st
         with os.fdopen(fd, "rb", closefd=False) as f:
             raw = f.read(1 << 16)
     except OSError as e:
-        return None, "%s cannot be read (%s)" % (where, e.strerror or e)
+        return (None, "%s cannot be read (%s)" % (where, e.strerror or e)), None
     finally:
         os.close(fd)
     try:
         d = json.loads(raw)
     except ValueError:
-        return None, "%s is not JSON" % where
+        return (None, "%s is not JSON" % where), st
     if not isinstance(d, dict):
-        return None, "%s is not a JSON object" % where
+        return (None, "%s is not a JSON object" % where), st
     if type(d.get("protocol")) is not int or d["protocol"] != PROTOCOL["major"]:
-        return None, "%s speaks protocol %r, not %d" % (where, d.get("protocol"), PROTOCOL["major"])
+        return (None, "%s speaks protocol %r, not %d" % (where, d.get("protocol"), PROTOCOL["major"])), st
     if not (isinstance(d.get("token"), str) and TOKEN_RE.fullmatch(d["token"])):
-        return None, "%s has no token of 64 hex characters" % where
+        return (None, "%s has no token of 64 hex characters" % where), st
     if not (isinstance(d.get("socket"), str) and d["socket"]):
-        return None, "%s names no socket" % where
-    return {"socket": d["socket"], "token": d["token"], "protocol": d["protocol"], "pid": d.get("pid"),
-            "build": d.get("build")}, None
+        return (None, "%s names no socket" % where), st
+    return ({"socket": d["socket"], "token": d["token"], "protocol": d["protocol"], "pid": d.get("pid"),
+             "build": d.get("build")}, None), st
 
 
 def find():
@@ -313,8 +344,7 @@ def cutover():
     """daemon/identity.json, or None when there is none (or it cannot be read
     as one)."""
     try:
-        with open(identity_path()) as f:
-            d = json.load(f)
+        d = sminos.json_at(identity_path())   # written whole, by rename
     except (OSError, ValueError):
         return None
     if not valid_identity(d):

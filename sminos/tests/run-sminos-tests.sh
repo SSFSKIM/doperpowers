@@ -6551,7 +6551,8 @@ assert_equals "$A_ROW" "reading the schema h1 False idle" "h2's list --json show
 
 # Both daemons running: the same say lands with no tick run by hand. How soon
 # is the machine's business; the wait is a liveness bound (ci-kit §6).
-md_ticks() { cat "$MD/$1"/sminos/projects/*/daemon.json 2>/dev/null || true; }
+# A tick's end is daemon/ticked's mtime (a quiet project's record is not written).
+md_ticks() { python3 -c 'import os, sys; print(os.stat(sys.argv[1]).st_mtime_ns)' "$MD/$1/sminos/daemon/ticked" 2>/dev/null || true; }
 H1_TICKS="$(md_ticks h1)"; H2_TICKS="$(md_ticks h2)"
 md_loops_ticked() { [ "$(md_ticks h1)" != "$H1_TICKS" ] && [ "$(md_ticks h2)" != "$H2_TICKS" ]; }
 env "${H1[@]}" "$SMINOS" daemon run --interval 1 > "$MD/run-h1.out" 2>&1 & RUN1=$!

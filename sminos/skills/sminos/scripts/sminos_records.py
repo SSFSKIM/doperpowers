@@ -87,12 +87,13 @@ def _valid(rec):
 
 
 def read(sid):
-    """The session's record, or None when it has none (or an unreadable one)."""
+    """The session's record, or None when it has none (or an unreadable one).
+    Records are written whole, by rename, so a stat tells one unchanged
+    (sminos.json_at): the daemon's tick asks for every member's."""
     if not sminos.UUID_RE.fullmatch(str(sid or "")):
         return None
     try:
-        with open(record_path(sid)) as f:
-            rec = json.load(f)
+        rec = sminos.json_at(record_path(sid))
     except (OSError, ValueError):
         return None
     return rec if _valid(rec) else None

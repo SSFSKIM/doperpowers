@@ -722,8 +722,7 @@ def read_smns(path):
     git never syncs and no hub feeds (hub_wellformed), with a warning: two
     live transports are worse than none."""
     try:
-        with open(path) as f:
-            d = json.load(f)
+        d = json_at(path)   # resolved again each cache generation: a stat while the file holds still
     except (OSError, ValueError) as e:
         warn("ignoring unreadable %s: %s" % (path, e))
         return None
@@ -752,8 +751,7 @@ def names_hub(root, pid):
 def registration(pid):
     """A project's project.json as it is now (project_path), or {}."""
     try:
-        with open(os.path.join(projects_root(), pid, "project.json")) as f:
-            d = json.load(f)
+        d = json_at(os.path.join(projects_root(), pid, "project.json"))
     except (OSError, ValueError):
         return {}
     return d if isinstance(d, dict) else {}
@@ -810,8 +808,7 @@ def enrollment():
             _ENROLLED.append({"url": ident["hub"], "org": ident["org"], "machine": ident["name"]})
             return _ENROLLED[0]
         try:
-            with open(os.path.join(root(), "daemon", "hub.json")) as f:
-                d = json.load(f)
+            d = json_at(os.path.join(root(), "daemon", "hub.json"))   # written whole, by rename
         except (OSError, ValueError):
             d = None
         ok = isinstance(d, dict) and all(isinstance(d.get(k), str) and d[k] for k in ("hub", "org", "machine"))
@@ -1151,8 +1148,9 @@ def derivation(cwd, fresh=False):
 
 def _derive(repo, common):
     try:
-        with open(os.path.join(common, "config"), encoding="utf-8-sig", errors="replace") as f:
-            remotes = git_config_remotes(f.read())
+        # Each cache generation derives every checkout again; the bytes are
+        # read again only once the file moved (git writes it whole, by rename).
+        remotes = git_config_remotes(file_bytes(os.path.join(common, "config")).decode("utf-8-sig", "replace"))
     except FileNotFoundError:
         remotes = {}
     except OSError:
@@ -1202,8 +1200,7 @@ def derived_key(pid):
     """The remote key a project registered here was derived from (its
     REMOTE_FILE), or ""."""
     try:
-        with open(os.path.join(projects_root(), pid, REMOTE_FILE)) as f:
-            key = json.load(f).get("key")
+        key = json_at(os.path.join(projects_root(), pid, REMOTE_FILE)).get("key")
     except (OSError, ValueError, AttributeError):
         return ""
     return key if isinstance(key, str) else ""
@@ -1218,11 +1215,10 @@ def remote_moved(project, key):
     `project` has no checkout registered here, the first sight of the new
     key: once it has one, the old project was said already, or never stood
     at a root here."""
-    for path in sorted(glob.glob(os.path.join(projects_root(), "*", "project.json"))):
-        pid = os.path.basename(os.path.dirname(path))
-        held = registration(pid) if pid != project.id else {}
-        if str(held.get("root") or "") != project.root:
+    for pid in _registered_at(project.root):
+        if pid == project.id:
             continue
+        held = registration(pid)
         old = derived_key(pid)
         if not old or old == key or said_once(pid, WARNED_REMOTE):
             continue
@@ -1234,6 +1230,23 @@ def remote_moved(project, key):
             daemon_log(line)
         except OSError:
             pass
+
+
+_ROOTS = []   # [{registered root: [project ids]}], per cache generation (_registered_at)
+
+
+def _registered_at(root):
+    """The projects registered here at `root`, in id order: every
+    registration read once per cache generation, however many projects
+    remote_moved looks for (one each pass for each remote-derived project
+    with no checkout registered)."""
+    if not _ROOTS:
+        roots = {}
+        for path in sorted(glob.glob(os.path.join(projects_root(), "*", "project.json"))):
+            pid = os.path.basename(os.path.dirname(path))
+            roots.setdefault(str(registration(pid).get("root") or ""), []).append(pid)
+        _ROOTS.append(roots)
+    return _ROOTS[0].get(root, [])
 
 
 def project_source(cwd):
@@ -1304,6 +1317,8 @@ def seat_project(seat, fresh=False):
     if project is None:
         name = safe_name(os.path.basename(os.path.normpath(cwd))) or "fleet"
         project = make_project("local-" + name, name, "", os.path.abspath(cwd))
+    if _SEAT_PROJECTS.get(key, project) != project:
+        _SEAT_PIDS.clear()   # a fresh look moved the seat: every later read of the generation sees where to
     _SEAT_PROJECTS[key] = project
     return project
 
@@ -1360,13 +1375,12 @@ def project_path(project, *parts):
     project's (kept_root). A remote-derived project's home records the key
     its id derives from (REMOTE_FILE), for remote_moved."""
     if project.id not in _HOMES:
-        os.makedirs(os.path.join(project.home, "log"), mode=0o700, exist_ok=True)
+        _ensure_dir(os.path.join(project.home, "log"))
         path = os.path.join(project.home, "project.json")
 
         def held_now():
             try:
-                with open(path) as f:
-                    return json.load(f)
+                return json_at(path)   # written whole, by rename: a stat tells it unchanged
             except (OSError, ValueError):
                 return None
 
@@ -1396,8 +1410,15 @@ def project_path(project, *parts):
             write_json(os.path.join(project.home, REMOTE_FILE), {"key": key})
         _HOMES.add(project.id)
     path = os.path.join(project.home, *parts)
-    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    _ensure_dir(os.path.dirname(path))
     return path
+
+
+def _ensure_dir(d):
+    """A directory made (0700, with its parents) when it is not one yet: one
+    stat when it is, as it is on every call but the first."""
+    if not os.path.isdir(d):
+        os.makedirs(d, mode=0o700, exist_ok=True)
 
 
 def register_if_absent(project):
@@ -1434,6 +1455,35 @@ def _registration_at(path):
         _REGISTRATION_FILES.pop(path, None)
         return None
     return held[1]
+
+
+_FILE_BYTES = {}  # path → ((st_ino, st_size, st_mtime_ns), its bytes), for file_bytes
+
+
+def file_bytes(path):
+    """A small file's bytes, read again only once its inode, size or mtime
+    moved (every file read through here is written whole, by rename: a new
+    inode); OSError as open raises it. The daemon's loop asks for the same
+    records, registrations and settings every tick, most of them unchanged
+    for days: a stat instead of an open. Callers parse the bytes each time,
+    so nothing they hold is shared."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        _FILE_BYTES.pop(path, None)
+        raise
+    key = (st.st_ino, st.st_size, st.st_mtime_ns)
+    held = _FILE_BYTES.get(path)
+    if held is None or held[0] != key:
+        with open(path, "rb") as f:
+            held = _FILE_BYTES[path] = (key, f.read())
+    return held[1]
+
+
+def json_at(path):
+    """file_bytes, parsed: a new object on every call. OSError or ValueError
+    as open and json.load raise them."""
+    return json.loads(file_bytes(path))
 
 
 def known_projects(all_seats=None):
@@ -1657,7 +1707,7 @@ def launch_cwd(session, transcript="", fallback="", fresh=False):
     _LAUNCH[session] = entry
     if entry != hit:
         try:
-            os.makedirs(os.path.dirname(launch_cache_path(session)), mode=0o700, exist_ok=True)
+            _ensure_dir(os.path.dirname(launch_cache_path(session)))
             write_json(launch_cache_path(session), entry)
         except OSError:
             pass   # read again next time
@@ -1670,12 +1720,12 @@ def override_path(session):
 
 def override_of(session):
     """The project id a session's join override names, or "" for none. Read
-    afresh each time (a missing file is one failed open): `join` writes it
-    while the daemon's tick reads, and a tick deciding on a stale read would
-    move the session back and forth."""
+    as it is now each time (a missing file is one failed stat; one written
+    since, by rename, a new inode): `join` writes it while the daemon's tick
+    reads, and a tick deciding on a stale read would move the session back
+    and forth."""
     try:
-        with open(override_path(session)) as f:
-            d = json.load(f)
+        d = json_at(override_path(session))
         pid = str(d.get("project") or "") if isinstance(d, dict) else ""
     except (OSError, ValueError):
         pid = ""
@@ -2313,22 +2363,48 @@ def _merge(streams):
     return list(heapq.merge(*streams.values(), key=lambda e: (e["ts"], e["writer"])))
 
 
-def _store_whole(project, store):
+def _store_whole(project, store, shared=False):
     """(the store's files' (path, key), every event of it as _store_read
     returns them, each a copy of its own): merged again only once a file
     moved. A machine's history is tens of thousands of events that do not
-    change, and the daemon's tick merged every project's every 5 s."""
+    change, and the daemon's tick merged every project's every 5 s.
+    `shared`: the merged list itself, no copy, for a reader that changes
+    nothing in it (view_of's View); what is derived from it is kept with it
+    (log_memo) until a file moves."""
     files = tuple((path, *_log_file_held(path))
                   for path in sorted(glob.glob(os.path.join(project.home, store, "*.jsonl"))))
     sig = tuple((path, key) for path, key, _ in files)
     held = _MERGED.get((project.home, store))
     if held is None or held[0] != sig:
+        if held is not None:
+            _MEMOS.pop(id(held[1]), None)
         streams = {}
         for _, _, events in files:
             for e in events:
                 streams.setdefault(e["writer"], []).append(e)
         held = _MERGED[(project.home, store)] = (sig, _merge(streams))
-    return sig, [dict(e) for e in held[1]]
+        _MEMOS[id(held[1])] = (held[1], len(held[1]), {})
+    return sig, held[1] if shared else [dict(e) for e in held[1]]
+
+
+# id(a merged log _store_whole keeps) → (that list, its length, {name: what log_memo derived from it})
+_MEMOS = {}
+
+
+def log_memo(events, name, compute):
+    """compute(events), kept beside the merged log `events` is when it is
+    one (_store_whole's shared list: a moved file replaces the list and
+    drops what was kept), else computed for this caller alone. Each pass of
+    the daemon asks every project's log for the same indexes; only a log
+    that moved is scanned again. What is kept is shared: read it, never
+    change it."""
+    held = _MEMOS.get(id(events))
+    if held is None or held[0] is not events or held[1] != len(events):
+        return compute(events)
+    kept = held[2]
+    if name not in kept:
+        kept[name] = compute(events)
+    return kept[name]
 
 
 def reader_key(session_uuid):
@@ -2371,8 +2447,7 @@ def cursor_save(project, session_uuid, cursor):
 
 def delivered_load(project, session_uuid):
     try:
-        with open(os.path.join(project.home, "delivered", reader_key(session_uuid) + ".json")) as f:
-            d = json.load(f)
+        d = json_at(os.path.join(project.home, "delivered", reader_key(session_uuid) + ".json"))
     except (OSError, ValueError):
         return {}
     out = {}
@@ -2602,12 +2677,19 @@ def member_label(m, rows):
     return "%s#%s" % (m.alias, m.short) if shared and m.short else m.alias
 
 
+_INTERNAL = []   # [internal_pids as listed], per cache generation
+
+
 def internal_pids():
-    """Pids `derive` marked as its own headless forks: never members (§5)."""
-    try:
-        return {n for n in os.listdir(os.path.join(root(), "internal")) if n.isdigit()}
-    except OSError:
-        return set()
+    """Pids `derive` marked as its own headless forks: never members (§5).
+    Listed once per cache generation, as the engine's records are
+    (peer_records): every view asks."""
+    if not _INTERNAL:
+        try:
+            _INTERNAL.append(frozenset(n for n in os.listdir(os.path.join(root(), "internal")) if n.isdigit()))
+        except OSError:
+            _INTERNAL.append(frozenset())
+    return _INTERNAL[0]
 
 
 DESK_MEMBER_ENV = "SMINOS_DESK_MEMBER"  # set by the daemon running a verb for a desk RPC: the member's id
@@ -2751,6 +2833,12 @@ def _lineage_index(events):
     its log once, and a member whose publication is current costs no scan."""
     if _LINEAGE_INDEX[0] is events and _LINEAGE_INDEX[1] == len(events):
         return _LINEAGE_INDEX[2]
+    index = log_memo(events, "lineage", _lineage_scan)
+    _LINEAGE_INDEX[:] = [events, len(events), index]
+    return index
+
+
+def _lineage_scan(events):
     conts, published, membership = {}, {}, {}
     for e in events:
         sid = e.get("session")
@@ -2761,7 +2849,6 @@ def _lineage_index(events):
             conts[e["to"]] = sid
         elif publishes(e):
             published[sid] = e
-    _LINEAGE_INDEX[:] = [events, len(events), (conts, published, membership)]
     return conts, published, membership
 
 
@@ -2971,16 +3058,29 @@ def seats_by_session(project, all_seats):
     whose cwd moved still stands for the session it holds, one seat one
     target (find_target)."""
     out, own = {}, set()
-    for s in all_seats:
+    for s, pid in _seat_pids(all_seats):
         sid = s["current"]
         if not sid:
             continue
-        mine = (p := seat_project(s)) is not None and p.id == project.id
+        mine = pid == project.id
         if mine or sid not in own:
             out[sid] = s
             if mine:
                 own.add(sid)
     return out
+
+
+_SEAT_PIDS = {}   # id(a seat read) → (that read, [(seat, its project's id or None)]), per cache generation
+
+
+def _seat_pids(all_seats):
+    """Each seat of a seat read with its project's id (seat_project), once
+    per read and cache generation: every project's view asks of every seat."""
+    held = _SEAT_PIDS.get(id(all_seats))
+    if held is None or held[0] is not all_seats or len(held[1]) != len(all_seats):
+        held = _SEAT_PIDS[id(all_seats)] = (all_seats, [(s, (p.id if (p := seat_project(s)) else None))
+                                                        for s in all_seats])
+    return held[1]
 
 
 def _local_sessions(project, all_seats):
@@ -2989,8 +3089,8 @@ def _local_sessions(project, all_seats):
     session whose project it is (record_project: its launch directory's, or
     the one it joined), internal forks aside."""
     local = {}
-    for s in all_seats:
-        if s["current"] and (p := seat_project(s)) and p.id == project.id:
+    for s, pid in _seat_pids(all_seats):
+        if s["current"] and pid == project.id:
             local.setdefault(s["current"], {})["seat"] = s
     internal = internal_pids()
     for rec in peer_records():
@@ -3036,12 +3136,7 @@ def _reconcile(project, events, local, by_session):
     is read from the cache generation's resolution (seat_project); a move or
     a join it decides is written only if the session's project, resolved
     afresh under the lock, still says so (here_now, retire_moved)."""
-    latest, joined = {}, {}
-    for e in events:
-        if e["kind"] in MEMBERSHIP and e.get("session") and writer_session(e["writer"]) == e["session"]:
-            latest[e["session"]] = e["kind"]
-            if e["kind"] == "joined":
-                joined[e["session"]] = e
+    latest, joined = log_memo(events, "memberships", _memberships)
     out = []
     for sid, e in joined.items():
         if latest[sid] != "joined" or sid in local or not is_self(str(e.get("machine") or ""), sid):
@@ -3087,6 +3182,18 @@ def _reconcile(project, events, local, by_session):
         if seat and "peer" not in ev and seat["status"] != "retired" and (successor := continued_in(sid)):
             out += hand_off(project, sid, successor)
     return out
+
+
+def _memberships(events):
+    """({session: its latest own membership event's kind}, {session: its
+    latest own joined}) of a log as read, for _reconcile."""
+    latest, joined = {}, {}
+    for e in events:
+        if e["kind"] in MEMBERSHIP and e.get("session") and writer_session(e["writer"]) == e["session"]:
+            latest[e["session"]] = e["kind"]
+            if e["kind"] == "joined":
+                joined[e["session"]] = e
+    return latest, joined
 
 
 def here_now(project, ev):
@@ -3821,13 +3928,14 @@ def view_of(project, all_seats=None, titles=True):
     all_seats = seats() if all_seats is None else all_seats
     by_session = seats_by_session(project, all_seats)
     local = _local_sessions(project, all_seats)
-    sig, events = _store_whole(project, "log")
+    sig, events = _store_whole(project, "log", shared=True)
     appended = _reconcile(project, events, local, by_session)
     if appended:   # a hand-off may have moved a seat to the session it continues in
         all_seats = seats()
         by_session = seats_by_session(project, all_seats)
         local = _local_sessions(project, all_seats)
-    events = events + appended
+    if appended:
+        events = events + appended
     # The projection of a log no file of which moved is the one made last:
     # a read-only View, as the generation's cache (_VIEWS) shares it too.
     held = None if appended else _PROJECTED.get(project.id)
@@ -3846,8 +3954,8 @@ def view_of(project, all_seats=None, titles=True):
                    shadowing(project, sid, info, all_seats))
            for sid, r in joined]
     sessions = {m.session for m in out}
-    rest = sorted((s for s in all_seats if (not s["current"] or s["current"] not in sessions)
-                   and (p := seat_project(s)) and p.id == project.id), key=lambda s: s["updated"], reverse=True)
+    rest = sorted((s for s, pid in _seat_pids(all_seats) if (not s["current"] or s["current"] not in sessions)
+                   and pid == project.id), key=lambda s: s["updated"], reverse=True)
     rows = [_member(s["current"], info.get(s["current"]), s, None, True, titles, info) if s["current"] else
             vacant_member(s) for s in rest]
     # Seat-less sessions the log holds as retired, by alias: what a tag that
@@ -3903,7 +4011,12 @@ def _owed(events, session, record):
 def addressees(events):
     """{session: the events addressed to it, in the log's order}: the part of
     the log _owed reads for each session, read once for all of them (the
-    daemon asks for every member of every project each tick)."""
+    daemon asks for every member of every project each tick), and once for
+    a log that has not moved (log_memo; read it, never change it)."""
+    return log_memo(events, "addressees", _addressees)
+
+
+def _addressees(events):
     out = {}
     for e in events:
         to = e.get("to")
@@ -7048,6 +7161,13 @@ def forget_caches():
     _VIEWS.clear()
     _ENROLLED.clear()
     _ORG_DIR.clear()
+    _SEAT_PIDS.clear()
+    _INTERNAL.clear()
+    _ROOTS.clear()
+    _GENERATION[0] += 1
+
+
+_GENERATION = [0]   # how many cache generations this process began (forget_caches)
 
 
 def refresh_caches():
@@ -7316,6 +7436,7 @@ def running_now(session_id):
     invocation's copy: what a route about to resume a session asks last."""
     global _PEERS
     _PEERS = None
+    _INTERNAL.clear()   # listed with them, so a fork's record is never read beside an older listing
     return session_running(session_id)
 
 
@@ -7575,8 +7696,7 @@ def machine_identity():
             _SELF = (ident["name"], {n: frozenset(ss) for n, ss in ident["former"].items()})
             return _SELF
         try:
-            with open(os.path.join(root(), "daemon", "hub.json")) as f:
-                d = json.load(f)
+            d = json_at(os.path.join(root(), "daemon", "hub.json"))
         except (OSError, ValueError):
             d = None
         name, former = "", {}
@@ -10641,6 +10761,7 @@ def guide_text(session, launch, source="", title=""):
     while seen == (None, None) and time.time() < until:
         time.sleep(0.1)
         _PEERS = None
+        _INTERNAL.clear()
         seen = _on_sight(project, session)
     if seen is None or not joinable(*seen, member_mark(seen[1])):
         return ""

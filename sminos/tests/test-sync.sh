@@ -405,7 +405,8 @@ with open(tmp, "w") as f:   # replaced whole: a record read mid-write would be n
                "kind": "interactive", "entrypoint": "sdk-cli", "status": "idle", "cwd": sys.argv[3]}, f)
 os.replace(tmp, sys.argv[4])
 PY
-tick_b() { python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get("tick", ""))' "$T/b/s/projects/$PID/daemon.json" 2>/dev/null || true; }
+# A tick's end is daemon/ticked's mtime (a quiet project's record is not written).
+tick_b() { python3 -c 'import os, sys; print(os.stat(sys.argv[1]).st_mtime_ns)' "$T/b/s/daemon/ticked" 2>/dev/null || true; }
 tick_b_moved() { [ "$(tick_b)" != "$1" ]; }
 for _ in 1 2; do
   B_TICK="$(tick_b)"
@@ -473,7 +474,7 @@ m = [e for e in evs if e["kind"] in ("joined", "retired")][-1]
 print(m["kind"] + (":" + m["reason"] if m.get("reason") else ""), [e["title"] for e in evs if e["kind"] == "titled"])' "$1" 2>/dev/null || true
 }
 membership_is() { [ "$(membership "$1")" = "$2" ]; }
-tick_a() { python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get("tick", ""))' "$T/a/s/projects/$PID/daemon.json" 2>/dev/null || true; }
+tick_a() { python3 -c 'import os, sys; print(os.stat(sys.argv[1]).st_mtime_ns)' "$T/a/s/daemon/ticked" 2>/dev/null || true; }
 tick_moved() { [ "$(tick_a)" != "$1" ]; }
 two_ticks() { local t; t="$(tick_a)"; until_true 100 tick_moved "$t" || true; t="$(tick_a)"; until_true 100 tick_moved "$t" || true; }
 ma_on_beta() { # → ma's in-charge line and its source as beta's list --json carries them
