@@ -69,6 +69,13 @@ an artifact of the replay, not progress the model chose to send.
                  approve, and asks the session to run the smoke export and
                  send it the result: a message the session sends and then
                  keeps working
+  significant    the executor's checkpoint: M2 of 4 merged, and with it a
+                 report exports end to end for the first time, inside the
+                 spec's time and memory targets: progress as planned that
+                 changes what the human can do (with --history after_report)
+  good_surprise  the executor's checkpoint: M2 of 4 merged, and it turns out
+                 to fix a nightly flake nobody aimed at: a surprise with no
+                 decision in it (with --history after_report)
 
 The transcript audit behind it (2026-10-20, 58 interactive sessions after
 7.185.0): about half the steps an agent report, a peer message or a
@@ -76,12 +83,13 @@ notification started ended on prose the human never received, against one in
 ten of the steps the human started; that share did not move with 7.185.0.
 
   python3 tests/output-styles/to-human-agent-step-eval.py ARM=STYLE.md [ARM=STYLE.md ...] \
-      [--reps 5] [--scenarios routine_peer,routine_relay,milestone,surprise,ruling,small_ruling,late_failure,milestone3,complete,keep_working]
+      [--reps 5] [--scenarios routine_peer,routine_relay,milestone,surprise,ruling,small_ruling,late_failure,milestone3,complete,keep_working,significant,good_surprise]
       [--history short,long,after_report,silent2,reported3] [--out results.json]
       [--tool-history ARM[,ARM]] [--max-steps 5] [--first-rep 0] [--dry-run]
 
 Without --history, each scenario runs on its own: milestone3 on silent2,
-complete on reported3, the rest on short.
+complete on reported3, significant and good_surprise on after_report, the
+rest on short.
 
 --history after_report: M1 was reported to the human before M2 lands; silent2:
 M1 and M2 landed without a message, and milestone3 is the next checkpoint. reported3: M3's checkpoint
@@ -104,6 +112,44 @@ ANTHROPIC_AUTH_TOKEN), since the stored ANTHROPIC_API_KEY has no credit; its
 requests and judges carry the Claude Code shape the gateway requires
 (mid_turn.py). Rounds before 2026-10-27 called api.anthropic.com with the
 system prompt as one string and no claude-code beta.
+
+Each message a run sends is also judged for how it opens (`judge_leads`,
+claude-opus-5-5 at low effort): with the work's mechanics (a merge, a PR, CI,
+a review, a milestone count) or with what the human gains (what now works, a
+result, a finding, a problem, a request); `mechanics` counts the mentions of
+those mechanics in it by a pattern.
+
+Significant-progress round, 2026-10-28: the owner asked for fewer messages on
+routine progress and merges and more on progress that is significant or
+surprising. Their transcripts of the week before (1,152 messages) held about
+70 status reports in 8 sessions, the milestone cadence's "send where the work
+stands", and 28 messages whose first sentence was a merge. v1 replaces the
+cadence: "significant progress, such as something now working that did not
+or a result that changes what they can do or decide; any surprise, good or
+bad; ..." joins the list, routine progress (a merge, a green run, a milestone
+that lands as planned) needs no message of its own, "and in a message it is a
+clause or a link at most: lead with what is significant or surprising." v2
+(shipped) keeps v1 and makes its last part a sentence of its own: "A message
+opens with what is significant or surprising in it; the routine steps behind
+it follow as a clause or a link at most." 7.210.0 the control, every history
+in tool form, 5 reps; runs that reached the human, then the messages opening
+with mechanics among them:
+                                   control      v1           v2
+  milestone (after_report)         0            0            0
+  milestone3 (silent2)             5, 5         0            0
+  significant (after_report)       0            5, 1         5, 0
+  good_surprise (after_report)     5, 5         5, 3         5, 0
+  complete (reported3)             5, 0         5, 0         5, 0
+  late_failure, 8 steps, 4 reps    4, 1         4, 1         4, 1
+  routine_peer, routine_relay      0 of 10      0 of 10      -
+The cadence's status report listed M1-M3 by PR; without it a run that goes as
+planned stays silent until something significant lands (the closing texts:
+"This is routine progress, so I'm not messaging the human until M4 finishes
+or something comes up."). Every message still names the merge behind it,
+"(PR #48, green CI, clean review)", as the clause the wording allows. Each
+late_failure arm's mechanics opening is a Critical block whose first clause
+names the merged M2 before the failure. At 5 steps late_failure was cut off
+in 1 control and 2 v1 runs still reading the code; at 8, none.
 
 Final-message round, 2026-10-27: the style before the final flag (old,
 ab6b0307) against 651e917b's (new: every message through the tool, a message
@@ -446,7 +492,18 @@ INCOMING["keep_working"] = agent_msg(
     "Only the owner can approve it: someone has to click Always Allow at the mini between 14:30 and 14:40 UTC, or the build times out "
     "and M3's release slips to tomorrow. Meanwhile, please run `make smoke-export` on main from your session and send me "
     "the result: I need it before I open M3's PR.")
-DEFAULT_HISTORY = {"milestone3": "silent2", "complete": "reported3"}
+INCOMING["significant"] = agent_msg(
+    "Checkpoint: M2 of 4 (the streaming writer) landed. PR #48 merged on green CI; review clean. With M1's query layer "
+    "under it, a report now exports end to end for the first time, from the CLI: the 2M-row fixture streams to CSV in "
+    "44 s with memory flat at 90 MB, inside the spec's 60 s and 256 MB targets. M3 (the export endpoint and its cache) "
+    "is starting now. No decision needed.")
+INCOMING["good_surprise"] = agent_msg(
+    "Checkpoint: M2 of 4 (the streaming writer) landed. PR #48 merged on green CI; review clean. One thing I did not "
+    "expect: it fixes the flaky test_reports_pagination, which has failed about one nightly run in five since August. "
+    "The old writer buffered rows across page boundaries; I ran the test 200 times on main after the merge, 0 failures. "
+    "M3 (the export endpoint and its cache) is starting now. No decision needed.")
+DEFAULT_HISTORY = {"milestone3": "silent2", "complete": "reported3", "significant": "after_report",
+                   "good_surprise": "after_report"}
 # The shell's clock: keep_working's is 25 minutes before the window it asks for, so the request is timely.
 CLOCK = datetime.datetime(2026, 10, 20, 16, 42, 7)
 CLOCKS = {"keep_working": datetime.datetime(2026, 10, 20, 14, 5, 31)}
@@ -674,6 +731,47 @@ Is it written to the human (reports to them, addresses them in the second person
 
 ROUTINE = ("routine_peer", "routine_relay")
 
+LEAD = """A coding agent works for a human who is away from the screen and reads only the messages the agent sends. Here is one of them:
+
+<msg>
+{message}
+</msg>
+
+Read how it opens: its first sentence, after any heading or label. Does it open with the routine mechanics of the work (that something merged, a PR or commit number, CI or tests passing, a review coming back, a version, which milestone landed or how many have), or with what the human gains from it (what now works or can be done, a result or measurement, a finding, a surprise, a problem, a decision, a question or request)? Answer JSON only: {"opens_with": "mechanics"|"substance", "why": "<one short clause>"}"""
+
+MECHANICS = re.compile(r"\bPR #?\d+|#\d+\b|\bmerged?\b|\bCI\b|\bgreen\b|review(?:ed)? (?:came back )?clean|clean review", re.I)
+
+def judge_leads(x):
+    """How each message the run sent opens, judged, and how often it names the work's mechanics, written on the
+    run as `leads`."""
+    x["leads"] = []
+    for m in message_texts(x["steps"]):
+        lead = {"chars": len(m), "mechanics": len(MECHANICS.findall(m))}
+        try:
+            lead.update(ask_judge(client, LEAD.replace("{message}", m)))
+        except Exception as err:
+            lead["error"] = repr(err)
+        x["leads"].append(lead)
+    return len(x["leads"])
+
+def lead_counts(results):
+    """Per scenario and arm: the messages sent, how many open with mechanics, their mean length and mean count of
+    mechanics named."""
+    out = {}
+    for x in results:
+        for lead in x.get("leads", []):
+            c = out.setdefault((x["scenario"], x["arm"]), {"messages": 0, "opens_mechanics": 0, "judge_errors": 0,
+                                                            "chars": 0, "mechanics": 0})
+            c["messages"] += 1
+            c["opens_mechanics"] += lead.get("opens_with") == "mechanics"
+            c["judge_errors"] += "error" in lead
+            c["chars"] += lead["chars"]
+            c["mechanics"] += lead["mechanics"]
+    for c in out.values():
+        c["chars"] = round(c["chars"] / c["messages"])
+        c["mechanics"] = round(c["mechanics"] / c["messages"], 1)
+    return out
+
 def judge_end(x):
     """The judges of a closing text, each verdict written on the run's end: whether it restates the message before
     it, and, in a scenario with something for the human that ended without a final message, whether it is
@@ -793,6 +891,7 @@ if __name__ == "__main__":
             if "error" not in x:
                 x["end"] = turn_end(x)
         judged += sum(pool.map(judge_end, [x for x in out if "error" not in x]))
+        judged += sum(pool.map(judge_leads, [x for x in out if "error" not in x]))
     out.sort(key=lambda x: (x["scenario"], x.get("history", ""), x["arm"], x["rep"]))
     Path(args.out).write_text(json.dumps(out, indent=1, ensure_ascii=False))
     print(f"{len(out)} runs, {sum('error' in x for x in out)} errors, {judged} judge calls; full output in {args.out}")
@@ -811,3 +910,6 @@ if __name__ == "__main__":
     print("\nper arm:")
     for arm, a in final_forms(out).items():
         print(arm, json.dumps(a))
+    print("\nhow the messages open, per scenario and arm (mean chars and mechanics named per message):")
+    for key, c in sorted(lead_counts(out).items()):
+        print(*key, json.dumps(c))

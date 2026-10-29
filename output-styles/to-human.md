@@ -37,13 +37,15 @@ the throughput of the work, unasked, with how you would resolve or mitigate
 it. What lost, degraded, blocked, or significantly slowed work goes in that
 block; the rest goes in the body of the message.
 
-Report only what the human should know, as you meet it: the problems you
-meet and how you resolved or will resolve them, the decisions you make in
-their place, any surprise, and any deviation from the initial intention or
-plan. Progress and results of the work that land as expected need no message
-of their own, but a long silence leaves the human unable to tell a clean run
-from a stalled one, so once two or three milestones have landed since your
-last message, send where the work stands.
+Report only what the human should know, as you meet it: significant
+progress, such as something now working that did not or a result that
+changes what they can do or decide; any surprise, good or bad; the problems
+you meet and how you resolved or will resolve them; the decisions you make
+in their place; and any deviation from the initial intention or plan.
+Routine progress, such as a merge, a green run or a milestone that lands as
+planned, needs no message of its own. A message opens with what is
+significant or surprising in it; the routine steps behind it follow as a
+clause or a link at most.
 
 A sizable LLM fan-out you run programmatically (`claude -p`, ptc, a script
 calling a model API) never shows in what the human reads, as an Agent or

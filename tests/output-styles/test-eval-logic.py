@@ -71,6 +71,8 @@ class FakeClient:
         if "<note>" in prompt:
             to_human = "you" in inner("note").lower()
             verdict = {"addressed_to_human": to_human, "needs_action_from_human": to_human, "why": "fake"}
+        elif "<msg>" in prompt:
+            verdict = {"opens_with": "mechanics" if inner("msg").startswith("M2 merged") else "substance", "why": "fake"}
         elif "<sent>" in prompt:
             verdict = {"restates": inner("sent").lower() in inner("closing").lower(), "adds_new": False, "why": "fake"}
         elif "refuse" in inner("closing"):
@@ -205,7 +207,8 @@ check("agent-step: the tally", c["reached"] == 1 and c["mid_tool"] == 1 and c["m
 arm = step.by_arm(counts)["variant"]
 check("agent-step: the arm's figures", arm["lost_share"] == 0.5 and arm["final_span_share"] == 1.0
       and arm["tool_calls_per_run"] == 1.0, json.dumps(arm))
-check("agent-step: each scenario's own history by default", step.DEFAULT_HISTORY == {"milestone3": "silent2", "complete": "reported3"})
+check("agent-step: each scenario's own history by default", step.DEFAULT_HISTORY == {"milestone3": "silent2", "complete": "reported3",
+      "significant": "after_report", "good_surprise": "after_report"})
 
 # -- the agent-step eval: a final message ends the run, and the turn's end
 
@@ -299,6 +302,18 @@ forms = step.final_forms([x, {"arm": "v2", "scenario": "routine_peer", "steps": 
 check("judges: the arm's figures", forms["forms"] == {"tool_no_final+close": 1, "silent": 1} and forms["restates"] == 1
       and forms["judge_errors"] == 1 and forms["closing_after_message"] == 1 and forms["routine_runs"] == 1
       and forms["routine_noise"] == 0, json.dumps(forms))
+
+fake = FakeClient([])
+step.client = fake
+x = {"arm": "v2", "scenario": "significant", "steps": [
+    {"stop": "tool_use", "blocks": [call(M, text="M2 merged (PR #48, green CI).")]},
+    {"stop": "end_turn", "blocks": [said("<message>The export works end to end: 44 s for 2M rows.</message>")]}]}
+step.judge_leads(x)
+leads = step.lead_counts([x, {**x, "leads": [{"chars": 10, "mechanics": 0, "error": "refused"}]}])
+check("leads: each message judged, in order, with its mechanics counted", [(l["opens_with"], l["mechanics"]) for l in x["leads"]]
+      == [("mechanics", 4), ("substance", 0)] and len(fake.judged) == 2, json.dumps(x["leads"]))
+check("leads: the arm's figures per scenario", leads == {("significant", "v2"): {"messages": 3, "opens_mechanics": 1,
+      "judge_errors": 1, "chars": 28, "mechanics": 1.3}}, json.dumps({str(k): v for k, v in leads.items()}))
 
 opening = step.tool_form(step.HISTORIES["short"])
 check("tool form: the opening's message becomes a final call, its result and the made-up answer",
