@@ -1805,6 +1805,31 @@ describe('interrupt: the reply it cut off', () => {
     expect(h.conversation).toEqual([MARKER, row('The interrupt came from the desk.')])
   })
 
+  test("overlapping interrupts: a late row of the earlier turn keeps that turn's reply alone, and the later turn's cut-off row stands", async () => {
+    const h = harness({ holdAppend: true })
+    await h.ready()
+    // Each turn streams, is interrupted with its record held at the marker, and unwinds out of the live state.
+    for (const [turnId, text] of [['t1', '1, 2'], ['t2', 'a, b']] as const) {
+      await h.turn(turnId)
+      await h.step({ turnId, index: 0, model: 'm', messageCount: 1 }, [{ kind: 'text', index: 0, text }], async () => {
+        h.children[0]!.write(line({ id: `c-${turnId}`, op: 'interrupt', from: 'desk' }))
+        await h.settle()
+      })
+      await h.fire(STEP_END_WAIT_MS)
+      await h.complete(turnId, 'aborted')
+    }
+    expect(h.appends.length).toBe(2)
+    // The engine keeps the first turn's reply late: the stream pairs it no more.
+    await h.responseRow({ type: 'text', text: '1, 2' }, { uuid: 'r-late' })
+    expect(h.ofType('row-seen')).toContainEqual(expect.objectContaining({ uuid: 'r-late', door: 'response' }))
+    for (let i = 0; i < h.appends.length; i++) {
+      h.appends[i]!()
+      await h.settle()
+    }
+    expect(h.conversation.filter((r) => r.content[0]!.text.startsWith(CUT_OFF))).toEqual([row(`${CUT_OFF}\na, b`)])
+    expect(h.conversation).toEqual([MARKER, MARKER, row('The interrupt came from the desk.'), row('The interrupt came from the desk.'), row(`${CUT_OFF}\na, b`)])
+  })
+
   test('a late row of another kind keeps none of the text: the third row stands', async () => {
     const h = harness()
     await unwoundInterrupt(h, () => h.responseRow({ type: 'thinking', thinking: 'hm', signature: 's' }))
