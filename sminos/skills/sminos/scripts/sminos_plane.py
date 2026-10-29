@@ -160,7 +160,8 @@ process whose transcript this machine does not hold ends `session-ended`, at
 
 What the desk can do with a session (the desk control surface's M0): its
 presence carries the `capabilities` its bridge's status says (absent from a
-bridge that says none: one from before sminos 1.7.0), and a `read` frame is
+bridge that says none: one from before sminos 1.7.0) and the permission mode
+it last read (`mode`, mode_reading), and a `read` frame is
 the bridge's answer to the read, asked on a thread of its own (at most
 READS_IN_FLIGHT per subscription; the rest answered `busy`), answered on the
 sub as DX4 `read` — after its snapshot, if it came before — or as why there
@@ -231,6 +232,7 @@ NOT_READY_WINDOW = 5.0    # s: a 503 (not ready) is asked again this long, as `s
 STALE_WAIT = 3.0
 REDIAL_EVERY = 0.05       # s: between two dials of a socket that refused
 RECORD_FIELDS = ("status", "waitingFor", "needs")
+MODE_WORD = re.compile(r"^[A-Za-z]{1,32}$")   # a permission mode as the engine words it (the bridge mod's MODE_WORD)
 AGENT_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 TASK_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")   # DX3 `output`'s taskId, as the engine spells task ids
 OUTPUT_TAIL_MAX = 524288  # bytes an `output` may ask for: the answer fits one frame (DX3)
@@ -2480,7 +2482,8 @@ class Bridges:
     def __init__(self):
         self.lock = threading.Lock()
         # session → [socket inode, answered, probed at, probing, the child that answered (inode, pid), its
-        # capabilities, the number of the probe that answered, the launch it named (O12 M7)]
+        # capabilities, the number of the probe that answered, the launch it named (O12 M7), the mode it
+        # read (DX4 ModeReading)]
         self.held = {}
         self.probes = 0   # probes begun
         self.wake = lambda: None
@@ -2498,7 +2501,7 @@ class Bridges:
                 self.held.pop(sid, None)
             return False
         with self.lock:
-            h = self.held.setdefault(sid, [ino, False, None, False, None, None, 0, None])
+            h = self.held.setdefault(sid, [ino, False, None, False, None, None, 0, None, None])
             if not h[3] and (h[0] != ino or h[2] is None or now - h[2] >= BRIDGE_RECHECK):
                 h[3] = True
                 self.probes += 1
@@ -2507,7 +2510,7 @@ class Bridges:
             return h[1]
 
     def probe(self, sid, path, ino, now, number):
-        answered, child, caps, launch = False, None, None, None
+        answered, child, caps, launch, mode = False, None, None, None, None
         try:
             status, body = bridge.request(path, "GET", "/status", timeout=PROBE_TIMEOUT)
             answered = status == 200 and isinstance(body, dict) and body.get("session") == sid
@@ -2515,14 +2518,15 @@ class Bridges:
                 child = [ino, body.get("pid")]
                 caps = body["capabilities"] if isinstance(body.get("capabilities"), dict) else None
                 launch = body["launch"] if isinstance(body.get("launch"), str) and body["launch"] else None
+                mode = mode_reading(body)
         except (OSError, ValueError, http.client.HTTPException):
             pass
         with self.lock:
             h = self.held.get(sid)
             if h is None:
                 return
-            changed = h[1] != answered or h[5] != caps or h[7] != launch
-            h[:] = [ino, answered, now, False, child, caps, number, launch]
+            changed = h[1] != answered or h[5] != caps or h[7] != launch or h[8] != mode
+            h[:] = [ino, answered, now, False, child, caps, number, launch, mode]
         if changed:
             self.wake()
 
@@ -2555,6 +2559,28 @@ class Bridges:
         with self.lock:
             h = self.held.get(sid)
             return h[7] if h and h[1] else None
+
+    def mode(self, sid):
+        """The session's permission mode as its bridge last read it
+        (mode_reading), when it answered and had read one."""
+        with self.lock:
+            h = self.held.get(sid)
+            return h[8] if h and h[1] else None
+
+
+def mode_reading(status):
+    """DX4's ModeReading `{mode, at}` from a bridge's status: the mode the
+    session last reported and when the bridge read that report (epoch ms on
+    this machine's clock), both the bridge's own, so the body moves only
+    when the session reports, never as the probe asks again; the same `at`
+    its `read status` and heartbeat carry (`permissionModeAt`). None when it
+    names none, or a word that is no mode."""
+    mode, at = status.get("permissionMode"), status.get("permissionModeAt")
+    if not (isinstance(mode, str) and MODE_WORD.match(mode)):
+        return None
+    if isinstance(at, bool) or not isinstance(at, (int, float)) or at != at or at in (float("inf"), float("-inf")):
+        return None
+    return {"mode": mode, "at": at}
 
 
 def _stat_key(path):
@@ -2732,6 +2758,11 @@ class Plane:
         launch = self.bridges.launch(sid) if self.launches and body["bridge"] else None
         if launch is not None:
             body["launch"] = launch
+        # Absent until the bridge has read one, so an older reader sees the
+        # body it always did (desk-hub's SessionPresence `mode?`).
+        mode = self.bridges.mode(sid) if body["bridge"] else None
+        if mode is not None:
+            body["mode"] = mode
         return body
 
     def presence(self, pid, force=False, now=None, socks=None):

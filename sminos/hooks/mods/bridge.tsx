@@ -7,7 +7,7 @@ import { OFF_LINE, ON_LINE, isCuaEnabled, isLiveMarker, verdictOf } from './brid
 import type { Guard, Place, Verdict } from './bridge-place'
 import { EFFORTS, INTERRUPT_HOLD_MS, RESPAWN_FIRST_MS, RESPAWN_STEP_MS, WAKE_LINE, capped, isEffort, isLaneVerdict, isObserver, loopKey, message, parsed, state } from './bridge-state'
 import type { Answer, Capabilities, Command, Decision, DeliveryKey, DeskRun, Override, Readback, Request, Steer, Stops, Wake } from './bridge-state'
-import { adoptKept, adoptSeed, emit, emitOwed, emitTaken, endStep, forgetLive, poster, pump, releaseStepEnd, requeue, resyncEvents, stopChild } from './bridge-stream'
+import { adoptKept, adoptSeed, emit, emitOwed, emitTaken, endStep, forgetLive, modeFields, poster, pump, releaseStepEnd, requeue, resyncEvents, stopChild } from './bridge-stream'
 import {
   CHECKS_KEPT,
   askCallFor,
@@ -246,35 +246,13 @@ const MODE = { plugin: 'sminos', key: 'mode' } as const
 const MODE_WORD = /^[A-Za-z]{1,32}$/
 
 /**
- * The session's permission mode, as `read status` and the heartbeat carry
- * it: `permissionMode`, the engine's word as the main loop last reported it;
- * `permissionModeAt`, when the bridge read that report (`$.clock.now()`'s
- * milliseconds); `permissionModeFrom`, the event it came in. All three are
- * absent until the session has reported a mode: the engine has no getter for
- * it (2.1.312), and nothing is inferred from the settings or the launch flags.
- *
- * What reports it (observeMode's callers): the engine's own
- * `permission_mode_changed` record, raised at every switch its mode
- * transition makes (Shift+Tab in the terminal, plan mode's exit, auto mode's
- * fallback, a mode set from the SDK or Remote Control), so a switch is here
- * as it happens and on the stream with the next heartbeat; and the mode a
- * prompt (classic UserPromptSubmit) or a permission prompt
- * (PermissionRequest) was made under. A change no record reports stays
- * unseen until the next prompt or permission prompt.
- * The session's start reports none (the classic SessionStart input carries
- * no mode), so a session that has neither switched nor taken a prompt has
- * no `permissionMode` yet.
- */
-function modeFields() {
-  const r = state.permissionMode
-  return r === undefined ? {} : { permissionMode: r.mode, permissionModeAt: r.at, permissionModeFrom: r.from }
-}
-
-/**
  * A report of the main loop's mode, from the event `from`: the session's
- * `permissionMode` from here (modeFields). A subagent's report is its own
- * loop's mode, never the session's: callers pass none. A report read after a
- * later one replaces nothing. Kept in `$.state` when the mode changes.
+ * `permissionMode` from here (modeFields, which says what reports it). A
+ * subagent's report is its own loop's mode, never the session's: callers
+ * pass none. A report read after a later one replaces nothing. A change is
+ * kept in `$.state` and posted at once on a heartbeat, so the child (whose
+ * status the daemon's presence reads) has a switch as it happens, not at the
+ * next beat; a report of the same mode rides the next beat.
  */
 function observeMode($: EngineInterface, mode: unknown, from: string) {
   if (state.post === undefined || typeof mode !== 'string' || !MODE_WORD.test(mode)) {
@@ -290,6 +268,7 @@ function observeMode($: EngineInterface, mode: unknown, from: string) {
       state.permissionMode = { mode, at, from }
       if (isChange) {
         $.state.set(MODE, state.permissionMode).catch((error: unknown) => $.ui.log(`bridge: the permission mode is not kept for a reload: ${message(error)}`, { to: 'debug' }))
+        emit({ type: 'heartbeat', state: turnState() })
       }
     },
     (error: unknown) => $.ui.log(`bridge: a report of the permission mode was not read: ${message(error)}`, { to: 'debug' }),
