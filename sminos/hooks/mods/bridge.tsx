@@ -6,7 +6,7 @@ import { ASK_TOOL, PLUGIN, asyncAsks, observeAsks } from './ask'
 import { OFF_LINE, ON_LINE, isCuaEnabled, isLiveMarker, verdictOf } from './bridge-place'
 import type { Guard, Place, Verdict } from './bridge-place'
 import { EFFORTS, INTERRUPT_HOLD_MS, RESPAWN_FIRST_MS, RESPAWN_STEP_MS, WAKE_LINE, capped, isEffort, isLaneVerdict, isObserver, loopKey, message, parsed, state } from './bridge-state'
-import type { Answer, Capabilities, Command, Decision, DeliveryKey, DeskRun, Override, Readback, Request, Steer, Stops, Wake } from './bridge-state'
+import type { Answer, Capabilities, Command, Decision, DeliveryKey, DeskRun, Override, Readback, Request, Steer, Stops, Streaming, Wake } from './bridge-state'
 import { adoptKept, adoptSeed, emit, emitOwed, emitTaken, endStep, forgetLive, modeFields, poster, pump, releaseStepEnd, requeue, resyncEvents, stopChild } from './bridge-stream'
 import {
   CHECKS_KEPT,
@@ -846,6 +846,16 @@ function wakeForSteer($: EngineInterface, unread: readonly Steer[]) {
  * messages before it waits for any hook. `from` says where the interrupt came
  * from (`desk`: the desk's RPC). A second interrupt of the same turn leaves
  * the first's in place; the engine refuses its abort.
+ *
+ * The record also carries the reply the abort cut off (cutOff): unlike Esc, a
+ * plugin's abort keeps no block still streaming, and the engine keeps a block
+ * as a row only once it completes. The turn's streaming messages are taken
+ * before the abort, since its unwinding (the step's end, the turn's) drops
+ * them from the live state, and that can land before the abort resolves.
+ * Until the record is in they stay `captured`, so a row keeping one of their
+ * blocks settles it even once the stream pairs it no more (settleCaptured);
+ * their text is read just before the cut-off row goes in, the latest moment,
+ * so the chunks still on their way and the rows kept meanwhile are in.
  */
 async function interrupt($: EngineInterface, from: unknown): Promise<Answer> {
   const turnId = state.mainTurn
@@ -865,6 +875,8 @@ async function interrupt($: EngineInterface, from: unknown): Promise<Answer> {
   if (!state.interrupts.has(turnId)) {
     state.interrupts.set(turnId, pending)
   }
+  const streamed = [...state.messages.values()].filter((m) => m.turnId === turnId && m.agentId === null)
+  state.captured.add(streamed)
   try {
     try {
       await $.turn.abort({ turnId })
@@ -896,9 +908,10 @@ async function interrupt($: EngineInterface, from: unknown): Promise<Answer> {
         stops.running.push(task)
       }
     }
-    await recordInterrupt($, from, stops)
+    await recordInterrupt($, from, stops, streamed)
     return { ok: true, result: { turnId, ...stops } }
   } finally {
+    state.captured.delete(streamed)
     recorded()
   }
 }
@@ -980,34 +993,96 @@ function interruptNote(from: unknown, stops: Stops): string {
 }
 
 /**
+ * The reply an interrupt cut off: the text the main turn streamed that no row
+ * kept (its text blocks no `block-row` settled, in order), each block as the
+ * bridge holds it (its last BLOCK_TAIL characters: `isPartial` when one was
+ * cut). Thinking and a tool call's input are left out: the reply is the text
+ * the person was shown. Undefined when there is none.
+ */
+type CutOff = { text: string; isPartial: boolean }
+function cutOff(messages: Streaming[]): CutOff | undefined {
+  const blocks = messages
+    .sort((a, b) => a.step - b.step)
+    .flatMap((m) => [...m.blocks.values()].filter((b) => b.kind === 'text' && !m.settled.has(b.index) && b.text.trim() !== '').sort((a, b) => a.index - b.index))
+  if (blocks.length === 0) {
+    return undefined
+  }
+  return { text: blocks.map((b) => b.text).join('\n\n'), isPartial: blocks.some((b) => b.truncated === true) }
+}
+
+/**
+ * The cut-off row's first line, the cut-off text after it: a reader knows the
+ * row by its first line starting `The interrupt cut off the reply you were
+ * writing.`
+ */
+const CUT_OFF_LINE =
+  'The interrupt cut off the reply you were writing. The person was shown what you had written of it, the text after this line, but it is not in the conversation as your reply.'
+const CUT_OFF_PARTIAL = ' Only its end was kept, so the text starts partway through.'
+/** Characters of the cut-off reply the terminal's mirror line shows; its row carries it whole. */
+const MIRRORED_REPLY = 300
+
+const cutOffRow = (cut: CutOff) => `${CUT_OFF_LINE}${cut.isPartial ? CUT_OFF_PARTIAL : ''}\n${cut.text}`
+
+/** Text on one line: the transcript line draws a newline as U+FFFD (live, 2.1.302). */
+const oneLine = (text: string) => text.replace(/\s*[\r\n]+\s*/g, ' ')
+
+/** The cut-off row as the terminal's mirror says it, for the person: its first MIRRORED_REPLY characters, and how many it left out. */
+function mirroredReply(cut: CutOff): string {
+  const reply = oneLine(cut.text).trim()
+  let shown = reply.slice(0, MIRRORED_REPLY)
+  const last = shown.charCodeAt(shown.length - 1)
+  if (shown.length < reply.length && last >= 0xd800 && last <= 0xdbff) {
+    shown = shown.slice(0, -1)
+  }
+  const rest = reply.length - shown.length
+  return `The reply it cut off: ${cut.isPartial ? '…' : ''}${shown}${rest > 0 ? `… (${rest} more characters not shown)` : ''}`
+}
+
+/**
  * The interrupt's record: Esc leaves the model `[Request interrupted by
  * user]`, a plugin's abort no marker at all, so user rows say it, read at the
- * next request. Two rows: the marker alone, since a transcript's reader knows
- * an interrupt only by a row whose whole text is the marker, then the note. A
- * plugin's user row is kept `isMeta` (2.1.300 `m6r`): the model reads both,
- * and no reader takes the note for a prompt. The terminal does not draw an
- * appended row, so a transcript line mirrors them.
+ * next request. The marker alone, since a transcript's reader knows an
+ * interrupt only by a row whose whole text is the marker; then the note; then,
+ * when the turn streamed text no row kept, the cut-off row, so the note stays
+ * the closed text its readers match whole (DX4's stop records, MAWS's rows).
+ * Each row waits for the one before it: a refused or failed one ends the
+ * record there. A plugin's user row is kept `isMeta` (2.1.300 `m6r`): the
+ * model reads them all, and no reader takes one for a prompt. The terminal
+ * does not draw an appended row, so a transcript line mirrors them.
  */
-async function recordInterrupt($: EngineInterface, from: unknown, stops: Stops) {
+async function recordInterrupt($: EngineInterface, from: unknown, stops: Stops, streamed: Streaming[]) {
   const kept: string[] = []
-  for (const text of [INTERRUPT_MARKER, interruptNote(from, stops)]) {
-    try {
-      const stored = await $.session.append({ message: { type: 'user', content: [{ type: 'text', text }] } })
-      if (stored.deny !== undefined) {
-        $.ui.log(`bridge: the interrupt's record was refused: ${stored.deny}`, { to: 'debug' })
-        break
+  const note = interruptNote(from, stops)
+  if (await appendRecord($, INTERRUPT_MARKER)) {
+    kept.push(INTERRUPT_MARKER)
+    if (await appendRecord($, note)) {
+      kept.push(note)
+      // Read now, the two rows in: a row the engine kept meanwhile settled its block.
+      const cut = cutOff(streamed)
+      if (cut !== undefined && (await appendRecord($, cutOffRow(cut)))) {
+        kept.push(mirroredReply(cut))
       }
-      // The hook does not see the plugin's own append: named once it is in.
-      noticeRow({ type: 'row-seen', uuid: stored.uuid, agentId: null, door: 'note' })
-      kept.push(text)
-    } catch (error) {
-      $.ui.log(`bridge: the interrupt's record was not appended: ${message(error)}`, { to: 'debug' })
-      break
     }
   }
   if (kept.length > 0) {
-    // One line: the transcript line draws a newline as U+FFFD (live, 2.1.302).
-    $.ui.log(`interrupt: ${kept.join(' ').replaceAll('\n', ' ')}`)
+    $.ui.log(`interrupt: ${oneLine(kept.join(' '))}`)
+  }
+}
+
+/** One row of the interrupt's record appended and named; false, said in the debug log, when it was refused or failed. */
+async function appendRecord($: EngineInterface, text: string): Promise<boolean> {
+  try {
+    const stored = await $.session.append({ message: { type: 'user', content: [{ type: 'text', text }] } })
+    if (stored.deny !== undefined) {
+      $.ui.log(`bridge: the interrupt's record was refused: ${stored.deny}`, { to: 'debug' })
+      return false
+    }
+    // The hook does not see the plugin's own append: named once it is in.
+    noticeRow({ type: 'row-seen', uuid: stored.uuid, agentId: null, door: 'note' })
+    return true
+  } catch (error) {
+    $.ui.log(`bridge: the interrupt's record was not appended: ${message(error)}`, { to: 'debug' })
+    return false
   }
 }
 

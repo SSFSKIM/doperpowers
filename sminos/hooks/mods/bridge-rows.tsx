@@ -355,8 +355,41 @@ export function announceRow(door: string, message: { name?: string; content?: un
   if (door === 'queue' || isUnkept) {
     return
   }
-  if (door !== 'response' || !nameBlock(agentId, uuid, content[0])) {
-    noticeRow({ type: 'row-seen', uuid, agentId, door })
+  if (door === 'response' && nameBlock(agentId, uuid, content[0])) {
+    return
+  }
+  if (door === 'response' && agentId === null) {
+    settleCaptured(content[0])
+  }
+  noticeRow({ type: 'row-seen', uuid, agentId, door })
+}
+
+/**
+ * A main-loop response row the stream no longer pairs, kept while an
+ * interrupt has yet to record what its turn cut off: it settles one block, in
+ * a message an interrupt took that the live state has since dropped, its
+ * step's end or its turn's having gone out. Its owner is the oldest pending
+ * capture with an open block of its kind (a tool call: the one holding its
+ * id), since an earlier turn's rows are written before a later one's; within
+ * it, the first open block, as nameBlock pairs. A message the live state still
+ * holds learns its rows by `block-row`.
+ */
+function settleCaptured(block: Record<string, unknown> | undefined) {
+  const kind = ROW_KIND[String(block?.type)]
+  if (kind === undefined) {
+    return
+  }
+  const live = new Set(state.messages.values())
+  for (const messages of state.captured) {
+    const open = messages
+      .filter((m) => !live.has(m))
+      .sort((a, b) => a.step - b.step)
+      .flatMap((m) => [...m.blocks.values()].filter((b) => b.kind === kind && !m.settled.has(b.index)).sort((a, b) => a.index - b.index).map((b) => ({ m, b })))
+    const hit = kind === 'tool' ? open.find(({ b }) => b.id === block?.id) : open[0]
+    if (hit !== undefined) {
+      hit.m.settled.add(hit.b.index)
+      return
+    }
   }
 }
 
