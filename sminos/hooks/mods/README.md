@@ -334,7 +334,7 @@ rows read from the transcript, and the export to the host).
   `interrupt` aborts the turn and stops each Bash call the abort moved
   to the background, then appends user rows telling the model so (a
   plugin's abort leaves no marker of its own, and the moved call's result
-  says it runs on), the reply the abort cut off among them (a plugin's
+  says it runs on), and a row with the reply the abort cut off (a plugin's
   abort drops the text still streaming, which Esc keeps), holding the turn's Bash calls until the row is in, since
   a queued next turn takes its messages before it waits for any hook;
   `model` rewrites the main loop's requests (never

@@ -1574,9 +1574,11 @@ describe('interrupt', () => {
 })
 
 describe('interrupt: the reply it cut off', () => {
-  /** The note's line before the cut-off reply, which runs from the next line to the note's end. */
+  /** The cut-off row's first line; the cut-off text follows it. */
   const CUT_OFF =
-    'The interrupt cut off the reply you were writing. The person was shown what you had written of it, the text after this line to the end of this note, but it is not in the conversation as your reply.'
+    'The interrupt cut off the reply you were writing. The person was shown what you had written of it, the text after this line, but it is not in the conversation as your reply.'
+  const row = (text: string) => ({ type: 'user', content: [{ type: 'text', text }] })
+  const MARKER = row('[Request interrupted by user]')
   /** The record the next request carries, once the interrupted turn ended. */
   const nextRead = async (h: ReturnType<typeof harness>) => {
     await h.complete('t1', 'aborted')
@@ -1585,7 +1587,7 @@ describe('interrupt: the reply it cut off', () => {
     return h.requests[h.requests.length - 1]!
   }
 
-  test('text the turn streamed and no row kept goes in the note, after its other lines; the marker stays a row of its own; the thinking is left out', async () => {
+  test('text the turn streamed and no row kept goes in a third row, after the marker and the note, both unchanged; the thinking is left out', async () => {
     const h = harness()
     await h.ready()
     await h.turn('t1')
@@ -1599,10 +1601,29 @@ describe('interrupt: the reply it cut off', () => {
       await h.responseRow({ type: 'thinking', thinking: 'counting', signature: 's' })
       expect(await h.command({ op: 'interrupt', from: 'desk' })).toMatchObject({ ok: true, result: { turnId: 't1', stopped: [], running: [] } })
     })
-    expect(await nextRead(h)).toEqual([
-      { type: 'user', content: [{ type: 'text', text: '[Request interrupted by user]' }] },
-      { type: 'user', content: [{ type: 'text', text: `The interrupt came from the desk.\n${CUT_OFF}\n1, 2, 3, 4` }] },
-    ])
+    expect(await nextRead(h)).toEqual([MARKER, row('The interrupt came from the desk.'), row(`${CUT_OFF}\n1, 2, 3, 4`)])
+    // Each row is named on the stream, as every row the session keeps is.
+    expect(h.ofType('row-seen').filter((e) => e.door === 'note').length).toBe(3)
+  })
+
+  test("with text cut off, the note is byte for byte today's: its origin and its task lines alone, the closed text DX4 and MAWS match whole", async () => {
+    const h = harness()
+    await h.ready()
+    await h.turn('t1')
+    let finish: (text: string) => void = () => undefined
+    const running = h.hook('tool.call', { tool: 'Bash' })(h.engine, { tool: 'Bash', tool_use_id: 'tu1', command: 'python3 -c sleep' }, () => new Promise((resolve) => (finish = (text) => resolve({ text }))))
+    await h.settle()
+    await h.step({ turnId: 't1', index: 0, model: 'm', messageCount: 1 }, [{ kind: 'text', index: 0, text: 'Still counting: 1, 2' }], async () => {
+      const answered = h.command({ op: 'interrupt', from: 'desk' })
+      await h.settle()
+      finish('Command running in background with ID: b5y6zo7fe. Output is being written to: /tmp/o')
+      await running
+      expect(await answered).toMatchObject({ ok: true, result: { turnId: 't1', stopped: ['b5y6zo7fe'], running: [] } })
+    })
+    const note =
+      'The interrupt came from the desk.\nTask b5y6zo7fe, the Bash command the interrupt moved to the background, was then stopped: it is not running, and no notification will come for it.'
+    expect(await nextRead(h)).toEqual([MARKER, row(note), row(`${CUT_OFF}\nStill counting: 1, 2`)])
+    expect(h.logs).toContain(`interrupt: [Request interrupted by user] ${note.replace('\n', ' ')} The reply it cut off: Still counting: 1, 2`)
   })
 
   test('a block a row kept is no part of it: only the text no row kept', async () => {
@@ -1617,10 +1638,10 @@ describe('interrupt: the reply it cut off', () => {
       await h.responseRow({ type: 'text', text: 'Counting now.' })
       await h.command({ op: 'interrupt' })
     })
-    expect(said(await nextRead(h))).toBe(`[Request interrupted by user]\nThe interrupt came from outside the terminal.\n${CUT_OFF}\n1, 2`)
+    expect(await nextRead(h)).toEqual([MARKER, row('The interrupt came from outside the terminal.'), row(`${CUT_OFF}\n1, 2`)])
   })
 
-  test("a turn that left no text unkept keeps today's note: its text kept, the unkept thinking, tool input, blank text and a subagent's text left out", async () => {
+  test("a turn that left no text unkept gets today's record, no third row: its text kept, the unkept thinking, tool input, blank text and a subagent's text left out", async () => {
     const h = harness()
     await h.ready()
     await h.turn('t1')
@@ -1637,11 +1658,11 @@ describe('interrupt: the reply it cut off', () => {
         await h.command({ op: 'interrupt', from: 'desk' })
       })
     })
-    expect(said(await nextRead(h))).toBe('[Request interrupted by user]\nThe interrupt came from the desk.')
+    expect(await nextRead(h)).toEqual([MARKER, row('The interrupt came from the desk.')])
     expect(h.logs).toContain('interrupt: [Request interrupted by user] The interrupt came from the desk.')
   })
 
-  test('the mirror stays one line, the cut-off text held to its start and said to be cut; the note carries it whole', async () => {
+  test('the mirror stays one line, the cut-off text held to its start and said to be cut; its row carries it whole', async () => {
     const h = harness()
     await h.ready()
     await h.turn('t1')
@@ -1650,7 +1671,7 @@ describe('interrupt: the reply it cut off', () => {
     await h.step({ turnId: 't1', index: 0, model: 'm', messageCount: 1 }, chunks, async () => {
       await h.command({ op: 'interrupt', from: 'desk' })
     })
-    expect(said(await nextRead(h))).toBe(`[Request interrupted by user]\nThe interrupt came from the desk.\n${CUT_OFF}\n${reply}`)
+    expect(await nextRead(h)).toEqual([MARKER, row('The interrupt came from the desk.'), row(`${CUT_OFF}\n${reply}`)])
     const mirror = h.logs.filter((l) => l.startsWith('interrupt: '))
     expect(mirror.length).toBe(1)
     expect(mirror[0]).not.toMatch(/[\r\n]/)
@@ -1671,9 +1692,11 @@ describe('interrupt: the reply it cut off', () => {
     await h.step({ turnId: 't1', index: 0, model: 'm', messageCount: 1 }, [{ kind: 'text', index: 0, text: long }], async () => {
       await h.command({ op: 'interrupt', from: 'desk' })
     })
-    const note = said(await nextRead(h)).split('\n').slice(1)
-    expect(note[1]).toBe(`${CUT_OFF} Only its end was kept, so the text starts partway through.`)
-    expect(note[2]).toBe(long.slice(-BLOCK_TAIL))
+    expect(await nextRead(h)).toEqual([
+      MARKER,
+      row('The interrupt came from the desk.'),
+      row(`${CUT_OFF} Only its end was kept, so the text starts partway through.\n${long.slice(-BLOCK_TAIL)}`),
+    ])
 
     const short = harness()
     await short.ready()
@@ -1682,6 +1705,19 @@ describe('interrupt: the reply it cut off', () => {
       await short.command({ op: 'interrupt', from: 'desk' })
     })
     expect(short.logs).toContain('interrupt: [Request interrupted by user] The interrupt came from the desk. The reply it cut off: one two')
+  })
+
+  test('a cut-off row a hook refused leaves the marker and the note kept and mirrored, the refusal in the debug log', async () => {
+    const h = harness({ denyAppend: 'The interrupt cut off the reply' })
+    await h.ready()
+    await h.turn('t1')
+    await h.step({ turnId: 't1', index: 0, model: 'm', messageCount: 1 }, [{ kind: 'text', index: 0, text: '1, 2' }], async () => {
+      expect(await h.command({ op: 'interrupt', from: 'desk' })).toMatchObject({ ok: true, result: { turnId: 't1' } })
+    })
+    expect(h.calls.filter((c) => c.op === 'append').length).toBe(3)
+    expect(h.conversation).toEqual([MARKER, row('The interrupt came from the desk.')])
+    expect(h.logs).toContain("bridge: the interrupt's record was refused: refused by a hook")
+    expect(h.logs.filter((l) => l.startsWith('interrupt: '))).toEqual(['interrupt: [Request interrupted by user] The interrupt came from the desk.'])
   })
 
   test("the text is read once the abort is in: a chunk that lands meanwhile counts, though the abort's unwinding ends the step and the turn before the record", async () => {
@@ -1709,7 +1745,7 @@ describe('interrupt: the reply it cut off', () => {
       await h.complete('t1', 'aborted')
     }
     expect(await h.command({ op: 'interrupt', from: 'desk' })).toMatchObject({ ok: true, result: { turnId: 't1' } })
-    expect(said(h.conversation)).toBe(`[Request interrupted by user]\nThe interrupt came from the desk.\n${CUT_OFF}\n1, 2, 3`)
+    expect(h.conversation).toEqual([MARKER, row('The interrupt came from the desk.'), row(`${CUT_OFF}\n1, 2, 3`)])
   })
 })
 

@@ -1001,12 +1001,12 @@ function interruptOrigin(from: unknown): string {
   return `The interrupt came from ${from === 'desk' ? 'the desk' : 'outside the terminal'}.`
 }
 
-function noteLines(from: unknown, stops: Stops): string[] {
+function interruptNote(from: unknown, stops: Stops): string {
   return [
     interruptOrigin(from),
     ...stops.stopped.map((task) => `Task ${task}, the Bash command the interrupt moved to the background, was then stopped: it is not running, and no notification will come for it.`),
     ...stops.running.map((task) => `Task ${task}, the Bash command the interrupt moved to the background, could not be stopped: it may still be running.`),
-  ]
+  ].join('\n')
 }
 
 /**
@@ -1027,27 +1027,24 @@ function cutOff(messages: Streaming[]): CutOff | undefined {
   return { text: blocks.map((b) => b.text).join('\n\n'), isPartial: blocks.some((b) => b.truncated === true) }
 }
 
-/** The note's line before the reply it cut off, which runs from the next line to the note's end. */
+/**
+ * The cut-off row's first line, the cut-off text after it: a reader knows the
+ * row by its first line starting `The interrupt cut off the reply you were
+ * writing.`
+ */
 const CUT_OFF_LINE =
-  'The interrupt cut off the reply you were writing. The person was shown what you had written of it, the text after this line to the end of this note, but it is not in the conversation as your reply.'
+  'The interrupt cut off the reply you were writing. The person was shown what you had written of it, the text after this line, but it is not in the conversation as your reply.'
 const CUT_OFF_PARTIAL = ' Only its end was kept, so the text starts partway through.'
-/** Characters of the cut-off reply the terminal's mirror line shows; the note carries it whole. */
+/** Characters of the cut-off reply the terminal's mirror line shows; its row carries it whole. */
 const MIRRORED_REPLY = 300
 
-function interruptNote(from: unknown, stops: Stops, cut: CutOff | undefined): string {
-  const reply = cut === undefined ? [] : [`${CUT_OFF_LINE}${cut.isPartial ? CUT_OFF_PARTIAL : ''}`, cut.text]
-  return [...noteLines(from, stops), ...reply].join('\n')
-}
+const cutOffRow = (cut: CutOff) => `${CUT_OFF_LINE}${cut.isPartial ? CUT_OFF_PARTIAL : ''}\n${cut.text}`
 
 /** Text on one line: the transcript line draws a newline as U+FFFD (live, 2.1.302). */
 const oneLine = (text: string) => text.replace(/\s*[\r\n]+\s*/g, ' ')
 
-/** The note as the terminal's mirror says it: the reply it cut off, for the person, held to its first MIRRORED_REPLY characters. */
-function mirroredNote(from: unknown, stops: Stops, cut: CutOff | undefined): string {
-  const said = noteLines(from, stops).join(' ')
-  if (cut === undefined) {
-    return said
-  }
+/** The cut-off row as the terminal's mirror says it, for the person: its first MIRRORED_REPLY characters, and how many it left out. */
+function mirroredReply(cut: CutOff): string {
   const reply = oneLine(cut.text).trim()
   let shown = reply.slice(0, MIRRORED_REPLY)
   const last = shown.charCodeAt(shown.length - 1)
@@ -1055,24 +1052,28 @@ function mirroredNote(from: unknown, stops: Stops, cut: CutOff | undefined): str
     shown = shown.slice(0, -1)
   }
   const rest = reply.length - shown.length
-  return `${said} The reply it cut off: ${cut.isPartial ? '…' : ''}${shown}${rest > 0 ? `… (${rest} more characters not shown)` : ''}`
+  return `The reply it cut off: ${cut.isPartial ? '…' : ''}${shown}${rest > 0 ? `… (${rest} more characters not shown)` : ''}`
 }
 
 /**
  * The interrupt's record: Esc leaves the model `[Request interrupted by
  * user]`, a plugin's abort no marker at all, so user rows say it, read at the
- * next request. Two rows: the marker alone, since a transcript's reader knows
- * an interrupt only by a row whose whole text is the marker, then the note,
- * the reply the abort cut off last in it. A plugin's user row is kept
- * `isMeta` (2.1.300 `m6r`): the model reads both, and no reader takes the
- * note for a prompt. The terminal does not draw an appended row, so a
- * transcript line mirrors them.
+ * next request. The marker alone, since a transcript's reader knows an
+ * interrupt only by a row whose whole text is the marker; then the note; then,
+ * when the turn streamed text no row kept, the cut-off row, so the note stays
+ * the closed text its readers match whole (DX4's stop records, MAWS's rows).
+ * Each row waits for the one before it: a refused or failed one ends the
+ * record there. A plugin's user row is kept `isMeta` (2.1.300 `m6r`): the
+ * model reads them all, and no reader takes one for a prompt. The terminal
+ * does not draw an appended row, so a transcript line mirrors them.
  */
 async function recordInterrupt($: EngineInterface, from: unknown, stops: Stops, cut: CutOff | undefined) {
   const kept: string[] = []
+  const note = interruptNote(from, stops)
   const rows = [
     { text: INTERRUPT_MARKER, mirror: INTERRUPT_MARKER },
-    { text: interruptNote(from, stops, cut), mirror: mirroredNote(from, stops, cut) },
+    { text: note, mirror: note },
+    ...(cut === undefined ? [] : [{ text: cutOffRow(cut), mirror: mirroredReply(cut) }]),
   ]
   for (const { text, mirror } of rows) {
     try {
