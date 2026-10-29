@@ -24,12 +24,14 @@ IFS= read -r -d '' input
 # looked at too: either admits. On a machine enrolled at a desk hub every
 # directory is a project (a repository no .smns claims is its remote's
 # project, and a directory neither claims is in the machine's own), so the
-# enrollment's file admits them all; it is only looked for, never read,
-# and which project is `record`'s to decide. So does the session's join
+# enrollment's file admits them all (daemon/hub.json, or daemon/identity.json
+# on a machine cut over to its endpoint, whose hub.json is gone); it is only
+# looked for, never read, and which project is `record`'s to decide. So does the session's join
 # override (`sminos join`), which
 # puts a session launched in no repository into a project.
 home=${SMINOS_HOME:-${DAEMON_HOME:-$HOME/.claude/sminos}}
-enrolled=$home/daemon/hub.json
+enrolled=
+[[ -e $home/daemon/hub.json || -e $home/daemon/identity.json ]] && enrolled=1
 in_project() { # dir — whether a .smns or .git lies above it (a dir it cannot judge: yes)
   local d=$1
   [[ $d == /* && $d != *\\* ]] || return 0
@@ -39,7 +41,7 @@ in_project() { # dir — whether a .smns or .git lies above it (a dir it cannot 
   done
 }
 cwd=${input#*\"cwd\":}
-if [[ ! -e $enrolled && $cwd != "$input" ]]; then
+if [[ -z $enrolled && $cwd != "$input" ]]; then
   cwd=${cwd#"${cwd%%[![:space:]]*}"}
   cwd=${cwd#\"}
   cwd=${cwd%%\"*}
