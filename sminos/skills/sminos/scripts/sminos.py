@@ -4823,6 +4823,12 @@ def push_member(member, text, tagged, session=None, event=None, project=None, wo
         return "recorded"
     if st != "stopped":
         return "recorded"
+    if foreign_config(fresh["current"]):
+        # Nor from here one another config dir holds (resume_session): it
+        # reads the log once resumed under its own.
+        warn("%s runs under %s: resumed from a process under it, it reads this" % (
+            fresh["alias"], foreign_config(fresh["current"])))
+        return "recorded"
     locks = []
     try:
         # The lifecycle lock spans the recheck and the resume, so a concurrent
@@ -6143,6 +6149,15 @@ def cmd_record(_a, payload=None):
     if not (UUID_RE.match(session) and cwd and tpath):
         return
     try:
+        # Its engine's config dir, from its own environment, before anything
+        # reads the files the engine keeps there; not recorded, the rest goes on.
+        record_config_dir(session)
+    except OSError as e:
+        try:
+            daemon_log("record %s %s: its config dir was not recorded: %s" % (event, session[:8], e))
+        except OSError:
+            pass
+    try:
         # The payload's cwd is where the session's shell is now; its project
         # is its launch directory's, which the transcript names (§1c).
         project = session_project(session, launch_cwd(session, tpath, fallback=cwd))
@@ -6368,6 +6383,10 @@ def derive_refusal(project, m):
         return "it runs on %s" % m.machine
     if m.charge_source == "set":
         return "its line is set"
+    foreign = foreign_config(m.session)
+    if foreign:
+        return ("its engine runs under %s, not this process's config dir (%s), where a fork from here would look "
+                "for it, on that dir's credentials" % (foreign, config_dir()))
     path = transcript_path(m.session)
     if not path:
         return "no transcript of it on this machine"
@@ -7155,7 +7174,9 @@ def forget_caches():
     _SELF = None
     _PSTART.clear()
     _TRANSCRIPTS.clear()
-    _TINDEX.stale()
+    _RECORDED_DIRS[0] = None
+    for index in [_TINDEX, *list(_TINDEXES.values())]:
+        index.stale()
     _PROJECTS.clear()
     _SEAT_PROJECTS.clear()
     _RECORD_PROJECTS.clear()
@@ -7184,14 +7205,129 @@ def harness_ok():
     return agents_json() is not None
 
 
+# ------------------------------------------------------------ the engine's config dirs
+#
+# The engine writes a session's records (sessions/<pid>.json) and transcript
+# (projects/<dir>/<id>.jsonl) under its own process's config dir:
+# CLAUDE_CONFIG_DIR, else ~/.claude. Only the session's own processes see that
+# environment, so a session whose engine runs under another dir has it
+# recorded by its hook (record_config_dir), and each reader of a session's
+# engine files asks session_config_dir; a reader of every session reads the
+# default and every recorded dir (engine_dirs). A `claude --resume` launched
+# from here looks in this process's own dir and runs on its credentials, so
+# nothing resumes a session another dir holds (foreign_config).
+
+CONFIG_DIRS = "config-dirs"   # under $SMINOS_HOME: <session>.json, {"configDir": <absolute path>, "at"}
+_RECORDED_DIRS = [None]       # {session: its recorded config dir}, read once a cache generation
+
+
+def config_dir(env=None):
+    """The engine's config dir as a process with this environment (this
+    process's when None) runs it: CLAUDE_CONFIG_DIR, else ~/.claude;
+    absolute. `config_dir({})` is the default."""
+    env = os.environ if env is None else env
+    return os.path.abspath(os.path.expanduser(env.get("CLAUDE_CONFIG_DIR") or os.path.join(home_dir(), ".claude")))
+
+
+def config_dir_path(session):
+    return os.path.join(root(), CONFIG_DIRS, session + ".json")
+
+
+def _same_dir(a, b):
+    return os.path.realpath(a) == os.path.realpath(b)
+
+
+def recorded_config_dirs(fresh=False):
+    """{session: config dir}: each session whose hook recorded a config dir
+    other than the default. Once a cache generation; `fresh`: as the
+    directory is now."""
+    held = None if fresh else _RECORDED_DIRS[0]
+    if held is None:
+        held, d = {}, os.path.join(root(), CONFIG_DIRS)
+        try:
+            names = os.listdir(d)
+        except OSError:
+            names = []
+        for name in names:
+            sid, ext = os.path.splitext(name)
+            if ext != ".json" or not UUID_RE.fullmatch(sid):
+                continue
+            try:
+                cfg = json_at(os.path.join(d, name)).get("configDir")
+            except (OSError, ValueError, AttributeError):
+                continue
+            if isinstance(cfg, str) and os.path.isabs(cfg):
+                held[sid] = cfg
+        _RECORDED_DIRS[0] = held
+    return held
+
+
+def session_config_dir(session):
+    """The config dir a session's engine writes its records and transcript
+    under: the one its hook recorded, else the default. Every reader of one
+    session's engine files asks this."""
+    return recorded_config_dirs().get(session) or config_dir({})
+
+
+def engine_dirs(fresh=False):
+    """Every config dir whose engine files sminos reads: the default, then
+    each one a session's hook recorded, each once."""
+    out, seen = [], set()
+    for d in [config_dir({})] + sorted(set(recorded_config_dirs(fresh).values())):
+        real = os.path.realpath(d)
+        if real not in seen:
+            seen.add(real)
+            out.append(d)
+    return out
+
+
+def engine_record_paths(fresh=False):
+    """The path of every engine session record, under every config dir
+    sminos knows (engine_dirs; `fresh`, as recorded now)."""
+    return [p for d in engine_dirs(fresh) for p in glob.glob(os.path.join(glob.escape(d), "sessions", "*.json"))]
+
+
+def record_config_dir(session, env=None):
+    """A session's own hook's (and `join`'s, run from inside it): its config
+    dir, from its own environment, recorded when it is not the default, a
+    record removed once it is; written only when that changed."""
+    mine, path = config_dir(env), config_dir_path(session)
+    try:
+        held = json_at(path).get("configDir")
+    except (OSError, ValueError, AttributeError):
+        held = None
+    if _same_dir(mine, config_dir({})):
+        if held is None:
+            return
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            pass
+    elif held != mine:
+        os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+        write_json(path, {"configDir": mine, "at": now(ms=True)})
+    else:
+        return
+    _RECORDED_DIRS[0] = None
+
+
+def foreign_config(session):
+    """The config dir a session's engine runs under when it is not this
+    process's own, else "": a `claude --resume` of it launched from here
+    would look for it in this process's dir, on that dir's credentials."""
+    theirs = session_config_dir(session)
+    return "" if _same_dir(theirs, config_dir()) else theirs
+
+
 def peer_records():
     """The harness's peer registry: one JSON per live-ish session under
-    ~/.claude/sessions/<pid>.json. Records of dead sessions linger, so callers
-    check the pid before trusting one."""
+    <config dir>/sessions/<pid>.json, for every config dir sminos knows
+    (engine_record_paths). Records of dead sessions linger, so callers check
+    the pid before trusting one."""
     global _PEERS, _PEERS_UNREAD
     if _PEERS is None:
         recs, unread = [], []
-        for p in glob.glob(os.path.join(home_dir(), ".claude", "sessions", "*.json")):
+        for p in engine_record_paths():
             try:
                 with open(p) as f:
                     d = json.load(f)
@@ -7215,9 +7351,9 @@ def peer_notes():
     """What the engine's session records could not tell, for a view that
     rests on them: [note], empty when every record was read."""
     peer_records()
-    d = os.path.join(home_dir(), ".claude", "sessions")
-    if not os.path.isdir(d):
-        return ["no engine session records here (%s): no session reads as running" % d]
+    dirs = [os.path.join(d, "sessions") for d in engine_dirs()]
+    if not any(os.path.isdir(d) for d in dirs):
+        return ["no engine session records here (%s): no session reads as running" % ", ".join(dirs)]
     if _PEERS_UNREAD:
         return ["%d engine session record%s could not be read (%s): %s session%s may be missing or read as not "
                 "running" % (len(_PEERS_UNREAD), "" if len(_PEERS_UNREAD) == 1 else "s",
@@ -7940,7 +8076,8 @@ TRANSCRIPT_SHARED = 0.25
 
 
 class TranscriptIndex:
-    """Every session's transcript under ~/.claude/projects, by session id. A
+    """Every session's transcript under one config dir's projects directory
+    (one index each: transcript_index), by session id. A
     transcript sits directly in its project directory (projects/<dir>/<id>.jsonl;
     only subagent files nest deeper), and the harness mangles the cwd into the
     directory's name, so a session is found by its id, not by its cwd. One
@@ -7994,13 +8131,12 @@ class TranscriptIndex:
         self.base, self.dirs, self.by, self.at, self.forgot = base, dirs, by, began, False
         self.refreshes += 1
 
-    def paths(self, session_id, within=None):
-        """The transcripts of a session found under the projects directory,
-        from a listing begun at most `within` seconds ago (None: the cache
-        generation's, up to TRANSCRIPT_FRESH old). A process's first
+    def paths(self, base, session_id, within=None):
+        """The transcripts of a session found under the projects directory
+        `base`, from a listing begun at most `within` seconds ago (None: the
+        cache generation's, up to TRANSCRIPT_FRESH old). A process's first
         TRANSCRIPT_GLOBS asks glob for the one id instead: a verb asks a few,
         and building the index costs as much as several globs."""
-        base = os.path.join(home_dir(), ".claude", "projects")
         with self.lock:
             if self.at is None and self.globbed < TRANSCRIPT_GLOBS:
                 self.globbed += 1
@@ -8012,7 +8148,15 @@ class TranscriptIndex:
             return [os.path.join(base, d, session_id + ".jsonl") for d in self.by.get(session_id, ())]
 
 
-_TINDEX = TranscriptIndex()
+_TINDEX = TranscriptIndex()   # the default config dir's
+_TINDEXES = {}                # another config dir's projects directory → its index
+
+
+def transcript_index(base):
+    """The index of a config dir's projects directory `base`."""
+    if base == os.path.join(config_dir({}), "projects"):
+        return _TINDEX
+    return _TINDEXES.get(base) or _TINDEXES.setdefault(base, TranscriptIndex())
 
 
 def transcripts_now():
@@ -8020,8 +8164,10 @@ def transcripts_now():
     caller about to act on a transcript's absence or its age (the daemon's
     sweeps, which remove what a session left once its transcript is gone)."""
     _TRANSCRIPTS.clear()
-    with _TINDEX.lock:
-        _TINDEX.refresh(os.path.join(home_dir(), ".claude", "projects"))
+    recorded_config_dirs(fresh=True)
+    for base, index in [(os.path.join(config_dir({}), "projects"), _TINDEX), *list(_TINDEXES.items())]:
+        with index.lock:
+            index.refresh(base)
 
 
 def transcript_path(session_id, fresh=False):
@@ -8040,7 +8186,8 @@ def _transcript(session_id, within):
     hit = None if within is not None else _TRANSCRIPTS.get(session_id)   # one lookup: the plane's threads ask while the uplink forgets
     if hit:
         return hit
-    hits = _TINDEX.paths(session_id, within)
+    base = os.path.join(session_config_dir(session_id), "projects")
+    hits = transcript_index(base).paths(base, session_id, within)
     if not hits:
         _TRANSCRIPTS.pop(session_id, None)
         return ""
@@ -9202,6 +9349,11 @@ def resume_session(s, msg, wait, locks=None, verb="resumed", quiet=False, on_lau
     if not s["current"]:
         raise ResumeRefused("seat %s/%s is vacant — fill it with: sminos fill %s/%s \"<task>\"" % (
             s["group"], s["alias"], s["group"], s["alias"]), EXIT_UNKNOWN)
+    foreign = foreign_config(s["current"])
+    if foreign:
+        raise ResumeRefused("the session of %s/%s runs under %s, not this process's config dir (%s): resume it "
+                            "from a process under its own (CLAUDE_CONFIG_DIR=%s)" % (
+                                s["group"], s["alias"], foreign, config_dir(), shlex.quote(foreign)), 1)
     # Where the engine keeps its session now (a /cd or EnterWorktree moved it), else where it was spawned.
     cwd = os.path.abspath(os.path.expanduser(seat_cwd(s)))
     if not os.path.isdir(cwd):
@@ -10341,7 +10493,7 @@ def subagents_view(session, stall_minutes=None):
             notes.append("no bridge runs in this session: lifecycle is inferred from its transcripts")
     if not tpath:
         notes.append("no transcript of session %s on this machine (%s): %s" % (
-            session[:8], os.path.join(home_dir(), ".claude", "projects"),
+            session[:8], os.path.join(session_config_dir(session), "projects"),
             "only the agents its bridge holds are listed" if bridge is not None else "no subagent can be read"))
     notes += peer_notes()
     stall = V.STALL_SECONDS if stall_minutes is None else stall_minutes * 60
@@ -10685,6 +10837,10 @@ def cmd_join(a):
         die("join declares the calling session's project: run it from inside a session")
     if a.cwd and a.project:
         die("usage: sminos join <project> | --cwd | (nothing: which project this session is in)")
+    try:
+        record_config_dir(sid)   # from the session's own environment, as its hook does: its move reads its engine record
+    except OSError as e:
+        warn("the session's config dir was not recorded (%s)" % e)
     launch = launch_cwd(sid, fallback=os.getcwd())
     home = resolve_project(launch)
     held = override_of(sid)

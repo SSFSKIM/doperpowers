@@ -406,8 +406,8 @@ def _now_ms():
 
 
 def config_dir():
-    """The session's config dir, which the child inherits."""
-    return os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(S.home_dir(), ".claude")
+    """The session's config dir, which the child inherits (sminos.config_dir)."""
+    return S.config_dir()
 
 
 def presence_path(session_pid):

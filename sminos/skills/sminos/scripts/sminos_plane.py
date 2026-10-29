@@ -32,7 +32,7 @@ the facts as they stand, the look is asked right after it, and the first
 `subagents` carries what it found.
 
 Presence. For every session of a hub project on this machine, its record in
-the engine's registry (`~/.claude/sessions/<pid>.json`: `status`,
+the engine's registry (`<config dir>/sessions/<pid>.json`: `status`,
 `waitingFor`, `needs`, verbatim; null once no process holds it) and whether
 its bridge answers (DX5's `GET /status`) reach the hub as DX4 `presence`
 when either changes, and all of them after every connect. The log's
@@ -169,7 +169,6 @@ only to a hub whose welcome lists it (`kinds`).
 """
 
 import collections
-import glob
 import hashlib
 import http.client
 import itertools
@@ -2216,11 +2215,11 @@ class Subscription:
         return [self.message("read", body)]
 
 
-def read_answer(path, rid, what, args, cwd=""):
+def read_answer(path, rid, what, args, cwd="", cfg=None):
     """DX4 `read`'s body: the session's bridge's answer to the read (DX5),
     or why there is none; an `mcp` answer with the servers the session's
     project disables added (`with_disabled`, from its working directory
-    `cwd`)."""
+    `cwd` and its config dir `cfg`)."""
     def error(code, message):
         return {"id": rid, "what": what, "error": {"code": code, "message": message}}
 
@@ -2238,21 +2237,27 @@ def read_answer(path, rid, what, args, cwd=""):
         return error("failed", "the bridge answered %d: %s" % (status, out.get("error")))
     if out.get("ok"):
         result = out.get("result")
-        return {"id": rid, "what": what, "result": with_disabled(result, cwd) if what == "mcp" else result}
+        return {"id": rid, "what": what, "result": with_disabled(result, cwd, cfg) if what == "mcp" else result}
     why = str(out.get("error") or "the session refused the read")
     # A kind the mod does not serve, or a mod from before reads.
     return error("unsupported" if why.startswith(("no read ", "unknown op")) else "failed", why)
 
 
-def global_config():
+def global_config(cfg=None):
     """The engine's global config file, chosen as 2.1.310 chooses it (`y_`
     in its cli): `<config dir>/.config.json` while that legacy file is a
     nonempty file, or an empty writable one with no `.claude.json` beside
     it; else `.claude.json` (`.claude-custom-oauth.json` under a custom OAuth
-    URL) in CLAUDE_CONFIG_DIR when it is set, else in the home directory."""
+    URL) in CLAUDE_CONFIG_DIR when it is set, else in the home directory.
+    `cfg`: a session's config dir (sminos.session_config_dir), the file its
+    engine reads; None, this process's environment's."""
     suffix = "-custom-oauth" if os.environ.get("CLAUDE_CODE_CUSTOM_OAUTH_URL") else ""
-    main = os.path.join(os.environ.get("CLAUDE_CONFIG_DIR") or sminos.home_dir(), ".claude%s.json" % suffix)
-    legacy = os.path.join(bridge.config_dir(), ".config.json")
+    if cfg is None:
+        named, cfg = os.environ.get("CLAUDE_CONFIG_DIR"), bridge.config_dir()
+    else:
+        named = None if sminos._same_dir(cfg, sminos.config_dir({})) else cfg
+    main = os.path.join(named or sminos.home_dir(), ".claude%s.json" % suffix)
+    legacy = os.path.join(cfg, ".config.json")
     try:
         st = os.stat(legacy)
     except OSError:
@@ -2313,15 +2318,16 @@ def _canonical_root(root):
     return os.path.dirname(common)
 
 
-def disabled_mcp(cwd):
+def disabled_mcp(cwd, cfg=None):
     """The MCP servers the engine keeps disabled for the project `cwd` is in
-    (`/mcp disable`): `projects[<key>].disabledMcpServers` of `.claude.json`,
-    the one key of that file read, names alone. [] when there are none or the
-    file cannot be read."""
+    (`/mcp disable`): `projects[<key>].disabledMcpServers` of `.claude.json`
+    (global_config's, `cfg` the session's config dir), the one key of that
+    file read, names alone. [] when there are none or the file cannot be
+    read."""
     if not cwd:
         return []
     try:
-        with open(global_config(), encoding="utf-8") as f:
+        with open(global_config(cfg), encoding="utf-8") as f:
             config = json.load(f)
     except (OSError, ValueError):
         return []
@@ -2333,14 +2339,14 @@ def disabled_mcp(cwd):
     return [n for n in names if isinstance(n, str) and 0 < len(n) <= DISABLED_NAME_MAX][:DISABLED_MAX]
 
 
-def with_disabled(result, cwd):
+def with_disabled(result, cwd, cfg=None):
     """`read mcp`'s answer with each server the project disables added as
     `{name, status: "disabled"}`, unless the bridge already named it: the
     bridge sees only servers whose tools the model has."""
     if not (isinstance(result, dict) and isinstance(result.get("servers"), list)):
         return result
     named = {s.get("name") for s in result["servers"] if isinstance(s, dict)}
-    added = [{"name": n, "status": "disabled"} for n in disabled_mcp(cwd) if n not in named]
+    added = [{"name": n, "status": "disabled"} for n in disabled_mcp(cwd, cfg) if n not in named]
     return {**result, "servers": result["servers"] + added}
 
 
@@ -2417,7 +2423,7 @@ class Records:
     def scan(self):
         live = {}
         seen = set()
-        for path in glob.glob(os.path.join(glob.escape(sminos.home_dir()), ".claude", "sessions", "*.json")):
+        for path in sminos.engine_record_paths(fresh=True):
             seen.add(path)
             try:
                 st = os.stat(path)
@@ -2935,9 +2941,10 @@ class Plane:
         self.reading[s.sub] += 1
         path = bridge.endpoint(s.session)
         cwd = str((self.live.get(s.session) or {}).get("cwd") or self.here.get(s.project, {}).get(s.session) or "")
+        cfg = sminos.session_config_dir(s.session)
 
         def run(sub=s.sub):
-            self.read_answers.put((sub, read_answer(path, rid, what, args, cwd)))
+            self.read_answers.put((sub, read_answer(path, rid, what, args, cwd, cfg)))
             self.wake()
 
         threading.Thread(target=run, name="plane-read", daemon=True).start()

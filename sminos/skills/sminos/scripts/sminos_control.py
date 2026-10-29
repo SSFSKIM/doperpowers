@@ -113,18 +113,17 @@ def deliver(session, project, event, text):
 # ------------------------------------------------------------------ the engine supervisor
 
 
-def supervisor_socket():
-    """The engine supervisor's control socket for this user's config
-    (~/.claude, as sminos reads every engine file): /tmp/cc-daemon-<uid>/
-    <sha256 of the config dir's absolute path, first 8>/control.sock."""
-    cfg = os.path.abspath(os.path.join(S.home_dir(), ".claude"))
-    return os.path.join("/tmp", "cc-daemon-%d" % os.getuid(), hashlib.sha256(cfg.encode()).hexdigest()[:8],
-                        "control.sock")
+def supervisor_socket(cfg):
+    """The engine supervisor's control socket for the config dir `cfg` (a
+    session's: sminos.session_config_dir): /tmp/cc-daemon-<uid>/<sha256 of
+    the config dir's absolute path, first 8>/control.sock."""
+    return os.path.join("/tmp", "cc-daemon-%d" % os.getuid(),
+                        hashlib.sha256(os.path.abspath(cfg).encode()).hexdigest()[:8], "control.sock")
 
 
-def supervisor_key():
+def supervisor_key(cfg):
     try:
-        with open(os.path.join(S.home_dir(), ".claude", "daemon", "control.key")) as f:
+        with open(os.path.join(cfg, "daemon", "control.key")) as f:
             key = f.read().strip()
     except OSError:
         return ""
@@ -137,13 +136,15 @@ def bg_job(peer):
     return short if (peer or {}).get("kind") == "bg" and SHORT_RE.match(short) else ""
 
 
-def supervisor_reply(short, text):
+def supervisor_reply(short, text, session=""):
     """The supervisor's `reply` to a --bg job: queued input of human origin,
-    read at the job's next step. `nextTurn` keeps it from answering a question
+    read at the job's next step, through the supervisor of the config dir
+    the job's session runs under. `nextTurn` keeps it from answering a question
     dialog that happens to be open. True when the supervisor took it, else
     why not (nothing reached the job). Raises SendFailed("after") when the
     request went and no answer came."""
-    key = supervisor_key()
+    cfg = S.session_config_dir(session)
+    key = supervisor_key(cfg)
     if not key:
         return "no supervisor control key"
     req = {"proto": 1, "op": "reply", "short": short, "text": text, "auth": key, "nextTurn": True}
@@ -151,7 +152,7 @@ def supervisor_reply(short, text):
     s.settimeout(SUPERVISOR_TIMEOUT)
     try:
         try:
-            s.connect(supervisor_socket())
+            s.connect(supervisor_socket(cfg))
             s.sendall((json.dumps(req) + "\n").encode())
         except OSError as e:
             return "no supervisor took it (%s)" % e
@@ -201,7 +202,7 @@ def push_live(peer, session, text, event=None, project=None, words=None):
     if owner and deliver(session, project, event, text):
         return
     if owner and bg_job(peer):
-        took = supervisor_reply(bg_job(peer), text)
+        took = supervisor_reply(bg_job(peer), text, session)
         if took is True:
             return
     sender = str(event.get("via") or event.get("from") or "") if event is not None else ""
@@ -253,7 +254,7 @@ def cmd_steer(a):
     short = bg_job(peer)
     try:
         if short:
-            took = supervisor_reply(short, a.text)
+            took = supervisor_reply(short, a.text, session)
             if took is True:
                 print("steered %s through the engine supervisor (no bridge): read at its next step" % a.member)
                 return

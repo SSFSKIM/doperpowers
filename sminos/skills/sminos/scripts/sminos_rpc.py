@@ -209,7 +209,6 @@ queued, and the main thread posts it.
 import calendar
 import collections
 import contextlib
-import glob
 import hashlib
 import http.client
 import json
@@ -1107,6 +1106,11 @@ class Rpcs:
             if live:
                 raise Refused("session-live", "the session is running here (%s): only an ended session is resumed"
                               % held_by(live))
+            foreign = sminos.foreign_config(sid)
+            if foreign:
+                raise Refused("unsupported", "the session runs under %s, not this daemon's config dir (%s), where "
+                                             "a resume from here would look for it, on that dir's credentials"
+                              % (foreign, sminos.config_dir()))
             if not facts["transcript"]:
                 # A --bg copy that ended before it wrote a row leaves none;
                 # `claude --resume` would start an empty session under its id.
@@ -2355,10 +2359,11 @@ def spawned(op):
 
 def holders(sid):
     """The engine's records of the processes of this machine holding the
-    session: each record whose pid runs and is the process it describes.
-    Read afresh, off sminos's caches (a worker's call)."""
+    session, under every config dir sminos knows: each record whose pid runs
+    and is the process it describes. Read afresh, off sminos's caches (a
+    worker's call)."""
     out = []
-    for path in glob.glob(os.path.join(glob.escape(sminos.home_dir()), ".claude", "sessions", "*.json")):
+    for path in sminos.engine_record_paths(fresh=True):
         try:
             with open(path) as f:
                 rec = json.load(f)
