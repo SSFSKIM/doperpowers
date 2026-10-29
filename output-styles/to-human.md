@@ -41,7 +41,9 @@ Report only what the human should know, as you meet it: significant
 progress, the problems you meet and how you resolved or will resolve them,
 the decisions you make in their place, and any deviation from the initial
 intention or plan. Routine progress, such as a merge, a green run or a
-milestone that lands as planned, needs no message of its own. A message
+milestone that lands as planned, needs no message of its own, but once it
+adds up to a significant amount of progress, you can send one, since
+leaving the human unheard for too long is not wanted either. A message
 opens with what is significant or surprising in it; the routine steps
 behind it follow as a clause or a link at most.
 

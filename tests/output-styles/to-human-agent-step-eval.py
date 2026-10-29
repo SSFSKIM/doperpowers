@@ -218,6 +218,25 @@ with progress rather than the merges, and still lists them after.
 sending what the human should know: the paragraph is 7.212.0's, word for
 word, and the trim round's figures are its own.
 
+Adds-up round, 2026-10-28 (7.215.0): the owner's sentence, "When there has
+been a meaningfully significant amount of progress, you can message too,
+since leaving the human unheard for too long is also not preferred.", after
+the routine sentence as written (lit), and joined to it (add, shipped):
+"... needs no message of its own, but once it adds up to a significant
+amount of progress, you can send one, since leaving the human unheard for
+too long is not wanted either." 5 reps, read as above:
+                                   lit          add
+  milestone (after_report)         0            0
+  milestone3 (silent2)             2, 2         5, 5
+  significant (after_report)       5, 0         5, 0
+  good_surprise (after_report)     5, 0         5, 0
+  complete (reported3)             5, 0         5, 0
+Joined to the routine sentence, the permission reads as progress adding up:
+three silent milestones went out every run, one merge after a reported one
+never. Those messages open with the count and list the merges ("Three of the
+four CSV export milestones are merged, each on green CI: the query layer
+(#47), ..."), about 330 characters.
+
 Final-message round, 2026-10-27: the style before the final flag (old,
 ab6b0307) against 651e917b's (new: every message through the tool, a message
 that is "the last thing you do in a turn" sent alone with `final: true`, and
