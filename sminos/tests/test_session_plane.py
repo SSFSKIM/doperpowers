@@ -1843,6 +1843,32 @@ class ConfigDirSession(unittest.TestCase):
             self.assertEqual(len(reads), 2)
         self.assertEqual(plane.sminos.recorded_config_dirs().get(other), self.cfg, "the next poll finds it")
 
+    def test_a_registered_dir_speaks_only_for_the_sessions_registered_to_it(self):
+        """A dir copied from ~/.claude carries other sessions' records, a
+        live one with a listening inbox among them: none of them is read as
+        that session's — no delivery is routed to it, no presence, no holder."""
+        import sminos_rpc as rpcs
+        other, inbox = new_session(), os.path.join(self.cfg, "in.sock")
+        listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        listener.bind(inbox)
+        listener.listen(1)
+        self.addCleanup(listener.close)
+        holder = subprocess.Popen(["sleep", "3600"])
+        self.addCleanup(holder.wait)
+        self.addCleanup(holder.kill)
+        planted = os.path.join(self.cfg, "sessions", "%d.json" % holder.pid)
+        with open(planted, "w") as f:
+            json.dump({"pid": holder.pid, "sessionId": other, "cwd": self.fake.dir, "kind": "interactive",
+                       "status": "busy", "messagingSocketPath": inbox}, f)
+        self.addCleanup(os.unlink, planted)
+        plane.sminos.forget_caches()
+        self.assertIsNone(plane.sminos.peer_for_session(other), "no delivery is routed to it")
+        self.assertNotIn(other, self.p.records.scan(), "no presence")
+        self.assertEqual(rpcs.holders(other), [], "no holder")
+        self.assertIsNotNone(plane.sminos.session_running(self.sid), "while the session registered there is read")
+        self.assertIn(self.sid, self.p.records.scan())
+        self.assertEqual([r["sessionId"] for r in rpcs.holders(self.sid)], [self.sid])
+
     def test_its_presence_and_its_rows_are_read_under_its_config_dir(self):
         self.fake.start_bridge()
         before = self.fake.user_row("before")

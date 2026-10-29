@@ -7218,8 +7218,8 @@ def harness_ok():
 # nothing resumes a session another dir holds (foreign_config).
 
 CONFIG_DIRS = "config-dirs"   # under $SMINOS_HOME: <session>.json, {"configDir": <absolute path>, "at"}
-# The registry as read: ({session: its recorded config dir}, engine_dirs'
-# list). Once a cache generation; and a listing kept, beyond the generation,
+# The registry as read: ({session: its recorded config dir}, [(engine dir,
+# the sessions its records speak for, None for every one)]). Once a cache generation; and a listing kept, beyond the generation,
 # while its directory's identity holds, once the directory held still
 # REGISTRY_RACY_NS before it was read (a coarse clock): the plane's presence
 # asks for it as it is now five times a second.
@@ -7260,17 +7260,21 @@ def _read_registry(d):
             continue
         if isinstance(cfg, str) and os.path.isabs(cfg):
             recorded[sid] = cfg
-    dirs, seen = [], set()
-    for cfg in [config_dir({})] + sorted(set(recorded.values())):
+    owners = {}
+    for sid, cfg in recorded.items():
+        owners.setdefault(os.path.realpath(cfg), set()).add(sid)
+    default = config_dir({})
+    dirs, seen = [(default, None)], {os.path.realpath(default)}
+    for cfg in sorted(set(recorded.values())):
         real = os.path.realpath(cfg)
         if real not in seen:
             seen.add(real)
-            dirs.append(cfg)
+            dirs.append((cfg, frozenset(owners[real])))
     return recorded, dirs
 
 
 def _registry(fresh=False):
-    """(recorded_config_dirs, engine_dirs): once a cache generation; `fresh`,
+    """(recorded_config_dirs, [(dir, owners)]): once a cache generation; `fresh`,
     as the directory is now — a stat of it while a kept listing's identity
     holds. A transcript found for a session whose recorded dir changed is
     looked for again."""
@@ -7314,13 +7318,23 @@ def session_config_dir(session):
 def engine_dirs(fresh=False):
     """Every config dir whose engine files sminos reads: the default, then
     each one a session's hook recorded, each once."""
-    return _registry(fresh)[1]
+    return [d for d, _ in _registry(fresh)[1]]
 
 
 def engine_record_paths(fresh=False):
-    """The path of every engine session record, under every config dir
-    sminos knows (engine_dirs; `fresh`, as recorded now)."""
-    return [p for d in engine_dirs(fresh) for p in glob.glob(os.path.join(glob.escape(d), "sessions", "*.json"))]
+    """[(path, owners)]: every engine session record under every config dir
+    sminos knows (`fresh`, as recorded now), with the sessions its dir speaks
+    for (speaks_for)."""
+    return [(p, owners) for d, owners in _registry(fresh)[1]
+            for p in glob.glob(os.path.join(glob.escape(d), "sessions", "*.json"))]
+
+
+def speaks_for(owners, rec):
+    """Whether an engine record found under a dir whose `owners` these are
+    is its session's: the default's records speak for every session (None),
+    another dir's only for the sessions registered to it — a dir copied from
+    ~/.claude carries other sessions' records, live ones among them."""
+    return owners is None or rec.get("sessionId") in owners
 
 
 def record_config_dir(session, env=None):
@@ -7359,12 +7373,13 @@ def foreign_config(session):
 def peer_records():
     """The harness's peer registry: one JSON per live-ish session under
     <config dir>/sessions/<pid>.json, for every config dir sminos knows
-    (engine_record_paths). Records of dead sessions linger, so callers check
-    the pid before trusting one."""
+    (engine_record_paths, each speaking for the sessions its dir does).
+    Records of dead sessions linger, so callers check the pid before trusting
+    one."""
     global _PEERS, _PEERS_UNREAD
     if _PEERS is None:
         recs, unread = [], []
-        for p in engine_record_paths():
+        for p, owners in engine_record_paths():
             try:
                 with open(p) as f:
                     d = json.load(f)
@@ -7373,10 +7388,10 @@ def peer_records():
             except Exception:
                 unread.append(os.path.basename(p))
                 continue
-            if isinstance(d, dict):
-                recs.append(d)
-            else:
+            if not isinstance(d, dict):
                 unread.append(os.path.basename(p))
+            elif speaks_for(owners, d):
+                recs.append(d)
         _PEERS, _PEERS_UNREAD = recs, unread
     return _PEERS
 

@@ -1210,9 +1210,10 @@ def sweep_overrides():
     sminos.join_refusal — a retired project), is removed, a daemon.log line
     naming the session and the target; the session itself already resolves
     as though it were absent (session_project). A cached launch directory
-    (`launch/<id>.json`) and a recorded config dir (`config-dirs/<id>.json`,
-    last: what is judged before it looks for the transcript there; never a
-    running session's) go by the transcript's rule alone."""
+    (`launch/<id>.json`) goes by the transcript's rule alone, and a recorded
+    config dir (`config-dirs/<id>.json`, last: what is judged before it looks
+    for the transcript there) once its session runs no more and its
+    transcript is gone."""
     sminos.transcripts_now()
     now = time.time()
     for sub in ("sessions", "launch", sminos.CONFIG_DIRS):
@@ -1225,9 +1226,9 @@ def sweep_overrides():
             sid, ext = os.path.splitext(name)
             if ext != ".json" or not sminos.UUID_RE.fullmatch(sid):
                 continue
-            if sub == sminos.CONFIG_DIRS and sminos.session_running(sid):
-                continue   # its engine has written no transcript yet, and its record is read there
             last = mtime(sminos.transcript_path(sid))
+            if sub == sminos.CONFIG_DIRS and (last is not None or sminos.session_running(sid)):
+                continue   # where its transcript is, however quiet, or where its engine writes one
             why = "its transcript is gone" if last is None else \
                 "its transcript has not changed in %d days" % ((now - last) // 86400) \
                 if now - last >= OVERRIDE_QUIET_S else ""

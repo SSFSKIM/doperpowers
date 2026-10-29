@@ -2421,7 +2421,7 @@ class Records:
     def scan(self):
         live = {}
         seen = set()
-        for path in sminos.engine_record_paths(fresh=True):
+        for path, owners in sminos.engine_record_paths(fresh=True):
             seen.add(path)
             try:
                 st = os.stat(path)
@@ -2437,7 +2437,7 @@ class Records:
                 held = self.files[path] = (st.st_mtime_ns, st.st_size, rec if isinstance(rec, dict) else None)
             rec = held[2]
             sid = rec.get("sessionId") if rec else None
-            if isinstance(sid, str) and self.running(rec):
+            if isinstance(sid, str) and sminos.speaks_for(owners, rec) and self.running(rec):
                 old = live.get(sid)
                 if old is None or (rec.get("updatedAt") or 0) > (old.get("updatedAt") or 0):
                     live[sid] = rec

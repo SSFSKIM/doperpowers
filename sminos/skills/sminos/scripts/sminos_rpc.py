@@ -2363,13 +2363,14 @@ def holders(sid):
     and is the process it describes. Read afresh, off sminos's caches (a
     worker's call)."""
     out = []
-    for path in sminos.engine_record_paths(fresh=True):
+    for path, owners in sminos.engine_record_paths(fresh=True):
         try:
             with open(path) as f:
                 rec = json.load(f)
         except (OSError, ValueError):
             continue
-        if isinstance(rec, dict) and rec.get("sessionId") == sid and sminos.pid_alive(rec.get("pid")) \
+        if isinstance(rec, dict) and rec.get("sessionId") == sid and sminos.speaks_for(owners, rec) \
+                and sminos.pid_alive(rec.get("pid")) \
                 and sminos.same_process(rec, fresh=True):
             out.append(rec)
     return out

@@ -558,6 +558,26 @@ rm -r "$CFG/projects/p-$S19"
 kill "$S20_PID"; wait "$S20_PID" 2>/dev/null || true
 "$SMINOS" daemon tick >/dev/null 2>&1 || true
 [ ! -e "$SMINOS_HOME/config-dirs/$S20.json" ] && pass "until it ends with none" || fail "until it ends with none"
+S21=1a000021-0000-4000-8000-000000000021   # ended under CFG a month ago, its transcript kept
+run_in "$CR" "$SMINOS" seat add crew aged --session "$S21"
+ENGINE_DIR="$CFG" transcript "$S21" "$CR"
+S21_TX=$TX
+hook_payload SessionStart "$S21" "$CR" "$S21_TX" | CLAUDE_CONFIG_DIR="$CFG" CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" "$HOOK"
+python3 -c 'import os, sys, time; t = time.time() - 31 * 86400; os.utime(sys.argv[1], (t, t))' "$S21_TX"
+"$SMINOS" daemon tick >/dev/null 2>&1 || true
+[ -e "$SMINOS_HOME/config-dirs/$S21.json" ] && pass "an ended session's is kept while its transcript is there, however quiet" \
+  || fail "an ended session's is kept while its transcript is there, however quiet"
+assert_equals "$(python3 - "$S21" <<'PY'
+import os, sys
+sys.path.insert(0, os.environ["SCRIPTS"])
+import sminos
+print(sminos.transcript_path(sys.argv[1]))
+PY
+)" "$S21_TX" "so its transcript is still found"
+: > "$STUB_STATE/calls"
+run_in "$CR" "$SMINOS" resume crew/aged "back"
+assert_contains "$OUT" "runs under $CFG" "and a resume from here still refused"
+assert_not_contains "$(cat "$STUB_STATE/calls")" "--resume $S21" "launching nothing"
 
 echo "the hook's cheap look, on a machine not enrolled:"
 as c gamma
