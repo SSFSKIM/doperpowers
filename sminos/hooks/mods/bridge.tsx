@@ -258,9 +258,9 @@ const MODE_WORD = /^[A-Za-z]{1,32}$/
  * transition makes (Shift+Tab in the terminal, plan mode's exit, auto mode's
  * fallback, a mode set from the SDK or Remote Control), so a switch is here
  * as it happens and on the stream with the next heartbeat; and the mode a
- * prompt (classic UserPromptSubmit), a permission prompt (PermissionRequest)
- * or a tool call's permission decision (its `tool_decision` record) was made
- * under. A change none of them reports stays unseen until the next of them.
+ * prompt (classic UserPromptSubmit) or a permission prompt
+ * (PermissionRequest) was made under. A change no record reports stays
+ * unseen until the next prompt or permission prompt.
  * The session's start reports none (the classic SessionStart input carries
  * no mode), so a session that has neither switched nor taken a prompt has
  * no `permissionMode` yet.
@@ -2253,17 +2253,22 @@ export function registerBridge(on: On) {
   }).catch((_, e, next) => next(e))
 
   // The engine's record of each permission decision, by call: who decided
-  // it, the evidence a request's settlement names, and the mode it was made
-  // under; and its record of each switch of mode, as it happens. A record
-  // made in a subagent's loop names it (`agent_id`): its mode is that loop's.
+  // it, the evidence a request's settlement names. Its `permission_mode` is
+  // no report of the mode: it is the mode the check began under, which a
+  // switch since may have left (accepting ExitPlanMode leaves plan before
+  // its dialog settles, and the record that follows still says plan), and an
+  // in-process teammate's record comes with no `agent_id`, the collector
+  // keeping only a hex or UUID id. Then the engine's record of each switch of
+  // mode, as it happens: in 2.1.312 the main loop's transitions raise it with
+  // no loop named, a subagent's own (its ExitPlanMode) names its agent, and a
+  // switch in a teammate's view (Shift+Tab there) changes the teammate's
+  // mode without raising one, so a record naming no loop is taken as the
+  // main loop's.
   on('telemetry.log', { to: 'collector' }, async ($, e, next) => {
     if (state.post !== undefined && e.to === 'collector' && e.event === 'tool_decision') {
       const { tool_use_id: id, source, decision } = e.attributes
       if (typeof id === 'string' && typeof source === 'string') {
         decisionRecorded(id, source, decision === 'accept')
-      }
-      if (e.attributes.agent_id === undefined) {
-        observeMode($, e.attributes.permission_mode, 'tool_decision')
       }
     }
     if (e.to === 'collector' && e.event === 'permission_mode_changed' && e.attributes.agent_id === undefined) {

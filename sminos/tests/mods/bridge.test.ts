@@ -7454,16 +7454,27 @@ describe("the session's permission mode, as the engine reports it", () => {
     expect(await beat(h)).toMatchObject({ permissionMode: 'default', permissionModeAt: h.now(), permissionModeFrom: 'PermissionRequest' })
   })
 
-  test("a switch in the terminal reaches it as it happens, by the engine's permission_mode_changed record; each permission decision's record reports the mode it was made under", async () => {
+  test("a switch in the terminal reaches it as it happens, by the engine's permission_mode_changed record", async () => {
     const h = harness()
     await h.ready()
     await prompted(h, 'default')
     h.advance(1_000)
     await record(h, 'permission_mode_changed', { from_mode: 'default', to_mode: 'acceptEdits', trigger: 'shift_tab' })
     expect(await beat(h)).toMatchObject({ permissionMode: 'acceptEdits', permissionModeAt: h.now(), permissionModeFrom: 'permission_mode_changed' })
+  })
+
+  test("a permission decision's record is no report: its mode is the one the check began under, which a switch since may have left", async () => {
+    // Accepting ExitPlanMode switches plan to default before its dialog
+    // settles, and the decision's record that follows still says plan.
+    const h = harness()
+    await h.ready()
+    await prompted(h, 'plan')
     h.advance(1_000)
-    await record(h, 'tool_decision', { decision: 'accept', source: 'config', tool_name: 'Edit', tool_use_id: 'toolu_1', permission_mode: 'plan' })
-    expect(await beat(h)).toMatchObject({ permissionMode: 'plan', permissionModeAt: h.now(), permissionModeFrom: 'tool_decision' })
+    await record(h, 'permission_mode_changed', { from_mode: 'plan', to_mode: 'default', trigger: 'exit_plan_mode' })
+    const changedAt = h.now()
+    h.advance(1_000)
+    await record(h, 'tool_decision', { decision: 'accept', source: 'user_temporary', tool_name: 'ExitPlanMode', tool_use_id: 'toolu_1', permission_mode: 'plan' })
+    expect(await beat(h)).toMatchObject({ permissionMode: 'default', permissionModeAt: changedAt, permissionModeFrom: 'permission_mode_changed' })
   })
 
   test("a subagent's report is its own loop's mode, never the session's", async () => {
@@ -7472,7 +7483,6 @@ describe("the session's permission mode, as the engine reports it", () => {
     await prompted(h, 'auto')
     await h.permission('Bash', { command: 'ls' }, 'a1', { decision: { behavior: 'allow' } }, undefined, 'bypassPermissions')
     await record(h, 'permission_mode_changed', { from_mode: 'default', to_mode: 'plan', agent_id: 'a1' })
-    await record(h, 'tool_decision', { decision: 'accept', source: 'config', tool_name: 'Bash', tool_use_id: 'toolu_2', permission_mode: 'dontAsk', agent_id: 'a1' })
     await prompted(h, 'acceptEdits', { agent_id: 'a1' })
     expect(await beat(h)).toMatchObject({ permissionMode: 'auto', permissionModeFrom: 'UserPromptSubmit' })
   })
