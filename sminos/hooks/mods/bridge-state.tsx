@@ -302,6 +302,12 @@ export type BridgeState = {
   wakes: Wake[]
   /** The main turns the bridge's interrupt is ending, by turn, until each one ends. */
   interrupts: Map<string, Interrupt>
+  /**
+   * The main turn's streaming messages each interrupt took before its abort,
+   * until its record is in: a response row kept once the live state dropped
+   * them settles its block there (bridge-rows.tsx, settleCaptured).
+   */
+  captured: Set<Streaming[]>
   /** For each running foreground subagent, the main turn it belongs to (its tool calls are that turn's). */
   foreground: Map<string, string>
   /** A compaction asked for during the main turn, run when it ends. */
@@ -511,6 +517,7 @@ const fresh = (): BridgeState => ({
   steers: [],
   wakes: [],
   interrupts: new Map(),
+  captured: new Set(),
   foreground: new Map(),
 })
 

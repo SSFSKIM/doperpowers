@@ -1747,6 +1747,69 @@ describe('interrupt: the reply it cut off', () => {
     expect(await h.command({ op: 'interrupt', from: 'desk' })).toMatchObject({ ok: true, result: { turnId: 't1' } })
     expect(h.conversation).toEqual([MARKER, row('The interrupt came from the desk.'), row(`${CUT_OFF}\n1, 2, 3`)])
   })
+
+  test("a row that keeps the reply while the marker is still going in: it was kept, so no third row", async () => {
+    const h = harness({ holdAppend: true })
+    await h.ready()
+    await h.turn('t1')
+    await h.step({ turnId: 't1', index: 0, model: 'm', messageCount: 1 }, [{ kind: 'text', index: 0, text: '1, 2' }], async () => {
+      h.children[0]!.write(line({ id: 'c-int', op: 'interrupt', from: 'desk' }))
+      await h.settle()
+      expect(h.appends.length).toBe(1)
+      // The response's block completes and the engine keeps its row while the marker's append waits.
+      await h.responseRow({ type: 'text', text: '1, 2' })
+      h.appends[0]!()
+      await h.settle()
+      h.appends[1]!()
+      await h.settle()
+      // The marker and the note, and no row after them.
+      expect(h.calls.filter((c) => c.op === 'append').length).toBe(2)
+      await h.settle()
+      expect(h.ofType('result').find((e) => e.id === 'c-int')).toMatchObject({ ok: true, result: { turnId: 't1' } })
+    })
+    expect(h.conversation).toEqual([MARKER, row('The interrupt came from the desk.')])
+  })
+
+  /** A turn whose text streamed, its message taken by the interrupt, then dropped by the abort's unwinding before `late` keeps rows. */
+  const unwoundInterrupt = async (h: ReturnType<typeof harness>, late: () => Promise<void>) => {
+    await h.ready()
+    await h.turn('t1')
+    const e = { turnId: 't1', index: 0, model: 'm', messageCount: 1 }
+    const gen = h.hook('turn.step', e)(h.engine, e, () => {
+      const g = (async function* () {
+        yield { kind: 'thinking', index: 0, text: 'hm' }
+        yield { kind: 'text', index: 1, text: '1, 2' }
+        return { turnId: 't1', index: 0, answer: '', toolUses: [], stopReason: null, usage: null }
+      })() as AsyncGenerator<unknown, unknown> & { result: Promise<unknown> }
+      g.result = Promise.resolve({ turnId: 't1', index: 0, stopReason: null, usage: null })
+      return g
+    }) as AsyncGenerator<unknown, unknown>
+    await gen.next()
+    await gen.next()
+    const abort = h.engine.turn.abort
+    h.engine.turn.abort = async (args) => {
+      await abort(args)
+      await gen.return(undefined)
+      await h.fire(STEP_END_WAIT_MS)
+      await h.complete('t1', 'aborted')
+      await late()
+    }
+    expect(await h.command({ op: 'interrupt', from: 'desk' })).toMatchObject({ ok: true, result: { turnId: 't1' } })
+  }
+
+  test("a row that keeps the reply after the abort's unwinding dropped its message, named row-seen: it was kept, so no third row", async () => {
+    const h = harness()
+    await unwoundInterrupt(h, () => h.responseRow({ type: 'text', text: '1, 2' }, { uuid: 'r-late' }))
+    // The stream no longer pairs it: its step's end is out.
+    expect(h.ofType('row-seen')).toContainEqual(expect.objectContaining({ uuid: 'r-late', door: 'response' }))
+    expect(h.conversation).toEqual([MARKER, row('The interrupt came from the desk.')])
+  })
+
+  test('a late row of another kind keeps none of the text: the third row stands', async () => {
+    const h = harness()
+    await unwoundInterrupt(h, () => h.responseRow({ type: 'thinking', thinking: 'hm', signature: 's' }))
+    expect(h.conversation).toEqual([MARKER, row('The interrupt came from the desk.'), row(`${CUT_OFF}\n1, 2`)])
+  })
 })
 
 /** The text of the user rows a conversation holds, as the model reads them. */

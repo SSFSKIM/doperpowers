@@ -872,9 +872,11 @@ function wakeForSteer($: EngineInterface, unread: readonly Steer[]) {
  * plugin's abort keeps no block still streaming, and the engine keeps a block
  * as a row only once it completes. The turn's streaming messages are taken
  * before the abort, since its unwinding (the step's end, the turn's) drops
- * them from the live state, and that can land before the abort resolves;
- * their text is read at the record, the latest moment, so the chunks still
- * on their way and a row naming a block that had just completed are in.
+ * them from the live state, and that can land before the abort resolves.
+ * Until the record is in they stay `captured`, so a row keeping one of their
+ * blocks settles it even once the stream pairs it no more (settleCaptured);
+ * their text is read just before the cut-off row goes in, the latest moment,
+ * so the chunks still on their way and the rows kept meanwhile are in.
  */
 async function interrupt($: EngineInterface, from: unknown): Promise<Answer> {
   const turnId = state.mainTurn
@@ -895,6 +897,7 @@ async function interrupt($: EngineInterface, from: unknown): Promise<Answer> {
     state.interrupts.set(turnId, pending)
   }
   const streamed = [...state.messages.values()].filter((m) => m.turnId === turnId && m.agentId === null)
+  state.captured.add(streamed)
   try {
     try {
       await $.turn.abort({ turnId })
@@ -926,9 +929,10 @@ async function interrupt($: EngineInterface, from: unknown): Promise<Answer> {
         stops.running.push(task)
       }
     }
-    await recordInterrupt($, from, stops, cutOff(streamed))
+    await recordInterrupt($, from, stops, streamed)
     return { ok: true, result: { turnId, ...stops } }
   } finally {
+    state.captured.delete(streamed)
     recorded()
   }
 }
@@ -1067,31 +1071,39 @@ function mirroredReply(cut: CutOff): string {
  * model reads them all, and no reader takes one for a prompt. The terminal
  * does not draw an appended row, so a transcript line mirrors them.
  */
-async function recordInterrupt($: EngineInterface, from: unknown, stops: Stops, cut: CutOff | undefined) {
+async function recordInterrupt($: EngineInterface, from: unknown, stops: Stops, streamed: Streaming[]) {
   const kept: string[] = []
   const note = interruptNote(from, stops)
-  const rows = [
-    { text: INTERRUPT_MARKER, mirror: INTERRUPT_MARKER },
-    { text: note, mirror: note },
-    ...(cut === undefined ? [] : [{ text: cutOffRow(cut), mirror: mirroredReply(cut) }]),
-  ]
-  for (const { text, mirror } of rows) {
-    try {
-      const stored = await $.session.append({ message: { type: 'user', content: [{ type: 'text', text }] } })
-      if (stored.deny !== undefined) {
-        $.ui.log(`bridge: the interrupt's record was refused: ${stored.deny}`, { to: 'debug' })
-        break
+  if (await appendRecord($, INTERRUPT_MARKER)) {
+    kept.push(INTERRUPT_MARKER)
+    if (await appendRecord($, note)) {
+      kept.push(note)
+      // Read now, the two rows in: a row the engine kept meanwhile settled its block.
+      const cut = cutOff(streamed)
+      if (cut !== undefined && (await appendRecord($, cutOffRow(cut)))) {
+        kept.push(mirroredReply(cut))
       }
-      // The hook does not see the plugin's own append: named once it is in.
-      noticeRow({ type: 'row-seen', uuid: stored.uuid, agentId: null, door: 'note' })
-      kept.push(mirror)
-    } catch (error) {
-      $.ui.log(`bridge: the interrupt's record was not appended: ${message(error)}`, { to: 'debug' })
-      break
     }
   }
   if (kept.length > 0) {
     $.ui.log(`interrupt: ${oneLine(kept.join(' '))}`)
+  }
+}
+
+/** One row of the interrupt's record appended and named; false, said in the debug log, when it was refused or failed. */
+async function appendRecord($: EngineInterface, text: string): Promise<boolean> {
+  try {
+    const stored = await $.session.append({ message: { type: 'user', content: [{ type: 'text', text }] } })
+    if (stored.deny !== undefined) {
+      $.ui.log(`bridge: the interrupt's record was refused: ${stored.deny}`, { to: 'debug' })
+      return false
+    }
+    // The hook does not see the plugin's own append: named once it is in.
+    noticeRow({ type: 'row-seen', uuid: stored.uuid, agentId: null, door: 'note' })
+    return true
+  } catch (error) {
+    $.ui.log(`bridge: the interrupt's record was not appended: ${message(error)}`, { to: 'debug' })
+    return false
   }
 }
 
