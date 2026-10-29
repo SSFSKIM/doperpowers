@@ -214,6 +214,9 @@ Nothing needs you."), which the opening judge counts as mechanics since a
 milestone count is one; significant 5 and 0; good_surprise 5 and 0; complete
 5 and 1. Against v4 (the cadence "in a line or two" alone), the status leads
 with progress rather than the merges, and still lists them after.
+7.214.0 drops the cadence again, the owner relying for now on the agent
+sending what the human should know: the paragraph is 7.212.0's, word for
+word, and the trim round's figures are its own.
 
 Final-message round, 2026-10-27: the style before the final flag (old,
 ab6b0307) against 651e917b's (new: every message through the tool, a message
