@@ -45,7 +45,15 @@ the subagent tree; presence; the bridge's streaming entries; usage on a main
 one), then `row`, `chunk`, `block-row`, `step-end` (a model request ended:
 DX5's step end, or the turn's end cutting it off, after its block-rows),
 `subagents`, `usage`, each numbered, and `end` (a `chunk` carries the bridge's
-stamp `t`, so the web can say how long one took to be drawn). Rows come from the transcript on disk and everything live from the
+stamp `t`, so the web can say how long one took to be drawn). A `step-end` is
+`{turnId, agentId, step}` and, each only when the plane knows it, `t` — the
+bridge's stamp of the event that ended the step (its step end, or the turn's
+end that cut it off; ms on the machine's clock, as a chunk's) — and `model`
+and `effort`, as the step's start carried them (the main loop's with an
+override chosen through the bridge applied; `effort` null when the request
+named none). A step begun before the subscription carries its snapshot
+entry's `model` and no `effort`, which the entry does not keep; one the
+plane knows only by its chunks, neither. Rows come from the transcript on disk and everything live from the
 bridge's DX5 stream, so the two are joined in one order — the disk's (DX5's
 row order, composite cd2667d8):
 
@@ -1566,7 +1574,7 @@ class Subscription:
         self.loose = set()            # noticed rows nothing drawn awaits (the cut's own): past due, forgotten
         self.upto = {}                # (turnId, agentId, step) → the snapshot's watermark
         self.held = set()             # (turnId, agentId, step, index): blocks whose text the subscriber holds
-        self.steps = set()            # (turnId, agentId, step): model requests open, whose step-end is still due
+        self.steps = {}               # (turnId, agentId, step) → its start's step_facts: model requests open, whose step-end is still due
         self.stream_over = False      # the bridge's stream ended with the session
         self.ending_at = None
         # What the session runs (DX4's widened `subagents`): this loop's jobs
@@ -1826,7 +1834,7 @@ class Subscription:
                     continue
                 key = (e.get("turnId"), e.get("agentId"), e.get("step"))
                 self.upto[key] = e.get("upTo") if isinstance(e.get("upTo"), int) else -1
-                self.steps.add(key)
+                self.steps[key] = step_facts(e)
                 blocks = []
                 for b in e.get("blocks") or []:
                     if not isinstance(b, dict):
@@ -1913,7 +1921,7 @@ class Subscription:
             chunk = e.get("chunk")
             if isinstance(chunk, dict):
                 self.held.add(key + (chunk.get("index"),))
-            self.steps.add(key)
+            self.steps.setdefault(key, {})
             body = {"turnId": e.get("turnId"), "agentId": agent, "step": e.get("step"), "chunkIndex": index, "chunk": chunk}
             # The bridge's stamp (ms on this machine's clock), for the web's chunk-to-drawn latency.
             if type(e.get("t")) in (int, float):
@@ -1931,17 +1939,16 @@ class Subscription:
             # block-rows before its end, so in DX5's order it follows them.
             key = (e.get("turnId"), agent, e.get("step"))
             if e.get("phase") == "start":
-                self.steps.add(key)
+                self.steps[key] = step_facts(e)
             elif e.get("phase") == "end":
-                self.steps.discard(key)
+                facts = self.steps.pop(key, {})
                 self.falls_due(now, lambda k: k == key)
-                out.append(self.message("step-end", {"turnId": key[0], "agentId": agent, "step": key[2]}))
+                out.append(self.step_end(key, e, facts))
         elif kind == "turn" and e.get("phase") == "complete":
             # A turn that ends cuts off its steps whose end never came (an abort).
             cut_off = [k for k in self.steps if k[0] == e.get("turnId")]
             for key in sorted(cut_off, key=lambda k: (str(k[1]), k[2] if isinstance(k[2], int) else -1)):
-                self.steps.discard(key)
-                out.append(self.message("step-end", {"turnId": key[0], "agentId": key[1], "step": key[2]}))
+                out.append(self.step_end(key, e, self.steps.pop(key)))
             self.falls_due(now, lambda k: k[0] == e.get("turnId"))
         elif kind == "catalog":
             if self.agent is None and self.catalog_allowed():
@@ -1988,6 +1995,15 @@ class Subscription:
         """The loop's model request open now, if any (the latest)."""
         open_ = [k for k in self.steps if (k[1] or None) == (agent or None)]
         return max(open_, key=lambda k: (str(k[0]), k[2] if isinstance(k[2], int) else -1)) if open_ else None
+
+    def step_end(self, key, e, facts):
+        """DX4's step-end for the step `key`, which the DX5 event `e` ended
+        (its `step` end, or the `turn` complete that cut it off): `t`, that
+        event's stamp, and what the step's start said of it (`facts`)."""
+        body = {"turnId": key[0], "agentId": key[1], "step": key[2]}
+        if type(e.get("t")) in (int, float):
+            body["t"] = e["t"]
+        return self.message("step-end", {**body, **facts})
 
     def falls_due(self, now, ended):
         """Rows noticed during the steps `ended` names are due from now."""
@@ -2331,6 +2347,19 @@ def with_disabled(result, cwd):
 def block_row(e):
     return {"uuid": e.get("uuid"), "turnId": e.get("turnId"), "agentId": e.get("agentId"), "step": e.get("step"),
             "index": e.get("index")}
+
+
+def step_facts(e):
+    """What a step's start (DX5's `step` start, or a snapshot's streaming
+    entry, which the child keeps from it) says of its request, as DX4's
+    step-end carries it: `model`, and `effort` (null: the request named
+    none), each only when it says it."""
+    facts = {}
+    if isinstance(e.get("model"), str) and e["model"]:
+        facts["model"] = e["model"]
+    if "effort" in e and (e["effort"] is None or isinstance(e["effort"], str)):
+        facts["effort"] = e["effort"]
+    return facts
 
 
 def usage_of(e):
