@@ -1328,6 +1328,75 @@ class Engine(Session):
         self.settle(agent_sub, agent_b)
         self.assertEqual(agent_b.step_ends, [("t-a1", "a1", 0)], "an agent sub its own")
 
+    def test_step_end_carries_its_time_and_what_its_start_said(self):
+        self.fake.start_bridge()
+        sub, b = self.subscribe()
+        self.assertTrue(self.pump(sub, b, lambda: b.snapshot is not None))
+        named = self.fake.message(model="claude-opus-5-5", effort="high")
+        named.text(0, "an answer")
+        named.row(0)
+        named.end(t=1760000000500)
+        plain = self.fake.message(model="claude-opus-5-5")
+        plain.end(t=1760000000900)
+        self.assertTrue(self.pump(sub, b, lambda: len(b.step_ends) == 2 and b.rows))
+        self.assertEqual(b.step_end_bodies, [
+            {"turnId": named.turn, "agentId": None, "step": 0, "t": 1760000000500,
+             "model": "claude-opus-5-5", "effort": "high"},
+            {"turnId": plain.turn, "agentId": None, "step": 0, "t": 1760000000900,
+             "model": "claude-opus-5-5", "effort": None}], "an effort the request named none of is null")
+        self.assertClean(b)
+
+    def test_step_end_leaves_out_what_the_plane_does_not_know(self):
+        self.fake.start_bridge()
+        before = self.fake.message(model="claude-opus-5-5", effort="high")
+        before.text(0, "begun before the subscription")
+        sub, b = self.subscribe()
+        self.assertTrue(self.pump(sub, b, lambda: b.snapshot is not None))
+        before.end(t=None)
+        self.fake.post([{"type": "step", "phase": "end", "turnId": "t-unseen", "agentId": None, "step": 3,
+                         "stopReason": None, "usage": None, "t": 1760000000700}])
+        self.assertTrue(self.pump(sub, b, lambda: len(b.step_ends) == 2))
+        self.assertEqual(b.step_end_bodies, [
+            {"turnId": before.turn, "agentId": None, "step": 0, "model": "claude-opus-5-5"},
+            {"turnId": "t-unseen", "agentId": None, "step": 3, "t": 1760000000700}],
+            "the snapshot's entry keeps the model and no effort; a step seen by nothing carries neither; "
+            "an unstamped end no t: absent, never null")
+
+    def test_a_cut_off_step_takes_its_turns_end_time(self):
+        self.fake.start_bridge()
+        sub, b = self.subscribe()
+        self.assertTrue(self.pump(sub, b, lambda: b.snapshot is not None))
+        stamped = self.fake.message(model="claude-opus-5-5", effort="max")
+        stamped.text(0, "then Esc")
+        stamped.turn_complete("aborted", t=1760000001200)
+        unstamped = self.fake.message(model="claude-opus-5-5", effort="max")
+        unstamped.text(0, "Esc again")
+        unstamped.turn_complete("aborted", t=None)
+        self.assertTrue(self.pump(sub, b, lambda: len(b.step_ends) == 2))
+        self.assertEqual(b.step_end_bodies, [
+            {"turnId": stamped.turn, "agentId": None, "step": 0, "t": 1760000001200,
+             "model": "claude-opus-5-5", "effort": "max"},
+            {"turnId": unstamped.turn, "agentId": None, "step": 0, "model": "claude-opus-5-5", "effort": "max"}])
+
+    def test_each_step_end_carries_what_its_own_request_ran_on(self):
+        """An override chosen through the bridge (DX5's `model` event) is
+        the main loop's from its next request, whose start carries it
+        (bridge.test.ts, "model and effort"); a subagent runs on its own."""
+        self.fake.start_bridge()
+        sub, b = self.subscribe()
+        self.assertTrue(self.pump(sub, b, lambda: b.snapshot is not None))
+        running = self.fake.message(model="claude-opus-5-5")
+        self.fake.post([{"type": "model", "model": "claude-sonnet-5-5", "effort": "high", "t": 0}])
+        running.end(t=1)
+        chosen = self.fake.message(turn=running.turn, step=1, model="claude-sonnet-5-5", effort="high")
+        sa = self.fake.message(agent="a1", turn="t-a1", model="claude-haiku-4-5")
+        sa.end(t=2)
+        chosen.end(t=3)
+        self.assertTrue(self.pump(sub, b, lambda: len(b.step_ends) == 3))
+        self.assertEqual([(e["step"], e["agentId"], e["model"], e["effort"]) for e in b.step_end_bodies], [
+            (0, None, "claude-opus-5-5", None), (0, "a1", "claude-haiku-4-5", None),
+            (1, None, "claude-sonnet-5-5", "high")])
+
     def test_main_scope_carries_every_chunk_and_the_tree(self):
         self.fake.start_bridge()
         sub, b = self.subscribe()

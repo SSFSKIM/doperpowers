@@ -1030,7 +1030,8 @@ describe('the stream', () => {
     await h.fire(STEP_END_WAIT_MS)
     expect(h.ofType('step').map((e) => e.phase)).toEqual(['start', 'end'])
     expect(h.ofType('step')[0]).toMatchObject({ model: 'm', effort: 'high', messageCount: 4 })
-    expect(h.ofType('step')[1]).toMatchObject({ stopReason: 'end_turn' })
+    // Its stamp `t` is what DX4's step-end carries (sminos_plane).
+    expect(h.ofType('step')[1]).toMatchObject({ stopReason: 'end_turn', t: expect.any(Number) })
   })
 
   test("a subagent's chunks carry its agentId", async () => {

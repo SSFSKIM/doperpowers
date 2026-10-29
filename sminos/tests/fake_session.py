@@ -143,7 +143,7 @@ class Endpoint:
         key = (e.get("turnId"), e.get("agentId"), e.get("step"))
         if kind == "step":
             if e["phase"] == "start":
-                self.streaming[key] = {"turnId": key[0], "agentId": key[1], "step": key[2], "model": "m",
+                self.streaming[key] = {"turnId": key[0], "agentId": key[1], "step": key[2], "model": e.get("model"),
                                        "upTo": -1, "blocks": {}, "settled": set()}
             else:
                 self.streaming.pop(key, None)
@@ -324,10 +324,12 @@ class Message:
     while no module was loaded, or under an earlier one, never streams (the
     seed rule): its chunks reach no child and its rows are named by
     `row-seen`. Once its step's end is out, its pairing is closed: a later
-    row of it is named by `row-seen` too."""
+    row of it is named by `row-seen` too. Its start carries `model` and
+    `effort` as the mod's does (the effort null when the request named
+    none)."""
 
-    def __init__(self, fake, agent, turn, step):
-        self.fake, self.agent, self.turn, self.step = fake, agent, turn, step
+    def __init__(self, fake, agent, turn, step, model="m", effort=None):
+        self.fake, self.agent, self.turn, self.step, self.model = fake, agent, turn, step, model
         self.module = fake.module
         self.ended = False
         self.next_chunk = 0
@@ -337,7 +339,7 @@ class Message:
         self.named = {}       # block index → (the row's uuid, the notice's stamp), as the mod marks the block
         fake.messages.append(self)
         self.post([{"type": "step", "phase": "start", "turnId": turn, "agentId": agent, "step": step,
-                    "model": "m", "t": 0}])
+                    "model": model, "effort": effort, "t": 0}])
 
     def streams(self):
         return self.module is not None and self.module is self.fake.module
@@ -397,7 +399,7 @@ class Message:
             if i in named:
                 b.update(uuid=named[i][0], namedAt=named[i][1])
             return b
-        return {**self.ids(), "model": "m", "upTo": self.next_chunk - 1,
+        return {**self.ids(), "model": self.model, "upTo": self.next_chunk - 1,
                 "blocks": [block(i, t) for i, t in sorted(self.texts.items()) if i not in self.settled or i in named],
                 "settled": sorted(self.settled)}
 
@@ -406,14 +408,17 @@ class Message:
                                          "message": {"role": "assistant",
                                                      "content": [{"type": "text", "text": self.texts.get(index, "")}]}})
 
-    def end(self):
-        self.post([{"type": "step", "phase": "end", **self.ids(), "stopReason": None, "usage": None, "t": 0}])
+    def end(self, t=0):
+        """The step's end, stamped `t` (None: unstamped)."""
+        self.post([{"type": "step", "phase": "end", **self.ids(), "stopReason": None, "usage": None,
+                    **({} if t is None else {"t": t})}])
         self.ended = True
 
-    def turn_complete(self, reason="aborted"):
-        """The turn ends; a step whose end never came is cut off with it."""
+    def turn_complete(self, reason="aborted", t=0):
+        """The turn ends, stamped `t` (None: unstamped); a step whose end
+        never came is cut off with it."""
         self.post([{"type": "turn", "phase": "complete", "turnId": self.turn, "agentId": self.agent,
-                    "reason": reason, "usage": None, "t": 0}])
+                    "reason": reason, "usage": None, **({} if t is None else {"t": t})}])
         self.ended = True
 
 
@@ -620,11 +625,11 @@ class FakeSession:
     def gap(self):
         self.post([{"type": "gap", "dropped": 3, "t": 0}])
 
-    def message(self, agent=None, turn=None, step=0):
+    def message(self, agent=None, turn=None, step=0, **start):
         if turn is None:
             self.turns += 1
             turn = "turn-%d" % self.turns
-        return Message(self, agent, turn, step)
+        return Message(self, agent, turn, step, **start)
 
     def usage(self, tokens):
         self.post([{"type": "usage", "context": {"tokens": tokens, "window": 200000, "percent": tokens / 2000},

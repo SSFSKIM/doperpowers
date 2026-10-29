@@ -317,6 +317,7 @@ class Consumer:
         self.kinds = []
         self.stamps = []              # each chunk's `t`, the bridge's stamp
         self.step_ends = []
+        self.step_end_bodies = []     # each step-end's body as it came
         self.pages = []
         self.outputs = []
         self.reads = []
@@ -436,6 +437,7 @@ class Consumer:
                 self.last_settle.append(body.get("uuid"))
         elif kind == "step-end":
             self.step_ends.append((body.get("turnId"), body.get("agentId"), body.get("step")))
+            self.step_end_bodies.append(body)
             for b in self.layer.step_end(body):
                 gone[b.key] = "step-end"
                 self.dropped[b.key] = b.text
