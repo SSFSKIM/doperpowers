@@ -173,6 +173,15 @@ v3's 363 and the control's 396) without changing what it says. v3's
 good_surprise regression came mostly from its opening sentence, not the
 cadence (v4 1 of 5). The owner chose no cadence: 7.211.0 stands.
 
+Trim round, 2026-10-28 (7.212.0): the owner cut "such as something now
+working that did not or a result that changes what they can do or decide;
+any surprise, good or bad;" from the list, which leaves surprise only in the
+opening sentence. 5 reps, read as above: milestone 0, milestone3 0,
+significant 5 and 0, good_surprise 5 and 0, complete 5 and 0, as 7.211.0. The
+bare "significant progress" still sends the first end-to-end export ("Reports
+now export end to end from the CLI. This is the first time it has worked."),
+and the opening sentence still sends the unplanned fix, opening with it.
+
 Final-message round, 2026-10-27: the style before the final flag (old,
 ab6b0307) against 651e917b's (new: every message through the tool, a message
 that is "the last thing you do in a turn" sent alone with `final: true`, and
