@@ -279,6 +279,23 @@ as a alpha
 hook_payload SessionStart "$STRAY" "$BARE" /nowhere | CLAUDE_PLUGIN_ROOT="$FAKE" "$HOOK"
 [ -e "$T/python-started" ] && pass "on an enrolled machine, it admits every directory" \
   || fail "on an enrolled machine, it admits every directory"
+# Either enrollment file admits: hub.json (the org key's) or identity.json (a
+# machine cut over to its endpoint, whose hub.json is gone); neither, not.
+for f in hub.json identity.json none; do
+  as d delta
+  rm -rf "$SMINOS_HOME" "$T/python-started"
+  mkdir -p "$SMINOS_HOME/daemon" "$T/d/bare"
+  [ "$f" = none ] || printf '{}' > "$SMINOS_HOME/daemon/$f"
+  hook_payload SessionStart "$STRAY" "$T/d/bare" /nowhere | CLAUDE_PLUGIN_ROOT="$FAKE" "$HOOK"
+  if [ "$f" = none ]; then
+    [ ! -e "$T/python-started" ] && pass "with neither hub.json nor identity.json, the hook exits before Python outside a project" \
+      || fail "with neither hub.json nor identity.json, the hook exits before Python outside a project"
+  else
+    [ -e "$T/python-started" ] && pass "with $f alone, the hook admits a directory outside any project" \
+      || fail "with $f alone, the hook admits a directory outside any project"
+  fi
+done
+as a alpha
 TX="$HOME/.claude/projects/bare/$STRAY.jsonl"
 mkdir -p "$(dirname "$TX")"
 printf '%s\n' '{"type":"user","uuid":"st000001","isSidechain":false,"origin":{"kind":"human"},"message":{"role":"user","content":"go"}}' > "$TX"
