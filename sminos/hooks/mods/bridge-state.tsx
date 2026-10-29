@@ -1,6 +1,6 @@
 import type { HookStream, HttpResponse, ProcessSpawnChunk, ProcessSpawnResult, Timer } from 'claude-code'
 
-import type { MediaAttachment } from '../../types/sminos'
+import type { MediaAttachment, ModeKept } from '../../types/sminos'
 
 import type { Place } from './bridge-place'
 import type { Catalog } from './bridge-catalog'
@@ -400,6 +400,14 @@ export type BridgeState = {
    * (`--launch`), which refuses a desk action sealed for another launch.
    */
   launch?: string
+  /**
+   * The main loop's permission mode as the engine last reported it, absent
+   * until it has (bridge.tsx, `observeMode`); kept in `$.state` for a reload.
+   * `modeReports` counts the reports, so one read after a later one never
+   * replaces it.
+   */
+  permissionMode?: ModeKept
+  modeReports: number
   catalog?: Catalog
   refreshCatalog?: () => Promise<Catalog>
   /** The desk command called and not yet read back: the next waits for it (one at a time, spec §6). */
@@ -483,6 +491,7 @@ const fresh = (): BridgeState => ({
   mediaWrites: Promise.resolve(),
   mediaWake: { isSubmitted: false },
   transitions: 0,
+  modeReports: 0,
   isLaneMarked: false,
   isUnreadSaid: false,
   generation: 0,

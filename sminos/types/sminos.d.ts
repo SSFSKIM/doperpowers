@@ -87,8 +87,18 @@ export type LaneVerdictKept = 'match' | 'mismatch'
  */
 export type LaunchKept = string
 
+/**
+ * `mode`: the main loop's permission mode as the engine last reported it to
+ * the bridge (hooks/mods/bridge.tsx, `observeMode`): the engine's word for it,
+ * when the bridge read it (`$.clock.now()`'s milliseconds) and the event the
+ * report came in. Written when the mode reported changes, so that the module
+ * that loads after a reload says what was reported before it, not nothing; a
+ * new process (a `--resume`) starts with none. Only sminos writes or reads it.
+ */
+export type ModeKept = { mode: string; at: number; from: string }
+
 declare module 'claude-code' {
   interface PluginState {
-    sminos: { ask: AskSnapshot; btw: string[]; media: MediaSnapshot; lane: LaneVerdictKept; launch: LaunchKept }
+    sminos: { ask: AskSnapshot; btw: string[]; media: MediaSnapshot; lane: LaneVerdictKept; launch: LaunchKept; mode: ModeKept }
   }
 }

@@ -301,7 +301,8 @@ rows read from the transcript, and the export to the host).
   an unplaced machine.
 - **The stream.** Each chunk of every model request, the main loop's and
   every subagent's (tagged with its turn, loop and index), tool calls and
-  results, turns, subagents, usage, a heartbeat, and the requests below.
+  results, turns, subagents, usage, a heartbeat (the turn's state, and the
+  permission mode the engine last reported), and the requests below.
   Every row the session keeps is named once, as it is written (so in write
   order): a response row by its `block-row` (which settles its block), any
   other by `row-seen`, and a step's end follows every `block-row` of its step

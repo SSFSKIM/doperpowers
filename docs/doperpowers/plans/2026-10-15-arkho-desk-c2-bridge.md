@@ -944,6 +944,27 @@ a full backlog refuses too). The child's listen backlog is 128.
 - **Verb** `sminos stop <member> <task>`: op `stop`; prints `stopped <member>'s background
   task <id>`; the mod's refusal exits 1 with its reason; no bridge, exit 4 "no bridge".
 
+#### The permission mode (doperpowers #160, sminos 1.27.14)
+
+- **`ping`'s and `heartbeat`'s `state`, and `read status`'s result,** gain
+  `permissionMode` (the engine's word: `default`, `acceptEdits`, `plan`, `auto`,
+  `dontAsk`, `bypassPermissions`), `permissionModeAt` (epoch ms, when the mod read the
+  report) and `permissionModeFrom` (the event it came in), all three absent until the
+  session has reported a mode. The mode is the main loop's as the engine last reported
+  it, never inferred from the settings or the launch flags; a subagent's report is its
+  own loop's and is not taken.
+- **What reports it** (`permissionModeFrom`): `permission_mode_changed`, the engine's
+  collector record of each switch its mode transition makes (Shift+Tab in the terminal,
+  plan mode's exit, auto mode's fallback, a mode set from the SDK or Remote Control),
+  raised to `telemetry.log` as it happens, so a switch rides the next heartbeat (5 s);
+  `tool_decision`, the record of each tool call's permission decision; the classic
+  `UserPromptSubmit` and `PermissionRequest` inputs (`permission_mode`). A change none of
+  them reports stays unseen until the next of them. The session's start reports none (the
+  classic SessionStart input carries no mode in 2.1.312), so a session that has neither
+  switched nor taken a prompt has no mode yet. A module reload keeps the last report
+  (`$.state`, `{plugin: 'sminos', key: 'mode'}`), its `permissionModeAt` unchanged; a new
+  process starts with none.
+
 ## Decision Log
 
 - Decision: Verification. Each milestone gets the subagent-driven
