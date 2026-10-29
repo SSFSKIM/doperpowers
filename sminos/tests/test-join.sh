@@ -542,11 +542,22 @@ assert_contains "$OUT" "tuned: recorded" "a message to it is recorded for it, no
 assert_not_contains "$(cat "$STUB_STATE/calls")" "--resume $S19" "the delivery resumes nothing either"
 run_in "$CR" env CLAUDE_CONFIG_DIR="$CFG" "$SMINOS" resume crew/tuned "go on"
 assert_contains "$(cat "$STUB_STATE/calls")" "--bg --resume $S19" "a process under its own config dir resumes it"
+S20=1a000020-0000-4000-8000-000000000020   # running under CFG, its engine yet to write a transcript
+live_pid
+S20_PID=$LIVE_PID
+ENGINE_DIR="$CFG" session_record s20 "$S20" "$S20_PID" "$CR"
+hook_payload SessionStart "$S20" "$CR" "$CFG/projects/p-$S20/$S20.jsonl" \
+  | CLAUDE_CONFIG_DIR="$CFG" CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" "$HOOK"
 rm -r "$CFG/projects/p-$S19"
 "$SMINOS" daemon tick >/dev/null 2>&1 || true
 [ ! -e "$SMINOS_HOME/config-dirs/$S19.json" ] && [ -e "$SMINOS_HOME/config-dirs/$S17.json" ] \
   && pass "the daemon forgets a session's config dir once its transcript is gone, and keeps a live one's" \
   || fail "the daemon forgets a session's config dir once its transcript is gone, and keeps a live one's"
+[ -e "$SMINOS_HOME/config-dirs/$S20.json" ] && pass "and a running session's that has written no transcript yet" \
+  || fail "and a running session's that has written no transcript yet"
+kill "$S20_PID"; wait "$S20_PID" 2>/dev/null || true
+"$SMINOS" daemon tick >/dev/null 2>&1 || true
+[ ! -e "$SMINOS_HOME/config-dirs/$S20.json" ] && pass "until it ends with none" || fail "until it ends with none"
 
 echo "the hook's cheap look, on a machine not enrolled:"
 as c gamma

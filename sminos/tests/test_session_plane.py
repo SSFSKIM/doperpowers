@@ -1783,10 +1783,7 @@ class ConfigDirSession(unittest.TestCase):
         with open(self.record, "w") as f:
             json.dump({"pid": self.holder.pid, "sessionId": self.sid, "cwd": self.fake.dir, "kind": "interactive",
                        "status": "busy"}, f)
-        payload = {"session_id": self.sid, "transcript_path": self.fake.path(None), "cwd": self.fake.dir,
-                   "hook_event_name": "SessionStart", "source": "startup"}
-        subprocess.run([os.path.join(SCRIPTS, "sminos"), "record"], input=json.dumps(payload), text=True,
-                       env={**os.environ, "CLAUDE_CONFIG_DIR": self.cfg}, capture_output=True, check=True)
+        self.hook(self.sid, self.fake.path(None), self.cfg)
         plane.sminos.forget_caches()   # a new cache generation, as the plane's next members read begins one
         self.p = plane.Plane("testhost", lambda: None, transcripts=plane.Transcripts(), disk=plane.Disk())
         self.p.here = {PROJECT: {self.sid: self.fake.dir}}
@@ -1798,8 +1795,53 @@ class ConfigDirSession(unittest.TestCase):
         self.holder.terminate()
         self.holder.wait(5)
         os.unlink(self.record)   # the machine's other tests read every recorded dir's records
-        os.unlink(plane.sminos.config_dir_path(self.sid))
+        if os.path.exists(plane.sminos.config_dir_path(self.sid)):
+            os.unlink(plane.sminos.config_dir_path(self.sid))
         plane.sminos.forget_caches()
+
+    def hook(self, sid, transcript, cfg=None):
+        """The session's record hook, run in its environment: under `cfg`, else the default."""
+        env = {k: v for k, v in os.environ.items() if k != "CLAUDE_CONFIG_DIR"}
+        if cfg:
+            env["CLAUDE_CONFIG_DIR"] = cfg
+        payload = {"session_id": sid, "transcript_path": transcript, "cwd": self.fake.dir,
+                   "hook_event_name": "SessionStart", "source": "startup"}
+        subprocess.run([os.path.join(SCRIPTS, "sminos"), "record"], input=json.dumps(payload), text=True, env=env,
+                       capture_output=True, check=True)
+
+    def test_a_session_back_under_the_default_is_read_there(self):
+        """Its hook, run under the default again, drops the record: the
+        transcript found under the recorded dir is looked for again, under
+        the default, once the presence poll reads the registry."""
+        self.fake.user_row("before", post=False)
+        self.assertEqual(plane.sminos.transcript_now(self.sid), self.fake.path(None))
+        back = os.path.join(os.environ["HOME"], ".claude", "projects", "back", self.sid + ".jsonl")
+        os.makedirs(os.path.dirname(back), exist_ok=True)
+        shutil.copy(self.fake.path(None), back)
+        self.addCleanup(os.unlink, back)
+        self.hook(self.sid, back)
+        self.p.records.scan()
+        self.assertEqual(plane.sminos.transcript_now(self.sid), back)
+
+    def test_the_registry_is_read_again_only_once_it_moved(self):
+        """The presence poll asks for the registry as it is now five times a
+        second: a stat while its directory holds still, a read once a hook
+        recorded another session there."""
+        d = os.path.dirname(plane.sminos.config_dir_path(self.sid))
+        past = time.time() - 5
+        os.utime(d, (past, past))
+        real, reads = plane.sminos._read_registry, []
+        with mock.patch.object(plane.sminos, "_read_registry", side_effect=lambda at: reads.append(at) or real(at)):
+            for _ in range(5):
+                self.p.records.scan()
+            self.assertEqual(len(reads), 1, "read once while it holds still")
+            other = new_session()
+            self.addCleanup(lambda: os.path.exists(plane.sminos.config_dir_path(other))
+                            and os.unlink(plane.sminos.config_dir_path(other)))
+            self.hook(other, os.path.join(self.cfg, "projects", "proj", other + ".jsonl"), self.cfg)
+            self.p.records.scan()
+            self.assertEqual(len(reads), 2)
+        self.assertEqual(plane.sminos.recorded_config_dirs().get(other), self.cfg, "the next poll finds it")
 
     def test_its_presence_and_its_rows_are_read_under_its_config_dir(self):
         self.fake.start_bridge()

@@ -7218,7 +7218,14 @@ def harness_ok():
 # nothing resumes a session another dir holds (foreign_config).
 
 CONFIG_DIRS = "config-dirs"   # under $SMINOS_HOME: <session>.json, {"configDir": <absolute path>, "at"}
-_RECORDED_DIRS = [None]       # {session: its recorded config dir}, read once a cache generation
+# The registry as read: ({session: its recorded config dir}, engine_dirs'
+# list). Once a cache generation; and a listing kept, beyond the generation,
+# while its directory's identity holds, once the directory held still
+# REGISTRY_RACY_NS before it was read (a coarse clock): the plane's presence
+# asks for it as it is now five times a second.
+_RECORDED_DIRS = [None]
+_RECORDED_LISTING = [None]    # (the directory, its inode, its mtime_ns), the registry
+REGISTRY_RACY_NS = 1_000_000_000
 
 
 def config_dir(env=None):
@@ -7237,29 +7244,64 @@ def _same_dir(a, b):
     return os.path.realpath(a) == os.path.realpath(b)
 
 
-def recorded_config_dirs(fresh=False):
-    """{session: config dir}: each session whose hook recorded a config dir
-    other than the default. Once a cache generation; `fresh`: as the
-    directory is now."""
+def _read_registry(d):
+    recorded = {}
+    try:
+        names = os.listdir(d)
+    except OSError:
+        names = []
+    for name in names:
+        sid, ext = os.path.splitext(name)
+        if ext != ".json" or not UUID_RE.fullmatch(sid):
+            continue
+        try:
+            cfg = json_at(os.path.join(d, name)).get("configDir")
+        except (OSError, ValueError, AttributeError):
+            continue
+        if isinstance(cfg, str) and os.path.isabs(cfg):
+            recorded[sid] = cfg
+    dirs, seen = [], set()
+    for cfg in [config_dir({})] + sorted(set(recorded.values())):
+        real = os.path.realpath(cfg)
+        if real not in seen:
+            seen.add(real)
+            dirs.append(cfg)
+    return recorded, dirs
+
+
+def _registry(fresh=False):
+    """(recorded_config_dirs, engine_dirs): once a cache generation; `fresh`,
+    as the directory is now — a stat of it while a kept listing's identity
+    holds. A transcript found for a session whose recorded dir changed is
+    looked for again."""
     held = None if fresh else _RECORDED_DIRS[0]
     if held is None:
-        held, d = {}, os.path.join(root(), CONFIG_DIRS)
+        d = os.path.join(root(), CONFIG_DIRS)
         try:
-            names = os.listdir(d)
+            st = os.stat(d)
+            key = (d, st.st_ino, st.st_mtime_ns)
         except OSError:
-            names = []
-        for name in names:
-            sid, ext = os.path.splitext(name)
-            if ext != ".json" or not UUID_RE.fullmatch(sid):
-                continue
-            try:
-                cfg = json_at(os.path.join(d, name)).get("configDir")
-            except (OSError, ValueError, AttributeError):
-                continue
-            if isinstance(cfg, str) and os.path.isabs(cfg):
-                held[sid] = cfg
+            key = None
+        listing = _RECORDED_LISTING[0]
+        if key is not None and listing is not None and listing[0] == key:
+            held = listing[1]
+        else:
+            began = time.time_ns()
+            held = _read_registry(d)
+            _RECORDED_LISTING[0] = (key, held) if key is not None and began - key[2] >= REGISTRY_RACY_NS else None
+        before = _RECORDED_DIRS[0]
+        if before is not None and before[0] != held[0]:
+            for sid in set(before[0]) | set(held[0]):
+                if before[0].get(sid) != held[0].get(sid):
+                    _TRANSCRIPTS.pop(sid, None)
         _RECORDED_DIRS[0] = held
     return held
+
+
+def recorded_config_dirs(fresh=False):
+    """{session: config dir}: each session whose hook recorded a config dir
+    other than the default (_registry)."""
+    return _registry(fresh)[0]
 
 
 def session_config_dir(session):
@@ -7272,13 +7314,7 @@ def session_config_dir(session):
 def engine_dirs(fresh=False):
     """Every config dir whose engine files sminos reads: the default, then
     each one a session's hook recorded, each once."""
-    out, seen = [], set()
-    for d in [config_dir({})] + sorted(set(recorded_config_dirs(fresh).values())):
-        real = os.path.realpath(d)
-        if real not in seen:
-            seen.add(real)
-            out.append(d)
-    return out
+    return _registry(fresh)[1]
 
 
 def engine_record_paths(fresh=False):
@@ -7308,7 +7344,8 @@ def record_config_dir(session, env=None):
         write_json(path, {"configDir": mine, "at": now(ms=True)})
     else:
         return
-    _RECORDED_DIRS[0] = None
+    _RECORDED_DIRS[0] = _RECORDED_LISTING[0] = None
+    _TRANSCRIPTS.pop(session, None)
 
 
 def foreign_config(session):

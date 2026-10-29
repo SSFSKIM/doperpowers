@@ -2249,13 +2249,11 @@ def global_config(cfg=None):
     nonempty file, or an empty writable one with no `.claude.json` beside
     it; else `.claude.json` (`.claude-custom-oauth.json` under a custom OAuth
     URL) in CLAUDE_CONFIG_DIR when it is set, else in the home directory.
-    `cfg`: a session's config dir (sminos.session_config_dir), the file its
-    engine reads; None, this process's environment's."""
+    `cfg`: the config dir a session's hook recorded (sminos.recorded_config_dirs:
+    its CLAUDE_CONFIG_DIR), the file its engine reads; None, this process's
+    environment's."""
     suffix = "-custom-oauth" if os.environ.get("CLAUDE_CODE_CUSTOM_OAUTH_URL") else ""
-    if cfg is None:
-        named, cfg = os.environ.get("CLAUDE_CONFIG_DIR"), bridge.config_dir()
-    else:
-        named = None if sminos._same_dir(cfg, sminos.config_dir({})) else cfg
+    named, cfg = (cfg, cfg) if cfg else (os.environ.get("CLAUDE_CONFIG_DIR"), bridge.config_dir())
     main = os.path.join(named or sminos.home_dir(), ".claude%s.json" % suffix)
     legacy = os.path.join(cfg, ".config.json")
     try:
@@ -2941,7 +2939,7 @@ class Plane:
         self.reading[s.sub] += 1
         path = bridge.endpoint(s.session)
         cwd = str((self.live.get(s.session) or {}).get("cwd") or self.here.get(s.project, {}).get(s.session) or "")
-        cfg = sminos.session_config_dir(s.session)
+        cfg = sminos.recorded_config_dirs().get(s.session)   # none recorded: as the engine would under this environment
 
         def run(sub=s.sub):
             self.read_answers.put((sub, read_answer(path, rid, what, args, cwd, cfg)))

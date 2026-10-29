@@ -1211,8 +1211,8 @@ def sweep_overrides():
     naming the session and the target; the session itself already resolves
     as though it were absent (session_project). A cached launch directory
     (`launch/<id>.json`) and a recorded config dir (`config-dirs/<id>.json`,
-    last: what is judged before it looks for the transcript there) go by
-    the transcript's rule alone."""
+    last: what is judged before it looks for the transcript there; never a
+    running session's) go by the transcript's rule alone."""
     sminos.transcripts_now()
     now = time.time()
     for sub in ("sessions", "launch", sminos.CONFIG_DIRS):
@@ -1225,6 +1225,8 @@ def sweep_overrides():
             sid, ext = os.path.splitext(name)
             if ext != ".json" or not sminos.UUID_RE.fullmatch(sid):
                 continue
+            if sub == sminos.CONFIG_DIRS and sminos.session_running(sid):
+                continue   # its engine has written no transcript yet, and its record is read there
             last = mtime(sminos.transcript_path(sid))
             why = "its transcript is gone" if last is None else \
                 "its transcript has not changed in %d days" % ((now - last) // 86400) \
