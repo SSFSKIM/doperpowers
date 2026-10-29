@@ -200,6 +200,21 @@ green CI). The review raised two minor findings ..."). Without the opening
 sentence every message opened with the merge; with it, the surprise still did
 in 4 of 5, beside "land as expected" (not run alone). The owner kept 7.212.0.
 
+Short-status round, 2026-10-28 (7.213.0): the owner's concern that 7.212.0
+reports too seldom brings the cadence back with its content named: "...
+needs no message of its own, but a long silence leaves the human unable to
+tell a clean run from a stalled one, so once two or three milestones have
+landed since your last message, send where the work stands in a line or two:
+how far along it is, what comes next, and whether anything needs them." 5
+reps: milestone 0; milestone3 5, a status of about 300 characters opening
+with how far along the work is ("CSV export is 3 of 4 milestones done. The
+query layer (#47), the streaming writer (#48) and the export endpoint with
+its Redis cache (#49) are merged, all on green CI with clean reviews. ...
+Nothing needs you."), which the opening judge counts as mechanics since a
+milestone count is one; significant 5 and 0; good_surprise 5 and 0; complete
+5 and 1. Against v4 (the cadence "in a line or two" alone), the status leads
+with progress rather than the merges, and still lists them after.
+
 Final-message round, 2026-10-27: the style before the final flag (old,
 ab6b0307) against 651e917b's (new: every message through the tool, a message
 that is "the last thing you do in a turn" sent alone with `final: true`, and
