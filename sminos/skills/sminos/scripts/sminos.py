@@ -7164,6 +7164,7 @@ def forget_caches():
     _SEAT_PIDS.clear()
     _INTERNAL.clear()
     _ROOTS.clear()
+    _BOOT.clear()
     _GENERATION[0] += 1
 
 
@@ -7337,7 +7338,7 @@ def proc_started_at(pid):
         return None
 
 
-_BOOT = {}   # a /proc's btime, as _linux_start read it once
+_BOOT = {}   # a /proc's btime, as _linux_start read it, per cache generation
 
 
 def _linux_start(pid):
@@ -7348,9 +7349,10 @@ def _linux_start(pid):
     harness records ps's reading (same_process). proc_started_at's truer
     instant can fall in the second after. 0 when there is no such process;
     None when /proc cannot tell (no Linux /proc), for ps to answer."""
-    # The boot time holds until the machine reboots, which ends this process:
-    # read once (the kernel writes all of /proc/stat out for each read), the
-    # file's presence still asked each time.
+    # The boot time, read once a cache generation (the kernel writes all of
+    # /proc/stat out for each read, and every running session asks); a step
+    # of the wall clock moves it, which the next generation reads. The
+    # file's presence is still asked each time.
     boot = _BOOT.get(PROC)
     try:
         if boot is None:

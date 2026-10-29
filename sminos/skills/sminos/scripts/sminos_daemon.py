@@ -376,6 +376,15 @@ def config_key(log):
     return st.st_ino, st.st_size, st.st_mtime_ns
 
 
+def level(state):
+    """Whether a mirror_state's HEAD names a branch at the remote's main, by
+    the refs it holds: nothing of it is left to push, whoever committed."""
+    head = state[1].decode(errors="replace").strip()
+    refs = dict(line.split(" ", 1) for line in state[0].splitlines() if " " in line)
+    return head.startswith("ref: ") and bool(refs.get("refs/remotes/origin/main")) \
+        and refs.get(head[len("ref: "):]) == refs["refs/remotes/origin/main"]
+
+
 def settled(project, log, state):
     """Whether the mirror is as its last sync left it (`state`, mirror_state now)."""
     return state is not None and _SETTLED.get(log) == (state, project.remote)
@@ -528,7 +537,7 @@ def sync_out(project):
                 with lock(log, ".sync.lock"):
                     if not git_ok(log, "status", "--porcelain").stdout.strip():
                         state = mirror_state(log)
-                        if state is not None:
+                        if state is not None and level(state):
                             _SETTLED[log] = (state, project.remote)
             return pushed
     except BecameHub as e:

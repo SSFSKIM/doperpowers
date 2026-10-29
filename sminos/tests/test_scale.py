@@ -634,7 +634,7 @@ class QuietTick(unittest.TestCase):
         self.assertEqual([p for p in ops.opens if not p.startswith(engine) and p not in procs], [],
                          "nothing but the engine's records of the running sessions, and their processes, is opened")
         self.assertLessEqual(len(ops.opens) - len(procs), running)
-        self.assertLessEqual(len(procs), running, "one look at each running session's process")
+        self.assertLessEqual(len(procs), running + 1, "one look at each running session's process, and the boot time")
 
     def test_a_quiet_tick_leaves_every_record_as_it_was(self):
         quietly(daemon.tick_all, quiet=True)
@@ -692,6 +692,28 @@ class QuietTick(unittest.TestCase):
         finally:
             os.chmod(path, 0o600)
         self.assertFalse(policy.read_only())
+
+    def test_a_boot_time_moved_is_read_at_the_next_generation(self):
+        """Linux's boot time is read once a cache generation, not once a
+        process: a step of the wall clock moves it."""
+        proc = tempfile.mkdtemp(dir=T)
+        os.makedirs(os.path.join(proc, "4242"))
+        hz = os.sysconf("SC_CLK_TCK")
+        with open(os.path.join(proc, "4242", "stat"), "w") as f:
+            f.write("4242 (x) S 1 4242 4242 0 -1 4194560 0 0 0 0 0 0 0 0 20 0 1 0 %d 0 0\n" % (60 * hz))
+
+        def boot(t):
+            with open(os.path.join(proc, "stat"), "w") as f:
+                f.write("cpu  0 0 0 0\nbtime %d\n" % t)
+
+        with mock.patch.object(sminos, "PROC", proc):
+            boot(1000000)
+            sminos.forget_caches()
+            self.assertEqual(sminos._linux_start(4242), 1000060)
+            boot(1000030)
+            self.assertEqual(sminos._linux_start(4242), 1000060, "within a generation, the boot time read")
+            sminos.forget_caches()
+            self.assertEqual(sminos._linux_start(4242), 1000090)
 
     def test_the_polls_between_ticks_make_and_open_nothing(self):
         rl10 = sminos.sibling_module("sminos_rl10")
@@ -789,6 +811,33 @@ class QuietMirror(unittest.TestCase):
         for _ in range(3):
             self.gits()
         self.assertIn(w.replace("/", ".") + ".jsonl", self.remote_files())
+
+    def test_a_commit_of_another_process_is_pushed(self):
+        """A commit made in the mirror by another hand after the push phase
+        found nothing ahead leaves HEAD past the remote's main: never kept
+        as settled, so the next tick pushes it."""
+        self.gits()
+        sminos.log_append(self.project, "%s/%s" % (MACHINE, uuid.uuid4()), "say", to=[], text="moves the tree")
+        self.assertIn("push", self.gits())
+        name = "%s.%s.jsonl" % (MACHINE, uuid.uuid4())
+        real = daemon.ahead
+
+        def commit_then_look(log):
+            got = real(log)
+            if not os.path.exists(os.path.join(log, name)):
+                with open(os.path.join(log, name), "w") as f:
+                    f.write(json.dumps({"ts": "2026-10-28T00:00:00.000Z", "writer": name[:-6].replace(".", "/", 1),
+                                        "seq": 1, "kind": "say", "session": name[len(MACHINE) + 1:-6], "to": [],
+                                        "text": "committed by hand"}) + "\n")
+                gitq("add", name, cwd=log)
+                gitq("commit", "-q", "-m", "by hand", cwd=log)
+            return got
+
+        with mock.patch.object(daemon, "ahead", commit_then_look):
+            self.gits()
+        for _ in range(3):
+            self.gits()
+        self.assertIn(name, self.remote_files())
 
     def test_a_push_from_elsewhere_is_merged(self):
         self.gits()
