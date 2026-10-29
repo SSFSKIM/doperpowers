@@ -590,8 +590,8 @@ function harness(
       },
     }
   }
-  /** The classic PermissionRequest hooks for a call, with the engine's `suggestions` if any; the settings hooks beneath answer `beneath`. */
-  const permission = (tool: string, input: unknown, agentId?: string, beneath: Record<string, unknown> = {}, suggestions?: unknown) =>
+  /** The classic PermissionRequest hooks for a call, with the engine's `suggestions` if any and the loop's permission `mode`; the settings hooks beneath answer `beneath`. */
+  const permission = (tool: string, input: unknown, agentId?: string, beneath: Record<string, unknown> = {}, suggestions?: unknown, mode?: string) =>
     hook('classic.PermissionRequest', { hook_event_name: 'PermissionRequest' })(
       engine,
       {
@@ -603,6 +603,7 @@ function harness(
         cwd: '/w',
         ...(agentId !== undefined && { agent_id: agentId }),
         ...(suggestions !== undefined && { permission_suggestions: suggestions }),
+        ...(mode !== undefined && { permission_mode: mode }),
       },
       Object.assign(async () => beneath, { signal: new AbortController().signal }),
     ) as Promise<Record<string, unknown>>
@@ -7403,5 +7404,124 @@ describe('lane B: the observer (O12 M3)', () => {
     expect(h.ofType('chunk')).toEqual([expect.objectContaining({ turnId: 't1', agentId: null, chunk: { kind: 'text', index: 0, text: 'mine' } })])
     await h.step({ turnId: 't1', index: 0, model: 'm', messageCount: 1, agentId: 'a1' }, [{ kind: 'text', index: 0, text: 'sub' }])
     expect(h.ofType('chunk').at(-1)).toMatchObject({ agentId: 'a1', chunk: { text: 'sub' } })
+  })
+})
+
+describe("the session's permission mode, as the engine reports it", () => {
+  /** The heartbeat's turn state, as the next beat posts it. */
+  const beat = async (h: ReturnType<typeof harness>) => {
+    h.timers.find((t) => t.kind === 'every' && t.ms === HEARTBEAT_MS && !t.cancelled)!.fn()
+    await h.settle()
+    return h.ofType('heartbeat').at(-1)!.state as Record<string, unknown>
+  }
+  /** A prompt submitted under `mode`, through the classic UserPromptSubmit hooks; the settings hooks beneath answer `beneath`. */
+  const prompted = async (h: ReturnType<typeof harness>, mode: unknown, extra: Record<string, unknown> = {}, beneath: Record<string, unknown> = {}) => {
+    const answered = await h.hook('classic.UserPromptSubmit', { hook_event_name: 'UserPromptSubmit' })(
+      h.engine,
+      { hook_event_name: 'UserPromptSubmit', prompt: 'go', session_id: SID, transcript_path: '/t', cwd: '/w', ...(mode !== undefined && { permission_mode: mode }), ...extra },
+      async () => beneath,
+    )
+    await h.settle()
+    return answered
+  }
+  /** A collector record through the telemetry.log hooks, as the engine raises its own. */
+  const record = async (h: ReturnType<typeof harness>, event: string, attributes: Record<string, unknown>) => {
+    await h.hook('telemetry.log', { to: 'collector' })(h.engine, { to: 'collector', event, attributes, loggedAt: '2026-10-29T00:00:00.000Z' }, async () => ({ value: undefined }))
+    await h.settle()
+  }
+  const MODE_KEYS = ['permissionMode', 'permissionModeAt', 'permissionModeFrom']
+
+  test('absent until the session reports a mode; then the heartbeat and read status carry the word, when it was read and the event it came from', async () => {
+    const h = harness()
+    await h.ready()
+    const before = await beat(h)
+    expect(MODE_KEYS.filter((k) => k in before)).toEqual([])
+    const status = (await h.command({ op: 'read', what: 'status' })) as { result: Record<string, unknown> }
+    expect(MODE_KEYS.filter((k) => k in status.result)).toEqual([])
+    await prompted(h, 'auto')
+    expect(await beat(h)).toMatchObject({ permissionMode: 'auto', permissionModeAt: h.now(), permissionModeFrom: 'UserPromptSubmit' })
+    expect(await h.command({ op: 'read', what: 'status' })).toMatchObject({ ok: true, result: { permissionMode: 'auto', permissionModeAt: h.now(), permissionModeFrom: 'UserPromptSubmit' } })
+  })
+
+  test('a switch a later classic hook event sees reaches the next heartbeat after it', async () => {
+    const h = harness()
+    await h.ready()
+    await prompted(h, 'auto')
+    expect(await beat(h)).toMatchObject({ permissionMode: 'auto' })
+    h.advance(60_000)
+    await h.permission('Bash', { command: 'ls' }, undefined, { decision: { behavior: 'allow' } }, undefined, 'default')
+    await h.settle()
+    expect(await beat(h)).toMatchObject({ permissionMode: 'default', permissionModeAt: h.now(), permissionModeFrom: 'PermissionRequest' })
+  })
+
+  test("a switch in the terminal reaches it as it happens, by the engine's permission_mode_changed record", async () => {
+    const h = harness()
+    await h.ready()
+    await prompted(h, 'default')
+    h.advance(1_000)
+    await record(h, 'permission_mode_changed', { from_mode: 'default', to_mode: 'acceptEdits', trigger: 'shift_tab' })
+    expect(await beat(h)).toMatchObject({ permissionMode: 'acceptEdits', permissionModeAt: h.now(), permissionModeFrom: 'permission_mode_changed' })
+  })
+
+  test("a permission decision's record is no report: its mode is the one the check began under, which a switch since may have left", async () => {
+    // Accepting ExitPlanMode switches plan to default before its dialog
+    // settles, and the decision's record that follows still says plan.
+    const h = harness()
+    await h.ready()
+    await prompted(h, 'plan')
+    h.advance(1_000)
+    await record(h, 'permission_mode_changed', { from_mode: 'plan', to_mode: 'default', trigger: 'exit_plan_mode' })
+    const changedAt = h.now()
+    h.advance(1_000)
+    await record(h, 'tool_decision', { decision: 'accept', source: 'user_temporary', tool_name: 'ExitPlanMode', tool_use_id: 'toolu_1', permission_mode: 'plan' })
+    expect(await beat(h)).toMatchObject({ permissionMode: 'default', permissionModeAt: changedAt, permissionModeFrom: 'permission_mode_changed' })
+  })
+
+  test("a subagent's report is its own loop's mode, never the session's", async () => {
+    const h = harness()
+    await h.ready()
+    await prompted(h, 'auto')
+    await h.permission('Bash', { command: 'ls' }, 'a1', { decision: { behavior: 'allow' } }, undefined, 'bypassPermissions')
+    await record(h, 'permission_mode_changed', { from_mode: 'default', to_mode: 'plan', agent_id: 'a1' })
+    await prompted(h, 'acceptEdits', { agent_id: 'a1' })
+    expect(await beat(h)).toMatchObject({ permissionMode: 'auto', permissionModeFrom: 'UserPromptSubmit' })
+  })
+
+  test('a report that carries no mode word changes nothing', async () => {
+    const h = harness()
+    await h.ready()
+    await prompted(h, undefined)
+    await prompted(h, '')
+    await prompted(h, 42)
+    const none = await beat(h)
+    expect(MODE_KEYS.filter((k) => k in none)).toEqual([])
+    await prompted(h, 'plan')
+    await prompted(h, undefined)
+    expect(await beat(h)).toMatchObject({ permissionMode: 'plan' })
+  })
+
+  test('the UserPromptSubmit hook only observes: it answers what the hooks beneath answered', async () => {
+    const h = harness()
+    await h.ready()
+    const blocked = { block: 'not now', additionalContext: ['x'] }
+    expect(await prompted(h, 'auto', {}, blocked)).toBe(blocked)
+  })
+
+  test('a module reload says what was last reported before it, until the session reports again', async () => {
+    const kept = new Map<string, unknown>()
+    const before = harness({ sessionState: kept })
+    await before.ready()
+    await prompted(before, 'acceptEdits')
+    const at = before.now()
+    const reloaded = harness({ sessionState: kept, messages: [{ type: 'user' }] })
+    await reloaded.ready()
+    expect(await beat(reloaded)).toMatchObject({ permissionMode: 'acceptEdits', permissionModeAt: at, permissionModeFrom: 'UserPromptSubmit' })
+    await record(reloaded, 'permission_mode_changed', { from_mode: 'acceptEdits', to_mode: 'plan', trigger: 'shift_tab' })
+    expect(await beat(reloaded)).toMatchObject({ permissionMode: 'plan', permissionModeFrom: 'permission_mode_changed' })
+    // A new process (a --resume) holds nothing: absent until it reports.
+    const relaunched = harness()
+    await relaunched.ready()
+    const fresh = await beat(relaunched)
+    expect(MODE_KEYS.filter((k) => k in fresh)).toEqual([])
   })
 })

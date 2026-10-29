@@ -236,7 +236,64 @@ function turnState() {
     ...(state.isTurnUnknown && { isTurnUnknown: true }),
     isStreaming: state.steps > 0,
     tools: [...state.calls.values()].map((c) => c.tool),
+    ...modeFields(),
   }
+}
+
+/** Where the last report of the mode is kept for a reload (types/sminos.d.ts). */
+const MODE = { plugin: 'sminos', key: 'mode' } as const
+/** A mode as the engine words it: one word (`default`, `acceptEdits`, `plan`, `auto`, `dontAsk`, `bypassPermissions`). */
+const MODE_WORD = /^[A-Za-z]{1,32}$/
+
+/**
+ * The session's permission mode, as `read status` and the heartbeat carry
+ * it: `permissionMode`, the engine's word as the main loop last reported it;
+ * `permissionModeAt`, when the bridge read that report (`$.clock.now()`'s
+ * milliseconds); `permissionModeFrom`, the event it came in. All three are
+ * absent until the session has reported a mode: the engine has no getter for
+ * it (2.1.312), and nothing is inferred from the settings or the launch flags.
+ *
+ * What reports it (observeMode's callers): the engine's own
+ * `permission_mode_changed` record, raised at every switch its mode
+ * transition makes (Shift+Tab in the terminal, plan mode's exit, auto mode's
+ * fallback, a mode set from the SDK or Remote Control), so a switch is here
+ * as it happens and on the stream with the next heartbeat; and the mode a
+ * prompt (classic UserPromptSubmit) or a permission prompt
+ * (PermissionRequest) was made under. A change no record reports stays
+ * unseen until the next prompt or permission prompt.
+ * The session's start reports none (the classic SessionStart input carries
+ * no mode), so a session that has neither switched nor taken a prompt has
+ * no `permissionMode` yet.
+ */
+function modeFields() {
+  const r = state.permissionMode
+  return r === undefined ? {} : { permissionMode: r.mode, permissionModeAt: r.at, permissionModeFrom: r.from }
+}
+
+/**
+ * A report of the main loop's mode, from the event `from`: the session's
+ * `permissionMode` from here (modeFields). A subagent's report is its own
+ * loop's mode, never the session's: callers pass none. A report read after a
+ * later one replaces nothing. Kept in `$.state` when the mode changes.
+ */
+function observeMode($: EngineInterface, mode: unknown, from: string) {
+  if (state.post === undefined || typeof mode !== 'string' || !MODE_WORD.test(mode)) {
+    return
+  }
+  const report = ++state.modeReports
+  void $.clock.now().then(
+    (at) => {
+      if (report !== state.modeReports) {
+        return
+      }
+      const isChange = state.permissionMode?.mode !== mode
+      state.permissionMode = { mode, at, from }
+      if (isChange) {
+        $.state.set(MODE, state.permissionMode).catch((error: unknown) => $.ui.log(`bridge: the permission mode is not kept for a reload: ${message(error)}`, { to: 'debug' }))
+      }
+    },
+    (error: unknown) => $.ui.log(`bridge: a report of the permission mode was not read: ${message(error)}`, { to: 'debug' }),
+  )
 }
 
 /**
@@ -500,6 +557,7 @@ async function read($: EngineInterface, what: unknown, args: unknown): Promise<A
       repo: repo === null ? null : { ...(repo.remote !== null && { remote: withoutUserinfo(repo.remote) }) },
       surfaces: [...surfaces],
       override: state.override ?? null,
+      ...modeFields(),
     },
   }
 }
@@ -1692,6 +1750,17 @@ export async function bridgeStart($: EngineInterface, e: SessionStartInput) {
     }
   }
   await takeLaunch($)
+  // The mode the session last reported to the module before this one (a
+  // reload): said until the session reports again.
+  if (state.permissionMode === undefined) {
+    const kept = await $.state.get(MODE).then(
+      (read) => read.value,
+      () => undefined,
+    )
+    if (state.permissionMode === undefined && typeof kept?.mode === 'string' && MODE_WORD.test(kept.mode) && typeof kept.at === 'number' && typeof kept.from === 'string') {
+      state.permissionMode = { mode: kept.mode, at: kept.at, from: kept.from }
+    }
+  }
   state.post = (socketPath, nonce, body) =>
     $.http.fetch('http://bridge/events', {
       method: 'POST',
@@ -2112,6 +2181,9 @@ export function registerBridge(on: On) {
   // module saw (claimCheck's `isSeen`), so nothing beneath restored
   // anything, and only within the bound the hub admits (boundedSuggestions).
   on('classic.PermissionRequest', { hook_event_name: 'PermissionRequest' }, async ($, e, next) => {
+    if (e.agent_id === undefined) {
+      observeMode($, e.permission_mode, 'PermissionRequest')
+    }
     // An observer raises nothing: MAWS answers its session's prompts
     // (--permission-prompt-tool stdio), and a desk card would be one it
     // cannot.
@@ -2181,13 +2253,36 @@ export function registerBridge(on: On) {
   }).catch((_, e, next) => next(e))
 
   // The engine's record of each permission decision, by call: who decided
-  // it, the evidence a request's settlement names.
-  on('telemetry.log', { to: 'collector' }, async (_, e, next) => {
+  // it, the evidence a request's settlement names. Its `permission_mode` is
+  // no report of the mode: it is the mode the check began under, which a
+  // switch since may have left (accepting ExitPlanMode leaves plan before
+  // its dialog settles, and the record that follows still says plan), and an
+  // in-process teammate's record comes with no `agent_id`, the collector
+  // keeping only a hex or UUID id. Then the engine's record of each switch of
+  // mode, as it happens: in 2.1.312 the main loop's transitions raise it with
+  // no loop named, a subagent's own (its ExitPlanMode) names its agent, and a
+  // switch in a teammate's view (Shift+Tab there) changes the teammate's
+  // mode without raising one, so a record naming no loop is taken as the
+  // main loop's.
+  on('telemetry.log', { to: 'collector' }, async ($, e, next) => {
     if (state.post !== undefined && e.to === 'collector' && e.event === 'tool_decision') {
       const { tool_use_id: id, source, decision } = e.attributes
       if (typeof id === 'string' && typeof source === 'string') {
         decisionRecorded(id, source, decision === 'accept')
       }
+    }
+    if (e.to === 'collector' && e.event === 'permission_mode_changed' && e.attributes.agent_id === undefined) {
+      observeMode($, e.attributes.to_mode, 'permission_mode_changed')
+    }
+    return next(e)
+  }).catch((_, e, next) => next(e))
+
+  // The mode each prompt is submitted under: a session's first report of
+  // its mode when it has not switched. Observed only: the answer is the
+  // hooks' beneath.
+  on('classic.UserPromptSubmit', { hook_event_name: 'UserPromptSubmit' }, ($, e, next) => {
+    if (e.agent_id === undefined) {
+      observeMode($, e.permission_mode, 'UserPromptSubmit')
     }
     return next(e)
   }).catch((_, e, next) => next(e))
