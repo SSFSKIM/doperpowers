@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # smns-guide.sh (SessionStart) hands its payload to `sminos guide` and prints
 # what that prints, which the engine adds to the session's context: on a
-# machine enrolled at a desk hub, who the session is in the org and how it
+# machine enrolled at a desk hub (hub.json, or identity.json once cut over
+# to its endpoint), who the session is in the org and how it
 # reaches the others (docs/doperpowers/specs/2026-10-18-smns-org-directory-design.md
 # §9). The gate is the verb's (tests/test-guide.sh pins its text); the
 # hook only passes the payload on, never prints an error, never blocks a start,
@@ -44,6 +45,22 @@ run SMNS_INTERNAL=1
 if [ -z "$OUT" ] && [ "$RC" = 0 ]; then pass "an internal fork gets nothing"; else fail "SMNS_INTERNAL: rc=$RC printed: $OUT"; fi
 OUT="$("$HOOK" </dev/null 2>&1)"; RC=$?
 if [ -z "$OUT" ] && [ "$RC" = 0 ]; then pass "no payload: nothing, exit 0"; else fail "no payload: rc=$RC printed: $OUT"; fi
+
+echo "the enrollment's file (hub.json, or identity.json on a machine cut over to its endpoint):"
+GATE="$T/gate-plugin"
+mkdir -p "$GATE/skills/sminos/scripts"
+printf '#!/bin/sh\necho guided\n' > "$GATE/skills/sminos/scripts/sminos"
+chmod +x "$GATE/skills/sminos/scripts/sminos"
+for f in hub.json identity.json none; do
+  rm -rf "$SMINOS_HOME/daemon"; mkdir -p "$SMINOS_HOME/daemon"
+  [ "$f" = none ] || printf '{}' > "$SMINOS_HOME/daemon/$f"
+  run CLAUDE_PLUGIN_ROOT="$GATE"
+  if [ "$f" = none ]; then
+    if [ -z "$OUT" ] && [ "$RC" = 0 ]; then pass "with neither file, the hook exits before the verb"; else fail "neither file: rc=$RC printed: $OUT"; fi
+  elif [ "$OUT" = guided ] && [ "$RC" = 0 ]; then pass "with $f alone, the hook reaches sminos guide"
+  else fail "$f alone: rc=$RC printed: $OUT"; fi
+done
+printf '{}' > "$SMINOS_HOME/daemon/hub.json"
 
 echo "a CLI that fails:"
 FAKE="$T/plugin"
