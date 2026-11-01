@@ -267,8 +267,10 @@ def _is_open(item):
 
 # ------------------------------------------------------------------ apply
 
-def apply(st, doc, now):
+def apply(st, doc, now, lineages=None):
     """One update's ledger change, applied to a copy of `st` at `now` (epoch seconds): (the new state, the report).
+    `lineages` maps a subscription's stored session to every session of its lineage (the command resolves them;
+    a subscription missing from it stands for its stored session alone).
     The whole document is validated first, every item as it would stand after the merge; any problem raises
     Invalid naming each, and nothing is changed. The report: `new` (ids created), `changed` (ids changed in a
     substantive field), `unchanged_open` (open items it left as they were), `archived` (the items moved out),
@@ -397,11 +399,15 @@ def apply(st, doc, now):
             e["covered"] = stamp(max(covered, parse(e["covered"]) if e.get("covered") else covered))
         if s.get("seen") is not None and (e.get("seen") is None or parse(s["seen"]) > parse(e["seen"])):
             e["seen"] = stamp(parse(s["seen"]))
-    # An owner's item filed under a subscription's stored session turns seen once that session's mark has
-    # passed its `raised` (it never turns back). The digest that read the window may not mention an older
-    # item, so the flip is the ledger's, from the marks it holds; an item filed under a later session of the
-    # lineage, which apply cannot map, is left to the update.
-    marks = {e["session"]: parse(e["seen"]) for ini in out["initiatives"] for e in ini["sessions"] if e.get("seen")}
+    # An owner's item filed under any session of a subscription's lineage turns seen once the subscription's
+    # mark has passed its `raised` (it never turns back). The digest that read the window may not mention an
+    # older item, and a done one is not in its open list at all, so the flip is the ledger's, from its marks.
+    marks = {}
+    for ini in out["initiatives"]:
+        for e in ini["sessions"]:
+            if e.get("seen"):
+                for sid in (lineages or {}).get(e["session"]) or [e["session"]]:
+                    marks[sid] = max(marks.get(sid, parse(e["seen"])), parse(e["seen"]))
     for i in out["items"]:
         if i["lane"] == "yours" and not i.get("seen") and i.get("session") in marks \
                 and parse(i["raised"]) <= marks[i["session"]]:

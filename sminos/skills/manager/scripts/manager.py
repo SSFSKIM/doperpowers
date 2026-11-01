@@ -511,6 +511,19 @@ def remove_subscriptions(a, names):
     emit(a, {"removed": removed}, "unsubscribed: %s" % ", ".join(s[:8] for s in removed))
 
 
+def lineages_of(st):
+    """Each subscription's stored session -> the sessions of its lineage, resolved as `pending` resolves them; one
+    that does not resolve stands for its stored session alone."""
+    out = {}
+    for _, e in _entries(st):
+        try:
+            t = resolve_stored(e)
+        except (SystemExit, Exception):     # the seen flip is a convenience: it never fails the apply
+            t = None
+        out[e.get("session")] = list(t.sessions) if t is not None else [e.get("session")]
+    return out
+
+
 def cmd_ledger(a):
     """`ledger`: the ledger per initiative. `ledger apply`: one update's ledger change (manager_ledger.apply),
     under the state's lock; a change that does not hold exits 2 naming every problem, the file unchanged."""
@@ -533,7 +546,7 @@ def cmd_ledger(a):
     with L.lock(a.name):
         st = load_state(a.name)
         try:
-            st, report = L.apply(st, doc, now)
+            st, report = L.apply(st, doc, now, lineages_of(st))
         except L.Invalid as e:
             fail("the ledger change was not applied:\n  %s" % "\n  ".join(e.problems), 2)
         L.append_archive(a.name, report["archived"])

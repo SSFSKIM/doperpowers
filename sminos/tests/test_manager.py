@@ -841,6 +841,20 @@ class Ledger(unittest.TestCase):
         st, _ = self.apply(st, update([]), T0 + 120)
         self.assertTrue(st["items"][0]["seen"], "and it stays seen")
 
+    def test_an_item_filed_under_a_later_session_of_the_lineage_turns_seen_by_its_subscriptions_mark(self):
+        # A done item stays out of the digests' open list, so nothing else would ever flip an item a digest
+        # filed under the session the subscription continued in.
+        st = v2((SID, iso(T0 - DAY), None))
+        st, _ = self.apply(st, update([yours(session=NEXT, raised=iso(T0 - 3600), status="done",
+                                             evidence="merged", status_at=iso(T0 - 1800)),
+                                       yours(session=NEXT, raised=iso(T0 - 60), need="after the mark")]))
+        mark = {"session": SID, "from": iso(T0 - DAY), "covered": iso(T0), "seen": iso(T0 - 600)}
+        got, _ = L.apply(st, update([], sessions=[mark]), T0 + 60)
+        self.assertEqual([i["seen"] for i in got["items"]], [False, False], "without the lineage, apply cannot map it")
+        got, _ = L.apply(st, update([], sessions=[mark]), T0 + 60, lineages={SID: [SID, NEXT]})
+        self.assertEqual([i["seen"] for i in got["items"]], [True, False],
+                         "in the subscription's lineage and raised before its mark: seen")
+
     def test_done_and_overtaken_items_archive_after_30_days_and_their_ids_are_not_reused(self):
         st = self.seeded()
         st, _ = self.apply(st, update([{"id": "y1", "status": "done", "evidence": "merged", "status_at": iso(T0)},
@@ -1226,6 +1240,23 @@ class Commands(unittest.TestCase):
         _, out, _ = self.run_in_alpha("ledger")
         self.assertRegex(out, r"(?m)^\s+y1\s+pending\s+decide\s+optional\b.*builder.*merge PR #9\?")
         self.assertRegex(out, r"(?m)^\s+w1\s+in progress\s+Sessions can be asked questions")
+
+    def test_apply_flips_seen_across_a_subscriptions_lineage_and_survives_one_that_does_not_resolve(self):
+        """GONE continued in GONE2: a done item a digest filed under GONE2 turns seen by GONE's mark; a subscription
+        that no longer resolves falls back to its stored id and does not fail the apply."""
+        self.run_in_alpha("subscriptions", "add", "Old", GONE)
+        st = self.state()
+        st["initiatives"][0]["sessions"].append({"session": "7b0000ff-0000-4000-8000-0000000000ff", "alias": "ghost",
+                                                 "project": "", "project_name": "", "added": iso(T0),
+                                                 "covered": iso(T0), "seen": None})
+        self.write_state(st)
+        covered = st["initiatives"][0]["sessions"][0]["covered"]
+        self.apply(update([yours(initiative="Old", member="gone-term", session=GONE2, raised=iso(T0 + 50),
+                                 status="done", evidence="merged", status_at=iso(T0 + 55))]))
+        self.assertFalse(self.state()["items"][0]["seen"])
+        self.apply(update([], sessions=[{"session": GONE, "from": covered, "covered": iso(L.parse(covered) + 3600),
+                                         "seen": iso(T0 + 60)}]))
+        self.assertTrue(self.state()["items"][0]["seen"])
 
     def test_a_refused_apply_exits_2_and_leaves_the_file_as_it_was(self):
         self.run_in_alpha("subscriptions", "add", "P5", "builder")
