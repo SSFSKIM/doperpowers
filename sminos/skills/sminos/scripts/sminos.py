@@ -2895,12 +2895,19 @@ def lineage_provenance(project, sid, peer=None, former=None, events=None):
     none); else the first provisional record, the fallback, so a provisional
     session between it and a final ancestor never hides the ancestor. The
     session's own publications are never evidence: they say what its record
-    already is."""
+    already is. A predecessor whose record file cannot be read ends the walk
+    (sminos_records.unreadable): nothing past it is evidence, since its own
+    may hold owners changed since. `former` given, even empty, is the whole
+    lineage."""
     records = records_module()
-    chain = list(former) if former else (lineage_of(project, sid, peer, events) if project is not None else [])
+    chain = list(former) if former is not None else (
+        lineage_of(project, sid, peer, events) if project is not None else [])
     fallback = None
     for i, old in enumerate(chain):
         rec = records.read(old)
+        if rec is None and records.unreadable(old):
+            chain = chain[:i]
+            break
         if rec is not None:
             if records.is_final(rec):
                 return records.inherited(rec, chain[:i + 1])
@@ -2926,9 +2933,13 @@ def ensure_record(project, sid, seat=None, peer=None, evidence=None, former=None
     lineage only where one can appear, a background job or a hand-off. Then,
     whether or not it changed, a member whose `joined` does not carry what
     its record publishes is joined again (publish_owners). A record that
-    cannot be written is a warning: membership never waits on it. Returns
-    the record, or None."""
+    cannot be written is a warning: membership never waits on it. A record
+    file that exists but cannot be read is left as it is, said once per
+    process in daemon.log, and None returned. Returns the record, or None."""
     records = records_module()
+    if records.unreadable(sid):
+        _unreadable_said(sid)
+        return None
     rec = records.read(sid)
     settled = rec is not None and (records.basis(rec) == "launch" or records.strength(rec) == (2, True)
                                    or (records.strength(rec) == (1, True) and not former
@@ -2944,6 +2955,20 @@ def ensure_record(project, sid, seat=None, peer=None, evidence=None, former=None
     if rec is not None and records.is_final(rec) and project is not None:
         publish_owners(project, sid, events)
     return rec
+
+
+_UNREADABLE_SAID = set()
+
+
+def _unreadable_said(sid):
+    if sid in _UNREADABLE_SAID:
+        return
+    _UNREADABLE_SAID.add(sid)
+    try:
+        daemon_log("record: session %s has a record file that cannot be read: left as it is, nothing written over it"
+                   % sid[:8])
+    except OSError:
+        pass
 
 
 def publish_owners(project, sid, events=None):
@@ -5935,10 +5960,10 @@ def record_session(project, session, tpath, event, last_message="", source=""):
         return
     # A session nobody launched through sminos is what its own environment,
     # the hook's, says; a seat's provenance came with its launch.
-    evidence = None if seat or launch_pending(session) else records_module().hook_provenance(marked)
+    evidence, former = session_evidence(session, seat, marked)
     if event == "SessionStart":
         position_init(project, session, tpath, since)
-    ensure_record(project, session, seat, peer, evidence)
+    ensure_record(project, session, seat, peer, evidence, former)
     alias = _member_alias(project, session, seat, peer, marked, evidence)
     if event != "Stop" or alias is None:
         return
@@ -5947,6 +5972,55 @@ def record_session(project, session, tpath, event, last_message="", source=""):
         until = min(until, _RECORD_DEADLINE - 0.5)
     await_flush(tpath, last_message, until)
     export_host(project, session, tpath, alias)
+
+
+def session_evidence(session, seat, marked):
+    """(evidence, former) for ensure_record from the hook or the bridge
+    child: nothing for a seat or a session whose launch is pending (its
+    provenance came with its launch), else the session's own environment
+    (sminos_records.hook_provenance). A marked session MAWS launched for a
+    remote member (MAWS_LAUNCHED_BY, O12 M11) binds the variable's
+    appSessionId (sminos_records.bind_launched): its first session is the
+    spawner's; a later one (a /clear, a resume that started a fresh session)
+    continues the sessions bound before it, `former`, the latest first, so
+    an owner change made on its predecessor carries over and the variable
+    never grants the spawner again over a record. Walking them newest first,
+    a readable record lets lineage decide; a record file that cannot be read
+    is a barrier: no lineage past it and no evidence (`former` empty), so
+    the session gets at most the provisional defaults, which publish
+    nothing, until it reads again. Only when none of them has a record file
+    (the first hook bound the app session, but the records' lock kept its
+    record off) is the spawner its fallback, as for the first: no owner
+    change can have been made without a record. The spawner's proof is read
+    only while the session's own record is not final yet. A session whose
+    own record cannot be read, or a binding that cannot be made, gives no
+    evidence."""
+    records = records_module()
+    if seat or launch_pending(session):
+        return None, None
+    if records.unreadable(session):
+        return None, None   # ensure_record leaves it as it is
+    launched = records.launched_by() if marked else None
+    if launched is None:
+        return records.hook_provenance(marked), None
+    plain = {k: v for k, v in os.environ.items() if k != records.LAUNCHED_ENV}
+    try:
+        earlier = records.bind_launched(launched["appSessionId"], session, _RECORD_DEADLINE)
+    except (OSError, LockBusy) as e:
+        try:
+            daemon_log("record: session %s could not bind its launch's app session: %s" % (session[:8], e))
+        except OSError:
+            pass
+        return None, None
+    former = earlier or None
+    for s in earlier:
+        if records.read(s) is not None:
+            return records.hook_provenance(marked, plain), former
+        if records.unreadable(s):
+            return None, []
+    if records.is_final(records.read(session)):
+        return records.hook_provenance(marked, plain), former
+    return records.hook_provenance(marked, session=session), former
 
 
 def _on_sight(project, session):
@@ -6004,8 +6078,8 @@ def export_live(cwd, session, records):
     marked = seen is not None and member_mark(seen[1])
     if seen is None or not joinable(*seen, marked):
         return []
-    evidence = None if seen[0] or launch_pending(session) else records_module().hook_provenance(marked)
-    ensure_record(project, session, *seen, evidence)
+    evidence, former = session_evidence(session, seen[0], marked)
+    ensure_record(project, session, *seen, evidence, former)
     alias = _member_alias(project, session, *seen, marked, evidence)
     events = host_events(records, alias) if alias is not None else []
     return append_host(project, session, events) if events else []
@@ -7946,7 +8020,9 @@ def launch_env(settings):
     the env. So is SMINOS_LAUNCH: a launch id is its own launch's, carried
     in its settings, never one a spawning seat inherited. So is MAWS_LANE,
     MAWS's lane B marker (O12 M3): a seat a lane B session spawns is sminos's
-    own, never an observer. So is SMINOS_DESK_PROOF, a desk spawn's proof
+    own, never an observer. So is MAWS_LAUNCHED_BY, the spawner MAWS
+    launched a lane B session for (O12 M11): the seat copies its parent's
+    record instead. So is SMINOS_DESK_PROOF, a desk spawn's proof
     (O12 M7): its record keeps it, and no session inherits it. An EMPTY settings
     value declares the PLAIN route, enforced below the argv by dropping the
     gateway transport env too.
@@ -7955,6 +8031,7 @@ def launch_env(settings):
     env.pop("RUNNER_TRACKING_ID", None)
     env.pop(records_module().LAUNCH_ENV, None)
     env.pop("MAWS_LANE", None)
+    env.pop(records_module().LAUNCHED_ENV, None)
     env.pop(DESK_PROOF_ENV, None)
     if not settings:
         for k in gateway_env_keys():

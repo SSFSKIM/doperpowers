@@ -101,7 +101,7 @@ banner_short() { printf '%s' "$1" | sed -n 's/.*\[\([0-9a-f]*\) \/ [0-9a-f-]*\].
 # calls.log and assertion failures print that log, so a real credential in the
 # runner's shell must never reach it.
 unset ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_SUBAGENT_MODEL UNRELATED_TRANSPORT_VAR
-unset DAEMON_CLAUDE_SETTINGS DAEMON_CLAUDE_EFFORT SMINOS_ALIAS RUNNER_TRACKING_ID DAEMON_HOME MAWS_LANE
+unset DAEMON_CLAUDE_SETTINGS DAEMON_CLAUDE_EFFORT SMINOS_ALIAS RUNNER_TRACKING_ID DAEMON_HOME MAWS_LANE MAWS_LAUNCHED_BY
 # The harness exports CLAUDE_CODE_SESSION_ID to Bash tools; sminos derives the
 # sender identity from it. The suite is "a real terminal" unless a case sets it.
 unset CLAUDE_CODE_SESSION_ID
@@ -248,7 +248,7 @@ if [ $has_bg -eq 1 ]; then
   # keyed by the prompt's first line so tests can grep the exact launch.
   # `path=` records only whether PATH survived.
   first="${prompt%%$'\n'*}"
-  echo "bg-env:$first base=${ANTHROPIC_BASE_URL:-};token=${ANTHROPIC_AUTH_TOKEN:-};sub=${CLAUDE_CODE_SUBAGENT_MODEL:-};keep=${UNRELATED_TRANSPORT_VAR:-};runner=${RUNNER_TRACKING_ID:-};path=${PATH:+set};lane=${MAWS_LANE:-}" >> "$STUB_STATE/log/calls.log"
+  echo "bg-env:$first base=${ANTHROPIC_BASE_URL:-};token=${ANTHROPIC_AUTH_TOKEN:-};sub=${CLAUDE_CODE_SUBAGENT_MODEL:-};keep=${UNRELATED_TRANSPORT_VAR:-};runner=${RUNNER_TRACKING_ID:-};path=${PATH:+set};lane=${MAWS_LANE:-};launched=${MAWS_LAUNCHED_BY:-}" >> "$STUB_STATE/log/calls.log"
   if [ "${STUB_FAIL_BG:-0}" = "1" ]; then
     echo "stub: simulated --bg launch failure" >&2
     exit 1
@@ -811,7 +811,7 @@ if [ -n "$(field "$NU_ID" pending_short)" ]; then pass "no-uuid launch records p
 GW="$TEST_ROOT/gw.json"
 printf '{"env":{"ANTHROPIC_BASE_URL":"http://gw","ANTHROPIC_AUTH_TOKEN":"tok","CLAUDE_CODE_SUBAGENT_MODEL":"m","PATH":"/nope"}}' > "$GW"
 mkdir -p "$HOME/.claude"; cp "$GW" "$HOME/.claude/clodex-settings.json"
-export ANTHROPIC_BASE_URL="http://gw" ANTHROPIC_AUTH_TOKEN="fixture-token" CLAUDE_CODE_SUBAGENT_MODEL="sub" UNRELATED_TRANSPORT_VAR="keep" RUNNER_TRACKING_ID="run-1" MAWS_LANE=B
+export ANTHROPIC_BASE_URL="http://gw" ANTHROPIC_AUTH_TOKEN="fixture-token" CLAUDE_CODE_SUBAGENT_MODEL="sub" UNRELATED_TRANSPORT_VAR="keep" RUNNER_TRACKING_ID="run-1" MAWS_LANE=B MAWS_LAUNCHED_BY=launched-fixture
 DAEMON_CLAUDE_SETTINGS="$GW" DAEMON_CLAUDE_EFFORT=high run "$SMINOS" spawn gwworker "GW-1"
 assert_rc 0 "$RC" "gateway spawn exits 0"
 G_UUID="$(banner_uuid "$OUT")"
@@ -840,13 +840,15 @@ assert_contains "$(grep 'bg-env:' "$STUB_STATE/log/calls.log" | tail -1)" "runne
 assert_contains "$(grep 'bg-env:' "$STUB_STATE/log/calls.log" | tail -1)" ";lane=" "the launch's environment is recorded with its lane marker"
 assert_not_contains "$(grep 'bg-env:' "$STUB_STATE/log/calls.log" | tail -1)" "lane=B" \
   "MAWS_LANE is always stripped: a seat a lane B session spawns is no observer (O12 M3)"
+assert_not_contains "$(grep 'bg-env:' "$STUB_STATE/log/calls.log" | tail -1)" "launched=launched-fixture" \
+  "MAWS_LAUNCHED_BY is always stripped: a seat copies its parent's record, never the spawner's variable (O12 M11)"
 run "$SMINOS" spawn plain2 "PLAIN-2"
 assert_contains "$(grep 'bg-env:' "$STUB_STATE/log/calls.log" | tail -1)" "base=;token=;sub=;keep=keep;runner=;path=set" "plain route scrubs the gateway env keys, keeps PATH and unrelated vars"
 PLAIN_LAUNCH="$(launch_settings_of)"
 assert_equals "$(settings_env "$PLAIN_LAUNCH")" "{\"SMINOS_HOME\": \"$SMINOS_HOME\"}" \
   "a plain-route seat's settings carry only the spawner's SMINOS_HOME (and its launch id), the route still the caller's"
 assert_equals "$(field "$(banner_uuid "$OUT")" settings)" "" "and its record keeps the plain route"
-unset ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_SUBAGENT_MODEL UNRELATED_TRANSPORT_VAR RUNNER_TRACKING_ID MAWS_LANE
+unset ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_SUBAGENT_MODEL UNRELATED_TRANSPORT_VAR RUNNER_TRACKING_ID MAWS_LANE MAWS_LAUNCHED_BY
 # A caller's --settings given inline (a JSON object) is merged the same way.
 run "$SMINOS" spawn inlineset "IN-1" --settings '{"model": "x", "env": {"SMINOS_HOME": "/elsewhere"}}'
 assert_rc 0 "$RC" "spawn with inline JSON settings exits 0"
@@ -5912,6 +5914,46 @@ assert_equals "$(hp_events "$HR")" "joined " "a resumed marked session whose dea
 tx "$TXD/$HR.jsonl" asst r1000002 '<message>after the resume</message>'
 SMNS_MEMBER="$MARK" hook_run Stop "$HR" "$R3" "$TXD/$HR.jsonl"
 assert_equals "$(hp_events "$HR")" "joined message:r1000002#0 " "and its Stop exports what it sent its human since"
+# A session MAWS spawned for a remote member (O12 M11): its engine host sets
+# MAWS_LAUNCHED_BY beside the mark, naming the spawner and a proof file that
+# holds the sealed spawn action, and the session is the spawner's from its
+# first hook. A /clear goes on with its predecessor's record, as it stands
+# then, never the variable's; a claude its Bash starts claims nothing.
+LB_MEMBER=0123456789abcdef0123456789abcdef
+LB_OTHER=fedcba9876543210fedcba9876543210
+LB_PROOF="$TEST_ROOT/launched-by-v.json"
+printf '{"action":{"device":"dev-v","opId":"op-v-000000000001","v":1},"device":"dev-v","member":"%s","opId":"op-v-000000000001"}' \
+  "$LB_MEMBER" > "$LB_PROOF"
+LB_VAR="$(printf '{"appSessionId":"app-v","device":"dev-v","member":"%s","opId":"op-v-000000000001","proofFile":"%s"}' \
+  "$LB_MEMBER" "$LB_PROOF")"
+record_of() { # session key… → those keys of its record, as one JSON list
+  python3 -c 'import json, sys; r = json.load(open(sys.argv[1])); print(json.dumps([r.get(k) for k in sys.argv[2:]]))' \
+    "$SMINOS_HOME/session-records/$1.json" "${@:2}"
+}
+HV=6e000010-0000-4000-8000-00000000006e
+HW=6e000011-0000-4000-8000-00000000006e
+HXB=6e000012-0000-4000-8000-00000000006e
+sdk_peer mawsv "$HV"
+tx "$TXD/$HV.jsonl" asst v1000001 'spawned'
+SMNS_MEMBER="$MARK" MAWS_LANE=B MAWS_LAUNCHED_BY="$LB_VAR" hook_run SessionStart "$HV" "$R3" "$TXD/$HV.jsonl" startup
+assert_equals "$(record_of "$HV" owners principal origin source)" \
+  "[[\"$LB_MEMBER\"], \"$LB_MEMBER\", {\"kind\": \"maws\", \"requester\": \"$LB_MEMBER\"}, \"hook\"]" \
+  "a session MAWS launched for a member is that member's, final, from its first hook"
+assert_equals "$(record_of "$HV" ownersProof)" '[[{"device": "dev-v", "opId": "op-v-000000000001", "v": 1}]]' \
+  "its ownersProof is the proof file's sealed action"
+assert_contains "$(grep '"joined"' "$HPLOG/testhost.$HV.jsonl")" "\"owners\": [\"$LB_MEMBER\"]" "and its joined publishes the spawner"
+hp_peer bashv "$HXB" derived interactive
+tx "$TXD/$HXB.jsonl" asst x1000001 'nested'
+SMNS_MEMBER="$PPID" MAWS_LANE=B MAWS_LAUNCHED_BY="$LB_VAR" hook_run SessionStart "$HXB" "$R3" "$TXD/$HXB.jsonl" startup
+assert_equals "$(record_of "$HXB" owners origin)" '[["@machine"], {"kind": "terminal"}]' \
+  "a claude the session's Bash starts (another parent) claims nothing: a terminal's record"
+python3 -c 'import json, sys; p = sys.argv[1]; r = json.load(open(p)); r.update(owners=[sys.argv[2]], principal=sys.argv[2]); json.dump(r, open(p, "w"))' \
+  "$SMINOS_HOME/session-records/$HV.json" "$LB_OTHER"
+sdk_peer mawsv "$HW"
+tx "$TXD/$HW.jsonl" asst w1000001 'cleared'
+SMNS_MEMBER="$MARK" MAWS_LANE=B MAWS_LAUNCHED_BY="$LB_VAR" hook_run SessionStart "$HW" "$R3" "$TXD/$HW.jsonl" clear
+assert_equals "$(record_of "$HW" owners source former)" "[[\"$LB_OTHER\"], \"lineage\", [\"$HV\"]]" \
+  "a /clear goes on with its predecessor's owners as they were changed, not the variable's"
 cd "$WORK"
 rm -f "$HOME/.claude/sessions/hp-"*.json
 
