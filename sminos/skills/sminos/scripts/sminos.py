@@ -41,12 +41,13 @@ member too, seat-less, from the first call that reads its project.
     sminos join     <project> | --cwd                     # this session's project, declared: a session is in
                    its launch directory's project (a `cd` moves nothing) until it joins another; --cwd goes
                    back; alone: which project it is in, and why. Not for a seat
-    sminos derive   <member> | --all [--refreshes N]      # ask a session its line, by a headless internal fork,
-                   once its model made ten tool calls; a session under a name the engine made up (or one sminos
-                   gave it) is also asked for a charge name, handed to its name mod as
-                   $SMINOS_HOME/names/<session>.json. --all (the daemon's, every five minutes) derives first
-                   lines before refreshes and holds a member whose fork failed out for an hour; --refreshes
-                   caps the members with a line it forks (the daemon passes 2), oldest line first
+    sminos derive   <member> | --all [--refreshes N]      # ask a session its line, by its bridge's side question
+                   (btw), else a headless internal fork, once its model made ten tool calls; a session under a
+                   name the engine made up (or one sminos gave it) is also asked for a charge name, handed to
+                   its name mod as $SMINOS_HOME/names/<session>.json. --all (the daemon's, every five
+                   minutes) derives first lines before refreshes and holds a member whose fork failed out for
+                   an hour; --refreshes caps the members with a line it forks (the daemon passes 2), oldest
+                   line first
     sminos name-due --session <id>                        # the name mod's check: the session's pending
                    name when it is due, else nothing (not for a person to run)
     sminos record                                         # the Stop / SessionStart hook's verb (payload on stdin);
@@ -6253,12 +6254,17 @@ def chat_host(project, a):
 # ------------------------------------------------------------ the in-charge line
 #
 # `charge` sets a member's line; `derive` asks a session what it is in charge
-# of by forking it headless, and the fork is internal: SMNS_INTERNAL keeps the
-# hook from recording it, and $SMINOS_HOME/internal/<pid>, written before the
-# fork starts, keeps reconciliation from joining it (§5).
+# of. A live session whose bridge offers the side question (`btw`) is asked
+# through it: one tool-less completion over the session's last request,
+# reading the session's own cache, which derive's recent activity keeps warm
+# (about a seventh of the headless fork's price; sminos_fork). Any other
+# session, and one whose side question fails, is forked headless, and the
+# fork is internal: SMNS_INTERNAL keeps the hook from recording it, and
+# $SMINOS_HOME/internal/<pid>, written before the fork starts, keeps
+# reconciliation from joining it (§5).
 #
-# The fork starts in safe mode — without the session's plugins, hooks, mods
-# and MCP servers, which a fork answering from the conversation has no use
+# The headless fork starts in safe mode — without the session's plugins,
+# hooks, mods and MCP servers, which a fork answering from the conversation has no use
 # for (with them it was offered their tools) — persists nothing, and is sent
 # uncached (DISABLE_PROMPT_CACHING): its tool list is not the session's, so
 # it never reads a cache, and the hour-long one it would write (the
@@ -6578,95 +6584,45 @@ def derive_failed_mark(session, failed):
         warn("the failed derive of %s could not be %s: %s" % (session[:8], "stamped" if failed else "cleared", e))
 
 
-def fork_failure(obj, err):
-    """Why a fork ended without an answer, as one line of at most
-    DERIVE_WHY_MAX characters: its result's error text when it reported an
-    error, else the head of its stderr; "" when it said nothing."""
-    said = []
-    if obj and obj.get("is_error"):
-        errors = obj.get("errors")
-        said = [str(obj.get("result") or "")] + ([str(e) for e in errors] if isinstance(errors, list) else [])
-    text = " ".join(" ".join(said).split()) or " ".join((err or "").split())
-    return text[:DERIVE_WHY_MAX]
-
-
 def derive_line(project, m, prompt=DERIVE_PROMPT):
-    """Fork the member's session headless, ask it `prompt`, and return
-    (line, answer): its one-line answer (answer_line) and the whole text the
-    answer's name is read from. The fork starts behind a gate: its pid is marked internal before it can
-    register. It starts in safe mode, uncached, and persists nothing (the
-    section's note); its session id is minted here (`--session-id`) all the
-    same, so a transcript an engine wrote anyway is known and deleted
-    whatever the outcome — an answer, a crash, a timeout — and so is the
-    marker. A failure says why (fork_failure). The prompt comes last:
-    `--tools` takes several values and would swallow a prompt right after
-    it."""
-    fork = str(uuidlib.uuid4())
-    env = {**os.environ, "SMNS_INTERNAL": "1", "DISABLE_PROMPT_CACHING": "1"}
-    args = ["claude", "-p", "--resume", m.session, "--fork-session", "--session-id", fork, "--safe-mode",
-            "--no-session-persistence", "--tools", "", "--output-format", "json", prompt]
-    gate_r, gate_w = os.pipe()
-    marker = ""
-    out = err = ""
-    obj = None
+    """Ask the member's session `prompt` through a fork and return (line,
+    answer): its one-line answer (answer_line) and the whole text the
+    answer's name is read from. A live session whose bridge offers `btw` is
+    asked through it, reading the session's own warm cache (sminos_fork); a
+    side question that fails in any way (refused, an API error, aborted,
+    silent past the timeout, no line in its answer) falls back to the
+    headless fork, as does a session with no such bridge: safe mode,
+    uncached, persisting nothing, no tools (the section's note), so derive
+    succeeds wherever it did before. How it asked goes to stderr; a failure
+    of the headless fork says why (DeriveFailed)."""
+    fork = sibling_module("sminos_fork")
+    timeout = float(os.environ.get("SMINOS_DERIVE_TIMEOUT") or 120)
+    if fork.bridge_offers(m.session, "btw"):
+        try:
+            got = fork.ask_btw(m.session, prompt, timeout=timeout)
+            line = answer_line(got.text)
+            why = "" if line else "its answer has no line"
+        except fork.ForkFailed as e:
+            why, line = e.reason, ""
+        if line:
+            _derive_said(m, got)
+            return line, got.text
+        sys.stderr.write("sminos: derive %s: btw gave no line (%s); asking a headless fork\n" % (m.alias, why))
     try:
-        try:
-            proc = subprocess.Popen(["/bin/sh", "-c", 'read -r _ <&%d; exec %d<&-; exec "$@"' % (gate_r, gate_r), "sh"]
-                                    + args, cwd=member_cwd(project, m), env=env,
-                                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                    text=True, pass_fds=(gate_r,))
-        except OSError as e:
-            raise DeriveFailed("the fork did not start: %s" % e)
-        finally:
-            os.close(gate_r)
-        os.makedirs(os.path.join(root(), "internal"), mode=0o700, exist_ok=True)
-        marker = os.path.join(root(), "internal", str(proc.pid))
-        try:
-            open(marker, "w").close()
-        except OSError as e:
-            proc.kill()
-            proc.communicate()
-            raise DeriveFailed("its fork could not be marked internal: %s" % e)
-        os.write(gate_w, b"\n")
-        os.close(gate_w)
-        gate_w = -1
-        timeout = float(os.environ.get("SMINOS_DERIVE_TIMEOUT") or 120)
-        try:
-            out, err = proc.communicate(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            out, err = proc.communicate()
-            why = fork_failure(None, err)
-            raise DeriveFailed("the fork timed out after %ds%s" % (timeout, ": " + why if why else ""), err)
-        for raw in reversed((out or "").splitlines()):
-            if raw.strip().startswith("{"):
-                try:
-                    d = json.loads(raw)
-                except ValueError:
-                    continue
-                if isinstance(d, dict):
-                    obj = d
-                    break
-        if proc.returncode != 0 or obj is None or obj.get("is_error"):
-            why = fork_failure(obj, err)
-            raise DeriveFailed("the fork failed (exit %d)%s" % (proc.returncode, ": " + why if why else ""), err)
-        answer = str(obj.get("result") or "")
-        line = answer_line(answer)
-        if not line:
-            raise DeriveFailed("the fork answered nothing", err)
-        return line, answer
-    finally:
-        if gate_w != -1:
-            os.close(gate_w)
-        for sid in {fork, str((obj or {}).get("session_id") or "")}:
-            path = transcript_now(sid) if UUID_RE.match(sid) and sid != m.session else ""
-            if path:
-                os.unlink(path)
-        if marker:
-            try:
-                os.unlink(marker)
-            except FileNotFoundError:
-                pass
+        got = fork.headless_fork(project, m, prompt, tools=False, cache=False, timeout=timeout)
+    except fork.ForkFailed as e:
+        raise DeriveFailed(e.reason, e.stderr)
+    line = answer_line(got.text)
+    if not line:
+        raise DeriveFailed("the fork answered nothing")
+    _derive_said(m, got)
+    return line, got.text
+
+
+def _derive_said(m, got):
+    """How derive asked, on stderr (its printed line does not change)."""
+    sys.stderr.write("sminos: derive %s via %s · cache read %s · input %s\n" % (
+        m.alias, got.via, format(got.usage["cacheRead"], ","), format(got.usage["input"], ",")))
 
 
 def cmd_derive(a):

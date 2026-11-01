@@ -8,6 +8,7 @@
     manager subscriptions remove <member>...
     manager carry
     manager carry set (--file PATH | -)
+    manager query <member> "<question>" [--timeout S]
 
 Every command takes --json and --name N (which manager's state: $SMINOS_HOME/managers/<N>.json, default
 `default`). T is local time: 9am, 14:30 (today; a clock time later than now means yesterday), a duration back
@@ -15,8 +16,8 @@ from now (10h, 90m, 2d), or an ISO-8601 time. Exit codes are sminos's: 0, 1 a fa
 ambiguous member.
 
 Nothing here writes to a session or a project log: it reads transcripts and host events, and writes only the
-manager's own state file. Resolving a member may let sminos reconcile a project's membership, as any sminos read
-does. Detail: CLAUDE.md beside this file.
+manager's own state file; `query` asks a fork of the session, which the session never sees. Resolving a member
+may let sminos reconcile a project's membership, as any sminos read does. Detail: CLAUDE.md beside this file.
 """
 
 import argparse
@@ -25,6 +26,7 @@ import json
 import os
 import re
 import sys
+from types import SimpleNamespace
 from typing import Any, NamedTuple
 
 sys.path.insert(0, os.path.realpath(os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "..", "sminos",
@@ -32,6 +34,7 @@ sys.path.insert(0, os.path.realpath(os.path.join(os.path.dirname(os.path.realpat
 
 import sminos as S  # noqa: E402
 import sminos_bridge as B  # noqa: E402
+import sminos_fork as F  # noqa: E402
 import manager_window as W  # noqa: E402
 
 STATE_VERSION = 1
@@ -473,6 +476,70 @@ def cmd_carry(a):
     emit(a, {"carry": items, "briefed": st["briefed"]}, "carry list recorded: %d item(s)" % len(items))
 
 
+QUERY_REFUSALS = {
+    "busy": "%s is already answering another manager query (busy)",
+    "nothing-to-fork": "%s has made no model request yet, so there is nothing to fork (nothing-to-fork)",
+}
+
+
+def _fork_subject(t, session):
+    """(project, member) for the headless fork of `session`, the member's newest: the member itself while it holds
+    that session, else a stand-in naming it (a session membership no longer holds), whose fork starts where the
+    project's log last saw it joined, else at the project's root."""
+    if t.project is None:
+        fail("%s is in no project on this machine: there is no directory to fork it from" % t.alias, 1)
+    m = t.member
+    if m is None or getattr(m, "session", "") != session:
+        m = SimpleNamespace(session=session, seat=None)
+    return t.project, m
+
+
+def _headless(t, session, question, timeout):
+    foreign = S.foreign_config(session)
+    if foreign:
+        fail("%s's engine runs under %s, not this process's config dir (%s), where a headless fork from here would "
+             "look for it, on that dir's credentials" % (t.alias, foreign, S.config_dir()), 1)
+    project, m = _fork_subject(t, session)
+    return F.headless_fork(project, m, F.FORK_FRAME + "\n\nThe question:\n\n" + question, tools=True, cache=True,
+                           timeout=timeout)
+
+
+def cmd_query(a):
+    """A question put to a fork of the member's session: its fork agent through its bridge (`ask`) while it is
+    live and its bridge can run one under the read-only guard, else a headless fork (a session not running, a
+    bridge with no `ask`, an `ask` refused `no-guard`). The session never sees the exchange."""
+    if not a.question.strip():
+        raise Usage("a query is its question")
+    if a.timeout <= 0:
+        raise Usage("--timeout must be positive")
+    t = resolve(a.member)
+    refuse_remote(t)
+    session = t.sessions[-1]
+    got = None
+    if F.bridge_offers(session, "ask"):
+        try:
+            got = F.ask_fork_agent(session, a.question, timeout=a.timeout)
+        except F.ForkFailed as e:
+            if e.code in QUERY_REFUSALS:
+                fail(QUERY_REFUSALS[e.code] % t.alias, 1)
+            if e.code != "no-guard":
+                fail("%s: %s" % (t.alias, e.reason), 1)
+            sys.stderr.write("manager: %s's bridge runs no read-only guard (no-guard); asking a headless fork\n"
+                             % t.alias)
+    if got is None:
+        try:
+            got = _headless(t, session, a.question, a.timeout)
+        except F.ForkFailed as e:
+            tail = [x for x in (e.stderr or "").splitlines() if x.strip()][-5:]
+            fail("%s: %s%s" % (t.alias, e.reason, "".join("\n    %s" % x for x in tail)), 1)
+    u = got.usage
+    via = "via %s · cache read %s · cache write %s · input %s · output %s" % (
+        got.via, *(format(u[k], ",") for k in ("cacheRead", "cacheWrite", "input", "output")))
+    cut = "\n(the answer was cut to 64 KiB)" if got.truncated else ""
+    emit(a, {"member": t.alias, "via": got.via, "text": got.text, "truncated": got.truncated, "usage": u},
+         "%s%s\n%s" % (got.text.rstrip("\n"), cut, via))
+
+
 def parser():
     p = argparse.ArgumentParser(prog="manager", description="The session manager's read-only views.")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -496,6 +563,10 @@ def parser():
     c = command("carry", cmd_carry, help="the items the last briefing left open")
     c.add_argument("words", nargs="*", metavar="set [-]")
     c.add_argument("--file")
+    c = command("query", cmd_query, help="a question put to a fork of a member's session")
+    c.add_argument("member")
+    c.add_argument("question")
+    c.add_argument("--timeout", type=float, default=300, help="seconds to wait for the answer (default 300)")
     return p
 
 
