@@ -5958,9 +5958,14 @@ def session_evidence(session, seat, marked):
     spawner's; a later one (a /clear, a resume that started a fresh session)
     continues the sessions bound before it, `former`, the latest first, so
     an owner change made on its predecessor carries over and the variable
-    never grants the spawner again. The first session's proof is read only
-    while its record is not final yet. A binding that cannot be made gives
-    no evidence, so the record stays provisional until a later hook."""
+    never grants the spawner again over a record. Only when none of them has
+    a record file (the first hook bound the app session, but the records'
+    lock kept its record off) is the spawner its fallback, as for the first:
+    no owner change can have been made without a record, and a record file
+    that cannot be read counts as one. The spawner's proof is read only
+    while the session's own record is not final yet. A binding that cannot
+    be made gives no evidence, so the record stays provisional until a
+    later hook."""
     records = records_module()
     if seat or launch_pending(session):
         return None, None
@@ -5976,11 +5981,12 @@ def session_evidence(session, seat, marked):
         except OSError:
             pass
         return None, None
-    if earlier:
-        return records.hook_provenance(marked, plain), earlier
+    former = earlier or None
+    if earlier and any(os.path.lexists(records.record_path(s)) for s in earlier):
+        return records.hook_provenance(marked, plain), former
     if records.is_final(records.read(session)):
-        return records.hook_provenance(marked, plain), None
-    return records.hook_provenance(marked, session=session), None
+        return records.hook_provenance(marked, plain), former
+    return records.hook_provenance(marked, session=session), former
 
 
 def _on_sight(project, session):

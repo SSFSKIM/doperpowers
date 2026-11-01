@@ -1149,6 +1149,30 @@ class TheSpawner(unittest.TestCase):
         self.assertEqual(self.said(m), [], "a continuation reads no proof")
         m.assert_private()
 
+    def test_a_clear_before_the_first_record_is_still_the_spawners(self):
+        m = Machine(self)
+        pid = self.engine(m, T0)
+        var = self.launch(m, "app-one")
+        lock = m.reg / "session-records" / ".lock"
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        with open(lock, "a") as lf:
+            fcntl.flock(lf, fcntl.LOCK_EX)
+            m.hook("SessionStart", T0, env={**self.env(var), "SMNS_RECORD_TIMEOUT": "1"})
+            fcntl.flock(lf, fcntl.LOCK_UN)
+        self.assertIsNone(m.record(T0), "the records' lock kept the first session's record off")
+        self.assertEqual(self.bound(m, "app-one"), [T0], "but its hook bound the app session, taking no lock")
+        # /clear before any hook of the first session retries.
+        self.engine(m, TB, pid=pid)
+        m.hook("SessionStart", TB, source="clear", env=self.env(var))
+        rec = m.record(TB)
+        self.assertEqual((rec["owners"], rec["principal"], rec["origin"], rec["source"]),
+                         ([MEMBER], MEMBER, {"kind": "maws", "requester": MEMBER}, "hook"),
+                         "no predecessor holds a record, so no owner change can have been made: the spawner's")
+        self.assertEqual(rec["ownersProof"], [sealed_action()])
+        self.assertEqual(self.bound(m, "app-one"), [T0, TB])
+        self.assertEqual(m.publications(TB), [{"owners": [MEMBER], "origin": {"kind": "maws", "requester": MEMBER}}])
+        m.assert_private()
+
     def test_two_spawns_that_reuse_an_opId_are_two_lineages(self):
         m = Machine(self)
         self.engine(m, T0, name="one")
