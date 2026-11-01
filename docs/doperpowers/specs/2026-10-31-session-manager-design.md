@@ -20,7 +20,7 @@ A side effect ships with it: `sminos derive`, which forks a session every six ho
 - [x] (2026-11-01 05:36Z) M3 — the shared fork code in sminos: `derive` on `btw`, `manager query` on `ask` with the headless fallback. Reviewed clean after two fix rounds (the follower's close, the kept end, `spawn-refused`, derive's btw kept off the hub); `sminos`, `sminos-suites` green on e4375df6.
 - [x] (2026-11-01 04:20Z) Owner extended the design mid-execution: the ledger (two lanes), the delta update led by what the owner has not seen, the read-only page; on-ask only. Milestones re-cut: M4 ledger and delta, M5 skill and replay (the former M4), M6 page (Decision Log, 2026-11-01).
 - [x] (2026-11-01 06:40Z) Revised spec reviewed: spec review and buildability review of M4–M6, then a round on the fixes; converged (Decision Log).
-- [ ] M4 — the ledger and the delta in the `manager` command: state v2, `ledger`, `ledger apply`, seen marks.
+- [x] (2026-11-01 06:39Z) M4 — the ledger and the delta in the `manager` command: state v2, `ledger`, `ledger apply`, seen marks. Reviewed clean after two fix rounds; `sminos`, `sminos-suites` green on f38b80ad.
 - [ ] M5 — the skill, the digest brief, the replay evaluation, and acceptance 1–12.
 - [ ] M6 — the page: `manager serve`, its install, versions, acceptance 13–14.
 - [ ] Whole-branch review (review-code, high), retrospective, merge.
