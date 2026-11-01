@@ -50,12 +50,12 @@ Run more than a couple of Claude Code sessions and they start stepping on each o
 ```text
 $ sminos list
 api
-  parser    [7a11ce01]  interactive  busy  @macbook  api@parser-rewrite  in charge: the new parser        · active 2m
-  ci-owner  [a45b97a3]  interactive  idle  @mini     api@main            in charge: CI and the release    · active 14m
-  e2e       [2b52e44a]  seat         busy  @devbox   api@e2e-flakes      in charge: the flaky e2e suite   · active now
+  parser  [7a11ce01]  interactive  busy  @macbook  api@parser  in charge: the new parser
+  ci      [a45b97a3]  interactive  idle  @mini     api@main    in charge: CI and releases
+  e2e     [2b52e44a]  seat         busy  @devbox   api@e2e     in charge: the flaky e2e suite
 you: parser [7a11ce01]
 
-$ sminos say "@ci-owner the parser rewrite renames the tokens table; hold the release"
+$ sminos say "@ci the parser rewrite renames the tokens table; hold the release"
 ```
 
 ```mermaid
@@ -65,12 +65,12 @@ flowchart LR
         parser["parser"]
     end
     subgraph mini
-        ci["ci-owner"]
+        ci["ci"]
     end
     subgraph devbox
         e2e["e2e (a spawned seat)"]
     end
-    parser <-- "say @ci-owner" --> ci
+    parser <-- "say @ci" --> ci
     parser -- "spawn, watch, steer" --> e2e
     parser -. "a report, and questions<br/>that don't block" .-> you
 ```
