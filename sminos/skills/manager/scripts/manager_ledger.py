@@ -221,7 +221,7 @@ def _fill(item):
 # ------------------------------------------------------------------ validation
 
 def valid_lang(tag):
-    return isinstance(tag, str) and bool(LANG_RE.match(tag))
+    return isinstance(tag, str) and bool(LANG_RE.fullmatch(tag))
 
 
 def lang_of(st):

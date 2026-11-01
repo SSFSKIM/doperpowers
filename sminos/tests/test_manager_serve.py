@@ -540,7 +540,7 @@ class Page(unittest.TestCase):
         if not node:
             self.skipTest("no node on PATH")
         r = subprocess.run([node, str(HERE / "page_check.mjs"), str(SKILL / "assets" / "page.html"), scenario],
-                           capture_output=True, text=True, timeout=60)
+                           capture_output=True, text=True, timeout=60, env={**os.environ, "TZ": "UTC"})
         self.assertEqual(r.returncode, 0, r.stderr)
         return json.loads(r.stdout)
 

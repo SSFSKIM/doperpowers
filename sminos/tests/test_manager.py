@@ -932,7 +932,7 @@ class Ledger(unittest.TestCase):
         self.assertEqual(L.view(st, T0)["lang"], "en")
         for tag in ("ko", "pt-BR", "zh-Hant-TW"):
             self.assertEqual(L.view(L.normalize(dict(st, lang=tag)), T0)["lang"], tag)
-        for bad in ("", "k", "korean", "ko_KR", "ko-", "-ko", None, 7, ["ko"]):
+        for bad in ("", "k", "korean", "ko_KR", "ko-", "-ko", "ko\n", None, 7, ["ko"]):
             with self.assertRaises(L.Invalid, msg=repr(bad)) as raised:
                 L.normalize(dict(st, lang=bad))
             self.assertIn("lang", raised.exception.problems[0])
@@ -1271,7 +1271,7 @@ class Commands(unittest.TestCase):
         self.assertEqual(json.loads(self.run_in_alpha("ledger", "--json")[1])["lang"], "ko")
         self.assertNotIn("ko", self.run_in_alpha("ledger")[1], "the text output, for the model, stays as it was")
         before = self.state_file().read_bytes()
-        for bad in ("korean", "ko_KR"):
+        for bad in ("korean", "ko_KR", "ko\n"):
             r = self.run_in_alpha("ledger", "lang", bad, check=False)
             self.assertEqual(r[0], 2, r[2])
             self.assertIn("'%s' is not a language tag" % bad, r[2])
