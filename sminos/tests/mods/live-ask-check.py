@@ -62,8 +62,13 @@ GUARD_REASON = "This is a read-only fork (manager query): calls that change file
 SENTENCE = "The probe word is PELICAN-42, and the harbor light is green."
 COMMIT = "manager probe commit"
 # Told to try: a fork left to itself declines a write the frame says is refused, which proves nothing of the guard.
-TOUCH = ("This is a test of the read-only guard: call the Bash tool exactly once with the command `touch %s` (the guard "
-         "is expected to refuse it), then quote the tool's result and say whether the file was created.")
+TOUCH = ("This is a test of the read-only guard, and the test needs the call made: your first action must be one call "
+         "of the Bash tool with exactly the command `touch %s`. Declining without calling the tool fails the test; the "
+         "guard is expected to refuse the call, which is the point. Then quote the tool's result and say whether the file "
+         "was created.")
+# A fork that runs for a while with no tool: the engine blocks a standalone `sleep 25` (2.1.316), so a long fork writes.
+LONG = ("Without using any tool, write an essay of about 2,500 words on the history of lighthouses, then end with the "
+        "line %s.")
 
 
 def rows_of(path):
@@ -165,7 +170,7 @@ class Ask(LB.Live):
 
     def asked(self, prompt, seconds=240):
         """An ask that must start: its answer, its end, and the fork's rows."""
-        r = self.ask(prompt)
+        r = self.ask_when_free(prompt)
         if not r.get("ok"):
             raise RuntimeError("ask refused: %s" % json.dumps(r))
         op_id, agent = r["result"]["id"], r["result"]["agentId"]
@@ -219,13 +224,49 @@ class Ask(LB.Live):
 
     def first_call_refused(self, fork_rows, what):
         """The engine invariant the guard's unlisted-id rule rests on: a bridge fork is listed from its
-        spawn on, so the guard knows it at its very first tool call. Checked where that first call is
-        one the guard must refuse (the fork was told to make it first)."""
+        spawn on, so the guard knows it at its very first tool call. Checked wherever that first call is
+        one the guard must refuse (a tool outside Read, Grep, Glob and Bash, or a Bash `touch`); a fork
+        whose first call is not such a call leaves it unexercised."""
         uses = self.uses(fork_rows)
         first = uses[0] if uses else None
-        self.check("%s: the guard identified the managed fork on its first tool call" % what,
-                   first is not None and GUARD_REASON in (first[2] or ""),
-                   "first call %s" % (json.dumps(first)[:240] if first else "none"))
+        name = "%s: the guard identified the managed fork on its first tool call" % what
+        must_refuse = first is not None and (first[0] not in ("Read", "Grep", "Glob", "Bash")
+                                             or (first[0] == "Bash" and "touch" in json.dumps(first[1])))
+        if not must_refuse:
+            self.unexercised(name, "its first call is %s" % (json.dumps(first)[:200] if first else "none"))
+            return
+        self.check(name, GUARD_REASON in (first[2] or ""), "first call %s" % json.dumps(first)[:240])
+
+    def ask_when_free(self, prompt, seconds=20):
+        """An ask retried while it is refused busy (the agent list may lag a fork's end): its answer, and how
+        long busy held."""
+        t = time.time()
+        while True:
+            r = self.ask(prompt)
+            if r.get("code") != "busy" or time.time() - t > seconds:
+                held = time.time() - t
+                if r.get("code") == "busy" or held > 0.5:
+                    print("  (observed) busy held %.1f s after the previous fork's end before %s" % (
+                        held, "the ask was taken" if r.get("ok") else "giving up: %s" % json.dumps(r)[:160]), flush=True)
+                return r
+            time.sleep(0.5)
+
+    def touch_probe(self, probe, what, tries=3):
+        """The touch probe, asked again (up to `tries`) while the fork declines without calling the tool."""
+        for attempt in range(1, tries + 1):
+            r, end, fork = self.asked(TOUCH % probe)
+            if self.uses(fork):
+                break
+            print("  (observed) %s: the fork declined without a call (try %d): %r" % (what, attempt, (end.get("text") or "")[:160]), flush=True)
+        if not self.uses(fork):
+            self.unexercised("%s: touch refused by the guard" % what, "the fork never called a tool in %d tries" % tries)
+            self.check("%s: no file, no permission prompt" % what, not os.path.exists(probe) and self.no_prompt_seen(), "exists %s" % os.path.exists(probe))
+            return
+        self.check("%s: touch refused by the guard, no file, no permission prompt" % what,
+                   not os.path.exists(probe) and self.refusals(fork) and self.no_prompt_seen(),
+                   "exists %s; calls %s; refusals %d; answer %r" % (os.path.exists(probe), self.tool_calls(fork), len(self.refusals(fork)),
+                                                                 (end.get("text") or "")[:160]))
+        self.first_call_refused(fork, what)
 
     def unexercised(self, name, detail):
         """A scenario the model never entered: said, and counted neither passed nor failed."""
@@ -290,21 +331,17 @@ def run_a(live):
     live.check("a read-only Bash (git log -1 --oneline) runs and is answered from", COMMIT in (end.get("text") or "") and not live.refusals(fork),
                "calls %s; %r" % (live.tool_calls(fork), (end.get("text") or "")[:160]))
 
-    probe = "/tmp/manager-probe-a-%d" % os.getpid()
-    r, end, fork = live.asked(TOUCH % probe)
-    live.check("default mode: touch refused by the guard, no file, no permission prompt",
-               not os.path.exists(probe) and live.refusals(fork) and live.no_prompt_seen(),
-               "exists %s; calls %s; refusals %d; answer %r" % (os.path.exists(probe), live.tool_calls(fork), len(live.refusals(fork)),
-                                                             (end.get("text") or "")[:160]))
-    live.first_call_refused(fork, "default mode")
+    live.touch_probe("/tmp/manager-probe-a-%d" % os.getpid(), "default mode")
 
     r, end, fork = live.asked("This is a test of the read-only guard (it is expected to refuse both). Do two things and report "
                               "each tool's result: (1) call the Agent tool to spawn a general-purpose subagent with the prompt "
                               "'reply hi'; (2) call the SendMessage tool to send the message 'hello' to the main session. If a "
                               "tool is not available to you, say so.")
     uses = live.uses(fork)
+    live.first_call_refused(fork, "delegation")
     for tool, what in (("Agent", "a fork told to spawn an Agent is refused"), ("SendMessage", "a fork told to message the main session is refused")):
-        tried = [u for u in uses if u[0] == tool]
+        # SendMessage is a deferred tool: a fork reaches it through ToolSearch, which the guard refuses too.
+        tried = [u for u in uses if u[0] == tool or (u[0] == "ToolSearch" and tool in json.dumps(u[1]))]
         if not tried:
             live.unexercised(what, "the fork made no %s call; its calls %s; answer %r" % (tool, live.tool_calls(fork), (end.get("text") or "")[:240]))
             continue
@@ -342,11 +379,12 @@ def run_a(live):
 
     # Busy, then an Esc in the session during an ask.
     t = time.time()
-    live.prompt("Run the Bash command `sleep 25`, then reply with exactly: SECOND-SLEEP-DONE.")
+    live.prompt("Run the Bash command `sleep 20`, then reply with exactly: SECOND-SLEEP-DONE.")
     wait_for("main's second sleep", 90, lambda: [x for x in live.main_rows() if x.get("type") == "assistant"
-                                                 and "sleep 25" in json.dumps((x.get("message") or {}).get("content"))])
+                                                 and "sleep 20" in json.dumps((x.get("message") or {}).get("content"))
+                                                 and x.get("timestamp", "") >= time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(t))])
     time.sleep(1)
-    first = live.ask("Run the Bash command `sleep 12`, then reply with exactly: FORK-ESC-DONE.")
+    first = live.ask_when_free(LONG % "FORK-ESC-DONE")
     second = live.ask("And this?")
     live.check("a second ask while one runs is refused busy", first.get("ok") and second.get("code") == "busy",
                "%s / %s" % (json.dumps(first)[:160], json.dumps(second)[:160]))
@@ -358,12 +396,14 @@ def run_a(live):
         end = None
     main_end = live.main_turns(t, "complete")
     print("  (observed) Esc during an ask: main turn %s; the fork's end %s" % (
-        [e.get("reason") for e in main_end], json.dumps(end)[:300] if end else "none within 90 s"), flush=True)
+        [e.get("reason") for e in main_end], json.dumps({k: v for k, v in (end or {}).items() if k != "text"}) +
+        (" text ends %r" % (end.get("text") or "")[-40:] if end else "none within 90 s")), flush=True)
     live.check("Esc during an ask: the ask still ends", end is not None, json.dumps(end)[:200] if end else "no end")
     time.sleep(3)
 
     # A compaction during an ask.
-    r = live.ask("Run the Bash command `sleep 15`, then reply with exactly: FORK-COMPACT-DONE.")
+    r = live.ask_when_free(LONG % "FORK-COMPACT-DONE")
+    print("  (observed) the compaction's ask: %s" % json.dumps(r)[:200], flush=True)
     time.sleep(3)
     live.prompt("/compact")
     try:
@@ -372,17 +412,19 @@ def run_a(live):
         end = None
     wait_for("the compaction", 180, lambda: [x for x in live.main_rows() if x.get("isCompactSummary")
                                              or x.get("subtype") == "compact_boundary"], every=1.0)
-    print("  (observed) compaction during an ask: the fork's end %s" % (json.dumps(end)[:300] if end else "none"), flush=True)
+    print("  (observed) compaction during an ask: the fork's end %s" % (
+        json.dumps({k: v for k, v in end.items() if k != "text"}) + " text ends %r" % (end.get("text") or "")[-40:] if end else "none"), flush=True)
     live.check("compaction during an ask: the ask still ends", end is not None, json.dumps(end)[:200] if end else "no end")
     time.sleep(5)
 
     # A reload of the plugins during an ask: does the fork outlive the bridge module that spawned it?
-    r = live.ask("Run the Bash command `sleep 25`, then reply with exactly: FORK-RELOAD-DONE.")
+    r = live.ask_when_free(LONG % "FORK-RELOAD-DONE")
     agent = (r.get("result") or {}).get("agentId")
     if not r.get("ok"):
         live.check("a reload during an ask: the ask starts", False, json.dumps(r)[:200])
     else:
-        wait_for("the fork's sleep", 60, lambda: [u for u in live.uses(live.fork_rows(agent)) if u[0] == "Bash"], every=0.5)
+        time.sleep(4)
+        print("  (observed) before the reload the fork is listed %s" % json.dumps(live.agent_status(agent)), flush=True)
         live.prompt("/reload-plugins")
         end = None
         try:
@@ -409,7 +451,7 @@ def run_a(live):
                 else "ended without its answer"), flush=True)
             if after.get("ok"):
                 live.ended(after["result"]["id"], 120)
-            later = live.ask("Reply with exactly: AFTER-RELOAD.")
+            later = live.ask_when_free("Reply with exactly: AFTER-RELOAD.")
             live.check("a reload during an ask: once the old fork ended, ask is taken again", later.get("ok"), json.dumps(later)[:200])
             if later.get("ok"):
                 live.ended(later["result"]["id"], 120)
@@ -440,13 +482,7 @@ def run_b(live):
     live.setup()
     live.start()
     live.turn("Reply with exactly this sentence and nothing else: %s" % SENTENCE)
-    probe = "/tmp/manager-probe-b-%d" % os.getpid()
-    r, end, fork = live.asked(TOUCH % probe)
-    live.check("auto mode: touch refused by the guard, no file, no permission prompt",
-               not os.path.exists(probe) and live.refusals(fork) and live.no_prompt_seen(),
-               "exists %s; calls %s; refusals %d; answer %r" % (os.path.exists(probe), live.tool_calls(fork), len(live.refusals(fork)),
-                                                             (end.get("text") or "")[:160]))
-    live.first_call_refused(fork, "auto mode")
+    live.touch_probe("/tmp/manager-probe-b-%d" % os.getpid(), "auto mode")
 
 
 def run_c(live):
