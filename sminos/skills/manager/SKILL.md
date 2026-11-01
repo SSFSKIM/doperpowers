@@ -82,7 +82,9 @@ says so) or "update since T" (every session from T).
    document: one item per need across sessions (a need one session relays from
    another is one item, raised at its first mention; when one session's item
    asks more than another's, such as a redeploy and a check after it, the part
-   the other lacks stays an item of its own), work outcomes merged across
+   the other lacks stays an item of its own; a merged item's status is the
+   one its digests' evidence shows, never moved further than that evidence
+   goes, `unverified` kept), work outcomes merged across
    sessions and held here to the initiative's cap (keep the outcomes that
    matter most to the owner; fold the rest into their meanings or into a held
    item), one brief per initiative written from the digests' prose. Its `sessions` lists each subscription you read through,
