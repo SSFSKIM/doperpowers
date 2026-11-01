@@ -493,6 +493,20 @@ class Status(unittest.TestCase):
         self.assertTrue(j["up"])
         self.assertIn(["launchctl", "print", "gui/%d/com.doperpowers.sminos-manager.st" % os.getuid()], stub_calls())
 
+    def test_a_loaded_agent_that_is_not_running_is_not_up(self):
+        self.env["STUB_DIR"] = stub_dir({
+            "tailscale status --json": ts_status(),
+            "tailscale serve status --json": self.serve_status(47700),
+            "launchctl print": "com.doperpowers.sminos-manager.st = {\n\tstate = waiting\n\tlast exit code = 1\n}\n"})
+        j = json.loads(manager("serve", "--status", "--name", "st", "--json", env=self.env).stdout)
+        self.assertTrue(j["launchd"]["loaded"])
+        self.assertFalse(j["launchd"]["running"])
+        self.assertTrue(j["tailscale"]["mapped"])
+        self.assertFalse(j["up"])
+        text = manager("serve", "--status", "--name", "st", env=self.env).stdout
+        self.assertIn("not running", text)
+        self.assertIn("waiting", text)
+
     def test_status_when_neither(self):
         self.env["STUB_DIR"] = stub_dir({"tailscale status --json": ts_status(),
                                          "tailscale serve status --json": self.serve_status(47999)})
@@ -516,6 +530,25 @@ class Status(unittest.TestCase):
 
     def test_flags_that_do_not_go_together(self):
         self.assertEqual(manager("serve", "--status", "--install").returncode, 2)
+
+
+class Page(unittest.TestCase):
+    """The page's script in a Node VM over a stand-in DOM (page_check.mjs)."""
+
+    def check(self, scenario):
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("no node on PATH")
+        r = subprocess.run([node, str(HERE / "page_check.mjs"), str(SKILL / "assets" / "page.html"), scenario],
+                           capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return json.loads(r.stdout)
+
+    def test_an_update_during_a_fetch_is_fetched_after_it(self):
+        got = self.check("refresh")
+        self.assertEqual(got["errors"], [])
+        self.assertEqual(got["fetches"], 2)          # the held fetch, then one for the update that landed meanwhile
+        self.assertEqual(got["shown"], "new")
 
 
 if __name__ == "__main__":

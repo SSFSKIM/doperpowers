@@ -88,6 +88,7 @@ details.item[open] > summary::after { transform: rotate(90deg); }
 .margin { color: var(--ink-muted); display: flex; flex-direction: column; padding-top: 0.15em; }
 .margin .type { color: var(--ink); }
 .body { min-width: 0; }
+.need, .meaning, .refs { display: block; }
 .need { overflow-wrap: anywhere; }
 .meaning { color: var(--ink-muted); font-size: var(--small); margin-top: var(--s1); }
 .meta { color: var(--ink-muted); margin-top: var(--s1); display: flex; flex-wrap: wrap; gap: 0 var(--s2);
@@ -367,14 +368,16 @@ details.fold > summary { cursor: pointer; padding: var(--s2) 0; color: var(--ink
     window.scrollTo(0, y);
   }
 
-  let loading = null;
+  // One fetch at a time; a request for a fresh ledger while one is in flight (an update that landed after it
+  // was sent) is kept and fetched as soon as the current one settles, so the last update is always shown.
+  let loading = null, again = false;
   function load() {
-    if (loading) return loading;
+    if (loading) { again = true; return loading; }
     loading = fetch("ledger.json", { cache: "no-store", credentials: "same-origin" })
       .then(r => { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
       .then(j => { ledger = j; lastError = ""; render(); })
       .catch(e => { lastError = String(e && e.message || e); render(); })
-      .finally(() => { loading = null; });
+      .finally(() => { loading = null; if (again) { again = false; load(); } });
     return loading;
   }
 

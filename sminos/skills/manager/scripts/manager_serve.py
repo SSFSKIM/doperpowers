@@ -373,13 +373,15 @@ def install(name, port=None):
 
 
 def status(name):
-    """{installed, address, port, https_port, owner, launchd: {loaded, state, pid}, tailscale: {mapped, proxy}, up}."""
+    """{installed, address, port, https_port, owner, launchd: {loaded, running, state, pid}, tailscale: {mapped, proxy},
+    up}: up when launchd runs the server (loaded alone may be an agent waiting out its throttle after a crash) and
+    tailscale maps the HTTPS port to it."""
     try:
         cfg = load_settings(name)
     except ValueError as e:
         raise Refused(str(e))
     out = {"name": name, "installed": cfg is not None, "address": None, "port": None, "https_port": None,
-           "owner": None, "launchd": {"loaded": False, "state": None, "pid": None},
+           "owner": None, "launchd": {"loaded": False, "running": False, "state": None, "pid": None},
            "tailscale": {"mapped": False, "proxy": None}, "up": False}
     if cfg is None:
         return out
@@ -396,8 +398,9 @@ def status(name):
             k, sep, v = line.strip().partition(" = ")
             if sep and k in ("state", "pid") and k not in fields:
                 fields[k] = v.strip()
-        out["launchd"] = {"loaded": True, "state": fields.get("state"),
-                          "pid": int(fields["pid"]) if fields.get("pid", "").isdigit() else None}
+        pid = int(fields["pid"]) if fields.get("pid", "").isdigit() else None
+        out["launchd"] = {"loaded": True, "running": fields.get("state") == "running" or pid is not None,
+                          "state": fields.get("state"), "pid": pid}
     code, text = run_tool(["tailscale", "serve", "status", "--json"])
     if code == 0:
         try:
@@ -408,7 +411,7 @@ def status(name):
             if host.rsplit(":", 1)[-1] == str(cfg["https_port"]):
                 proxy = (((conf or {}).get("Handlers") or {}).get("/") or {}).get("Proxy")
                 out["tailscale"] = {"mapped": proxy == "http://127.0.0.1:%d" % cfg["port"], "proxy": proxy}
-    out["up"] = out["launchd"]["loaded"] and out["tailscale"]["mapped"]
+    out["up"] = out["launchd"]["running"] and out["tailscale"]["mapped"]
     return out
 
 
@@ -418,9 +421,12 @@ def render_status(s):
             settings_path(s["name"]), "" if s["name"] == "default" else " --name " + s["name"])
     ld, ts = s["launchd"], s["tailscale"]
     lines = ["address:   %s%s" % (s["address"], "" if s["up"] else "  (not reachable yet)")]
-    if ld["loaded"]:
-        lines.append("launchd:   holds %s (%s%s)" % (label(s["name"]), ld["state"] or "loaded",
+    if ld["running"]:
+        lines.append("launchd:   holds %s (%s%s)" % (label(s["name"]), ld["state"] or "running",
                                                      ", pid %d" % ld["pid"] if ld["pid"] else ""))
+    elif ld["loaded"]:
+        lines.append("launchd:   holds %s but it is not running (state %s); its output is in %s"
+                     % (label(s["name"]), ld["state"] or "unknown", log_path(s["name"])))
     else:
         lines.append("launchd:   not loaded; load it: launchctl bootstrap gui/$(id -u) %s" % plist_path(s["name"]))
     if ts["mapped"]:
