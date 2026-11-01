@@ -48,6 +48,8 @@ rest.
     $M ledger                                          # the ledger as the last update left it
     $M ledger apply --file PATH                        # record an update's change (or `-` for stdin)
     $M query <member> "<question>"                     # a read-only fork of the session answers
+    $M serve --status                                  # the ledger's page: its address, whether it is up
+    $M serve --install                                 # only on the owner's word (below)
 
 `T` is local time: `9am`, `14:30`, `10h`, `2d`, or ISO-8601. `--name N`
 selects a second manager's state (default `default`).
@@ -119,8 +121,19 @@ says so) or "update since T" (every session from T).
      stand. Before a session's seen mark, only "while you were there" lines for
      decisions and changes of plan. A session the owner was in throughout gets
      those lines and no more ("you were in CI-opt until 14:20; nothing since").
+   - **The page's address**, last, when `$M serve --status --json` reports
+     `up`: its `address`, where the owner reads this ledger from their phone.
 
 An update in which nothing moved says so in a line or two.
+
+## The page
+
+`manager serve` shows the ledger, as the last update left it, as a read-only
+page on the owner's tailnet, admitting only their own Tailscale identity.
+Installing it is the owner's choice: run `$M serve --install` only when they
+ask for it, and hand them the two commands it prints (loading the launchd
+agent, exposing the port with `tailscale serve`) instead of running them, since
+they change the owner's machine and what their tailnet can reach.
 
 ## The ledger's terms
 

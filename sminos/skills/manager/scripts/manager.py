@@ -9,6 +9,7 @@
     manager ledger
     manager ledger apply (--file PATH | -)
     manager query <member> "<question>" [--timeout S]
+    manager serve [--port P] | serve --install [--port P] | serve --status
 
 Every command takes --json and --name N (which manager's state: $SMINOS_HOME/managers/<N>.json, default
 `default`). T is local time: 9am, 14:30 (today; a clock time later than now means yesterday), a duration back
@@ -16,7 +17,8 @@ from now (10h, 90m, 2d), or an ISO-8601 time. Exit codes are sminos's: 0, 1 a fa
 change refused), 4 an unknown or ambiguous member.
 
 Nothing here writes to a session or a project log: it reads transcripts and host events, and writes only the
-manager's own state file and its archive; `query` asks a fork of the session, which the session never sees.
+manager's own state file and its archive (and, for `serve --install`, serve.json and the launchd agent); `query`
+asks a fork of the session, which the session never sees.
 Resolving a member may let sminos reconcile a project's membership, as any sminos read does. Detail: CLAUDE.md
 beside this file.
 """
@@ -38,6 +40,7 @@ import sminos as S  # noqa: E402
 import sminos_bridge as B  # noqa: E402
 import sminos_fork as F  # noqa: E402
 import manager_ledger as L  # noqa: E402
+import manager_serve as SV  # noqa: E402
 import manager_window as W  # noqa: E402
 
 SHORT_RE = re.compile(r"^[0-9a-f]{8}$")
@@ -623,6 +626,24 @@ def cmd_query(a):
          "%s%s\n%s" % (got.text.rstrip("\n"), cut, via))
 
 
+def cmd_serve(a):
+    """`serve`: the page's server in the foreground; `--install` the launchd agent; `--status` where it stands
+    (manager_serve)."""
+    if a.port is not None and not 0 < a.port < 65536:
+        raise Usage("--port is a port number, 1-65535")
+    if a.status and a.port is not None:
+        raise Usage("serve --status takes no --port (it reads serve.json)")
+    try:
+        if a.status:
+            s = SV.status(a.name)
+            return emit(a, s, SV.render_status(s))
+        if a.install:
+            return print("\n".join(SV.install(a.name, a.port)))
+        SV.serve(a.name, a.port)
+    except SV.Refused as e:
+        fail(str(e), 1)
+
+
 def parser():
     p = argparse.ArgumentParser(prog="manager", description="The session manager's read-only views.")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -651,6 +672,11 @@ def parser():
     c.add_argument("member")
     c.add_argument("question")
     c.add_argument("--timeout", type=float, default=300, help="seconds to wait for the answer (default 300)")
+    c = command("serve", cmd_serve, help="the ledger's read-only page for the owner's tailnet")
+    how = c.add_mutually_exclusive_group()
+    how.add_argument("--install", action="store_true", help="write the launchd agent; print the load and expose commands")
+    how.add_argument("--status", action="store_true", help="the address, launchd's hold, tailscale's mapping")
+    c.add_argument("--port", type=int, help="the local port (default: serve.json's, else %d)" % SV.DEFAULT_PORT)
     return p
 
 

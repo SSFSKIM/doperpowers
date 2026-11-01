@@ -1,0 +1,394 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<meta name="referrer" content="no-referrer">
+<title>Ledger</title>
+<!-- The session manager's ledger, read-only (served by `manager serve`). Design law: DESIGN.md beside this file.
+     Every piece of ledger text is set with textContent; nothing on the page sends anything. -->
+<style>
+:root {
+  --ground: oklch(0.975 0.010 160);
+  --ink: oklch(0.26 0.020 160);
+  --ink-muted: oklch(0.47 0.020 160);
+  --rule: oklch(0.26 0.020 160 / 0.14);
+  --rule-strong: oklch(0.26 0.020 160 / 0.32);
+  --red: oklch(0.50 0.150 27);
+  --red-ground: oklch(0.50 0.150 27 / 0.08);
+  --serif: "Iowan Old Style", "Palatino Linotype", Palatino, ui-serif, Georgia, serif;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px; --s5: 24px; --s6: 32px; --s7: 48px;
+  --text: 17px; --small: 15px; --meta: 12.5px; --h-group: 19px; --h-init: 26px;
+  --margin: 4.5rem;
+  --column: 40rem;
+  --radius: 2px;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ground: oklch(0.19 0.012 160);
+    --ink: oklch(0.92 0.010 160);
+    --ink-muted: oklch(0.70 0.015 160);
+    --rule: oklch(0.92 0.010 160 / 0.14);
+    --rule-strong: oklch(0.92 0.010 160 / 0.32);
+    --red: oklch(0.72 0.140 27);
+    --red-ground: oklch(0.72 0.140 27 / 0.12);
+  }
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+body {
+  margin: 0; background: var(--ground); color: var(--ink);
+  font: var(--text)/1.45 var(--serif);
+  padding: max(var(--s5), env(safe-area-inset-top)) max(var(--s4), env(safe-area-inset-right))
+           max(var(--s7), env(safe-area-inset-bottom)) max(var(--s4), env(safe-area-inset-left));
+}
+main { max-width: var(--column); margin: 0 auto; }
+a { color: inherit; }
+:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; border-radius: var(--radius); }
+.mono, .margin, .meta, .stamp, .count, .fresh, .window, .refs, dt {
+  font-family: var(--mono); font-size: var(--meta); font-variant-numeric: tabular-nums; line-height: 1.5;
+}
+h1, h2, h3, h4 { font-weight: 600; margin: 0; }
+
+header { padding-bottom: var(--s4); border-bottom: 1px solid var(--rule-strong); }
+h1 { font-size: var(--h-init); line-height: 1.2; }
+.fresh, .window { margin: var(--s1) 0 0; color: var(--ink-muted); }
+.fresh .conn { white-space: nowrap; }
+.summary { list-style: none; margin: var(--s3) 0 0; padding: 0; }
+.summary li { display: flex; flex-wrap: wrap; gap: 0 var(--s2); align-items: baseline; padding: var(--s1) 0; }
+.summary a { font-weight: 600; }
+.summary .count { color: var(--ink-muted); }
+.summary .count.blocking { color: var(--red); }
+
+.initiative { padding-top: var(--s6); }
+.initiative > h2 { font-size: var(--h-init); line-height: 1.2; padding-bottom: var(--s2); }
+.part { padding-top: var(--s5); }
+.part > h3 { font-size: var(--h-group); display: flex; gap: var(--s2); align-items: baseline;
+  padding-bottom: var(--s2); border-bottom: 1px solid var(--rule-strong); }
+.part > h3 .count, .group > h4 .count { color: var(--ink-muted); font-weight: 400; }
+.group > h4 { font-size: var(--small); padding: var(--s3) 0 var(--s1); display: flex; gap: var(--s2);
+  align-items: baseline; }
+.group > h4 .why { font-weight: 400; color: var(--ink-muted); font-style: italic; }
+.group.blocking { border-bottom: 3px double var(--red); padding-bottom: var(--s1); }
+.empty { color: var(--ink-muted); font-style: italic; margin: var(--s3) 0 0; }
+
+details.item { border-bottom: 1px solid var(--rule); }
+details.item > summary {
+  list-style: none; cursor: pointer; display: grid; grid-template-columns: var(--margin) 1fr auto;
+  gap: 0 var(--s3); padding: var(--s3) 0; align-items: start;
+}
+details.item > summary::-webkit-details-marker { display: none; }
+details.item > summary::after {
+  content: "\203A"; font-family: var(--mono); color: var(--ink-muted); line-height: 1.45;
+  transition: none; display: inline-block;
+}
+details.item[open] > summary::after { transform: rotate(90deg); }
+.margin { color: var(--ink-muted); display: flex; flex-direction: column; padding-top: 0.15em; }
+.margin .type { color: var(--ink); }
+.body { min-width: 0; }
+.need { overflow-wrap: anywhere; }
+.meaning { color: var(--ink-muted); font-size: var(--small); margin-top: var(--s1); }
+.meta { color: var(--ink-muted); margin-top: var(--s1); display: flex; flex-wrap: wrap; gap: 0 var(--s2);
+  align-items: baseline; }
+.meta .mark { color: var(--ink); }
+.stamp { border: 1px solid var(--rule-strong); border-radius: var(--radius); padding: 0 var(--s1); color: var(--ink-muted); }
+.stamp.blocking { border-color: var(--red); color: var(--red); background: var(--red-ground); }
+.refs { color: var(--ink-muted); margin-top: var(--s1); overflow-wrap: anywhere; }
+.more { padding: 0 0 var(--s4) calc(var(--margin) + var(--s3)); }
+.more p { margin: 0 0 var(--s2); }
+.more .label { font-family: var(--mono); font-size: var(--meta); color: var(--ink-muted); }
+blockquote { margin: 0 0 var(--s3); font-style: italic; overflow-wrap: anywhere; }
+dl { margin: 0; display: grid; grid-template-columns: max-content 1fr; gap: var(--s1) var(--s3); }
+dt { color: var(--ink-muted); }
+dd { margin: 0; font-size: var(--small); overflow-wrap: anywhere; }
+
+details.item.row > summary { padding: var(--s2) 0; }
+details.item.row .need { font-size: var(--small); }
+details.item.row .meta { margin-top: 0; }
+
+details.fold { margin-top: var(--s2); }
+details.fold > summary { cursor: pointer; padding: var(--s2) 0; color: var(--ink-muted); font-family: var(--mono);
+  font-size: var(--meta); }
+.brief { padding-top: var(--s5); }
+.brief > summary { cursor: pointer; display: flex; flex-wrap: wrap; gap: 0 var(--s2); align-items: baseline;
+  padding-bottom: var(--s2); border-bottom: 1px solid var(--rule-strong); }
+.brief > summary h3 { font-size: var(--h-group); display: inline; }
+.brief > summary .mono { color: var(--ink-muted); }
+.brief .prose { max-width: 68ch; padding-top: var(--s3); }
+.brief .prose p { margin: 0 0 var(--s3); white-space: pre-line; }
+
+.notice { margin: var(--s6) 0 0; color: var(--ink-muted); font-style: italic; }
+
+@media (min-width: 48rem) {
+  body { padding-top: var(--s7); }
+  :root { --margin: 6rem; }
+}
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Ledger</h1>
+    <p class="fresh" id="fresh">Reading the ledger…</p>
+    <p class="window" id="window" hidden></p>
+    <ul class="summary" id="summary"></ul>
+  </header>
+  <div id="ledger" aria-live="polite"></div>
+</main>
+<script>
+"use strict";
+(function () {
+  const DAY = 864e5, RECENT = 7 * DAY;
+  const opened = new Set();       // ids of the disclosures the reader opened, kept across re-renders
+  let ledger = null, conn = "connecting", lastError = "";
+
+  function el(tag, cls, text) {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined && text !== null) e.textContent = String(text);
+    return e;
+  }
+  function add(parent, ...kids) { for (const k of kids) if (k) parent.appendChild(k); return parent; }
+  function put(parent, child) { parent.appendChild(child); return child; }
+  function time(ts) { const t = ts ? Date.parse(ts) : NaN; return isNaN(t) ? null : new Date(t); }
+  function clock(ts) {
+    const d = time(ts);
+    if (!d) return "";
+    const hm = d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+    if (d.toDateString() === new Date().toDateString()) return hm;
+    return d.toLocaleDateString("en-US", { month: "short", day: "numeric" }) + " " + hm;
+  }
+  function ago(ts) {
+    const d = time(ts);
+    if (!d) return "";
+    const m = Math.round((Date.now() - d.getTime()) / 60000);
+    if (m < 1) return "just now";
+    if (m < 60) return m + " min ago";
+    const h = Math.round(m / 60);
+    if (h < 36) return h + " h ago";
+    return Math.round(h / 24) + " days ago";
+  }
+  function slug(name) { return "i-" + String(name).toLowerCase().replace(/[^a-z0-9]+/g, "-"); }
+  function short(sid) { return sid ? String(sid).slice(0, 8) : ""; }
+
+  // A disclosure whose open state survives a re-render.
+  function disclosure(cls, id) {
+    const d = el("details", cls);
+    d.dataset.id = id;
+    if (opened.has(id)) d.open = true;
+    d.addEventListener("toggle", function () { if (d.open) opened.add(id); else opened.delete(id); });
+    return d;
+  }
+  function field(dl, label, value) {
+    if (!value) return;
+    add(dl, el("dt", null, label), el("dd", null, value));
+  }
+
+  // ------------------------------------------------------------- an owner's item
+  function statusWord(it) {
+    if (it.status === "answered" && it.unverified) return "answered (unverified)";
+    return it.status;
+  }
+  function yours(it, compact) {
+    const d = disclosure("item" + (compact ? " row" : ""), it.id);
+    const s = put(d, el("summary"));
+    const margin = el("span", "margin");
+    if (compact) add(margin, el("span", null, clock(it.status_at || it.changed)));
+    else add(margin, el("span", null, clock(it.raised)), el("span", "type", it.type));
+    const body = el("span", "body");
+    add(body, el("span", "need", it.need));
+    const meta = el("span", "meta");
+    add(meta, el("span", null, it.member));
+    if (compact) {
+      add(meta, el("span", "stamp", statusWord(it)));
+    } else if (it.status === "pending") {
+      add(meta, el("span", "stamp" + (it.blocking ? " blocking" : ""), it.blocking ? "blocking" : "optional"));
+      if (!it.seen) add(meta, el("span", "mark", "● unseen"));
+    } else {
+      add(meta, el("span", "stamp", statusWord(it)), el("span", null, clock(it.status_at)));
+    }
+    if (ledger && it.reported && it.reported === ledger.updated) add(meta, el("span", "mark", "new"));
+    add(body, meta);
+    add(s, margin, body);
+
+    const more = put(d, el("div", "more"));
+    if (it.why) add(more, add(el("p"), el("span", "label", "why you  "), document.createTextNode(it.why)));
+    if (it.source) add(more, el("blockquote", null, it.source));
+    if (it.evidence && it.status !== "pending") {
+      add(more, el("p", "label", statusWord(it) + (it.status_at ? " · " + clock(it.status_at) : "")));
+      add(more, el("blockquote", null, it.evidence));
+    }
+    const dl = put(more, el("dl"));
+    field(dl, "session", it.member + (it.session ? " · " + short(it.session) : ""));
+    field(dl, "type", it.type + (it.blocking ? ", blocking" : ", optional"));
+    field(dl, "raised", clock(it.raised));
+    field(dl, "status", statusWord(it) + (it.status_at ? " · " + clock(it.status_at) : ""));
+    return d;
+  }
+
+  // ------------------------------------------------------------- a work outcome
+  function work(it, compact) {
+    const d = disclosure("item" + (compact ? " row" : ""), it.id);
+    const s = put(d, el("summary"));
+    const margin = el("span", "margin");
+    if (compact) add(margin, el("span", null, clock(it.finished || it.changed)));
+    else add(margin, el("span", null, clock(it.started)), el("span", "type", it.status === "stalled" ? "stalled" : "work"));
+    const body = el("span", "body");
+    add(body, el("span", "need", it.title));
+    if (compact) {
+      add(body, add(el("span", "meta"), el("span", "stamp", "done")));
+    } else {
+      add(body, el("span", "meaning", it.meaning));
+      if (it.status === "stalled") add(body, add(el("span", "meta"), el("span", "mark", "waits on " + (it.waits_on || "?"))));
+      if (it.refs && it.refs.length) add(body, el("span", "refs", it.refs.join(" · ")));
+    }
+    add(s, margin, body);
+    const more = put(d, el("div", "more"));
+    if (compact && it.meaning) add(more, el("p", null, it.meaning));
+    const dl = put(more, el("dl"));
+    field(dl, "sessions", (it.members || []).join(", "));
+    field(dl, "started", clock(it.started));
+    field(dl, "finished", clock(it.finished));
+    if (it.status === "stalled") field(dl, "waits on", it.waits_on);
+    if (compact && it.refs && it.refs.length) field(dl, "refs", it.refs.join(" · "));
+    return d;
+  }
+
+  // ------------------------------------------------------------- one initiative
+  function part(title, count) {
+    const sec = el("section", "part");
+    const h = put(sec, el("h3", null, title));
+    if (count !== undefined) add(h, el("span", "count", count));
+    return sec;
+  }
+  function doneAt(it) {
+    const d = time(it.lane === "work" ? (it.finished || it.changed) : (it.status_at || it.changed));
+    return d ? d.getTime() : 0;
+  }
+
+  function initiative(ini) {
+    const items = ini.items || [];
+    const pending = items.filter(i => i.lane === "yours" && i.status === "pending");
+    const blocking = pending.filter(i => i.blocking), optional = pending.filter(i => !i.blocking);
+    const answered = items.filter(i => i.lane === "yours" && i.status === "answered");
+    const doing = items.filter(i => i.lane === "work" && i.status === "stalled")
+      .concat(items.filter(i => i.lane === "work" && i.status === "in progress"));
+    const done = items.filter(i => (i.lane === "yours" && (i.status === "done" || i.status === "overtaken"))
+      || (i.lane === "work" && i.status === "done")).sort((a, b) => doneAt(b) - doneAt(a));
+    const now = Date.now();
+    const recent = done.filter(i => now - doneAt(i) <= RECENT), older = done.filter(i => now - doneAt(i) > RECENT);
+
+    const sec = el("section", "initiative");
+    sec.id = slug(ini.name);
+    add(sec, el("h2", null, ini.name));
+
+    const needs = put(sec, part("Needs you", pending.length));
+    needs.classList.add("needs");
+    if (!pending.length) add(needs, el("p", "empty", "Nothing needs you in " + ini.name + "."));
+    if (blocking.length) {
+      const g = put(needs, el("div", "group blocking"));
+      add(put(g, el("h4", null, "Blocking")), el("span", "why", "work waits on you"));
+      blocking.forEach(i => add(g, yours(i)));
+    }
+    if (optional.length) {
+      const g = put(needs, el("div", "group"));
+      add(put(g, el("h4", null, "Optional")), el("span", "why", "asked, not waited on"));
+      optional.forEach(i => add(g, yours(i)));
+    }
+    if (answered.length) {
+      const a = put(sec, part("Answered", answered.length));
+      add(a, el("p", "empty", "In the sessions' hands."));
+      answered.forEach(i => add(a, yours(i)));
+    }
+    const w = put(sec, part("Work in progress", doing.length));
+    if (!doing.length) add(w, el("p", "empty", "Nothing in progress."));
+    doing.forEach(i => add(w, work(i)));
+
+    const dn = put(sec, part("Done", recent.length + (older.length ? " in 7 days" : "")));
+    if (!recent.length) add(dn, el("p", "empty", older.length ? "Nothing in the last 7 days." : "Nothing done yet."));
+    recent.forEach(i => add(dn, i.lane === "work" ? work(i, true) : yours(i, true)));
+    if (older.length) {
+      const f = put(dn, disclosure("fold", "older-" + ini.name));
+      add(f, el("summary", null, "older (" + older.length + ")"));
+      older.forEach(i => add(f, i.lane === "work" ? work(i, true) : yours(i, true)));
+    }
+
+    const b = ini.brief;
+    if (b && b.text) {
+      const br = put(sec, disclosure("brief", "brief-" + ini.name));
+      const s = put(br, el("summary"));
+      add(s, el("h3", null, "Brief"), el("span", "mono", "written " + clock(b.written) + (b.since ? ", from " + clock(b.since) : "")));
+      const prose = put(br, el("div", "prose"));
+      String(b.text).split(/\n\s*\n/).forEach(p => add(prose, el("p", null, p.trim())));
+    }
+    return { sec, blocking: blocking.length, optional: optional.length, answered: answered.length };
+  }
+
+  // ------------------------------------------------------------- the page
+  function header() {
+    const fresh = document.getElementById("fresh"), win = document.getElementById("window");
+    fresh.textContent = "";
+    const state = conn === "live" ? "live" : conn === "connecting" ? "connecting" : "reconnecting";
+    if (ledger && ledger.updated) {
+      add(fresh, document.createTextNode("updated " + clock(ledger.updated) + " · " + ago(ledger.updated) + " · "));
+    } else if (ledger) {
+      add(fresh, document.createTextNode("no update yet · "));
+    }
+    add(fresh, el("span", "conn", lastError ? "can't reach the Mac, showing what it last sent" : state));
+    const w = ledger && ledger.window;
+    win.hidden = !(w && w.since);
+    if (w && w.since) win.textContent = "covering " + clock(w.since) + " – " + clock(w.until);
+  }
+
+  function render() {
+    header();
+    if (!ledger) return;
+    const root = document.getElementById("ledger"), summary = document.getElementById("summary");
+    const y = window.scrollY;
+    root.textContent = "";
+    summary.textContent = "";
+    const inits = ledger.initiatives || [];
+    if (!inits.length) {
+      add(root, el("p", "notice", "No update yet. Ask the manager session for an update; this page shows the ledger as each update leaves it."));
+    }
+    for (const ini of inits) {
+      const r = initiative(ini);
+      add(root, r.sec);
+      const li = put(summary, el("li"));
+      const a = put(li, el("a", null, ini.name));
+      a.href = "#" + r.sec.id;
+      if (r.blocking) add(li, el("span", "count blocking", r.blocking + " blocking"));
+      add(li, el("span", "count", r.optional + " optional"));
+      if (r.answered) add(li, el("span", "count", r.answered + " answered"));
+    }
+    document.title = (inits.reduce((n, i) => n + (i.items || []).filter(x => x.lane === "yours" && x.status === "pending" && x.blocking).length, 0) || "") ? "Ledger · blocking" : "Ledger";
+    window.scrollTo(0, y);
+  }
+
+  let loading = null;
+  function load() {
+    if (loading) return loading;
+    loading = fetch("ledger.json", { cache: "no-store", credentials: "same-origin" })
+      .then(r => { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+      .then(j => { ledger = j; lastError = ""; render(); })
+      .catch(e => { lastError = String(e && e.message || e); render(); })
+      .finally(() => { loading = null; });
+    return loading;
+  }
+
+  function listen() {
+    const es = new EventSource("events");
+    es.onopen = function () { conn = "live"; load(); };
+    es.addEventListener("changed", function () { load(); });
+    es.onerror = function () { conn = "reconnecting"; header(); };
+  }
+
+  load();
+  listen();
+  setInterval(header, 30000);
+})();
+</script>
+</body>
+</html>
