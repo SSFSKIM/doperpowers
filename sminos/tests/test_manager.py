@@ -911,7 +911,7 @@ class Ledger(unittest.TestCase):
         st, _ = self.apply(st, update(briefs=[{"initiative": "P5", "since": iso(T0 - 3600), "text": "It went."}]),
                            T0 + 60)
         view = L.view(st, T0 + 120)
-        self.assertEqual(set(view), {"updated", "window", "initiatives"})
+        self.assertEqual(set(view), {"lang", "updated", "window", "initiatives"})
         (p5,) = view["initiatives"]
         self.assertEqual(set(p5), {"name", "items", "brief"})
         self.assertEqual([i["id"] for i in p5["items"]], ["y4", "y2", "y1", "y3", "y5", "w3", "w2", "w1"])
@@ -925,6 +925,19 @@ class Ledger(unittest.TestCase):
         self.assertIn("brief", text.splitlines()[-1])
         old = L.render(L.view(st, T0 + 8 * DAY), T0 + 8 * DAY)
         self.assertNotRegex(old, r"^\s+(y5|w1)\s", "done more than 7 days ago is left out of the text")
+
+    def test_lang_is_english_unless_the_state_holds_a_language_tag(self):
+        st = v2((SID, iso(T0 - DAY), None))
+        self.assertNotIn("lang", st, "absent stays absent")
+        self.assertEqual(L.view(st, T0)["lang"], "en")
+        for tag in ("ko", "pt-BR", "zh-Hant-TW"):
+            self.assertEqual(L.view(L.normalize(dict(st, lang=tag)), T0)["lang"], tag)
+        for bad in ("", "k", "korean", "ko_KR", "ko-", "-ko", None, 7, ["ko"]):
+            with self.assertRaises(L.Invalid, msg=repr(bad)) as raised:
+                L.normalize(dict(st, lang=bad))
+            self.assertIn("lang", raised.exception.problems[0])
+        held = L.normalize(dict(st, lang="ko"))
+        self.assertEqual(self.apply(held, update([yours()]))[0]["lang"], "ko", "an update keeps the language")
 
 
 def seen_of(sessions, since, until=None, stored=None):
@@ -1236,12 +1249,38 @@ class Commands(unittest.TestCase):
         self.assertEqual(r.stdout.strip(), "P5: 0 new · 1 changed · 1 still open")
         _, out, _ = self.run_in_alpha("ledger", "--json")
         got = json.loads(out)
-        self.assertEqual(set(got), {"updated", "window", "initiatives"})
+        self.assertEqual(set(got), {"lang", "updated", "window", "initiatives"})
         self.assertEqual([(i["name"], [x["id"] for x in i["items"]], i["brief"]["text"]) for i in got["initiatives"]],
                          [("P5", ["y1", "w1"], "Builder built.")])
         _, out, _ = self.run_in_alpha("ledger")
         self.assertRegex(out, r"(?m)^\s+y1\s+pending\s+decide\s+optional\b.*builder.*merge PR #9\?")
         self.assertRegex(out, r"(?m)^\s+w1\s+in progress\s+Sessions can be asked questions")
+
+    def test_ledger_lang_sets_and_shows_the_language(self):
+        self.run_in_alpha("subscriptions", "add", "P5", "builder")
+        self.assertEqual(self.run_in_alpha("ledger", "lang")[1].strip(), "en")
+        self.assertEqual(json.loads(self.run_in_alpha("ledger", "lang", "--json")[1]), {"lang": "en"})
+        self.assertNotIn("lang", self.state())
+        _, out, _ = self.run_in_alpha("ledger", "lang", "ko", "--json")
+        self.assertEqual(json.loads(out), {"lang": "ko"})
+        st = self.state()
+        self.assertEqual(st["lang"], "ko")
+        self.assertEqual([e["alias"] for e in st["initiatives"][0]["sessions"]], ["builder"], "the rest is kept")
+        self.assertEqual(stat.S_IMODE(self.state_file().stat().st_mode), 0o600)
+        self.assertEqual(self.run_in_alpha("ledger", "lang")[1].strip(), "ko")
+        self.assertEqual(json.loads(self.run_in_alpha("ledger", "--json")[1])["lang"], "ko")
+        self.assertNotIn("ko", self.run_in_alpha("ledger")[1], "the text output, for the model, stays as it was")
+        before = self.state_file().read_bytes()
+        for bad in ("korean", "ko_KR"):
+            r = self.run_in_alpha("ledger", "lang", bad, check=False)
+            self.assertEqual(r[0], 2, r[2])
+            self.assertIn("'%s' is not a language tag" % bad, r[2])
+        self.assertEqual(self.run_in_alpha("ledger", "lang", "ko", "en", check=False)[0], 2)
+        self.assertEqual(self.state_file().read_bytes(), before, "a refused tag leaves the file as it was")
+        self.write_state(dict(self.state(), lang="Korean!"))
+        r = self.run_in_alpha("ledger", check=False)
+        self.assertEqual(r[0], 1)
+        self.assertIn("lang 'Korean!' is not a language tag", r[2])
 
     def test_apply_flips_seen_across_a_subscriptions_lineage_and_survives_one_that_does_not_resolve(self):
         """GONE continued in GONE2: a done item a digest filed under GONE2 turns seen by GONE's mark; a subscription

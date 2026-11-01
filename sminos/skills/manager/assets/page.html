@@ -131,7 +131,7 @@ details.fold > summary { cursor: pointer; padding: var(--s2) 0; color: var(--ink
 <body>
 <main>
   <header>
-    <h1>Ledger</h1>
+    <h1 id="title">Ledger</h1>
     <p class="fresh" id="fresh">Reading the ledger…</p>
     <p class="window" id="window" hidden></p>
     <ul class="summary" id="summary"></ul>
@@ -145,6 +145,71 @@ details.fold > summary { cursor: pointer; padding: var(--s2) 0; color: var(--ink
   const opened = new Set();       // ids of the disclosures the reader opened, kept across re-renders
   let ledger = null, conn = "connecting", lastError = "";
 
+  // The page's own words, per language; the ledger's `lang` picks one by its primary subtag, English otherwise.
+  const WORDS = {
+    en: {
+      ledger: "Ledger", reading: "Reading the ledger…",
+      types: { decide: "decide", judge: "judge", act: "act", answer: "answer", other: "other" },
+      status: { pending: "pending", answered: "answered", unverified: "answered (unverified)", done: "done",
+        overtaken: "overtaken" },
+      blocking: "blocking", optional: "optional", unseen: "● unseen", fresh: "new", work: "work", stalled: "stalled",
+      waitsOn: x => "waits on " + x, whyYou: "why you",
+      f: { session: "session", type: "type", raised: "raised", status: "status", sessions: "sessions",
+        started: "started", finished: "finished", waitsOn: "waits on", refs: "refs" },
+      needs: "Needs you", noNeeds: name => "Nothing needs you in " + name + ".",
+      blockingH: "Blocking", blockingWhy: "work waits on you", optionalH: "Optional", optionalWhy: "asked, not waited on",
+      answered: "Answered", answeredNote: "In the sessions' hands.",
+      doing: "Work in progress", noDoing: "Nothing in progress.",
+      done: "Done", doneCount: (n, older) => n + (older ? " in 7 days" : ""),
+      noRecent: "Nothing in the last 7 days.", noDone: "Nothing done yet.", older: n => "older (" + n + ")",
+      brief: "Brief", written: (w, since) => "written " + w + (since ? ", from " + since : ""),
+      updated: (c, a) => "updated " + c + " · " + a + " · ", noUpdate: "no update yet · ",
+      conn: { live: "live", connecting: "connecting", reconnecting: "reconnecting" },
+      unreachable: "can't reach the Mac, showing what it last sent",
+      covering: (a, b) => "covering " + a + " – " + b,
+      notice: "No update yet. Ask the manager session for an update; this page shows the ledger as each update leaves it.",
+      count: { blocking: n => n + " blocking", optional: n => n + " optional", answered: n => n + " answered" },
+      titleBlocking: "Ledger · blocking",
+      ago: { now: "just now", min: m => m + " min ago", h: h => h + " h ago", days: d => d + " days ago" },
+    },
+    ko: {
+      ledger: "장부", reading: "장부를 읽는 중…",
+      types: { decide: "결정", judge: "판단", act: "조치", answer: "답변", other: "기타" },
+      status: { pending: "대기", answered: "답함", unverified: "답함(미확인)", done: "완료", overtaken: "넘어감" },
+      blocking: "차단", optional: "선택", unseen: "● 안 봄", fresh: "새 항목", work: "작업", stalled: "멈춤",
+      waitsOn: x => "대기 중: " + x, whyYou: "내가 필요한 이유",
+      f: { session: "세션", type: "유형", raised: "제기", status: "상태", sessions: "세션", started: "시작",
+        finished: "끝남", waitsOn: "대기 중", refs: "참조" },
+      needs: "내 차례", noNeeds: name => name + "에서 내 차례인 일은 없어요.",
+      blockingH: "차단", blockingWhy: "일이 나를 기다리는 중", optionalH: "선택", optionalWhy: "물었지만 기다리지는 않음",
+      answered: "답한 것", answeredNote: "세션이 처리하는 중이에요.",
+      doing: "진행 중", noDoing: "진행 중인 일이 없어요.",
+      done: "완료", doneCount: (n, older) => (older ? "7일간 " : "") + n,
+      noRecent: "최근 7일간 끝난 일이 없어요.", noDone: "아직 끝난 일이 없어요.", older: n => "이전 (" + n + ")",
+      brief: "요약", written: (w, since) => w + " 작성" + (since ? ", " + since + "부터" : ""),
+      updated: (c, a) => "업데이트 " + c + " · " + a + " · ", noUpdate: "아직 업데이트 없음 · ",
+      conn: { live: "실시간", connecting: "연결 중", reconnecting: "다시 연결 중" },
+      unreachable: "Mac에 연결할 수 없어 마지막으로 받은 내용을 보여주는 중",
+      covering: (a, b) => "범위 " + a + " – " + b,
+      notice: "아직 업데이트가 없어요. 관리자 세션에 업데이트를 요청하세요. 이 페이지는 업데이트마다 남은 장부를 보여줘요.",
+      count: { blocking: n => "차단 " + n, optional: n => "선택 " + n, answered: n => "답함 " + n },
+      titleBlocking: "장부 · 차단",
+      ago: { now: "방금", min: m => m + "분 전", h: h => h + "시간 전", days: d => d + "일 전" },
+    },
+  };
+  let T = WORDS.en, loc = "en";
+  const REMEMBER = "ledger-lang";   // the last ledger's language, so the next load starts in it
+
+  function speak(tag) {
+    tag = typeof tag === "string" && tag ? tag : "en";
+    T = WORDS[tag.split("-")[0].toLowerCase()] || WORDS.en;
+    try { new Intl.DateTimeFormat(tag); loc = tag; } catch (e) { loc = "en"; }
+    document.documentElement.lang = tag;
+    document.getElementById("title").textContent = T.ledger;
+  }
+  function recall() { try { return window.localStorage.getItem(REMEMBER); } catch (e) { return null; } }
+  function remember(tag) { try { window.localStorage.setItem(REMEMBER, tag); } catch (e) { /* not kept */ } }
+
   function el(tag, cls, text) {
     const e = document.createElement(tag);
     if (cls) e.className = cls;
@@ -157,21 +222,21 @@ details.fold > summary { cursor: pointer; padding: var(--s2) 0; color: var(--ink
   function clock(ts) {
     const d = time(ts);
     if (!d) return "";
-    const hm = d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+    const hm = d.toLocaleTimeString(loc, { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
     if (d.toDateString() === new Date().toDateString()) return hm;
-    return d.toLocaleDateString("en-US", { month: "short", day: "numeric" }) + " " + hm;
+    return d.toLocaleDateString(loc, { month: "short", day: "numeric" }) + " " + hm;
   }
   function ago(ts) {
     const d = time(ts);
     if (!d) return "";
     const m = Math.round((Date.now() - d.getTime()) / 60000);
-    if (m < 1) return "just now";
-    if (m < 60) return m + " min ago";
+    if (m < 1) return T.ago.now;
+    if (m < 60) return T.ago.min(m);
     const h = Math.round(m / 60);
-    if (h < 36) return h + " h ago";
-    return Math.round(h / 24) + " days ago";
+    if (h < 36) return T.ago.h(h);
+    return T.ago.days(Math.round(h / 24));
   }
-  function slug(name) { return "i-" + String(name).toLowerCase().replace(/[^a-z0-9]+/g, "-"); }
+  function slug(name) { return "i-" + String(name).toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "-"); }
   function short(sid) { return sid ? String(sid).slice(0, 8) : ""; }
 
   // A disclosure whose open state survives a re-render.
@@ -189,15 +254,16 @@ details.fold > summary { cursor: pointer; padding: var(--s2) 0; color: var(--ink
 
   // ------------------------------------------------------------- an owner's item
   function statusWord(it) {
-    if (it.status === "answered" && it.unverified) return "answered (unverified)";
-    return it.status;
+    if (it.status === "answered" && it.unverified) return T.status.unverified;
+    return T.status[it.status] || it.status;
   }
+  function typeWord(it) { return T.types[it.type] || it.type; }
   function yours(it, compact) {
     const d = disclosure("item" + (compact ? " row" : ""), it.id);
     const s = put(d, el("summary"));
     const margin = el("span", "margin");
     if (compact) add(margin, el("span", null, clock(it.status_at || it.changed)));
-    else add(margin, el("span", null, clock(it.raised)), el("span", "type", it.type));
+    else add(margin, el("span", null, clock(it.raised)), el("span", "type", typeWord(it)));
     const body = el("span", "body");
     add(body, el("span", "need", it.need));
     const meta = el("span", "meta");
@@ -205,27 +271,27 @@ details.fold > summary { cursor: pointer; padding: var(--s2) 0; color: var(--ink
     if (compact) {
       add(meta, el("span", "stamp", statusWord(it)));
     } else if (it.status === "pending") {
-      add(meta, el("span", "stamp" + (it.blocking ? " blocking" : ""), it.blocking ? "blocking" : "optional"));
-      if (!it.seen) add(meta, el("span", "mark", "● unseen"));
+      add(meta, el("span", "stamp" + (it.blocking ? " blocking" : ""), it.blocking ? T.blocking : T.optional));
+      if (!it.seen) add(meta, el("span", "mark", T.unseen));
     } else {
       add(meta, el("span", "stamp", statusWord(it)), el("span", null, clock(it.status_at)));
     }
-    if (ledger && it.reported && it.reported === ledger.updated) add(meta, el("span", "mark", "new"));
+    if (ledger && it.reported && it.reported === ledger.updated) add(meta, el("span", "mark", T.fresh));
     add(body, meta);
     add(s, margin, body);
 
     const more = put(d, el("div", "more"));
-    if (it.why) add(more, add(el("p"), el("span", "label", "why you  "), document.createTextNode(it.why)));
+    if (it.why) add(more, add(el("p"), el("span", "label", T.whyYou + "  "), document.createTextNode(it.why)));
     if (it.source) add(more, el("blockquote", null, it.source));
     if (it.evidence && it.status !== "pending") {
       add(more, el("p", "label", statusWord(it) + (it.status_at ? " · " + clock(it.status_at) : "")));
       add(more, el("blockquote", null, it.evidence));
     }
     const dl = put(more, el("dl"));
-    field(dl, "session", it.member + (it.session ? " · " + short(it.session) : ""));
-    field(dl, "type", it.type + (it.blocking ? ", blocking" : ", optional"));
-    field(dl, "raised", clock(it.raised));
-    field(dl, "status", statusWord(it) + (it.status_at ? " · " + clock(it.status_at) : ""));
+    field(dl, T.f.session, it.member + (it.session ? " · " + short(it.session) : ""));
+    field(dl, T.f.type, typeWord(it) + ", " + (it.blocking ? T.blocking : T.optional));
+    field(dl, T.f.raised, clock(it.raised));
+    field(dl, T.f.status, statusWord(it) + (it.status_at ? " · " + clock(it.status_at) : ""));
     return d;
   }
 
@@ -235,25 +301,25 @@ details.fold > summary { cursor: pointer; padding: var(--s2) 0; color: var(--ink
     const s = put(d, el("summary"));
     const margin = el("span", "margin");
     if (compact) add(margin, el("span", null, clock(it.finished || it.changed)));
-    else add(margin, el("span", null, clock(it.started)), el("span", "type", it.status === "stalled" ? "stalled" : "work"));
+    else add(margin, el("span", null, clock(it.started)), el("span", "type", it.status === "stalled" ? T.stalled : T.work));
     const body = el("span", "body");
     add(body, el("span", "need", it.title));
     if (compact) {
-      add(body, add(el("span", "meta"), el("span", "stamp", "done")));
+      add(body, add(el("span", "meta"), el("span", "stamp", T.status.done)));
     } else {
       add(body, el("span", "meaning", it.meaning));
-      if (it.status === "stalled") add(body, add(el("span", "meta"), el("span", "mark", "waits on " + (it.waits_on || "?"))));
+      if (it.status === "stalled") add(body, add(el("span", "meta"), el("span", "mark", T.waitsOn(it.waits_on || "?"))));
       if (it.refs && it.refs.length) add(body, el("span", "refs", it.refs.join(" · ")));
     }
     add(s, margin, body);
     const more = put(d, el("div", "more"));
     if (compact && it.meaning) add(more, el("p", null, it.meaning));
     const dl = put(more, el("dl"));
-    field(dl, "sessions", (it.members || []).join(", "));
-    field(dl, "started", clock(it.started));
-    field(dl, "finished", clock(it.finished));
-    if (it.status === "stalled") field(dl, "waits on", it.waits_on);
-    if (compact && it.refs && it.refs.length) field(dl, "refs", it.refs.join(" · "));
+    field(dl, T.f.sessions, (it.members || []).join(", "));
+    field(dl, T.f.started, clock(it.started));
+    field(dl, T.f.finished, clock(it.finished));
+    if (it.status === "stalled") field(dl, T.f.waitsOn, it.waits_on);
+    if (compact && it.refs && it.refs.length) field(dl, T.f.refs, it.refs.join(" · "));
     return d;
   }
 
@@ -285,34 +351,34 @@ details.fold > summary { cursor: pointer; padding: var(--s2) 0; color: var(--ink
     sec.id = slug(ini.name);
     add(sec, el("h2", null, ini.name));
 
-    const needs = put(sec, part("Needs you", pending.length));
+    const needs = put(sec, part(T.needs, pending.length));
     needs.classList.add("needs");
-    if (!pending.length) add(needs, el("p", "empty", "Nothing needs you in " + ini.name + "."));
+    if (!pending.length) add(needs, el("p", "empty", T.noNeeds(ini.name)));
     if (blocking.length) {
       const g = put(needs, el("div", "group blocking"));
-      add(put(g, el("h4", null, "Blocking")), el("span", "why", "work waits on you"));
+      add(put(g, el("h4", null, T.blockingH)), el("span", "why", T.blockingWhy));
       blocking.forEach(i => add(g, yours(i)));
     }
     if (optional.length) {
       const g = put(needs, el("div", "group"));
-      add(put(g, el("h4", null, "Optional")), el("span", "why", "asked, not waited on"));
+      add(put(g, el("h4", null, T.optionalH)), el("span", "why", T.optionalWhy));
       optional.forEach(i => add(g, yours(i)));
     }
     if (answered.length) {
-      const a = put(sec, part("Answered", answered.length));
-      add(a, el("p", "empty", "In the sessions' hands."));
+      const a = put(sec, part(T.answered, answered.length));
+      add(a, el("p", "empty", T.answeredNote));
       answered.forEach(i => add(a, yours(i)));
     }
-    const w = put(sec, part("Work in progress", doing.length));
-    if (!doing.length) add(w, el("p", "empty", "Nothing in progress."));
+    const w = put(sec, part(T.doing, doing.length));
+    if (!doing.length) add(w, el("p", "empty", T.noDoing));
     doing.forEach(i => add(w, work(i)));
 
-    const dn = put(sec, part("Done", recent.length + (older.length ? " in 7 days" : "")));
-    if (!recent.length) add(dn, el("p", "empty", older.length ? "Nothing in the last 7 days." : "Nothing done yet."));
+    const dn = put(sec, part(T.done, T.doneCount(recent.length, older.length > 0)));
+    if (!recent.length) add(dn, el("p", "empty", older.length ? T.noRecent : T.noDone));
     recent.forEach(i => add(dn, i.lane === "work" ? work(i, true) : yours(i, true)));
     if (older.length) {
       const f = put(dn, disclosure("fold", "older-" + ini.name));
-      add(f, el("summary", null, "older (" + older.length + ")"));
+      add(f, el("summary", null, T.older(older.length)));
       older.forEach(i => add(f, i.lane === "work" ? work(i, true) : yours(i, true)));
     }
 
@@ -320,7 +386,7 @@ details.fold > summary { cursor: pointer; padding: var(--s2) 0; color: var(--ink
     if (b && b.text) {
       const br = put(sec, disclosure("brief", "brief-" + ini.name));
       const s = put(br, el("summary"));
-      add(s, el("h3", null, "Brief"), el("span", "mono", "written " + clock(b.written) + (b.since ? ", from " + clock(b.since) : "")));
+      add(s, el("h3", null, T.brief), el("span", "mono", T.written(clock(b.written), b.since ? clock(b.since) : "")));
       const prose = put(br, el("div", "prose"));
       String(b.text).split(/\n\s*\n/).forEach(p => add(prose, el("p", null, p.trim())));
     }
@@ -331,16 +397,16 @@ details.fold > summary { cursor: pointer; padding: var(--s2) 0; color: var(--ink
   function header() {
     const fresh = document.getElementById("fresh"), win = document.getElementById("window");
     fresh.textContent = "";
-    const state = conn === "live" ? "live" : conn === "connecting" ? "connecting" : "reconnecting";
+    const state = conn === "live" ? T.conn.live : conn === "connecting" ? T.conn.connecting : T.conn.reconnecting;
     if (ledger && ledger.updated) {
-      add(fresh, document.createTextNode("updated " + clock(ledger.updated) + " · " + ago(ledger.updated) + " · "));
+      add(fresh, document.createTextNode(T.updated(clock(ledger.updated), ago(ledger.updated))));
     } else if (ledger) {
-      add(fresh, document.createTextNode("no update yet · "));
+      add(fresh, document.createTextNode(T.noUpdate));
     }
-    add(fresh, el("span", "conn", lastError ? "can't reach the Mac, showing what it last sent" : state));
+    add(fresh, el("span", "conn", lastError ? T.unreachable : state));
     const w = ledger && ledger.window;
     win.hidden = !(w && w.since);
-    if (w && w.since) win.textContent = "covering " + clock(w.since) + " – " + clock(w.until);
+    if (w && w.since) win.textContent = T.covering(clock(w.since), clock(w.until));
   }
 
   function render() {
@@ -352,7 +418,7 @@ details.fold > summary { cursor: pointer; padding: var(--s2) 0; color: var(--ink
     summary.textContent = "";
     const inits = ledger.initiatives || [];
     if (!inits.length) {
-      add(root, el("p", "notice", "No update yet. Ask the manager session for an update; this page shows the ledger as each update leaves it."));
+      add(root, el("p", "notice", T.notice));
     }
     for (const ini of inits) {
       const r = initiative(ini);
@@ -360,11 +426,11 @@ details.fold > summary { cursor: pointer; padding: var(--s2) 0; color: var(--ink
       const li = put(summary, el("li"));
       const a = put(li, el("a", null, ini.name));
       a.href = "#" + r.sec.id;
-      if (r.blocking) add(li, el("span", "count blocking", r.blocking + " blocking"));
-      add(li, el("span", "count", r.optional + " optional"));
-      if (r.answered) add(li, el("span", "count", r.answered + " answered"));
+      if (r.blocking) add(li, el("span", "count blocking", T.count.blocking(r.blocking)));
+      add(li, el("span", "count", T.count.optional(r.optional)));
+      if (r.answered) add(li, el("span", "count", T.count.answered(r.answered)));
     }
-    document.title = (inits.reduce((n, i) => n + (i.items || []).filter(x => x.lane === "yours" && x.status === "pending" && x.blocking).length, 0) || "") ? "Ledger · blocking" : "Ledger";
+    document.title = (inits.reduce((n, i) => n + (i.items || []).filter(x => x.lane === "yours" && x.status === "pending" && x.blocking).length, 0) || "") ? T.titleBlocking : T.ledger;
     window.scrollTo(0, y);
   }
 
@@ -375,7 +441,7 @@ details.fold > summary { cursor: pointer; padding: var(--s2) 0; color: var(--ink
     if (loading) { again = true; return loading; }
     loading = fetch("ledger.json", { cache: "no-store", credentials: "same-origin" })
       .then(r => { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
-      .then(j => { ledger = j; lastError = ""; render(); })
+      .then(j => { ledger = j; lastError = ""; speak(j.lang); remember(j.lang || "en"); render(); })
       .catch(e => { lastError = String(e && e.message || e); render(); })
       .finally(() => { loading = null; if (again) { again = false; load(); } });
     return loading;
@@ -388,6 +454,8 @@ details.fold > summary { cursor: pointer; padding: var(--s2) 0; color: var(--ink
     es.onerror = function () { conn = "reconnecting"; header(); };
   }
 
+  speak(recall());
+  document.getElementById("fresh").textContent = T.reading;
   load();
   listen();
   setInterval(header, 30000);

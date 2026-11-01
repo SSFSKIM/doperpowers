@@ -105,6 +105,10 @@ Spacing scale: 4, 8, 12, 16, 24, 32, 48.
 Plain, short, second person ("Nothing needs you in P5"). Sentence case. Times as the phone's local clock, `14:32`
 today, `Oct 30 14:32` otherwise. Empty states name what is absent and what will change it. No em dashes.
 
+Every word the page itself says comes from its per-language table, picked by the ledger's `lang` (English when it
+has no table); dates follow that locale, times stay on the 24-hour clock (`10월 30일 14:32`). Korean is plain 해요체
+for sentences and bare nouns for labels, the owner's own side said from their view (`내 차례`), never `당신`.
+
 ## 7. Motion
 
 None. An update re-renders in place; open disclosures stay open across a re-render (kept by item id).

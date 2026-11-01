@@ -8,6 +8,7 @@
     manager subscriptions remove <member>...
     manager ledger
     manager ledger apply (--file PATH | -)
+    manager ledger lang [<tag>]
     manager query <member> "<question>" [--timeout S]
     manager serve [--port P] | serve --install [--port P] | serve --status
 
@@ -533,15 +534,34 @@ def lineages_of(st):
     return out, failed
 
 
+def ledger_lang(a, tag):
+    """The ledger's language, printed; with a tag, set under the state's lock (a malformed one exits 2)."""
+    if tag is None:
+        lang = L.lang_of(load_state(a.name))
+        return emit(a, {"lang": lang}, lang)
+    if not L.valid_lang(tag):
+        raise Usage("'%s' is not a language tag (BCP 47, such as ko, en, pt-BR)" % tag)
+    with L.lock(a.name):
+        st = load_state(a.name)
+        st["lang"] = tag
+        L.save(a.name, st)
+    emit(a, {"lang": tag}, "the ledger's language is now %s" % tag)
+
+
 def cmd_ledger(a):
     """`ledger`: the ledger per initiative. `ledger apply`: one update's ledger change (manager_ledger.apply),
-    under the state's lock; a change that does not hold exits 2 naming every problem, the file unchanged."""
+    under the state's lock; a change that does not hold exits 2 naming every problem, the file unchanged.
+    `ledger lang [<tag>]`: the language the ledger is written and shown in, or set it."""
     words, now = a.words, time.time()
     if not words:
         if a.file:
             raise Usage("ledger apply (--file PATH | -)")
         v = L.view(load_state(a.name), now)
         return emit(a, v, L.render(v, now))
+    if words[0] == "lang":
+        if len(words) > 2 or a.file:
+            raise Usage("ledger lang [<tag>]")
+        return ledger_lang(a, words[1] if len(words) == 2 else None)
     if words[0] != "apply" or len(words) > 2 or (len(words) == 2) == bool(a.file) or (len(words) == 2 and words[1] != "-"):
         raise Usage("ledger apply (--file PATH | -)")
     try:
@@ -678,8 +698,9 @@ def parser():
     c.add_argument("--until")
     c = command("subscriptions", cmd_subscriptions, help="the sessions followed, by initiative")
     c.add_argument("words", nargs="*", metavar="add|remove ...")
-    c = command("ledger", cmd_ledger, help="the ledger; `ledger apply` records an update's change")
-    c.add_argument("words", nargs="*", metavar="apply [-]")
+    c = command("ledger", cmd_ledger, help="the ledger; `ledger apply` records an update's change; `ledger lang` "
+                                           "its language")
+    c.add_argument("words", nargs="*", metavar="apply [-] | lang [<tag>]")
     c.add_argument("--file")
     c = command("query", cmd_query, help="a question put to a fork of a member's session")
     c.add_argument("member")

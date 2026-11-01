@@ -7,7 +7,8 @@ read-modify-write holds an exclusive flock on `<name>.lock` beside it (`lock`). 
 in memory on read and is stored as version 2 at the next write.
 
 Times are stored in one form, UTC with milliseconds (`stamp`); any ISO-8601 time is accepted (`parse`, a time
-with no zone read as local, as the command line's T is).
+with no zone read as local, as the command line's T is). `lang`, optional, is the language the ledger's own text is
+written in and its page labelled in, a BCP-47-shaped tag (`ko`, `en`, `pt-BR`); absent means `en`.
 """
 
 import contextlib
@@ -16,6 +17,7 @@ import datetime
 import fcntl
 import json
 import os
+import re
 
 import sminos as S
 
@@ -52,6 +54,8 @@ SUBSTANTIVE = {"yours": ("type", "blocking", "need", "status", "evidence"),
 # `id` and `lane` name the item; `reported` and `changed` are apply's stamps, kept from the item held.
 OWN = ("id", "lane", "reported", "changed")
 DOC_KEYS = ("window", "sessions", "items", "briefs")
+DEFAULT_LANG = "en"
+LANG_RE = re.compile(r"^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$")     # a language, then subtags: ko, pt-BR, zh-Hant-TW
 
 
 class Invalid(Exception):
@@ -181,12 +185,16 @@ def normalize(raw):
         st["window"] = raw.get("window")
         st["items"] = [dict(i) for i in raw.get("items") or [] if isinstance(i, dict)]
         st["briefs"] = [dict(b) for b in raw.get("briefs") or [] if isinstance(b, dict)]
+    if "lang" in raw:
+        st["lang"] = raw["lang"]
     held = raw.get("next") if isinstance(raw.get("next"), dict) else {}
     for lane in "yw":
         used = [int(i["id"][1:]) for i in st["items"]
                 if isinstance(i.get("id"), str) and i["id"][:1] == lane and i["id"][1:].isdigit()]
         st["next"][lane] = max([held.get(lane) or 1] + [n + 1 for n in used])
     problems = []
+    if "lang" in st and not valid_lang(st["lang"]):
+        problems.append("lang %r is not a language tag (ko, en, pt-BR)" % (st["lang"],))
     for i in st["items"]:
         lane = i.get("lane")
         if not (isinstance(i.get("id"), str) and i["id"].strip()):
@@ -211,6 +219,15 @@ def _fill(item):
 
 
 # ------------------------------------------------------------------ validation
+
+def valid_lang(tag):
+    return isinstance(tag, str) and bool(LANG_RE.match(tag))
+
+
+def lang_of(st):
+    """The language the ledger is written and shown in: its `lang`, else English."""
+    return st.get("lang") or DEFAULT_LANG
+
 
 def _check_item(item, where):
     """The problems of one item as it would stand: its lane's fields, kinds, enumerations, and what its status
@@ -454,14 +471,14 @@ def _order(item):
 
 
 def view(st, now=None):
-    """`manager ledger --json`, the shape the page serves: {updated, window, initiatives: [{name, items, brief}]},
-    every item held, in the order the ledger shows them."""
+    """`manager ledger --json`, the shape the page serves: {lang, updated, window, initiatives: [{name, items,
+    brief}]}, every item held, in the order the ledger shows them."""
     out = []
     for name in initiative_names(st):
         items = sorted((i for i in st["items"] if i.get("initiative") == name), key=_order)
         brief = next((b for b in st["briefs"] if b.get("initiative") == name), None)
         out.append({"name": name, "items": items, "brief": brief})
-    return {"updated": st["updated"], "window": st["window"], "initiatives": out}
+    return {"lang": lang_of(st), "updated": st["updated"], "window": st["window"], "initiatives": out}
 
 
 def clock(ts, now):
