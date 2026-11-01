@@ -30,7 +30,7 @@
   [data-kind="social"] { --ground: #F5F6F7; }
   html, body { margin: 0; background: var(--ground); }
   .canvas { position: relative; overflow: hidden; background: var(--ground); }
-  [data-kind="banner"] .canvas { width: 1280px; height: 320px; }
+  [data-kind="banner"] .canvas { width: 1280px; height: 280px; }
   [data-kind="social"] .canvas { width: 1280px; height: 640px; }
   .word {
     position: absolute;
@@ -42,7 +42,7 @@
     line-height: 1;
     white-space: nowrap;
   }
-  [data-kind="banner"] .word { left: 64px; top: 104px; font-size: 104px; }
+  [data-kind="banner"] .word { left: 64px; top: 84px; font-size: 104px; }
   [data-kind="social"] .word { left: 88px; top: 116px; font-size: 132px; }
   .line {
     position: absolute;
@@ -78,7 +78,7 @@ function wobble(x, seed) {
 }
 
 function draw() {
-  const W = 1280, H = kind === 'social' ? 640 : 320;
+  const W = 1280, H = kind === 'social' ? 640 : 280;
   const svg = document.getElementById('art');
   svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
   svg.setAttribute('width', W);
@@ -92,7 +92,7 @@ function draw() {
   let g;
   if (kind === 'banner') {
     const wordRight = document.getElementById('word').getBoundingClientRect().right;
-    g = { x0: wordRight + 56, straight: 0, ys: [92, 140, 188, 236], mid: 164,
+    g = { x0: wordRight + 56, straight: 0, ys: [72, 120, 168, 216], mid: 144,
           amp: 20, lane: 3.4, merged: 6.5, dot: 5, mergeDot: 8.5 };
     const span = W - g.x0;
     g.straight = g.x0 + span * 0.4;

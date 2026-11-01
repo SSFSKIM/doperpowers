@@ -17,8 +17,8 @@ if (!chromium) throw new Error('playwright not found: set PLAYWRIGHT_CORE to its
 
 const source = pathToFileURL(join(here, 'banner.html')).href;
 const shots = [
-  { query: 'kind=banner&theme=light', out: 'banner-light.png', w: 1280, h: 320, scale: 2, transparent: true },
-  { query: 'kind=banner&theme=dark', out: 'banner-dark.png', w: 1280, h: 320, scale: 2, transparent: true },
+  { query: 'kind=banner&theme=light', out: 'banner-light.png', w: 1280, h: 280, scale: 2, transparent: true },
+  { query: 'kind=banner&theme=dark', out: 'banner-dark.png', w: 1280, h: 280, scale: 2, transparent: true },
   { query: 'kind=social', out: 'social-preview.png', w: 1280, h: 640, scale: 1, transparent: false },
 ];
 

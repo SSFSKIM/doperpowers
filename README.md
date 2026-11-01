@@ -8,7 +8,7 @@
 <p align="center">
   <b>Claude Code plugins for building software with agents.</b><br>
   <code>doperpowers</code> takes a change from a rough idea to a reviewed, merged branch.<br>
-  <code>sminos</code> turns your sessions, on one machine or several, into a team that sees, messages and hands work to each other.
+  <code>sminos</code> makes your sessions, on one machine or many, work as a team.
 </p>
 
 <p align="center">
@@ -22,14 +22,14 @@
 ## doperpowers: one method for every change
 
 ```mermaid
-flowchart LR
-    idea([a rough idea]) --> grill["<b>brainstorming</b><br/>grills you until nothing<br/>is silently assumed"]
-    grill --> design{{"the design<br/>you approve"}}
-    design -- "well scoped" --> here["built right here,<br/>test-first"]
-    design -- "needs a spec" --> spec["<b>execspec</b><br/>one living spec: design,<br/>acceptance, milestones"]
-    spec -- "one milestone" --> inorder["runs in order<br/>from the spec"]
+flowchart TD
+    idea([a rough idea]) --> grill["<b>brainstorming</b><br/>grills you until nothing is silently assumed"]
+    grill --> design{{"the design you approve"}}
+    design -- "well scoped" --> here["built right here, test-first"]
+    design -- "needs a spec" --> spec["<b>execspec</b><br/>one living spec: design, acceptance, milestones"]
+    spec -- "one milestone" --> inorder["runs in order from the spec"]
     spec -- "several" --> fresh["a fresh subagent per milestone,<br/>reviewed at each boundary"]
-    here --> review["<b>review-code</b><br/>another model family<br/>reviews the branch"]
+    here --> review["<b>review-code</b><br/>another model family reviews the branch"]
     inorder --> review
     fresh --> review
     review --> merged([merged])
