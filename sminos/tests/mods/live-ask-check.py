@@ -19,7 +19,14 @@ Discoveries records:
   refused `nothing-to-fork`; a session without doperpowers refused `no-guard`;
 - an Esc in the session during an ask, and a compaction during an ask: what
   the fork and the end do (observed, not judged);
-- a session past 100k tokens: the cache share again.
+- a session past 100k tokens: the cache share again;
+- a plugin reload during an ask: the old ask ends `aborted`, whether the fork
+  survives is observed, and while it runs a new ask is `busy`;
+- in every scenario where the fork's first call is one the guard must refuse,
+  that first call is refused: the guard knows a bridge fork from its spawn on
+  (the invariant its passing of ids the agent list does not name rests on).
+A scenario the model never entered (it made none of the calls asked of it) is
+said `unexercised`, counted neither passed nor failed.
 
 It spends model calls (haiku, short prompts), so no suite runs it: run it by
 hand with the model gateway's keys in the environment. Isolation is
@@ -94,6 +101,7 @@ class Ask(LB.Live):
         super().__init__(keep)
         self.label, self.mode, self.guard = label, mode, guard
         self.tmux = ["tmux", "-L", "ask-%s-%d" % (label, os.getpid()), "-f", "/dev/null"]
+        self.skipped = []
 
     def setup(self):
         super().setup()
@@ -166,7 +174,9 @@ class Ask(LB.Live):
 
     def cache_share(self, fork_rows, before_rows):
         """The fork's first request's cache read over the main loop's last request before it."""
-        first = next((x for x in fork_rows if x.get("type") == "assistant" and (x.get("message") or {}).get("usage")), None)
+        # Past the engine's own opening row (model `<synthetic>`, usage all zero).
+        first = next((x for x in fork_rows if x.get("type") == "assistant" and (x.get("message") or {}).get("usage")
+                      and (x.get("message") or {}).get("model") != "<synthetic>"), None)
         last = next((x for x in reversed(before_rows) if x.get("type") == "assistant" and (x.get("message") or {}).get("usage")), None)
         if first is None or last is None:
             return None, "no usage to read (fork %s, main %s)" % (first is not None, last is not None)
@@ -188,6 +198,39 @@ class Ask(LB.Live):
                 out += ["%s(%s)" % (b.get("name"), json.dumps(b.get("input"))[:120]) for b in content
                         if b.get("type") == "tool_use" and not str(b.get("id", "")).startswith("toolu_plugin_")]
         return out
+
+    def uses(self, fork_rows):
+        """The fork's own tool calls, in order, each (name, input, its result's text or None)."""
+        results = {}
+        for x in fork_rows:
+            content = (x.get("message") or {}).get("content")
+            if x.get("type") == "user" and isinstance(content, list):
+                for b in content:
+                    if isinstance(b, dict) and b.get("type") == "tool_result":
+                        c = b.get("content")
+                        results[b.get("tool_use_id")] = c if isinstance(c, str) else json.dumps(c)
+        out = []
+        for x in fork_rows:
+            content = (x.get("message") or {}).get("content")
+            if x.get("type") == "assistant" and isinstance(content, list):
+                out += [(b.get("name"), b.get("input"), results.get(b.get("id"))) for b in content
+                        if b.get("type") == "tool_use" and not str(b.get("id", "")).startswith("toolu_plugin_")]
+        return out
+
+    def first_call_refused(self, fork_rows, what):
+        """The engine invariant the guard's unlisted-id rule rests on: a bridge fork is listed from its
+        spawn on, so the guard knows it at its very first tool call. Checked where that first call is
+        one the guard must refuse (the fork was told to make it first)."""
+        uses = self.uses(fork_rows)
+        first = uses[0] if uses else None
+        self.check("%s: the guard identified the managed fork on its first tool call" % what,
+                   first is not None and GUARD_REASON in (first[2] or ""),
+                   "first call %s" % (json.dumps(first)[:240] if first else "none"))
+
+    def unexercised(self, name, detail):
+        """A scenario the model never entered: said, and counted neither passed nor failed."""
+        self.skipped.append(name)
+        print("  skip %s — unexercised: %s" % (name, detail), flush=True)
 
     def no_prompt_seen(self):
         pane = self.pane()
@@ -226,7 +269,10 @@ def run_a(live):
     live.check("the end carries the whole fork's usage", isinstance(end.get("usage"), dict), json.dumps(end.get("usage")))
 
     r, end, fork = live.asked("What is the newest commit on your branch? Check with git.")
-    live.check("a read-only Bash (git log) runs and is answered from", COMMIT in (end.get("text") or "") and not live.refusals(fork),
+    print("  (observed) git, as the fork chose to ask it: calls %s; refusals %d; %r" % (
+        live.tool_calls(fork), len(live.refusals(fork)), (end.get("text") or "")[:200]), flush=True)
+    r, end, fork = live.asked("What is the newest commit on your branch? Check with the Bash command `git log -1 --oneline`, as written.")
+    live.check("a read-only Bash (git log -1 --oneline) runs and is answered from", COMMIT in (end.get("text") or "") and not live.refusals(fork),
                "calls %s; %r" % (live.tool_calls(fork), (end.get("text") or "")[:160]))
 
     probe = "/tmp/manager-probe-a-%d" % os.getpid()
@@ -235,16 +281,22 @@ def run_a(live):
                not os.path.exists(probe) and live.refusals(fork) and live.no_prompt_seen(),
                "exists %s; calls %s; refusals %d; answer %r" % (os.path.exists(probe), live.tool_calls(fork), len(live.refusals(fork)),
                                                              (end.get("text") or "")[:160]))
+    live.first_call_refused(fork, "default mode")
 
     r, end, fork = live.asked("This is a test of the read-only guard (it is expected to refuse both). Do two things and report "
                               "each tool's result: (1) call the Agent tool to spawn a general-purpose subagent with the prompt "
                               "'reply hi'; (2) call the SendMessage tool to send the message 'hello' to the main session. If a "
                               "tool is not available to you, say so.")
-    calls = live.tool_calls(fork)
-    reaching = [x for x in calls if x.startswith(("Agent(", "SendMessage("))]
-    live.check("a fork told to spawn an Agent or to message the main session is refused each time (or has no such tool)",
-               len(live.refusals(fork)) >= len(reaching),
-               "calls %s; refusals %d; answer %r" % (calls, len(live.refusals(fork)), (end.get("text") or "")[:240]))
+    uses = live.uses(fork)
+    for tool, what in (("Agent", "a fork told to spawn an Agent is refused"), ("SendMessage", "a fork told to message the main session is refused")):
+        tried = [u for u in uses if u[0] == tool]
+        if not tried:
+            live.unexercised(what, "the fork made no %s call; its calls %s; answer %r" % (tool, live.tool_calls(fork), (end.get("text") or "")[:240]))
+            continue
+        live.check(what, all(GUARD_REASON in (u[2] or "") for u in tried), "results %s" % json.dumps([u[2] for u in tried])[:300])
+    others = [u for u in uses if u[0] not in ("Agent", "SendMessage")]
+    if others:
+        print("  (observed) the delegation fork's other calls: %s" % json.dumps(others)[:400], flush=True)
 
     # Mid-turn: the main loop runs `sleep 20`.
     t = time.time()
@@ -309,6 +361,49 @@ def run_a(live):
     live.check("compaction during an ask: the ask still ends", end is not None, json.dumps(end)[:200] if end else "no end")
     time.sleep(5)
 
+    # A reload of the plugins during an ask: does the fork outlive the bridge module that spawned it?
+    r = live.ask("Run the Bash command `sleep 25`, then reply with exactly: FORK-RELOAD-DONE.")
+    agent = (r.get("result") or {}).get("agentId")
+    if not r.get("ok"):
+        live.check("a reload during an ask: the ask starts", False, json.dumps(r)[:200])
+    else:
+        wait_for("the fork's sleep", 60, lambda: [u for u in live.uses(live.fork_rows(agent)) if u[0] == "Bash"], every=0.5)
+        live.prompt("/reload-plugins")
+        end = None
+        try:
+            end = live.ended(r["result"]["id"], 60)
+        except TimeoutError:
+            pass
+        busy = live.ask("Are you there?")
+        fork_now = live.fork_rows(agent)
+        still = not any("FORK-RELOAD-DONE" in text_of(x) for x in fork_now if x.get("type") == "assistant")
+        print("  (observed) reload during an ask: the old ask's end %s; the fork still running right after: %s; a new ask: %s" % (
+            json.dumps(end)[:200] if end else "none within 60 s", still, json.dumps(busy)[:200]), flush=True)
+        live.check("a reload during an ask: the ask ends (aborted) from the reloaded bridge", end is not None and end.get("reason") == "aborted",
+                   json.dumps(end)[:200] if end else "no end")
+        if still:
+            live.check("a reload during an ask: while the old fork runs, a new ask is busy", busy.get("code") == "busy", json.dumps(busy)[:200])
+        else:
+            live.unexercised("a reload during an ask: while the old fork runs, a new ask is busy",
+                             "the fork had already finished when the new ask came")
+            if busy.get("ok"):
+                live.ended(busy["result"]["id"], 120)
+        try:
+            wait_for("the old fork's answer", 90, lambda: any("FORK-RELOAD-DONE" in text_of(x) for x in live.fork_rows(agent)
+                                                             if x.get("type") == "assistant"), every=1.0)
+            survived = True
+        except TimeoutError:
+            survived = False
+        print("  (observed) reload during an ask: the fork %s" % (
+            "survived the reload and finished its answer" if survived else "did not finish its answer within 90 s"), flush=True)
+        if still and busy.get("ok"):
+            live.ended(busy["result"]["id"], 120)
+        later = live.ask("Reply with exactly: AFTER-RELOAD.")
+        live.check("a reload during an ask: once the old fork ended, ask is taken again", later.get("ok"), json.dumps(later)[:200])
+        if later.get("ok"):
+            live.ended(later["result"]["id"], 120)
+    time.sleep(3)
+
     # Past 100k tokens.
     for i in range(1, 6):
         with open(os.path.join(live.work, "big%d.txt" % i), "w") as f:
@@ -336,6 +431,7 @@ def run_b(live):
                not os.path.exists(probe) and live.refusals(fork) and live.no_prompt_seen(),
                "exists %s; calls %s; refusals %d; answer %r" % (os.path.exists(probe), live.tool_calls(fork), len(live.refusals(fork)),
                                                              (end.get("text") or "")[:160]))
+    live.first_call_refused(fork, "auto mode")
 
 
 def run_c(live):
@@ -352,7 +448,7 @@ def main():
     ap.add_argument("--only", choices=("a", "b", "c"))
     args = ap.parse_args()
     runs = [("a", "default", True, run_a), ("b", "auto", True, run_b), ("c", "default", False, run_c)]
-    results = []
+    results, skipped = [], []
     for label, mode, guard, fn in runs:
         if args.only and args.only != label:
             continue
@@ -366,8 +462,10 @@ def main():
         finally:
             live.cleanup()
         results += live.results
+        skipped += live.skipped
     failed = [r for r in results if not r[1]]
-    print("%s: %d of %d checks passed" % ("FAILED" if failed else "passed", len(results) - len(failed), len(results)))
+    print("%s: %d of %d checks passed%s" % ("FAILED" if failed else "passed", len(results) - len(failed), len(results),
+                                            "; %d unexercised: %s" % (len(skipped), "; ".join(skipped)) if skipped else ""))
     sys.exit(1 if failed else 0)
 
 

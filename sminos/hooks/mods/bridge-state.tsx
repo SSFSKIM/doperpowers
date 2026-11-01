@@ -51,6 +51,12 @@ export type Answer = { ok: true; result: Record<string, unknown> } | { ok: false
  * that end. `settle` hands the end to the op that waits for it.
  */
 export type OpenAsk = { agentId: string; end?: Record<string, unknown>; settle: (end: Record<string, unknown>) => void; ended: Promise<Record<string, unknown>> }
+/**
+ * A main-loop response that completed, as the rows can be searched for it
+ * (bridge-ask.tsx): its tool calls' ids and its text blocks, a response with
+ * no tool call found by its text.
+ */
+export type ResponseMark = { toolUseIds: string[]; texts: string[] }
 /** The model and effort chosen for this session through the bridge; null keeps the session's own. */
 export type Override = { model: string | null; effort: Effort | null }
 /** A value as an event carries it (`capped`): every string held to TEXT_CAP, and whether any was. */
@@ -449,11 +455,16 @@ export type BridgeState = {
   /** An ask is between its busy check and its spawn's answer: another is busy meanwhile. */
   isAskStarting: boolean
   /**
-   * The tool calls' ids of the main loop's last response that completed (its
-   * stop chunk carried usage): a fork's tail starts at the row holding them
-   * (bridge-ask.tsx).
+   * The fork agents of asks a module before this one left open, by agent id
+   * (bridge-ask.tsx): ended `aborted`, though the fork may still run, so the
+   * next ask is busy while `$.agent.list()` shows one running.
    */
-  lastResponseTools: string[]
+  askOrphans: Set<string>
+  /**
+   * The main loop's last response that completed (its stop chunk carried
+   * usage): a fork's tail starts at the row holding it (bridge-ask.tsx).
+   */
+  lastResponse: ResponseMark
   /**
    * The desk's agent stops whose note to the parent is not in yet
    * (bridge-agent-ops.tsx): an Agent call's result and the stopped agent's
@@ -513,7 +524,8 @@ const fresh = (): BridgeState => ({
   askOpen: new Map(),
   askWrites: Promise.resolve(),
   isAskStarting: false,
-  lastResponseTools: [],
+  askOrphans: new Set(),
+  lastResponse: { toolUseIds: [], texts: [] },
   agentStops: new Set(),
   media: [],
   mediaWrites: Promise.resolve(),

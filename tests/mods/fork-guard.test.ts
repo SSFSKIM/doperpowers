@@ -265,7 +265,7 @@ describe('the read-only fork guard: everything else untouched', () => {
     expect(eng.lists()).toBe(0)
   })
 
-  test("a loop the list does not name (a workflow's agent, the engine's own fork) passes, and is looked for again at its next call", async () => {
+  test("a loop the list does not name passes, since the engine lists no workflow agent or engine fork while it lists a bridge fork from its spawn on; it is looked for again at its next call", async () => {
     resetForkGuard()
     const eng = engine()
     const hooks = collect(registerForkGuard)

@@ -1,7 +1,7 @@
 import type { EngineInterface, SessionMessage, TurnCompleteInput } from 'claude-code'
 import { NOTHING_TO_FORK, boundedText, usageOf } from './bridge-btw'
 import { capped, message, state } from './bridge-state'
-import type { Answer, OpenAsk } from './bridge-state'
+import type { Answer, OpenAsk, ResponseMark } from './bridge-state'
 import { emit, emitOwed } from './bridge-stream'
 
 /**
@@ -93,19 +93,39 @@ function newest(text: string): string {
 }
 
 /**
- * What followed the main loop's last completed request, as text: from the
- * response that request got (the rows holding the tool calls in `anchors`,
- * with the assistant rows of the same response before them) to now, each
- * assistant text, each tool call as `name(input)` with its result under it,
- * input and result cut to TAIL_RESULT_MAX; the user rows are left out, a
- * result riding on its call. The newest TAIL_MAX bytes are kept. Nothing when
- * no row holds the response (it had no tool call, or the rows moved on).
+ * Whether a row holds the response `mark` names: one of its tool calls, or
+ * its text (a block, or the blocks joined, as a row holding several reads).
+ * The rows carry no id of their own (`$.session.messages()`), so a response
+ * with no tool call is found by its text; the search runs from the newest
+ * row back, and only rows newer than the response could repeat it.
  */
-export function renderTail(rows: readonly SessionMessage[], anchors: ReadonlySet<string>): string {
+function holds(row: SessionMessage, mark: ResponseMark): boolean {
+  if (row.role !== 'assistant') {
+    return false
+  }
+  if ((row.toolUses ?? []).some((use) => mark.toolUseIds.includes(use.tool_use_id))) {
+    return true
+  }
+  const text = typeof row.text === 'string' ? row.text.trim() : ''
+  if (text === '') {
+    return false
+  }
+  return mark.texts.some((t) => t.trim() === text) || (mark.texts.length > 1 && [mark.texts.join('\n'), mark.texts.join('')].some((t) => t.trim() === text))
+}
+
+/**
+ * What followed the main loop's last completed request, as text: from the
+ * response that request got (the newest row holding it, with the assistant
+ * rows of the same response before it) to now, each assistant text, each
+ * tool call as `name(input)` with its result under it, input and result cut
+ * to TAIL_RESULT_MAX; the user rows are left out, a result riding on its
+ * call. The newest TAIL_MAX bytes are kept. Nothing when no row holds the
+ * response (it said nothing visible, or the rows moved on).
+ */
+export function renderTail(rows: readonly SessionMessage[], mark: ResponseMark): string {
   let at = -1
   for (let i = rows.length - 1; i >= 0; i--) {
-    const row = rows[i]!
-    if (row.role === 'assistant' && (row.toolUses ?? []).some((use) => anchors.has(use.tool_use_id))) {
+    if (holds(rows[i]!, mark)) {
       at = i
       break
     }
@@ -221,6 +241,7 @@ export async function endOrphanedAsks($: EngineInterface) {
     const open = opened(agentId)
     open.settle({ reason: 'aborted' })
     state.askOpen.set(id, open)
+    state.askOrphans.add(agentId)
     void finished($, id, open)
   }
 }
@@ -230,6 +251,7 @@ export function askTurnEnded(e: TurnCompleteInput) {
   if (e.agentId === undefined) {
     return
   }
+  state.askOrphans.delete(e.agentId)
   for (const open of state.askOpen.values()) {
     if (open.agentId === e.agentId) {
       open.settle(askEnd(e))
@@ -241,8 +263,36 @@ export function askTurnEnded(e: TurnCompleteInput) {
  * The main loop's response completed (a stop chunk carrying usage passed up
  * through the bridge's turn.step): a mid-turn fork's tail starts at it.
  */
-export function noteMainResponse(toolUseIds: readonly string[]) {
-  state.lastResponseTools = [...toolUseIds]
+export function noteMainResponse(mark: ResponseMark) {
+  state.lastResponse = { toolUseIds: [...mark.toolUseIds], texts: [...mark.texts] }
+}
+
+/** An agent's status in `$.agent.list()` while its loop may still act. */
+const LIVE_STATUSES = new Set(['pending', 'running', 'waiting'])
+
+/**
+ * Whether an orphan's fork (an ask a module before this one left open) may
+ * still run: the list read now, each orphan the list no longer shows live let
+ * go for good. A list that cannot be read says nothing is known: still busy.
+ */
+async function isOrphanRunning($: EngineInterface): Promise<boolean> {
+  let agents: unknown
+  try {
+    agents = await $.agent.list()
+  } catch (error) {
+    state.log?.(`bridge: the agent list was not read for an orphaned manager query: ${message(error)}`)
+    return true
+  }
+  if (!Array.isArray(agents)) {
+    return true
+  }
+  for (const id of [...state.askOrphans]) {
+    const listed = agents.find((a) => a?.id === id)
+    if (listed === undefined || !LIVE_STATUSES.has(String(listed.status))) {
+      state.askOrphans.delete(id)
+    }
+  }
+  return state.askOrphans.size > 0
 }
 
 /**
@@ -262,6 +312,10 @@ export async function forkQuestion($: EngineInterface, id: string, prompt: unkno
   }
   state.isAskStarting = true
   try {
+    // A fork a reload left behind may still be running: one at a time holds across a reload.
+    if (state.askOrphans.size > 0 && (await isOrphanRunning($))) {
+      return { ok: false, error: ASK_BUSY, code: 'busy' }
+    }
     if (!(await isGuardLoaded($))) {
       return { ok: false, error: NO_GUARD, code: 'no-guard' }
     }
@@ -269,7 +323,7 @@ export async function forkQuestion($: EngineInterface, id: string, prompt: unkno
     if (rows.length === 0) {
       return { ok: false, error: NOTHING_TO_FORK, code: 'nothing-to-fork' }
     }
-    const tail = state.mainTurn !== undefined ? renderTail(rows, new Set(state.lastResponseTools)) : ''
+    const tail = state.mainTurn !== undefined ? renderTail(rows, state.lastResponse) : ''
     const spawned = await $.agent.spawn({ subagentType: 'fork', description: ASK_DESCRIPTION, prompt: askPrompt(tail, prompt) })
     const agentId = 'agentId' in spawned ? spawned.agentId : undefined
     if (agentId === undefined) {

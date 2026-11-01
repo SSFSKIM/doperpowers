@@ -2105,8 +2105,9 @@ export function registerBridge(on: On) {
     let chunkIndex = 0
     let stopReason: unknown = null
     let usage: unknown = null
-    /** The tool calls of this main-loop response, for a manager query's tail once it completes (bridge-ask.tsx). */
+    /** This main-loop response's tool calls and text blocks, for a manager query's tail once it completes (bridge-ask.tsx). */
     const toolUseIds: string[] = []
+    const texts: string[] = []
     try {
       const stream = synthetic ?? next(input)
       for await (const chunk of stream) {
@@ -2115,8 +2116,10 @@ export function registerBridge(on: On) {
         }
         if (isMain && chunk.kind === 'tool') {
           toolUseIds.push(chunk.id)
+        } else if (isMain && chunk.kind === 'text') {
+          texts[chunk.index] = (texts[chunk.index] ?? '') + chunk.text
         } else if (isMain && chunk.kind === 'stop' && chunk.usage !== null) {
-          noteMainResponse(toolUseIds)
+          noteMainResponse({ toolUseIds, texts: texts.filter((t) => typeof t === 'string') })
         }
         yield chunk
       }
