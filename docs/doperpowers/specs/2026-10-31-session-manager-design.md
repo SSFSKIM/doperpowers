@@ -465,6 +465,10 @@ A failure reads as one line on stderr and exit 1, for example `manager: CI-opt r
   Evidence: idle forks quoted the last assistant message (`PELICAN`, `SLEEP-DONE`); a mid-turn fork's context excluded the in-flight `sleep` call.
 - Observation: Spawning a fork agent from a slash command writes rows into the conversation; it is visible in the session's agent strip and `/tasks`.
   Evidence: two `local_command` user rows per command spawn; footer `◯ fork  fork probe idle  5s · ↓ 28.8k tokens`; `$.agent.list()` `type: fork, status: running`, then `completed`, `spawnedBy: forkprobe`.
+- Observation: Reading a window of a 669 MB transcript takes ~0.35 s; resolving the member is the cost of `manager transcript`, 2–10 s depending on how it is named.
+  Evidence: M1, b4948247 (669,398,962 bytes), `--since 10h`: by alias from a doperpowers session 2.43 s and 2.72 s; from a directory with no session id 5.44 s; by short id from inside a session 7.95 s (1.1 s CPU). Profile: `find_target`'s org-wide short pass builds 91 projects' views (~6.7 s under cProfile) and `caller_scope` runs `claude agents --json` (~2.4 s). Acceptance 3 is stated by alias, which holds with margin.
+- Observation: The P5 transcripts hold no `you·desk`/`you·desk?` rows over three days; mid-turn prompts are `queued_command` attachments carrying their own `origin`; task notifications appear both as origin-`task-notification` user rows and as `queued_command` attachments.
+  Evidence: M1's survey of the three P5 transcripts; the delivery forms are pinned by fixtures built from `bridge.tsx`'s code.
 
 ## Decision Log
 
@@ -497,6 +501,10 @@ A failure reads as one line on stderr and exit 1, for example `manager: CI-opt r
 - Decision: Execution pre-flight. The guard's agent lookup follows Interfaces ("remembers each agent id's verdict once resolved"); M2's decision line "`$.agent.list()` is read per `tool.check` of a subagent loop" is read as: looked up per call until the id's verdict is resolved, then remembered. A resolved verdict is re-derivable (an agent's `type` and `spawnedBy` are fixed at spawn and ids are not reused); an unresolved id (list rejected or lacks it) is refused and never remembered, so the next call looks again.
   Rationale: the two statements read two ways; the Interfaces text is the later, reviewed one, and caching what cannot change loses nothing the guard needs.
   Date/Author: 2026-10-31, plan-executor for doperpowers-9b (f89d7fb0).
+
+- Decision: M1's readings of the entry-kind table against real transcripts (engine 2.1.31x). (a) A peer entry is JSON `kind: "peer"` with `"from": <alias>`, rendered `peer <alias>` in text, so `kind` stays enumerable. (b) Messages and hand-backs from the session's own subagents (origin `peer` with a `senderTaskId`) are `agent`, not `peer`: they are the background agent's result, its `Agent` call's result being only the launch text, which is skipped. (c) Blocking questions (native `AskUserQuestion`, the plugin's with `async: false`) are `asked` at the call and `answered` from a non-error result; async ones still come from `sminos._ask_events`. (d) The bridge's origin is `{"kind": "plugin", "name": "sminos", "asUser": true}` (key `name`); `doperpowers` is accepted as the bridge's plugin too, since older transcripts hold the bridge under its former plugin. (e) A subscription entry stores the project's id under `project` and its name under `project_name` (ids do not collide; historical resolution needs the key). (f) MAWS: human-stamped rows in a MAWS launch (entrypoint `sdk-ts`) are `you·desk`; a MAWS ask's answer steer is `answered`, not also `you` — not yet checked against a MAWS-launched transcript. (g) The owner's `!` shell input stays `you?`; its `<bash-stdout>`/`<bash-stderr>` rows are tool output, left out. (h) `pending` and `subscriptions` pass over a subscription that no longer resolves or is now remote with a line on stderr instead of failing.
+  Rationale: each follows the table's intent (never put words in the owner's mouth; keep what the briefing needs) on frame shapes the spec did not foresee.
+  Date/Author: 2026-10-31, M1 executor, folded by plan-executor.
 
 ## Outcomes & Retrospective
 
