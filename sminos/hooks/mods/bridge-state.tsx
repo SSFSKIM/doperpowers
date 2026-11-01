@@ -45,6 +45,18 @@ export type BridgeEvent = Record<string, unknown> & { type: string }
 export type Command = Record<string, unknown> & { id: string; op: string }
 /** A command's answer: the `result` event's fields; a refusal's `code` names its kind where DX5 gives one. */
 export type Answer = { ok: true; result: Record<string, unknown> } | { ok: false; error: string; code?: string }
+/**
+ * A fork-agent question answered `started` (bridge-ask.tsx): its fork's agent
+ * id, and its end once the fork's turn.complete gave it, until the child took
+ * that end. `settle` hands the end to the op that waits for it.
+ */
+export type OpenAsk = { agentId: string; end?: Record<string, unknown>; settle: (end: Record<string, unknown>) => void; ended: Promise<Record<string, unknown>> }
+/**
+ * A main-loop response that completed, as the rows can be searched for it
+ * (bridge-ask.tsx): its tool calls' ids and its text blocks, a response with
+ * no tool call found by its text.
+ */
+export type ResponseMark = { toolUseIds: string[]; texts: string[] }
 /** The model and effort chosen for this session through the bridge; null keeps the session's own. */
 export type Override = { model: string | null; effort: Effort | null }
 /** A value as an event carries it (`capped`): every string held to TEXT_CAP, and whether any was. */
@@ -436,6 +448,23 @@ export type BridgeState = {
   btwOpen: Set<string>
   /** The writes of `btwOpen` to the session's `$.state`, in order. */
   btwWrites: Promise<void>
+  /** The fork-agent questions open in this session as this module knows them, by op id: its own, and those it ends for a module before it (bridge-ask.tsx). */
+  askOpen: Map<string, OpenAsk>
+  /** The writes of `askOpen` to the session's `$.state`, in order. */
+  askWrites: Promise<void>
+  /** An ask is between its busy check and its spawn's answer: another is busy meanwhile. */
+  isAskStarting: boolean
+  /**
+   * The forks whose turn.complete this module heard (bridge-ask.tsx): the
+   * next ask reads the list again for a short grace while one is still listed
+   * pending or running, since the list lags an end; it never exempts one.
+   */
+  askEndedAgents: Set<string>
+  /**
+   * The main loop's last response that completed (its stop chunk carried
+   * usage): a fork's tail starts at the row holding it (bridge-ask.tsx).
+   */
+  lastResponse: ResponseMark
   /**
    * The desk's agent stops whose note to the parent is not in yet
    * (bridge-agent-ops.tsx): an Agent call's result and the stopped agent's
@@ -492,6 +521,11 @@ const fresh = (): BridgeState => ({
   owedEnds: new Map(),
   btwOpen: new Set(),
   btwWrites: Promise.resolve(),
+  askOpen: new Map(),
+  askWrites: Promise.resolve(),
+  isAskStarting: false,
+  askEndedAgents: new Set(),
+  lastResponse: { toolUseIds: [], texts: [] },
   agentStops: new Set(),
   media: [],
   mediaWrites: Promise.resolve(),

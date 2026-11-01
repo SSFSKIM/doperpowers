@@ -59,7 +59,8 @@ and reading its answer (sminos_rpc's trace). An op answered at once whose
 outcome follows on the stream (a desk `command` answered `queued`, a side
 question `btw` answered `started`, DX5) keeps its nonce here past that
 answer, until its end (OUTCOME_EVENTS: the `run` or `btw` event of phase
-`end`): every such event of it is relayed carrying `rpc`, and the end is kept
+`end`; the session manager's `ask`, answered `started` too, is one such op,
+though no desk RPC carries it): every such event of it is relayed carrying `rpc`, and the end is kept
 beside the answer (`end`, its texts cut to END_TEXT_KEPT, a side question's
 answer marked `truncated` when cut), for a daemon that was stopped when it
 came. The mod posts an op's end again when it cannot tell a child took it (a
@@ -155,7 +156,7 @@ COMMAND_WAIT_MAX = 25000       # ms: under the 30 s an engine fetch waits
 AGENTS_KEPT = 200
 RPCS_KEPT = 100                # the mod's answers to commands a desk RPC sent, kept by its nonce
 END_TEXT_KEPT = 4096           # characters of a kept end's texts (a run's readback and settled, a side question's answer)
-OUTCOME_EVENTS = {"run": "command", "btw": "btw"}   # an op's outcome on the stream → the op it ends
+OUTCOME_EVENTS = {"run": "command", "btw": "btw", "ask": "ask"}   # an op's outcome on the stream → the op it ends
 ENDED_KEPT = 1000              # ids of ops whose end was relayed, kept so an end the mod posts again is dropped
 MEDIA = "media"                # a desk upload's event: an attachment's state, the upload the RPC's nonce
 REFUSED_KEPT = 100             # deliveries the engine dropped after `submitted`, kept for the daemon to report
@@ -356,13 +357,17 @@ class NotReady(OSError):
     """The endpoint answers but has not had the session's state from the mod yet (503)."""
 
 
-def subscribe(path):
+def subscribe(path, opened=None):
     """The endpoint's stream: yields each line, parsed, until it ends. Raises
     OSError when nothing answers, NotReady when the child has not had the
-    mod's first resync within its wait."""
+    mod's first resync within its wait. `opened`, when given, is called with
+    the connection once its socket is connected, so a caller can shut it to
+    end the stream from another thread."""
     c = _UnixConnection(path, timeout=None)
     try:
         c.request("GET", "/events")
+        if opened is not None:
+            opened(c)
         r = c.getresponse()
         if r.status == 503:
             raise NotReady("the bridge has not had the session's state yet")

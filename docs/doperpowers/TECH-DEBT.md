@@ -735,3 +735,9 @@ Residue of O12 M11's sminos half (MAWS's `docs/doperpowers/plans/2026-10-27-p5-o
 - **Behind an unreadable predecessor, a hand-off's or a background job's lineage takes the hook's own final evidence.** `lineage_provenance` now stops at a predecessor whose record file exists but cannot be read. An M11 continuation then gets no evidence, so its record stays provisional until the predecessor reads again. The other lineages fall back to the hook's evidence, which is final, so a changed owner on the unreadable predecessor would not carry over. Making that fallback provisional too is the fix.
 - **`claim` can still replace an unreadable record file.** It runs only for a brand-new session binding its pending launch at startup, where an existing record file is all but impossible. Applying `unreadable()` there is one line.
 - **An unreadable record is logged once per process.** Each hook is its own process, so such a session adds one daemon.log line per hook run. One line in total would need a marker on disk.
+
+## manager query's fork agent (2026-11-01, session manager M2)
+
+Residue of the bridge's `ask` op (`sminos/hooks/mods/bridge-ask.tsx`), from its live measurements; spec `docs/doperpowers/specs/2026-10-31-session-manager-design.md`.
+
+- **A haiku session's fork can follow the session's own unanswered prompt mid-turn instead of the question.** On a session mid-turn, the fork's inherited conversation ends with the session's prompt (for example "Run sleep 20, then reply …"). On haiku, 2 of 5 forks ran the pending call and wrote the session's reply, and the result was the same with the tail left out (3/5 clean), so the tail is not the cause. Opus and Sonnet were clean 10/10. The guard refuses any write a fork attempts. The lever is how the question is framed against that inherited prompt, not the tail. T3. Trigger: the manager queried against haiku sessions, or the live check's judged pending-call check failing on a stronger model.

@@ -10,7 +10,12 @@
 /** One control's capability: whether this bridge can do it, and why not. */
 export type Control = { available: boolean; reason?: string }
 
-/** Every key of the lane map's `ControlCapabilities`, in its order. */
+/**
+ * Every key of the lane map's `ControlCapabilities`, in its order, then
+ * `ask`, the owner's manager's fork agent, which this machine's `manager
+ * query` alone sends (the desk names none of it, and a key it does not know
+ * it passes over).
+ */
 export const CONTROL_KEYS = [
   'read.usage', 'read.config', 'read.settings', 'read.mcp',
   'btw', 'compact', 'model',
@@ -18,6 +23,7 @@ export const CONTROL_KEYS = [
   'decide', 'decide.scope', 'decide.interrupt',
   'decide.addDirectory', 'stop-agent', 'tell',
   'media', 'forget', 'rewind-files', 'elicitation.answer',
+  'ask',
 ] as const
 export type ControlKey = (typeof CONTROL_KEYS)[number]
 
@@ -26,12 +32,14 @@ export type ControlKey = (typeof CONTROL_KEYS)[number]
  * wave has built so far (MW1 the reads, MW2 the side question, MW3 the
  * scoped allows: `decide.addDirectory` is an `addDirectories` suggestion
  * through `decide.scope`, never a directory of the desk's own; MW4 one
- * subagent stopped or told; MW5 an image or a PDF read into the conversation).
+ * subagent stopped or told; MW5 an image or a PDF read into the conversation),
+ * and `ask` (the session manager's query; refused `no-guard` at the op when no
+ * read-only guard is loaded, which only the op can ask now).
  */
 const AVAILABLE: ReadonlySet<ControlKey> = new Set<ControlKey>([
   'read.usage', 'read.config', 'read.settings', 'read.mcp',
   'btw', 'compact', 'model', 'mcp.enable', 'mcp.disable', 'mcp.reconnect', 'decide',
-  'decide.scope', 'decide.addDirectory', 'stop-agent', 'tell', 'media',
+  'decide.scope', 'decide.addDirectory', 'stop-agent', 'tell', 'media', 'ask',
 ])
 
 /** What lane A cannot do, with the standing reason: no later sminos changes these, only the engine or another path. */

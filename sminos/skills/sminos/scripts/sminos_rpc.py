@@ -1415,7 +1415,8 @@ class Rpcs:
         (the desk control surface, §3), carrying the nonce of the DX6
         `command` or `btw` that asked for it — the event's own (the bridge's
         child names it), else the one this daemon kept for it — or null for
-        one nobody here asked for."""
+        a command nobody here asked for; a side question nobody here asked
+        for does not go up (op_event)."""
         self.take()
         for sid, pid, e in items:
             if isinstance(e, dict) and pid and e.get("type") in OP_OF:
@@ -1428,6 +1429,12 @@ class Rpcs:
             return   # an end already won: neither a late end nor a replayed start re-arms it
         held = self.op_ids.get(oid)
         nonce = e.get("rpc") if isinstance(e.get("rpc"), str) else held["nonce"] if held else None
+        if nonce is None and e.get("type") == "btw":
+            # A side question no desk RPC asked (derive's, MAWS's own local
+            # lane A, which follows it on its own subscription): the desk
+            # passes over an op with no nonce and the hub keeps no `btw` op,
+            # so it does not go up, and its question and answer stay here.
+            return
         child = e.get("child") if isinstance(e.get("child"), list) else None
         if e.get("phase") == "start" and e.get("name") == RELOAD and isinstance(oid, str):
             # A reload can be finished by its effect, whoever sent it (`sminos

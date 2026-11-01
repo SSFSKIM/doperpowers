@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  The session manager's page: `manager serve`, a read-only server of one
+  manager's ledger on 127.0.0.1, which `tailscale serve` exposes to the
+  owner's tailnet. Rendered by `manager serve --install` into
+  ~/Library/LaunchAgents/{{LABEL}}.plist; the placeholders are filled from
+  the installing environment. Load it with
+  `launchctl bootstrap gui/$(id -u) <that file>`.
+  The program is the Python that ran the install, pinned (launchd's PATH may
+  find an older python3 first, which cannot import sminos), running the
+  marketplace clone's manager.py when the installing one ran from the
+  versioned plugin cache, so a plugin update does not strand it; the server
+  executes itself again in place when its scripts change, so KeepAlive and
+  the throttle meet only a crash. Its port and the owner's login are read
+  from serve.json beside the state file at each start.
+  A user agent: it lives as long as the owner's login, through the manager
+  session closing, the screen locking and a plugin update, and starts again
+  at the next login after a reboot.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>{{LABEL}}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>{{PYTHON}}</string>
+    <string>{{MANAGER}}</string>
+    <string>serve</string>
+    <string>--name</string>
+    <string>{{NAME}}</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>60</integer>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>SMINOS_HOME</key><string>{{SMINOS_HOME}}</string>
+  </dict>
+  <key>StandardOutPath</key><string>{{LOG}}</string>
+  <key>StandardErrorPath</key><string>{{LOG}}</string>
+</dict>
+</plist>

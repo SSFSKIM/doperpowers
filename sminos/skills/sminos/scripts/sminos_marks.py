@@ -132,12 +132,19 @@ def _span(text, is_open):
     return {"kind": KIND, "text": text, "isOpen": is_open}
 
 
-def _parse_marked(text):
+def tag_tokens(text):
+    """The mark tags the parse reads in a text, in order: those outside code by the strict fence reading, or by
+    the glued recovery when only it balances them. Every reader of a text's marks takes its tags from here."""
     tokens, balanced = _reading(text, code_regions(text))
     if not balanced:
         glued, glued_balanced = _reading(text, code_regions(text, GLUED))
         if glued_balanced:
             tokens = glued
+    return tokens
+
+
+def _parse_marked(text):
+    tokens = tag_tokens(text)
     spans = []
     # One entry per open mark, innermost last: [tag, its current run of text,
     # or None once an inner mark has interrupted it].
