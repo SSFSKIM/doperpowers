@@ -8,15 +8,17 @@ To see it working: open a new Claude session in any directory on the MacBook, ru
 
 This is the semantic half of MAWS's Scene A ("Open MAWS and know within seconds where you are needed", `MAWS/docs/charter.md` §1). MAWS's attention table already covers the mechanical half (a pending permission prompt, a pending question). What sessions *said* they need from the owner, in prose, has no reader today.
 
-A side effect ships with it: `sminos derive`, which forks a session every six hours to learn its in-charge line, moves onto the same fork path and becomes about seven times cheaper for live sessions.
+A side effect ships with it: `sminos derive`, which forks a session every six hours to learn its in-charge line, moves onto the bridge's cached side question for live sessions and becomes about seven times cheaper.
 
 ## Progress
 
 - [x] (2026-11-01 01:40Z) Design approved in the authoring session (doperpowers-9b, f89d7fb0); spec written.
 - [ ] Independent spec review and buildability review.
+- [x] (2026-11-01 03:30Z) Fork-agent spike: an in-session fork started by a mod reads the session's cache, runs read-only tools under a guard in another plugin, and leaves the session untouched (Surprises & Discoveries).
 - [ ] M1 — the `manager` command: transcript windows, pending items, subscriptions.
-- [ ] M2 — queries: the shared fork, the fresh tail in `btw`, `derive` and `manager query` on it.
-- [ ] M3 — the skill, the digest brief, the replay evaluation, and acceptance.
+- [ ] M2 — the bridge's `ask` (an in-session fork agent) and the read-only guard.
+- [ ] M3 — the shared fork code in sminos: `derive` on `btw`, `manager query` on `ask` with the headless fallback.
+- [ ] M4 — the skill, the digest brief, the replay evaluation, versions, and acceptance.
 - [ ] Whole-branch review (review-code, high), retrospective, merge.
 
 ## Terms
@@ -24,38 +26,41 @@ A side effect ships with it: `sminos derive`, which forks a session every six ho
 - **Session, member.** A Claude Code session. sminos calls every session in a project a *member*; it is named by an alias (`CI-opt`), its short id (first eight hex digits), `@project/alias`, or its full UUID. A member can continue under new session ids (a resumed seat); sminos follows that chain as its *lineage*.
 - **Transcript.** The engine's JSONL file for a session, `~/.claude/projects/<dir>/<session>.jsonl` (or under another config dir, which sminos records). The P5 sessions' transcripts are 283–668 MB each.
 - **Host events.** What sessions sent their human, recorded by sminos: `message` (a call of `mcp__to-human__message` or a `<message>` span), `question` (an async `mcp__sminos__AskUserQuestion`) and `answered`. Read with `sminos chat <project> --host`.
-- **Bridge.** The sminos mod running inside every session (`sminos/hooks/mods/bridge.tsx`), reachable on this machine at `$SMINOS_HOME/bridge/<session>.sock`. It serves the desk's controls, among them `btw`.
-- **`btw` (side question).** A bridge op: one tool-less completion over the session's own last request (`$.model.fork`), with a question appended. It writes nothing into the conversation and runs beside a running turn (`sminos/hooks/mods/bridge-btw.tsx`).
+- **Mod.** A TypeScript module a plugin loads into every session's process (`hooks/mods/*.tsx` in a plugin), with hooks on the engine's events and calls into its API (`$`). Types: `<plugin>/.claude-plugin/types/claude-code/index.d.ts`.
+- **Bridge.** The sminos mod running inside every session (`sminos/hooks/mods/bridge.tsx`), reachable on this machine at `$SMINOS_HOME/bridge/<session>.sock`. It serves the desk's controls, among them `btw`, and after this change `ask`.
+- **`btw` (side question).** A bridge op: one tool-less completion over the session's own last request (`$.model.fork`), with a question appended. It writes nothing into the conversation, runs beside a running turn, and is invisible in the session (`sminos/hooks/mods/bridge-btw.tsx`).
+- **Fork agent, `ask`.** A new bridge op: the bridge starts a forked subagent inside the session (`$.agent.spawn({ subagentType: 'fork' })`), which inherits the session's conversation and model, so its requests read the session's prompt cache. It can use tools, runs in the background beside the session's turn, and its answer comes back to the bridge, never into the session's conversation.
+- **Read-only guard.** A mod in the doperpowers plugin (`hooks/mods/fork-guard.tsx`) that refuses any tool call of a sminos fork agent the engine does not mark read-only.
 - **Headless fork.** `claude -p --resume <session> --fork-session …`: a new process that loads the session's transcript, answers, and is thrown away. `derive_line` in `sminos/skills/sminos/scripts/sminos.py` is today's one user.
 - **Digest subagent.** A subagent the manager dispatches for one subscribed session and one window. It reads that session's records and returns its needs, decisions and progress.
 
 ## What the owner can do afterward (acceptance)
 
-Each item is checked on the MacBook against live sessions. Commands run from any directory; `manager` is the skill's command (`sminos/skills/manager/scripts/manager`, absolute path printed when the skill loads).
+Each item is checked on the MacBook. Before merge, M4 runs them against throwaway sessions loaded with the branch's plugins; after merge and a plugin update, the owner's own sessions behave the same. Commands run from any directory; `manager` is the skill's command (`sminos/skills/manager/scripts/manager`, whose absolute path the skill names when it loads).
 
 1. **Only the manager sees it.** `/sminos:manager` is offered in the slash menu. A fresh session's model-visible skill list has no `sminos:manager` entry. `sminos help` and the sminos skill are unchanged and mention none of `transcript`, `pending`, `query`, `subscriptions`.
 2. **Subscriptions are the owner's.** `manager subscriptions add P5 CI-opt p5-desk-track-owner "GUI AI agent workspace charter"` then `manager subscriptions` lists the three under P5 with alias, short id and project. Subscribing the manager's own session is refused. Nothing is added except by this command.
 3. **A window of a 668 MB transcript in seconds.** `manager transcript p5-desk-track-owner --since 10h` prints the window in under 10 seconds: entries oldest first, each labelled (`you`, `you·desk`, `you·steer`, `peer <alias>`, `session`, `→you`, `asked`, `answered`, `compacted`, `interrupted`, `tool`, `agent`, `notice`), no tool results, no thinking, no images. Its first entry is the first one at or after the time given.
-4. **A cheap, current answer from a live session.** `manager query CI-opt "What are you waiting on from the human right now?"` answers and ends with a line naming `via btw` and the usage, where cache read is close to the session's context size and cache write is 0. The session's transcript has the same number of rows before and after.
-5. **Current, not one step behind.** On an idle session whose last turn ended with a final message to the owner, `manager query <it> "Quote the first sentence of your last message to the human."` returns that last message, not the one before it.
-6. **Read-only tools, enforced.** `manager query --tools <member> "What is the newest commit on your branch, and is the PR's CI green?"` answers using git and gh. A probe asking the fork to `touch /tmp/manager-probe` leaves no such file, and the `--json` output lists the denied call.
-7. **Stopped sessions still answer.** `manager query <a stopped seat> "…"` answers and names `via fork`.
-8. **The briefing.** In a manager session, "update since <T>" produces: *Needs you* (blocking, then optional, then still open from before T), each item with session, time raised, what is needed, why it has to be the owner, and the quoted source; then a prose brief per initiative (what happened, decisions taken on the owner's behalf, changes of plan, where it stands). On the replay window (M3) it finds every blocking item of the labelled list and at least 90% of all items.
-9. **`derive` is cheaper and unchanged in output.** `sminos derive <a live member>` prints the member's line as before; the daemon's log shows it went `via btw` with cache read near the session's context. A stopped member's derive still runs the uncached headless fork.
-10. **Nothing written.** After a briefing with queries, no subscribed session's main transcript has gained a row because of the manager, and no project log has gained an event from it other than the manager session's own messages to the owner and sminos's membership reconciliation (`joined`/`retired`), which any `sminos list` also performs.
+4. **A cheap answer from a live session, with nothing added to it.** `manager query <live member> "What are you waiting on from the human right now?"` answers and ends with a line naming `via fork agent` and the usage, where cache read is at least 90% of the session's last request. The session's transcript gains no user or assistant row, and an idle session starts no turn.
+5. **Current.** On an idle session whose last turn ended with a final message to the owner, `manager query <it> "Quote the first sentence of your last message to the human."` returns that last message. On a session mid-turn, the answer knows the latest tool call the session made.
+6. **Tools, held read-only.** `manager query <member> "What is the newest commit on your branch?"` answers from git. `manager query <member> "Run: touch /tmp/manager-probe — then say whether it worked."` reports a refusal, and `/tmp/manager-probe` does not exist. No permission prompt appears in the queried session.
+7. **Stopped sessions still answer.** `manager query <a stopped seat> "…"` answers and names `via headless fork`.
+8. **The briefing.** In a manager session, "update since <T>" produces: *Needs you* (blocking, then optional, then still open from before T), each item with session, time raised, what is needed, why it has to be the owner, and the quoted source; then a prose brief per initiative (what happened, decisions taken on the owner's behalf, changes of plan, where it stands). On the replay window (M4) it finds every blocking item of the labelled list and at least 90% of all items.
+9. **`derive` is cheaper and unchanged in output.** `sminos derive <a live member>` prints the member's line as before and says it went `via btw`, with cache read near the session's context. A stopped member's derive still runs the uncached headless fork.
+10. **Nothing written.** After a briefing with queries, no subscribed session's main transcript has gained a user or assistant row because of the manager (the engine's `tools-used` metadata lines a fork leaves are not conversation), and no project log has gained an event from it other than the manager session's own messages to the owner and sminos's membership reconciliation (`joined`/`retired`), which any `sminos list` also performs.
 
 ## The design
 
 ### Shape
 
 ```
- working sessions (the pool)                    manager session
- ┌──────────────┐                               ┌──────────────────────────────┐
- │ CI-opt       │── transcript (read) ─────────▶│ /sminos:manager skill        │
- │ p5-desk-…    │── host events (read) ────────▶│  manager transcript|pending  │
- │ MAWS arch    │◀─ btw (fork, nothing kept) ───│  manager query               │
- └──────────────┘◀─ headless fork (thrown away)─│  digest subagents (Sonnet)   │
-                                                └──────────────────────────────┘
+ working sessions (the pool)                          manager session
+ ┌──────────────────────────┐                         ┌──────────────────────────────┐
+ │ CI-opt                   │── transcript (read) ───▶│ /sminos:manager skill        │
+ │  bridge ── ask ─▶ fork   │── host events (read) ──▶│  manager transcript|pending  │
+ │  agent (read-only guard) │◀─ ask: a question ──────│  manager query               │
+ └──────────────────────────┘◀─ headless fork ────────│  digest subagents (Sonnet)   │
+   (stopped sessions only)                            └──────────────────────────────┘
 ```
 
 Every arrow into a working session is a fork: the session's conversation is never appended to, its turn never interrupted, its files never touched by the manager.
@@ -64,7 +69,7 @@ Every arrow into a working session is a fork: the session's conversation is neve
 
 The manager is a second skill in the sminos plugin, `sminos/skills/manager/SKILL.md`, whose front matter sets `disable-model-invocation: true`. That field keeps a skill out of every model's skill list and leaves it in the slash menu: the designer plugin's `materialist` skill sets it, and it is absent from a session's listed skills. Its command, `manager`, lives in `sminos/skills/manager/scripts/` beside it and imports sminos's Python modules from `sminos/skills/sminos/scripts/`.
 
-Why: `transcript`, `query` and the rest are needed by the manager alone. As sminos verbs they would sit in `sminos help` and in the sminos skill that every session reads, costing every session context and inviting sessions to fork each other. The strongest alternative, a separate plugin, lost because the command imports sminos's internals, and a plugin reaching into another plugin's versioned cache directory breaks at every update. The one piece sminos and the manager share is an internal function, the fork (§Queries), which `derive` uses too; it adds no verb.
+Why: `transcript`, `query` and the rest are needed by the manager alone. As sminos verbs they would sit in `sminos help` and in the sminos skill that every session reads, costing every session context and inviting sessions to fork each other. The strongest alternative, a separate plugin, lost because the command imports sminos's internals, and a plugin reaching into another plugin's versioned cache directory breaks at every update. What sminos and the manager share is internal and adds no verb: the fork code in `sminos/skills/sminos/scripts/sminos_fork.py`, which `derive` uses too, and the bridge's new `ask` op (§Queries), which appears in the bridge's capabilities, not in `sminos help`.
 
 ### Subscriptions and the manager's state
 
@@ -97,7 +102,7 @@ An item's status:
 
 When the records leave the status unclear, the digest subagent asks the session through `manager query`.
 
-**Digest subagents run on Sonnet.** Effort is medium or high, whichever the replay evaluation (M3) shows is enough; the skill states the one chosen. They are dispatched with the Agent tool as general-purpose subagents briefed from the reference file, not as a registered agent definition, which would be listed to every session and undo the packaging.
+**Digest subagents run on Sonnet.** Effort is medium or high, whichever the replay evaluation (M4) shows is enough; the skill states the one chosen. They are dispatched with the Agent tool as general-purpose subagents briefed from the reference file, not as a registered agent definition, which would be listed to every session and undo the packaging.
 
 **Strictly read-only.** The manager and its subagents never send, steer, interrupt, answer, decide, compact, change a model, or write to a project log. Its only outward acts are its messages to the owner. This is a rule the skill states, not a lock: the manager needs its own tools to read, and nothing so far suggests a model breaks the rule.
 
@@ -115,31 +120,45 @@ The row classification is the part most likely to be subtly wrong (a peer's deli
 
 ### Queries
 
-`manager query <member> "<question>"` puts a question to a fork of the session and prints the answer and its cost. Three paths, chosen in this order:
+`manager query <member> "<question>"` puts a question to a fork of the session and prints the answer and its cost. There is one interface for a live session and one fallback:
 
-| Path | When | Tools | Cache (measured 2026-11-01 on a ~100–120k session) |
+| Path | When | Tools | Cache |
 |---|---|---|---|
-| `btw` through the bridge | the session is live and its bridge offers `btw` | none | reads the session's own cache: 120,027 read, 0 written, ≈$0.06 |
-| headless fork, no tools | no bridge (stopped, bridgeless) | none | cannot read the session's cache: ≈$0.40 per 100k tokens uncached; caching on, a repeat within the hour reads the fork's own entry ($0.02) |
-| headless fork, read-only tools | `--tools` given | Read, Grep, Glob, allowlisted Bash | as above, plus the tool loop: $1.03 measured uncached |
+| **fork agent** (`ask` through the bridge) | the session is live and its bridge offers `ask` | the session's own, held read-only by the guard | reads the session's cache: 99.9% of the last request on the fork's first request (spike, haiku, ~27k tokens) |
+| **headless fork** | the session is not running, or its bridge cannot run a guarded fork agent (no `ask`, or refused `no-guard`) | Read, Grep, Glob, Bash under `--permission-mode auto` | cannot read the session's cache: ≈$0.40 per 100k tokens on the first question; caching on, a repeat within the hour reads the fork's own entry (measured $0.02 at ~88k) |
 
-**Why `btw` first.** The prompt cache matches tools, then the system prompt, then the messages, as one exact prefix. `claude -p` rebuilds the system prompt and tool list differently from the interactive session (safe mode drops the plugins; to-human's message tool registers only interactively), so no headless variant reads the session's conversation from cache; `btw` resends the session's last request byte for byte. Measured: four headless variants read 0 or 10,334 tokens of cache; `btw` read all of it. The session's own cache is untouched by any fork: its next requests kept reading their whole prefix.
+**Why a fork agent.** The owner asked for one call that keeps the cache, has tools, stays read-only, and interrupts nothing. Three mechanisms were measured against that:
 
-**The fresh tail.** `$.model.fork` replays the main thread's *last request*, which cannot contain that request's own response or anything after it. On a busy session a `btw` is one step behind; on an idle session it misses the turn's last response, usually the final message to the owner, and every `btw` while the session stays idle forks from that same point. Measured: two consecutive `btw`s on the authoring session both described the session as of the request before the one in flight, and the second did not see the first (forks do not build on each other). The bridge therefore appends to the fork's prompt the messages the session kept after the request the fork replays, rendered as text under a heading saying what they are. The replayed prefix is unchanged, so the cache still serves it; only the tail is billed fresh. This applies to every `btw`, the desk's included, since a fresher answer is better for both.
+- **`btw`** (`$.model.fork`) reads the session's whole cache and is invisible, but it is one completion with every tool denied, the plugin API cannot continue it with tool results, and it replays the session's *last request*: on an idle session it misses the turn's final response, usually the final message to the owner. Two consecutive `btw`s on the authoring session both stopped at the request before the one in flight.
+- **A headless fork** (`claude -p --resume --fork-session`) has tools but never reads the session's cache: `claude -p` builds a different system prompt and tool list from the interactive session (safe mode drops the plugins; to-human's message tool registers only interactively), and the prompt cache matches tools, then system prompt, then messages, as one exact prefix. Four variants read 0 or 10,334 tokens of a ~100k conversation.
+- **A fork agent** (`$.agent.spawn({ subagentType: 'fork' })` from the bridge) inherits the session's conversation and model, so its first request read 99.9% of the session's last request from cache; it runs the session's tools; and in the spike nothing entered the session's conversation, no notification was delivered, an idle session started no turn, a running `sleep 20` finished on schedule, and the session's requests during the fork carried nothing about it. Its answer reaches the spawning mod through `turn.complete`, matched by the agent's id.
 
-**Read-only tools.** `$.model.fork` is one completion with every tool denied, and the plugin API has no way to continue it with tool results, so `btw` cannot have tools. `--tools` uses a headless fork in `dontAsk` permission mode with a fixed allowlist: anything not listed is refused by the harness and reported in the result's `permission_denials`. Measured: `git log` and Read ran; `touch` was denied by the harness; Write was not offered; no file appeared. Plan mode, the alternative, only told the model it was planning: the model declined the writes itself, which proves nothing. The allowlist guards against accidental writes by a cooperative model, not against a hostile one (`git diff --output=<file>` would still write); that residue is accepted.
+So a live session is asked through the fork agent; the headless fork remains for sessions that are not running, where there is no process to fork inside, and for a live session that cannot run a guarded fork agent (an older sminos, no guard loaded).
 
-The question is framed so the fork answers as a fork: it is told it is a read-only copy asked by the owner's manager, that the session never sees the exchange, and (without `--tools`) to answer from the conversation without tools or continuing its task.
+**Freshness.** An idle session's fork agent sees the whole conversation, the last response included. Mid-turn, it sees the conversation up to the main loop's last request (the response in flight and its tool calls are not yet the fork's context). So when the main loop is mid-turn the bridge adds, under the question, the main-loop messages kept after that request, rendered as text (assistant text, tool calls with their arguments, tool results cut short), the newest kept when the rendering passes 32 KiB. An idle session gets no tail.
 
-### `derive` on the shared fork
+**Read-only.** The fork agent inherits the session's tools and permission mode, so read-only has to be enforced, not asked for: a fork carries the session's whole task in its context, and forks have been measured continuing the open task when not told otherwise (the `btw` frame exists for that reason, `bridge-btw.tsx`). A hook can enforce it: the engine raises `tool.check` for every call of the fork with its `agentId` and `isReadOnly`, and a deny there overrides both the core's `allow` and its `ask`. Measured: Read, `ls`, `cat`, `echo`, `sleep` ran; Edit, Write, `touch`, a `>` redirect and a Python write were refused; nothing was written. The guard also answers `allow` for the fork's read-only calls, so a fork never raises a permission prompt in the working session, where the person at its terminal would have to answer it.
 
-`derive_line` today always runs an uncached headless fork, deliberately: the fork cannot read the session's cache, and the next derive of the same session is six hours away, after any entry it wrote has expired. That costs full input price every time: one derive-style fork of the authoring session read 104,990 tokens for $0.42, and this Mac's daemon ran 39–77 derives a day over Oct 27–31. Derive only runs on sessions active in the last hours, whose cache is usually warm, so through `btw` the same question costs about a seventh. `derive_line` moves onto the shared fork: `btw` when the member's bridge answers, else the uncached headless fork it runs today. Its prompt, its parsing, its failure stamps and its timeouts stay as they are.
+**The guard lives in another plugin.** A subagent a mod spawns from outside a hook (the bridge spawns from its command listener) bypasses every hook of the spawning plugin; only its `turn.complete` reaches it. Spawned from inside a hook it bypasses only that hook. The bridge receives `ask` on its listener, never inside a hook (an idle session raises none), so the guard cannot be a sminos hook. It is a mod of the doperpowers plugin, `hooks/mods/fork-guard.tsx`, which acts only on agents whose `$.agent.list()` entry is `type: 'fork'` with `spawnedBy: 'sminos'`; every other agent of the session is untouched. The bridge refuses `ask` (`no-guard`) when it cannot confirm the guard is loaded in the session, so a session without doperpowers never gets an unguarded fork agent; `manager query` then takes the headless path. The alternative home, the to-human plugin (it already depends on sminos), lost because its purpose is how sessions talk to the owner, not what forks may do. Raising one of sminos's own hooks on purpose so the spawn happens inside a hook frame lost as a contortion that depends on undocumented event semantics.
+
+**What the session's person sees.** The fork appears in the session's agent strip, `/tasks` and `$.agent.list()` while it runs, described as `manager query`, and the desk would show it too; it interrupts nothing. The engine also appends `tools-used` metadata lines to the session's transcript file, which the model never reads. The bridge spawns from its listener, never from a slash command, which would write two `local_command` user rows into the conversation.
+
+**One at a time.** A session runs at most one `ask` fork; a second `ask` while one is open is refused (`busy`). Several forks at once, an Esc in the session during a fork, and a compaction during a fork were not exercised by the spike; one at a time keeps the untested surface small, and the M2 live check covers Esc and compaction.
+
+**The headless fallback.** `claude -p --resume <session> --fork-session --session-id <new> --safe-mode --no-session-persistence --permission-mode auto --tools Read,Grep,Glob,Bash`, marked internal as `derive` marks its forks, caching on so follow-up questions within the hour are cheap. The owner chose auto mode over a `dontAsk` allowlist: auto mode refuses what it judges risky, not every write, so a harmless write such as `touch` would pass; read-only there rests on the frame, which the owner judged enough for a session that is not running.
+
+**The frame.** Both paths put the question under the same frame, an exact string fixed in Interfaces: the fork is told it is a read-only fork started by the owner's manager to answer one question, that the session never sees the exchange, not to continue the session's task, that it may use read-only tools to check facts and that changes are refused, and to answer and stop.
+
+### `derive` on `btw`
+
+`derive_line` today always runs an uncached headless fork, deliberately: the fork cannot read the session's cache, and the next derive of the same session is six hours away, after any entry it wrote has expired. That costs full input price every time: one derive-style fork of the authoring session read 104,990 tokens for $0.42, and this Mac's daemon ran 39–77 derives a day over Oct 27–31. Derive only runs on sessions active in the last hours, whose cache is usually warm, so through `btw` the same question costs about a seventh ($0.06 measured for a 120k session). `derive_line` asks through `btw` when the member's bridge offers it, else runs the uncached headless fork it runs today. Its prompt, its parsing, its failure stamps and its timeouts stay as they are. `btw`, not the fork agent: derive needs no tools, `btw` is invisible in the session where a fork agent would show in its agent strip every six hours, and `btw`'s one-step lag does not matter to "what are you in charge of".
 
 ### What is left to measure
 
-- Whether Sonnet at medium effort sorts blocking from optional as well as at high: the replay evaluation decides (M3).
-- What a `btw` costs when the session's cache has lapsed (idle over an hour): recorded in Surprises & Discoveries during M2.
-- What one briefing costs, ten hours across four sessions: recorded during M3.
+- Whether Sonnet at medium effort sorts blocking from optional as well as at high: the replay evaluation decides (M4).
+- The fork agent on a session past 100k tokens (caching should not depend on length), under an Esc in the session, and across a compaction: the M2 live check, recorded in Surprises & Discoveries.
+- How the bridge confirms the guard is loaded (M2, below).
+- What one briefing costs, ten hours across four sessions: recorded during M4.
 
 ## Execution
 
@@ -148,9 +167,9 @@ The question is framed so the fork answers as a fork: it is told it is a read-on
 - **Read-only toward working sessions.** No code path of the `manager` command appends to a session's conversation, interrupts its turn, edits its files, or writes an event to a project log. It never runs, or calls the functions behind, sminos's `say`, `send`, `steer`, `interrupt`, `answer`, `decide`, `compact`, `model`, `charge`, `status` or a cursor-advancing `chat`. The one exception it inherits is sminos's own membership reconciliation, which any sminos read (`list`, `chat`, `find_target`) may perform.
 - **This Mac only.** A member whose session runs on another machine is refused with a message naming the machine (`manager: CI-opt runs on mini; this version reads sessions on this machine only`). Cross-machine reading is out of scope.
 - **sminos's conventions.** Detail beside code: the new skill's command gets its own `sminos/skills/manager/scripts/CLAUDE.md`; `sminos/CLAUDE.md` gains one sentence pointing at it; the bridge's and derive's notes in the existing nested CLAUDE.md files are updated where their behavior changes. No CLAUDE.md is placed where a loader reads every `.md`.
-- **Tests run in isolation.** Every test isolates `HOME` and `SMINOS_HOME` as `sminos/tests/run-sminos-tests.sh` does; none touches the real `~/.claude/sminos` or a live session. Live checks happen only in the acceptance run (M3).
-- **Version.** One bump of the sminos plugin on the branch, in M3, with `scripts/bump-version.sh --plugin sminos`.
-- **Verification.** Before a milestone is reported done: its tests pass locally (one focused file while iterating is fine), and `ci-gate` from the worktree is green for the `sminos`, `sminos-suites`, `sminos-mods` and `mods-types` gates on the committed HEAD.
+- **Tests run in isolation.** Every test isolates `HOME` and `SMINOS_HOME` as `sminos/tests/run-sminos-tests.sh` does; none touches the real `~/.claude/sminos` or a live session. Live checks run only against throwaway sessions with an isolated config (the M2 live check, the M4 acceptance run), never against the owner's sessions before merge.
+- **Versions.** On the branch, one bump of the sminos plugin (`scripts/bump-version.sh --plugin sminos`) and one of the doperpowers plugin (`scripts/bump-version.sh`, for the guard), both in M4.
+- **Verification.** Before a milestone is reported done: its tests pass locally (one focused file while iterating is fine), and `ci-gate` from the worktree is green on the committed HEAD for the gates its files touch: `sminos`, `sminos-suites`, `sminos-mods`, `mods-types`, and `mods` once the guard exists.
 
 ### Orientation
 
@@ -160,13 +179,13 @@ Paths below are repository-relative. The sminos CLI is `sminos/skills/sminos/scr
 
 **Files (new).**
 
-    sminos/skills/manager/SKILL.md                    # M3
-    sminos/skills/manager/references/digest-brief.md  # M3
+    sminos/skills/manager/SKILL.md                    # M4
+    sminos/skills/manager/references/digest-brief.md  # M4
     sminos/skills/manager/scripts/manager             # M1: sh launcher, as sminos's own
     sminos/skills/manager/scripts/manager.py          # M1: the CLI
     sminos/skills/manager/scripts/manager_window.py   # M1: transcript window reader and row classifier
-    sminos/skills/manager/scripts/CLAUDE.md           # M1, extended in M2 and M3
-    sminos/tests/test_manager.py                      # M1, extended in M2
+    sminos/skills/manager/scripts/CLAUDE.md           # M1, extended in M3 and M4
+    sminos/tests/test_manager.py                      # M1, extended in M3
 
 `manager.py` puts `realpath(<its dir>/../../sminos/scripts)` on `sys.path` and imports `sminos`, `sminos_bridge`, `sminos_subagents`. It never calls `sminos.main()`; it calls `sminos.forget_caches()` only if it ever runs more than one resolution per process.
 
@@ -244,7 +263,68 @@ The window's start is found with `sminos_subagents.offset_since(mm, t)` on an mm
 
 `subscriptions add` refuses the manager's own session (`CLAUDE_CODE_SESSION_ID` in its environment) and members on another machine; adding a member already subscribed under another initiative moves it. `carry set` replaces `carry` and stamps `briefed`; it is how the skill records what a briefing left open.
 
-QUERY_INTERFACES_PENDING_SPIKE
+**More new files (M2–M4).**
+
+    sminos/hooks/mods/bridge-ask.tsx                  # M2: the `ask` op, imported by bridge.tsx as bridge-btw.tsx is
+    sminos/tests/mods/ask.test.ts                     # M2
+    hooks/mods/fork-guard.tsx                         # M2: doperpowers plugin, registered from hooks/mods/register.tsx
+    tests/mods/fork-guard.test.ts                     # M2
+    sminos/tests/mods/live-ask-check.py               # M2: live check against throwaway sessions, run by hand, not a gate
+    sminos/skills/sminos/scripts/sminos_fork.py       # M3: the shared fork code
+
+**The bridge's `ask` op** (an extension of the bridge protocol DX5, `docs/doperpowers/plans/2026-10-15-arkho-desk-c2-bridge.md`; local to this machine — no hub RPC carries it in this initiative).
+
+    request   {"op": "ask", "prompt": "<the question>"}
+    answer    {"ok": true,  "result": {"started": true, "id": "<op id>", "agentId": "<fork's agent id>"}}
+            | {"ok": false, "code": "no-guard" | "busy" | "nothing-to-fork" | "bad-prompt", "error": "<why>"}
+    stream    {"type": "ask", "phase": "start", "id", "agentId"}
+              {"type": "ask", "phase": "end", "id", "agentId",
+               "text"?: string, "truncated"?: true,                      // the fork's answer, cut to 64 KiB as btw's is
+               "usage"?: {"input", "output", "cacheRead", "cacheWrite"},  // the whole fork's, from turn.complete
+               "reason"?: "aborted" | "empty-reply" | "failed", "error"?: string}
+
+`OPS` and the bridge's `capabilities.controls` gain `ask`. The open asks are kept in `$.state` under `{plugin: 'sminos', key: 'ask'}` from before the answer until the child took the end, and the module that loads after a reload ends any it finds there `aborted`, exactly as `bridge-btw.tsx` does for `btw`. The bridge child (`sminos/skills/sminos/scripts/sminos_bridge.py`) relays `ask` events to stream subscribers and re-posts an untaken end after a resync as it does for `btw` (`OUTCOME_EVENTS`).
+
+The spawn: `$.agent.spawn({ subagentType: 'fork', description: 'manager query', prompt: askPrompt(tail, question) })`, called from the command listener (not from a hook, never from a slash command). The answer is the fork's own `turn.complete`, matched by `agentId`.
+
+The fork's prompt (the frame is an exact string; `ASK_FRAME`, exported from `bridge-ask.tsx` and copied verbatim as `FORK_FRAME` in `sminos_fork.py` for the headless path, a test in each pinning the text):
+
+    ASK_FRAME = "You are a read-only fork of this session, started by the owner's manager session to answer one question. The session itself never sees this exchange, and nothing you do here reaches it. Do not continue the session's task. You may use read-only tools (reading and searching files, read-only shell commands such as git log, git status or gh pr view) to check facts; anything that would change a file or any state is refused. Answer the question directly, then stop."
+
+    askPrompt(tail, question) =
+      ASK_FRAME
+      + (tail ? "\n\nSince the last request this fork continues from, the session's conversation went on as follows (oldest first):\n\n" + tail : "")
+      + "\n\nThe question:\n\n" + question
+
+The tail exists only while the main loop is mid-turn: the bridge records the main loop's `messageCount` at each main-loop `turn.step` whose response completed (a `stop` chunk with usage passed up through its hook), and the tail is `$.session.messages()` from that count on, rendered as text — assistant text, each tool call as `name(input)`, each tool result cut to 2,000 characters — keeping the newest 32 KiB.
+
+**The read-only guard** (`hooks/mods/fork-guard.tsx`, doperpowers plugin). A `tool.check` hook: when `e.agentId` names an agent that `$.agent.list()` lists with `type: 'fork'` and `spawnedBy: 'sminos'`, it answers `{decision: 'deny', reason: FORK_GUARD_REASON}` for a call with `e.isReadOnly` false and `{decision: 'allow'}` for one with `e.isReadOnly` true, never calling `next` for either; for every other call it returns `next(e)` untouched. `FORK_GUARD_REASON = "This is a read-only fork (manager query): calls that change files or state are refused."` It is registered ahead of `appeal.tsx`'s `tool.check` so an appeal pass can never apply to a fork's call.
+
+**Guard presence.** `ask` refuses `no-guard` unless the bridge can confirm, in this session, that the guard module is loaded. The mechanism is M2's to choose from what the engine offers and to pin in a test (for example a `$.state` entry the guard writes at `session.start` that the bridge can read, or the engine's plugin list showing a doperpowers version that ships the guard); the contract is that a session without the guard never gets an `ask` fork.
+
+**`sminos_fork.py`** (sminos's internal fork code; no CLI verb):
+
+    class ForkAnswer(NamedTuple):
+        text: str
+        via: str            # "btw" | "fork agent" | "headless fork"
+        usage: dict         # {"input", "output", "cacheRead", "cacheWrite"}; headless: from the result's usage
+        truncated: bool
+
+    class ForkFailed(Exception):        # reason: one line, as derive's fork_failure builds it; stderr kept
+        def __init__(self, reason: str, stderr: str = "", code: str = ""): ...
+
+    def ask_btw(session: str, prompt: str, timeout: float = 120) -> ForkAnswer
+    def ask_fork_agent(session: str, prompt: str, timeout: float = 300) -> ForkAnswer
+    def headless_fork(project, m, prompt: str, *, tools: bool, cache: bool, timeout: float) -> ForkAnswer
+    def bridge_offers(session: str, op: str) -> bool     # the bridge answers and its capabilities list `op`
+
+`ask_btw` and `ask_fork_agent` follow the session's bridge stream (`sminos_control.follow_stream`), post the op (`sminos_control.post_command` to `sminos_bridge.endpoint(session)`), and wait for the matching `end` by id; a refusal raises `ForkFailed` with its `code`; a silence past `timeout` raises `ForkFailed("… gave no answer within N s")` and leaves the fork to finish on its own (stopping it through the bridge's `stop-agent` would leave a note in the session's conversation). `headless_fork` is `derive_line`'s process code moved and generalized: the gate, the internal marker, `--safe-mode`, `--no-session-persistence`, `--fork-session --session-id <new>`, `cwd=member_cwd`, the cleanup in `finally`; `tools=False` passes `--tools ""` and `tools=True` passes `--permission-mode auto --tools Read,Grep,Glob,Bash`; `cache=False` sets `DISABLE_PROMPT_CACHING=1`; the prompt is always last, after `--output-format json` (a prompt right after `--tools ""` is read as a tool name).
+
+**`manager query`:**
+
+    manager query <member> "<question>" [--timeout S]
+
+Text output: the answer, then one line `via fork agent · cache read N · cache write N · input N · output N` (or `via headless fork · …`). `--json`: `{"member", "via", "text", "truncated", "usage"}`. It asks through `ask_fork_agent` with the question under no extra frame (the bridge adds `ASK_FRAME`) when `bridge_offers(session, "ask")`; otherwise through `headless_fork(…, FORK_FRAME + "\n\nThe question:\n\n" + question, tools=True, cache=True)`: a session that is not running, a bridge that does not offer `ask` (an older sminos), and an `ask` refused `no-guard` all take the headless path, at the read-only level the owner accepted for it, and the output's `via` says which path answered. An `ask` refused `busy` (another manager query is running in that session) or `nothing-to-fork` (the session has made no request yet) is reported, exit 1. A session under another config dir is refused for the headless path as `derive` refuses it (`foreign_config`).
 
 ### M1 — The `manager` command: windows, pending items, subscriptions
 
@@ -255,12 +335,87 @@ At the end of M1 the owner (or a session) can run `manager transcript <member> -
 - **Decisions:**
   - The classifier lives in `manager_window.py` and reuses sminos's readers named in the entry-kind table instead of re-deriving frame formats; where no reader exists (compaction summaries, interrupts, steers, the `[sminos chat` frames), it keys on the constants named there and its fixtures pin them.
   - Lineage boundaries are emitted as `boundary` entries so a reader sees where a session continued.
+  - A subscription is resolved by the session id it stored, not its alias (aliases recur and change): the stored id goes through `find_target` as a full uuid and on to the session it continued in (`sminos_bridge.successor`), so a resumed seat stays followed; `subscriptions` shows the current alias beside the stored one when they differ.
   - `--max-chars` defaults to 400,000 characters of rendered text; past it the walk stops and says the last timestamp reached and suggests a later `--since` or an `--until`.
   - Speed target: a 10-hour window of a ~670 MB transcript renders in under 10 seconds on the MacBook (acceptance 3). If `offset_since`'s 1 MiB granularity or the forward scan misses it, measure before optimizing and record the figure in Surprises & Discoveries.
 - **Does not touch:** the sminos CLI's verbs, `sminos help`, the sminos skill, the bridge, `derive`.
 - **Proves:** acceptance 2 and 3. Tests pin: each entry kind from a fixture row of that kind; a peer frame never classified as `you`; an `answeredWithoutRequest` row dropped; an unknown row dropped; the window starting at the first row at or after `T` in a generated file of at least 50 MB; a two-session lineage walked oldest first with one `boundary`; time parsing of each `T` form, including a clock time later than now meaning yesterday; `--max-chars` truncation; `pending` matching questions to answers by `src` across the log and the host store; `subscriptions add` refusing the manager's own session and a remote member; the state file written 0600 and replaced whole.
 
-QUERY_AND_SKILL_MILESTONES_PENDING_SPIKE
+### M2 — The bridge's `ask` and the read-only guard
+
+At the end of M2 a live session running the branch's sminos and doperpowers plugins answers a bridge `ask` through a fork agent inside it: the fork reads the session's cache, uses read-only tools, is refused anything else, and leaves the session's conversation and turn untouched. `sminos/tests/mods/live-ask-check.py` shows each of these on throwaway sessions.
+
+- **Touches:** `sminos/hooks/mods/bridge-ask.tsx` (new), `sminos/hooks/mods/bridge.tsx` (`OPS`, `capabilities.controls`, routing the op, recording the main loop's completed-request `messageCount`, matching `turn.complete` to open asks), `sminos/types/sminos.d.ts` (the `ask` state key), `sminos/skills/sminos/scripts/sminos_bridge.py` (`OUTCOME_EVENTS`), `sminos/tests/mods/ask.test.ts` (new), `sminos/tests/test-bridge-control.sh` where the child's relay of `ask` is pinned; `hooks/mods/fork-guard.tsx` (new), `hooks/mods/register.tsx`, `tests/mods/fork-guard.test.ts` (new); `sminos/tests/mods/live-ask-check.py` (new); `sminos/hooks/mods/CLAUDE.md` and `hooks/mods/CLAUDE.md` (and `hooks/mods/README.md`, the mods' manual) for what changed.
+- **Exposes:** the `ask` op, `ASK_FRAME`, `askPrompt`, the guard and `FORK_GUARD_REASON`, the guard-presence check (Interfaces).
+- **Consumes:** nothing from M1.
+- **Decisions:**
+  - `bridge-ask.tsx` mirrors `bridge-btw.tsx`'s structure (answer at once, start and end on the stream after the answer, open ids kept in `$.state` across a reload, orphans ended `aborted`), so the desk-facing machinery the child already has for `btw` carries `ask` unchanged.
+  - The guard-presence mechanism is this milestone's to choose; whichever it is, `ask.test.ts` pins that a session without it refuses `no-guard`, and the live check runs a session without the doperpowers plugin to prove it.
+  - `spawnedBy` is the spawning plugin's name as the engine reports it (`forkprobe` in the spike); the live check confirms it reads `sminos` for the bridge's forks before the guard keys on it.
+  - The guard caches nothing across calls it cannot re-derive: `$.agent.list()` is read per `tool.check` of a subagent loop (the main loop's calls, which carry no `agentId`, pass through without a lookup).
+  - Live checks follow the spike's harness (`~/.local/share/session-manager/spikes/fork-agent-probe/run_probe2.py`, `analyze.py`, and `fork-agent-findings.md` beside it): an isolated config dir, sessions on haiku rooted outside `~` (a session rooted under `~` loads `~/.claude/CLAUDE.md`; friction entry `general/conditional/isolated-claude-home-under-user-home-inherits-ancestor-claude-md.md`), the branch's plugins loaded from the worktree. Do not copy the engine into a fake `HOME`.
+- **Does not touch:** `btw`'s behavior, `derive`, the `manager` command, `sminos_rpc.py` and the hub's RPC set, the desk.
+- **Proves:** acceptance 4, 5 and 6 at the bridge (M4 repeats them through `manager query`). Unit tests pin: `ask` refused `bad-prompt`, `busy`, `no-guard`, `nothing-to-fork`; `ASK_FRAME`'s exact text; `askPrompt` with and without a tail; the tail rendered from the messages after the recorded count, tool results cut to 2,000 characters, the newest 32 KiB kept; the end's text cut to 64 KiB; an end matched to its own `agentId` only; an orphaned ask ended `aborted` after a reload; the guard denying a non-read-only call and allowing a read-only one for a sminos fork, and passing through untouched for another plugin's fork, a non-fork subagent and the main loop; the guard answering before `appeal.tsx`'s pass can apply. The live check records, into Surprises & Discoveries: an idle session's ask (cache read as a share of the last request, the quoted last message, the main transcript's user and assistant row counts before and after, no turn started); an ask during a main-loop `sleep 20` (the sleep's duration, the tail naming the latest tool call); `touch` refused with no file and no permission prompt, in `auto` and in `default` permission mode; `busy`; `no-guard`; a session past 100k tokens (cache share); an Esc in the session during an ask and a compaction during an ask (what the fork and the end do).
+
+### M3 — The shared fork code: `derive` on `btw`, `manager query`
+
+At the end of M3, `sminos derive` asks a live member through `btw` and a stopped one through the uncached headless fork as before, with the same printed line; `manager query <member> "<question>"` answers from a live session through its fork agent and from a stopped one through the headless fork, and says which.
+
+- **Touches:** `sminos/skills/sminos/scripts/sminos_fork.py` (new), `sminos/skills/sminos/scripts/sminos.py` (`derive_line` moves its process code into `sminos_fork.headless_fork` and asks `ask_btw` first), `sminos/skills/manager/scripts/manager.py` (`query`), `sminos/tests/run-sminos-tests.sh` (the stub `claude` records the `--permission-mode` and `--tools` values it was given in `calls.log`; derive's cases), `sminos/tests/test_manager.py`, a Python bridge stand-in that answers `btw` and `ask` (extend `sminos/tests/test_policy_requests.py`'s `Bridge` or `test_rpcs.py`'s `Mod`), `sminos/skills/sminos/scripts/CLAUDE.md` (derive's note, `sminos_fork.py`), `sminos/skills/manager/scripts/CLAUDE.md`.
+- **Exposes:** `sminos_fork` (Interfaces), `manager query`.
+- **Consumes:** the `ask` op and `ASK_FRAME` (M2); the `manager` command's resolution and output conventions (M1).
+- **Decisions:**
+  - `derive_line` asks `ask_btw(m.session, prompt, timeout=SMINOS_DERIVE_TIMEOUT)` when `bridge_offers(m.session, "btw")`; on any `ForkFailed` from it (refused, an API error, aborted, silent past the timeout) it runs the headless fork once, so derive's success rate never drops below today's. The headless call is `headless_fork(project, m, prompt, tools=False, cache=False, timeout=…)`: exactly today's flags and environment. `DeriveFailed` keeps its meaning and its stamps: `derive_line` turns the last `ForkFailed` into `DeriveFailed(reason, stderr)`.
+  - Derive's printed line does not change. How it asked (`via btw` or `via headless fork`, with cache read and input tokens) goes to stderr beside its other diagnostics, which is where acceptance 9 reads it.
+  - `btw` gets derive's prompt as it is; the bridge adds `BTW_FRAME`.
+  - `manager query`'s routing is the table in Interfaces; its timeout default is 300 s for the fork agent and the headless fork alike.
+- **Does not touch:** the TypeScript mods (M2 is done), the skill.
+- **Proves:** acceptance 7 and 9 at the stub level, and `manager query`'s routing. Tests pin: derive with a live bridge stand-in offering `btw` asks through it and starts no fork process; derive with a refused or failing `btw` falls back to the headless fork; derive with no bridge runs the headless fork with `--tools ""` and `DISABLE_PROMPT_CACHING=1`, prompt last; `manager query` with a stand-in offering `ask` returns its end's text and usage and names `via fork agent`; `busy` and `nothing-to-fork` exit 1 with the reason; `no-guard`, an `ask`-less bridge and a stopped session take the headless fork with `--permission-mode auto --tools Read,Grep,Glob,Bash`, caching on, `FORK_FRAME` before the question, prompt last; a remote member and a foreign config dir refused; a silent bridge past `--timeout` exits 1 saying so.
+
+### M4 — The skill, the digest brief, the replay evaluation, and acceptance
+
+At the end of M4 the owner can run `/sminos:manager` in a fresh session, subscribe sessions, and ask for an update since a time, and get the briefing the design describes; the digest subagents' effort is chosen on evidence; both plugins carry new versions; and every acceptance item has been run.
+
+- **Touches:** `sminos/skills/manager/SKILL.md` (new), `sminos/skills/manager/references/digest-brief.md` (new), `docs/doperpowers/specs/2026-10-31-session-manager-replay.md` (new: the labelled list and the scores), `sminos/skills/manager/scripts/CLAUDE.md` (final), `sminos/CLAUDE.md` (the pointer, if M1 did not add it), the plugins' versions through `scripts/bump-version.sh --plugin sminos` and `scripts/bump-version.sh`, this spec's Progress and record.
+- **Consumes:** every command from M1 and M3.
+- **Decisions:**
+  - Write and test the skill with `doperpowers:writing-skills`. `SKILL.md`'s front matter is `name: manager`, a one-sentence `description` for the slash menu (what it does for the owner: a read-only briefing of what their subscribed sessions need from them and what happened since a time), and `disable-model-invocation: true`. Its body carries what the manager model cannot derive: the purpose (the owner's side of the work), the commands (named from the skill's base directory), the briefing's order and item fields, blocking and optional, the status rules, the digest dispatch (general-purpose subagents, `model: sonnet`, the chosen effort, one per subscribed session, in parallel, briefed from `references/digest-brief.md`), recording the carry list with `manager carry set` after each briefing, subscriptions only on the owner's word (it may suggest), strictly read-only, and the query costs that tell it when a query is worth it (a fork agent costs a fraction of a headless fork). The design section of this spec is the source; the skill does not point at the spec, since the manager model will not have it.
+  - `digest-brief.md` is the brief a digest subagent gets: its member, its window, its carry items; to read with `manager transcript` and ask with `manager query` when the records leave an item's status unclear; to return, per need, what is needed, why it has to be the owner, blocking or optional, when raised, status with its evidence, and the quoted source, then the session's decisions taken on the owner's behalf, changes of plan and progress, as prose for the manager to merge.
+  - **The replay evaluation.** Window: 2026-10-30 00:00 to 2026-10-31 23:59 KST over the P5 sessions `37052769`, `b4948247`, `a45b97a3`, and `1ea561bc` (the MAWS session that asked to merge cua PR #240). The labelled list is made first, independently of the skill: an Opus subagent at high effort reads the window's host events and `manager transcript` windows and lists every item the owner was asked for, with its blocking or optional label and its status at the window's end; the executor checks each item against the transcripts and writes the list to the replay file. Then the briefing procedure runs on the same window twice, digest subagents at Sonnet medium and at Sonnet high, and each is scored: blocking items found, all items found, items invented, statuses right. Medium is chosen if it finds every blocking item high finds and its total recall is within 5 points of high's; the choice goes into `SKILL.md` and the Decision Log, the scores into the replay file and Surprises & Discoveries, with each run's cost.
+  - **Pressure scenarios** for the skill (writing-skills), on a throwaway manager session: the owner says "tell CI-opt yes, merge it" (it does not relay; it says where to answer); the owner says "subscribe whatever looks relevant" (it lists suggestions and subscribes only what the owner then names); a digest finds an item it cannot settle from the records (it queries rather than guesses); the owner asks a follow-up about one item (it answers from the briefing, the transcript or a query, without re-running the briefing).
+  - **Acceptance run.** Items 4–7 and 9 need the new bridge inside the queried session, so before merge they run against throwaway sessions loaded with the branch's plugins, as M2's live check does. Items 1–3 and 8 run as written on the owner's real records: the `manager` commands read transcripts and host events and change nothing, and when item 8's briefing on the replay window queries a P5 session, that session's bridge does not offer `ask` before merge, so the query takes the headless fork (read-only at the level the owner accepted for it, roughly $0.40 per 100k tokens of that session's context); each such query is noted with its cost in the replay file. Item 10 is checked on the throwaway sessions the queries went to, and on the real sessions' transcripts for the reads. After merge and a plugin update, the finish step repeats item 4 against one of the owner's own live sessions.
+- **Does not touch:** code beyond what an acceptance failure forces (a failure found here is fixed in the milestone's own files and recorded).
+- **Proves:** acceptance 1–10; the replay scores and the effort choice; the pressure scenarios' outcomes.
+
+### Concrete Steps
+
+All from the worktree, `/Users/new/Developer/GitHub/doperpowers/.claude/worktrees/session-manager`.
+
+    python3 sminos/tests/test_manager.py                    # M1, M3: the manager command
+    bash sminos/tests/run-sminos-tests.sh                   # every sminos suite; SMINOS_PART=core or suites for half
+    bash sminos/tests/mods/run.sh                           # M2: the sminos mods, ask.test.ts among them
+    bash tests/mods/run-mods-tests.sh                       # M2: the doperpowers mods, fork-guard.test.ts among them
+    bash tests/mods/typecheck.sh                            # every plugin's mods and tests typecheck
+    ci-gate --gates sminos,sminos-suites,sminos-mods,mods-types,mods   # on the committed HEAD
+    python3 sminos/tests/mods/live-ask-check.py             # M2: live, throwaway haiku sessions; prints one verdict line per check
+
+Expected shapes (illustrative values):
+
+    $ sminos/skills/manager/scripts/manager transcript p5-desk-track-owner --since 10h | head -4
+    2026-10-31 14:02  you        merge it once CI is green
+    2026-10-31 14:02  tool       Bash: gh pr checks 452
+    2026-10-31 14:05  →you       PR #452 is merged. …
+    2026-10-31 14:06  peer CI-opt  [sminos chat doperpowers …] the runner image moved
+
+    $ sminos/skills/manager/scripts/manager query CI-opt "What are you waiting on from the human?"
+    Nothing blocking. One optional item: …
+    via fork agent · cache read 412,330 · cache write 1,204 · input 96 · output 388
+
+    $ sminos/skills/manager/scripts/manager query some-stopped-seat "What did you finish last?"
+    …
+    via headless fork · cache read 0 · cache write 88,102 · input 2 · output 310
+
+A failure reads as one line on stderr and exit 1, for example `manager: CI-opt runs on mini; this version reads sessions on this machine only` or `manager: CI-opt is already answering another manager query (busy)`.
 
 ## Surprises & Discoveries
 
@@ -280,14 +435,33 @@ QUERY_AND_SKILL_MILESTONES_PENDING_SPIKE
   Evidence: 104,990 input tokens, $0.4225. daemon.log, successful derives per day Oct 27–31: 77, 58, 39, 61, 48 (the parser may double-count a few two-line answers).
 - Observation: Two days of P5 host events are about 140k tokens; most messages carry italic needs-you spans.
   Evidence: MAWS + doperpowers projects, Oct 29–31: 507 host events, ~565k characters; 231 of 377 messages with italic spans; all 62 questions answered.
+- Observation: A fork agent a mod spawns (`$.agent.spawn({ subagentType: 'fork' })`) reads the session's cache on its first request.
+  Evidence: spike (haiku, engine 2.1.316, `~/.local/share/session-manager/spikes/fork-agent-findings.md`): first-request cache read 27,169 of 27,196, 27,315 of 27,317, 27,208 of 27,235 tokens. One idle fork read 22,214 of 27,113, and the main loop's own next request read the same 22,214 (the session's first-turn miss, not the fork's). The main loop wrote about 121 tokens per step while a fork ran.
+- Observation: The fork agent leaves the session's conversation and turn untouched; its answer reaches only the spawning mod.
+  Evidence: main transcript rows 33 before an idle fork, 38 during (five `tools-used` metadata lines), 38 when done, 38 25 s later; no task-notification, `prompt.submit` or `session.receive`; no turn started. A fork spawned during the main loop's `sleep 20` left it to run 20.1 s. Main requests during the fork carried only `total_tokens_reminder`. The answer, reason and usage arrived at the spawning plugin's `turn.complete`, matched by `agentId`.
+- Observation: A fork spawned outside a hook bypasses every hook of the spawning plugin; spawned inside a hook it bypasses only that hook. A separate plugin's `tool.check` sees every fork call and its deny overrides core's allow and ask.
+  Evidence: timer spawn: the spawning plugin's `tool.call`, `tool.check`, `turn.step`, `turn.start`, `prompt.attachment` saw nothing, `turn.complete` arrived. Spawn from a `tool.call` hook: that hook missed the fork's calls, the same plugin's other `tool.call` hook denied Edit and `touch`. A separate plugin's `tool.check` (`isReadOnly` false → deny) let Read, `ls`, `cat`, `echo`, `sleep` run and refused Edit, Write, a `>` redirect, `touch` and a Python write; `/tmp/fork-probe-x`, `-y`, `-z` absent.
+- Observation: An idle session's fork agent sees the last response; mid-turn it stops at the main loop's last request.
+  Evidence: idle forks quoted the last assistant message (`PELICAN`, `SLEEP-DONE`); a mid-turn fork's context excluded the in-flight `sleep` call.
+- Observation: Spawning a fork agent from a slash command writes rows into the conversation; it is visible in the session's agent strip and `/tasks`.
+  Evidence: two `local_command` user rows per command spawn; footer `◯ fork  fork probe idle  5s · ↓ 28.8k tokens`; `$.agent.list()` `type: fork, status: running`, then `completed`, `spawnedBy: forkprobe`.
 
 ## Decision Log
 
-- Decision: Verification. One independent spec review (technical-heavy: `doperpowers:adversarial-reviewer`) and, since the execution has three milestones, the adversarial reviewer's buildability review of the execution section, in the same round. The branch gets `doperpowers:review-code` at **high** (`doperpowers:reviewer-high`): the bridge change runs inside every session's process and `derive` runs from every machine's daemon.
+- Decision: Verification. One independent spec review (technical-heavy: `doperpowers:adversarial-reviewer`) and, since the execution has four milestones, the adversarial reviewer's buildability review of the execution section, in the same round. The branch gets `doperpowers:review-code` at **high** (`doperpowers:reviewer-high`): the bridge change runs inside every session's process and `derive` runs from every machine's daemon.
   Rationale: the stakes sit in the shared code paths, not in the new command.
   Date/Author: 2026-11-01, doperpowers-9b (f89d7fb0).
 - Decision: The carry list and subscriptions live in `$SMINOS_HOME/managers/<name>.json`, not only in the manager's conversation as presented.
-  Rationale: the owner chose "carried forward" for older open items; a compaction or a fresh manager session would lose a list kept only in context. The file holds only what the owner declared (subscriptions) and what the last briefing told them was open; it is not a ledger maintained in the background, which the owner rejected.
+  Rationale: the owner chose "carried forward" for older open items; a compaction or a fresh manager session would lose a list kept only in context. The file holds only what the owner declared (subscriptions) and what the last briefing told them was open; it is not a ledger maintained in the background, which the owner rejected. Told to the owner with an offer to revert.
+  Date/Author: 2026-11-01, doperpowers-9b (f89d7fb0).
+- Decision: One query interface for live sessions, the fork agent (`ask`), replacing the presented split of `btw` without tools and a headless `--tools` fork; the `btw` freshness tail is dropped from scope.
+  Rationale: the owner asked for one call that keeps the cache, has tools, stays read-only and interrupts nothing; the spike showed the fork agent does all four. The tail fix served only `btw` as the manager's query path; `derive`, `btw`'s remaining user here, does not need it. The rejected alternative, keeping both paths, made the manager choose between cheap-without-tools and tools-without-cache on every question.
+  Date/Author: 2026-11-01, doperpowers-9b (f89d7fb0), on the owner's direction.
+- Decision: The headless fork runs under `--permission-mode auto --tools Read,Grep,Glob,Bash`, not `dontAsk` with a Bash allowlist.
+  Rationale: the owner's call ("`--permission-mode auto --tools Read,Bash …` is enough"). The allowlist enforced read-only (measured) at the cost of a curated list; auto mode refuses what it judges risky, and read-only rests on the frame. It now serves only sessions with no guarded fork agent.
+  Date/Author: 2026-11-01, doperpowers-9b (f89d7fb0), on the owner's direction.
+- Decision: The read-only guard is a mod of the doperpowers plugin.
+  Rationale: a fork the bridge spawns from its listener bypasses all of sminos's hooks (spike), so the guard must sit in another plugin. The to-human plugin, which already depends on sminos, lost because its purpose is how sessions talk to the owner; raising one of sminos's own hooks so the spawn happens inside a hook frame lost as a contortion on undocumented event semantics. A session without doperpowers gets no fork agent (`no-guard`) and its queries take the headless path. Told to the owner as a placement they may veto.
   Date/Author: 2026-11-01, doperpowers-9b (f89d7fb0).
 
 ## Outcomes & Retrospective
