@@ -15,7 +15,7 @@ A side effect ships with it: `sminos derive`, which forks a session every six ho
 - [x] (2026-11-01 01:40Z) Design approved in the authoring session (doperpowers-9b, f89d7fb0); spec written.
 - [x] (2026-11-01 05:10Z) Independent spec review and buildability review: two rounds, converged (Decision Log).
 - [x] (2026-11-01 03:30Z) Fork-agent spike: an in-session fork started by a mod reads the session's cache, runs read-only tools under a guard in another plugin, and leaves the session untouched (Surprises & Discoveries).
-- [ ] M1 — the `manager` command: transcript windows, pending items, subscriptions.
+- [x] (2026-11-01 03:29Z) M1 — the `manager` command: transcript windows, pending items, subscriptions. Reviewed clean after two fix rounds; `sminos`, `sminos-suites` green on 3e93e0f1.
 - [ ] M2 — the bridge's `ask` (an in-session fork agent) and the read-only guard.
 - [ ] M3 — the shared fork code in sminos: `derive` on `btw`, `manager query` on `ask` with the headless fallback.
 - [ ] M4 — the skill, the digest brief, the replay evaluation, versions, and acceptance.
