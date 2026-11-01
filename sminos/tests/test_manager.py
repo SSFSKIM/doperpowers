@@ -913,7 +913,8 @@ class Ledger(unittest.TestCase):
         view = L.view(st, T0 + 120)
         self.assertEqual(set(view), {"lang", "updated", "window", "initiatives"})
         (p5,) = view["initiatives"]
-        self.assertEqual(set(p5), {"name", "items", "brief"})
+        self.assertEqual(set(p5), {"name", "items", "brief", "roadmap"})
+        self.assertIsNone(p5["roadmap"])
         self.assertEqual([i["id"] for i in p5["items"]], ["y4", "y2", "y1", "y3", "y5", "w3", "w2", "w1"])
         self.assertEqual(p5["brief"]["text"], "It went.")
         text = L.render(view, T0 + 120)
@@ -938,6 +939,117 @@ class Ledger(unittest.TestCase):
             self.assertIn("lang", raised.exception.problems[0])
         held = L.normalize(dict(st, lang="ko"))
         self.assertEqual(self.apply(held, update([yours()]))[0]["lang"], "ko", "an update keeps the language")
+
+
+def part(pid, status="in progress", **kw):
+    return {"id": pid, "title": "Part " + pid, "status": status, "summary": "What " + pid + " is.", **kw}
+
+
+def roadmap(**kw):
+    return {"initiative": "P5", "source": "SSFSKIM/doperpowers docs/plan.md @ main 8adcec79",
+            "purpose": "Why P5 exists.", "done_when": "When P5 is closed.",
+            "parts": [part("C1", "done", owner="builder", refs=["PR #138"],
+                           changes=[{"at": iso(T0 - DAY), "text": "planned"},
+                                    {"at": "2026-11-01T09:00:00+09:00", "text": "merged"}],
+                           parts=[part("C1.1", "done"),
+                                  part("C1.2", "waiting", waits_on="the owner's login",
+                                       parts=[part("C1.2.1", "not started")])]),
+                      part("C2", now="a spec, no code yet"), part("C3", "dropped")], **kw}
+
+
+class Roadmaps(unittest.TestCase):
+    """`apply`'s `roadmaps`: each replaces its initiative's roadmap whole, validated as everything else is."""
+
+    def problems(self, doc, st=None):
+        st = st or v2((SID, iso(T0 - DAY), None))
+        before = json.dumps(st, sort_keys=True)
+        with self.assertRaises(L.Invalid) as raised:
+            L.apply(st, doc, T0)
+        self.assertEqual(json.dumps(st, sort_keys=True), before, "the state held is untouched")
+        return "\n".join(raised.exception.problems)
+
+    def test_a_roadmap_is_stored_whole_with_its_written_stamp_and_replaced_whole(self):
+        st, got = L.apply(v2((SID, iso(T0 - DAY), None)), update() | {"roadmaps": [roadmap()]}, T0)
+        self.assertEqual(got["roadmaps"], ["P5"])
+        (held,) = st["roadmaps"]
+        self.assertEqual((held["initiative"], held["written"]), ("P5", L.stamp(T0)))
+        self.assertEqual(held["parts"][0]["changes"][1]["at"], "2026-11-01T00:00:00.000Z", "times stored in UTC")
+        self.assertEqual(held["parts"][0]["parts"][1]["parts"][0]["id"], "C1.2.1")
+        self.assertEqual(L.normalize(json.loads(json.dumps(st)))["roadmaps"], st["roadmaps"], "it reads back")
+        st, _ = L.apply(st, update() | {"roadmaps": [roadmap(parts=[part("D1")], purpose=None)]}, T0 + 60)
+        (held,) = st["roadmaps"]
+        self.assertEqual(([p["id"] for p in held["parts"]], held["purpose"], held["written"]),
+                         (["D1"], None, L.stamp(T0 + 60)), "the new one replaces the old whole")
+        st, got = L.apply(st, update(), T0 + 120)
+        self.assertEqual((got["roadmaps"], len(st["roadmaps"])), ([], 1), "an update without one keeps it")
+
+    def test_the_view_and_the_text_carry_it(self):
+        st, report = L.apply(v2((SID, iso(T0 - DAY), None)), update() | {"roadmaps": [roadmap()]}, T0)
+        self.assertEqual(L.summary(st, report), "P5: 0 new · 0 changed · 0 still open · roadmap written")
+        view = L.view(st, T0)
+        self.assertEqual(view["initiatives"][0]["roadmap"], st["roadmaps"][0])
+        line = next(x for x in L.render(view, T0).splitlines() if "roadmap" in x)
+        self.assertEqual(line, "  roadmap from SSFSKIM/doperpowers docs/plan.md @ main 8adcec79, written %s: "
+                               "2 done · 1 in progress · 1 waiting · 1 not started · 1 dropped" % L.clock(L.stamp(T0), T0))
+
+    def test_a_roadmap_for_an_initiative_no_subscription_holds_shows_and_survives(self):
+        st = v2((SID, iso(T0 - DAY), None))
+        st, _ = L.apply(st, update([work(initiative="P6")]) | {"roadmaps": [roadmap(initiative="P6")]}, T0)
+        self.assertEqual([(i["name"], bool(i["roadmap"])) for i in L.view(st, T0)["initiatives"]],
+                         [("P5", False), ("P6", True)])
+
+    def test_bad_roadmaps_name_every_problem(self):
+        text = self.problems(update() | {"roadmaps": [
+            roadmap(parts=[part("C1", "blocked"),                                   # outside the enumeration
+                           part("C2", "waiting"),                                   # waiting without waits_on
+                           part("C1"),                                              # a duplicate id
+                           part("C4", parts=[part("C4.1", parts=[part("C4.1.1", parts=[part("C4.1.1.1")])])]),
+                           part("C5", colour="red"),                                # a field no part has
+                           part("C6", changes=[{"at": "soon", "text": "x", "by": "me"}]),
+                           part("C7", owner="", refs="PR #1"),
+                           {"id": 7, "title": ["x"], "status": None}]),
+            roadmap(initiative="P9", written=iso(T0), parts=[]),
+            {"initiative": "P5", "source": "s", "parts": [part("Z1")]}]})
+        for said in ("'blocked' is not one of", "C2: waits_on is required once its status is waiting",
+                     "id C1 is given to two parts", "C4 > C4.1 > C4.1.1: parts nest at most 3 levels deep",
+                     "a part has no field 'colour'", "C6 changes[0]: at 'soon' is not an ISO-8601 time",
+                     "C6 changes[0]: a change has no field 'by'", "C7: owner cannot be blank",
+                     "C7: refs must be a list of text", "part [7]: id must be text", "title must be text",
+                     "status is required", "summary is required", "roadmaps[1]: a roadmap has no field 'written'",
+                     "roadmaps[1]: parts is required", "P9 is not an initiative of this ledger",
+                     "roadmaps[2]: a second roadmap for P5"):
+            self.assertIn(said, text)
+        self.assertIn("parts must be a list of objects", self.problems(update() | {"roadmaps": [roadmap(parts="C1")]}))
+        self.assertIn("roadmaps: a list of objects", self.problems(update() | {"roadmaps": {"P5": roadmap()}}))
+        self.assertIn("roadmaps: a list of objects", self.problems(update() | {"roadmaps": None}))
+
+    def test_a_held_roadmap_that_does_not_hold_fails_the_read(self):
+        st, _ = L.apply(v2((SID, iso(T0 - DAY), None)), update() | {"roadmaps": [roadmap()]}, T0)
+        raw = json.loads(json.dumps(st))
+        raw["roadmaps"][0]["parts"][1]["status"] = "maybe"
+        with self.assertRaises(L.Invalid) as raised:
+            L.normalize(raw)
+        self.assertIn("roadmaps[0] part C2: status 'maybe'", raised.exception.problems[0])
+
+    def test_a_held_roadmaps_that_is_not_a_list_of_roadmaps_is_refused_not_dropped(self):
+        st, _ = L.apply(v2((SID, iso(T0 - DAY), None)), update() | {"roadmaps": [roadmap()]}, T0)
+        held = json.loads(json.dumps(st))["roadmaps"][0]
+        for bad, said in ((7, "roadmaps is int, not a list"), ({"P5": held}, "roadmaps is dict, not a list"),
+                          ("x", "roadmaps is str, not a list"), ([7], "roadmaps[0] is int, not a roadmap object"),
+                          ([held, "x"], "roadmaps[1] is str, not a roadmap object")):
+            raw = json.loads(json.dumps(st))
+            raw["roadmaps"] = bad
+            with self.assertRaises(L.Invalid, msg=repr(bad)) as raised:
+                L.normalize(raw)
+            self.assertIn(said, "\n".join(raised.exception.problems))
+
+    def test_two_held_roadmaps_for_one_initiative_are_refused(self):
+        st, _ = L.apply(v2((SID, iso(T0 - DAY), None)), update() | {"roadmaps": [roadmap()]}, T0)
+        raw = json.loads(json.dumps(st))
+        raw["roadmaps"].append(dict(raw["roadmaps"][0]))
+        with self.assertRaises(L.Invalid) as raised:
+            L.normalize(raw)
+        self.assertIn("roadmaps[1]: a second roadmap for P5", raised.exception.problems)
 
 
 def seen_of(sessions, since, until=None, stored=None):
@@ -1255,6 +1367,16 @@ class Commands(unittest.TestCase):
         _, out, _ = self.run_in_alpha("ledger")
         self.assertRegex(out, r"(?m)^\s+y1\s+pending\s+decide\s+optional\b.*builder.*merge PR #9\?")
         self.assertRegex(out, r"(?m)^\s+w1\s+in progress\s+Sessions can be asked questions")
+        self.assertNotIn("roadmap", out)
+        r = subprocess.run([str(MANAGER), "ledger", "apply", "-", "--name", self.name], text=True, capture_output=True,
+                           input=json.dumps(update() | {"roadmaps": [roadmap()]}), env=os.environ, cwd=BASE)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.strip(), "P5: 0 new · 0 changed · 2 still open · roadmap written")
+        _, out, _ = self.run_in_alpha("ledger")
+        self.assertRegex(out, r"(?m)^  roadmap from SSFSKIM/doperpowers docs/plan\.md @ main 8adcec79, written .*: "
+                              r"2 done · 1 in progress · 1 waiting · 1 not started · 1 dropped$")
+        _, out, _ = self.run_in_alpha("ledger", "--json")
+        self.assertEqual([p["id"] for p in json.loads(out)["initiatives"][0]["roadmap"]["parts"]], ["C1", "C2", "C3"])
 
     def test_ledger_lang_sets_and_shows_the_language(self):
         self.run_in_alpha("subscriptions", "add", "P5", "builder")

@@ -1,5 +1,5 @@
 """The manager's state file, version 2: the subscriptions and the ledger (the owner's items, the work's outcomes,
-the latest brief per initiative), and `apply`, the one way an update changes it.
+the latest brief and roadmap per initiative), and `apply`, the one way an update changes it.
 
 `$SMINOS_HOME/managers/<name>.json`, mode 0600, written whole through a temporary file and a rename; every
 read-modify-write holds an exclusive flock on `<name>.lock` beside it (`lock`). Done and overtaken items whose
@@ -53,7 +53,19 @@ SUBSTANTIVE = {"yours": ("type", "blocking", "need", "status", "evidence"),
                "work": ("title", "meaning", "status", "waits_on")}
 # `id` and `lane` name the item; `reported` and `changed` are apply's stamps, kept from the item held.
 OWN = ("id", "lane", "reported", "changed")
-DOC_KEYS = ("window", "sessions", "items", "briefs")
+DOC_KEYS = ("window", "sessions", "items", "briefs", "roadmaps")
+
+# A roadmap: an initiative's whole plan, each part's status and history, written whole by the manager at an update
+# from the initiative's roadmap document. Fields as FIELDS above; `written` is apply's stamp. Parts nest, at most
+# ROADMAP_DEPTH levels, and their ids are unique across the whole roadmap.
+ROADMAP_FIELDS = {"initiative": ("text", True), "written": ("time", False), "source": ("text", True),
+                  "purpose": ("text?", False), "done_when": ("text?", False), "parts": ("parts", True)}
+PART_FIELDS = {"id": ("text", True), "title": ("text", True), "status": ("text", True), "owner": ("text?", False),
+               "summary": ("text", True), "now": ("text?", False), "waits_on": ("text?", False),
+               "changes": ("changes", False), "refs": ("texts", False), "parts": ("parts", False)}
+CHANGE_FIELDS = {"at": ("time", True), "text": ("text", True)}
+PART_STATUSES = ("done", "in progress", "waiting", "not started", "deferred", "dropped")
+ROADMAP_DEPTH = 3
 DEFAULT_LANG = "en"
 LANG_RE = re.compile(r"^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$")     # a language, then subtags: ko, pt-BR, zh-Hant-TW
 
@@ -172,7 +184,8 @@ def normalize(raw):
     raw = raw if isinstance(raw, dict) else {}
     briefed = _norm_time(raw.get("briefed")) if raw.get("briefed") else None
     st = {"version": VERSION, "initiatives": [], "updated": None, "window": None, "next": {"y": 1, "w": 1},
-          "items": [], "briefs": []}
+          "items": [], "briefs": [], "roadmaps": []}
+    shape = []
     for i in raw.get("initiatives") or []:
         if isinstance(i, dict) and i.get("name"):
             st["initiatives"].append({**i, "sessions": [_subscription(e, briefed) for e in i.get("sessions") or []
@@ -185,6 +198,17 @@ def normalize(raw):
         st["window"] = raw.get("window")
         st["items"] = [dict(i) for i in raw.get("items") or [] if isinstance(i, dict)]
         st["briefs"] = [dict(b) for b in raw.get("briefs") or [] if isinstance(b, dict)]
+        held_roadmaps = raw.get("roadmaps")
+        if held_roadmaps is None:
+            held_roadmaps = []
+        if not isinstance(held_roadmaps, list):
+            shape.append("roadmaps is %s, not a list of roadmaps" % type(held_roadmaps).__name__)
+            held_roadmaps = []
+        for n, r in enumerate(held_roadmaps):
+            if isinstance(r, dict):
+                st["roadmaps"].append(dict(r))
+            else:
+                shape.append("roadmaps[%d] is %s, not a roadmap object" % (n, type(r).__name__))
     if "lang" in raw:
         st["lang"] = raw["lang"]
     held = raw.get("next") if isinstance(raw.get("next"), dict) else {}
@@ -192,7 +216,7 @@ def normalize(raw):
         used = [int(i["id"][1:]) for i in st["items"]
                 if isinstance(i.get("id"), str) and i["id"][:1] == lane and i["id"][1:].isdigit()]
         st["next"][lane] = max([held.get(lane) or 1] + [n + 1 for n in used])
-    problems = []
+    problems = list(shape)
     if "lang" in st and not valid_lang(st["lang"]):
         problems.append("lang %r is not a language tag (ko, en, pt-BR)" % (st["lang"],))
     for i in st["items"]:
@@ -205,6 +229,15 @@ def normalize(raw):
             continue
         _fill(i)
         problems += _check_item(i, str(i.get("id")))
+    seen_roadmaps = set()
+    for n, r in enumerate(st["roadmaps"]):
+        where = "roadmaps[%d]" % n
+        problems += check_roadmap(r, where, stored=True)
+        initiative = r.get("initiative")
+        if isinstance(initiative, str):
+            if initiative in seen_roadmaps:
+                problems.append("%s: a second roadmap for %s" % (where, initiative))
+            seen_roadmaps.add(initiative)
     if problems:
         raise Invalid(problems)
     return st
@@ -229,23 +262,20 @@ def lang_of(st):
     return st.get("lang") or DEFAULT_LANG
 
 
-def _check_item(item, where):
-    """The problems of one item as it would stand: its lane's fields, kinds, enumerations, and what its status
-    requires."""
-    lane = item["lane"]
-    fields, problems = FIELDS[lane], []
-    for k in item:
-        if k not in fields and k not in OWN:
-            problems.append("%s: no %s item has a field '%s'" % (where, lane, k))
-    good = {}       # the fields whose value holds its kind, the only ones the checks below read
+def _check_fields(obj, fields, where, problems):
+    """The fields of `obj` checked against `fields` ({name: (kind, required)}): each problem appended, and the
+    fields whose value holds its kind returned, the only ones a caller's further checks read. Kinds: text, bool,
+    time, texts (a list of strings), and for a roadmap `parts` (a non-empty list of objects) and `changes` (a list
+    of objects); `?` allows null."""
+    good = {}
     for k, (kind, required) in fields.items():
-        if k not in item or item[k] is None:
+        if k not in obj or obj[k] is None:
             if required:
                 problems.append("%s: %s is required" % (where, k))
-            elif k in item and not kind.endswith("?"):
+            elif k in obj and not kind.endswith("?"):
                 problems.append("%s: %s cannot be null" % (where, k))
             continue
-        v, base = item[k], kind.rstrip("?")
+        v, base = obj[k], kind.rstrip("?")
         if base == "text" and not isinstance(v, str):
             problems.append("%s: %s must be text" % (where, k))
         elif base == "text" and not v.strip():
@@ -257,8 +287,24 @@ def _check_item(item, where):
             problems.append("%s: %s %r is not an ISO-8601 time" % (where, k, v))
         elif base == "texts" and not (isinstance(v, list) and all(isinstance(x, str) for x in v)):
             problems.append("%s: %s must be a list of text" % (where, k))
+        elif base in ("parts", "changes") and not (isinstance(v, list) and all(isinstance(x, dict) for x in v)):
+            problems.append("%s: %s must be a list of objects" % (where, k))
+        elif base == "parts" and required and not v:
+            problems.append("%s: %s is required (at least one)" % (where, k))
         else:
             good[k] = v
+    return good
+
+
+def _check_item(item, where):
+    """The problems of one item as it would stand: its lane's fields, kinds, enumerations, and what its status
+    requires."""
+    lane = item["lane"]
+    fields, problems = FIELDS[lane], []
+    for k in item:
+        if k not in fields and k not in OWN:
+            problems.append("%s: no %s item has a field '%s'" % (where, lane, k))
+    good = _check_fields(item, fields, where, problems)
     status = good.get("status")
     if lane == "yours":
         if "type" in good and good["type"] not in YOURS_TYPES:
@@ -278,6 +324,67 @@ def _check_item(item, where):
     return problems
 
 
+def check_roadmap(r, where, stored=False):
+    """The problems of one roadmap: its fields and its parts' (kinds, the status enumeration, waits_on when
+    waiting), ids unique across the tree, nesting at most ROADMAP_DEPTH levels. `written` is allowed only in a
+    stored roadmap (apply stamps it)."""
+    problems = []
+    for k in r:
+        if k not in ROADMAP_FIELDS or (k == "written" and not stored):
+            problems.append("%s: a roadmap has no field '%s'" % (where, k))
+    good = _check_fields(r, ROADMAP_FIELDS, where, problems)
+    ids = set()
+
+    def part(p, at, depth):
+        for k in p:
+            if k not in PART_FIELDS:
+                problems.append("%s: a part has no field '%s'" % (at, k))
+        g = _check_fields(p, PART_FIELDS, at, problems)
+        if "id" in g:
+            if g["id"] in ids:
+                problems.append("%s: id %s is given to two parts" % (at, g["id"]))
+            ids.add(g["id"])
+        status = g.get("status")
+        if status is not None and status not in PART_STATUSES:
+            problems.append("%s: status '%s' is not one of %s" % (at, status, ", ".join(PART_STATUSES)))
+        elif status == "waiting" and "waits_on" not in g and p.get("waits_on") is None:
+            problems.append("%s: waits_on is required once its status is waiting" % at)
+        for n, c in enumerate(g.get("changes") or []):
+            cat = "%s changes[%d]" % (at, n)
+            for k in c:
+                if k not in CHANGE_FIELDS:
+                    problems.append("%s: a change has no field '%s'" % (cat, k))
+            _check_fields(c, CHANGE_FIELDS, cat, problems)
+        kids = g.get("parts") or []
+        if kids and depth >= ROADMAP_DEPTH:
+            problems.append("%s: parts nest at most %d levels deep" % (at, ROADMAP_DEPTH))
+            return
+        for n, kid in enumerate(kids):
+            part(kid, "%s > %s" % (at, _part_name(kid, n)), depth + 1)
+
+    for n, p in enumerate(good.get("parts") or []):
+        part(p, "%s part %s" % (where, _part_name(p, n)), 1)
+    return problems
+
+
+def _part_name(p, n):
+    """A part as a problem names it: its id, or its place when it has none."""
+    return p["id"] if isinstance(p.get("id"), str) and p["id"].strip() else "[%d]" % n
+
+
+def _norm_roadmap(r):
+    """A roadmap with its changes' times in the stored form (a copy)."""
+    r = copy.deepcopy(r)
+
+    def walk(parts):
+        for p in parts or []:
+            for c in p.get("changes") or []:
+                c["at"] = _norm_time(c["at"])
+            walk(p.get("parts"))
+    walk(r.get("parts"))
+    return r
+
+
 def _is_open(item):
     return item.get("status") not in RESOLVED
 
@@ -291,20 +398,21 @@ def apply(st, doc, now, lineages=None):
     The whole document is validated first, every item as it would stand after the merge; any problem raises
     Invalid naming each, and nothing is changed. The report: `new` (ids created), `changed` (ids changed in a
     substantive field), `unchanged_open` (open items it left as they were), `archived` (the items moved out),
-    `briefs` (the initiatives whose brief it replaced)."""
+    `briefs` and `roadmaps` (the initiatives whose brief, whose roadmap, it replaced)."""
     problems = []
     if not isinstance(doc, dict):
-        raise Invalid(["the update is a JSON object with window, sessions, items and briefs"])
+        raise Invalid(["the update is a JSON object with window, sessions, items, briefs and roadmaps"])
     for k in doc:
         if k not in DOC_KEYS:
             problems.append("the update has no field '%s' (it holds %s)" % (k, ", ".join(DOC_KEYS)))
     window = doc.get("window")
-    sessions, items, briefs = (doc.get(k, []) for k in ("sessions", "items", "briefs"))    # only absent is empty
+    # Only an absent list is empty.
+    sessions, items, briefs, roadmaps = (doc.get(k, []) for k in ("sessions", "items", "briefs", "roadmaps"))
     if not isinstance(window, dict) or parse(window.get("since")) is None or parse(window.get("until")) is None:
         problems.append("window: since and until, both ISO-8601 times, are required")
     elif parse(window["until"]) < parse(window["since"]):
         problems.append("window: until is earlier than since")
-    for k, v in (("sessions", sessions), ("items", items), ("briefs", briefs)):
+    for k, v in (("sessions", sessions), ("items", items), ("briefs", briefs), ("roadmaps", roadmaps)):
         if not isinstance(v, list) or not all(isinstance(x, dict) for x in v):
             problems.append("%s: a list of objects" % k)
     if problems:
@@ -387,6 +495,23 @@ def apply(st, doc, now, lineages=None):
         for k in b:
             if k not in ("initiative", "since", "text"):
                 problems.append("%s: a brief has no field '%s'" % (where, k))
+
+    # A roadmap names an initiative the ledger knows: one held, or one this update's items or briefs name.
+    known = set(initiative_names(st)) | {x.get("initiative") for x in items + briefs
+                                         if isinstance(x.get("initiative"), str)}
+    seen_roadmaps = set()
+    for n, r in enumerate(roadmaps):
+        where = "roadmaps[%d]" % n
+        problems += check_roadmap(r, where)
+        initiative = r.get("initiative")
+        if not isinstance(initiative, str) or not initiative.strip():
+            continue
+        if initiative not in known:
+            problems.append("%s: %s is not an initiative of this ledger (it knows %s)" % (
+                where, initiative, ", ".join(sorted(known)) or "none yet"))
+        if initiative in seen_roadmaps:
+            problems.append("%s: a second roadmap for %s" % (where, initiative))
+        seen_roadmaps.add(initiative)
     if problems:
         raise Invalid(problems)
 
@@ -436,6 +561,10 @@ def apply(st, doc, now, lineages=None):
         out["briefs"] = [x for x in out["briefs"] if x.get("initiative") != b["initiative"]]
         out["briefs"].append({"initiative": b["initiative"], "written": at, "since": stamp(parse(b["since"])),
                               "text": b["text"]})
+    for r in roadmaps:
+        out["roadmaps"] = [x for x in out["roadmaps"] if x.get("initiative") != r["initiative"]]
+        out["roadmaps"].append({"initiative": r["initiative"], "written": at,
+                                **{k: v for k, v in _norm_roadmap(r).items() if k != "initiative"}})
 
     archived = [i for i in out["items"] if i.get("status") in RESOLVED and parse(i.get("changed")) is not None
                 and now - parse(i["changed"]) > ARCHIVE_AFTER]
@@ -444,15 +573,16 @@ def apply(st, doc, now, lineages=None):
     done = set(new) | set(changed)
     unchanged = [i["id"] for i in out["items"] if _is_open(i) and i["id"] not in done]
     return out, {"new": new, "changed": changed, "unchanged_open": unchanged, "archived": archived,
-                 "briefs": [b["initiative"] for b in briefs]}
+                 "briefs": [b["initiative"] for b in briefs], "roadmaps": [r["initiative"] for r in roadmaps]}
 
 
 # ------------------------------------------------------------------ the view
 
 def initiative_names(st):
-    """Every initiative the state names, in order: the subscriptions', then any only an item or a brief names."""
+    """Every initiative the state names, in order: the subscriptions', then any only an item, a brief or a roadmap
+    names."""
     names = [i["name"] for i in st["initiatives"]]
-    for x in st["items"] + st["briefs"]:
+    for x in st["items"] + st["briefs"] + st["roadmaps"]:
         if x.get("initiative") and x["initiative"] not in names:
             names.append(x["initiative"])
     return names
@@ -472,12 +602,13 @@ def _order(item):
 
 def view(st, now=None):
     """`manager ledger --json`, the shape the page serves: {lang, updated, window, initiatives: [{name, items,
-    brief}]}, every item held, in the order the ledger shows them."""
+    brief, roadmap}]}, every item held, in the order the ledger shows them; `roadmap` the one held, or null."""
     out = []
     for name in initiative_names(st):
         items = sorted((i for i in st["items"] if i.get("initiative") == name), key=_order)
         brief = next((b for b in st["briefs"] if b.get("initiative") == name), None)
-        out.append({"name": name, "items": items, "brief": brief})
+        roadmap = next((r for r in st["roadmaps"] if r.get("initiative") == name), None)
+        out.append({"name": name, "items": items, "brief": brief, "roadmap": roadmap})
     return {"lang": lang_of(st), "updated": st["updated"], "window": st["window"], "initiatives": out}
 
 
@@ -534,11 +665,28 @@ def render(v, now):
         if b:
             lines.append("  brief written %s, covering since %s" % (clock(b.get("written"), now),
                                                                     clock(b.get("since"), now)))
+        r = ini.get("roadmap")
+        if r:
+            lines.append("  roadmap from %s, written %s: %s" % (r["source"].replace("\n", " "),
+                                                               clock(r.get("written"), now), _tally(r)))
     return "\n".join(lines)
 
 
+def _tally(roadmap):
+    """A roadmap's parts at every level counted by status, in PART_STATUSES order: `3 done · 2 in progress`."""
+    counts = {}
+
+    def walk(parts):
+        for p in parts or []:
+            counts[p["status"]] = counts.get(p["status"], 0) + 1
+            walk(p.get("parts"))
+    walk(roadmap["parts"])
+    return " · ".join("%d %s" % (counts[k], k) for k in PART_STATUSES if counts.get(k))
+
+
 def summary(st, report):
-    """`apply`'s text: one line per initiative, `P5: 2 new · 3 changed · 5 still open · brief written`."""
+    """`apply`'s text: one line per initiative, `P5: 2 new · 3 changed · 5 still open · brief written · roadmap
+    written`."""
     by_id = {i["id"]: i for i in st["items"]}
     lines = []
     for name in initiative_names(st):
@@ -546,7 +694,8 @@ def summary(st, report):
             return sum(1 for x in ids if x in by_id and by_id[x].get("initiative") == name)
         line = "%s: %d new · %d changed · %d still open" % (
             name, count(report["new"]), count(report["changed"]), count(report["unchanged_open"]))
-        lines.append(line + (" · brief written" if name in report["briefs"] else ""))
+        line += " · brief written" if name in report["briefs"] else ""
+        lines.append(line + (" · roadmap written" if name in report["roadmaps"] else ""))
     if report["archived"]:
         lines.append("archived %d done or overtaken item(s) older than 30 days" % len(report["archived"]))
     return "\n".join(lines)

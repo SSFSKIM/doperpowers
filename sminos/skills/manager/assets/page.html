@@ -120,6 +120,27 @@ details.fold > summary { cursor: pointer; padding: var(--s2) 0; color: var(--ink
 .brief .prose { max-width: 68ch; padding-top: var(--s3); }
 .brief .prose p { margin: 0 0 var(--s3); white-space: pre-line; }
 
+.summary a.rm-link { font-weight: 400; font-family: var(--mono); font-size: var(--meta); color: var(--ink-muted); }
+
+.rm-head { max-width: 68ch; padding-top: var(--s3); }
+.rm-head p { margin: 0 0 var(--s2); font-size: var(--small); overflow-wrap: anywhere; }
+.rm-head .label, .changes-h { font-family: var(--mono); font-size: var(--meta); color: var(--ink-muted); }
+.rm-head .source { font-family: var(--mono); font-size: var(--meta); color: var(--ink-muted); }
+.step.lvl2 > details > summary .body, .step.lvl2 > details > .more { padding-left: var(--s4); }
+.step.lvl3 > details > summary .body, .step.lvl3 > details > .more { padding-left: var(--s6); }
+.step.lvl2 > details > .more, .step.lvl3 > details > .more { margin-left: calc(var(--margin) + var(--s3)); }
+.rm-head .written { white-space: nowrap; }
+.step.lvl1 > details > summary .need { font-weight: 600; }
+.step.quiet > details > summary .need { color: var(--ink-muted); }
+.step.dropped > details > summary .need { text-decoration: line-through; }
+.stamp.live { color: var(--ink); }
+.step .more p { font-size: var(--small); max-width: 68ch; overflow-wrap: anywhere; }
+.step .more p.changes-h { margin: var(--s3) 0 var(--s1); font-size: var(--meta); }
+ol.changes { list-style: none; margin: 0; padding: 0; max-width: 68ch; }
+ol.changes li { padding: var(--s1) 0; border-top: 1px solid var(--rule); }
+ol.changes .meta { margin-top: 0; }
+ol.changes .text { display: block; font-size: var(--small); overflow-wrap: anywhere; }
+
 .notice { margin: var(--s6) 0 0; color: var(--ink-muted); font-style: italic; }
 
 @media (min-width: 48rem) {
@@ -171,6 +192,11 @@ details.fold > summary { cursor: pointer; padding: var(--s2) 0; color: var(--ink
       count: { blocking: n => n + " blocking", optional: n => n + " optional", answered: n => n + " answered" },
       titleBlocking: "Ledger · blocking",
       ago: { now: "just now", min: m => m + " min ago", h: h => h + " h ago", days: d => d + " days ago" },
+      roadmap: "Roadmap", rmCount: (done, all) => done + " of " + all + " done",
+      rmStatus: { "done": "done", "in progress": "in progress", "waiting": "waiting", "not started": "not started",
+        "deferred": "deferred", "dropped": "dropped" },
+      rf: { summary: "what it is", now: "now", waitsOn: "waits on", changes: "changes", owner: "owner", refs: "refs" },
+      purpose: "purpose", doneWhen: "done when", newChanges: n => n + " new", freshChange: "new",
     },
     ko: {
       ledger: "장부", reading: "장부를 읽는 중…",
@@ -195,6 +221,11 @@ details.fold > summary { cursor: pointer; padding: var(--s2) 0; color: var(--ink
       count: { blocking: n => "차단 " + n, optional: n => "선택 " + n, answered: n => "답함 " + n },
       titleBlocking: "장부 · 차단",
       ago: { now: "방금", min: m => m + "분 전", h: h => h + "시간 전", days: d => d + "일 전" },
+      roadmap: "로드맵", rmCount: (done, all) => all + "개 중 " + done + "개 완료",
+      rmStatus: { "done": "완료", "in progress": "진행 중", "waiting": "대기", "not started": "시작 전",
+        "deferred": "연기", "dropped": "폐기" },
+      rf: { summary: "무엇인가", now: "지금", waitsOn: "대기 중", changes: "변경 이력", owner: "담당", refs: "참조" },
+      purpose: "목적", doneWhen: "완료 조건", newChanges: n => "새 변경 " + n, freshChange: "새",
     },
   };
   let T = WORDS.en, loc = "en";
@@ -323,6 +354,74 @@ details.fold > summary { cursor: pointer; padding: var(--s2) 0; color: var(--ink
     return d;
   }
 
+  // ------------------------------------------------------------- the roadmap
+  // Every part a compact row (id, title, status stamp, owner, its new changes), children indented beneath it;
+  // a row expands to what the part is, what exists now, what it waits on, its refs and its changes, newest first.
+  // A change is new when it is dated after the start of the span the last update covered.
+  const QUIET = new Set(["done", "deferred", "dropped"]);
+  function since() { return time(ledger && ledger.window && ledger.window.since); }
+  function isNew(c, from) { const d = time(c.at); return !!(from && d && d > from); }
+  function newCount(p, from) { return (p.changes || []).filter(c => isNew(c, from)).length; }
+  function walk(parts, f) { for (const p of parts || []) { f(p); walk(p.parts, f); } }
+  function labelled(label, text) {
+    return add(el("p"), el("span", "label", label + "  "), document.createTextNode(text));
+  }
+
+  function step(ini, p, from, depth) {
+    const box = el("div", "step lvl" + depth + (QUIET.has(p.status) ? " quiet" : "") +
+      (p.status === "dropped" ? " dropped" : ""));
+    const d = put(box, disclosure("item row", "rm:" + JSON.stringify([ini.name, p.id])));
+    const s = put(d, el("summary"));
+    const body = el("span", "body");
+    add(body, el("span", "need", p.title));
+    const meta = put(body, el("span", "meta"));
+    add(meta, el("span", "stamp" + (QUIET.has(p.status) ? "" : " live"), T.rmStatus[p.status] || p.status));
+    if (p.owner) add(meta, el("span", null, p.owner));
+    const n = newCount(p, from);
+    if (n) add(meta, el("span", "mark", T.newChanges(n)));
+    add(s, add(el("span", "margin"), el("span", "type", p.id)), body);
+
+    const more = put(d, el("div", "more"));
+    if (p.summary) add(more, labelled(T.rf.summary, p.summary));
+    if (p.now) add(more, labelled(T.rf.now, p.now));
+    if (p.waits_on) add(more, labelled(T.rf.waitsOn, p.waits_on));
+    const dl = put(more, el("dl"));
+    field(dl, T.rf.owner, p.owner);
+    field(dl, T.rf.refs, (p.refs || []).join(" · "));
+    const changes = (p.changes || []).slice().sort((a, b) => (time(b.at) || 0) - (time(a.at) || 0));
+    if (changes.length) {
+      add(more, el("p", "label changes-h", T.rf.changes));
+      const ol = put(more, el("ol", "changes"));
+      for (const c of changes) {
+        const li = put(ol, el("li"));
+        const m = put(li, el("span", "meta"));
+        add(m, el("span", null, clock(c.at)));
+        if (isNew(c, from)) add(m, el("span", "mark", T.freshChange));
+        add(li, el("span", "text", c.text));
+      }
+    }
+    if (p.parts && p.parts.length) {
+      const kids = put(box, el("div", "steps"));
+      p.parts.forEach(k => add(kids, step(ini, k, from, depth + 1)));
+    }
+    return box;
+  }
+
+  function roadmap(ini) {
+    const r = ini.roadmap, from = since();
+    let done = 0, all = 0, fresh = 0;
+    walk(r.parts, p => { if (p.status !== "dropped") all++; if (p.status === "done") done++; fresh += newCount(p, from); });
+    const sec = part(T.roadmap, T.rmCount(done, all));
+    sec.classList.add("roadmap");
+    sec.id = "r-" + slug(ini.name).slice(2);  // initiative sections are "i-…", so no roadmap anchor can equal one
+    const head = put(sec, el("div", "rm-head"));
+    if (r.purpose) add(head, labelled(T.purpose, r.purpose));
+    if (r.done_when) add(head, labelled(T.doneWhen, r.done_when));
+    add(head, add(el("p", "source", r.source + " · "), el("span", "written", T.written(clock(r.written), ""))));
+    (r.parts || []).forEach(p => add(sec, step(ini, p, from, 1)));
+    return { sec, fresh };
+  }
+
   // ------------------------------------------------------------- one initiative
   function part(title, count) {
     const sec = el("section", "part");
@@ -364,6 +463,8 @@ details.fold > summary { cursor: pointer; padding: var(--s2) 0; color: var(--ink
       add(put(g, el("h4", null, T.optionalH)), el("span", "why", T.optionalWhy));
       optional.forEach(i => add(g, yours(i)));
     }
+    const rm = ini.roadmap && ini.roadmap.parts ? roadmap(ini) : null;
+    if (rm) add(sec, rm.sec);
     if (answered.length) {
       const a = put(sec, part(T.answered, answered.length));
       add(a, el("p", "empty", T.answeredNote));
@@ -390,7 +491,7 @@ details.fold > summary { cursor: pointer; padding: var(--s2) 0; color: var(--ink
       const prose = put(br, el("div", "prose"));
       String(b.text).split(/\n\s*\n/).forEach(p => add(prose, el("p", null, p.trim())));
     }
-    return { sec, blocking: blocking.length, optional: optional.length, answered: answered.length };
+    return { sec, blocking: blocking.length, optional: optional.length, answered: answered.length, roadmap: rm };
   }
 
   // ------------------------------------------------------------- the page
@@ -429,6 +530,11 @@ details.fold > summary { cursor: pointer; padding: var(--s2) 0; color: var(--ink
       if (r.blocking) add(li, el("span", "count blocking", T.count.blocking(r.blocking)));
       add(li, el("span", "count", T.count.optional(r.optional)));
       if (r.answered) add(li, el("span", "count", T.count.answered(r.answered)));
+      if (r.roadmap) {
+        const ra = put(li, el("a", "rm-link", T.roadmap));
+        ra.href = "#" + r.roadmap.sec.id;
+        if (r.roadmap.fresh) add(li, el("span", "count", T.newChanges(r.roadmap.fresh)));
+      }
     }
     document.title = (inits.reduce((n, i) => n + (i.items || []).filter(x => x.lane === "yours" && x.status === "pending" && x.blocking).length, 0) || "") ? T.titleBlocking : T.ledger;
     window.scrollTo(0, y);

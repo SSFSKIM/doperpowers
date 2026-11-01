@@ -95,7 +95,14 @@ says so) or "update since T" (every session from T).
    unrelated outcomes listed under one title, never a routine step (a deploy,
    a plan landing, a merge) in a title, and never work only begun titled as
    what is being built; split such an item, or cut the step to its status or
-   meaning. One brief per initiative, written from the digests' prose. Its `sessions` lists each subscription you read through,
+   meaning. One brief per initiative, written from the digests' prose.
+   An initiative with a roadmap document (the plan or composite spec its
+   sessions work from, named by the owner or pointed to by the sessions'
+   records) gets its `roadmaps` entry rewritten whole at each update: read the
+   document itself, read-only, at its newest revision, for every part and
+   sub-part; keep each part's `changes` from the roadmap the ledger holds, and
+   add what the document and the window show (decisions, scope changes, parts
+   added, dropped or re-cut). Its `sessions` lists each subscription you read through,
    with the `from` `pending` gave, the `covered` its digest reached (`until`
    when it read the whole window, or had no activity to read), and the seen
    mark `pending` gave; leave out every session you could not read, so the
@@ -104,7 +111,15 @@ says so) or "update since T" (every session from T).
        {"window": {"since": "<ISO>", "until": "<ISO>"},
         "sessions": [{"session": "<id pending gave>", "from": "<ISO>", "covered": "<ISO>", "seen": "<ISO>" | null}],
         "items": [<the digests' items, merged: new ones without "id", changes with it>],
-        "briefs": [{"initiative": "<name>", "since": "<ISO>", "text": "<the brief>"}]}
+        "briefs": [{"initiative": "<name>", "since": "<ISO>", "text": "<the brief>"}],
+        "roadmaps": [{"initiative": "<name>", "source": "<repo, path, branch@sha or PR>",
+                      "purpose": "<what it is for>", "done_when": "<what closes it>",
+                      "parts": [{"id": "C2.1", "title": "…", "owner": "<alias> | owner",
+                                 "status": "done | in progress | waiting | not started | deferred | dropped",
+                                 "summary": "<what the part is>", "now": "<what exists, what is next>",
+                                 "waits_on": "<required when waiting>", "refs": ["PR #138"],
+                                 "changes": [{"at": "<ISO>", "text": "<what changed>"}],
+                                 "parts": [<sub-parts, at most 3 levels>]}]}]}
 
    Write it to a temporary file and apply it with
    `$M ledger apply --file PATH --json`; a refusal names every problem, fix
@@ -170,7 +185,7 @@ and are never items of their own. **Cap: an update adds at most 8 work items per
 initiative.**
 
 **Language.** The ledger's own text (`need`, `why`, `title`, `meaning`,
-`waits_on`, the briefs) is written in its `lang`, as `$M ledger --json` shows
+`waits_on`, the briefs, the roadmaps) is written in its `lang`, as `$M ledger --json` shows
 it, and the page is labelled in it; quotes (`source`, `evidence`) stay as said.
 When the owner asks for another language, set it with `$M ledger lang <tag>` and
 rewrite the open items' text in one `ledger apply` (the ledger's own `window`,
