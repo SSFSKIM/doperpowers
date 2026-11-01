@@ -51,7 +51,7 @@ $ sminos list
 api
   parser  [7a11ce01]  interactive  busy  @macbook  api@parser  in charge: the new parser
   ci      [a45b97a3]  interactive  idle  @mini     api@main    in charge: CI and releases
-  e2e     [2b52e44a]  seat         busy  @devbox   api@e2e     in charge: the flaky e2e suite
+  e2e     [2b52e44a]  seat         busy  @macbook  api@e2e     in charge: the flaky e2e suite
 you: parser [7a11ce01]
 
 $ sminos say "@ci the parser rewrite renames the tokens table; hold the release"
@@ -62,12 +62,10 @@ flowchart LR
     you((you))
     subgraph macbook
         parser["parser"]
+        e2e["e2e (a spawned seat)"]
     end
     subgraph mini
         ci["ci"]
-    end
-    subgraph devbox
-        e2e["e2e (a spawned seat)"]
     end
     parser <-- "say @ci" --> ci
     parser -- "spawn, watch, steer" --> e2e
@@ -76,7 +74,7 @@ flowchart LR
 
 - **Who's here, and what they own.** `sminos list` shows every session in the project: its machine, branch, state and the line it is in charge of. A project is every clone and worktree of one repository, on every enrolled machine.
 - **Messages instead of copy-paste.** `sminos say "@parser …"` reaches that session wherever it runs; `@all`, a machine, or the whole org work too.
-- **Spawn and drive.** `sminos spawn` starts a background session (a seat) on a task; `watch`, `steer`, `interrupt`, `answer` and `decide` reach into one that is running.
+- **Spawn and drive.** `sminos spawn` starts a background session (a seat) on a task; `watch`, `steer`, `interrupt`, `answer` and `decide` reach into one that is running. Spawning and these controls work on sessions on the same machine; messages cross machines.
 - **Every commit names its author session.** Commits and PRs end with a `Sminos-Session:` line, and `sminos who <commit|PR>` finds that session and how to reach it.
 - **Questions that don't block.** A session asks you through an async question tool and keeps working until you answer.
 - **Catch up in one read.** The `manager` skill follows the sessions you name and tells you what they need from you and what you missed.
@@ -110,7 +108,7 @@ Then, in `~/.claude/settings.json`, turn on function hooks (sminos's bridge and 
 
 This is one person's daily setup, published as it runs. It moves fast (the plugin version is past 7.200) and is shaped by how its maintainer works, so a few things are worth knowing up front:
 
-- **Some agents are pinned to models served through a local gateway.** The `review-code` reviewers and a few others run on another model family (`sol`, `astra` in [`agents/`](agents/)). Without that gateway, point their `model:` lines at models you have.
+- **Some agents are pinned to models served through a local gateway.** The `review-code` reviewers and a few others run on another model family (`sol`, `astra`). Without that gateway, point the `model:` lines in [`agents/`](agents/) at models you have, and do the same for the `LADDER` in the `review-code` panel workflow ([`code-review.js`](skills/review-code/workflows/code-review.js)), which pins them itself; its `deriverModel`, `finderModel` and `verifierModel` arguments override a lane per call.
 - **Built for Claude Code.** sminos, to-human and the hooks are Claude Code plugins. The skills also ship as a local [Codex plugin](.codex-plugin/), with [ports of the agent definitions](codex/agents/README.md); upstream's other harness adapters were dropped.
 - **The board is a backlog.** `issue-tracker` keeps deferred work as GitHub issues that a session takes when you name one. The unattended pipeline that once dispatched agents onto tickets [is dormant](docs/doperpowers/specs/2026-10-18-board-dispatch-dormant.md): a session working with you proved faster and more reliable.
 

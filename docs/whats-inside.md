@@ -53,7 +53,7 @@ Registered as `doperpowers:<name>` and dispatched by the skills above; you rarel
 | [`task-executor`](../agents/task-executor.md) | opus, high | Builds one milestone inside `subagent-driven-execution` |
 | [`task-reviewer`](../agents/task-reviewer.md) | sol, xhigh | Reviews one milestone inside `subagent-driven-execution` |
 
-`sol` and `astra` are another model family, served to its maintainer through a local gateway; elsewhere, change the `model:` line. Reviewers are read-only and cannot start a review of their own.
+`sol` and `astra` are another model family, served to its maintainer through a local gateway; elsewhere, change the `model:` lines in the agent definitions and the `LADDER` in [`review-code`'s panel workflow](../skills/review-code/workflows/code-review.js), which pins them itself (its `deriverModel`, `finderModel` and `verifierModel` arguments override a lane per call). Reviewers are read-only and cannot start a review of their own.
 
 ## doperpowers: hooks
 
