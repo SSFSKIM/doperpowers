@@ -112,6 +112,14 @@ def read(sid):
     return rec if _valid(rec) else None
 
 
+def unreadable(sid):
+    """Whether the session has a record file that cannot be read as a
+    record (read gives None): it is never written over, and never skipped
+    along a lineage, since it may hold owners changed since."""
+    return bool(sminos.UUID_RE.fullmatch(str(sid or ""))) and os.path.lexists(record_path(sid)) \
+        and read(sid) is None
+
+
 def is_final(rec):
     return bool(rec) and rec.get("source") != "default"
 
@@ -171,9 +179,12 @@ def establish(sid, prov, deadline=None):
     """(record, changed): the session's record, written from `prov` (a
     provenance: PROVENANCE's fields, `source`, `basis`, maybe `former`) when
     it has none or `prov` is stronger evidence than its own (stronger);
-    otherwise the record it has, unchanged."""
+    otherwise the record it has, unchanged; (None, False) when its record
+    file exists but cannot be read (unreadable), which is never replaced."""
     with _locked(deadline):
         have = read(sid)
+        if have is None and os.path.lexists(record_path(sid)):
+            return None, False
         if not stronger(prov, have):
             return have, False
         rec = _record(sid, prov, controller=(have or {}).get("controller"))

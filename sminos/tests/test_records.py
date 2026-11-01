@@ -1173,6 +1173,51 @@ class TheSpawner(unittest.TestCase):
         self.assertEqual(m.publications(TB), [{"owners": [MEMBER], "origin": {"kind": "maws", "requester": MEMBER}}])
         m.assert_private()
 
+    @unittest.skipIf(os.geteuid() == 0, "root reads a file of mode 000")
+    def test_an_unreadable_record_is_never_written_over(self):
+        m = Machine(self)
+        self.engine(m, T0)
+        var = self.launch(m, "app-one")
+        m.hook("SessionStart", T0, env=self.env(var))
+        m.record_path(T0).write_text(json.dumps(dict(m.record(T0), owners=[OTHER], principal=OTHER)))
+        before = m.record_path(T0).read_bytes()
+        os.chmod(m.record_path(T0), 0)
+        try:
+            m.hook("Stop", T0, source="", env=self.env(var))
+        finally:
+            os.chmod(m.record_path(T0), 0o600)
+        self.assertEqual(m.record_path(T0).read_bytes(), before, "its changed owners stand, not the spawner")
+        said = [x for x in lines(m.reg / "daemon.log") if "record file that cannot be read" in x]
+        self.assertEqual(len(said), 1, said)
+        self.assertNotIn(OTHER, said[0], "never the record's content")
+
+    @unittest.skipIf(os.geteuid() == 0, "root reads a file of mode 000")
+    def test_an_unreadable_predecessor_is_a_barrier_to_lineage(self):
+        m = Machine(self)
+        pid = self.engine(m, T0)
+        var = self.launch(m, "app-one")
+        m.hook("SessionStart", T0, env=self.env(var))
+        self.engine(m, TB, pid=pid)
+        m.hook("SessionStart", TB, source="clear", env=self.env(var))
+        m.record_path(TB).write_text(json.dumps(dict(m.record(TB), owners=[OTHER], principal=OTHER)))
+        os.chmod(m.record_path(TB), 0)
+        try:
+            self.engine(m, TD, pid=pid)
+            m.hook("SessionStart", TD, source="clear", env=self.env(var))
+            rec = m.record(TD)
+            published = m.publications(TD)
+        finally:
+            os.chmod(m.record_path(TB), 0o600)
+        self.assertEqual((rec["owners"], rec["source"], rec["former"]), (["@machine"], "default", []),
+                         "no lineage past the unreadable predecessor, and no spawner: the provisional defaults")
+        self.assertEqual(published, [], "nothing published for it, the spawner least of all")
+        self.assertEqual(self.bound(m, "app-one"), [T0, TB, TD])
+        # Once the predecessor reads again, lineage decides.
+        m.hook("Stop", TD, source="", env=self.env(var))
+        rec = m.record(TD)
+        self.assertEqual((rec["owners"], rec["source"], rec["former"]), ([OTHER], "lineage", [TB, T0]))
+        self.assertEqual(m.publications(TD), [{"owners": [OTHER], "origin": {"kind": "maws", "requester": MEMBER}}])
+
     def test_two_spawns_that_reuse_an_opId_are_two_lineages(self):
         m = Machine(self)
         self.engine(m, T0, name="one")
