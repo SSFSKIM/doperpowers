@@ -7,7 +7,7 @@ Design: `docs/doperpowers/specs/2026-10-31-session-manager-design.md` (M5, accep
 - **Window.** 2026-10-30 00:00 – 2026-10-31 23:59 KST (2026-10-29T15:00:00Z – 2026-10-31T14:59:59Z) over the P5 sessions GUI AI agent workspace charter (`37052769`, MAWS), p5-desk-track-owner (`b4948247`), CI-opt (`a45b97a3`) and cua_repl (`1ea561bc`, MAWS). Window sizes as `manager transcript` renders them: 570k / 731k characters (charter, first day / second day), 205k / 232k (desk track), 310k / 133k (CI-opt), 122k / 391k (cua_repl).
 - **The labelled list** (below) was made before the skill existed, by an Opus subagent at high effort reading the host events and the four untruncated windows, and then given each item's type and the four-way status (`done` where the session reported the follow-through finished by the cutoff) by a second Opus pass from the same evidence. The executor spot-checked the second pass against the transcripts (S63's "B4 step 1 held" and S88's "applied it in three places" read as quoted); the pass itself re-read about 30 items' labels and disagreed with one (S76, blocking, arguably optional), left as labelled.
 - **Each run is two frozen updates** under its own empty manager state (`--name replay-<run>`): its subscriptions backdated as if added at 2026-10-30T15:00Z, so each `covered` starts at the window's start, as `subscriptions add` sets it 24 hours before the moment of adding. **A**, a first plain "update" to 2026-10-30T15:00Z (`manager pending --until`); **B**, the next plain "update" to the cutoff, each session from where A finished reading it, each digest given its session's open ledger items. Digests are general-purpose Sonnet subagents briefed from `references/digest-brief.md`, told not to query (a query reads the session as it is now) and to pass `--until` on every read. Each run's ledger after B is scored against the list by an Opus subagent (matching each labelled item to ledger items, then status, type and blocking; classifying every unmatched ledger item).
-- **Round 1** had the executor as the manager, merging the digests' reports by hand under the skill's rules. **Round 2** ran after the brief and the skill were refined from round 1's misses, with an Opus subagent as the manager loading `SKILL.md` and running both updates itself (digests dispatched by it), so round 2 tests the skill end to end.
+- **Round 1** had the executor as the manager, merging the digests' reports by hand under the skill's rules. **Round 2** ran after the brief and the skill were refined from round 1's misses, with an Opus subagent as the manager loading `SKILL.md` and running both updates itself (digests dispatched by it), so round 2 tests the skill end to end, as it stood before the task review (the pre-review version; the shipped version's run is its own section below).
 
 ## Scores
 
@@ -17,8 +17,8 @@ Each run's ledger after B against the 111 labelled items (51 blocking). *Found* 
 |---|---|---|---|---|---|---|---|---|---|
 | medium, round 1 | v1 | executor | 50/51 | 82/111 (73.9%) | — | 66/82 (82/82) | 64/82 | 69/82 | 1 / 0 / 0 |
 | high, round 1 | v1 | executor | 49/51 | 102/111 (91.9%) | 89/111 | 75/102 (101/102) | 83/102 | 80/102 | 1 / 1 / 0 |
-| **medium, round 2** | v2 | Opus loading the skill | **51/51** | **105/111 (94.6%)** | 91/111 (82.0%) | 80/105 (103/105) | 87/105 | 87/105 | 2 / 0 / 0 |
-| high, round 2 | v2 | Opus loading the skill | 49/51 | 104/111 (93.7%) | 94/111 (84.7%) | 84/104 (103/104) | 81/104 | 85/104 | 1 / 0 / 1 |
+| **medium, round 2** | v2 (pre-review) | Opus loading the skill | **51/51** | **105/111 (94.6%)** | 91/111 (82.0%) | 80/105 (103/105) | 87/105 | 87/105 | 2 / 0 / 0 |
+| high, round 2 | v2 (pre-review) | Opus loading the skill | 49/51 | 104/111 (93.7%) | 94/111 (84.7%) | 84/104 (103/104) | 81/104 | 85/104 | 1 / 0 / 1 |
 
 Not found, blocking: round 1 medium S70 (how to close B4 step 3's card check); round 1 high S13 (the phone check after the 10-29 redeploy, lost in the executor's merge, which dropped the item carrying it as a duplicate of the bare redeploy) and S107 (the second sitting's permissions and input source); round 2 high S4 (tell the session when off the mini, and the teardown) and S70. Round 2 medium missed six optional asks: S3, S6, S7, S8 (asks inside the M10 sitting), S17, S73.
 
@@ -30,7 +30,7 @@ Where the ledger still errs: `answered` against a labelled `done` was the common
 
 ## The choice: Sonnet at medium
 
-The rule (M5): medium is chosen if it finds every blocking item high finds and its total recall is within 5 points of high's. On round 2, the skill as shipped, medium found all 51 blocking items (high 49) and 94.6% of all items (high 93.7%). Medium is chosen, and on this input it meets acceptance 8: every blocking item and at least 90% of all items. Round 1, under v1 of the brief, would have chosen high (medium's recall 18 points lower) and neither run met acceptance 8 there.
+The rule (M5): medium is chosen if it finds every blocking item high finds and its total recall is within 5 points of high's. On round 2, the pre-review version of the skill and brief, medium found all 51 blocking items (high 49) and 94.6% of all items (high 93.7%). Medium is chosen. On this input that version met acceptance 8: every blocking item and at least 90% of all items. The shipped version's run, below, does not (50/51 strict). Round 1, under v1 of the brief, would have chosen high (medium's recall 18 points lower) and neither run met acceptance 8 there.
 
 ## Cost
 
@@ -78,9 +78,11 @@ The review found two defects in the chosen run, both fixed before this run. Firs
 
 **The final run.** The chosen arm (Sonnet at medium) ran once more on the replay window with the final skill and brief, cap 8, frozen as before (`--until`, no queries), under a fresh `--name replay-final`. The eight digests were dispatched natively with the Agent tool, as the skill does. The merge, the apply and the update text were done by an Opus subagent that loaded the skill and was given `pending`'s output and the digests' reports (a subagent cannot dispatch subagents). A: `P5: 38 new` (30 owner items, 8 work items, a brief). B: `67 new · 5 changed · 5 still open · brief written`.
 
-| run | blocking found | all found | one label per item | status exact (±1) | type | blocking flag | unmatched: missed by labeller / duplicate / invented |
+| run | blocking found | all found | one label per item | status exact (±1)* | type* | blocking flag* | unmatched: missed by labeller / duplicate / invented |
 |---|---|---|---|---|---|---|---|
 | final | **50/51** | 100/111 (90.1%) | 84/111 (75.7%) | 80/98 (97/98) | 82/98 | 77/98 | 2 / 1 / 1 |
+
+\* Over the original scorer's 98 matched items, before S60 and S61 were counted as found; hence the denominators of 98, not 100.
 
 **On the shipped run, acceptance 8 is not met: 50/51 blocking (100/111, 90.1%, overall).** The scorer marked three blocking asks as borderline. S60 and S61, the quit and relaunch, are counted as found: `y52`'s need names "quit, replace, relaunch" and its evidence quotes the owner's "quitted" and "launched". S50 is not counted. It was a separate request, made after the first start of attempt 5 failed, to restart the run in terminal 1 and confirm it started. `y19` records the whole rerun finishing, not that request. In other words, a request to redo a step was nested inside a task already under way, and the digest folded it into the task's item. Round 2 medium found 51/51 (94.6%) on the same window with the brief before this review. Between the two runs, the blocking misses move with run-to-run variance.
 
@@ -119,9 +121,9 @@ No session in the window continued into a new id, so the lineage half of the see
 
 Round 2 medium's twelve work items, read by a reviewer subagent given only the rubric and the ledger: no title is only an identifier and no routine step stands as an item of its own; one title fails "says what is now true" (`w6`, "Typing text and the clipboard on cua's Linux engine, through one verified paste route", a fragment, and a release step of the outcome `w5` holds); two carry milestone or initiative names a reader does not need (`w1` "(O3-D) … built through its last milestone", `w7` "… and O3 … is closed"). Four items read as lists of unrelated outcomes grouped by the sitting or checklist that proved them (`w3`, `w2`, `w11`, and mildly `w9`): the cap of 6 the replay ran under forced the folding. The reviewer counts about 16 distinct outcomes over the two days, 8 a day for the initiative, against 15–22 raw proposals a day from the four digests before merging. **The cap is set to 8 work items per update per initiative**, the day's real shape, and v2 of the brief now asks for a title that is a sentence, one outcome per title, with no milestone or initiative name in it. The P5 window yielded 6 per update under the old cap, within the new one.
 
-## The shipped version's ledger
+## The shipped version's ledgers
 
-The final run after B, as `manager ledger --name replay-final` prints it (times in the machine's zone, PDT on the day of the run):
+The scored run (`replay-final`) after B, as `manager ledger --name replay-final` prints it, with the 16-item work lane the first reviewer read (14/16). The re-merged work lane that passed 15/15 under the tightened merge rule follows it. Times are in the machine's zone, PDT on the day of the run:
 
 ```
 P5 · updated 01:23 (covering 10-30 08:00–10-31 07:59)
@@ -231,6 +233,27 @@ P5 · updated 01:23 (covering 10-30 08:00–10-31 07:59)
   w9   done         A very large old session opens on its newest part in MAWS, older history loads as you scroll, a jump to an old message lands on it, and one oversized reply no longer drops the connection every session shares  [MAWS #374, MAWS #376, MAWS #377, MAWS #383, master 74f175c2c]
   w10  done         A machine's git, source control and files keep serving through the background daemon with the app quit, and the daemon move is complete  [O3, O3-E, branch p5-o3-e, 2d4bbfa13, MAWS #390, commit 5440fbf72]
   brief written 01:23, covering since 10-30 08:00
+```
+
+The re-merge (`replay-final2`: the same digest reports, merged again under the tightened rule), its work lane as `manager ledger --name replay-final2` prints it:
+
+```
+P5 · updated 01:01 (covering 10-30 08:00–10-31 07:59)
+  w13  in progress  Every machine, the MacBook included, now signs with its own key, and the shared org key is retired  [O14 B3/B4, MAWS #373, MAWS #380, MAWS #261, MAWS #378, hub@1eeff6de, org state v16]
+  w9   in progress  Linux sessions can run on cua's own engine service, matching the vendor's results with no vendor code  [#171 M3, feat/171-m3, linux171]
+  w10  in progress  Agents driving a Mac through cua's own engine show a named, coloured cursor like Codex's  [#235, feat/235-macos-cursor, cursor235, #200]
+  w1   done         MAWS's session index runs in the always-on background daemon, within its memory budget  [O3-D, MAWS #369, MAWS #370, MAWS #372, 4885de28c]
+  w2   done         A MAWS window shows a terminal session on another machine as it is: its permission mode within seconds, no stuck 'Working', and an interrupted reply's text kept  [O9, MAWS #355, MAWS #361, MAWS #364, doperpowers #445, doperpowers #448, doperpowers #449, sminos 1.27.14-1.27.17]
+  w3   done         The Mac mini runs through MAWS, and questions its sessions ask reach your phone as cards, whether the session waits or not  [B2, MAWS #340, MAWS #343, MAWS #345, MAWS #357]
+  w4   done         The production desk shows a session on another machine live  [O10 acceptance 7, MAWS #356, MAWS #360, doperpowers #447, sminos 1.27.15, hub@78b2bfbf, hub@8813921b]
+  w5   done         A failed, flaky or measured MAWS e2e job now leaves the app's main-process output and the engine host's log in its artifacts, redacted  [MAWS #353, MAWS #346]
+  w6   done         MAWS's CI goes red less often for infrastructure reasons  [MAWS #363, MAWS #366, MAWS #367, MAWS #370, ci-kit #182]
+  w7   done         cua's own Linux engine is released and installable, selectable with CUA_NATIVE_ENGINE, while OpenAI's helper stays the default  [#171, PR #230, PR #231, linux-engine-v0.1.0, cua plugin 0.18.0, #232]
+  w8   done         cua's Linux engine types text and uses the clipboard through one verified paste route  [#171 M2, PR #233, linux-engine-v0.2.0, plugin 0.19.0]
+  w14  done         A session started without the MAWS app delivers every event to the desk exactly once, across cuts, deploys and restarts  [MAWS #379, MAWS #382, O10 acceptance 2]
+  w15  done         A permission request raised while the MAWS app was away no longer gets lost before it reaches Needs-you  [MAWS #386, MAWS #384, cross-build.spec.ts:554]
+  w11  done         Very large old sessions open in MAWS: newest part first, older history as you scroll, and jumps to old messages land  [MAWS #374, MAWS #376, MAWS #377, MAWS #383, master 74f175c2c]
+  w12  done         A machine's git, source control and files keep serving other machines with MAWS quit, from the always-on daemon  [O3, O3-E, 2d4bbfa13, MAWS #390, 5440fbf72]
 ```
 
 ## The labelled list: owner asks in the P5 sessions, 2026-10-30 00:00 – 2026-10-31 23:59 KST
