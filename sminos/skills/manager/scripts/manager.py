@@ -350,8 +350,12 @@ def seen_window(t, since, until=None, stored=None):
     that shows the owner in the session's own window (manager_window.owner_present); `last_activity` the newest
     entry kept. Raises NoWindow, or manager_window.Unreadable."""
     paths = _paths(t)
-    if not any(p for _, p in paths):
-        raise NoWindow("no transcript of it on this machine")
+    missing = [sid[:8] for sid, p in paths if not p]
+    if missing:
+        # A session of the lineage that cannot be read is a stretch the update cannot vouch for: an error, so the
+        # subscription keeps its covered point instead of reading as inactive and read through.
+        raise NoWindow("%s of its lineage %s no transcript on this machine: the read is incomplete" % (
+            ", ".join(missing), "has" if len(missing) == 1 else "have"))
     entries = W.window(paths, since, until, float("inf"))["entries"]
     present = [L.parse(e["ts"]) for e in entries if W.owner_present(e)] + ([L.parse(stored)] if stored else [])
     present = [x for x in present if x is not None]

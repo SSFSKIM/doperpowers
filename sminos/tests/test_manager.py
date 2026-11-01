@@ -940,6 +940,19 @@ class SeenMarks(unittest.TestCase):
         self.assertEqual(seen_of([self.S1], T0, stored=iso(T0 + DAY))["seen"], L.stamp(T0 + DAY),
                          "a held mark newer than the window's words stays")
 
+    def test_a_lineage_with_a_missing_session_is_an_incomplete_read(self):
+        """A predecessor with no transcript here and a readable, empty successor: not an inactive session read
+        through, but an error for that subscription, so the update leaves its covered where it was."""
+        missing = "7c000003-0000-4000-8000-0000000000c3"
+        write_transcript(transcript_file(self.S2), [])
+        target = manager.Target("m", None, [missing, self.S2], None, "testhost", True)
+        entry = {"session": missing, "alias": "m", "covered": iso(T0), "seen": None}
+        (got,) = manager.seen_marks([("P5", entry, target, None)], None, T0 + 3600)
+        self.assertIn(missing[:8], got["error"])
+        self.assertIn("incomplete", got["error"])
+        self.assertNotIn("seen", got)
+        self.assertNotIn("last_activity", got)
+
 
 # ---------------------------------------------------------------------------------------------- the commands
 
@@ -1180,6 +1193,46 @@ class Commands(unittest.TestCase):
                              capture_output=True, env=os.environ, cwd=BASE)
         self.assertEqual(bad.returncode, 2)
         self.assertEqual(self.state_file().read_bytes(), before)
+
+    def test_values_are_checked_against_their_kind_before_anything_uses_them(self):
+        """Each malformed value is refused with a named problem (exit 2, no traceback) and the file stays
+        byte-identical: whitespace for a status's evidence and time, a non-boolean seen, a collection of the wrong
+        shape where a list belongs, an id that is not text."""
+        self.run_in_alpha("subscriptions", "add", "P5", "builder")
+        self.apply(update([yours(session=B1)]))
+        sub = self.state()["initiatives"][0]["sessions"][0]["session"]
+        cases = {
+            "whitespace evidence and status_at on a new item": (
+                update([yours(session=B1, status="answered", evidence=" ", status_at=" ")]),
+                ("evidence", "status_at")),
+            "whitespace evidence and status_at on a change": (
+                update([{"id": "y1", "status": "answered", "evidence": "  ", "status_at": "\t"}]),
+                ("evidence", "status_at")),
+            "a seen that is not a boolean": (update([{"id": "y1", "seen": " "}]), ("seen",)),
+            "a null seen": (update([yours(session=B1, seen=None)]), ("seen",)),
+            "whitespace for an optional text": (update([yours(session=B1, why="   ")]), ("why",)),
+            "refs that are not a list": (update([work(refs="PR #9")]), ("refs",)),
+            "items as an object": (dict(update(), items={}), ("items",)),
+            "sessions as an object": (dict(update(), sessions={}), ("sessions",)),
+            "briefs as null": (dict(update(), briefs=None), ("briefs",)),
+            "an id that is not text": (update([{"id": {}}]), ("id",)),
+            "an id that is null": (update([dict(yours(session=B1), id=None)]), ("id",)),
+            "a session that is not text": (
+                update(sessions=[{"session": {}, "from": iso(T0), "covered": iso(T0)}]), ("session",)),
+            "a brief's initiative that is not text": (
+                update(briefs=[{"initiative": ["P5"], "since": iso(T0), "text": "x"}]), ("initiative",)),
+            "a lane that is not text": (update([dict(yours(session=B1), lane={})]), ("lane",)),
+        }
+        self.assertTrue(sub)
+        for label, (doc, said) in cases.items():
+            with self.subTest(label):
+                before = self.state_file().read_bytes()
+                r = self.apply(doc, check=False)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertNotIn("Traceback", r.stderr)
+                for word in said:
+                    self.assertIn(word, r.stderr)
+                self.assertEqual(self.state_file().read_bytes(), before)
 
     def test_concurrent_applies_wait_on_the_lock_and_both_land(self):
         self.run_in_alpha("subscriptions", "add", "P5", "builder")

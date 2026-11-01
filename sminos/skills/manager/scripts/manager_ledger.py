@@ -189,8 +189,11 @@ def normalize(raw):
     problems = []
     for i in st["items"]:
         lane = i.get("lane")
-        if lane not in LANES:
-            problems.append("%s: lane '%s' is not one of %s" % (i.get("id"), lane, ", ".join(LANES)))
+        if not (isinstance(i.get("id"), str) and i["id"].strip()):
+            problems.append("an item's id %r is not text" % (i.get("id"),))
+            continue
+        if not (isinstance(lane, str) and lane in LANES):
+            problems.append("%s: lane %r is not one of %s" % (i["id"], lane, ", ".join(LANES)))
             continue
         _fill(i)
         problems += _check_item(i, str(i.get("id")))
@@ -217,40 +220,44 @@ def _check_item(item, where):
     for k in item:
         if k not in fields and k not in OWN:
             problems.append("%s: no %s item has a field '%s'" % (where, lane, k))
+    good = {}       # the fields whose value holds its kind, the only ones the checks below read
     for k, (kind, required) in fields.items():
-        v = item.get(k)
-        if v is None or (isinstance(v, str) and not v.strip()):
+        if k not in item or item[k] is None:
             if required:
                 problems.append("%s: %s is required" % (where, k))
-            elif v is None and not kind.endswith("?"):
+            elif k in item and not kind.endswith("?"):
                 problems.append("%s: %s cannot be null" % (where, k))
             continue
-        base = kind.rstrip("?")
+        v, base = item[k], kind.rstrip("?")
         if base == "text" and not isinstance(v, str):
             problems.append("%s: %s must be text" % (where, k))
+        elif base == "text" and not v.strip():
+            problems.append("%s: %s %s" % (where, k, "is required" if required else
+                                           "cannot be blank (leave it out, or null)"))
         elif base == "bool" and not isinstance(v, bool):
             problems.append("%s: %s must be true or false" % (where, k))
         elif base == "time" and parse(v) is None:
-            problems.append("%s: %s '%s' is not an ISO-8601 time" % (where, k, v))
+            problems.append("%s: %s %r is not an ISO-8601 time" % (where, k, v))
         elif base == "texts" and not (isinstance(v, list) and all(isinstance(x, str) for x in v)):
             problems.append("%s: %s must be a list of text" % (where, k))
-    status = item.get("status")
+        else:
+            good[k] = v
+    status = good.get("status")
     if lane == "yours":
-        if item.get("type") not in YOURS_TYPES and isinstance(item.get("type"), str) and item["type"].strip():
-            problems.append("%s: type '%s' is not one of %s" % (where, item["type"], ", ".join(YOURS_TYPES)))
-        if status not in YOURS_STATUSES and isinstance(status, str) and status.strip():
+        if "type" in good and good["type"] not in YOURS_TYPES:
+            problems.append("%s: type '%s' is not one of %s" % (where, good["type"], ", ".join(YOURS_TYPES)))
+        if status is not None and status not in YOURS_STATUSES:
             problems.append("%s: status '%s' is not one of %s" % (where, status, ", ".join(YOURS_STATUSES)))
-        elif status in YOURS_STATUSES and status != "pending":
+        elif status is not None and status != "pending":
             for k in ("evidence", "status_at"):
-                if not item.get(k):
+                if k not in good and (k not in item or item[k] is None):
                     problems.append("%s: %s is required once its status is %s" % (where, k, status))
     else:
-        if status not in WORK_STATUSES and isinstance(status, str) and status.strip():
+        if status is not None and status not in WORK_STATUSES:
             problems.append("%s: status '%s' is not one of %s" % (where, status, ", ".join(WORK_STATUSES)))
-        if status == "stalled" and not item.get("waits_on"):
-            problems.append("%s: waits_on is required once its status is stalled" % where)
-        if status == "done" and not item.get("finished"):
-            problems.append("%s: finished is required once its status is done" % where)
+        for k, needs in (("waits_on", "stalled"), ("finished", "done")):
+            if status == needs and k not in good and (k not in item or item[k] is None):
+                problems.append("%s: %s is required once its status is %s" % (where, k, needs))
     return problems
 
 
@@ -272,8 +279,8 @@ def apply(st, doc, now):
     for k in doc:
         if k not in DOC_KEYS:
             problems.append("the update has no field '%s' (it holds %s)" % (k, ", ".join(DOC_KEYS)))
-    window, sessions = doc.get("window"), doc.get("sessions") or []
-    items, briefs = doc.get("items") or [], doc.get("briefs") or []
+    window = doc.get("window")
+    sessions, items, briefs = (doc.get(k, []) for k in ("sessions", "items", "briefs"))    # only absent is empty
     if not isinstance(window, dict) or parse(window.get("since")) is None or parse(window.get("until")) is None:
         problems.append("window: since and until, both ISO-8601 times, are required")
     elif parse(window["until"]) < parse(window["since"]):
@@ -289,11 +296,14 @@ def apply(st, doc, now):
     seen_sessions = set()
     for n, s in enumerate(sessions):
         sid, where = s.get("session"), "sessions[%d]" % n
-        if sid not in subs:
+        if not isinstance(sid, str):
+            problems.append("%s: session must be a subscription's session id" % where)
+        elif sid not in subs:
             problems.append("%s: %s is not a subscription" % (where, sid))
         elif sid in seen_sessions:
             problems.append("%s: %s is listed twice" % (where, sid))
-        seen_sessions.add(sid)
+        else:
+            seen_sessions.add(sid)
         for k in ("from", "covered"):
             if parse(s.get(k)) is None:
                 problems.append("%s: %s, an ISO-8601 time, is required" % (where, k))
@@ -307,12 +317,18 @@ def apply(st, doc, now):
     merged, given_ids = [], set()
     for n, given in enumerate(items):
         iid = given.get("id")
+        if "id" in given and not (isinstance(iid, str) and iid.strip()):
+            problems.append("items[%d]: id must be a held item's id (a new item has none)" % n)
+            continue
         where = "items[%d] (%s)" % (n, iid if iid is not None else "new")
         fields = {k: v for k, v in given.items() if k not in ("reported", "changed")}
+        if "lane" in fields and not (isinstance(fields["lane"], str) and fields["lane"] in LANES):
+            problems.append("%s: lane %r is not one of %s" % (where, fields["lane"], ", ".join(LANES)))
+            continue
         if iid is None:
             lane = fields.get("lane")
-            if lane not in LANES:
-                problems.append("%s: lane '%s' is not one of %s" % (where, lane, ", ".join(LANES)))
+            if lane is None:
+                problems.append("%s: lane is required (%s)" % (where, ", ".join(LANES)))
                 continue
             item = dict(fields)
             _fill(item)
@@ -341,12 +357,17 @@ def apply(st, doc, now):
         where = "briefs[%d]" % n
         for k in ("initiative", "text"):
             if not isinstance(b.get(k), str) or not b[k].strip():
-                problems.append("%s: %s is required" % (where, k))
+                problems.append("%s: %s is required, as text" % (where, k))
         if parse(b.get("since")) is None:
             problems.append("%s: since, an ISO-8601 time, is required" % where)
-        if b.get("initiative") in seen_briefs:
-            problems.append("%s: a second brief for %s" % (where, b.get("initiative")))
-        seen_briefs.add(b.get("initiative"))
+        initiative = b.get("initiative")
+        if isinstance(initiative, str) and initiative in seen_briefs:
+            problems.append("%s: a second brief for %s" % (where, initiative))
+        elif isinstance(initiative, str):
+            seen_briefs.add(initiative)
+        for k in b:
+            if k not in ("initiative", "since", "text"):
+                problems.append("%s: a brief has no field '%s'" % (where, k))
     if problems:
         raise Invalid(problems)
 
