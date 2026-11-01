@@ -12,6 +12,7 @@ Run: python3 -B sminos/tests/test_manager_serve.py
 import http.client
 import json
 import os
+import re
 import shutil
 import socket
 import stat
@@ -553,10 +554,14 @@ class Page(unittest.TestCase):
     # The page's own words, as the ledger's `lang` picks them.
     ENGLISH = ("Needs you", "Blocking", "work waits on you", "decide", "● unseen", "new", "answered (unverified)",
                "Answered", "Work in progress", "stalled", "waits on a login", "Done", "Nothing done yet.", "Brief",
-               "1 blocking", " ago", "connecting", "covering Oct 15 ")
+               "1 blocking", " ago", "connecting", "covering Oct 15 ",
+               "Roadmap", "1 of 5 done", "purpose", "done when", "what it is", "now", "waits on", "changes",
+               "owner", "not started", "deferred", "dropped", "2 new")
     KOREAN = ("내 차례", "차단", "결정", "● 안 봄", "새 항목", "답함(미확인)", "답한 것", "진행 중", "멈춤",
               "대기 중: a login", "완료", "아직 끝난 일이 없어요.", "요약", "차단 1", " 전 ·", "연결 중",
-              "범위 10월 15일 ")
+              "범위 10월 15일 ",
+              "로드맵", "5개 중 1개 완료", "목적", "완료 조건", "무엇인가", "지금", "대기 중", "변경 이력", "담당",
+              "시작 전", "연기", "폐기", "새 변경 2")
 
     def test_a_korean_ledger_is_labelled_in_korean(self):
         got = self.check("ko")
@@ -564,10 +569,29 @@ class Page(unittest.TestCase):
         self.assertEqual((got["lang"], got["h1"], got["title"], got["stored"]), ("ko", "장부", "장부 · 차단", "ko"))
         for word in self.KOREAN:
             self.assertIn(word, got["text"])
-        for word in ("Needs you", "Blocking", "unseen", "Work in progress", "Done", "Brief", "ago", "connecting"):
+        for word in ("Needs you", "Blocking", "unseen", "Work in progress", "Done", "Brief", "ago", "connecting",
+                     "Roadmap", "not started", "deferred", "dropped", "what it is", "changes", "done when"):
             self.assertNotIn(word, got["text"])
-        for text in ("need text", "quoted source", "work title", "brief text"):
+        for text in ("need text", "quoted source", "work title", "brief text", "purpose text", "done-when text",
+                     "summary text", "now text", "the owner's login", "new change", "repo docs/plan.md @ main"):
             self.assertIn(text, got["text"], "the ledger's own text is shown as written")
+
+    def test_the_roadmap_follows_needs_you_with_every_part_and_its_news(self):
+        got = self.check("roadmap")
+        self.assertEqual(got["errors"], [])
+        rm = got["roadmap"]
+        self.assertEqual(rm["sections"][:2], ["part needs", "part roadmap"], "after Needs you, before the rest")
+        self.assertEqual(rm["heading"], "Roadmap1 of 5 done", "a dropped part is not counted")
+        self.assertEqual(rm["rows"], ["step lvl1 rm-P5-C1", "step lvl2 rm-P5-C1.1", "step lvl3 rm-P5-C1.1.1",
+                                      "step lvl1 rm-P5-C2", "step lvl1 rm-P5-C3", "step lvl1 rm-P5-C4"],
+                         "every part in the roadmap's order, children beneath their parent")
+        self.assertEqual(rm["meta"], {"C1": "donebuilder2 new", "C1.1": "waiting", "C2": "in progress"},
+                         "changes after the window's start are new; a part with none says nothing")
+        self.assertEqual([re.sub(r"^.*?\d\d:\d\d", "", c) for c in rm["changes"]],
+                         ["newnew change", "newmiddle change", "old change"], "newest first, the new ones marked")
+        self.assertEqual((rm["open"], rm["closed"]), (True, False), "an opened row stays open across a re-render")
+        self.assertIn("Roadmap #" + rm["id"], rm["link"], "the header summary links to it")
+        self.assertTrue(rm["summary"].endswith("Roadmap2 new"))
 
     def test_english_is_the_default(self):
         got = self.check("en")

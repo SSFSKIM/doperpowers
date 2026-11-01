@@ -71,9 +71,17 @@ Structure is hairlines (`--rule`) and whitespace; the one heavier mark is the do
 
 **Compiled.** Dominant region: the first initiative's blocking items, first in DOM order after a slim header.
 Reading order: header (freshness, one summary line per initiative), then per initiative: Needs you (blocking,
-then optional), Answered, Work in progress (stalled first), Done (7 days; older disclosed), Brief (collapsed).
-Columns: one, max 40rem, the margin column 4.5rem inside each item line. Density lives in the done list (one line
-per item). Repeats: item lines within a group, nothing else.
+then optional), Roadmap (when the initiative has one), Answered, Work in progress (stalled first), Done (7 days;
+older disclosed), Brief (collapsed).
+Columns: one, max 40rem, the margin column 4.5rem inside each item line. Density lives in the done list and the
+roadmap (one row per item or part). Repeats: item lines within a group, part rows within the roadmap.
+
+**Roadmap.** The initiative's whole plan, which can run to 30 parts or more on a phone, so every part is a compact
+row (its id in the margin, title, status stamp, owner) and expands, never the section. Ids stay aligned in the
+margin column at every depth; nesting indents the title (16 px, then 32 px), so a third-level title keeps its width.
+Top-level titles are semibold; done, deferred and dropped titles are `--ink-muted`, a dropped one struck through,
+with the status always said by the stamp. A part's changes dated after the last update's window start are its
+news: the row counts them (`2 new`) and the expanded list marks each, so movement shows without opening anything.
 
 **Ledger.**
 | Brief evidence | Relationship | Constraint | Rendered assertion | Forbidden |
@@ -99,6 +107,11 @@ Spacing scale: 4, 8, 12, 16, 24, 32, 48.
 - `doneRow`: one line, mono date in the margin, serif text, a mono status word (`done`, `overtaken`).
 - `group heading`: serif 19 px with a mono count.
 - The brief: one `details`, summary in mono metadata, prose in serif paragraphs.
+- `step` (a roadmap part, a compact `item`): `.margin` the part's id; `.body` the serif title and a meta line
+  (status stamp, owner, the count of new changes). Expanded: what it is, now, what it waits on, owner, refs, then
+  its changes newest first (mono date and `new` over the serif text). Its children follow it, indented.
+- The roadmap's head: purpose and done-when in serif with mono labels, then the source and when it was written in
+  mono.
 
 ## 6. Voice
 

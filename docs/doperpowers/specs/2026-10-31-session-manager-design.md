@@ -353,7 +353,8 @@ The window's start is found with `sminos_subagents.offset_since(mm, t)` on an mm
          "status": "in progress", "waits_on": null, "started": "…Z", "finished": null, "refs": ["PR #449"],
          "reported": "…Z", "changed": "…Z"}
       ],
-      "briefs": [{"initiative": "P5", "written": "…Z", "since": "…Z", "text": "…prose…"}]
+      "briefs": [{"initiative": "P5", "written": "…Z", "since": "…Z", "text": "…prose…"}],
+      "roadmaps": [{"initiative": "P5", "written": "…Z", "source": "…", "parts": […]}]   // 2026-11-01; shape below, under `ledger apply`
     }
 
 Enumerations: `lane` `yours | work`; yours `type` `decide | judge | act | answer | other`, `status` `pending | answered | done | overtaken`; work `status` `in progress | done | stalled`. Times named for the session (`raised`, `status_at`, `started`, `finished`) are when it happened in the session, taken from the evidence; `reported` and `changed` are when an update recorded it. `seen` is whether the item was raised at or before its session's seen mark, and only ever turns from false to true. Reading a version 1 file migrates it in memory (each `carry` entry becomes a yours item: type `other`, status `pending`, its initiative and `session` from its subscription, `reported` = `briefed`; `briefed` becomes `updated`; every subscription's `covered` = `briefed`, or 24 hours before its `added` when nothing was briefed), normalized and validated as `apply` validates, and the next write stores version 2.
@@ -363,11 +364,31 @@ Enumerations: `lane` `yours | work`; yours `type` `decide | judge | act | answer
     {"window": {"since": "…Z", "until": "…Z"},
      "sessions": [ {"session": "a45b97a3-…", "from": "…Z", "covered": "…Z", "seen": "…Z" | null} ],   // the subscriptions this update read through: from where, to where
      "items": [ {…an item…} ],          // with an "id": a change to that item (the fields given replace those held); without: a new item, given the next id of its lane (y…, w…)
-     "briefs": [ {"initiative": "P5", "since": "…Z", "text": "…"} ]}
+     "briefs": [ {"initiative": "P5", "since": "…Z", "text": "…"} ],
+     "roadmaps": [ {…a roadmap…} ]}     // 2026-11-01, optional: each replaces its initiative's roadmap whole
+
+A roadmap (2026-11-01) is an initiative's whole plan as the manager reads it from the initiative's roadmap document at each update, written in the ledger's `lang`, stored whole with apply's `written` stamp (one per initiative, in the state file's `roadmaps` list):
+
+    {"initiative": "<a known initiative>",                               required: one held, or one this update's items or briefs name
+     "source": "<where the roadmap lives: repo, path, branch@sha, PR>",  required
+     "purpose": "<what the initiative is for>",                          optional
+     "done_when": "<what closes it>",                                    optional
+     "parts": [<part>, …]}                                               required, non-empty
+    part:
+    {"id": "C2.1",                                                       required, unique across the whole roadmap
+     "title": "…", "summary": "<what this part is>",                     required
+     "status": "done | in progress | waiting | not started | deferred | dropped",   required
+     "owner": "<session alias, or 'owner'>", "now": "<what exists now, what is next>",   optional
+     "waits_on": "…",                                                    required when waiting
+     "changes": [{"at": "<ISO-8601>", "text": "…"}],                     optional, any order (shown newest first)
+     "refs": ["PR #138"],                                                optional
+     "parts": [<part>, …]}                                               optional; parts nest at most 3 levels
+
+It is validated as the rest of the document is (every problem named, nothing applied, unknown fields refused, kinds checked before use), and on read. `ledger --json` gives each initiative its `roadmap` (or null); the text `ledger` adds one line per initiative with one, `roadmap from <source>, written <time>: 3 done · 2 in progress · …` (parts at every level counted by status); `apply`'s text adds `· roadmap written`. The page shows it after *Needs you*: purpose and done-when, then every part as a compact row (id, title, status, owner) with its children indented beneath, each expanding to what it is, now, what it waits on, refs and its changes; a change dated after the last update's `window.since` is marked new, and each row counts its new ones.
 
 Validation covers the whole document before anything is written, and every item as it would stand after the merge, new or changed: `id` and `lane` never change; enumerations hold; required fields are present and non-empty — yours: `initiative`, `member`, `session`, `type`, `blocking`, `need`, `raised`, `source`, `status`, and `evidence` and `status_at` once its status is past `pending`; work: `initiative`, `title`, `meaning`, `status`, `started`, `waits_on` when `stalled`, `finished` when `done`; times parse; `seen` does not go from true to false; a change names a known id; a session in `sessions` is a subscription. Any problem exits 2 naming every one, with the file unchanged; nothing is ever deleted. Then `apply` stamps `reported` and `changed` on new items; stamps `changed` on a held item only when a substantive field changed (for yours: `type`, `blocking`, `need`, `status`, `evidence`; for work: `title`, `meaning`, `status`, `waits_on`), not for a refreshed `seen` or an unchanged value; moves each listed subscription's `covered` forward to the value given only when the interval read connects to it (`from` at or before the held `covered`; never back), so an "update since T" that starts after `covered` leaves the gap behind it for the next plain update to read, and moves its `seen` to the newer of held and given; sets `updated` to now and `window` from the document; replaces each initiative's brief given; and moves done and overtaken items whose `changed` is more than 30 days old to `<name>.archive.jsonl` (append, one item per line). It reports which ids it created, which it changed substantively, and which open items it left as they were, the three lists the update is written from: `--json` `{"new": [...], "changed": [...], "unchanged_open": [...]}`; text, one line per initiative, `P5: 2 new · 3 changed · 5 still open · brief written`.
 
-**`manager ledger`** prints the ledger per initiative: the owner's items by status (pending first; within it blocking, then unseen), then work in progress, stalled, and done in the last 7 days; then the latest brief's time and window. `--json` prints `{"lang", "updated", "window", "initiatives": [{"name", "items": […], "brief"}]}`, the shape `/ledger.json` serves (M6); `lang` is the state's, `"en"` when it holds none. The text output stays English, since the model reads it.
+**`manager ledger`** prints the ledger per initiative: the owner's items by status (pending first; within it blocking, then unseen), then work in progress, stalled, and done in the last 7 days; then the latest brief's time and window. `--json` prints `{"lang", "updated", "window", "initiatives": [{"name", "items": […], "brief", "roadmap"}]}`, the shape `/ledger.json` serves (M6); `lang` is the state's, `"en"` when it holds none. The text output stays English, since the model reads it.
 
 **`manager ledger lang [<tag>]`** prints the ledger's language; with a tag it sets it under the state's lock. Both take `--json` (`{"lang": "ko"}`); a tag that is not BCP-47-shaped exits 2 naming it. The page labels itself from a per-language table (en, ko) picked by the tag's primary subtag, English otherwise, sets `<html lang>` and formats dates and times in that locale; the manager writes the ledger's own text (`need`, `why`, `title`, `meaning`, `waits_on`, briefs) in it, quotes staying as said.
 
@@ -760,6 +781,9 @@ A failure reads as one line on stderr and exit 1, for example `manager: CI-opt r
   Date/Author: 2026-11-01, doperpowers-9b (f89d7fb0).
 - Decision: The ledger has a language, stored in the state file as an optional `lang` (a BCP-47-shaped tag, absent meaning `en`), set with `manager ledger lang <tag>` and carried in `ledger --json`. It governs both the page's labels (a per-language table, en and ko, by the tag's primary subtag) and the ledger's own text, which the manager and its digests write in it; quotes stay as said. The model-facing text output of `ledger` stays English. The page remembers the last language in `localStorage`, so a load starts in it before the ledger arrives.
   Rationale: the owner asked to read the page in Korean on their phone, labels and content alike. The stored tag won over the phone's `navigator.language` because the content's language has to last across manager sessions (a fresh manager must keep writing Korean without being told again), which a browser setting cannot carry, and because one setting should govern labels and content together, rather than labels following the phone while the content follows whatever the manager last wrote.
+  Date/Author: 2026-11-01, session-pool-attention-manager (f89d7fb0), on the owner's request.
+- Decision: The page shows each initiative's whole roadmap, from structured data the manager writes at each update (`ledger apply`'s optional `roadmaps`, one per initiative, replaced whole and stored with a `written` stamp): purpose, done-when, every part and sub-part (to three levels) with its owner, status, what it is, what exists now, what it waits on, refs, and its change history. The manager reads the initiative's roadmap document, read-only, at its newest revision, carries each part's changes forward from the roadmap the ledger holds, and adds what the document and the window show. The page marks a change new when it is dated after the last update's `window.since`.
+  Rationale: the owner asked to see the roadmap on the page, every part and what changed in it. Structured data written by the manager won over rendering the repository's markdown file: the page reads only the state file (the server opens nothing else and starts no process), the document is long and in English, and the owner wants it digested, in their language, with a change history per part, which a file read at render time cannot carry from one revision to the next.
   Date/Author: 2026-11-01, session-pool-attention-manager (f89d7fb0), on the owner's request.
 
 ## Outcomes & Retrospective
