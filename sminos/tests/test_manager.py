@@ -497,6 +497,18 @@ class Windows(unittest.TestCase):
         self.assertEqual([e["kind"] for e in got["entries"]], ["you", "session", "boundary", "you", "session"])
         self.assertEqual([e["session"] for e in got["entries"]], [SID[:8]] * 2 + [NEXT[:8]] * 3)
 
+    def test_missing_names_only_sessions_the_window_could_include(self):
+        old, mid = "7d000001-0000-4000-8000-0000000000d1", "7d000002-0000-4000-8000-0000000000d2"
+        a, b = Rows(), Rows(T0 + 100)
+        a.user("first", HUMAN)
+        b.user("second", HUMAN)
+        write_transcript(self.dir / "a.jsonl", a.rows)
+        write_transcript(self.dir / "b.jsonl", b.rows)
+        lineage = [(old, ""), (SID, str(self.dir / "a.jsonl")), (mid, ""), (NEXT, str(self.dir / "b.jsonl"))]
+        self.assertEqual(W.window(lineage, T0 + 50)["missing"], [mid], "old ended before a.jsonl began; mid may not")
+        self.assertEqual(W.window(lineage, T0 + 200)["missing"], [], "both ended before b.jsonl's first row")
+        self.assertEqual(W.window(lineage, T0)["missing"], [old, mid])
+
     def test_a_blocking_answer_whose_question_precedes_the_window(self):
         """Since set at the answer: the question is not shown, its answer still is."""
         r = Rows()
@@ -952,6 +964,24 @@ class SeenMarks(unittest.TestCase):
         self.assertIn("incomplete", got["error"])
         self.assertNotIn("seen", got)
         self.assertNotIn("last_activity", got)
+
+    def test_a_missing_session_proven_to_end_before_the_window_reads_clean(self):
+        """The engine prunes old transcripts: a missing predecessor whose successor's first row is at or before
+        the window's start ended before it, so the read is whole. One the window could include stays an error."""
+        missing = "7c000004-0000-4000-8000-0000000000c4"
+        r = Rows()
+        r.user("started early", HUMAN)                      # T0 + 1
+        late = r.user("typed in the window", HUMAN)         # T0 + 2
+        write_transcript(transcript_file(self.S2), r.rows)
+        target = manager.Target("m", None, [missing, self.S2], None, "testhost", True)
+        entry = {"session": missing, "alias": "m", "covered": iso(T0), "seen": None}
+        (got,) = manager.seen_marks([("P5", entry, target, None)], SA_epoch(late["timestamp"]), T0 + 3600)
+        self.assertNotIn("error", got)
+        self.assertEqual(got["seen"], late["timestamp"])
+        (at_start,) = manager.seen_marks([("P5", entry, target, None)], T0 + 1, T0 + 3600)
+        self.assertNotIn("error", at_start, "a first row exactly at the window's start is proof too")
+        (early,) = manager.seen_marks([("P5", entry, target, None)], T0, T0 + 3600)
+        self.assertIn("incomplete", early["error"], "the successor began inside the window: the gap may hold rows")
 
 
 # ---------------------------------------------------------------------------------------------- the commands

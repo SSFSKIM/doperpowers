@@ -573,15 +573,40 @@ def _row_back(mm, uuid, end):
         at = start
 
 
+def _first_epoch(path):
+    """The time of a transcript's first stamped row; None when it holds none."""
+    mm = _map(path)
+    if mm is None:
+        return None
+    try:
+        first = next(_rows(mm, 0, float("-inf")), None)
+    finally:
+        mm.close()
+    return SA._epoch(first.get("timestamp")) if first is not None else None
+
+
+def ended_before(sessions, i, since):
+    """Whether the records prove the lineage's session `i` ended before `since`: a later session of the lineage
+    has a transcript whose first row is at or before it, so the lineage had moved on before the window began
+    (the engine prunes old transcripts, so a long-lived lineage loses its oldest ones)."""
+    for _, path in sessions[i + 1:]:
+        if path:
+            first = _first_epoch(path)
+            if first is not None and first <= since:
+                return True
+    return False
+
+
 def window(sessions, since, until=None, max_chars=DEFAULT_MAX_CHARS, corroborate=None):
-    """{"entries", "truncated", "stopped_at"}: the window over a lineage (`sessions`: (session id, transcript
-    path or ""), oldest first), a `boundary` entry where it moves to the next session id, cut where the
-    rendered text would pass `max_chars` (stopped_at: the last entry's time; missing: the lineage's sessions
-    with no transcript on this machine). A transcript that cannot be read raises Unreadable."""
-    entries, used, truncated, previous, missing = [], 0, False, None, []
+    """{"entries", "truncated", "stopped_at", "missing"}: the window over a lineage (`sessions`: (session id,
+    transcript path or ""), oldest first), a `boundary` entry where it moves to the next session id, cut where
+    the rendered text would pass `max_chars` (stopped_at: the last entry's time; missing: the lineage's sessions
+    with no transcript on this machine that the window could include, those proven to have ended before `since`
+    left out). A transcript that cannot be read raises Unreadable."""
+    entries, used, truncated, previous = [], 0, False, None
+    missing = [sid for i, (sid, path) in enumerate(sessions) if not path and not ended_before(sessions, i, since)]
     for sid, path in sessions:
         if not path:
-            missing.append(sid)
             continue
         mm = _map(path)
         if mm is None:
