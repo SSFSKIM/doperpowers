@@ -89,7 +89,11 @@ says so) or "update since T" (every session from T).
    goes, `unverified` kept), work outcomes merged across
    sessions and held here to the initiative's cap (keep the outcomes that
    matter most to the owner; fold the rest into their meanings or into a held
-   item), one brief per initiative written from the digests' prose. Its `sessions` lists each subscription you read through,
+   item). Each work item stays one outcome, whatever a digest proposed: never
+   unrelated outcomes listed under one title, never a routine step (a deploy,
+   a plan landing, a merge) in a title, and never work only begun titled as
+   what is being built; split such an item, or cut the step to its status or
+   meaning. One brief per initiative, written from the digests' prose. Its `sessions` lists each subscription you read through,
    with the `from` `pending` gave, the `covered` its digest reached (`until`
    when it read the whole window, or had no activity to read), and the seen
    mark `pending` gave; leave out every session you could not read, so the

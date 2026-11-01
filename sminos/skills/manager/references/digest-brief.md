@@ -119,8 +119,9 @@ initiative names) go in `refs`, never in the title.
 | M10 sitting done | A MAWS window on the MacBook drives a session running on the mini |
 | O3-D M7 reviewed clean | — (a routine step: update the outcome it belongs to) |
 
-Routine steps — a milestone landing, a review round, a merge, a CI run, a fix
-wave, a restarted watcher — are never items of their own: they move an
+Routine steps — a milestone landing, a plan landing, a review round, a merge,
+a deploy, a CI run, a fix wave, a restarted watcher — are never items of their
+own, nor a clause added to an outcome's title: they move an
 outcome's status (`in progress`, `done`, or `stalled` with `waits_on`) or its
 meaning. Prefer updating a held work item to adding one, and leave a done one
 alone unless the outcome itself changed (it broke, reopened, or grew into
