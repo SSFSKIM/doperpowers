@@ -1,0 +1,163 @@
+<!doctype html>
+<!--
+  Source of the README banner and the GitHub social preview.
+  Render: node docs/assets/render-banner.mjs (writes the PNGs beside this file).
+  Query: ?kind=banner|social&theme=light|dark (social is always light).
+
+  The picture: four sessions (lanes) start as loose, hand-drawn lines where a
+  person's ideas emerge, straighten as the method takes them through spec and
+  build, pass messages between each other (the connectors), and converge into
+  one merged line, the only thing drawn in the accent.
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wdth,wght@12..96,75..100,200..800&display=block" rel="stylesheet">
+<style>
+  :root {
+    --ink: #1F2328;          /* GitHub light foreground */
+    --ink-quiet: #59636E;
+    --accent: #C15F3C;       /* Claude's orange, darkened for 3:1+ on white */
+    --ground: transparent;
+  }
+  [data-theme="dark"] {
+    --ink: #E6EDF3;          /* GitHub dark foreground */
+    --ink-quiet: #9198A1;
+    --accent: #E08A66;
+  }
+  [data-kind="social"] { --ground: #F5F6F7; }
+  html, body { margin: 0; background: var(--ground); }
+  .canvas { position: relative; overflow: hidden; background: var(--ground); }
+  [data-kind="banner"] .canvas { width: 1280px; height: 280px; }
+  [data-kind="social"] .canvas { width: 1280px; height: 640px; }
+  .word {
+    position: absolute;
+    font-family: "Bricolage Grotesque", sans-serif;
+    font-variation-settings: "opsz" 96, "wdth" 92;
+    font-weight: 720;
+    letter-spacing: -0.035em;
+    color: var(--ink);
+    line-height: 1;
+    white-space: nowrap;
+  }
+  [data-kind="banner"] .word { left: 64px; top: 84px; font-size: 104px; }
+  [data-kind="social"] .word { left: 88px; top: 116px; font-size: 132px; }
+  .line {
+    position: absolute;
+    font-family: "Bricolage Grotesque", sans-serif;
+    font-variation-settings: "opsz" 24, "wdth" 100;
+    font-weight: 450;
+    color: var(--ink-quiet);
+    white-space: nowrap;
+  }
+  [data-kind="banner"] .line { display: none; }
+  [data-kind="social"] .line { left: 94px; top: 282px; font-size: 33px; letter-spacing: -0.005em; }
+  svg { position: absolute; inset: 0; }
+</style>
+</head>
+<body>
+<div class="canvas" id="canvas">
+  <svg id="art" xmlns="http://www.w3.org/2000/svg"></svg>
+  <div class="word" id="word">doperpowers</div>
+  <div class="line" id="line">Spec-driven development and multi-session teamwork for Claude Code</div>
+</div>
+<script>
+const q = new URLSearchParams(location.search);
+const kind = q.get('kind') || 'banner';
+const theme = kind === 'social' ? 'light' : (q.get('theme') || 'light');
+document.documentElement.dataset.kind = kind;
+document.documentElement.dataset.theme = theme;
+
+// Deterministic wobble: a sum of sines per lane, so a render is repeatable.
+function wobble(x, seed) {
+  return Math.sin(x * 0.031 + seed * 1.7) * 0.6
+       + Math.sin(x * 0.077 + seed * 4.1) * 0.25
+       + Math.sin(x * 0.017 + seed * 2.3) * 0.5;
+}
+
+function draw() {
+  const W = 1280, H = kind === 'social' ? 640 : 280;
+  const svg = document.getElementById('art');
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  svg.setAttribute('width', W);
+  svg.setAttribute('height', H);
+  const css = getComputedStyle(document.documentElement);
+  const ink = css.getPropertyValue('--ink').trim();
+  const accent = css.getPropertyValue('--accent').trim();
+
+  // Geometry per kind. Banner: the graphic takes the space right of the
+  // wordmark. Social: it runs under the text across the lower band.
+  let g;
+  if (kind === 'banner') {
+    const wordRight = document.getElementById('word').getBoundingClientRect().right;
+    g = { x0: wordRight + 56, straight: 0, ys: [72, 120, 168, 216], mid: 144,
+          amp: 20, lane: 3.4, merged: 6.5, dot: 5, mergeDot: 8.5 };
+    const span = W - g.x0;
+    g.straight = g.x0 + span * 0.4;
+    g.links = [[0, 1, g.x0 + span * 0.45], [2, 3, g.x0 + span * 0.53], [1, 2, g.x0 + span * 0.61]];
+    g.mergeFrom = g.x0 + span * 0.69; g.mergeAt = g.x0 + span * 0.86;
+    g.starts = [0, 34, 14, 52];
+  } else {
+    g = { x0: 88, ys: [400, 452, 504, 556], mid: 478, amp: 24, lane: 3.8, merged: 7.5,
+          dot: 6, mergeDot: 10 };
+    const span = W - g.x0;
+    g.straight = g.x0 + span * 0.42;
+    g.links = [[0, 1, g.x0 + span * 0.5], [2, 3, g.x0 + span * 0.57], [1, 2, g.x0 + span * 0.64]];
+    g.mergeFrom = g.x0 + span * 0.71; g.mergeAt = g.x0 + span * 0.87;
+    g.starts = [0, 60, 24, 96];
+  }
+
+  const NS = 'http://www.w3.org/2000/svg';
+  const el = (name, attrs, parent = svg) => {
+    const n = document.createElementNS(NS, name);
+    for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v);
+    parent.appendChild(n);
+    return n;
+  };
+  const defs = el('defs', {});
+
+  g.ys.forEach((y, i) => {
+    const start = g.x0 + g.starts[i];
+    // Emerging: each lane fades in from nothing over its first stretch.
+    const grad = el('linearGradient', { id: `fade${i}`, gradientUnits: 'userSpaceOnUse',
+      x1: start, y1: 0, x2: start + 110, y2: 0 }, defs);
+    el('stop', { offset: 0, 'stop-color': ink, 'stop-opacity': 0 }, grad);
+    el('stop', { offset: 1, 'stop-color': ink, 'stop-opacity': 1 }, grad);
+
+    // Loose, hand-drawn stretch whose wobble decays to nothing by `straight`.
+    const pts = [];
+    for (let x = start; x <= g.straight; x += 3) {
+      const t = (x - start) / (g.straight - start);
+      const a = g.amp * Math.pow(1 - t, 1.6);
+      pts.push([x, y + a * wobble(x, i + 1)]);
+    }
+    let d = `M${pts[0][0].toFixed(1)} ${pts[0][1].toFixed(1)}`;
+    for (const [x, yy] of pts.slice(1)) d += ` L${x.toFixed(1)} ${yy.toFixed(1)}`;
+    // Straight run, then a smooth merge into the middle line.
+    d += ` L${g.mergeFrom.toFixed(1)} ${y}`;
+    const c = (g.mergeAt - g.mergeFrom) / 2;
+    d += ` C${(g.mergeFrom + c).toFixed(1)} ${y} ${(g.mergeAt - c).toFixed(1)} ${g.mid} ${g.mergeAt.toFixed(1)} ${g.mid}`;
+    el('path', { d, fill: 'none', stroke: `url(#fade${i})`, 'stroke-width': g.lane,
+      'stroke-linecap': 'round', 'stroke-linejoin': 'round' });
+  });
+
+  // Messages between sessions: a connector with a node at each end.
+  for (const [a, b, x] of g.links) {
+    el('line', { x1: x, y1: g.ys[a], x2: x, y2: g.ys[b], stroke: ink, 'stroke-width': g.lane * 0.8 });
+    for (const y of [g.ys[a], g.ys[b]]) el('circle', { cx: x, cy: y, r: g.dot, fill: ink });
+  }
+
+  // The converged result: the one thing in the accent, running off the edge.
+  el('line', { x1: g.mergeAt, y1: g.mid, x2: W + 10, y2: g.mid, stroke: accent,
+    'stroke-width': g.merged, 'stroke-linecap': 'round' });
+  el('circle', { cx: g.mergeAt, cy: g.mid, r: g.mergeDot, fill: accent });
+
+  document.body.dataset.ready = '1';
+}
+
+document.fonts.ready.then(draw);
+</script>
+</body>
+</html>

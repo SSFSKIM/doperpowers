@@ -1,41 +1,89 @@
-# doperpowers
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/banner-dark.png">
+    <img alt="doperpowers" src="docs/assets/banner-light.png" width="840">
+  </picture>
+</p>
 
-**A methodology your coding agent actually follows** — not a pile of prompts, but a set of skills that trigger themselves at the right moment and keep the agent honest from first idea to merged branch.
+<p align="center">
+  <b>Claude Code plugins for building software with agents.</b><br>
+  <code>doperpowers</code> takes a change from a rough idea to a reviewed, merged branch.<br>
+  <code>sminos</code> makes your sessions, on one machine or many, work as a team.
+</p>
 
-```text
-                     d o p e r p o w e r s
+<p align="center">
+  <a href="#install">Install</a> ·
+  <a href="docs/whats-inside.md">What's inside</a> ·
+  <a href="#what-to-expect">What to expect</a>
+</p>
 
-   idea ─▶ grill ─▶ design you sign off ─▶ spec ─┬─▶ ONE MILESTONE · runs in order from the spec itself
-                                                 └─▶ SEVERAL       · a fresh subagent per milestone, reviewed at each frontier
-   board · the backlog: you name a ticket, the session takes it through the same method
+---
+
+## doperpowers: one method for every change
+
+```mermaid
+flowchart LR
+    grill["<b>brainstorming</b><br/>a design you approve"]
+    grill -- "well scoped" --> here["built in<br/>the session"]
+    grill -- "needs a spec" --> spec["<b>execspec</b><br/>one living spec"]
+    spec -- "one milestone" --> inorder["run in order"]
+    spec -- "several" --> fresh["a fresh subagent<br/>per milestone"]
+    here --> review["<b>review-code</b><br/>another model family"]
+    inorder --> review
+    fresh --> review
+    review --> merged([merged])
 ```
 
-Most agent scaffolding is a single linear pipeline: you talk, it plans, it codes. doperpowers sizes the work first. Every change starts with a grill that closes the design questions while you are present, then a design you approve. From there the shape follows the reader: a change one agent builds in the session goes straight from the approved design to code; anything else gets one spec that carries its design with its reasoning, its acceptance, and its plan of work told as milestones. One milestone runs in order from the spec; several run a fresh subagent per milestone, reviewed at every boundary. How much independent review the work gets is a separate call, made from its stakes rather than its size. Either way the agent runs without stopping until it meets a decision the design did not cover, and that comes back to you.
+- **It asks before it builds.** `brainstorming` explores what the work should be and grills you in batched rounds while you are there, then presents the design. Nothing that commits a product or design decision is built before you approve it.
+- **One living spec, when the work needs one.** `execspec` writes a single document that carries the design with its reasoning, acceptance as observable behavior, and the plan of work as milestones. It is reviewed before it runs and kept current while it runs: progress, decisions, surprises, and a retrospective at the end.
+- **The shape follows the size.** A well-scoped change is built in the session. A one-milestone spec runs in order. Several milestones each go to a fresh subagent (`subagent-driven-execution`), built test-first and reviewed at every dependency boundary, so your session stays the design session.
+- **Review by a different model.** `review-code` sends the finished branch to an independent reviewer from another model family, sized by the stakes: one reviewer for a focused diff, a multi-lens panel with a binding verifier for a large one.
+- **It keeps going.** Between your approval and the merge the agent doesn't stop to ask what's next. It comes back when it meets a decision the design didn't cover.
 
-Because every skill declares when it applies, you don't invoke any of this by hand. The agent checks for a relevant skill before it starts a task, and the right workflow just happens.
+You don't call any of this by hand: every skill says when it applies, and the agent checks before it starts.
 
----
+## sminos: your sessions, as a team
 
-## One method, sized by the work
+Run more than a couple of Claude Code sessions and they start stepping on each other: two of them edit the same file, one waits on a fact another already found, and you become the message bus. sminos makes every session in a project a member that knows the others.
 
-Every change enforces the same non-negotiables — design before code, tests before implementation, evidence before "done." What varies is the shape, and the shape follows the size.
+```text
+$ sminos list
+api
+  parser  [7a11ce01]  interactive  busy  @macbook  api@parser  in charge: the new parser
+  ci      [a45b97a3]  interactive  idle  @mini     api@main    in charge: CI and releases
+  e2e     [2b52e44a]  seat         busy  @macbook  api@e2e     in charge: the flaky e2e suite
+you: parser [7a11ce01]
 
-**One unit** — work one agent can reliably own.
-The agent refuses to jump straight to code. It interviews you (`brainstorming`) and turns the conversation into a design you approve; when the work is complex and sizable enough that reliable execution needs a spec, it writes the design up as a living spec that carries its own plan of work and progress (`execspec`), then builds it in order without stopping for next steps. You approve the design; an independent spec review and a whole-branch review gate the rest.
+$ sminos say "@ci the parser rewrite renames the tokens table; hold the release"
+```
 
-**Several units, or taste mid-flight** — work that needs more than one agent-ownable milestone, or your judgment while it is built.
-The same grill and the same spec: its plan of work is told as milestones an executor can own from the document and the code — files, interfaces, the decisions already settled, proof; no line numbers, no steps — and each one runs through a fresh subagent, reviewed at dependency frontiers — spec compliance, then code quality (`subagent-driven-execution`) — with the whole branch reviewed at the end.
+```mermaid
+flowchart LR
+    you((you))
+    subgraph macbook
+        parser["parser"]
+        e2e["e2e (a spawned seat)"]
+    end
+    subgraph mini
+        ci["ci"]
+    end
+    parser <-- "say @ci" --> ci
+    parser -- "spawn, watch, steer" --> e2e
+    parser -. "a report, and questions<br/>that don't block" .-> you
+```
 
-**Later** — the backlog.
-Work deferred out of a session lands as a ticket on the board (`issue-tracker`, GitHub issues or an Arkho board service), and waits there until a session takes it — one you name it to, or one that picks up a ticket ready to build on its own — through the same method. Sessions working in one project see each other, message each other and you, and hand work between them (`sminos`). Product feedback can feed the board directly (`triaging-feedback`). The board once dispatched its own Architect, Executor and review workers onto tickets with nobody watching; that pipeline is dormant (`docs/doperpowers/specs/2026-10-18-board-dispatch-dormant.md`): unattended work proved slower and less reliable than a session working with you.
+- **Who's here, and what they own.** `sminos list` shows every session in the project: its machine, branch, state and the line it is in charge of. A project is every clone and worktree of one repository, on every enrolled machine.
+- **Messages instead of copy-paste.** `sminos say "@parser …"` reaches that session wherever it runs; `@all`, a machine, or the whole org work too.
+- **Spawn and drive.** `sminos spawn` starts a background session (a seat) on a task; `watch`, `steer`, `interrupt`, `answer` and `decide` reach into one that is running on the same machine. Messages cross machines; these controls don't.
+- **Every commit names its author session.** Commits and PRs end with a `Sminos-Session:` line, and `sminos who <commit|PR>` finds that session and how to reach it.
+- **Questions that don't block.** A session asks you through an async question tool and keeps working until you answer.
+- **Catch up in one read.** The `manager` skill follows the sessions you name and tells you what they need from you and what you missed.
 
----
+`to-human` comes with it: a session writes you a report, message by message, and the terminal folds its working record (tool calls, scratch notes) behind a button, so you read what the session says to you instead of its transcript.
 
 ## Install
 
-### Claude Code
-
-doperpowers ships as a Claude Code plugin from a self-hosted marketplace in this repo. It installs side by side with anything else you have. The marketplace carries four plugins: `doperpowers` (the skills and agents), `sminos` (the project family: sessions that see and message each other and you, across machines; its CLI, the bridge and the async question tool), `to-human` (the report view of a session under the `to-human` output style; it installs `sminos` with it) and `devcloud` (opt-in, the cloud dev host and its secrets guard).
+In Claude Code:
 
 ```text
 /plugin marketplace add SSFSKIM/doperpowers
@@ -44,94 +92,30 @@ doperpowers ships as a Claude Code plugin from a self-hosted marketplace in this
 /plugin install to-human@doperpowers
 ```
 
-Their hooks run in the order your settings give them. Put this in `~/.claude/settings.json` so the report view sees every row first and sminos's bridge sits outside every other plugin's hooks (a secrets guard's among them):
+Then, in `~/.claude/settings.json`, turn on function hooks (sminos's bridge and question tool, and the to-human view, are built on them) and put the plugins' hooks in order:
 
 ```json
-"prependPlugins": ["to-human@doperpowers", "sminos@doperpowers", "doperpowers@doperpowers"]
+{
+  "env": { "CLAUDE_CODE_ENABLE_FUNCTION_HOOKS": "1" },
+  "prependPlugins": ["to-human@doperpowers", "sminos@doperpowers", "doperpowers@doperpowers"],
+  "outputStyle": "doperpowers:to-human"
+}
 ```
 
-> Add it with the `owner/repo` form above, not a raw URL to `marketplace.json`. The plugin's source is the repo root, so Claude clones the whole repository for that path to resolve.
+`outputStyle` is optional: leave it out to keep reading the transcript. Spanning machines takes one more step, a git mirror or a desk hub: see [sminos's setup guide](sminos/skills/sminos/references/setup.md). Updating, and how this coexists with other marketplaces: [`docs/INSTALL-doperpowers.md`](docs/INSTALL-doperpowers.md).
 
-Update later:
+## What to expect
 
-```text
-/plugin marketplace update doperpowers
-/plugin install doperpowers@doperpowers
-```
+This is one person's daily setup, published as it runs. It moves fast (the plugin version is past 7.200) and is shaped by how its maintainer works, so a few things are worth knowing up front:
 
-Full details, including how it coexists with other marketplaces: [`docs/INSTALL-doperpowers.md`](docs/INSTALL-doperpowers.md).
+- **Some agents are pinned to models served through a local gateway.** The `review-code` reviewers and a few others run on another model family (`sol`, `astra`). Without that gateway, point the `model:` lines in [`agents/`](agents/) at models you have, and do the same for the `LADDER` in the `review-code` panel workflow ([`code-review.js`](skills/review-code/workflows/code-review.js)), which pins them itself; its `deriverModel`, `finderModel` and `verifierModel` arguments override a lane per call.
+- **Built for Claude Code.** sminos, to-human and the hooks are Claude Code plugins. The skills also ship as a local [Codex plugin](.codex-plugin/), with [ports of the agent definitions](codex/agents/README.md); upstream's other harness adapters were dropped.
+- **The board is a backlog.** `issue-tracker` keeps deferred work as GitHub issues that a session takes when you name one. The unattended pipeline that once dispatched agents onto tickets [is dormant](docs/doperpowers/specs/2026-10-18-board-dispatch-dormant.md): a session working with you proved faster and more reliable.
 
-### Codex
+Every skill, agent and hook is listed in [What's inside](docs/whats-inside.md).
 
-A Codex plugin manifest ships in [`.codex-plugin/`](.codex-plugin/) for local installs. (The external sync to the Codex plugins repository was retired in v7.23.0; the script lives in git history if ever needed again.)
+## Credits
 
-For native subagents, install the [Codex agent definitions](codex/agents/README.md).
-These port the Claude agent contracts to Codex and replace the companion runtime
-inside Codex; Claude's registered agents and companion remain available.
+doperpowers started as a fork of [obra/superpowers](https://github.com/obra/superpowers) by Jesse Vincent and has since been rebuilt around the living spec, cross-model review and multi-session work. The brainstorming skill's grill comes from Matt Pocock's [grill-me](https://github.com/mattpocock/skills/tree/main/skills/productivity/grill-me). This repository carries no license of its own; [`NOTICE`](NOTICE) reproduces the MIT notices of both projects.
 
----
-
-## The skills
-
-Seventeen skills, grouped by what they're for. Each one auto-triggers from its description; you rarely name them yourself.
-
-**Shape the work**
-- `brainstorming` — Socratic design refinement before any code is written
-- `execspec` — after the approved design: write the living spec, review it, and run it — one milestone in order, several through a fresh subagent each
-- `architecture-mapping` — author and maintain ARCHITECTURE.md, the repo's spine map with citable invariants
-- `decomposing` — carve a large goal into a tree of well-scoped tickets
-- `organizing-sprints` — turn a pile of raw observations into the next sprint
-- `transcribing-meeting-recordings` — diarized, visually grounded transcripts from meeting recordings
-
-**Build it**
-- `test-driven-development` — RED → GREEN → REFACTOR, no code before a failing test
-- `subagent-driven-execution` — one fresh subagent per milestone, reviews at dependency frontiers
-
-**Keep it honest**
-- `review-code` — the Claude-native code-review path: effort-routed to registered reviewer agents on GPT through the local gateway (low/medium/high) or a multi-lens panel workflow (xhigh/max)
-- `codex-companion` — drive OpenAI Codex models for independent reviews and delegated work (manual `/codex-companion`)
-- `present` — an HTML explainer article that leaves your human partner understanding a subject end to end: work an agent shipped, a design you discussed, a spec, someone else's code, or any idea (manual `/present`)
-
-**Track it and coordinate**
-- `issue-tracker` — the board as a backlog, in GitHub issues or on an Arkho board service: register, search, take a named ticket, close it out (its automatic dispatch is dormant)
-- `sminos` — the project family, shipped as the `sminos` plugin: every session in a project is a member that can message the others and its human, spawn and retire background sessions, and span machines
-
-**Deployed alongside, not a skill**
-- `application-agents/triaging-feedback/` — the feedback→triage poller: turns product feedback into grounded board tickets
-
-**Extend it**
-- `writing-skills` — create and test new skills that shape agent behavior
-
-**Output style**
-- `to-human` — for a session whose human reads a report stream rather than the transcript: the agent sends every message through `mcp__to-human__message` (the `to-human` plugin's tool, offered under this style; `final: true` ends the turn once the message is sent, with no reply asked after it), with `<message>` at the end of a turn only where the tool is missing (each message carrying a `★ Insight` block on its implementation choices when it implemented something, opening with a `⚠ Critical` block when work was lost, degraded, blocked, or significantly slowed, which ends on how far that is handled and whether it needs the human, and for what, and naming every bottleneck or friction on quality or throughput with how it would resolve or mitigate it) and asks for input through `mcp__sminos__AskUserQuestion` (the sminos plugin's: the native AskUserQuestion plus `async`, which the style names over the native tool) — async by default, with `async: false` when the work waits on the answer; a reader shows only those messages, in both forms, and the questions, with old `<to-human>`, `<essential>`, `<need-input>` and `<insight>` marks read as aliases of `<message>` (that reader is the `to-human` plugin). Select per launch with `"outputStyle": "doperpowers:to-human"` (the plugin-qualified name; the message tool registers only under it).
-
----
-
-## How a change flows
-
-1. **brainstorming** — Activates before writing code. Refines rough ideas through questions, explores alternatives, presents the design in sections short enough to actually read, and routes: a well-scoped task is built right there; an initiative complex and sizable enough that reliable execution needs a spec goes to execspec.
-2. **execspec** — Writes the spec from the approved design: the design with its reasoning, acceptance as observable behavior, and a plan of work told as milestones — files, interfaces, the decisions already settled, proof; code only where the code is a decision. Reviews it, then runs it: one milestone in order from the spec; several go to a fresh subagent each.
-3. **subagent-driven-execution** — Sets up an isolated checkout, dispatches a fresh subagent per milestone, reviews at dependency frontiers, and fixes by resuming the executor. After the final review it writes the spec's retrospective and integrates the branch.
-4. **test-driven-development** — Enforces the RED-GREEN-REFACTOR cycle throughout and deletes any code written before its test.
-
-These are mandatory workflows, not suggestions. The agent checks for a relevant skill before any task.
-
----
-
-## Philosophy
-
-- **Design before code** — understand the problem before proposing a solution.
-- **Test-driven** — write the failing test first, always.
-- **Systematic over ad-hoc** — a repeatable process beats guessing.
-- **Simplicity as a goal** — the minimum that solves the problem, captured with all its real complexity.
-- **Evidence over claims** — verify before declaring anything done.
-
----
-
-## Contributing
-
-This is a personal fork, tuned to how its maintainer actually works. Skills are behavior-shaping code, not prose — changing one changes what the agent does, so use the `writing-skills` skill and test the change before relying on it. Issues and ideas: [github.com/SSFSKIM/doperpowers/issues](https://github.com/SSFSKIM/doperpowers/issues).
-
-## License
-
-MIT — see [`LICENSE`](LICENSE). Attribution for the upstream work this derives from is recorded in [`NOTICE`](NOTICE) and [`LICENSE-FORK`](LICENSE-FORK).
+Skills here are behavior-shaping code, not prose: changing one changes what the agent does, so changes go through the `writing-skills` skill and get tested. Issues and ideas: [github.com/SSFSKIM/doperpowers/issues](https://github.com/SSFSKIM/doperpowers/issues).

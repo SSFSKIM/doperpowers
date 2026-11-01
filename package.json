@@ -1,13 +1,13 @@
 {
   "name": "doperpowers",
   "version": "7.216.0",
-  "description": "Doperpowers skills and runtime bootstrap for coding agents",
+  "description": "A development methodology for Claude Code: a design you approve, one living spec, test-first builds by fresh subagents, and review by another model family.",
   "type": "module",
   "keywords": [
     "skills",
+    "methodology",
+    "spec-driven-development",
     "tdd",
-    "debugging",
-    "collaboration",
-    "workflow"
+    "code-review"
   ]
 }

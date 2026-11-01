@@ -1,6 +1,6 @@
 {
   "name": "doperpowers",
-  "description": "Emerges by humans, Converges by Agents",
+  "description": "A development methodology for Claude Code: a design you approve, one living spec, test-first builds by fresh subagents, and review by another model family.",
   "version": "7.216.0",
   "author": {
     "name": "SSFSKIM",
@@ -8,18 +8,16 @@
   },
   "homepage": "https://github.com/SSFSKIM/doperpowers",
   "repository": "https://github.com/SSFSKIM/doperpowers",
-  "license": "MIT",
   "workflows": [
     "./skills/review-code/workflows/code-review.js"
   ],
   "keywords": [
     "skills",
+    "methodology",
+    "spec-driven-development",
     "tdd",
-    "debugging",
-    "collaboration",
-    "best-practices",
-    "workflows",
-    "autonomous-agents",
-    "sminos"
+    "subagents",
+    "code-review",
+    "workflows"
   ]
 }

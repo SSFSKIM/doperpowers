@@ -92,12 +92,12 @@ attached the first time a session reads a file beneath it.
 | `web/` | A fifth plugin in this marketplace, versioned on its own: the fetch tool (`mcp__web__fetch`), which saves a page as a clipper-shaped markdown file in the machine's shared cache and replies with the page, its outline or a cited answer, and the clipper behind it. Detail in `web/CLAUDE.md`. |
 | `output-styles/` | Output styles the harness auto-loads from the plugin (no `CLAUDE.md` here: every `.md` loads as a style). `to-human.md`: for sessions whose human reads a report stream instead of the transcript (selected per launch via `outputStyle`; design in `docs/doperpowers/specs/2026-09-05-sminos-human-stream-design.md`); its front matter `maws-to-human-contract: 6` is the message-tool shape, 7 being MAWS's own. |
 | `.claude-plugin/` | Claude Code manifest (`plugin.json`) + dev `marketplace.json`. The manifest's `workflows` key registers `skills/review-code/workflows/code-review.js` as the named workflow `doperpowers:code-review`: the Workflow tool's `scriptPath` passes the ordinary read-path check (the working directory and added directories only), so a path into the plugin cache is always refused — 56 such failures in this machine's transcripts, 2026-09-02 → 10-04, every one of them — and every caller passes the name. |
-| `.codex-plugin/`, `.cursor-plugin/`, `.kimi-plugin/`, `.opencode/`, `.pi/`, `.agents/`, `gemini-extension.json` | Per-harness plugin manifests/adapters. `.codex-plugin` is a local manifest only (the external fork sync was retired in v7.23.0; script recoverable from git history). |
+| `.codex-plugin/`, `.agents/` | Codex: the local plugin manifest and its dev marketplace (the external fork sync was retired in v7.23.0; script recoverable from git history). Upstream's other harness adapters (Cursor, Kimi, OpenCode, Pi, Gemini) were removed on 2026-07-02. |
 | `codex/agents/` | The Codex ports of `agents/*.md`: native role definitions (TOML) with their install guide, copied into `~/.codex/agents/` by hand — no manifest installs them. They live outside `agents/` because Claude loads every `.md` under `agents/` as an agent, so the guide there was registered as a `doperpowers:codex:README` agent with every tool. `tests/codex/test-native-agents.py` holds each port to its source contract and model pin. |
 | `tests/` | Shell + harness integration tests, one subdir per harness, run via each dir's `run-*.sh`; `tests/mods/` holds the mods' TypeScript tests and `typecheck.sh`, the `mods-types` gate. Detail in `tests/CLAUDE.md`. |
 | `scripts/` | `bump-version.sh` (one plugin's version across its manifests per `.version-bump.json`, doperpowers by default, `--plugin devcloud`, `--plugin to-human`, `--plugin sminos` or `--plugin web` for the others; marketplace entries addressed by name; a version not above every declared file's current one is refused, since the marketplace updates by number alone), `lint-shell.sh`. |
 | `archive/` | Retired skills kept for reference, not loaded by any harness; what each was, and where its surviving rules live, is in `archive/CLAUDE.md`. |
-| `docs/` | Harness porting/install docs + `docs/doperpowers/{plans,specs}` design history. |
+| `docs/` | The install guide, `whats-inside.md` (the catalog the README links: every skill, agent and hook of doperpowers, sminos and to-human), `assets/` (the README banner and social preview, rendered from `banner.html`), harness porting notes, and `docs/doperpowers/{plans,specs}` design history. |
 | `evals/` | Skill-behavior eval harness (`superpowers-evals`), **gitignored** — cloned in separately, not part of the plugin. |
 | `.github/` | `PULL_REQUEST_TEMPLATE.md`, issue templates. |
 
@@ -129,6 +129,9 @@ not gate plugin changes.
 - **Changing a skill is changing behavior, not prose.** Upstream's bar is high
   (eval evidence, adversarial testing). For fork-local skill tweaks, still use
   the `writing-skills` skill and sanity-test the change before relying on it.
+- **The public face follows the tree.** `README.md` and `docs/whats-inside.md`
+  are what a visitor reads; a skill, agent or hook added, retired or made
+  manual changes its row in `whats-inside.md` in the same change.
 - **A map row orients; detail lives beside the code.** A root Repo map row
   stays a sentence or two: what the path is and where its detail lives. A
   feature's detail goes in the nested `CLAUDE.md` nearest its code, never
