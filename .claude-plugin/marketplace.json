@@ -15,8 +15,7 @@
         "name": "SSFSKIM",
         "email": "supremekim17@gmail.com"
       },
-      "homepage": "https://github.com/SSFSKIM/doperpowers",
-      "license": "MIT"
+      "homepage": "https://github.com/SSFSKIM/doperpowers"
     },
     {
       "name": "ci-kit",
@@ -40,8 +39,7 @@
         "name": "SSFSKIM",
         "email": "supremekim17@gmail.com"
       },
-      "homepage": "https://github.com/SSFSKIM/doperpowers/tree/main/devcloud",
-      "license": "MIT"
+      "homepage": "https://github.com/SSFSKIM/doperpowers/tree/main/devcloud"
     },
     {
       "name": "to-human",
@@ -52,8 +50,7 @@
         "name": "SSFSKIM",
         "email": "supremekim17@gmail.com"
       },
-      "homepage": "https://github.com/SSFSKIM/doperpowers/tree/main/to-human",
-      "license": "MIT"
+      "homepage": "https://github.com/SSFSKIM/doperpowers/tree/main/to-human"
     },
     {
       "name": "sminos",
@@ -64,8 +61,7 @@
         "name": "SSFSKIM",
         "email": "supremekim17@gmail.com"
       },
-      "homepage": "https://github.com/SSFSKIM/doperpowers/tree/main/sminos",
-      "license": "MIT"
+      "homepage": "https://github.com/SSFSKIM/doperpowers/tree/main/sminos"
     },
     {
       "name": "web",
@@ -76,8 +72,7 @@
         "name": "SSFSKIM",
         "email": "supremekim17@gmail.com"
       },
-      "homepage": "https://github.com/SSFSKIM/doperpowers/tree/main/web",
-      "license": "MIT"
+      "homepage": "https://github.com/SSFSKIM/doperpowers/tree/main/web"
     }
   ]
 }

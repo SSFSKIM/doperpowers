@@ -8,7 +8,6 @@
   },
   "homepage": "https://github.com/SSFSKIM/doperpowers/tree/main/sminos",
   "repository": "https://github.com/SSFSKIM/doperpowers",
-  "license": "MIT",
   "types": "./types/sminos.d.ts",
   "keywords": [
     "sminos",

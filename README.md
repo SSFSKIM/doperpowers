@@ -114,8 +114,8 @@ This is one person's daily setup, published as it runs. It moves fast (the plugi
 
 Every skill, agent and hook is listed in [What's inside](docs/whats-inside.md).
 
-## Credits and license
+## Credits
 
-doperpowers started as a fork of [obra/superpowers](https://github.com/obra/superpowers) by Jesse Vincent and has since been rebuilt around the living spec, cross-model review and multi-session work. Code from upstream stays under its MIT license ([`LICENSE`](LICENSE)); files this fork created are under [`LICENSE-FORK`](LICENSE-FORK); [`NOTICE`](NOTICE) says which is which.
+doperpowers started as a fork of [obra/superpowers](https://github.com/obra/superpowers) by Jesse Vincent and has since been rebuilt around the living spec, cross-model review and multi-session work. The brainstorming skill's grill comes from Matt Pocock's [grill-me](https://github.com/mattpocock/skills/tree/main/skills/productivity/grill-me). This repository carries no license of its own; [`NOTICE`](NOTICE) reproduces the MIT notices of both projects.
 
 Skills here are behavior-shaping code, not prose: changing one changes what the agent does, so changes go through the `writing-skills` skill and get tested. Issues and ideas: [github.com/SSFSKIM/doperpowers/issues](https://github.com/SSFSKIM/doperpowers/issues).
