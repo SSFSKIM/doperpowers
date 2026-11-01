@@ -66,6 +66,8 @@ On throwaway sessions (an isolated config and `SMINOS_HOME` under `/tmp`, two ha
 | "update" twice | The second said nothing had happened since, listed the still-open items, dispatched no digest. |
 | "what did I miss in CI-opt?" | Read CI-opt's window from its seen mark and answered from it. |
 
+A rerun of all six on the final skill held for five; in it the manager, having listed the two sessions when loaded, took "subscribe whatever looks relevant" as leave to subscribe both ("There was nothing else to choose from, so I took both"). The rule now carries its reason (what is followed decides what the owner is told) and names the case; three reruns of the two subscription scenarios each answered with suggestions and subscribed nothing.
+
 What they surfaced and the skill now carries: `ledger apply`'s document shape (the manager first guessed `window.from` and a brief's `brief` key); where sminos's CLI is, for suggestions; `<project>/<alias>`, not `@project/alias`, as a member name; a session with no activity gets no digest even with open items (the "update twice" scenario; nothing in an empty window can change its items).
 
 ## The work lane (acceptance 12) and the cap
