@@ -51,10 +51,12 @@ per question of a multi-question card), an explicit "waiting on you", a gate the
 session will not pass on its own, an owner-only step mentioned in prose. An
 ask inside a larger one is an item of its own when the owner has to do or
 answer it separately: a check to report on during a sitting, a look to take
-after a deploy, something to leave alone until a fix lands. One need
-repeated across several messages is one item, raised at its first mention in
-the window; a need raised before the window that is still open is
-one of the held items you were given, not a new one.
+after a deploy, something to leave alone until a fix lands. So is a request
+made while that work is under way to redo, restart or change a step the owner
+already took, after something went wrong: the larger task finishing does not
+answer it. One need repeated across several messages is one item, raised at
+its first mention in the window; a need raised before the window that is still
+open is one of the held items you were given, not a new one.
 
 **Type.**
 
