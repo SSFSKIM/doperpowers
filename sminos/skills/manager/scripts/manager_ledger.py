@@ -185,6 +185,7 @@ def normalize(raw):
     briefed = _norm_time(raw.get("briefed")) if raw.get("briefed") else None
     st = {"version": VERSION, "initiatives": [], "updated": None, "window": None, "next": {"y": 1, "w": 1},
           "items": [], "briefs": [], "roadmaps": []}
+    shape = []
     for i in raw.get("initiatives") or []:
         if isinstance(i, dict) and i.get("name"):
             st["initiatives"].append({**i, "sessions": [_subscription(e, briefed) for e in i.get("sessions") or []
@@ -197,7 +198,17 @@ def normalize(raw):
         st["window"] = raw.get("window")
         st["items"] = [dict(i) for i in raw.get("items") or [] if isinstance(i, dict)]
         st["briefs"] = [dict(b) for b in raw.get("briefs") or [] if isinstance(b, dict)]
-        st["roadmaps"] = [dict(r) for r in raw.get("roadmaps") or [] if isinstance(r, dict)]
+        held_roadmaps = raw.get("roadmaps")
+        if held_roadmaps is None:
+            held_roadmaps = []
+        if not isinstance(held_roadmaps, list):
+            shape.append("roadmaps is %s, not a list of roadmaps" % type(held_roadmaps).__name__)
+            held_roadmaps = []
+        for n, r in enumerate(held_roadmaps):
+            if isinstance(r, dict):
+                st["roadmaps"].append(dict(r))
+            else:
+                shape.append("roadmaps[%d] is %s, not a roadmap object" % (n, type(r).__name__))
     if "lang" in raw:
         st["lang"] = raw["lang"]
     held = raw.get("next") if isinstance(raw.get("next"), dict) else {}
@@ -205,7 +216,7 @@ def normalize(raw):
         used = [int(i["id"][1:]) for i in st["items"]
                 if isinstance(i.get("id"), str) and i["id"][:1] == lane and i["id"][1:].isdigit()]
         st["next"][lane] = max([held.get(lane) or 1] + [n + 1 for n in used])
-    problems = []
+    problems = list(shape)
     if "lang" in st and not valid_lang(st["lang"]):
         problems.append("lang %r is not a language tag (ko, en, pt-BR)" % (st["lang"],))
     for i in st["items"]:
@@ -218,8 +229,15 @@ def normalize(raw):
             continue
         _fill(i)
         problems += _check_item(i, str(i.get("id")))
+    seen_roadmaps = set()
     for n, r in enumerate(st["roadmaps"]):
-        problems += check_roadmap(r, "roadmaps[%d]" % n, stored=True)
+        where = "roadmaps[%d]" % n
+        problems += check_roadmap(r, where, stored=True)
+        initiative = r.get("initiative")
+        if isinstance(initiative, str):
+            if initiative in seen_roadmaps:
+                problems.append("%s: a second roadmap for %s" % (where, initiative))
+            seen_roadmaps.add(initiative)
     if problems:
         raise Invalid(problems)
     return st

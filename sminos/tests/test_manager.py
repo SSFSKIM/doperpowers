@@ -1031,6 +1031,26 @@ class Roadmaps(unittest.TestCase):
             L.normalize(raw)
         self.assertIn("roadmaps[0] part C2: status 'maybe'", raised.exception.problems[0])
 
+    def test_a_held_roadmaps_that_is_not_a_list_of_roadmaps_is_refused_not_dropped(self):
+        st, _ = L.apply(v2((SID, iso(T0 - DAY), None)), update() | {"roadmaps": [roadmap()]}, T0)
+        held = json.loads(json.dumps(st))["roadmaps"][0]
+        for bad, said in ((7, "roadmaps is int, not a list"), ({"P5": held}, "roadmaps is dict, not a list"),
+                          ("x", "roadmaps is str, not a list"), ([7], "roadmaps[0] is int, not a roadmap object"),
+                          ([held, "x"], "roadmaps[1] is str, not a roadmap object")):
+            raw = json.loads(json.dumps(st))
+            raw["roadmaps"] = bad
+            with self.assertRaises(L.Invalid, msg=repr(bad)) as raised:
+                L.normalize(raw)
+            self.assertIn(said, "\n".join(raised.exception.problems))
+
+    def test_two_held_roadmaps_for_one_initiative_are_refused(self):
+        st, _ = L.apply(v2((SID, iso(T0 - DAY), None)), update() | {"roadmaps": [roadmap()]}, T0)
+        raw = json.loads(json.dumps(st))
+        raw["roadmaps"].append(dict(raw["roadmaps"][0]))
+        with self.assertRaises(L.Invalid) as raised:
+            L.normalize(raw)
+        self.assertIn("roadmaps[1]: a second roadmap for P5", raised.exception.problems)
+
 
 def seen_of(sessions, since, until=None, stored=None):
     target = manager.Target("m", None, list(sessions), None, "testhost", True)

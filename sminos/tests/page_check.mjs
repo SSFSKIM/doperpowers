@@ -100,7 +100,7 @@ function run(page, scenario) {
     } else if (scenario === "roadmap") {
       fetches[0]({ ok: true, status: 200, json: async () => kinds(null) });
       await settle();
-      const row = find(byId.ledger, (n) => n.dataset.id === "rm-P5-C1.1");    // the reader opens a row
+      const row = find(byId.ledger, (n) => n.dataset.id === 'rm:["P5","C1.1"]');    // the reader opens a row
       row.open = true;
       (row.listeners.toggle || []).forEach((f) => f());
       stream.onopen();                                                           // and an update re-renders the page
@@ -115,11 +115,11 @@ function run(page, scenario) {
     if (scenario === "roadmap") {
       const ini = find(byId.ledger, (n) => n.className === "initiative");
       const rm = find(ini, (n) => /\broadmap\b/.test(n.className));
-      const step = (id) => find(rm, (n) => n.dataset.id === "rm-P5-" + id);
+      const step = (id) => find(rm, (n) => n.dataset.id === "rm:" + JSON.stringify(["P5", id]));
       const meta = (id) => find(step(id), (n) => n.className === "meta").textContent;
       out.roadmap = {
         sections: ini.children.filter((n) => n.tagName === "section").map((n) => n.className),
-        id: rm.id, heading: rm.children[0].textContent,
+        id: rm.id, initiativeId: ini.id, heading: rm.children[0].textContent,
         rows: all(rm, (n) => /\bstep\b/.test(n.className)).map((n) => n.className.split(" ").slice(0, 2).join(" ") + " "
           + n.children[0].dataset.id),
         meta: { C1: meta("C1"), "C1.1": meta("C1.1"), C2: meta("C2") },

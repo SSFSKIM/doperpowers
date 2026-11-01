@@ -582,9 +582,12 @@ class Page(unittest.TestCase):
         rm = got["roadmap"]
         self.assertEqual(rm["sections"][:2], ["part needs", "part roadmap"], "after Needs you, before the rest")
         self.assertEqual(rm["heading"], "Roadmap1 of 5 done", "a dropped part is not counted")
-        self.assertEqual(rm["rows"], ["step lvl1 rm-P5-C1", "step lvl2 rm-P5-C1.1", "step lvl3 rm-P5-C1.1.1",
-                                      "step lvl1 rm-P5-C2", "step lvl1 rm-P5-C3", "step lvl1 rm-P5-C4"],
-                         "every part in the roadmap's order, children beneath their parent")
+        self.assertEqual(rm["rows"], ['step lvl1 rm:["P5","C1"]', 'step lvl2 rm:["P5","C1.1"]',
+                                      'step lvl3 rm:["P5","C1.1.1"]', 'step lvl1 rm:["P5","C2"]',
+                                      'step lvl1 rm:["P5","C3"]', 'step lvl1 rm:["P5","C4"]'],
+                         "every part in the roadmap's order, children beneath their parent, keyed unambiguously")
+        self.assertEqual(rm["id"], "r-p5", "the roadmap's anchor")
+        self.assertNotEqual(rm["id"], rm["initiativeId"], "in a namespace initiative sections cannot produce")
         self.assertEqual(rm["meta"], {"C1": "donebuilder2 new", "C1.1": "waiting", "C2": "in progress"},
                          "changes after the window's start are new; a part with none says nothing")
         self.assertEqual([re.sub(r"^.*?\d\d:\d\d", "", c) for c in rm["changes"]],

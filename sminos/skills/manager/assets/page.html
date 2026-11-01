@@ -370,7 +370,7 @@ ol.changes .text { display: block; font-size: var(--small); overflow-wrap: anywh
   function step(ini, p, from, depth) {
     const box = el("div", "step lvl" + depth + (QUIET.has(p.status) ? " quiet" : "") +
       (p.status === "dropped" ? " dropped" : ""));
-    const d = put(box, disclosure("item row", "rm-" + ini.name + "-" + p.id));
+    const d = put(box, disclosure("item row", "rm:" + JSON.stringify([ini.name, p.id])));
     const s = put(d, el("summary"));
     const body = el("span", "body");
     add(body, el("span", "need", p.title));
@@ -413,7 +413,7 @@ ol.changes .text { display: block; font-size: var(--small); overflow-wrap: anywh
     walk(r.parts, p => { if (p.status !== "dropped") all++; if (p.status === "done") done++; fresh += newCount(p, from); });
     const sec = part(T.roadmap, T.rmCount(done, all));
     sec.classList.add("roadmap");
-    sec.id = slug(ini.name) + "-roadmap";
+    sec.id = "r-" + slug(ini.name).slice(2);  // initiative sections are "i-…", so no roadmap anchor can equal one
     const head = put(sec, el("div", "rm-head"));
     if (r.purpose) add(head, labelled(T.purpose, r.purpose));
     if (r.done_when) add(head, labelled(T.doneWhen, r.done_when));
