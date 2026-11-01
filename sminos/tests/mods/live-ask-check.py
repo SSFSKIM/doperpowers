@@ -23,7 +23,9 @@ Discoveries records:
 - a reload of the bridge module during an ask (a change to its file, as a
   plugin update brings): the old ask ends `aborted`, whether the fork survives
   is observed, and while it runs a new ask is `busy`;
-- an ask after an Esc, before the session takes input (observed);
+- an ask after an Esc, before the session takes input, refused
+  `spawn-refused`; a fork asked something else while the session's call is
+  pending answers its own question and leaves that call alone;
 - in every scenario where the fork's first call is one the guard must refuse,
   that first call is refused: the guard knows a bridge fork from its spawn on
   (the invariant its passing of ids the agent list does not name rests on).
@@ -400,8 +402,8 @@ def run_a(live):
     first_user = next((text_of(x) for x in fork if x.get("type") == "user"), "")
     live.check("mid-turn: the sleep keeps its duration", took is not None and 19.5 <= took <= 23, "sleep 20 took %s s" % took)
     live.check("mid-turn: the fork's prompt carries the tail naming the latest call",
-               "Since the last request" in first_user and "sleep 20" in first_user.split("Since the last request")[-1],
-               repr(first_user[first_user.find("Since the last request"):][:300]))
+               "<session-record>" in first_user and "sleep 20" in first_user.split("<session-record>")[-1].split("</session-record>")[0],
+               repr(first_user[first_user.find("<session-record>"):][:300]))
     live.check("mid-turn: the fork's answer names the sleep", "sleep 20" in (end.get("text") or ""), repr((end.get("text") or "")[:200]))
 
     # Busy, then an Esc in the session during an ask.
@@ -427,12 +429,19 @@ def run_a(live):
         (" text ends %r" % (end.get("text") or "")[-40:] if end else "none within 90 s")), flush=True)
     live.check("Esc during an ask: the ask still ends", end is not None, json.dumps(end)[:200] if end else "no end")
     if end is not None:
-        print("  (observed) the Esc's fork %s" % ("wrote its essay" if "FORK-ESC-DONE" in (end.get("text") or "")
-                                                 else "did not answer its question: calls %s" % live.tool_calls(live.fork_rows(first["result"]["agentId"]))), flush=True)
+        # Asked something else while the tail showed the session's pending `sleep 20`, the fork answers its own
+        # question and leaves the session's call to the session (a tail read as conversation had it run the call).
+        fork = live.answered_rows(first["result"]["agentId"]) or live.fork_rows(first["result"]["agentId"])
+        ran = [u for u in live.uses(fork) if u[0] == "Bash" and "sleep" in json.dumps(u[1])]
+        text = end.get("text") or ""
+        live.check("mid-turn: a fork asked something else leaves the session's pending call alone and answers its question",
+                   not ran and "SECOND-SLEEP-DONE" not in text and "FORK-ESC-DONE" in text,
+                   "calls %s; text opens %r, ends %r" % (live.tool_calls(fork), text[:60], text[-30:]))
     time.sleep(3)
-    # After an Esc the engine spawns no agent until the session takes input (2.1.316): the ask says so.
+    # After an Esc the engine spawns no agent until the session takes input (2.1.316): the ask says so, coded.
     stopped = live.ask("Are you there?")
-    print("  (observed) an ask after the Esc, before any input: %s" % json.dumps(stopped)[:200], flush=True)
+    live.check("an ask after the Esc, before any input, is refused spawn-refused", stopped.get("code") == "spawn-refused",
+               json.dumps(stopped)[:200])
     if stopped.get("ok"):
         live.ended(stopped["result"]["id"], 120)
     live.turn("Reply with exactly: AFTER-ESC.")

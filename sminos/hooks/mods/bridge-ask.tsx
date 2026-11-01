@@ -58,10 +58,25 @@ export const ASK_GRACE_POLLS = 12
 /** The session's open asks, by id with their fork's agent, as `$.state` keeps them for a module that loads after this one (types/sminos.d.ts). */
 const OPEN = { plugin: 'sminos', key: 'bridgeAsk' } as const
 
-/** The fork's prompt: the frame, what followed the request it continues from (mid-turn), then the question as asked. */
+/** What follows the question in every fork's prompt: its answer is drawn from what it sees, never by doing the session's work. */
+export const ASK_AFTER_QUESTION = "Answer it from what you can see; do not perform any of the session's pending or planned calls."
+/** What introduces a mid-turn fork's tail, which follows inside `<session-record>`. */
+const RECORD_INTRO =
+  "What the session has done since the request this fork continues from, for reference only: a record of the session's own work, to read, not to act on (oldest first)."
+/** How the tail says a call the session made that has no result yet. */
+const STILL_RUNNING = '(still running in the session — not yours to run)'
+
+/**
+ * The fork's prompt: the frame; mid-turn, what followed the request it
+ * continues from, as a delimited record of the session's own work; then the
+ * question as asked, and ASK_AFTER_QUESTION last. A tail presented as more
+ * conversation was read as conversation to continue: a fork shown the
+ * session's pending call ran it and wrote the session's reply, against the
+ * frame (5 of 5 live runs, haiku, 2.1.316).
+ */
 export function askPrompt(tail: string, question: string): string {
-  const since = tail === '' ? '' : `\n\nSince the last request this fork continues from, the session's conversation went on as follows (oldest first):\n\n${tail}`
-  return `${ASK_FRAME}${since}\n\nThe question:\n\n${question}`
+  const record = tail === '' ? '' : `\n\n${RECORD_INTRO}\n\n<session-record>\n${tail}\n</session-record>`
+  return `${ASK_FRAME}${record}\n\nThe question:\n\n${question}\n\n${ASK_AFTER_QUESTION}`
 }
 
 /** A text held to TAIL_RESULT_MAX characters, saying how much was cut. */
@@ -123,10 +138,11 @@ function holds(row: SessionMessage, mark: ResponseMark): boolean {
 /**
  * What followed the main loop's last completed request, as text: from the
  * response that request got (the newest row holding it, with the assistant
- * rows of the same response before it) to now, each assistant text, each
- * tool call as `name(input)` with its result under it, input and result cut
- * to TAIL_RESULT_MAX; the user rows are left out, a result riding on its
- * call. The newest TAIL_MAX bytes are kept. Nothing when no row holds the
+ * rows of the same response before it) to now, in the third person (the
+ * session wrote, the session called): each assistant text, each tool call as
+ * `name(input)` with its result under it, or STILL_RUNNING while it has none,
+ * input and result cut to TAIL_RESULT_MAX; the user rows are left out, a
+ * result riding on its call. The newest TAIL_MAX bytes are kept. Nothing when no row holds the
  * response (it said nothing visible, or the rows moved on).
  */
 export function renderTail(rows: readonly SessionMessage[], mark: ResponseMark): string {
@@ -150,11 +166,11 @@ export function renderTail(rows: readonly SessionMessage[], mark: ResponseMark):
       continue
     }
     if (typeof row.text === 'string' && row.text.trim() !== '') {
-      lines.push(`assistant: ${row.text}`)
+      lines.push(`the session wrote: ${row.text}`)
     }
     for (const use of row.toolUses ?? []) {
-      lines.push(`tool call: ${use.tool}(${cut(JSON.stringify(use.input ?? {}))})`)
-      lines.push(typeof use.text === 'string' ? `  ${use.isError === true ? 'error' : 'result'}: ${cut(use.text)}` : '  (no result yet)')
+      lines.push(`the session called: ${use.tool}(${cut(JSON.stringify(use.input ?? {}))})`)
+      lines.push(typeof use.text === 'string' ? `  ${use.isError === true ? 'error' : 'result'}: ${cut(use.text)}` : `  ${STILL_RUNNING}`)
     }
   }
   return newest(lines.join('\n'))
@@ -356,7 +372,8 @@ export async function forkQuestion($: EngineInterface, id: string, prompt: unkno
     const spawned = await $.agent.spawn({ subagentType: 'fork', description: ASK_DESCRIPTION, prompt: askPrompt(tail, prompt) })
     const agentId = 'agentId' in spawned ? spawned.agentId : undefined
     if (agentId === undefined) {
-      return { ok: false, error: `the fork was not spawned: ${'deny' in spawned && typeof spawned.deny === 'string' ? spawned.deny : 'the engine started no agent'}` }
+      // Past an Esc, until the session takes input, the engine spawns nothing (2.1.316); manager query answers a spawn-refused ask through the headless fork.
+      return { ok: false, code: 'spawn-refused', error: `the fork was not spawned: ${'deny' in spawned && typeof spawned.deny === 'string' ? spawned.deny : 'the engine started no agent'}` }
     }
     const open = opened(agentId)
     // Kept before it is answered started: a reload from here on finds it.

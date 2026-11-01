@@ -12,6 +12,7 @@ import {
   TAIL_MAX,
   TAIL_RESULT_MAX,
   askEnd,
+  ASK_AFTER_QUESTION,
   askPrompt,
   renderTail,
 } from '../../hooks/mods/bridge-ask'
@@ -47,10 +48,13 @@ describe('the fork agent: its words', () => {
     expect(FORK_GUARD_PRESENT).toBe('The read-only fork guard (doperpowers) is loaded.')
   })
 
-  test('the prompt: the frame, the tail when there is one, then the question as asked', () => {
-    expect(askPrompt('', 'What are you waiting on?')).toBe(`${ASK_FRAME}\n\nThe question:\n\nWhat are you waiting on?`)
-    expect(askPrompt('assistant: running the tests', 'Which tests?')).toBe(
-      `${ASK_FRAME}\n\nSince the last request this fork continues from, the session's conversation went on as follows (oldest first):\n\nassistant: running the tests\n\nThe question:\n\nWhich tests?`,
+  test("the prompt: the frame, the tail as a delimited record to read, not to act on, then the question, then the rule against the session's calls", () => {
+    expect(ASK_AFTER_QUESTION).toBe("Answer it from what you can see; do not perform any of the session's pending or planned calls.")
+    expect(askPrompt('', 'What are you waiting on?')).toBe(
+      `${ASK_FRAME}\n\nThe question:\n\nWhat are you waiting on?\n\n${ASK_AFTER_QUESTION}`,
+    )
+    expect(askPrompt('the session wrote: running the tests', 'Which tests?')).toBe(
+      `${ASK_FRAME}\n\nWhat the session has done since the request this fork continues from, for reference only: a record of the session's own work, to read, not to act on (oldest first).\n\n<session-record>\nthe session wrote: running the tests\n</session-record>\n\nThe question:\n\nWhich tests?\n\n${ASK_AFTER_QUESTION}`,
     )
   })
 })
@@ -64,7 +68,7 @@ describe('the fork agent: the tail', () => {
       called('toolu_s', 'Bash', { command: 'sleep 20' }),
       results('toolu_s', 'ignored: the call carries its result'),
     ]
-    expect(renderTail(rows, { toolUseIds: ['toolu_s'], texts: [] })).toBe('assistant: Now I will sleep.\ntool call: Bash({"command":"sleep 20"})\n  (no result yet)')
+    expect(renderTail(rows, { toolUseIds: ['toolu_s'], texts: [] })).toBe('the session wrote: Now I will sleep.\nthe session called: Bash({"command":"sleep 20"})\n  (still running in the session — not yours to run)')
   })
 
   test("a call's result follows it, cut to 2,000 characters; an error is said to be one", () => {
@@ -72,9 +76,9 @@ describe('the fork agent: the tail', () => {
     const long = 'x'.repeat(5_000)
     const tail = renderTail([called('toolu_r', 'Read', { file_path: '/a' }, long), called('toolu_b', 'Bash', { command: 'false' }, 'exit 1', true)], { toolUseIds: ['toolu_r'], texts: [] })
     const [first, result, second, error] = tail.split('\n')
-    expect(first).toBe('tool call: Read({"file_path":"/a"})')
+    expect(first).toBe('the session called: Read({"file_path":"/a"})')
     expect(result).toBe(`  result: ${'x'.repeat(2_000)} [… 3000 more characters]`)
-    expect(second).toBe('tool call: Bash({"command":"false"})')
+    expect(second).toBe('the session called: Bash({"command":"false"})')
     expect(error).toBe('  error: exit 1')
   })
 
@@ -95,20 +99,20 @@ describe('the fork agent: the tail', () => {
     expect(utf8(tail)).toBeLessThanOrEqual(TAIL_MAX)
     expect(utf8(tail)).toBeGreaterThan(TAIL_MAX - 1_300)
     expect(tail.startsWith('[earlier messages cut]\n')).toBe(true)
-    expect(tail.endsWith('assistant: the newest line')).toBe(true)
-    expect(tail).not.toContain('tool call: Bash')
+    expect(tail.endsWith('the session wrote: the newest line')).toBe(true)
+    expect(tail).not.toContain('the session called: Bash')
   })
 
   test("a response with no tool call is found by its text: its prose reaches the fork while the turn goes on past it", () => {
     const rows = [said('Let me look.'), asked('older prompt'), said('Let me look.'), asked('A Stop hook said: keep going.')]
-    expect(renderTail(rows, { toolUseIds: [], texts: ['Let me look.'] })).toBe('assistant: Let me look.')
+    expect(renderTail(rows, { toolUseIds: [], texts: ['Let me look.'] })).toBe('the session wrote: Let me look.')
     // A row holding several of the response's text blocks, joined.
     expect(renderTail([asked('go'), said('First part.\nSecond part.')], { toolUseIds: [], texts: ['First part.', 'Second part.'] })).toBe(
-      'assistant: First part.\nSecond part.',
+      'the session wrote: First part.\nSecond part.',
     )
     // A response the transcript split across rows: its text row, then its call row.
     expect(renderTail([asked('go'), said('Checking.'), called('toolu_c', 'Read', { file_path: '/a' })], { toolUseIds: [], texts: ['Checking.'] })).toBe(
-      'assistant: Checking.\ntool call: Read({"file_path":"/a"})\n  (no result yet)',
+      'the session wrote: Checking.\nthe session called: Read({"file_path":"/a"})\n  (still running in the session — not yours to run)',
     )
   })
 
@@ -210,9 +214,9 @@ describe('the fork agent: the op', () => {
     expect(h.spawns).toEqual([])
   })
 
-  test("the engine's refusal of the spawn is the op's, and nothing stays open", async () => {
+  test("the engine's refusal of the spawn is the op's, coded spawn-refused (manager query takes the headless fork), and nothing stays open", async () => {
     const h = await live({ spawnDeny: 'past a Stop nothing is spawned' })
-    expect(await h.command({ op: 'ask', prompt: 'q' })).toMatchObject({ ok: false, error: 'the fork was not spawned: past a Stop nothing is spawned' })
+    expect(await h.command({ op: 'ask', prompt: 'q' })).toMatchObject({ ok: false, code: 'spawn-refused', error: 'the fork was not spawned: past a Stop nothing is spawned' })
     expect(h.sessionState.get('bridgeAsk') ?? []).toEqual([])
     expect(h.ofType('ask')).toEqual([])
   })
@@ -244,7 +248,7 @@ describe('the fork agent: the op', () => {
     await h.step({ turnId: 't1', index: 0, messageCount: 3, model: 'm' }, [{ kind: 'text', index: 0, text: 'Sleeping.' }, { kind: 'tool', index: 1, id: 'toolu_s', name: 'Bash' }, { kind: 'stop', stopReason: 'tool_use', usage: USAGE }])
     h.setRows([asked('go'), said('Sleeping.'), called('toolu_s', 'Bash', { command: 'sleep 20' })])
     await h.command({ op: 'ask', prompt: 'What are you running?' })
-    expect(h.spawns[0]!.prompt).toBe(askPrompt('assistant: Sleeping.\ntool call: Bash({"command":"sleep 20"})\n  (no result yet)', 'What are you running?'))
+    expect(h.spawns[0]!.prompt).toBe(askPrompt('the session wrote: Sleeping.\nthe session called: Bash({"command":"sleep 20"})\n  (still running in the session — not yours to run)', 'What are you running?'))
   })
 
   test("a continued turn: a response with no tool call (a Stop hook kept the turn going) is the tail's start, its prose in the fork's prompt", async () => {
@@ -258,7 +262,7 @@ describe('the fork agent: the op', () => {
     // The turn goes on (a Stop hook's continuation): its next request is in flight.
     h.setRows([asked('go'), said('The tests pass; I will stop here.'), asked('Stop hook feedback: also run the linter.')])
     await h.command({ op: 'ask', prompt: 'Where are you?' })
-    expect(h.spawns[0]!.prompt).toBe(askPrompt('assistant: The tests pass; I will stop here.', 'Where are you?'))
+    expect(h.spawns[0]!.prompt).toBe(askPrompt('the session wrote: The tests pass; I will stop here.', 'Where are you?'))
   })
 
   test('a response that never completed (no stop with usage) moves nothing: the tail starts at the last one that did', async () => {
@@ -268,7 +272,7 @@ describe('the fork agent: the op', () => {
     await h.step({ turnId: 't1', index: 1, messageCount: 5, model: 'm' }, [{ kind: 'tool', index: 0, id: 'toolu_2', name: 'Bash' }, { kind: 'stop', stopReason: null, usage: null }])
     h.setRows([asked('go'), called('toolu_1', 'Read', { file_path: '/a' }, 'A'), called('toolu_2', 'Bash', { command: 'ls' })])
     await h.command({ op: 'ask', prompt: 'q' })
-    expect(h.spawns[0]!.prompt).toContain('tool call: Read({"file_path":"/a"})\n  result: A\ntool call: Bash({"command":"ls"})')
+    expect(h.spawns[0]!.prompt).toContain('the session called: Read({"file_path":"/a"})\n  result: A\nthe session called: Bash({"command":"ls"})')
   })
 
   test("a subagent's response is no anchor: the tail follows the main loop's", async () => {
@@ -278,7 +282,7 @@ describe('the fork agent: the op', () => {
     await h.step({ turnId: 'ts', index: 0, messageCount: 1, model: 'm', agentId: 'asub' }, [{ kind: 'tool', index: 0, id: 'toolu_sub', name: 'Read' }, { kind: 'stop', stopReason: 'tool_use', usage: USAGE }])
     h.setRows([asked('go'), called('toolu_m', 'Agent', { description: 'look' })])
     await h.command({ op: 'ask', prompt: 'q' })
-    expect(h.spawns[0]!.prompt).toContain('tool call: Agent({"description":"look"})')
+    expect(h.spawns[0]!.prompt).toContain('the session called: Agent({"description":"look"})')
   })
 
   test('an ask started in a module then reloaded ends once in its successor, aborted, under its own id and agent', async () => {
