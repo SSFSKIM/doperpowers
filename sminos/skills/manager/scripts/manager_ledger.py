@@ -397,6 +397,15 @@ def apply(st, doc, now):
             e["covered"] = stamp(max(covered, parse(e["covered"]) if e.get("covered") else covered))
         if s.get("seen") is not None and (e.get("seen") is None or parse(s["seen"]) > parse(e["seen"])):
             e["seen"] = stamp(parse(s["seen"]))
+    # An owner's item filed under a subscription's stored session turns seen once that session's mark has
+    # passed its `raised` (it never turns back). The digest that read the window may not mention an older
+    # item, so the flip is the ledger's, from the marks it holds; an item filed under a later session of the
+    # lineage, which apply cannot map, is left to the update.
+    marks = {e["session"]: parse(e["seen"]) for ini in out["initiatives"] for e in ini["sessions"] if e.get("seen")}
+    for i in out["items"]:
+        if i["lane"] == "yours" and not i.get("seen") and i.get("session") in marks \
+                and parse(i["raised"]) <= marks[i["session"]]:
+            i["seen"] = True
 
     out["updated"] = at
     out["window"] = {"since": stamp(parse(window["since"])), "until": stamp(parse(window["until"]))}

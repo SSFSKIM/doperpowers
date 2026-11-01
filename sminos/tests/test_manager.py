@@ -824,6 +824,23 @@ class Ledger(unittest.TestCase):
         st = read(T0 - 60, T0 + 600, T0 + 500, T0 + 4)
         self.assertEqual((sub(SID)["covered"], sub(SID)["seen"]), (L.stamp(T0 + 600), L.stamp(T0 + 500)))
 
+    def test_an_item_turns_seen_once_its_sessions_seen_mark_passes_it(self):
+        # The replay's ledger kept an ask unseen after the owner typed in its session: the manager left the
+        # flip to a digest whose window did not mention the item. apply holds the seen marks and does it.
+        st = v2((SID, iso(T0 - DAY), None), (NEXT, iso(T0 - DAY), None))
+        st, _ = self.apply(st, update([yours(raised=iso(T0 - 3600)), yours(raised=iso(T0 - 60), need="later"),
+                                       yours(session=NEXT, raised=iso(T0 - 3600), need="elsewhere")]))
+        self.assertEqual([i["seen"] for i in st["items"]], [False, False, False])
+        st, got = self.apply(st, update([yours(raised=iso(T0 - 1800), need="new, before the mark")],
+                                        sessions=[{"session": SID, "from": iso(T0 - DAY), "covered": iso(T0),
+                                                   "seen": iso(T0 - 600)}]), T0 + 60)
+        self.assertEqual([(i["id"], i["seen"]) for i in st["items"]],
+                         [("y1", True), ("y2", False), ("y3", False), ("y4", True)],
+                         "raised at or before the session's mark: seen; after it, or in another session: not")
+        self.assertEqual(got["changed"], [], "a refreshed seen is no substantive change")
+        st, _ = self.apply(st, update([]), T0 + 120)
+        self.assertTrue(st["items"][0]["seen"], "and it stays seen")
+
     def test_done_and_overtaken_items_archive_after_30_days_and_their_ids_are_not_reused(self):
         st = self.seeded()
         st, _ = self.apply(st, update([{"id": "y1", "status": "done", "evidence": "merged", "status_at": iso(T0)},
