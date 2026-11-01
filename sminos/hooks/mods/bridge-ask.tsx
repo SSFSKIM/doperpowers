@@ -47,6 +47,13 @@ export const FORK_GUARD_PROBE = '/dev/null/sminos-fork-guard-probe'
 export const FORK_GUARD_PRESENT = 'The read-only fork guard (doperpowers) is loaded.'
 export const NO_GUARD = "no read-only guard is loaded in this session (doperpowers' fork guard): a fork agent would run with the session's own permissions"
 export const ASK_BUSY = 'this session is already answering another manager query'
+/**
+ * The grace a fork whose end this module heard gets when the list still calls
+ * it pending or running (the list lags a turn's end): read again every
+ * ASK_GRACE_POLL_MS, ASK_GRACE_POLLS times (about 3 s), then busy.
+ */
+export const ASK_GRACE_POLL_MS = 250
+export const ASK_GRACE_POLLS = 12
 
 /** The session's open asks, by id with their fork's agent, as `$.state` keeps them for a module that loads after this one (types/sminos.d.ts). */
 const OPEN = { plugin: 'sminos', key: 'bridgeAsk' } as const
@@ -270,25 +277,51 @@ export function noteMainResponse(mark: ResponseMark) {
 const LIVE_STATUSES = new Set(['pending', 'running', 'waiting'])
 
 /**
- * Whether a manager query's fork may still be running in this session, read
- * from `$.agent.list()` now: any `type: 'fork'` agent `spawnedBy: 'sminos'`
- * whose status is live, but one whose end this module heard. Nothing kept
- * across a reload is needed, so one at a time holds across any number of
- * them (a fork may outlive the module that spawned it). A list that cannot
- * be read says nothing is known: busy.
+ * The manager queries' forks the list calls live now (any `type: 'fork'`
+ * agent `spawnedBy: 'sminos'`, pending, running or waiting), or undefined when
+ * the list cannot be read.
  */
-async function isForkRunning($: EngineInterface): Promise<boolean> {
+async function liveForks($: EngineInterface): Promise<{ id: string; status: string }[] | undefined> {
   let agents: unknown
   try {
     agents = await $.agent.list()
   } catch (error) {
     state.log?.(`bridge: the agent list was not read for a manager query: ${message(error)}`)
-    return true
+    return undefined
   }
   if (!Array.isArray(agents)) {
-    return true
+    return undefined
   }
-  return agents.some((a) => a?.type === 'fork' && a.spawnedBy === 'sminos' && LIVE_STATUSES.has(String(a.status)) && !state.askEndedAgents.has(String(a.id)))
+  return agents
+    .filter((a) => a?.type === 'fork' && a.spawnedBy === 'sminos' && LIVE_STATUSES.has(String(a.status)))
+    .map((a) => ({ id: String(a.id), status: String(a.status) }))
+}
+
+/**
+ * Whether a manager query's fork may still be running in this session: the
+ * agent list is authoritative, read now, so one at a time holds across any
+ * number of reloads (a fork may outlive the module that spawned it). A list
+ * that cannot be read says nothing is known: busy. The one grace: when every
+ * live fork is one whose turn.complete this module heard and the list still
+ * calls it pending or running, the list is read again for about 3 s
+ * (ASK_GRACE_POLLS), since it lags an end. `waiting` gets none: a fork with
+ * background work of its own may resume its turn.
+ */
+async function isForkRunning($: EngineInterface): Promise<boolean> {
+  for (let poll = 0; ; poll++) {
+    const live = await liveForks($)
+    if (live === undefined) {
+      return true
+    }
+    if (live.length === 0) {
+      return false
+    }
+    const isGraced = live.every((f) => state.askEndedAgents.has(f.id) && f.status !== 'waiting')
+    if (!isGraced || poll >= ASK_GRACE_POLLS) {
+      return true
+    }
+    await $.clock.sleep(ASK_GRACE_POLL_MS)
+  }
 }
 
 /**

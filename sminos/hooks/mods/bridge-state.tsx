@@ -455,8 +455,9 @@ export type BridgeState = {
   /** An ask is between its busy check and its spawn's answer: another is busy meanwhile. */
   isAskStarting: boolean
   /**
-   * The forks whose end this module heard (bridge-ask.tsx): free for the next
-   * ask though `$.agent.list()` may still call them running a moment longer.
+   * The forks whose turn.complete this module heard (bridge-ask.tsx): the
+   * next ask reads the list again for a short grace while one is still listed
+   * pending or running, since the list lags an end; it never exempts one.
    */
   askEndedAgents: Set<string>
   /**

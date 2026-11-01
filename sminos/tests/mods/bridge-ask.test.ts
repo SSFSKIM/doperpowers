@@ -5,6 +5,7 @@ import {
   ASK_BUSY,
   ASK_DESCRIPTION,
   ASK_FRAME,
+  ASK_GRACE_POLLS,
   FORK_GUARD_PRESENT,
   FORK_GUARD_PROBE,
   NO_GUARD,
@@ -325,13 +326,41 @@ describe('the fork agent: the op', () => {
     expect(await h.command({ op: 'ask', prompt: 'q' })).toMatchObject({ ok: true, result: { started: true } })
   })
 
-  test("a fork whose end this module heard is free at once, though the list may still call it running", async () => {
+  /** A live harness whose last ask's fork has ended (its turn.complete heard), the agent list answering `listing(n)` at its n-th read from here. */
+  const afterHeardEnd = async (listing: (agentId: string, n: number) => Record<string, unknown>[]) => {
     const h = await live()
     const r = await h.command({ op: 'ask', prompt: 'q' })
     const agentId = (r.result as { agentId: string }).agentId
-    h.setAgents([managed(agentId, 'running')])
     await forkEnds(h, agentId)
+    let reads = 0
+    ;(h.engine as unknown as { agent: { list: () => Promise<unknown> } }).agent.list = async () => listing(agentId, ++reads)
+    return { h, reads: () => reads }
+  }
+
+  test("a fork whose end this module heard, still listed running a moment, is read again within a short grace: once it is listed completed, the next ask is taken", async () => {
+    const { h, reads } = await afterHeardEnd((id, n) => [managed(id, n < 3 ? 'running' : 'completed')])
     expect(await h.command({ op: 'ask', prompt: 'again' })).toMatchObject({ ok: true, result: { started: true } })
+    expect(reads()).toBe(3)
+  })
+
+  test("a heard end whose fork stays waiting (background work of its own) is busy at once: waiting gets no grace", async () => {
+    const { h, reads } = await afterHeardEnd((id) => [managed(id, 'waiting')])
+    expect(await h.command({ op: 'ask', prompt: 'again' })).toMatchObject({ ok: false, code: 'busy' })
+    expect(reads()).toBe(1)
+    expect(h.spawns).toHaveLength(1)
+  })
+
+  test("a heard end whose listing stays running past the grace is busy: the list is authoritative", async () => {
+    const { h, reads } = await afterHeardEnd((id) => [managed(id, 'running')])
+    expect(await h.command({ op: 'ask', prompt: 'again' })).toMatchObject({ ok: false, code: 'busy' })
+    expect(reads()).toBe(ASK_GRACE_POLLS + 1)
+    expect(h.spawns).toHaveLength(1)
+  })
+
+  test("a heard end gives no grace to another live sminos fork beside it", async () => {
+    const { h, reads } = await afterHeardEnd((id) => [managed(id, 'running'), managed('aother', 'running')])
+    expect(await h.command({ op: 'ask', prompt: 'again' })).toMatchObject({ ok: false, code: 'busy' })
+    expect(reads()).toBe(1)
   })
 
   test('while the agent list cannot be read, ask is busy', async () => {
