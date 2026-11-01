@@ -264,14 +264,20 @@ def cmd_transcript(a):
 
     def corroborate(text):
         if "words" not in owner:
-            owner["words"] = W.OwnerWords(S.log_read(t.project) if t.project is not None else [])
+            owner["words"] = W.OwnerWords(S.log_read(t.project) if t.project is not None else [], t.sessions)
         return owner["words"].corroborates(text)
 
-    got = W.window(paths, since.timestamp(), until.timestamp() if until else None, a.max_chars, corroborate)
+    try:
+        got = W.window(paths, since.timestamp(), until.timestamp() if until else None, a.max_chars, corroborate)
+    except W.Unreadable as e:
+        fail("cannot read the transcript %s: %s" % (e.path, e.error), 1)
+    for sid in got["missing"]:
+        sys.stderr.write("manager: %s's session %s has no transcript on this machine; the window leaves it out\n"
+                         % (t.alias, sid[:8]))
     if a.json:
         emit(a, {"member": t.alias, "sessions": t.sessions, "since": since.isoformat(),
                  "until": until.isoformat() if until else None, "truncated": got["truncated"],
-                 "entries": got["entries"]}, "")
+                 "missing": got["missing"], "entries": got["entries"]}, "")
         return
     lines = [W.render(e) for e in got["entries"]]
     if not lines:
@@ -289,7 +295,8 @@ def cmd_transcript(a):
 def pending_of(targets, until=None):
     """Async questions with no answer of the same src (any age; with `until`, only what was asked and answered
     before it), across the log and the host store of every session of each target's lineage; and the targets
-    sminos holds `waiting` (a permission prompt or a native question on screen)."""
+    sminos holds `waiting` (a permission prompt or a native question on screen). `waiting` is a state as of now,
+    which no record lets a past moment reconstruct: with `until` it is left empty and `waiting_known` is false."""
     cut = until.timestamp() if until is not None else None
     unanswered, waiting = [], []
     for t in targets:
@@ -310,13 +317,13 @@ def pending_of(targets, until=None):
                                    "question": "\n".join(map(str, text)) if isinstance(text, list) else str(text or ""),
                                    "choices": list(e.get("choices") or []), "src": src})
         m = t.member
-        if m is not None and getattr(m, "state", "") == "waiting":
+        if cut is None and m is not None and getattr(m, "state", "") == "waiting":
             age = getattr(m, "state_age", None)
             since = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=age)).strftime(
                 "%Y-%m-%dT%H:%M:%SZ") if age is not None else None
             waiting.append({"member": t.alias, "session": t.sessions[-1], "since": since})
     unanswered.sort(key=lambda q: S._ts_epoch(q["asked"]) or 0)
-    return {"unanswered": unanswered, "waiting": waiting}
+    return {"unanswered": unanswered, "waiting": waiting, "waiting_known": cut is None}
 
 
 def subscribed_targets(st):
@@ -349,7 +356,11 @@ def cmd_pending(a):
     if got["waiting"]:
         lines.append("Waiting on a prompt in the session (%d):" % len(got["waiting"]))
         lines += ["  %s  since %s" % (w["member"], _local(w["since"]) if w["since"] else "?") for w in got["waiting"]]
-    emit(a, got, "\n".join(lines) or "Nothing pending.")
+    if not lines:
+        lines.append("No unanswered questions." if not got["waiting_known"] else "Nothing pending.")
+    if not got["waiting_known"]:
+        lines.append("(Sessions waiting on a prompt are not shown for a past --until: that state is not recorded.)")
+    emit(a, got, "\n".join(lines))
 
 
 def cmd_subscriptions(a):

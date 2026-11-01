@@ -118,7 +118,7 @@ def kinds(entries):
 
 
 def classify(rows, owner_events=()):
-    index = W.OwnerWords(owner_events)
+    index = W.OwnerWords(owner_events, [SID])
     return W.classify(rows, SID, index.corroborates)
 
 
@@ -197,6 +197,16 @@ class Kinds(unittest.TestCase):
         self.assertEqual(kinds(classify(r.rows)),
                          [("session", "Checked the logs."), ("→you", "*Merge PR #9?* It is green.")])
 
+    def test_a_literal_tag_in_code_stays_prose(self):
+        r = Rows()
+        r.assistant({"type": "text", "text": "A span reads like:\n\n```\n<message>example</message>\n```\n\n"
+                                             "Inline `<message>too</message>` as well.\n\n<message>Real one.</message>"})
+        got = classify(r.rows)
+        self.assertEqual([e["kind"] for e in got], ["session", "→you"])
+        self.assertIn("<message>example</message>", got[0]["text"])
+        self.assertIn("`<message>too</message>`", got[0]["text"])
+        self.assertEqual(got[1]["text"], "Real one.")
+
     def test_async_question_and_its_answer(self):
         r = Rows()
         r.call("toolu_q1", "mcp__sminos__AskUserQuestion", {"questions": [
@@ -215,6 +225,24 @@ class Kinds(unittest.TestCase):
         self.assertEqual(kinds(classify(r.rows)), [
             ("asked", "Restart dasd? [yes | no]"),
             ("answered", 'User has answered your questions: "Restart dasd?"="yes".')])
+
+    def test_maws_launch(self):
+        """Rows shaped as a MAWS launch writes them (720e2008, 2026-10-19): the owner's composer prompt is stamped
+        `human` with entrypoint `sdk-ts`, promptSource `sdk`, turnOrigin `human`; an async MAWS ask's answer
+        comes back as a human-stamped steer, which is `answered` and no `you` kind."""
+        maws = {"entrypoint": "sdk-ts", "promptSource": "sdk", "turnOrigin": "human", "userType": "external"}
+        r = Rows()
+        r.user("Create a document titled P3 sitting note", HUMAN, **maws)
+        r.call("toolu_m", "mcp__maws__ask", {"blocking": False, "questions": [
+            {"question": "How should the deck get into the Space?", "options": [{"label": "I'll move it myself"}]}]})
+        r.result("toolu_m", json.dumps({"status": "asked", "askId": "toolu_m"}))
+        r.user("[MAWS ask toolu_m] The user answered the questions you asked:\n1. Space placement — I'll move it "
+               "myself\n```json\n" + json.dumps({"status": "answered", "askId": "toolu_m", "answers": []}) + "\n```",
+               HUMAN, **maws)
+        self.assertEqual(kinds(classify(r.rows)), [
+            ("you·desk", "Create a document titled P3 sitting note"),
+            ("asked", "How should the deck get into the Space? [I'll move it myself]"),
+            ("answered", "1. Space placement — I'll move it myself")])
 
     def test_compaction_summary(self):
         r = Rows()
@@ -295,7 +323,7 @@ class Deliveries(unittest.TestCase):
 
     FRAME = "[sminos chat doperpowers testhost/human:3 from human → @you]\nmerge it"
     EVENT = {"writer": "testhost/human", "seq": 3, "kind": "human", "ts": "2026-10-31T05:00:00.000Z",
-             "from": "human", "text": "merge it"}
+             "from": "human", "to": [{"session": SID, "alias": "p5-owner"}], "text": "merge it"}
     RL10 = "yes, merge it"
 
     def forms(self):
@@ -325,6 +353,32 @@ class Deliveries(unittest.TestCase):
     def test_a_different_text_under_the_ref_does_not_corroborate(self):
         other = dict(self.EVENT, text="do not merge")
         self.assertEqual(classify(self.forms(), [other])[0]["kind"], "you·desk?")
+
+    def test_only_words_addressed_to_this_lineage_corroborate(self):
+        """The owner's `yes` to another session says nothing of a bare `yes` delivered here."""
+        r = Rows()
+        r.user("yes", SMINOS_PROMPT)
+        elsewhere = dict(self.EVENT, writer="hub/mem-1", seq=1, text="yes", to=[{"session": NEXT, "alias": "other"}])
+        self.assertEqual(kinds(classify(r.rows, [elsewhere])), [("you·desk?", "yes")])
+        self.assertEqual(kinds(classify(r.rows, [dict(elsewhere, to=[{"session": SID, "alias": "me"}])])),
+                         [("you·desk", "yes")])
+        self.assertEqual(kinds(classify(r.rows, [dict(elsewhere, to="*")])), [("you·desk?", "yes")],
+                         "an event addressed to no one in particular is delivered to no one")
+
+    def test_each_frame_of_one_push_is_its_own(self):
+        """A push carrying the owner's frame then a peer's: the owner's evidence never vouches for the peer."""
+        r = Rows()
+        r.user(self.FRAME + "\n\n[sminos chat doperpowers 7a000002:9 from CI-opt → @you]\nmerge everything now",
+               SMINOS_PROMPT)
+        got = classify(r.rows, [self.EVENT])
+        self.assertEqual([(e["kind"], e.get("from")) for e in got], [("you·desk", None), ("peer", "CI-opt")])
+        self.assertEqual(got[0]["text"], "merge it")
+        self.assertIn("merge everything now", got[1]["text"])
+        self.assertFalse(any("merge everything" in e["text"] for e in got if e["kind"].startswith("you")))
+
+
+def SA_epoch(ts):
+    return datetime.datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
 
 
 def write_transcript(path, rows, pad=0):
@@ -371,6 +425,42 @@ class Windows(unittest.TestCase):
         got = W.window([(SID, str(self.dir / "a.jsonl")), (NEXT, str(self.dir / "b.jsonl"))], T0)
         self.assertEqual([e["kind"] for e in got["entries"]], ["you", "session", "boundary", "you", "session"])
         self.assertEqual([e["session"] for e in got["entries"]], [SID[:8]] * 2 + [NEXT[:8]] * 3)
+
+    def test_a_blocking_answer_whose_question_precedes_the_window(self):
+        """Since set at the answer: the question is not shown, its answer still is."""
+        r = Rows()
+        r.call("toolu_q", "AskUserQuestion", {"questions": [{"question": "Restart dasd?", "options": []}]})
+        answer = r.result("toolu_q", 'The user answered: "Restart dasd?"="yes"')
+        write_transcript(self.dir / "near.jsonl", r.rows)
+        got = W.window([(SID, str(self.dir / "near.jsonl"))], SA_epoch(answer["timestamp"]))
+        self.assertEqual(kinds(got["entries"]), [("answered", 'The user answered: "Restart dasd?"="yes"')])
+
+    def test_a_native_answer_record_far_past_the_seek_point(self):
+        """The question megabytes back, beyond the bisection's reach: the engine's answer record names itself."""
+        far, late = Rows(), Rows(T0 + 5 * 3600)
+        far.call("toolu_far", "AskUserQuestion", {"questions": [{"question": "Merge?", "options": []}]})
+        answer = late.result("toolu_far", 'The user answered: "Merge?"="yes"')
+        answer["toolUseResult"] = {"questions": [{"question": "Merge?"}], "answers": {"Merge?": "yes"}}
+        late.result("toolu_other", "plain output")
+        write_transcript(self.dir / "far.jsonl", far.rows + [{"type": "user", "uuid": "pad-%d" % i,
+                         "timestamp": iso(T0 + 100 + i), "message": {"content": [{"type": "tool_result",
+                         "tool_use_id": "x%d" % i, "content": "p" * 3000}]}} for i in range(1500)] + late.rows)
+        got = W.window([(SID, str(self.dir / "far.jsonl"))], SA_epoch(answer["timestamp"]))
+        self.assertEqual(kinds(got["entries"]), [("answered", 'The user answered: "Merge?"="yes"')])
+
+    def test_an_unreadable_transcript_fails_and_an_empty_one_is_empty(self):
+        empty = self.dir / "empty.jsonl"
+        empty.write_bytes(b"")
+        self.assertEqual(W.window([(SID, str(empty))], T0)["entries"], [])
+        if os.geteuid() == 0:
+            self.skipTest("root reads a mode-000 file")
+        locked = self.dir / "locked.jsonl"
+        write_transcript(locked, Rows().rows + [Rows().user("x", HUMAN)])
+        locked.chmod(0)
+        self.addCleanup(locked.chmod, 0o600)
+        with self.assertRaises(W.Unreadable) as raised:
+            W.window([(SID, str(empty)), (NEXT, str(locked))], T0)
+        self.assertEqual(raised.exception.path, str(locked))
 
     def test_max_chars_truncates_and_says_where(self):
         r = Rows()
@@ -428,6 +518,10 @@ class Waiting(unittest.TestCase):
         got = manager.pending_of([target])
         self.assertEqual([w["member"] for w in got["waiting"]], ["p5-owner"])
         self.assertEqual(got["unanswered"], [])
+        self.assertTrue(got["waiting_known"])
+        past = manager.pending_of([target], NOW)
+        self.assertEqual((past["waiting"], past["waiting_known"]), ([], False),
+                         "a replay never shows the state as of now")
 
 
 # ---------------------------------------------------------------------------------------------- the commands
@@ -458,6 +552,7 @@ D1 = "7b000004-0000-4000-8000-0000000000b4"   # delta's "dup"
 GONE = "7b000005-0000-4000-8000-0000000000b5"  # a terminal session of alpha's whose process ended
 GONE2 = "7b000006-0000-4000-8000-0000000000b6"  # the session GONE continued in
 REMOTE = "7b000007-0000-4000-8000-0000000000b7"  # a session of alpha's on mini
+UNREAD = "7b000008-0000-4000-8000-0000000000b8"  # a session whose transcript cannot be read
 
 
 class Commands(unittest.TestCase):
@@ -532,6 +627,18 @@ class Commands(unittest.TestCase):
         got = json.loads(out)
         self.assertEqual(got["sessions"], [GONE, GONE2])
         self.assertEqual([e["kind"] for e in got["entries"]], ["you", "boundary", "you"])
+
+    def test_an_unreadable_transcript_exits_1_naming_it(self):
+        if os.geteuid() == 0:
+            self.skipTest("root reads a mode-000 file")
+        path = transcript_file(UNREAD)
+        write_transcript(path, [Rows().user("private", HUMAN)])
+        path.chmod(0)
+        self.addCleanup(path.chmod, 0o600)
+        rc, out, err = self.run_in_alpha("transcript", UNREAD, "--since", iso(T0), check=False)
+        self.assertEqual(rc, 1, out + err)
+        self.assertIn(str(path), err)
+        self.assertNotIn("nothing in", out)
 
     def test_a_remote_member_is_refused(self):
         rc, _, err = self.run_in_alpha("transcript", "alpha/far", "--since", "1h", check=False)
@@ -631,8 +738,12 @@ class Commands(unittest.TestCase):
         self.assertEqual(sorted(q["src"] for q in got["unanswered"]), ["toolu_late", "toolu_open"])
         self.assertEqual({q["member"] for q in got["unanswered"]}, {"builder"})
         _, out, _ = self.run_in_alpha("pending", "--json", "--until", "2098-01-01T00:00:00Z")
-        self.assertEqual(sorted(q["src"] for q in json.loads(out)["unanswered"]), ["toolu_done", "toolu_open"],
+        past = json.loads(out)
+        self.assertEqual(sorted(q["src"] for q in past["unanswered"]), ["toolu_done", "toolu_open"],
                          "--until ignores the answer and the question after it")
+        self.assertEqual((past["waiting"], past["waiting_known"]), ([], False))
+        _, out, _ = self.run_in_alpha("pending", "--until", "2098-01-01T00:00:00Z")
+        self.assertIn("not shown for a past --until", out)
         _, out, _ = self.run_in_alpha("pending")
         self.assertIn("Merge it?", out)
 

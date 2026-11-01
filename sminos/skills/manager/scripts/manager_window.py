@@ -18,6 +18,8 @@ affirmatively says the owner typed it.
 
 import datetime
 import json
+import mmap
+import os
 import re
 
 import sminos as S
@@ -79,9 +81,16 @@ def _cut(text, n):
 
 
 def _outside_marks(text):
-    """The text with its `<message>` regions taken out (the spans themselves are read by extract_marks)."""
+    """The text with its `<message>` regions taken out (the spans themselves are read by extract_marks). The
+    tags are the ones sminos_marks reads as tags (its code-aware reading, with its glued-fence recovery), so a
+    literal tag in code stays prose."""
+    tokens, balanced = sminos_marks._reading(text, sminos_marks.code_regions(text))
+    if not balanced:
+        glued, glued_balanced = sminos_marks._reading(text, sminos_marks.code_regions(text, sminos_marks.GLUED))
+        if glued_balanced:
+            tokens = glued
     out, depth, at = [], 0, 0
-    for m in sminos_marks.TAG.finditer(text):
+    for m in tokens:
         if depth == 0:
             out.append(text[at:m.start()])
         depth = max(depth + (-1 if m.group(1) else 1), 0)
@@ -96,8 +105,9 @@ def _sender(raw):
 
 
 def frames(text):
-    """[(kind, sender, ref, body)] for each sminos frame in a delivered text, in order: kind `chat` (ref its
-    event's `writer:seq`) or `message` (ref its message id). [] for a text that opens with none."""
+    """[(kind, sender, ref, body, whole)] for each sminos frame in a delivered text, in order: kind `chat` (ref
+    its event's `writer:seq`) or `message` (ref its message id); `whole` the frame's own text, header line and
+    body. [] for a text that opens with none."""
     heads = sorted([("chat", m) for m in CHAT_FRAME_RE.finditer(text)] +
                    [("message", m) for m in MESSAGE_FRAME_RE.finditer(text)], key=lambda h: h[1].start())
     if not heads or heads[0][1].start() != 0:
@@ -105,36 +115,38 @@ def frames(text):
     out = []
     for i, (kind, m) in enumerate(heads):
         end = heads[i + 1][1].start() if i + 1 < len(heads) else len(text)
-        body = text[m.end():end]
+        body, whole = text[m.end():end].rstrip("\n"), text[m.start():end].rstrip("\n")
         if kind == "chat":
-            out.append(("chat", _sender(m.group(3)), m.group(2), body.rstrip("\n")))
+            out.append(("chat", _sender(m.group(3)), m.group(2), body, whole))
         else:
-            out.append(("message", _sender(m.group(1)), m.group(2), body.rstrip("\n")))
+            out.append(("message", _sender(m.group(1)), m.group(2), body, whole))
     return out
 
 
 class OwnerWords:
-    """The owner's words a project's log holds (sminos.owner_event: `human` events of `<machine>/human` or
-    `hub/<member>`), to corroborate what the bridge delivered as the owner's."""
+    """The owner's words a project's log holds for one lineage (sminos.owner_event: `human` events of
+    `<machine>/human` or `hub/<member>`, addressed to one of `sessions` by sminos.addressed_to), to corroborate
+    what the bridge delivered to that session as the owner's."""
 
-    def __init__(self, events):
+    def __init__(self, events, sessions):
         self.by_ref, self.texts = {}, set()
         for e in events:
-            if S.owner_event(e) and isinstance(e.get("text"), str):
+            if S.owner_event(e) and isinstance(e.get("text"), str) and any(S.addressed_to(e, s) for s in sessions):
                 self.by_ref[S.event_ref(e)] = e["text"].strip()
                 self.texts.add(e["text"].strip())
 
     def corroborates(self, text):
-        """Whether a delivered text is the owner's words as the log holds them: each frame from the owner names
-        an owner event whose text it carries (a chat frame by its ref), and a bare text (MAWS's RL10 send, which
-        never logs) is an owner event's whole text."""
+        """Whether one delivered frame from the owner, or a bare text, is the owner's words to this lineage as
+        the log holds them: a chat frame names, by its ref, such an event with exactly its text; a message frame
+        or a bare text (MAWS's RL10 send, which never logs) is such an event's whole text. A text of several
+        frames is classified frame by frame, never corroborated whole."""
         fs = frames(text)
         if not fs:
             return text.strip() in self.texts
-        owned = [f for f in fs if f[1] == "human"]
-        return bool(owned) and all(
-            (self.by_ref.get(ref) == body.strip()) if kind == "chat" else (body.strip() in self.texts)
-            for kind, _, ref, body in owned)
+        if len(fs) != 1 or fs[0][1] != "human":
+            return False
+        kind, _, ref, body, _ = fs[0]
+        return self.by_ref.get(ref) == body.strip() if kind == "chat" else body.strip() in self.texts
 
 
 def _local(ts):
@@ -244,10 +256,29 @@ class Classifier:
         if asks:
             self._ask_row(row)
 
-    def _settle(self, block, ts):
+    def prior(self, row):
+        """A row before the window, read only for the blocking questions it asks, so their answer in the window
+        is still known as one; it adds no entry."""
+        if row.get("type") != "assistant":
+            return
+        for n, b in enumerate(S._blocks(row, "tool_use")):
+            name, inp = b.get("name"), b.get("input") if isinstance(b.get("input"), dict) else {}
+            if name == NATIVE_ASK or (name in S.ASK_TOOLS and inp.get("async") is False) or \
+                    (name == S.MAWS_ASK_TOOL and inp.get("blocking") is not False):
+                self.pending[str(b.get("id") or "")] = ("ask", 0, n, None, row.get("timestamp"))
+
+    def _settle(self, block, ts, row):
         cid = str(block.get("tool_use_id") or "")
         held = self.pending.pop(cid, None)
         if held is None:
+            # The engine's record of a native question's answer names its questions and answers on the row
+            # (`toolUseResult`): an answer whose question lies before even the window's seek point.
+            record = row.get("toolUseResult")
+            if isinstance(record, dict) and "questions" in record and "answers" in record \
+                    and block.get("is_error") is not True:
+                text = S._result_text(block.get("content")).strip()
+                if text:
+                    self._add(0, ts, "answered", text)
             return
         what, seq, sub, call, called = held
         if what == "message":
@@ -284,7 +315,7 @@ class Classifier:
                 self._ask_row(row)
                 break
         for b in results:
-            self._settle(b, ts)
+            self._settle(b, ts, row)
         if any(S.DELIVERY_RE.search(t) for t in S._delivery_texts(row)):
             self._ask_row(row)    # an async ask's answer
             return
@@ -397,13 +428,16 @@ class Classifier:
         elif not (as_user or meta) or stripped.startswith(S.COMMAND_ROW_TAGS + S.PLUGIN_PROMPTS) \
                 or stripped.startswith(("<system-reminder>", "(no content)")):
             return
+        elif not frames(stripped):
+            self._add(0, ts, "you·desk" if self.corroborate(stripped) else "you·desk?", stripped)
         else:
-            fs = frames(stripped)
-            if fs and fs[0][1] != "human":
-                self._add(0, ts, "peer", stripped, **{"from": fs[0][1]})
-                return
-            shown = fs[0][3].strip() if len(fs) == 1 else stripped
-            self._add(0, ts, "you·desk" if self.corroborate(stripped) else "you·desk?", shown)
+            # One push can carry several frames, each its own sender's: each is classified on its own, so one
+            # frame's evidence never vouches for another sender's words.
+            for n, (_, sender, _, body, whole) in enumerate(frames(stripped)):
+                if sender != "human":
+                    self._add(n, ts, "peer", whole, **{"from": sender})
+                else:
+                    self._add(n, ts, "you·desk" if self.corroborate(whole) else "you·desk?", body.strip())
 
     def _notification(self, ts, text):
         summary = jobs._element(text, "summary") or jobs._element(text, "status")
@@ -423,10 +457,31 @@ def classify(rows, session, corroborate=None):
     return c.finish()
 
 
-def rows_between(path, since, until=None):
+class Unreadable(Exception):
+    """A transcript that could not be opened or mapped (an empty one is not: it holds no rows)."""
+
+    def __init__(self, path, error):
+        super().__init__("%s: %s" % (path, error))
+        self.path, self.error = path, error
+
+
+def _map(path):
+    """The transcript mapped for reading; None when it is empty; Unreadable when it cannot be read."""
+    try:
+        with open(path, "rb") as f:
+            if os.fstat(f.fileno()).st_size == 0:
+                return None
+            return mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+    except (OSError, ValueError) as e:
+        raise Unreadable(path, e)
+
+
+def rows_between(path, since, until=None, before=None):
     """The transcript's rows stamped at or after `since` and before `until` (epoch seconds), in file order:
-    the start found by bisection, request records and attachments no entry reads passed over unparsed."""
-    mm = SA._open_map(path)
+    the start found by bisection, request records and attachments no entry reads passed over unparsed. The rows
+    from the seek point up to `since` go to `before` (Classifier.prior) when it is given. Unreadable when the
+    file cannot be read."""
+    mm = _map(path)
     if mm is None:
         return
     try:
@@ -448,7 +503,11 @@ def rows_between(path, since, until=None):
             if not isinstance(row, dict):
                 continue
             t = SA._epoch(row.get("timestamp"))
-            if t is None or t < since:
+            if t is None:
+                continue
+            if t < since:
+                if before is not None:
+                    before(row)
                 continue
             if until is not None and t >= until:
                 break
@@ -460,13 +519,15 @@ def rows_between(path, since, until=None):
 def window(sessions, since, until=None, max_chars=DEFAULT_MAX_CHARS, corroborate=None):
     """{"entries", "truncated", "stopped_at"}: the window over a lineage (`sessions`: (session id, transcript
     path or ""), oldest first), a `boundary` entry where it moves to the next session id, cut where the
-    rendered text would pass `max_chars` (stopped_at: the last entry's time)."""
-    entries, used, truncated, previous = [], 0, False, None
+    rendered text would pass `max_chars` (stopped_at: the last entry's time; missing: the lineage's sessions
+    with no transcript on this machine). A transcript that cannot be read raises Unreadable."""
+    entries, used, truncated, previous, missing = [], 0, False, None, []
     for sid, path in sessions:
         if not path:
+            missing.append(sid)
             continue
         c = Classifier(sid, corroborate)
-        for row in rows_between(path, since, until):
+        for row in rows_between(path, since, until, before=c.prior):
             c.feed(row)
             if used + c.chars > max_chars:
                 truncated = True
@@ -491,4 +552,5 @@ def window(sessions, since, until=None, max_chars=DEFAULT_MAX_CHARS, corroborate
             break
         out.append(e)
         size += n
-    return {"entries": out, "truncated": truncated, "stopped_at": out[-1]["ts"] if truncated and out else None}
+    return {"entries": out, "truncated": truncated, "stopped_at": out[-1]["ts"] if truncated and out else None,
+            "missing": missing}
