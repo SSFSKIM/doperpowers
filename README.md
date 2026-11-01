@@ -22,14 +22,13 @@
 ## doperpowers: one method for every change
 
 ```mermaid
-flowchart TD
-    idea([a rough idea]) --> grill["<b>brainstorming</b><br/>grills you until nothing is silently assumed"]
-    grill --> design{{"the design you approve"}}
-    design -- "well scoped" --> here["built right here, test-first"]
-    design -- "needs a spec" --> spec["<b>execspec</b><br/>one living spec: design, acceptance, milestones"]
-    spec -- "one milestone" --> inorder["runs in order from the spec"]
-    spec -- "several" --> fresh["a fresh subagent per milestone,<br/>reviewed at each boundary"]
-    here --> review["<b>review-code</b><br/>another model family reviews the branch"]
+flowchart LR
+    grill["<b>brainstorming</b><br/>a design you approve"]
+    grill -- "well scoped" --> here["built in<br/>the session"]
+    grill -- "needs a spec" --> spec["<b>execspec</b><br/>one living spec"]
+    spec -- "one milestone" --> inorder["run in order"]
+    spec -- "several" --> fresh["a fresh subagent<br/>per milestone"]
+    here --> review["<b>review-code</b><br/>another model family"]
     inorder --> review
     fresh --> review
     review --> merged([merged])
