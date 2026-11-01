@@ -41,6 +41,16 @@ export type AskSnapshot = {
 }
 
 /**
+ * `bridgeAsk`: the session manager's questions this session's bridge answered
+ * `started` (hooks/mods/bridge-ask.tsx), each its op id and its fork's agent
+ * id, until the bridge's child took its end, so that the module that loads
+ * after a reload ends those it finds there, `aborted`. A key of its own: `ask`
+ * is the ask mod's AskSnapshot, which another plugin observes. Only sminos
+ * writes or reads it.
+ */
+export type BridgeAskKept = { id: string; agentId: string }[]
+
+/**
  * `media`: the desk's uploads this session holds (hooks/mods/bridge-media.tsx,
  * the desk control surface spec's MW5), each attachment where its intake
  * stands, so that the module that loads after a reload claims nothing twice
@@ -99,6 +109,6 @@ export type ModeKept = { mode: string; at: number; from: string }
 
 declare module 'claude-code' {
   interface PluginState {
-    sminos: { ask: AskSnapshot; btw: string[]; media: MediaSnapshot; lane: LaneVerdictKept; launch: LaunchKept; mode: ModeKept }
+    sminos: { ask: AskSnapshot; btw: string[]; bridgeAsk: BridgeAskKept; media: MediaSnapshot; lane: LaneVerdictKept; launch: LaunchKept; mode: ModeKept }
   }
 }

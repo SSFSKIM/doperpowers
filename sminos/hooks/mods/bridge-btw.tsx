@@ -98,7 +98,7 @@ export function boundedText(text: string, max = BTW_TEXT_MAX): { text: string; t
 }
 
 /** The fork's cost, in the shape the end carries (DX5: `{input, output, cacheRead?, cacheWrite?}`). */
-function usageOf(u: { input_tokens: number; output_tokens: number; cache_read_input_tokens: number; cache_creation_input_tokens: number }) {
+export function usageOf(u: { input_tokens: number; output_tokens: number; cache_read_input_tokens: number; cache_creation_input_tokens: number }) {
   return { input: u.input_tokens, output: u.output_tokens, cacheRead: u.cache_read_input_tokens, cacheWrite: u.cache_creation_input_tokens }
 }
 

@@ -31,6 +31,7 @@ import { catalogNow } from './bridge-catalog'
 import { OBSERVER_REASON, controlsOf } from './bridge-controls'
 import { READ_KINDS, readKind } from './bridge-reads'
 import { endOrphanedSideQuestions, sideQuestion } from './bridge-btw'
+import { askTurnEnded, endOrphanedAsks, forkQuestion, noteMainResponse } from './bridge-ask'
 import { engineError, forNotes, notifiedStops, stopAgent, tellAgent } from './bridge-agent-ops'
 import { acceptMedia, claimMedia, mediaLoaded, mediaPassedOn, mediaTurnEnded, mediaTurnStarted, observeMediaResult } from './bridge-media'
 
@@ -293,7 +294,7 @@ function recoverMainTurn(turnId: string) {
 export const TURN_UNKNOWN = 'turn state unknown since the bridge reloaded; retry after the next model request'
 const TURN_OPS = new Set(['steer', 'interrupt', 'compact'])
 /** The ops this bridge answers (DX5 `capabilities.ops`), and the reads (`read`'s kinds). */
-export const OPS = ['ping', 'steer', 'interrupt', 'stop', 'model', 'compact', 'deliver', 'answer', 'read', 'command', 'btw', 'stop-agent', 'tell', 'media']
+export const OPS = ['ping', 'steer', 'interrupt', 'stop', 'model', 'compact', 'deliver', 'answer', 'read', 'command', 'btw', 'stop-agent', 'tell', 'media', 'ask']
 export const READS = ['status', 'catalog', ...READ_KINDS]
 /**
  * The ops an observer refuses (O12 M3): every op that acts on the session.
@@ -443,6 +444,8 @@ function commandAnswer($: EngineInterface, command: Command): Answered | Promise
       return tellAgent($, command.agentId, command.text, command.resolvedAgentId)
     case 'media':
       return acceptMedia($, command)
+    case 'ask':
+      return forkQuestion($, command.id, command.prompt)
     default:
       return { ok: false, error: `unknown op: ${command.op}` }
   }
@@ -1902,6 +1905,8 @@ export async function bridgeStart($: EngineInterface, e: SessionStartInput) {
   // A side question a module before this one started, whose fork the reload
   // aborted: its end goes to the first child, after the resync.
   await endOrphanedSideQuestions($)
+  // So does a manager query's, whose fork's end this module will not hear.
+  await endOrphanedAsks($)
   // The desk's uploads a module before this one held: reconciled, their
   // unsaid states said to the first child, a pending one's wake armed again.
   await mediaLoaded($)
@@ -2025,6 +2030,8 @@ export function registerBridge(on: On) {
       }
     }
     releaseStepEnd(loopKey(e.agentId))
+    // A manager query's fork ending: its ask's end (bridge-ask.tsx).
+    askTurnEnded(e)
     emit({ type: 'turn', phase: 'complete', turnId: e.turnId, agentId: e.agentId ?? null, reason: e.reason, usage: e.usage ?? null })
     if (e.agentId === undefined) {
       try {
@@ -2098,11 +2105,18 @@ export function registerBridge(on: On) {
     let chunkIndex = 0
     let stopReason: unknown = null
     let usage: unknown = null
+    /** The tool calls of this main-loop response, for a manager query's tail once it completes (bridge-ask.tsx). */
+    const toolUseIds: string[] = []
     try {
       const stream = synthetic ?? next(input)
       for await (const chunk of stream) {
         if (isShown && chunk.kind !== 'engine') {
           emit({ type: 'chunk', ...tag, chunkIndex: chunkIndex++, chunk })
+        }
+        if (isMain && chunk.kind === 'tool') {
+          toolUseIds.push(chunk.id)
+        } else if (isMain && chunk.kind === 'stop' && chunk.usage !== null) {
+          noteMainResponse(toolUseIds)
         }
         yield chunk
       }

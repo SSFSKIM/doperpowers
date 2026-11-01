@@ -2,7 +2,7 @@
 
 Function hooks of the doperpowers plugin: one module (`register.tsx`, named
 by `hooks/hooks.json` under `modules`) that registers its mods —
-kairos, compact, appeal, interim and reload, each described below. The
+the fork guard, kairos, compact, appeal, interim and reload, each described below. The
 engine loads it only where `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` is set and
 ignores it elsewhere; the shell hooks beside this folder run everywhere. The
 ask tool, the bridge and the session's sminos address are the sminos
@@ -120,6 +120,53 @@ Known limits: a literal mention of a tag in prose parses as a span; unfold
 state lives in the module and resets on reload or a new session; a run's rows are known
 by the order they first drew in, so a resumed session that redraws history
 out of order can put a button on the wrong row until the next redraw.
+
+## fork guard (`fork-guard.tsx`)
+
+The session manager (sminos's `/sminos:manager`, design
+`docs/doperpowers/specs/2026-10-31-session-manager-design.md`) asks a live
+session a question through a fork agent its bridge spawns inside it
+(`ask`, `sminos/hooks/mods/bridge-ask.tsx`): the fork inherits the
+conversation, the model, the tools and the permission mode, so read-only has
+to be enforced. The bridge spawns it from its command listener, outside any
+hook frame, and such a fork bypasses every hook of the spawning plugin; this
+plugin's hooks see its calls, so the guard is here.
+
+A *managed fork* is an agent `$.agent.list()` lists as `type: 'fork'` with
+`spawnedBy: 'sminos'`. For its calls:
+
+- **`tool.call`**: any tool but `Read`, `Grep`, `Glob` and `Bash` is refused
+  (`FORK_GUARD_REASON`) without calling beneath. The surface is decided by
+  name: `isReadOnly` is the tool's own word (the engine marks `Agent`
+  read-only, and a delegated child would run unguarded), and a plugin that
+  serves its tool inside its own `tool.call` hook never reaches `tool.check`.
+- **`tool.check`**: the read tools are allowed, Bash is allowed when the
+  engine holds that input read-only (`isReadOnly`) and denied otherwise, over
+  core's `allow` and `ask` alike; anything else is denied. A fork never puts a
+  permission prompt in front of the session's person.
+
+Every other agent and the main loop pass untouched; the main loop's calls
+(no `agentId`) need no lookup, and an agent's verdict is remembered once the
+list names it. An id the list does not name — a workflow's agents and the
+engine's own forks carry such ids — is no managed fork (the bridge's fork is
+listed from its spawn on) and passes, looked for again at its next call.
+
+It fails closed: each registration's `.catch` refuses a call it had not
+passed on (the engine skips a hook that throws or overruns and runs what is
+beneath, the session's ordinary permissions), and a subagent's call is
+refused while the agent list cannot be read.
+
+Its presence: before each spawn the bridge sends a `$.tool.check` query from
+sminos for a Read of `/dev/null/sminos-fork-guard-probe`, which runs nothing;
+the guard answers it `deny` with `FORK_GUARD_PRESENT`, and without a guard
+loaded now core answers instead, so the bridge refuses the ask `no-guard` and
+the manager takes its headless path. Registered first in `register.tsx`, its
+hooks are the plugin's outermost: the appeal's pass never applies to a fork's
+call.
+
+Tests: `tests/mods/fork-guard.test.ts`; the live check is
+`sminos/tests/mods/live-ask-check.py` (throwaway sessions; it spends model
+calls).
 
 ## kairos (`kairos.tsx`)
 

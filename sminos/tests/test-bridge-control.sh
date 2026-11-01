@@ -280,6 +280,14 @@ elif op == "fakemod":       # sminos session lines-file mode-file
                          {"type": "btw", "phase": "end", "id": cid, "text": "\uac00" * 5000,
                           "usage": {"input": 12, "output": 34, "cacheRead": 5000, "cacheWrite": 7}}]
                 threading.Timer(0.3, post, (sock, later)).start()
+            elif o == "ask":
+                # As the bridge answers the manager's question: started at
+                # once with its fork's agent, the start and end following.
+                result = {"ok": True, "result": {"started": True, "id": cid, "agentId": "afork1"}}
+                later = [{"type": "ask", "phase": "start", "id": cid, "agentId": "afork1"},
+                         {"type": "ask", "phase": "end", "id": cid, "agentId": "afork1", "text": "It waits on you.",
+                          "usage": {"input": 4, "output": 30, "cacheRead": 27000, "cacheWrite": 700}}]
+                threading.Timer(0.3, post, (sock, later)).start()
             elif o == "media":
                 # As the bridge answers a desk upload: queued once held, its
                 # attachment's states following on the stream, the upload
@@ -543,6 +551,16 @@ ctl post "$SOCK" "[{\"type\":\"btw\",\"phase\":\"end\",\"id\":\"$BID\",\"reason\
 until_true 100 has_event "$WATCHD" btw start "after-$BID" || true
 assert_equals "$(count_event "$WATCHD" btw end "$BID")" "1" "a side question's end posted again is relayed once"
 assert_equals "$(field_of "$(kept_rpc nonce-b1)" end.usage.output)" "34" "and the end kept is the first"
+# The session manager's question (local: no RPC's nonce): its start and end
+# relayed to the stream's subscribers, an end posted again relayed once.
+OUTK="$(ctl command "$SOCK" '{"op":"ask","prompt":"what are you waiting on?"}')"
+KID="$(field_of "${OUTK#* }" id)"
+assert_equals "$(field_of "${OUTK#* }" result.started)/$(field_of "${OUTK#* }" result.agentId)" "true/afork1" "the child answers a manager query started, with its fork's agent"
+until_true 100 has_event "$WATCHD" ask end "$KID" || true
+assert_equals "$(field_of "$(event_of "$WATCHD" ask end "$KID")" text)" "It waits on you." "its end is relayed with the fork's answer"
+ctl post "$SOCK" "[{\"type\":\"ask\",\"phase\":\"end\",\"id\":\"$KID\",\"agentId\":\"afork1\",\"reason\":\"aborted\"},{\"type\":\"ask\",\"phase\":\"start\",\"id\":\"after-$KID\"}]" >/dev/null
+until_true 100 has_event "$WATCHD" ask start "after-$KID" || true
+assert_equals "$(count_event "$WATCHD" ask end "$KID")" "1" "a manager query's end posted again is relayed once"
 # A desk upload: the answer is kept under the RPC's nonce, which is the
 # upload; each `media` event is relayed carrying it as `rpc`, once by its
 # (upload, index, state); the upload's end is kept beside the answer.

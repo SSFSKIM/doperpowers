@@ -45,6 +45,12 @@ export type BridgeEvent = Record<string, unknown> & { type: string }
 export type Command = Record<string, unknown> & { id: string; op: string }
 /** A command's answer: the `result` event's fields; a refusal's `code` names its kind where DX5 gives one. */
 export type Answer = { ok: true; result: Record<string, unknown> } | { ok: false; error: string; code?: string }
+/**
+ * A fork-agent question answered `started` (bridge-ask.tsx): its fork's agent
+ * id, and its end once the fork's turn.complete gave it, until the child took
+ * that end. `settle` hands the end to the op that waits for it.
+ */
+export type OpenAsk = { agentId: string; end?: Record<string, unknown>; settle: (end: Record<string, unknown>) => void; ended: Promise<Record<string, unknown>> }
 /** The model and effort chosen for this session through the bridge; null keeps the session's own. */
 export type Override = { model: string | null; effort: Effort | null }
 /** A value as an event carries it (`capped`): every string held to TEXT_CAP, and whether any was. */
@@ -436,6 +442,18 @@ export type BridgeState = {
   btwOpen: Set<string>
   /** The writes of `btwOpen` to the session's `$.state`, in order. */
   btwWrites: Promise<void>
+  /** The fork-agent questions open in this session as this module knows them, by op id: its own, and those it ends for a module before it (bridge-ask.tsx). */
+  askOpen: Map<string, OpenAsk>
+  /** The writes of `askOpen` to the session's `$.state`, in order. */
+  askWrites: Promise<void>
+  /** An ask is between its busy check and its spawn's answer: another is busy meanwhile. */
+  isAskStarting: boolean
+  /**
+   * The tool calls' ids of the main loop's last response that completed (its
+   * stop chunk carried usage): a fork's tail starts at the row holding them
+   * (bridge-ask.tsx).
+   */
+  lastResponseTools: string[]
   /**
    * The desk's agent stops whose note to the parent is not in yet
    * (bridge-agent-ops.tsx): an Agent call's result and the stopped agent's
@@ -492,6 +510,10 @@ const fresh = (): BridgeState => ({
   owedEnds: new Map(),
   btwOpen: new Set(),
   btwWrites: Promise.resolve(),
+  askOpen: new Map(),
+  askWrites: Promise.resolve(),
+  isAskStarting: false,
+  lastResponseTools: [],
   agentStops: new Set(),
   media: [],
   mediaWrites: Promise.resolve(),
