@@ -1,10 +1,10 @@
-# Session manager — a read-only briefing session over the sessions doing the work
+# Session manager — a read-only manager session over the sessions doing the work, and its ledger
 
 The owner runs initiatives that last days and span several sessions at once. P5 (the desk folded into MAWS) ran across "GUI AI agent workspace charter" (`37052769`, project MAWS), `p5-desk-track-owner` (`b4948247`) and `CI-opt` (`a45b97a3`, both project doperpowers), and early on `remote-architecture`. Coming back after hours away, the work has moved far, messages have stacked up in every session, and finding what is owed to whom means scrolling back through each one. What gets lost is the owner's side of the work: questions, decisions, judgments and actions the sessions are waiting on, blocking or not.
 
-After this change the owner keeps one **manager session** open: a Claude session that has loaded the `/sminos:manager` skill. They tell it which sessions to follow and under which initiative, and whenever they come back they ask "update since 9am". It answers with what needs them first (blocking items, then optional ones, then older items still open) and then a written brief per initiative. They can ask follow-up questions, which it answers from the records, from the sessions' transcripts, or by putting the question to a fork of a session. The manager never writes to a working session, so the work it reports on is never interrupted or changed by it.
+After this change the owner keeps one **manager session** open: a Claude session that has loaded the `/sminos:manager` skill. They tell it which sessions to follow and under which initiative, and whenever they come back they ask "update" (since the last update) or "update since 9am". The owner often works inside some of those sessions at the terminal; the manager's job is what they missed. It answers with what needs them first (blocking items, then optional ones, the ones raised where the owner has not been since leading, then items still open from before), what changed in what they were asked and in the work, and a written brief per initiative of the stretches they did not see. It keeps all of it in a **ledger**: the owner's items (what they must decide, judge, do or answer, and where each stands) and the work's outcomes in plain words. A read-only web page on the owner's tailnet shows the ledger as of the last update, so they can read it from a phone. They can ask follow-up questions, which it answers from the records, from the sessions' transcripts, or by putting the question to a fork of a session. Nothing runs between the owner's asks. The manager never writes to a working session, so the work it reports on is never interrupted or changed by it.
 
-To see it working: open a new Claude session in any directory on the MacBook, run `/sminos:manager`, say "subscribe P5: GUI AI agent workspace charter, p5-desk-track-owner, CI-opt", then "update since 10 hours ago". The briefing names, for example, the PR merge a session asked you to decide and the `dasd` restart only you can do, each with the session, the time and the message it came from.
+To see it working: open a new Claude session in any directory on the MacBook, run `/sminos:manager`, say "subscribe P5: GUI AI agent workspace charter, p5-desk-track-owner, CI-opt", then "update since 10 hours ago". The update names, for example, the PR merge a session asked you to decide and the `dasd` restart only you can do, each with the session, the time and the message it came from, and marks which ones arrived after you last wrote in that session. An hour later "update" reports only what changed since. The page's address, printed by `manager serve --status`, shows the same ledger.
 
 This is the semantic half of MAWS's Scene A ("Open MAWS and know within seconds where you are needed", `MAWS/docs/charter.md` §1). MAWS's attention table already covers the mechanical half (a pending permission prompt, a pending question). What sessions *said* they need from the owner, in prose, has no reader today.
 
@@ -18,7 +18,11 @@ A side effect ships with it: `sminos derive`, which forks a session every six ho
 - [x] (2026-11-01 03:29Z) M1 — the `manager` command: transcript windows, pending items, subscriptions. Reviewed clean after two fix rounds; `sminos`, `sminos-suites` green on 3e93e0f1.
 - [ ] M2 — the bridge's `ask` (an in-session fork agent) and the read-only guard.
 - [ ] M3 — the shared fork code in sminos: `derive` on `btw`, `manager query` on `ask` with the headless fallback.
-- [ ] M4 — the skill, the digest brief, the replay evaluation, versions, and acceptance.
+- [x] (2026-11-01 04:20Z) Owner extended the design mid-execution: the ledger (two lanes), the delta update led by what the owner has not seen, the read-only page; on-ask only. Milestones re-cut: M4 ledger and delta, M5 skill and replay (the former M4), M6 page (Decision Log, 2026-11-01).
+- [ ] Revised spec reviewed (spec review and buildability review of M4–M6).
+- [ ] M4 — the ledger and the delta in the `manager` command: state v2, `ledger`, `ledger apply`, seen marks.
+- [ ] M5 — the skill, the digest brief, the replay evaluation, and acceptance 1–12.
+- [ ] M6 — the page: `manager serve`, its install, versions, acceptance 13–14.
 - [ ] Whole-branch review (review-code, high), retrospective, merge.
 
 ## Terms
@@ -33,10 +37,14 @@ A side effect ships with it: `sminos derive`, which forks a session every six ho
 - **Read-only guard.** A mod in the doperpowers plugin (`hooks/mods/fork-guard.tsx`) that limits a sminos fork agent to reading files and read-only shell commands, refusing everything else, and refuses when in doubt.
 - **Headless fork.** `claude -p --resume <session> --fork-session …`: a new process that loads the session's transcript, answers, and is thrown away. `derive_line` in `sminos/skills/sminos/scripts/sminos.py` is today's one user.
 - **Digest subagent.** A subagent the manager dispatches for one subscribed session and one window. It reads that session's records and returns its needs, decisions and progress.
+- **Update.** One run of the manager's procedure on the owner's ask, over a window from `T` to now; a plain "update" takes `T` from where the last update's window ended.
+- **Ledger.** What the manager keeps between updates, per initiative: the owner's items (*your items*) and the work's outcomes (*work items*), and the latest brief. It lives in the manager's state file and changes only during an update.
+- **Seen mark.** Per session, the time of the owner's latest own words in it (`you`, `you·desk`, `you·steer`, or an answer to a blocking question, which is given in the session's own window). What the session wrote after its seen mark is *unseen*.
+- **The page.** A read-only web page showing the ledger, served by `manager serve` on this Mac and reached over the owner's tailnet through `tailscale serve`.
 
 ## What the owner can do afterward (acceptance)
 
-Each item is checked on the MacBook. Before merge, M4 runs them against throwaway sessions loaded with the branch's plugins; after merge and a plugin update, the owner's own sessions behave the same. Commands run from any directory; `manager` is the skill's command (`sminos/skills/manager/scripts/manager`, whose absolute path the skill names when it loads).
+Each item is checked on the MacBook. Before merge, M5 and M6 run them against throwaway sessions loaded with the branch's plugins; after merge and a plugin update, the owner's own sessions behave the same. Commands run from any directory; `manager` is the skill's command (`sminos/skills/manager/scripts/manager`, whose absolute path the skill names when it loads).
 
 1. **Only the manager sees it.** `/sminos:manager` is offered in the slash menu. A fresh session's model-visible skill list has no `sminos:manager` entry. `sminos help` and the sminos skill are unchanged and mention none of `transcript`, `pending`, `query`, `subscriptions`.
 2. **Subscriptions are the owner's.** `manager subscriptions add P5 CI-opt p5-desk-track-owner "GUI AI agent workspace charter"` then `manager subscriptions` lists the three under P5 with alias, short id and project. Subscribing the manager's own session is refused. Nothing is added except by this command.
@@ -45,9 +53,13 @@ Each item is checked on the MacBook. Before merge, M4 runs them against throwawa
 5. **Current.** On an idle session whose last turn ended with a final message to the owner, `manager query <it> "Quote the first sentence of your last message to the human."` returns that last message. On a session mid-turn, the answer knows the latest tool call the session made.
 6. **Tools, held read-only.** `manager query <member> "What is the newest commit on your branch?"` answers from git. `manager query <member> "Run: touch /tmp/manager-probe — then say whether it worked."` reports a refusal, and `/tmp/manager-probe` does not exist. No permission prompt appears in the queried session.
 7. **Stopped sessions still answer.** `manager query <a stopped seat> "…"` answers and names `via headless fork`.
-8. **The briefing.** In a manager session, "update since <T>" produces: *Needs you* (blocking, then optional, then still open from before T), each item with session, time raised, what is needed, why it has to be the owner, and the quoted source; then a prose brief per initiative (what happened, decisions taken on the owner's behalf, changes of plan, where it stands). On the replay window (M4) it finds every blocking item of the labelled list and at least 90% of all items.
+8. **The update.** In a manager session, "update since <T>" produces: *Needs you* (blocking, then optional, each group with unseen items first and marked, then a short list of items still open from before T), each item with session, its type, time raised, what is needed, why it has to be the owner, and the quoted source; then what changed in the owner's items and the work's outcomes; then a prose brief per initiative of what the owner did not see (what happened, decisions taken on the owner's behalf, changes of plan, where it stands). On the replay window (M5) it finds every blocking item of the labelled list and at least 90% of all items.
 9. **`derive` is cheaper and unchanged in output.** `sminos derive <a live member>` prints the member's line as before and says it went `via btw`, with cache read near the session's context. A stopped member's derive still runs the uncached headless fork.
-10. **Nothing written.** After a briefing with queries, no subscribed session's main transcript has gained a user or assistant row because of the manager (the engine's `tools-used` metadata lines a fork leaves are not conversation), and no project log has gained an event from it other than the manager session's own messages to the owner and sminos's membership reconciliation (`joined`/`retired`), which any `sminos list` also performs.
+10. **Nothing written.** After an update with queries, no subscribed session's main transcript has gained a user or assistant row because of the manager (the engine's `tools-used` metadata lines a fork leaves are not conversation), and no project log has gained an event from it other than the manager session's own messages to the owner and sminos's membership reconciliation (`joined`/`retired`), which any `sminos list` also performs. The manager's only file writes are its own state file (and its archive) under `$SMINOS_HOME/managers/`.
+11. **A delta, led by what was missed.** Two frozen updates over the replay window, the second taking its `T` from the first ("update" with no time): the second reports as new only items raised or changed after the first's end, lists the first's still-open items in its short list, and repeats none of the first's resolved items. In a session where the owner wrote after a message, that message's item is marked seen; items after the owner's last words in a session are marked unseen and lead their group.
+12. **The ledger reads as outcomes.** After the replay updates, `manager ledger` shows, per initiative, the owner's items by status and type, and work items whose titles say in plain words what is now true or possible; no work title is only an identifier (a PR, milestone, commit or ticket number, which sit in `refs`), routine steps (a milestone landing, a review round, a merge, a CI run) are not items of their own, and the P5 window yields no more work items per initiative than the cap the digest brief states.
+13. **The page.** From a phone on the owner's tailnet, logged in as the owner, the page's address shows the ledger as `manager ledger` does: by initiative, the owner's items first, then work in progress, then done, with the update's time and window. A request without the owner's Tailscale identity (a tagged devcloud host, a plain `curl` to the local port) gets 403. A page left open shows a new update within 5 seconds of `ledger apply`, without a reload. No control on the page changes anything.
+14. **Installable and quiet.** `manager serve --install` writes a launchd agent and prints the commands that load it and expose it with `tailscale serve`; after they run, the page survives a logout and a plugin update. Between updates the server starts no process and makes no model call.
 
 ## The design
 
@@ -60,10 +72,14 @@ Each item is checked on the MacBook. Before merge, M4 runs them against throwawa
  │  bridge ── ask ─▶ fork   │── host events (read) ──▶│  manager transcript|pending  │
  │  agent (read-only guard) │◀─ ask: a question ──────│  manager query               │
  └──────────────────────────┘◀─ headless fork ────────│  digest subagents (Sonnet)   │
-   (stopped sessions only)                            └──────────────────────────────┘
+   (stopped sessions only)                            │  manager ledger apply ──┐    │
+                                                      └─────────────────────────┼────┘
+                                                                                ▼
+                         owner's phone ── tailnet ── tailscale serve ── manager serve ◀── state file
+                                                     (identity)       (read-only)       (the ledger)
 ```
 
-Every arrow into a working session is a fork: the session's conversation is never appended to, its turn never interrupted, its files never touched by the manager.
+Every arrow into a working session is a fork: the session's conversation is never appended to, its turn never interrupted, its files never touched by the manager. The ledger changes only when the owner asks for an update; the page only reads it.
 
 ### Packaging: a skill only the owner can load, with its own command
 
@@ -71,42 +87,73 @@ The manager is a second skill in the sminos plugin, `sminos/skills/manager/SKILL
 
 Why: `transcript`, `query` and the rest are needed by the manager alone. As sminos verbs they would sit in `sminos help` and in the sminos skill that every session reads, costing every session context and inviting sessions to fork each other. The strongest alternative, a separate plugin, lost because the command imports sminos's internals, and a plugin reaching into another plugin's versioned cache directory breaks at every update. What sminos and the manager share is internal and adds no verb: the fork code in `sminos/skills/sminos/scripts/sminos_fork.py`, which `derive` uses too, and the bridge's new `ask` op (§Queries), which appears in the bridge's capabilities, not in `sminos help`.
 
-### Subscriptions and the manager's state
+### Subscriptions, the ledger, and the manager's state
 
 The owner names the sessions to follow and the initiative each belongs to. The manager may suggest sessions (from in-charge lines, or sessions that message each other or name the same work) but subscribes none on its own. A subscription records the member's session id at the time and follows its lineage, so a seat that continued under a new id stays followed.
 
-State lives in `$SMINOS_HOME/managers/<name>.json` (default name `default`; `--name` picks another for a second manager). It holds the subscriptions and the **carry list**: the items the last briefing left open, each with its session and source, so the next briefing rechecks them. Keeping these in a file, not only in the manager's conversation, means a compaction or a fresh manager session loses nothing; see the Decision Log entry of 2026-11-01.
+State lives in `$SMINOS_HOME/managers/<name>.json` (default name `default`; `--name` picks another for a second manager). It holds the subscriptions and the **ledger**, so a compaction or a fresh manager session loses nothing. The ledger takes the place of the first version's carry list (the items the last briefing left open, now the ledger's open items). It changes only during an update, through `manager ledger apply`; nothing maintains it in the background.
 
-### The briefing
+The ledger holds, per initiative:
 
-The owner asks for an update since a time (`9am`, `10h`, an ISO time; local time). The manager:
+- **Your items**: what a session asked of the owner, each with a type, blocking or optional (below), and a status.
 
-1. Runs `manager pending` for the mechanical signals across every subscription: async questions with no answer (any age) and sessions in the `waiting` state (a permission prompt or a native question on screen).
-2. Dispatches one digest subagent per subscribed session, in parallel, each with its member, the window, that session's carry-list items and the digest brief (`sminos/skills/manager/references/digest-brief.md`).
-3. Merges their reports and writes the briefing; updates the carry list.
+  | Type | What the owner is asked for |
+  |---|---|
+  | decide | a choice between options or a go/no-go: a merge, a route, a scope cut |
+  | judge | an assessment of something made: a review, a taste call, whether a result is good enough |
+  | act | something only the owner can do: a login, a password, a permission or TCC dialog, a physical step, a restart outside the session's reach |
+  | answer | a fact, value or preference only the owner holds |
+  | other | anything else asked of the owner |
 
-The briefing, in this order:
+  | Status | When |
+  |---|---|
+  | pending | nothing yet shows the owner's response |
+  | answered | the owner responded (its question has an `answered` event, or the owner's words after it in that session — typed, sent from the desk, or a steer — address it) and the session has it in hand; "answered (unverified)" when the only evidence is a `you?` or `you·desk?` row, quoted |
+  | done | the session reports the follow-through finished |
+  | overtaken | the session moved on without the owner: decided it itself, dropped it, or the need went away |
 
-- **Needs you.** Blocking first, then optional, then *older*: items raised before the window and still open. Each item: session (alias), when raised, what exactly is needed, why it has to be the owner, and a short quote of the source with its time.
-- **A written brief per initiative.** Prose: what happened, the decisions sessions took on the owner's behalf, where plans changed, where things stand now.
+- **Work items**: what the sessions' work achieves, one item per outcome a person outside the session would recognize as meaningful. Its *title* says in plain words what is now true or possible ("Sessions' in-charge lines now cost a seventh of what they did"), never only an identifier; PR, milestone, commit and ticket numbers go in its *refs*. Its *meaning* line says why it matters to the owner. Status: *in progress*, *done*, or *stalled* (with what it waits on). Routine steps (a milestone landing, a review round, a merge, a CI run, a fix wave) update an outcome's status or meaning and never become items of their own. The digest brief caps the work items one update may add per initiative, a cap M5 sets from the replay, so the lane keeps the size of the work's real shape.
+- **The latest brief** per initiative, with its time and window.
+
+Done and overtaken items older than 30 days move to an archive file beside the state file (`<name>.archive.jsonl`), so the ledger stays the size of what is current.
+
+### The update
+
+The owner asks for an update: "update" (from where the last update's window ended; a first update with no time covers the last 24 hours and says so) or "update since T" (`9am`, `10h`, an ISO time; local time). The manager:
+
+1. Runs `manager pending` for the mechanical signals across every subscription: async questions with no answer (any age), sessions in the `waiting` state (a permission prompt or a native question on screen), and each session's seen mark and last activity.
+2. Dispatches one digest subagent per subscribed session that has activity since `T` or open ledger items, in parallel, each with its member, the window, its seen mark, that session's open ledger items (both lanes) and the digest brief (`sminos/skills/manager/references/digest-brief.md`). A session with neither gets no subagent.
+3. Merges their reports into one ledger change, applies it with `manager ledger apply`, and writes the update for the owner.
+
+**What the owner has seen.** The owner often works inside some subscribed sessions at the terminal, and the update is for what they missed. A session's seen mark is the time of the owner's latest own words in it: a `you`, `you·desk` or `you·steer` entry, or an answer to one of its blocking questions (native `AskUserQuestion`, or the sminos one with `async: false`), which is given in the session's own window. What the session wrote before that, the owner had in front of them; what it wrote after, they did not. The rule errs toward reporting: unverified rows (`you?`, `you·desk?`) do not count as presence; nor does an answer to an async question, which the owner may give from the desk or a phone without the session in front of them; and an owner who read a session without writing in it is, on the records, absent. The records on this Mac hold no other presence signal; MAWS's unread state, which covers MAWS-launched sessions only, is a later source.
+
+The update, in this order:
+
+- **Needs you.** Blocking first, then optional; within each, unseen items first, marked. Each item: session (alias), type, when raised, what exactly is needed, why it has to be the owner, and a short quote of the source with its time. Then **still open**: items an earlier update reported and nothing has changed since, one line each, blocking first.
+- **What changed.** The owner's items whose status changed since `T` (answered, done, overtaken), one line each with its evidence; work items that started, finished or stalled since `T`.
+- **A written brief per initiative**, of what the owner did not see: what happened, the decisions sessions took on the owner's behalf, where plans changed, where things stand now. A session the owner was in throughout the window gets one line ("you were in CI-opt until 14:20; nothing since").
+- The page's address, when the page is installed.
 
 **Blocking** means some work is stopped, or will stop, until the owner acts: a question the session waits on, a password, login or permission, a merge or publish gate the session will not pass on its own, an explicit "waiting on you". **Optional** is everything else the owner is asked for: offers the session parked ("If you'd rather see the cost first, I can measure it on the mini"), confirmations deferred to pickup, defaults chosen pending the owner's word. The to-human style makes sessions put every place they need the owner in italics; in the Oct 29–31 sample 231 of 377 messages carried such spans, which makes them the digest's first lead, not its only one.
 
-An item's status:
+When the records leave an item's status unclear, the digest subagent asks the session through `manager query`.
 
-| Status | When |
-|---|---|
-| answered | its question has an `answered` event, or the owner's words after it in that session (typed, sent from the desk, or a steer) address it; when the only evidence is an unverified row (`you?`, `you·desk?`), the briefing says "answered (unverified)" and quotes it |
-| overtaken | the session moved on without the owner: decided it itself, dropped it, or the need went away |
-| open | anything else |
+**Digest subagents run on Sonnet.** Effort is medium or high, whichever the replay evaluation (M5) shows is enough; the skill states the one chosen. They are dispatched with the Agent tool as general-purpose subagents briefed from the reference file, not as a registered agent definition, which would be listed to every session and undo the packaging.
 
-When the records leave the status unclear, the digest subagent asks the session through `manager query`.
+**Strictly read-only.** The manager and its subagents never send, steer, interrupt, answer, decide, compact, change a model, or write to a project log. Its only outward acts are its messages to the owner, and its only writes are its own state file and archive. This is a rule the skill states, not a lock: the manager needs its own tools to read, and nothing so far suggests a model breaks the rule.
 
-**Digest subagents run on Sonnet.** Effort is medium or high, whichever the replay evaluation (M4) shows is enough; the skill states the one chosen. They are dispatched with the Agent tool as general-purpose subagents briefed from the reference file, not as a registered agent definition, which would be listed to every session and undo the packaging.
+**On demand only.** Nothing runs between the owner's requests: no schedule, no pushes, no background reading. The page serves the ledger as the last update left it and says when that was.
 
-**Strictly read-only.** The manager and its subagents never send, steer, interrupt, answer, decide, compact, change a model, or write to a project log. Its only outward acts are its messages to the owner. This is a rule the skill states, not a lock: the manager needs its own tools to read, and nothing so far suggests a model breaks the rule.
+### The page
 
-**On demand only.** Nothing runs between the owner's requests: no schedule, no pushes.
+The owner reads the ledger from a phone or another machine on their tailnet. `manager serve` is a small HTTP server on this Mac that turns the state file into one read-only page:
+
+- **What it shows.** Per initiative: *Needs you* (blocking, then optional; unseen items marked), *Answered* (in the session's hands), *Work in progress*, *Done* (the last 7 days, older behind a disclosure), and the latest brief, collapsed. At the top: when the last update ran, the window it covered, and how long ago that was. Each item expands to its quote, session and time. It shows ledger content only, never transcript text beyond the quotes the ledger holds. Its look goes through the designer skill: phone first, the owner's items before everything, type and blocking legible at a glance.
+- **How it stays current.** The page holds an event stream (`/events`); the server stats the state file every second and announces a change when its modification time moves, and the page refetches `/ledger.json`. Between updates nothing changes, so nothing is sent.
+- **Who can read it.** The server binds `127.0.0.1`; `tailscale serve` proxies an HTTPS port of the Mac's tailnet name to it. Every request must carry a `Tailscale-User-Login` header equal to the owner's login, recorded at install from `tailscale status --json`; anything else gets 403, a direct request to the local port included. `tailscale serve` sets that header from the requesting node's user, and tagged nodes carry none: the devcloud VMs share the tailnet, and the page is the owner's work. M6 opens with a spike that checks the header's behavior (set for the owner's devices, absent for a tagged node, a client-sent copy replaced); if it does not hold, the server identifies the peer with `tailscale whois` on the forwarded address instead.
+- **How it runs.** Under launchd, so the page is up while the manager session is closed, which is when the owner is away. `manager serve --install` writes a launchd agent the way `sminos daemon install` writes the daemon's (the pinned Python, the marketplace clone's script path so a plugin update does not strand it) and prints the `launchctl bootstrap` and `tailscale serve` commands; loading and exposing are the owner's steps, as they are for the daemon. The server starts no process, calls no model and reads one file.
+
+The strongest alternative, `tailscale serve` of a static directory the update writes, needs no process at all but has no identity check: anything the tailnet's policy lets reach the Mac could read the page, the devcloud VMs among them. Others are in the Decision Log (2026-11-01).
 
 ### Transcript windows
 
@@ -160,20 +207,23 @@ The guard fails closed. The engine skips a hook that throws, overruns its budget
 
 ### What is left to measure
 
-- Whether Sonnet at medium effort sorts blocking from optional as well as at high: the replay evaluation decides (M4).
+- Whether Sonnet at medium effort sorts blocking from optional as well as at high: the replay evaluation decides (M5).
 - The fork agent on a session past 100k tokens (caching should not depend on length), under an Esc in the session, and across a compaction: the M2 live check, recorded in Surprises & Discoveries.
 - How the bridge confirms the guard is loaded (M2, below).
-- What one briefing costs, ten hours across four sessions: recorded during M4.
+- What one update costs, ten hours across four sessions, and what a delta update an hour later costs: recorded during M5.
+- How many work items an initiative's real outcomes come to over a day, which sets the digest brief's cap: read from the replay (M5).
+- Whether `tailscale serve`'s identity header is set for the owner's devices, absent for tagged nodes, and replaced when a client sends its own: M6's opening spike.
 
 ## Execution
 
 ### Constraints that bind every milestone
 
-- **Read-only toward working sessions.** No code path of the `manager` command appends to a session's conversation, interrupts its turn, edits its files, or writes an event to a project log. It never runs, or calls the functions behind, sminos's `say`, `send`, `steer`, `interrupt`, `answer`, `decide`, `compact`, `model`, `charge`, `status` or a cursor-advancing `chat`. The one exception it inherits is sminos's own membership reconciliation, which any sminos read (`list`, `chat`, `find_target`) may perform.
+- **Read-only toward working sessions.** No code path of the `manager` command appends to a session's conversation, interrupts its turn, edits its files, or writes an event to a project log. It never runs, or calls the functions behind, sminos's `say`, `send`, `steer`, `interrupt`, `answer`, `decide`, `compact`, `model`, `charge`, `status` or a cursor-advancing `chat`. The one exception it inherits is sminos's own membership reconciliation, which any sminos read (`list`, `chat`, `find_target`) may perform. Its writes are its state file, its archive and `serve.json` under `$SMINOS_HOME/managers/`, and the launchd agent `manager serve --install` writes.
+- **On demand only.** Nothing the manager ships runs between the owner's asks except `manager serve`, which only reads the state file and serves it: no schedule, no poller of sessions, no model call outside an update.
 - **This Mac only.** A member whose session runs on another machine is refused with a message naming the machine (`manager: CI-opt runs on mini; this version reads sessions on this machine only`). Cross-machine reading is out of scope.
 - **sminos's conventions.** Detail beside code: the new skill's command gets its own `sminos/skills/manager/scripts/CLAUDE.md`; `sminos/CLAUDE.md` gains one sentence pointing at it; the bridge's and derive's notes in the existing nested CLAUDE.md files are updated where their behavior changes. No CLAUDE.md is placed where a loader reads every `.md`.
-- **Tests run in isolation.** Every test isolates `HOME` and `SMINOS_HOME` as `sminos/tests/run-sminos-tests.sh` does; none touches the real `~/.claude/sminos` or a live session. Live checks run only against throwaway sessions with an isolated config (the M2 live check, the M4 acceptance run), never against the owner's sessions before merge.
-- **Versions.** On the branch, one bump of the sminos plugin (`scripts/bump-version.sh --plugin sminos`) and one of the doperpowers plugin (`scripts/bump-version.sh`, for the guard), both in M4.
+- **Tests run in isolation.** Every test isolates `HOME` and `SMINOS_HOME` as `sminos/tests/run-sminos-tests.sh` does; none touches the real `~/.claude/sminos` or a live session. Live checks run only against throwaway sessions with an isolated config (the M2 live check, the M5 acceptance run), never against the owner's sessions before merge. `manager serve`'s tests bind a random local port and never run `tailscale serve`, `launchctl` or write under the real `~/Library/LaunchAgents`.
+- **Versions.** On the branch, one bump of the sminos plugin (`scripts/bump-version.sh --plugin sminos`) and one of the doperpowers plugin (`scripts/bump-version.sh`, for the guard), both in M6, the last milestone.
 - **Verification.** Before a milestone is reported done: its tests pass locally (one focused file while iterating is fine), and `ci-gate` from the worktree is green on the committed HEAD for the gates its files touch: `sminos`, `sminos-suites`, `sminos-mods`, `mods-types`, and `mods` once the guard exists.
 
 ### Orientation
@@ -184,25 +234,33 @@ Paths below are repository-relative. The sminos CLI is `sminos/skills/sminos/scr
 
 **Files (new).**
 
-    sminos/skills/manager/SKILL.md                    # M4
-    sminos/skills/manager/references/digest-brief.md  # M4
+    sminos/skills/manager/SKILL.md                    # M5
+    sminos/skills/manager/references/digest-brief.md  # M5
     sminos/skills/manager/scripts/manager             # M1: sh launcher, as sminos's own
     sminos/skills/manager/scripts/manager.py          # M1: the CLI
     sminos/skills/manager/scripts/manager_window.py   # M1: transcript window reader and row classifier
-    sminos/skills/manager/scripts/CLAUDE.md           # M1, extended in M3 and M4
-    sminos/tests/test_manager.py                      # M1, extended in M3
+    sminos/skills/manager/scripts/manager_ledger.py   # M4: the state file v2, the ledger, apply, archive
+    sminos/skills/manager/scripts/manager_serve.py    # M6: the page's server and its install
+    sminos/skills/manager/assets/page.html            # M6: the page, one file, no build step
+    sminos/skills/manager/references/sminos-manager.plist   # M6: the launchd template
+    sminos/skills/manager/scripts/CLAUDE.md           # M1, extended in M3–M6
+    sminos/tests/test_manager.py                      # M1, extended in M3 and M4
+    sminos/tests/test_manager_serve.py                # M6
 
 `manager.py` puts `realpath(<its dir>/../../sminos/scripts)` on `sys.path` and imports `sminos`, `sminos_bridge`, `sminos_subagents`. It never calls `sminos.main()`; it calls `sminos.forget_caches()` only if it ever runs more than one resolution per process.
 
 **Commands.** Every command takes `--json`; text output is for the manager model to read, JSON for tests and scripts. Exit codes follow sminos's: 0 success, 1 failure with a message on stderr, 2 usage, 4 an unknown or ambiguous member (as `find_target` exits).
 
     manager transcript <member> --since T [--until T] [--max-chars N]
-    manager pending [--until T] [--name N]
+    manager pending [--since T] [--until T] [--name N]       # --since: M4, bounds the seen marks' read
     manager subscriptions [--name N]
     manager subscriptions add <initiative> <member>... [--name N]
     manager subscriptions remove <member>... [--name N]
-    manager carry [--name N]
-    manager carry set (--file PATH | -) [--name N]
+    manager ledger [--name N]                                  # M4; replaces `carry`
+    manager ledger apply (--file PATH | -) [--name N]          # M4; replaces `carry set`
+    manager serve [--name N] [--port P]                        # M6: run the page's server in the foreground
+    manager serve --install [--name N] [--port P]              # M6: write the launchd agent, print the load and expose commands
+    manager serve --status [--name N]                          # M6: the address, launchd's hold, tailscale's
 
 `T` is local time: `9am`, `14:30` (today; a clock time later than now means yesterday), a duration back from now (`10h`, `90m`, `2d`), or an ISO-8601 time.
 
@@ -254,27 +312,52 @@ The window's start is found with `sminos_subagents.offset_since(mm, t)` on an mm
 **`manager pending --json`:**
 
     {"unanswered": [{"member": "CI-opt", "session": "a45b97a3-…", "asked": "…Z", "question": "…", "src": "toolu_…"}],
-     "waiting":    [{"member": "p5-desk-track-owner", "session": "…", "since": "…Z"}]}
+     "waiting":    [{"member": "p5-desk-track-owner", "session": "…", "since": "…Z"}],
+     "seen":       [{"member": "CI-opt", "initiative": "P5", "seen": "…Z" | null, "last_activity": "…Z" | null}]}   // M4
+
+`seen` (M4): one entry per subscribed member. `seen` is the newest `you`, `you·desk` or `you·steer` entry, or `answered` entry of a blocking question (M1's reading (c): the call's non-error result; not an async question's host-event answer), across the member's lineage; `null` when there is none in the range read. `last_activity` is the newest entry of any kept kind. Both are found by reading the transcript backward from its end (or from `--until`) and stop at the first match, so a 669 MB transcript costs what its tail costs. The backward read stops at `--since T` when given, as an update gives its window start: `seen` is then `null` when the owner wrote nothing in the window, which is all the update needs (every window entry is unseen). Without `--since` it reads back at most 7 days. With `--until T`, entries after `T` are ignored. `pending`'s text output adds one line per member: `CI-opt  seen 14:20 · active 16:05` (or `never seen here`).
 
 `unanswered`: `question` host events of every subscribed session (any age) with no `answered` event of the same `src`; with `--until T`, only questions asked before `T` and answers given before `T` count, so a past moment can be replayed. Read both places a host event can live, the log and the host store (`sminos._own_events(project, sid, "log")` and `(project, sid, sminos.HOST_STORE)`); an answer can sit under the asker's writer. `waiting`: subscribed members whose `Member.state` is `waiting`.
 
-**State file** `$SMINOS_HOME/managers/<name>.json` (mode 0600, written whole through a temporary file and a rename):
+**State file** `$SMINOS_HOME/managers/<name>.json` (mode 0600, written whole through a temporary file and a rename). M1 wrote version 1 (`initiatives`, `carry`, `briefed`); M4 moves it to version 2, and every read-modify-write (subscriptions, `ledger apply`) holds an exclusive `fcntl.flock` on `<name>.lock` beside it, since an update and a subscription change can now meet:
 
     {
-      "version": 1,
+      "version": 2,
       "initiatives": [
         {"name": "P5", "sessions": [
-          {"session": "b4948247-…", "alias": "p5-desk-track-owner", "project": "doperpowers", "added": "…Z"}]}
+          {"session": "b4948247-…", "alias": "p5-desk-track-owner", "project": "<project id>", "project_name": "doperpowers", "added": "…Z"}]}
       ],
-      "carry": [
-        {"session": "a45b97a3-…", "member": "CI-opt", "raised": "…Z", "need": "…", "blocking": true, "source": "…quote…"}
+      "updated": "…Z",                 // when the last update applied
+      "window": {"since": "…Z", "until": "…Z"},   // what the last update covered; a plain "update" starts at its `until`
+      "next": {"y": 13, "w": 5},       // the next id of each lane; archived ids are never reused
+      "items": [
+        {"id": "y12", "lane": "yours", "initiative": "P5", "member": "CI-opt", "session": "a45b97a3-…",
+         "type": "decide", "blocking": true, "need": "…", "why": "…", "raised": "…Z", "source": "…quote…",
+         "status": "pending", "status_at": "…Z", "evidence": "…quote…" | null, "unverified": false,
+         "seen": false, "reported": "…Z", "changed": "…Z"},
+        {"id": "w4", "lane": "work", "initiative": "P5", "members": ["CI-opt", "p5-desk-track-owner"],
+         "title": "…what is now true, in plain words…", "meaning": "…why it matters to the owner…",
+         "status": "in progress", "waits_on": null, "started": "…Z", "finished": null, "refs": ["PR #449"],
+         "reported": "…Z", "changed": "…Z"}
       ],
-      "briefed": "…Z"
+      "briefs": [{"initiative": "P5", "written": "…Z", "since": "…Z", "text": "…prose…"}]
     }
 
-`subscriptions add` refuses the manager's own session (`CLAUDE_CODE_SESSION_ID` in its environment) and members on another machine; adding a member already subscribed under another initiative moves it. `carry set` replaces `carry` and stamps `briefed`; it is how the skill records what a briefing left open.
+Enumerations: `lane` `yours | work`; yours `type` `decide | judge | act | answer | other`, `status` `pending | answered | done | overtaken`; work `status` `in progress | done | stalled` (`waits_on` set when stalled). `seen` is whether the item was raised at or before its session's seen mark when the update ran. `reported` is when an update first reported the item, `changed` when one last changed it; together they let an update tell new, changed and still-open items apart. Reading a version 1 file migrates it in memory (each `carry` entry becomes a yours item: type `other`, status `pending`, its initiative from its session's subscription, `reported` = `briefed`; `briefed` becomes `updated`), and the next write stores version 2.
 
-**More new files (M2–M4).**
+**`manager ledger apply`** takes one JSON document:
+
+    {"window": {"since": "…Z", "until": "…Z"},
+     "items": [ {…an item…} ],          // an item with an "id" updates that item (fields given replace fields held); one without is new and gets the next id of its lane (y…, w…)
+     "briefs": [ {"initiative": "P5", "since": "…Z", "text": "…"} ]}
+
+It validates the whole document before writing anything (known lanes, types, statuses; an update to an unknown id; a new item missing a required field — yours: `initiative`, `member`, `type`, `blocking`, `need`, `raised`, `source`, `status`; work: `initiative`, `title`, `meaning`, `status`), exit 2 naming every problem; it never deletes an item. It stamps `reported` on new items and `changed` on every item it touches, sets `updated` to now and `window` from the document, replaces each initiative's brief given, and moves done and overtaken items whose `changed` is more than 30 days old to `<name>.archive.jsonl` (append, one item per line). Text output: one line per initiative, `P5: 2 new · 3 changed · 5 open · brief written`.
+
+**`manager ledger`** prints the ledger per initiative: the owner's items by status (pending first; within it blocking, then unseen), then work in progress, stalled, and done in the last 7 days; then the latest brief's time and window. `--json` prints `{"updated", "window", "initiatives": [{"name", "items": […], "brief"}]}`, the shape `/ledger.json` serves (M6).
+
+`subscriptions add` refuses the manager's own session (`CLAUDE_CODE_SESSION_ID` in its environment) and members on another machine; adding a member already subscribed under another initiative moves it (its open items keep their initiative until an update moves them).
+
+**More new files (M2–M3).**
 
     sminos/hooks/mods/bridge-ask.tsx                  # M2: the `ask` op, imported by bridge.tsx as bridge-btw.tsx is
     sminos/tests/mods/bridge-ask.test.ts              # M2 (ask.test.ts already exists: it tests the async question tool)
@@ -345,6 +428,24 @@ The tail exists only while the main loop is mid-turn: the bridge records a bound
 
 Text output: the answer, then one line `via fork agent · cache read N · cache write N · input N · output N` (or `via headless fork · …`). `--json`: `{"member", "via", "text", "truncated", "usage"}`. It asks through `ask_fork_agent` with the question under no extra frame (the bridge adds `ASK_FRAME`) when `bridge_offers(session, "ask")`; otherwise through `headless_fork(…, FORK_FRAME + "\n\nThe question:\n\n" + question, tools=True, cache=True)`: a session that is not running, a bridge that does not offer `ask` (an older sminos), and an `ask` refused `no-guard` all take the headless path, at the read-only level the owner accepted for it, and the output's `via` says which path answered. An `ask` refused `busy` (another manager query is running in that session) or `nothing-to-fork` (the session has made no request yet) is reported, exit 1. A session under another config dir is refused for the headless path as `derive` refuses it (`foreign_config`).
 
+**`manager serve`** (M6). Its settings live in `$SMINOS_HOME/managers/<name>.serve.json` (0600): `{"port": P, "https_port": H, "owner": "<tailnet login>"}`, written by `--install` (port defaults chosen by M6 and recorded in the Decision Log).
+
+    GET /             the page (assets/page.html, read per request so an update to the page needs no restart)
+    GET /ledger.json  `manager ledger --json` of the state file, built per request
+    GET /events       text/event-stream: `event: changed` with the state's `updated` whenever the state file's
+                      mtime moves (stat once a second), a comment line every 25 s to keep proxies open
+    anything else     404; a method other than GET, 405
+
+Every request is checked first: its `Tailscale-User-Login` header must equal `owner`, else 403 with a one-line body. The server binds `127.0.0.1:P`, starts no subprocess, opens no outbound connection, and re-executes itself in place when its own scripts change, as the sminos daemon does, so a plugin update reaches a running server.
+
+`--install` reads the owner's login from `tailscale status --json` (the `LoginName` of `Self.UserID` in `User`) and refuses when tailscale is not running or this node is tagged. It writes `~/Library/LaunchAgents/com.doperpowers.sminos-manager.<name>.plist` (0600) from `references/sminos-manager.plist` the way `sminos_daemon.install_launchd` does (the installing Python pinned, the marketplace clone's `manager.py` when run from the versioned cache, `RunAtLoad`, `KeepAlive`, `ThrottleInterval` 60, output to `<name>.serve.log`), writes `serve.json`, and prints, without running them:
+
+    load it:    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.doperpowers.sminos-manager.default.plist
+    expose it:  tailscale serve --bg --https=H http://127.0.0.1:P
+    address:    https://<this Mac's tailnet name>:H/
+
+`--status` prints the address, whether launchd holds the agent (`launchctl print`), and whether `tailscale serve status --json` maps `H` to `P`.
+
 ### M1 — The `manager` command: windows, pending items, subscriptions
 
 At the end of M1 the owner (or a session) can run `manager transcript <member> --since 10h` on any local session and read its condensed window in seconds, `manager pending` for unanswered questions and waiting sessions, and `manager subscriptions …` / `manager carry …` to keep the manager's state. Nothing yet asks a session anything.
@@ -374,7 +475,7 @@ At the end of M2 a live session running the branch's sminos and doperpowers plug
   - The guard caches nothing across calls it cannot re-derive: `$.agent.list()` is read per `tool.check` of a subagent loop (the main loop's calls, which carry no `agentId`, pass through without a lookup).
   - Live checks follow the spike's harness (`~/.local/share/session-manager/spikes/fork-agent-probe/run_probe2.py`, `analyze.py`, and `fork-agent-findings.md` beside it): an isolated config dir, sessions on haiku rooted outside `~` (a session rooted under `~` loads `~/.claude/CLAUDE.md`; friction entry `general/conditional/isolated-claude-home-under-user-home-inherits-ancestor-claude-md.md`), the branch's plugins loaded from the worktree. Do not copy the engine into a fake `HOME`.
 - **Does not touch:** `btw`'s behavior, `derive`, the `manager` command, `sminos_rpc.py` and the hub's RPC set, the desk.
-- **Proves:** acceptance 4, 5 and 6 at the bridge (M4 repeats them through `manager query`). Unit tests pin: `ask` refused `bad-prompt`, `busy`, `no-guard`, `nothing-to-fork`; `ASK_FRAME`'s exact text; `askPrompt` with and without a tail; the tail rendered from the messages after the last completed response (a text-only one included), tool results cut to 2,000 characters, the newest 32 KiB kept; the end's text cut to 64 KiB; an end matched to its own `agentId` only; an orphaned ask ended `aborted` after a reload, and a fork still running after any number of reloads keeping `ask` busy; open asks kept under `bridgeAsk` beside a pending async question's `AskSnapshot` under `ask`, neither overwriting the other across a reload; the guard, for a managed fork: refusing at `tool.call` every tool outside `FORK_TOOLS` (`Agent`, `SendMessage`, an MCP tool, a stand-in plugin tool whose `tool.call` handler would write a probe file — the file is not written), allowing `Read`/`Grep`/`Glob`, allowing read-only `Bash` and denying the rest at `tool.check`; refusing when `$.agent.list()` rejects, passing an id a readable list lacks, and when a guard handler throws (the registration's `.catch`); passing through untouched for another plugin's fork, a non-fork subagent and the main loop; answering before `appeal.tsx`'s pass can apply; guard presence turning false when the guard module is unloaded, so `ask` answers `no-guard`. The live check records, into Surprises & Discoveries: an idle session's ask (cache read as a share of the last request, the quoted last message, the main transcript's user and assistant row counts before and after, no turn started); an ask during a main-loop `sleep 20` (the sleep's duration, the tail naming the latest tool call); `touch` refused with no file and no permission prompt, in `auto` and in `default` permission mode; a fork told to spawn an `Agent` or to message the main session refused; the managed fork identified on its first tool call; a sminos reload during an ask (whether the fork survives); `busy`; `no-guard`; a session past 100k tokens (cache share); an Esc in the session during an ask and a compaction during an ask (what the fork and the end do).
+- **Proves:** acceptance 4, 5 and 6 at the bridge (M5 repeats them through `manager query`). Unit tests pin: `ask` refused `bad-prompt`, `busy`, `no-guard`, `nothing-to-fork`; `ASK_FRAME`'s exact text; `askPrompt` with and without a tail; the tail rendered from the messages after the last completed response (a text-only one included), tool results cut to 2,000 characters, the newest 32 KiB kept; the end's text cut to 64 KiB; an end matched to its own `agentId` only; an orphaned ask ended `aborted` after a reload, and a fork still running after any number of reloads keeping `ask` busy; open asks kept under `bridgeAsk` beside a pending async question's `AskSnapshot` under `ask`, neither overwriting the other across a reload; the guard, for a managed fork: refusing at `tool.call` every tool outside `FORK_TOOLS` (`Agent`, `SendMessage`, an MCP tool, a stand-in plugin tool whose `tool.call` handler would write a probe file — the file is not written), allowing `Read`/`Grep`/`Glob`, allowing read-only `Bash` and denying the rest at `tool.check`; refusing when `$.agent.list()` rejects, passing an id a readable list lacks, and when a guard handler throws (the registration's `.catch`); passing through untouched for another plugin's fork, a non-fork subagent and the main loop; answering before `appeal.tsx`'s pass can apply; guard presence turning false when the guard module is unloaded, so `ask` answers `no-guard`. The live check records, into Surprises & Discoveries: an idle session's ask (cache read as a share of the last request, the quoted last message, the main transcript's user and assistant row counts before and after, no turn started); an ask during a main-loop `sleep 20` (the sleep's duration, the tail naming the latest tool call); `touch` refused with no file and no permission prompt, in `auto` and in `default` permission mode; a fork told to spawn an `Agent` or to message the main session refused; the managed fork identified on its first tool call; a sminos reload during an ask (whether the fork survives); `busy`; `no-guard`; a session past 100k tokens (cache share); an Esc in the session during an ask and a compaction during an ask (what the fork and the end do).
 
 ### M3 — The shared fork code: `derive` on `btw`, `manager query`
 
@@ -391,27 +492,60 @@ At the end of M3, `sminos derive` asks a live member through `btw` and a stopped
 - **Does not touch:** the TypeScript mods (M2 is done), the skill.
 - **Proves:** acceptance 7 and 9 at the stub level, and `manager query`'s routing. Tests pin: derive with a live bridge stand-in offering `btw` asks through it and starts no fork process; derive with a refused or failing `btw` falls back to the headless fork; derive with no bridge runs the headless fork with `--tools ""` and `DISABLE_PROMPT_CACHING=1`, prompt last; `manager query` with a stand-in offering `ask` returns its end's text and usage and names `via fork agent`; `busy` and `nothing-to-fork` exit 1 with the reason; `no-guard`, an `ask`-less bridge and a stopped session take the headless fork with `--permission-mode auto --tools Read,Grep,Glob,Bash`, caching on, `FORK_FRAME` before the question, prompt last; a remote member and a foreign config dir refused; a silent bridge past `--timeout` exits 1 saying so.
 
-### M4 — The skill, the digest brief, the replay evaluation, and acceptance
+### M4 — The ledger and the delta in the `manager` command
 
-At the end of M4 the owner can run `/sminos:manager` in a fresh session, subscribe sessions, and ask for an update since a time, and get the briefing the design describes; the digest subagents' effort is chosen on evidence; both plugins carry new versions; and every acceptance item has been run.
+At the end of M4, `manager ledger apply` records an update's items and briefs in a version 2 state file, `manager ledger` shows them per initiative, and `manager pending --since T` gives each subscribed session's seen mark. Nothing writes the ledger yet but a test or a hand-run command.
 
-- **Touches:** `sminos/skills/manager/SKILL.md` (new), `sminos/skills/manager/references/digest-brief.md` (new), `docs/doperpowers/specs/2026-10-31-session-manager-replay.md` (new: the labelled list and the scores), `sminos/skills/manager/scripts/CLAUDE.md` (final), `sminos/CLAUDE.md` (the pointer, if M1 did not add it), the plugins' versions through `scripts/bump-version.sh --plugin sminos` and `scripts/bump-version.sh`, this spec's Progress and record.
-- **Consumes:** every command from M1 and M3.
+- **Touches:** `sminos/skills/manager/scripts/manager_ledger.py` (new), `manager.py` (`ledger` and `ledger apply` replacing `carry`; `pending`'s `seen` and `--since`; the lock around subscription writes), `manager_window.py` (the backward reader for seen marks), `sminos/tests/test_manager.py`, `sminos/skills/manager/scripts/CLAUDE.md`.
+- **Exposes:** the version 2 state file, `manager ledger`, `manager ledger apply`, `pending`'s `seen` (Interfaces).
+- **Consumes:** M1's resolution, windows, classifier and state file.
 - **Decisions:**
-  - Write and test the skill with `doperpowers:writing-skills`. `SKILL.md`'s front matter is `name: manager`, a one-sentence `description` for the slash menu (what it does for the owner: a read-only briefing of what their subscribed sessions need from them and what happened since a time), and `disable-model-invocation: true`. Its body carries what the manager model cannot derive: the purpose (the owner's side of the work), the commands (named from the skill's base directory), the briefing's order and item fields, blocking and optional, the status rules, the digest dispatch (general-purpose subagents, `model: sonnet`, the chosen effort, one per subscribed session, in parallel, briefed from `references/digest-brief.md`), recording the carry list with `manager carry set` after each briefing, subscriptions only on the owner's word (it may suggest), strictly read-only, and the query costs that tell it when a query is worth it (a fork agent costs a fraction of a headless fork). The design section of this spec is the source; the skill does not point at the spec, since the manager model will not have it.
-  - `digest-brief.md` is the brief a digest subagent gets: its member, its window, its carry items; to read with `manager transcript` and ask with `manager query` when the records leave an item's status unclear; to return, per need, what is needed, why it has to be the owner, blocking or optional, when raised, status with its evidence, and the quoted source, then the session's decisions taken on the owner's behalf, changes of plan and progress, as prose for the manager to merge.
-  - **The replay evaluation.** Window: 2026-10-30 00:00 to 2026-10-31 23:59 KST over the P5 sessions `37052769`, `b4948247`, `a45b97a3`, and `1ea561bc` (the MAWS session that asked to merge cua PR #240). The labelled list is made first, independently of the skill: an Opus subagent at high effort reads the window's host events and `manager transcript` windows and lists every item the owner was asked for, with its blocking or optional label and its status at the window's end; the executor checks each item against the transcripts and writes the list to the replay file. Then the briefing procedure runs on the same window twice, digest subagents at Sonnet medium and at Sonnet high, and each is scored: blocking items found, all items found, items invented, statuses right. Medium is chosen if it finds every blocking item high finds and its total recall is within 5 points of high's; the choice goes into `SKILL.md` and the Decision Log, the scores into the replay file and Surprises & Discoveries, with each run's cost. The chosen effort must also meet acceptance 8 on this input: every blocking item found and at least 90% of all items.
-  - **The replay is frozen at its cutoff.** The labelled list judges status as of 2026-10-31 23:59 KST, so nothing either run reads may come from after it: transcripts are read with `--until` the cutoff, `manager pending --until` the cutoff, and the digest subagents are told not to query (a query reads the session as it is now, with later answers in it) and to settle every item from the records up to the cutoff. Each run starts from its own empty state (`--name replay-medium`, `--name replay-high`), so neither reads the other's carry list. Querying is exercised separately, on throwaway sessions, in M2's live check and the acceptance run.
-  - **Pressure scenarios** for the skill (writing-skills), on a throwaway manager session: the owner says "tell CI-opt yes, merge it" (it does not relay; it says where to answer); the owner says "subscribe whatever looks relevant" (it lists suggestions and subscribes only what the owner then names); a digest finds an item it cannot settle from the records (it queries rather than guesses); the owner asks a follow-up about one item (it answers from the briefing, the transcript or a query, without re-running the briefing).
-  - **Acceptance run.** Items 4–7 and 9 need the new bridge inside the queried session, so before merge they run against throwaway sessions loaded with the branch's plugins, as M2's live check does. Items 1–3 and 8 run as written on the owner's real records: the `manager` commands read transcripts and host events and change nothing, and item 8 is the frozen replay above. Item 10 is checked on the throwaway sessions the queries went to, and on the real sessions' transcripts for the reads. After merge and a plugin update, the finish step repeats item 4 against one of the owner's own live sessions.
+  - The backward reader reads the transcript in blocks from its end (or from `--until`'s offset, found with `offset_since`), classifies rows with M1's classifier newest first, and stops at the first owner entry or at `--since`. It calls the classifier; it does not copy its frame rules.
+  - `carry` and `carry set` are removed, not aliased: nothing outside the branch has used them.
+  - `ledger apply` validates the whole document before writing and writes nothing on any problem. Ids come from the state's `next` counters, which archiving never lowers.
+  - The ledger's text output is for the manager model: compact, one line per item, ids shown so an update can name the items it changes.
+- **Does not touch:** the skill (M5), the bridge, `derive`, the fork code.
+- **Proves:** acceptance 11's mechanics and the ledger's contract at the command level. Tests pin: a version 1 file migrated (each carry entry a yours item of type `other`, status `pending`, its initiative from its subscription; `briefed` to `updated`; version 2 on the next write); `apply` giving new items ids and replacing only the fields given on an update; an unknown id, lane, type or status and a missing required field refused with every problem named and the file unchanged; `reported` stamped once, `changed` on each touch, `updated` and `window` set, a brief replaced per initiative; done and overtaken items archived after 30 days and their ids never reused; two concurrent `apply`s both landing under the lock; `ledger --json`'s shape and the text output's order; seen marks: the newest owner entry across a lineage, `you?`, `you·desk?` and an async question's answer ignored, a blocking question's answer counted, `--since` giving `null` when the owner wrote nothing after it, `--until` ignoring later entries; on a generated 50 MB transcript whose last owner entry sits near the end, the seen mark found in under a second (the figure recorded).
+
+### M5 — The skill, the digest brief, the replay evaluation, and acceptance 1–12
+
+At the end of M5 the owner can run `/sminos:manager` in a fresh session, subscribe sessions, ask for an update, and get the update the design describes: led by what they missed, a delta from the last one, written into the ledger. The digest subagents' effort is chosen on evidence, and acceptance 1–12 have been run.
+
+- **Touches:** `sminos/skills/manager/SKILL.md` (new), `sminos/skills/manager/references/digest-brief.md` (new), `docs/doperpowers/specs/2026-10-31-session-manager-replay.md` (new: the labelled list and the scores), `sminos/skills/manager/scripts/CLAUDE.md`, `sminos/CLAUDE.md` (the pointer, if M1 did not add it), this spec's Progress and record.
+- **Consumes:** every command from M1, M3 and M4.
+- **Decisions:**
+  - Write and test the skill with `doperpowers:writing-skills`. `SKILL.md`'s front matter is `name: manager`, a one-sentence `description` for the slash menu (what it does for the owner: a read-only update of what their subscribed sessions need from them and what they missed), and `disable-model-invocation: true`. Its body carries what the manager model cannot derive: the purpose (the owner's side of the work, and what they missed while working elsewhere), the commands (named from the skill's base directory), the update's window (a plain "update" from the last window's end), its order and item fields, the seen marks and what they mean, the delta (new, changed, still open), the types, blocking and optional, the statuses, the work lane's grain rule and cap, the digest dispatch (general-purpose subagents, `model: sonnet`, the chosen effort, one per subscribed session with activity or open items, in parallel, briefed from `references/digest-brief.md`), applying the ledger change with `manager ledger apply` after each update, subscriptions only on the owner's word (it may suggest), strictly read-only, nothing between asks, and the query costs that tell it when a query is worth it (a fork agent costs a fraction of a headless fork). The design section of this spec is the source; the skill does not point at the spec, since the manager model will not have it.
+  - `digest-brief.md` is the brief a digest subagent gets: its member, its window, its seen mark, its session's open ledger items in both lanes (with ids); to read with `manager transcript` and ask with `manager query` when the records leave an item's status unclear; to return ledger items in `ledger apply`'s shape (new ones without ids, each with `seen` set by comparing its `raised` with the seen mark; changes to held ones by id, with the evidence) and, as prose, only the stretches after the seen mark: decisions taken on the owner's behalf, changes of plan, where things stand. It states the work lane's rule with examples drawn from the replay (an outcome title next to the identifier-only title it replaces) and the cap.
+  - **The labelled list already exists** (111 items: 51 blocking, 60 optional; made by an Opus labeller before the ledger was designed, so without types or done status). Before scoring, the executor adds each item's type and, for answered items, whether the follow-through was done by the cutoff, from the same evidence, spot-checking a sample against the transcripts.
+  - **The replay evaluation.** Window: 2026-10-30 00:00 to 2026-10-31 23:59 KST over the P5 sessions `37052769`, `b4948247`, `a45b97a3`, and `1ea561bc` (the MAWS session that asked to merge cua PR #240). The labelled list is made first, independently of the skill: an Opus subagent at high effort reads the window's host events and `manager transcript` windows and lists every item the owner was asked for, with its blocking or optional label and its status at the window's end; the executor checks each item against the transcripts and writes the list to the replay file. Then the update procedure runs on the same window twice, digest subagents at Sonnet medium and at Sonnet high. Each run is two frozen updates: A from 2026-10-30 00:00 to 2026-10-31 00:00 KST, then B, a plain "update" from A's window end to the cutoff. Each run's ledger after B is scored against the labelled list: blocking items found, all items found, items invented, statuses right (pending, answered, done, overtaken), and types right (reported, not a gate). Medium is chosen if it finds every blocking item high finds and its total recall is within 5 points of high's; the choice goes into `SKILL.md` and the Decision Log, the scores into the replay file and Surprises & Discoveries, with each update's cost (A as a full update, B as a delta). The chosen effort must also meet acceptance 8 on this input: every blocking item found and at least 90% of all items.
+  - **The delta, the seen marks and the work lane on the replay.** B is checked against acceptance 11: what it reports as new or changed, against the items the labelled list places after A's window end; A's open items in its still-open list; none of A's resolved items repeated. Ten items whose seen flag the executor checks by hand against the transcripts (five marked seen, five unseen) are recorded with the verdicts. The work lane of the chosen run is read against acceptance 12 by a reviewer subagent given only the rubric (plain-words titles saying what is now true or possible; no identifier-only title; no routine step as an item) and the ledger; the number of outcomes the P5 window really holds per initiative per day sets the digest brief's cap, recorded in the Decision Log. The chosen run's ledger, rendered by `manager ledger`, goes into the replay file so the owner can read the lane as it will look.
+  - **The replay is frozen at its cutoff.** The labelled list judges status as of 2026-10-31 23:59 KST, so nothing either run reads may come from after it: transcripts are read with `--until` each update's window end, `manager pending --until` the same, and the digest subagents are told not to query (a query reads the session as it is now, with later answers in it) and to settle every item from the records up to that end. Each run starts from its own empty state (`--name replay-medium`, `--name replay-high`), so neither reads the other's ledger. Querying is exercised separately, on throwaway sessions, in M2's live check and the acceptance run.
+  - **Pressure scenarios** for the skill (writing-skills), on a throwaway manager session: the owner says "tell CI-opt yes, merge it" (it does not relay; it says where to answer); the owner says "subscribe whatever looks relevant" (it lists suggestions and subscribes only what the owner then names); a digest finds an item it cannot settle from the records (it queries rather than guesses); the owner asks a follow-up about one item (it answers from the update, the ledger, the transcript or a query, without re-running the update); the owner says "update" twice in a row (the second says briefly that nothing changed and runs no digest subagent for a session with no activity); the owner says "what did I miss in CI-opt?" (it answers from the stretch after that session's seen mark).
+  - **Acceptance run.** Items 4–7 and 9 need the new bridge inside the queried session, so before merge they run against throwaway sessions loaded with the branch's plugins, as M2's live check does. Items 1–3, 8, 11 and 12 run as written on the owner's real records: the `manager` commands read transcripts and host events and change nothing but the manager's own state, and items 8, 11 and 12 are the frozen replay above. Item 10 is checked on the throwaway sessions the queries went to, and on the real sessions' transcripts for the reads. After merge and a plugin update, the finish step repeats item 4 against one of the owner's own live sessions.
 - **Does not touch:** code beyond what an acceptance failure forces (a failure found here is fixed in the milestone's own files and recorded).
-- **Proves:** acceptance 1–10; the replay scores and the effort choice; the pressure scenarios' outcomes.
+- **Proves:** acceptance 1–12; the replay scores, the effort choice and the work-lane cap; the pressure scenarios' outcomes.
+
+### M6 — The page
+
+At the end of M6, `manager serve` serves the ledger as a read-only page to the owner's Tailscale identity only, `manager serve --install` writes the launchd agent and prints the load and expose commands, the update names the page's address, and both plugins carry new versions.
+
+- **Touches:** `sminos/skills/manager/scripts/manager_serve.py` (new), `sminos/skills/manager/assets/page.html` (new), `sminos/skills/manager/references/sminos-manager.plist` (new), `manager.py` (the `serve` commands), `sminos/tests/test_manager_serve.py` (new), `sminos/tests/run-sminos-tests.sh` (`run_suites()` calls it), `SKILL.md` (the page's address in the update; installing on the owner's word), `sminos/skills/manager/scripts/CLAUDE.md`, the plugins' versions through `scripts/bump-version.sh --plugin sminos` and `scripts/bump-version.sh`, this spec's Progress and record.
+- **Exposes:** `manager serve` (Interfaces).
+- **Consumes:** M4's `ledger --json` shape and state file; M5's skill.
+- **Decisions:**
+  - **The opening spike** settles the identity header before the server is built. Run a throwaway header-echo server on a local port, expose it with `tailscale serve --bg --https=<a free port>`, and request it from this Mac by its tailnet name (the owner's own device), with a forged `Tailscale-User-Login` sent by the client, and from a tagged node if one is running (`devcloud vm` lists them; if none is, record that the tagged case is unverified and rely on `tailscale whois` of the peer address, which names a tagged node by its tags). Remove the throwaway serve mapping afterward (`tailscale serve --https=<port> off`) and touch nothing else in the Mac's serve config. Record the findings in Surprises & Discoveries; if the header is not set or not replaced as the design assumes, the server identifies the peer with `tailscale whois` instead, and the Decision Log says so.
+  - The server is Python's `http.server.ThreadingHTTPServer`, no dependency beyond the standard library; it reads the ledger through `manager_ledger` (the same code as `manager ledger --json`), never its own parse of the file.
+  - The page is one HTML file with its CSS and script inline, no build step and no external asset (it must load with nothing reachable but the Mac), designed through the designer skill: phone first (375 px wide), the owner's items before everything, type and blocking legible at a glance, unseen items marked, work outcomes as titles with their meaning beneath and refs small, the latest brief collapsed, the update's time and age at the top, light and dark by the system setting. It renders `/ledger.json` and listens on `/events`.
+  - Installing is the owner's choice: the skill runs `manager serve --install` only when the owner asks, and hands them the two printed commands rather than running `launchctl` or `tailscale serve` itself, since they change the owner's machine and what their tailnet can reach.
+- **Does not touch:** the update procedure beyond naming the address; any session; the sminos daemon.
+- **Proves:** acceptance 13 and 14. Tests pin: 403 for a request without the header, with another login, and for a direct local request; 200 with the owner's login; `/ledger.json` equal to `manager ledger --json`; `/events` announcing `changed` within 2 seconds of a `ledger apply` and nothing while the file is unchanged; 404 and 405; no subprocess started and no outbound connection opened while serving (the test fails if either is attempted); `--install` under an isolated `HOME` writing the plist 0600 with the pinned interpreter and the clone's path, writing `serve.json`, and printing both commands without running them; `--status` against stub `tailscale` and `launchctl` on `PATH`. Before merge, the acceptance run serves the branch's page in the foreground behind a temporary `tailscale serve` mapping on a free port, checks it from this Mac's tailnet name (200, the page rendered at phone width with `playwright-cli`, a screenshot in the report) and from a tagged node if one is running (403), then removes the mapping. After merge, the finish step gives the owner the install's commands and checks the address from their phone with them; surviving a logout and a plugin update is the owner's to observe.
 
 ### Concrete Steps
 
 All from the worktree, `/Users/new/Developer/GitHub/doperpowers/.claude/worktrees/session-manager`.
 
-    python3 sminos/tests/test_manager.py                    # M1, M3: the manager command
+    python3 sminos/tests/test_manager.py                    # M1, M3, M4: the manager command
+    python3 sminos/tests/test_manager_serve.py              # M6: the page's server and its install
     bash sminos/tests/run-sminos-tests.sh                   # every sminos suite; SMINOS_PART=core or suites for half
     bash sminos/tests/mods/run.sh                           # M2: the sminos mods, bridge-ask.test.ts among them
     bash tests/mods/run-mods-tests.sh                       # M2: the doperpowers mods, fork-guard.test.ts among them
@@ -434,6 +568,14 @@ Expected shapes (illustrative values):
     $ sminos/skills/manager/scripts/manager query some-stopped-seat "What did you finish last?"
     …
     via headless fork · cache read 0 · cache write 88,102 · input 2 · output 310
+
+    $ sminos/skills/manager/scripts/manager ledger
+    P5 · updated 16:10 (covering 09:00–16:10)
+      y12  pending   decide  blocking  NEW   CI-opt 14:32  merge the runner-image PR once CI is green?
+      y9   pending   act     optional        p5-desk-track-owner 11:05  restart dasd on the mini (needs your password)
+      y7   answered  judge                   GUI AI agent workspace charter 10:12  the desk layout mockup — "go with B"
+      w4   in progress  Sessions can be asked questions without disturbing them (manager query)
+      w3   done         The interrupt keeps a session's cut-off reply instead of discarding it
 
 A failure reads as one line on stderr and exit 1, for example `manager: CI-opt runs on mini; this version reads sessions on this machine only` or `manager: CI-opt is already answering another manager query (busy)`.
 
@@ -522,6 +664,19 @@ A failure reads as one line on stderr and exit 1, for example `manager: CI-opt r
 - Decision: M3's readings. (a) A `btw` answer with no in-charge line falls back to the headless fork like any `ForkFailed`, which keeps derive's success rate from dropping below today's. (b) `manager query` falls back to the headless fork only on `no-guard` (and on no `ask` at all, or a stopped session). `busy`, `nothing-to-fork` and every other failure exit 1 with their reason: an aborted, failed or empty fork agent, a spawn failure, `lane-b`, a timeout. A second, uncached fork would double the cost of an error the owner should see. An observer's bridge (MAWS lane B) lists no ops, so it takes the headless path. (c) A query targets the member's newest session. For a session membership no longer holds, the headless fork runs from its `joined` cwd, else the project root; a session with no project is refused. (d) `cache=True` removes an inherited `DISABLE_PROMPT_CACHING`. (e) Derive's route goes to stderr as `sminos: derive <alias> via <btw|headless fork> · cache read N · input N`. (f) The test bridge stand-in is its own side-effect-free module, `sminos/tests/bridge_standin.py`, and `run-sminos-tests.sh` roots under `/tmp`, since macOS's `$TMPDIR` pushed a bridge socket past the 103-byte limit.
   Rationale: each settles a case the spec left open in the direction of its stated aims (derive never less available than today; the owner sees errors instead of paying twice for them).
   Date/Author: 2026-10-31, M3 executor, folded by plan-executor.
+
+- Decision: The design gains a ledger, a delta update led by what the owner has not seen, and a read-only page on the owner's tailnet; nothing runs between the owner's asks. Milestones re-cut: M4 the ledger and the delta, M5 the skill and the replay (the former M4), M6 the page; the version bumps move to M6.
+  Rationale: the owner asked mid-execution for a page "updated live, tailscale served" keeping the ledger: what is done, in progress, and pending on their side to act, judge or decide. They first chose a live ledger (a Sonnet pass on each new message) with the brief on ask, then withdrew the live part: "manager doesn't have to get a constant feedback… often times I'm gonna be with sessions, on terminal, and manager only have to take care of what I'm missing… just update the delta only when I ask it to." On the work lane they asked for outcomes they can identify the meaning of, not "M1 reviewed clean" or "PR #449 merged", grouped bigger, since routine progress only bloats it. The 2026-11-01 entry above ("not a ledger maintained in the background, which the owner rejected") still holds: the ledger changes only during an update. Rejected: background Sonnet passes per event (withdrawn by the owner; they pay for what the owner often watched happen); live mechanical facts on the page, such as open questions and session states polled without a model (a poller in the server and a page that disagrees with its own ledger, for what the owner said they do not need); keeping the replay's milestone ahead of the ledger and retrofitting the skill after (the skill would be written twice).
+  Date/Author: 2026-11-01, doperpowers-9b (f89d7fb0), on the owner's direction.
+- Decision: "Seen" is read from the records alone: a session's seen mark is the owner's latest own words in it (a typed, desk or steer entry, or an answer to a blocking question), and everything after it is unseen.
+  Rationale: it is the one presence signal every transcript on this Mac holds, and it errs toward reporting: unverified rows, async answers (which the owner can give from a phone without the session in front of them) and reading without writing do not count as presence. Rejected: a time-decay presence window after each owner entry (a guess layered on a guess, which would hide messages the owner never saw); MAWS's unread state (it covers MAWS-launched sessions only; a later source); asking the owner to mark sessions read (a chore the manager exists to remove).
+  Date/Author: 2026-11-01, doperpowers-9b (f89d7fb0).
+- Decision: The page is served by its own small server under launchd, behind `tailscale serve`, admitting only requests whose `Tailscale-User-Login` is the owner's.
+  Rationale: the owner reads it from a phone while away, when the manager session may be closed, so the server cannot live in that session; the devcloud VMs share the tailnet and the page carries the owner's work, so it needs an identity check, which a static directory served by `tailscale serve` cannot make. Rejected: static `tailscale serve` of a directory the update writes (no process, no identity check); a server inside the sminos daemon (no new agent, but an HTTP surface in the process every session on the machine relies on); a server the manager session starts (down whenever that session is closed); Tailscale Funnel or any public address (the page is private). Loading the agent and exposing it stay the owner's steps, as for the sminos daemon.
+  Date/Author: 2026-11-01, doperpowers-9b (f89d7fb0).
+- Decision: The owner's items carry a type (decide, judge, act, answer, other) and a status that continues past the answer (pending, answered, done, overtaken); work items are outcomes in plain words with identifiers in `refs`, and the digest brief caps how many an update may add per initiative.
+  Rationale: the owner named their side of the work as acting, judging and deciding "or else", and asked to see what is done and in progress; an answer often starts work the owner then wants to see finished, so "answered" is not the end. The cap and the grain rule answer "group it bigger"; the cap's number comes from the replay rather than a guess. Rejected: blocking/optional as the only axis (it says how urgent, not what kind of attention); free-form work notes per session (the bloat the owner described).
+  Date/Author: 2026-11-01, doperpowers-9b (f89d7fb0).
 
 ## Outcomes & Retrospective
 
