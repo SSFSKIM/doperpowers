@@ -1,6 +1,6 @@
 {
   "name": "sminos",
-  "description": "The orchestration interface: the machine side of the MAWS desk, and how sessions and humans reach each other. The sminos CLI (the project log, messages between sessions, spawned seats, the daemon and its uplink to the desk hub), the bridge that makes a session watchable and steerable from outside it, the async AskUserQuestion, and the hooks that record what a session sent its human",
+  "description": "Your Claude Code sessions as a team: every session in a project sees the others, messages them and you, spawns and steers background sessions, and spans machines. The sminos CLI and daemon, the bridge that makes a session watchable and steerable from outside it, the async question tool, and the Sminos-Session line on every commit and PR",
   "version": "1.31.0",
   "author": {
     "name": "SSFSKIM",

@@ -1,6 +1,6 @@
 {
   "name": "doperpowers",
-  "description": "Emerges by humans, Converges by Agents",
+  "description": "Claude Code plugins for building software with agents: the doperpowers methodology, sminos, and their companions",
   "owner": {
     "name": "SSFSKIM",
     "email": "supremekim17@gmail.com"
@@ -8,7 +8,7 @@
   "plugins": [
     {
       "name": "doperpowers",
-      "description": "Emerges by humans, Converges by Agent",
+      "description": "A development methodology for Claude Code: a design you approve, one living spec, test-first builds by fresh subagents, and review by another model family.",
       "version": "7.216.0",
       "source": "./",
       "author": {
@@ -45,7 +45,7 @@
     },
     {
       "name": "to-human",
-      "description": "The report view under the to-human output style: messages fold to their <message> spans, the working record (tool calls, agent and other sessions' messages) behind › working record buttons; the message tool (`mcp__to-human__message`) sends a message before another tool call word for word; each message the model sends raises a notification (`$.ui.notify`)",
+      "description": "Read a session as a report, not a transcript: under the to-human output style the session sends you messages through its message tool (mcp__to-human__message), the terminal folds its working record (tool calls, scratch notes, other sessions' messages) behind buttons, and each message raises a notification",
       "version": "0.7.2",
       "source": "./to-human",
       "author": {
@@ -57,7 +57,7 @@
     },
     {
       "name": "sminos",
-      "description": "The orchestration interface: the machine side of the MAWS desk, and how sessions and humans reach each other. The sminos CLI (the project log, messages between sessions, spawned seats, the daemon and its uplink to the desk hub), the bridge that makes a session watchable and steerable from outside it, the async AskUserQuestion, and the hooks that record what a session sent its human",
+      "description": "Your Claude Code sessions as a team: every session in a project sees the others, messages them and you, spawns and steers background sessions, and spans machines. The sminos CLI and daemon, the bridge that makes a session watchable and steerable from outside it, the async question tool, and the Sminos-Session line on every commit and PR",
       "version": "1.31.0",
       "source": "./sminos",
       "author": {
