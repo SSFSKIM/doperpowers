@@ -347,6 +347,8 @@ run_suites() {
     fail "pending TUI sends survive stopped folding (test_tui_pending_send.py)"; fi
   if python3 "$SCRIPT_DIR/test_list_fold.py"; then pass "stopped members fold only in text views (test_list_fold.py)"; else
     fail "stopped members fold only in text views (test_list_fold.py)"; fi
+  if python3 -B "$SCRIPT_DIR/test_manager.py"; then pass "the session manager's command: windows, pending, subscriptions (test_manager.py)"; else
+    fail "the session manager's command: windows, pending, subscriptions (test_manager.py)"; fi
   # The bridge's session endpoint has a file of its own (short socket paths, a
   # stand-in for the mod); its assertions count here as one.
   echo

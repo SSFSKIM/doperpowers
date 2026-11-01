@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# manager — the session manager skill's command (read-only views of the sessions
+# the owner follows). The CLI lives in manager.py next to this file; this launcher
+# only resolves its own real path, so a symlink to it works.
+exec python3 "$(dirname "$(readlink -f "$0")")/manager.py" "$@"
