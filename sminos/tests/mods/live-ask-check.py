@@ -20,8 +20,10 @@ Discoveries records:
 - an Esc in the session during an ask, and a compaction during an ask: what
   the fork and the end do (observed, not judged);
 - a session past 100k tokens: the cache share again;
-- a plugin reload during an ask: the old ask ends `aborted`, whether the fork
-  survives is observed, and while it runs a new ask is `busy`;
+- a reload of the bridge module during an ask (a change to its file, as a
+  plugin update brings): the old ask ends `aborted`, whether the fork survives
+  is observed, and while it runs a new ask is `busy`;
+- an ask after an Esc, before the session takes input (observed);
 - in every scenario where the fork's first call is one the guard must refuse,
   that first call is refused: the guard knows a bridge fork from its spawn on
   (the invariant its passing of ids the agent list does not name rests on).
@@ -160,9 +162,19 @@ class Ask(LB.Live):
 
     # -- asking
 
-    def ask(self, prompt):
-        s, body = LB.request(self.endpoint(), "POST", "/command?wait=15000", {"op": "ask", "prompt": prompt}, timeout=20)
+    def ask(self, prompt, rpc=None):
+        s, body = LB.request(self.endpoint(), "POST", "/command?wait=15000",
+                             {"op": "ask", "prompt": prompt, **({"rpc": rpc} if rpc else {})}, timeout=20)
         return body if s == 200 else {"ok": False, "error": "status %s" % s, "body": body}
+
+    def kept_end(self, rpc):
+        """An op's end the child kept beside its answer under the op's `rpc` nonce (as a desk RPC's), which
+        outlives a child's replacement: the stream relays each end once, to the subscribers it has then."""
+        try:
+            with open(os.path.join(self.smh, "bridge", self.session + ".json")) as f:
+                return ((json.load(f).get("rpcs") or {}).get(rpc) or {}).get("end")
+        except (OSError, ValueError):
+            return None
 
     def ended(self, op_id, seconds=240):
         return wait_for("the ask's end", seconds, lambda: next(iter(self.seen(
@@ -175,7 +187,18 @@ class Ask(LB.Live):
             raise RuntimeError("ask refused: %s" % json.dumps(r))
         op_id, agent = r["result"]["id"], r["result"]["agentId"]
         end = self.ended(op_id, seconds)
+        # The end can reach the stream before the fork's last rows reach its transcript (seen past 300k tokens).
+        try:
+            wait_for("the fork's answered request in its transcript", 15, lambda: self.answered_rows(agent), every=0.5)
+        except TimeoutError:
+            pass
         return r, end, self.fork_rows(agent)
+
+    def answered_rows(self, agent_id):
+        """The fork's rows once one of its model requests (not the engine's opening row) is written."""
+        rows = self.fork_rows(agent_id)
+        return rows if any(x.get("type") == "assistant" and (x.get("message") or {}).get("usage")
+                           and (x.get("message") or {}).get("model") != "<synthetic>" for x in rows) else None
 
     def cache_share(self, fork_rows, before_rows):
         """The fork's first request's cache read over the main loop's last request before it."""
@@ -237,12 +260,12 @@ class Ask(LB.Live):
             return
         self.check(name, GUARD_REASON in (first[2] or ""), "first call %s" % json.dumps(first)[:240])
 
-    def ask_when_free(self, prompt, seconds=20):
+    def ask_when_free(self, prompt, seconds=20, rpc=None):
         """An ask retried while it is refused busy (the agent list may lag a fork's end): its answer, and how
         long busy held."""
         t = time.time()
         while True:
-            r = self.ask(prompt)
+            r = self.ask(prompt, rpc)
             if r.get("code") != "busy" or time.time() - t > seconds:
                 held = time.time() - t
                 if r.get("code") == "busy" or held > 0.5:
@@ -399,7 +422,16 @@ def run_a(live):
         [e.get("reason") for e in main_end], json.dumps({k: v for k, v in (end or {}).items() if k != "text"}) +
         (" text ends %r" % (end.get("text") or "")[-40:] if end else "none within 90 s")), flush=True)
     live.check("Esc during an ask: the ask still ends", end is not None, json.dumps(end)[:200] if end else "no end")
+    if end is not None:
+        print("  (observed) the Esc's fork %s" % ("wrote its essay" if "FORK-ESC-DONE" in (end.get("text") or "")
+                                                 else "did not answer its question: calls %s" % live.tool_calls(live.fork_rows(first["result"]["agentId"]))), flush=True)
     time.sleep(3)
+    # After an Esc the engine spawns no agent until the session takes input (2.1.316): the ask says so.
+    stopped = live.ask("Are you there?")
+    print("  (observed) an ask after the Esc, before any input: %s" % json.dumps(stopped)[:200], flush=True)
+    if stopped.get("ok"):
+        live.ended(stopped["result"]["id"], 120)
+    live.turn("Reply with exactly: AFTER-ESC.")
 
     # A compaction during an ask.
     r = live.ask_when_free(LONG % "FORK-COMPACT-DONE")
@@ -417,20 +449,35 @@ def run_a(live):
     live.check("compaction during an ask: the ask still ends", end is not None, json.dumps(end)[:200] if end else "no end")
     time.sleep(5)
 
-    # A reload of the plugins during an ask: does the fork outlive the bridge module that spawned it?
-    r = live.ask_when_free(LONG % "FORK-RELOAD-DONE")
+    # A reload of the bridge module during an ask: does the fork outlive the module that spawned it? The
+    # reloaded module's `aborted` end can reach the new child before a subscriber does, so the ask carries
+    # an `rpc` nonce and its end is read where the child keeps it, as the daemon reads a desk RPC's.
+    nonce = "live-ask-reload-%d" % os.getpid()
+    r = live.ask_when_free(LONG % "FORK-RELOAD-DONE", rpc=nonce)
     agent = (r.get("result") or {}).get("agentId")
     if not r.get("ok"):
         live.check("a reload during an ask: the ask starts", False, json.dumps(r)[:200])
     else:
         time.sleep(4)
         print("  (observed) before the reload the fork is listed %s" % json.dumps(live.agent_status(agent)), flush=True)
-        live.prompt("/reload-plugins")
-        end = None
+        # A change to the module reloads it, as a plugin update does (the other live checks' way): a
+        # `/reload-plugins` over unchanged files left this bridge module in place (2.1.316), the fork's end
+        # coming from the module that spawned it.
+        old_child = (live.status() or {}).get("pid")
+        with open(os.path.join(live.plugin, "hooks", "mods", "bridge.tsx"), "a") as f:
+            f.write("\n// live-ask-check: a change that reloads the module\n")
         try:
-            end = live.ended(r["result"]["id"], 60)
+            new_child = wait_for("the child after a module reload", 60,
+                                 lambda: (live.status() or {}).get("pid") not in (None, old_child) and live.status())["pid"]
         except TimeoutError:
-            pass
+            new_child = None
+        print("  (observed) the module reload replaced the bridge's child: %s -> %s" % (old_child, new_child), flush=True)
+        op_id = r["result"]["id"]
+        try:
+            end = wait_for("the ask's end", 60, lambda: live.kept_end(nonce) or next(iter(live.seen(
+                lambda e: e.get("type") == "ask" and e.get("phase") == "end" and e.get("id") == op_id)), None), every=0.5)
+        except TimeoutError:
+            end = None
         live.check("a reload during an ask: the ask ends (aborted) from the reloaded bridge", end is not None and end.get("reason") == "aborted",
                    json.dumps(end)[:200] if end else "no end")
         # Liveness from the engine's own list, as the reloaded bridge seeds it (GET /agents), never from the fork's words.
