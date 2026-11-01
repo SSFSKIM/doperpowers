@@ -47,6 +47,7 @@ rest.
     $M transcript <member> --since T [--until T] [--max-chars N]
     $M ledger                                          # the ledger as the last update left it
     $M ledger apply --file PATH                        # record an update's change (or `-` for stdin)
+    $M ledger lang [<tag>]                             # the language the ledger is written in (ko, en, pt-BR); set it
     $M query <member> "<question>"                     # a read-only fork of the session answers
     $M serve --status                                  # the ledger's page: its address, whether it is up
     $M serve --install                                 # only on the owner's word (below)
@@ -76,7 +77,8 @@ says so) or "update since T" (every session from T).
    items in both lanes with their ids (from `$M ledger --json`), a share of
    the work-item cap below to aim for (the cap over the sessions digested for
    that initiative, rounded up; a session that clearly holds more outcomes may
-   go past it), `$M`'s absolute path, and that queries are allowed. A session with no activity in its window gets none: nothing in an
+   go past it), `$M`'s absolute path, the ledger's `lang` to write its items in,
+   and that queries are allowed. A session with no activity in its window gets none: nothing in an
    empty window can change its items, which stay in the still-open list, and
    `pending` has read the window through. A subscription with an `error` gets
    none and is named at the top of the update.
@@ -166,6 +168,13 @@ meaning why it matters to the owner, identifiers in `refs`. Routine steps (a
 milestone landing, a review round, a merge, a CI run) move an outcome's status
 and are never items of their own. **Cap: an update adds at most 8 work items per
 initiative.**
+
+**Language.** The ledger's own text (`need`, `why`, `title`, `meaning`,
+`waits_on`, the briefs) is written in its `lang`, as `$M ledger --json` shows
+it, and the page is labelled in it; quotes (`source`, `evidence`) stay as said.
+When the owner asks for another language, set it with `$M ledger lang <tag>` and
+rewrite the open items' text in one `ledger apply` (the ledger's own `window`,
+no `sessions`).
 
 ## Follow-up questions
 

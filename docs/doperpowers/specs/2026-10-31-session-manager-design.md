@@ -264,6 +264,7 @@ Paths below are repository-relative. The sminos CLI is `sminos/skills/sminos/scr
     manager subscriptions remove <member>... [--name N]
     manager ledger [--name N]                                  # M4; replaces `carry`
     manager ledger apply (--file PATH | -) [--name N]          # M4; replaces `carry set`
+    manager ledger lang [<tag>] [--name N]                     # 2026-11-01: the ledger's language; with a tag, set it
     manager serve [--name N] [--port P]                        # M6: run the page's server in the foreground
     manager serve --install [--name N] [--port P]              # M6: write the launchd agent, print the load and expose commands
     manager serve --status [--name N]                          # M6: the address, launchd's hold, tailscale's
@@ -330,6 +331,8 @@ The window's start is found with `sminos_subagents.offset_since(mm, t)` on an mm
 
     {
       "version": 2,
+      "lang": "ko",                    // optional: the language of the ledger's own text and of the page's labels,
+                                       // a BCP-47-shaped tag (ko, en, pt-BR); absent means en; validated on read
       "initiatives": [
         {"name": "P5", "sessions": [
           {"session": "b4948247-…", "alias": "p5-desk-track-owner", "project": "<project id>", "project_name": "doperpowers", "added": "…Z",
@@ -364,7 +367,9 @@ Enumerations: `lane` `yours | work`; yours `type` `decide | judge | act | answer
 
 Validation covers the whole document before anything is written, and every item as it would stand after the merge, new or changed: `id` and `lane` never change; enumerations hold; required fields are present and non-empty — yours: `initiative`, `member`, `session`, `type`, `blocking`, `need`, `raised`, `source`, `status`, and `evidence` and `status_at` once its status is past `pending`; work: `initiative`, `title`, `meaning`, `status`, `started`, `waits_on` when `stalled`, `finished` when `done`; times parse; `seen` does not go from true to false; a change names a known id; a session in `sessions` is a subscription. Any problem exits 2 naming every one, with the file unchanged; nothing is ever deleted. Then `apply` stamps `reported` and `changed` on new items; stamps `changed` on a held item only when a substantive field changed (for yours: `type`, `blocking`, `need`, `status`, `evidence`; for work: `title`, `meaning`, `status`, `waits_on`), not for a refreshed `seen` or an unchanged value; moves each listed subscription's `covered` forward to the value given only when the interval read connects to it (`from` at or before the held `covered`; never back), so an "update since T" that starts after `covered` leaves the gap behind it for the next plain update to read, and moves its `seen` to the newer of held and given; sets `updated` to now and `window` from the document; replaces each initiative's brief given; and moves done and overtaken items whose `changed` is more than 30 days old to `<name>.archive.jsonl` (append, one item per line). It reports which ids it created, which it changed substantively, and which open items it left as they were, the three lists the update is written from: `--json` `{"new": [...], "changed": [...], "unchanged_open": [...]}`; text, one line per initiative, `P5: 2 new · 3 changed · 5 still open · brief written`.
 
-**`manager ledger`** prints the ledger per initiative: the owner's items by status (pending first; within it blocking, then unseen), then work in progress, stalled, and done in the last 7 days; then the latest brief's time and window. `--json` prints `{"updated", "window", "initiatives": [{"name", "items": […], "brief"}]}`, the shape `/ledger.json` serves (M6).
+**`manager ledger`** prints the ledger per initiative: the owner's items by status (pending first; within it blocking, then unseen), then work in progress, stalled, and done in the last 7 days; then the latest brief's time and window. `--json` prints `{"lang", "updated", "window", "initiatives": [{"name", "items": […], "brief"}]}`, the shape `/ledger.json` serves (M6); `lang` is the state's, `"en"` when it holds none. The text output stays English, since the model reads it.
+
+**`manager ledger lang [<tag>]`** prints the ledger's language; with a tag it sets it under the state's lock. Both take `--json` (`{"lang": "ko"}`); a tag that is not BCP-47-shaped exits 2 naming it. The page labels itself from a per-language table (en, ko) picked by the tag's primary subtag, English otherwise, sets `<html lang>` and formats dates and times in that locale; the manager writes the ledger's own text (`need`, `why`, `title`, `meaning`, `waits_on`, briefs) in it, quotes staying as said.
 
 `subscriptions add` refuses the manager's own session (`CLAUDE_CODE_SESSION_ID` in its environment) and members on another machine, and starts each new subscription's `covered` 24 hours before now; adding a member already subscribed under another initiative moves it, keeping its `covered` and `seen` (its open items keep their initiative until an update moves them).
 
@@ -753,6 +758,9 @@ A failure reads as one line on stderr and exit 1, for example `manager: CI-opt r
   Round 2 (one adversarial reviewer on the fixes) found (b) still leaky, now fixed: `covered` is set when a subscription is added, so a failed first read keeps a fixed retry point; it advances only over an interval that connects to it, so an "update since T" later than `covered` cannot jump a gap; and a message-tool call is reported in the window of its call, since the classifier lost a message whose call and result straddled a window edge (reproduced). It found nothing further in (a) and (c)–(i), nor in the MAWS-composer addition; with these two fixed, review has converged.
   Rationale: (a), (b) and (d) are the review's two P1 findings and one consequence: each would have hidden from the owner something they had not seen, the opposite of the feature's purpose. The rest were real contract gaps an executor would have hit. Rejected for (a): requiring explicit read acknowledgement before condensing (a chore the manager exists to remove; the owner asked to be told only what they missed). Rejected for (g): a Unix-socket or authenticated proxy-to-backend transport (it guards against a process that can already read the file).
   Date/Author: 2026-11-01, doperpowers-9b (f89d7fb0).
+- Decision: The ledger has a language, stored in the state file as an optional `lang` (a BCP-47-shaped tag, absent meaning `en`), set with `manager ledger lang <tag>` and carried in `ledger --json`. It governs both the page's labels (a per-language table, en and ko, by the tag's primary subtag) and the ledger's own text, which the manager and its digests write in it; quotes stay as said. The model-facing text output of `ledger` stays English. The page remembers the last language in `localStorage`, so a load starts in it before the ledger arrives.
+  Rationale: the owner asked to read the page in Korean on their phone, labels and content alike. The stored tag won over the phone's `navigator.language` because the content's language has to last across manager sessions (a fresh manager must keep writing Korean without being told again), which a browser setting cannot carry, and because one setting should govern labels and content together, rather than labels following the phone while the content follows whatever the manager last wrote.
+  Date/Author: 2026-11-01, session-pool-attention-manager (f89d7fb0), on the owner's request.
 
 ## Outcomes & Retrospective
 

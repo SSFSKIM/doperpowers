@@ -540,7 +540,7 @@ class Page(unittest.TestCase):
         if not node:
             self.skipTest("no node on PATH")
         r = subprocess.run([node, str(HERE / "page_check.mjs"), str(SKILL / "assets" / "page.html"), scenario],
-                           capture_output=True, text=True, timeout=60)
+                           capture_output=True, text=True, timeout=60, env={**os.environ, "TZ": "UTC"})
         self.assertEqual(r.returncode, 0, r.stderr)
         return json.loads(r.stdout)
 
@@ -549,6 +549,38 @@ class Page(unittest.TestCase):
         self.assertEqual(got["errors"], [])
         self.assertEqual(got["fetches"], 2)          # the held fetch, then one for the update that landed meanwhile
         self.assertEqual(got["shown"], "new")
+
+    # The page's own words, as the ledger's `lang` picks them.
+    ENGLISH = ("Needs you", "Blocking", "work waits on you", "decide", "● unseen", "new", "answered (unverified)",
+               "Answered", "Work in progress", "stalled", "waits on a login", "Done", "Nothing done yet.", "Brief",
+               "1 blocking", " ago", "connecting", "covering Oct 15 ")
+    KOREAN = ("내 차례", "차단", "결정", "● 안 봄", "새 항목", "답함(미확인)", "답한 것", "진행 중", "멈춤",
+              "대기 중: a login", "완료", "아직 끝난 일이 없어요.", "요약", "차단 1", " 전 ·", "연결 중",
+              "범위 10월 15일 ")
+
+    def test_a_korean_ledger_is_labelled_in_korean(self):
+        got = self.check("ko")
+        self.assertEqual(got["errors"], [])
+        self.assertEqual((got["lang"], got["h1"], got["title"], got["stored"]), ("ko", "장부", "장부 · 차단", "ko"))
+        for word in self.KOREAN:
+            self.assertIn(word, got["text"])
+        for word in ("Needs you", "Blocking", "unseen", "Work in progress", "Done", "Brief", "ago", "connecting"):
+            self.assertNotIn(word, got["text"])
+        for text in ("need text", "quoted source", "work title", "brief text"):
+            self.assertIn(text, got["text"], "the ledger's own text is shown as written")
+
+    def test_english_is_the_default(self):
+        got = self.check("en")
+        self.assertEqual(got["errors"], [])
+        self.assertEqual((got["lang"], got["h1"], got["title"]), ("en", "Ledger", "Ledger · blocking"))
+        for word in self.ENGLISH:
+            self.assertIn(word, got["text"])
+
+    def test_the_last_language_labels_the_page_before_the_ledger_arrives(self):
+        got = self.check("remembered")
+        self.assertEqual(got["errors"], [])
+        self.assertEqual((got["lang"], got["h1"]), ("ko", "장부"))
+        self.assertIn("장부를 읽는 중", got["text"])
 
 
 if __name__ == "__main__":
