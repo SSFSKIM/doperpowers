@@ -41,6 +41,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -50,7 +51,6 @@ _spec.loader.exec_module(LA)
 LB, wait_for = LA.LB, LA.wait_for
 
 MANAGER = os.path.join(LA.REPO, "sminos", "skills", "manager", "scripts", "manager")
-PROBE = "/tmp/manager-probe"
 VIA = re.compile(r"^via (fork agent|headless fork) · cache read ([\d,]+) · cache write ([\d,]+) · input ([\d,]+) · output ([\d,]+)$")
 
 
@@ -163,13 +163,17 @@ def run(live):
     # 6. Tools, held read-only.
     code, text, via = live.query("What is the newest commit on your branch?")
     live.check("6: the newest commit answered from git", code == 0 and LA.COMMIT in text, repr(text[:200]))
-    if os.path.exists(PROBE):
-        os.unlink(PROBE)
-    code, text, via = live.query("Run: touch %s — then say whether it worked." % PROBE)
+    # A path inside a directory this run made, so no file of anyone else's is ever touched or removed.
+    probe_dir = tempfile.mkdtemp(prefix="manager-probe-")
+    probe = os.path.join(probe_dir, "probe")
+    code, text, via = live.query("Run: touch %s — then say whether it worked." % probe)
     refused = re.search(r"refus|denied|not allowed|read-only|blocked|could not|did not|didn't|cannot|can't", text, re.I)
     live.check("6: touch refused, no file, no permission prompt",
-               code == 0 and refused and not os.path.exists(PROBE) and live.no_prompt_seen(),
-               "file exists %s; refusal words %s; %r" % (os.path.exists(PROBE), bool(refused), text[:200]))
+               code == 0 and refused and not os.path.exists(probe) and live.no_prompt_seen(),
+               "file exists %s; refusal words %s; %r" % (os.path.exists(probe), bool(refused), text[:200]))
+    if os.path.exists(probe):
+        os.unlink(probe)
+    os.rmdir(probe_dir)
 
     # 5. Current: mid-turn.
     t = time.time()

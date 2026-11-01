@@ -89,6 +89,13 @@ item is done. A `peer` message reporting that the owner answered elsewhere is
 evidence too; quote it. Past `pending`, give `evidence` (a short quote with
 its time) and `status_at` (when it happened in the session).
 
+Evidence closes an item only when it belongs to the same request: the same
+ask, the same thing granted or done. Sessions ask for similar things more than
+once (a second permission after a first, a redeploy after a deploy), and a
+grant or finish of the earlier one says nothing about the later. When the
+records do not tie the evidence to this request, leave the item `answered` or
+`pending`, and say under **Unsure** what you could not tie.
+
 **Seen.** The seen mark is the time of the owner's latest words typed in this
 session's own window. An item raised at or before it has `seen: true`; after
 it, `seen: false`. No seen mark: every item is unseen. A held item that was
@@ -115,9 +122,10 @@ wave, a restarted watcher — are never items of their own: they move an
 outcome's status (`in progress`, `done`, or `stalled` with `waits_on`) or its
 meaning. Prefer updating a held work item to adding one, and leave a done one
 alone unless the outcome itself changed (it broke, reopened, or grew into
-more). The dispatch states how many new work items your session may propose;
-propose no more than that, folding smaller results into the outcome they
-serve. `started` is when the outcome's work began, the window's `from` when
+more). The dispatch gives a share of the initiative's work-item cap to aim
+for: fold smaller results into the outcome they serve, and go past the share
+only when the session clearly holds more distinct outcomes; the manager holds
+the initiative to its cap when it merges. `started` is when the outcome's work began, the window's `from` when
 that was earlier.
 
 ## What you return

@@ -58,10 +58,12 @@ The owner asks "update" (each session from where the last update finished
 reading it; a first update with nothing recorded covers the last 24 hours, and
 says so) or "update since T" (every session from T).
 
-1. **`$M pending`** (with `--since T` for "update since T"). It gives the
-   unanswered async questions (any age), sessions waiting on a prompt now, and
-   one `seen` entry per subscription: its window (`from`, `until`), its seen
-   mark, its last activity, or an `error` when it cannot be read.
+1. **`$M pending --json`** (with `--since T` for "update since T"; the text
+   output has neither the session ids nor the exact times the next steps
+   need). It gives the unanswered async questions (any age), sessions waiting
+   on a prompt now, and one `seen` entry per subscription: its session id, its
+   window (`from`, `until`), its seen mark, its last activity, or an `error`
+   when it cannot be read.
 2. **One digest subagent per session with activity in its window**
    (`last_activity` in its `seen` entry), dispatched in parallel with the
    Agent tool: `subagent_type: general-purpose`, `model: sonnet`,
@@ -69,10 +71,10 @@ says so) or "update since T" (every session from T).
    `references/digest-brief.md` in this skill's base directory (by absolute
    path), then gives its member (alias and session id), initiative, window
    (`from`, `until` from `pending`), seen mark, its session's open ledger
-   items in both lanes with their ids (from `$M ledger --json`), its share of
-   the work-item cap below (the cap over the sessions digested for that
-   initiative, rounded up), `$M`'s absolute path, and that queries are
-   allowed. A session with no activity in its window gets none: nothing in an
+   items in both lanes with their ids (from `$M ledger --json`), a share of
+   the work-item cap below to aim for (the cap over the sessions digested for
+   that initiative, rounded up; a session that clearly holds more outcomes may
+   go past it), `$M`'s absolute path, and that queries are allowed. A session with no activity in its window gets none: nothing in an
    empty window can change its items, which stay in the still-open list, and
    `pending` has read the window through. A subscription with an `error` gets
    none and is named at the top of the update.
@@ -81,8 +83,9 @@ says so) or "update since T" (every session from T).
    another is one item, raised at its first mention; when one session's item
    asks more than another's, such as a redeploy and a check after it, the part
    the other lacks stays an item of its own), work outcomes merged across
-   sessions and held to the cap, one brief per initiative written from the
-   digests' prose. Its `sessions` lists each subscription you read through,
+   sessions and held here to the initiative's cap (keep the outcomes that
+   matter most to the owner; fold the rest into their meanings or into a held
+   item), one brief per initiative written from the digests' prose. Its `sessions` lists each subscription you read through,
    with the `from` `pending` gave, the `covered` its digest reached (`until`
    when it read the whole window, or had no activity to read), and the seen
    mark `pending` gave; leave out every session you could not read, so the
@@ -93,9 +96,10 @@ says so) or "update since T" (every session from T).
         "items": [<the digests' items, merged: new ones without "id", changes with it>],
         "briefs": [{"initiative": "<name>", "since": "<ISO>", "text": "<the brief>"}]}
 
-   Write it to a temporary file and apply it; a refusal names every problem,
-   fix and re-apply. `apply` answers with what is new, changed and still
-   open; the update is written from those lists.
+   Write it to a temporary file and apply it with
+   `$M ledger apply --file PATH --json`; a refusal names every problem, fix
+   and re-apply. It answers with three lists of ids, `new`, `changed` and
+   `unchanged_open`; the update is written from those lists.
 4. **Write the update**, in this order:
    - **Incomplete**, only when a session could not be read: which, why, since
      when.
