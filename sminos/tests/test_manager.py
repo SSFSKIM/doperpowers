@@ -448,6 +448,72 @@ class Windows(unittest.TestCase):
         got = W.window([(SID, str(self.dir / "far.jsonl"))], SA_epoch(answer["timestamp"]))
         self.assertEqual(kinds(got["entries"]), [("answered", 'The user answered: "Merge?"="yes"')])
 
+    MAWS_CALL_UUID = "8824b63b-ce21-478d-b888-53eb12d381a2"
+    MAWS_ANSWER = json.dumps({"status": "answered", "askId": "toolu_01LBLBL5kBYAnj1mHrbfkEVe", "answers": [
+        {"id": "doc-design-system", "question": "Which design system should a new one-page document use?",
+         "status": "answered", "name": "GOV.UK sample", "designSystemId": "551057ac-9903-490c-8c9a-be1cb1636b70"}]},
+        indent=2)
+
+    def distant(self, name, call, result, between=None):
+        """A transcript with about 4.75 MB of rows between a call and its result, the window starting exactly
+        at the result: the call lies far before the seek point."""
+        pad = [{"type": "user", "uuid": "pad-%d" % i, "timestamp": iso(T0 + 100 + i), "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "x%d" % i, "content": "p" * 3100}]}} for i in range(1500)]
+        path = self.dir / name
+        write_transcript(path, [call] + (between or []) + pad + [result])
+        return W.window([(SID, str(path))], SA_epoch(result["timestamp"]))["entries"]
+
+    def maws_rows(self, source=True):
+        """The blocking MAWS ask and its answer, as 720e2008 holds them (2026-10-19T10:02:43Z)."""
+        call = {"type": "assistant", "uuid": self.MAWS_CALL_UUID, "timestamp": iso(T0 + 1), "entrypoint": "sdk-ts",
+                "message": {"role": "assistant", "stop_reason": "tool_use", "content": [{
+                    "type": "tool_use", "id": "toolu_01LBLBL5kBYAnj1mHrbfkEVe", "name": "mcp__maws__ask",
+                    "input": {"title": "Design system for a new document", "blocking": True, "questions": [
+                        {"id": "doc-design-system", "header": "Design system", "modality": "design_system",
+                         "question": "Which design system should a new one-page document use?",
+                         "allowCreate": False}]}, "caller": {"type": "direct"}}]}}
+        content = [{"type": "text", "text": self.MAWS_ANSWER}]
+        result = {"type": "user", "uuid": "552686ed-4a93-4d3b-aaca-324a406d9199", "parentUuid": self.MAWS_CALL_UUID,
+                  "timestamp": iso(T0 + 5 * 3600), "entrypoint": "sdk-ts", "toolUseResult": content,
+                  "message": {"role": "user", "content": [{"tool_use_id": "toolu_01LBLBL5kBYAnj1mHrbfkEVe",
+                                                           "type": "tool_result", "content": content}]}}
+        if source:
+            result["sourceToolAssistantUUID"] = self.MAWS_CALL_UUID
+        return call, result
+
+    def test_a_distant_blocking_maws_answer(self):
+        call, result = self.maws_rows()
+        # A request record repeating the conversation, and a row quoting the call's uuid, both nearer the answer
+        # than the call itself: the search back takes neither for the call.
+        between = [{"type": "api-request", "body": '"uuid":"%s"' % self.MAWS_CALL_UUID},
+                   Rows(T0 + 50).user("the call was row \"uuid\":\"%s\"" % self.MAWS_CALL_UUID, HUMAN)]
+        self.assertEqual(kinds(self.distant("maws.jsonl", call, result, between)), [("answered", self.MAWS_ANSWER)])
+
+    def test_a_distant_blocking_maws_answer_naming_no_call(self):
+        """An engine that does not name the call: MAWS's answered result names it itself."""
+        call, result = self.maws_rows(source=False)
+        self.assertEqual(kinds(self.distant("maws-old.jsonl", call, result)), [("answered", self.MAWS_ANSWER)])
+
+    def test_a_distant_blocking_answer_of_the_plugins_ask(self):
+        """The plugin's ask with `async: false` answers with the engine's text alone (ask.tsx's answerText):
+        known by the call its row names."""
+        r = Rows()
+        call = r.call("toolu_p", "mcp__sminos__AskUserQuestion", {"async": False, "questions": [
+            {"question": "Merge PR #9?", "options": [{"label": "yes"}, {"label": "no"}]}]})
+        call["uuid"] = "9c000001-0000-4000-8000-0000000000c1"
+        text ='Your questions have been answered: "Merge PR #9?"="yes". You can now continue with these answers in mind.'
+        result = Rows(T0 + 5 * 3600).result("toolu_p", text)
+        result["sourceToolAssistantUUID"] = call["uuid"]
+        self.assertEqual(kinds(self.distant("plugin.jsonl", call, result)), [("answered", text)])
+
+    def test_a_distant_ordinary_result_is_no_answer(self):
+        r = Rows()
+        call = r.call("toolu_s", "Bash", {"command": "sleep 18000"})
+        call["uuid"] = "9c000002-0000-4000-8000-0000000000c2"
+        result = Rows(T0 + 5 * 3600).result("toolu_s", '{"status": "answered", "askId": "toolu_other"}')
+        result["sourceToolAssistantUUID"] = call["uuid"]
+        self.assertEqual(self.distant("bash.jsonl", call, result), [])
+
     def test_an_unreadable_transcript_fails_and_an_empty_one_is_empty(self):
         empty = self.dir / "empty.jsonl"
         empty.write_bytes(b"")

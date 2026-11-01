@@ -82,15 +82,9 @@ def _cut(text, n):
 
 def _outside_marks(text):
     """The text with its `<message>` regions taken out (the spans themselves are read by extract_marks). The
-    tags are the ones sminos_marks reads as tags (its code-aware reading, with its glued-fence recovery), so a
-    literal tag in code stays prose."""
-    tokens, balanced = sminos_marks._reading(text, sminos_marks.code_regions(text))
-    if not balanced:
-        glued, glued_balanced = sminos_marks._reading(text, sminos_marks.code_regions(text, sminos_marks.GLUED))
-        if glued_balanced:
-            tokens = glued
+    tags are the ones the marks parse reads (sminos_marks.tag_tokens), so a literal tag in code stays prose."""
     out, depth, at = [], 0, 0
-    for m in tokens:
+    for m in sminos_marks.tag_tokens(text):
         if depth == 0:
             out.append(text[at:m.start()])
         depth = max(depth + (-1 if m.group(1) else 1), 0)
@@ -171,13 +165,15 @@ class Classifier:
     questions and answers are read at the end over the rows that can hold them (sminos._ask_events).
     `chars`: the rendered size of the entries so far, for the window's budget."""
 
-    def __init__(self, session, corroborate=None):
+    def __init__(self, session, corroborate=None, lookup=None):
         self.short = session[:8]
         self.corroborate = corroborate or (lambda text: False)
+        self.lookup = lookup     # row uuid -> the row, searched for before the window's seek point; or None
         self.out = []            # (row seq, sub, entry)
         self.pending = {}        # tool id -> (what, row seq, sub, the call's block or entry, its time)
         self.ask_rows = []       # (row seq, row) for _ask_events
         self.ask_calls = set()
+        self.calls = set()       # every tool call id seen, before the window or in it
         self.seq = 0
         self.chars = 0
 
@@ -232,11 +228,11 @@ class Classifier:
             elif kind == "tool_use":
                 name, cid, inp = str(b.get("name") or ""), str(b.get("id") or ""), b.get("input")
                 inp = inp if isinstance(inp, dict) else {}
+                self.calls.add(cid)
                 if name in S.MESSAGE_TOOLS:
                     self.pending[cid] = ("message", self.seq, n, b, ts)
                 elif name in S.ASK_TOOLS or name == S.MAWS_ASK_TOOL or name == NATIVE_ASK:
-                    if (name in S.ASK_TOOLS and inp.get("async") is not False) or \
-                            (name == S.MAWS_ASK_TOOL and inp.get("blocking") is False):
+                    if not _blocking_ask(b):
                         self.ask_calls.add(cid)    # an async ask: _ask_events reads it
                         asks = True
                     else:
@@ -257,25 +253,43 @@ class Classifier:
             self._ask_row(row)
 
     def prior(self, row):
-        """A row before the window, read only for the blocking questions it asks, so their answer in the window
-        is still known as one; it adds no entry."""
+        """A row between the seek point and the window, read only for its tool calls: a blocking question's
+        answer in the window is still known as one. It adds no entry."""
         if row.get("type") != "assistant":
             return
         for n, b in enumerate(S._blocks(row, "tool_use")):
-            name, inp = b.get("name"), b.get("input") if isinstance(b.get("input"), dict) else {}
-            if name == NATIVE_ASK or (name in S.ASK_TOOLS and inp.get("async") is False) or \
-                    (name == S.MAWS_ASK_TOOL and inp.get("blocking") is not False):
-                self.pending[str(b.get("id") or "")] = ("ask", 0, n, None, row.get("timestamp"))
+            cid = str(b.get("id") or "")
+            self.calls.add(cid)
+            if _blocking_ask(b):
+                self.pending[cid] = ("ask", 0, n, None, row.get("timestamp"))
+
+    def _distant_answer(self, block, row, cid):
+        """Whether a result whose call this classifier never saw (it lies before the window's seek point) is a
+        blocking question's answer. The row names its call (`sourceToolAssistantUUID`), which is found by an
+        exact search back from the seek point; a row that names none is an answer only when its record says so
+        itself: the engine's native record (`toolUseResult` with `questions` and `answers`), or MAWS's answered
+        result, which names this call (`{"status": "answered", "askId": <the call>}`)."""
+        if block.get("is_error") is True or cid in self.calls:
+            return False
+        src = row.get("sourceToolAssistantUUID")
+        if self.lookup is not None and isinstance(src, str) and S.UUID_RE.match(src):
+            call = self.lookup(src)
+            if call is not None:
+                return any(b.get("id") == cid and _blocking_ask(b) for b in S._blocks(call, "tool_use"))
+        record = row.get("toolUseResult")
+        if isinstance(record, dict) and "questions" in record and "answers" in record:
+            return True
+        try:
+            result = json.loads(S._result_text(block.get("content")))
+        except ValueError:
+            return False
+        return isinstance(result, dict) and result.get("status") == "answered" and result.get("askId") == cid
 
     def _settle(self, block, ts, row):
         cid = str(block.get("tool_use_id") or "")
         held = self.pending.pop(cid, None)
         if held is None:
-            # The engine's record of a native question's answer names its questions and answers on the row
-            # (`toolUseResult`): an answer whose question lies before even the window's seek point.
-            record = row.get("toolUseResult")
-            if isinstance(record, dict) and "questions" in record and "answers" in record \
-                    and block.get("is_error") is not True:
+            if self._distant_answer(block, row, cid):
                 text = S._result_text(block.get("content")).strip()
                 if text:
                     self._add(0, ts, "answered", text)
@@ -444,6 +458,14 @@ class Classifier:
         self._add(0, ts, "notice", _cut(summary or text.strip().split("\n", 1)[0], TOOL_CHARS * 2))
 
 
+def _blocking_ask(block):
+    """Whether a tool call is a question the session waits on: the native AskUserQuestion, the plugin's ask
+    called with `async: false`, MAWS's ask unless called with `blocking: false`."""
+    name, inp = block.get("name"), block.get("input") if isinstance(block.get("input"), dict) else {}
+    return name == NATIVE_ASK or (name in S.ASK_TOOLS and inp.get("async") is False) or \
+        (name == S.MAWS_ASK_TOOL and inp.get("blocking") is not False)
+
+
 def _question(questions, choices):
     text = "\n".join(q for q in questions if q)
     return text + (" [%s]" % " | ".join(c for c in choices if c) if any(choices) else "")
@@ -476,44 +498,58 @@ def _map(path):
         raise Unreadable(path, e)
 
 
-def rows_between(path, since, until=None, before=None):
-    """The transcript's rows stamped at or after `since` and before `until` (epoch seconds), in file order:
-    the start found by bisection, request records and attachments no entry reads passed over unparsed. The rows
-    from the seek point up to `since` go to `before` (Classifier.prior) when it is given. Unreadable when the
-    file cannot be read."""
-    mm = _map(path)
-    if mm is None:
-        return
-    try:
-        pos, end_of = SA.offset_since(mm, since), len(mm)
-        while pos < end_of:
-            end = mm.find(b"\n", pos)
-            end = end_of if end < 0 else end
-            line = mm[pos:end]
-            pos = end + 1
-            if not line or line.startswith(jobs.REQUEST_RECORD):
-                continue
-            if b'"type":"attachment"' in line and b'"queued_command"' not in line \
-                    and b'"hook_additional_context"' not in line:
-                continue
+def _rows(mm, start, since, until=None, before=None):
+    """The mapped transcript's rows from the seek point `start` stamped at or after `since` and before `until`
+    (epoch seconds), in file order; request records and attachments no entry reads passed over unparsed. The
+    rows from the seek point up to `since` go to `before` (Classifier.prior) when it is given."""
+    pos, end_of = start, len(mm)
+    while pos < end_of:
+        end = mm.find(b"\n", pos)
+        end = end_of if end < 0 else end
+        line = mm[pos:end]
+        pos = end + 1
+        if not line or line.startswith(jobs.REQUEST_RECORD):
+            continue
+        if b'"type":"attachment"' in line and b'"queued_command"' not in line \
+                and b'"hook_additional_context"' not in line:
+            continue
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(row, dict):
+            continue
+        t = SA._epoch(row.get("timestamp"))
+        if t is None:
+            continue
+        if t < since:
+            if before is not None:
+                before(row)
+            continue
+        if until is not None and t >= until:
+            break
+        yield row
+
+
+def _row_back(mm, uuid, end):
+    """The row whose own `uuid` is `uuid`, found by a byte search back from `end` (the seek point), with only
+    the line found parsed: request records, which repeat the conversation, and lines that merely quote the id
+    are passed over. None when no such row is there."""
+    needle, at = ('"uuid":"%s"' % uuid).encode(), end
+    while True:
+        i = mm.rfind(needle, 0, at)
+        if i < 0:
+            return None
+        start = mm.rfind(b"\n", 0, i) + 1
+        if mm[start:start + len(jobs.REQUEST_RECORD)] != jobs.REQUEST_RECORD:
+            stop = mm.find(b"\n", i)
             try:
-                row = json.loads(line)
+                row = json.loads(mm[start:len(mm) if stop < 0 else stop])
             except ValueError:
-                continue
-            if not isinstance(row, dict):
-                continue
-            t = SA._epoch(row.get("timestamp"))
-            if t is None:
-                continue
-            if t < since:
-                if before is not None:
-                    before(row)
-                continue
-            if until is not None and t >= until:
-                break
-            yield row
-    finally:
-        mm.close()
+                row = None
+            if isinstance(row, dict) and row.get("uuid") == uuid:
+                return row
+        at = start
 
 
 def window(sessions, since, until=None, max_chars=DEFAULT_MAX_CHARS, corroborate=None):
@@ -526,13 +562,20 @@ def window(sessions, since, until=None, max_chars=DEFAULT_MAX_CHARS, corroborate
         if not path:
             missing.append(sid)
             continue
-        c = Classifier(sid, corroborate)
-        for row in rows_between(path, since, until, before=c.prior):
-            c.feed(row)
-            if used + c.chars > max_chars:
-                truncated = True
-                break
-        got = c.finish()
+        mm = _map(path)
+        if mm is None:
+            continue
+        try:
+            start = SA.offset_since(mm, since)
+            c = Classifier(sid, corroborate, lookup=lambda uuid, mm=mm, start=start: _row_back(mm, uuid, start))
+            for row in _rows(mm, start, since, until, before=c.prior):
+                c.feed(row)
+                if used + c.chars > max_chars:
+                    truncated = True
+                    break
+            got = c.finish()
+        finally:
+            mm.close()
         if got:
             if previous is not None:
                 b = {"ts": got[0]["ts"], "session": sid[:8], "kind": "boundary",
