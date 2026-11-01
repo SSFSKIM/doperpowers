@@ -17,6 +17,8 @@ All six milestones are reviewed clean. The whole-branch review at high found no 
 | M5 skill, digest brief, replay, acceptance | 12d60720, 04a64ebf, fcdaf2c8, e8536aa9, 5f09bb50; fixes 3e32929e, 8c4e4be2, d63a5e6e, b5a55402, 45f6b0a6, c2f227b3, c91f55e3, 59ad1cf7, 3f01cbc3, 11ca95e0 | 3 (false done, seen across the lineage, a final run on the shipped version; resolver errors named, the redo rule, the one-outcome merge; record labels) | GREEN 41293052265 (11ca95e0) |
 | M6 the page | 37ce4223, 6d4fe808; fix f6b20c73 | 1 (refresh race, meaning layout, `up` means running, install pressure scenario) | GREEN 41290823464 (f6b20c73) |
 
+The merged head 947691ff is GREEN on all seven touched gates (run 41294409364). PR: https://github.com/SSFSKIM/doperpowers/pull/451.
+
 The merge of main (a16a0807, sminos 1.28.0) came in as 947691ff. Versions were kept at doperpowers 7.216.0 and sminos 1.29.0, and TECH-DEBT.md keeps both new sections.
 
 ## Rulings taken during execution (all in the Decision Log)
