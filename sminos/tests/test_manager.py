@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 """The session manager's command (sminos/skills/manager/scripts/manager): condensed transcript windows and
 their row classifier, pending questions, subscriptions and the carry list, member resolution across projects
-and for sessions membership has retired. The classifier is pinned on rows shaped as the engine and the bridge
-write them; the commands run through the real CLI in a temporary HOME and SMINOS_HOME.
+and for sessions membership has retired, and `query`'s routing between a live session's fork agent and the
+headless fork (sminos_fork), against the real bridge child with bridge_standin.py as its mod and a fake claude.
+The classifier is pinned on rows shaped as the engine and the bridge write them; the commands run through the
+real CLI in a temporary HOME and SMINOS_HOME.
 
 Run: python3 -B sminos/tests/test_manager.py
 """
 import datetime
 import json
 import os
+import re
 import stat
 import subprocess
 import sys
@@ -33,9 +36,29 @@ os.makedirs(os.path.join(os.environ["HOME"], ".claude", "sessions"), exist_ok=Tr
 sys.path.insert(0, str(SCRIPTS))
 sys.path.insert(0, str(MANAGER_DIR))
 
+import bridge_standin  # noqa: E402
 import manager  # noqa: E402
 import manager_window as W  # noqa: E402
 import sminos as S  # noqa: E402
+import sminos_fork as F  # noqa: E402
+
+# A fake `claude` for the headless fork: each call's argv, the environment that matters and its working
+# directory go to $FAKE_CLAUDE_LOG, one JSON line each; it answers as `claude -p --output-format json` does.
+FAKE_BIN = os.path.join(BASE, "fake-bin")
+os.makedirs(FAKE_BIN)
+with open(os.path.join(FAKE_BIN, "claude"), "w") as _f:
+    _f.write("""#!/usr/bin/env python3
+import json, os, sys
+argv = sys.argv[1:]
+with open(os.environ["FAKE_CLAUDE_LOG"], "a") as f:
+    f.write(json.dumps({"argv": argv, "nocache": os.environ.get("DISABLE_PROMPT_CACHING"),
+                        "internal": os.environ.get("SMNS_INTERNAL"), "cwd": os.getcwd()}) + "\\n")
+print(json.dumps({"type": "result", "is_error": False, "result": "From the headless fork.",
+                  "session_id": argv[argv.index("--session-id") + 1],
+                  "usage": {"input_tokens": 2, "output_tokens": 310, "cache_read_input_tokens": 0,
+                            "cache_creation_input_tokens": 88102}}))
+""")
+os.chmod(os.path.join(FAKE_BIN, "claude"), 0o755)
 
 KST = datetime.timezone(datetime.timedelta(hours=9))
 SID = "7a000001-0000-4000-8000-0000000000a1"
@@ -824,9 +847,148 @@ class Commands(unittest.TestCase):
         self.assertEqual((entry["session"], entry["alias"]), (GONE, "gone-term"))
 
     def test_usage_errors_exit_2(self):
-        for args in (("transcript", "builder"), ("bogus",), ("transcript", "builder", "--since", "soon")):
+        for args in (("transcript", "builder"), ("bogus",), ("transcript", "builder", "--since", "soon"),
+                     ("query", "builder"), ("query", "builder", " "), ("query", "builder", "why?", "--timeout", "0")):
             with self.subTest(args=args):
                 self.assertEqual(self.run_in_alpha(*args, check=False)[0], 2)
+
+    # query: a live session's fork agent through its bridge (bridge_standin.py: the real child, this test its mod),
+    # else a headless fork (FAKE_BIN's claude)
+
+    QUESTION = "What are you waiting on from the human right now?"
+    ANSWER_USAGE = {"input": 96, "output": 388, "cacheRead": 412330, "cacheWrite": 1204}
+
+    def standin(self, sid, **kw):
+        s = bridge_standin.StandIn(SCRIPTS / "sminos", sid, **kw)
+        self.addCleanup(s.stop)
+        return s
+
+    def query(self, *args, check=True):
+        """`manager query`, any claude it starts being the fake; (rc, out, err, the fake's calls)."""
+        log = Path(BASE, "claude-%s.log" % self.name)
+        log.unlink(missing_ok=True)
+        rc, out, err = self.run_in_alpha("query", *args, check=check,
+                                         env={"PATH": "%s:%s" % (FAKE_BIN, os.environ["PATH"]),
+                                              "FAKE_CLAUDE_LOG": str(log)})
+        calls = [json.loads(x) for x in log.read_text().splitlines()] if log.exists() else []
+        return rc, out, err, calls
+
+    def assert_headless(self, out, calls, session, question):
+        self.assertEqual(out.splitlines()[-1],
+                         "via headless fork · cache read 0 · cache write 88,102 · input 2 · output 310")
+        self.assertEqual(out.splitlines()[0], "From the headless fork.")
+        self.assertEqual(len(calls), 1, calls)
+        argv = calls[0]["argv"]
+        self.assertEqual(argv[:4], ["-p", "--resume", session, "--fork-session"])
+        for flags in (["--safe-mode", "--no-session-persistence"], ["--permission-mode", "auto"],
+                      ["--tools", "Read,Grep,Glob,Bash"]):
+            at = argv.index(flags[0])
+            self.assertEqual(argv[at:at + len(flags)], flags)
+        self.assertEqual(argv[-3:], ["--output-format", "json", F.FORK_FRAME + "\n\nThe question:\n\n" + question],
+                         "the frame before the question, the prompt last")
+        self.assertIsNone(calls[0]["nocache"], "caching on: a follow-up within the hour reads the fork's own entry")
+        self.assertEqual(calls[0]["internal"], "1", "marked internal, as derive's forks are")
+
+    def test_query_through_the_fork_agent(self):
+        s = self.standin(B1, ask={"text": "Nothing blocking. One optional item.", "usage": self.ANSWER_USAGE})
+        _, out, _, calls = self.query("builder", self.QUESTION)
+        self.assertEqual(out.splitlines(), ["Nothing blocking. One optional item.",
+                                            "via fork agent · cache read 412,330 · cache write 1,204 · input 96 · "
+                                            "output 388"])
+        self.assertEqual([c["prompt"] for c in s.commands if c["op"] == "ask"], [self.QUESTION],
+                         "the question as asked: the bridge adds the frame")
+        self.assertEqual(calls, [], "no headless fork")
+        _, out, _, _ = self.query("builder", self.QUESTION, "--json")
+        self.assertEqual(json.loads(out), {"member": "builder", "via": "fork agent", "truncated": False,
+                                           "text": "Nothing blocking. One optional item.",
+                                           "usage": self.ANSWER_USAGE})
+
+    def test_query_busy_and_nothing_to_fork_exit_1(self):
+        for code, said in (("busy", "builder is already answering another manager query (busy)"),
+                           ("nothing-to-fork", "(nothing-to-fork)")):
+            with self.subTest(code=code):
+                s = self.standin(B1, ask={"refuse": [code, "the bridge's words"]})
+                rc, _, err, calls = self.query("builder", self.QUESTION, check=False)
+                s.stop()
+                self.assertEqual(rc, 1)
+                self.assertIn(said, err)
+                self.assertEqual(calls, [], "no headless fork")
+
+    def test_query_headless_where_no_guarded_fork_agent_can_answer(self):
+        cases = (("no-guard", {"ask": {"refuse": ["no-guard", "no read-only guard is loaded"]}}),
+                 ("a bridge with no ask", {"ops": ["btw"]}),
+                 ("no bridge", None))
+        for label, standin in cases:
+            with self.subTest(label):
+                s = self.standin(B1, **standin) if standin is not None else None
+                _, out, err, calls = self.query("builder", self.QUESTION)
+                if s is not None:
+                    s.stop()
+                self.assert_headless(out, calls, B1, self.QUESTION)
+                self.assertEqual(os.path.realpath(calls[0]["cwd"]), os.path.realpath(self.dirs["bravo"]),
+                                 "the fork starts where the session runs")
+                if label == "no-guard":
+                    self.assertIn("no-guard", err)
+
+    def test_query_a_stopped_session_takes_the_headless_fork(self):
+        _, out, _, calls = self.query(GONE, "What did you finish last?")
+        self.assert_headless(out, calls, GONE2, "What did you finish last?")
+        self.assertEqual(os.path.realpath(calls[0]["cwd"]), os.path.realpath(self.dirs["alpha"]))
+
+    def test_query_refuses_a_remote_member_and_a_foreign_config_dir(self):
+        rc, _, err, calls = self.query("alpha/far", self.QUESTION, check=False)
+        self.assertEqual(rc, 1)
+        self.assertIn("far runs on mini; this version reads sessions on this machine only", err)
+        other = Path(BASE, "other-config")
+        other.mkdir(exist_ok=True)
+        record = Path(S.config_dir_path(A1))
+        record.parent.mkdir(parents=True, exist_ok=True)
+        record.write_text(json.dumps({"configDir": str(other), "at": iso(T0)}))
+        self.addCleanup(record.unlink)
+        rc, _, err, calls = self.query("a-one", self.QUESTION, check=False)
+        self.assertEqual(rc, 1)
+        self.assertIn("a-one's engine runs under %s" % other, err)
+        self.assertEqual(calls, [], "no fork is started from the wrong config dir")
+
+    def test_query_a_silent_bridge_past_the_timeout_exits_1(self):
+        self.standin(B1, ask={"silent": True})
+        rc, _, err, calls = self.query("builder", self.QUESTION, "--timeout", "1", check=False)
+        self.assertEqual(rc, 1)
+        self.assertIn("the fork agent gave no answer within 1 s", err)
+        self.assertEqual(calls, [], "no headless fork")
+
+    def test_query_says_when_the_answer_was_cut(self):
+        self.standin(B1, ask={"text": "A long answer", "truncated": True})
+        _, out, _, _ = self.query("builder", self.QUESTION)
+        self.assertEqual(out.splitlines()[:2], ["A long answer", "(the answer was cut to 64 KiB)"])
+
+    def test_bridge_offers(self):
+        self.assertFalse(F.bridge_offers(B1, "ask"), "no bridge")
+        s = self.standin(B1, ops=["btw"])
+        self.assertTrue(F.bridge_offers(B1, "btw"))
+        self.assertFalse(F.bridge_offers(B1, "ask"), "an op its capabilities do not list")
+        s.stop()
+        self.standin(B1, ops=[])
+        self.assertFalse(F.bridge_offers(B1, "btw"), "an observer's bridge lists no ops")
+
+
+class ForkFrame(unittest.TestCase):
+    """The headless fork's frame is the bridge's ASK_FRAME, word for word."""
+
+    TEXT = ("You are a read-only fork of this session, started by the owner's manager session to answer one question. "
+            "The session itself never sees this exchange, and nothing you do here reaches it. Do not continue the "
+            "session's task. You may use read-only tools (reading and searching files, read-only shell commands such "
+            "as git log, git status or gh pr view) to check facts; anything that would change a file or any state is "
+            "refused. Answer the question directly, then stop.")
+
+    def test_fork_frame_text(self):
+        self.assertEqual(F.FORK_FRAME, self.TEXT)
+
+    def test_fork_frame_is_the_bridges_ask_frame(self):
+        source = (PLUGIN / "hooks" / "mods" / "bridge-ask.tsx").read_text()
+        m = re.search(r'export const ASK_FRAME =\s*"((?:[^"\\]|\\.)*)"', source)
+        self.assertIsNotNone(m, "bridge-ask.tsx exports ASK_FRAME as one string")
+        self.assertEqual(json.loads('"%s"' % m.group(1)), F.FORK_FRAME)
 
 
 if __name__ == "__main__":

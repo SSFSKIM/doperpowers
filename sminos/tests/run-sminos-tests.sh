@@ -27,7 +27,10 @@ fi
 
 FAILURES=0
 PASSES=0
-TEST_ROOT="$(mktemp -d)"
+# Under /tmp, not $TMPDIR: a bridge's socket, $SMINOS_HOME/bridge/<session>.sock,
+# must fit a Unix socket path (103 bytes on macOS), which macOS's per-user
+# TMPDIR leaves no room for.
+TEST_ROOT="$(mktemp -d /tmp/smt.XXXXXX)"
 SOCK_PID=""
 EXTRA_PIDS=()
 cleanup() {
@@ -157,7 +160,7 @@ esac
 
 args=("$@")
 prompt="${args[$((${#args[@]} - 1))]}"
-has_bg=0; fork=0; session_id=""; name=""; resume_uuid=""; worktree=""; i=0
+has_bg=0; fork=0; session_id=""; name=""; resume_uuid=""; worktree=""; tools="<unset>"; pmode="<unset>"; i=0
 while [ $i -lt ${#args[@]} ]; do
   case "${args[$i]}" in
     --bg) has_bg=1 ;;
@@ -166,6 +169,8 @@ while [ $i -lt ${#args[@]} ]; do
     -n) i=$((i + 1)); name="${args[$i]}" ;;
     --resume) i=$((i + 1)); resume_uuid="${args[$i]}" ;;
     --worktree) i=$((i + 1)); worktree="${args[$i]}" ;;
+    --tools) i=$((i + 1)); tools="${args[$i]}" ;;
+    --permission-mode) i=$((i + 1)); pmode="${args[$i]}" ;;
   esac
   i=$((i + 1))
 done
@@ -192,9 +197,11 @@ PY
 # what it prints on stderr), and STUB_FORK_LIST=1 has it
 # list the project's members while it runs. STUB_FORK_RENAME=<record>=<name>
 # has the parent's owner rename it (/rename: the record's name, source user)
-# while the fork runs. The prompt it was given is kept in fork-prompt.txt.
+# while the fork runs. The prompt it was given is kept in fork-prompt.txt; the
+# fork-env line records its environment and the --tools and --permission-mode
+# values it was given (`<unset>` for a flag it was not given).
 if [ $fork -eq 1 ]; then
-  echo "fork-env:internal=${SMNS_INTERNAL:-} marker=$([ -f "$SMINOS_HOME/internal/$$" ] && echo yes || echo no) nocache=${DISABLE_PROMPT_CACHING:-}" >> "$STUB_STATE/log/calls.log"
+  echo "fork-env:internal=${SMNS_INTERNAL:-} marker=$([ -f "$SMINOS_HOME/internal/$$" ] && echo yes || echo no) nocache=${DISABLE_PROMPT_CACHING:-} tools=[$tools] mode=[$pmode]" >> "$STUB_STATE/log/calls.log"
   printf '%s' "$prompt" > "$STUB_STATE/log/fork-prompt.txt"
   if [ -n "${STUB_FORK_RENAME:-}" ]; then
     python3 - "${STUB_FORK_RENAME%=*}" "${STUB_FORK_RENAME##*=}" <<'PY'
@@ -5627,6 +5634,7 @@ STUB_FORK_LIST=1 STUB_FORK_RESULT='<message>Keeps the stub tool working.
 A second line.</message>' run "$SMINOS" derive hd
 assert_rc 0 "$RC" "derive exits 0"
 assert_contains "$OUT" "hd: Keeps the stub tool working." "derive prints the one-line answer, marks stripped, first line"
+assert_contains "$OUT" "sminos: derive hd via headless fork · cache read 0 · input 0" "and says on stderr how it asked: a session with no bridge, the headless fork"
 assert_contains "$(tail -1 "$HPLOG/testhost.$HD.jsonl")" '"text": "Keeps the stub tool working.", "source": "derived"' "and records it as a derived line"
 assert_equals "$(json_row hd charge_source)" "derived" "list --json says the line was derived"
 run "$SMINOS" list --json
@@ -5637,6 +5645,7 @@ assert_equals "$(host_count)" "$HOST_BEFORE" "the host stream has no new line"
 assert_equals "$(find "$HOME/.claude/projects" -name '*.jsonl' | wc -l | tr -d ' ')" "$TX_BEFORE" "the fork's transcript is deleted"
 assert_contains "$(grep 'fork-env:' "$STUB_STATE/log/calls.log" | tail -1)" "internal=1 marker=yes" "the fork runs with SMNS_INTERNAL set and its pid marked before it starts"
 assert_contains "$(grep 'fork-env:' "$STUB_STATE/log/calls.log" | tail -1)" "nocache=1" "and is sent uncached: nothing would read the cache it wrote"
+assert_contains "$(grep 'fork-env:' "$STUB_STATE/log/calls.log" | tail -1)" "tools=[] mode=[<unset>]" "with no tools and no permission mode: a session with no bridge gets today's fork"
 FORK_ARGV="$(grep -- '--fork-session' "$STUB_STATE/log/calls.log" | tail -1)"
 if grep -Eq -- "^-p --resume $HD --fork-session --session-id [0-9a-f-]{36} --safe-mode --no-session-persistence --tools  --output-format json In one line: what is this session in charge of" <<<"$FORK_ARGV"; then
   pass "the fork is the headless resume the design names, its id pinned, in safe mode and persisting nothing, the prompt last"
@@ -5741,6 +5750,66 @@ run "$SMINOS" derive he
 assert_rc 0 "$RC" "a derive that names the member does not wait for the hour"
 assert_contains "$OUT" "he: owns the stub tool" "and records its line"
 assert_file_absent "$SMINOS_HOME/derive-failed/$HE" "a derive that succeeds clears the stamp"
+# A live session whose bridge offers the side question (btw) is asked through
+# it, reading the session's own cache, and no fork process starts; a refused
+# or failing side question falls back to the headless fork, so derive
+# succeeds wherever it did before. The bridge is the real child with
+# bridge_standin.py as its mod.
+standin() { # session config — the session's bridge, until standin_stop
+  rm -f "$TEST_ROOT/standin.ready" "$TEST_ROOT/standin.log"
+  python3 "$SCRIPT_DIR/bridge_standin.py" "$SMINOS" "$1" "$2" "$TEST_ROOT/standin.ready" "$TEST_ROOT/standin.log" &
+  STANDIN_PID=$!
+  for _ in $(seq 1 200); do [ -f "$TEST_ROOT/standin.ready" ] && break; sleep 0.05; done
+}
+standin_stop() { kill "$STANDIN_PID" 2>/dev/null || true; wait "$STANDIN_PID" 2>/dev/null || true; }
+forks() { grep -c -- '--fork-session' "$STUB_STATE/log/calls.log" || true; }
+DERIVE_PROMPT_NOW="In one line: what is this session in charge of in this project — its standing responsibility, not its latest step? Answer with the line only."
+HV=7e000001-0000-4000-8000-00000000007e
+hp_peer dbtw "$HV" user interactive
+tx "$TXD/$HV.jsonl" tool v0000001 10
+standin "$HV" '{"ops": ["btw", "ask"], "btw": {"text": "<message>Keeps the bridge stand-in honest.</message>"}}'
+FORKS_BEFORE="$(forks)"
+run "$SMINOS" derive dbtw
+standin_stop
+assert_rc 0 "$RC" "derive through the side question exits 0"
+assert_contains "$OUT" "dbtw: Keeps the bridge stand-in honest." "derive prints the side question's line as it printed the fork's"
+assert_contains "$OUT" "sminos: derive dbtw via btw · cache read 120,027 · input 156" "and says on stderr it went through btw, with the cache it read"
+assert_equals "$(forks)" "$FORKS_BEFORE" "starting no fork process"
+assert_contains "$(tail -1 "$HPLOG/testhost.$HV.jsonl")" '"text": "Keeps the bridge stand-in honest.", "source": "derived"' "and records the derived line"
+assert_equals "$(python3 -c 'import json, sys
+print([c["prompt"] for c in map(json.loads, open(sys.argv[1])) if c.get("op") == "btw"][-1])' "$TEST_ROOT/standin.log")" \
+  "$DERIVE_PROMPT_NOW" "the side question is derive's prompt as it is (the bridge adds its own frame)"
+HW2=7e000002-0000-4000-8000-00000000007e
+hp_peer drefused "$HW2" user interactive
+tx "$TXD/$HW2.jsonl" tool w0000001 10
+standin "$HW2" '{"ops": ["btw"], "btw": {"refuse": ["nothing-to-fork", "nothing to fork yet"]}}'
+FORKS_BEFORE="$(forks)"
+STUB_FORK_RESULT="Owns the refused fixture." run "$SMINOS" derive drefused
+standin_stop
+assert_rc 0 "$RC" "a refused side question: derive exits 0"
+assert_contains "$OUT" "drefused: Owns the refused fixture." "a refused side question falls back to the headless fork"
+assert_contains "$OUT" "sminos: derive drefused: btw gave no line (nothing to fork yet); asking a headless fork" "saying why"
+assert_contains "$OUT" "sminos: derive drefused via headless fork" "and how it asked"
+assert_equals "$(forks)" "$((FORKS_BEFORE + 1))" "one fork process"
+assert_contains "$(grep 'fork-env:' "$STUB_STATE/log/calls.log" | tail -1)" "internal=1 marker=yes nocache=1 tools=[] mode=[<unset>]" \
+  "today's fork exactly: internal, uncached, no tools"
+assert_equals "$(cat "$STUB_STATE/log/fork-prompt.txt")" "$DERIVE_PROMPT_NOW" "asked the same prompt, last"
+HX2=7e000003-0000-4000-8000-00000000007e
+hp_peer dfailed "$HX2" user interactive
+tx "$TXD/$HX2.jsonl" tool x0000001 10
+standin "$HX2" '{"ops": ["btw"], "btw": {"refuse": ["busy", "busy"]}}'
+STUB_FORK_FAIL=1 run "$SMINOS" derive dfailed
+standin_stop
+assert_rc 1 "$RC" "when the headless fork fails too, derive fails as before"
+assert_contains "$OUT" "sminos: derive dfailed failed: the fork failed (exit 1): " "with the headless fork's reason"
+standin "$HX2" '{"ops": ["btw"], "btw": {"end": {"reason": "api-error", "status": 529, "error": "overloaded_error", "usage": {"input": 9, "output": 0, "cacheRead": 0, "cacheWrite": 0}}}}'
+FORKS_BEFORE="$(forks)"
+STUB_FORK_RESULT="Owns the overloaded fixture." run "$SMINOS" derive dfailed
+standin_stop
+assert_rc 0 "$RC" "a side question that ended in an API error: derive exits 0"
+assert_contains "$OUT" "dfailed: Owns the overloaded fixture." "it falls back to the headless fork"
+assert_contains "$OUT" "the side question ended without an answer: its request failed (HTTP 529: overloaded_error)" "saying why"
+assert_equals "$(forks)" "$((FORKS_BEFORE + 1))" "one fork process"
 # A headless or SDK run registers as interactive with an sdk-* entrypoint: no
 # member, whatever its kind — neither reconciliation nor the hook joins it.
 HH=6b000008-0000-4000-8000-00000000006b
