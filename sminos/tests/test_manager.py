@@ -19,6 +19,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 HERE = Path(__file__).resolve().parent
 PLUGIN = HERE.parent
@@ -40,6 +41,8 @@ import bridge_standin  # noqa: E402
 import manager  # noqa: E402
 import manager_window as W  # noqa: E402
 import sminos as S  # noqa: E402
+import sminos_bridge as B  # noqa: E402
+import sminos_control as C  # noqa: E402
 import sminos_fork as F  # noqa: E402
 
 # A fake `claude` for the headless fork: each call's argv, the environment that matters and its working
@@ -916,6 +919,7 @@ class Commands(unittest.TestCase):
 
     def test_query_headless_where_no_guarded_fork_agent_can_answer(self):
         cases = (("no-guard", {"ask": {"refuse": ["no-guard", "no read-only guard is loaded"]}}),
+                 ("spawn-refused", {"ask": {"refuse": ["spawn-refused", "the fork was not spawned"]}}),
                  ("a bridge with no ask", {"ops": ["btw"]}),
                  ("no bridge", None))
         for label, standin in cases:
@@ -927,8 +931,8 @@ class Commands(unittest.TestCase):
                 self.assert_headless(out, calls, B1, self.QUESTION)
                 self.assertEqual(os.path.realpath(calls[0]["cwd"]), os.path.realpath(self.dirs["bravo"]),
                                  "the fork starts where the session runs")
-                if label == "no-guard":
-                    self.assertIn("no-guard", err)
+                if label in ("no-guard", "spawn-refused"):
+                    self.assertIn("(%s); asking a headless fork" % label, err)
 
     def test_query_a_stopped_session_takes_the_headless_fork(self):
         _, out, _, calls = self.query(GONE, "What did you finish last?")
@@ -961,6 +965,64 @@ class Commands(unittest.TestCase):
         self.standin(B1, ask={"text": "A long answer", "truncated": True})
         _, out, _, _ = self.query("builder", self.QUESTION)
         self.assertEqual(out.splitlines()[:2], ["A long answer", "(the answer was cut to 64 KiB)"])
+
+    def test_an_ask_lets_go_of_its_stream_however_it_ends(self):
+        """derive --all asks one member after another in one process: each ask closes its subscription (its thread
+        ends, the child drops the subscriber) whether it returned or raised, and stops no fork."""
+        for label, ask, call in (
+                ("returned", {"text": "Nothing blocking."}, lambda: F.ask_fork_agent(B1, self.QUESTION)),
+                ("raised", {"silent": True}, lambda: F.ask_fork_agent(B1, self.QUESTION, timeout=1))):
+            with self.subTest(label):
+                s = self.standin(B1, ask=ask)
+                streams = []
+
+                def follow(path, real=C.follow_stream):
+                    streams.append(real(path))
+                    return streams[-1]
+
+                with mock.patch.object(F.C, "follow_stream", follow):
+                    if label == "raised":
+                        with self.assertRaises(F.ForkFailed):
+                            call()
+                    else:
+                        self.assertEqual(call().text, "Nothing blocking.")
+                self.assertEqual(len(streams), 1)
+                self.assertTrue(streams[0].closed)
+                self.assertTrue(streams[0].done.wait(5), "the follower's thread ended")
+                # The child notices a gone subscriber when it next writes to it.
+                for _ in range(100):
+                    s.post({"type": "usage", "t": 0})
+                    if B.probe(B.endpoint(B1)).get("subscribers") == 0:
+                        break
+                    time.sleep(0.05)
+                self.assertEqual(B.probe(B.endpoint(B1)).get("subscribers"), 0, "the child holds no subscriber")
+                self.assertEqual([c["op"] for c in s.commands], ["ask"], "and nothing was sent to stop the fork")
+                s.stop()
+
+    def test_an_end_only_the_kept_file_holds_is_read_from_it(self):
+        """A module reload mid-ask posts the end to the new child before the stream is back: the ask, sent with an
+        rpc nonce of its own, reads the end the new child kept under it instead of waiting out its timeout."""
+        s = self.standin(B1, ask={"text": "Answered across the reload.", "reload": True})
+        began = time.monotonic()
+        got = F.ask_fork_agent(B1, self.QUESTION, timeout=60)
+        self.assertEqual(got.text, "Answered across the reload.")
+        self.assertLess(time.monotonic() - began, 20, "read from the kept file, not waited out")
+        nonce = s.commands[0].get("rpc")
+        self.assertRegex(nonce or "", r"^manager-[0-9a-f]{32}$")
+        self.assertEqual(F.kept_end(B1, nonce)["text"], "Answered across the reload.")
+        s.stop()
+        self.standin(B1, ask={"end": {"reason": "aborted"}, "reload": True})
+        began = time.monotonic()
+        rc, _, err, calls = self.query("builder", self.QUESTION, "--timeout", "60", check=False)
+        self.assertEqual(rc, 1)
+        self.assertIn("the fork agent ended without an answer: it was aborted", err)
+        self.assertLess(time.monotonic() - began, 30)
+        self.assertEqual(calls, [], "no headless fork")
+
+    def test_btw_goes_with_no_rpc_nonce(self):
+        s = self.standin(B1, btw={"text": "Keeps it."})
+        self.assertEqual(F.ask_btw(B1, "Your line?").text, "Keeps it.")
+        self.assertNotIn("rpc", s.commands[0], "the daemon relays btw events to the desk under their nonce")
 
     def test_bridge_offers(self):
         self.assertFalse(F.bridge_offers(B1, "ask"), "no bridge")

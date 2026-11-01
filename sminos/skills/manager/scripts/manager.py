@@ -480,6 +480,12 @@ QUERY_REFUSALS = {
     "busy": "%s is already answering another manager query (busy)",
     "nothing-to-fork": "%s has made no model request yet, so there is nothing to fork (nothing-to-fork)",
 }
+# The `ask` refusals a headless fork answers in its place: a session whose bridge cannot run a guarded fork agent,
+# or whose engine refused the spawn (a session stopped by Esc refuses one until it gets input).
+QUERY_HEADLESS = {
+    "no-guard": "runs no read-only fork guard",
+    "spawn-refused": "refused to spawn a fork agent (an Esc leaves a session refusing until it gets input)",
+}
 
 
 def _fork_subject(t, session):
@@ -522,10 +528,9 @@ def cmd_query(a):
         except F.ForkFailed as e:
             if e.code in QUERY_REFUSALS:
                 fail(QUERY_REFUSALS[e.code] % t.alias, 1)
-            if e.code != "no-guard":
+            if e.code not in QUERY_HEADLESS:
                 fail("%s: %s" % (t.alias, e.reason), 1)
-            sys.stderr.write("manager: %s's bridge runs no read-only guard (no-guard); asking a headless fork\n"
-                             % t.alias)
+            sys.stderr.write("manager: %s %s (%s); asking a headless fork\n" % (t.alias, QUERY_HEADLESS[e.code], e.code))
     if got is None:
         try:
             got = _headless(t, session, a.question, a.timeout)

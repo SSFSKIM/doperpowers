@@ -410,6 +410,44 @@ def cmd_compact(a):
 # ------------------------------------------------------------------ requests from outside
 
 
+class Stream(queue.Queue):
+    """follow_stream's queue of events. `close()` ends the subscription: its
+    socket is shut, so its thread stops reading and ends (`done`), and
+    nothing more is queued. It only lets go of the stream; the session, and
+    any op the stream was following, go on."""
+
+    def __init__(self):
+        super().__init__()
+        self._lock = threading.Lock()
+        self._sock = None
+        self.closed = False
+        self.done = threading.Event()
+
+    @staticmethod
+    def _shut(sock):
+        try:
+            sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+
+    def opened(self, conn):
+        """The subscription's connection, as it connects: its socket is kept,
+        since the connection lets go of it once the response is read (the
+        child answers `Connection: close`); one closed already is shut at once."""
+        with self._lock:
+            self._sock = conn.sock
+            closed = self.closed
+        if closed and conn.sock is not None:
+            self._shut(conn.sock)
+
+    def close(self):
+        with self._lock:
+            self.closed = True
+            sock = self._sock
+        if sock is not None:
+            self._shut(sock)
+
+
 def follow_stream(path):
     """The endpoint's stream on a thread: a queue of its events (the
     snapshot first), then None at its end. A stream the child ended because
@@ -417,15 +455,25 @@ def follow_stream(path):
     next in the queue, so a settlement that happened in between is read from
     its `settled`. A child not ready yet (503: the mod's first resync has
     not reached it) is asked again until the first snapshot's window
-    (FIRST_WAIT_S) runs out."""
-    events = queue.Queue()
+    (FIRST_WAIT_S) runs out. A caller that keeps running after it has what
+    it waited for closes the queue (Stream.close), so no thread, socket or
+    growing queue outlives its use."""
+    events = Stream()
     first_by = time.monotonic() + FIRST_WAIT_S
 
     def follow():
+        try:
+            run()
+        finally:
+            events.done.set()
+
+    def run():
         pid = None
-        while True:
+        while not events.closed:
             try:
-                for e in B.subscribe(path):
+                for e in B.subscribe(path, events.opened):
+                    if events.closed:
+                        break
                     if e.get("type") == "snapshot":
                         if pid is not None and e.get("pid") != pid:
                             break   # another child: what this one followed is gone
@@ -437,6 +485,8 @@ def follow_stream(path):
                     continue
                 break
             except (OSError, http.client.HTTPException, ValueError):
+                break
+            if events.closed:
                 break
             status = B.probe(path)
             if pid is None or status is None or status.get("pid") != pid:

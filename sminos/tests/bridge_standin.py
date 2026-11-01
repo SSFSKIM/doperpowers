@@ -12,6 +12,7 @@ How each op is answered, `btw` and `ask` alike:
     {"refuse": ["code", "why"]}       refused at the op
     {"end": {"reason": "...", ...}}   started, then ended with no answer
     {"silent": true}                  started, never ended
+    {"reload": true, ...}             the child replaced before the end is posted (to the new child)
 
 As a module: StandIn(cli, session, ops=[...], btw={...}, ask={...}); its
 `commands` are the ops it received. As a script, it runs until SIGTERM:
@@ -50,32 +51,38 @@ class StandIn:
         self.session, self.ops, self.log = session, list(ops), log
         self.answers = {"btw": btw or {"text": "Keeps the stand-in's tool working."},
                         "ask": ask or {"text": "Nothing blocking."}}
-        self.commands = []
-        self.proc = subprocess.Popen([str(cli), "bridge", "--session", session], stdout=subprocess.PIPE,
+        self.cli, self.commands = cli, []
+        self.start_child()
+
+    def start_child(self):
+        """A child for the session, this process its mod: its hello read, then the session's start and the
+        mod's state (with the capabilities) posted, as a module that loads does."""
+        self.proc = subprocess.Popen([str(self.cli), "bridge", "--session", self.session], stdout=subprocess.PIPE,
                                      stderr=subprocess.DEVNULL, text=True)
         hello = json.loads(self.proc.stdout.readline())
         assert hello.get("op") == "hello", hello
-        self.sock, self.nonce = hello["socket"], hello["nonce"]
-        threading.Thread(target=self.drain, daemon=True).start()
+        self.child = (hello["socket"], hello["nonce"])   # one value: a post never pairs one child's socket with another's nonce
+        threading.Thread(target=self.drain, args=(self.proc,), daemon=True).start()
         caps = {"sminos": "test", "protocol": 2, "engine": "test", "ops": self.ops, "reads": [], "routes": {},
                 "controls": {op: {"available": True} for op in self.ops}}
-        self.post({"type": "session", "phase": "start", "session": session, "cwd": "/", "t": 0},
+        self.post({"type": "session", "phase": "start", "session": self.session, "cwd": "/", "t": 0},
                   {"type": "resync", "turns": [], "streaming": [], "agents": [], "cut": hello.get("seed") or {},
                    "capabilities": caps, "t": 0})
 
     def post(self, *events):
-        c = _Unix(self.sock)
+        sock, nonce = self.child
+        c = _Unix(sock)
         try:
             c.request("POST", "/events", body=json.dumps(list(events)).encode(),
-                      headers={"content-type": "application/json", NONCE_HEADER: self.nonce})
+                      headers={"content-type": "application/json", NONCE_HEADER: nonce})
             status = c.getresponse().status
         finally:
             c.close()
         assert status == 204, status
 
-    def drain(self):
-        with self.proc.stdout:
-            for line in self.proc.stdout:
+    def drain(self, proc):
+        with proc.stdout:
+            for line in proc.stdout:
                 cmd = json.loads(line)
                 self.commands.append(cmd)
                 if self.log:
@@ -103,6 +110,11 @@ class StandIn:
         else:
             end = {"text": how["text"], "usage": how.get("usage", USAGE),
                    **({"truncated": True} if how.get("truncated") else {})}
+        if how.get("reload"):
+            # A reload of the module mid-op: the child is replaced, and the module after it posts the end to the
+            # new child before any subscriber is back on its stream.
+            self.stop()
+            self.start_child()
         self.post({"type": op, "phase": "end", "id": oid, **end, "t": 0})
 
     def stop(self):

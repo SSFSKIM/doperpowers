@@ -357,13 +357,17 @@ class NotReady(OSError):
     """The endpoint answers but has not had the session's state from the mod yet (503)."""
 
 
-def subscribe(path):
+def subscribe(path, opened=None):
     """The endpoint's stream: yields each line, parsed, until it ends. Raises
     OSError when nothing answers, NotReady when the child has not had the
-    mod's first resync within its wait."""
+    mod's first resync within its wait. `opened`, when given, is called with
+    the connection once its socket is connected, so a caller can shut it to
+    end the stream from another thread."""
     c = _UnixConnection(path, timeout=None)
     try:
         c.request("GET", "/events")
+        if opened is not None:
+            opened(c)
         r = c.getresponse()
         if r.status == 503:
             raise NotReady("the bridge has not had the session's state yet")

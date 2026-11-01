@@ -117,11 +117,43 @@ def _ended_without_answer(what, e):
     return _line("the %s ended without an answer: %s" % (what, why))
 
 
-def _ask_bridge(session, op, prompt, timeout, via, what):
+# How often an ask whose end has not reached the stream looks for it where
+# the bridge's child keeps it (_ask_bridge).
+KEPT_POLL_S = 0.5
+# How long an ask's bridge may answer nowhere before it is taken as gone (a
+# reload's new child takes a moment to come up).
+CHILDLESS_S = 10
+
+
+def _ask_bridge(session, op, prompt, timeout, via, what, kept=False):
     """`op {prompt}` on the session's bridge, its end awaited on the stream
-    subscribed before it went."""
+    subscribed before it went. The subscription is closed however this
+    ends (derive --all asks one member after another in one process); the
+    fork is not stopped by it.
+
+    `kept`: the op goes with an `rpc` nonce of its own, so the bridge's child
+    keeps its answer, and then its end, under that nonce in its kept file,
+    as it does a desk RPC's, and a child that replaces it (a reload of the
+    module) takes the nonce up from that file. A reload mid-op can post the
+    end to the new child before any subscriber is back on its stream, so an
+    end the stream has not brought is looked for there until the timeout."""
     path = B.endpoint(session)
     events = C.follow_stream(path)
+    try:
+        return _asked(events, session, path, op, prompt, timeout, via, what,
+                      "manager-%s" % uuidlib.uuid4().hex if kept else None)
+    finally:
+        events.close()
+
+
+def kept_end(session, nonce):
+    """The end the session's bridge child kept beside the answer to the op
+    sent with `nonce`, or None."""
+    end = ((B.load_kept(session).get("rpcs") or {}).get(nonce) or {}).get("end")
+    return end if isinstance(end, dict) else None
+
+
+def _asked(events, session, path, op, prompt, timeout, via, what, nonce):
     try:
         first = events.get(timeout=C.FIRST_WAIT_S)
     except queue.Empty:
@@ -129,7 +161,7 @@ def _ask_bridge(session, op, prompt, timeout, via, what):
     if not first or first.get("type") != "snapshot":
         raise ForkFailed("the session's bridge did not stream", code="no-stream")
     try:
-        r = C.post_command(path, {"op": op, "prompt": prompt})
+        r = C.post_command(path, {"op": op, "prompt": prompt, **({"rpc": nonce} if nonce else {})})
     except C.Unanswered as e:
         raise ForkFailed(_line("the session's bridge gave no answer: %s" % e))
     if r is None:
@@ -142,15 +174,37 @@ def _ask_bridge(session, op, prompt, timeout, via, what):
         raise ForkFailed(_line(out.get("error") or "the %s was refused" % what), code=str(out.get("code") or ""))
     oid = (out.get("result") or {}).get("id") or out.get("id")
     deadline = time.monotonic() + timeout
+    streaming, e, childless = True, None, None
     while True:
-        try:
-            e = events.get(timeout=max(0.0, deadline - time.monotonic()))
-        except queue.Empty:
-            raise ForkFailed("the %s gave no answer within %d s" % (what, timeout), code="timeout")
-        if e is None:
+        left = deadline - time.monotonic()
+        if streaming:
+            try:
+                got = events.get(timeout=max(0.0, min(left, KEPT_POLL_S) if nonce else left))
+            except queue.Empty:
+                got = False
+            if got is None:
+                streaming = False   # the child went, or another replaced it
+            elif got and got.get("type") == op and got.get("phase") == "end" and got.get("id") == oid:
+                e = got
+                break
+        if nonce:
+            e = kept_end(session, nonce)
+            if e is not None:
+                break
+        if not streaming and not nonce:
             raise ForkFailed("the session's bridge ended before the %s did" % what, code="ended")
-        if e.get("type") == op and e.get("phase") == "end" and e.get("id") == oid:
-            break
+        if not streaming:
+            # A reload leaves no child for a moment before its new one: only a bridge gone for longer is gone.
+            if B.probe(path) is not None:
+                childless = None
+            elif childless is None:
+                childless = time.monotonic()
+            elif time.monotonic() - childless > CHILDLESS_S:
+                raise ForkFailed("the session's bridge ended before the %s did" % what, code="ended")
+        if left <= 0:
+            raise ForkFailed("the %s gave no answer within %d s" % (what, timeout), code="timeout")
+        if not streaming:
+            time.sleep(max(0.0, min(left, KEPT_POLL_S)))
     text = e.get("text")
     if e.get("reason") or not isinstance(text, str) or not text.strip():
         raise ForkFailed(_ended_without_answer(what, e), code=str(e.get("reason") or "empty-reply"))
@@ -159,14 +213,17 @@ def _ask_bridge(session, op, prompt, timeout, via, what):
 
 def ask_btw(session, prompt, timeout=120):
     """The session's side question (`btw`): the bridge puts `prompt` under its
-    own frame (BTW_FRAME)."""
+    own frame (BTW_FRAME). It goes with no `rpc` nonce, unlike `ask`: the
+    daemon relays every bridge's `btw` events to the desk as DX4 `op`, under
+    the nonce they carry, where null is one no desk RPC asked for; a reload
+    mid-question costs derive its timeout, then the headless fork."""
     return _ask_bridge(session, "btw", prompt, timeout, "btw", "side question")
 
 
 def ask_fork_agent(session, prompt, timeout=300):
     """The session's fork agent (`ask`): the bridge puts `prompt` under
     ASK_FRAME, with the tail of a running turn."""
-    return _ask_bridge(session, "ask", prompt, timeout, "fork agent", "fork agent")
+    return _ask_bridge(session, "ask", prompt, timeout, "fork agent", "fork agent", kept=True)
 
 
 # ------------------------------------------------------------------ headless
