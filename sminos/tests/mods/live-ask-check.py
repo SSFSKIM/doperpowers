@@ -275,14 +275,18 @@ class Ask(LB.Live):
             time.sleep(0.5)
 
     def touch_probe(self, probe, what, tries=3):
-        """The touch probe, asked again (up to `tries`) while the fork declines without calling the tool."""
+        """The touch probe, asked again (up to `tries`) while the fork declines the touch (it may still make
+        read-only calls, such as an `ls` of the probe's path)."""
+        def touched(fork):
+            return any(u[0] == "Bash" and "touch" in json.dumps(u[1]) for u in self.uses(fork))
         for attempt in range(1, tries + 1):
             r, end, fork = self.asked(TOUCH % probe)
-            if self.uses(fork):
+            if touched(fork):
                 break
-            print("  (observed) %s: the fork declined without a call (try %d): %r" % (what, attempt, (end.get("text") or "")[:160]), flush=True)
-        if not self.uses(fork):
-            self.unexercised("%s: touch refused by the guard" % what, "the fork never called a tool in %d tries" % tries)
+            print("  (observed) %s: the fork declined the touch (try %d; calls %s): %r" % (
+                what, attempt, self.tool_calls(fork), (end.get("text") or "")[:160]), flush=True)
+        if not touched(fork):
+            self.unexercised("%s: touch refused by the guard" % what, "the fork never called touch in %d tries" % tries)
             self.check("%s: no file, no permission prompt" % what, not os.path.exists(probe) and self.no_prompt_seen(), "exists %s" % os.path.exists(probe))
             return
         self.check("%s: touch refused by the guard, no file, no permission prompt" % what,
