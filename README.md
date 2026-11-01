@@ -74,7 +74,7 @@ flowchart LR
 
 - **Who's here, and what they own.** `sminos list` shows every session in the project: its machine, branch, state and the line it is in charge of. A project is every clone and worktree of one repository, on every enrolled machine.
 - **Messages instead of copy-paste.** `sminos say "@parser …"` reaches that session wherever it runs; `@all`, a machine, or the whole org work too.
-- **Spawn and drive.** `sminos spawn` starts a background session (a seat) on a task; `watch`, `steer`, `interrupt`, `answer` and `decide` reach into one that is running. Spawning and these controls work on sessions on the same machine; messages cross machines.
+- **Spawn and drive.** `sminos spawn` starts a background session (a seat) on a task; `watch`, `steer`, `interrupt`, `answer` and `decide` reach into one that is running on the same machine. Messages cross machines; these controls don't.
 - **Every commit names its author session.** Commits and PRs end with a `Sminos-Session:` line, and `sminos who <commit|PR>` finds that session and how to reach it.
 - **Questions that don't block.** A session asks you through an async question tool and keeps working until you answer.
 - **Catch up in one read.** The `manager` skill follows the sessions you name and tells you what they need from you and what you missed.
