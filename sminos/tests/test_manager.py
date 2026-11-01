@@ -9,7 +9,9 @@ real CLI in a temporary HOME and SMINOS_HOME.
 
 Run: python3 -B sminos/tests/test_manager.py
 """
+import contextlib
 import datetime
+import io
 import json
 import os
 import re
@@ -1257,6 +1259,44 @@ class Commands(unittest.TestCase):
         self.apply(update([], sessions=[{"session": GONE, "from": covered, "covered": iso(L.parse(covered) + 3600),
                                          "seen": iso(T0 + 60)}]))
         self.assertTrue(self.state()["items"][0]["seen"])
+
+    def test_a_lineage_that_fails_to_resolve_still_applies_and_names_the_seen_refresh_as_failed(self):
+        """A resolver error that is not a miss (a bug) must not pass silently for a stored id alone: the change is
+        applied and the subscription's seen refresh is reported failed, in the text and in --json."""
+        self.run_in_alpha("subscriptions", "add", "Old", GONE)
+        st = self.state()
+        st["initiatives"][0]["sessions"].append({"session": "7b0000ff-0000-4000-8000-0000000000ff", "alias": "ghost",
+                                                 "project": "", "project_name": "", "added": iso(T0),
+                                                 "covered": iso(T0), "seen": None})
+        self.write_state(st)
+        covered = st["initiatives"][0]["sessions"][0]["covered"]
+        self.apply(update([yours(initiative="Old", member="gone-term", session=GONE2, raised=iso(T0 + 50),
+                                 status="done", evidence="merged", status_at=iso(T0 + 55))]))
+        src = Path(BASE, self.name + "-update.json")
+        src.write_text(json.dumps(update([], sessions=[{"session": GONE, "from": covered,
+                                                        "covered": iso(L.parse(covered) + 3600),
+                                                        "seen": iso(T0 + 60)}])))
+        real = manager.resolve_stored
+
+        def broken(entry):
+            if entry.get("session") == GONE:
+                raise RuntimeError("resolver bug")
+            return real(entry)
+        for as_json in (True, False):
+            out = io.StringIO()
+            with mock.patch.object(manager, "resolve_stored", broken), contextlib.redirect_stdout(out):
+                manager.main(["ledger", "apply", "--file", str(src), "--name", self.name] + (["--json"] if as_json else []))
+            if as_json:
+                got = json.loads(out.getvalue())
+                self.assertEqual(got["seen_refresh_failed"],
+                                 [{"session": GONE, "alias": "gone-term", "error": "RuntimeError: resolver bug"}],
+                                 "the broken one is named; ghost, a plain miss, is not")
+            else:
+                self.assertIn("seen refresh failed for gone-term (%s): RuntimeError: resolver bug" % GONE[:8],
+                              out.getvalue())
+        st = self.state()
+        self.assertFalse(st["items"][0]["seen"], "its lineage unknown, the item under GONE2 is left unseen")
+        self.assertEqual(st["initiatives"][0]["sessions"][0]["seen"], iso(T0 + 60), "and the change was applied")
 
     def test_a_refused_apply_exits_2_and_leaves_the_file_as_it_was(self):
         self.run_in_alpha("subscriptions", "add", "P5", "builder")

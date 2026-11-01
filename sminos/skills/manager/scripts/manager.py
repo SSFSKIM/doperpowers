@@ -515,16 +515,22 @@ def remove_subscriptions(a, names):
 
 
 def lineages_of(st):
-    """Each subscription's stored session -> the sessions of its lineage, resolved as `pending` resolves them; one
-    that does not resolve stands for its stored session alone."""
-    out = {}
+    """({stored session: the sessions of its lineage}, failures), each lineage resolved as `pending` resolves it. One
+    that does not resolve (no member or record knows it, or the resolver's exit for it) stands for its stored session
+    alone; any other error does too, and is returned as a failure ({session, alias, error}) for the caller to name,
+    since it may hide items left unseen under later sessions."""
+    out, failed = {}, []
     for _, e in _entries(st):
+        sid = e.get("session")
         try:
             t = resolve_stored(e)
-        except (SystemExit, Exception):     # the seen flip is a convenience: it never fails the apply
+        except SystemExit:      # a seat with no session here: a miss, said on stderr by the resolver
             t = None
-        out[e.get("session")] = list(t.sessions) if t is not None else [e.get("session")]
-    return out
+        except Exception as x:  # noqa: BLE001 — never fails the apply; named instead
+            t = None
+            failed.append({"session": sid, "alias": e.get("alias"), "error": "%s: %s" % (type(x).__name__, x)})
+        out[sid] = list(t.sessions) if t is not None else [sid]
+    return out, failed
 
 
 def cmd_ledger(a):
@@ -548,13 +554,20 @@ def cmd_ledger(a):
         raise Usage("the ledger change is not JSON: %s" % e)
     with L.lock(a.name):
         st = load_state(a.name)
+        lineages, failed = lineages_of(st)
         try:
-            st, report = L.apply(st, doc, now, lineages_of(st))
+            st, report = L.apply(st, doc, now, lineages)
         except L.Invalid as e:
             fail("the ledger change was not applied:\n  %s" % "\n  ".join(e.problems), 2)
         L.append_archive(a.name, report["archived"])
         L.save(a.name, st)
-    emit(a, {k: report[k] for k in ("new", "changed", "unchanged_open")}, L.summary(st, report))
+    data = {k: report[k] for k in ("new", "changed", "unchanged_open")}
+    lines = [L.summary(st, report)]
+    if failed:
+        data["seen_refresh_failed"] = failed
+        lines += ["seen refresh failed for %s (%s): %s; items under its later sessions were not turned seen" % (
+            f["alias"], str(f["session"])[:8], f["error"]) for f in failed]
+    emit(a, data, "\n".join(lines))
 
 
 QUERY_REFUSALS = {
