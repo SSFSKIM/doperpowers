@@ -42,12 +42,22 @@ created whole by a link), and the claim (one rename to `<session>.json`) is
 honoured for the bound session alone, whoever makes it: its hooks, until one
 succeeds, or its spawner. A pending launch, or a binding, older than a day
 is swept by the daemon (sweep_pending).
+
+MAWS's engine host launches a session it spawned for a remote member with
+`MAWS_LAUNCHED_BY` beside its member mark (O12 M11): the spawner, and a
+proof file holding the sealed spawn action. The hook honours it for a
+marked session alone (hook_provenance), and only for the first session of
+its `appSessionId` (bind_launched: `launched/<sha256 of it>.jsonl`, created
+whole by a link, later sessions appended under its lock); a later one is a
+continuation of the latest before it.
 """
 import contextlib
 import fcntl
+import hashlib
 import json
 import os
 import re
+import stat
 import sys
 import time
 import urllib.parse
@@ -67,6 +77,9 @@ RANK = {"default": 0, "hook": 1, "lineage": 2, "launch": 3}   # a basis's streng
 LANES = ("A", "B")
 PROVENANCE = ("origin", "owners", "ownersProof", "principal", "inference")
 PENDING_KEPT_S = 86400
+LAUNCHED_ENV = "MAWS_LAUNCHED_BY"
+LAUNCHED_KEYS = ("appSessionId", "member", "device", "opId", "proofFile")
+PROOF_MAX = 5 * 1024 * 1024   # the sealed action carries a brief up to the channel's 4 MiB
 
 
 def records_dir():
@@ -345,11 +358,152 @@ def default_provenance(source="default"):
             "inference": slot({}), "source": source, "basis": source}
 
 
-def hook_provenance(marked, env=None):
+def hook_provenance(marked, env=None, session=""):
     """A session nobody launched through sminos, from its own environment:
-    MAWS's when its host marked it (sminos.member_mark), else a terminal's."""
-    return {**default_provenance("hook"), "origin": {"kind": "maws" if marked else "terminal"},
+    MAWS's when its host marked it (sminos.member_mark), else a terminal's.
+    A marked session whose MAWS_LAUNCHED_BY parses (launched_by) is its
+    spawner's, with the proof file's action as its ownersProof when the file
+    bears the spawn out (launched_proof)."""
+    env = os.environ if env is None else env
+    prov = {**default_provenance("hook"), "origin": {"kind": "maws" if marked else "terminal"},
             "inference": session_inference(env)}
+    launched = launched_by(env) if marked else None
+    if launched is None:
+        return prov
+    member = launched["member"]
+    return {**prov, "owners": [member], "principal": member, "origin": {"kind": "maws", "requester": member},
+            "ownersProof": launched_proof(launched, session)}
+
+
+def launched_by(env=None):
+    """MAWS_LAUNCHED_BY as a dict of its five non-empty strings
+    (LAUNCHED_KEYS), or None when it is unset or does not parse so."""
+    env = os.environ if env is None else env
+    try:
+        v = json.loads(env.get(LAUNCHED_ENV) or "")
+    except ValueError:
+        return None
+    if not (isinstance(v, dict) and all(isinstance(v.get(k), str) and v[k] for k in LAUNCHED_KEYS)) \
+            or v["member"] == MACHINE:
+        return None
+    return {k: v[k] for k in LAUNCHED_KEYS}
+
+
+def launched_proof(launched, session=""):
+    """[the sealed spawn action] when the proof file is a regular file of at
+    most PROOF_MAX bytes holding the envelope {member, device, opId, action}
+    whose member, device and opId are the variable's, and whose action names
+    the same device and opId (it carries no member: the endpoint's binding
+    is). Otherwise [], said in daemon.log without the file's content. The
+    proof attests; the owners follow the variable either way, which the
+    engine host set once the endpoint authorized the spawn."""
+    why, data = None, b""
+    try:
+        fd = os.open(launched["proofFile"], os.O_RDONLY | os.O_NONBLOCK)
+    except OSError as e:
+        why = "cannot be opened (%s)" % (e.strerror or type(e).__name__)
+    else:
+        try:
+            st = os.fstat(fd)
+            if not stat.S_ISREG(st.st_mode):
+                why = "is not a regular file"
+            elif st.st_size > PROOF_MAX:
+                why = "is larger than %d bytes" % PROOF_MAX
+            else:
+                while len(data) <= PROOF_MAX and (chunk := os.read(fd, PROOF_MAX + 1 - len(data))):
+                    data += chunk
+                why = "is larger than %d bytes" % PROOF_MAX if len(data) > PROOF_MAX else None
+        except OSError as e:
+            why = "cannot be read (%s)" % (e.strerror or type(e).__name__)
+        finally:
+            os.close(fd)
+        if why is None:
+            try:
+                env = json.loads(data)
+            except ValueError:
+                env = None
+            action = env.get("action") if isinstance(env, dict) else None
+            if not isinstance(env, dict):
+                why = "does not parse as a JSON object"
+            elif any(env.get(k) != launched[k] for k in ("member", "device", "opId")):
+                why = "names another member, device or opId than %s" % LAUNCHED_ENV
+            elif not isinstance(action, dict):
+                why = "holds no action object"
+            elif any(action.get(k) != launched[k] for k in ("device", "opId")):
+                why = "holds an action for another device or opId"
+            else:
+                return [action]
+    try:
+        sminos.daemon_log("record: session %s: the spawner's proof %s: its ownersProof is []"
+                          % (str(session)[:8] or "?", why))
+    except OSError:
+        pass
+    return []
+
+
+def launched_path(app):
+    """The sessions bound to a MAWS appSessionId, one JSON line each in the
+    order they claimed it; named by its hash, since MAWS's id is any
+    non-empty string."""
+    return os.path.join(records_dir(), "launched", hashlib.sha256(app.encode("utf-8")).hexdigest() + ".jsonl")
+
+
+def _launched_sessions(text):
+    out = []
+    for line in text.splitlines():
+        try:
+            sid = json.loads(line).get("session")
+        except (ValueError, AttributeError):
+            continue   # a line torn by a crash
+        if isinstance(sid, str) and sminos.UUID_RE.fullmatch(sid) and sid not in out:
+            out.append(sid)
+    return out
+
+
+def bind_launched(app, sid, deadline=None):
+    """The sessions bound to `app` before `sid`, newest first, binding `sid`
+    when it is not yet: [] for its first session, which takes the variable.
+    The first binding is a file created whole by one link (bind's rule), so
+    of two claimants exactly one is first; a later session is appended under
+    the file's lock (waited for until `deadline`, else LockBusy)."""
+    path = launched_path(app)
+    line = json.dumps({"appSessionId": app, "session": sid, "at": sminos.now()}) + "\n"
+    try:
+        with open(path) as f:
+            have = _launched_sessions(f.read())
+    except FileNotFoundError:
+        os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+        tmp = "%s.%d.%s.tmp" % (path, os.getpid(), uuid.uuid4().hex[:8])
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            with os.fdopen(fd, "w") as f:
+                f.write(line)
+            try:
+                os.link(tmp, path)
+                return []
+            except FileExistsError:
+                pass
+        finally:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+        have = []
+    if sid in have:
+        return list(reversed(have[:have.index(sid)]))
+    with open(path, "a+") as f:
+        sminos.flock_until(f, deadline)
+        try:
+            f.seek(0)
+            text = f.read()
+            have = _launched_sessions(text)
+            if sid in have:
+                return list(reversed(have[:have.index(sid)]))
+            f.write(line if not text or text.endswith("\n") else "\n" + line)
+            f.flush()
+            return list(reversed(have))
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
 
 
 def inherited(rec, former):

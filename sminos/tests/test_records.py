@@ -13,6 +13,7 @@ leaves SMINOS_HOME unset, the default home under its temporary HOME), with a
 `claude` stand-in first on PATH. Run: python3 -B -I sminos/tests/test_records.py
 """
 import glob
+import hashlib
 import json
 import os
 import re
@@ -51,7 +52,8 @@ os.makedirs(os.path.join(state, "agents"), exist_ok=True)
 args = sys.argv[1:]
 with open(os.path.join(state, "calls.log"), "a") as f:
     f.write(json.dumps({"args": args, "launch_env": os.environ.get("SMINOS_LAUNCH", ""),
-                        "proof_env": os.environ.get("SMINOS_DESK_PROOF")}) + "\n")
+                        "proof_env": os.environ.get("SMINOS_DESK_PROOF"),
+                        "launched_env": os.environ.get("MAWS_LAUNCHED_BY")}) + "\n")
 if args[:1] == ["agents"]:
     print(json.dumps([jload(p) for p in sorted(glob.glob(os.path.join(state, "agents", "*.json")))]))
     sys.exit(0)
@@ -962,6 +964,224 @@ class TheStore(unittest.TestCase):
         self.assertEqual(R.base_url_ref("https://[::1]:9/p"), "base-url:https://[::1]:9")
         self.assertEqual(R.base_url_ref("https://gw.example.com/path?token=x"), "base-url:https://gw.example.com")
         self.assertIsNone(R.base_url_ref("not a url"))
+
+
+
+OP = "op-spawn-0000000001"
+THIRD = "a" * 32
+BRIEF = "BRIEF-TEXT-NEVER-LOGGED"
+
+
+def sealed_action(device="device-a", op=OP):
+    """A sealed spawn action in org-protocol's shape (isAction): `device` and
+    `opId`, no `member`, which is the endpoint's authenticated binding."""
+    return {"v": 1, "org": "org-one", "machine": "machine-ref", "device": device, "opId": op,
+            "opCreated": "2026-10-31T00:00:00.000Z", "action": "session.spawn",
+            "args": {"brief": BRIEF, "cwd": "/w"}, "nonce": "AAAAAAAAAAAAAAAAAAAAAA",
+            "created": "2026-10-31T00:00:00.000Z", "stepUp": "c2ln"}
+
+
+def canonical(obj):
+    return json.dumps(obj, sort_keys=True, separators=(",", ":"))
+
+
+class TheSpawner(unittest.TestCase):
+    """O12 M11: a session MAWS's engine host launched for a remote member
+    (MAWS_LAUNCHED_BY beside its member mark) is that member's from its first
+    hook, its proof the sealed action the proof file holds; the variable binds
+    the first session of its appSessionId alone, and a later one (a /clear, a
+    resume that starts a fresh session) goes on with its predecessor's record."""
+
+    def launch(self, m, app, member=MEMBER, device="device-a", op=OP, envelope=None, proof=None):
+        """MAWS_LAUNCHED_BY for a spawn, with its proof file as the engine
+        host writes it: the canonical envelope, or `envelope` in its place,
+        or `proof` (bytes, "absent", "directory")."""
+        path = m.dir / "launched-by" / (hashlib.sha256(app.encode()).hexdigest() + ".json")
+        path.parent.mkdir(exist_ok=True)
+        if proof == "directory":
+            path.mkdir()
+        elif isinstance(proof, bytes):
+            path.write_bytes(proof)
+        elif proof != "absent":
+            path.write_text(canonical(envelope if envelope is not None else
+                                      {"member": member, "device": device, "opId": op,
+                                       "action": sealed_action(device, op)}))
+        return canonical({"appSessionId": app, "member": member, "device": device, "opId": op,
+                          "proofFile": str(path)})
+
+    def engine(self, m, sid, name="engine", pid=None):
+        """A MAWS engine's session: an SDK run whose parent is this test, the host its mark names."""
+        return m.peer(sid, name, entrypoint="sdk-ts", pid=pid)
+
+    def env(self, var):
+        return {"SMNS_MEMBER": str(os.getpid()), "MAWS_LANE": "B", "MAWS_LAUNCHED_BY": var}
+
+    def bound(self, m, app):
+        """The sessions bound to an appSessionId, in the order they claimed it; None for no binding."""
+        p = m.reg / "session-records" / "launched" / (hashlib.sha256(app.encode()).hexdigest() + ".jsonl")
+        return [json.loads(x)["session"] for x in lines(p)] if p.exists() else None
+
+    def said(self, m):
+        p = m.reg / "daemon.log"
+        return [x for x in lines(p) if "spawner's proof" in x] if p.exists() else []
+
+    def test_the_spawner_owns_the_session_from_its_first_hook(self):
+        m = Machine(self)
+        self.engine(m, T0)
+        var = self.launch(m, "app-one")
+        m.hook("SessionStart", T0, env=self.env(var))
+        rec = m.record(T0)
+        action = sealed_action()
+        self.assertNotIn("member", action, "the sealed action carries no member, and none is looked for")
+        self.assertEqual((rec["owners"], rec["principal"], rec["origin"]),
+                         ([MEMBER], MEMBER, {"kind": "maws", "requester": MEMBER}))
+        self.assertEqual(rec["ownersProof"], [action], "the action, unchanged")
+        self.assertEqual((rec["source"], rec["basis"]), ("hook", "hook"), "the hook's evidence, final")
+        self.assertEqual(m.publications(T0), [{"owners": [MEMBER], "origin": {"kind": "maws", "requester": MEMBER}}])
+        row = m.row(T0)
+        self.assertEqual((row["owners"], row["origin"], row["ownersProof"]),
+                         ([MEMBER], {"kind": "maws", "requester": MEMBER}, [action]))
+        self.assertEqual(self.said(m), [])
+        self.assertEqual(self.bound(m, "app-one"), [T0], "the appSessionId is bound to its first session")
+        m.hook("Stop", T0, source="", env=self.env(var))
+        self.assertEqual(m.record(T0), rec, "a later hook leaves it as it is")
+        self.assertEqual(self.bound(m, "app-one"), [T0])
+        m.assert_private()
+
+    def test_a_claude_the_sessions_bash_starts_claims_nothing(self):
+        m = Machine(self)
+        engine = self.engine(m, T0)
+        var = self.launch(m, "app-one")
+        # The variable and the mark inherited, the parent another: an interactive claude, a terminal's.
+        m.peer(TX, "bashclaude")
+        m.hook("SessionStart", TX, env={"SMNS_MEMBER": str(engine), "MAWS_LANE": "B", "MAWS_LAUNCHED_BY": var,
+                                        "CLAUDE_CODE_SESSION_ID": TX})
+        rec = m.record(TX)
+        self.assertEqual((rec["owners"], rec["origin"], rec["ownersProof"], rec["source"]),
+                         (["@machine"], {"kind": "terminal"}, [], "hook"))
+        self.assertIsNone(self.bound(m, "app-one"), "nothing bound")
+        # A marked session whose variable does not parse is as before it: MAWS's, the machine's owners.
+        for sid, name, bad in ((TB, "nojson", "{not json"),
+                               (TD, "nomember", canonical({"appSessionId": "app-x", "member": "", "device": "d",
+                                                           "opId": OP, "proofFile": "/nowhere"}))):
+            self.engine(m, sid, name=name)
+            m.hook("SessionStart", sid, env=self.env(bad))
+            rec = m.record(sid)
+            self.assertEqual((rec["owners"], rec["origin"], rec["source"]), (["@machine"], {"kind": "maws"}, "hook"),
+                             name)
+        self.assertFalse((m.reg / "session-records" / "launched").exists() and
+                         os.listdir(m.reg / "session-records" / "launched"), "no binding for any of them")
+        self.assertEqual(self.said(m), [])
+
+    def test_a_proof_that_fails_keeps_the_owners_and_drops_the_proof(self):
+        m = Machine(self)
+        genuine = {"member": MEMBER, "device": "device-a", "opId": OP, "action": sealed_action()}
+        cases = [
+            ("missing", {"proof": "absent"}),
+            ("not a regular file", {"proof": "directory"}),
+            ("unparsable", {"proof": ("{not json " + BRIEF).encode()}),
+            ("not an object", {"proof": b"[1, 2]"}),
+            ("oversized", {"proof": canonical(dict(genuine, pad="x" * (5 * 1024 * 1024))).encode()}),
+            ("envelope member", {"envelope": dict(genuine, member=OTHER)}),
+            ("envelope device", {"envelope": dict(genuine, device="device-b")}),
+            ("envelope opId", {"envelope": dict(genuine, opId="op-spawn-0000000002")}),
+            ("action device", {"envelope": dict(genuine, action=sealed_action(device="device-b"))}),
+            ("action opId", {"envelope": dict(genuine, action=sealed_action(op="op-spawn-0000000002"))}),
+            ("action not an object", {"envelope": dict(genuine, action=[BRIEF])}),
+        ]
+        for i, (name, kw) in enumerate(cases):
+            with self.subTest(name):
+                sid = "7e%06x-0000-4000-8000-%012x" % (i, i)
+                self.engine(m, sid, name="eng%d" % i)
+                var = self.launch(m, "app-" + name, **kw)
+                before = len(self.said(m))
+                m.hook("SessionStart", sid, env=self.env(var))
+                rec = m.record(sid)
+                self.assertEqual((rec["owners"], rec["principal"], rec["origin"], rec["source"]),
+                                 ([MEMBER], MEMBER, {"kind": "maws", "requester": MEMBER}, "hook"),
+                                 "the owners still follow the variable")
+                self.assertEqual(rec["ownersProof"], [])
+                said = self.said(m)[before:]
+                self.assertEqual(len(said), 1, said)
+                self.assertNotIn(BRIEF, said[0], "never the file's content")
+                self.assertNotIn("xxxx", said[0])
+                m.hook("Stop", sid, source="", env=self.env(var))
+                self.assertEqual(len(self.said(m)) - before, 1, "said once, not at every hook")
+        m.assert_private()
+
+    def test_a_seat_the_session_spawns_carries_no_variable(self):
+        m = Machine(self)
+        self.engine(m, T0)
+        var = self.launch(m, "app-one")
+        m.hook("SessionStart", T0, env=self.env(var))
+        kid = m.spawn("kid", env={**self.env(var), "CLAUDE_CODE_SESSION_ID": T0})
+        last = [json.loads(x) for x in lines(m.state / "calls.log") if '"--bg"' in x][-1]
+        self.assertIsNone(last["launched_env"], "launch_env drops MAWS_LAUNCHED_BY")
+        rec = m.record(kid)
+        self.assertEqual((rec["owners"], rec["origin"], rec["ownersProof"], rec["source"]),
+                         ([MEMBER], {"kind": "sminos-spawn", "spawnerSession": T0}, [sealed_action()], "launch"),
+                         "the seat copies its parent's record")
+        self.assertEqual(self.bound(m, "app-one"), [T0])
+
+    def test_a_clear_goes_on_with_its_predecessors_owners_not_the_variables(self):
+        m = Machine(self)
+        pid = self.engine(m, T0)
+        var = self.launch(m, "app-one")
+        m.hook("SessionStart", T0, env=self.env(var))
+        # A record action moved the owners on the session (O8's, here by hand).
+        m.record_path(T0).write_text(json.dumps(dict(m.record(T0), owners=[OTHER], principal=OTHER)))
+        # /clear: the same engine, its environment unchanged, goes on as another session.
+        self.engine(m, TB, pid=pid)
+        m.hook("SessionStart", TB, source="clear", env=self.env(var))
+        rec = m.record(TB)
+        self.assertEqual((rec["owners"], rec["principal"], rec["source"], rec["basis"], rec["former"]),
+                         ([OTHER], OTHER, "lineage", "lineage", [T0]), "its predecessor's record, as changed")
+        self.assertEqual((rec["origin"], rec["ownersProof"]),
+                         ({"kind": "maws", "requester": MEMBER}, [sealed_action()]))
+        self.assertEqual(m.publications(TB), [{"owners": [OTHER], "origin": {"kind": "maws", "requester": MEMBER}}])
+        self.assertEqual(self.bound(m, "app-one"), [T0, TB])
+        # Again: the latest session's record, not the first's.
+        m.record_path(TB).write_text(json.dumps(dict(rec, owners=[THIRD], principal=THIRD)))
+        self.engine(m, TD, pid=pid)
+        m.hook("SessionStart", TD, source="clear", env=self.env(var))
+        self.assertEqual((m.record(TD)["owners"], m.record(TD)["former"]), ([THIRD], [TB, T0]))
+        self.assertEqual(self.bound(m, "app-one"), [T0, TB, TD])
+        self.assertEqual(self.said(m), [], "a continuation reads no proof")
+        m.assert_private()
+
+    def test_two_spawns_that_reuse_an_opId_are_two_lineages(self):
+        m = Machine(self)
+        self.engine(m, T0, name="one")
+        self.engine(m, TB, name="two")
+        one = self.launch(m, "app-one", member=MEMBER)
+        two = self.launch(m, "app-two", member=OTHER, device="device-b")
+        m.hook("SessionStart", T0, env=self.env(one))
+        m.hook("SessionStart", TB, env=self.env(two))
+        a, b = m.record(T0), m.record(TB)
+        self.assertEqual((a["owners"], a["source"], a["former"]), ([MEMBER], "hook", []))
+        self.assertEqual((b["owners"], b["source"], b["former"]), ([OTHER], "hook", []), "its own spawner")
+        self.assertEqual(b["ownersProof"], [sealed_action(device="device-b")])
+        self.assertEqual((self.bound(m, "app-one"), self.bound(m, "app-two")), ([T0], [TB]))
+
+    def test_a_session_already_bound_is_left_as_it_is(self):
+        m = Machine(self)
+        self.engine(m, T0)
+        var = self.launch(m, "app-one")
+        m.hook("SessionStart", T0, env=self.env(var))
+        m.record_path(T0).write_text(json.dumps(dict(m.record(T0), owners=[OTHER], principal=OTHER)))
+        before = m.record_path(T0).read_bytes()
+        m.hook("Stop", T0, source="", env=self.env(var))
+        m.hook("SessionStart", T0, source="resume", env=self.env(var))   # a resume under the same session id
+        self.assertEqual(m.record_path(T0).read_bytes(), before, "its own record stands")
+        self.assertEqual(self.bound(m, "app-one"), [T0])
+        # A session started before this landed keeps its final hook record when it is resumed with the variable.
+        self.engine(m, TB, name="older")
+        m.hook("SessionStart", TB, env={"SMNS_MEMBER": str(os.getpid())})
+        older = m.record_path(TB).read_bytes()
+        m.hook("SessionStart", TB, source="resume", env=self.env(self.launch(m, "app-older")))
+        self.assertEqual(m.record_path(TB).read_bytes(), older)
+        self.assertEqual(m.record(TB)["owners"], ["@machine"])
+        self.assertEqual(self.said(m), [])
 
 
 if __name__ == "__main__":

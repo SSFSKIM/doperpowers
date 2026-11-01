@@ -5934,10 +5934,10 @@ def record_session(project, session, tpath, event, last_message="", source=""):
         return
     # A session nobody launched through sminos is what its own environment,
     # the hook's, says; a seat's provenance came with its launch.
-    evidence = None if seat or launch_pending(session) else records_module().hook_provenance(marked)
+    evidence, former = session_evidence(session, seat, marked)
     if event == "SessionStart":
         position_init(project, session, tpath, since)
-    ensure_record(project, session, seat, peer, evidence)
+    ensure_record(project, session, seat, peer, evidence, former)
     alias = _member_alias(project, session, seat, peer, marked, evidence)
     if event != "Stop" or alias is None:
         return
@@ -5946,6 +5946,41 @@ def record_session(project, session, tpath, event, last_message="", source=""):
         until = min(until, _RECORD_DEADLINE - 0.5)
     await_flush(tpath, last_message, until)
     export_host(project, session, tpath, alias)
+
+
+def session_evidence(session, seat, marked):
+    """(evidence, former) for ensure_record from the hook or the bridge
+    child: nothing for a seat or a session whose launch is pending (its
+    provenance came with its launch), else the session's own environment
+    (sminos_records.hook_provenance). A marked session MAWS launched for a
+    remote member (MAWS_LAUNCHED_BY, O12 M11) binds the variable's
+    appSessionId (sminos_records.bind_launched): its first session is the
+    spawner's; a later one (a /clear, a resume that started a fresh session)
+    continues the sessions bound before it, `former`, the latest first, so
+    an owner change made on its predecessor carries over and the variable
+    never grants the spawner again. The first session's proof is read only
+    while its record is not final yet. A binding that cannot be made gives
+    no evidence, so the record stays provisional until a later hook."""
+    records = records_module()
+    if seat or launch_pending(session):
+        return None, None
+    launched = records.launched_by() if marked else None
+    if launched is None:
+        return records.hook_provenance(marked), None
+    plain = {k: v for k, v in os.environ.items() if k != records.LAUNCHED_ENV}
+    try:
+        earlier = records.bind_launched(launched["appSessionId"], session, _RECORD_DEADLINE)
+    except (OSError, LockBusy) as e:
+        try:
+            daemon_log("record: session %s could not bind its launch's app session: %s" % (session[:8], e))
+        except OSError:
+            pass
+        return None, None
+    if earlier:
+        return records.hook_provenance(marked, plain), earlier
+    if records.is_final(records.read(session)):
+        return records.hook_provenance(marked, plain), None
+    return records.hook_provenance(marked, session=session), None
 
 
 def _on_sight(project, session):
@@ -6003,8 +6038,8 @@ def export_live(cwd, session, records):
     marked = seen is not None and member_mark(seen[1])
     if seen is None or not joinable(*seen, marked):
         return []
-    evidence = None if seen[0] or launch_pending(session) else records_module().hook_provenance(marked)
-    ensure_record(project, session, *seen, evidence)
+    evidence, former = session_evidence(session, seen[0], marked)
+    ensure_record(project, session, *seen, evidence, former)
     alias = _member_alias(project, session, *seen, marked, evidence)
     events = host_events(records, alias) if alias is not None else []
     return append_host(project, session, events) if events else []
@@ -7990,7 +8025,9 @@ def launch_env(settings):
     the env. So is SMINOS_LAUNCH: a launch id is its own launch's, carried
     in its settings, never one a spawning seat inherited. So is MAWS_LANE,
     MAWS's lane B marker (O12 M3): a seat a lane B session spawns is sminos's
-    own, never an observer. So is SMINOS_DESK_PROOF, a desk spawn's proof
+    own, never an observer. So is MAWS_LAUNCHED_BY, the spawner MAWS
+    launched a lane B session for (O12 M11): the seat copies its parent's
+    record instead. So is SMINOS_DESK_PROOF, a desk spawn's proof
     (O12 M7): its record keeps it, and no session inherits it. An EMPTY settings
     value declares the PLAIN route, enforced below the argv by dropping the
     gateway transport env too.
@@ -7999,6 +8036,7 @@ def launch_env(settings):
     env.pop("RUNNER_TRACKING_ID", None)
     env.pop(records_module().LAUNCH_ENV, None)
     env.pop("MAWS_LANE", None)
+    env.pop(records_module().LAUNCHED_ENV, None)
     env.pop(DESK_PROOF_ENV, None)
     if not settings:
         for k in gateway_env_keys():
