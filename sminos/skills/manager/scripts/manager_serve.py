@@ -32,7 +32,6 @@ import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from xml.sax.saxutils import escape
 
 import sminos as S
 import manager_ledger as L
@@ -51,6 +50,11 @@ CODE_SETTLE = 1.0           # new code is acted on once it has held still this l
 TOOL_TIMEOUT = 15           # tailscale and launchctl, run by --install and --status only
 CSP = ("default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; "
        "img-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
+
+
+def escape(text):
+    """`text` as plist (XML) character data (xml.sax.saxutils would pull in urllib.request for three replaces)."""
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
 class Refused(Exception):

@@ -82,10 +82,10 @@ sys.path[0] = os.path.dirname(os.path.realpath(script))
 runpy.run_path(script, run_name="__main__")
 """)
 # `--install` writes a launchd agent and refuses off macOS; the CI runs Linux, so the install's tests run the CLI
-# with sys.platform reading darwin.
+# with sys.platform reading darwin (the standard modules that branch on it at import are imported first).
 AS_MAC = os.path.join(BASE, "as_mac.py")
 with open(AS_MAC, "w") as _f:
-    _f.write("import os, runpy, sys\nsys.platform = 'darwin'\nscript = sys.argv[1]\nsys.argv = sys.argv[1:]\n"
+    _f.write("import os, runpy, sys, subprocess, json, urllib.request\nsys.platform = 'darwin'\nscript = sys.argv[1]\nsys.argv = sys.argv[1:]\n"
              "sys.path[0] = os.path.dirname(os.path.realpath(script))\n"
              "runpy.run_path(script, run_name='__main__')\n")
 
