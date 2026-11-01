@@ -19,9 +19,12 @@ line with its figures:
   read near the session's context;
 - 10: across the queries, the session's project log gains no event but
   membership's `joined`/`retired`;
-- 7: the session stopped, a query answers `via headless fork`; and a stopped
-  member's derive (observed: a terminal session is retired from membership once
-  its process ends, so derive may no longer find it).
+- 7: the session stopped, a query answers `via headless fork`;
+- 9, with `--derive stopped` in place of the live derive (a derived line holds
+  six hours, so one session gives one derive): given a seat before it stops (a
+  terminal session is retired from membership once its process ends; a seat
+  outlives its process), the stopped seat's derive prints its line `via
+  headless fork`.
 
 It spends model calls (haiku, short prompts), so no suite runs it: run it by
 hand with the model gateway's keys in the environment. Isolation is
@@ -198,16 +201,14 @@ def run(live):
         conv_before, conv_now), flush=True)
 
     # 9. derive on btw.
-    total = live.last_request_total()
-    code, out, err = live.run_cmd([live.sminos(), "derive", live.session], timeout=300)
-    m = re.search(r"via (btw|headless fork) · cache read ([\d,]+) · input ([\d,]+)", err)
-    read = num(m.group(2)) if m else None
-    live.check("9: derive of a live member prints its line and goes via btw, cache read near the context",
-               code == 0 and out.strip() and m and m.group(1) == "btw" and read and read >= 0.9 * total,
-               "exit %d; line %r; stderr %r; context %d" % (code, out.strip()[:160], err.strip()[-240:], total))
+    if live.derive == "live":
+        derive_live(live)
 
     # 7. A stopped session still answers.
     session = live.session
+    if live.derive == "stopped":
+        code, out, err = live.run_cmd([live.sminos(), "seat", "add", "probe", "live-seat", "--session", session])
+        live.check("9: the session takes a seat", code == 0, "exit %d; %r" % (code, (out + err).strip()[-200:]))
     live.prompt("/exit")
     try:
         wait_for("the session's process to end", 60, lambda: not os.path.exists(live.endpoint()) or not live.status(), every=1.0)
@@ -217,18 +218,33 @@ def run(live):
     code, text, via = live.query("What is the probe word in your last message?", member=session)
     live.check("7: a stopped session answers via headless fork", code == 0 and via and via["via"] == "headless fork"
                and "PELICAN-42" in text, "exit %d; via %s; %r" % (code, json.dumps(via), text[:200]))
-    code, out, err = live.run_cmd([live.sminos(), "derive", session], timeout=300)
-    print("  (observed) derive of the stopped member: exit %d; line %r; stderr %r" % (code, out.strip()[:160], err.strip()[-300:]),
-          flush=True)
+    if live.derive == "stopped":
+        code, out, err = live.run_cmd([live.sminos(), "derive", "live-seat"], timeout=300)
+        live.check("9: a stopped seat's derive prints its line via headless fork",
+                   code == 0 and out.strip() and "via headless fork" in err,
+                   "exit %d; line %r; stderr %r" % (code, out.strip()[:160], err.strip()[-300:]))
+
+
+def derive_live(live):
+    total = live.last_request_total()
+    code, out, err = live.run_cmd([live.sminos(), "derive", live.session], timeout=300)
+    m = re.search(r"via (btw|headless fork) · cache read ([\d,]+) · input ([\d,]+)", err)
+    read = num(m.group(2)) if m else None
+    live.check("9: derive of a live member prints its line and goes via btw, cache read near the context",
+               code == 0 and out.strip() and m and m.group(1) == "btw" and read and read >= 0.9 * total,
+               "exit %d; line %r; stderr %r; context %d" % (code, out.strip()[:160], err.strip()[-240:], total))
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--keep", action="store_true")
     ap.add_argument("--model", default="haiku", help="the session's model, which its forks inherit (default haiku)")
+    ap.add_argument("--derive", choices=("live", "stopped"), default="live",
+                    help="derive the live session (default) or, instead, the stopped one through a seat")
     args = ap.parse_args()
     live = Mgr(args.keep, "m", "default", True)
     live.model = args.model
+    live.derive = args.derive
     print("live manager check (%s, default mode, with doperpowers): %s" % (args.model, live.root), flush=True)
     try:
         run(live)
