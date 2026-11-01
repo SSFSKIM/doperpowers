@@ -16,8 +16,8 @@ A side effect ships with it: `sminos derive`, which forks a session every six ho
 - [x] (2026-11-01 05:10Z) Independent spec review and buildability review: two rounds, converged (Decision Log).
 - [x] (2026-11-01 03:30Z) Fork-agent spike: an in-session fork started by a mod reads the session's cache, runs read-only tools under a guard in another plugin, and leaves the session untouched (Surprises & Discoveries).
 - [x] (2026-11-01 03:29Z) M1 — the `manager` command: transcript windows, pending items, subscriptions. Reviewed clean after two fix rounds; `sminos`, `sminos-suites` green on 3e93e0f1.
-- [ ] M2 — the bridge's `ask` (an in-session fork agent) and the read-only guard.
-- [ ] M3 — the shared fork code in sminos: `derive` on `btw`, `manager query` on `ask` with the headless fallback.
+- [x] (2026-11-01 05:36Z) M2 — the bridge's `ask` (an in-session fork agent) and the read-only guard. Reviewed clean after three fix rounds; live check 25/25; five gates green on edc9d397, mod gates on a17c12aa.
+- [x] (2026-11-01 05:36Z) M3 — the shared fork code in sminos: `derive` on `btw`, `manager query` on `ask` with the headless fallback. Reviewed clean after two fix rounds (the follower's close, the kept end, `spawn-refused`, derive's btw kept off the hub); `sminos`, `sminos-suites` green on e4375df6.
 - [x] (2026-11-01 04:20Z) Owner extended the design mid-execution: the ledger (two lanes), the delta update led by what the owner has not seen, the read-only page; on-ask only. Milestones re-cut: M4 ledger and delta, M5 skill and replay (the former M4), M6 page (Decision Log, 2026-11-01).
 - [x] (2026-11-01 06:40Z) Revised spec reviewed: spec review and buildability review of M4–M6, then a round on the fixes; converged (Decision Log).
 - [ ] M4 — the ledger and the delta in the `manager` command: state v2, `ledger`, `ledger apply`, seen marks.
