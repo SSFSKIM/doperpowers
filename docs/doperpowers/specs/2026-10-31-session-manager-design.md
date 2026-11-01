@@ -24,6 +24,7 @@ A side effect ships with it: `sminos derive`, which forks a session every six ho
 - [x] (2026-11-01 09:44Z) M5 — the skill, the digest brief, the replay evaluation, and acceptance 1–12. Reviewed clean after three fix rounds; acceptance 8 recorded not met (50/51 strict); `sminos`, `sminos-suites` green on 11ca95e0.
 - [x] (2026-11-01 09:24Z) M6 — the page: `manager serve`, its install, versions, acceptance 13–14. Reviewed clean after one fix round; opening check and acceptance 13 run live; 375 px screenshots taken; gates green on f6b20c73. Acceptance 14 (install from the owner's phone, lasting service) is the owner's after merge.
 - [x] (2026-11-01 09:44Z) Whole-branch review (review-code, high): clean; retrospective written. Merge, the post-merge repeat of acceptance 4, and acceptance 14 are the dispatching session's and the owner's (PR).
+- [x] (2026-11-01 10:12Z) Merged (PR #451, 0b19568b) on the owner's word; plugins updated (sminos 1.29.0, doperpowers 7.216.0). Acceptance 4 repeated on owner sessions (Surprises & Discoveries). Page installed and exposed on the owner's word: launchd running, `https://s.tail112c3f.ts.net:47390/` 200 over the tailnet, 403 on the local port. Left to the owner: opening it from the phone, and the page's lifetime across a reboot.
 
 ## Terms
 
@@ -664,6 +665,8 @@ A failure reads as one line on stderr and exit 1, for example `manager: CI-opt r
   Evidence: `git -C … && git -C …` and `git -C … log -1 --format=…` refused in every run; the fork fell back to reading `.git/HEAD`. Plain `git log -1 --oneline` ran and answered.
 - Observation: Mid-turn, a haiku fork can follow the session's own unanswered prompt instead of its question; Opus and Sonnet do not. The tail is not the cause.
   Evidence: with the tail as conversation, 5/5 haiku forks asked for an essay ran the pending `sleep 20` and wrote the session's reply. With the `<session-record>` template (a17c12aa): essay 4/4 clean; short question 3/5; pending Write 4/5 (the miss was refused by the guard); short question with no tail 3/5; Opus 5/5 and Sonnet 5/5. All 20 forks of the measured sets answered their question; cache share 0.9987–0.9999. Kept as is (the fork inherits its session's model); logged in `docs/doperpowers/TECH-DEBT.md`.
+- Observation: After merge, acceptance 4 holds on an owner's session that has made a request since the plugin update; a session whose last request predates the update misses the cache on its first fork, because the updated plugins change the request's prefix.
+  Evidence: 2026-11-01 after `claude plugin update` (sminos 1.29.0, doperpowers 7.216.0), the live bridges reloaded and 12 of 16 offered `ask`. `manager query c265c9a7` (a manim-master session, active after the update): `via fork agent`, cache read 492,255, write 1,905 (99.6%); transcript 743 user/assistant rows and 2,428 lines before and after. `manager query a45b97a3` (CI-opt, last request before the update): `via fork agent`, cache read 7,176, write 172,705; rows 38,936 and lines 160,766 before and after. Both answers were correct and current. Item 4's ≥90% holds once a session's cache carries the current plugins' prefix, which its next request after an update gives it.
 
 ## Decision Log
 
