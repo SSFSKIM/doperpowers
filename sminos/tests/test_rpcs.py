@@ -1780,6 +1780,22 @@ class Checks(unittest.TestCase):
         self.assertEqual((got[0]["session"], got[0]["sub"]), (self.bridged.sid, None), "session-wide")
         self.assertNotIn("op_id", self.ledger()[asked["nonce"]], "not kept once its end went up")
 
+    def test_m2_a_side_question_no_desk_rpc_asked_stays_on_the_machine(self):
+        """A side question posted to the bridge with no `rpc` (derive's, or MAWS's own local lane A, which follows it on
+        its own subscription) has no follower on the desk (desk-web passes over an op with no nonce, the hub keeps no
+        `btw` op), so it does not go up, and its question and answer stay on the machine; a desk RPC's still does."""
+        reqs = self.following()
+        self.r.kinds = frozenset({"op"})
+        self.mod.post({"type": "btw", "phase": "start", "id": "c-derive", "t": 0},
+                      {"type": "btw", "phase": "end", "id": "c-derive", "text": "Owns the derive fixture.",
+                       "usage": {"input": 1, "output": 2, "cacheRead": 3, "cacheWrite": 0}, "t": 0})
+        asked = self.send("btw", {"session": self.bridged.sid, "prompt": "from the desk"})
+        self.assertEqual(self.outcome(asked)["state"], "done")
+        got = wait_for(lambda: [m for m in self.op_messages(reqs) if m["body"]["phase"] == "end"] and self.op_messages())
+        self.assertTrue(got, "the desk's side question went up")
+        self.assertEqual({m["body"]["rpc"] for m in got}, {asked["nonce"]}, "only the one a desk RPC asked")
+        self.assertNotIn("c-derive", [m["body"]["id"] for m in got])
+
     def test_m2_a_refused_side_question_fails_with_the_bridges_code_first(self):
         self.mod.refuse_btw = ("nothing-to-fork", "nothing to fork yet: the session has made no model request")
         asked = self.send("btw", {"session": self.bridged.sid, "prompt": "anything?"})

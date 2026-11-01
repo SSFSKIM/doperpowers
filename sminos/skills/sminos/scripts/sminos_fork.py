@@ -214,9 +214,9 @@ def _asked(events, session, path, op, prompt, timeout, via, what, nonce):
 def ask_btw(session, prompt, timeout=120):
     """The session's side question (`btw`): the bridge puts `prompt` under its
     own frame (BTW_FRAME). It goes with no `rpc` nonce, unlike `ask`: the
-    daemon relays every bridge's `btw` events to the desk as DX4 `op`, under
-    the nonce they carry, where null is one no desk RPC asked for; a reload
-    mid-question costs derive its timeout, then the headless fork."""
+    daemon relays a bridge's `btw` events to the desk as DX4 `op` only under
+    a nonce, so one with none stays on the machine; a reload mid-question
+    costs derive its timeout, then the headless fork."""
     return _ask_bridge(session, "btw", prompt, timeout, "btw", "side question")
 
 
