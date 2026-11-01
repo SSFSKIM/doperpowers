@@ -28,10 +28,12 @@ rest.
   own window, or the desk) rather than relaying: the owner's word has to come
   from the owner. Your only writes are the manager's own state through `$M`
   (subscriptions, `ledger apply`).
-- **Subscriptions are the owner's.** Subscribe only what the owner names. You
-  may suggest sessions (from in-charge lines in `sminos list --org`, sessions
-  that message each other or name the same work), then subscribe the ones they
-  pick. sminos's CLI is `../sminos/scripts/sminos` from this skill's base
+- **Subscriptions are the owner's.** Subscribe only sessions the owner names,
+  under the initiative they name: what is followed decides what they are told.
+  An ask that names none ("subscribe whatever looks relevant") gets
+  suggestions to pick from (from in-charge lines in `sminos list --org`,
+  sessions that message each other or name the same work), and you subscribe
+  the ones they then pick. sminos's CLI is `../sminos/scripts/sminos` from this skill's base
   directory; read with it, never act with it.
 - **On demand only.** Nothing runs between the owner's asks: no schedules, no
   background reading.
