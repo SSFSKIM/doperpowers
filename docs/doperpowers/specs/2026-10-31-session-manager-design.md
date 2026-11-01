@@ -494,6 +494,10 @@ A failure reads as one line on stderr and exit 1, for example `manager: CI-opt r
   Rationale: dropping them would report already-answered requests as open; counting them as verified would break the rule against putting words in the owner's mouth. Adding a provenance mark to the bridge's delivery rows lost: it changes text every session's model reads and the desk's delivery contract, for a reader that can label uncertainty instead.
   Date/Author: 2026-11-01, doperpowers-9b (f89d7fb0).
 
+- Decision: Execution pre-flight. The guard's agent lookup follows Interfaces ("remembers each agent id's verdict once resolved"); M2's decision line "`$.agent.list()` is read per `tool.check` of a subagent loop" is read as: looked up per call until the id's verdict is resolved, then remembered. A resolved verdict is re-derivable (an agent's `type` and `spawnedBy` are fixed at spawn and ids are not reused); an unresolved id (list rejected or lacks it) is refused and never remembered, so the next call looks again.
+  Rationale: the two statements read two ways; the Interfaces text is the later, reviewed one, and caching what cannot change loses nothing the guard needs.
+  Date/Author: 2026-10-31, plan-executor for doperpowers-9b (f89d7fb0).
+
 ## Outcomes & Retrospective
 
 Pending — written at finish.
