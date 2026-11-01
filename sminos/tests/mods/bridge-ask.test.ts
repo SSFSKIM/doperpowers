@@ -292,36 +292,55 @@ describe('the fork agent: the op', () => {
     expect(next.ofType('ask')).toEqual([])
   })
 
-  test("an orphan's fork still running after the reload keeps ask busy, looked up at the next ask; once the list says it stopped, ask is taken", async () => {
+  const managed = (id: string, status: string) => ({ id, description: 'manager query', type: 'fork', status, spawnedBy: 'sminos' })
+
+  test("busy is read from the agent list: a sminos fork still live after two reloads keeps the next ask busy; once it stopped, ask is taken", async () => {
     const kept = new Map<string, unknown>()
-    kept.set('bridgeAsk', [{ id: 'cold', agentId: 'aorphan' }])
-    const orphan = { id: 'aorphan', description: 'manager query', type: 'fork', status: 'running', spawnedBy: 'sminos' }
-    const h = await live({ sessionState: kept, agents: [orphan] })
-    expect(h.ofType('ask')).toEqual([expect.objectContaining({ phase: 'end', id: 'cold', agentId: 'aorphan', reason: 'aborted' })])
-    expect(await h.command({ op: 'ask', prompt: 'q' })).toMatchObject({ ok: false, code: 'busy' })
-    expect(h.spawns).toEqual([])
-    h.setAgents([{ ...orphan, status: 'completed' }])
-    expect(await h.command({ op: 'ask', prompt: 'q' })).toMatchObject({ ok: true, result: { started: true } })
-    // Its stop is remembered: the next ask after this one's end lists nothing for it.
-    await forkEnds(h, 'afork1')
-    const lists = h.agentLists()
-    expect(await h.command({ op: 'ask', prompt: 'again' })).toMatchObject({ ok: true })
-    expect(h.agentLists()).toBe(lists)
+    const first = await live({ sessionState: kept })
+    const r = await first.command({ op: 'ask', prompt: 'q' })
+    const agentId = (r.result as { agentId: string }).agentId
+    // Reload one: the ask ends aborted and leaves bridgeAsk; the fork runs on.
+    const second = await live({ sessionState: kept, agents: [managed(agentId, 'running')] })
+    expect(second.ofType('ask')).toEqual([expect.objectContaining({ phase: 'end', id: r.id, agentId, reason: 'aborted' })])
+    expect(kept.get('bridgeAsk')).toEqual([])
+    // Reload two: nothing of the ask is kept anywhere, and the fork still runs.
+    const third = await live({ sessionState: kept, agents: [managed(agentId, 'running')] })
+    for (const status of ['running', 'pending', 'waiting']) {
+      third.setAgents([managed(agentId, status)])
+      expect(await third.command({ op: 'ask', prompt: 'q' })).toMatchObject({ ok: false, code: 'busy', error: ASK_BUSY })
+    }
+    expect(third.spawns).toEqual([])
+    third.setAgents([managed(agentId, 'completed')])
+    expect(await third.command({ op: 'ask', prompt: 'q' })).toMatchObject({ ok: true, result: { started: true } })
   })
 
-  test("an orphan whose fork's end this module hears is let go; while the list cannot be read, ask stays busy", async () => {
-    const kept = new Map<string, unknown>()
-    kept.set('bridgeAsk', [{ id: 'cold', agentId: 'aorphan' }])
-    const h = await live({ sessionState: kept, agents: [{ id: 'aorphan', description: 'manager query', type: 'fork', status: 'running', spawnedBy: 'sminos' }] })
-    await forkEnds(h, 'aorphan')
-    expect(await h.command({ op: 'ask', prompt: 'q' })).toMatchObject({ ok: true })
-    const other = new Map<string, unknown>()
-    other.set('bridgeAsk', [{ id: 'cold2', agentId: 'aorphan2' }])
-    const blind = await live({ sessionState: other })
-    ;(blind.engine as unknown as { agent: { list: () => Promise<unknown> } }).agent.list = async () => {
+  test("another plugin's fork, the model's own fork, and a sminos subagent that is no fork leave ask free", async () => {
+    const h = await live({
+      agents: [
+        { id: 'aprobe', description: 'fork probe', type: 'fork', status: 'running', spawnedBy: 'forkprobe' },
+        { id: 'amodel', description: 'x', type: 'fork', status: 'running' },
+        { id: 'asub', description: 'y', type: 'general-purpose', status: 'running', spawnedBy: 'sminos' },
+      ],
+    })
+    expect(await h.command({ op: 'ask', prompt: 'q' })).toMatchObject({ ok: true, result: { started: true } })
+  })
+
+  test("a fork whose end this module heard is free at once, though the list may still call it running", async () => {
+    const h = await live()
+    const r = await h.command({ op: 'ask', prompt: 'q' })
+    const agentId = (r.result as { agentId: string }).agentId
+    h.setAgents([managed(agentId, 'running')])
+    await forkEnds(h, agentId)
+    expect(await h.command({ op: 'ask', prompt: 'again' })).toMatchObject({ ok: true, result: { started: true } })
+  })
+
+  test('while the agent list cannot be read, ask is busy', async () => {
+    const h = await live()
+    ;(h.engine as unknown as { agent: { list: () => Promise<unknown> } }).agent.list = async () => {
       throw new Error('$.agent.list: the host did not answer')
     }
-    expect(await blind.command({ op: 'ask', prompt: 'q' })).toMatchObject({ ok: false, code: 'busy' })
+    expect(await h.command({ op: 'ask', prompt: 'q' })).toMatchObject({ ok: false, code: 'busy' })
+    expect(h.spawns).toEqual([])
   })
 
   test("open asks are kept under bridgeAsk, beside the async question tool's snapshot under ask: neither overwrites the other across a reload", async () => {

@@ -241,7 +241,6 @@ export async function endOrphanedAsks($: EngineInterface) {
     const open = opened(agentId)
     open.settle({ reason: 'aborted' })
     state.askOpen.set(id, open)
-    state.askOrphans.add(agentId)
     void finished($, id, open)
   }
 }
@@ -251,9 +250,9 @@ export function askTurnEnded(e: TurnCompleteInput) {
   if (e.agentId === undefined) {
     return
   }
-  state.askOrphans.delete(e.agentId)
   for (const open of state.askOpen.values()) {
     if (open.agentId === e.agentId) {
+      state.askEndedAgents.add(e.agentId)
       open.settle(askEnd(e))
     }
   }
@@ -271,28 +270,25 @@ export function noteMainResponse(mark: ResponseMark) {
 const LIVE_STATUSES = new Set(['pending', 'running', 'waiting'])
 
 /**
- * Whether an orphan's fork (an ask a module before this one left open) may
- * still run: the list read now, each orphan the list no longer shows live let
- * go for good. A list that cannot be read says nothing is known: still busy.
+ * Whether a manager query's fork may still be running in this session, read
+ * from `$.agent.list()` now: any `type: 'fork'` agent `spawnedBy: 'sminos'`
+ * whose status is live, but one whose end this module heard. Nothing kept
+ * across a reload is needed, so one at a time holds across any number of
+ * them (a fork may outlive the module that spawned it). A list that cannot
+ * be read says nothing is known: busy.
  */
-async function isOrphanRunning($: EngineInterface): Promise<boolean> {
+async function isForkRunning($: EngineInterface): Promise<boolean> {
   let agents: unknown
   try {
     agents = await $.agent.list()
   } catch (error) {
-    state.log?.(`bridge: the agent list was not read for an orphaned manager query: ${message(error)}`)
+    state.log?.(`bridge: the agent list was not read for a manager query: ${message(error)}`)
     return true
   }
   if (!Array.isArray(agents)) {
     return true
   }
-  for (const id of [...state.askOrphans]) {
-    const listed = agents.find((a) => a?.id === id)
-    if (listed === undefined || !LIVE_STATUSES.has(String(listed.status))) {
-      state.askOrphans.delete(id)
-    }
-  }
-  return state.askOrphans.size > 0
+  return agents.some((a) => a?.type === 'fork' && a.spawnedBy === 'sminos' && LIVE_STATUSES.has(String(a.status)) && !state.askEndedAgents.has(String(a.id)))
 }
 
 /**
@@ -312,8 +308,8 @@ export async function forkQuestion($: EngineInterface, id: string, prompt: unkno
   }
   state.isAskStarting = true
   try {
-    // A fork a reload left behind may still be running: one at a time holds across a reload.
-    if (state.askOrphans.size > 0 && (await isOrphanRunning($))) {
+    // A fork a reload left behind may still be running: the agent list, not this module's memory, says.
+    if (await isForkRunning($)) {
       return { ok: false, error: ASK_BUSY, code: 'busy' }
     }
     if (!(await isGuardLoaded($))) {

@@ -455,11 +455,10 @@ export type BridgeState = {
   /** An ask is between its busy check and its spawn's answer: another is busy meanwhile. */
   isAskStarting: boolean
   /**
-   * The fork agents of asks a module before this one left open, by agent id
-   * (bridge-ask.tsx): ended `aborted`, though the fork may still run, so the
-   * next ask is busy while `$.agent.list()` shows one running.
+   * The forks whose end this module heard (bridge-ask.tsx): free for the next
+   * ask though `$.agent.list()` may still call them running a moment longer.
    */
-  askOrphans: Set<string>
+  askEndedAgents: Set<string>
   /**
    * The main loop's last response that completed (its stop chunk carried
    * usage): a fork's tail starts at the row holding it (bridge-ask.tsx).
@@ -524,7 +523,7 @@ const fresh = (): BridgeState => ({
   askOpen: new Map(),
   askWrites: Promise.resolve(),
   isAskStarting: false,
-  askOrphans: new Set(),
+  askEndedAgents: new Set(),
   lastResponse: { toolUseIds: [], texts: [] },
   agentStops: new Set(),
   media: [],

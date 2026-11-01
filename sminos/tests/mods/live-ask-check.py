@@ -232,6 +232,21 @@ class Ask(LB.Live):
         self.skipped.append(name)
         print("  skip %s — unexercised: %s" % (name, detail), flush=True)
 
+    def agent_status(self, agent_id):
+        """The agent as the bridge's child keeps it from the engine's list (GET /agents), or None when it holds none."""
+        try:
+            status, body = LB.request(self.endpoint(), "GET", "/agents", timeout=5)
+        except OSError:
+            return None
+        agents = ((body or {}).get("agents") or []) if status == 200 else []
+        return next((a for a in agents if a.get("agentId") == agent_id or a.get("id") == agent_id), None)
+
+    @staticmethod
+    def is_live(listed):
+        if listed is None:
+            return False
+        return listed["running"] is True if "running" in listed else listed.get("status") in ("pending", "running", "waiting")
+
     def no_prompt_seen(self):
         pane = self.pane()
         return not any(w in pane for w in ("Do you want to proceed", "Do you want to make this edit", "Do you want to create"))
@@ -374,34 +389,34 @@ def run_a(live):
             end = live.ended(r["result"]["id"], 60)
         except TimeoutError:
             pass
-        busy = live.ask("Are you there?")
-        fork_now = live.fork_rows(agent)
-        still = not any("FORK-RELOAD-DONE" in text_of(x) for x in fork_now if x.get("type") == "assistant")
-        print("  (observed) reload during an ask: the old ask's end %s; the fork still running right after: %s; a new ask: %s" % (
-            json.dumps(end)[:200] if end else "none within 60 s", still, json.dumps(busy)[:200]), flush=True)
         live.check("a reload during an ask: the ask ends (aborted) from the reloaded bridge", end is not None and end.get("reason") == "aborted",
                    json.dumps(end)[:200] if end else "no end")
-        if still:
-            live.check("a reload during an ask: while the old fork runs, a new ask is busy", busy.get("code") == "busy", json.dumps(busy)[:200])
+        # Liveness from the engine's own list, as the reloaded bridge seeds it (GET /agents), never from the fork's words.
+        time.sleep(3)
+        listed = live.agent_status(agent)
+        alive = live.is_live(listed)
+        print("  (observed) reload during an ask: this engine %s the fork (its listing after the reload: %s)" % (
+            "keeps running" if alive else "cancels or ends", json.dumps(listed)), flush=True)
+        after = live.ask("Are you there?")
+        if alive:
+            live.check("a reload during an ask: while the old fork is live, a new ask is busy", after.get("code") == "busy", json.dumps(after)[:200])
+            try:
+                wait_for("the old fork to end", 120, lambda: not live.is_live(live.agent_status(agent)), every=1.0)
+            except TimeoutError:
+                pass
+            print("  (observed) reload during an ask: the surviving fork %s" % (
+                "finished its answer" if any("FORK-RELOAD-DONE" in text_of(x) for x in live.fork_rows(agent) if x.get("type") == "assistant")
+                else "ended without its answer"), flush=True)
+            if after.get("ok"):
+                live.ended(after["result"]["id"], 120)
+            later = live.ask("Reply with exactly: AFTER-RELOAD.")
+            live.check("a reload during an ask: once the old fork ended, ask is taken again", later.get("ok"), json.dumps(later)[:200])
+            if later.get("ok"):
+                live.ended(later["result"]["id"], 120)
         else:
-            live.unexercised("a reload during an ask: while the old fork runs, a new ask is busy",
-                             "the fork had already finished when the new ask came")
-            if busy.get("ok"):
-                live.ended(busy["result"]["id"], 120)
-        try:
-            wait_for("the old fork's answer", 90, lambda: any("FORK-RELOAD-DONE" in text_of(x) for x in live.fork_rows(agent)
-                                                             if x.get("type") == "assistant"), every=1.0)
-            survived = True
-        except TimeoutError:
-            survived = False
-        print("  (observed) reload during an ask: the fork %s" % (
-            "survived the reload and finished its answer" if survived else "did not finish its answer within 90 s"), flush=True)
-        if still and busy.get("ok"):
-            live.ended(busy["result"]["id"], 120)
-        later = live.ask("Reply with exactly: AFTER-RELOAD.")
-        live.check("a reload during an ask: once the old fork ended, ask is taken again", later.get("ok"), json.dumps(later)[:200])
-        if later.get("ok"):
-            live.ended(later["result"]["id"], 120)
+            live.check("a reload during an ask: with the old fork ended, a new ask is taken", after.get("ok"), json.dumps(after)[:200])
+            if after.get("ok"):
+                live.ended(after["result"]["id"], 120)
     time.sleep(3)
 
     # Past 100k tokens.
