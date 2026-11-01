@@ -160,9 +160,11 @@ def render(entry):
 
 class Classifier:
     """One session's rows, fed oldest first, into entries. A tool call's result settles it later in the feed:
-    a message tool's call is the owner's message once its result is in and no error (sminos._sent_text), an
-    agent's line takes the first characters of its result, a blocking question its answer. The async ask's
-    questions and answers are read at the end over the rows that can hold them (sminos._ask_events).
+    a message tool's call is the owner's message from its call (its input's text, as sminos._sent_text reads
+    it), withdrawn when its result is an error; an agent's line takes the first characters of its result; a
+    blocking question its answer (`answered`, source `blocking`). The async ask's questions and answers are read
+    at the end over the rows that can hold them (sminos._ask_events; source `async`). A `you·desk` entry says
+    how it came (`via`: `composer`, a MAWS launch's composer; `bridge`, a bridge delivery).
     `chars`: the rendered size of the entries so far, for the window's budget."""
 
     def __init__(self, session, corroborate=None, lookup=None):
@@ -204,8 +206,11 @@ class Classifier:
             for i, e in S._ask_events([r for _, r in self.ask_rows]):
                 seq, row = self.ask_rows[i]
                 text = _question(e["text"], e.get("choices")) if e["kind"] == "question" else e["text"]
-                self.out.append((seq, -1, {"ts": row.get("timestamp"), "session": self.short,
-                                           "kind": "asked" if e["kind"] == "question" else "answered", "text": text}))
+                entry = {"ts": row.get("timestamp"), "session": self.short,
+                         "kind": "asked" if e["kind"] == "question" else "answered", "text": text}
+                if e["kind"] != "question":
+                    entry["source"] = "async"
+                self.out.append((seq, -1, entry))
         self.out.sort(key=lambda x: (x[0], x[1]))
         return [e for _, _, e in self.out]
 
@@ -230,7 +235,11 @@ class Classifier:
                 inp = inp if isinstance(inp, dict) else {}
                 self.calls.add(cid)
                 if name in S.MESSAGE_TOOLS:
-                    self.pending[cid] = ("message", self.seq, n, b, ts)
+                    # The owner's message at its call, so a window edge between the call and its result cannot
+                    # lose it; an error result in the window withdraws it (_settle).
+                    text = inp.get("text")
+                    if isinstance(text, str) and text.strip():
+                        self.pending[cid] = ("message", self.seq, n, self._add(n, ts, "→you", text), ts)
                 elif name in S.ASK_TOOLS or name == S.MAWS_ASK_TOOL or name == NATIVE_ASK:
                     if not _blocking_ask(b):
                         self.ask_calls.add(cid)    # an async ask: _ask_events reads it
@@ -292,14 +301,13 @@ class Classifier:
             if self._distant_answer(block, row, cid):
                 text = S._result_text(block.get("content")).strip()
                 if text:
-                    self._add(0, ts, "answered", text)
+                    self._add(0, ts, "answered", text, source="blocking")
             return
         what, seq, sub, call, called = held
-        if what == "message":
-            text = S._sent_text(call, {cid: block})
-            if text is not None:
-                self._add(sub, called, "→you", text, seq=seq)
-        elif block.get("is_error") is True:
+        if block.get("is_error") is True:
+            if what == "message":    # refused, failed or interrupted: it sent nothing
+                self.out = [x for x in self.out if x[2] is not call]
+                self.chars -= len(render(call)) + 1
             return
         elif what == "agent":
             result = S._result_text(block.get("content")).strip()
@@ -311,7 +319,7 @@ class Classifier:
         elif what == "ask":
             text = S._result_text(block.get("content")).strip()
             if text:
-                self._add(0, ts, "answered", text)
+                self._add(0, ts, "answered", text, source="blocking")
 
     # ---- user rows
 
@@ -385,7 +393,10 @@ class Classifier:
         if any(S._maws_answer(t) for t in S._maws_steer_texts(row)):
             self._ask_row(row)    # a MAWS ask's answer: `answered`
             return
-        self._add(0, ts, "you·desk" if row.get("entrypoint") == MAWS_ENTRYPOINT else "you", text.strip())
+        if row.get("entrypoint") == MAWS_ENTRYPOINT:
+            self._add(0, ts, "you·desk", text.strip(), via="composer")
+        else:
+            self._add(0, ts, "you", text.strip())
 
     def _unstamped(self, ts, text):
         """A row with no origin stamp: an older transcript's typed prompt reads as one only unverified (`you?`),
@@ -443,7 +454,7 @@ class Classifier:
                 or stripped.startswith(("<system-reminder>", "(no content)")):
             return
         elif not frames(stripped):
-            self._add(0, ts, "you·desk" if self.corroborate(stripped) else "you·desk?", stripped)
+            self._add(0, ts, "you·desk" if self.corroborate(stripped) else "you·desk?", stripped, via="bridge")
         else:
             # One push can carry several frames, each its own sender's: each is classified on its own, so one
             # frame's evidence never vouches for another sender's words.
@@ -451,7 +462,8 @@ class Classifier:
                 if sender != "human":
                     self._add(n, ts, "peer", whole, **{"from": sender})
                 else:
-                    self._add(n, ts, "you·desk" if self.corroborate(whole) else "you·desk?", body.strip())
+                    self._add(n, ts, "you·desk" if self.corroborate(whole) else "you·desk?", body.strip(),
+                              via="bridge")
 
     def _notification(self, ts, text):
         summary = jobs._element(text, "summary") or jobs._element(text, "status")
@@ -464,6 +476,15 @@ def _blocking_ask(block):
     name, inp = block.get("name"), block.get("input") if isinstance(block.get("input"), dict) else {}
     return name == NATIVE_ASK or (name in S.ASK_TOOLS and inp.get("async") is False) or \
         (name == S.MAWS_ASK_TOOL and inp.get("blocking") is not False)
+
+
+def owner_present(entry):
+    """Whether an entry shows the owner in the session's own window, for its seen mark: words typed there (`you`,
+    a MAWS composer submission) or an answer to a blocking question. Unverified rows, bridge deliveries, steers
+    and async answers can come from a phone or another session's view, so they do not count."""
+    kind = entry.get("kind")
+    return kind == "you" or (kind == "you·desk" and entry.get("via") == "composer") or \
+        (kind == "answered" and entry.get("source") == "blocking")
 
 
 def _question(questions, choices):

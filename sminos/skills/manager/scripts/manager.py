@@ -2,22 +2,23 @@
 """manager — the session manager skill's command: read-only views of the sessions the owner follows.
 
     manager transcript <member> --since T [--until T] [--max-chars N]
-    manager pending [--until T]
+    manager pending [--since T] [--until T]
     manager subscriptions
     manager subscriptions add <initiative> <member>...
     manager subscriptions remove <member>...
-    manager carry
-    manager carry set (--file PATH | -)
+    manager ledger
+    manager ledger apply (--file PATH | -)
     manager query <member> "<question>" [--timeout S]
 
 Every command takes --json and --name N (which manager's state: $SMINOS_HOME/managers/<N>.json, default
 `default`). T is local time: 9am, 14:30 (today; a clock time later than now means yesterday), a duration back
-from now (10h, 90m, 2d), or an ISO-8601 time. Exit codes are sminos's: 0, 1 a failure, 2 usage, 4 an unknown or
-ambiguous member.
+from now (10h, 90m, 2d), or an ISO-8601 time. Exit codes are sminos's: 0, 1 a failure, 2 usage (and a ledger
+change refused), 4 an unknown or ambiguous member.
 
 Nothing here writes to a session or a project log: it reads transcripts and host events, and writes only the
-manager's own state file; `query` asks a fork of the session, which the session never sees. Resolving a member
-may let sminos reconcile a project's membership, as any sminos read does. Detail: CLAUDE.md beside this file.
+manager's own state file and its archive; `query` asks a fork of the session, which the session never sees.
+Resolving a member may let sminos reconcile a project's membership, as any sminos read does. Detail: CLAUDE.md
+beside this file.
 """
 
 import argparse
@@ -26,6 +27,7 @@ import json
 import os
 import re
 import sys
+import time
 from types import SimpleNamespace
 from typing import Any, NamedTuple
 
@@ -35,9 +37,9 @@ sys.path.insert(0, os.path.realpath(os.path.join(os.path.dirname(os.path.realpat
 import sminos as S  # noqa: E402
 import sminos_bridge as B  # noqa: E402
 import sminos_fork as F  # noqa: E402
+import manager_ledger as L  # noqa: E402
 import manager_window as W  # noqa: E402
 
-STATE_VERSION = 1
 SHORT_RE = re.compile(r"^[0-9a-f]{8}$")
 DURATION_RE = re.compile(r"^(\d+(?:\.\d+)?)([mhd])$")
 CLOCK_RE = re.compile(r"^(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$", re.I)
@@ -190,11 +192,11 @@ def resolve(q):
 
 def resolve_stored(entry):
     """A subscription's member, by the session id it stored (aliases recur and change): through find_target as a
-    full uuid, on to the session it continued in; historically when membership no longer holds it."""
+    full uuid, on to the session it continued in; historically when membership no longer holds it. None when
+    nothing on this machine knows it."""
     sid = str(entry.get("session") or "")
     t = _from_hit(S.find_target(sid)) if S.UUID_RE.match(sid) else None
-    return t or historical(sid, _project_by_id(entry.get("project")), str(entry.get("alias") or "")) \
-        or fail("the subscription of %s (%s) no longer resolves" % (entry.get("alias"), sid[:8]), 1)
+    return t or historical(sid, _project_by_id(entry.get("project")), str(entry.get("alias") or ""))
 
 
 def refuse_remote(t):
@@ -204,30 +206,15 @@ def refuse_remote(t):
 
 # ------------------------------------------------------------------ state
 
-def state_path(name):
-    if not S.valid_name(name):
-        raise Usage("'%s' is not a manager name" % name)
-    return os.path.join(S.root(), "managers", name + ".json")
-
-
 def load_state(name):
+    """The manager's state, version 2 (manager_ledger); a file that cannot be read, or whose content does not
+    hold, exits 1 naming it."""
     try:
-        with open(state_path(name)) as f:
-            st = json.load(f)
-    except FileNotFoundError:
-        st = {}
-    except ValueError as e:
-        fail("%s is unreadable (%s)" % (state_path(name), e), 1)
-    st = st if isinstance(st, dict) else {}
-    return {"version": STATE_VERSION, "initiatives": list(st.get("initiatives") or []),
-            "carry": list(st.get("carry") or []), "briefed": st.get("briefed")}
-
-
-def save_state(name, st):
-    """The state written whole, through a temporary file and a rename, mode 0600."""
-    path = state_path(name)
-    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
-    S.write_json(path, st, mode=0o600)
+        return L.load(name)
+    except (OSError, ValueError) as e:
+        fail("%s is unreadable (%s)" % (L.path(name), e), 1)
+    except L.Invalid as e:
+        fail("%s does not hold:\n  %s" % (L.path(name), "\n  ".join(e.problems)), 1)
 
 
 def _entries(st):
@@ -251,6 +238,11 @@ def emit(a, data, text):
         print(text)
 
 
+def _paths(t):
+    """(session id, its transcript here or "") for each session of the member's lineage, oldest first."""
+    return [(sid, S.transcript_now(sid)) for sid in t.sessions]
+
+
 def cmd_transcript(a):
     t = resolve(a.member)
     refuse_remote(t)
@@ -260,7 +252,7 @@ def cmd_transcript(a):
         raise Usage("--until must be later than --since")
     if a.max_chars < 1:
         raise Usage("--max-chars must be positive")
-    paths = [(sid, S.transcript_now(sid)) for sid in t.sessions]
+    paths = _paths(t)
     if not any(p for _, p in paths):
         fail("no transcript of %s on this machine" % t.alias, 1)
     owner = {}
@@ -329,26 +321,76 @@ def pending_of(targets, until=None):
     return {"unanswered": unanswered, "waiting": waiting, "waiting_known": cut is None}
 
 
-def subscribed_targets(st):
-    """(initiative name, entry, target) for every subscription that still resolves to a member of this machine;
-    the others are said on stderr and passed over."""
+def subscriptions_of(st):
+    """(initiative name, entry, target, why not) for every subscription: its target when it still resolves to a
+    member of this machine, else None and why."""
     out = []
     for i, e in _entries(st):
         try:
             t = resolve_stored(e)
-        except SystemExit:
-            sys.stderr.write("manager: passed over %s: it does not resolve\n" % (e.get("alias") or e.get("session")))
+        except SystemExit:      # a seat with no session here, said on stderr by the resolver
+            t = None
+        if t is None:
+            out.append((i["name"], e, None, "it does not resolve"))
+        elif not t.local:
+            out.append((i["name"], e, None, "it runs on %s; this version reads sessions on this machine only"
+                        % t.machine))
+        else:
+            out.append((i["name"], e, t, None))
+    return out
+
+
+class NoWindow(Exception):
+    """A member none of whose sessions has a transcript on this machine."""
+
+
+def seen_window(t, since, until=None, stored=None):
+    """{"seen", "last_activity"} over the member's window from `since` to `until` (epoch seconds), read forward
+    with the window reader across its lineage: `seen` the newer of the mark held (`stored`) and the newest entry
+    that shows the owner in the session's own window (manager_window.owner_present); `last_activity` the newest
+    entry kept. Raises NoWindow, or manager_window.Unreadable."""
+    paths = _paths(t)
+    if not any(p for _, p in paths):
+        raise NoWindow("no transcript of it on this machine")
+    entries = W.window(paths, since, until, float("inf"))["entries"]
+    present = [L.parse(e["ts"]) for e in entries if W.owner_present(e)] + ([L.parse(stored)] if stored else [])
+    present = [x for x in present if x is not None]
+    active = [x for x in (L.parse(e["ts"]) for e in entries) if x is not None]
+    return {"seen": L.stamp(max(present)) if present else None,
+            "last_activity": L.stamp(max(active)) if active else None}
+
+
+def seen_marks(subs, since, end):
+    """`pending`'s `seen`: one entry per subscription, over its window (from `since` when given, else its
+    `covered`, else a day back; to `end`), or the reason it cannot be read."""
+    out = []
+    for initiative, e, t, why in subs:
+        entry = {"member": t.alias if t is not None else e.get("alias"), "session": e.get("session"),
+                 "initiative": initiative}
+        if why:
+            out.append(dict(entry, error=why))
             continue
-        if not t.local:
-            sys.stderr.write("manager: passed over %s: it runs on %s\n" % (t.alias, t.machine))
-            continue
-        out.append((i["name"], e, t))
+        frm = since if since is not None else L.parse(e.get("covered")) or end - L.FIRST_WINDOW
+        entry.update({"from": L.stamp(frm), "until": L.stamp(end)})
+        try:
+            entry.update(seen_window(t, frm, end, e.get("seen")))
+        except NoWindow as x:
+            entry = dict(entry, error=str(x))
+        except W.Unreadable as x:
+            entry = dict(entry, error="cannot read the transcript %s: %s" % (x.path, x.error))
+        out.append(entry)
     return out
 
 
 def cmd_pending(a):
+    since = parse_time(a.since) if a.since else None
     until = parse_time(a.until) if a.until else None
-    got = pending_of([t for _, _, t in subscribed_targets(load_state(a.name))], until)
+    if since is not None and until is not None and until <= since:
+        raise Usage("--until must be later than --since")
+    subs = subscriptions_of(load_state(a.name))
+    got = pending_of([t for _, _, t, _ in subs if t is not None], until)
+    now = time.time()
+    got["seen"] = seen_marks(subs, since.timestamp() if since else None, until.timestamp() if until else now)
     lines = []
     if got["unanswered"]:
         lines.append("Unanswered questions (%d):" % len(got["unanswered"]))
@@ -363,6 +405,17 @@ def cmd_pending(a):
         lines.append("No unanswered questions." if not got["waiting_known"] else "Nothing pending.")
     if not got["waiting_known"]:
         lines.append("(Sessions waiting on a prompt are not shown for a past --until: that state is not recorded.)")
+    if got["seen"]:
+        lines.append("Seen marks (each session's window, the owner's last words there, its last activity):")
+        width = max(len(str(s["member"])) for s in got["seen"])
+        for s in got["seen"]:
+            if "error" in s:
+                lines.append("  %s  %s" % (str(s["member"]).ljust(width), s["error"]))
+                continue
+            lines.append("  %s  %s–%s  %s · %s" % (
+                str(s["member"]).ljust(width), L.clock(s["from"], now), L.clock(s["until"], now),
+                "seen %s" % L.clock(s["seen"], now) if s["seen"] else "not seen",
+                "active %s" % L.clock(s["last_activity"], now) if s["last_activity"] else "no activity"))
     emit(a, got, "\n".join(lines))
 
 
@@ -384,7 +437,7 @@ def cmd_subscriptions(a):
 
 def list_subscriptions(a):
     st = load_state(a.name)
-    current = {(name, e.get("session")): t for name, e, t in subscribed_targets(st)}
+    current = {(name, e.get("session")): t for name, e, t, _ in subscriptions_of(st)}
     data, lines = {"initiatives": []}, []
     for i in st["initiatives"]:
         rows = []
@@ -411,69 +464,76 @@ def add_subscriptions(a, initiative, names):
             fail("%s is this manager's own session: it cannot follow itself" % t.alias, 1)
         refuse_remote(t)
         targets.append(t)
-    st = load_state(a.name)
-    for t in targets:
-        _drop(st, set(t.sessions) | {t.session})
-        group = next((i for i in st["initiatives"] if i["name"] == initiative), None)
-        if group is None:
-            group = {"name": initiative, "sessions": []}
-            st["initiatives"].append(group)
-        group["sessions"].append({"session": t.session, "alias": t.alias,
-                                  "project": t.project.id if t.project is not None else "",
-                                  "project_name": t.project.name if t.project is not None else "",
-                                  "added": S.now(ms=True)})
-    save_state(a.name, st)
+    with L.lock(a.name):
+        st = load_state(a.name)
+        for t in targets:
+            ids = set(t.sessions) | {t.session}
+            held = next((e for _, e in _entries(st) if e.get("session") in ids), None)
+            _drop(st, ids)
+            group = next((i for i in st["initiatives"] if i["name"] == initiative), None)
+            if group is None:
+                group = {"name": initiative, "sessions": []}
+                st["initiatives"].append(group)
+            added = S.now(ms=True)
+            # A new subscription reads from a day before it; a member moved between initiatives keeps its marks.
+            group["sessions"].append({"session": t.session, "alias": t.alias,
+                                      "project": t.project.id if t.project is not None else "",
+                                      "project_name": t.project.name if t.project is not None else "",
+                                      "added": held["added"] if held else added,
+                                      "covered": held["covered"] if held else L.stamp(L.parse(added) - L.FIRST_WINDOW),
+                                      "seen": held.get("seen") if held else None})
+        L.save(a.name, st)
     emit(a, {"initiative": initiative, "added": [{"session": t.session, "alias": t.alias} for t in targets]},
          "subscribed under %s: %s" % (initiative, ", ".join("%s (%s)" % (t.alias, t.session[:8]) for t in targets)))
 
 
 def remove_subscriptions(a, names):
-    st = load_state(a.name)
-    removed = []
-    for q in names:
-        hits = {e.get("session") for i, e in _entries(st)
-                if q in (e.get("session"), str(e.get("session"))[:8], e.get("alias"),
-                         "%s/%s" % (e.get("project_name"), e.get("alias")))}
-        if not hits:
-            t = resolve(q)
-            hits = {e.get("session") for _, e in _entries(st) if e.get("session") in set(t.sessions) | {t.session}}
-        if not hits:
-            fail("%s is not subscribed" % q, 1)
-        removed += sorted(hits)
-        _drop(st, hits)
-    save_state(a.name, st)
+    with L.lock(a.name):
+        st = load_state(a.name)
+        removed = []
+        for q in names:
+            hits = {e.get("session") for i, e in _entries(st)
+                    if q in (e.get("session"), str(e.get("session"))[:8], e.get("alias"),
+                             "%s/%s" % (e.get("project_name"), e.get("alias")))}
+            if not hits:
+                t = resolve(q)
+                hits = {e.get("session") for _, e in _entries(st) if e.get("session") in set(t.sessions) | {t.session}}
+            if not hits:
+                fail("%s is not subscribed" % q, 1)
+            removed += sorted(hits)
+            _drop(st, hits)
+        L.save(a.name, st)
     emit(a, {"removed": removed}, "unsubscribed: %s" % ", ".join(s[:8] for s in removed))
 
 
-def cmd_carry(a):
-    words = a.words
+def cmd_ledger(a):
+    """`ledger`: the ledger per initiative. `ledger apply`: one update's ledger change (manager_ledger.apply),
+    under the state's lock; a change that does not hold exits 2 naming every problem, the file unchanged."""
+    words, now = a.words, time.time()
     if not words:
-        st = load_state(a.name)
-        lines = []
-        for c in st["carry"]:
-            lines.append("- %s%s (%s): %s" % ("[blocking] " if c.get("blocking") else "", c.get("member"),
-                                              _local(c.get("raised")), c.get("need")))
-            if c.get("source"):
-                lines.append("  \"%s\"" % str(c["source"]).replace("\n", " "))
-        if st["briefed"]:
-            lines.append("(recorded by the briefing of %s)" % _local(st["briefed"]))
-        return emit(a, {"carry": st["carry"], "briefed": st["briefed"]}, "\n".join(lines) or "The carry list is empty.")
-    if words[0] != "set" or len(words) > 2 or (len(words) == 2) == bool(a.file) or (len(words) == 2 and words[1] != "-"):
-        raise Usage("carry set (--file PATH | -)")
+        if a.file:
+            raise Usage("ledger apply (--file PATH | -)")
+        v = L.view(load_state(a.name), now)
+        return emit(a, v, L.render(v, now))
+    if words[0] != "apply" or len(words) > 2 or (len(words) == 2) == bool(a.file) or (len(words) == 2 and words[1] != "-"):
+        raise Usage("ledger apply (--file PATH | -)")
     try:
         raw = sys.stdin.read() if len(words) == 2 else open(a.file).read()
     except OSError as e:
         fail("cannot read %s: %s" % (a.file, e), 1)
     try:
-        items = json.loads(raw)
+        doc = json.loads(raw)
     except ValueError as e:
-        raise Usage("the carry list is not JSON: %s" % e)
-    if not isinstance(items, list) or not all(isinstance(c, dict) for c in items):
-        raise Usage("the carry list is a JSON array of objects")
-    st = load_state(a.name)
-    st["carry"], st["briefed"] = items, S.now(ms=True)
-    save_state(a.name, st)
-    emit(a, {"carry": items, "briefed": st["briefed"]}, "carry list recorded: %d item(s)" % len(items))
+        raise Usage("the ledger change is not JSON: %s" % e)
+    with L.lock(a.name):
+        st = load_state(a.name)
+        try:
+            st, report = L.apply(st, doc, now)
+        except L.Invalid as e:
+            fail("the ledger change was not applied:\n  %s" % "\n  ".join(e.problems), 2)
+        L.append_archive(a.name, report["archived"])
+        L.save(a.name, st)
+    emit(a, {k: report[k] for k in ("new", "changed", "unchanged_open")}, L.summary(st, report))
 
 
 QUERY_REFUSALS = {
@@ -561,12 +621,13 @@ def parser():
     c.add_argument("--since", required=True)
     c.add_argument("--until")
     c.add_argument("--max-chars", type=int, default=W.DEFAULT_MAX_CHARS)
-    c = command("pending", cmd_pending, help="unanswered questions and waiting sessions")
+    c = command("pending", cmd_pending, help="unanswered questions, waiting sessions, each session's seen mark")
+    c.add_argument("--since", help="the seen marks' window for every member (default: each one's covered)")
     c.add_argument("--until")
     c = command("subscriptions", cmd_subscriptions, help="the sessions followed, by initiative")
     c.add_argument("words", nargs="*", metavar="add|remove ...")
-    c = command("carry", cmd_carry, help="the items the last briefing left open")
-    c.add_argument("words", nargs="*", metavar="set [-]")
+    c = command("ledger", cmd_ledger, help="the ledger; `ledger apply` records an update's change")
+    c.add_argument("words", nargs="*", metavar="apply [-]")
     c.add_argument("--file")
     c = command("query", cmd_query, help="a question put to a fork of a member's session")
     c.add_argument("member")
@@ -578,6 +639,8 @@ def parser():
 def main(argv=None):
     p = parser()
     a = p.parse_args(argv)
+    if not S.valid_name(a.name):
+        p.error("'%s' is not a manager name" % a.name)
     try:
         a.func(a)
     except Usage as e:

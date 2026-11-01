@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """The session manager's command (sminos/skills/manager/scripts/manager): condensed transcript windows and
-their row classifier, pending questions, subscriptions and the carry list, member resolution across projects
+their row classifier, pending questions and seen marks, subscriptions, the state file v2 and its ledger
+(manager_ledger: apply, migration, archive, the view), member resolution across projects
 and for sessions membership has retired, and `query`'s routing between a live session's fork agent and the
 headless fork (sminos_fork), against the real bridge child with bridge_standin.py as its mod and a fake claude.
 The classifier is pinned on rows shaped as the engine and the bridge write them; the commands run through the
@@ -39,6 +40,7 @@ sys.path.insert(0, str(MANAGER_DIR))
 
 import bridge_standin  # noqa: E402
 import manager  # noqa: E402
+import manager_ledger as L  # noqa: E402
 import manager_window as W  # noqa: E402
 import sminos as S  # noqa: E402
 import sminos_bridge as B  # noqa: E402
@@ -209,13 +211,56 @@ class Kinds(unittest.TestCase):
         r.assistant({"type": "text", "text": "Message sent to the human."}, answeredWithoutRequest=True)
         self.assertEqual(kinds(classify(r.rows)), [("session", "Running the suite now.")])
 
-    def test_message_tool_is_to_you_once_accepted(self):
+    def test_message_tool_is_to_you_at_its_call_unless_refused(self):
+        """Emitted at the call, from its input: a call with no result yet is the owner's message; an error result
+        withdraws it."""
         r = Rows()
         r.call("toolu_m1", "mcp__to-human__message", {"text": "PR #452 is merged."})
         r.result("toolu_m1", "sent")
         r.call("toolu_m2", "mcp__to-human__message", {"text": "refused one"})
         r.result("toolu_m2", "no", is_error=True)
-        self.assertEqual(kinds(classify(r.rows)), [("→you", "PR #452 is merged.")])
+        r.call("toolu_m3", "mcp__maws__message", {"text": "still in flight"})
+        got = classify(r.rows)
+        self.assertEqual(kinds(got), [("→you", "PR #452 is merged."), ("→you", "still in flight")])
+        self.assertEqual(got[0]["ts"], r.rows[0]["timestamp"], "the call's time")
+
+    def test_answered_carries_its_source(self):
+        r = Rows()
+        r.call("toolu_q2", "AskUserQuestion", {"questions": [{"question": "Restart dasd?", "options": []}]})
+        r.result("toolu_q2", 'User has answered your questions: "Restart dasd?"="yes".')
+        r.call("toolu_q1", "mcp__sminos__AskUserQuestion", {"questions": [{"question": "Which runner?",
+                                                                            "options": []}]})
+        r.result("toolu_q1", S.ASYNC_RESULT)
+        r.user("The sminos plugin sent a message:\nThe human responded to your async AskUserQuestion "
+               "(call toolu_q1): ubuntu" + S.PLUGIN_FRAMING + " text", {"kind": "plugin", "name": "sminos"})
+        got = [e for e in classify(r.rows) if e["kind"] == "answered"]
+        self.assertEqual([(e["text"][:4], e["source"]) for e in got], [("User", "blocking"), ("ubun", "async")])
+
+    def test_desk_entries_carry_their_via(self):
+        maws = {"entrypoint": "sdk-ts", "promptSource": "sdk", "turnOrigin": "human"}
+        r = Rows()
+        r.user("from the composer", HUMAN, **maws)
+        r.user("[sminos chat doperpowers testhost/human:3 from human → @you]\nmerge it", SMINOS_PROMPT)
+        r.user("an RL10 send", SMINOS_PROMPT)
+        event = {"writer": "testhost/human", "seq": 3, "kind": "human", "ts": "2026-10-31T05:00:00.000Z",
+                 "from": "human", "to": [{"session": SID, "alias": "p5-owner"}], "text": "merge it"}
+        got = classify(r.rows, [event])
+        self.assertEqual([(e["kind"], e["via"]) for e in got],
+                         [("you·desk", "composer"), ("you·desk", "bridge"), ("you·desk?", "bridge")])
+        self.assertEqual([W.render(e).split("  ", 1)[1].split()[0] for e in got], ["you·desk", "you·desk", "you·desk?"],
+                         "the text output is unchanged")
+
+    def test_owner_presence(self):
+        """What a seen mark counts: words typed in the session's own window."""
+        def entry(kind, **kw):
+            return {"ts": iso(T0), "session": SID[:8], "kind": kind, "text": "x", **kw}
+
+        counted = [entry("you"), entry("you·desk", via="composer"), entry("answered", source="blocking")]
+        not_counted = [entry("you?"), entry("you·desk", via="bridge"), entry("you·desk?", via="bridge"),
+                       entry("you·steer"), entry("answered", source="async"), entry("peer", **{"from": "x"}),
+                       entry("session"), entry("→you")]
+        self.assertTrue(all(W.owner_present(e) for e in counted))
+        self.assertFalse(any(W.owner_present(e) for e in not_counted))
 
     def test_message_spans(self):
         r = Rows()
@@ -554,6 +599,20 @@ class Windows(unittest.TestCase):
             W.window([(SID, str(empty)), (NEXT, str(locked))], T0)
         self.assertEqual(raised.exception.path, str(locked))
 
+    def test_a_message_straddling_a_window_end_belongs_to_its_calls_window(self):
+        r = Rows()
+        r.assistant({"type": "text", "text": "Merging."})
+        r.call("toolu_m", "mcp__to-human__message", {"text": "PR #452 is merged."})
+        res = r.result("toolu_m", "sent")
+        r.assistant({"type": "text", "text": "Next."})
+        path = self.dir / "edge.jsonl"
+        write_transcript(path, r.rows)
+        end = SA_epoch(res["timestamp"])
+        first = W.window([(SID, str(path))], T0, until=end)["entries"]
+        second = W.window([(SID, str(path))], end)["entries"]
+        self.assertIn(("→you", "PR #452 is merged."), kinds(first))
+        self.assertEqual(kinds(second), [("session", "Next.")], "reported once, in the window of its call")
+
     def test_max_chars_truncates_and_says_where(self):
         r = Rows()
         for i in range(50):
@@ -614,6 +673,272 @@ class Waiting(unittest.TestCase):
         past = manager.pending_of([target], NOW)
         self.assertEqual((past["waiting"], past["waiting_known"]), ([], False),
                          "a replay never shows the state as of now")
+
+
+# ---------------------------------------------------------------------------------------------- the ledger
+
+DAY = 86400
+WIN = {"since": iso(T0 - 10 * 3600), "until": iso(T0)}
+
+
+def v2(*subs):
+    """A version 2 state with one initiative, P5, holding the subscriptions (session, covered, seen)."""
+    return L.normalize({"version": 2, "initiatives": [{"name": "P5", "sessions": [
+        {"session": sid, "alias": "m-" + sid[:4], "project": "p", "project_name": "doperpowers",
+         "added": iso(T0 - DAY), "covered": covered, "seen": seen} for sid, covered, seen in subs]}]})
+
+
+def yours(**kw):
+    return {"lane": "yours", "initiative": "P5", "member": "CI-opt", "session": SID, "type": "decide",
+            "blocking": True, "need": "merge PR #9?", "why": "a merge gate", "raised": iso(T0 - 3600),
+            "source": "Merge PR #9? It is green.", "status": "pending", **kw}
+
+
+def work(**kw):
+    return {"lane": "work", "initiative": "P5", "members": ["CI-opt"], "title": "Sessions can be asked questions",
+            "meaning": "You can check on a session without disturbing it.", "status": "in progress",
+            "started": iso(T0 - 7200), "refs": ["PR #9"], **kw}
+
+
+def update(items=(), sessions=(), briefs=(), window=WIN):
+    return {"window": window, "sessions": list(sessions), "items": list(items), "briefs": list(briefs)}
+
+
+class Ledger(unittest.TestCase):
+    """The state file v2 and `apply`'s contract, on the pure functions (the commands are pinned below)."""
+
+    def apply(self, st, doc, at=T0):
+        return L.apply(st, doc, at)
+
+    def problems(self, st, doc):
+        before = json.dumps(st, sort_keys=True)
+        with self.assertRaises(L.Invalid) as raised:
+            L.apply(st, doc, T0)
+        self.assertEqual(json.dumps(st, sort_keys=True), before, "the state held is untouched")
+        return raised.exception.problems
+
+    def seeded(self):
+        st = v2((SID, iso(T0 - DAY), None))
+        st, _ = self.apply(st, update([yours(), yours(need="restart dasd", type="act", blocking=False), work()]))
+        return st
+
+    def test_new_items_take_the_next_id_of_their_lane_and_are_stamped(self):
+        st, got = self.apply(v2((SID, iso(T0 - DAY), None)),
+                             update([yours(), yours(need="restart dasd", type="act"), work()]), T0)
+        self.assertEqual([i["id"] for i in st["items"]], ["y1", "y2", "w1"])
+        self.assertEqual(st["next"], {"y": 3, "w": 2})
+        self.assertEqual({(i["reported"], i["changed"]) for i in st["items"]}, {(L.stamp(T0), L.stamp(T0))})
+        self.assertEqual((got["new"], got["changed"], got["unchanged_open"]), (["y1", "y2", "w1"], [], []))
+        self.assertEqual(st["updated"], L.stamp(T0))
+        self.assertEqual(st["window"], {"since": L.stamp(T0 - 10 * 3600), "until": L.stamp(T0)})
+        self.assertFalse(st["items"][0]["seen"], "seen defaults to false")
+
+    def test_a_change_replaces_only_the_fields_given(self):
+        st = self.seeded()
+        st, got = self.apply(st, update([{"id": "y1", "status": "answered", "evidence": '"go ahead"',
+                                          "status_at": iso(T0 + 60)}]), T0 + 3600)
+        y1 = st["items"][0]
+        self.assertEqual((y1["status"], y1["evidence"], y1["need"], y1["type"]),
+                         ("answered", '"go ahead"', "merge PR #9?", "decide"))
+        self.assertEqual(y1["reported"], L.stamp(T0), "reported is stamped once")
+        self.assertEqual(y1["changed"], L.stamp(T0 + 3600))
+        self.assertEqual((got["new"], got["changed"], got["unchanged_open"]), ([], ["y1"], ["y2", "w1"]))
+
+    def test_changed_is_not_stamped_for_a_refreshed_seen_or_an_unchanged_value(self):
+        st = self.seeded()
+        st, got = self.apply(st, update([{"id": "y2", "seen": True}, {"id": "w1", "title": work()["title"]},
+                                         {"id": "y1", "source": "a longer quote of the same ask"}]), T0 + 3600)
+        self.assertEqual([i["changed"] for i in st["items"]], [L.stamp(T0)] * 3)
+        self.assertTrue(st["items"][1]["seen"])
+        self.assertEqual(st["items"][0]["source"], "a longer quote of the same ask")
+        self.assertEqual((got["changed"], got["unchanged_open"]), ([], ["y1", "y2", "w1"]))
+
+    def test_done_and_overtaken_are_not_open(self):
+        st = self.seeded()
+        st, got = self.apply(st, update([
+            {"id": "y1", "status": "done", "evidence": "merged", "status_at": iso(T0)},
+            {"id": "w1", "status": "done", "finished": iso(T0)}]), T0 + 60)
+        self.assertEqual((got["changed"], got["unchanged_open"]), (["y1", "w1"], ["y2"]))
+        st, got = self.apply(st, update([]), T0 + 120)
+        self.assertEqual((got["new"], got["changed"], got["unchanged_open"]), ([], [], ["y2"]))
+
+    def test_every_problem_is_named_and_nothing_changes(self):
+        st = self.seeded()
+        st, _ = self.apply(st, update([{"id": "y2", "seen": True}]), T0 + 1)
+        got = self.problems(st, update(
+            [{"id": "y99", "status": "done"},                               # an unknown id
+             {"id": "y1", "lane": "work"},                                  # a lane changed
+             {"id": "y2", "type": "ponder"},                                # outside the enumeration
+             {"id": "y2", "seen": False},                                   # seen turned back
+             yours(session=""),                                             # a yours item without session
+             {"id": "w1", "status": "done"},                                # done work without finished
+             {"id": "y1", "status": "answered"},                            # answered without evidence or status_at
+             yours(raised="yesterday-ish"),                                 # a time that does not parse
+             yours(blockng=True)],                                          # a field no item has
+            sessions=[{"session": NEXT, "from": iso(T0 - DAY), "covered": iso(T0), "seen": None}]))
+        text = "\n".join(got)
+        for said in ("y99", "unknown id", "lane cannot change", "ponder", "seen cannot turn back", "session",
+                     "finished", "evidence", "status_at", "raised", "blockng", NEXT[:8]):
+            self.assertIn(said, text)
+        self.assertGreaterEqual(len(got), 11)
+
+    def test_a_brief_is_replaced_per_initiative(self):
+        st = v2((SID, iso(T0 - DAY), None))
+        st, _ = self.apply(st, update(briefs=[{"initiative": "P5", "since": iso(T0 - 3600), "text": "first"},
+                                              {"initiative": "P6", "since": iso(T0 - 3600), "text": "other"}]))
+        st, _ = self.apply(st, update(briefs=[{"initiative": "P5", "since": iso(T0), "text": "second"}]), T0 + 60)
+        self.assertEqual(sorted((b["initiative"], b["text"], b["written"]) for b in st["briefs"]),
+                         [("P5", "second", L.stamp(T0 + 60)), ("P6", "other", L.stamp(T0))])
+
+    def test_covered_and_seen_only_move_forward_and_only_over_a_connected_interval(self):
+        c0 = T0 - DAY
+        st = v2((SID, iso(c0), None), (NEXT, iso(c0), None))
+
+        def sub(sid):
+            return next(e for e in st["initiatives"][0]["sessions"] if e["session"] == sid)
+
+        def read(frm, covered, seen, at):
+            return self.apply(st, update(sessions=[{"session": SID, "from": iso(frm), "covered": iso(covered),
+                                                    "seen": iso(seen) if seen else None}]), at)[0]
+
+        st = read(c0, T0, T0 - 600, T0 + 1)
+        self.assertEqual((sub(SID)["covered"], sub(SID)["seen"]), (L.stamp(T0), L.stamp(T0 - 600)))
+        self.assertEqual((sub(NEXT)["covered"], sub(NEXT)["seen"]), (L.stamp(c0), None), "absent: kept")
+        st = read(T0 + 3600, T0 + 7200, T0 - 900, T0 + 2)
+        self.assertEqual((sub(SID)["covered"], sub(SID)["seen"]), (L.stamp(T0), L.stamp(T0 - 600)),
+                         "a window starting after covered leaves the gap; an older seen mark changes nothing")
+        st = read(c0, c0 + 60, None, T0 + 3)
+        self.assertEqual(sub(SID)["covered"], L.stamp(T0), "never back")
+        st = read(T0 - 60, T0 + 600, T0 + 500, T0 + 4)
+        self.assertEqual((sub(SID)["covered"], sub(SID)["seen"]), (L.stamp(T0 + 600), L.stamp(T0 + 500)))
+
+    def test_done_and_overtaken_items_archive_after_30_days_and_their_ids_are_not_reused(self):
+        st = self.seeded()
+        st, _ = self.apply(st, update([{"id": "y1", "status": "done", "evidence": "merged", "status_at": iso(T0)},
+                                       {"id": "y2", "status": "overtaken", "evidence": "it decided",
+                                        "status_at": iso(T0)}]), T0)
+        st, got = self.apply(st, update([]), T0 + 29 * DAY)
+        self.assertEqual((got["archived"], [i["id"] for i in st["items"]]), ([], ["y1", "y2", "w1"]))
+        st, got = self.apply(st, update([yours(need="a new one")]), T0 + 31 * DAY)
+        self.assertEqual([i["id"] for i in got["archived"]], ["y1", "y2"])
+        self.assertEqual([i["id"] for i in st["items"]], ["w1", "y3"], "y1 and y2 are never given again")
+        self.assertEqual(got["new"], ["y3"])
+
+    def test_a_version_1_file_migrates(self):
+        raw = {"version": 1, "initiatives": [{"name": "P5", "sessions": [
+            {"session": SID, "alias": "CI-opt", "project": "p", "project_name": "doperpowers", "added": iso(T0 - DAY)},
+            {"session": NEXT, "alias": "owner", "project": "p", "project_name": "doperpowers",
+             "added": iso(T0 - DAY)}]}],
+            "carry": [{"session": SID, "member": "CI-opt", "raised": iso(T0 - 3600), "need": "merge PR #9",
+                       "blocking": True, "source": "Merge PR #9?"}],
+            "briefed": iso(T0)}
+        st = L.normalize(raw)
+        self.assertEqual(st["version"], 2)
+        self.assertEqual(st["updated"], L.stamp(T0))
+        self.assertEqual([(e["covered"], e["seen"]) for e in st["initiatives"][0]["sessions"]],
+                         [(L.stamp(T0), None)] * 2)
+        (y1,) = st["items"]
+        self.assertEqual({k: y1[k] for k in ("id", "lane", "type", "status", "initiative", "session", "need",
+                                             "blocking", "reported")},
+                         {"id": "y1", "lane": "yours", "type": "other", "status": "pending", "initiative": "P5",
+                          "session": SID, "need": "merge PR #9", "blocking": True, "reported": L.stamp(T0)})
+        self.assertEqual(st["next"], {"y": 2, "w": 1})
+        self.assertNotIn("carry", st)
+        self.assertNotIn("briefed", st)
+        never = L.normalize(dict(raw, carry=[], briefed=None))
+        self.assertEqual(never["initiatives"][0]["sessions"][0]["covered"], L.stamp(T0 - 2 * DAY),
+                         "nothing briefed: 24 hours before the subscription")
+        with self.assertRaises(L.Invalid):
+            L.normalize(dict(raw, carry=[{"session": SID, "member": "CI-opt"}]))
+
+    def test_the_view_orders_the_owners_items_then_the_work(self):
+        st = v2((SID, iso(T0 - DAY), None))
+        st, _ = self.apply(st, update([
+            yours(need="optional, unseen", blocking=False),                                       # y1
+            yours(need="blocking, seen", seen=True),                                              # y2
+            yours(need="answered", status="answered", evidence="yes", status_at=iso(T0)),         # y3
+            yours(need="blocking, unseen"),                                                       # y4
+            yours(need="done", status="done", evidence="did", status_at=iso(T0)),                 # y5
+            work(title="Done outcome", status="done", finished=iso(T0)),                          # w1
+            work(title="Stalled outcome", status="stalled", waits_on="the owner's login"),        # w2
+            work(title="Outcome in progress")]),                                                  # w3
+            T0)
+        st, _ = self.apply(st, update(briefs=[{"initiative": "P5", "since": iso(T0 - 3600), "text": "It went."}]),
+                           T0 + 60)
+        view = L.view(st, T0 + 120)
+        self.assertEqual(set(view), {"updated", "window", "initiatives"})
+        (p5,) = view["initiatives"]
+        self.assertEqual(set(p5), {"name", "items", "brief"})
+        self.assertEqual([i["id"] for i in p5["items"]], ["y4", "y2", "y1", "y3", "y5", "w3", "w2", "w1"])
+        self.assertEqual(p5["brief"]["text"], "It went.")
+        text = L.render(view, T0 + 120)
+        ids = re.findall(r"^\s+([yw]\d+)\s", text, re.M)
+        self.assertEqual(ids, ["y4", "y2", "y1", "y3", "y5", "w3", "w2", "w1"])
+        self.assertRegex(text.splitlines()[0], r"^P5 · updated ")
+        self.assertIn("unseen", next(line for line in text.splitlines() if line.strip().startswith("y4")))
+        self.assertIn("waits on the owner's login", text)
+        self.assertIn("brief", text.splitlines()[-1])
+        old = L.render(L.view(st, T0 + 8 * DAY), T0 + 8 * DAY)
+        self.assertNotRegex(old, r"^\s+(y5|w1)\s", "done more than 7 days ago is left out of the text")
+
+
+def seen_of(sessions, since, until=None, stored=None):
+    target = manager.Target("m", None, list(sessions), None, "testhost", True)
+    return manager.seen_window(target, since, until, stored)
+
+
+class SeenMarks(unittest.TestCase):
+    """A session's seen mark: the newest of the owner's words typed in its own window, read forward with the
+    window reader across the lineage; never older than the mark held."""
+
+    S1 = "7c000001-0000-4000-8000-0000000000c1"
+    S2 = "7c000002-0000-4000-8000-0000000000c2"
+
+    def test_the_newest_typed_words_across_a_lineage(self):
+        a, b = Rows(), Rows(T0 + 100)
+        typed = a.user("first", HUMAN)
+        a.assistant({"type": "text", "text": "one"})
+        b.call("toolu_q", "AskUserQuestion", {"questions": [{"question": "Go?", "options": []}]})
+        answer = b.result("toolu_q", 'User has answered your questions: "Go?"="yes".')
+        b.user("unstamped")                                                              # you?
+        b.user([{"type": "text", "text": STEER_LINE + "\nstop"}], SMINOS_ROW, meta=True)  # you·steer
+        b.user("an RL10 send", SMINOS_PROMPT)                                            # you·desk? (bridge)
+        b.call("toolu_a", "mcp__sminos__AskUserQuestion", {"questions": [{"question": "Q?", "options": []}]})
+        b.result("toolu_a", S.ASYNC_RESULT)
+        b.user("The sminos plugin sent a message:\nThe human responded to your async AskUserQuestion "
+               "(call toolu_a): ok" + S.PLUGIN_FRAMING + " text", {"kind": "plugin", "name": "sminos"})
+        last = b.assistant({"type": "text", "text": "done"})
+        write_transcript(transcript_file(self.S1), a.rows)
+        write_transcript(transcript_file(self.S2), b.rows)
+        got = seen_of([self.S1, self.S2], T0)
+        self.assertEqual((got["seen"], got["last_activity"]), (answer["timestamp"], last["timestamp"]))
+        early = seen_of([self.S1, self.S2], T0, until=T0 + 100)
+        self.assertEqual(early["seen"], typed["timestamp"], "--until leaves later words out")
+
+    def test_a_maws_composer_submission_counts(self):
+        r = Rows()
+        r.assistant({"type": "text", "text": "Ready."})
+        typed = r.user("from the composer", HUMAN, entrypoint="sdk-ts", promptSource="sdk", turnOrigin="human")
+        write_transcript(transcript_file(self.S1), r.rows)
+        self.assertEqual(seen_of([self.S1], T0)["seen"], typed["timestamp"])
+
+    def test_a_blocking_answer_whose_call_precedes_the_window(self):
+        r = Rows()
+        r.call("toolu_q", "AskUserQuestion", {"questions": [{"question": "Go?", "options": []}]})
+        answer = r.result("toolu_q", 'User has answered your questions: "Go?"="yes".')
+        write_transcript(transcript_file(self.S1), r.rows)
+        self.assertEqual(seen_of([self.S1], SA_epoch(answer["timestamp"]))["seen"], answer["timestamp"])
+
+    def test_a_window_without_the_owner_keeps_the_mark_held(self):
+        r = Rows()
+        r.user("typed", HUMAN)
+        prose = r.assistant({"type": "text", "text": "Working."})
+        write_transcript(transcript_file(self.S1), r.rows)
+        got = seen_of([self.S1], SA_epoch(prose["timestamp"]), stored=iso(T0 - DAY))
+        self.assertEqual((got["seen"], got["last_activity"]), (L.stamp(T0 - DAY), prose["timestamp"]))
+        self.assertIsNone(seen_of([self.S1], SA_epoch(prose["timestamp"]))["seen"])
+        self.assertEqual(seen_of([self.S1], T0, stored=iso(T0 + DAY))["seen"], L.stamp(T0 + DAY),
+                         "a held mark newer than the window's words stays")
 
 
 # ---------------------------------------------------------------------------------------------- the commands
@@ -690,8 +1015,22 @@ class Commands(unittest.TestCase):
     def setUp(self):
         self.name = "t%d" % id(self)
 
+    def state_file(self):
+        return Path(os.environ["SMINOS_HOME"], "managers", self.name + ".json")
+
     def state(self):
-        return json.loads(Path(os.environ["SMINOS_HOME"], "managers", self.name + ".json").read_text())
+        return json.loads(self.state_file().read_text())
+
+    def write_state(self, st):
+        self.state_file().parent.mkdir(parents=True, exist_ok=True)
+        self.state_file().write_text(json.dumps(st))
+
+    def apply(self, doc, check=True):
+        r = subprocess.run([str(MANAGER), "ledger", "apply", "-", "--json", "--name", self.name],
+                           input=json.dumps(doc), text=True, capture_output=True, env=os.environ, cwd=BASE)
+        if check and r.returncode:
+            raise AssertionError("apply: %d\n%s" % (r.returncode, r.stderr))
+        return r
 
     def run_in_alpha(self, *args, check=True, env=None):
         return cli(*args, "--name", self.name, cwd=self.dirs["alpha"], check=check, env=env)
@@ -758,10 +1097,18 @@ class Commands(unittest.TestCase):
         self.assertIn(B1[:8], out)
         self.assertIn("bravo", out)
         st = self.state()
-        self.assertEqual(st["version"], 1)
+        self.assertEqual(st["version"], 2)
         self.assertEqual([(i["name"], [s["session"] for s in i["sessions"]]) for i in st["initiatives"]],
                          [("P5", [B1, A1])])
+        for e in st["initiatives"][0]["sessions"]:
+            self.assertAlmostEqual(L.parse(e["covered"]), L.parse(e["added"]) - DAY, places=3,
+                                   msg="covered: 24 hours before")
+            self.assertIsNone(e["seen"])
+        st["initiatives"][0]["sessions"][0].update(covered=iso(T0), seen=iso(T0 - 60))
+        self.write_state(st)
         self.run_in_alpha("subscriptions", "add", "P6", "builder")
+        moved = self.state()["initiatives"][1]["sessions"][0]
+        self.assertEqual((moved["covered"], moved["seen"]), (iso(T0), iso(T0 - 60)), "a move keeps both marks")
         self.assertEqual([(i["name"], [s["session"] for s in i["sessions"]]) for i in self.state()["initiatives"]],
                          [("P5", [A1]), ("P6", [B1])], "a member subscribed under another initiative moves")
         self.run_in_alpha("subscriptions", "remove", "builder")
@@ -789,24 +1136,87 @@ class Commands(unittest.TestCase):
         self.assertNotEqual(path.stat().st_ino, before, "written through a temporary file and a rename")
         self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
 
-    def test_carry(self):
-        items = [{"session": B1, "member": "builder", "raised": "2026-10-31T05:00:00Z", "need": "merge PR #9",
-                  "blocking": True, "source": "Merge PR #9?"}]
-        src = Path(BASE, self.name + "-carry.json")
-        src.write_text(json.dumps(items))
-        self.run_in_alpha("carry", "set", "--file", str(src))
+    # the ledger
+
+    def test_ledger_apply_and_show(self):
+        self.run_in_alpha("subscriptions", "add", "P5", "builder")
+        covered = self.state()["initiatives"][0]["sessions"][0]["covered"]
+        reached = iso(L.parse(covered) + 3600)
+        doc = update([yours(member="builder", session=B1), work(members=["builder"])],
+                     sessions=[{"session": B1, "from": covered, "covered": reached, "seen": iso(T0 - 60)}],
+                     briefs=[{"initiative": "P5", "since": covered, "text": "Builder built."}])
+        src = Path(BASE, self.name + "-update.json")
+        src.write_text(json.dumps(doc))
+        _, out, _ = self.run_in_alpha("ledger", "apply", "--file", str(src), "--json")
+        self.assertEqual(json.loads(out), {"new": ["y1", "w1"], "changed": [], "unchanged_open": []})
         st = self.state()
-        self.assertEqual(st["carry"], items)
-        self.assertTrue(st["briefed"])
-        _, out, _ = self.run_in_alpha("carry")
-        self.assertIn("merge PR #9", out)
-        r = subprocess.run([str(MANAGER), "carry", "set", "-", "--name", self.name], input="[]", text=True,
-                           capture_output=True, env=os.environ, cwd=BASE)
+        self.assertEqual(st["version"], 2)
+        self.assertEqual(stat.S_IMODE(self.state_file().stat().st_mode), 0o600)
+        self.assertEqual((st["initiatives"][0]["sessions"][0]["covered"], st["initiatives"][0]["sessions"][0]["seen"]),
+                         (reached, iso(T0 - 60)))
+        r = subprocess.run([str(MANAGER), "ledger", "apply", "-", "--name", self.name], text=True, capture_output=True,
+                           input=json.dumps(update([{"id": "y1", "blocking": False}])), env=os.environ, cwd=BASE)
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(self.state()["carry"], [])
-        bad = subprocess.run([str(MANAGER), "carry", "set", "-", "--name", self.name], input="{nope", text=True,
+        self.assertEqual(r.stdout.strip(), "P5: 0 new · 1 changed · 1 still open")
+        _, out, _ = self.run_in_alpha("ledger", "--json")
+        got = json.loads(out)
+        self.assertEqual(set(got), {"updated", "window", "initiatives"})
+        self.assertEqual([(i["name"], [x["id"] for x in i["items"]], i["brief"]["text"]) for i in got["initiatives"]],
+                         [("P5", ["y1", "w1"], "Builder built.")])
+        _, out, _ = self.run_in_alpha("ledger")
+        self.assertRegex(out, r"(?m)^\s+y1\s+pending\s+decide\s+optional\b.*builder.*merge PR #9\?")
+        self.assertRegex(out, r"(?m)^\s+w1\s+in progress\s+Sessions can be asked questions")
+
+    def test_a_refused_apply_exits_2_and_leaves_the_file_as_it_was(self):
+        self.run_in_alpha("subscriptions", "add", "P5", "builder")
+        before = self.state_file().read_bytes()
+        r = self.apply(update([{"id": "y7", "status": "done"}, yours(session=B1, type="ponder")]), check=False)
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertIn("y7", r.stderr)
+        self.assertIn("ponder", r.stderr)
+        self.assertEqual(self.state_file().read_bytes(), before)
+        self.assertEqual(self.apply({"items": "nope"}, check=False).returncode, 2)
+        bad = subprocess.run([str(MANAGER), "ledger", "apply", "-", "--name", self.name], input="{nope", text=True,
                              capture_output=True, env=os.environ, cwd=BASE)
         self.assertEqual(bad.returncode, 2)
+        self.assertEqual(self.state_file().read_bytes(), before)
+
+    def test_concurrent_applies_wait_on_the_lock_and_both_land(self):
+        self.run_in_alpha("subscriptions", "add", "P5", "builder")
+        procs = []
+        with L.lock(self.name):
+            for need in ("one", "two"):
+                procs.append(subprocess.Popen(
+                    [str(MANAGER), "ledger", "apply", "-", "--name", self.name], stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=os.environ, cwd=BASE))
+                procs[-1].stdin.write(json.dumps(update([yours(session=B1, need=need)])))
+                procs[-1].stdin.close()
+            time.sleep(1.5)
+            self.assertEqual([p.poll() for p in procs], [None, None], "both wait while the lock is held")
+        for p in procs:
+            self.assertEqual(p.wait(30), 0, p.stderr.read())
+            p.stdout.close()
+            p.stderr.close()
+        items = self.state()["items"]
+        self.assertEqual(sorted(i["id"] for i in items), ["y1", "y2"])
+        self.assertEqual(sorted(i["need"] for i in items), ["one", "two"])
+
+    def test_old_resolved_items_go_to_the_archive(self):
+        self.run_in_alpha("subscriptions", "add", "P5", "builder")
+        st = self.state()
+        old = iso(time.time() - 40 * DAY)
+        st["items"] = [dict(yours(session=B1, status="done", evidence="merged", status_at=old), id="y1",
+                            reported=old, changed=old)]
+        st["next"] = {"y": 2, "w": 1}
+        self.write_state(st)
+        self.apply(update([yours(session=B1, need="fresh")]))
+        self.assertEqual([i["id"] for i in self.state()["items"]], ["y2"])
+        archive = Path(os.environ["SMINOS_HOME"], "managers", self.name + ".archive.jsonl")
+        self.assertEqual([json.loads(x)["id"] for x in archive.read_text().splitlines()], ["y1"])
+        self.assertEqual(stat.S_IMODE(archive.stat().st_mode), 0o600)
+
+    def test_carry_is_gone(self):
+        self.assertEqual(self.run_in_alpha("carry", check=False)[0], 2)
 
     # pending
 
@@ -848,6 +1258,33 @@ class Commands(unittest.TestCase):
         _, out, _ = self.run_in_alpha("subscriptions", "--json")
         entry = json.loads(out)["initiatives"][0]["sessions"][0]
         self.assertEqual((entry["session"], entry["alias"]), (GONE, "gone-term"))
+
+    def test_pending_gives_each_subscriptions_seen_mark_over_its_own_window(self):
+        """builder's transcript: `build the thing` (typed) at T0+1, prose at T0+2. Without --since a member's window
+        starts at its covered; an unresolvable subscription is listed with its error."""
+        self.run_in_alpha("subscriptions", "add", "P5", "builder")
+        st = self.state()
+        st["initiatives"][0]["sessions"][0]["covered"] = iso(T0 + 1.5)
+        st["initiatives"][0]["sessions"].append({"session": "7b0000ff-0000-4000-8000-0000000000ff", "alias": "ghost",
+                                                 "project": "", "project_name": "", "added": iso(T0),
+                                                 "covered": iso(T0), "seen": None})
+        self.write_state(st)
+        _, out, _ = self.run_in_alpha("pending", "--json", "--until", iso(T0 + 3600))
+        seen = json.loads(out)["seen"]
+        self.assertEqual([s["member"] for s in seen], ["builder", "ghost"])
+        self.assertEqual({k: seen[0][k] for k in ("session", "initiative", "from", "until", "seen", "last_activity")},
+                         {"session": B1, "initiative": "P5", "from": iso(T0 + 1.5), "until": iso(T0 + 3600),
+                          "seen": None, "last_activity": iso(T0 + 2)})
+        self.assertIn("does not resolve", seen[1]["error"])
+        _, out, _ = self.run_in_alpha("pending", "--json", "--since", iso(T0), "--until", iso(T0 + 3600))
+        self.assertEqual((json.loads(out)["seen"][0]["from"], json.loads(out)["seen"][0]["seen"]),
+                         (iso(T0), iso(T0 + 1)))
+        _, out, _ = self.run_in_alpha("pending", "--since", iso(T0), "--until", iso(T0 + 3600))
+        self.assertRegex(out, r"(?m)^\s*builder\s+(10-31 )?14:00–(10-31 )?15:00\s+seen (10-31 )?14:00 · "
+                              r"active (10-31 )?14:00$")
+        self.assertRegex(out, r"(?m)^\s*ghost\s+.*does not resolve")
+        rc, _, _ = self.run_in_alpha("pending", "--since", iso(T0 + 10), "--until", iso(T0), check=False)
+        self.assertEqual(rc, 2)
 
     def test_usage_errors_exit_2(self):
         for args in (("transcript", "builder"), ("bogus",), ("transcript", "builder", "--since", "soon"),
