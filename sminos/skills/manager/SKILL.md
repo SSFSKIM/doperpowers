@@ -26,8 +26,8 @@ rest.
   never write to a project log. When the owner tells you to pass something on
   ("tell CI-opt yes"), say where they can answer it themselves (the session's
   own window, or the desk) rather than relaying: the owner's word has to come
-  from the owner. Your only writes are the manager's
-  own state through `$M` (subscriptions, `ledger apply`).
+  from the owner. Your only writes are the manager's own state through `$M`
+  (subscriptions, `ledger apply`).
 - **Subscriptions are the owner's.** Subscribe only what the owner names. You
   may suggest sessions (from in-charge lines in `sminos list --org`, sessions
   that message each other or name the same work), then subscribe the ones they
@@ -61,30 +61,30 @@ says so) or "update since T" (every session from T).
    one `seen` entry per subscription: its window (`from`, `until`), its seen
    mark, its last activity, or an `error` when it cannot be read.
 2. **One digest subagent per session with activity in its window**
-   (`last_activity` in its `seen` entry), dispatched in parallel
-   with the Agent tool: `subagent_type: general-purpose`, `model: sonnet`,
+   (`last_activity` in its `seen` entry), dispatched in parallel with the
+   Agent tool: `subagent_type: general-purpose`, `model: sonnet`,
    `effort: medium`. Its prompt tells it to read its brief first,
    `references/digest-brief.md` in this skill's base directory (by absolute
    path), then gives its member (alias and session id), initiative, window
    (`from`, `until` from `pending`), seen mark, its session's open ledger
-   items in both lanes with their ids (from `$M ledger --json`), the
-   work-item cap below, `$M`'s absolute path, and that queries are allowed.
-   A session with no activity in its window gets none: nothing in an empty
-   window can change its items, which stay in the still-open list, and
+   items in both lanes with their ids (from `$M ledger --json`), its share of
+   the work-item cap below (the cap over the sessions digested for that
+   initiative, rounded up), `$M`'s absolute path, and that queries are
+   allowed. A session with no activity in its window gets none: nothing in an
+   empty window can change its items, which stay in the still-open list, and
    `pending` has read the window through. A subscription with an `error` gets
    none and is named at the top of the update.
 3. **Merge and apply.** Collect the digests' items into one `ledger apply`
    document: one item per need across sessions (a need one session relays from
    another is one item, raised at its first mention; when one session's item
    asks more than another's, such as a redeploy and a check after it, the part
-   the other lacks stays an item of its own), work outcomes merged
-   across sessions and held to the cap, one brief per initiative written from
-   the digests' prose. Its `sessions` lists each subscription you read through,
+   the other lacks stays an item of its own), work outcomes merged across
+   sessions and held to the cap, one brief per initiative written from the
+   digests' prose. Its `sessions` lists each subscription you read through,
    with the `from` `pending` gave, the `covered` its digest reached (`until`
    when it read the whole window, or had no activity to read), and the seen
-   mark `pending` gave; leave out
-   every session you could not read, so the next update reads that stretch
-   again. `window` is the span the update covered. The document:
+   mark `pending` gave; leave out every session you could not read, so the
+   next update reads that stretch again. `window` is the span the update covered. The document:
 
        {"window": {"since": "<ISO>", "until": "<ISO>"},
         "sessions": [{"session": "<id pending gave>", "from": "<ISO>", "covered": "<ISO>", "seen": "<ISO>" | null}],
@@ -92,8 +92,8 @@ says so) or "update since T" (every session from T).
         "briefs": [{"initiative": "<name>", "since": "<ISO>", "text": "<the brief>"}]}
 
    Write it to a temporary file and apply it; a refusal names every problem,
-   fix and re-apply. `apply` answers with what is new, changed and still open; the
-   update is written from those lists.
+   fix and re-apply. `apply` answers with what is new, changed and still
+   open; the update is written from those lists.
 4. **Write the update**, in this order:
    - **Incomplete**, only when a session could not be read: which, why, since
      when.
@@ -103,16 +103,16 @@ says so) or "update since T" (every session from T).
      its time. Then **still open**: items an earlier update reported and this
      one did not change, one line each, blocking first.
    - **What changed.** The owner's items whose status changed (answered, done,
-     overtaken), one line each with its evidence and when; work outcomes
-     started, finished or stalled.
+     overtaken), and new ones already settled inside the window, one line
+     each with its evidence and when; work outcomes started, finished or
+     stalled.
    - **A brief per initiative** of what the owner did not see: what happened,
      decisions sessions took on their behalf, where plans changed, where things
      stand. Before a session's seen mark, only "while you were there" lines for
      decisions and changes of plan. A session the owner was in throughout gets
      those lines and no more ("you were in CI-opt until 14:20; nothing since").
 
-An update in which nothing moved says so in a line or two; sessions with no
-activity and no open items cost no subagent.
+An update in which nothing moved says so in a line or two.
 
 ## The ledger's terms
 
@@ -139,7 +139,7 @@ false to true.
 recognize, its title saying in plain words what is now true or possible, its
 meaning why it matters to the owner, identifiers in `refs`. Routine steps (a
 milestone landing, a review round, a merge, a CI run) move an outcome's status
-and are never items of their own. **Cap: an update adds at most 6 work items per
+and are never items of their own. **Cap: an update adds at most 8 work items per
 initiative.**
 
 ## Follow-up questions

@@ -10,17 +10,17 @@ writes the update.
 
 Your dispatch gives you: the member (alias and session id), the initiative, the
 window (`from`, `until`), the session's seen mark, the session's open ledger
-items in both lanes (with ids), the work-item cap for this update, and whether
-you may query the session. The manager command is at the path the dispatch
-names (`$M` below).
+items in both lanes (with ids), how many new work items you may propose, and
+whether you may query the session. The manager command is at the path the
+dispatch names (`$M` below).
 
 ## Strictly read-only
 
 You read records; you never act on a session. Never send, steer, interrupt,
 answer, decide, compact or change a model for any session, never write to a
 project log, and write no file but scratch files of your own under `/tmp`.
-The commands you need are `$M transcript`,
-`$M pending` and `$M query`; nothing else of sminos.
+The commands you need are `$M transcript`, `$M pending` and `$M query`;
+nothing else of sminos.
 
 ## Reading the window
 
@@ -51,9 +51,9 @@ per question of a multi-question card), an explicit "waiting on you", a gate the
 session will not pass on its own, an owner-only step mentioned in prose. An
 ask inside a larger one is an item of its own when the owner has to do or
 answer it separately: a check to report on during a sitting, a look to take
-after a deploy, something to leave alone until a fix lands. One
-need repeated across several messages is one item, raised at its first
-mention in the window; a need raised before the window that is still open is
+after a deploy, something to leave alone until a fix lands. One need
+repeated across several messages is one item, raised at its first mention in
+the window; a need raised before the window that is still open is
 one of the held items you were given, not a new one.
 
 **Type.**
@@ -86,8 +86,8 @@ its asks are optional.
 Once an item is answered, read on for its follow-through: when the session
 reports doing what the answer asked (merged, deployed, built, ran it), the
 item is done. A `peer` message reporting that the owner answered elsewhere is
-evidence too; quote it. Past `pending`, give `evidence` (a short quote with its time) and
-`status_at` (when it happened in the session).
+evidence too; quote it. Past `pending`, give `evidence` (a short quote with
+its time) and `status_at` (when it happened in the session).
 
 **Seen.** The seen mark is the time of the owner's latest words typed in this
 session's own window. An item raised at or before it has `seen: true`; after
@@ -98,9 +98,11 @@ back.
 ## The work's outcomes (lane `work`)
 
 One work item per outcome a person outside the session would recognize as
-meaningful. Its `title` says in plain words what is now true or possible; its
-`meaning` says in one line why it matters to the owner; identifiers (PR,
-milestone, commit, ticket, run numbers) go in `refs`, never alone in the title.
+meaningful. Its `title` is a sentence saying in plain words what is now true
+or possible, one outcome per title (two unrelated fixes are two outcomes, or
+one folded into the other's meaning); its `meaning` says in one line why it
+matters to the owner; identifiers (PR, milestone, commit, ticket, run numbers,
+initiative names) go in `refs`, never in the title.
 
 | identifier-only title (wrong) | outcome title (right) |
 |---|---|
@@ -111,9 +113,12 @@ milestone, commit, ticket, run numbers) go in `refs`, never alone in the title.
 Routine steps — a milestone landing, a review round, a merge, a CI run, a fix
 wave, a restarted watcher — are never items of their own: they move an
 outcome's status (`in progress`, `done`, or `stalled` with `waits_on`) or its
-meaning. Prefer updating a held work item to adding one. The dispatch states
-how many work items this update may add for the whole initiative; propose no
-more than that, folding smaller results into the outcome they serve.
+meaning. Prefer updating a held work item to adding one, and leave a done one
+alone unless the outcome itself changed (it broke, reopened, or grew into
+more). The dispatch states how many new work items your session may propose;
+propose no more than that, folding smaller results into the outcome they
+serve. `started` is when the outcome's work began, the window's `from` when
+that was earlier.
 
 ## What you return
 
