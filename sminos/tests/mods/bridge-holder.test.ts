@@ -606,6 +606,26 @@ describe('lane B: a main turn\'s origin (O12 M4a)', () => {
     expect(h.holderBodies('turn').map((b) => b.origin)).toEqual(['task', 'query'])
   })
 
+  test("a query's or a cron's own row, stamped `unclassified` (2.1.316, live), is its submission's: the turn keeps the submitted origin", async () => {
+    // Measured by live-observer-check.py on 2.1.316: prompt.submit says `sdk`
+    // (a stdin turn) or `scheduled-trigger` (a cron fire), and the same
+    // prompt's row at session.append says `unclassified`.
+    const h = await observing()
+    await arm(h, E1, 1, 1)
+    for (const [i, [kind, origin]] of ([['sdk', 'query'], ['scheduled-trigger', 'cron']] as const).entries()) {
+      const text = `[[${kind}]] go`
+      await h.submit(text, kind)
+      await h.append('prompt', { type: 'user', role: 'user', content: [{ type: 'text', text }] }, { origin: { kind: 'unclassified' } })
+      await h.turn(`t${i}`, undefined, text)
+      expect(await originAsked(h, `t${i}`)).toBe(origin)
+      await h.complete(`t${i}`)
+    }
+    // A row that names no origin and has no submission is still no evidence: unknown.
+    await h.append('prompt', { type: 'user', role: 'user', content: [{ type: 'text', text: 'unseen' }] }, { origin: { kind: 'unclassified' } })
+    await h.turn('t9', undefined, 'unseen')
+    expect(await originAsked(h, 't9')).toBe('unknown')
+  })
+
   /** One main request of a turn, let go by the host's proceed; the origin its `turn` named. */
   async function originAsked(h: H, turnId: string, index = 0) {
     const r = request(h, turnId, index)

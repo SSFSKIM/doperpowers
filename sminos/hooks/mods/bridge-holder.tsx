@@ -590,17 +590,20 @@ export function promptSubmitted(kind: string, text: string, turnId: string | und
 
 /**
  * A prompt's row in the main conversation, by its stamp: the same prompt as
- * one submitted with its kind and text and no row yet; else seen here
- * alone, which while a main turn runs is that turn's (a delivery into it,
- * or the prompt it started with, which identical text cannot tell apart),
- * and evidence for no turn.
+ * one submitted with its kind and text and no row yet; one whose stamp names
+ * no turn origin is the submission of its text whatever that submission's
+ * kind (2.1.316 stamps the row of an `sdk` or a `scheduled-trigger` prompt
+ * `unclassified`, measured live); else seen here alone, which while a main
+ * turn runs is that turn's (a delivery into it, or the prompt it started
+ * with, which identical text cannot tell apart), and evidence for no turn.
  */
 export function promptRow(kind: string, text: string, uuid: string) {
   const h = state.holder
   if (h.prompts.some((p) => p.uuid === uuid)) {
     return
   }
-  const submitted = h.prompts.findLast((p) => p.uuid === undefined && p.kind === kind && p.text === text)
+  const isUnmatched = (p: PromptSeen) => p.uuid === undefined && p.text === text
+  const submitted = h.prompts.findLast((p) => isUnmatched(p) && p.kind === kind) ?? (Object.hasOwn(ORIGINS, kind) ? undefined : h.prompts.findLast(isUnmatched))
   if (submitted !== undefined) {
     submitted.uuid = uuid
     return
