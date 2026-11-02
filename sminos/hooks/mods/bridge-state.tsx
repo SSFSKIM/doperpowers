@@ -264,6 +264,8 @@ export type HolderState = {
   owner: string
   /** This module wrote its mark over the kept state at its version (the claim): until then a keep is that claim. */
   isClaimed: boolean
+  /** The mark the reload last read on the kept state (none: nothing kept); absent if it read nothing. A later claim takes over only that one. */
+  reloadMark?: { mark: string | undefined }
   isRetired: boolean
   load?: Promise<void>
   /** The kept state restored (or none to restore: no gate): until then every main request waits. */

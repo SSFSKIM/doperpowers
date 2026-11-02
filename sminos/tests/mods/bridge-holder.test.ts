@@ -480,6 +480,73 @@ describe('lane B: what fails on the way to an acknowledgement or a restore (O12 
     await ru.done
   })
 
+  test('a reload whose read failed never takes the kept state from a later module: finding a mark it never read, it stops (keeps and acknowledges nothing)', async () => {
+    let isReadable = false
+    const kept = new Map<string, unknown>()
+    const h = harness({ env: MARKED, sessionState: kept, messages: [], stateFault: (op, key) => (op === 'get' && key === 'holder' && !isReadable ? 'fail' : undefined) })
+    await h.start()
+    h.children[0]!.write(bootstrap())
+    await flush(h)
+    h.children[0]!.write(helloMatch)
+    h.children[0]!.write(relayed(E1, { t: 'welcome', protocol: 1 }))
+    await flush(h)
+    // A later module loads and claims; this one's reads come back.
+    const later = { shape: 1, owner: 'a-later-module', observerStarted: true, armGenerations: 0, fences: [] }
+    h.writeState('holder', later)
+    isReadable = true
+    await h.fire(HOLDER_RETRY_MS)
+    await flush(h)
+    expect(kept.get('holder')).toEqual(later)
+    await arm(h, E1, 1, 1)
+    await h.fire(HOLDER_RETRY_MS)
+    expect(h.holderBodies('armed')).toEqual([])
+    expect(kept.get('holder')).toEqual(later)
+  })
+
+  test("a claim deferred past the C3 window takes over the module before it (the mark it read at its reload) and none of that module's fences: no pre-reload hold outlives the window", async () => {
+    const older = { shape: 1, owner: 'the-module-before', observerStarted: true, armGenerations: 1, fences: [{ epoch: E1, fence: 1, armGeneration: 1, leaseMs: LEASE }] }
+    const kept = new Map<string, unknown>([['holder', older]])
+    // The module before keeps writing while this one claims: every claim at the reload misses.
+    let misses = 3
+    const after: H = harness({
+      env: MARKED,
+      sessionState: kept,
+      messages: [{ type: 'user' }],
+      stateFault: (op, key) => {
+        if (op === 'set' && key === 'holder' && misses > 0) {
+          misses--
+          after.writeState('holder', { ...older })
+        }
+        return undefined
+      },
+    })
+    await after.start()
+    expect(after.logs.filter((l) => l.includes('holder') && l.includes(`${UNREAD_WINDOW} ms`))).toHaveLength(1)
+    await after.fire(UNREAD_WINDOW)
+    await flush(after)
+    expect(kept.get('holder')).toMatchObject({ observerStarted: true, fences: [] })
+    expect((kept.get('holder') as Kept).owner).not.toBe('the-module-before')
+    await after.turn('t1')
+    const r = request(after, 't1')
+    await flush(after)
+    expect(r.isMade()).toBe(true)
+    await r.done
+  })
+
+  test('the C3 window runs once: a kept state of another shape whose writes keep failing is not held again at its end', async () => {
+    const kept = new Map<string, unknown>([['holder', { shape: 2 }]])
+    const h = harness({ env: MARKED, sessionState: kept, messages: [{ type: 'user' }], stateFault: (op, key) => (op === 'set' && key === 'holder' ? 'fail' : undefined) })
+    await h.start()
+    await h.fire(UNREAD_WINDOW)
+    await flush(h)
+    expect(h.timers.filter((t) => t.kind === 'after' && t.ms === UNREAD_WINDOW && !t.cancelled)).toHaveLength(0)
+    await h.turn('t1')
+    const r = request(h, 't1')
+    await flush(h)
+    expect(r.isMade()).toBe(true)
+    await r.done
+  })
+
   test("a `turn` the child did not write withholds the arm's acknowledgement, which follows once the turn is written", async () => {
     let isTurnRefused = true
     const h = await observing({ holderAnswer: (b) => (b.kind === 'turn' && isTurnRefused ? 'fail' : undefined) })
@@ -535,7 +602,8 @@ describe('lane B: a main turn\'s origin (O12 M4a)', () => {
     ['task-notification', 'task'],
     ['peer', 'peer'],
     ['peer-send-message', 'peer'],
-    ['composer', 'unknown'],
+    ['composer', 'query'],
+    ['bridge', 'unknown'],
   ]
   for (const [kind, origin] of ORIGINS) {
     test(`a turn started by a ${kind} prompt is fenced as ${origin} at every main request, subagents' requests alongside asking nothing`, async () => {
@@ -728,7 +796,7 @@ describe("O16's gate fixture at the mod's fence (O12 M4a)", () => {
   type Frame = Record<string, unknown> & { t: string }
   type Row = { case: string; from?: 'observer' | 'host'; frame?: Frame; event?: string }
   const rows = GATE_FIXTURE.slice(1).map((l) => JSON.parse(l) as Row)
-  const KINDS: Record<string, string> = { query: 'sdk', cron: 'scheduled-trigger', task: 'task-notification', peer: 'peer', unknown: 'composer' }
+  const KINDS: Record<string, string> = { query: 'sdk', cron: 'scheduled-trigger', task: 'task-notification', peer: 'peer', unknown: 'bridge' }
   const gateFrame = (f: Frame) => (f.t === 'turn' ? { t: 'turn', fence: f.fence, origin: f.origin } : { t: 'armed', fence: f.fence })
 
   async function play(name: string) {
@@ -748,7 +816,7 @@ describe("O16's gate fixture at the mod's fence (O12 M4a)", () => {
     let step: (ReturnType<typeof request> & { release: () => void }) | undefined
     const begin = async (origin: unknown) => {
       const text = `${name}: the turn`
-      await h.submit(text, KINDS[String(origin)] ?? 'composer')
+      await h.submit(text, KINDS[String(origin)] ?? 'bridge')
       await h.turn('t1', undefined, text)
       const hold = deferred()
       step = { ...request(h, 't1', 0, undefined, hold.p), release: hold.release }

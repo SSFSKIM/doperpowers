@@ -67,8 +67,12 @@ const TURNS_KEPT = 16
 /** The longest lease a timer can hold: `$.clock.after` past 2^31 - 1 ms would fire at once. */
 const LEASE_MAX_MS = 2_147_483_647 - HOLDER_MARGIN_MS
 const HOLDER = { plugin: 'sminos', key: 'holder' } as const
-/** The engine's prompt origins (PromptOrigin) as OX10's turn origins; any other is `unknown`. */
-const ORIGINS: Record<string, TurnOrigin> = { sdk: 'query', 'scheduled-trigger': 'cron', 'task-notification': 'task', peer: 'peer', 'peer-send-message': 'peer' }
+/**
+ * The engine's prompt origins (PromptOrigin) as OX10's turn origins; any
+ * other is `unknown`. `composer` is what the engine stamps on a prompt MAWS's
+ * host writes on stdin (C4): the controller's own prompt, a query.
+ */
+const ORIGINS: Record<string, TurnOrigin> = { composer: 'query', sdk: 'query', 'scheduled-trigger': 'cron', 'task-notification': 'task', peer: 'peer', 'peer-send-message': 'peer' }
 
 export const fenceKey = (epoch: string, fence: number) => `${epoch}#${fence}`
 const isCount = (v: unknown, least = 0): v is number => typeof v === 'number' && Number.isInteger(v) && v >= least
@@ -115,7 +119,7 @@ async function keepNow($: EngineInterface, h: HolderState): Promise<boolean> {
     return false
   }
   if (!h.isClaimed) {
-    const missed = await claimKept($, h)
+    const missed = await claimKept($, h, false)
     if (missed !== undefined) {
       log(`the fences are not kept: ${missed}`)
     }
@@ -175,31 +179,49 @@ async function restore($: EngineInterface, h: HolderState): Promise<void> {
   if (lane !== 'B' || state.laneVerdict === 'mismatch') {
     return
   }
-  const missed = await claimKept($, h)
+  const missed = await claimKept($, h, true)
   if (missed !== undefined) {
     holdUnread($, h, missed)
   }
 }
 
+/** The mark on a kept state: the module instance that wrote it, if it names one. */
+const markOf = (value: unknown) => (isRecord(value) && typeof value.owner === 'string' ? value.owner : undefined)
+
 /**
  * Claims the kept state: the very snapshot read, at its version
- * (`ifVersion`), written over with this module's own fences and the kept ones
- * together, and only then are the kept ones held. A module before this one
- * that keeps an arm between the read and the claim makes the claim miss, and
- * the next read has that arm. A kept state of a shape this module does not
- * read is held as the production lease's window and written over. Undefined
- * once claimed; else why not.
+ * (`ifVersion`), written over with this module's own fences, and at the
+ * reload (`isReload`) the kept ones together, which only then are held. A
+ * module before this one that keeps an arm between the read and the claim
+ * makes the claim miss, and the next read has that arm. A kept state of a
+ * shape this module does not read is held, at the reload, as the production
+ * lease's window (C3) and written over. Undefined once claimed; else why not.
+ *
+ * A claim made later (the reload's missed) holds nothing kept: the window
+ * already outlived every lease from before the reload, and it runs once. It
+ * takes the kept state only from the module before this one, by the mark
+ * the reload read (none, if nothing was kept); any other mark is a later
+ * module's, or one this module cannot place, and it retires, as when a
+ * later module's mark turns up after a claim.
  */
-async function claimKept($: EngineInterface, h: HolderState): Promise<string | undefined> {
+async function claimKept($: EngineInterface, h: HolderState, isReload: boolean): Promise<string | undefined> {
   try {
-    for (let tries = 0; tries < 3 && h === state.holder; tries++) {
+    for (let tries = 0; tries < 3 && !h.isRetired && h === state.holder; tries++) {
       const read = await $.state.get(HOLDER)
+      const mark = markOf(read.value)
+      if (isReload) {
+        h.reloadMark = { mark }
+      } else if (read.value !== undefined && (h.reloadMark === undefined || mark !== h.reloadMark.mark)) {
+        h.isRetired = true
+        log('a later module keeps the fences now (or one this module cannot place): this one stops')
+        return 'another module keeps them'
+      }
       const kept = read.value === undefined ? undefined : isKept(read.value) ? read.value : null
-      if (kept === null) {
+      if (kept === null && isReload) {
         holdUnread($, h, 'the kept state is not one this module reads')
       }
       const own = snapshot(h)
-      const adopted = (kept?.fences ?? []).filter((f) => !h.fences.has(fenceKey(f.epoch, f.fence)))
+      const adopted = isReload ? (kept?.fences ?? []).filter((f) => !h.fences.has(fenceKey(f.epoch, f.fence))) : []
       const claim: HolderKept = {
         ...own,
         observerStarted: own.observerStarted || kept?.observerStarted === true,
@@ -220,7 +242,7 @@ async function claimKept($: EngineInterface, h: HolderState): Promise<string | u
       }
       return undefined
     }
-    return 'the kept state kept changing under the claim'
+    return h.isRetired ? 'another module keeps them' : 'the kept state kept changing under the claim'
   } catch (error) {
     return `the kept state is not read: ${message(error)}`
   }
