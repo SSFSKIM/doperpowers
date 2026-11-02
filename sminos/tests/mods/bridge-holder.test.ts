@@ -86,7 +86,8 @@ describe('lane B: the observer and its relay (O12 M4a)', () => {
     expect(h.holderPosts).toEqual([])
     h.children[0]!.write(bootstrap())
     await flush(h)
-    expect(h.holderPosts.map((p) => [p.socketPath, p.nonce, p.body])).toEqual([[ROUTE, `n-${GEN}`, { kind: 'ready', generation: GEN }]])
+    // A fresh process (its launch minted by this module) asks the child to activate receipts with it (O12 M4b).
+    expect(h.holderPosts.map((p) => [p.socketPath, p.nonce, p.body])).toEqual([[ROUTE, `n-${GEN}`, { kind: 'ready', generation: GEN, launch: String(h.sessionState.get('launch')), retained: [] }]])
     expect(h.holderPosts[0]!.kept).toMatchObject({ shape: 1, observerStarted: true, fences: [] })
   })
 
@@ -322,7 +323,7 @@ describe('lane B: the fence (O12 M4a)', () => {
     const G2 = 'fedcba9876543210'
     h.children[1]!.write(bootstrap(G2, '/tmp/s/bridge/h100.sock', 100))
     await flush(h)
-    expect(h.holderBodies('ready').at(-1)).toEqual({ kind: 'ready', generation: G2 })
+    expect(h.holderBodies('ready').at(-1)).toEqual({ kind: 'ready', generation: G2, launch: String(h.sessionState.get('launch')), retained: [] })
     expect(h.holderPosts.at(-1)!.kept).toMatchObject({ observerStarted: true, fences: [{ epoch: E1, fence: 1 }] })
     await h.turn('t1')
     const r = request(h, 't1')
@@ -355,7 +356,7 @@ describe('lane B: the fence (O12 M4a)', () => {
     h.children[1]!.write(bootstrap(G2, '/tmp/s/bridge/h101.sock', 101))
     h.children[1]!.write(hello(NEW, `/tmp/s/bridge/${NEW}.sock`))
     await flush(h)
-    expect(h.holderBodies('ready').at(-1)).toEqual({ kind: 'ready', generation: G2 })
+    expect(h.holderBodies('ready').at(-1)).toEqual({ kind: 'ready', generation: G2, launch: String(h.sessionState.get('launch')), retained: [] })
     await h.turn('t2')
     const r = request(h, 't2')
     await flush(h)

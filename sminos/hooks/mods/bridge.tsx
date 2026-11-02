@@ -34,7 +34,9 @@ import { endOrphanedSideQuestions, sideQuestion } from './bridge-btw'
 import { askTurnEnded, endOrphanedAsks, forkQuestion, noteMainResponse } from './bridge-ask'
 import { engineError, forNotes, notifiedStops, stopAgent, tellAgent } from './bridge-agent-ops'
 import { acceptMedia, claimMedia, mediaLoaded, mediaPassedOn, mediaTurnEnded, mediaTurnStarted, observeMediaResult } from './bridge-media'
-import { abandonedStep, admission, enterStep, holderLoaded, isHolderLoaded, leaveStep, mainTurnOver, mainTurnStarted, onHolderLine, promptRow, promptSettled, promptSubmitted, stoppedStep, waitAtFence } from './bridge-holder'
+import { abandonedStep, admission, enterStep, holderLoaded, isHolderLoaded, leaveStep, mainTurnOver, mainTurnStarted, onHolderLine, promptRow, promptSettled, promptSubmitted, receiptsAdmitted, receiptsStopped, stoppedStep, waitAtFence } from './bridge-holder'
+import { receiptRow, receiptsCarried } from './bridge-receipts'
+import type { ReceiptMark } from './bridge-state'
 
 export { OFF_LINE, ON_LINE } from './bridge-place'
 export { BLOCK_TAIL, INTERRUPT_HOLD_MS, TEXT_CAP, WAKE_LINE, capped, resetBridge } from './bridge-state'
@@ -337,14 +339,17 @@ async function takeLaunch($: EngineInterface): Promise<void> {
   if (state.launch !== undefined) {
     return
   }
-  const kept = await $.state.get(LAUNCH).then(
-    (read) => read.value,
+  const read = await $.state.get(LAUNCH).then(
+    (r) => ({ kept: r.value }),
     () => undefined,
   )
-  if (typeof kept === 'string' && LAUNCH_RE.test(kept)) {
-    state.launch = kept
+  if (typeof read?.kept === 'string' && LAUNCH_RE.test(read.kept)) {
+    state.launch = read.kept
+    state.launchFrom = 'kept'
     return
   }
+  // A process whose kept launch cannot be read is taken as one that ran before this module (O12 M4b).
+  state.launchFrom = read !== undefined && read.kept === undefined ? 'new' : 'unread'
   state.launch = mintLaunch()
   await $.state.set(LAUNCH, state.launch).catch((error: unknown) => $.ui.log(`bridge: the launch is not kept for a reload: ${message(error)}`, { to: 'debug' }))
 }
@@ -2135,14 +2140,29 @@ export function registerBridge(on: On) {
       // A request goes only once every fence the gate armed lets it go (its
       // `proceed`, its disarm, its lease and margin run out), and the last of
       // these reads has no await between it and `next`; a `stop` makes none.
+      // An observer's request first learns which receipts it carries (O12
+      // M4b, bridge-receipts.tsx), then reads the fences again: its admission
+      // reports them, decided with no await before `next`; a `stop` keeps
+      // them for their release.
       let held: TurnStepStream | undefined
       if (fenced !== undefined && synthetic === undefined) {
+        let carried: ReceiptMark[] | undefined
         for (;;) {
           const verdict = admission(fenced)
+          if (verdict !== 'wait' && carried === undefined && isObserver()) {
+            carried = await receiptsCarried($, fenced, e.index)
+            continue
+          }
           if (verdict === 'clear') {
+            if (carried !== undefined && carried.length > 0) {
+              receiptsAdmitted($, carried)
+            }
             break
           }
           if (verdict !== 'wait') {
+            if (carried !== undefined && carried.length > 0) {
+              receiptsStopped($, carried)
+            }
             held = stoppedStep(e, verdict.stop)
             break
           }
@@ -2151,6 +2171,7 @@ export function registerBridge(on: On) {
             break
           }
           await waitAtFence($, fenced, next.signal)
+          carried = undefined
         }
       }
       // The model chosen through the bridge is the main loop's: a subagent runs
@@ -2463,7 +2484,14 @@ export function registerBridge(on: On) {
     if (e.door !== 'queue') {
       await forNotes($, notifiedStops(e.message))
     }
+    // A delivery's receipt marker (O12 M4b), ordered as the row goes in,
+    // before it is stored: a read of the conversation that finds it then
+    // never takes it for an older row.
+    const unseen = agentId === null && isObserver() ? receiptRow(e.door, e.message.content, e.uuid) : undefined
     const stored = await next(e)
+    if (stored.deny !== undefined) {
+      unseen?.()
+    }
     // A desk upload's Read: its result moves the attachment on (bridge-media.tsx).
     observeMediaResult($, e.door, e.message, agentId)
     if (isLive && stored.deny === undefined) {

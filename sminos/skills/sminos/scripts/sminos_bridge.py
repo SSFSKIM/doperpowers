@@ -1727,7 +1727,8 @@ def serve(session, lane=None, launch=None):
     holder = None
     if is_lane_marked() and lane != "mismatch" and H.gate_path():
         try:
-            holder = H.Holder(session, H.gate_path(), os.path.join(d, "h%d.sock" % os.getpid()), write_line).start()
+            holder = H.Holder(session, H.gate_path(), os.path.join(d, "h%d.sock" % os.getpid()), write_line,
+                              launch=launch or None).start()
         except OSError as err:
             sys.stderr.write("sminos bridge: holder: no route, so no observer: %s\n" % err)
     if verdict is not None:

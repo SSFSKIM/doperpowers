@@ -379,6 +379,10 @@ run_suites() {
   if python3 -B "$SCRIPT_DIR/test_holder.py"; then
     pass "the bridge's gate client: hello, heartbeats, reconnects, acks in arm order, the relay (test_holder.py)"
   else fail "the bridge's gate client: hello, heartbeats, reconnects, acks in arm order, the relay (test_holder.py)"; fi
+
+  if python3 -B "$SCRIPT_DIR/test_holder_receipts.py"; then
+    pass "the bridge child's receipts: activation before the hello, the M4a upgrade, durable admit and release reports (test_holder_receipts.py)"
+  else fail "the bridge child's receipts: activation before the hello, the M4a upgrade, durable admit and release reports (test_holder_receipts.py)"; fi
   # Deliveries to a gate process (O12 M4b): the process mode, receipts before the inbox write, settlement at admission.
   if python3 -B "$SCRIPT_DIR/test_holder_deliveries.py"; then
     pass "a gate process's deliveries: its mode, receipts, admission, stop, retries, restarts (test_holder_deliveries.py)"

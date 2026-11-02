@@ -117,8 +117,16 @@ export type ModeKept = { mode: string; at: number; from: string }
  * moves with every arm of it) and that arm's lease; the module that loads
  * after a reload holds each before any model request passes, for its lease
  * plus the heartbeat margin from the load. `owner` is the module instance
- * that wrote it last: an older instance that finds another's stops writing.
- * Only sminos writes or reads it.
+ * that wrote it last, for diagnosis.
+ *
+ * `receipts` (O12 M4b; hooks/mods/bridge-receipts.tsx) is written by every
+ * module that knows receipts, so its absence beside `observerStarted` says an
+ * M4a observer's module kept the state: that process stays `legacy` for
+ * settlement. `reports` are the admission and release reports the child has
+ * not durably acknowledged, each naming the session it was made in, replayed
+ * until it has; `stopped` the receipts whose request the gate's `stop`
+ * ended, released for a retry in this launch once no fence holds. Only
+ * sminos writes or reads it.
  */
 export type HolderKept = {
   shape: 1
@@ -126,7 +134,16 @@ export type HolderKept = {
   observerStarted: boolean
   armGenerations: number
   fences: { epoch: string; fence: number; armGeneration: number; leaseMs: number }[]
+  receipts?: { reports: ReceiptReport[]; stopped: StoppedReceipt[] }
 }
+
+/** A report to the bridge child's route (POST /holder `admit` or `release`), as the mod keeps it until acknowledged. */
+export type ReceiptReport =
+  | { kind: 'admit'; session: string; ids: string[] }
+  | { kind: 'release'; session: string; items: { id: string; attempt: number; present: boolean }[] }
+
+/** A receipt whose request the gate's `stop` ended: its id, the attempt its row named, the session it was delivered to. */
+export type StoppedReceipt = { session: string; id: string; attempt: number }
 
 declare module 'claude-code' {
   interface PluginState {
