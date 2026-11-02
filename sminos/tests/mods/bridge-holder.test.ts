@@ -383,53 +383,10 @@ describe('lane B: the fence (O12 M4a)', () => {
     expect(kept.get('holder')).toMatchObject({ observerStarted: true, fences: [] })
   })
 
-  test('a module a later one replaced (its mark on the kept state another\'s) keeps and acknowledges nothing more', async () => {
-    const h = await observing()
-    await arm(h, E1, 1, 1)
-    const kept = h.sessionState.get('holder') as Record<string, unknown>
-    h.sessionState.set('holder', { ...kept, owner: 'a-later-module' })
-    await arm(h, E1, 2, 1)
-    expect(h.holderBodies('armed').map((b) => b.arm)).toEqual([1])
-    expect(h.sessionState.get('holder')).toMatchObject({ owner: 'a-later-module' })
-  })
 })
 
 describe('lane B: what fails on the way to an acknowledgement or a restore (O12 M4a)', () => {
   type Kept = { owner: string; armGenerations: number; fences: { epoch: string; fence: number; armGeneration: number; leaseMs: number }[] }
-
-  test('a reload claims the very state it restored: a fence the module before it kept meanwhile is held too, and the kept state is the new one\'s', async () => {
-    const kept = new Map<string, unknown>()
-    const before = await observing({ sessionState: kept })
-    await arm(before, E1, 1, 1)
-    const owner = (kept.get('holder') as Kept).owner
-    // Between the new module's read and its first write, the one before it
-    // keeps arm 2 (fence 2), which it then acknowledges.
-    let isRaced = false
-    const after: H = harness({
-      env: MARKED,
-      sessionState: kept,
-      messages: [{ type: 'user' }],
-      stateFault: (op, key) => {
-        if (op === 'set' && key === 'holder' && !isRaced) {
-          isRaced = true
-          const k = kept.get('holder') as Kept
-          after.writeState('holder', { ...k, armGenerations: 2, fences: [...k.fences, { epoch: E1, fence: 2, armGeneration: 2, leaseMs: LEASE }] })
-        }
-        return undefined
-      },
-    })
-    await after.turn('t1')
-    const r = request(after, 't1')
-    await flush(after)
-    expect(isRaced).toBe(true)
-    expect(r.isMade()).toBe(false)
-    expect(kept.get('holder')).toMatchObject({ fences: [{ epoch: E1, fence: 1 }, { epoch: E1, fence: 2 }] })
-    expect((kept.get('holder') as Kept).owner).not.toBe(owner)
-    expect(after.timers.filter((t) => t.kind === 'after' && t.ms === FALLBACK && !t.cancelled)).toHaveLength(2)
-    await after.fire(FALLBACK)
-    expect(r.isMade()).toBe(true)
-    await r.done
-  })
 
   /** C3: a kept state this module cannot read is held for one production lease and margin from the reload. */
   const UNREAD_WINDOW = 10_000 + HOLDER_MARGIN_MS
@@ -480,55 +437,21 @@ describe('lane B: what fails on the way to an acknowledgement or a restore (O12 
     await ru.done
   })
 
-  test('a reload whose read failed never takes the kept state from a later module: finding a mark it never read, it stops (keeps and acknowledges nothing)', async () => {
+  test("a reload whose read failed holds the C3 window alone: once reads come back, this module's own state is kept, and no fence from before the reload is ever held again", async () => {
+    const before = { shape: 1, owner: 'the-module-before', observerStarted: true, armGenerations: 1, fences: [{ epoch: E1, fence: 1, armGeneration: 1, leaseMs: LEASE }] }
+    const kept = new Map<string, unknown>([['holder', before]])
     let isReadable = false
-    const kept = new Map<string, unknown>()
-    const h = harness({ env: MARKED, sessionState: kept, messages: [], stateFault: (op, key) => (op === 'get' && key === 'holder' && !isReadable ? 'fail' : undefined) })
+    const h = harness({ env: MARKED, sessionState: kept, messages: [{ type: 'user' }], stateFault: (op, key) => (op === 'get' && key === 'holder' && !isReadable ? 'fail' : undefined) })
     await h.start()
-    h.children[0]!.write(bootstrap())
-    await flush(h)
-    h.children[0]!.write(helloMatch)
-    h.children[0]!.write(relayed(E1, { t: 'welcome', protocol: 1 }))
-    await flush(h)
-    // A later module loads and claims; this one's reads come back.
-    const later = { shape: 1, owner: 'a-later-module', observerStarted: true, armGenerations: 0, fences: [] }
-    h.writeState('holder', later)
     isReadable = true
-    await h.fire(HOLDER_RETRY_MS)
+    await h.fire(UNREAD_WINDOW)
     await flush(h)
-    expect(kept.get('holder')).toEqual(later)
-    await arm(h, E1, 1, 1)
-    await h.fire(HOLDER_RETRY_MS)
-    expect(h.holderBodies('armed')).toEqual([])
-    expect(kept.get('holder')).toEqual(later)
-  })
-
-  test("a claim deferred past the C3 window takes over the module before it (the mark it read at its reload) and none of that module's fences: no pre-reload hold outlives the window", async () => {
-    const older = { shape: 1, owner: 'the-module-before', observerStarted: true, armGenerations: 1, fences: [{ epoch: E1, fence: 1, armGeneration: 1, leaseMs: LEASE }] }
-    const kept = new Map<string, unknown>([['holder', older]])
-    // The module before keeps writing while this one claims: every claim at the reload misses.
-    let misses = 3
-    const after: H = harness({
-      env: MARKED,
-      sessionState: kept,
-      messages: [{ type: 'user' }],
-      stateFault: (op, key) => {
-        if (op === 'set' && key === 'holder' && misses > 0) {
-          misses--
-          after.writeState('holder', { ...older })
-        }
-        return undefined
-      },
-    })
-    await after.start()
-    expect(after.logs.filter((l) => l.includes('holder') && l.includes(`${UNREAD_WINDOW} ms`))).toHaveLength(1)
-    await after.fire(UNREAD_WINDOW)
-    await flush(after)
     expect(kept.get('holder')).toMatchObject({ observerStarted: true, fences: [] })
     expect((kept.get('holder') as Kept).owner).not.toBe('the-module-before')
-    await after.turn('t1')
-    const r = request(after, 't1')
-    await flush(after)
+    expect(h.timers.filter((t) => t.kind === 'after' && !t.cancelled && (t.ms === FALLBACK || t.ms === UNREAD_WINDOW))).toHaveLength(0)
+    await h.turn('t1')
+    const r = request(h, 't1')
+    await flush(h)
     expect(r.isMade()).toBe(true)
     await r.done
   })

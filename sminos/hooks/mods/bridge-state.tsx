@@ -260,13 +260,8 @@ export type FencedStep = { turnId: string; turns: Map<string, Promise<HolderAske
 export type PromptSeen = { kind: string; text: string; uuid?: string; seq: number; isTaken: boolean }
 /** The observer's state (bridge-holder.tsx): what a module keeps of the gate, reloaded from `$.state`. */
 export type HolderState = {
-  /** This module instance's mark on what it keeps: a later instance (a reload) writes its own, and an older one that finds it stops keeping. */
+  /** This module instance's mark on what it keeps, for diagnosis: a reload's module writes its own. */
   owner: string
-  /** This module wrote its mark over the kept state at its version (the claim): until then a keep is that claim. */
-  isClaimed: boolean
-  /** The mark the reload last read on the kept state (none: nothing kept); absent if it read nothing. A later claim takes over only that one. */
-  reloadMark?: { mark: string | undefined }
-  isRetired: boolean
   load?: Promise<void>
   /** The kept state restored (or none to restore: no gate): until then every main request waits. */
   isLoaded: boolean
@@ -566,8 +561,6 @@ const freshHolder = (): HolderState => {
   const loaded = new Promise<void>((resolve) => (markLoaded = resolve))
   return {
     owner: Array.from(crypto.getRandomValues(new Uint8Array(8)), (b) => b.toString(16).padStart(2, '0')).join(''),
-    isClaimed: false,
-    isRetired: false,
     isLoaded: false,
     loaded,
     markLoaded,
