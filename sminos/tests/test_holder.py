@@ -400,6 +400,19 @@ class Connection(Case):
         self.assertGreaterEqual(time.monotonic() - first.frames[0][0], 1.4, "the welcome's wait (1.5 s here)")
         self.assertEqual(self.host.conn(1).wait_frames(1)[0]["t"], "hello")
 
+    def test_a_host_line_past_the_bound_ends_the_connection(self):
+        # Its newline arrives in the chunk that crosses LINE_MAX: the
+        # completed line is measured too, never relayed.
+        child = self.child()
+        child.ready()
+        conn, epoch = self.welcomed(child)
+        line = json.dumps({"t": "disarm", "fence": 1, "pad": "x" * 66560}).encode() + b"\n"
+        self.assertGreater(len(line), sminos_holder.LINE_MAX + 1000)
+        conn.sock.sendall(line)
+        self.assertTrue(wait_for(lambda: conn.closed), "the connection ends")
+        self.assertEqual(self.host.conn(1).wait_frames(1)[0]["t"], "hello")
+        self.assertEqual([ln for ln in child.holder_lines() if (ln.get("frame") or {}).get("t") == "disarm"], [])
+
     def test_an_invalid_welcome_is_no_welcome(self):
         child = self.child()
         child.ready()
@@ -684,30 +697,69 @@ class Independence(Case):
         os.close(fd)
         self.assertIsNotNone(child.wait_line(lambda ln: ln.get("op") == "hello"))
 
-    def orphan(self):
-        """A child under a stand-in claude, its ordinary startup held (its
-        transcript a FIFO nobody writes, so its watchdog never starts):
-        (the stand-in, its bootstrap, the file whose creation ends it)."""
+    def hold_seed(self):
+        """The session's transcript a FIFO nobody writes: read_seed blocks at
+        its open, before the ordinary hello (and the watchdog it starts)."""
         projects = os.path.join(self.home, "cc", "projects", "p")
         os.makedirs(projects)
-        os.mkfifo(os.path.join(projects, SESSION + ".jsonl"))
+        fifo = os.path.join(projects, SESSION + ".jsonl")
+        os.mkfifo(fifo)
+        return fifo
+
+    def orphan(self, args=("--lane", "match"), env=None):
+        """A child under a stand-in claude, its ordinary startup held:
+        (the stand-in, its bootstrap, the file whose creation ends it)."""
+        self.hold_seed()
         go = os.path.join(self.home, "go")
         err = open(os.path.join(self.home, "child.err"), "w")
         parent = subprocess.Popen(
             [sys.executable, "-c", "import os, subprocess, sys, time\n"
              "subprocess.Popen(sys.argv[2:])\n"
              "while not os.path.exists(sys.argv[1]): time.sleep(0.02)\n",
-             go, SMINOS, "bridge", "--session", SESSION, "--lane", "match"],
+             go, SMINOS, "bridge", "--session", SESSION, *args],
             stdout=subprocess.PIPE, stderr=err,
             env={**os.environ, "HOME": os.path.join(self.home, "home"), "SMINOS_HOME": os.path.join(self.home, "s"),
                  "CLAUDE_CONFIG_DIR": os.path.join(self.home, "cc"), "MAWS_LANE": "B", "MAWS_HOLDER_SOCKET": self.gate,
-                 "SMINOS_HOLDER_HEARTBEAT": str(HEARTBEAT), "SMINOS_HOLDER_BACKOFF": str(BACKOFF)})
+                 "SMINOS_HOLDER_HEARTBEAT": str(HEARTBEAT), "SMINOS_HOLDER_BACKOFF": str(BACKOFF), **(env or {})})
         err.close()
         boot = json.loads(parent.stdout.readline())["bootstrap"]
         self.assertEqual(boot["pid"], parent.pid)
         self.addCleanup(parent.stdout.close)
         self.addCleanup(lambda: _kill(boot["childPid"]))
         return parent, boot, go
+
+    def test_a_sticky_match_connects_while_the_kept_state_read_is_held(self):
+        # The kept state is a FIFO nobody writes: Bridge() blocks reading it.
+        # The module's verdict (`--lane match`) reaches the gate at once.
+        d = os.path.join(self.home, "s", "bridge")
+        os.makedirs(d, mode=0o700)
+        os.mkfifo(os.path.join(d, SESSION + ".json"))
+        child = self.child()
+        child.ready()
+        conn, epoch = self.welcomed(child)
+        self.assertEqual(conn.seen()[0]["childPid"], child.proc.pid)
+        self.beats_hold(conn, 1.0)
+        self.assertFalse([ln for ln in child.lines if ln.get("op") == "hello"], "the ordinary hello is still held")
+
+    def test_an_unresolved_verdict_connects_once_resolved_while_the_seed_read_is_held(self):
+        # No `--lane`: the session's registry record is missing at first, so
+        # the verdict is unresolved; it arrives while read_seed is blocked,
+        # and the retries (on their own thread) resolve `match` and connect.
+        parent, boot, _go = self.orphan(args=(), env={"SMNS_MEMBER": str(os.getpid())})
+        h = {sminos_holder.NONCE_HEADER: boot["nonce"]}
+        status, answer = post(boot["socket"], "/holder", {"kind": "ready", "generation": boot["generation"]}, h)
+        self.assertEqual((status, answer["lane"]), (200, "unresolved"))
+        time.sleep(QUIET)
+        self.assertEqual(self.host.conns, [])
+        sessions = os.path.join(self.home, "cc", "sessions")
+        os.makedirs(sessions)
+        with open(os.path.join(sessions, "%d.json" % parent.pid), "w") as f:
+            json.dump({"sessionId": SESSION, "pid": parent.pid}, f)
+        conn = self.host.conn(0)
+        self.assertEqual(conn.wait_frames(1)[0], {"t": "hello", "protocol": 1, "session": SESSION, "pid": parent.pid,
+                                                  "childPid": boot["childPid"]})
+        conn.send({"t": "welcome", "protocol": 1})
+        self.assertTrue(wait_for(lambda: len(conn.times("hb")) >= 2))
 
     def test_an_orphaned_child_leaves_the_gate_even_while_its_startup_is_held(self):
         # claude dies while the child's ordinary startup is held: the gate

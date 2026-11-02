@@ -500,6 +500,63 @@ def lane_verdict(session, session_pid):
     return "mismatch"
 
 
+class LaneVerdict:
+    """The marked session's verdict, resolved once on a thread of its own
+    from the child's start: a sticky one its module holds (`--lane`) at
+    once, else lane_verdict's, an `unresolved` one retried every
+    LANE_RETRY_S for LANE_RETRY_FOR_S, then every LANE_RETRY_LATER_S, until
+    it resolves. Nothing of the child's ordinary startup (its kept state,
+    the seed, the hello) stands before it, so the gate client (O12 M4a)
+    learns `match` whatever that startup waits on. Each listener hears the
+    verdict once known and at its one change, from `unresolved`."""
+
+    def __init__(self, session, session_pid, given=None):
+        self.session = session
+        self.session_pid = session_pid
+        self.value = given if given in ("match", "mismatch") else None
+        self.cond = threading.Condition()
+        self.listeners = []
+
+    def listen(self, fn):
+        with self.cond:
+            self.listeners.append(fn)
+            value = self.value
+        if value is not None:
+            fn(value)
+
+    def _set(self, value):
+        with self.cond:
+            if value == self.value:
+                return
+            self.value = value
+            listeners = list(self.listeners)
+            self.cond.notify_all()
+        for fn in listeners:
+            fn(value)
+
+    def run(self, stop):
+        started = time.monotonic()
+        while self.value in (None, "unresolved"):
+            self._set(lane_verdict(self.session, self.session_pid))
+            if self.value != "unresolved":
+                return
+            wait = LANE_RETRY_S if time.monotonic() - started < LANE_RETRY_FOR_S else LANE_RETRY_LATER_S
+            if stop.wait(wait):
+                return
+
+    def first(self):
+        """The verdict once its first observation is made."""
+        with self.cond:
+            self.cond.wait_for(lambda: self.value is not None)
+            return self.value
+
+    def resolved(self, seconds):
+        """The verdict once it is match or mismatch, or None after `seconds`."""
+        with self.cond:
+            self.cond.wait_for(lambda: self.value in ("match", "mismatch"), seconds)
+            return self.value if self.value in ("match", "mismatch") else None
+
+
 def process_started(pid):
     """When a live process started, in epoch seconds (ps's whole second),
     or None when that cannot be read."""
@@ -847,29 +904,30 @@ class Bridge:
         marked one not yet known otherwise): no client decides for it."""
         return self.lane is not None and self.lane != "mismatch"
 
-    def settle_lane(self, session_pid):
-        """Retries an unresolved verdict until it resolves, saying it to the
-        mod on a line of its own; and relays the launch's lane to the
-        session's record until the record holds it (a record the hook writes
-        after this child's hello). Never a lane for an unresolved verdict."""
+    def settle_lane(self, verdict):
+        """Says an unresolved verdict to the mod on a line of its own once
+        its resolver (LaneVerdict) resolves it; and relays the launch's lane
+        to the session's record until the record holds it (a record the hook
+        writes after this child's hello): A for an unmarked session (no
+        verdict). Never a lane for an unresolved verdict."""
         started = time.monotonic()
         relayed = False
         while True:
-            if self.lane == "unresolved":
-                verdict = lane_verdict(self.session, session_pid)
-                if verdict != "unresolved":
-                    self.lane = verdict
-                    if self.holder is not None:
-                        self.holder.set_lane(verdict)
-                    try:
-                        self.emit({"op": "lane", "lane": verdict})
-                    except OSError:
-                        return
-            if self.lane != "unresolved":
-                relayed = relayed or relay_controller(self.session, "B" if self.lane == "match" else "A")
-                if relayed:
-                    return
             wait = LANE_RETRY_S if time.monotonic() - started < LANE_RETRY_FOR_S else LANE_RETRY_LATER_S
+            if self.lane == "unresolved":
+                resolved = verdict.resolved(wait)
+                if self.closing.is_set():
+                    return
+                if resolved is None:
+                    continue
+                self.lane = resolved
+                try:
+                    self.emit({"op": "lane", "lane": resolved})
+                except OSError:
+                    return
+            relayed = relayed or relay_controller(self.session, "B" if self.lane == "match" else "A")
+            if relayed:
+                return
             if self.closing.wait(wait):
                 return
 
@@ -1656,6 +1714,11 @@ def serve(session, lane=None, launch=None):
     d = bridge_dir()
     os.makedirs(d, mode=0o700, exist_ok=True)
     os.chmod(d, 0o700)
+    parent = os.getppid()
+    # A marked session's verdict is resolved from here on, on its own
+    # thread, apart from the startup below (LaneVerdict).
+    stop = threading.Event()
+    verdict = LaneVerdict(session, parent, lane) if is_lane_marked() else None
     # The observer first (O12 M4a): its route answers and its bootstrap is
     # said before any of the child's ordinary startup, which it never waits
     # on. Not for a session its module already knows is not MAWS's own.
@@ -1667,6 +1730,10 @@ def serve(session, lane=None, launch=None):
             holder = H.Holder(session, H.gate_path(), os.path.join(d, "h%d.sock" % os.getpid()), write_line).start()
         except OSError as err:
             sys.stderr.write("sminos bridge: holder: no route, so no observer: %s\n" % err)
+    if verdict is not None:
+        if holder is not None:
+            verdict.listen(holder.set_lane)
+        threading.Thread(target=verdict.run, args=(stop,), daemon=True).start()
     tmp = os.path.join(d, ".%s.%d.sock" % (session[:8], os.getpid()))
     try:
         os.unlink(tmp)
@@ -1683,17 +1750,14 @@ def serve(session, lane=None, launch=None):
     os.replace(tmp, path)
     bridge = server.bridge = Bridge(session, path)
     bridge.child = [mine, os.getpid()]
-    parent = os.getppid()
     bridge.presence = presence_path(parent)
     bridge.launch = launch or None
     if is_lane_marked():
         # The process's verdict, when its module holds one (`--lane`): a
         # replacement child after the engine host exited would find the
         # engine re-parented, and its own check would say mismatch.
-        bridge.lane = lane if lane in ("match", "mismatch") else lane_verdict(session, parent)
-    if holder is not None:
-        bridge.holder = holder
-        holder.set_lane(bridge.lane)
+        bridge.lane = verdict.first()
+    bridge.holder = holder
 
     def watchdog():
         while not bridge.closing.wait(WATCHDOG_EVERY):
@@ -1721,7 +1785,7 @@ def serve(session, lane=None, launch=None):
                      **({"lane": bridge.lane} if bridge.lane is not None else {}),
                      **({"launch": bridge.launch} if bridge.launch is not None else {})})
         threading.Thread(target=watchdog, daemon=True).start()
-        threading.Thread(target=bridge.settle_lane, args=(parent,), daemon=True).start()
+        threading.Thread(target=bridge.settle_lane, args=(verdict,), daemon=True).start()
         threading.Thread(target=bridge.watch_presence, daemon=True).start()
         threading.Thread(target=bridge.run_exports, daemon=True).start()
         server.serve_forever(poll_interval=0.25)
@@ -1729,6 +1793,7 @@ def serve(session, lane=None, launch=None):
         pass
     finally:
         bridge.closing.set()
+        stop.set()
         if holder is not None:
             holder.close()
         try:

@@ -489,6 +489,8 @@ class _Lines:
                 return None
             self.buf += chunk
         line, self.buf = self.buf.split(b"\n", 1)
+        if len(line) > LINE_MAX:   # its newline came in the chunk that crossed the bound
+            return None
         try:
             return json.loads(line)
         except ValueError:
