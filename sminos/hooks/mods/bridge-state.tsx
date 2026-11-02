@@ -239,22 +239,38 @@ export type HolderFence = { epoch: string; fence: number; armGeneration: number;
  */
 export type HolderRelay = { socket: string; nonce: string; generation: string; pid: number | null; childPid: number | null; child: number; epoch?: string }
 /**
+ * What came of asking the child to write a `turn` (or an `armed`): `written`;
+ * `moot`, the connection it was for gone (409) or the ask malformed, so it
+ * never will be; `failed`, no answer, to be asked again.
+ */
+export type HolderAsked = 'written' | 'moot' | 'failed'
+/**
  * A main-loop model request while it is entering, waiting at the fence or
  * inside the model step: the `turn` asked of each fence it waits on (by
- * fence key; the promise settles true once the child wrote it), and the
- * host's answer to each (`stop` with its reason, else proceed).
+ * fence key; one that failed is dropped, to be asked again), and the host's
+ * answer to each (`stop` with its reason, else proceed).
  */
-export type FencedStep = { turnId: string; turns: Map<string, Promise<boolean>>; answers: Map<string, { stop?: string }>; wake?: () => void }
-/** A prompt seen entering the main loop, by its engine-stamped origin: correlated with the turn it starts by text, each at most once. */
-export type PromptSeen = { kind: string; text: string; uuid?: string; turnId?: string }
+export type FencedStep = { turnId: string; turns: Map<string, Promise<HolderAsked>>; answers: Map<string, { stop?: string }>; wake?: () => void }
+/**
+ * A prompt seen entering the main loop, by its engine-stamped origin, at its
+ * submission or as its row: `seq` orders it among the turns' starts, and
+ * `isTaken` once a turn has it, the one it started or the one running when
+ * it came (a delivery into that turn, which starts none).
+ */
+export type PromptSeen = { kind: string; text: string; uuid?: string; seq: number; isTaken: boolean }
 /** The observer's state (bridge-holder.tsx): what a module keeps of the gate, reloaded from `$.state`. */
 export type HolderState = {
   /** This module instance's mark on what it keeps: a later instance (a reload) writes its own, and an older one that finds it stops keeping. */
   owner: string
-  isClaimed: boolean
   isRetired: boolean
-  load?: Promise<void>
+  /** The kept state restored and claimed (or none to restore: no gate): until then every main request waits. */
   isLoaded: boolean
+  loaded: Promise<void>
+  markLoaded: () => void
+  /** The restore being tried now, if one is. */
+  restoring?: Promise<boolean>
+  /** Why the restore last failed, said once until it changes. */
+  restoreFailure?: string
   /** The process committed to the gate (O12 M4a): kept before its first ready, never taken back. */
   observerStarted: boolean
   armGenerations: number
@@ -266,8 +282,10 @@ export type HolderState = {
   writes: Promise<boolean>
   step?: FencedStep
   prompts: PromptSeen[]
-  /** Each main turn running, by id: its text at its start, and its origin once correlated. */
-  turns: Map<string, { text: string; origin?: TurnOrigin }>
+  /** Each main turn running, by id: its text at its start, where it started among the prompts seen (`seq`), and its origin once correlated. */
+  turns: Map<string, { text: string; seq: number; origin?: TurnOrigin }>
+  /** Orders prompts seen and turns started. */
+  seq: number
 }
 
 export type BridgeState = {
@@ -542,19 +560,25 @@ export type BridgeState = {
   holder: HolderState
 }
 
-const freshHolder = (): HolderState => ({
-  owner: Array.from(crypto.getRandomValues(new Uint8Array(8)), (b) => b.toString(16).padStart(2, '0')).join(''),
-  isClaimed: false,
-  isRetired: false,
-  isLoaded: false,
-  observerStarted: false,
-  armGenerations: 0,
-  fences: new Map(),
-  acks: Promise.resolve(),
-  writes: Promise.resolve(true),
-  prompts: [],
-  turns: new Map(),
-})
+const freshHolder = (): HolderState => {
+  let markLoaded = () => undefined as void
+  const loaded = new Promise<void>((resolve) => (markLoaded = resolve))
+  return {
+    owner: Array.from(crypto.getRandomValues(new Uint8Array(8)), (b) => b.toString(16).padStart(2, '0')).join(''),
+    isRetired: false,
+    isLoaded: false,
+    loaded,
+    markLoaded,
+    observerStarted: false,
+    armGenerations: 0,
+    fences: new Map(),
+    acks: Promise.resolve(),
+    writes: Promise.resolve(true),
+    prompts: [],
+    turns: new Map(),
+    seq: 0,
+  }
+}
 
 const fresh = (): BridgeState => ({
   loopTurns: new Map(),

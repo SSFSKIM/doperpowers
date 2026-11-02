@@ -34,7 +34,7 @@ import { endOrphanedSideQuestions, sideQuestion } from './bridge-btw'
 import { askTurnEnded, endOrphanedAsks, forkQuestion, noteMainResponse } from './bridge-ask'
 import { engineError, forNotes, notifiedStops, stopAgent, tellAgent } from './bridge-agent-ops'
 import { acceptMedia, claimMedia, mediaLoaded, mediaPassedOn, mediaTurnEnded, mediaTurnStarted, observeMediaResult } from './bridge-media'
-import { abandonedStep, admission, enterStep, holderLoaded, isHolderLoaded, leaveStep, mainTurnOver, mainTurnStarted, onHolderLine, promptSettled, seePrompt, stoppedStep, waitAtFence } from './bridge-holder'
+import { abandonedStep, admission, enterStep, holderLoaded, isHolderLoaded, leaveStep, mainTurnOver, mainTurnStarted, onHolderLine, promptRow, promptSettled, promptSubmitted, restoreHolder, stoppedStep, waitAtFence } from './bridge-holder'
 
 export { OFF_LINE, ON_LINE } from './bridge-place'
 export { BLOCK_TAIL, INTERRUPT_HOLD_MS, TEXT_CAP, WAKE_LINE, capped, resetBridge } from './bridge-state'
@@ -1829,7 +1829,9 @@ export async function bridgeStart($: EngineInterface, e: SessionStartInput) {
   }
   await takeLaunch($)
   // The gate's fences a module before this one held (a reload), held again
-  // before the first child, whose relay finds them (O12 M4a).
+  // before the first child, whose relay finds them (O12 M4a); a restore that
+  // fails is said, and tried again on this `$`.
+  state.log = (text) => $.ui.log(text, { to: 'debug' })
   await holderLoaded($)
   // The mode the session last reported to the module before this one (a
   // reload): said until the session reports again.
@@ -2046,16 +2048,14 @@ export function registerBridge(on: On) {
 
   // A prompt entering the main loop, by the origin the engine stamped on it
   // where it was queued (O12 M4a): the turn it starts is told to the gate as
-  // that origin (bridge-holder.tsx). Seen before `next`, since the turn may
-  // start before the submission settles. Observed only.
+  // that origin (bridge-holder.tsx); one the engine delivers into a running
+  // turn (`turnId`) starts none. Seen before `next`, since the turn may start
+  // before the submission settles. Observed only.
   on('prompt.submit', { text: /^/ }, async (_, e, next) => {
-    const kind = state.isLaneMarked ? e.origin.kind : undefined
-    if (kind !== undefined) {
-      seePrompt(kind, e.text)
-    }
+    const seen = state.isLaneMarked ? promptSubmitted(e.origin.kind, e.text, e.turnId) : undefined
     const entered = await next(e)
-    if (kind !== undefined) {
-      promptSettled(kind, e.text, entered)
+    if (seen !== undefined) {
+      promptSettled(seen, entered)
     }
     return entered
   }).catch((_, e, next) => next(e))
@@ -2119,9 +2119,10 @@ export function registerBridge(on: On) {
     // subagent's never stands for the main loop.
     const fenced = isMain ? enterStep(e.turnId) : undefined
     try {
-      // The fences a module before this one held, before any request passes.
+      // The fences a module before this one held, before any request passes:
+      // until they are restored, the request waits at the fence.
       if (fenced !== undefined && !isHolderLoaded()) {
-        await holderLoaded($)
+        await restoreHolder($)
       }
       // Only a step with an upload pending waits on anything else here. An
       // observer claims none, and rewrites no model or effort: those are MAWS's.
@@ -2473,7 +2474,7 @@ export function registerBridge(on: On) {
         // A prompt's own row and its stamp (O12 M4a): the same prompt as one
         // seen at prompt.submit, or one seen only here.
         if (state.isLaneMarked && (e.door === 'prompt' || e.door === 'delivery')) {
-          seePrompt(e.origin.kind, rowText(e.message.content), stored.uuid)
+          promptRow(e.origin.kind, rowText(e.message.content), stored.uuid)
         }
         exportRow(e.door, stored.message, stored.uuid, e.origin)
         enteredRow(e.door, stored.message, stored.uuid, e.origin)

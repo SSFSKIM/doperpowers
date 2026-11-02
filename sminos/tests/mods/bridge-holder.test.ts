@@ -1,6 +1,6 @@
 import { describe, expect, test, tier } from 'claude-code/testing'
 
-import { HOLDER_MARGIN_MS, HOLDER_WAIT_MS } from '../../hooks/mods/bridge-holder'
+import { HOLDER_MARGIN_MS, HOLDER_RETRY_MS, HOLDER_WAIT_MS } from '../../hooks/mods/bridge-holder'
 import { OBSERVER_REASON } from '../../hooks/mods/bridge-controls'
 import { GATE_FIXTURE } from './gate-fixture'
 import { NONCE, SID, SOCK, childArgv, harness, hello, line } from './bridge-harness'
@@ -394,6 +394,136 @@ describe('lane B: the fence (O12 M4a)', () => {
   })
 })
 
+describe('lane B: what fails on the way to an acknowledgement or a restore (O12 M4a)', () => {
+  type Kept = { owner: string; armGenerations: number; fences: { epoch: string; fence: number; armGeneration: number; leaseMs: number }[] }
+
+  test('a reload claims the very state it restored: a fence the module before it kept meanwhile is held too, and the kept state is the new one\'s', async () => {
+    const kept = new Map<string, unknown>()
+    const before = await observing({ sessionState: kept })
+    await arm(before, E1, 1, 1)
+    const owner = (kept.get('holder') as Kept).owner
+    // Between the new module's read and its first write, the one before it
+    // keeps arm 2 (fence 2), which it then acknowledges.
+    let isRaced = false
+    const after: H = harness({
+      env: MARKED,
+      sessionState: kept,
+      messages: [{ type: 'user' }],
+      stateFault: (op, key) => {
+        if (op === 'set' && key === 'holder' && !isRaced) {
+          isRaced = true
+          const k = kept.get('holder') as Kept
+          after.writeState('holder', { ...k, armGenerations: 2, fences: [...k.fences, { epoch: E1, fence: 2, armGeneration: 2, leaseMs: LEASE }] })
+        }
+        return undefined
+      },
+    })
+    await after.turn('t1')
+    const r = request(after, 't1')
+    await flush(after)
+    expect(isRaced).toBe(true)
+    expect(r.isMade()).toBe(false)
+    expect(kept.get('holder')).toMatchObject({ fences: [{ epoch: E1, fence: 1 }, { epoch: E1, fence: 2 }] })
+    expect((kept.get('holder') as Kept).owner).not.toBe(owner)
+    expect(after.timers.filter((t) => t.kind === 'after' && t.ms === FALLBACK && !t.cancelled)).toHaveLength(2)
+    await after.fire(FALLBACK)
+    expect(r.isMade()).toBe(true)
+    await r.done
+  })
+
+  test('a reload that cannot read the kept state keeps every request closed, and tries again until it can', async () => {
+    const kept = new Map<string, unknown>()
+    const before = await observing({ sessionState: kept })
+    await arm(before, E1, 1, 1)
+    let isReadable = false
+    const after = harness({ env: MARKED, sessionState: kept, messages: [{ type: 'user' }], stateFault: (op, key) => (op === 'get' && key === 'holder' && !isReadable ? 'fail' : undefined) })
+    await after.turn('t1')
+    const r = request(after, 't1')
+    await flush(after)
+    expect(r.isMade()).toBe(false)
+    await after.fire(HOLDER_RETRY_MS)
+    expect(r.isMade()).toBe(false)
+    isReadable = true
+    await after.fire(HOLDER_RETRY_MS)
+    await flush(after)
+    // Read now: fence 1 is held, for a whole lease and margin from then.
+    expect(r.isMade()).toBe(false)
+    expect(kept.get('holder')).toMatchObject({ fences: [{ epoch: E1, fence: 1 }] })
+    await after.fire(FALLBACK)
+    expect(r.isMade()).toBe(true)
+    await r.done
+  })
+
+  test('a kept state this module cannot read keeps every request closed and is never written over; with no gate it changes nothing', async () => {
+    const unreadable = { shape: 2, fences: 'kept another way' }
+    const kept = new Map<string, unknown>([['holder', unreadable]])
+    const h = harness({ env: MARKED, sessionState: kept, messages: [{ type: 'user' }] })
+    await h.start()
+    await h.turn('t1')
+    const r = request(h, 't1')
+    await flush(h)
+    await h.fire(HOLDER_RETRY_MS)
+    await flush(h)
+    expect(r.isMade()).toBe(false)
+    expect(kept.get('holder')).toEqual(unreadable)
+    expect(h.logs.some((l) => l.includes('holder') && l.includes('closed'))).toBe(true)
+    // A session no gate serves never reads it.
+    const u = harness({ sessionState: new Map<string, unknown>([['holder', unreadable]]), messages: [{ type: 'user' }] })
+    await u.turn('t1')
+    const ru = request(u, 't1')
+    await flush(u)
+    expect(ru.isMade()).toBe(true)
+    await ru.done
+  })
+
+  test("a `turn` the child did not write withholds the arm's acknowledgement, which follows once the turn is written", async () => {
+    let isTurnRefused = true
+    const h = await observing({ holderAnswer: (b) => (b.kind === 'turn' && isTurnRefused ? 'fail' : undefined) })
+    await h.turn('t1')
+    const hold = deferred()
+    const r = request(h, 't1', 0, undefined, hold.p)
+    await flush(h)
+    expect(r.isMade()).toBe(true)
+    await arm(h, E1, 1, 7)
+    expect(h.holderBodies('turn').length).toBeGreaterThan(0)
+    expect(h.holderBodies('armed')).toEqual([])
+    isTurnRefused = false
+    await h.fire(HOLDER_RETRY_MS)
+    await flush(h)
+    expect(h.holderBodies('turn', 'armed').slice(-2)).toEqual([
+      { kind: 'turn', generation: GEN, epoch: E1, fence: 7, origin: 'unknown' },
+      { kind: 'armed', generation: GEN, epoch: E1, arm: 1, fence: 7 },
+    ])
+    expect(h.holderBodies('armed')).toHaveLength(1)
+    hold.release()
+    await r.done
+  })
+
+  test('an acknowledgement whose fence was not kept is tried again, and the arms after it wait behind it: no hole in the order', async () => {
+    let isFailing = false
+    const h = await observing({ stateFault: (op, key) => (op === 'set' && key === 'holder' && isFailing ? 'fail' : undefined) })
+    isFailing = true
+    h.children[0]!.write(relayed(E1, armFrame(1), 1))
+    await flush(h)
+    isFailing = false
+    await arm(h, E1, 2, 1)
+    expect(h.holderBodies('armed')).toEqual([])
+    await h.fire(HOLDER_RETRY_MS)
+    await flush(h)
+    expect(h.holderBodies('armed').map((b) => b.arm)).toEqual([1, 2])
+  })
+
+  test("an arm whose connection ended is not tried again: its acknowledgement could never go (409), and the next connection's arms are not held behind it", async () => {
+    const h = await observing({ holderAnswer: (b) => (b.kind === 'armed' && b.epoch === E1 ? { status: 409, body: { ok: false, code: 'epoch' } } : undefined) })
+    await arm(h, E1, 1, 1)
+    await answer(h, E2, { t: 'welcome', protocol: 1 })
+    await arm(h, E2, 1, 1)
+    await h.fire(HOLDER_RETRY_MS)
+    await flush(h)
+    expect(h.holderBodies('armed').map((b) => `${String(b.epoch)}/${String(b.arm)}`)).toEqual([`${E1}/1`, `${E2}/1`])
+  })
+})
+
 describe('lane B: a main turn\'s origin (O12 M4a)', () => {
   const ORIGINS: [string, string][] = [
     ['sdk', 'query'],
@@ -474,6 +604,67 @@ describe('lane B: a main turn\'s origin (O12 M4a)', () => {
     await answer(h, E1, { t: 'proceed', fence: 1 })
     await r3.done
     expect(h.holderBodies('turn').map((b) => b.origin)).toEqual(['task', 'query'])
+  })
+
+  /** One main request of a turn, let go by the host's proceed; the origin its `turn` named. */
+  async function originAsked(h: H, turnId: string, index = 0) {
+    const r = request(h, turnId, index)
+    await flush(h)
+    await answer(h, E1, { t: 'proceed', fence: 1 })
+    await r.done
+    return h.holderBodies('turn').at(-1)!.origin
+  }
+
+  test("a peer's words of the same text delivered into a running turn whose origin is unknown leave it unknown, at submit or as its row alone", async () => {
+    const h = await observing()
+    await arm(h, E1, 1, 1)
+    await h.turn('t1', undefined, 'hi')
+    expect(await originAsked(h, 't1')).toBe('unknown')
+    await h.submit('hi', 'peer', { turnId: 't1' })
+    expect(await originAsked(h, 't1', 1)).toBe('unknown')
+    await h.append('delivery', { type: 'user', role: 'user', content: [{ type: 'text', text: 'hi' }] }, { origin: { kind: 'peer' } })
+    expect(await originAsked(h, 't1', 2)).toBe('unknown')
+    await h.complete('t1')
+    // Neither is a candidate for a later turn of that text: a query's is a query.
+    await h.submit('hi', 'sdk')
+    await h.turn('t2', undefined, 'hi')
+    expect(await originAsked(h, 't2')).toBe('query')
+  })
+
+  test("a peer's words consumed by one turn never start a later one: the SDK's `status` turn is a query", async () => {
+    const h = await observing()
+    await arm(h, E1, 1, 1)
+    await h.submit('check the build', 'sdk')
+    await h.turn('t1', undefined, 'check the build')
+    await h.submit('status', 'peer', { turnId: 't1' })
+    expect(await originAsked(h, 't1')).toBe('query')
+    await h.complete('t1')
+    await h.submit('status', 'sdk')
+    await h.turn('t2', undefined, 'status')
+    expect(await originAsked(h, 't2')).toBe('query')
+  })
+
+  test('a submission made while a turn runs (a plugin\'s own, no turnId) is no origin of that turn, only of the turn it starts', async () => {
+    const h = await observing()
+    await arm(h, E1, 1, 1)
+    await h.turn('t1', undefined, 'ping')
+    await h.submit('ping', 'sdk')
+    expect(await originAsked(h, 't1')).toBe('unknown')
+    await h.complete('t1')
+    await h.turn('t2', undefined, 'ping')
+    expect(await originAsked(h, 't2')).toBe('query')
+  })
+
+  test('prompts of one text waiting with different origins establish none: the turn is unknown, and so is the next of that text', async () => {
+    const h = await observing()
+    await arm(h, E1, 1, 1)
+    await h.submit('status', 'scheduled-trigger')
+    await h.submit('status', 'peer')
+    await h.turn('t1', undefined, 'status')
+    expect(await originAsked(h, 't1')).toBe('unknown')
+    await h.complete('t1')
+    await h.turn('t2', undefined, 'status')
+    expect(await originAsked(h, 't2')).toBe('unknown')
   })
 
   test('a dropped submission starts nothing: its origin is never taken by a later turn', async () => {

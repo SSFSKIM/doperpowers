@@ -3,7 +3,7 @@ import type { EngineInterface, HookStream, TurnStepChunk, TurnStepInput, TurnSte
 import type { HolderKept } from '../../types/sminos'
 
 import { isRecord, message, parsed, state } from './bridge-state'
-import type { FencedStep, HolderFence, HolderRelay, HolderState, TurnOrigin } from './bridge-state'
+import type { FencedStep, HolderAsked, HolderFence, HolderRelay, HolderState, PromptSeen, TurnOrigin } from './bridge-state'
 
 /**
  * The lane B observer's fence (O12 M4a): MAWS's engine host reaps an idle
@@ -28,13 +28,20 @@ import type { FencedStep, HolderFence, HolderRelay, HolderState, TurnOrigin } fr
  *   waits: every fence must release it (`proceed`, `disarm` or its expiry),
  *   and one `stop` ends the turn without a request. A reconnect, a new child
  *   or a new epoch's `proceed` releases nothing of an older epoch's fence.
- * - A module that loads into the process (a reload) holds the kept fences
- *   before any request can pass, each for one full lease and margin from
- *   then: the time already spent cannot be read without a wall clock.
+ * - Each arm is acknowledged only once its fence is kept and its `turn`, if
+ *   one was owed, is written; what failed is tried again, never skipped, so
+ *   the arms after it are never acknowledged ahead of it.
+ * - A module that loads into the process (a reload) claims the kept state it
+ *   read, at that version, before any request can pass, and holds its fences
+ *   each for one full lease and margin from then: the time already spent
+ *   cannot be read without a wall clock. Until it has restored them every
+ *   main request waits.
  * - A turn's origin is the engine's stamp on the prompt that started it,
- *   seen at `prompt.submit` and in its row, matched to the turn by text;
- *   `unknown` when nothing matches. It is diagnostic: every origin is fenced
- *   alike.
+ *   seen at `prompt.submit` and in its row, matched to the turn by text
+ *   among the prompts seen before it started; a prompt delivered into a
+ *   running turn is no turn's evidence. `unknown` when nothing matches, or
+ *   when prompts of its text disagree. It is diagnostic: every origin is
+ *   fenced alike.
  *
  * M4a changes no delivery and no settlement: a peer's message is settled at
  * its inbox handoff as before, and a turn's `turn` carries no `delivery`.
@@ -44,6 +51,8 @@ import type { FencedStep, HolderFence, HolderRelay, HolderState, TurnOrigin } fr
 export const HOLDER_MARGIN_MS = 5_000
 /** How long one held wait on the child's route lasts while a request waits at the fence: a call in flight stops the hook's own budget. */
 export const HOLDER_WAIT_MS = 5_000
+/** How soon what failed for want of the kept state or the child is tried again: restoring the kept state, an acknowledgement. */
+export const HOLDER_RETRY_MS = 1_500
 /** What a stopped request says when the host's `stop` carried no reason. */
 export const HOLDER_STOP_REASON = 'The holder ended this session; reopening it continues the conversation.'
 /** A POST the route did not answer (the child ending): tried this many times while its relay stands. */
@@ -84,13 +93,14 @@ const snapshot = (h: HolderState): HolderKept => ({
 })
 
 /**
- * Writes what this module holds, after every write before it: true once
- * written. A write that finds another module instance's mark (the one a
- * reload loaded) retires this one, which then keeps and acknowledges nothing.
+ * Writes what this module holds, after every write before it and once the
+ * kept state is restored: true once written. A write that finds another
+ * module instance's mark (the one a reload loaded) retires this one, which
+ * then keeps and acknowledges nothing.
  */
 function keep($: EngineInterface): Promise<boolean> {
   const h = state.holder
-  const write = h.writes.then(() => keepNow($, h))
+  const write = h.writes.then(() => h.loaded).then(() => keepNow($, h))
   h.writes = write
   return write
 }
@@ -99,14 +109,13 @@ async function keepNow($: EngineInterface, h: HolderState): Promise<boolean> {
   try {
     for (let tries = 0; tries < 3 && !h.isRetired && h === state.holder; tries++) {
       const read = await $.state.get(HOLDER)
-      if (h.isClaimed && isRecord(read.value) && read.value.owner !== h.owner) {
+      if (isRecord(read.value) && read.value.owner !== h.owner) {
         h.isRetired = true
         log('a later module keeps the fences now: this one stops')
         return false
       }
       const written = await $.state.set(HOLDER, snapshot(h), { ifVersion: read.version })
       if (written.isSet) {
-        h.isClaimed = true
         return true
       }
     }
@@ -117,45 +126,97 @@ async function keepNow($: EngineInterface, h: HolderState): Promise<boolean> {
 }
 
 /**
- * What a module before this one kept (a reload), taken once and before any
- * request passes: each fence held again for a whole lease and margin from
- * now, and `observerStarted` as it was.
+ * Restores what a module before this one kept (a reload): one try now, then
+ * again every HOLDER_RETRY_MS on this `$` until it holds (bridgeStart's,
+ * which outlives its hook).
  */
-export function holderLoaded($: EngineInterface): Promise<void> {
+export async function holderLoaded($: EngineInterface): Promise<void> {
   const h = state.holder
-  h.load ??= loadKept($, h).finally(() => (h.isLoaded = true))
-  return h.load
+  if (!(await restoreHolder($)) && h === state.holder) {
+    $.clock.after(HOLDER_RETRY_MS, () => void holderLoaded($))
+  }
 }
 
-/** Whether the kept state was taken already: a request then needs no await for it. */
+/** Whether the kept state is restored: a request then needs no await for it. */
 export const isHolderLoaded = () => state.holder.isLoaded
 
-async function loadKept($: EngineInterface, h: HolderState): Promise<void> {
-  let kept: unknown
-  try {
-    kept = (await $.state.get(HOLDER)).value
-  } catch (error) {
-    log(`the kept fences are not read: ${message(error)}`)
-    return
+/**
+ * One try at restoring the kept state, or the one being tried: true once it
+ * holds, and from then every main request may be admitted on the fences.
+ */
+export function restoreHolder($: EngineInterface): Promise<boolean> {
+  const h = state.holder
+  if (h.isLoaded) {
+    return Promise.resolve(true)
   }
-  if (kept === undefined) {
-    return
-  }
-  if (!isKept(kept)) {
-    log('the kept state is not one this module reads: nothing restored')
-    return
-  }
-  h.observerStarted ||= kept.observerStarted
-  h.armGenerations = Math.max(h.armGenerations, kept.armGenerations)
-  for (const f of kept.fences) {
-    if (!h.fences.has(fenceKey(f.epoch, f.fence))) {
-      install($, f.epoch, f.fence, f.leaseMs)
+  h.restoring ??= claimKept($, h).then((isRestored) => {
+    h.restoring = undefined
+    if (isRestored && !h.isLoaded) {
+      h.isLoaded = true
+      h.markLoaded()
+      if (h === state.holder) {
+        wakeStep()
+      }
     }
+    return isRestored
+  })
+  return h.restoring
+}
+
+/**
+ * A session no gate serves (no marker, or one this process controls) has
+ * nothing to restore. Else this module claims the very snapshot it read, at
+ * its version (`ifVersion`), with its own fences and the kept ones together,
+ * and only then holds the kept ones: a module before it that keeps an arm
+ * between the read and the claim makes the claim miss, and the next read has
+ * that arm. A kept state that cannot be read, or one this module does not
+ * read, restores nothing: a fence the host holds an acknowledgement for may
+ * be in it, so requests stay closed.
+ */
+async function claimKept($: EngineInterface, h: HolderState): Promise<boolean> {
+  try {
+    if ((await $.env.get('MAWS_LANE')) !== 'B' || state.laneVerdict === 'mismatch') {
+      return true
+    }
+    for (let tries = 0; tries < 3 && h === state.holder; tries++) {
+      const read = await $.state.get(HOLDER)
+      const kept = read.value === undefined ? undefined : isKept(read.value) ? read.value : null
+      if (kept === null) {
+        return restoreFailed(h, 'the kept state is not one this module reads')
+      }
+      const own = snapshot(h)
+      const adopted = (kept?.fences ?? []).filter((f) => !h.fences.has(fenceKey(f.epoch, f.fence)))
+      const claim: HolderKept = {
+        ...own,
+        observerStarted: own.observerStarted || kept?.observerStarted === true,
+        armGenerations: Math.max(own.armGenerations, kept?.armGenerations ?? 0),
+        fences: [...own.fences, ...adopted],
+      }
+      if (!(await $.state.set(HOLDER, claim, { ifVersion: read.version })).isSet) {
+        continue
+      }
+      h.observerStarted ||= claim.observerStarted
+      h.armGenerations = Math.max(h.armGenerations, claim.armGenerations)
+      for (const f of adopted) {
+        install($, f.epoch, f.fence, f.leaseMs)
+      }
+      if (adopted.length > 0) {
+        log(`${adopted.length} fence(s) held again for a whole lease and margin`)
+      }
+      return true
+    }
+    return restoreFailed(h, 'the kept state kept changing under the claim')
+  } catch (error) {
+    return restoreFailed(h, `the kept state is not read: ${message(error)}`)
   }
-  if (kept.fences.length > 0) {
-    log(`${kept.fences.length} fence(s) held again for a whole lease and margin`)
+}
+
+function restoreFailed(h: HolderState, why: string): false {
+  if (h.restoreFailure !== why) {
+    h.restoreFailure = why
+    log(`${why}: main requests stay closed until it is restored`)
   }
-  await keep($)
+  return false
 }
 
 // -- the fences
@@ -273,11 +334,14 @@ async function takeBootstrap($: EngineInterface, b: Record<string, unknown>) {
   const relay: HolderRelay = { socket: b.socket, nonce: b.nonce, generation: b.generation, pid: pid(b.pid), childPid: pid(b.childPid), child: state.generation }
   h.relay = relay
   // What a module before this one kept is in before anything is written.
-  await holderLoaded($)
+  await h.loaded
   h.observerStarted = true
-  if (!(await keep($))) {
-    log('observerStarted is not kept: the gate is not started')
-    return
+  while (!(await keep($))) {
+    if (h.isRetired || !isCurrent(relay)) {
+      return
+    }
+    log(`observerStarted is not kept: the gate waits, tried again in ${HOLDER_RETRY_MS} ms`)
+    await new Promise<void>((resolve) => $.clock.after(HOLDER_RETRY_MS, resolve))
   }
   if (!isCurrent(relay)) {
     return
@@ -291,20 +355,62 @@ async function takeBootstrap($: EngineInterface, b: Record<string, unknown>) {
 function onArm($: EngineInterface, relay: HolderRelay, epoch: string, arm: number, fence: number, leaseMs: number) {
   const h = state.holder
   install($, epoch, fence, leaseMs)
-  const turn = isMainActive() ? askTurn($, epoch, fence) : undefined
-  h.acks = h.acks.then(async () => {
-    if (!(await keep($))) {
-      log(`arm ${arm} of ${epoch} is not acknowledged: its fence is not kept`)
+  // While a main turn runs, its `turn` is asked at once, ahead of this ack.
+  const told = isMainActive() ? askTurn($, epoch, fence) : undefined
+  h.acks = h.acks.then(() => acknowledge($, h, relay, { epoch, arm, fence }, told))
+}
+
+/**
+ * Acknowledges the oldest arm not yet acknowledged (R1), once its fence is
+ * kept and the `turn` it owed, if a main turn ran when it came, is written.
+ * What failed for want of the kept state or an answer is tried again after
+ * HOLDER_RETRY_MS, the arms after it waiting behind it: the child writes an
+ * `armed` only once every earlier one is in, so a skipped arm would hold
+ * every later one back for good. It ends when its connection did (the
+ * child's 409, a new child) or a later module took over.
+ */
+async function acknowledge($: EngineInterface, h: HolderState, relay: HolderRelay, a: { epoch: string; arm: number; fence: number }, told: Promise<HolderAsked> | undefined) {
+  const what = `arm ${a.arm} of ${a.epoch}`
+  const isGone = () => h.isRetired || h !== state.holder || !isCurrent(relay)
+  for (let isRetry = false; ; isRetry = true) {
+    if (isRetry) {
+      log(`${what} is not acknowledged yet: tried again in ${HOLDER_RETRY_MS} ms`)
+      await new Promise<void>((resolve) => $.clock.after(HOLDER_RETRY_MS, resolve))
+      // A turn not written is asked again, while a main turn still runs.
+      if (told !== undefined && (await told) === 'failed') {
+        told = isMainActive() ? askTurn($, a.epoch, a.fence) : undefined
+      }
+    }
+    if (isGone()) {
+      log(`${what} is not acknowledged: this module or its child was replaced`)
       return
     }
-    if (turn !== undefined) {
-      await turn
+    if ((await tryAcknowledge($, h, relay, a, told)) !== 'failed') {
+      return
     }
-    const acked = await post($, relay, { kind: 'armed', epoch, arm, fence })
-    if (acked?.status !== 200) {
-      log(`arm ${arm} of ${epoch} not acknowledged (${acked?.status ?? 'no answer'})`)
+  }
+}
+
+async function tryAcknowledge($: EngineInterface, h: HolderState, relay: HolderRelay, a: { epoch: string; arm: number; fence: number }, told: Promise<HolderAsked> | undefined): Promise<HolderAsked> {
+  if (!(await keep($))) {
+    return h.isRetired ? 'moot' : 'failed'
+  }
+  const turn = told === undefined ? 'written' : await told
+  if (turn !== 'written') {
+    if (turn === 'moot') {
+      log(`arm ${a.arm} of ${a.epoch} is not acknowledged: its turn can never be written`)
     }
-  })
+    return turn
+  }
+  const acked = await post($, relay, { kind: 'armed', ...a })
+  if (acked === undefined) {
+    return 'failed'
+  }
+  if (acked.status !== 200) {
+    log(`arm ${a.arm} of ${a.epoch} is not acknowledged (${acked.status}): its connection is gone`)
+    return 'moot'
+  }
+  return 'written'
 }
 
 function answer(key: string, a: { stop?: string }) {
@@ -342,10 +448,10 @@ async function post($: EngineInterface, relay: HolderRelay, body: Record<string,
 
 /**
  * The `turn` asked of a fence for the main turn running: once per request
- * and fence (the one already asked is the one awaited); true once the child
- * wrote it. An earlier child's epoch has no connection to ask on.
+ * and fence (the one already asked is the one awaited, unless it failed,
+ * which is asked again). An earlier child's epoch has no connection to ask on.
  */
-function askTurn($: EngineInterface, epoch: string, fence: number): Promise<boolean> {
+function askTurn($: EngineInterface, epoch: string, fence: number): Promise<HolderAsked> {
   const h = state.holder
   const key = fenceKey(epoch, fence)
   const step = h.step
@@ -355,11 +461,18 @@ function askTurn($: EngineInterface, epoch: string, fence: number): Promise<bool
   }
   const origin = originOf(step?.turnId ?? state.mainTurn)
   const relay = h.relay
-  const turn =
+  const turn: Promise<HolderAsked> =
     relay === undefined || !epoch.startsWith(`${relay.generation}.`)
-      ? Promise.resolve(false)
-      : post($, relay, { kind: 'turn', epoch, fence, origin }).then((r) => r?.status === 200)
-  step?.turns.set(key, turn)
+      ? Promise.resolve('moot')
+      : post($, relay, { kind: 'turn', epoch, fence, origin }).then((r) => (r === undefined ? 'failed' : r.status === 200 ? 'written' : 'moot'))
+  if (step !== undefined) {
+    step.turns.set(key, turn)
+    void turn.then((t) => {
+      if (t === 'failed' && step.turns.get(key) === turn) {
+        step.turns.delete(key)
+      }
+    })
+  }
   return turn
 }
 
@@ -379,13 +492,17 @@ export function leaveStep(step: FencedStep) {
 /**
  * Whether the request may go now, read at once and with no await, so nothing
  * comes between this and its `next`: `stop` once any fence answered it;
- * `wait` while an installed fence has not released it; else `clear`.
+ * `wait` while the kept state is not restored, or an installed fence has not
+ * released it; else `clear`.
  */
 export function admission(step: FencedStep): 'clear' | 'wait' | { stop: string } {
   for (const a of step.answers.values()) {
     if (a.stop !== undefined) {
       return { stop: a.stop }
     }
+  }
+  if (!state.holder.isLoaded) {
+    return 'wait'
   }
   for (const key of state.holder.fences.keys()) {
     if (!step.answers.has(key)) {
@@ -396,15 +513,19 @@ export function admission(step: FencedStep): 'clear' | 'wait' | { stop: string }
 }
 
 /**
- * One wait at the fence: `turn` asked of every fence not yet asked, then
- * until anything moves (an answer, an arm, a disarm, an expiry, a new
- * route, the request abandoned). A wait held on the child's route keeps a
- * call in flight meanwhile, which stops the hook's own budget (a hook's
- * time, `$.clock.sleep` included, runs only while no `$` call is in flight);
- * with no route, the wait spends that budget.
+ * One wait at the fence: the kept state restored if it is not yet (then the
+ * request reads its fences anew), `turn` asked of every fence not yet asked,
+ * then until anything moves (an answer, an arm, a disarm, an expiry, a new
+ * route, the request abandoned, the restore's next try). A wait held on the
+ * child's route keeps a call in flight meanwhile, which stops the hook's own
+ * budget (a hook's time, `$.clock.sleep` included, runs only while no `$`
+ * call is in flight); with no route, the wait spends that budget.
  */
 export async function waitAtFence($: EngineInterface, step: FencedStep, signal: AbortSignal | undefined): Promise<void> {
   const h = state.holder
+  if (!h.isLoaded && (await restoreHolder($))) {
+    return
+  }
   for (const f of h.fences.values()) {
     void askTurn($, f.epoch, f.fence)
   }
@@ -412,9 +533,11 @@ export async function waitAtFence($: EngineInterface, step: FencedStep, signal: 
     step.wake = resolve
     signal?.addEventListener('abort', () => resolve(), { once: true })
   })
+  const retry = h.isLoaded ? undefined : $.clock.after(HOLDER_RETRY_MS, () => step.wake?.())
   const relay = h.relay
   const held = relay !== undefined && isCurrent(relay) ? post($, relay, { kind: 'wait', ms: HOLDER_WAIT_MS }).then((r) => r?.status === 200) : Promise.resolve(false)
   await Promise.race([woken, held.then((isHeld) => (isHeld ? undefined : woken))])
+  retry?.cancel()
   step.wake = undefined
 }
 
@@ -440,48 +563,68 @@ export function abandonedStep(e: TurnStepInput): HookStream<TurnStepChunk, TurnS
 
 // -- origins
 
-/**
- * A prompt seen entering the main loop, by its engine-stamped origin kind:
- * at `prompt.submit` (no row yet), or as its row (`uuid`), which is the same
- * prompt as the latest one seen at submit with its kind and text and no row.
- */
-export function seePrompt(kind: string, text: string, uuid?: string) {
+/** Whether a main turn runs, or may (a module loaded while one ran). */
+const isMainRunning = () => state.mainTurn !== undefined || state.isTurnUnknown
+
+function remember(p: PromptSeen) {
   const h = state.holder
-  if (uuid !== undefined) {
-    if (h.prompts.some((p) => p.uuid === uuid)) {
-      return
-    }
-    const submitted = h.prompts.findLast((p) => p.uuid === undefined && p.kind === kind && p.text === text)
-    if (submitted !== undefined) {
-      submitted.uuid = uuid
-      return
-    }
-  }
-  h.prompts.push({ kind, text, ...(uuid !== undefined && { uuid }) })
+  h.prompts.push(p)
   if (h.prompts.length > PROMPTS_KEPT) {
     h.prompts.shift()
   }
   correlate()
 }
 
-/** A prompt's submission settled: one dropped started nothing; one entered as other text is matched by that text. */
-export function promptSettled(kind: string, text: string, entered: { drop?: unknown; text?: unknown }) {
+/**
+ * A prompt submitted to the main loop, by its engine-stamped origin kind,
+ * seen at `prompt.submit` before it enters. One the engine names a running
+ * turn for (`turnId`) is delivered into that turn: it starts none and says
+ * nothing of how that turn started. Any other may start a later turn of its
+ * text, never one already running.
+ */
+export function promptSubmitted(kind: string, text: string, turnId: string | undefined): PromptSeen {
+  const p: PromptSeen = { kind, text, seq: ++state.holder.seq, isTaken: turnId !== undefined }
+  remember(p)
+  return p
+}
+
+/**
+ * A prompt's row in the main conversation, by its stamp: the same prompt as
+ * one submitted with its kind and text and no row yet; else seen here
+ * alone, which while a main turn runs is that turn's (a delivery into it,
+ * or the prompt it started with, which identical text cannot tell apart),
+ * and evidence for no turn.
+ */
+export function promptRow(kind: string, text: string, uuid: string) {
   const h = state.holder
-  const at = h.prompts.findIndex((p) => p.turnId === undefined && p.kind === kind && p.text === text)
-  if (at === -1) {
+  if (h.prompts.some((p) => p.uuid === uuid)) {
     return
   }
+  const submitted = h.prompts.findLast((p) => p.uuid === undefined && p.kind === kind && p.text === text)
+  if (submitted !== undefined) {
+    submitted.uuid = uuid
+    return
+  }
+  remember({ kind, text, uuid, seq: ++h.seq, isTaken: isMainRunning() })
+}
+
+/** A submission settled: one dropped started nothing; one that entered as other text is matched by that text. */
+export function promptSettled(p: PromptSeen, entered: { drop?: unknown; text?: unknown }) {
+  const h = state.holder
   if (entered.drop !== undefined) {
-    h.prompts.splice(at, 1)
-  } else if (typeof entered.text === 'string' && entered.text !== text) {
-    h.prompts[at]!.text = entered.text
+    const at = h.prompts.indexOf(p)
+    if (at !== -1 && !p.isTaken) {
+      h.prompts.splice(at, 1)
+    }
+  } else if (typeof entered.text === 'string' && entered.text !== p.text) {
+    p.text = entered.text
     correlate()
   }
 }
 
 export function mainTurnStarted(turnId: string, text: string) {
   const h = state.holder
-  h.turns.set(turnId, { text })
+  h.turns.set(turnId, { text, seq: ++h.seq })
   if (h.turns.size > TURNS_KEPT) {
     h.turns.delete(h.turns.keys().next().value!)
   }
@@ -492,17 +635,29 @@ export function mainTurnOver(turnId: string) {
   state.holder.turns.delete(turnId)
 }
 
-/** Each main turn with no origin yet takes the oldest unmatched prompt of its text; a turn's origin, once found, never changes. */
+/**
+ * Each main turn with no origin yet takes the oldest prompt of its text seen
+ * before it started and taken by no turn. Prompts of its text that disagree
+ * on the origin establish none: the turn is `unknown` and takes them all. A
+ * turn's origin, once found, never changes.
+ */
 function correlate() {
   const h = state.holder
-  for (const [turnId, t] of h.turns) {
+  for (const t of h.turns.values()) {
     if (t.origin !== undefined || t.text === '') {
       continue
     }
-    const p = h.prompts.find((candidate) => candidate.turnId === undefined && candidate.text === t.text)
-    if (p !== undefined) {
-      p.turnId = turnId
-      t.origin = ORIGINS[p.kind] ?? 'unknown'
+    const candidates = h.prompts.filter((p) => !p.isTaken && p.seq < t.seq && p.text === t.text)
+    const origins = new Set(candidates.map((p) => ORIGINS[p.kind] ?? 'unknown'))
+    if (origins.size === 1) {
+      candidates[0]!.isTaken = true
+      t.origin = [...origins][0]
+    } else if (origins.size > 1) {
+      for (const p of candidates) {
+        p.isTaken = true
+      }
+      t.origin = 'unknown'
+      log(`prompts of a turn's text disagree on its origin (${[...origins].join(', ')}): unknown`)
     }
   }
 }

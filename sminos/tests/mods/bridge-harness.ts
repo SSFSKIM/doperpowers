@@ -15,6 +15,13 @@ export const NONCE = 'n0'
 export const hello = (session = SID, socket = SOCK, kept?: Record<string, unknown>, nonce = NONCE, seed?: Record<string, string>) =>
   `${JSON.stringify({ op: 'hello', session, pid: 7, socket, protocol: 1, nonce, ...(kept !== undefined && { kept }), ...(seed !== undefined && { seed }) })}\n`
 export const line = (obj: Record<string, unknown>) => `${JSON.stringify(obj)}\n`
+/** The versions of one host's `$.state` (a `sessionState` map), whichever harness reads it. */
+const stateVersionsBy = new WeakMap<Map<string, unknown>, Map<string, number>>()
+const versionsOf = (kept: Map<string, unknown>) => {
+  const versions = stateVersionsBy.get(kept) ?? new Map<string, number>()
+  stateVersionsBy.set(kept, versions)
+  return versions
+}
 /** The child's command line as the mod starts it: its session, and the process's launch the harness's `$.state` holds (O12 M7). */
 export const childArgv = (h: { sessionState: Map<string, unknown> }, session = SID) => [
   '/plug/skills/sminos/scripts/sminos',
@@ -137,6 +144,12 @@ export function harness(
     cua?: boolean
     /** `$.state.get` rejects. */
     stateFails?: boolean
+    /**
+     * Asked before each `$.state` read or write of this plugin's own key: `fail`
+     * makes the call reject (the host did not answer); anything else lets it
+     * run, after whatever the function did (another writer's write, say).
+     */
+    stateFault?: (op: 'get' | 'set', key: string) => 'fail' | undefined
     /** What `$.session.version()` answers; by default 2.1.300's release, with no base. */
     version?: { version: string; base?: string; builtAt?: string }
     /** What `$.command.list()` answers. */
@@ -228,6 +241,7 @@ export function harness(
   /** What `$.fs.stat` finds at a path: its kind, whether it is a link, and where it resolves (itself unless said). */
   const stats: Record<string, { kind: 'file' | 'dir' | 'other'; isLink?: boolean; realPath?: string }> = {}
   const sessionState = options.sessionState ?? new Map<string, unknown>()
+  const fault = options.stateFault
   /** Each `$.model.fork`, held until the test settles it. */
   const forks: { prompt: string; resolve: (r: Record<string, unknown>) => void; reject: (e: Error) => void }[] = []
   /** Each `$.command.run`, held until the test settles it. */
@@ -251,8 +265,8 @@ export function harness(
   const queries: Record<string, unknown>[] = []
   /** How many times the mod read `$.agent.list()`. */
   let agentLists = 0
-  /** The host's `$.state` versions for this plugin's own keys: each write moves its key's. */
-  const stateVersions = new Map<string, number>()
+  /** The host's `$.state` versions for this plugin's own keys: each write moves its key's; shared with every harness sharing `sessionState` (one host). */
+  const stateVersions = versionsOf(sessionState)
   /** Each POST /holder the mod made on the child's private route, in order, with what `$.state` kept when it was made. */
   const holderPosts: {
     socketPath?: string
@@ -455,6 +469,9 @@ export function harness(
     state: {
       get: async (ref: { plugin: string; key: string }) => {
         if (ref.plugin === PLUGIN) {
+          if (options.stateFault?.('get', ref.key) === 'fail') {
+            throw new Error('$.state.get: the host did not answer')
+          }
           return sessionState.has(ref.key) ? { value: sessionState.get(ref.key), version: stateVersions.get(ref.key) ?? 1 } : { value: undefined, version: 0 }
         }
         guardReads.push({ op: 'state.get', args: ref })
@@ -465,6 +482,9 @@ export function harness(
         return ref.plugin === 'devcloud' && ref.key === 'secrets-guard' ? marker : { value: undefined, version: 0 }
       },
       set: async (ref: { plugin: string; key: string }, value: unknown, options?: { ifVersion?: number }) => {
+        if (ref.plugin === PLUGIN && fault?.('set', ref.key) === 'fail') {
+          throw new Error('$.state.set: the host did not answer')
+        }
         // As the host: a write naming a version that no longer stands is refused.
         const at = sessionState.has(ref.key) ? (stateVersions.get(ref.key) ?? 1) : 0
         if (options?.ifVersion !== undefined && options.ifVersion !== at) {
@@ -725,6 +745,11 @@ export function harness(
     logs,
     toasts,
     guardReads,
+    /** Another writer's write of this plugin's key (a module instance before this one): the version moves as with any write. */
+    writeState: (key: string, value: unknown) => {
+      stateVersions.set(key, (sessionState.has(key) ? (stateVersions.get(key) ?? 1) : 0) + 1)
+      sessionState.set(key, value)
+    },
     setMarker: (read: { value: unknown; version: number }) => (marker = read),
     setCua: (isEnabled: boolean) => (isCuaEnabled = isEnabled),
     /** Holds the guard reads until the returned function is called. */
