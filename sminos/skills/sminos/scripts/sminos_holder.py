@@ -55,7 +55,7 @@ The private relay (the contract the mod consumes):
                                        "nonce": <hex>, "generation": <hex>,
                                        "pid": <claude's pid>, "childPid": <this child's pid>,
                                        "processAge": <seconds claude's process has run, boot clock> | null}}
-        (`processAge` is the mod's evidence of a fresh process, O12 M4b.)
+        (`processAge` is for diagnosis: the mod decides a fresh process from its SessionStart, O12 M4b.)
     stdout, each host frame of a welcomed connection, in the order received:
         {"op": "holder", "epoch": E, "frame": {...}}            welcome, disarm, proceed, stop
         {"op": "holder", "epoch": E, "arm": N, "frame": {"t": "arm", "fence", "leaseMs"}}
@@ -76,7 +76,9 @@ The private relay (the contract the mod consumes):
             the client chooses the process's delivery mode
             (sminos_holder_deliveries): `activate` with `launch` (the
             process's, M7's) and `retained` (the receipt ids the live
-            conversation holds, a resume's rows), or `observer_upgrade` when
+            conversation holds, a resume's rows), connecting only when the
+            record is `gate` (one a legacy handoff won first stays
+            unobserved: no hello) or cannot be read; or `observer_upgrade` when
             `upgrade` (a process a module ran in before this one: `legacy`,
             an M4a observer going on as before, or with `observe` false one
             no observer served staying unobserved: this child never says
@@ -281,12 +283,12 @@ class Holder:
 
     def _process_age(self):
         """Seconds claude's process has run, on the boot clock no wall-clock
-        step moves (sminos_holder_deliveries.process): the mod's evidence
-        that its module is the process's first. None when unreadable."""
+        step moves (sminos_holder_deliveries.process), said in the bootstrap
+        for diagnosis. None when unreadable."""
         try:
             import sminos_holder_deliveries as D
             proc = D.process(self.pid)
-        except Exception:  # noqa: BLE001 — no evidence, which the mod takes as an existing process
+        except Exception:  # noqa: BLE001 — a diagnostic: unreadable is said as none
             return None
         age = proc["age"] if proc is not None else None
         return round(age, 3) if isinstance(age, (int, float)) and age != float("inf") else None
@@ -348,8 +350,14 @@ class Holder:
                     return
             if not self.activated:
                 self._activate()
-            if (self.activation or {}).get("observe") is False:
+            act = self.activation or {}
+            if act.get("observe") is False:
                 self.log("receipts: an existing process no observer served: it stays unobserved, no hello")
+                return
+            if act.get("launch") and not act.get("upgrade") and self.receipts == "legacy":
+                # A fresh process a legacy handoff won first: its observer is
+                # not enabled partway through it (the spec's activation rule).
+                self.log("receipts: a legacy handoff won this process first: it stays unobserved, no hello")
                 return
             with self.lock:
                 self.attempts += 1

@@ -34,7 +34,7 @@ import { endOrphanedSideQuestions, sideQuestion } from './bridge-btw'
 import { askTurnEnded, endOrphanedAsks, forkQuestion, noteMainResponse } from './bridge-ask'
 import { engineError, forNotes, notifiedStops, stopAgent, tellAgent } from './bridge-agent-ops'
 import { acceptMedia, claimMedia, mediaLoaded, mediaPassedOn, mediaTurnEnded, mediaTurnStarted, observeMediaResult } from './bridge-media'
-import { abandonedStep, admission, enterStep, holderLoaded, isHolderLoaded, leaveStep, mainTurnOver, mainTurnStarted, onHolderLine, promptRow, promptSettled, promptSubmitted, receiptsAdmitted, receiptsStopped, stoppedStep, waitAtFence } from './bridge-holder'
+import { abandonedStep, admission, enterStep, holderLoaded, isHolderLoaded, leaveStep, mainTurnOver, mainTurnStarted, onHolderLine, promptRow, promptSettled, promptSubmitted, receiptsAdmitted, receiptsStopped, sessionStarted, stoppedStep, waitAtFence } from './bridge-holder'
 import { receiptRow, receiptsCarried } from './bridge-receipts'
 import type { Carried } from './bridge-receipts'
 
@@ -2012,6 +2012,15 @@ export function registerBridge(on: On) {
       $.ui.log(`bridge: not started: ${message(error)}`, { to: 'debug' })
     }
     return started
+  })
+
+  // The engine's own SessionStart (a matcher every payload meets, beside the
+  // ask mod's): a start, a resume or a fork is the process's, the evidence
+  // that this module is its first (O12 M4b, bridge-holder.tsx); a plugin
+  // reload raises none.
+  on('classic.SessionStart', { source: /^/ }, (_, e, next) => {
+    sessionStarted(e.source)
+    return next(e)
   })
 
   // A /clear ends the conversation and goes on under a new id with no

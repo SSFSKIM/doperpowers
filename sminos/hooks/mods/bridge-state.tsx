@@ -316,6 +316,10 @@ export type HolderState = {
    * first bootstrap from the process's age.
    */
   fresh?: boolean
+  /** This module handled the process's own SessionStart (`startup`, `resume`, `fork`): its first load's evidence. */
+  isProcessStart: boolean
+  /** A first bootstrap waiting for that evidence. */
+  onProcessStart?: () => void
   receipts: ReceiptsState
   /** The `$` of the child's loop (the session start's), which outlives every hook: reports and releases run on it. */
   engine?: EngineInterface
@@ -615,6 +619,7 @@ const freshHolder = (): HolderState => {
     prompts: [],
     turns: new Map(),
     seq: 0,
+    isProcessStart: false,
     receipts: { rows: new Map(), preload: new Map(), retained: [], done: new Set(), reports: [], stopped: [], isPumping: false, isRetryArmed: false, isReleasing: false },
   }
 }

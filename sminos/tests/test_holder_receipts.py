@@ -82,6 +82,14 @@ class Receipts(Case):
         with open(self.path(rid)) as f:
             return json.load(f)
 
+    def status(self, child):
+        """GET /status's `holder` (empty while the bridge's socket is not up yet)."""
+        try:
+            _, st = sminos_bridge.request(os.path.join(self.home, "s", "bridge", SESSION + ".sock"), "GET", "/status")
+        except OSError:
+            return {}
+        return st["holder"]
+
     def gated(self, child):
         """The child ready with this process's launch, welcomed on its first connection."""
         self.ready(child, launch=LAUNCH)
@@ -110,16 +118,26 @@ class Activation(Receipts):
         _, st = sminos_bridge.request(os.path.join(self.home, "s", "bridge", SESSION + ".sock"), "GET", "/status")
         self.assertEqual(st["holder"]["receipts"], "gate")
 
-    def test_a_record_already_chosen_is_kept_and_the_observer_connects_anyway(self):
+    def test_a_fresh_process_whose_legacy_handoff_won_stays_legacy_and_unobserved(self):
         # A legacy handoff won the process's mode lock first: activation never
-        # turns it, and the observer still says hello.
+        # turns it, and its observer is not enabled partway through it: no hello.
         rec = hd._choose(self.proc, "legacy", "handoff", session=SESSION)
+        child = self.child()
+        self.ready(child, launch=LAUNCH)
+        self.assertTrue(wait_for(lambda: "receipts" in self.status(child)))
+        time.sleep(QUIET)
+        self.assertEqual(self.host.conns, [], "no hello")
+        self.assertEqual(self.mode(), rec)
+        self.assertEqual(self.status(child)["receipts"], "legacy")
+
+    def test_a_record_already_gate_is_kept_and_observed(self):
+        # A module before this one activated (a reload, a child restart): the
+        # record stays `gate` and the observer says hello.
+        rec = hd._choose(self.proc, "gate", "activation", launch=LAUNCH, session=SESSION)
         child = self.child()
         self.ready(child, launch=LAUNCH)
         self.assertEqual(self.host.conn(0).wait_frames(1)[0]["t"], "hello")
         self.assertEqual(self.mode(), rec)
-        _, st = sminos_bridge.request(os.path.join(self.home, "s", "bridge", SESSION + ".sock"), "GET", "/status")
-        self.assertEqual(st["holder"]["receipts"], "legacy")
 
     def test_a_child_restart_or_a_clear_never_changes_the_mode(self):
         first = self.child()
@@ -147,8 +165,8 @@ class Activation(Receipts):
             self.assertEqual(f.read(), "{not json", "nothing overwrote it")
 
     def test_the_bootstrap_says_how_long_claudes_process_has_run(self):
-        # The mod's evidence of a fresh process (one whose first module this
-        # is): the process's age on the boot clock, as the deliverers read it.
+        # For diagnosis: the process's age on the boot clock, as the
+        # deliverers read it.
         boot = self.child().bootstrap()
         self.assertIsInstance(boot["processAge"], (int, float))
         self.assertLessEqual(abs(boot["processAge"] - hd.process(os.getpid())["age"]), 5.0)

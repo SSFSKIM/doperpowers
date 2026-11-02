@@ -49,15 +49,21 @@ import type { FencedStep, HolderAsked, HolderFence, HolderRelay, HolderState, Pr
  *
  * - The child's first ready asks it to activate receipts for this process
  *   before its first hello, on positive evidence that the process is a
- *   fresh one: no module before this one left a trace in it (its kept
- *   launch, its kept holder state) and the child found it seconds into its
- *   run (`processAge`, under FRESH_PROCESS_S), or a module before this one
- *   found it so (`fresh`, kept). Then with the process's launch and the
- *   receipts the live conversation holds (`retained`). Any other process is
- *   an existing one, its absent bookkeeping no evidence that nothing was
+ *   fresh one: this module handled the process's own classic SessionStart
+ *   (`startup`, `resume`, `fork`: the engine raises it as the process
+ *   starts its session, never at a plugin reload or a worker respawn, and a
+ *   /clear's or a compaction's is no start) with no trace of a module before
+ *   it (a kept launch, kept holder state), or a module before this one found
+ *   it so (`fresh`, kept). Then with the process's launch and the receipts
+ *   the live conversation holds (`retained`). Any other process is an
+ *   existing one, its absent bookkeeping no evidence that nothing was
  *   handed off: an upgrade the child records `legacy`, observed if an
  *   observer served it before (an M4a observer goes on), never observed
- *   otherwise (no hello: the host keeps its lineage registration).
+ *   otherwise (no hello: the host keeps its lineage registration). A first
+ *   bootstrap with no evidence either way waits STARTUP_WAIT_MS for the
+ *   SessionStart (the engine runs it while the first session.start is
+ *   still settling), then takes the process for an existing one. The
+ *   child's `processAge` is said for diagnosis; it decides nothing.
  * - A main-loop request the module admits (a `proceed`, no fence, a lease's
  *   expiry) reports the receipts it carries, decided with no await before
  *   its `next`; the report is kept in `$.state` and replayed on the child's
@@ -70,12 +76,13 @@ import type { FencedStep, HolderAsked, HolderFence, HolderRelay, HolderState, Pr
  */
 
 /**
- * The age a process may have at its first module's first bootstrap and be
- * taken for a fresh one (O12 M4b): its engine starts the module, the module
- * its child, before the first prompt, in seconds; a `/reload-plugins` comes
- * to a process far older. On the boot clock, which no wall-clock step moves.
+ * How long a first bootstrap with no evidence of the process's start waits
+ * for its SessionStart before the process is taken for an existing one (O12
+ * M4b): the engine raises it beside the first session.start, which spawns
+ * the child, so on a start it is there at once or within moments; a module
+ * reloaded into a running process waits this long once, before its hello.
  */
-export const FRESH_PROCESS_S = 60
+export const STARTUP_WAIT_MS = 5_000
 
 /** The observer's fallback past a lease: one heartbeat, OX10's production margin. */
 export const HOLDER_MARGIN_MS = 5_000
@@ -209,7 +216,7 @@ export const isHolderLoaded = () => state.holder.isLoaded
  * process is a fresh one (O12 M4b): the `fresh` it decided; or, with none,
  * an existing one (an M4a module's state, a launch kept with no holder
  * state, a state it cannot read). Nothing at all left decides nothing: the
- * first bootstrap's `processAge` does.
+ * process's own SessionStart, or its absence, does at the first bootstrap.
  */
 async function restore($: EngineInterface, h: HolderState): Promise<void> {
   let kept: unknown
@@ -381,9 +388,19 @@ async function takeBootstrap($: EngineInterface, b: Record<string, unknown>) {
   // What a module before this one kept is in before anything is written.
   await h.loaded
   // A fresh process, or an existing one (O12 M4b): decided once per process.
+  if (h.fresh === undefined && !h.isProcessStart) {
+    await new Promise<void>((resolve) => {
+      h.onProcessStart = resolve
+      $.clock.after(STARTUP_WAIT_MS, resolve)
+    })
+    h.onProcessStart = undefined
+  }
   if (h.fresh === undefined) {
-    h.fresh = typeof b.processAge === 'number' && b.processAge >= 0 && b.processAge < FRESH_PROCESS_S
-    log(`the process is ${h.fresh ? 'a fresh one' : `an existing one (its age ${String(b.processAge)} s)`}`)
+    h.fresh = h.isProcessStart
+    log(`the process is ${h.fresh ? 'a fresh one: this module handled its SessionStart' : 'an existing one: no SessionStart of its own came'} (its age ${String(b.processAge)} s)`)
+  }
+  if (!isCurrent(relay)) {
+    return
   }
   // An existing process no observer served stays unobserved.
   const observe = h.fresh || h.observerStarted
@@ -481,9 +498,9 @@ function answer(key: string, a: { stop?: string }) {
 }
 
 /** POST /holder on the child's route, naming its generation; undefined when the child never answered. */
-async function post($: EngineInterface, relay: HolderRelay, body: Record<string, unknown>): Promise<{ status: number; answer?: Record<string, unknown> } | undefined> {
+async function post($: EngineInterface, relay: HolderRelay, body: Record<string, unknown>, attempts = POST_TRIES): Promise<{ status: number; answer?: Record<string, unknown> } | undefined> {
   let failure: unknown
-  for (let tries = 0; tries < POST_TRIES && isCurrent(relay); tries++) {
+  for (let tries = 0; tries < attempts && isCurrent(relay); tries++) {
     try {
       const res = await $.http.fetch('http://holder/holder', {
         method: 'POST',
@@ -622,6 +639,15 @@ export function abandonedStep(e: TurnStepInput): HookStream<TurnStepChunk, TurnS
 
 // -- receipts (O12 M4b)
 
+/** The classic SessionStart: a start, a resume or a fork is the process's own (its first load's evidence); a /clear's or a compaction's is none. */
+export function sessionStarted(source: string) {
+  const h = state.holder
+  if (source === 'startup' || source === 'resume' || source === 'fork') {
+    h.isProcessStart = true
+    h.onProcessStart?.()
+  }
+}
+
 /**
  * The module's final admission of a main-loop request carrying these
  * receipts: the report queued at once (the caller enters `next` with no
@@ -671,7 +697,9 @@ async function pumpReports(): Promise<void> {
         void keep($)
         continue
       }
-      const got = await post($, relay, report.kind === 'admit' ? { kind: 'admit', session: report.session, ids: report.ids } : { kind: 'release', session: report.session, items: report.items })
+      // A release is one attempt per fence check: its retry is this loop's,
+      // which checks the fences again first.
+      const got = await post($, relay, report.kind === 'admit' ? { kind: 'admit', session: report.session, ids: report.ids } : { kind: 'release', session: report.session, items: report.items }, report.kind === 'release' ? 1 : POST_TRIES)
       if (h !== state.holder) {
         return
       }
