@@ -180,7 +180,7 @@ def supervisor_reply(short, text, session=""):
 # ------------------------------------------------------------------ delivery
 
 
-def push_live(peer, session, text, event=None, project=None, words=None, receipt=None):
+def push_live(peer, session, text, event=None, project=None, words=None, marker=None):
     """A delivery's last hop to a live session, `event` the last log event the
     text carries (None for a frame no log holds; every event of one push is
     one writer's, so one side's) and `project` the id of the project whose
@@ -198,15 +198,15 @@ def push_live(peer, session, text, event=None, project=None, words=None, receipt
     A log-backed delivery is a handoff to the session's process, whose
     delivery mode decides it (O12 M4b, sminos_holder_deliveries): `legacy`
     (or no record, which records `legacy` first) takes it as above; a
-    `gate` process takes it only with its `receipt` (the id its caller
-    prepared under the session's delivery lock, S.holder_carry), which goes
-    straight to the inbox with the receipt's marker as the text's first
-    line — a lane B observer's bridge refuses every `deliver` (M3), and the
+    `gate` process takes it only with its receipt's `marker` (the line
+    naming the receipt and attempt its caller prepared under the session's
+    delivery lock, S.holder_carry), which goes straight to the inbox as the
+    text's first line — a lane B observer's bridge refuses every `deliver` (M3), and the
     verdict was applied when the receipt was prepared — and anything else
     raises SendFailed("before"), nothing handed off. (A peer record naming
     no pid names no process to hold a mode; every live one names one.)"""
-    if receipt is not None:
-        text = "%s\n%s" % (S.holder_module().marker(receipt), text)
+    if marker is not None:
+        text = "%s\n%s" % (marker, text)
     else:
         if words is None and event is not None and event.get("kind") == "human" \
                 and S.sibling_module("sminos_rl10").cut_over():

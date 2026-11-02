@@ -172,7 +172,7 @@ class Rig(unittest.TestCase):
 
     def ids(self, sid=S1):
         """The receipt ids each inbox frame carries."""
-        return [hd.markers(text) for text in self.inbox(sid)]
+        return [[rid for rid, _ in hd.markers(text)] for text in self.inbox(sid)]
 
     def receipt(self, e, sid=S1, project=None):
         path = hd._receipt_path(hd.key_hash((project or self.hp).id, sid, e["writer"], e["seq"]))
@@ -189,6 +189,27 @@ class Rig(unittest.TestCase):
         rec = hd.activate(pid, launch, sid, retained=retained)
         self.assertEqual(rec["mode"], "gate")
         return rec
+
+
+    def said(self, words):
+        """The daemon.log lines that hold `words`."""
+        try:
+            text = Path(sminos.root(), "daemon.log").read_text()
+        except FileNotFoundError:
+            return []
+        return [line for line in text.splitlines() if words in line]
+
+    def cut_over(self, devices=()):
+        """This machine cut over to its endpoint, `devices` revoked."""
+        sminos.write_json(rl10.identity_path(), {
+            "org": "org-1", "hub": "http://127.0.0.1:9", "name": "testhost", "former": {}, "ref": "r",
+            "enrolled": "2026-10-27T00:00:00.000Z", "cutover": "2026-10-27T00:00:01.000Z", "build": "b"})
+        self.revoke(devices)
+        sminos.forget_caches()
+
+    def revoke(self, devices, version=1):
+        os.makedirs(os.path.dirname(rl10.revoked_path()), exist_ok=True)
+        rl10.keep_revoked({"version": version, "devices": list(devices), "members": [], "keys": []}, True)
 
 
 # ------------------------------------------------------------- the process mode
@@ -334,7 +355,8 @@ class Receipt(Rig):
         self.assertEqual(stat.S_IMODE(os.stat(hd._receipt_path(r["id"].split(".")[0])).st_mode), 0o600)
         frame = self.inbox(S1)[0]
         body = frame.split("\n", 1)[1]
-        self.assertTrue(body.startswith(hd.marker(r["id"]) + "\n"), "the marker is the envelope body's first line")
+        self.assertTrue(body.startswith(hd.marker(r["id"], 1) + "\n"), "the marker is the envelope body's first line")
+        self.assertEqual(hd.markers(frame), [(r["id"], 1)], "naming the receipt and its attempt")
         self.assertIn("hello there", frame)
         self.assertEqual(self.bridge, [], "a gate process's delivery goes to its inbox alone")
         self.assertEqual(self.settled(OTHER), 0, "the cursor waits for the admission")
@@ -567,17 +589,16 @@ class Retry(Rig):
         for _ in range(3):
             self.deliver()
         self.assertEqual(len(self.inbox(S1)), 1, "a reconnect's welcome is no release: nothing until the mod says")
-        self.assertEqual(hd.release([{"id": rid, "present": True}], self.pid, "launch-2", S1)["code"], "launch")
-        self.assertEqual(hd.release([{"id": rid, "present": True}], self.pid, "launch-1", S2)["receipts"],
-                         {rid: "foreign"})
-        self.assertEqual(hd.release([{"id": rid, "present": True}], self.pid, "launch-1", S1)["receipts"],
-                         {rid: "released"})
+        item = {"id": rid, "attempt": 1, "present": True}
+        self.assertEqual(hd.release([item], self.pid, "launch-2", S1)["code"], "launch")
+        self.assertEqual(hd.release([item], self.pid, "launch-1", S2)["receipts"], {rid: "foreign"})
+        self.assertEqual(hd.release([item], self.pid, "launch-1", S1)["receipts"], {rid: "released"})
         self.deliver()
         self.assertEqual(self.ids(), [[rid], [rid]], "retried once, the same id")
         self.assertNotIn("the body", self.inbox(S1)[1], "a wake: its row is in the conversation")
         self.deliver()
         self.assertEqual(len(self.inbox(S1)), 2, "a newer hold keeps it pending until another release")
-        hd.release([{"id": rid, "present": False}], self.pid, "launch-1", S1)
+        hd.release([{"id": rid, "attempt": 2, "present": False}], self.pid, "launch-1", S1)
         self.deliver()
         self.assertIn("the body", self.inbox(S1)[2], "its row gone (a rewind): the full body")
         self.assertEqual(self.receipt(e)["attempt"]["n"], 3)
@@ -587,11 +608,10 @@ class Retry(Rig):
         e, rid = self.stopped()
         resumed = self.launch(S1)
         self.gate(resumed, launch="launch-1")   # the same launch id, another process
-        self.assertEqual(hd.release([{"id": rid, "present": True}], resumed, "launch-1", S1)["receipts"],
-                         {rid: "stale"})
+        item = {"id": rid, "attempt": 1, "present": True}
+        self.assertEqual(hd.release([item], resumed, "launch-1", S1)["receipts"], {rid: "stale"})
         hd.admit([rid], resumed, S1)
-        self.assertEqual(hd.release([{"id": rid, "present": True}], resumed, "launch-1", S1)["receipts"],
-                         {rid: "admitted"})
+        self.assertEqual(hd.release([item], resumed, "launch-1", S1)["receipts"], {rid: "admitted"})
 
     def test_a_resume_racing_its_own_activation_waits_for_it(self):
         """A young process of a session a gate process served: its first
@@ -599,13 +619,19 @@ class Retry(Rig):
         bridge activates."""
         e, rid = self.stopped()
         resumed = self.launch(S1)
-        got = self.deliver()
-        self.assertEqual([o for _, o in got["outcomes"]], [sminos.HOLDER_AWAITING])
+        for _ in range(3):
+            got = self.deliver()
+            self.assertEqual([o for _, o in got["outcomes"]], [sminos.HOLDER_AWAITING])
         self.assertIsNone(hd.read_mode(hd.process(resumed)), "nothing chosen for it yet")
         self.assertEqual(len(self.inbox(S1)), 1)
+        self.assertEqual(self.record().get(OTHER, {}).get("attempts", 0), 0, "waiting counts no attempt")
         self.gate(resumed, launch="launch-2", retained=[rid])
         self.deliver()
         self.assertEqual(self.ids()[1], [rid])
+        self.assertEqual(hd.read_mode(hd.process(resumed))["mode"], "gate")
+        self.assertEqual(self.receipt(e)["attempt"]["pid"], resumed, "a receipt of its own")
+        self.assertEqual(len(self.said("may yet activate receipts")), 1, "the grace's start, said once")
+        self.assertEqual(self.said("did not activate receipts"), [], "it ended in `gate`")
         with mock.patch.object(hd, "ACTIVATION_GRACE_S", 0):
             again = self.launch(S1)
             self.deliver()
@@ -722,6 +748,239 @@ class Sweep(Rig):
         self.assertIsNotNone(hd.read_mode(hd.process(live)))
         self.assertEqual(sorted(os.listdir(os.path.join(hd.home(), hd.LAUNCHES))),
                          sorted(os.path.basename(hd._mode_path(hd.process(live), ext)) for ext in (".json", ".lock")))
+
+
+# ------------------------------------------------------------- review fixes
+
+
+class Policy(Rig):
+    """A receipt proves it was prepared, not that anything was handed off:
+    the revocation set and the read-only policy are read again before any
+    push or retry of it; only its admission settles it unasked."""
+
+    def setUp(self):
+        super().setUp()
+        self.cut_over()
+        self.pid = self.launch(S1)
+        self.gate(self.pid)
+
+    def failed_first_push(self):
+        e = self.arrive(OTHER, 1, signer=DEV_A, text="signed body")
+        with mock.patch.object(sminos, "send_frame", side_effect=sminos.SendFailed("before", "refused")):
+            got = self.deliver()
+        self.assertTrue(got["outcomes"][0][1].startswith("failed:"))
+        self.assertEqual(self.receipt(e)["attempt"]["state"], "prepared")
+        return e
+
+    def test_a_receipt_nothing_was_handed_off_under_is_refused_once_its_signer_is_revoked(self):
+        e = self.failed_first_push()
+        self.revoke(["dev-a"], version=2)
+        got = self.deliver()
+        self.assertEqual([o for _, o in got["outcomes"]], [outcomes.REFUSED_REVOKED])
+        self.assertEqual(self.inbox(S1), [], "never pushed")
+        self.assertIsNone(self.receipt(e), "its receipt goes with it")
+        self.assertEqual(self.deliver()["outcomes"], [])
+
+    def test_revoke_owed_marks_a_receipt_nothing_was_handed_off_under(self):
+        e = self.failed_first_push()
+        self.revoke(["dev-a"], version=2)
+        self.assertEqual([x["seq"] for x in sminos.revoke_owed(self.hp, member(S1), rl10.revoked())], [1])
+        self.assertIsNone(self.receipt(e))
+        self.deliver()
+        self.assertEqual(self.inbox(S1), [])
+
+    def test_a_handed_off_receipt_is_left_to_its_admission(self):
+        e = self.arrive(OTHER, 1, signer=DEV_A)
+        self.deliver()
+        rid = self.receipt(e)["id"]
+        self.revoke(["dev-a"], version=2)
+        self.assertEqual(sminos.revoke_owed(self.hp, member(S1), rl10.revoked()), [], "delivered before it")
+        hd.admit([rid], self.pid, S1)
+        self.assertEqual([o for _, o in self.deliver()["outcomes"]], ["sent"], "admission settles it, unasked")
+
+    def test_a_handed_off_receipt_is_not_retried_once_its_signer_is_revoked(self):
+        e = self.arrive(OTHER, 1, signer=DEV_A)
+        self.deliver()
+        self.revoke(["dev-a"], version=2)
+        resumed = self.launch(S1)
+        self.gate(resumed, launch="launch-2")
+        got = self.deliver()
+        self.assertEqual([o for _, o in got["outcomes"]], [outcomes.REFUSED_REVOKED])
+        self.assertEqual(len(self.inbox(S1)), 1, "no retry into the new launch")
+        self.assertIsNone(self.receipt(e))
+
+    def test_deliver_verdict_rechecks_the_revocation_before_a_retry(self):
+        words = self.arrive("hub/mem-1", 1, kind="human", signer=DEV_A, text="words for you")
+        with mock.patch.object(sminos, "send_frame", side_effect=sminos.SendFailed("before", "refused")):
+            self.assertTrue(sminos.deliver_verdict(self.hp, member(S1), words, "words").startswith("failed:"))
+        self.revoke(["dev-a"], version=2)
+        self.assertEqual(sminos.deliver_verdict(self.hp, member(S1), words, "words"), outcomes.REFUSED_REVOKED)
+        self.assertEqual(self.inbox(S1), [])
+        self.assertIsNone(self.receipt(words))
+
+
+class Identity(Rig):
+    """A process's mode identity is what every reader reads alike, whatever
+    the wall clock did since: on Linux the boot and the start in ticks."""
+
+    def proc(self, root, boot_id="0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0", btime=1_700_000_000, ticks=123456):
+        os.makedirs(os.path.join(root, "4242"), exist_ok=True)
+        os.makedirs(os.path.join(root, "sys", "kernel", "random"), exist_ok=True)
+        Path(root, "stat").write_text("cpu 1 2 3\nbtime %d\n" % btime)
+        Path(root, "uptime").write_text("5000.00 9000.00\n")
+        Path(root, "sys", "kernel", "random", "boot_id").write_text(boot_id + "\n")
+        Path(root, "4242", "stat").write_text(
+            "4242 (claude (x)) S " + " ".join(["0"] * 18) + " %d " % ticks + " ".join(["0"] * 5) + "\n")
+
+    def read(self, root):
+        sminos._BOOT.clear()
+        with mock.patch.object(sminos, "PROC", root), mock.patch.object(hd, "sys", mock.Mock(platform="linux")):
+            return hd.process(4242)
+
+    def test_linux_identity_survives_a_wall_clock_step(self):
+        root = os.path.join(self.home, "proc")
+        self.proc(root)
+        before = self.read(root)
+        self.assertIsNotNone(before)
+        self.proc(root, btime=1_700_000_000 + 3600)   # the clock stepped an hour
+        self.assertEqual(self.read(root)["start"], before["start"])
+        self.proc(root, boot_id="11111111-2222-3333-4444-555555555555")   # another boot, the same pid and ticks
+        self.assertNotEqual(self.read(root)["start"], before["start"])
+        self.proc(root, ticks=123457)
+        self.assertNotEqual(self.read(root)["start"], before["start"])
+
+    def test_no_boot_id_is_no_identity(self):
+        root = os.path.join(self.home, "proc")
+        self.proc(root)
+        os.unlink(os.path.join(root, "sys", "kernel", "random", "boot_id"))
+        self.assertIsNone(self.read(root), "fail closed, never a clock-derived identity")
+
+
+class Release(Rig):
+    def setUp(self):
+        super().setUp()
+        self.pid = self.launch(S1)
+        self.gate(self.pid)
+        self.e = self.arrive(OTHER, 1, text="the body")
+        self.deliver()
+        self.rid = self.receipt(self.e)["id"]
+
+    def release(self, attempt, present=True):
+        return hd.release([{"id": self.rid, "attempt": attempt, "present": present}], self.pid, "launch-1", S1)
+
+    def test_a_replayed_release_of_an_earlier_attempt_releases_nothing(self):
+        self.assertEqual(self.release(1)["receipts"], {self.rid: "released"})
+        self.deliver()
+        self.assertEqual(self.receipt(self.e)["attempt"]["n"], 2)
+        self.assertEqual(self.release(1)["receipts"], {self.rid: "stale"}, "attempt 1 was released already")
+        self.deliver()
+        self.assertEqual(len(self.inbox(S1)), 2, "no third push")
+        self.assertEqual(self.receipt(self.e)["attempt"]["n"], 2)
+
+    def test_a_replayed_release_of_the_current_attempt_allows_one_retry(self):
+        self.assertEqual(self.release(1)["receipts"], {self.rid: "released"})
+        self.assertEqual(self.release(1)["receipts"], {self.rid: "released"}, "idempotent")
+        self.deliver()
+        self.deliver()
+        self.assertEqual(len(self.inbox(S1)), 2)
+
+    def test_a_release_naming_no_attempt_releases_nothing(self):
+        got = hd.release([{"id": self.rid, "present": True}], self.pid, "launch-1", S1)
+        self.assertEqual(got["receipts"], {self.rid: "stale"})
+        self.deliver()
+        self.assertEqual(len(self.inbox(S1)), 1)
+
+
+class Storage(Rig):
+    """A report the child could not record durably is a retryable failure,
+    never an acknowledged `unknown`."""
+
+    def setUp(self):
+        super().setUp()
+        self.pid = self.launch(S1)
+        self.gate(self.pid)
+        self.e = self.arrive(OTHER, 1)
+        self.deliver()
+        self.rid = self.receipt(self.e)["id"]
+        self.path = hd._receipt_path(self.rid.split(".")[0])
+
+    def test_an_unreadable_receipt_fails_an_admission_retryably(self):
+        kept = Path(self.path).read_text()
+        Path(self.path).write_text("{")
+        got = hd.admit([self.rid], self.pid, S1)
+        self.assertEqual((got["ok"], got["code"]), (False, "storage"))
+        Path(self.path).write_text(kept)
+        self.assertEqual(hd.admit([self.rid], self.pid, S1), {"ok": True, "receipts": {self.rid: "admitted"}},
+                         "the replay records it")
+
+    def test_a_write_that_fails_fails_the_report(self):
+        with mock.patch.object(hd, "_write", side_effect=OSError(28, "No space left on device")):
+            got = hd.admit([self.rid], self.pid, S1)
+        self.assertEqual((got["ok"], got["code"]), (False, "storage"))
+        self.assertIsNone(self.receipt(self.e)["admitted"])
+        with mock.patch.object(hd, "_write", side_effect=OSError(28, "No space left on device")):
+            got = hd.release([{"id": self.rid, "attempt": 1, "present": True}], self.pid, "launch-1", S1)
+        self.assertEqual((got["ok"], got["code"]), (False, "storage"))
+
+    def test_an_unreadable_receipt_fails_a_release_retryably(self):
+        Path(self.path).write_text("{")
+        got = hd.release([{"id": self.rid, "attempt": 1, "present": True}], self.pid, "launch-1", S1)
+        self.assertEqual((got["ok"], got["code"]), (False, "storage"))
+
+    def test_an_invalid_token_is_still_unknown(self):
+        forged = self.rid.split(".")[0] + ".0123456789abcdef"
+        self.assertEqual(hd.admit([forged], self.pid, S1), {"ok": True, "receipts": {forged: "unknown"}})
+
+
+class Grace(Rig):
+    def test_the_grace_is_bounded_at_30_seconds_and_0_is_the_literal_rule(self):
+        for value, grace in (("999", 30.0), ("0", 0.0), ("12", 12.0), ("", 30.0)):
+            with mock.patch.dict(os.environ, {"SMINOS_HOLDER_ACTIVATION_GRACE": value}):
+                self.assertEqual(hd._grace(), grace, value)
+
+    def test_no_activation_within_the_grace_is_legacy_after_it_and_one_handoff(self):
+        pid = self.launch(S1)
+        self.gate(pid)
+        e = self.arrive(OTHER, 1)
+        self.deliver()
+        hd.admit([self.receipt(e)["id"]], pid, S1)
+        self.deliver()
+        resumed = self.launch(S1)
+        self.arrive(OTHER, 2)
+        for _ in range(sminos.DELIVERY_ATTEMPTS + 2):
+            self.assertEqual([o for _, o in self.deliver()["outcomes"]], [sminos.HOLDER_AWAITING])
+        self.assertEqual(len(self.inbox(S1)), 1, "nothing handed off while it may activate")
+        self.assertEqual(self.record().get(OTHER, {}).get("attempts", 0), 0)
+        real = hd.process
+
+        def older(p):
+            got = real(p)
+            return dict(got, age=got["age"] + hd.ACTIVATION_GRACE_S + 1) if got else got
+        with mock.patch.object(hd, "process", side_effect=older):
+            self.assertEqual([o for _, o in self.deliver()["outcomes"]], ["sent"])
+            self.assertEqual(self.deliver()["outcomes"], [])
+        self.assertEqual(hd.read_mode(hd.process(resumed))["mode"], "legacy")
+        self.assertEqual(len(self.inbox(S1)), 2, "exactly one handoff")
+        self.assertEqual(len(self.said("may yet activate receipts")), 1)
+        self.assertEqual(len(self.said("did not activate receipts")), 1)
+
+
+class SweepIdentity(Rig):
+    def test_a_live_process_whose_start_cannot_be_read_keeps_its_mode(self):
+        live = self.launch(S1)
+        self.gate(live)
+        path = hd._mode_path(hd.process(live))
+        with mock.patch.object(hd, "process", return_value=None):
+            self.assertEqual(hd.sweep(sminos.known_project), (0, 0))
+        self.assertTrue(os.path.exists(path), "not proof it ended")
+        self.assertEqual(hd.read_mode(hd.process(live))["mode"], "gate")
+
+    def test_a_record_of_another_process_under_a_reused_pid_is_swept(self):
+        live = self.launch(S1)
+        stale = os.path.join(hd.home(), hd.LAUNCHES, "%d-%s.json" % (live, "0"))
+        Path(stale).write_text("{}")
+        self.assertEqual(hd.sweep(sminos.known_project), (1, 0))
+        self.assertFalse(os.path.exists(stale))
 
 
 if __name__ == "__main__":

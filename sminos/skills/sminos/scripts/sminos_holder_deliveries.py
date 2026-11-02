@@ -16,13 +16,18 @@ unarmed admission, or the observer's lease-expiry proceed). On the host's
         receipts.lock                                 every receipt's read-modify-write
         launches/<pid>-<start>.json            0600   one process's delivery mode
         launches/<pid>-<start>.lock                   its mode lock
+        launches/<pid>-<start>.grace           0600   a deliverer waits for its activation (said once)
         sessions/<session>                     0600   the session was served by a `gate` process once
 
 ## The process mode
 
-A claude process is `pid` plus `start` (its start, whole epoch seconds, as
-`ps -o lstart=` reads it: process()), so a reused pid is another process.
-Its record is chosen once, under the process's mode lock, and never changes:
+A claude process is `pid` plus `start`, its identity (process()): on macOS
+the start XNU stored at fork, in whole epoch seconds; on Linux the boot id
+and the start in ticks since that boot. Neither moves when the wall clock
+steps, so every reader (deliverers, the child, the sweep) names the same
+process alike, and a reused pid is another process. Where it cannot be
+read, there is none: deliveries hold, activation is refused. Its record is
+chosen once, under the process's mode lock, and never changes:
 
     {"v": 1, "pid", "start", "mode": "gate" | "legacy", "launch": <M7's launch id> | null,
      "session": <the session it was chosen for> | null, "by": "activation" | "observer" | "handoff",
@@ -38,8 +43,9 @@ Its record is chosen once, under the process's mode lock, and never changes:
 - No record: nothing was handed off and nothing activated. The next
   deliverer records `legacy` under the lock and hands off, except while a
   young process of a session a `gate` process served before may still
-  activate (ACTIVATION_GRACE_S): that delivery waits, owed, for at most the
-  grace.
+  activate (ACTIVATION_GRACE_S, at most 30 s; 0 is the plain rule): that
+  delivery waits, owed, no attempt counted. daemon.log says when the wait
+  starts, and when it ends in `legacy`.
 - A record present but unreadable, or naming another mode: fail closed. The
   delivery stays owed (no attempt counted) and activation is refused. Unknown
   support is not legacy.
@@ -49,6 +55,7 @@ Its record is chosen once, under the process's mode lock, and never changes:
     {"v": 1, "id": "<keyhash>.<token>", "key": {"project", "session", "writer", "seq"}, "hash": <the event's>,
      "words": true | false | null, "created": <ISO>,
      "attempt": {"n", "pid", "start", "launch", "body": "full" | "wake", "state": "prepared" | "pushed", "at"},
+     "handed": true (an attempt reached the inbox, or may have) | absent,
      "released": {"attempt": n, "present": bool, "at"} | null,
      "admitted": {"pid", "start", "launch", "at"} | null}
 
@@ -56,11 +63,19 @@ Its record is chosen once, under the process's mode lock, and never changes:
 file's name; `token` is random, made at the first prepare and kept, so an id
 cannot be derived from what a log shows. A receipt is good only for the
 event whose hash it holds: another body at that position (a git merge put
-another line there) is none. The id rides each delivery's text as its first
-line, `[sminos receipt <id>]` (marker()); the bridge mod reads it from the
-observed row and reports it through the child, which checks it here: text
-alone settles nothing. `attempt` is the current one: a resume or a retry
-changes the attempt, never the id.
+another line there) is none. The id and its attempt ride each delivery's
+text as its first line, `[sminos receipt <id> attempt <n>]` (marker()); the
+bridge mod reads them from the observed row and reports them through the
+child, which checks them here: text alone settles nothing. `attempt` is the
+current one: a resume or a retry changes the attempt, never the id.
+
+A receipt proves it was prepared, not that anything was handed off. Only
+`handed` (or an admission) exempts its event from a revocation
+(sminos.revoke_owed); and every step that would push — a retry, a push that
+failed before it reached — is checked first against the revocation set and
+the read-only policy, as a fresh push is (plan(prepare=False) says so
+without writing; sminos.holder_owed answers HOLDER_RETRY). Only an
+admission settles a receipt unasked.
 
 What a deliverer does with an event (plan(), under the recipient's delivery
 lock, sminos.deliver_next and deliver_verdict):
@@ -105,36 +120,45 @@ takes only this module's short locks, so none waits on a deliverer's push.
         M4b activation of its own): `legacy` unless a record exists. Call it
         before handling any delivery or activation; keep the observer
         connected and fencing either way. Raises Unreadable.
-    admit(ids, pid, session) -> {"ok": True, "receipts": {id: state}} | {"ok": False, "code", "error"}
+    admit(ids, pid, session) -> {"ok": True, "receipts": {id: state}} | {"ok": False, "code", "error"[, "receipts"]}
         The mod admitted a model request carrying these receipts' rows (a
-        `proceed`, no fence, or lease-expiry). Durable before it answers, and
-        idempotent: replay it until it answers ok. state is `admitted` (now
-        or before), `gone` (no such receipt: settled and removed, or never
-        made — nothing to do), `unknown` (an id whose token is not the
-        receipt's: settles nothing) or `foreign` (the receipt is another
-        session's: an old child's report after a /clear). Refused whole
-        (`ok` false) when the process is not `gate` (`code` legacy, mode or
-        process). The daemon is nudged; its next delivery pass settles.
-    release(items, pid, launch, session) -> {"ok": True, "receipts": {id: state}} | {"ok": False, "code", "error"}
-        items: [{"id", "present": bool}]. A stopped receipt in this same
+        `proceed`, no fence, or lease-expiry): ids only, an admission of
+        any attempt settles. Durable before it answers, and idempotent:
+        replay it until it answers ok. state is `admitted` (now or before),
+        `gone` (no such receipt: settled and removed, or never made —
+        nothing to do), `unknown` (an id whose token is not the receipt's:
+        settles nothing) or `foreign` (the receipt is another session's: an
+        old child's report after a /clear). `ok` false: refused whole when
+        the process is not `gate` (`code` legacy, mode or process); `code`
+        storage when an item could not be recorded durably (its receipt
+        there and unreadable, a write failed: state `unavailable`, the
+        others recorded beside it) — retryable: replay the whole report.
+        The daemon is nudged; its next delivery pass settles.
+    release(items, pid, launch, session) -> same shape as admit
+        items: [{"id", "attempt": n, "present": bool}], `attempt` the one
+        the stopped row's marker named. A stopped attempt in this same
         launch may be retried: the matching `disarm` (same epoch and fence)
         came, or every applicable hold expired plus the margin — the mod
         decides that against its current fences, never on a welcome alone;
         `present` says whether its row is still in the conversation (a wake
-        then; a rewind or /clear dropped it: the full body). Checked here
-        against the current process and launch: the receipt's attempt must
-        be this process's (pid and start) in `launch`. state is `released`,
-        `admitted`, `gone`, `unknown`, `foreign` or `stale` (the attempt is
-        another process's or launch's: nothing to release here). One
-        release allows one retry; a later stop needs another.
-    marker(id) / MARKER_RE / markers(text)
-        The text marker: a line `[sminos receipt <id>]`, the first line of
-        each delivery's text (a wake's too).
+        then; a rewind or /clear dropped it: the full body). Checked here,
+        under the receipts lock, against the receipt's current attempt: it
+        must be `attempt`, this process's (pid and start), in `launch`.
+        state is `released` (now, or a replay of this attempt's release),
+        `admitted`, `gone`, `unknown`, `foreign`, `unavailable` (code
+        storage, as admit) or `stale` (the attempt named is not the current
+        one — a replay after its retry was made, or none named — or is
+        another process's or launch's: nothing released). One release
+        allows one retry; the retry's stop needs a release of its attempt.
+    marker(id, attempt) / MARKER_RE / markers(text) -> [(id, attempt)]
+        The text marker: a line `[sminos receipt <id> attempt <n>]`, the
+        first line of each delivery's text (a wake's too).
 
 `stop` records nothing: no admission, no cursor. A receipt whose process
 ended is retried by the next launch, with the same id.
 
-Recovery: sweep() removes the mode records of processes that are gone and
+Recovery: sweep() removes the mode records of processes that are gone (or
+whose pid names another process: never one merely unreadable now) and
 the receipts whose event the delivery record has settled (a crash between
 the settlement and settled()); `sminos daemon run` sweeps with its other
 sweeps.
@@ -157,24 +181,26 @@ LAUNCHES = "launches"
 SESSIONS = "sessions"
 MODES = ("gate", "legacy")
 BODIES = ("full", "wake")
-MARKER = "[sminos receipt %s]"
+MARKER = "[sminos receipt %s attempt %d]"
 ID_RE = re.compile(r"^([0-9a-f]{24})\.([0-9a-f]{16})$")
-MARKER_RE = re.compile(r"^\[sminos receipt ([0-9a-f]{24}\.[0-9a-f]{16})\]$", re.M)
+MARKER_RE = re.compile(r"^\[sminos receipt ([0-9a-f]{24}\.[0-9a-f]{16}) attempt ([1-9][0-9]{0,8})\]$", re.M)
+GRACE_MAX_S = 30.0
 RETAINED_MAX = 512           # receipt ids an activation keeps as found in the conversation
 SESSION_KEPT_S = 30 * 86400  # a session marker unrefreshed this long is swept
 
 
 def _grace():
     try:
-        v = float(os.environ.get("SMINOS_HOLDER_ACTIVATION_GRACE") or 30)
+        v = float(os.environ.get("SMINOS_HOLDER_ACTIVATION_GRACE") or GRACE_MAX_S)
     except ValueError:
-        return 30.0
-    return max(v, 0.0)
+        return GRACE_MAX_S
+    return min(max(v, 0.0), GRACE_MAX_S)
 
 
 # How long a deliverer waits, owed, for a young process of a session a `gate`
 # process served before to activate, before it records the process `legacy`:
 # a resume races its own bridge's activation, and the first handoff wins.
+# Never more than GRACE_MAX_S; 0 is the record-alone rule with no wait.
 ACTIVATION_GRACE_S = _grace()
 
 
@@ -248,25 +274,62 @@ def _read(path):
 
 
 def process(pid):
-    """{"pid", "start"} of a live process, its start in whole epoch seconds;
-    None when it does not run or its start cannot be read."""
+    """{"pid", "start", "age"} of a live process: `start` its identity, the
+    same for every reader (deliverers, the child, the sweep) whatever the
+    wall clock did since it began, and `age` its seconds since then. None
+    when it does not run or its identity cannot be read (no reader falls
+    back to a clock-derived one: two readers could tell two processes)."""
     try:
         pid = int(pid)
     except (TypeError, ValueError):
         return None
     if pid <= 1:
         return None
-    # Epoch seconds where the kernel says so (no local-time text between two
-    # processes that may not share a TZ); ps's text where it cannot.
-    start = S._darwin_start(pid) if sys.platform == "darwin" else S._linux_start(pid)
-    if start is None:
-        parsed = S._parse_lstart(S.read_proc_start(pid))
-        start = int(time.mktime(parsed)) if parsed else 0
-    return {"pid": pid, "start": int(start)} if start else None
+    got = _darwin_identity(pid) if sys.platform == "darwin" else _linux_identity(pid)
+    return None if got is None else {"pid": pid, "start": got[0], "age": got[1]}
+
+
+def _darwin_identity(pid):
+    """macOS: kinfo_proc's p_starttime, the wall-clock instant XNU stores in
+    the proc at fork (kern_fork.c, microtime into p_start) and reads back
+    as it is: a later clock step moves no stored start."""
+    start = S._darwin_start(pid)
+    if not start:
+        return None
+    return str(int(start)), max(time.time() - start, 0.0)
+
+
+def _linux_identity(pid):
+    """Linux: the boot (/proc/sys/kernel/random/boot_id) and the start in
+    clock ticks since it (/proc/<pid>/stat), neither read off the wall
+    clock; ps's epoch start adds /proc/stat's btime, which a clock step
+    moves. The age from /proc/uptime, the boot-time clock."""
+    try:
+        with open(os.path.join(S.PROC, "sys", "kernel", "random", "boot_id")) as f:
+            boot = f.read().strip().replace("-", "").lower()
+        ticks = S._start_ticks(pid)
+        with open(os.path.join(S.PROC, "uptime")) as f:
+            uptime = float(f.read().split()[0])
+    except (OSError, ValueError, IndexError):
+        return None
+    if not re.fullmatch(r"[0-9a-f]{32}", boot):
+        return None
+    return "%s-%d" % (boot, ticks), max(uptime - ticks / os.sysconf("SC_CLK_TCK"), 0.0)
+
+
+def _gone(pid):
+    """Whether the process `pid` positively no longer runs."""
+    try:
+        os.kill(int(pid), 0)
+    except ProcessLookupError:
+        return True
+    except (PermissionError, OSError, ValueError):
+        return False
+    return False
 
 
 def _mode_path(proc, ext=".json"):
-    return os.path.join(home(), LAUNCHES, "%d-%d%s" % (proc["pid"], proc["start"], ext))
+    return os.path.join(home(), LAUNCHES, "%d-%s%s" % (proc["pid"], proc["start"], ext))
 
 
 def read_mode(proc):
@@ -299,7 +362,24 @@ def _choose(proc, mode, by, launch=None, session=None, retained=()):
         _write(_mode_path(proc), rec)
         if mode == "gate" and session:
             _mark_session(session)
+        try:
+            os.unlink(_mode_path(proc, ".grace"))
+            if mode == "legacy":
+                S.daemon_log("delivery: process %d of %s did not activate receipts within %ds: legacy, handed off"
+                             % (proc["pid"], session, ACTIVATION_GRACE_S))
+        except FileNotFoundError:
+            pass
         return rec
+
+
+def _grace_started(proc, session):
+    """A deliverer waits for the process's activation: said once."""
+    try:
+        os.close(os.open(_mode_path(proc, ".grace"), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
+    except FileExistsError:
+        return
+    S.daemon_log("delivery: process %d of %s may yet activate receipts (a gate process served its session): "
+                 "what is owed to it waits, up to %ds" % (proc["pid"], session, ACTIVATION_GRACE_S))
 
 
 def _session_path(session):
@@ -339,19 +419,23 @@ def observer_upgrade(pid):
     return _choose(_process_of(pid), "legacy", "observer")
 
 
-def handoff(pid, session):
+def handoff(pid, session, choose=True):
     """What a deliverer may do with a live process `pid` of `session`:
     "legacy" (its record says so, or it had none and now does: hand off),
     "gate" (prepare a receipt), "wait" (no record, and the process is a
     young one of a session a `gate` process served: stays owed), or
-    "held:<why>" (fail closed)."""
+    "held:<why>" (fail closed). Without `choose`, a process with no record
+    is "legacy" unrecorded: what a handoff would make it."""
     try:
         proc = _process_of(pid)
         rec = read_mode(proc)
         if rec is not None:
             return rec["mode"]
-        if _served(session) and time.time() - proc["start"] < ACTIVATION_GRACE_S:
+        if _served(session) and proc["age"] < ACTIVATION_GRACE_S:
+            _grace_started(proc, session)
             return "wait"
+        if not choose:
+            return "legacy"
         return _choose(proc, "legacy", "handoff", session=session)["mode"]
     except (Unreadable, OSError) as e:
         return "held:%s" % e
@@ -374,13 +458,13 @@ def _receipts_lock():
         yield
 
 
-def marker(receipt_id):
-    return MARKER % receipt_id
+def marker(receipt_id, attempt):
+    return MARKER % (receipt_id, attempt)
 
 
 def markers(text):
-    """The receipt ids a text's marker lines name, in order."""
-    return MARKER_RE.findall(text or "")
+    """[(receipt id, attempt)] a text's marker lines name, in order."""
+    return [(rid, int(n)) for rid, n in MARKER_RE.findall(text or "")]
 
 
 def exists(project_id, session, e):
@@ -399,18 +483,35 @@ def exists(project_id, session, e):
     return r is not None and r.get("hash") == S.event_hash(e)
 
 
+def handed(project_id, session, e):
+    """Whether the event's receipt went to its process: an attempt reached
+    its inbox (or may have), or the mod admitted it. A receipt only prepared
+    proves nothing was handed off (a push that failed before it reached the
+    session); one that cannot be read proves nothing either."""
+    path = _receipt_path(key_hash(project_id, session, e["writer"], e["seq"]), create=False)
+    if not os.path.exists(path):
+        return False
+    try:
+        r = _read(path)
+    except Unreadable:
+        return False
+    return r is not None and r.get("hash") == S.event_hash(e) and bool(r.get("handed") or r.get("admitted"))
+
+
 def _attempt(n, proc, launch, body):
     return {"n": n, "pid": proc["pid"], "start": proc["start"], "launch": launch, "body": body,
             "state": "prepared", "at": S.now(ms=True)}
 
 
-def plan(project_id, session, e, event_hash, peer_pid, words=None, existing_only=False):
+def plan(project_id, session, e, event_hash, peer_pid, words=None, existing_only=False, prepare=True):
     """What a deliverer does with the log event `e` owed to `session`, whose
     live process is `peer_pid` (None: none runs), as the module's contract
     says, preparing a receipt durably when it is to be pushed. The caller
     holds the session's delivery lock. With `existing_only`, None when no
     receipt is held for the event. `words`: the verdict a fresh push is made
-    under, kept for a later legacy handoff of the same receipt."""
+    under, kept for a later legacy handoff of the same receipt. Without
+    `prepare`, nothing is written or chosen: "push" and "legacy" say a
+    handoff would be made, for the caller to check its policy first."""
     keyhash = key_hash(project_id, session, e["writer"], e["seq"])
     path = _receipt_path(keyhash)
     with _receipts_lock():
@@ -428,7 +529,7 @@ def plan(project_id, session, e, event_hash, peer_pid, words=None, existing_only
             return Plan("settle", rid)
         if peer_pid is None:
             return Plan("awaiting", rid) if r else Plan("legacy", words=words)
-        mode = handoff(peer_pid, session)
+        mode = handoff(peer_pid, session, choose=prepare)
         if mode == "wait":
             return Plan("awaiting", rid, why="its process may yet activate receipts")
         if mode.startswith("held:"):
@@ -443,6 +544,12 @@ def plan(project_id, session, e, event_hash, peer_pid, words=None, existing_only
         if rec is None or rec["mode"] != "gate":
             return Plan("held", rid, why="the process's mode changed under the deliverer")
         a = r.get("attempt") if r else None
+        if not prepare:
+            if r is not None and (a.get("pid"), a.get("start")) == (proc["pid"], proc["start"]) \
+                    and a.get("state") != "prepared" \
+                    and (r.get("released") or {}).get("attempt") != a.get("n"):
+                return Plan("awaiting", rid)
+            return Plan("push", rid)
         if r is None:
             r = {"v": 1, "id": "%s.%s" % (keyhash, secrets.token_hex(8)),
                  "key": {"project": project_id, "session": session, "writer": e["writer"], "seq": e["seq"]},
@@ -483,6 +590,7 @@ def pushed(receipt_id, attempt):
         if r is None or r.get("id") != receipt_id or (r.get("attempt") or {}).get("n") != attempt:
             return
         r["attempt"]["state"] = "pushed"
+        r["handed"] = True
         _write(path, r)
 
 
@@ -519,15 +627,14 @@ def _gate_process(pid):
 
 
 def _held_receipt(receipt_id, session):
-    """(path, receipt) for an id this session may report, else (None, state)."""
+    """(path, receipt) for an id this session may report, else (None,
+    state). Raises Unreadable when the receipt is there and cannot be read:
+    whether the id is valid is not known, and the report is not recorded."""
     m = ID_RE.match(receipt_id) if isinstance(receipt_id, str) else None
     if not m:
         return None, "unknown"
     path = _receipt_path(m.group(1))
-    try:
-        r = _read(path)
-    except Unreadable:
-        return None, "unknown"
+    r = _read(path)
     if r is None:
         return None, "gone"
     if r.get("id") != receipt_id:
@@ -537,33 +644,57 @@ def _held_receipt(receipt_id, session):
     return (path, r), None
 
 
+def _report(items, session, key, record):
+    """A child's report (admit, release) recorded item by item under the
+    receipts lock. key(item) is the receipt id an item names;
+    record(path, receipt, item) writes what the item changes, returns its
+    state and whether it wrote. Every item that can be recorded is; any
+    that cannot (its receipt there and unreadable, a write that failed)
+    makes the answer a retryable failure, `code` storage, with the others'
+    states beside it: replayed whole, the recorded ones are idempotent."""
+    out, changed, failed = {}, False, None
+    try:
+        with _receipts_lock():
+            for item in items if isinstance(items, (list, tuple)) else ():
+                rid = key(item)
+                try:
+                    held, state = _held_receipt(rid, session)
+                    if held is None:
+                        out[str(rid)] = state
+                        continue
+                    out[rid], wrote = record(held[0], held[1], item)
+                    changed = changed or wrote
+                except (Unreadable, OSError) as e:
+                    out[str(rid)] = "unavailable"
+                    failed = failed or str(e)
+    except OSError as e:
+        failed = str(e)
+    if changed:
+        S.nudge_daemon()
+    if failed:
+        return {"ok": False, "code": "storage", "error": "not recorded, replay the report: %s" % failed,
+                "receipts": out}
+    return {"ok": True, "receipts": out}
+
+
 def admit(ids, pid, session):
     """The admission of receipts, as the module's contract says."""
     got, refusal = _gate_process(pid)
     if refusal:
         return refusal
     proc, rec = got
-    out, newly = {}, False
-    with _receipts_lock():
-        for rid in ids if isinstance(ids, (list, tuple)) else ():
-            held, state = _held_receipt(rid, session)
-            if held is None:
-                out[str(rid)] = state
-                continue
-            path, r = held
-            if not r.get("admitted"):
-                r["admitted"] = {"pid": proc["pid"], "start": proc["start"], "launch": rec["launch"],
-                                 "at": S.now(ms=True)}
-                _write(path, r)
-                newly = True
-            out[rid] = "admitted"
-    if newly:
-        S.nudge_daemon()
-    return {"ok": True, "receipts": out}
+
+    def record(path, r, _rid):
+        if r.get("admitted"):
+            return "admitted", False
+        r["admitted"] = {"pid": proc["pid"], "start": proc["start"], "launch": rec["launch"], "at": S.now(ms=True)}
+        _write(path, r)
+        return "admitted", True
+    return _report(ids, session, lambda rid: rid, record)
 
 
 def release(items, pid, launch, session):
-    """A stopped receipt's retry in the same launch, as the module's
+    """A stopped attempt's retry in the same launch, as the module's
     contract says."""
     got, refusal = _gate_process(pid)
     if refusal:
@@ -572,28 +703,21 @@ def release(items, pid, launch, session):
     if launch != rec["launch"]:
         return {"ok": False, "code": "launch", "error": "process %d is launch %s, not %s" % (
             proc["pid"], rec["launch"], launch)}
-    out, newly = {}, False
-    with _receipts_lock():
-        for item in items if isinstance(items, (list, tuple)) else ():
-            rid = item.get("id") if isinstance(item, dict) else None
-            held, state = _held_receipt(rid, session)
-            if held is None:
-                out[str(rid)] = state
-                continue
-            path, r = held
-            a = r.get("attempt") or {}
-            if r.get("admitted"):
-                out[rid] = "admitted"
-            elif (a.get("pid"), a.get("start"), a.get("launch")) != (proc["pid"], proc["start"], launch):
-                out[rid] = "stale"
-            else:
-                r["released"] = {"attempt": a.get("n"), "present": item.get("present") is True, "at": S.now(ms=True)}
-                _write(path, r)
-                out[rid] = "released"
-                newly = True
-    if newly:
-        S.nudge_daemon()
-    return {"ok": True, "receipts": out}
+
+    def record(path, r, item):
+        a = r.get("attempt") or {}
+        n = item.get("attempt")
+        if r.get("admitted"):
+            return "admitted", False
+        if (a.get("pid"), a.get("start"), a.get("launch")) != (proc["pid"], proc["start"], launch) \
+                or type(n) is not int or n != a.get("n"):
+            return "stale", False
+        if (r.get("released") or {}).get("attempt") == n:
+            return "released", False
+        r["released"] = {"attempt": n, "present": item.get("present") is True, "at": S.now(ms=True)}
+        _write(path, r)
+        return "released", True
+    return _report(items, session, lambda item: item.get("id") if isinstance(item, dict) else None, record)
 
 
 # ------------------------------------------------------------------ recovery
@@ -601,7 +725,8 @@ def release(items, pid, launch, session):
 
 def sweep(project_of):
     """Removes what nothing will read again: the mode records (and locks) of
-    processes that no longer run, the receipts whose event the recipient's
+    processes that positively no longer run (gone, or their pid another
+    process's now), the receipts whose event the recipient's
     delivery record has settled past (a crash between the settlement and
     settled()), and session markers unrefreshed for SESSION_KEPT_S.
     `project_of(id)` is the project registered here, or None (its receipts
@@ -613,11 +738,13 @@ def sweep(project_of):
     home()
     modes = receipts = 0
     for name in os.listdir(os.path.join(base, LAUNCHES)):
-        m = re.match(r"^(\d+)-(-?\d+)\.(json|lock)$", name)
+        m = re.match(r"^(\d+)-([0-9a-f-]+)\.(json|lock|grace)$", name)
         if not m:
             continue
-        proc = process(m.group(1))
-        if proc is None or proc["start"] != int(m.group(2)):
+        # Only on proof the process ended: it is gone, or its pid now names
+        # another process. A live one whose identity cannot be read now
+        # keeps its sticky mode.
+        if _gone(m.group(1)) or (process(m.group(1)) or {}).get("start", m.group(2)) != m.group(2):
             try:
                 os.unlink(os.path.join(base, LAUNCHES, name))
                 modes += m.group(3) == "json"
