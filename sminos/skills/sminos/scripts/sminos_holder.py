@@ -79,14 +79,16 @@ The private relay (the contract the mod consumes):
               404 {ok: false, code: "arm"}         no arm N on E
               400 {ok: false, code: "shape"}       a malformed body, or a fence that is not arm N's
         {kind: "turn", generation, epoch, fence, origin, delivery?}
-            origin is query | cron | task | peer | unknown; delivery an opaque string.
+            origin is query | cron | task | peer | unknown; delivery, when present, an
+            opaque string of 1 to DELIVERY_MAX characters (M4a's production turns omit it).
             → 200 {ok: true} once `turn` is written on E's connection;
               409 {ok: false, code: "epoch"} when E is not live (nothing was written)
             The host's answer (`proceed`, `stop`, or a `disarm`) comes back as a
             relay line of E, never in this answer.
 
-Every answer comes at once: the route waits on nothing but the gate
-connection's own write. A heartbeat is connection liveness, not permission
+GET /status on the bridge's own socket adds `holder: {ready, epoch,
+attempts}`, for diagnosis only. Every answer here comes at once: the route
+waits on nothing but the gate connection's own write. A heartbeat is connection liveness, not permission
 to signal: only an `armed` the mod caused grants that.
 """
 
