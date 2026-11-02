@@ -217,6 +217,59 @@ export type ReadbackWatch = {
   done: (readback: Readback) => void
 }
 
+/**
+ * A main turn's origin as the gate's `turn` names it (OX10): what started it,
+ * from the engine's stamp on the prompt that started it (bridge-holder.tsx);
+ * `unknown` when nothing correlates, never an inferred `query`.
+ */
+export type TurnOrigin = 'query' | 'cron' | 'task' | 'peer' | 'unknown'
+/**
+ * A fence the gate armed (O12 M4a), installed when its arm is relayed: the
+ * connection's `epoch` and the host's `fence` number name it (a fence number
+ * alone names nothing across a reconnect); `armGeneration` moves with every
+ * arm of it, first or renewal, so only the latest arm's `timer` (its lease
+ * plus the heartbeat margin, from that arm's receipt) may release it.
+ */
+export type HolderFence = { epoch: string; fence: number; armGeneration: number; leaseMs: number; timer?: Timer }
+/**
+ * The bridge child's private route to the gate (its holder bootstrap line):
+ * where `POST /holder` goes and what it must carry, the child that said it
+ * (`child`, the module's child generation: a later child's relay replaces
+ * it), and the connection the child was last welcomed on.
+ */
+export type HolderRelay = { socket: string; nonce: string; generation: string; pid: number | null; childPid: number | null; child: number; epoch?: string }
+/**
+ * A main-loop model request while it is entering, waiting at the fence or
+ * inside the model step: the `turn` asked of each fence it waits on (by
+ * fence key; the promise settles true once the child wrote it), and the
+ * host's answer to each (`stop` with its reason, else proceed).
+ */
+export type FencedStep = { turnId: string; turns: Map<string, Promise<boolean>>; answers: Map<string, { stop?: string }>; wake?: () => void }
+/** A prompt seen entering the main loop, by its engine-stamped origin: correlated with the turn it starts by text, each at most once. */
+export type PromptSeen = { kind: string; text: string; uuid?: string; turnId?: string }
+/** The observer's state (bridge-holder.tsx): what a module keeps of the gate, reloaded from `$.state`. */
+export type HolderState = {
+  /** This module instance's mark on what it keeps: a later instance (a reload) writes its own, and an older one that finds it stops keeping. */
+  owner: string
+  isClaimed: boolean
+  isRetired: boolean
+  load?: Promise<void>
+  isLoaded: boolean
+  /** The process committed to the gate (O12 M4a): kept before its first ready, never taken back. */
+  observerStarted: boolean
+  armGenerations: number
+  fences: Map<string, HolderFence>
+  relay?: HolderRelay
+  /** The acknowledgements, one after another in the order the arms came (R1). */
+  acks: Promise<void>
+  /** The writes of the kept state, in order. */
+  writes: Promise<boolean>
+  step?: FencedStep
+  prompts: PromptSeen[]
+  /** Each main turn running, by id: its text at its start, and its origin once correlated. */
+  turns: Map<string, { text: string; origin?: TurnOrigin }>
+}
+
 export type BridgeState = {
   /**
    * The calls that outlive a hook, made in session.start: its `$` lives as
@@ -485,7 +538,23 @@ export type BridgeState = {
   mediaWake: { armed?: object; isSubmitted: boolean }
   /** Whether the main turn's state is still unknown (bridge.tsx): a wake waits while it is. */
   isTurnStillUnknown?: () => Promise<boolean>
+  /** The lane B observer's fences and the origins of main turns (O12 M4a, bridge-holder.tsx). */
+  holder: HolderState
 }
+
+const freshHolder = (): HolderState => ({
+  owner: Array.from(crypto.getRandomValues(new Uint8Array(8)), (b) => b.toString(16).padStart(2, '0')).join(''),
+  isClaimed: false,
+  isRetired: false,
+  isLoaded: false,
+  observerStarted: false,
+  armGenerations: 0,
+  fences: new Map(),
+  acks: Promise.resolve(),
+  writes: Promise.resolve(true),
+  prompts: [],
+  turns: new Map(),
+})
 
 const fresh = (): BridgeState => ({
   loopTurns: new Map(),
@@ -553,6 +622,7 @@ const fresh = (): BridgeState => ({
   interrupts: new Map(),
   captured: new Set(),
   foreground: new Map(),
+  holder: freshHolder(),
 })
 
 export let state = fresh()

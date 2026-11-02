@@ -572,6 +572,29 @@ class Acks(Case):
 
 
 class Route(Case):
+    def test_a_wait_is_held_until_a_line_is_relayed_or_its_time_is_out(self):
+        # The call a request held at the fence keeps in flight (the hook's own
+        # budget runs only while none is): it answers once the relay writes,
+        # or at its `ms`, and never writes anything to the gate.
+        child = self.child()
+        g = child.bootstrap()["generation"]
+        child.ready()
+        conn, epoch = self.welcomed(child)
+        started = time.monotonic()
+        self.assertEqual(child.post({"kind": "wait", "generation": g, "ms": 300}), (200, {"ok": True, "relayed": False}))
+        self.assertGreaterEqual(time.monotonic() - started, 0.3 * 0.9)
+        answers = []
+        waiting = threading.Thread(target=lambda: answers.append(child.post({"kind": "wait", "generation": g, "ms": 10000})))
+        waiting.start()
+        time.sleep(QUIET)
+        self.assertEqual(answers, [], "held while nothing is relayed")
+        conn.send({"t": "arm", "fence": 1, "leaseMs": 400})
+        waiting.join(LIVENESS)
+        self.assertEqual(answers, [(200, {"ok": True, "relayed": True})])
+        self.assertEqual(child.post({"kind": "wait", "generation": g, "ms": 0})[1]["code"], "shape")
+        self.assertEqual(child.post({"kind": "wait", "generation": g})[1]["code"], "shape")
+        self.assertEqual(conn.seen(skip_hb=True), [conn.seen()[0]], "a wait says nothing to the gate")
+
     def test_the_route_checks_nonce_generation_and_shape(self):
         child = self.child()
         boot = child.bootstrap()
@@ -747,8 +770,17 @@ class Independence(Case):
         # and the retries (on their own thread) resolve `match` and connect.
         parent, boot, _go = self.orphan(args=(), env={"SMNS_MEMBER": str(os.getpid())})
         h = {sminos_holder.NONCE_HEADER: boot["nonce"]}
-        status, answer = post(boot["socket"], "/holder", {"kind": "ready", "generation": boot["generation"]}, h)
-        self.assertEqual((status, answer["lane"]), (200, "unresolved"))
+        # The bootstrap goes before the resolver's first look, so `ready` may
+        # answer `lane: null` at first; it is idempotent, asked again until
+        # the gate holds the unresolved verdict.
+        answers = []
+
+        def unresolved():
+            answers.append(post(boot["socket"], "/holder", {"kind": "ready", "generation": boot["generation"]}, h))
+            return answers[-1][1].get("lane") == "unresolved"
+
+        self.assertTrue(wait_for(unresolved, step=0.05), "the gate learns the unresolved verdict: %r" % answers[-3:])
+        self.assertEqual({(s, a.get("lane")) for s, a in answers} - {(200, None), (200, "unresolved")}, set())
         time.sleep(QUIET)
         self.assertEqual(self.host.conns, [])
         sessions = os.path.join(self.home, "cc", "sessions")
@@ -971,6 +1003,12 @@ class Replay(Case):
         self.assertEqual(len(conn.seen(skip_hb=True)), consumed + len(late), "%s: nothing more: %r" % (case, conn.seen()))
         return child, conn, epoch, []
 
+    def test_the_mods_copy_is_the_fixture(self):
+        # The mod's replay (bridge.test.ts) reads the fixture from a module of
+        # its own, since a mod's test loads no JSON file: line for line this one.
+        self.assertEqual(GATE_TS.read_text(), gate_fixture_ts(FIXTURE.read_bytes()),
+                         "run python3 -B sminos/tests/test_holder.py --write-gate-ts")
+
     def test_proceed(self):
         _, conn, _, _ = self.play("proceed")
         self.assertEqual(conn.seen("armed"), [{"t": "armed", "fence": 1}], "the arm met a turn: still one armed")
@@ -1033,6 +1071,22 @@ class Replay(Case):
         PENDING.append("P3a: the final SIGTERM's confirmed-lease check is the fix-wave host's (the joint proof)")
 
 
+GATE_TS = HERE / "mods" / "gate-fixture.ts"
+
+
+def gate_fixture_ts(raw):
+    """The fixture as the TypeScript module the mod's replay imports: each line a string, as written."""
+    source = json.loads((HERE / "p5-o16-gate.source.json").read_text())
+    lines = [x for x in raw.decode().splitlines() if x.strip()]
+    return (
+        "// Written by `python3 -B sminos/tests/test_holder.py --write-gate-ts` from p5-o16-gate.jsonl\n"
+        "// (MAWS %s, blob %s); test_holder.py fails while the two differ.\n"
+        "/** O16's gate fixture, line for line, for the mod's replay (bridge.test.ts): a mod's test loads no JSON file. */\n"
+        "export const GATE_FIXTURE: readonly string[] = [\n%s]\n"
+        % (source["commit"][:9], source["blob"][:9], "".join("  %s,\n" % json.dumps(x) for x in lines))
+    )
+
+
 def tearDownModule():
     for line in sorted(set(PENDING)):
         sys.stderr.write("PENDING %s\n" % line)
@@ -1040,4 +1094,7 @@ def tearDownModule():
 
 
 if __name__ == "__main__":
+    if sys.argv[1:] == ["--write-gate-ts"]:
+        GATE_TS.write_text(gate_fixture_ts(FIXTURE.read_bytes()))
+        sys.exit(0)
     unittest.main()

@@ -85,10 +85,19 @@ The private relay (the contract the mod consumes):
               409 {ok: false, code: "epoch"} when E is not live (nothing was written)
             The host's answer (`proceed`, `stop`, or a `disarm`) comes back as a
             relay line of E, never in this answer.
+        {kind: "wait", generation, ms}
+            held until the relay writes its next line, or `ms` (at most
+            WAIT_MAX_MS) has passed, or the client closes; then
+            → 200 {ok: true, relayed: <whether a line went meanwhile>}
+            A model request the mod holds at the fence keeps one of these in
+            flight: the engine runs a hook's own budget (10 s) only while none
+            of its calls is, and the observer's fallback (lease plus margin,
+            15 s) is longer. It is a wait, not a channel: the answer it waits
+            for is a relay line.
 
 GET /status on the bridge's own socket adds `holder: {ready, epoch,
-attempts}`, for diagnosis only. Every answer here comes at once: the route
-waits on nothing but the gate connection's own write. A heartbeat is connection liveness, not permission
+attempts}`, for diagnosis only. Every answer here but `wait`'s comes at once: the
+route waits on nothing but the gate connection's own write. A heartbeat is connection liveness, not permission
 to signal: only an `armed` the mod caused grants that.
 """
 
@@ -113,6 +122,7 @@ HOST_FRAMES = ("welcome", "arm", "disarm", "proceed", "stop")
 LINE_MAX = 64 * 1024          # a host line longer than this is not OX10: the connection ends
 BODY_MAX = 64 * 1024          # a POST /holder body
 DELIVERY_MAX = 256            # characters of a turn's opaque delivery id
+WAIT_MAX_MS = 20000           # a held wait, under the engine's 30-second bound on the mod's fetch
 RELAY_QUEUED = 256            # host frames waiting for stdout; past it the connection ends (the mod is not reading)
 WRITE_WAIT_S = 5.0            # a gate write that makes no progress this long ends the connection
 READ_STEP_S = 0.25            # how often a reader waiting on the gate looks at whether it should stop
@@ -193,6 +203,8 @@ class Holder:
         self.conn = None                  # the welcomed connection, while there is one
         self.attempts = 0                 # connections tried, for /status
         self.relay = queue.Queue(RELAY_QUEUED)
+        self.relayed = threading.Condition()
+        self.lines_out = 0                # relay lines written on stdout, for a held wait
         self.server = None
         self.said = None
 
@@ -224,6 +236,8 @@ class Holder:
         with self.lock:
             conn, self.conn = self.conn, None
             self.wake.notify_all()
+        with self.relayed:
+            self.relayed.notify_all()
         if conn is not None:
             self._end(conn, None)
         if self.server is not None:
@@ -390,6 +404,9 @@ class Holder:
                 self.emit(line)
             except OSError:   # stdout is gone, and with it the mod
                 return
+            with self.relayed:
+                self.lines_out += 1
+                self.relayed.notify_all()
 
     # -- the route
 
@@ -410,7 +427,25 @@ class Holder:
             return self._armed(body)
         if kind == "turn":
             return self._turn(body)
-        return 400, {"ok": False, "code": "shape", "error": "kind is ready, armed or turn"}
+        if kind == "wait":
+            return self._wait(body)
+        return 400, {"ok": False, "code": "shape", "error": "kind is ready, armed, turn or wait"}
+
+    def _wait(self, body):
+        """Held until the relay writes a line, `ms` passes or the client
+        closes: the call the mod keeps in flight while a request waits."""
+        ms = body.get("ms")
+        if not _is_int(ms, 1):
+            return 400, {"ok": False, "code": "shape", "error": "wait names ms, a positive integer"}
+        deadline = time.monotonic() + min(ms, WAIT_MAX_MS) / 1000.0
+        with self.relayed:
+            seen = self.lines_out
+            while self.lines_out == seen and not self.closing.is_set():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                self.relayed.wait(min(remaining, READ_STEP_S))
+            return 200, {"ok": True, "relayed": self.lines_out != seen}
 
     def _live(self, epoch):
         with self.lock:
