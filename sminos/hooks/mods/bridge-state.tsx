@@ -275,6 +275,7 @@ export type ReceiptsState = {
   /** Every receipt id the live conversation held at the scan: an activation's `retained`. */
   retained: string[]
   scan?: Promise<void>
+  /** The receipts no admission is owed for any more, by session and id (receiptKey): an admission of any attempt settles; a release is no admission. */
   done: Set<string>
   reports: ReceiptReport[]
   stopped: StoppedReceipt[]
@@ -307,12 +308,14 @@ export type HolderState = {
   /** Orders prompts seen, turns started, main requests entered and rows carrying receipt markers. */
   seq: number
   /**
-   * The process ran before this module knew receipts (O12 M4b): an M4a
-   * observer kept `observerStarted` with no `receipts`, or the process's
-   * launch was kept by a module before this one, which kept no receipts. Its
-   * settlement stays `legacy` (the child's activation is an upgrade).
+   * Whether the process is a fresh one (O12 M4b, bridge-holder.tsx's
+   * restore and bootstrap): one whose first module knew receipts may
+   * activate them; any other is an existing process, `legacy` for
+   * settlement, observed only if an observer served it before. Undefined
+   * until decided: from what a module before this one kept, else at the
+   * first bootstrap from the process's age.
    */
-  isUpgrade: boolean
+  fresh?: boolean
   receipts: ReceiptsState
   /** The `$` of the child's loop (the session start's), which outlives every hook: reports and releases run on it. */
   engine?: EngineInterface
@@ -612,7 +615,6 @@ const freshHolder = (): HolderState => {
     prompts: [],
     turns: new Map(),
     seq: 0,
-    isUpgrade: false,
     receipts: { rows: new Map(), preload: new Map(), retained: [], done: new Set(), reports: [], stopped: [], isPumping: false, isRetryArmed: false, isReleasing: false },
   }
 }

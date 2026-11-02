@@ -2,9 +2,10 @@ import type { EngineInterface, HookStream, TurnStepChunk, TurnStepInput, TurnSte
 
 import type { HolderKept, ReceiptReport, StoppedReceipt } from '../../types/sminos'
 
-import { REPORTS_KEPT, admitCarried, liveMarks, releaseStoppedNow, reportAnswered, scanConversation, stopCarried, turnDelivery } from './bridge-receipts'
+import { REPORTS_KEPT, admitCarried, holdReleases, liveMarks, releaseStoppedNow, reportAnswered, scanConversation, stopCarried, turnDelivery } from './bridge-receipts'
+import type { Carried } from './bridge-receipts'
 import { isRecord, message, parsed, state } from './bridge-state'
-import type { FencedStep, HolderAsked, HolderFence, HolderRelay, HolderState, PromptSeen, ReceiptMark, TurnOrigin } from './bridge-state'
+import type { FencedStep, HolderAsked, HolderFence, HolderRelay, HolderState, PromptSeen, TurnOrigin } from './bridge-state'
 
 /**
  * The lane B observer's fence (O12 M4a): MAWS's engine host reaps an idle
@@ -47,11 +48,16 @@ import type { FencedStep, HolderAsked, HolderFence, HolderRelay, HolderState, Pr
  * Receipts (O12 M4b; bridge-receipts.tsx decides which a request carries):
  *
  * - The child's first ready asks it to activate receipts for this process
- *   before its first hello: with the process's launch and the receipts the
- *   live conversation holds (`retained`), or, in a process that ran before
- *   this module knew receipts (an M4a observer's, or a launch kept with no
- *   receipts), as an upgrade the child records `legacy`, the observer going
- *   on as before.
+ *   before its first hello, on positive evidence that the process is a
+ *   fresh one: no module before this one left a trace in it (its kept
+ *   launch, its kept holder state) and the child found it seconds into its
+ *   run (`processAge`, under FRESH_PROCESS_S), or a module before this one
+ *   found it so (`fresh`, kept). Then with the process's launch and the
+ *   receipts the live conversation holds (`retained`). Any other process is
+ *   an existing one, its absent bookkeeping no evidence that nothing was
+ *   handed off: an upgrade the child records `legacy`, observed if an
+ *   observer served it before (an M4a observer goes on), never observed
+ *   otherwise (no hello: the host keeps its lineage registration).
  * - A main-loop request the module admits (a `proceed`, no fence, a lease's
  *   expiry) reports the receipts it carries, decided with no await before
  *   its `next`; the report is kept in `$.state` and replayed on the child's
@@ -62,6 +68,14 @@ import type { FencedStep, HolderAsked, HolderFence, HolderRelay, HolderState, Pr
  * - A main turn whose own text carries a receipt names it in its `turn`
  *   (`delivery`, the first of several).
  */
+
+/**
+ * The age a process may have at its first module's first bootstrap and be
+ * taken for a fresh one (O12 M4b): its engine starts the module, the module
+ * its child, before the first prompt, in seconds; a `/reload-plugins` comes
+ * to a process far older. On the boot clock, which no wall-clock step moves.
+ */
+export const FRESH_PROCESS_S = 60
 
 /** The observer's fallback past a lease: one heartbeat, OX10's production margin. */
 export const HOLDER_MARGIN_MS = 5_000
@@ -119,7 +133,8 @@ function isKept(value: unknown): value is HolderKept {
     isCount(value.armGenerations) &&
     Array.isArray(value.fences) &&
     value.fences.every((f) => isRecord(f) && typeof f.epoch === 'string' && isCount(f.fence) && isCount(f.armGeneration) && isLease(f.leaseMs)) &&
-    (value.receipts === undefined || (isRecord(value.receipts) && Array.isArray(value.receipts.reports) && value.receipts.reports.every(isReport) && Array.isArray(value.receipts.stopped) && value.receipts.stopped.every(isStopped)))
+    (value.receipts === undefined || (isRecord(value.receipts) && Array.isArray(value.receipts.reports) && value.receipts.reports.every(isReport) && Array.isArray(value.receipts.stopped) && value.receipts.stopped.every(isStopped))) &&
+    (value.fresh === undefined || typeof value.fresh === 'boolean')
   )
 }
 
@@ -130,6 +145,7 @@ const snapshot = (h: HolderState): HolderKept => ({
   armGenerations: h.armGenerations,
   fences: [...h.fences.values()].map((f) => ({ epoch: f.epoch, fence: f.fence, armGeneration: f.armGeneration, leaseMs: f.leaseMs })),
   receipts: { reports: h.receipts.reports, stopped: h.receipts.stopped },
+  ...(h.fresh !== undefined && { fresh: h.fresh }),
 })
 
 /**
@@ -189,10 +205,11 @@ export const isHolderLoaded = () => state.holder.isLoaded
 
 /**
  * A session no gate serves (no marker, or one this process controls) has
- * nothing to restore. A process that ran before this module knew receipts
- * (O12 M4b) is an upgrade: an M4a observer's module kept `observerStarted`
- * and no `receipts`, or a module before this one kept the process's launch
- * and no holder state that knows receipts; its settlement stays `legacy`.
+ * nothing to restore. What a module before this one left says whether the
+ * process is a fresh one (O12 M4b): the `fresh` it decided; or, with none,
+ * an existing one (an M4a module's state, a launch kept with no holder
+ * state, a state it cannot read). Nothing at all left decides nothing: the
+ * first bootstrap's `processAge` does.
  */
 async function restore($: EngineInterface, h: HolderState): Promise<void> {
   let kept: unknown
@@ -206,16 +223,17 @@ async function restore($: EngineInterface, h: HolderState): Promise<void> {
     return
   }
   if (kept === undefined) {
-    h.isUpgrade = state.launchFrom !== 'new'
+    if (state.launchFrom !== 'new') {
+      h.fresh = false
+    }
     return
   }
   if (!isKept(kept)) {
     holdUnread($, h, 'the kept state is not one this module reads')
     return
   }
-  if (kept.receipts === undefined) {
-    h.isUpgrade = kept.observerStarted || state.launchFrom !== 'new'
-  } else {
+  h.fresh = kept.fresh === true
+  if (kept.receipts !== undefined) {
     h.receipts.reports.push(...kept.receipts.reports.slice(-REPORTS_KEPT))
     h.receipts.stopped.push(...kept.receipts.stopped)
   }
@@ -240,8 +258,8 @@ function holdUnread($: EngineInterface, h: HolderState, why: string) {
     return
   }
   h.observerStarted = true
-  // What it kept of receipts is lost too: its process may have run before them.
-  h.isUpgrade = true
+  // What it kept of receipts is lost too: an existing process, observed.
+  h.fresh = false
   install($, UNREAD.epoch, UNREAD.fence, PRODUCTION_LEASE_MS)
   log(`${why}: main requests are held ${PRODUCTION_LEASE_MS + HOLDER_MARGIN_MS} ms from now (one production lease and margin), then admitted`)
 }
@@ -362,7 +380,14 @@ async function takeBootstrap($: EngineInterface, b: Record<string, unknown>) {
   h.engine = $
   // What a module before this one kept is in before anything is written.
   await h.loaded
-  h.observerStarted = true
+  // A fresh process, or an existing one (O12 M4b): decided once per process.
+  if (h.fresh === undefined) {
+    h.fresh = typeof b.processAge === 'number' && b.processAge >= 0 && b.processAge < FRESH_PROCESS_S
+    log(`the process is ${h.fresh ? 'a fresh one' : `an existing one (its age ${String(b.processAge)} s)`}`)
+  }
+  // An existing process no observer served stays unobserved.
+  const observe = h.fresh || h.observerStarted
+  h.observerStarted = observe
   while (!(await keep($))) {
     if (!isCurrent(relay)) {
       return
@@ -375,7 +400,7 @@ async function takeBootstrap($: EngineInterface, b: Record<string, unknown>) {
   if (!isCurrent(relay)) {
     return
   }
-  const activation = h.isUpgrade ? { upgrade: true } : state.launch !== undefined ? { launch: state.launch, retained: h.receipts.retained } : {}
+  const activation = !h.fresh ? { upgrade: true, observe } : state.launch !== undefined ? { launch: state.launch, retained: h.receipts.retained } : {}
   const ready = await post($, relay, { kind: 'ready', ...activation })
   log(ready?.status === 200 ? `ready (child ${relay.childPid ?? '?'}, lane ${String(ready.answer?.lane)})` : `the child did not take ready (${ready?.status ?? 'no answer'})`)
   // A request waiting at the fence holds its wait on this route from now.
@@ -602,16 +627,16 @@ export function abandonedStep(e: TurnStepInput): HookStream<TurnStepChunk, TurnS
  * receipts: the report queued at once (the caller enters `next` with no
  * await after this), then kept and sent.
  */
-export function receiptsAdmitted($: EngineInterface, marks: readonly ReceiptMark[]) {
-  if (admitCarried(marks)) {
+export function receiptsAdmitted($: EngineInterface, carried: Carried) {
+  if (admitCarried(carried)) {
     void keep(state.holder.engine ?? $)
     void pumpReports()
   }
 }
 
 /** A request the gate's `stop` ended: its receipts wait, kept, for their release in this launch. */
-export function receiptsStopped($: EngineInterface, marks: readonly ReceiptMark[]) {
-  if (stopCarried(marks)) {
+export function receiptsStopped($: EngineInterface, carried: Carried) {
+  if (stopCarried(carried)) {
     void keep(state.holder.engine ?? $)
     void releaseStopped()
   }
@@ -638,6 +663,13 @@ async function pumpReports(): Promise<void> {
       const $ = h.engine
       if (report === undefined || relay === undefined || !isCurrent(relay) || $ === undefined || h !== state.holder) {
         return
+      }
+      // A release goes only while no fence holds (checked at each replay):
+      // under a newer one it waits among the stopped again.
+      if (report.kind === 'release' && h.fences.size > 0) {
+        holdReleases()
+        void keep($)
+        continue
       }
       const got = await post($, relay, report.kind === 'admit' ? { kind: 'admit', session: report.session, ids: report.ids } : { kind: 'release', session: report.session, items: report.items })
       if (h !== state.holder) {

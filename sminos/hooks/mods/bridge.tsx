@@ -36,7 +36,7 @@ import { engineError, forNotes, notifiedStops, stopAgent, tellAgent } from './br
 import { acceptMedia, claimMedia, mediaLoaded, mediaPassedOn, mediaTurnEnded, mediaTurnStarted, observeMediaResult } from './bridge-media'
 import { abandonedStep, admission, enterStep, holderLoaded, isHolderLoaded, leaveStep, mainTurnOver, mainTurnStarted, onHolderLine, promptRow, promptSettled, promptSubmitted, receiptsAdmitted, receiptsStopped, stoppedStep, waitAtFence } from './bridge-holder'
 import { receiptRow, receiptsCarried } from './bridge-receipts'
-import type { ReceiptMark } from './bridge-state'
+import type { Carried } from './bridge-receipts'
 
 export { OFF_LINE, ON_LINE } from './bridge-place'
 export { BLOCK_TAIL, INTERRUPT_HOLD_MS, TEXT_CAP, WAKE_LINE, capped, resetBridge } from './bridge-state'
@@ -2146,21 +2146,23 @@ export function registerBridge(on: On) {
       // them for their release.
       let held: TurnStepStream | undefined
       if (fenced !== undefined && synthetic === undefined) {
-        let carried: ReceiptMark[] | undefined
+        let carried: Carried | undefined
+        let isCarriedRead = false
         for (;;) {
           const verdict = admission(fenced)
-          if (verdict !== 'wait' && carried === undefined && isObserver()) {
+          if (verdict !== 'wait' && !isCarriedRead && isObserver()) {
             carried = await receiptsCarried($, fenced, e.index)
+            isCarriedRead = true
             continue
           }
           if (verdict === 'clear') {
-            if (carried !== undefined && carried.length > 0) {
+            if (carried !== undefined) {
               receiptsAdmitted($, carried)
             }
             break
           }
           if (verdict !== 'wait') {
-            if (carried !== undefined && carried.length > 0) {
+            if (carried !== undefined) {
               receiptsStopped($, carried)
             }
             held = stoppedStep(e, verdict.stop)
@@ -2172,6 +2174,7 @@ export function registerBridge(on: On) {
           }
           await waitAtFence($, fenced, next.signal)
           carried = undefined
+          isCarriedRead = false
         }
       }
       // The model chosen through the bridge is the main loop's: a subagent runs

@@ -24,7 +24,8 @@ const LEASE = 400
 const FALLBACK = LEASE + HOLDER_MARGIN_MS
 const REASON = 'The holder ended this session; reopening it continues the conversation.'
 
-const bootstrap = (generation = GEN, socket = ROUTE, childPid = 99) => line({ op: 'holder', bootstrap: { socket, nonce: `n-${generation}`, generation, pid: 7, childPid } })
+/** The child's bootstrap; `processAge` its word on claude's process (seconds run, a fresh one by default). */
+const bootstrap = (generation = GEN, socket = ROUTE, childPid = 99, processAge: number | null = 1) => line({ op: 'holder', bootstrap: { socket, nonce: `n-${generation}`, generation, pid: 7, childPid, processAge } })
 const relayed = (epoch: string, frame: Record<string, unknown>, arm?: number) => line({ op: 'holder', epoch, ...(arm !== undefined && { arm }), frame })
 const armFrame = (fence: number, leaseMs = LEASE) => ({ t: 'arm', fence, leaseMs })
 const helloMatch = line({ op: 'hello', session: SID, pid: 7, socket: SOCK, protocol: 1, nonce: NONCE, lane: 'match' })

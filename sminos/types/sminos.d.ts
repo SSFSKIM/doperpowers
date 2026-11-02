@@ -135,6 +135,13 @@ export type HolderKept = {
   armGenerations: number
   fences: { epoch: string; fence: number; armGeneration: number; leaseMs: number }[]
   receipts?: { reports: ReceiptReport[]; stopped: StoppedReceipt[] }
+  /**
+   * Whether the process is a fresh one, whose first module was this plugin's
+   * M4b or later (O12 M4b): decided once, at the first bootstrap, from the
+   * child's word on the process's age, and kept so every later module of the
+   * process decides alike. Absent from an M4a module's.
+   */
+  fresh?: boolean
 }
 
 /** A report to the bridge child's route (POST /holder `admit` or `release`), as the mod keeps it until acknowledged. */

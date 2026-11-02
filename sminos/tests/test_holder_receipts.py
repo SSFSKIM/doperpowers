@@ -146,9 +146,34 @@ class Activation(Receipts):
         with open(hd._mode_path(self.proc)) as f:
             self.assertEqual(f.read(), "{not json", "nothing overwrote it")
 
+    def test_the_bootstrap_says_how_long_claudes_process_has_run(self):
+        # The mod's evidence of a fresh process (one whose first module this
+        # is): the process's age on the boot clock, as the deliverers read it.
+        boot = self.child().bootstrap()
+        self.assertIsInstance(boot["processAge"], (int, float))
+        self.assertLessEqual(abs(boot["processAge"] - hd.process(os.getpid())["age"]), 5.0)
+
+    def test_reports_wait_for_the_activation_and_are_never_answered_legacy_before_it(self):
+        # The activation waits on a deliverer's mode lock: a report meanwhile
+        # is answered `pending` (retryable), not `legacy`, and records nothing;
+        # once the activation chose `gate`, the replay is recorded.
+        child = self.child()
+        rid = self.receipt()
+        with sminos.flocked(hd._mode_path(self.proc, ".lock")):
+            self.ready(child, launch=LAUNCH)
+            status, answer = self.report(child, "admit", session=SESSION, ids=[rid])
+            self.assertEqual((status, answer["ok"], answer["code"]), (200, False, "pending"))
+            status, answer = self.report(child, "release", session=SESSION,
+                                         items=[{"id": rid, "attempt": 1, "present": True}])
+            self.assertEqual((status, answer["ok"], answer["code"]), (200, False, "pending"))
+            self.assertIsNone(self.stored(rid)["admitted"])
+        self.assertTrue(wait_for(lambda: self.mode() is not None))
+        self.assertEqual(self.report(child, "admit", session=SESSION, ids=[rid])[1],
+                         {"ok": True, "receipts": {rid: "admitted"}})
+
     def test_a_ready_with_a_malformed_activation_is_refused(self):
         child = self.child()
-        for bad in ({"launch": 7}, {"upgrade": "yes"}, {"retained": "x"}, {"retained": [1]}):
+        for bad in ({"launch": 7}, {"upgrade": "yes"}, {"retained": "x"}, {"retained": [1]}, {"observe": "no"}):
             status, answer = self.ready(child, **bad)
             self.assertEqual((status, answer["code"]), (400, "shape"), bad)
         time.sleep(QUIET)
@@ -180,6 +205,22 @@ class Upgrade(Receipts):
         status, answer = self.report(child, "admit", session=SESSION, ids=[rid])
         self.assertEqual((status, answer["ok"], answer["code"]), (200, False, "legacy"))
         self.assertIsNone(self.stored(rid)["admitted"])
+
+
+    def test_an_existing_process_never_observed_records_legacy_and_says_no_hello(self):
+        # M4b loaded into a process whose bridge never started an observer
+        # (a pre-M4a module ran in it): legacy settlement, and it stays
+        # unobserved: no hello, ever, from this child.
+        child = self.child()
+        status, answer = self.ready(child, upgrade=True, observe=False)
+        self.assertEqual((status, answer["ok"]), (200, True))
+        self.assertTrue(wait_for(lambda: self.mode() is not None))
+        rec = self.mode()
+        self.assertEqual((rec["mode"], rec["launch"]), ("legacy", None))
+        time.sleep(QUIET)
+        self.assertEqual(self.host.conns, [], "no hello")
+        rid = self.receipt()
+        self.assertEqual(self.report(child, "admit", session=SESSION, ids=[rid])[1]["code"], "legacy")
 
 
 class Admission(Receipts):

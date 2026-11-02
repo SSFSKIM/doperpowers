@@ -32,7 +32,8 @@ const C = 'cccccccccccccccccccccccc.0123456789abcdef'
 const delivered = (id: string, attempt = 1, said = 'hello there') =>
   `<cross-session-message from-name="peer">\n[sminos receipt ${id} attempt ${attempt}]\n[sminos chat proj SK/peer:1 from peer → @you]\n${said}\n</cross-session-message>`
 
-const bootstrap = (generation = GEN, socket = ROUTE, childPid = 99) => line({ op: 'holder', bootstrap: { socket, nonce: `n-${generation}`, generation, pid: 7, childPid } })
+/** The child's bootstrap; `processAge` its word on claude's process (seconds run, a fresh one by default). */
+const bootstrap = (generation = GEN, socket = ROUTE, childPid = 99, processAge: number | null = 1) => line({ op: 'holder', bootstrap: { socket, nonce: `n-${generation}`, generation, pid: 7, childPid, processAge } })
 const relayed = (epoch: string, frame: Record<string, unknown>, arm?: number) => line({ op: 'holder', epoch, ...(arm !== undefined && { arm }), frame })
 const helloMatch = (session = SID) => line({ op: 'hello', session, pid: 7, socket: `/tmp/s/bridge/${session}.sock`, protocol: 1, nonce: 'n0', lane: 'match' })
 
@@ -174,6 +175,21 @@ describe('receipts: what an admitted request carried (O12 M4b)', () => {
     expect(admits(h)).toEqual([])
   })
 
+  test('a later incarnation never vouches for an older row a rewind took out: a repeated write after the turn began waits for a later request', async () => {
+    const h = await observing()
+    await peerRow(h, delivered(A))
+    // A rewind takes A's row out; a turn starts without it.
+    live(h)
+    await h.turn('t1', undefined, 'go')
+    // The inbox writes A again after the turn began: not in its first request.
+    await peerRow(h, delivered(A), 'delivery')
+    live(h, 'go', delivered(A))
+    await request(h, 't1').done
+    expect(admits(h)).toEqual([])
+    await request(h, 't1', 1).done
+    expect(admits(h)).toEqual([{ session: SID, ids: [A] }])
+  })
+
   test('an unmarked session reads nothing of receipts', async () => {
     const h = harness({ messages: [] })
     await h.ready()
@@ -255,6 +271,41 @@ describe('receipts: a stopped request (O12 M4b)', () => {
     expect(releases(h)).toEqual([{ session: SID, items: [{ id: A, attempt: 2, present: true }] }])
   })
 
+  test('a released receipt is not an admitted one: stop, release, the retry in this launch, its admission reported', async () => {
+    const h = await stopped()
+    await h.complete('t1')
+    await answer(h, { t: 'disarm', fence: 1 })
+    expect(releases(h)).toEqual([{ session: SID, items: [{ id: A, attempt: 2, present: true }] }])
+    await flush(h)
+    // The deliverer's retry: a wake naming the next attempt, then a turn.
+    await peerRow(h, delivered(A, 3, 'wake'))
+    live(h, delivered(A, 2), delivered(A, 3, 'wake'))
+    await h.turn('t2', undefined, delivered(A, 3, 'wake'))
+    await request(h, 't2').done
+    expect(admits(h)).toEqual([{ session: SID, ids: [A] }])
+  })
+
+  test('a release waiting for its replay is held again by a newer fence: it goes once no fence holds, its row read afresh', async () => {
+    let fail = true
+    const h = await stopped({ holderAnswer: (b) => (b.kind === 'release' && fail ? 'fail' : undefined) })
+    await answer(h, { t: 'disarm', fence: 1 })
+    const tried = releases(h).length
+    expect(tried).toBeGreaterThan(0)
+    expect(releases(h).at(-1)).toEqual({ session: SID, items: [{ id: A, attempt: 2, present: true }] })
+    // Fence 2 installs before the replay: the replay sends nothing while it stands.
+    await arm(h, 2, 2)
+    fail = false
+    await h.fire(HOLDER_RETRY_MS)
+    expect(releases(h)).toHaveLength(tried)
+    expect(keptReceipts(h)).toEqual({ reports: [], stopped: [{ session: SID, id: A, attempt: 2 }] })
+    // Its disarm: released now, the row's presence read again (a rewind took it out).
+    live(h)
+    await answer(h, { t: 'disarm', fence: 2 })
+    expect(releases(h)).toHaveLength(tried + 1)
+    expect(releases(h).at(-1)).toEqual({ session: SID, items: [{ id: A, attempt: 2, present: false }] })
+    expect(keptReceipts(h)).toEqual({ reports: [], stopped: [] })
+  })
+
   test('a later admitted request carrying it settles it instead: no release follows', async () => {
     const h = await stopped()
     await h.complete('t1')
@@ -322,6 +373,21 @@ describe('receipts: reports until the child records them (O12 M4b)', () => {
     await request(legacy, 't1').done
     await flush(legacy)
     expect(keptReceipts(legacy)).toEqual({ reports: [], stopped: [] })
+  })
+
+  test("a report the child answers pending (its activation not settled) is replayed, never taken for the process's refusal", async () => {
+    let pending = true
+    const h = await observing({ holderAnswer: (b) => (b.kind === 'admit' && pending ? { status: 200, body: { ok: false, code: 'pending', error: 'not activated yet' } } : undefined) })
+    await peerRow(h, delivered(A))
+    live(h, delivered(A))
+    await h.turn('t1', undefined, delivered(A))
+    await request(h, 't1').done
+    await flush(h)
+    expect(keptReceipts(h)).toEqual({ reports: [{ kind: 'admit', session: SID, ids: [A] }], stopped: [] })
+    pending = false
+    await h.fire(HOLDER_RETRY_MS)
+    expect(admits(h).at(-1)).toEqual({ session: SID, ids: [A] })
+    expect(keptReceipts(h)).toEqual({ reports: [], stopped: [] })
   })
 
   test("a child restart: what the old child did not acknowledge is replayed to the new one at its ready", async () => {
@@ -397,7 +463,7 @@ describe('receipts: activation and the upgrade (O12 M4b)', () => {
     await h.start()
     h.children[0]!.write(bootstrap(G2, '/tmp/s/bridge/h100.sock', 100))
     await flush(h)
-    expect(h.holderBodies('ready')).toEqual([{ kind: 'ready', generation: G2, upgrade: true }])
+    expect(h.holderBodies('ready')).toEqual([{ kind: 'ready', generation: G2, upgrade: true, observe: true }])
     expect(h.children[0]!.argv).toContain('--launch=LaunchLaunchLaunchLaun')
     // The fence it kept holds a request; the observer acknowledges a new arm.
     await h.turn('t1')
@@ -416,23 +482,67 @@ describe('receipts: activation and the upgrade (O12 M4b)', () => {
     await r.done
   })
 
-  test('a process whose launch a module before this one kept, with no receipts kept, is an upgrade too; one whose module knew receipts is not', async () => {
+  test('a fresh process is one whose first module this is, seconds into its run: one long running or of unknown age is an existing process, legacy and unobserved', async () => {
+    const fresh = harness({ env: MARKED, messages: [{ type: 'user' }] })
+    await fresh.start()
+    fresh.children[0]!.write(bootstrap(GEN, ROUTE, 99, 2.5))
+    await flush(fresh)
+    expect(fresh.holderBodies('ready')).toEqual([{ kind: 'ready', generation: GEN, launch: String(fresh.sessionState.get('launch')), retained: [] }])
+    expect(fresh.sessionState.get('holder')).toMatchObject({ observerStarted: true, fresh: true })
+    for (const age of [3600, null]) {
+      const old = harness({ env: MARKED, messages: [{ type: 'user' }] })
+      await old.start()
+      old.children[0]!.write(bootstrap(GEN, ROUTE, 99, age))
+      await flush(old)
+      expect(old.holderBodies('ready')).toEqual([{ kind: 'ready', generation: GEN, upgrade: true, observe: false }])
+      expect(old.sessionState.get('holder')).toMatchObject({ observerStarted: false, fresh: false })
+    }
+  })
+
+  test('a process a module before this one ran in with no observer (its launch kept) stays legacy and unobserved, however young', async () => {
     const pre = harness({ env: MARKED, sessionState: new Map<string, unknown>([['launch', 'LaunchLaunchLaunchLaun']]), messages: [{ type: 'user' }] })
     await pre.start()
     pre.children[0]!.write(bootstrap())
     await flush(pre)
-    expect(pre.holderBodies('ready')).toEqual([{ kind: 'ready', generation: GEN, upgrade: true }])
+    expect(pre.holderBodies('ready')).toEqual([{ kind: 'ready', generation: GEN, upgrade: true, observe: false }])
+    expect(pre.sessionState.get('holder')).toMatchObject({ observerStarted: false })
+  })
+
+  test("a reload keeps the process's classification: a fresh one's next module activates whatever the age; an existing one's stays unobserved", async () => {
     const kept = new Map<string, unknown>()
     await observing({ sessionState: kept })
     const after = harness({ env: MARKED, sessionState: kept, messages: [{ type: 'user' }] })
     await after.start()
-    after.children[0]!.write(bootstrap(G2))
+    after.children[0]!.write(bootstrap(G2, ROUTE, 99, 3600))
     await flush(after)
     expect(after.holderBodies('ready')).toEqual([{ kind: 'ready', generation: G2, launch: String(kept.get('launch')), retained: [] }])
+    const old = new Map<string, unknown>()
+    const first = harness({ env: MARKED, sessionState: old, messages: [{ type: 'user' }] })
+    await first.start()
+    first.children[0]!.write(bootstrap(GEN, ROUTE, 99, 3600))
+    await flush(first)
+    const next = harness({ env: MARKED, sessionState: old, messages: [{ type: 'user' }] })
+    await next.start()
+    next.children[0]!.write(bootstrap(G2, ROUTE, 99, 1))
+    await flush(next)
+    expect(next.holderBodies('ready')).toEqual([{ kind: 'ready', generation: G2, upgrade: true, observe: false }])
   })
 })
 
 describe('receipts: a /clear (O12 M4b)', () => {
+  test("a request in a /clear's window, before the bridge has moved to the new session, reports the conversation it read: the new one", async () => {
+    const h = await observing()
+    await h.hook('session.end', {})(h.engine, { reason: 'clear', sessionId: SID }, async () => ({}))
+    await flush(h)
+    // The engine is on the new conversation; the bridge's poll has not moved yet.
+    h.setSession(NEW)
+    await peerRow(h, delivered(C))
+    live(h, delivered(C))
+    await h.turn('t2', undefined, delivered(C))
+    await request(h, 't2').done
+    expect(admits(h)).toEqual([{ session: NEW, ids: [C] }])
+  })
+
   test("reports name the session they were made in: replayed after a /clear, never as the new session's; the old conversation's rows are not the new one's", async () => {
     let fail = true
     const h = await observing({ holderAnswer: (b) => (b.kind === 'admit' && fail ? 'fail' : undefined) })

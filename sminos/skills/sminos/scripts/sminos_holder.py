@@ -53,7 +53,9 @@ The private relay (the contract the mod consumes):
     ordinary hello and its seed:
         {"op": "holder", "bootstrap": {"socket": <path of the /holder socket>,
                                        "nonce": <hex>, "generation": <hex>,
-                                       "pid": <claude's pid>, "childPid": <this child's pid>}}
+                                       "pid": <claude's pid>, "childPid": <this child's pid>,
+                                       "processAge": <seconds claude's process has run, boot clock> | null}}
+        (`processAge` is the mod's evidence of a fresh process, O12 M4b.)
     stdout, each host frame of a welcomed connection, in the order received:
         {"op": "holder", "epoch": E, "frame": {...}}            welcome, disarm, proceed, stop
         {"op": "holder", "epoch": E, "arm": N, "frame": {"t": "arm", "fence", "leaseMs"}}
@@ -67,7 +69,7 @@ The private relay (the contract the mod consumes):
     POST /holder on bootstrap.socket, header X-Bridge-Nonce: bootstrap.nonce
     (409 {ok: false, code: "nonce"} without it), body an object naming this
     child's `generation` (409 code "generation" otherwise) and one `kind`:
-        {kind: "ready", generation, launch?, upgrade?, retained?}
+        {kind: "ready", generation, launch?, upgrade?, observe?, retained?}
             the mod's fence receiver is installed: the client may connect
             (once the verdict is `match`). Idempotent. The first that names
             an activation (O12 M4b) is the one taken: before its first hello
@@ -75,10 +77,12 @@ The private relay (the contract the mod consumes):
             (sminos_holder_deliveries): `activate` with `launch` (the
             process's, M7's) and `retained` (the receipt ids the live
             conversation holds, a resume's rows), or `observer_upgrade` when
-            `upgrade` (an M4a observer's process: `legacy`, the observer
-            going on as before); a record that exists is kept as it is, and
-            one that cannot be read leaves receipts off (said once), the
-            observer connecting anyway.
+            `upgrade` (a process a module ran in before this one: `legacy`,
+            an M4a observer going on as before, or with `observe` false one
+            no observer served staying unobserved: this child never says
+            hello); a record that exists is kept as it is, and one that
+            cannot be read leaves receipts off (said once), the observer
+            connecting anyway.
             → 200 {ok: true, lane, epoch: <the welcomed connection's> | null, receipts: <the mode> | null}
         {kind: "armed", generation, epoch, arm, fence}
             the mod installed arm N of epoch E (fence must be that arm's).
@@ -109,7 +113,10 @@ The private relay (the contract the mod consumes):
             names the old one). Recorded durably before the answer
             (sminos_holder_deliveries.admit): → 200 with its answer, `ok`
             false with code `storage` replayed by the mod, `legacy` ending
-            the report.
+            the report. Until the activation's outcome is known (it waits on
+            a deliverer's mode lock, or for the lane) a report waits up to
+            ACTIVATION_WAIT_S, then is answered `ok` false with code
+            `pending`, recording nothing: replayed, never taken for legacy.
         {kind: "release", generation, session, items: [{id, attempt, present}]}
             stopped attempts the mod found free to retry in this launch
             (sminos_holder_deliveries.release, the launch the activation's);
@@ -147,6 +154,7 @@ BODY_MAX = 64 * 1024          # a POST /holder body
 DELIVERY_MAX = 256            # characters of a turn's opaque delivery id
 REPORT_MAX = 512              # receipts one admission or release report names
 ID_MAX = 64                   # characters of a receipt id, a launch or a session a report names
+ACTIVATION_WAIT_S = 1.0       # a report waits this long for the activation before it is answered `pending`
 WAIT_MAX_MS = 20000           # a held wait, under the engine's 30-second bound on the mod's fetch
 RELAY_QUEUED = 256            # host frames waiting for stdout; past it the connection ends (the mod is not reading)
 WRITE_WAIT_S = 5.0            # a gate write that makes no progress this long ends the connection
@@ -244,6 +252,7 @@ class Holder:
         # None while not activated (no ready yet, or no launch to activate with).
         self.activation = None
         self.activated = False
+        self.settled = threading.Event()  # the activation's outcome is known: reports may be answered
         self.receipts = None
 
     # -- life
@@ -264,10 +273,23 @@ class Holder:
         threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.25}, daemon=True).start()
         self.emit({"op": "holder", "bootstrap": {"socket": self.route, "nonce": self.nonce,
                                                  "generation": self.generation,
-                                                 "pid": self.pid, "childPid": self.child_pid}})
+                                                 "pid": self.pid, "childPid": self.child_pid,
+                                                 "processAge": self._process_age()}})
         threading.Thread(target=self._run_relay, daemon=True).start()
         threading.Thread(target=self._run_gate, daemon=True).start()
         return self
+
+    def _process_age(self):
+        """Seconds claude's process has run, on the boot clock no wall-clock
+        step moves (sminos_holder_deliveries.process): the mod's evidence
+        that its module is the process's first. None when unreadable."""
+        try:
+            import sminos_holder_deliveries as D
+            proc = D.process(self.pid)
+        except Exception:  # noqa: BLE001 — no evidence, which the mod takes as an existing process
+            return None
+        age = proc["age"] if proc is not None else None
+        return round(age, 3) if isinstance(age, (int, float)) and age != float("inf") else None
 
     def close(self):
         self.closing.set()
@@ -326,6 +348,9 @@ class Holder:
                     return
             if not self.activated:
                 self._activate()
+            if (self.activation or {}).get("observe") is False:
+                self.log("receipts: an existing process no observer served: it stays unobserved, no hello")
+                return
             with self.lock:
                 self.attempts += 1
                 epoch = "%s.%d" % (self.generation, self.attempts)
@@ -345,6 +370,12 @@ class Holder:
         that cannot be read or written is said and leaves receipts off; the
         observer connects either way: observing is not settling."""
         self.activated = True
+        try:
+            self._choose_mode()
+        finally:
+            self.settled.set()
+
+    def _choose_mode(self):
         act = self.activation or {}
         if not act.get("upgrade") and not act.get("launch"):
             self.log("receipts: the mod named no launch: none activated")
@@ -501,23 +532,32 @@ class Holder:
 
     def _ready(self, body):
         launch, upgrade, retained = body.get("launch"), body.get("upgrade"), body.get("retained")
+        observe = body.get("observe")
         if not ((launch is None or (isinstance(launch, str) and 0 < len(launch) <= ID_MAX))
-                and upgrade in (None, True, False)
+                and upgrade in (None, True, False) and observe in (None, True, False)
                 and (retained is None or (isinstance(retained, list) and len(retained) <= REPORT_MAX
                                           and all(_is_id(r) for r in retained)))):
             return 400, {"ok": False, "code": "shape",
-                         "error": "ready names maybe a launch, upgrade (a boolean) and retained receipt ids"}
+                         "error": "ready names maybe a launch, upgrade and observe (booleans) and retained receipt ids"}
         with self.lock:
             # The first ready that names an activation is the one taken: the
             # gate thread activates once, before its first hello.
             if self.activation is None and (launch is not None or upgrade is not None):
                 self.activation = {"launch": launch or self.launch, "upgrade": upgrade is True,
-                                   "retained": list(retained or ())}
+                                   "retained": list(retained or ()), "observe": observe is not False}
             self.ready = True
             self.wake.notify_all()
             conn = self.conn
             return 200, {"ok": True, "lane": self.lane, "epoch": conn.epoch if conn is not None else None,
                          "receipts": self.receipts}
+
+    def _pending(self):
+        """A report before the activation's outcome is known (it waits on a
+        deliverer's mode lock, or on the lane): answered retryably, never as
+        the `legacy` a missing record would read as."""
+        if self.settled.wait(ACTIVATION_WAIT_S):
+            return None
+        return 200, {"ok": False, "code": "pending", "error": "receipts are not activated yet: replay the report"}
 
     def _admit(self, body):
         """The mod admitted a model request carrying these receipts' rows:
@@ -527,6 +567,9 @@ class Holder:
         if not (isinstance(ids, list) and 0 < len(ids) <= REPORT_MAX and all(_is_id(i) for i in ids)
                 and _is_id(session)):
             return 400, {"ok": False, "code": "shape", "error": "admit names receipt ids and their session"}
+        pending = self._pending()
+        if pending is not None:
+            return pending
         import sminos_holder_deliveries as D
         return 200, D.admit(ids, self.pid, session)
 
@@ -539,6 +582,9 @@ class Holder:
                         and type(i.get("present")) is bool for i in items)):
             return 400, {"ok": False, "code": "shape",
                          "error": "release names items {id, attempt, present} and their session"}
+        pending = self._pending()
+        if pending is not None:
+            return pending
         launch = (self.activation or {}).get("launch") or self.launch
         if not launch:
             return 409, {"ok": False, "code": "launch", "error": "this child knows no launch of its process"}

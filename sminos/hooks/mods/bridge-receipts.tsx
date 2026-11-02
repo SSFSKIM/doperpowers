@@ -28,7 +28,12 @@ import type { FencedStep, ReceiptMark } from './bridge-state'
  * not; a turn it did not see begin has no first request it can join to.
  * Every one is then checked against the live conversation
  * (`$.session.messages({ as: 'api' })`): a row a rewind or a compaction
- * took out is in no request. The markers are read wherever they stand in a
+ * took out is in no request. The live conversation names receipts, not
+ * rows, so an id with a row seen after the cutoff (the inbox wrote it
+ * again, a retry's wake) is not vouched for by an older row of it a rewind
+ * may have taken out: it waits for a later request, unless the turn's own
+ * text names it. The conversation's identity is read with it, and a report
+ * names that session, whatever the bridge has moved to yet (a /clear). The markers are read wherever they stand in a
  * row's text, so the envelope's framing around the delivery's body (or a
  * rendering that wraps it) never hides one; an id names an unguessable
  * receipt the child checks, so a quoted one settles nothing it should not.
@@ -139,14 +144,20 @@ export function forgetReceiptRows() {
   r.scan = undefined
 }
 
-const isPending = (id: string) => state.holder.receipts.reports.some((p) => p.kind === 'admit' && p.ids.includes(id))
+/** A receipt as one session's: the key of `done`. */
+const receiptKey = (session: string, id: string) => `${session} ${id}`
+const isDone = (session: string, id: string) => state.holder.receipts.done.has(receiptKey(session, id))
+const isPending = (session: string, id: string) => state.holder.receipts.reports.some((p) => p.kind === 'admit' && p.session === session && p.ids.includes(id))
 
 /**
  * What a main-loop request at `index` of its turn would carry that is still
- * to be reported, before the live conversation is checked: none for the
- * first request of a turn this module did not see begin.
+ * to be reported in `session`, before the live conversation is checked: none
+ * for the first request of a turn this module did not see begin. An id with
+ * a row seen at or after the cutoff is left for a later request (the live
+ * conversation cannot say which of its rows it holds), unless the turn's own
+ * text names it.
  */
-function due(step: FencedStep, index: number): Map<string, number> {
+function due(step: FencedStep, index: number, session: string): Map<string, number> {
   const h = state.holder
   const r = h.receipts
   const turn = h.turns.get(step.turnId)
@@ -154,12 +165,18 @@ function due(step: FencedStep, index: number): Map<string, number> {
   if (cutoff === undefined) {
     return new Map()
   }
-  const marks: ReceiptMark[] = [...marksIn(turn?.text)]
+  const own = marksIn(turn?.text)
+  const marks: ReceiptMark[] = [...own]
+  const late = new Set<string>()
   for (const [uuid, row] of r.rows) {
-    if (row.marks.every((m) => r.done.has(m.id))) {
+    if (row.marks.every((m) => isDone(session, m.id))) {
       r.rows.delete(uuid)
     } else if (row.seq < cutoff) {
       marks.push(...row.marks)
+    } else {
+      for (const m of row.marks) {
+        late.add(m.id)
+      }
     }
   }
   for (const [id, attempt] of r.preload) {
@@ -167,36 +184,51 @@ function due(step: FencedStep, index: number): Map<string, number> {
   }
   const out = byId(marks)
   for (const id of out.keys()) {
-    if (r.done.has(id) || isPending(id)) {
+    if (isDone(session, id) || isPending(session, id) || (late.has(id) && !own.some((m) => m.id === id))) {
       out.delete(id)
     }
   }
   return out
 }
 
+/** The receipts a request carries, as the conversation it was built from names them, and that conversation's session. */
+export type Carried = { session: string; marks: ReceiptMark[] }
+
 /**
  * The receipts the request carries and has not reported: those due that the
- * live conversation still holds. Reads the conversation only when one is
- * due; one that cannot be read carries none now (a later request rechecks).
+ * live conversation still holds, with the session that conversation is
+ * (read with it: a /clear's new one before the bridge has moved to it).
+ * Reads the conversation only when one may be due; one that cannot be read
+ * carries none now (a later request rechecks).
  */
-export async function receiptsCarried($: EngineInterface, step: FencedStep, index: number): Promise<ReceiptMark[]> {
-  if (state.session === undefined) {
-    return []
+export async function receiptsCarried($: EngineInterface, step: FencedStep, index: number): Promise<Carried | undefined> {
+  // Asked first of the bridge's session, so a request carrying nothing reads
+  // nothing; the rows a /clear's new conversation took in are not that
+  // session's done ones (session.end forgot the old conversation's rows).
+  if (state.session === undefined || due(step, index, state.session).size === 0) {
+    return undefined
   }
-  const want = due(step, index)
-  if (want.size === 0) {
-    return []
+  const [session, live] = await Promise.all([
+    $.session.id().catch((error: unknown) => {
+      log(`the session id was not read: ${error instanceof Error ? error.message : String(error)}`)
+      return undefined
+    }),
+    liveMarks($),
+  ])
+  if (session === undefined || live === undefined) {
+    return undefined
   }
-  const live = await liveMarks($)
-  return live === undefined ? [] : [...want].filter(([id]) => live.has(id)).map(([id, attempt]) => ({ id, attempt: Math.max(attempt, live.get(id)!) }))
+  const want = due(step, index, session)
+  const marks = [...want].filter(([id]) => live.has(id)).map(([id, attempt]) => ({ id, attempt: Math.max(attempt, live.get(id)!) }))
+  return marks.length === 0 ? undefined : { session, marks }
 }
 
-/** The ids no report is owed for any more. */
-export function settledIds(ids: Iterable<string>) {
+/** The receipts of `session` no admission is owed for any more: admitted, gone, never this session's, or of a process that takes none. */
+function settledIds(session: string, ids: Iterable<string>) {
   const done = state.holder.receipts.done
   for (const id of ids) {
-    done.delete(id)
-    done.add(id)
+    done.delete(receiptKey(session, id))
+    done.add(receiptKey(session, id))
     state.holder.receipts.preload.delete(id)
   }
   while (done.size > DONE_KEPT) {
@@ -219,38 +251,61 @@ function queue(report: ReceiptReport) {
  * no await, so nothing comes between this and the request's `next`. Its
  * stopped receipts are stopped no more. True when a report was queued.
  */
-export function admitCarried(marks: readonly ReceiptMark[]): boolean {
-  const session = state.session
-  const ids = [...new Set(marks.map((m) => m.id))].filter((id) => !isPending(id))
-  if (session === undefined || ids.length === 0) {
+export function admitCarried({ session, marks }: Carried): boolean {
+  const ids = [...new Set(marks.map((m) => m.id))].filter((id) => !isPending(session, id))
+  if (ids.length === 0) {
     return false
   }
   for (let i = 0; i < ids.length; i += REPORT_MAX) {
     queue({ kind: 'admit', session, ids: ids.slice(i, i + REPORT_MAX) })
   }
   const r = state.holder.receipts
-  r.stopped = r.stopped.filter((s) => !ids.includes(s.id))
+  r.stopped = r.stopped.filter((s) => s.session !== session || !ids.includes(s.id))
   return true
 }
 
 /** A request the gate's `stop` ended, carrying these receipts: nothing is reported; each waits for its release in this launch. */
-export function stopCarried(marks: readonly ReceiptMark[]): boolean {
-  const session = state.session
-  if (session === undefined || marks.length === 0) {
+export function stopCarried({ session, marks }: Carried): boolean {
+  if (marks.length === 0) {
     return false
   }
-  const r = state.holder.receipts
   for (const [id, attempt] of byId(marks)) {
-    const at = r.stopped.findIndex((s) => s.id === id)
-    if (at === -1) {
-      r.stopped.push({ session, id, attempt })
-    } else {
-      r.stopped[at] = { session, id, attempt: Math.max(attempt, r.stopped[at]!.attempt) }
-    }
+    keepStopped({ session, id, attempt })
+  }
+  return true
+}
+
+function keepStopped(s: StoppedReceipt) {
+  const r = state.holder.receipts
+  const at = r.stopped.findIndex((t) => t.session === s.session && t.id === s.id)
+  if (at === -1) {
+    r.stopped.push(s)
+  } else {
+    r.stopped[at] = { ...s, attempt: Math.max(s.attempt, r.stopped[at]!.attempt) }
   }
   if (r.stopped.length > STOPPED_KEPT) {
     log(`more than ${STOPPED_KEPT} stopped receipts: the oldest wait for a new launch`)
     r.stopped.splice(0, r.stopped.length - STOPPED_KEPT)
+  }
+}
+
+/**
+ * A fence holds again: every release still waiting for the child goes back
+ * among the stopped receipts, released again (its row's presence read
+ * afresh) once no fence holds. Admission reports stay queued. True when one
+ * went back.
+ */
+export function holdReleases(): boolean {
+  const r = state.holder.receipts
+  const held = r.reports.filter((p) => p.kind === 'release')
+  if (held.length === 0) {
+    return false
+  }
+  r.reports = r.reports.filter((p) => p.kind !== 'release')
+  for (const p of held) {
+    for (const i of p.items) {
+      keepStopped({ session: p.session, id: i.id, attempt: i.attempt })
+    }
   }
   return true
 }
@@ -283,17 +338,21 @@ export function turnDelivery(turnId: string | undefined): string | undefined {
 /**
  * The child's answer to a report: `done` (recorded, or nothing more can be:
  * the process takes no receipts, the report was malformed), `retry` (no
- * answer, a storage failure, a mode it cannot read now), the report left
- * at the head, or rotated to the back holding only what was not recorded.
+ * answer, a storage failure, the activation not settled yet (`pending`), a
+ * mode it cannot read now), the report left at the head, or rotated to the
+ * back holding only what was not recorded. Only an admission's answer
+ * settles its ids for good; a release's acknowledgement leaves them to be
+ * admitted (its retry's row).
  */
 export function reportAnswered(report: ReceiptReport, got: { status: number; answer?: Record<string, unknown> } | undefined): 'done' | 'retry' {
   if (got === undefined) {
     return 'retry'
   }
   const ids = report.kind === 'admit' ? report.ids : report.items.map((i) => i.id)
+  const settled = (which: string[]) => report.kind === 'admit' && settledIds(report.session, which)
   if (got.status === 400) {
     log(`the child refused a ${report.kind} report as malformed: ${JSON.stringify(got.answer).slice(0, 200)}`)
-    settledIds(ids)
+    settled(ids)
     return 'done'
   }
   if (got.status !== 200 || !isRecord(got.answer)) {
@@ -301,18 +360,18 @@ export function reportAnswered(report: ReceiptReport, got: { status: number; ans
   }
   const a = got.answer
   if (a.ok === true) {
-    settledIds(ids)
+    settled(ids)
     return 'done'
   }
   if (a.code === 'legacy' || a.code === 'launch') {
     log(`${report.kind} of ${ids.length} receipt(s) is moot: ${String(a.error)}`)
-    settledIds(ids)
+    settled(ids)
     return 'done'
   }
   if (a.code === 'storage' && isRecord(a.receipts)) {
     const states = a.receipts
     const left = (id: string) => states[id] === 'unavailable'
-    settledIds(ids.filter((id) => !left(id)))
+    settled(ids.filter((id) => !left(id)))
     const r = state.holder.receipts
     r.reports.shift()
     const rest: ReceiptReport | undefined =
