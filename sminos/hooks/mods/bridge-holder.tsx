@@ -389,6 +389,9 @@ async function takeBootstrap($: EngineInterface, b: Record<string, unknown>) {
     log(`a bootstrap with no route: ${JSON.stringify(b).slice(0, 200)}`)
     return
   }
+  // When its age was sampled, on both clocks, for the age at the decision.
+  const sampledMono = performance.now()
+  const sampledWall = $.clock.now().catch(() => NaN)
   const h = state.holder
   const relay: HolderRelay = { socket: b.socket, nonce: b.nonce, generation: b.generation, pid: pid(b.pid), childPid: pid(b.childPid), child: state.generation }
   h.relay = relay
@@ -410,10 +413,15 @@ async function takeBootstrap($: EngineInterface, b: Record<string, unknown>) {
     // process is seconds old. A process with no trace of a module before
     // this one started under one older than M7, so it is old: a /resume in it
     // fails the age, a reload in it raises no SessionStart, and a real start
-    // or `claude --resume` passes both. An unknown age is an old one.
-    const isYoung = typeof b.processAge === 'number' && b.processAge >= 0 && b.processAge < FRESH_PROCESS_S
-    h.fresh = h.isProcessStart && isYoung
-    log(`the process is ${h.fresh ? 'a fresh one' : 'an existing one'}: ${h.isProcessStart ? 'its SessionStart came' : 'no SessionStart of its own came'}, its age ${String(b.processAge)} s`)
+    // or `claude --resume` passes both. An unknown age is an old one. The age
+    // is the process's now, at the decision, which comes at or after its
+    // SessionStart: the sampled age plus what passed since the bootstrap, the
+    // larger of the monotonic and the engine's clock (neither a wall-clock
+    // step back nor a clock unread makes the process younger).
+    const passedMs = Math.max(performance.now() - sampledMono, (await $.clock.now().catch(() => NaN)) - (await sampledWall))
+    const age = typeof b.processAge === 'number' && b.processAge >= 0 ? b.processAge + passedMs / 1000 : NaN
+    h.fresh = h.isProcessStart && age < FRESH_PROCESS_S
+    log(`the process is ${h.fresh ? 'a fresh one' : 'an existing one'}: ${h.isProcessStart ? 'its SessionStart came' : 'no SessionStart of its own came'}, its age ${Number.isNaN(age) ? 'unknown' : `${age.toFixed(1)} s`}`)
   }
   if (!isCurrent(relay)) {
     return

@@ -544,6 +544,26 @@ describe('receipts: activation and the upgrade (O12 M4b)', () => {
     expect(h.sessionState.get('holder')).toMatchObject({ observerStarted: false, fresh: false })
   })
 
+  test("the age is the process's at its SessionStart: one sampled at 59 s with the SessionStart 4 s later is an existing process; 50 s and 4 s, a fresh one", async () => {
+    const late = harness({ env: MARKED, messages: [{ type: 'user' }], processStart: null })
+    await late.start()
+    late.children[0]!.write(bootstrap(GEN, ROUTE, 99, 59))
+    await flush(late)
+    late.advance(4_000)
+    await late.classicStart('resume')
+    await flush(late)
+    expect(late.holderBodies('ready')).toEqual([{ kind: 'ready', generation: GEN, upgrade: true, observe: false }])
+    expect(late.sessionState.get('holder')).toMatchObject({ observerStarted: false, fresh: false })
+    const young = harness({ env: MARKED, messages: [{ type: 'user' }], processStart: null })
+    await young.start()
+    young.children[0]!.write(bootstrap(GEN, ROUTE, 99, 50))
+    await flush(young)
+    young.advance(4_000)
+    await young.classicStart('startup')
+    await flush(young)
+    expect(young.holderBodies('ready')).toEqual([{ kind: 'ready', generation: GEN, launch: String(young.sessionState.get('launch')), retained: [] }])
+  })
+
   test("the process's SessionStart coming after the child's bootstrap still makes it a fresh one", async () => {
     const h = harness({ env: MARKED, messages: [{ type: 'user' }], processStart: null })
     await h.start()
