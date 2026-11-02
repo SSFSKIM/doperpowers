@@ -321,8 +321,9 @@ export type HolderState = {
   /** A first bootstrap waiting for that evidence. */
   onProcessStart?: () => void
   receipts: ReceiptsState
-  /** The `$` of the child's loop (the session start's), which outlives every hook: reports and releases run on it. */
-  engine?: EngineInterface
+  /** The child loop's report pump and release (the session start's `$`, which outlives every hook), set at its bootstrap. */
+  pumpReports?: () => void
+  releaseStopped?: () => void
 }
 
 export type BridgeState = {

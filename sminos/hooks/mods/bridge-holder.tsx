@@ -306,7 +306,7 @@ function expire($: EngineInterface, f: HolderFence, generation: number) {
   log(`fence ${key}: no answer within its lease and the margin`)
   void keep($)
   wakeStep()
-  void releaseStopped()
+  void releaseStopped($)
 }
 
 function release($: EngineInterface, key: string) {
@@ -319,7 +319,7 @@ function release($: EngineInterface, key: string) {
   h.fences.delete(key)
   void keep($)
   wakeStep()
-  void releaseStopped()
+  void releaseStopped($)
 }
 
 const wakeStep = () => state.holder.step?.wake?.()
@@ -395,7 +395,11 @@ async function takeBootstrap($: EngineInterface, b: Record<string, unknown>) {
   const h = state.holder
   const relay: HolderRelay = { socket: b.socket, nonce: b.nonce, generation: b.generation, pid: pid(b.pid), childPid: pid(b.childPid), child: state.generation }
   h.relay = relay
-  h.engine = $
+  // The reports and releases run on this loop's `$`, the session start's,
+  // which outlives every hook: a hook reaches them through these (a module
+  // keeps no `$` of its own; the engine refuses one assigned).
+  h.pumpReports = () => void pumpReports($)
+  h.releaseStopped = () => void releaseStopped($)
   // What a module before this one kept is in before anything is written.
   await h.loaded
   // A fresh process, or an existing one (O12 M4b): decided once per process.
@@ -447,8 +451,8 @@ async function takeBootstrap($: EngineInterface, b: Record<string, unknown>) {
   // A request waiting at the fence holds its wait on this route from now.
   wakeStep()
   // What the child before this one did not acknowledge goes to this one.
-  void pumpReports()
-  void releaseStopped()
+  void pumpReports($)
+  void releaseStopped($)
 }
 
 function onArm($: EngineInterface, relay: HolderRelay, epoch: string, arm: number, fence: number, leaseMs: number) {
@@ -679,16 +683,16 @@ export function sessionStarted(source: string) {
  */
 export function receiptsAdmitted($: EngineInterface, carried: Carried) {
   if (admitCarried(carried)) {
-    void keep(state.holder.engine ?? $)
-    void pumpReports()
+    void keep($)
+    state.holder.pumpReports?.()
   }
 }
 
 /** A request the gate's `stop` ended: its receipts wait, kept, for their release in this launch. */
 export function receiptsStopped($: EngineInterface, carried: Carried) {
   if (stopCarried(carried)) {
-    void keep(state.holder.engine ?? $)
-    void releaseStopped()
+    void keep($)
+    state.holder.releaseStopped?.()
   }
 }
 
@@ -699,7 +703,7 @@ export function receiptsStopped($: EngineInterface, carried: Carried) {
  * HOLDER_RETRY_MS; a new child takes them up at its ready. On the child's
  * own route, never behind the stream's posts.
  */
-async function pumpReports(): Promise<void> {
+async function pumpReports($: EngineInterface): Promise<void> {
   const h = state.holder
   const r = h.receipts
   if (r.isPumping) {
@@ -710,8 +714,7 @@ async function pumpReports(): Promise<void> {
     for (;;) {
       const report = r.reports[0]
       const relay = h.relay
-      const $ = h.engine
-      if (report === undefined || relay === undefined || !isCurrent(relay) || $ === undefined || h !== state.holder) {
+      if (report === undefined || relay === undefined || !isCurrent(relay) || h !== state.holder) {
         return
       }
       // A release goes only while no fence holds (checked at each replay):
@@ -733,7 +736,7 @@ async function pumpReports(): Promise<void> {
           r.isRetryArmed = true
           $.clock.after(HOLDER_RETRY_MS, () => {
             r.isRetryArmed = false
-            void pumpReports()
+            void pumpReports($)
           })
         }
         return
@@ -754,11 +757,10 @@ async function pumpReports(): Promise<void> {
  * or renewed one standing. A welcome changes no fence, so it releases
  * nothing. Each says whether its row is still in the live conversation.
  */
-async function releaseStopped(): Promise<void> {
+async function releaseStopped($: EngineInterface): Promise<void> {
   const h = state.holder
   const r = h.receipts
-  const $ = h.engine
-  if (r.isReleasing || r.stopped.length === 0 || h.fences.size > 0 || !h.isLoaded || $ === undefined) {
+  if (r.isReleasing || r.stopped.length === 0 || h.fences.size > 0 || !h.isLoaded) {
     return
   }
   r.isReleasing = true
@@ -771,7 +773,7 @@ async function releaseStopped(): Promise<void> {
     log(`${r.stopped.length} stopped receipt(s) released for a retry in this launch: no fence holds`)
     releaseStoppedNow(live)
     void keep($)
-    void pumpReports()
+    void pumpReports($)
   } finally {
     r.isReleasing = false
   }
