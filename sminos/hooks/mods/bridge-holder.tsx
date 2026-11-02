@@ -62,8 +62,9 @@ import type { FencedStep, HolderAsked, HolderFence, HolderRelay, HolderState, Pr
  *   otherwise (no hello: the host keeps its lineage registration). A first
  *   bootstrap with no evidence either way waits STARTUP_WAIT_MS for the
  *   SessionStart (the engine runs it while the first session.start is
- *   still settling), then takes the process for an existing one. The
- *   child's `processAge` is said for diagnosis; it decides nothing.
+ *   still settling), then decides. The SessionStart is one witness; the
+ *   child's `processAge`, under FRESH_PROCESS_S, the other: both, or the
+ *   process is an existing one.
  * - A main-loop request the module admits (a `proceed`, no fence, a lease's
  *   expiry) reports the receipts it carries, decided with no await before
  *   its `next`; the report is kept in `$.state` and replayed on the child's
@@ -83,6 +84,13 @@ import type { FencedStep, HolderAsked, HolderFence, HolderRelay, HolderState, Pr
  * reloaded into a running process waits this long once, before its hello.
  */
 export const STARTUP_WAIT_MS = 5_000
+
+/**
+ * The age under which a process whose SessionStart this module handled is
+ * taken for a fresh one (the second witness): the engine starts the module,
+ * the module its child, before the first prompt, in seconds.
+ */
+export const FRESH_PROCESS_S = 60
 
 /** The observer's fallback past a lease: one heartbeat, OX10's production margin. */
 export const HOLDER_MARGIN_MS = 5_000
@@ -396,8 +404,16 @@ async function takeBootstrap($: EngineInterface, b: Record<string, unknown>) {
     h.onProcessStart = undefined
   }
   if (h.fresh === undefined) {
-    h.fresh = h.isProcessStart
-    log(`the process is ${h.fresh ? 'a fresh one: this module handled its SessionStart' : 'an existing one: no SessionStart of its own came'} (its age ${String(b.processAge)} s)`)
+    // Two witnesses, each insufficient alone. The SessionStart says a session
+    // started, which a mid-process /resume says too; the age (the claude
+    // process's, on the boot clock the child read at its bootstrap) says the
+    // process is seconds old. A process with no trace of a module before
+    // this one started under one older than M7, so it is old: a /resume in it
+    // fails the age, a reload in it raises no SessionStart, and a real start
+    // or `claude --resume` passes both. An unknown age is an old one.
+    const isYoung = typeof b.processAge === 'number' && b.processAge >= 0 && b.processAge < FRESH_PROCESS_S
+    h.fresh = h.isProcessStart && isYoung
+    log(`the process is ${h.fresh ? 'a fresh one' : 'an existing one'}: ${h.isProcessStart ? 'its SessionStart came' : 'no SessionStart of its own came'}, its age ${String(b.processAge)} s`)
   }
   if (!isCurrent(relay)) {
     return
@@ -639,7 +655,7 @@ export function abandonedStep(e: TurnStepInput): HookStream<TurnStepChunk, TurnS
 
 // -- receipts (O12 M4b)
 
-/** The classic SessionStart: a start, a resume or a fork is the process's own (its first load's evidence); a /clear's or a compaction's is none. */
+/** The classic SessionStart: a start, a resume or a fork is a session's start (one witness of a first load, the process's age the other); a /clear's or a compaction's is none. */
 export function sessionStarted(source: string) {
   const h = state.holder
   if (source === 'startup' || source === 'resume' || source === 'fork') {

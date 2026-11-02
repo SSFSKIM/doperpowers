@@ -500,14 +500,23 @@ describe('receipts: activation and the upgrade (O12 M4b)', () => {
     await r.done
   })
 
-  test("a fresh process is one whose own SessionStart (a startup, a resume, a fork) this module handled, whatever its age; a module loaded with none (a reload) takes it for an existing one, legacy and unobserved", async () => {
+  test("a fresh process is one whose own SessionStart (a startup, a resume, a fork) this module handled, seconds into its run; a module loaded with none (a reload) takes it for an existing one, legacy and unobserved", async () => {
     for (const source of ['startup', 'resume', 'fork'] as const) {
       const fresh = harness({ env: MARKED, messages: [{ type: 'user' }], processStart: source })
       await fresh.start()
-      fresh.children[0]!.write(bootstrap(GEN, ROUTE, 99, 3600))
+      fresh.children[0]!.write(bootstrap(GEN, ROUTE, 99, 2.5))
       await flush(fresh)
       expect(fresh.holderBodies('ready')).toEqual([{ kind: 'ready', generation: GEN, launch: String(fresh.sessionState.get('launch')), retained: [] }])
       expect(fresh.sessionState.get('holder')).toMatchObject({ observerStarted: true, fresh: true })
+    }
+    // A SessionStart in a process long running, or of an age unknown, is no first load.
+    for (const age of [3600, null]) {
+      const aged = harness({ env: MARKED, messages: [{ type: 'user' }], processStart: 'startup' })
+      await aged.start()
+      aged.children[0]!.write(bootstrap(GEN, ROUTE, 99, age))
+      await flush(aged)
+      expect(aged.holderBodies('ready')).toEqual([{ kind: 'ready', generation: GEN, upgrade: true, observe: false }])
+      expect(aged.sessionState.get('holder')).toMatchObject({ observerStarted: false, fresh: false })
     }
     // Loaded with no SessionStart of its own (a reload, nothing a module before
     // kept): it waits for one a while, then the process is an existing one;
@@ -522,6 +531,17 @@ describe('receipts: activation and the upgrade (O12 M4b)', () => {
     await old.fire(STARTUP_WAIT_MS)
     expect(old.holderBodies('ready')).toEqual([{ kind: 'ready', generation: GEN, upgrade: true, observe: false }])
     expect(old.sessionState.get('holder')).toMatchObject({ observerStarted: false, fresh: false })
+  })
+
+  test("a mid-process /resume reaching a reloaded module with no trace, in an old process, before it decided: an existing process", async () => {
+    const h = harness({ env: MARKED, messages: [{ type: 'user' }], processStart: null })
+    await h.start()
+    h.children[0]!.write(bootstrap(GEN, ROUTE, 99, 3600))
+    await flush(h)
+    await h.classicStart('resume')
+    await flush(h)
+    expect(h.holderBodies('ready')).toEqual([{ kind: 'ready', generation: GEN, upgrade: true, observe: false }])
+    expect(h.sessionState.get('holder')).toMatchObject({ observerStarted: false, fresh: false })
   })
 
   test("the process's SessionStart coming after the child's bootstrap still makes it a fresh one", async () => {

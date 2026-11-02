@@ -55,7 +55,7 @@ The private relay (the contract the mod consumes):
                                        "nonce": <hex>, "generation": <hex>,
                                        "pid": <claude's pid>, "childPid": <this child's pid>,
                                        "processAge": <seconds claude's process has run, boot clock> | null}}
-        (`processAge` is for diagnosis: the mod decides a fresh process from its SessionStart, O12 M4b.)
+        (`processAge` is one of the mod's two witnesses of a fresh process, its SessionStart the other, O12 M4b.)
     stdout, each host frame of a welcomed connection, in the order received:
         {"op": "holder", "epoch": E, "frame": {...}}            welcome, disarm, proceed, stop
         {"op": "holder", "epoch": E, "arm": N, "frame": {"t": "arm", "fence", "leaseMs"}}
@@ -283,12 +283,12 @@ class Holder:
 
     def _process_age(self):
         """Seconds claude's process has run, on the boot clock no wall-clock
-        step moves (sminos_holder_deliveries.process), said in the bootstrap
-        for diagnosis. None when unreadable."""
+        step moves (sminos_holder_deliveries.process), said in the bootstrap:
+        the mod's second witness of a fresh process. None when unreadable."""
         try:
             import sminos_holder_deliveries as D
             proc = D.process(self.pid)
-        except Exception:  # noqa: BLE001 — a diagnostic: unreadable is said as none
+        except Exception:  # noqa: BLE001 — unreadable is said as none, which the mod takes for an old process
             return None
         age = proc["age"] if proc is not None else None
         return round(age, 3) if isinstance(age, (int, float)) and age != float("inf") else None

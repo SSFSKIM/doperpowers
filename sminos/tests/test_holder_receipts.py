@@ -165,8 +165,8 @@ class Activation(Receipts):
             self.assertEqual(f.read(), "{not json", "nothing overwrote it")
 
     def test_the_bootstrap_says_how_long_claudes_process_has_run(self):
-        # For diagnosis: the process's age on the boot clock, as the
-        # deliverers read it.
+        # The mod's second witness of a fresh process: the process's age on the
+        # boot clock, as the deliverers read it.
         boot = self.child().bootstrap()
         self.assertIsInstance(boot["processAge"], (int, float))
         self.assertLessEqual(abs(boot["processAge"] - hd.process(os.getpid())["age"]), 5.0)
