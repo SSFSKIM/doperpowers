@@ -34,8 +34,8 @@ import type { FencedStep, HolderAsked, HolderFence, HolderRelay, HolderState, Pr
  * - A module that loads into the process (a reload) claims the kept state it
  *   read, at that version, before any request can pass, and holds its fences
  *   each for one full lease and margin from then: the time already spent
- *   cannot be read without a wall clock. Until it has restored them every
- *   main request waits.
+ *   cannot be read without a wall clock. A kept state it cannot read holds
+ *   every main request for the production lease and margin (C3).
  * - A turn's origin is the engine's stamp on the prompt that started it,
  *   seen at `prompt.submit` and in its row, matched to the turn by text
  *   among the prompts seen before it started; a prompt delivered into a
@@ -51,8 +51,12 @@ import type { FencedStep, HolderAsked, HolderFence, HolderRelay, HolderState, Pr
 export const HOLDER_MARGIN_MS = 5_000
 /** How long one held wait on the child's route lasts while a request waits at the fence: a call in flight stops the hook's own budget. */
 export const HOLDER_WAIT_MS = 5_000
-/** How soon what failed for want of the kept state or the child is tried again: restoring the kept state, an acknowledgement. */
+/** How soon an acknowledgement that failed for want of the kept state or the child is tried again. */
 export const HOLDER_RETRY_MS = 1_500
+/** OX10's production lease: the lease of a kept state this module cannot read (C3). */
+const PRODUCTION_LEASE_MS = 10_000
+/** The fence that stands for a kept state this module could not read: no child's epoch, so no gate's frame names it. */
+const UNREAD = { epoch: 'unread', fence: 0 } as const
 /** What a stopped request says when the host's `stop` carried no reason. */
 export const HOLDER_STOP_REASON = 'The holder ended this session; reopening it continues the conversation.'
 /** A POST the route did not answer (the child ending): tried this many times while its relay stands. */
@@ -94,9 +98,10 @@ const snapshot = (h: HolderState): HolderKept => ({
 
 /**
  * Writes what this module holds, after every write before it and once the
- * kept state is restored: true once written. A write that finds another
- * module instance's mark (the one a reload loaded) retires this one, which
- * then keeps and acknowledges nothing.
+ * kept state is restored: true once written. Until this module has claimed
+ * the kept state (its reload could not read it), the write is that claim. A
+ * write that finds another module instance's mark (the one a reload loaded)
+ * retires this one, which then keeps and acknowledges nothing.
  */
 function keep($: EngineInterface): Promise<boolean> {
   const h = state.holder
@@ -106,6 +111,16 @@ function keep($: EngineInterface): Promise<boolean> {
 }
 
 async function keepNow($: EngineInterface, h: HolderState): Promise<boolean> {
+  if (h.isRetired || h !== state.holder) {
+    return false
+  }
+  if (!h.isClaimed) {
+    const missed = await claimKept($, h)
+    if (missed !== undefined) {
+      log(`the fences are not kept: ${missed}`)
+    }
+    return missed === undefined
+  }
   try {
     for (let tries = 0; tries < 3 && !h.isRetired && h === state.holder; tries++) {
       const read = await $.state.get(HOLDER)
@@ -126,63 +141,62 @@ async function keepNow($: EngineInterface, h: HolderState): Promise<boolean> {
 }
 
 /**
- * Restores what a module before this one kept (a reload): one try now, then
- * again every HOLDER_RETRY_MS on this `$` until it holds (bridgeStart's,
- * which outlives its hook).
+ * Restores what a module before this one kept (a reload), once and before
+ * any main request passes: the kept state claimed and its fences held again,
+ * each for a whole lease and margin from now. A kept state this module
+ * cannot read, or cannot read at all, is held as one fence of the production
+ * lease (C3): any lease the host confirmed before the reload ends within it,
+ * and an arm after the reload is installed afresh.
  */
-export async function holderLoaded($: EngineInterface): Promise<void> {
+export function holderLoaded($: EngineInterface): Promise<void> {
   const h = state.holder
-  if (!(await restoreHolder($)) && h === state.holder) {
-    $.clock.after(HOLDER_RETRY_MS, () => void holderLoaded($))
-  }
+  h.load ??= restore($, h).finally(() => {
+    h.isLoaded = true
+    h.markLoaded()
+    if (h === state.holder) {
+      wakeStep()
+    }
+  })
+  return h.load
 }
 
-/** Whether the kept state is restored: a request then needs no await for it. */
+/** Whether the kept state was restored already: a request then needs no await for it. */
 export const isHolderLoaded = () => state.holder.isLoaded
 
-/**
- * One try at restoring the kept state, or the one being tried: true once it
- * holds, and from then every main request may be admitted on the fences.
- */
-export function restoreHolder($: EngineInterface): Promise<boolean> {
-  const h = state.holder
-  if (h.isLoaded) {
-    return Promise.resolve(true)
+/** A session no gate serves (no marker, or one this process controls) has nothing to restore. */
+async function restore($: EngineInterface, h: HolderState): Promise<void> {
+  let lane: string | undefined
+  try {
+    lane = await $.env.get('MAWS_LANE')
+  } catch (error) {
+    holdUnread($, h, `the lane is not read: ${message(error)}`)
+    return
   }
-  h.restoring ??= claimKept($, h).then((isRestored) => {
-    h.restoring = undefined
-    if (isRestored && !h.isLoaded) {
-      h.isLoaded = true
-      h.markLoaded()
-      if (h === state.holder) {
-        wakeStep()
-      }
-    }
-    return isRestored
-  })
-  return h.restoring
+  if (lane !== 'B' || state.laneVerdict === 'mismatch') {
+    return
+  }
+  const missed = await claimKept($, h)
+  if (missed !== undefined) {
+    holdUnread($, h, missed)
+  }
 }
 
 /**
- * A session no gate serves (no marker, or one this process controls) has
- * nothing to restore. Else this module claims the very snapshot it read, at
- * its version (`ifVersion`), with its own fences and the kept ones together,
- * and only then holds the kept ones: a module before it that keeps an arm
- * between the read and the claim makes the claim miss, and the next read has
- * that arm. A kept state that cannot be read, or one this module does not
- * read, restores nothing: a fence the host holds an acknowledgement for may
- * be in it, so requests stay closed.
+ * Claims the kept state: the very snapshot read, at its version
+ * (`ifVersion`), written over with this module's own fences and the kept ones
+ * together, and only then are the kept ones held. A module before this one
+ * that keeps an arm between the read and the claim makes the claim miss, and
+ * the next read has that arm. A kept state of a shape this module does not
+ * read is held as the production lease's window and written over. Undefined
+ * once claimed; else why not.
  */
-async function claimKept($: EngineInterface, h: HolderState): Promise<boolean> {
+async function claimKept($: EngineInterface, h: HolderState): Promise<string | undefined> {
   try {
-    if ((await $.env.get('MAWS_LANE')) !== 'B' || state.laneVerdict === 'mismatch') {
-      return true
-    }
     for (let tries = 0; tries < 3 && h === state.holder; tries++) {
       const read = await $.state.get(HOLDER)
       const kept = read.value === undefined ? undefined : isKept(read.value) ? read.value : null
       if (kept === null) {
-        return restoreFailed(h, 'the kept state is not one this module reads')
+        holdUnread($, h, 'the kept state is not one this module reads')
       }
       const own = snapshot(h)
       const adopted = (kept?.fences ?? []).filter((f) => !h.fences.has(fenceKey(f.epoch, f.fence)))
@@ -195,6 +209,7 @@ async function claimKept($: EngineInterface, h: HolderState): Promise<boolean> {
       if (!(await $.state.set(HOLDER, claim, { ifVersion: read.version })).isSet) {
         continue
       }
+      h.isClaimed = true
       h.observerStarted ||= claim.observerStarted
       h.armGenerations = Math.max(h.armGenerations, claim.armGenerations)
       for (const f of adopted) {
@@ -203,20 +218,25 @@ async function claimKept($: EngineInterface, h: HolderState): Promise<boolean> {
       if (adopted.length > 0) {
         log(`${adopted.length} fence(s) held again for a whole lease and margin`)
       }
-      return true
+      return undefined
     }
-    return restoreFailed(h, 'the kept state kept changing under the claim')
+    return 'the kept state kept changing under the claim'
   } catch (error) {
-    return restoreFailed(h, `the kept state is not read: ${message(error)}`)
+    return `the kept state is not read: ${message(error)}`
   }
 }
 
-function restoreFailed(h: HolderState, why: string): false {
-  if (h.restoreFailure !== why) {
-    h.restoreFailure = why
-    log(`${why}: main requests stay closed until it is restored`)
+/**
+ * What this module could not read of the kept state, held as one fence of
+ * the production lease from now (C3), unless it is held already: no gate's,
+ * so no answer ends it, only its lease and margin.
+ */
+function holdUnread($: EngineInterface, h: HolderState, why: string) {
+  if (h !== state.holder || h.fences.has(fenceKey(UNREAD.epoch, UNREAD.fence))) {
+    return
   }
-  return false
+  install($, UNREAD.epoch, UNREAD.fence, PRODUCTION_LEASE_MS)
+  log(`${why}: main requests are held ${PRODUCTION_LEASE_MS + HOLDER_MARGIN_MS} ms from now (one production lease and margin), then admitted`)
 }
 
 // -- the fences
@@ -516,14 +536,15 @@ export function admission(step: FencedStep): 'clear' | 'wait' | { stop: string }
  * One wait at the fence: the kept state restored if it is not yet (then the
  * request reads its fences anew), `turn` asked of every fence not yet asked,
  * then until anything moves (an answer, an arm, a disarm, an expiry, a new
- * route, the request abandoned, the restore's next try). A wait held on the
+ * route, the request abandoned). A wait held on the
  * child's route keeps a call in flight meanwhile, which stops the hook's own
  * budget (a hook's time, `$.clock.sleep` included, runs only while no `$`
  * call is in flight); with no route, the wait spends that budget.
  */
 export async function waitAtFence($: EngineInterface, step: FencedStep, signal: AbortSignal | undefined): Promise<void> {
   const h = state.holder
-  if (!h.isLoaded && (await restoreHolder($))) {
+  if (!h.isLoaded) {
+    await holderLoaded($)
     return
   }
   for (const f of h.fences.values()) {
@@ -533,11 +554,9 @@ export async function waitAtFence($: EngineInterface, step: FencedStep, signal: 
     step.wake = resolve
     signal?.addEventListener('abort', () => resolve(), { once: true })
   })
-  const retry = h.isLoaded ? undefined : $.clock.after(HOLDER_RETRY_MS, () => step.wake?.())
   const relay = h.relay
   const held = relay !== undefined && isCurrent(relay) ? post($, relay, { kind: 'wait', ms: HOLDER_WAIT_MS }).then((r) => r?.status === 200) : Promise.resolve(false)
   await Promise.race([woken, held.then((isHeld) => (isHeld ? undefined : woken))])
-  retry?.cancel()
   step.wake = undefined
 }
 

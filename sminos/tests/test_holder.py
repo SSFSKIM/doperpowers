@@ -8,12 +8,13 @@ Each case runs a real `sminos bridge` child against a fake engine host on a
 real Unix socket and plays the mod itself: it reads the child's stdout and
 posts to its POST /holder route. Timings are scaled (heartbeat 0.2 s,
 backoff 0.3 s); production's are 5 s each. The replay plays the child's side
-of O16's gate fixture (p5-o16-gate.jsonl, MAWS's copied byte for byte, its
-source in p5-o16-gate.source.json): what the child alone can be judged on —
-its hello, welcome, heartbeats, reconnects, the relay of every host frame,
-and an `armed` only for an arm the mod acknowledged, in arm order. What only
-the fix-wave host can show is printed as PENDING (decisions P3), never
-skipped silently. The mod's fence is bridge.test.ts's.
+of O16's gate fixture (p5-o16-gate.jsonl, as its fix wave recorded it,
+MAWS's copied byte for byte, its source in p5-o16-gate.source.json): what
+the child alone can be judged on — its hello, welcome, heartbeats,
+reconnects, the relay of every host frame, and an `armed` only for an arm
+the mod acknowledged, in arm order. What only the host can show (that it
+sent or withheld its SIGTERM) is the joint proof's (J1). The mod's fence is
+bridge-holder.test.ts's.
 
 Hermetic: every case has its own HOME, SMINOS_HOME and CLAUDE_CONFIG_DIR
 under one temporary directory; nothing listens beyond Unix sockets there.
@@ -54,7 +55,6 @@ SESSION = "5f0c2a1e-6b7d-4c3e-9a8f-0123456789ab"   # the fixture's
 HEARTBEAT, BACKOFF = 0.2, 0.3
 LIVENESS = 15            # s: how long a wait for something that must happen may take on a loaded machine
 QUIET = 0.6              # s: how long nothing must happen, for "nothing happens"
-PENDING = []
 
 
 def wait_for(pred, timeout=LIVENESS, step=0.02):
@@ -921,8 +921,10 @@ class Replay(Case):
     observer frames in order, with one `armed` more for each arm the
     fixture's observer left unacknowledged, which the mod acknowledges at the
     case's end (P4, R4: every arm gets its one `armed` once installed, and a
-    late one is valid). Every host frame must reach the mod as its relay
-    line, an arm numbered."""
+    late one is valid), but for one it leaves `unanswered`, which the mod
+    never acknowledges and every later ack waits behind (R1). A `silence` is
+    the host's verdict; this child beats on. Every host frame must reach the
+    mod as its relay line, an arm numbered."""
 
     @classmethod
     def setUpClass(cls):
@@ -943,12 +945,15 @@ class Replay(Case):
         consumed = 0                 # the connection's non-heartbeat frames already matched
         arms = []                    # (epoch, number, fence) relayed and not yet acknowledged, oldest first
         late = []                    # the `armed` frames the case's end must still see
+        unanswered = None            # the arm the fixture's observer leaves unanswered: never acknowledged
         closed_at = None
         for row in self.rows_of(case):
             event = row.get("event")
-            if event == "silence":
-                return child, conn, epoch, arms
-            if event == "server_restart":
+            # A `silence` is the host's verdict on the row: this child beats on,
+            # and the row heals by an `hb` on the same connection (R5).
+            if event == "unanswered":
+                unanswered = arms[-1]
+            elif event == "server_restart":
                 closed_at = self.host.replace()
             elif event in ("exit", "closed"):
                 conn.close()
@@ -992,10 +997,16 @@ class Replay(Case):
             if t == "arm":
                 arms.append((epoch, line["arm"], frame["fence"]))
         # Every arm the fixture's observer left unacknowledged gets its one
-        # `armed` now, on a connection still open.
+        # `armed` now, on a connection still open; but one it left unanswered,
+        # behind which every later ack waits (R1): taken, and nothing goes.
         for e, n, fence in arms:
-            if e == epoch and not conn.closed:
-                self.assertEqual(child.ack(e, n, fence)[0], 200)
+            if (e, n, fence) == unanswered or e != epoch or conn.closed:
+                continue
+            status, answer = child.ack(e, n, fence)
+            self.assertEqual(status, 200)
+            if unanswered is not None and unanswered[0] == e and n > unanswered[1]:
+                self.assertEqual((answer["sent"], answer["waiting"] >= 1), (0, True), "%s: an ack behind the unanswered one" % case)
+            else:
                 late.append({"t": "armed", "fence": fence})
         if late:
             self.assertEqual(conn.wait_frames(consumed + len(late))[consumed:], late, "%s: the late acks" % case)
@@ -1004,7 +1015,7 @@ class Replay(Case):
         return child, conn, epoch, []
 
     def test_the_mods_copy_is_the_fixture(self):
-        # The mod's replay (bridge.test.ts) reads the fixture from a module of
+        # The mod's replay (bridge-holder.test.ts) reads the fixture from a module of
         # its own, since a mod's test loads no JSON file: line for line this one.
         self.assertEqual(GATE_TS.read_text(), gate_fixture_ts(FIXTURE.read_bytes()),
                          "run python3 -B sminos/tests/test_holder.py --write-gate-ts")
@@ -1036,26 +1047,44 @@ class Replay(Case):
     def test_renew(self):
         _, conn, _, _ = self.play("renew")
         self.assertEqual(conn.seen("armed"), [{"t": "armed", "fence": 1}] * 3)
-        PENDING.append("P3b: the host awaiting `armed` for a renewal while signalled is the fix-wave host's; "
-                       "the child acknowledges every renewal once installed (`renew`, played)")
 
-    def test_heartbeat_loss_up_to_its_silence(self):
-        child, conn, epoch, arms = self.play("heartbeat-loss")
-        # Past the silence the baseline heals by a second hello on the same
-        # connection; on the fixed gate an hb does (R5), which is all this
-        # child ever sends there.
-        self.assertEqual(len(arms), 1)
-        conn.send({"t": "disarm", "fence": 1})
-        self.assertIsNotNone(child.relay(epoch, {"t": "disarm", "fence": 1}))
-        time.sleep(HEARTBEAT * 6)
+    def test_heartbeat_loss(self):
+        # P3c: past the silence the row heals by a heartbeat on the same
+        # connection (R5), which is all this child ever sends there: no second
+        # hello, no second connection; both arms acknowledged late, in order.
+        _, conn, _, _ = self.play("heartbeat-loss")
+        self.assertEqual(len(self.host.conns), 1)
         self.assertEqual(len(conn.seen("hello")), 1, "no gap hello")
-        conn.send({"t": "arm", "fence": 2, "leaseMs": 400})
-        line = child.wait_line(lambda ln: ln.get("epoch") == epoch and ln.get("arm") == 2)
-        self.assertEqual(child.ack(epoch, 1, 1)[1]["sent"], 1)
-        self.assertEqual(child.ack(epoch, line["arm"], 2)[1]["sent"], 1)
-        self.assertEqual(conn.wait_frames(3)[1:], [{"t": "armed", "fence": 1}, {"t": "armed", "fence": 2}])
-        PENDING.append("P3c: `heartbeat-loss` healed by `hb` on the same connection: played up to its silence; "
-                       "the baseline's gap hello is not this child's (R5), the rest awaits the fix-wave fixture")
+        self.assertEqual(conn.seen("armed"), [{"t": "armed", "fence": 1}, {"t": "armed", "fence": 2}])
+
+    def test_turn_armed_proceed(self):
+        _, conn, _, _ = self.play("turn-armed-proceed")
+        self.assertEqual([f["t"] for f in conn.seen(skip_hb=True)], ["hello", "turn", "armed"])
+
+    def test_turn_proceed_armed(self):
+        # The arm's ack after the host's proceed and disarm still goes: a late
+        # `armed` is valid and changes nothing (R4).
+        _, conn, _, _ = self.play("turn-proceed-armed")
+        self.assertEqual([f["t"] for f in conn.seen(skip_hb=True)], ["hello", "turn", "armed"])
+
+    def test_sigterm_confirmed(self):
+        # P3a, the observer's side: the renewal the host's SIGTERM waits on is
+        # acknowledged on the same connection once the mod installed it.
+        _, conn, _, _ = self.play("sigterm-confirmed")
+        self.assertEqual(conn.seen("armed"), [{"t": "armed", "fence": 1}] * 2)
+
+    def test_sigterm_withheld(self):
+        # P3b, the observer's side: a renewal the mod leaves unanswered holds
+        # every later ack behind it (R1): the later re-arm's ack is taken and
+        # waits, and nothing more reaches the host.
+        _, conn, _, _ = self.play("sigterm-withheld")
+        self.assertEqual(conn.seen("armed"), [{"t": "armed", "fence": 1}])
+
+    def test_sigterm_rearmed(self):
+        # P3a: two re-arms in a row, each its own `armed`, oldest first (FIFO):
+        # the first answers the older arm, which the host takes as confirming nothing.
+        _, conn, _, _ = self.play("sigterm-rearmed")
+        self.assertEqual(conn.seen("armed"), [{"t": "armed", "fence": 1}] * 3)
 
     def test_server_restart(self):
         child, conn, epoch, _ = self.play("server-restart")
@@ -1068,7 +1097,11 @@ class Replay(Case):
         # and says hello afresh.
         self.play("no-row")
         self.assertEqual(self.host.conn(1).wait_frames(1)[0]["t"], "hello")
-        PENDING.append("P3a: the final SIGTERM's confirmed-lease check is the fix-wave host's (the joint proof)")
+
+    def test_every_case_is_played(self):
+        cases = list(dict.fromkeys(r["case"] for r in self.rows))
+        played = [name[len("test_"):].replace("_", "-") for name in dir(self) if name.startswith("test_")]
+        self.assertEqual([c for c in cases if c not in played], [], "a case of the fixture no test plays")
 
 
 GATE_TS = HERE / "mods" / "gate-fixture.ts"
@@ -1081,15 +1114,13 @@ def gate_fixture_ts(raw):
     return (
         "// Written by `python3 -B sminos/tests/test_holder.py --write-gate-ts` from p5-o16-gate.jsonl\n"
         "// (MAWS %s, blob %s); test_holder.py fails while the two differ.\n"
-        "/** O16's gate fixture, line for line, for the mod's replay (bridge.test.ts): a mod's test loads no JSON file. */\n"
+        "/** O16's gate fixture, line for line, for the mod's replay (bridge-holder.test.ts): a mod's test loads no JSON file. */\n"
         "export const GATE_FIXTURE: readonly string[] = [\n%s]\n"
         % (source["commit"][:9], source["blob"][:9], "".join("  %s,\n" % json.dumps(x) for x in lines))
     )
 
 
 def tearDownModule():
-    for line in sorted(set(PENDING)):
-        sys.stderr.write("PENDING %s\n" % line)
     shutil.rmtree(BASE, ignore_errors=True)
 
 

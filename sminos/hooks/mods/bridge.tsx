@@ -34,7 +34,7 @@ import { endOrphanedSideQuestions, sideQuestion } from './bridge-btw'
 import { askTurnEnded, endOrphanedAsks, forkQuestion, noteMainResponse } from './bridge-ask'
 import { engineError, forNotes, notifiedStops, stopAgent, tellAgent } from './bridge-agent-ops'
 import { acceptMedia, claimMedia, mediaLoaded, mediaPassedOn, mediaTurnEnded, mediaTurnStarted, observeMediaResult } from './bridge-media'
-import { abandonedStep, admission, enterStep, holderLoaded, isHolderLoaded, leaveStep, mainTurnOver, mainTurnStarted, onHolderLine, promptRow, promptSettled, promptSubmitted, restoreHolder, stoppedStep, waitAtFence } from './bridge-holder'
+import { abandonedStep, admission, enterStep, holderLoaded, isHolderLoaded, leaveStep, mainTurnOver, mainTurnStarted, onHolderLine, promptRow, promptSettled, promptSubmitted, stoppedStep, waitAtFence } from './bridge-holder'
 
 export { OFF_LINE, ON_LINE } from './bridge-place'
 export { BLOCK_TAIL, INTERRUPT_HOLD_MS, TEXT_CAP, WAKE_LINE, capped, resetBridge } from './bridge-state'
@@ -1829,8 +1829,8 @@ export async function bridgeStart($: EngineInterface, e: SessionStartInput) {
   }
   await takeLaunch($)
   // The gate's fences a module before this one held (a reload), held again
-  // before the first child, whose relay finds them (O12 M4a); a restore that
-  // fails is said, and tried again on this `$`.
+  // before the first child, whose relay finds them (O12 M4a); one it cannot
+  // read is said, and held for the production lease (C3).
   state.log = (text) => $.ui.log(text, { to: 'debug' })
   await holderLoaded($)
   // The mode the session last reported to the module before this one (a
@@ -2119,10 +2119,9 @@ export function registerBridge(on: On) {
     // subagent's never stands for the main loop.
     const fenced = isMain ? enterStep(e.turnId) : undefined
     try {
-      // The fences a module before this one held, before any request passes:
-      // until they are restored, the request waits at the fence.
+      // The fences a module before this one held, before any request passes.
       if (fenced !== undefined && !isHolderLoaded()) {
-        await restoreHolder($)
+        await holderLoaded($)
       }
       // Only a step with an upload pending waits on anything else here. An
       // observer claims none, and rewrites no model or effort: those are MAWS's.

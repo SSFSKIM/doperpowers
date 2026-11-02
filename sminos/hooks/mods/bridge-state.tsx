@@ -262,15 +262,14 @@ export type PromptSeen = { kind: string; text: string; uuid?: string; seq: numbe
 export type HolderState = {
   /** This module instance's mark on what it keeps: a later instance (a reload) writes its own, and an older one that finds it stops keeping. */
   owner: string
+  /** This module wrote its mark over the kept state at its version (the claim): until then a keep is that claim. */
+  isClaimed: boolean
   isRetired: boolean
-  /** The kept state restored and claimed (or none to restore: no gate): until then every main request waits. */
+  load?: Promise<void>
+  /** The kept state restored (or none to restore: no gate): until then every main request waits. */
   isLoaded: boolean
   loaded: Promise<void>
   markLoaded: () => void
-  /** The restore being tried now, if one is. */
-  restoring?: Promise<boolean>
-  /** Why the restore last failed, said once until it changes. */
-  restoreFailure?: string
   /** The process committed to the gate (O12 M4a): kept before its first ready, never taken back. */
   observerStarted: boolean
   armGenerations: number
@@ -565,6 +564,7 @@ const freshHolder = (): HolderState => {
   const loaded = new Promise<void>((resolve) => (markLoaded = resolve))
   return {
     owner: Array.from(crypto.getRandomValues(new Uint8Array(8)), (b) => b.toString(16).padStart(2, '0')).join(''),
+    isClaimed: false,
     isRetired: false,
     isLoaded: false,
     loaded,

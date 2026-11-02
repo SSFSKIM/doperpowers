@@ -431,44 +431,48 @@ describe('lane B: what fails on the way to an acknowledgement or a restore (O12 
     await r.done
   })
 
-  test('a reload that cannot read the kept state keeps every request closed, and tries again until it can', async () => {
+  /** C3: a kept state this module cannot read is held for one production lease and margin from the reload. */
+  const UNREAD_WINDOW = 10_000 + HOLDER_MARGIN_MS
+
+  test('C3: a kept state this module cannot read holds main requests one whole production lease and margin from the reload, says so, then admits them', async () => {
+    const kept = new Map<string, unknown>([['holder', { shape: 2, fences: 'kept another way' }]])
+    const h = harness({ env: MARKED, sessionState: kept, messages: [{ type: 'user' }] })
+    await h.start()
+    expect(h.logs.filter((l) => l.includes('holder') && l.includes(`${UNREAD_WINDOW} ms`))).toHaveLength(1)
+    // A turn a second after the reload is held.
+    h.advance(1_000)
+    await h.turn('t1')
+    const r = request(h, 't1')
+    await flush(h)
+    expect(r.isMade()).toBe(false)
+    // The window ends by the relative timer set at the reload, never the wall clock.
+    await h.fire(UNREAD_WINDOW)
+    expect(r.isMade()).toBe(true)
+    await r.done
+    await h.complete('t1')
+    // A turn after the window is admitted at once.
+    await h.turn('t2')
+    const r2 = request(h, 't2')
+    await flush(h)
+    expect(r2.isMade()).toBe(true)
+    await r2.done
+  })
+
+  test('C3: a reload whose kept state cannot be read at all (the read fails) is held the same window, then admitted; a session no gate serves never reads it', async () => {
     const kept = new Map<string, unknown>()
     const before = await observing({ sessionState: kept })
     await arm(before, E1, 1, 1)
-    let isReadable = false
-    const after = harness({ env: MARKED, sessionState: kept, messages: [{ type: 'user' }], stateFault: (op, key) => (op === 'get' && key === 'holder' && !isReadable ? 'fail' : undefined) })
+    const after = harness({ env: MARKED, sessionState: kept, messages: [{ type: 'user' }], stateFault: (op, key) => (op === 'get' && key === 'holder' ? 'fail' : undefined) })
+    await after.start()
+    expect(after.logs.filter((l) => l.includes('holder') && l.includes(`${UNREAD_WINDOW} ms`))).toHaveLength(1)
     await after.turn('t1')
     const r = request(after, 't1')
     await flush(after)
     expect(r.isMade()).toBe(false)
-    await after.fire(HOLDER_RETRY_MS)
-    expect(r.isMade()).toBe(false)
-    isReadable = true
-    await after.fire(HOLDER_RETRY_MS)
-    await flush(after)
-    // Read now: fence 1 is held, for a whole lease and margin from then.
-    expect(r.isMade()).toBe(false)
-    expect(kept.get('holder')).toMatchObject({ fences: [{ epoch: E1, fence: 1 }] })
-    await after.fire(FALLBACK)
+    await after.fire(UNREAD_WINDOW)
     expect(r.isMade()).toBe(true)
     await r.done
-  })
-
-  test('a kept state this module cannot read keeps every request closed and is never written over; with no gate it changes nothing', async () => {
-    const unreadable = { shape: 2, fences: 'kept another way' }
-    const kept = new Map<string, unknown>([['holder', unreadable]])
-    const h = harness({ env: MARKED, sessionState: kept, messages: [{ type: 'user' }] })
-    await h.start()
-    await h.turn('t1')
-    const r = request(h, 't1')
-    await flush(h)
-    await h.fire(HOLDER_RETRY_MS)
-    await flush(h)
-    expect(r.isMade()).toBe(false)
-    expect(kept.get('holder')).toEqual(unreadable)
-    expect(h.logs.some((l) => l.includes('holder') && l.includes('closed'))).toBe(true)
-    // A session no gate serves never reads it.
-    const u = harness({ sessionState: new Map<string, unknown>([['holder', unreadable]]), messages: [{ type: 'user' }] })
+    const u = harness({ sessionState: new Map<string, unknown>([['holder', { shape: 2 }]]), messages: [{ type: 'user' }], stateFault: () => 'fail' })
     await u.turn('t1')
     const ru = request(u, 't1')
     await flush(u)
@@ -712,9 +716,13 @@ describe('lane B: a main turn\'s origin (O12 M4a)', () => {
  * of its fence (the arm met a running step: turn first, then its ack; P4,
  * R4) and, after the fixture's frames, the `armed` of each arm the fixture's
  * observer left unacknowledged (R4: a late ack is valid). Every relayed arm
- * gets exactly one `armed`, in the order the arms came (R1). `hello` and `hb`
- * are the child's (test_holder.py). A peer `delivery` in the fixture is an
- * opaque input of the relay, which M4a's production turns omit.
+ * gets exactly one `armed`, in the order the arms came (R1), but one the
+ * fixture's observer leaves `unanswered`: the child is played holding that
+ * ack unanswered, and no later arm's may pass it. `hello` and `hb` are the
+ * child's (test_holder.py), and so is a `silence`: the mod's relay goes on
+ * on the same connection. A peer `delivery` in the fixture is an opaque
+ * input of the relay, which M4a's production turns omit. What only the host
+ * shows (it sent or withheld its SIGTERM) is the joint proof's (J1).
  */
 describe("O16's gate fixture at the mod's fence (O12 M4a)", () => {
   type Frame = Record<string, unknown> & { t: string }
@@ -725,7 +733,9 @@ describe("O16's gate fixture at the mod's fence (O12 M4a)", () => {
 
   async function play(name: string) {
     const caseRows = rows.filter((r) => r.case === name)
-    const h = harness({ env: MARKED, messages: [] })
+    // The acks the child is played holding unanswered, as `epoch/arm`.
+    const unanswered = new Set<string>()
+    const h = harness({ env: MARKED, messages: [], holderAnswer: (b) => (b.kind === 'armed' && unanswered.has(`${String(b.epoch)}/${String(b.arm)}`) ? 'hold' : undefined) })
     await h.start()
     h.children[0]!.write(bootstrap())
     h.children[0]!.write(helloMatch)
@@ -735,7 +745,6 @@ describe("O16's gate fixture at the mod's fence (O12 M4a)", () => {
     let epochs = 0
     let epoch = ''
     let armed = 0
-    let silenced = false
     let step: (ReturnType<typeof request> & { release: () => void }) | undefined
     const begin = async (origin: unknown) => {
       const text = `${name}: the turn`
@@ -746,11 +755,6 @@ describe("O16's gate fixture at the mod's fence (O12 M4a)", () => {
       await flush(h)
     }
     for (const [i, row] of caseRows.entries()) {
-      if (row.event === 'silence') {
-        // The baseline heals by a second hello, which M4a's child never says (R5): played up to here (P3c).
-        silenced = true
-        break
-      }
       if (row.event !== undefined || row.frame === undefined) {
         continue
       }
@@ -777,6 +781,9 @@ describe("O16's gate fixture at the mod's fence (O12 M4a)", () => {
       const n = frame.t === 'arm' ? ++armed : undefined
       if (n !== undefined) {
         arms.push({ epoch, arm: n })
+        if (caseRows[i + 1]?.event === 'unanswered') {
+          unanswered.add(`${epoch}/${n}`)
+        }
       }
       h.children[0]!.write(relayed(epoch, frame, n))
       await flush(h)
@@ -784,7 +791,11 @@ describe("O16's gate fixture at the mod's fence (O12 M4a)", () => {
     step?.release()
     const outcome = await step?.done
     await flush(h)
-    return { h, expected, arms, step, outcome, silenced, stopped: caseRows.some((r) => r.frame?.t === 'stop') }
+    // The arms acknowledged: every one, up to one held unanswered.
+    const held = arms.findIndex((a) => unanswered.has(`${a.epoch}/${a.arm}`))
+    const acked = held === -1 ? arms : arms.slice(0, held)
+    const written = toGate(h).filter((f) => !(f.t === 'armed' && unanswered.has(`${String(f.epoch)}/${String(f.arm)}`)))
+    return { h, expected, arms, acked, held: held === -1 ? undefined : arms[held], written, step, outcome, epochs, stopped: caseRows.some((r) => r.frame?.t === 'stop') }
   }
 
   /** The mod's gate frames against the fixture's observer frames, with the allowances above. */
@@ -804,17 +815,32 @@ describe("O16's gate fixture at the mod's fence (O12 M4a)", () => {
   }
 
   const cases = [...new Set(rows.map((r) => r.case))]
-  test('carries the eight cases this replay plays', () => {
-    expect(cases).toEqual(['proceed', 'stop', 'armed-renewing-turn-proceed', 'armed-veto-turn-proceed', 'no-answer', 'renew', 'heartbeat-loss', 'server-restart', 'no-row'])
+  test('carries the fourteen cases this replay plays', () => {
+    expect(cases).toEqual([
+      'proceed',
+      'stop',
+      'armed-renewing-turn-proceed',
+      'armed-veto-turn-proceed',
+      'no-answer',
+      'renew',
+      'heartbeat-loss',
+      'turn-armed-proceed',
+      'turn-proceed-armed',
+      'sigterm-confirmed',
+      'sigterm-withheld',
+      'sigterm-rearmed',
+      'server-restart',
+      'no-row',
+    ])
   })
 
   for (const name of cases) {
     test(`${name}: the mod's frames are the fixture's observer frames, every arm acknowledged once in order`, async () => {
-      const { h, expected, arms, step, outcome, stopped } = await play(name)
-      const got = toGate(h).map((f) => ({ ...f }))
+      const { h, expected, acked, written, step, outcome, stopped } = await play(name)
+      const got = written.map((f) => ({ ...f }))
       matches(got, expected)
       expect(got.filter((f) => f.t === 'turn').every((f) => !('delivery' in f))).toBe(true)
-      expect(got.filter((f) => f.t === 'armed').map((f) => ({ epoch: f.epoch, arm: f.arm }))).toEqual(arms)
+      expect(got.filter((f) => f.t === 'armed').map((f) => ({ epoch: f.epoch, arm: f.arm }))).toEqual(acked)
       if (step !== undefined) {
         // A turn before the signal enters `next` once; one after it stops with no request.
         expect(step.made()).toBe(stopped ? 0 : 1)
@@ -826,14 +852,22 @@ describe("O16's gate fixture at the mod's fence (O12 M4a)", () => {
     })
   }
 
-  // What only the fix-wave host and its fixture can show (decisions P3): named, never skipped silently.
-  test('PENDING P3a: the final SIGTERM\'s confirmed-lease check is the fix-wave host\'s (the joint proof)', () => {
-    expect(cases).toContain('stop')
+  // The fix-wave fixture closes P3 (decisions): the observer's side of each, played.
+  test('P3a: under a SIGTERM the host sends on a confirmed lease, the renewal it waits on is acknowledged once installed; to two renewals in a row, each its own `armed`, oldest first', async () => {
+    const confirmed = await play('sigterm-confirmed')
+    expect(confirmed.written.filter((f) => f.t === 'armed').map((f) => f.arm)).toEqual([1, 2])
+    const rearmed = await play('sigterm-rearmed')
+    expect(rearmed.written.filter((f) => f.t === 'armed').map((f) => f.arm)).toEqual([1, 2, 3])
   })
-  test('PENDING P3b: the host awaiting `armed` for a renewal while signalled is the fix-wave host\'s; the mod acknowledges every renewal once installed (`renew`, played)', () => {
-    expect(cases).toContain('renew')
+  test('P3b: a renewal left unanswered while signalled holds every later arm\'s acknowledgement behind it (R1): none is asked ahead of it', async () => {
+    const withheld = await play('sigterm-withheld')
+    expect(withheld.held).toEqual({ epoch: E1, arm: 2 })
+    expect(withheld.h.holderBodies('armed').map((b) => b.arm)).toEqual([1, 2])
+    expect(withheld.written.filter((f) => f.t === 'armed').map((f) => f.arm)).toEqual([1])
   })
-  test('PENDING P3c: `heartbeat-loss` healed by `hb` on the same connection awaits the fix-wave fixture; played here up to its silence', async () => {
-    expect((await play('heartbeat-loss')).silenced).toBe(true)
+  test('P3c: `heartbeat-loss` is played to its end on the one connection it opened: the relay goes on past the silence, no second welcome, every arm acknowledged', async () => {
+    const loss = await play('heartbeat-loss')
+    expect(loss.epochs).toBe(1)
+    expect(loss.written.filter((f) => f.t === 'armed').map((f) => `${String(f.epoch)}/${String(f.fence)}`)).toEqual([`${E1}/1`, `${E1}/2`])
   })
 })

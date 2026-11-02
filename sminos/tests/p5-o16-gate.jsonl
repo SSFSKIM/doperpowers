@@ -1,4 +1,4 @@
-{"fixture":"p5-o16-gate","protocol":1,"source":"src/engine-host/holder/gate-fixture.test.ts","timings":{"leaseMs":400,"leaseMarginMs":100,"silenceMs":200,"production":{"leaseMs":10000,"leaseMarginMs":1000,"silenceMs":15000,"heartbeatMs":5000,"reconnectBackoffMs":5000}},"rows":"{case, from: observer|host, frame} for a frame; {case, event, detail} for a moment that is not one"}
+{"fixture":"p5-o16-gate","protocol":1,"source":"src/engine-host/holder/gate-fixture.test.ts","timings":{"leaseMs":400,"leaseMarginMs":100,"silenceMs":200,"endSessionGraceMs":450,"production":{"leaseMs":10000,"leaseMarginMs":1000,"silenceMs":15000,"heartbeatMs":5000,"reconnectBackoffMs":5000,"endSessionGraceMs":3000}},"rows":"{case, from: observer|host, frame} for a frame; {case, event, detail} for a moment that is not one"}
 {"case":"proceed","from":"observer","frame":{"t":"hello","protocol":1,"session":"5f0c2a1e-6b7d-4c3e-9a8f-0123456789ab","pid":4711,"childPid":4712}}
 {"case":"proceed","from":"host","frame":{"t":"welcome","protocol":1}}
 {"case":"proceed","from":"observer","frame":{"t":"hb"}}
@@ -65,11 +65,71 @@
 {"case":"heartbeat-loss","event":"silence","detail":"no heartbeat for the silence window (200 ms): unhealthy, the reap cancelled"}
 {"case":"heartbeat-loss","from":"host","frame":{"t":"disarm","fence":1}}
 {"case":"heartbeat-loss","event":"due","detail":"due again: the unhealthy observer holds the row, nothing is armed"}
-{"case":"heartbeat-loss","from":"observer","frame":{"t":"hello","protocol":1,"session":"5f0c2a1e-6b7d-4c3e-9a8f-0123456789ab","pid":4711,"childPid":4712}}
-{"case":"heartbeat-loss","from":"host","frame":{"t":"welcome","protocol":1}}
-{"case":"heartbeat-loss","event":"healthy","detail":"heard again by a fresh hello"}
+{"case":"heartbeat-loss","from":"observer","frame":{"t":"hb"}}
+{"case":"heartbeat-loss","event":"healthy","detail":"heard again by a heartbeat on the same connection; nothing is re-armed"}
 {"case":"heartbeat-loss","event":"due","detail":"the row is due and verified empty"}
 {"case":"heartbeat-loss","from":"host","frame":{"t":"arm","fence":2,"leaseMs":400}}
+{"case":"turn-armed-proceed","from":"observer","frame":{"t":"hello","protocol":1,"session":"5f0c2a1e-6b7d-4c3e-9a8f-0123456789ab","pid":4711,"childPid":4712}}
+{"case":"turn-armed-proceed","from":"host","frame":{"t":"welcome","protocol":1}}
+{"case":"turn-armed-proceed","from":"observer","frame":{"t":"hb"}}
+{"case":"turn-armed-proceed","event":"due","detail":"the row is due and verified empty"}
+{"case":"turn-armed-proceed","from":"host","frame":{"t":"arm","fence":1,"leaseMs":400}}
+{"case":"turn-armed-proceed","from":"observer","frame":{"t":"turn","fence":1,"origin":"cron"}}
+{"case":"turn-armed-proceed","from":"observer","frame":{"t":"armed","fence":1}}
+{"case":"turn-armed-proceed","from":"host","frame":{"t":"proceed","fence":1}}
+{"case":"turn-armed-proceed","from":"host","frame":{"t":"disarm","fence":1}}
+{"case":"turn-armed-proceed","event":"unchanged","detail":"the late armed changes nothing: the reap stays idle, nothing armed or signalled"}
+{"case":"turn-proceed-armed","from":"observer","frame":{"t":"hello","protocol":1,"session":"5f0c2a1e-6b7d-4c3e-9a8f-0123456789ab","pid":4711,"childPid":4712}}
+{"case":"turn-proceed-armed","from":"host","frame":{"t":"welcome","protocol":1}}
+{"case":"turn-proceed-armed","from":"observer","frame":{"t":"hb"}}
+{"case":"turn-proceed-armed","event":"due","detail":"the row is due and verified empty"}
+{"case":"turn-proceed-armed","from":"host","frame":{"t":"arm","fence":1,"leaseMs":400}}
+{"case":"turn-proceed-armed","from":"observer","frame":{"t":"turn","fence":1,"origin":"cron"}}
+{"case":"turn-proceed-armed","from":"host","frame":{"t":"proceed","fence":1}}
+{"case":"turn-proceed-armed","from":"host","frame":{"t":"disarm","fence":1}}
+{"case":"turn-proceed-armed","from":"observer","frame":{"t":"armed","fence":1}}
+{"case":"turn-proceed-armed","event":"unchanged","detail":"the late armed changes nothing: the reap stays idle, nothing armed or signalled"}
+{"case":"sigterm-confirmed","from":"observer","frame":{"t":"hello","protocol":1,"session":"5f0c2a1e-6b7d-4c3e-9a8f-0123456789ab","pid":4711,"childPid":4712}}
+{"case":"sigterm-confirmed","from":"host","frame":{"t":"welcome","protocol":1}}
+{"case":"sigterm-confirmed","event":"heartbeats","detail":"the observer beats throughout this case (not recorded)"}
+{"case":"sigterm-confirmed","event":"due","detail":"the row is due and verified empty"}
+{"case":"sigterm-confirmed","from":"host","frame":{"t":"arm","fence":1,"leaseMs":400}}
+{"case":"sigterm-confirmed","from":"observer","frame":{"t":"armed","fence":1}}
+{"case":"sigterm-confirmed","event":"end_session","detail":"the engine host sends end_session"}
+{"case":"sigterm-confirmed","event":"wait","detail":"the signal outlives the arm's lease less its margin (300 ms)"}
+{"case":"sigterm-confirmed","from":"host","frame":{"t":"arm","fence":1,"leaseMs":400}}
+{"case":"sigterm-confirmed","from":"observer","frame":{"t":"armed","fence":1}}
+{"case":"sigterm-confirmed","event":"sigterm","detail":"the engine host sends SIGTERM under a confirmed lease, 450 ms after end_session"}
+{"case":"sigterm-confirmed","event":"exit","detail":"the engine exits; its row closes the observer"}
+{"case":"sigterm-withheld","from":"observer","frame":{"t":"hello","protocol":1,"session":"5f0c2a1e-6b7d-4c3e-9a8f-0123456789ab","pid":4711,"childPid":4712}}
+{"case":"sigterm-withheld","from":"host","frame":{"t":"welcome","protocol":1}}
+{"case":"sigterm-withheld","event":"heartbeats","detail":"the observer beats throughout this case (not recorded)"}
+{"case":"sigterm-withheld","event":"due","detail":"the row is due and verified empty"}
+{"case":"sigterm-withheld","from":"host","frame":{"t":"arm","fence":1,"leaseMs":400}}
+{"case":"sigterm-withheld","from":"observer","frame":{"t":"armed","fence":1}}
+{"case":"sigterm-withheld","event":"end_session","detail":"the engine host sends end_session"}
+{"case":"sigterm-withheld","event":"wait","detail":"the signal outlives the arm's lease less its margin (300 ms)"}
+{"case":"sigterm-withheld","from":"host","frame":{"t":"arm","fence":1,"leaseMs":400}}
+{"case":"sigterm-withheld","event":"unanswered","detail":"the observer leaves the renewal unanswered"}
+{"case":"sigterm-withheld","from":"host","frame":{"t":"arm","fence":1,"leaseMs":400}}
+{"case":"sigterm-withheld","event":"wait","detail":"no armed for the re-arm within the lease less its margin (300 ms)"}
+{"case":"sigterm-withheld","event":"sigterm_withheld","detail":"no confirmed lease at the SIGTERM: none sent, the reap ends and the fence is disarmed"}
+{"case":"sigterm-withheld","from":"host","frame":{"t":"disarm","fence":1}}
+{"case":"sigterm-rearmed","from":"observer","frame":{"t":"hello","protocol":1,"session":"5f0c2a1e-6b7d-4c3e-9a8f-0123456789ab","pid":4711,"childPid":4712}}
+{"case":"sigterm-rearmed","from":"host","frame":{"t":"welcome","protocol":1}}
+{"case":"sigterm-rearmed","event":"heartbeats","detail":"the observer beats throughout this case (not recorded)"}
+{"case":"sigterm-rearmed","event":"due","detail":"the row is due and verified empty"}
+{"case":"sigterm-rearmed","from":"host","frame":{"t":"arm","fence":1,"leaseMs":400}}
+{"case":"sigterm-rearmed","from":"observer","frame":{"t":"armed","fence":1}}
+{"case":"sigterm-rearmed","event":"end_session","detail":"the engine host sends end_session"}
+{"case":"sigterm-rearmed","event":"wait","detail":"the signal outlives the arm's lease less its margin (300 ms)"}
+{"case":"sigterm-rearmed","from":"host","frame":{"t":"arm","fence":1,"leaseMs":400}}
+{"case":"sigterm-rearmed","from":"host","frame":{"t":"arm","fence":1,"leaseMs":400}}
+{"case":"sigterm-rearmed","from":"observer","frame":{"t":"armed","fence":1}}
+{"case":"sigterm-rearmed","event":"unconfirmed","detail":"the answer to the older arm confirms nothing: no SIGTERM"}
+{"case":"sigterm-rearmed","from":"observer","frame":{"t":"armed","fence":1}}
+{"case":"sigterm-rearmed","event":"sigterm","detail":"the engine host sends SIGTERM under a confirmed lease, 450 ms after end_session"}
+{"case":"sigterm-rearmed","event":"exit","detail":"the engine exits; its row closes the observer"}
 {"case":"server-restart","from":"observer","frame":{"t":"hello","protocol":1,"session":"5f0c2a1e-6b7d-4c3e-9a8f-0123456789ab","pid":4711,"childPid":4712}}
 {"case":"server-restart","from":"host","frame":{"t":"welcome","protocol":1}}
 {"case":"server-restart","event":"server_restart","detail":"the engine host is replaced: the gate closes and a new one listens at the same path"}
