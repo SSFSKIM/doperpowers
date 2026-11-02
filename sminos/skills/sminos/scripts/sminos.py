@@ -8020,10 +8020,12 @@ def launch_env(settings):
     the env. So is SMINOS_LAUNCH: a launch id is its own launch's, carried
     in its settings, never one a spawning seat inherited. So is MAWS_LANE,
     MAWS's lane B marker (O12 M3): a seat a lane B session spawns is sminos's
-    own, never an observer. So is MAWS_LAUNCHED_BY, the spawner MAWS
-    launched a lane B session for (O12 M11): the seat copies its parent's
-    record instead. So is SMINOS_DESK_PROOF, a desk spawn's proof
-    (O12 M7): its record keeps it, and no session inherits it. An EMPTY settings
+    own, never an observer; and MAWS_HOLDER_SOCKET, the engine host's holder
+    socket (O12 M4a), whose gate a seat never says hello on. So is
+    MAWS_LAUNCHED_BY, the spawner MAWS launched a lane B session for (O12
+    M11): the seat copies its parent's record instead. So is
+    SMINOS_DESK_PROOF, a desk spawn's proof (O12 M7): its record keeps it,
+    and no session inherits it. An EMPTY settings
     value declares the PLAIN route, enforced below the argv by dropping the
     gateway transport env too.
     """
@@ -8031,6 +8033,7 @@ def launch_env(settings):
     env.pop("RUNNER_TRACKING_ID", None)
     env.pop(records_module().LAUNCH_ENV, None)
     env.pop("MAWS_LANE", None)
+    env.pop("MAWS_HOLDER_SOCKET", None)
     env.pop(records_module().LAUNCHED_ENV, None)
     env.pop(DESK_PROOF_ENV, None)
     if not settings:

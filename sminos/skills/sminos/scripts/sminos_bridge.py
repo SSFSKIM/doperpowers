@@ -127,6 +127,16 @@ refuse a body naming another (409, code `launch`) before anything reaches
 the mod. A remote desk action names the launch it was sealed for, so one
 sealed before a relaunch is refused here, at the effect; a body naming none
 is a local caller's.
+
+In a marked session whose launch names MAWS_HOLDER_SOCKET, the child is also
+the session's observer on the engine host's holder socket (O12 M4a, OX10):
+sminos_holder.py's gate client, with a private route of its own (POST
+/holder on another socket) and stdout lines of its own (`{"op": "holder",
+...}`), started before anything else here, so neither waits on this child's
+ordinary startup (the seed's read), its server, its lock or its exports. Its
+first line, the bootstrap, precedes the ordinary hello; its docstring is the
+contract the mod consumes. Every stdout line, the holder's and this
+module's, is written whole under one lock (write_line).
 """
 
 import collections
@@ -147,6 +157,7 @@ from http.server import BaseHTTPRequestHandler
 from urllib.parse import parse_qs, unquote, urlparse
 
 import sminos as S
+import sminos_holder as H
 
 PROTOCOL = 1
 SOCKET_PATH_MAX = 103          # sun_path on macOS (104 with the NUL); Linux allows 107
@@ -177,7 +188,7 @@ NONCE_HEADER = "X-Bridge-Nonce"       # this child's, from its hello: a post wit
 QUESTION_TOOLS = ("AskUserQuestion",)
 # Who answered, as a client may not claim it: the terminal and the bridge settle on their own.
 RESERVED_BY = ("terminal", "bridge")
-CHILD_LINES = ("hello", "lane")   # what only the child says to the mod: never a client's command
+CHILD_LINES = ("hello", "lane", "holder")   # what only the child says to the mod: never a client's command
 LANE_MARK = "MAWS_LANE"        # MAWS's lane B marker, beside SMNS_MEMBER (sminos.MEMBER_MARK)
 LANE_B = "lane-b"              # an observer's refusal's code
 LAUNCH = "launch"              # a command or decision sealed for another launch of the session: its refusal's code
@@ -187,6 +198,18 @@ LANE_RETRY_S, LANE_RETRY_FOR_S, LANE_RETRY_LATER_S = 2, 60, 30   # an unresolved
 # The rules a scoped allow adds at most (DX5's decision POST): the bound of
 # the suggestions a request carries, from which the daemon resolves them.
 PERMISSIONS_MAX = 8
+
+
+STDOUT = threading.Lock()   # one line at a time on fd 1, whoever writes it (the bridge, the holder's relay)
+
+
+def write_line(obj):
+    """One JSON line on stdout, whole, under the lock every writer shares.
+    Raises OSError once stdout is gone (the mod with it)."""
+    data = (json.dumps(obj) + "\n").encode()
+    with STDOUT:
+        while data:
+            data = data[os.write(1, data):]
 
 
 def _ready_wait():
@@ -738,7 +761,6 @@ class Bridge:
         self.started = time.time()
         self.lock = threading.Lock()
         self.changed = threading.Condition(self.lock)   # a request was decided, settled, or closed
-        self.out_lock = threading.Lock()
         self.subscribers = set()
         self.pending = {}        # request id → {"raised", "decided", "handed", "closed", "saw_waiting"}
         self.settled = collections.OrderedDict()   # request id → its settlement, the last SETTLED_KEPT
@@ -761,6 +783,9 @@ class Bridge:
         self.waiters = {}        # command id → [threading.Event, result event]
         self.rpc_of = {}         # command id → the nonce of the desk RPC it carries (`rpc`), until answered or ended
         self.closing = threading.Event()
+        # The session's observer on the engine host's holder socket (O12
+        # M4a), when serve() started one: told the verdict, read for /status.
+        self.holder = None
         self.kept = load_kept(session)
         self.saved = self.kept    # what the file holds: kept is written until it is
         # A command a child before this one carried, answered `queued` and
@@ -834,6 +859,8 @@ class Bridge:
                 verdict = lane_verdict(self.session, session_pid)
                 if verdict != "unresolved":
                     self.lane = verdict
+                    if self.holder is not None:
+                        self.holder.set_lane(verdict)
                     try:
                         self.emit({"op": "lane", "lane": verdict})
                     except OSError:
@@ -1417,6 +1444,7 @@ class Bridge:
                     **({"lane": self.lane} if self.lane is not None else {}),
                     **({"launch": self.launch} if self.launch is not None else {}),
                     **({"capabilities": self.capabilities} if self.capabilities is not None else {}),
+                    **({"holder": self.holder.status()} if self.holder is not None else {}),
                     **self.mode}
 
     def agents_now(self):
@@ -1429,14 +1457,11 @@ class Bridge:
     # -- the mod's input: one line on stdout
 
     def emit(self, obj):
-        data = (json.dumps(obj) + "\n").encode()
-        with self.out_lock:
-            try:
-                while data:
-                    data = data[os.write(1, data):]
-            except OSError:   # the mod is gone: so is the session
-                self.closing.set()
-                raise
+        try:
+            write_line(obj)
+        except OSError:   # the mod is gone: so is the session
+            self.closing.set()
+            raise
 
     def command(self, body, wait_ms):
         refused = self.fenced(body)
@@ -1631,6 +1656,17 @@ def serve(session, lane=None, launch=None):
     d = bridge_dir()
     os.makedirs(d, mode=0o700, exist_ok=True)
     os.chmod(d, 0o700)
+    # The observer first (O12 M4a): its route answers and its bootstrap is
+    # said before any of the child's ordinary startup, which it never waits
+    # on. Not for a session its module already knows is not MAWS's own.
+    # One that cannot serve its route leaves the session unobserved, as
+    # before M4a, never without its bridge.
+    holder = None
+    if is_lane_marked() and lane != "mismatch" and H.gate_path():
+        try:
+            holder = H.Holder(session, H.gate_path(), os.path.join(d, "h%d.sock" % os.getpid()), write_line).start()
+        except OSError as err:
+            sys.stderr.write("sminos bridge: holder: no route, so no observer: %s\n" % err)
     tmp = os.path.join(d, ".%s.%d.sock" % (session[:8], os.getpid()))
     try:
         os.unlink(tmp)
@@ -1655,6 +1691,9 @@ def serve(session, lane=None, launch=None):
         # replacement child after the engine host exited would find the
         # engine re-parented, and its own check would say mismatch.
         bridge.lane = lane if lane in ("match", "mismatch") else lane_verdict(session, parent)
+    if holder is not None:
+        bridge.holder = holder
+        holder.set_lane(bridge.lane)
 
     def watchdog():
         while not bridge.closing.wait(WATCHDOG_EVERY):
@@ -1690,6 +1729,8 @@ def serve(session, lane=None, launch=None):
         pass
     finally:
         bridge.closing.set()
+        if holder is not None:
+            holder.close()
         try:
             if os.lstat(path).st_ino == mine:
                 os.unlink(path)

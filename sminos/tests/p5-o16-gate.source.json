@@ -1,0 +1,7 @@
+{
+  "what": "p5-o16-gate.jsonl is O16's OX10 gate fixture (the engine host's fake observer recording M5's tests), copied byte for byte; test_holder.py checks the copy against `blob` before it replays the child's side of it. It is the baseline's until O16's fix wave supplies its own (O12 M4a, decisions P2).",
+  "repository": "MAWS",
+  "commit": "242375483cb1f60de56d6b5517bfe7147562553a",
+  "path": "spikes/protocol-probe/fixtures/p5/p5-o16-gate.jsonl",
+  "blob": "9070a302c9ac98690b398534a28c4071ede99571"
+}
