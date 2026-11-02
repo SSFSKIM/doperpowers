@@ -1193,6 +1193,20 @@ def override_duty():
     _OVERRIDES_SWEPT = time.time()
     sweep_overrides()
     sweep_launches()
+    sweep_holder_deliveries()
+
+
+def sweep_holder_deliveries():
+    """The receipt layer's leftovers (O12 M4b, sminos_holder_deliveries.sweep):
+    the delivery modes of processes that ended, and the receipts a crash
+    left behind their settled events, said in daemon.log when there are any."""
+    try:
+        _, receipts = sminos.holder_module().sweep(sminos.known_project)
+    except OSError as e:
+        sminos.daemon_log("delivery: the holder's receipts could not be swept: %s" % e)
+        return
+    if receipts:
+        sminos.daemon_log("removed %d receipt%s of settled deliveries" % (receipts, "" if receipts == 1 else "s"))
 
 
 def sweep_launches():
