@@ -2581,7 +2581,9 @@ def revoke_owed(project, member, revoked):
     push is noted, or whose receipt went to its `gate` process (O12 M4b:
     an attempt reached its inbox, or it was admitted), was delivered before
     the revocation, and is left to its settlement; a receipt only prepared
-    is marked like any owed event, and removed. The events marked."""
+    is marked like any owed event, and removed; one that cannot be read is
+    deferred, kept, its event left owed (its delivery holds while it stays
+    so, and a push after takes the revocation check). The events marked."""
     session = member.session
     if not session:
         return []
@@ -2592,7 +2594,7 @@ def revoke_owed(project, member, revoked):
         for e in _owed(log_read(project, to_session=session), session, record):
             noted = _delivery(record, e["writer"]).get("pushed")
             if not rl10.event_revoked(e, revoked) or (noted and noted[0] == e["seq"]) \
-                    or holder_module().handed(project.id, session, e):
+                    or holder_module().handed(project.id, session, e) is not False:
                 continue
             if delivered_revoke(project, session, e["writer"], e["seq"]):
                 holder_module().settled(project.id, session, e)
@@ -4275,7 +4277,10 @@ def holder_push(project, member, session, e, events, cursor, words=None, retry=F
     if not retry and (peer is None or peer.get("pid") is None
                       or (member.seat is None and latest_membership(_own_events(project, session)) == "retired")):
         return push_event(project, member, session, e, events, cursor, words=words)
-    plan = holder_module().plan(project.id, session, e, event_hash(e), peer.get("pid"), words=words)
+    # A retry's process may have ended since holder_owed saw it: no pid,
+    # and plan() leaves the receipt owed for a later launch.
+    plan = holder_module().plan(project.id, session, e, event_hash(e), peer.get("pid") if peer else None,
+                                words=words)
     return holder_carry(plan, project, member, session, e, events, cursor, peer)
 
 

@@ -276,7 +276,9 @@ def _read(path):
 def process(pid):
     """{"pid", "start", "age"} of a live process: `start` its identity, the
     same for every reader (deliverers, the child, the sweep) whatever the
-    wall clock did since it began, and `age` its seconds since then. None
+    wall clock did since it began, and `age` its seconds since then on the
+    boot clock (_boot_now), which no wall-clock step moves; infinite when
+    that cannot be read (no grace: the record-alone rule). None
     when it does not run or its identity cannot be read (no reader falls
     back to a clock-derived one: two readers could tell two processes)."""
     try:
@@ -289,32 +291,75 @@ def process(pid):
     return None if got is None else {"pid": pid, "start": got[0], "age": got[1]}
 
 
+def _boot_now():
+    """Now on the clock a process's start is kept in, beside its wall-clock
+    one: mach absolute time on macOS (time.monotonic's), CLOCK_BOOTTIME on
+    Linux (/proc/<pid>/stat's start ticks). Shared by every process of one
+    boot; no wall-clock step moves it."""
+    return time.monotonic() if sys.platform == "darwin" else time.clock_gettime(time.CLOCK_BOOTTIME)
+
+
 def _darwin_identity(pid):
     """macOS: kinfo_proc's p_starttime, the wall-clock instant XNU stores in
     the proc at fork (kern_fork.c, microtime into p_start) and reads back
-    as it is: a later clock step moves no stored start."""
+    as it is: a later clock step moves no stored start. The age from the
+    start XNU keeps in mach absolute time (_darwin_boot_start)."""
     start = S._darwin_start(pid)
     if not start:
         return None
-    return str(int(start)), max(time.time() - start, 0.0)
+    begun = _darwin_boot_start(pid)
+    return str(int(start)), float("inf") if begun is None else max(_boot_now() - begun, 0.0)
+
+
+_LIBPROC = None   # (proc_pid_rusage, seconds per mach tick) once looked up; False where there is none
+RUSAGE_INFO_V2 = 2
+RI_PROC_START_ABSTIME = 80   # offset in rusage_info_v2: ri_uuid[16], then eight uint64s before it
+
+
+def _darwin_boot_start(pid):
+    """A process's start in mach absolute time, as seconds (time.monotonic's
+    scale), from proc_pid_rusage's ri_proc_start_abstime; None when it
+    cannot be read (another user's process, no libproc)."""
+    global _LIBPROC
+    if _LIBPROC is None:
+        try:
+            import ctypes
+
+            class Timebase(ctypes.Structure):
+                _fields_ = [("numer", ctypes.c_uint32), ("denom", ctypes.c_uint32)]
+            rusage = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True).proc_pid_rusage
+            rusage.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_void_p]
+            rusage.restype = ctypes.c_int
+            tb = Timebase()
+            if ctypes.CDLL(None).mach_timebase_info(ctypes.byref(tb)) != 0 or not tb.denom:
+                raise OSError("no mach timebase")
+            _LIBPROC = (ctypes, rusage, tb.numer / tb.denom / 1e9)
+        except (ImportError, OSError, AttributeError):
+            _LIBPROC = False
+    if not _LIBPROC:
+        return None
+    ctypes, rusage, scale = _LIBPROC
+    buf = ctypes.create_string_buffer(256)
+    if rusage(int(pid), RUSAGE_INFO_V2, buf) != 0:
+        return None
+    ticks = int.from_bytes(buf.raw[RI_PROC_START_ABSTIME:RI_PROC_START_ABSTIME + 8], sys.byteorder)
+    return ticks * scale if ticks else None
 
 
 def _linux_identity(pid):
     """Linux: the boot (/proc/sys/kernel/random/boot_id) and the start in
     clock ticks since it (/proc/<pid>/stat), neither read off the wall
     clock; ps's epoch start adds /proc/stat's btime, which a clock step
-    moves. The age from /proc/uptime, the boot-time clock."""
+    moves. The age on CLOCK_BOOTTIME, the clock the ticks count on."""
     try:
         with open(os.path.join(S.PROC, "sys", "kernel", "random", "boot_id")) as f:
             boot = f.read().strip().replace("-", "").lower()
         ticks = S._start_ticks(pid)
-        with open(os.path.join(S.PROC, "uptime")) as f:
-            uptime = float(f.read().split()[0])
     except (OSError, ValueError, IndexError):
         return None
     if not re.fullmatch(r"[0-9a-f]{32}", boot):
         return None
-    return "%s-%d" % (boot, ticks), max(uptime - ticks / os.sysconf("SC_CLK_TCK"), 0.0)
+    return "%s-%d" % (boot, ticks), max(_boot_now() - ticks / os.sysconf("SC_CLK_TCK"), 0.0)
 
 
 def _gone(pid):
@@ -484,17 +529,19 @@ def exists(project_id, session, e):
 
 
 def handed(project_id, session, e):
-    """Whether the event's receipt went to its process: an attempt reached
-    its inbox (or may have), or the mod admitted it. A receipt only prepared
-    proves nothing was handed off (a push that failed before it reached the
-    session); one that cannot be read proves nothing either."""
+    """Whether the event's receipt went to its process: True when an attempt
+    reached its inbox (or may have) or the mod admitted it; False when there
+    is none for the event, or it was only prepared (a push that failed
+    before it reached the session: nothing handed off); None when it is
+    there and cannot be read — not known, so nothing may be decided of it
+    (revoke_owed defers the event, its receipt kept)."""
     path = _receipt_path(key_hash(project_id, session, e["writer"], e["seq"]), create=False)
     if not os.path.exists(path):
         return False
     try:
         r = _read(path)
     except Unreadable:
-        return False
+        return None
     return r is not None and r.get("hash") == S.event_hash(e) and bool(r.get("handed") or r.get("admitted"))
 
 

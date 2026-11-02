@@ -834,7 +834,8 @@ class Identity(Rig):
 
     def read(self, root):
         sminos._BOOT.clear()
-        with mock.patch.object(sminos, "PROC", root), mock.patch.object(hd, "sys", mock.Mock(platform="linux")):
+        with mock.patch.object(sminos, "PROC", root), mock.patch.object(hd, "sys", mock.Mock(platform="linux")), \
+                mock.patch.object(hd, "_boot_now", return_value=5000.0):   # CLOCK_BOOTTIME is Linux's alone
             return hd.process(4242)
 
     def test_linux_identity_survives_a_wall_clock_step(self):
@@ -981,6 +982,72 @@ class SweepIdentity(Rig):
         Path(stale).write_text("{}")
         self.assertEqual(hd.sweep(sminos.known_project), (1, 0))
         self.assertFalse(os.path.exists(stale))
+
+
+# ------------------------------------------------------------- review fixes, round 2
+
+
+class ClockSteps(Rig):
+    """C5's bound is on the boot clock: no wall-clock step lengthens (or
+    shortens) a process's grace."""
+
+    def setUp(self):
+        super().setUp()
+        pid = self.launch(S1)
+        self.gate(pid)
+        e = self.arrive(OTHER, 1)
+        self.deliver()
+        hd.admit([self.receipt(e)["id"]], pid, S1)
+        self.deliver()
+        self.resumed = self.launch(S1)
+
+    def test_a_backward_step_does_not_extend_the_grace(self):
+        wall, boot = time.time(), hd._boot_now()
+        with mock.patch.object(hd.time, "time", return_value=wall - 3600), \
+                mock.patch.object(hd, "_boot_now", return_value=boot + hd.ACTIVATION_GRACE_S + 1):
+            self.assertEqual(hd.handoff(self.resumed, S1), "legacy", "31 s of its life went by: the grace is over")
+
+    def test_a_forward_step_does_not_cut_the_grace_short(self):
+        with mock.patch.object(hd.time, "time", return_value=time.time() + 3600):
+            self.assertEqual(hd.handoff(self.resumed, S1), "wait")
+
+
+class Exits(Rig):
+    def test_a_recipient_that_exits_before_its_retry_leaves_it_owed(self):
+        pid = self.launch(S1)
+        self.gate(pid)
+        e = self.arrive(OTHER, 1)
+        with mock.patch.object(sminos, "send_frame", side_effect=sminos.SendFailed("before", "refused")):
+            self.deliver()
+        real, calls = sminos.peer_for_session, []
+
+        def peer(sid):   # live for the dry plan, gone by the retry
+            calls.append(sid)
+            return real(sid) if len(calls) == 1 else None
+        with mock.patch.object(sminos, "peer_for_session", side_effect=peer):
+            got = self.deliver()
+        self.assertEqual([o for _, o in got["outcomes"]], [sminos.HOLDER_AWAITING])
+        self.assertIsNotNone(self.receipt(e))
+        self.assertEqual(self.inbox(S1), [])
+
+
+class UnreadableHandoff(Rig):
+    def test_revocation_defers_an_event_whose_receipt_cannot_be_read(self):
+        self.cut_over()
+        pid = self.launch(S1)
+        self.gate(pid)
+        e = self.arrive(OTHER, 1, signer=DEV_A)
+        self.deliver()
+        hd.admit([self.receipt(e)["id"]], pid, S1)
+        path = hd._receipt_path(hd.key_hash(self.hp.id, S1, OTHER, 1))
+        kept = Path(path).read_text()
+        Path(path).write_text("{")
+        self.revoke(["dev-a"], version=2)
+        self.assertEqual(sminos.revoke_owed(self.hp, member(S1), rl10.revoked()), [], "not known unhanded: deferred")
+        self.assertEqual(Path(path).read_text(), "{", "its receipt kept")
+        self.assertTrue(self.deliver()["outcomes"][0][1].startswith("held:"))
+        Path(path).write_text(kept)
+        self.assertEqual([o for _, o in self.deliver()["outcomes"]], ["sent"], "its admission settles it")
 
 
 if __name__ == "__main__":
