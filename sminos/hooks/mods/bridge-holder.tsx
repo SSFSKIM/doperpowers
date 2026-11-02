@@ -31,11 +31,11 @@ import type { FencedStep, HolderAsked, HolderFence, HolderRelay, HolderState, Pr
  * - Each arm is acknowledged only once its fence is kept and its `turn`, if
  *   one was owed, is written; what failed is tried again, never skipped, so
  *   the arms after it are never acknowledged ahead of it.
- * - A module that loads into the process (a reload) claims the kept state it
- *   read, at that version, before any request can pass, and holds its fences
- *   each for one full lease and margin from then: the time already spent
- *   cannot be read without a wall clock. A kept state it cannot read holds
- *   every main request for the production lease and margin (C3).
+ * - A module that loads into the process (a reload) holds the kept fences
+ *   before any request can pass, each for one full lease and margin from
+ *   then: the time already spent cannot be read without a wall clock. A kept
+ *   state it cannot read holds every main request for the production lease
+ *   and margin, once (C3).
  * - A turn's origin is the engine's stamp on the prompt that started it,
  *   seen at `prompt.submit` and in its row, matched to the turn by text
  *   among the prompts seen before it started; a prompt delivered into a
@@ -67,8 +67,12 @@ const TURNS_KEPT = 16
 /** The longest lease a timer can hold: `$.clock.after` past 2^31 - 1 ms would fire at once. */
 const LEASE_MAX_MS = 2_147_483_647 - HOLDER_MARGIN_MS
 const HOLDER = { plugin: 'sminos', key: 'holder' } as const
-/** The engine's prompt origins (PromptOrigin) as OX10's turn origins; any other is `unknown`. */
-const ORIGINS: Record<string, TurnOrigin> = { sdk: 'query', 'scheduled-trigger': 'cron', 'task-notification': 'task', peer: 'peer', 'peer-send-message': 'peer' }
+/**
+ * The engine's prompt origins (PromptOrigin) as OX10's turn origins; any
+ * other is `unknown`. `composer` is what the engine stamps on a prompt MAWS's
+ * host writes on stdin (C4): the controller's own prompt, a query.
+ */
+const ORIGINS: Record<string, TurnOrigin> = { composer: 'query', sdk: 'query', 'scheduled-trigger': 'cron', 'task-notification': 'task', peer: 'peer', 'peer-send-message': 'peer' }
 
 export const fenceKey = (epoch: string, fence: number) => `${epoch}#${fence}`
 const isCount = (v: unknown, least = 0): v is number => typeof v === 'number' && Number.isInteger(v) && v >= least
@@ -98,10 +102,14 @@ const snapshot = (h: HolderState): HolderKept => ({
 
 /**
  * Writes what this module holds, after every write before it and once the
- * kept state is restored: true once written. Until this module has claimed
- * the kept state (its reload could not read it), the write is that claim. A
- * write that finds another module instance's mark (the one a reload loaded)
- * retires this one, which then keeps and acknowledges nothing.
+ * kept state is restored: true once written.
+ *
+ * The kept state has one writer at a time: a hot reload unloads the old
+ * module's environment before the new one loads (measured on 2.1.316, O12
+ * M4a review fix 2: the old instance's timers and in-flight `$` calls are
+ * rejected at the unload and every later `$` call is refused, so it can
+ * neither keep nor acknowledge; its bridge child is killed within about
+ * 0.1 s, closing its gate connection before the new child's hello).
  */
 function keep($: EngineInterface): Promise<boolean> {
   const h = state.holder
@@ -111,42 +119,26 @@ function keep($: EngineInterface): Promise<boolean> {
 }
 
 async function keepNow($: EngineInterface, h: HolderState): Promise<boolean> {
-  if (h.isRetired || h !== state.holder) {
+  if (h !== state.holder) {
     return false
   }
-  if (!h.isClaimed) {
-    const missed = await claimKept($, h)
-    if (missed !== undefined) {
-      log(`the fences are not kept: ${missed}`)
-    }
-    return missed === undefined
-  }
   try {
-    for (let tries = 0; tries < 3 && !h.isRetired && h === state.holder; tries++) {
-      const read = await $.state.get(HOLDER)
-      if (isRecord(read.value) && read.value.owner !== h.owner) {
-        h.isRetired = true
-        log('a later module keeps the fences now: this one stops')
-        return false
-      }
-      const written = await $.state.set(HOLDER, snapshot(h), { ifVersion: read.version })
-      if (written.isSet) {
-        return true
-      }
-    }
+    await $.state.set(HOLDER, snapshot(h))
+    return true
   } catch (error) {
     log(`the fences are not kept: ${message(error)}`)
+    return false
   }
-  return false
 }
 
 /**
- * Restores what a module before this one kept (a reload), once and before
- * any main request passes: the kept state claimed and its fences held again,
- * each for a whole lease and margin from now. A kept state this module
+ * Restores what the module before this one kept (a reload), once and before
+ * any main request passes: each kept fence held again for a whole lease and
+ * margin from now, `observerStarted` as it was. A kept state this module
  * cannot read, or cannot read at all, is held as one fence of the production
  * lease (C3): any lease the host confirmed before the reload ends within it,
- * and an arm after the reload is installed afresh.
+ * and an arm after the reload is installed afresh. The window runs once:
+ * nothing kept before the reload is held after it.
  */
 export function holderLoaded($: EngineInterface): Promise<void> {
   const h = state.holder
@@ -165,76 +157,44 @@ export const isHolderLoaded = () => state.holder.isLoaded
 
 /** A session no gate serves (no marker, or one this process controls) has nothing to restore. */
 async function restore($: EngineInterface, h: HolderState): Promise<void> {
-  let lane: string | undefined
+  let kept: unknown
   try {
-    lane = await $.env.get('MAWS_LANE')
-  } catch (error) {
-    holdUnread($, h, `the lane is not read: ${message(error)}`)
-    return
-  }
-  if (lane !== 'B' || state.laneVerdict === 'mismatch') {
-    return
-  }
-  const missed = await claimKept($, h)
-  if (missed !== undefined) {
-    holdUnread($, h, missed)
-  }
-}
-
-/**
- * Claims the kept state: the very snapshot read, at its version
- * (`ifVersion`), written over with this module's own fences and the kept ones
- * together, and only then are the kept ones held. A module before this one
- * that keeps an arm between the read and the claim makes the claim miss, and
- * the next read has that arm. A kept state of a shape this module does not
- * read is held as the production lease's window and written over. Undefined
- * once claimed; else why not.
- */
-async function claimKept($: EngineInterface, h: HolderState): Promise<string | undefined> {
-  try {
-    for (let tries = 0; tries < 3 && h === state.holder; tries++) {
-      const read = await $.state.get(HOLDER)
-      const kept = read.value === undefined ? undefined : isKept(read.value) ? read.value : null
-      if (kept === null) {
-        holdUnread($, h, 'the kept state is not one this module reads')
-      }
-      const own = snapshot(h)
-      const adopted = (kept?.fences ?? []).filter((f) => !h.fences.has(fenceKey(f.epoch, f.fence)))
-      const claim: HolderKept = {
-        ...own,
-        observerStarted: own.observerStarted || kept?.observerStarted === true,
-        armGenerations: Math.max(own.armGenerations, kept?.armGenerations ?? 0),
-        fences: [...own.fences, ...adopted],
-      }
-      if (!(await $.state.set(HOLDER, claim, { ifVersion: read.version })).isSet) {
-        continue
-      }
-      h.isClaimed = true
-      h.observerStarted ||= claim.observerStarted
-      h.armGenerations = Math.max(h.armGenerations, claim.armGenerations)
-      for (const f of adopted) {
-        install($, f.epoch, f.fence, f.leaseMs)
-      }
-      if (adopted.length > 0) {
-        log(`${adopted.length} fence(s) held again for a whole lease and margin`)
-      }
-      return undefined
+    if ((await $.env.get('MAWS_LANE')) !== 'B' || state.laneVerdict === 'mismatch') {
+      return
     }
-    return 'the kept state kept changing under the claim'
+    kept = (await $.state.get(HOLDER)).value
   } catch (error) {
-    return `the kept state is not read: ${message(error)}`
+    holdUnread($, h, `the kept state is not read: ${message(error)}`)
+    return
+  }
+  if (kept === undefined) {
+    return
+  }
+  if (!isKept(kept)) {
+    holdUnread($, h, 'the kept state is not one this module reads')
+    return
+  }
+  h.observerStarted ||= kept.observerStarted
+  h.armGenerations = Math.max(h.armGenerations, kept.armGenerations)
+  for (const f of kept.fences) {
+    install($, f.epoch, f.fence, f.leaseMs)
+  }
+  if (kept.fences.length > 0) {
+    log(`${kept.fences.length} fence(s) held again for a whole lease and margin`)
   }
 }
 
 /**
  * What this module could not read of the kept state, held as one fence of
- * the production lease from now (C3), unless it is held already: no gate's,
- * so no answer ends it, only its lease and margin.
+ * the production lease from now (C3): no gate's, so no answer ends it, only
+ * its lease and margin. `observerStarted` is taken as kept: never taken
+ * back, and what could not be read may have said so.
  */
 function holdUnread($: EngineInterface, h: HolderState, why: string) {
-  if (h !== state.holder || h.fences.has(fenceKey(UNREAD.epoch, UNREAD.fence))) {
+  if (h !== state.holder) {
     return
   }
+  h.observerStarted = true
   install($, UNREAD.epoch, UNREAD.fence, PRODUCTION_LEASE_MS)
   log(`${why}: main requests are held ${PRODUCTION_LEASE_MS + HOLDER_MARGIN_MS} ms from now (one production lease and margin), then admitted`)
 }
@@ -294,9 +254,6 @@ const isMainActive = () => state.holder.step !== undefined || state.mainTurn !==
  */
 export function onHolderLine($: EngineInterface, msg: Record<string, unknown>) {
   const h = state.holder
-  if (h.isRetired) {
-    return
-  }
   if (isRecord(msg.bootstrap)) {
     void takeBootstrap($, msg.bootstrap)
     return
@@ -357,7 +314,7 @@ async function takeBootstrap($: EngineInterface, b: Record<string, unknown>) {
   await h.loaded
   h.observerStarted = true
   while (!(await keep($))) {
-    if (h.isRetired || !isCurrent(relay)) {
+    if (!isCurrent(relay)) {
       return
     }
     log(`observerStarted is not kept: the gate waits, tried again in ${HOLDER_RETRY_MS} ms`)
@@ -387,11 +344,11 @@ function onArm($: EngineInterface, relay: HolderRelay, epoch: string, arm: numbe
  * HOLDER_RETRY_MS, the arms after it waiting behind it: the child writes an
  * `armed` only once every earlier one is in, so a skipped arm would hold
  * every later one back for good. It ends when its connection did (the
- * child's 409, a new child) or a later module took over.
+ * child's 409, a new child).
  */
 async function acknowledge($: EngineInterface, h: HolderState, relay: HolderRelay, a: { epoch: string; arm: number; fence: number }, told: Promise<HolderAsked> | undefined) {
   const what = `arm ${a.arm} of ${a.epoch}`
-  const isGone = () => h.isRetired || h !== state.holder || !isCurrent(relay)
+  const isGone = () => h !== state.holder || !isCurrent(relay)
   for (let isRetry = false; ; isRetry = true) {
     if (isRetry) {
       log(`${what} is not acknowledged yet: tried again in ${HOLDER_RETRY_MS} ms`)
@@ -413,7 +370,7 @@ async function acknowledge($: EngineInterface, h: HolderState, relay: HolderRela
 
 async function tryAcknowledge($: EngineInterface, h: HolderState, relay: HolderRelay, a: { epoch: string; arm: number; fence: number }, told: Promise<HolderAsked> | undefined): Promise<HolderAsked> {
   if (!(await keep($))) {
-    return h.isRetired ? 'moot' : 'failed'
+    return 'failed'
   }
   const turn = told === undefined ? 'written' : await told
   if (turn !== 'written') {

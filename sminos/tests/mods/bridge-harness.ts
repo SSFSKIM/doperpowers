@@ -15,13 +15,6 @@ export const NONCE = 'n0'
 export const hello = (session = SID, socket = SOCK, kept?: Record<string, unknown>, nonce = NONCE, seed?: Record<string, string>) =>
   `${JSON.stringify({ op: 'hello', session, pid: 7, socket, protocol: 1, nonce, ...(kept !== undefined && { kept }), ...(seed !== undefined && { seed }) })}\n`
 export const line = (obj: Record<string, unknown>) => `${JSON.stringify(obj)}\n`
-/** The versions of one host's `$.state` (a `sessionState` map), whichever harness reads it. */
-const stateVersionsBy = new WeakMap<Map<string, unknown>, Map<string, number>>()
-const versionsOf = (kept: Map<string, unknown>) => {
-  const versions = stateVersionsBy.get(kept) ?? new Map<string, number>()
-  stateVersionsBy.set(kept, versions)
-  return versions
-}
 /** The child's command line as the mod starts it: its session, and the process's launch the harness's `$.state` holds (O12 M7). */
 export const childArgv = (h: { sessionState: Map<string, unknown> }, session = SID) => [
   '/plug/skills/sminos/scripts/sminos',
@@ -265,8 +258,8 @@ export function harness(
   const queries: Record<string, unknown>[] = []
   /** How many times the mod read `$.agent.list()`. */
   let agentLists = 0
-  /** The host's `$.state` versions for this plugin's own keys: each write moves its key's; shared with every harness sharing `sessionState` (one host). */
-  const stateVersions = versionsOf(sessionState)
+  /** The host's `$.state` versions for this plugin's own keys: each write moves its key's. */
+  const stateVersions = new Map<string, number>()
   /** Each POST /holder the mod made on the child's private route, in order, with what `$.state` kept when it was made. */
   const holderPosts: {
     socketPath?: string
@@ -745,11 +738,6 @@ export function harness(
     logs,
     toasts,
     guardReads,
-    /** Another writer's write of this plugin's key (a module instance before this one): the version moves as with any write. */
-    writeState: (key: string, value: unknown) => {
-      stateVersions.set(key, (sessionState.has(key) ? (stateVersions.get(key) ?? 1) : 0) + 1)
-      sessionState.set(key, value)
-    },
     setMarker: (read: { value: unknown; version: number }) => (marker = read),
     setCua: (isEnabled: boolean) => (isCuaEnabled = isEnabled),
     /** Holds the guard reads until the returned function is called. */
