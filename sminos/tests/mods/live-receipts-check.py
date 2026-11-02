@@ -369,10 +369,11 @@ class Receipts(OC.Observer):
         self.activation()
         self.proceed_case()
         self.stop_case()
-        # the api conversation as a later turn's start reads it: at its own turn.start the row is not in it yet
+        # the api conversation as any turn's start reads it: at the delivery's own turn.start the row is there in
+        # some runs and not yet in others (measured: a race with the row's store), so the check reads later turns too
         own = [o for _, k, o in self.probe_lines("api") if isinstance(o, dict)][:1]
         self.marker_survives(self.proceed_rid, 1, "the delivery")
-        self.note("the api conversation read at the delivery's own turn.start (the row is not in it yet: why T6's index-0 rule reads turn.start's text)", [json.dumps(own)])
+        self.note("the api conversation read at the delivery's own turn.start (it may not hold the row yet: why T6's index-0 rule reads turn.start's text)", [json.dumps(own)])
         self.unarmed_case()
         self.lease_expiry_case()
         self.reload_case()
