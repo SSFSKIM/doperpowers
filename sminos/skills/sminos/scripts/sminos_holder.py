@@ -82,8 +82,10 @@ The private relay (the contract the mod consumes):
             `upgrade` (a process a module ran in before this one: `legacy`,
             an M4a observer going on as before, or with `observe` false one
             no observer served staying unobserved: this child never says
-            hello); a record that exists is kept as it is, and one that
-            cannot be read leaves receipts off (said once), the observer
+            hello); a record that exists is kept as it is. A fresh
+            process's activation that cannot read or write its record is
+            said and tried again every BACKOFF_S, with no hello until it is
+            durable; an upgrade's leaves receipts off, its observer
             connecting anyway.
             → 200 {ok: true, lane, epoch: <the welcomed connection's> | null, receipts: <the mode> | null}
         {kind: "armed", generation, epoch, arm, fence}
@@ -350,6 +352,12 @@ class Holder:
                     return
             if not self.activated:
                 self._activate()
+                if not self.activated:
+                    # A fresh process's mode is not durable yet: no hello
+                    # until it is; tried again after the backoff.
+                    if self.closing.wait(BACKOFF_S):
+                        return
+                    continue
             act = self.activation or {}
             if act.get("observe") is False:
                 self.log("receipts: an existing process no observer served: it stays unobserved, no hello")
@@ -372,34 +380,37 @@ class Holder:
     def _activate(self):
         """The process's delivery mode, chosen once per child before its first
         hello (O12 M4b; sminos_holder_deliveries holds the record): `gate`
-        with the mod's launch on a fresh process, `legacy` for an M4a
-        observer's (`upgrade`), the record as it is when one exists (a
-        reload, a child restart, a /clear, a deliverer's first handoff). One
-        that cannot be read or written is said and leaves receipts off; the
-        observer connects either way: observing is not settling."""
-        self.activated = True
-        try:
-            self._choose_mode()
-        finally:
-            self.settled.set()
-
-    def _choose_mode(self):
+        with the mod's launch on a fresh process, `legacy` for a process
+        already running (`upgrade`), the record as it is when one exists (a
+        reload, a child restart, a /clear, a deliverer's first handoff).
+        Settled (`activated`, `settled`) once its outcome is known. A fresh
+        process's that cannot be read or written stays unsettled, said, and
+        is tried again before any hello: its first hello waits for a durable
+        mode, since a deliverer would otherwise choose `legacy` under an
+        observer that can stop its requests. An upgrade's leaves receipts off
+        and its observer goes on as before: observing is not settling."""
         act = self.activation or {}
         if not act.get("upgrade") and not act.get("launch"):
             self.log("receipts: the mod named no launch: none activated")
-            return
-        try:
-            import sminos_holder_deliveries as D
-            if act.get("upgrade"):
-                rec = D.observer_upgrade(self.pid)
-            else:
-                rec = D.activate(self.pid, act["launch"], self.session, retained=act.get("retained") or ())
-            self.receipts = rec["mode"]
-            self.log("receipts: process %d is %s (%s)" % (self.pid, rec["mode"], rec.get("by")))
-        except Exception as err:  # noqa: BLE001 — unreadable, unwritable or unknown: fail closed, keep observing
-            self.receipts = "unknown"
-            self.log("receipts: not activated, deliveries to this process fail closed: %s: %s" % (
-                type(err).__name__, err))
+        else:
+            try:
+                import sminos_holder_deliveries as D
+                if act.get("upgrade"):
+                    rec = D.observer_upgrade(self.pid, by="observer" if act.get("observe") is not False else "existing")
+                else:
+                    rec = D.activate(self.pid, act["launch"], self.session, retained=act.get("retained") or ())
+                self.receipts = rec["mode"]
+                self.log("receipts: process %d is %s (%s)" % (self.pid, rec["mode"], rec.get("by")))
+            except Exception as err:  # noqa: BLE001 — unreadable, unwritable or unknown: fail closed
+                if not act.get("upgrade"):
+                    self._say("receipts: not activated yet, no hello until they are (again in %gs): %s: %s" % (
+                        BACKOFF_S, type(err).__name__, err))
+                    return
+                self.receipts = "unknown"
+                self.log("receipts: not activated, deliveries to this process fail closed: %s: %s" % (
+                    type(err).__name__, err))
+        self.activated = True
+        self.settled.set()
 
     def _connect(self, epoch):
         """One connection's life: hello, welcome, then its frames until it ends."""

@@ -63,7 +63,7 @@ _spec.loader.exec_module(OC)
 LB = OC.LB
 now, wait_for, is_in = OC.now, OC.wait_for, OC.is_in
 
-MARKER_RE = re.compile(r"\[sminos receipt ([0-9a-f]{24}\.[0-9a-f]{16}) attempt ([1-9][0-9]*)\]")
+MARKER_RE = re.compile(r"\[sminos receipt ([0-9a-f]{24}\.[0-9a-f]{16}) attempt ([1-9][0-9]*)(?: wake)?\]")
 M4A = "d6bd2d35"          # doperpowers: the M4a observer's head (sminos 1.32.0)
 PRE_M4A = "17944939"      # doperpowers origin/main: sminos 1.31.0, no observer
 PROBE = """const say = ($: any, text: string) => { try { $.ui.log('T7_PROBE ' + text, { to: 'debug' }) } catch {} }

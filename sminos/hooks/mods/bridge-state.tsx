@@ -259,7 +259,8 @@ export type FencedStep = { turnId: string; entered: number; turns: Map<string, P
  */
 export type PromptSeen = { kind: string; text: string; uuid?: string; seq: number; isTaken: boolean }
 /** A receipt's marker as a row carries it (O12 M4b): the receipt's id, and which delivery attempt of it the row is. */
-export type ReceiptMark = { id: string; attempt: number }
+/** A receipt's marker as a row names it: its attempt, and whether that attempt is a wake (no body of its own: sminos_holder_deliveries.WAKE_MARKER). */
+export type ReceiptMark = { id: string; attempt: number; isWake?: boolean }
 /**
  * What the observer knows of the receipts its process was handed (O12 M4b,
  * bridge-receipts.tsx): which rows carry markers and where each came among
@@ -275,6 +276,8 @@ export type ReceiptsState = {
   /** Every receipt id the live conversation held at the scan: an activation's `retained`. */
   retained: string[]
   scan?: Promise<void>
+  /** The scan read the conversation (a failed one is tried again by the next request that may carry a receipt). */
+  isScanned: boolean
   /** The receipts no admission is owed for any more, by session and id (receiptKey): an admission of any attempt settles; a release is no admission. */
   done: Set<string>
   reports: ReceiptReport[]
@@ -621,7 +624,7 @@ const freshHolder = (): HolderState => {
     turns: new Map(),
     seq: 0,
     isProcessStart: false,
-    receipts: { rows: new Map(), preload: new Map(), retained: [], done: new Set(), reports: [], stopped: [], isPumping: false, isRetryArmed: false, isReleasing: false },
+    receipts: { rows: new Map(), preload: new Map(), retained: [], isScanned: false, done: new Set(), reports: [], stopped: [], isPumping: false, isRetryArmed: false, isReleasing: false },
   }
 }
 

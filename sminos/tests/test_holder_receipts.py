@@ -150,19 +150,43 @@ class Activation(Receipts):
         self.host.conn(1).wait_frames(1)
         self.assertEqual(self.mode(), chosen, "an existing record, gate here, is returned as it is")
 
-    def test_an_unreadable_mode_fails_closed_and_the_observer_still_observes(self):
+    def test_an_unreadable_mode_withholds_a_fresh_processs_hello_and_an_upgrades_observer_observes(self):
         with open(hd._mode_path(self.proc), "w") as f:
             f.write("{not json")
         child = self.child()
         self.ready(child, launch=LAUNCH)
+        time.sleep(QUIET)
+        self.assertEqual(self.host.conns, [], "a fresh process says no hello while its mode is not known")
+        with open(hd._mode_path(self.proc)) as f:
+            self.assertEqual(f.read(), "{not json", "nothing overwrote it")
+        child.stop()
+        # An M4a observer's process (upgrade, observed): it goes on observing.
+        upgraded = self.child(args=("--lane", "match", "--launch=%s" % LAUNCH))
+        self.ready(upgraded, upgrade=True, observe=True)
         conn = self.host.conn(0)
         self.assertEqual(conn.wait_frames(1)[0]["t"], "hello")
         conn.send({"t": "welcome", "protocol": 1})
         self.assertTrue(wait_for(lambda: conn.seen("hb")), "heartbeats")
-        _, st = sminos_bridge.request(os.path.join(self.home, "s", "bridge", SESSION + ".sock"), "GET", "/status")
-        self.assertEqual(st["holder"]["receipts"], "unknown")
-        with open(hd._mode_path(self.proc)) as f:
-            self.assertEqual(f.read(), "{not json", "nothing overwrote it")
+        self.assertEqual(self.status(upgraded)["receipts"], "unknown")
+
+    def test_a_failed_activation_write_is_retried_before_any_hello(self):
+        # The mode cannot be written (a full disk): no hello, reports pending;
+        # once it can, the activation is retried, `gate`, then the hello.
+        launches = os.path.join(hd.home(), "launches")
+        os.makedirs(launches, exist_ok=True)
+        os.chmod(launches, 0o500)
+        self.addCleanup(lambda: os.path.isdir(launches) and os.chmod(launches, 0o700))
+        child = self.child()
+        rid = self.receipt()
+        self.ready(child, launch=LAUNCH)
+        time.sleep(QUIET)
+        self.assertEqual(self.host.conns, [], "no hello before the mode is durable")
+        self.assertEqual(self.report(child, "admit", session=SESSION, ids=[rid])[1]["code"], "pending")
+        os.chmod(launches, 0o700)
+        self.assertEqual(self.host.conn(0).wait_frames(1)[0]["t"], "hello")
+        self.assertEqual(self.mode()["mode"], "gate")
+        self.assertEqual(self.report(child, "admit", session=SESSION, ids=[rid])[1],
+                         {"ok": True, "receipts": {rid: "admitted"}})
 
     def test_the_bootstrap_says_how_long_claudes_process_has_run(self):
         # The mod's second witness of a fresh process: the process's age on the
@@ -234,7 +258,7 @@ class Upgrade(Receipts):
         self.assertEqual((status, answer["ok"]), (200, True))
         self.assertTrue(wait_for(lambda: self.mode() is not None))
         rec = self.mode()
-        self.assertEqual((rec["mode"], rec["launch"]), ("legacy", None))
+        self.assertEqual((rec["mode"], rec["launch"], rec["by"]), ("legacy", None, "existing"))
         time.sleep(QUIET)
         self.assertEqual(self.host.conns, [], "no hello")
         rid = self.receipt()

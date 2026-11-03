@@ -33,6 +33,9 @@ const delivered = (id: string, attempt = 1, said = 'hello there') =>
   `<cross-session-message from-name="peer">\n[sminos receipt ${id} attempt ${attempt}]\n[sminos chat proj SK/peer:1 from peer → @you]\n${said}\n</cross-session-message>`
 
 /** The child's bootstrap; `processAge` its word on claude's process (seconds run, a fresh one by default). */
+/** A wake as holder_wake writes it: a pointer to the body above, its marker saying it is a wake. */
+const woken = (id: string, attempt: number) => `<cross-session-message from-name="peer">\n[sminos receipt ${id} attempt ${attempt} wake]\n[sminos chat proj SK/peer:1 from peer → @you, again]\nIt is above in this conversation, delivered before: read it there.\n</cross-session-message>`
+
 const bootstrap = (generation = GEN, socket = ROUTE, childPid = 99, processAge: number | null = 1) => line({ op: 'holder', bootstrap: { socket, nonce: `n-${generation}`, generation, pid: 7, childPid, processAge } })
 const relayed = (epoch: string, frame: Record<string, unknown>, arm?: number) => line({ op: 'holder', epoch, ...(arm !== undefined && { arm }), frame })
 const helloMatch = (session = SID) => line({ op: 'hello', session, pid: 7, socket: `/tmp/s/bridge/${session}.sock`, protocol: 1, nonce: 'n0', lane: 'match' })
@@ -209,6 +212,46 @@ describe('receipts: what an admitted request carried (O12 M4b)', () => {
     await request(h, 't1').done
     await request(h, 't1', 1).done
     expect(h.apiReads()).toBe(reads)
+  })
+})
+
+describe('receipts: a wake and its body (O12 M4b)', () => {
+  test('a wake is admitted only with its body in the conversation; without it nothing is admitted and the receipt is released for a full retry', async () => {
+    const h = await observing()
+    // A rewind took the body out before the wake came: the wake alone is in.
+    await peerRow(h, woken(A, 2))
+    live(h, woken(A, 2))
+    await h.turn('t1', undefined, woken(A, 2))
+    await request(h, 't1').done
+    await flush(h)
+    expect(admits(h)).toEqual([])
+    expect(releases(h)).toEqual([{ session: SID, items: [{ id: A, attempt: 2, present: false }] }])
+    // The full body comes again (attempt 3): admitted.
+    await h.complete('t1')
+    await peerRow(h, delivered(A, 3))
+    live(h, woken(A, 2), delivered(A, 3))
+    await h.turn('t2', undefined, delivered(A, 3))
+    await request(h, 't2').done
+    expect(admits(h)).toEqual([{ session: SID, ids: [A] }])
+  })
+
+  test('a wake with its body still above is admitted; a release says present only for a body, never for a wake alone', async () => {
+    const h = await observing()
+    await peerRow(h, delivered(A))
+    await peerRow(h, woken(A, 2))
+    live(h, delivered(A), woken(A, 2))
+    await h.turn('t1', undefined, woken(A, 2))
+    await request(h, 't1').done
+    expect(admits(h)).toEqual([{ session: SID, ids: [A] }])
+  })
+
+  test("the activation's retained names only receipts whose body the conversation holds", async () => {
+    const h = harness({ env: MARKED, messages: [{ type: 'user' }] })
+    h.setApiConversation([{ role: 'user', content: [{ type: 'text', text: `${woken(A, 2)}\n${delivered(B)}` }] }])
+    await h.start()
+    h.children[0]!.write(bootstrap())
+    await flush(h)
+    expect(h.holderBodies('ready')).toEqual([{ kind: 'ready', generation: GEN, launch: String(h.sessionState.get('launch')), retained: [B] }])
   })
 })
 
@@ -406,6 +449,40 @@ describe('receipts: reports until the child records them (O12 M4b)', () => {
     await h.fire(HOLDER_RETRY_MS)
     expect(admits(h).at(-1)).toEqual({ session: SID, ids: [A] })
     expect(keptReceipts(h)).toEqual({ reports: [], stopped: [] })
+  })
+
+  test('a storage answer that names no state for an id leaves it to be replayed: only an explicit outcome ends one', async () => {
+    let storage = true
+    const h = await observing({
+      holderAnswer: (b) => (storage && (b.kind === 'admit' || b.kind === 'release') ? { status: 200, body: { ok: false, code: 'storage', error: 'disk', receipts: b.kind === 'admit' ? { [A]: 'admitted' } : {} } } : undefined),
+    })
+    await peerRow(h, delivered(A))
+    await peerRow(h, delivered(B))
+    live(h, delivered(A), delivered(B))
+    await h.turn('t1', undefined, 'go')
+    await h.complete('t1')
+    await h.turn('t2', undefined, 'go')
+    await request(h, 't2').done
+    await flush(h)
+    expect(keptReceipts(h)).toMatchObject({ reports: [{ kind: 'admit', session: SID, ids: [B] }] })
+    storage = false
+    await h.fire(HOLDER_RETRY_MS)
+    expect(admits(h).at(-1)).toEqual({ session: SID, ids: [B] })
+    expect(keptReceipts(h)).toEqual({ reports: [], stopped: [] })
+  })
+
+  test("a first scan that failed is tried again by a later request: a reload's earlier receipts are still admitted", async () => {
+    const kept = new Map<string, unknown>()
+    await observing({ sessionState: kept })
+    const after = harness({ env: MARKED, sessionState: kept, messages: [{ type: 'user' }] })
+    after.setApiConversation([{ role: 'user', content: [{ type: 'text', text: delivered(A) }] }])
+    after.failApiReads(1)
+    await after.start()
+    after.children[0]!.write(bootstrap(G2, '/tmp/s/bridge/h100.sock', 100))
+    await flush(after)
+    await request(after, 't0').done
+    await request(after, 't0', 1).done
+    expect(admits(after)).toEqual([{ session: SID, ids: [A] }])
   })
 
   test("a child restart: what the old child did not acknowledge is replayed to the new one at its ready", async () => {

@@ -685,6 +685,11 @@ export function receiptsAdmitted($: EngineInterface, carried: Carried) {
   if (admitCarried(carried)) {
     void keep($)
     state.holder.pumpReports?.()
+    // A wake whose body was gone waits among the stopped: released at once
+    // if no fence holds.
+    if (carried.bodiless.length > 0) {
+      state.holder.releaseStopped?.()
+    }
   }
 }
 

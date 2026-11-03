@@ -39,8 +39,8 @@ import type { FencedStep, ReceiptMark } from './bridge-state'
  * receipt the child checks, so a quoted one settles nothing it should not.
  */
 
-/** The marker a delivery's text carries (sminos_holder_deliveries.MARKER), read anywhere in a row's text. */
-const MARKER_RE = /\[sminos receipt ([0-9a-f]{24}\.[0-9a-f]{16}) attempt ([1-9][0-9]{0,8})\]/g
+/** The marker a delivery's text carries (sminos_holder_deliveries.MARKER, a wake's WAKE_MARKER), read anywhere in a row's text. */
+const MARKER_RE = /\[sminos receipt ([0-9a-f]{24}\.[0-9a-f]{16}) attempt ([1-9][0-9]{0,8})( wake)?\]/g
 /** The doors by which a delivery's text enters the main conversation: a prompt, a delivery into a running turn, a queued one's attachment. */
 const DOORS = new Set(['prompt', 'delivery', 'attachment'])
 /** Rows carrying markers, ids settled, reports and stopped receipts kept, at most. */
@@ -53,10 +53,17 @@ const REPORT_MAX = 512
 
 const log = (text: string) => state.log?.(`bridge: receipts: ${text}`)
 
+/** The states the child's answer names that end an id in a report (sminos_holder_deliveries.admit, .release); any other, or none, is replayed. */
+const ADMIT_ENDS = new Set(['admitted', 'gone', 'unknown', 'foreign'])
+const RELEASE_ENDS = new Set(['released', 'admitted', 'gone', 'unknown', 'foreign', 'stale'])
+
 /** The markers in a text, in order. */
 export function marksIn(text: string | undefined): ReceiptMark[] {
-  return [...(text ?? '').matchAll(MARKER_RE)].map((m) => ({ id: m[1]!, attempt: Number(m[2]) }))
+  return [...(text ?? '').matchAll(MARKER_RE)].map((m) => ({ id: m[1]!, attempt: Number(m[2]), ...(m[3] !== undefined && { isWake: true }) }))
 }
+
+/** A receipt as the live conversation holds it: its highest attempt, and whether a full body of it is there (a wake alone is none). */
+export type LiveMark = { attempt: number; hasBody: boolean }
 
 /** A row's or a message's text: its text blocks, or its string content. */
 function textOf(content: unknown): string {
@@ -75,8 +82,8 @@ function byId(marks: Iterable<ReceiptMark>): Map<string, number> {
   return out
 }
 
-/** The receipts the live conversation holds, as the requests read it, each id's highest attempt; undefined when it cannot be read. */
-export async function liveMarks($: EngineInterface): Promise<Map<string, number> | undefined> {
+/** The receipts the live conversation holds, as the requests read it; undefined when it cannot be read. */
+export async function liveMarks($: EngineInterface): Promise<Map<string, LiveMark> | undefined> {
   let conversation: unknown
   try {
     conversation = await $.session.messages({ as: 'api' })
@@ -87,7 +94,12 @@ export async function liveMarks($: EngineInterface): Promise<Map<string, number>
   if (!Array.isArray(conversation)) {
     return undefined
   }
-  return byId(conversation.flatMap((m) => (isRecord(m) && m.role === 'user' ? marksIn(textOf(m.content)) : [])))
+  const out = new Map<string, LiveMark>()
+  for (const m of conversation.flatMap((c) => (isRecord(c) && c.role === 'user' ? marksIn(textOf(c.content)) : []))) {
+    const was = out.get(m.id)
+    out.set(m.id, { attempt: Math.max(was?.attempt ?? 0, m.attempt), hasBody: (was?.hasBody ?? false) || m.isWake !== true })
+  }
+  return out
 }
 
 /**
@@ -114,23 +126,27 @@ export function receiptRow(door: string, content: unknown, uuid: string): (() =>
 /**
  * The markers this module's conversation held when it was first read, before
  * any row it saw (a reload, a resume): read once per conversation, before
- * the child's first ready names them (`retained`). A row seen since is
- * ordered by its own `seq`, not as one of these.
+ * the child's first ready names them (`retained`: those whose body the
+ * conversation holds, a wake alone being none). A row seen since is ordered
+ * by its own `seq`, not as one of these. A scan that could not read the
+ * conversation is tried again by the next request that may carry a receipt.
  */
 export function scanConversation($: EngineInterface): Promise<void> {
   const r = state.holder.receipts
   r.scan ??= (async () => {
     const live = await liveMarks($)
     if (live === undefined) {
+      r.scan = undefined
       return
     }
     const seen = new Set([...r.rows.values()].flatMap((row) => row.marks.map((m) => m.id)))
-    r.retained = [...live.keys()].slice(0, REPORT_MAX)
-    for (const [id, attempt] of live) {
+    r.retained = [...live].filter(([, m]) => m.hasBody).map(([id]) => id).slice(0, REPORT_MAX)
+    for (const [id, m] of live) {
       if (!seen.has(id)) {
-        r.preload.set(id, attempt)
+        r.preload.set(id, m.attempt)
       }
     }
+    r.isScanned = true
   })()
   return r.scan
 }
@@ -142,6 +158,7 @@ export function forgetReceiptRows() {
   r.preload.clear()
   r.retained = []
   r.scan = undefined
+  r.isScanned = false
 }
 
 /** A receipt as one session's: the key of `done`. */
@@ -191,8 +208,13 @@ function due(step: FencedStep, index: number, session: string): Map<string, numb
   return out
 }
 
-/** The receipts a request carries, as the conversation it was built from names them, and that conversation's session. */
-export type Carried = { session: string; marks: ReceiptMark[] }
+/**
+ * The receipts a request carries, as the conversation it was built from
+ * names them, and that conversation's session: `marks` with their body in
+ * it, admitted with the request; `bodiless`, a wake whose body a rewind took
+ * out, admitted never, released `present` false (a full retry, the same id).
+ */
+export type Carried = { session: string; marks: ReceiptMark[]; bodiless: ReceiptMark[] }
 
 /**
  * The receipts the request carries and has not reported: those due that the
@@ -202,6 +224,11 @@ export type Carried = { session: string; marks: ReceiptMark[] }
  * carries none now (a later request rechecks).
  */
 export async function receiptsCarried($: EngineInterface, step: FencedStep, index: number): Promise<Carried | undefined> {
+  // A first scan that failed: tried again, so what the conversation held
+  // before this module (a reload's) is due.
+  if (!state.holder.receipts.isScanned) {
+    await scanConversation($)
+  }
   // Asked first of the bridge's session, so a request carrying nothing reads
   // nothing; the rows a /clear's new conversation took in are not that
   // session's done ones (session.end forgot the old conversation's rows).
@@ -218,9 +245,15 @@ export async function receiptsCarried($: EngineInterface, step: FencedStep, inde
   if (session === undefined || live === undefined) {
     return undefined
   }
-  const want = due(step, index, session)
-  const marks = [...want].filter(([id]) => live.has(id)).map(([id, attempt]) => ({ id, attempt: Math.max(attempt, live.get(id)!) }))
-  return marks.length === 0 ? undefined : { session, marks }
+  const marks: ReceiptMark[] = []
+  const bodiless: ReceiptMark[] = []
+  for (const [id, attempt] of due(step, index, session)) {
+    const held = live.get(id)
+    if (held !== undefined) {
+      ;(held.hasBody ? marks : bodiless).push({ id, attempt: Math.max(attempt, held.attempt) })
+    }
+  }
+  return marks.length === 0 && bodiless.length === 0 ? undefined : { session, marks, bodiless }
 }
 
 /** The receipts of `session` no admission is owed for any more: admitted, gone, never this session's, or of a process that takes none. */
@@ -251,10 +284,15 @@ function queue(report: ReceiptReport) {
  * no await, so nothing comes between this and the request's `next`. Its
  * stopped receipts are stopped no more. True when a report was queued.
  */
-export function admitCarried({ session, marks }: Carried): boolean {
+export function admitCarried({ session, marks, bodiless }: Carried): boolean {
+  // A wake whose body is gone: the model read no message, so nothing is
+  // admitted; it is released for a full retry once no fence holds.
+  for (const [id, attempt] of byId(bodiless)) {
+    keepStopped({ session, id, attempt })
+  }
   const ids = [...new Set(marks.map((m) => m.id))].filter((id) => !isPending(session, id))
   if (ids.length === 0) {
-    return false
+    return bodiless.length > 0
   }
   for (let i = 0; i < ids.length; i += REPORT_MAX) {
     queue({ kind: 'admit', session, ids: ids.slice(i, i + REPORT_MAX) })
@@ -265,11 +303,11 @@ export function admitCarried({ session, marks }: Carried): boolean {
 }
 
 /** A request the gate's `stop` ended, carrying these receipts: nothing is reported; each waits for its release in this launch. */
-export function stopCarried({ session, marks }: Carried): boolean {
-  if (marks.length === 0) {
+export function stopCarried({ session, marks, bodiless }: Carried): boolean {
+  if (marks.length === 0 && bodiless.length === 0) {
     return false
   }
-  for (const [id, attempt] of byId(marks)) {
+  for (const [id, attempt] of byId([...marks, ...bodiless])) {
     keepStopped({ session, id, attempt })
   }
   return true
@@ -311,11 +349,12 @@ export function holdReleases(): boolean {
 }
 
 /**
- * Every stopped receipt released for its retry in this launch, its row's
+ * Every stopped receipt released for its retry in this launch, its body's
  * presence in the live conversation said (a wake for one there, the full
- * body for one a rewind or a /clear took out): one report per session.
+ * body for one a rewind or a /clear took out, or whose only row is a wake):
+ * one report per session.
  */
-export function releaseStoppedNow(live: Map<string, number> | undefined) {
+export function releaseStoppedNow(live: Map<string, LiveMark> | undefined) {
   const r = state.holder.receipts
   const stopped = r.stopped
   r.stopped = []
@@ -325,7 +364,7 @@ export function releaseStoppedNow(live: Map<string, number> | undefined) {
   }
   for (const [session, items] of sessions) {
     for (let i = 0; i < items.length; i += REPORT_MAX) {
-      queue({ kind: 'release', session, items: items.slice(i, i + REPORT_MAX).map((s) => ({ id: s.id, attempt: s.attempt, present: live?.has(s.id) ?? false })) })
+      queue({ kind: 'release', session, items: items.slice(i, i + REPORT_MAX).map((s) => ({ id: s.id, attempt: s.attempt, present: live?.get(s.id)?.hasBody ?? false })) })
     }
   }
 }
@@ -369,8 +408,10 @@ export function reportAnswered(report: ReceiptReport, got: { status: number; ans
     return 'done'
   }
   if (a.code === 'storage' && isRecord(a.receipts)) {
+    // Only an explicit outcome ends an id: one the answer names no state for
+    // (or `unavailable`) is replayed.
     const states = a.receipts
-    const left = (id: string) => states[id] === 'unavailable'
+    const left = (id: string) => !(report.kind === 'admit' ? ADMIT_ENDS : RELEASE_ENDS).has(String(states[id]))
     settled(ids.filter((id) => !left(id)))
     const r = state.holder.receipts
     r.reports.shift()

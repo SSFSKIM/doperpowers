@@ -111,7 +111,8 @@ takes only this module's short locks, so none waits on a deliverer's push.
         or a /clear never changes it); with none, `gate` is written with
         `launch` and `retained` (receipt ids the mod found in the live
         conversation's rows, for a resume's reconciliation) and the session
-        marked as one a `gate` process served — or `legacy` when
+        marked as one a `gate` process served (an existing `gate` record
+        marks the session it now serves too: a /clear's) — or `legacy` when
         `observer_started` (an M4a observer's process: observer_upgrade).
         Raises Unreadable (do not enable receipts; say so). Enable the
         receipt path only when the record returned is `gate`.
@@ -150,9 +151,13 @@ takes only this module's short locks, so none waits on a deliverer's push.
         one — a replay after its retry was made, or none named — or is
         another process's or launch's: nothing released). One release
         allows one retry; the retry's stop needs a release of its attempt.
-    marker(id, attempt) / MARKER_RE / markers(text) -> [(id, attempt)]
+    marker(id, attempt, body="full") / MARKER_RE / markers(text) -> [(id, attempt)]
         The text marker: a line `[sminos receipt <id> attempt <n>]`, the
-        first line of each delivery's text (a wake's too).
+        first line of each delivery's text; a wake's is
+        `[sminos receipt <id> attempt <n> wake]`, since it carries no body:
+        the mod admits a wake only while the body (its row, or an earlier
+        attempt's full one) is in the request's conversation, else releases
+        it `present` false for a full retry.
 
 `stop` records nothing: no admission, no cursor. A receipt whose process
 ended is retried by the next launch, with the same id.
@@ -182,8 +187,9 @@ SESSIONS = "sessions"
 MODES = ("gate", "legacy")
 BODIES = ("full", "wake")
 MARKER = "[sminos receipt %s attempt %d]"
+WAKE_MARKER = "[sminos receipt %s attempt %d wake]"   # a wake's: the mod admits it only with its body in the conversation
 ID_RE = re.compile(r"^([0-9a-f]{24})\.([0-9a-f]{16})$")
-MARKER_RE = re.compile(r"^\[sminos receipt ([0-9a-f]{24}\.[0-9a-f]{16}) attempt ([1-9][0-9]{0,8})\]$", re.M)
+MARKER_RE = re.compile(r"^\[sminos receipt ([0-9a-f]{24}\.[0-9a-f]{16}) attempt ([1-9][0-9]{0,8})(?: wake)?\]$", re.M)
 GRACE_MAX_S = 30.0
 RETAINED_MAX = 512           # receipt ids an activation keeps as found in the conversation
 SESSION_KEPT_S = 30 * 86400  # a session marker unrefreshed this long is swept
@@ -455,13 +461,19 @@ def activate(pid, launch, session, observer_started=False, retained=()):
     if not (isinstance(launch, str) and launch):
         raise ValueError("activation names the process's launch")
     kept = [r for r in dict.fromkeys(retained) if isinstance(r, str) and ID_RE.match(r)][:RETAINED_MAX]
-    return _choose(_process_of(pid), "gate", "activation", launch=launch, session=session, retained=kept)
+    rec = _choose(_process_of(pid), "gate", "activation", launch=launch, session=session, retained=kept)
+    if rec["mode"] == "gate" and session:
+        # Every session a gate process serves is marked (a /clear's too), for
+        # C5's grace at its later resume; the record, mode and launch, stand.
+        _mark_session(session)
+    return rec
 
 
-def observer_upgrade(pid):
-    """An M4a observer's process seen by M4b: `legacy` unless it has a
-    record (see the module's contract)."""
-    return _choose(_process_of(pid), "legacy", "observer")
+def observer_upgrade(pid, by="observer"):
+    """A process already running when M4b loaded: `legacy` unless it has a
+    record (see the module's contract). `by` says which: an M4a observer's
+    (`observer`), or one no observer served (`existing`)."""
+    return _choose(_process_of(pid), "legacy", by)
 
 
 def handoff(pid, session, choose=True):
@@ -503,8 +515,10 @@ def _receipts_lock():
         yield
 
 
-def marker(receipt_id, attempt):
-    return MARKER % (receipt_id, attempt)
+def marker(receipt_id, attempt, body="full"):
+    """The marker line of an attempt; a wake's says so, since a wake carries
+    no body: the mod admits it only while the body is in the conversation."""
+    return (WAKE_MARKER if body == "wake" else MARKER) % (receipt_id, attempt)
 
 
 def markers(text):

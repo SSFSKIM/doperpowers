@@ -50,6 +50,7 @@ import sminos_rl10 as rl10  # noqa: E402
 
 S1 = "4b000001-0000-4000-8000-0000000000b1"
 S2 = "4b000002-0000-4000-8000-0000000000b2"
+S3 = "4b000003-0000-4000-8000-0000000000b3"
 OTHER = "othermachine/4b0000ff-0000-4000-8000-0000000000ff"
 OTHER2 = "othermachine/4b0000fe-0000-4000-8000-0000000000fe"
 DEV_A = {"kind": "device", "member": "mem-1", "device": "dev-a", "keyId": "k-dev-a"}
@@ -248,6 +249,25 @@ class Mode(Rig):
         legacy = self.launch(S2)
         hd.observer_upgrade(legacy)
         self.assertEqual(hd.activate(legacy, "launch-2", S2)["mode"], "legacy")
+
+    def test_every_session_a_gate_process_serves_is_marked(self):
+        # A /clear's activation finds the record there: the new session is
+        # marked too (C5's grace for its later resume), the mode and launch kept.
+        pid = self.launch(S1)
+        rec = self.gate(pid)
+        self.assertFalse(hd._served(S2))
+        again = hd.activate(pid, "launch-1", S2)
+        self.assertEqual(again, rec, "the record as it was")
+        self.assertTrue(hd._served(S2), "the session it serves after the /clear is marked")
+        legacy = self.launch(S3)
+        hd.observer_upgrade(legacy)
+        hd.activate(legacy, "launch-2", S3)
+        self.assertFalse(hd._served(S3), "a legacy process's session is not one a gate process served")
+
+    def test_an_existing_process_no_observer_served_is_recorded_so(self):
+        pid = self.launch(S1)
+        rec = hd.observer_upgrade(pid, by="existing")
+        self.assertEqual((rec["mode"], rec["by"]), ("legacy", "existing"))
 
     def test_a_new_process_may_choose_again(self):
         first = self.launch(S1)
@@ -556,6 +576,8 @@ class Retry(Rig):
         frames = self.inbox(S1)
         self.assertEqual(self.ids(), [[rid], [rid]], "the same id")
         self.assertNotIn("the body", frames[1], "a wake referring to the kept row, not the body again")
+        self.assertIn(hd.marker(rid, 2, "wake"), frames[1], "its marker says it is a wake")
+        self.assertEqual(hd.markers(frames[1]), [(rid, 2)])
         self.assertIn(sminos.event_ref(e), frames[1])
         a = self.receipt(e)["attempt"]
         self.assertEqual((a["n"], a["pid"], a["launch"], a["body"]), (2, resumed, "launch-2", "wake"))

@@ -4306,7 +4306,7 @@ def holder_carry(plan, project, member, session, e, events, cursor, peer):
     text = frame_of(project, e, events, session, cursor) if plan.body == "full" else holder_wake(project, e)
     try:
         control_module().push_live(peer, session, text, e, project.id,
-                                   marker=holder_module().marker(plan.receipt, plan.attempt))
+                                   marker=holder_module().marker(plan.receipt, plan.attempt, plan.body))
     except SendFailed as err:
         if err.phase == "before":
             return "failed:%s" % err

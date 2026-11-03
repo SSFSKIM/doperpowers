@@ -252,6 +252,8 @@ export function harness(
   /** What `$.session.messages({ as: "api" })` answers when a test set it; and how many times it was read. */
   let apiConversation: unknown[] | undefined
   let apiReads = 0
+  /** Reads of the api conversation still to fail, as a test asked (`failApiReads`). */
+  let apiFailures = 0
   /** While held (`holdApiReads`), `$.session.messages({ as: "api" })` waits. */
   let apiGate: Promise<void> = Promise.resolve()
   let listedAgents = options.agents ?? []
@@ -293,6 +295,10 @@ export function harness(
         }
         apiReads++
         await apiGate
+        if (apiFailures > 0) {
+          apiFailures--
+          throw new Error('the conversation is not readable now')
+        }
         return apiConversation ?? conversation.map((m) => ({ role: 'user', content: m.content }))
       },
       usage: async () => ({ startedAt: 0, context: { tokens: 5000, window: 200000, percent: 2 }, rateLimits: [] }),
@@ -773,6 +779,8 @@ export function harness(
     spawns,
     queries,
     setApiConversation: (messages: unknown[] | undefined) => (apiConversation = messages),
+    /** The next `n` reads of the api conversation reject. */
+    failApiReads: (n: number) => (apiFailures = n),
     /** Holds the next reads of the conversation as the requests read it until the returned function is called. */
     holdApiReads: () => {
       let release: () => void = () => undefined
