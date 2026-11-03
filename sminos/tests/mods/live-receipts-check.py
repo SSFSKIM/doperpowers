@@ -12,8 +12,9 @@ loudly:
   its source and a young process age;
 - the marker (C6): `[sminos receipt <id> attempt <n>]` survives the engine's
   inbox rendering into the session.append row, turn.start's text and the
-  api conversation (`$.session.messages({as: 'api'})`), a wake's too, as a
-  diagnostic mod loaded beside sminos's reads them;
+  api conversation (`$.session.messages({as: 'api'})`), a wake's too (its
+  marker ending ` wake]`), as a diagnostic mod loaded beside sminos's reads
+  them;
 - the order of writes: the receipt is on disk, prepared, before the inbox
   write, and pushed after it;
 - proceed: a peer turn under a fence answered `proceed` names its receipt as
@@ -33,7 +34,7 @@ loudly:
   plugin stays `legacy`, observed with its new childPid and its fence, and
   hands deliveries off with no receipt; a process with no M4a observer
   (the plugin before M4a, origin/main 17944939 at 1.31.0) reloaded to this
-  plugin says no hello and stays legacy.
+  plugin says no hello and stays legacy, recorded `by: existing`.
 
 One engine runs at a time; everything it starts is isolated as
 live-observer-check.py isolates it, plus this check's own `sminos daemon
@@ -80,7 +81,7 @@ export const register = (on: any) => {
       try {
         const api = await $.session.messages({ as: 'api' })
         const marks = []
-        for (const m of api) if (m && m.role === 'user') { const t = typeof m.content === 'string' ? m.content : JSON.stringify(m.content); for (const x of t.matchAll(/\\[sminos receipt [0-9a-f.]+ attempt [0-9]+\\]/g)) marks.push(x[0]) }
+        for (const m of api) if (m && m.role === 'user') { const t = typeof m.content === 'string' ? m.content : JSON.stringify(m.content); for (const x of t.matchAll(/\\[sminos receipt [0-9a-f.]+ attempt [0-9]+(?: wake)?\\]/g)) marks.push(x[0]) }
         say($, 'api ' + JSON.stringify({ turnId: e.turnId, marks }))
       } catch (err) { say($, 'api-error ' + String(err)) }
     }
@@ -354,7 +355,7 @@ class Receipts(OC.Observer):
                 text = o.get("text") if k != "api" else " ".join(o.get("marks") or [])
                 for m in MARKER_RE.finditer(text or ""):
                     if m.group(1) == rid:
-                        found[k].append(int(m.group(2)))
+                        found[k].append(int(m.group(2)) if not m.group(0).endswith(" wake]") else "%s wake" % m.group(2))
         return found
 
     # -- the run
@@ -487,7 +488,7 @@ class Receipts(OC.Observer):
                    "released %.3f s after the disarm; attempt 2 (%s) %.3f s later; settled %.3f s after it; delivered %s; requests %s" % (
                        rel["t"] - disarmed, retry["obj"]["attempt"]["body"], retry["t"] - rel["t"], gone["t"] - retry["t"],
                        json.dumps(w2), [(r["plan"], r.get("head", "")[:50]) for r in stub.since(sm2, "main")]))
-        self.marker_survives(rid, 2, "the wake")
+        self.marker_survives(rid, "2 wake", "the wake (its marker saying wake)")
         self.note("the wake as the engine rendered it", [json.dumps(o)[:500] for _, k, o in self.probe_lines("append")
                                                           if isinstance(o, dict) and ("%s attempt 2" % rid) in (o.get("text") or "")][:1])
 
@@ -683,8 +684,8 @@ class Receipts(OC.Observer):
         hellos = g.find(lambda e: is_in("hello")(e) and e["frame"].get("pid") == pid, gm)
         _, rec = wait_for("the mode record", 10, lambda: (lambda pr: pr if pr[1] else None)(self.mode_record(pid)))
         receipts = [r for r in self.watch.rows if r["kind"] == "receipt" and r["t"] >= said]
-        self.check("a process with no M4a observer, reloaded to M4b: no hello, legacy, no receipt",
-                   not hellos and rec.get("mode") == "legacy" and not receipts,
+        self.check("a process with no M4a observer, reloaded to M4b: no hello, legacy by: existing, no receipt",
+                   not hellos and rec.get("mode") == "legacy" and rec.get("by") == "existing" and not receipts,
                    "hellos from pid %d: %d (in the %.0f s after the reload, and through a delivery); bridge: %s; record %s" % (
                        pid, len(hellos), now() - touched, [l.split("(to debug): ")[-1][:200] for l in self.debug_matching(unobserved)][:2], json.dumps(rec)))
         self.end_engine()
