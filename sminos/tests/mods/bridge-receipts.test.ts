@@ -258,6 +258,79 @@ describe('receipts: a wake and its body (O12 M4b)', () => {
     expect(admits(h)).toEqual([{ session: SID, ids: [A] }])
   })
 
+  test('a wake seen before a reload, its body retained from before the module: the scan counts that body, and the wake is admitted', async () => {
+    const kept = new Map<string, unknown>()
+    await observing({ sessionState: kept })
+    const after = harness({ env: MARKED, sessionState: kept, messages: [{ type: 'user' }] })
+    after.setApiConversation([
+      { role: 'user', content: [{ type: 'text', text: delivered(A) }] },
+      { role: 'user', content: [{ type: 'text', text: woken(A, 2) }] },
+    ])
+    await after.start()
+    // The retry's wake comes in before the child's bootstrap (and its scan).
+    await peerRow(after, woken(A, 2))
+    after.children[0]!.write(bootstrap(G2, '/tmp/s/bridge/h100.sock', 100))
+    await flush(after)
+    await after.turn('t1', undefined, 'go')
+    await request(after, 't1').done
+    expect(admits(after)).toEqual([{ session: SID, ids: [A] }])
+    expect(releases(after)).toEqual([])
+  })
+
+  test('a wake once judged bodiless is released present false even when a body shows up for the release: its retry is the full body, admitted', async () => {
+    const kept = new Map<string, unknown>()
+    await observing({ sessionState: kept })
+    const after = harness({ env: MARKED, sessionState: kept, messages: [{ type: 'user' }] })
+    after.setApiConversation([
+      { role: 'user', content: [{ type: 'text', text: delivered(A) }] },
+      { role: 'user', content: [{ type: 'text', text: woken(A, 2) }] },
+    ])
+    // The scan fails at the bootstrap and again at the request: no evidence of the body before the module.
+    after.failApiReads(2)
+    await after.start()
+    await peerRow(after, woken(A, 2))
+    after.children[0]!.write(bootstrap(G2, '/tmp/s/bridge/h100.sock', 100))
+    await flush(after)
+    await after.turn('t1', undefined, 'go')
+    await request(after, 't1').done
+    await flush(after)
+    expect(admits(after)).toEqual([])
+    expect(releases(after)).toEqual([{ session: SID, items: [{ id: A, attempt: 2, present: false }] }])
+    // The full retry: admitted on its own row.
+    await after.complete('t1')
+    await peerRow(after, delivered(A, 3))
+    after.setApiConversation([
+      { role: 'user', content: [{ type: 'text', text: delivered(A) }] },
+      { role: 'user', content: [{ type: 'text', text: woken(A, 2) }] },
+      { role: 'user', content: [{ type: 'text', text: delivered(A, 3) }] },
+    ])
+    await after.turn('t2', undefined, delivered(A, 3))
+    await request(after, 't2').done
+    expect(admits(after)).toEqual([{ session: SID, ids: [A] }])
+    expect(releases(after)).toHaveLength(1)
+  })
+
+  test('the plain case: stop, release with the body retained, the wake admitted at attempt 2', async () => {
+    const h = await observing()
+    await peerRow(h, delivered(A))
+    live(h, delivered(A))
+    await h.turn('t1', undefined, delivered(A))
+    await arm(h, 1, 1)
+    const r = request(h, 't1')
+    await flush(h)
+    await answer(h, { t: 'stop', fence: 1, reason: 'reaped' })
+    await r.done
+    await h.complete('t1')
+    await answer(h, { t: 'disarm', fence: 1 })
+    expect(releases(h)).toEqual([{ session: SID, items: [{ id: A, attempt: 1, present: true }] }])
+    await peerRow(h, woken(A, 2))
+    live(h, delivered(A), woken(A, 2))
+    await h.turn('t2', undefined, woken(A, 2))
+    await request(h, 't2').done
+    expect(admits(h)).toEqual([{ session: SID, ids: [A] }])
+    expect(releases(h)).toHaveLength(1)
+  })
+
   test('a wake with its body still above is admitted; a release says present only for a body, never for a wake alone', async () => {
     const h = await observing()
     await peerRow(h, delivered(A))

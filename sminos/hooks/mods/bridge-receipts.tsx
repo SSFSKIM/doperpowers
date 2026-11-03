@@ -139,11 +139,16 @@ export function scanConversation($: EngineInterface): Promise<void> {
       r.scan = undefined
       return
     }
-    const seen = new Set([...r.rows.values()].flatMap((row) => row.marks.map((m) => m.id)))
+    // What a row seen since the load named is that row's; a body the
+    // conversation holds that no seen row carried is from before the module
+    // (an observed wake hides no retained body).
+    const seen = [...r.rows.values()].flatMap((row) => row.marks)
     r.retained = [...live].filter(([, m]) => m.hasBody).map(([id]) => id).slice(0, REPORT_MAX)
     for (const [id, m] of live) {
-      if (!seen.has(id)) {
-        r.preload.set(id, m)
+      const ofId = seen.filter((s) => s.id === id)
+      const isBodySeen = ofId.some((s) => s.isWake !== true)
+      if (ofId.length === 0 || (m.hasBody && !isBodySeen)) {
+        r.preload.set(id, { attempt: m.attempt, hasBody: m.hasBody && !isBodySeen })
       }
     }
     r.isScanned = true
@@ -305,7 +310,7 @@ export function admitCarried({ session, marks, bodiless }: Carried): boolean {
   // A wake whose body is gone: the model read no message, so nothing is
   // admitted; it is released for a full retry once no fence holds.
   for (const [id, attempt] of byId(bodiless)) {
-    keepStopped({ session, id, attempt })
+    keepStopped({ session, id, attempt, bodiless: true })
   }
   const ids = [...new Set(marks.map((m) => m.id))].filter((id) => !isPending(session, id))
   if (ids.length === 0) {
@@ -324,8 +329,11 @@ export function stopCarried({ session, marks, bodiless }: Carried): boolean {
   if (marks.length === 0 && bodiless.length === 0) {
     return false
   }
-  for (const [id, attempt] of byId([...marks, ...bodiless])) {
+  for (const [id, attempt] of byId(marks)) {
     keepStopped({ session, id, attempt })
+  }
+  for (const [id, attempt] of byId(bodiless)) {
+    keepStopped({ session, id, attempt, bodiless: true })
   }
   return true
 }
@@ -333,10 +341,14 @@ export function stopCarried({ session, marks, bodiless }: Carried): boolean {
 function keepStopped(s: StoppedReceipt) {
   const r = state.holder.receipts
   const at = r.stopped.findIndex((t) => t.session === s.session && t.id === s.id)
+  const was = at === -1 ? undefined : r.stopped[at]!
+  // The later attempt's word stands; at the same attempt a bodiless verdict sticks.
+  const next = was === undefined || s.attempt > was.attempt ? s : s.attempt < was.attempt ? was : { ...s, bodiless: s.bodiless === true || was.bodiless === true }
+  const kept: StoppedReceipt = next.bodiless === true ? next : { session: next.session, id: next.id, attempt: next.attempt }
   if (at === -1) {
-    r.stopped.push(s)
+    r.stopped.push(kept)
   } else {
-    r.stopped[at] = { ...s, attempt: Math.max(s.attempt, r.stopped[at]!.attempt) }
+    r.stopped[at] = kept
   }
   if (r.stopped.length > STOPPED_KEPT) {
     log(`more than ${STOPPED_KEPT} stopped receipts: the oldest wait for a new launch`)
@@ -359,7 +371,7 @@ export function holdReleases(): boolean {
   r.reports = r.reports.filter((p) => p.kind !== 'release')
   for (const p of held) {
     for (const i of p.items) {
-      keepStopped({ session: p.session, id: i.id, attempt: i.attempt })
+      keepStopped({ session: p.session, id: i.id, attempt: i.attempt, ...(!i.present && { bodiless: true }) })
     }
   }
   return true
@@ -381,7 +393,7 @@ export function releaseStoppedNow(live: Map<string, LiveMark> | undefined) {
   }
   for (const [session, items] of sessions) {
     for (let i = 0; i < items.length; i += REPORT_MAX) {
-      queue({ kind: 'release', session, items: items.slice(i, i + REPORT_MAX).map((s) => ({ id: s.id, attempt: s.attempt, present: live?.get(s.id)?.hasBody ?? false })) })
+      queue({ kind: 'release', session, items: items.slice(i, i + REPORT_MAX).map((s) => ({ id: s.id, attempt: s.attempt, present: s.bodiless !== true && (live?.get(s.id)?.hasBody ?? false) })) })
     }
   }
 }

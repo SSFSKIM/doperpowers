@@ -149,8 +149,15 @@ export type ReceiptReport =
   | { kind: 'admit'; session: string; ids: string[] }
   | { kind: 'release'; session: string; items: { id: string; attempt: number; present: boolean }[] }
 
-/** A receipt whose request the gate's `stop` ended: its id, the attempt its row named, the session it was delivered to. */
-export type StoppedReceipt = { session: string; id: string; attempt: number }
+/**
+ * A receipt held for its release in this launch: its id, the attempt its row
+ * named, the session it was delivered to. A request's `stop` ended it, or a
+ * request judged its wake `bodiless` (no body among what it included): that
+ * verdict is released `present` false whatever the conversation shows then,
+ * so its retry is the full body, the release and the admission reading the
+ * same evidence.
+ */
+export type StoppedReceipt = { session: string; id: string; attempt: number; bodiless?: boolean }
 
 declare module 'claude-code' {
   interface PluginState {

@@ -138,7 +138,7 @@ function isReport(r: unknown): r is ReceiptReport {
   )
 }
 
-const isStopped = (s: unknown): s is StoppedReceipt => isRecord(s) && isSession(s.session) && isId(s.id) && isCount(s.attempt, 1)
+const isStopped = (s: unknown): s is StoppedReceipt => isRecord(s) && isSession(s.session) && isId(s.id) && isCount(s.attempt, 1) && (s.bodiless === undefined || typeof s.bodiless === 'boolean')
 
 function isKept(value: unknown): value is HolderKept {
   return (
