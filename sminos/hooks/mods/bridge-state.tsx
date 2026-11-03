@@ -266,13 +266,13 @@ export type ReceiptMark = { id: string; attempt: number; isWake?: boolean }
  * bridge-receipts.tsx): which rows carry markers and where each came among
  * the main turns' starts and requests (`seq`, the holder's order), the
  * markers the conversation held before this module saw any row
- * (`preload`, highest attempt by id, for a conversation this module did not
+ * (`preload`, highest attempt by id and whether a body of it was there, for a conversation this module did not
  * watch begin), the ids nothing more is owed for, the reports the child has
  * not acknowledged, and the stopped receipts awaiting their release.
  */
 export type ReceiptsState = {
   rows: Map<string, { marks: ReceiptMark[]; seq: number }>
-  preload: Map<string, number>
+  preload: Map<string, { attempt: number; hasBody: boolean }>
   /** Every receipt id the live conversation held at the scan: an activation's `retained`. */
   retained: string[]
   scan?: Promise<void>

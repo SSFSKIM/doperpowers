@@ -143,7 +143,7 @@ export function scanConversation($: EngineInterface): Promise<void> {
     r.retained = [...live].filter(([, m]) => m.hasBody).map(([id]) => id).slice(0, REPORT_MAX)
     for (const [id, m] of live) {
       if (!seen.has(id)) {
-        r.preload.set(id, m.attempt)
+        r.preload.set(id, m)
       }
     }
     r.isScanned = true
@@ -174,7 +174,7 @@ const isPending = (session: string, id: string) => state.holder.receipts.reports
  * conversation cannot say which of its rows it holds), unless the turn's own
  * text names it.
  */
-function due(step: FencedStep, index: number, session: string): Map<string, number> {
+function due(step: FencedStep, index: number, session: string): Map<string, LiveMark> {
   const h = state.holder
   const r = h.receipts
   const turn = h.turns.get(step.turnId)
@@ -184,7 +184,9 @@ function due(step: FencedStep, index: number, session: string): Map<string, numb
   }
   const own = marksIn(turn?.text)
   const marks: ReceiptMark[] = [...own]
+  // Ids with a row seen at or after the cutoff, and those of them whose late row is a body.
   const late = new Set<string>()
+  const lateBody = new Set<string>()
   for (const [uuid, row] of r.rows) {
     if (row.marks.every((m) => isDone(session, m.id))) {
       r.rows.delete(uuid)
@@ -193,15 +195,29 @@ function due(step: FencedStep, index: number, session: string): Map<string, numb
     } else {
       for (const m of row.marks) {
         late.add(m.id)
+        if (m.isWake !== true) {
+          lateBody.add(m.id)
+        }
       }
     }
   }
-  for (const [id, attempt] of r.preload) {
-    marks.push({ id, attempt })
+  for (const [id, m] of r.preload) {
+    marks.push({ id, attempt: m.attempt, ...(!m.hasBody && { isWake: true }) })
   }
-  const out = byId(marks)
-  for (const id of out.keys()) {
-    if (isDone(session, id) || isPending(session, id) || (late.has(id) && !own.some((m) => m.id === id))) {
+  // Each id once: its highest attempt, and whether a body of it is among
+  // what the request includes (a wake alone is none).
+  const out = new Map<string, LiveMark>()
+  for (const m of marks) {
+    const was = out.get(m.id)
+    out.set(m.id, { attempt: Math.max(was?.attempt ?? 0, m.attempt), hasBody: (was?.hasBody ?? false) || m.isWake !== true })
+  }
+  for (const [id, m] of out) {
+    const ownMarks = own.filter((o) => o.id === id)
+    // The turn's own text exempts an id from the late-row rule only for the
+    // kind it carries: a wake in it lends no late body row to this request
+    // (which body the conversation holds is then not known: a later request).
+    const isAmbiguous = late.has(id) && (ownMarks.length === 0 || (!ownMarks.some((o) => o.isWake !== true) && lateBody.has(id)))
+    if (isDone(session, id) || isPending(session, id) || isAmbiguous) {
       out.delete(id)
     }
   }
@@ -247,10 +263,11 @@ export async function receiptsCarried($: EngineInterface, step: FencedStep, inde
   }
   const marks: ReceiptMark[] = []
   const bodiless: ReceiptMark[] = []
-  for (const [id, attempt] of due(step, index, session)) {
+  for (const [id, included] of due(step, index, session)) {
     const held = live.get(id)
     if (held !== undefined) {
-      ;(held.hasBody ? marks : bodiless).push({ id, attempt: Math.max(attempt, held.attempt) })
+      // Its body must be both among what the request includes and still in the conversation.
+      ;(included.hasBody && held.hasBody ? marks : bodiless).push({ id, attempt: Math.max(included.attempt, held.attempt) })
     }
   }
   return marks.length === 0 && bodiless.length === 0 ? undefined : { session, marks, bodiless }

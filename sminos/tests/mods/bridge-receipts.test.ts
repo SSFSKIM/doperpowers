@@ -235,6 +235,29 @@ describe('receipts: a wake and its body (O12 M4b)', () => {
     expect(admits(h)).toEqual([{ session: SID, ids: [A] }])
   })
 
+  test("a full retry that came after a later step entered is not that step's body, though the turn's text names the wake: the next request admits it", async () => {
+    const h = await observing()
+    await peerRow(h, woken(A, 2))
+    live(h, woken(A, 2))
+    await h.turn('t1', undefined, woken(A, 2))
+    await request(h, 't1').done
+    await flush(h)
+    expect(releases(h)).toEqual([{ session: SID, items: [{ id: A, attempt: 2, present: false }] }])
+    // The next step waits at a fence; the full attempt 3 is appended meanwhile.
+    await arm(h, 1, 1)
+    const second = request(h, 't1', 1)
+    await flush(h)
+    expect(second.isMade()).toBe(false)
+    await peerRow(h, delivered(A, 3), 'delivery')
+    live(h, woken(A, 2), delivered(A, 3))
+    await answer(h, { t: 'proceed', fence: 1 })
+    await second.done
+    expect(admits(h)).toEqual([])
+    await answer(h, { t: 'disarm', fence: 1 })
+    await request(h, 't1', 2).done
+    expect(admits(h)).toEqual([{ session: SID, ids: [A] }])
+  })
+
   test('a wake with its body still above is admitted; a release says present only for a body, never for a wake alone', async () => {
     const h = await observing()
     await peerRow(h, delivered(A))
