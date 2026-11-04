@@ -1,0 +1,9 @@
+{
+  "what": "p5-o16-gate.jsonl is O16's OX10 gate fixture as its fix wave recorded it (the engine host's fake observer recording M5's tests), copied byte for byte; test_holder.py checks the copy against `blob` before it replays the child's side of it, and bridge-holder.test.ts the mod's (through gate-fixture.ts).",
+  "repository": "MAWS",
+  "commit": "bbf3133e81aacd2b1a1a3bd008c63de859a18bfd",
+  "branch": "o16-gate-reap",
+  "pr": "#449, with #448 merged",
+  "path": "spikes/protocol-probe/fixtures/p5/p5-o16-gate.jsonl",
+  "blob": "4858de0917b7e248ef0a5d4c03078a11b2f3c4b5"
+}

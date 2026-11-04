@@ -30,8 +30,8 @@ gates:
       scripts/lint-shell.sh "${files[@]}"
     timeout: 10
 
-  # The sminos plugin's suite in its two parts, run side by side (about 9 min
-  # serial).
+  # The sminos plugin's suite in its two parts, run side by side (about 26 min
+  # serial: core about 7, suites 18 to 20 on 2026-11-02).
   - name: sminos
     run: SMINOS_PART=core bash sminos/tests/run-sminos-tests.sh
     timeout: 20
@@ -39,7 +39,7 @@ gates:
 
   - name: sminos-suites
     run: SMINOS_PART=suites bash sminos/tests/run-sminos-tests.sh
-    timeout: 20
+    timeout: 30
     # test_rpcs.py runs the live checks' call paths (sminos/tests/mods/live-*) against its fake engine.
     paths: ["sminos/**", ".github/**"]
 

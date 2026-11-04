@@ -374,6 +374,11 @@ run_suites() {
   echo
   if "$SCRIPT_DIR/test-bridge-order.sh"; then pass "the bridge's row order and snapshot cut (test-bridge-order.sh)"; else
     fail "the bridge's row order and snapshot cut (test-bridge-order.sh)"; fi
+  # The child's gate client on MAWS's holder socket and its relay to the mod (O12 M4a), O16's fixture replayed at the
+  # child; what only the fix-wave host can show it prints as PENDING.
+  if python3 -B "$SCRIPT_DIR/test_holder.py"; then
+    pass "the bridge's gate client: hello, heartbeats, reconnects, acks in arm order, the relay (test_holder.py)"
+  else fail "the bridge's gate client: hello, heartbeats, reconnects, acks in arm order, the relay (test_holder.py)"; fi
   echo
   if "$SCRIPT_DIR/test-uplink.sh"; then pass "the uplink to the hub (test-uplink.sh)"; else fail "the uplink to the hub (test-uplink.sh)"; fi
   if python3 "$SCRIPT_DIR/test_happy_eyeballs.py"; then pass "the hub's connections past a blackholed IPv6 (test_happy_eyeballs.py)"; else

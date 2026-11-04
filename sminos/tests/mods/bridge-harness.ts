@@ -137,6 +137,12 @@ export function harness(
     cua?: boolean
     /** `$.state.get` rejects. */
     stateFails?: boolean
+    /**
+     * Asked before each `$.state` read or write of this plugin's own key: `fail`
+     * makes the call reject (the host did not answer); anything else lets it
+     * run, after whatever the function did (another writer's write, say).
+     */
+    stateFault?: (op: 'get' | 'set', key: string) => 'fail' | undefined
     /** What `$.session.version()` answers; by default 2.1.300's release, with no base. */
     version?: { version: string; base?: string; builtAt?: string }
     /** What `$.command.list()` answers. */
@@ -164,6 +170,14 @@ export function harness(
     guard?: boolean
     /** `$.agent.spawn` answers `{ deny }` with this reason. */
     spawnDeny?: string
+    /**
+     * How the child's private gate route (POST /holder, O12 M4a) answers a
+     * body: an answer, `hold` (the test settles it, `holderPosts[i].answer`),
+     * or `fail` (the request fails, as with no child). By default `ready`,
+     * `armed` and `turn` are answered as a live child answers them, and a
+     * `wait` is held.
+     */
+    holderAnswer?: (body: Record<string, unknown>) => { status: number; body?: unknown } | 'hold' | 'fail' | undefined
   } = {},
 ) {
   const hooks: { event: string; matcher: Matcher; handler: Handler }[] = []
@@ -220,6 +234,7 @@ export function harness(
   /** What `$.fs.stat` finds at a path: its kind, whether it is a link, and where it resolves (itself unless said). */
   const stats: Record<string, { kind: 'file' | 'dir' | 'other'; isLink?: boolean; realPath?: string }> = {}
   const sessionState = options.sessionState ?? new Map<string, unknown>()
+  const fault = options.stateFault
   /** Each `$.model.fork`, held until the test settles it. */
   const forks: { prompt: string; resolve: (r: Record<string, unknown>) => void; reject: (e: Error) => void }[] = []
   /** Each `$.command.run`, held until the test settles it. */
@@ -243,6 +258,17 @@ export function harness(
   const queries: Record<string, unknown>[] = []
   /** How many times the mod read `$.agent.list()`. */
   let agentLists = 0
+  /** The host's `$.state` versions for this plugin's own keys: each write moves its key's. */
+  const stateVersions = new Map<string, number>()
+  /** Each POST /holder the mod made on the child's private route, in order, with what `$.state` kept when it was made. */
+  const holderPosts: {
+    socketPath?: string
+    nonce?: string
+    body: Record<string, unknown>
+    kept: unknown
+    answer: (status: number, body?: unknown) => void
+    fail: () => void
+  }[] = []
   const $ = {
     plugin: { name: PLUGIN, root: '/plug' },
     env: { get: async (name: string) => options.env?.[name] },
@@ -377,6 +403,20 @@ export function harness(
             polls.push({ url, socketPath: init.socketPath, respond, fail: () => reject(new Error('refused')) })
             return
           }
+          if (url === 'http://holder/holder') {
+            const body = JSON.parse(init.body ?? '{}') as Record<string, unknown>
+            const answer = (status: number, answered?: unknown) => resolve({ status, ok: status < 300, headers: {}, text: answered === undefined ? '' : JSON.stringify(answered) })
+            const fail = () => reject(new Error('connect ENOENT'))
+            holderPosts.push({ socketPath: init.socketPath, nonce: init.headers?.['x-bridge-nonce'], body, kept: structuredClone(sessionState.get('holder')), answer, fail })
+            const given = options.holderAnswer?.(body)
+            const how = given ?? (body.kind === 'wait' ? 'hold' : { status: 200, body: body.kind === 'ready' ? { ok: true, lane: 'match', epoch: null } : body.kind === 'armed' ? { ok: true, sent: 1, waiting: 0 } : { ok: true } })
+            if (how === 'fail') {
+              fail()
+            } else if (how !== 'hold') {
+              answer(how.status, how.body)
+            }
+            return
+          }
           if (url.startsWith('http://bridge/rows?')) {
             const q: Record<string, string> = Object.fromEntries(url.slice(url.indexOf('?') + 1).split('&').map((kv) => kv.split('=').map(decodeURIComponent)))
             rowReads.push({ loop: q.loop ?? null, after: q.after ?? null, socketPath: init.socketPath })
@@ -422,7 +462,10 @@ export function harness(
     state: {
       get: async (ref: { plugin: string; key: string }) => {
         if (ref.plugin === PLUGIN) {
-          return sessionState.has(ref.key) ? { value: sessionState.get(ref.key), version: 1 } : { value: undefined, version: 0 }
+          if (options.stateFault?.('get', ref.key) === 'fail') {
+            throw new Error('$.state.get: the host did not answer')
+          }
+          return sessionState.has(ref.key) ? { value: sessionState.get(ref.key), version: stateVersions.get(ref.key) ?? 1 } : { value: undefined, version: 0 }
         }
         guardReads.push({ op: 'state.get', args: ref })
         await readGate
@@ -431,9 +474,18 @@ export function harness(
         }
         return ref.plugin === 'devcloud' && ref.key === 'secrets-guard' ? marker : { value: undefined, version: 0 }
       },
-      set: async (ref: { plugin: string; key: string }, value: unknown) => {
+      set: async (ref: { plugin: string; key: string }, value: unknown, options?: { ifVersion?: number }) => {
+        if (ref.plugin === PLUGIN && fault?.('set', ref.key) === 'fail') {
+          throw new Error('$.state.set: the host did not answer')
+        }
+        // As the host: a write naming a version that no longer stands is refused.
+        const at = sessionState.has(ref.key) ? (stateVersions.get(ref.key) ?? 1) : 0
+        if (options?.ifVersion !== undefined && options.ifVersion !== at) {
+          return { isSet: false, version: at }
+        }
         sessionState.set(ref.key, value)
-        return { isSet: true, version: 1 }
+        stateVersions.set(ref.key, at + 1)
+        return { isSet: true, version: at + 1 }
       },
     },
     settings: {
@@ -537,8 +589,15 @@ export function harness(
     }
     throw new Error(`no answer to ${JSON.stringify(body)}`)
   }
-  const turn = async (turnId: string, agentId?: string) =>
-    hook('turn.start', { turnId })(engine, { turnId, text: 'go', ...(agentId !== undefined && { agentId }) }, async () => ({ turnId }))
+  const turn = async (turnId: string, agentId?: string, text = 'go') =>
+    hook('turn.start', { turnId })(engine, { turnId, text, ...(agentId !== undefined && { agentId }) }, async () => ({ turnId }))
+  /** A prompt submitted, through the prompt.submit hooks, stamped with the engine's origin `kind` (`turnId`: the turn running when it came). */
+  const submit = async (text: string, kind: string, extra: { turnId?: string; entered?: Record<string, unknown> } = {}) => {
+    const e = { text, wait: false, origin: { kind }, ...(extra.turnId !== undefined && { turnId: extra.turnId }) }
+    const entered = await (hook('prompt.submit', { text })(engine, e, async () => extra.entered ?? { text }) as Promise<unknown>)
+    await settle()
+    return entered
+  }
   const complete = async (turnId: string, reason = 'answer', agentId?: string) => {
     await hook('turn.complete', { turnId })(engine, { turnId, answer: '', durationMs: 1, reason, ...(agentId !== undefined && { agentId }) }, async () => ({ text: '' }))
     await settle()
@@ -669,8 +728,12 @@ export function harness(
     requests,
     command,
     turn,
+    submit,
     complete,
     posts,
+    holderPosts,
+    /** The private route's posts of these kinds, their bodies, in the order made. */
+    holderBodies: (...kinds: string[]) => holderPosts.map((p) => p.body).filter((b) => kinds.length === 0 || kinds.includes(String(b.kind))),
     timers,
     logs,
     toasts,

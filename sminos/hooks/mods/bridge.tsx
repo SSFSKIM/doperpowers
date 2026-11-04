@@ -1,4 +1,4 @@
-import type { EngineInterface, HttpResponse, On, PermissionRequestDecision, SessionStartInput } from 'claude-code'
+import type { EngineInterface, HookStream, HttpResponse, On, PermissionRequestDecision, SessionStartInput, TurnStepChunk, TurnStepResult } from 'claude-code'
 // devcloud's contract, for the read of its guard's marker (erased at run time).
 import type {} from '../../../devcloud/types/devcloud'
 
@@ -34,6 +34,7 @@ import { endOrphanedSideQuestions, sideQuestion } from './bridge-btw'
 import { askTurnEnded, endOrphanedAsks, forkQuestion, noteMainResponse } from './bridge-ask'
 import { engineError, forNotes, notifiedStops, stopAgent, tellAgent } from './bridge-agent-ops'
 import { acceptMedia, claimMedia, mediaLoaded, mediaPassedOn, mediaTurnEnded, mediaTurnStarted, observeMediaResult } from './bridge-media'
+import { abandonedStep, admission, enterStep, holderLoaded, isHolderLoaded, leaveStep, mainTurnOver, mainTurnStarted, onHolderLine, promptRow, promptSettled, promptSubmitted, stoppedStep, waitAtFence } from './bridge-holder'
 
 export { OFF_LINE, ON_LINE } from './bridge-place'
 export { BLOCK_TAIL, INTERRUPT_HOLD_MS, TEXT_CAP, WAKE_LINE, capped, resetBridge } from './bridge-state'
@@ -88,7 +89,11 @@ export { FOLLOW_REASON, PANEL_REASON, SELF_REASON, UNKNOWN_REASON, UNMEASURED_RE
  * every control op is refused `lane-b`, nothing is raised, `turn.step`
  * rewrites nothing, and the stream goes on. The mod reads the marker at its
  * session start and observes until its child's verdict on the parent check
- * (its hello's `lane`, or a later `lane` line) says `mismatch`.
+ * (its hello's `lane`, or a later `lane` line) says `mismatch`. Where the
+ * engine host serves its holder socket, the observer takes part in its
+ * release fence (O12 M4a, bridge-holder.tsx): the child relays the gate's
+ * frames as `holder` lines, and every main-loop request waits while a fence
+ * the host armed has not let it go.
  *
  * Code that takes `$` stays in this file: the hooks, the session start, the
  * child and the session it serves, control, the wait for a decision, and the
@@ -114,7 +119,11 @@ export { FOLLOW_REASON, PANEL_REASON, SELF_REASON, UNKNOWN_REASON, UNMEASURED_RE
  *   desk shows;
  * - bridge-btw.tsx, bridge-agent-ops.tsx and bridge-media.tsx (which take
  *   `$`): the desk's side question, one subagent stopped or told, and the
- *   desk's images and PDFs read into the conversation.
+ *   desk's images and PDFs read into the conversation;
+ * - bridge-holder.tsx (which takes `$`): a lane B observer's part in MAWS's
+ *   release fence (O12 M4a): the gate's arms installed and acknowledged,
+ *   each main-loop request asked of the host before it goes, and the origin
+ *   of each main turn.
  *
  * The desk's ops (spec 2026-10-22-desk-control-surface-design.md): `read`
  * answers from `$` at once (`status`, `catalog`, and bridge-reads.tsx's
@@ -124,6 +133,9 @@ export { FOLLOW_REASON, PANEL_REASON, SELF_REASON, UNKNOWN_REASON, UNMEASURED_RE
  * read back from its rows), one desk command at a time. What the bridge can
  * do (`capabilities`) every resync carries to the child.
  */
+
+/** One model request's stream, as a hook yields it. */
+type TurnStepStream = HookStream<TurnStepChunk, TurnStepResult>
 
 export const HEARTBEAT_MS = 5_000
 const RESPAWN_MAX_MS = 60_000
@@ -1500,6 +1512,15 @@ function onLine($: EngineInterface, generation: number, line: string) {
     return
   }
   const msg = parsed as Record<string, unknown>
+  if (msg.op === 'holder') {
+    // The gate's relay (O12 M4a): the child's own lines carry no id. One that
+    // does is a client's command the child forwarded (it refuses `holder`
+    // through /command), never the gate's, and is not run either.
+    if (msg.id === undefined) {
+      onHolderLine($, msg)
+    }
+    return
+  }
   if (msg.op === 'hello' && typeof msg.socket === 'string') {
     state.socket = msg.socket
     state.nonce = typeof msg.nonce === 'string' ? msg.nonce : undefined
@@ -1807,6 +1828,11 @@ export async function bridgeStart($: EngineInterface, e: SessionStartInput) {
     }
   }
   await takeLaunch($)
+  // The gate's fences a module before this one held (a reload), held again
+  // before the first child, whose relay finds them (O12 M4a); one it cannot
+  // read is said, and held for the production lease (C3).
+  state.log = (text) => $.ui.log(text, { to: 'debug' })
+  await holderLoaded($)
   // The mode the session last reported to the module before this one (a
   // reload): said until the session reports again.
   if (state.permissionMode === undefined) {
@@ -1922,6 +1948,11 @@ export async function bridgeStart($: EngineInterface, e: SessionStartInput) {
 
 const RESERVED = new Set(['tool', 'tool_use_id', 'consent', 'agentId', 'requestMeta'])
 
+/** A row's text as a prompt's: its text blocks, joined by newlines. */
+function rowText(content: readonly unknown[]): string {
+  return content.flatMap((b) => (typeof b === 'object' && b !== null && (b as { type?: unknown }).type === 'text' && typeof (b as { text?: unknown }).text === 'string' ? [(b as { text: string }).text] : [])).join('\n')
+}
+
 /**
  * A result's text as the desk draws it. Core sets `text` (the record as the
  * model reads it); a hook's own `{ result }` has none, and the record it
@@ -1996,6 +2027,9 @@ export function registerBridge(on: On) {
     if (e.agentId === undefined) {
       state.mainTurn = e.turnId
       state.isTurnUnknown = false
+      if (state.isLaneMarked) {
+        mainTurnStarted(e.turnId, e.text)
+      }
       mediaTurnStarted()
       if (state.deliveredRows.length > 0) {
         void recheckDeliveries($, e.turnId)
@@ -2012,10 +2046,27 @@ export function registerBridge(on: On) {
     return next(e)
   })
 
+  // A prompt entering the main loop, by the origin the engine stamped on it
+  // where it was queued (O12 M4a): the turn it starts is told to the gate as
+  // that origin (bridge-holder.tsx); one the engine delivers into a running
+  // turn (`turnId`) starts none. Seen before `next`, since the turn may start
+  // before the submission settles. Observed only.
+  on('prompt.submit', { text: /^/ }, async (_, e, next) => {
+    const seen = state.isLaneMarked ? promptSubmitted(e.origin.kind, e.text, e.turnId) : undefined
+    const entered = await next(e)
+    if (seen !== undefined) {
+      promptSettled(seen, entered)
+    }
+    return entered
+  }).catch((_, e, next) => next(e))
+
   on('turn.complete', { turnId: /^/ }, async ($, e, next) => {
     const result = await next(e)
     if (e.agentId === undefined && state.mainTurn === e.turnId) {
       state.mainTurn = undefined
+    }
+    if (e.agentId === undefined) {
+      mainTurnOver(e.turnId)
     }
     if (e.agentId === undefined && state.mainTurn === undefined) {
       state.isTurnUnknown = false
@@ -2063,76 +2114,111 @@ export function registerBridge(on: On) {
       recoverMainTurn(e.turnId)
     }
     releaseStepEnd(loopKey(e.agentId))
-    // Only a step with an upload pending waits on anything here. An observer
-    // claims none, and rewrites no model or effort: those are MAWS's.
-    const isControlled = isMain && !isObserver()
-    const synthetic = isControlled && state.media.some((a) => a.state === 'pending')
-      ? await claimMedia($, e).catch((error: unknown) => {
-          $.ui.log(`bridge: no upload claimed: ${message(error)}`, { to: 'debug' })
-          return undefined
-        })
-      : undefined
-    // The model chosen through the bridge is the main loop's: a subagent runs
-    // on what its definition or its caller chose.
-    const o = isControlled ? state.override : undefined
-    const input = o === undefined ? e : { ...e, ...(o.model !== null && { model: o.model }), ...(o.effort !== null && { effort: o.effort }) }
-    if (isShown) {
-      emit({ type: 'step', phase: 'start', ...tag, model: input.model, effort: input.effort ?? null, messageCount: e.messageCount })
-    }
-    if (isMain) {
-      state.steps++
-    }
-    // Only a step that makes a request reads what was appended before it.
-    if (isMain && synthetic === undefined) {
-      // A request after the turn's first carries every row of its turn
-      // appended before it. The first carries the conversation as the turn
-      // began: a row appended between turn.start and it is not in it (live,
-      // 2.1.302), so that row waits for the second request, or the wake.
-      for (const s of state.steers) {
-        if (e.index > 0 && s.isAppended && s.turnId === e.turnId) {
-          s.isRead = true
-        }
-      }
-      // A wake's rows were in before it was given: any later request carries
-      // them, but the first of a turn that was already running.
-      for (const w of state.wakes) {
-        if (e.index > 0 || e.turnId !== w.turnAt) {
-          w.isRead = true
-        }
-      }
-      mediaPassedOn($)
-    }
-    let chunkIndex = 0
-    let stopReason: unknown = null
-    let usage: unknown = null
-    /** This main-loop response's tool calls and text blocks, for a manager query's tail once it completes (bridge-ask.tsx). */
-    const toolUseIds: string[] = []
-    const texts: string[] = []
+    // A main-loop request is the gate's from here (O12 M4a): an arm that comes
+    // while it enters, waits or runs tells the host of its turn first. A
+    // subagent's never stands for the main loop.
+    const fenced = isMain ? enterStep(e.turnId) : undefined
     try {
-      const stream = synthetic ?? next(input)
-      for await (const chunk of stream) {
-        if (isShown && chunk.kind !== 'engine') {
-          emit({ type: 'chunk', ...tag, chunkIndex: chunkIndex++, chunk })
-        }
-        if (isMain && chunk.kind === 'tool') {
-          toolUseIds.push(chunk.id)
-        } else if (isMain && chunk.kind === 'text') {
-          texts[chunk.index] = (texts[chunk.index] ?? '') + chunk.text
-        } else if (isMain && chunk.kind === 'stop' && chunk.usage !== null) {
-          noteMainResponse({ toolUseIds, texts: texts.filter((t) => typeof t === 'string') })
-        }
-        yield chunk
+      // The fences a module before this one held, before any request passes.
+      if (fenced !== undefined && !isHolderLoaded()) {
+        await holderLoaded($)
       }
-      const result = await stream.result
-      stopReason = result.stopReason
-      usage = result.usage
-      return result
-    } finally {
-      if (isMain) {
-        state.steps--
+      // Only a step with an upload pending waits on anything else here. An
+      // observer claims none, and rewrites no model or effort: those are MAWS's.
+      const isControlled = isMain && !isObserver()
+      const synthetic = isControlled && state.media.some((a) => a.state === 'pending')
+        ? await claimMedia($, e).catch((error: unknown) => {
+            $.ui.log(`bridge: no upload claimed: ${message(error)}`, { to: 'debug' })
+            return undefined
+          })
+        : undefined
+      // A request goes only once every fence the gate armed lets it go (its
+      // `proceed`, its disarm, its lease and margin run out), and the last of
+      // these reads has no await between it and `next`; a `stop` makes none.
+      let held: TurnStepStream | undefined
+      if (fenced !== undefined && synthetic === undefined) {
+        for (;;) {
+          const verdict = admission(fenced)
+          if (verdict === 'clear') {
+            break
+          }
+          if (verdict !== 'wait') {
+            held = stoppedStep(e, verdict.stop)
+            break
+          }
+          if (next.signal?.aborted) {
+            held = abandonedStep(e)
+            break
+          }
+          await waitAtFence($, fenced, next.signal)
+        }
       }
+      // The model chosen through the bridge is the main loop's: a subagent runs
+      // on what its definition or its caller chose.
+      const o = isControlled ? state.override : undefined
+      const input = o === undefined ? e : { ...e, ...(o.model !== null && { model: o.model }), ...(o.effort !== null && { effort: o.effort }) }
       if (isShown) {
-        endStep(loopKey(e.agentId), { type: 'step', phase: 'end', ...tag, stopReason, usage })
+        emit({ type: 'step', phase: 'start', ...tag, model: input.model, effort: input.effort ?? null, messageCount: e.messageCount })
+      }
+      if (isMain) {
+        state.steps++
+      }
+      // Only a step that makes a request reads what was appended before it.
+      if (isMain && synthetic === undefined && held === undefined) {
+        // A request after the turn's first carries every row of its turn
+        // appended before it. The first carries the conversation as the turn
+        // began: a row appended between turn.start and it is not in it (live,
+        // 2.1.302), so that row waits for the second request, or the wake.
+        for (const s of state.steers) {
+          if (e.index > 0 && s.isAppended && s.turnId === e.turnId) {
+            s.isRead = true
+          }
+        }
+        // A wake's rows were in before it was given: any later request carries
+        // them, but the first of a turn that was already running.
+        for (const w of state.wakes) {
+          if (e.index > 0 || e.turnId !== w.turnAt) {
+            w.isRead = true
+          }
+        }
+        mediaPassedOn($)
+      }
+      let chunkIndex = 0
+      let stopReason: unknown = null
+      let usage: unknown = null
+      /** This main-loop response's tool calls and text blocks, for a manager query's tail once it completes (bridge-ask.tsx). */
+      const toolUseIds: string[] = []
+      const texts: string[] = []
+      try {
+        const stream = held ?? synthetic ?? next(input)
+        for await (const chunk of stream) {
+          if (isShown && chunk.kind !== 'engine') {
+            emit({ type: 'chunk', ...tag, chunkIndex: chunkIndex++, chunk })
+          }
+          if (isMain && chunk.kind === 'tool') {
+            toolUseIds.push(chunk.id)
+          } else if (isMain && chunk.kind === 'text') {
+            texts[chunk.index] = (texts[chunk.index] ?? '') + chunk.text
+          } else if (isMain && chunk.kind === 'stop' && chunk.usage !== null) {
+            noteMainResponse({ toolUseIds, texts: texts.filter((t) => typeof t === 'string') })
+          }
+          yield chunk
+        }
+        const result = await stream.result
+        stopReason = result.stopReason
+        usage = result.usage
+        return result
+      } finally {
+        if (isMain) {
+          state.steps--
+        }
+        if (isShown) {
+          endStep(loopKey(e.agentId), { type: 'step', phase: 'end', ...tag, stopReason, usage })
+        }
+      }
+    } finally {
+      if (fenced !== undefined) {
+        leaveStep(fenced)
       }
     }
   })
@@ -2384,6 +2470,11 @@ export function registerBridge(on: On) {
       announceRow(e.door, e.door === 'note' ? stored.message : e.message, stored.uuid, agentId)
       observeRow(e.door, e.message, stored.uuid)
       if (agentId === null) {
+        // A prompt's own row and its stamp (O12 M4a): the same prompt as one
+        // seen at prompt.submit, or one seen only here.
+        if (state.isLaneMarked && (e.door === 'prompt' || e.door === 'delivery')) {
+          promptRow(e.origin.kind, rowText(e.message.content), stored.uuid)
+        }
         exportRow(e.door, stored.message, stored.uuid, e.origin)
         enteredRow(e.door, stored.message, stored.uuid, e.origin)
         // As the engine wrote it: a hook beneath may empty a command's rows (doperpowers' reload).

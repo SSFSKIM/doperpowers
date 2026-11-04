@@ -127,6 +127,16 @@ refuse a body naming another (409, code `launch`) before anything reaches
 the mod. A remote desk action names the launch it was sealed for, so one
 sealed before a relaunch is refused here, at the effect; a body naming none
 is a local caller's.
+
+In a marked session whose launch names MAWS_HOLDER_SOCKET, the child is also
+the session's observer on the engine host's holder socket (O12 M4a, OX10):
+sminos_holder.py's gate client, with a private route of its own (POST
+/holder on another socket) and stdout lines of its own (`{"op": "holder",
+...}`), started before anything else here, so neither waits on this child's
+ordinary startup (the seed's read), its server, its lock or its exports. Its
+first line, the bootstrap, precedes the ordinary hello; its docstring is the
+contract the mod consumes. Every stdout line, the holder's and this
+module's, is written whole under one lock (write_line).
 """
 
 import collections
@@ -147,6 +157,7 @@ from http.server import BaseHTTPRequestHandler
 from urllib.parse import parse_qs, unquote, urlparse
 
 import sminos as S
+import sminos_holder as H
 
 PROTOCOL = 1
 SOCKET_PATH_MAX = 103          # sun_path on macOS (104 with the NUL); Linux allows 107
@@ -177,7 +188,7 @@ NONCE_HEADER = "X-Bridge-Nonce"       # this child's, from its hello: a post wit
 QUESTION_TOOLS = ("AskUserQuestion",)
 # Who answered, as a client may not claim it: the terminal and the bridge settle on their own.
 RESERVED_BY = ("terminal", "bridge")
-CHILD_LINES = ("hello", "lane")   # what only the child says to the mod: never a client's command
+CHILD_LINES = ("hello", "lane", "holder")   # what only the child says to the mod: never a client's command
 LANE_MARK = "MAWS_LANE"        # MAWS's lane B marker, beside SMNS_MEMBER (sminos.MEMBER_MARK)
 LANE_B = "lane-b"              # an observer's refusal's code
 LAUNCH = "launch"              # a command or decision sealed for another launch of the session: its refusal's code
@@ -187,6 +198,18 @@ LANE_RETRY_S, LANE_RETRY_FOR_S, LANE_RETRY_LATER_S = 2, 60, 30   # an unresolved
 # The rules a scoped allow adds at most (DX5's decision POST): the bound of
 # the suggestions a request carries, from which the daemon resolves them.
 PERMISSIONS_MAX = 8
+
+
+STDOUT = threading.Lock()   # one line at a time on fd 1, whoever writes it (the bridge, the holder's relay)
+
+
+def write_line(obj):
+    """One JSON line on stdout, whole, under the lock every writer shares.
+    Raises OSError once stdout is gone (the mod with it)."""
+    data = (json.dumps(obj) + "\n").encode()
+    with STDOUT:
+        while data:
+            data = data[os.write(1, data):]
 
 
 def _ready_wait():
@@ -477,6 +500,63 @@ def lane_verdict(session, session_pid):
     return "mismatch"
 
 
+class LaneVerdict:
+    """The marked session's verdict, resolved once on a thread of its own
+    from the child's start: a sticky one its module holds (`--lane`) at
+    once, else lane_verdict's, an `unresolved` one retried every
+    LANE_RETRY_S for LANE_RETRY_FOR_S, then every LANE_RETRY_LATER_S, until
+    it resolves. Nothing of the child's ordinary startup (its kept state,
+    the seed, the hello) stands before it, so the gate client (O12 M4a)
+    learns `match` whatever that startup waits on. Each listener hears the
+    verdict once known and at its one change, from `unresolved`."""
+
+    def __init__(self, session, session_pid, given=None):
+        self.session = session
+        self.session_pid = session_pid
+        self.value = given if given in ("match", "mismatch") else None
+        self.cond = threading.Condition()
+        self.listeners = []
+
+    def listen(self, fn):
+        with self.cond:
+            self.listeners.append(fn)
+            value = self.value
+        if value is not None:
+            fn(value)
+
+    def _set(self, value):
+        with self.cond:
+            if value == self.value:
+                return
+            self.value = value
+            listeners = list(self.listeners)
+            self.cond.notify_all()
+        for fn in listeners:
+            fn(value)
+
+    def run(self, stop):
+        started = time.monotonic()
+        while self.value in (None, "unresolved"):
+            self._set(lane_verdict(self.session, self.session_pid))
+            if self.value != "unresolved":
+                return
+            wait = LANE_RETRY_S if time.monotonic() - started < LANE_RETRY_FOR_S else LANE_RETRY_LATER_S
+            if stop.wait(wait):
+                return
+
+    def first(self):
+        """The verdict once its first observation is made."""
+        with self.cond:
+            self.cond.wait_for(lambda: self.value is not None)
+            return self.value
+
+    def resolved(self, seconds):
+        """The verdict once it is match or mismatch, or None after `seconds`."""
+        with self.cond:
+            self.cond.wait_for(lambda: self.value in ("match", "mismatch"), seconds)
+            return self.value if self.value in ("match", "mismatch") else None
+
+
 def process_started(pid):
     """When a live process started, in epoch seconds (ps's whole second),
     or None when that cannot be read."""
@@ -738,7 +818,6 @@ class Bridge:
         self.started = time.time()
         self.lock = threading.Lock()
         self.changed = threading.Condition(self.lock)   # a request was decided, settled, or closed
-        self.out_lock = threading.Lock()
         self.subscribers = set()
         self.pending = {}        # request id → {"raised", "decided", "handed", "closed", "saw_waiting"}
         self.settled = collections.OrderedDict()   # request id → its settlement, the last SETTLED_KEPT
@@ -761,6 +840,9 @@ class Bridge:
         self.waiters = {}        # command id → [threading.Event, result event]
         self.rpc_of = {}         # command id → the nonce of the desk RPC it carries (`rpc`), until answered or ended
         self.closing = threading.Event()
+        # The session's observer on the engine host's holder socket (O12
+        # M4a), when serve() started one: told the verdict, read for /status.
+        self.holder = None
         self.kept = load_kept(session)
         self.saved = self.kept    # what the file holds: kept is written until it is
         # A command a child before this one carried, answered `queued` and
@@ -822,27 +904,30 @@ class Bridge:
         marked one not yet known otherwise): no client decides for it."""
         return self.lane is not None and self.lane != "mismatch"
 
-    def settle_lane(self, session_pid):
-        """Retries an unresolved verdict until it resolves, saying it to the
-        mod on a line of its own; and relays the launch's lane to the
-        session's record until the record holds it (a record the hook writes
-        after this child's hello). Never a lane for an unresolved verdict."""
+    def settle_lane(self, verdict):
+        """Says an unresolved verdict to the mod on a line of its own once
+        its resolver (LaneVerdict) resolves it; and relays the launch's lane
+        to the session's record until the record holds it (a record the hook
+        writes after this child's hello): A for an unmarked session (no
+        verdict). Never a lane for an unresolved verdict."""
         started = time.monotonic()
         relayed = False
         while True:
-            if self.lane == "unresolved":
-                verdict = lane_verdict(self.session, session_pid)
-                if verdict != "unresolved":
-                    self.lane = verdict
-                    try:
-                        self.emit({"op": "lane", "lane": verdict})
-                    except OSError:
-                        return
-            if self.lane != "unresolved":
-                relayed = relayed or relay_controller(self.session, "B" if self.lane == "match" else "A")
-                if relayed:
-                    return
             wait = LANE_RETRY_S if time.monotonic() - started < LANE_RETRY_FOR_S else LANE_RETRY_LATER_S
+            if self.lane == "unresolved":
+                resolved = verdict.resolved(wait)
+                if self.closing.is_set():
+                    return
+                if resolved is None:
+                    continue
+                self.lane = resolved
+                try:
+                    self.emit({"op": "lane", "lane": resolved})
+                except OSError:
+                    return
+            relayed = relayed or relay_controller(self.session, "B" if self.lane == "match" else "A")
+            if relayed:
+                return
             if self.closing.wait(wait):
                 return
 
@@ -1417,6 +1502,7 @@ class Bridge:
                     **({"lane": self.lane} if self.lane is not None else {}),
                     **({"launch": self.launch} if self.launch is not None else {}),
                     **({"capabilities": self.capabilities} if self.capabilities is not None else {}),
+                    **({"holder": self.holder.status()} if self.holder is not None else {}),
                     **self.mode}
 
     def agents_now(self):
@@ -1429,14 +1515,11 @@ class Bridge:
     # -- the mod's input: one line on stdout
 
     def emit(self, obj):
-        data = (json.dumps(obj) + "\n").encode()
-        with self.out_lock:
-            try:
-                while data:
-                    data = data[os.write(1, data):]
-            except OSError:   # the mod is gone: so is the session
-                self.closing.set()
-                raise
+        try:
+            write_line(obj)
+        except OSError:   # the mod is gone: so is the session
+            self.closing.set()
+            raise
 
     def command(self, body, wait_ms):
         refused = self.fenced(body)
@@ -1631,6 +1714,26 @@ def serve(session, lane=None, launch=None):
     d = bridge_dir()
     os.makedirs(d, mode=0o700, exist_ok=True)
     os.chmod(d, 0o700)
+    parent = os.getppid()
+    # A marked session's verdict is resolved from here on, on its own
+    # thread, apart from the startup below (LaneVerdict).
+    stop = threading.Event()
+    verdict = LaneVerdict(session, parent, lane) if is_lane_marked() else None
+    # The observer first (O12 M4a): its route answers and its bootstrap is
+    # said before any of the child's ordinary startup, which it never waits
+    # on. Not for a session its module already knows is not MAWS's own.
+    # One that cannot serve its route leaves the session unobserved, as
+    # before M4a, never without its bridge.
+    holder = None
+    if is_lane_marked() and lane != "mismatch" and H.gate_path():
+        try:
+            holder = H.Holder(session, H.gate_path(), os.path.join(d, "h%d.sock" % os.getpid()), write_line).start()
+        except OSError as err:
+            sys.stderr.write("sminos bridge: holder: no route, so no observer: %s\n" % err)
+    if verdict is not None:
+        if holder is not None:
+            verdict.listen(holder.set_lane)
+        threading.Thread(target=verdict.run, args=(stop,), daemon=True).start()
     tmp = os.path.join(d, ".%s.%d.sock" % (session[:8], os.getpid()))
     try:
         os.unlink(tmp)
@@ -1647,14 +1750,14 @@ def serve(session, lane=None, launch=None):
     os.replace(tmp, path)
     bridge = server.bridge = Bridge(session, path)
     bridge.child = [mine, os.getpid()]
-    parent = os.getppid()
     bridge.presence = presence_path(parent)
     bridge.launch = launch or None
     if is_lane_marked():
         # The process's verdict, when its module holds one (`--lane`): a
         # replacement child after the engine host exited would find the
         # engine re-parented, and its own check would say mismatch.
-        bridge.lane = lane if lane in ("match", "mismatch") else lane_verdict(session, parent)
+        bridge.lane = verdict.first()
+    bridge.holder = holder
 
     def watchdog():
         while not bridge.closing.wait(WATCHDOG_EVERY):
@@ -1682,7 +1785,7 @@ def serve(session, lane=None, launch=None):
                      **({"lane": bridge.lane} if bridge.lane is not None else {}),
                      **({"launch": bridge.launch} if bridge.launch is not None else {})})
         threading.Thread(target=watchdog, daemon=True).start()
-        threading.Thread(target=bridge.settle_lane, args=(parent,), daemon=True).start()
+        threading.Thread(target=bridge.settle_lane, args=(verdict,), daemon=True).start()
         threading.Thread(target=bridge.watch_presence, daemon=True).start()
         threading.Thread(target=bridge.run_exports, daemon=True).start()
         server.serve_forever(poll_interval=0.25)
@@ -1690,6 +1793,9 @@ def serve(session, lane=None, launch=None):
         pass
     finally:
         bridge.closing.set()
+        stop.set()
+        if holder is not None:
+            holder.close()
         try:
             if os.lstat(path).st_ino == mine:
                 os.unlink(path)

@@ -107,8 +107,29 @@ export type LaunchKept = string
  */
 export type ModeKept = { mode: string; at: number; from: string }
 
+/**
+ * `holder`: the lane B observer's state (hooks/mods/bridge-holder.tsx, O12
+ * M4a), the process's for its life. `observerStarted` is written before the
+ * mod first tells its child it is ready, so before the gate's first hello,
+ * and never taken back: a seen observer is not an absent one (O12 M4b reads
+ * it). `fences` are the gate's live fences, each its connection's `epoch`,
+ * the host's `fence`, its latest arm's generation (`armGeneration`, which
+ * moves with every arm of it) and that arm's lease; the module that loads
+ * after a reload holds each before any model request passes, for its lease
+ * plus the heartbeat margin from the load. `owner` is the module instance
+ * that wrote it last: an older instance that finds another's stops writing.
+ * Only sminos writes or reads it.
+ */
+export type HolderKept = {
+  shape: 1
+  owner: string
+  observerStarted: boolean
+  armGenerations: number
+  fences: { epoch: string; fence: number; armGeneration: number; leaseMs: number }[]
+}
+
 declare module 'claude-code' {
   interface PluginState {
-    sminos: { ask: AskSnapshot; btw: string[]; bridgeAsk: BridgeAskKept; media: MediaSnapshot; lane: LaneVerdictKept; launch: LaunchKept; mode: ModeKept }
+    sminos: { ask: AskSnapshot; btw: string[]; bridgeAsk: BridgeAskKept; media: MediaSnapshot; lane: LaneVerdictKept; launch: LaunchKept; mode: ModeKept; holder: HolderKept }
   }
 }

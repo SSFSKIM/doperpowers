@@ -217,6 +217,73 @@ export type ReadbackWatch = {
   done: (readback: Readback) => void
 }
 
+/**
+ * A main turn's origin as the gate's `turn` names it (OX10): what started it,
+ * from the engine's stamp on the prompt that started it (bridge-holder.tsx);
+ * `unknown` when nothing correlates, never an inferred `query`.
+ */
+export type TurnOrigin = 'query' | 'cron' | 'task' | 'peer' | 'unknown'
+/**
+ * A fence the gate armed (O12 M4a), installed when its arm is relayed: the
+ * connection's `epoch` and the host's `fence` number name it (a fence number
+ * alone names nothing across a reconnect); `armGeneration` moves with every
+ * arm of it, first or renewal, so only the latest arm's `timer` (its lease
+ * plus the heartbeat margin, from that arm's receipt) may release it.
+ */
+export type HolderFence = { epoch: string; fence: number; armGeneration: number; leaseMs: number; timer?: Timer }
+/**
+ * The bridge child's private route to the gate (its holder bootstrap line):
+ * where `POST /holder` goes and what it must carry, the child that said it
+ * (`child`, the module's child generation: a later child's relay replaces
+ * it), and the connection the child was last welcomed on.
+ */
+export type HolderRelay = { socket: string; nonce: string; generation: string; pid: number | null; childPid: number | null; child: number; epoch?: string }
+/**
+ * What came of asking the child to write a `turn` (or an `armed`): `written`;
+ * `moot`, the connection it was for gone (409) or the ask malformed, so it
+ * never will be; `failed`, no answer, to be asked again.
+ */
+export type HolderAsked = 'written' | 'moot' | 'failed'
+/**
+ * A main-loop model request while it is entering, waiting at the fence or
+ * inside the model step: the `turn` asked of each fence it waits on (by
+ * fence key; one that failed is dropped, to be asked again), and the host's
+ * answer to each (`stop` with its reason, else proceed).
+ */
+export type FencedStep = { turnId: string; turns: Map<string, Promise<HolderAsked>>; answers: Map<string, { stop?: string }>; wake?: () => void }
+/**
+ * A prompt seen entering the main loop, by its engine-stamped origin, at its
+ * submission or as its row: `seq` orders it among the turns' starts, and
+ * `isTaken` once a turn has it, the one it started or the one running when
+ * it came (a delivery into that turn, which starts none).
+ */
+export type PromptSeen = { kind: string; text: string; uuid?: string; seq: number; isTaken: boolean }
+/** The observer's state (bridge-holder.tsx): what a module keeps of the gate, reloaded from `$.state`. */
+export type HolderState = {
+  /** This module instance's mark on what it keeps, for diagnosis: a reload's module writes its own. */
+  owner: string
+  load?: Promise<void>
+  /** The kept state restored (or none to restore: no gate): until then every main request waits. */
+  isLoaded: boolean
+  loaded: Promise<void>
+  markLoaded: () => void
+  /** The process committed to the gate (O12 M4a): kept before its first ready, never taken back. */
+  observerStarted: boolean
+  armGenerations: number
+  fences: Map<string, HolderFence>
+  relay?: HolderRelay
+  /** The acknowledgements, one after another in the order the arms came (R1). */
+  acks: Promise<void>
+  /** The writes of the kept state, in order. */
+  writes: Promise<boolean>
+  step?: FencedStep
+  prompts: PromptSeen[]
+  /** Each main turn running, by id: its text at its start, where it started among the prompts seen (`seq`), and its origin once correlated. */
+  turns: Map<string, { text: string; seq: number; origin?: TurnOrigin }>
+  /** Orders prompts seen and turns started. */
+  seq: number
+}
+
 export type BridgeState = {
   /**
    * The calls that outlive a hook, made in session.start: its `$` lives as
@@ -485,6 +552,27 @@ export type BridgeState = {
   mediaWake: { armed?: object; isSubmitted: boolean }
   /** Whether the main turn's state is still unknown (bridge.tsx): a wake waits while it is. */
   isTurnStillUnknown?: () => Promise<boolean>
+  /** The lane B observer's fences and the origins of main turns (O12 M4a, bridge-holder.tsx). */
+  holder: HolderState
+}
+
+const freshHolder = (): HolderState => {
+  let markLoaded = () => undefined as void
+  const loaded = new Promise<void>((resolve) => (markLoaded = resolve))
+  return {
+    owner: Array.from(crypto.getRandomValues(new Uint8Array(8)), (b) => b.toString(16).padStart(2, '0')).join(''),
+    isLoaded: false,
+    loaded,
+    markLoaded,
+    observerStarted: false,
+    armGenerations: 0,
+    fences: new Map(),
+    acks: Promise.resolve(),
+    writes: Promise.resolve(true),
+    prompts: [],
+    turns: new Map(),
+    seq: 0,
+  }
 }
 
 const fresh = (): BridgeState => ({
@@ -553,6 +641,7 @@ const fresh = (): BridgeState => ({
   interrupts: new Map(),
   captured: new Set(),
   foreground: new Map(),
+  holder: freshHolder(),
 })
 
 export let state = fresh()
