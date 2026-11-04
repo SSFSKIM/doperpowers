@@ -434,7 +434,7 @@ export function createReloader(io: ReloadIo, where: ReloadWhere) {
  * remote for its head and, where it moved, updates the marketplace; then,
  * moved or not, installs every plugin the enabled plugins' manifests in the
  * clone depend on that is not installed, whoever updated those plugins, and
- * updates the enabled plugins installed from it at user scope whose version
+ * updates the enabled plugins installed from it at user or managed scope whose version
  * is not their manifest's in the clone, but none whose dependency chain
  * reaches one that did not install. The watch above then reloads every
  * session on the machine, once the batch is done.
@@ -452,7 +452,7 @@ export const ROLLING_MS = 60_000
 /** The fetch's files in its directory: its stamp, its lock, and its mark that it applies a batch. */
 export const fetchFiles = (state: string) => ({ stamp: `${state}/fetch.stamp`, lock: `${state}/fetch.lock`, applying: `${state}/fetch.applying` })
 
-export type Marketplace = { name: string; url: string; ref: string; clone: string }
+export type Marketplace = { name: string; clone: string } & ({ url: string; ref: string } | { url?: undefined; ref?: undefined })
 
 /**
  * The manifests a marketplace's clone holds, by plugin key: each plugin its
@@ -475,7 +475,7 @@ export async function cloneManifests(m: Pick<Marketplace, 'name' | 'clone'>, rea
   return manifests
 }
 
-/** The marketplaces known_marketplaces.json marks `autoUpdate` that come from a git remote, but none whose url or ref git would read as an option. */
+/** The marketplaces known_marketplaces.json marks `autoUpdate` that come from a directory or git remote, but none whose url or ref git would read as an option. */
 export function autoUpdating(source: string): Marketplace[] {
   let data: unknown
   try {
@@ -486,11 +486,15 @@ export function autoUpdating(source: string): Marketplace[] {
   if (!isRecord(data)) {
     return []
   }
-  return Object.entries(data).flatMap(([name, entry]) => {
+  return Object.entries(data).flatMap<Marketplace>(([name, entry]) => {
     if (!isRecord(entry) || entry.autoUpdate !== true || !isRecord(entry.source)) {
       return []
     }
     const { source: kind, repo, url, ref } = entry.source
+    if (kind === 'directory') {
+      const clone = text(entry.source.path)
+      return clone === undefined ? [] : [{ name, clone }]
+    }
     const remote = kind === 'github' && typeof repo === 'string' ? `https://github.com/${repo}.git` : kind === 'git' ? text(url) : undefined
     const clone = text(entry.installLocation)
     const head = text(ref) ?? 'HEAD'
@@ -552,6 +556,12 @@ export function createFetcher(io: FetchIo, where: FetchWhere) {
     for (const m of marketplaces) {
       paths.add(parentOf(m.clone))
       paths.add(`${m.clone}/.git/FETCH_HEAD`)
+      if (m.url === undefined) {
+        // A directory owner can reset in place after its fetch has gone quiet.
+        for (const path of ['', '/.git/index', '/.git/HEAD', '/.git/logs/HEAD', '/.claude-plugin/marketplace.json']) {
+          paths.add(`${m.clone}${path}`)
+        }
+      }
     }
     for (const path of paths) {
       const since = await age(path)
@@ -584,30 +594,36 @@ export function createFetcher(io: FetchIo, where: FetchWhere) {
     if (isMarked) {
       await mark()
     }
-    const remote = await io.run(['git', 'ls-remote', '--', m.url, m.ref], 30_000)
-    const head = remote.exitCode === 0 ? firstLine(remote.stdout).split(/\s/)[0] : undefined
-    if (head === undefined || head === '') {
-      io.log(`reload: ${m.name}: the remote's head could not be read (${firstLine(remote.stderr) || `exit ${remote.exitCode}`})`)
-      return
-    }
-    const local = await io.run(['git', '-C', m.clone, 'rev-parse', 'HEAD'], 10_000)
-    const isMoved = local.exitCode !== 0 || local.stdout.trim() !== head
-    if (isMoved) {
-      // The new clone is what a reload loads its path-sourced plugins from.
-      await mark()
-      const refreshed = await io.run(['claude', 'plugin', 'marketplace', 'update', m.name], PLUGIN_COMMAND_MS)
-      if (refreshed.exitCode !== 0) {
-        io.log(`reload: ${m.name}: the marketplace did not update (${firstLine(refreshed.stderr) || firstLine(refreshed.stdout)})`)
+    // A directory has no remote movement signal. Versionless plugins are
+    // conservatively checked each round; the CLI decides whether to install.
+    // This also retries a failed update without a separately remembered head.
+    let isMoved = true
+    if (m.url !== undefined) {
+      const remote = await io.run(['git', 'ls-remote', '--', m.url, m.ref], 30_000)
+      const head = remote.exitCode === 0 ? firstLine(remote.stdout).split(/\s/)[0] : undefined
+      if (head === undefined || head === '') {
+        io.log(`reload: ${m.name}: the remote's head could not be read (${firstLine(remote.stderr) || `exit ${remote.exitCode}`})`)
         return
       }
+      const local = await io.run(['git', '-C', m.clone, 'rev-parse', 'HEAD'], 10_000)
+      isMoved = local.exitCode !== 0 || local.stdout.trim() !== head
+      if (isMoved) {
+        // The new clone is what a reload loads its path-sourced plugins from.
+        await mark()
+        const refreshed = await io.run(['claude', 'plugin', 'marketplace', 'update', m.name], PLUGIN_COMMAND_MS)
+        if (refreshed.exitCode !== 0) {
+          io.log(`reload: ${m.name}: the marketplace did not update (${firstLine(refreshed.stderr) || firstLine(refreshed.stdout)})`)
+          return
+        }
+      }
     }
-    const keys = Object.keys(installed).filter((key) => key.endsWith(`@${m.name}`) && enabled.has(key) && installed[key]?.some((r) => r.scope === 'user'))
+    const keys = Object.keys(installed).filter((key) => key.endsWith(`@${m.name}`) && enabled.has(key) && isInstalledIn(installed, key))
     const manifests = await cloneManifests(m, io.read)
-    // A plugin whose version the clone does not tell (one from a url) is
-    // updated when the head moved, as every plugin once was.
-    const behind = keys.filter((key) => {
+    const behind = keys.flatMap((key) => {
       const version = manifests.get(key)?.version
-      return version === undefined ? isMoved : installed[key]?.find((r) => r.scope === 'user')?.version !== version
+      return (installed[key] ?? [])
+        .filter((r) => (r.scope === 'user' || r.scope === 'managed') && (version === undefined ? isMoved : r.version !== version))
+        .map((r) => ({ key, scope: r.scope }))
     })
     const dependencies = async (key: string) => manifests.get(key)?.dependencies ?? []
     // Every plugin the chains reach, so a dependency's own new dependency is
@@ -635,7 +651,7 @@ export function createFetcher(io: FetchIo, where: FetchWhere) {
       }
     }
     const held = new Map<string, string>()
-    for (const key of behind) {
+    for (const { key } of behind) {
       const reaches = await missingInChain(key, dependencies, (dependency) => failed.has(dependency))
       if (reaches !== undefined) {
         held.set(key, reaches)
@@ -644,9 +660,9 @@ export function createFetcher(io: FetchIo, where: FetchWhere) {
     if (held.size > 0) {
       io.log(`reload: ${[...held.keys()].join(', ')}: held back, as ${[...new Set(held.values())].join(', ')} did not install`)
     }
-    for (const key of behind.filter((k) => !held.has(k))) {
+    for (const { key, scope } of behind.filter((r) => !held.has(r.key))) {
       await mark()
-      const updated = await io.run(['claude', 'plugin', 'update', key, '--scope', 'user'], PLUGIN_COMMAND_MS)
+      const updated = await io.run(['claude', 'plugin', 'update', key, '--scope', scope], PLUGIN_COMMAND_MS)
       // The outcome is the CLI's last line, after its "Checking for updates…".
       io.log(`reload: ${key}: ${lastLine(updated.stdout) || lastLine(updated.stderr) || `exit ${updated.exitCode}`}`)
     }

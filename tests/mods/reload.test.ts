@@ -431,6 +431,7 @@ describe('autoUpdating', () => {
     expect(autoUpdating(JSON.stringify(known))).toEqual([
       { name: 'dp', url: 'https://github.com/o/dp.git', ref: 'HEAD', clone: '/m/dp' },
       { name: 'pinned', url: 'https://x/p.git', ref: 'stable', clone: '/m/p' },
+      { name: 'local', clone: '/src/l' },
     ])
     expect(autoUpdating('{')).toEqual([])
   })
@@ -452,6 +453,7 @@ describe('autoUpdating', () => {
 function fetchHarness(
   options: {
     remote?: string
+    directory?: boolean
     enabled?: string[]
     /** The clone's files, by path inside it, as JSON; one not named is missing. */
     clone?: Record<string, unknown>
@@ -477,7 +479,7 @@ function fetchHarness(
   /** The mark's age as each git and claude command starts, while it is up. */
   const markAges: number[] = []
   const known = {
-    dp: { source: { source: 'github', repo: 'o/dp' }, installLocation: CLONE, autoUpdate: true },
+    dp: { source: options.directory ? { source: 'directory', path: CLONE } : { source: 'github', repo: 'o/dp' }, installLocation: CLONE, autoUpdate: true },
     ...(options.withElse && { else: { source: { source: 'github', repo: 'o/else' }, installLocation: `${PLUGINS}/marketplaces/else`, autoUpdate: true } }),
   }
   const installed = {
@@ -572,7 +574,7 @@ function fetchHarness(
       const name = key.split('@')[0] as string
       const manifest = options.clone?.[`${name === 'doperpowers' ? '' : `${name}/`}.claude-plugin/plugin.json`] as { version?: string } | undefined
       if (manifest?.version !== undefined) {
-        installed.plugins[key] = [user(name, manifest.version)]
+        installed.plugins[key] = installed.plugins[key]!.map((r) => r.scope === argv[5] ? { ...r, version: manifest.version } : r)
       }
     }
     return ok()
@@ -701,6 +703,68 @@ describe('createFetcher: the plugins behind their clone', () => {
     const h = fetchHarness({ remote: IN_PLACE, clone: cloneOf({ doperpowers: { version: '7.1.0' }, 'to-human': { version: '0.2.0', dependencies: ['tool@else'] } }) })
     await h.fetcher.tick()
     expect(h.claude()).toEqual(['claude plugin install tool@else --scope user', 'claude plugin update to-human@dp --scope user'])
+  })
+})
+
+describe('createFetcher: directory marketplaces and managed installs', () => {
+  test('updates each stale global scope, not a current scope or a project record, without fetching the directory', async () => {
+    const h = fetchHarness({ directory: true, clone: cloneOf({ doperpowers: { version: '7.2.0' }, 'to-human': { version: '0.2.0' } }), records: {
+      'doperpowers@dp': [{ scope: 'managed', version: '7.1.0' }, user('doperpowers', '7.1.0'), { scope: 'project', version: '7.0.0', projectPath: '/r' }],
+      'to-human@dp': [{ scope: 'managed', version: '0.1.0' }, user('to-human', '0.2.0')],
+    } })
+    await h.fetcher.tick()
+    expect(h.claude()).toEqual([
+      'claude plugin update doperpowers@dp --scope managed',
+      'claude plugin update doperpowers@dp --scope user',
+      'claude plugin update to-human@dp --scope managed',
+    ])
+    expect(h.runs.some((r) => r.startsWith('git '))).toBe(false)
+    expect(h.applied.every((r) => r.isMarked)).toBe(true)
+    expect(h.files.has(h.applying)).toBe(false)
+    h.state.clock += FETCH_MS
+    await h.fetcher.tick()
+    expect(h.claude()).toHaveLength(3)
+  })
+
+  test('a directory has no remote movement signal: versionless plugins are checked each round, including retries', async () => {
+    const h = fetchHarness({ directory: true, clone: cloneOf({ doperpowers: {}, 'to-human': { version: '0.1.0' } }) })
+    h.state.failing = 'claude plugin update'
+    await h.fetcher.tick()
+    h.state.failing = ''
+    h.state.clock += FETCH_MS
+    await h.fetcher.tick()
+    expect(h.claude()).toEqual(Array(2).fill('claude plugin update doperpowers@dp --scope user'))
+  })
+
+  test('directory dependencies install first and a failed dependency holds managed updates until a later round', async () => {
+    const h = fetchHarness({ directory: true, clone: cloneOf({ doperpowers: { version: '7.2.0', dependencies: ['sminos'] }, sminos: { version: '1.0.0' } }),
+      enabled: ['doperpowers@dp'], records: { 'doperpowers@dp': [{ scope: 'managed', version: '7.1.0' }] } })
+    h.state.failing = 'claude plugin install'
+    await h.fetcher.tick()
+    expect(h.claude()).toEqual(['claude plugin install sminos@dp --scope user'])
+    h.state.failing = ''
+    h.state.clock += FETCH_MS
+    await h.fetcher.tick()
+    expect(h.claude().slice(1)).toEqual(['claude plugin install sminos@dp --scope user', 'claude plugin update doperpowers@dp --scope managed'])
+  })
+
+  test('an in-place directory reset is a roll even when FETCH_HEAD is old', async () => {
+    for (const path of ['.git/index', '.git/HEAD', '.git/logs/HEAD', '.claude-plugin/marketplace.json']) {
+      const h = fetchHarness({ directory: true })
+      h.files.set(`${h.plugins}/marketplaces/dp/${path}`, h.state.clock)
+      await h.fetcher.tick()
+      expect(h.files.has(h.stamp)).toBe(false)
+      expect(h.claude()).toEqual([])
+      h.state.clock += ROLLING_MS
+      await h.fetcher.tick()
+      expect(h.claude()).toHaveLength(2)
+    }
+  })
+
+  test('managed installs from git marketplaces also update at their own scope', async () => {
+    const h = fetchHarness({ records: { 'doperpowers@dp': [{ scope: 'managed', version: '7.1.0' }] } })
+    await h.fetcher.tick()
+    expect(h.claude()).toContain('claude plugin update doperpowers@dp --scope managed')
   })
 })
 

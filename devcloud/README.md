@@ -311,7 +311,7 @@ boot with the step named, and the next run starts again from the top:
 | 7 | `secrets` | materializes `secrets.toml` |
 | 8 | `home` | as the user: copies the profile's `home/`; the seed as gcloud's account and ADC, the Secret Manager project as gcloud's default; `gh auth setup-git` when gh has a `hosts.yml` |
 | 9 | `apply` | runs the configuration's `sync/apply.py` as the user |
-| 10 | `settings-and-env` | writes `/etc/claude-code/managed-settings.json` and `/etc/devcloud/env`; `TZ` sets the system time zone; seats the plugins from the marketplace copy (`/var/lib/devcloud/marketplaces/doperpowers`, at its declared source's head) and updates every install of the copy's plugins, at user or managed scope, whose version is not the copy's |
+| 10 | `settings-and-env` | writes `/etc/claude-code/managed-settings.json` and `/etc/devcloud/env`; `TZ` sets the system time zone; seats the plugins from the marketplace copy (`/var/lib/devcloud/marketplaces/doperpowers`, at its declared source's head) and marks the directory marketplace `autoUpdate`; the reload mod updates its enabled user and managed installs in interactive sessions |
 | 11 | `services` | installs or starts the services; restarts one whose unit or environment changed; on a persistent host that is a sminos machine, the sminos daemon (below); refuses a sandbox that carries a sminos machine identity |
 | 12 | `projects` | `devenv up` per `DEVCLOUD_PROJECTS` entry, as the user; `skipped` when none (see "Projects") |
 | 13 | `maws` | provisions MAWS's endpoint with the code `DEVCLOUD_MAWS_SECRET` names; `skipped` without it or without `mawsd`, `deferred` while its certificate is not yet listed (see "MAWS's endpoint") |
@@ -436,7 +436,7 @@ the services without a reboot. Untracked files are left alone.
 
 | service | runs | as |
 |---|---|---|
-| `pull-config` | `devcloud pull-config`, every 30 min; with no new configuration commit it still refreshes the marketplace copy and updates the installs to it (`claude plugin update` as the user), which a running session's reload mod then loads | root |
+| `pull-config` | `devcloud pull-config`, every 30 min; with no new configuration commit it still refreshes the marketplace copy so the reload mod in an interactive session can update the installs and reload them, as on a Mac | root |
 | `refresh-secrets` | `devcloud refresh-secrets` (steps 7, 10, 11), every 30 min | root |
 | `refresh-mirrors` | `devcloud refresh-mirrors`: fetches the mirror cache, every 30 min; nothing on a sandbox | root (git as the user) |
 | `session-mirror` | `~/.claude/tools/session-mirror ship`, continuously, when the configuration has it | the user |

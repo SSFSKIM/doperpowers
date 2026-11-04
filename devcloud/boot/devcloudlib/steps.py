@@ -685,7 +685,6 @@ def settings_and_env(r):
         # source the settings it reads declare.
         try:
             seating += "; " + plugins.record(r.user, r.user.env(pairs))
-            seating += "; " + plugins.update(r.user, r.user.env(pairs))
         except StepError as error:
             # A managed declaration the user's record does not match loads none
             # of the marketplace's plugins, the guard among them: back to the
@@ -960,15 +959,14 @@ def pull_config():
 
 def _refresh_marketplace(r):
     """The marketplace copy kept at its source's head between reconciles (a
-    pull with no new configuration commit runs no settings step), and the
-    user's installs moved to the versions it carries."""
+    pull with no new configuration commit runs no settings step). The reload
+    mod updates installs from this auto-updating directory marketplace."""
     if plugins.recorded(r.user):
         try:
             plugins.refresh(r.claude_dir)
         except plugins.Unavailable as error:
             _say(f"marketplace: {proc.KNOWN.scrub(str(error))}")
             return
-        _say(f"marketplace: {proc.KNOWN.scrub(plugins.update(r.user, r.user.env(_read_env(ENV_PATH))))}")
 
 
 def refresh_mirrors():
