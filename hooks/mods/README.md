@@ -680,23 +680,26 @@ is not installed. /plugin install sminos@doperpowers installs it, and the
 reload follows.`), as well as in the debug log.
 
 The module also fetches what the engine fetches only at a session's start.
-For each marketplace `known_marketplaces.json` marks `autoUpdate` (from
-GitHub or a git URL; this machine's are doperpowers, cua, designer and
-ptc-tool), one session per machine at a time, at most every 5 minutes,
-reads the remote's head with `git ls-remote` (an entry whose URL or ref
-begins with `-` is skipped) and compares it with the marketplace clone's.
-Where it moved, it runs `claude plugin marketplace update <name>`. Then,
-moved or not, it reads the clone's `.claude-plugin/marketplace.json` and the
-manifest at each plugin's `source` folder. It runs `claude plugin install
+For each marketplace `known_marketplaces.json` marks `autoUpdate`, one
+session per machine at a time, at most every 5 minutes, checks its plugins.
+For a GitHub or git URL source it reads the remote's head with `git ls-remote`
+(an entry whose URL or ref begins with `-` is skipped) and compares it with
+the marketplace clone's. Where it moved, it runs `claude plugin marketplace
+update <name>`. A directory source is read in place: its owner keeps the
+folder current, so there is no remote query or marketplace update. Then,
+moved or not, it reads `.claude-plugin/marketplace.json` and the manifest at
+each plugin's `source` folder. It runs `claude plugin install
 <dep> --scope user` for every plugin the enabled plugins' dependency chains
 reach that has no user or managed record (a name without `@<marketplace>`
 is of the dependent's), whether or not anything is behind, so a dependency
 another actor's update left out is installed too. Then it runs `claude
-plugin update <key> --scope user` for each enabled plugin installed from
-the marketplace at user scope whose recorded version is not the clone's
-(one the clone holds no manifest of, ci-kit's from a URL, only when the head
-moved), except one whose dependency chain reaches a dependency that did not
-install: that one is held back, with a debug line, and the rest go on, so a
+plugin update <key> --scope <record scope>` for each enabled plugin's user
+and managed records whose version is not the folder's manifest version.
+Project and local records stay untouched. With no manifest version, a git
+marketplace's plugin is checked when the head moved; a directory marketplace's
+is checked every round, leaving the CLI to decide whether to install. A
+plugin whose dependency chain reaches a dependency that did not install is
+held back, with a debug line, and the rest go on, so a
 dependency that will not install on this machine stops only the plugins
 that need it. Each fetch tries the install again. The watch then reloads
 every session on the machine, once: before a marketplace's update and each
@@ -720,15 +723,18 @@ one in (2.1.283 on; earlier engines pulled into the clone). The fetch finds
 work mostly just after the remote moved, which is when the person or the
 merging session runs its own update, or a new session's auto-update runs.
 So the session holding the lock first looks whether either file, a clone's
-parent directory or its `.git/FETCH_HEAD` changed within the last minute; if
-one did, another actor is rolling, and the round is skipped without a
+parent directory or its `.git/FETCH_HEAD` changed within the last minute.
+For a directory source it also checks the folder, catalog, git index, HEAD
+and HEAD reflog, so an in-place reset after a fetch counts too. If one changed,
+another actor is rolling, and the round is skipped without a
 stamp, for a later look to try again. That narrows the race without closing
 it: an actor that starts after the look still runs beside the fetch. The
 stamp is written before the fetch, so a fetch that fails waits out the
 period rather than being retried by every session, and a lock left by a
 session that died is cleared after 30 minutes. A machine with nothing
-new costs one `ls-remote` per marketplace every 5 minutes, about half a
-second each. It never passes `-y`, so a marketplace whose install command
+new costs one `ls-remote` per git marketplace every 5 minutes, about half a
+second each; directory marketplaces read local manifests, and versionless
+plugins also run the CLI's update check. It never passes `-y`, so a marketplace whose install command
 changed waits for a person.
 
 `DOPERPOWERS_AUTORELOAD=off` (or `0`, `false`) leaves a launch on the
