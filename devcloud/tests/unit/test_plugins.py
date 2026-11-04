@@ -198,6 +198,92 @@ class UpdateTest(Base):
         self.assertEqual(note, "updated sminos@doperpowers 1.2.0 to 1.3.0; "
                                "update failed: doperpowers@doperpowers (claude plugin exited 1)")
 
+    def test_updates_both_scopes_of_each_plugin_dependencies_first(self):
+        path = self.claude / "plugins/installed_plugins.json"
+        path.parent.mkdir(exist_ok=True)
+        path.write_text(json.dumps({"version": 2, "plugins": {
+            key: [{"scope": scope, "version": "0.0.1"} for scope in ("user", "managed")]
+            for key in ("to-human@doperpowers", "sminos@doperpowers")}}))
+        calls = []
+        plugins.update(self.user, {}, copy=self.copy,
+                       run=lambda argv, **kw: calls.append((argv[3], argv[-1])))
+        self.assertEqual(calls, [("sminos@doperpowers", "user"), ("sminos@doperpowers", "managed"),
+                                 ("to-human@doperpowers", "user"), ("to-human@doperpowers", "managed")])
+
+    def test_catalog_name_identifies_install_and_manifest_version_wins(self):
+        manifest = self.copy / "sminos/.claude-plugin/plugin.json"
+        manifest.write_text(json.dumps({"name": "different-name", "version": "1.4.0"}))
+        catalog = self.copy / ".claude-plugin/marketplace.json"
+        catalog.write_text(json.dumps({"plugins": [{"name": "sminos", "source": "./sminos", "version": "1.3.0"}]}))
+        self.installed({"sminos@doperpowers": ("managed", "1.2.0")})
+        self.assertEqual(plugins.outdated(self.user, self.copy), [("sminos@doperpowers", "managed", "1.2.0", "1.4.0")])
+        manifest.write_text(json.dumps({"name": "different-name"}))
+        self.assertEqual(plugins.versions(self.copy), {"sminos": ("1.3.0", [])})
+
+    def test_catalog_names_must_be_plain_plugin_names(self):
+        catalog = self.copy / ".claude-plugin/marketplace.json"
+        for name in (None, "", "--help", "sminos@other", "../sminos", "two words", 7):
+            with self.subTest(name=name):
+                catalog.write_text(json.dumps({"plugins": [{"name": name, "source": "./sminos"}]}))
+                self.assertEqual(plugins.versions(self.copy), {})
+
+    def test_invalid_manifests_are_skipped_without_blocking_valid_updates(self):
+        manifest = self.copy / "sminos/.claude-plugin/plugin.json"
+        self.installed({"sminos@doperpowers": ("user", "1.2.0"), "doperpowers@doperpowers": ("user", "7.1.0")})
+        for data in ([], None, 7, {"name": "sminos", "version": 7},
+                     {"name": "sminos", "version": ""},
+                     *({"name": "sminos", "version": "1.3.0", "dependencies": deps}
+                       for deps in (7, "doperpowers", {}, [7], None))):
+            with self.subTest(manifest=data):
+                manifest.write_text(json.dumps(data))
+                calls = []
+                note = plugins.update(self.user, {}, copy=self.copy, run=lambda argv, **kw: calls.append(argv[3]))
+                self.assertEqual(calls, ["doperpowers@doperpowers"])
+                self.assertIn("updated doperpowers@doperpowers", note)
+
+    def test_qualified_dependencies_order_only_the_same_marketplace(self):
+        self.carry({"a": ("./a", "2", ["z@doperpowers", "b@other"]),
+                    "b": ("./b", "2", ["a@doperpowers"]), "z": ("./z", "2", None)})
+        self.installed({f"{name}@doperpowers": ("user", "1") for name in ("a", "b", "z")})
+        calls = []
+        plugins.update(self.user, {}, copy=self.copy, run=lambda argv, **kw: calls.append(argv[3]))
+        self.assertEqual(calls, ["z@doperpowers", "a@doperpowers", "b@doperpowers"])
+
+    def test_batch_deadline_limits_timeouts_and_names_updates_left_for_next_run(self):
+        self.carry({name: (f"./{name}", "2", None) for name in ("a", "b", "c", "d")})
+        self.installed({f"{name}@doperpowers": ("user", "1") for name in ("a", "b", "c", "d")})
+        now, calls = [100.0], []
+
+        def claude(argv, **kw):
+            calls.append((argv[3], kw["timeout"]))
+            now[0] += kw["timeout"]
+            raise StepError("timed out")
+
+        with mock.patch("time.monotonic", side_effect=lambda: now[0]):
+            note = plugins.update(self.user, {}, copy=self.copy, run=claude)
+        self.assertEqual(calls, [("a@doperpowers", 180), ("b@doperpowers", 120)])
+        self.assertIn("update failed: a@doperpowers", note)
+        self.assertIn("b@doperpowers", note)
+        self.assertIn("left for the next run", note)
+        self.assertIn("c@doperpowers (user)", note)
+        self.assertIn("d@doperpowers (user)", note)
+
+    def test_non_executable_cli_is_a_named_failure_and_the_batch_continues(self):
+        bin_dir = self.tmp / "bin"
+        bin_dir.mkdir()
+        (bin_dir / "claude").write_text("not executable")
+        self.installed({"sminos@doperpowers": ("user", "1.2.0"), "doperpowers@doperpowers": ("user", "7.1.0")})
+        note = plugins.update(self.user, {"PATH": str(bin_dir)}, copy=self.copy)
+        self.assertIn("update failed:", note)
+        self.assertIn("doperpowers@doperpowers", note)
+        self.assertIn("sminos@doperpowers", note)
+        self.assertIn("Permission denied", note)
+
+    def test_malformed_catalog_list_does_not_escape_update(self):
+        catalog = self.copy / ".claude-plugin/marketplace.json"
+        catalog.write_text(json.dumps({"plugins": 7}))
+        self.assertEqual(plugins.update(self.user, {}, copy=self.copy), "plugins current")
+
     def test_no_registry_or_no_catalog_is_nothing_to_do(self):
         run = mock.Mock(side_effect=AssertionError("ran"))
         self.assertEqual(plugins.update(self.user, {}, copy=self.copy, run=run), "plugins current")

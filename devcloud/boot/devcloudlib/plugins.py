@@ -23,6 +23,7 @@ import os
 import pathlib
 import re
 import shutil
+import time
 
 from .proc import StepError, run as proc_run
 
@@ -144,30 +145,46 @@ def record(user, env, copy=None, run=proc_run):
 
 
 def versions(copy=None):
-    """{name: (version, dependencies)} of each plugin the copy carries in its
-    own tree, from its manifest; a plugin from another source (ci-kit, a git
-    URL) is not the copy's to say."""
+    """{catalog name: (version, same-marketplace dependencies)} of each
+    valid plugin the copy carries in its own tree. The manifest supplies the
+    version, falling back to the catalog when absent; another source (ci-kit,
+    a git URL) is not the copy's to say."""
     copy = pathlib.Path(copy or COPY)
     try:
-        listed = json.loads((copy / ".claude-plugin/marketplace.json").read_text()).get("plugins") or []
-    except (OSError, ValueError, AttributeError):
+        catalog = json.loads((copy / ".claude-plugin/marketplace.json").read_text())
+    except (OSError, ValueError):
+        return {}
+    listed = catalog.get("plugins") if isinstance(catalog, dict) else None
+    if not isinstance(listed, list):
         return {}
     root, out = copy.resolve(), {}
     for entry in listed:
-        source = entry.get("source") if isinstance(entry, dict) else None
-        if not (isinstance(source, str) and source.startswith("./")):
+        if not isinstance(entry, dict):
             continue
-        tree = (copy / source).resolve()
-        if tree != root and root not in tree.parents:
+        name, source = entry.get("name"), entry.get("source")
+        if not (isinstance(name, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", name)
+                and isinstance(source, str) and source.startswith("./")):
             continue
         try:
+            tree = (copy / source).resolve()
+            if tree != root and root not in tree.parents:
+                continue
             manifest = json.loads((tree / ".claude-plugin/plugin.json").read_text())
-        except (OSError, ValueError):
+        except (OSError, ValueError, RuntimeError):
             continue
-        version = manifest.get("version") or entry.get("version")
-        if isinstance(manifest.get("name"), str) and isinstance(version, str):
-            deps = [d for d in manifest.get("dependencies") or [] if isinstance(d, str)]
-            out[manifest["name"]] = (version, deps)
+        if not isinstance(manifest, dict):
+            continue
+        version = manifest.get("version", entry.get("version"))
+        deps = manifest.get("dependencies", [])
+        if not (isinstance(version, str) and version.strip() and isinstance(deps, list)
+                and all(isinstance(d, str) for d in deps)):
+            continue
+        local_deps = []
+        for dependency in deps:
+            dep, separator, market = dependency.partition("@")
+            if not separator or market == NAME:
+                local_deps.append(dep)
+        out[name] = (version, local_deps)
     return out
 
 
@@ -189,13 +206,13 @@ def outdated(user, copy=None):
         for record in records:
             if isinstance(record, dict) and record.get("scope") in ("user", "managed") \
                     and record.get("version") != wanted[name][0]:
-                found[name] = (key, record["scope"], record.get("version"), wanted[name][0])
+                found.setdefault(name, {})[record["scope"]] = (key, record["scope"], record.get("version"), wanted[name][0])
     ordered, done = [], set()
     while len(done) < len(found):
         ready = sorted(n for n in found if n not in done
                        and all(d in done or d not in found for d in wanted[n][1]))
         for name in ready or sorted(set(found) - done):   # a cycle: the rest as they come
-            ordered.append(found[name])
+            ordered.extend(found[name].values())
             done.add(name)
     return ordered
 
@@ -206,19 +223,31 @@ def update(user, env, copy=None, run=proc_run):
     as the Macs' follow their marketplace: the engine installs new versions
     only at a session's start, and a session that keeps running would never
     get them. Its sessions' reload mod sees installed_plugins.json change and
-    reloads. Returns a note; a failed update is named, never raised."""
-    done, failed = [], []
-    for key, scope, old, new in outdated(user, copy):
+    reloads. The batch gets five minutes, not 180 seconds per installed
+    record without a bound. Returns a note; a failed update is named, never
+    raised, so it cannot undo seating or fail the pull job."""
+    deadline = time.monotonic() + 300
+    try:
+        pending = outdated(user, copy)
+    except Exception as error:  # A broken inventory must not undo seating either.
+        return f"plugin inventory failed ({type(error).__name__}); updates left for the next run"
+    done, failed, left = [], [], []
+    for index, (key, scope, old, new) in enumerate(pending):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            left = [f"{key} ({scope})" for key, scope, _, _ in pending[index:]]
+            break
         try:
             run(["claude", "plugin", "update", key, "--scope", scope], user=user, env=env, log="plugins",
-                cwd=str(user.home), timeout=180)
+                cwd=str(user.home), timeout=min(180, remaining))
             done.append(f"{key} {old} to {new}")
-        except StepError as error:
+        except (StepError, OSError) as error:
             failed.append(f"{key} ({error})")
-    if not done and not failed:
+    if not done and not failed and not left:
         return "plugins current"
     return "; ".join(filter(None, ["updated " + ", ".join(done) if done else "",
-                                   "update failed: " + ", ".join(failed) if failed else ""]))
+                                   "update failed: " + ", ".join(failed) if failed else "",
+                                   "left for the next run: " + ", ".join(left) if left else ""]))
 
 
 def managed(settings, copy=None):
