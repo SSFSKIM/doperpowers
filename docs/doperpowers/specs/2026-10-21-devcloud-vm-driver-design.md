@@ -2709,6 +2709,30 @@ commit 5168e433 on its branch, 2026-10-21):
     idle).
   Date/Author: 2026-10-27, the person, through the main session.
 
+- Decision: A host's plugin installs follow its marketplace copy. After each refresh of the copy (step
+  10, and a pull-config that finds no new configuration commit), every install of a plugin the copy
+  carries in its own tree, at user or managed scope, whose version is not the copy's, is updated with
+  `claude plugin update <key> --scope <its scope>` as the user, dependencies first. A failure is noted
+  in the step's detail and never fails the job.
+  - Why: the copy was kept current, but nothing installed from it. The engine installs new versions
+    only at a session's start, and the reload mod's fetch, which updates running sessions on the
+    Macs, covers git marketplaces only, not this directory one. So a host whose one session ran on
+    stayed at the versions it started with: dc-linux171 ran doperpowers 7.210.0 and to-human 0.7.1
+    a week after main moved to 7.216.0 and 0.7.2. Once the installs change, a running interactive
+    session's reload mod sees installed_plugins.json change and reloads, as on a Mac.
+  - The engine's own startup update records the three plugins the managed settings enable at scope
+    `managed`, so the update keeps each record's scope. Project and local records belong to a
+    directory and are left to the sessions there. ci-kit, whose source is a git URL rather than the
+    copy's tree, is left to the engine.
+  - Checked against the real CLI (2.1.318) in an isolated config: a directory marketplace whose
+    checkout moved from e5403891 to 17944939, one record at user scope and one at managed; both
+    updated and kept their scope.
+  - Rejected: teaching the reload mod to update directory marketplaces. It runs only inside an
+    interactive session, so a host with none, or with only headless MAWS launches, would stay behind.
+  - Reaches only hosts made after it lands: a host keeps the boot code its image installed.
+  Date/Author: 2026-11-04, devcloud setup session, from the person's report of a host missing a
+  plugin change.
+
 ## Outcomes & Retrospective
 
 **Against the purpose.** The purpose holds as written: a session can now get a cloud machine with

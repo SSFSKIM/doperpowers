@@ -132,6 +132,79 @@ class RecordTest(Base):
             plugins.record(self.user, {}, copy=self.copy, run=lambda argv, **kw: None)
 
 
+class UpdateTest(Base):
+    """Installs follow the copy: an installed version the copy no longer
+    carries is updated as the user, at the record's scope, dependencies
+    first; a plugin from another source and a project's record are left."""
+
+    def setUp(self):
+        super().setUp()
+        self.carry({"doperpowers": ("./", "7.2.0", None), "to-human": ("./to-human", "0.8.0", ["sminos"]),
+                    "sminos": ("./sminos", "1.3.0", None)},
+                   extra=[{"name": "ci-kit", "source": {"source": "url", "url": "https://example.com/ci-kit.git"}},
+                          {"name": "escape", "source": "./../outside"}])
+
+    def carry(self, plugins_, extra=()):
+        entries = list(extra)
+        for name, (source, version, deps) in plugins_.items():
+            tree = self.copy / source
+            (tree / ".claude-plugin").mkdir(parents=True, exist_ok=True)
+            manifest = {"name": name, "version": version, **({"dependencies": deps} if deps else {})}
+            (tree / ".claude-plugin/plugin.json").write_text(json.dumps(manifest))
+            entries.append({"name": name, "source": source})
+        (self.copy / ".claude-plugin/marketplace.json").write_text(json.dumps({"name": "doperpowers",
+                                                                              "plugins": entries}))
+        outside = self.tmp / "marketplaces/outside/.claude-plugin"
+        outside.mkdir(parents=True, exist_ok=True)
+        (outside / "plugin.json").write_text('{"name": "escape", "version": "9"}')
+
+    def installed(self, records):
+        path = self.claude / "plugins/installed_plugins.json"
+        path.parent.mkdir(exist_ok=True)
+        path.write_text(json.dumps({"version": 2, "plugins": {
+            key: [{"scope": scope, "version": version, **({"projectPath": "/work"} if scope == "project" else {})}]
+            for key, (scope, version) in records.items()}}))
+
+    def test_versions_are_the_copys_own_plugins_only(self):
+        self.assertEqual(plugins.versions(self.copy), {"doperpowers": ("7.2.0", []),
+                                                       "to-human": ("0.8.0", ["sminos"]),
+                                                       "sminos": ("1.3.0", [])})
+
+    def test_updates_what_the_copy_moved_past_dependencies_first(self):
+        self.installed({"to-human@doperpowers": ("managed", "0.7.0"), "sminos@doperpowers": ("managed", "1.2.0"),
+                        "doperpowers@doperpowers": ("user", "7.2.0"), "ci-kit@doperpowers": ("user", "abc123"),
+                        "web@doperpowers": ("user", "0.1.0"), "sminos@other": ("user", "0.0.1")})
+        calls = []
+        note = plugins.update(self.user, {"HOME": "h"}, copy=self.copy,
+                              run=lambda argv, **kw: calls.append((argv, kw["user"], kw["env"])))
+        self.assertEqual([c[0] for c in calls], [
+            ["claude", "plugin", "update", "sminos@doperpowers", "--scope", "managed"],
+            ["claude", "plugin", "update", "to-human@doperpowers", "--scope", "managed"]])
+        self.assertEqual({(c[1], c[2]["HOME"]) for c in calls}, {(self.user, "h")})
+        self.assertEqual(note, "updated sminos@doperpowers 1.2.0 to 1.3.0, to-human@doperpowers 0.7.0 to 0.8.0")
+
+    def test_a_projects_record_is_left_and_current_installs_need_nothing(self):
+        self.installed({"sminos@doperpowers": ("project", "1.0.0"), "doperpowers@doperpowers": ("user", "7.2.0")})
+        note = plugins.update(self.user, {}, copy=self.copy, run=mock.Mock(side_effect=AssertionError("ran")))
+        self.assertEqual(note, "plugins current")
+
+    def test_a_failed_update_is_named_and_the_rest_still_run(self):
+        self.installed({"sminos@doperpowers": ("user", "1.2.0"), "doperpowers@doperpowers": ("user", "7.1.0")})
+
+        def claude(argv, **kw):
+            if argv[3] == "doperpowers@doperpowers":
+                raise StepError("claude plugin exited 1")
+        note = plugins.update(self.user, {}, copy=self.copy, run=claude)
+        self.assertEqual(note, "updated sminos@doperpowers 1.2.0 to 1.3.0; "
+                               "update failed: doperpowers@doperpowers (claude plugin exited 1)")
+
+    def test_no_registry_or_no_catalog_is_nothing_to_do(self):
+        run = mock.Mock(side_effect=AssertionError("ran"))
+        self.assertEqual(plugins.update(self.user, {}, copy=self.copy, run=run), "plugins current")
+        self.installed({"sminos@doperpowers": ("user", "1.2.0")})
+        self.assertEqual(plugins.update(self.user, {}, copy=self.tmp / "nowhere", run=run), "plugins current")
+
+
 class ManagedTest(unittest.TestCase):
     COPY = pathlib.Path("/var/lib/devcloud/marketplaces/doperpowers")
     DIRECTORY = {"source": {"source": "directory", "path": str(COPY)}}
@@ -205,6 +278,7 @@ class SettingsStepTest(Base):
         self.assertEqual(self.seen_at_record["extraKnownMarketplaces"]["doperpowers"]["source"]["path"],
                          str(self.copy), "the record moved before the managed settings named the copy")
         self.assertEqual(json.loads(self.managed.read_text())["prependPlugins"], list(plugins.OUTER))
+        self.assertTrue(detail.endswith("; recorded; plugins current"), detail)
 
     def test_a_failed_record_puts_the_user_tier_back(self):
         work = self.upstream()
@@ -225,6 +299,30 @@ class SettingsStepTest(Base):
         state, _ = self.step(mock.Mock(side_effect=AssertionError("recorded")))
         self.assertEqual(state, "missing")
         self.assertEqual(json.loads(self.managed.read_text())["prependPlugins"], [])
+
+
+class PullRefreshTest(Base):
+    """A pull with no new configuration commit refreshes the copy and moves
+    the installs to it; a copy that cannot be had updates nothing."""
+
+    def run_refresh(self, refresh):
+        r = steps.Run("pull-config")
+        r.user = self.user
+        said = []
+        with mock.patch.object(plugins, "recorded", lambda user: True), \
+                mock.patch.object(plugins, "refresh", refresh), \
+                mock.patch.object(plugins, "update", lambda user, env: f"updated for {env['HOME']}"), \
+                mock.patch.object(steps, "ENV_PATH", self.tmp / "env"), \
+                mock.patch.object(steps, "_say", said.append):
+            steps._refresh_marketplace(r)
+        return said
+
+    def test_the_update_follows_the_refresh(self):
+        self.assertEqual(self.run_refresh(lambda claude_dir: ("abc", "")), [f"marketplace: updated for {self.user.home}"])
+
+    def test_no_copy_no_update(self):
+        said = self.run_refresh(mock.Mock(side_effect=plugins.Unavailable("the marketplace could not be cloned")))
+        self.assertEqual(said, ["marketplace: the marketplace could not be cloned"])
 
 
 class DriverKeysTest(Base):

@@ -15,7 +15,8 @@ record of it is moved there (`claude plugin marketplace add <COPY>`) before
 any session starts: with the managed declaration and a record that still
 names GitHub, a session loads no plugin of the marketplace at all, the guard
 included (M1). The copy is refreshed at every boot, reconcile, secrets
-refresh and configuration pull."""
+refresh and configuration pull, and after the settings step's and the pull's
+refresh the user's installs move to the versions it carries (`update`)."""
 
 import json
 import os
@@ -140,6 +141,84 @@ def record(user, env, copy=None, run=proc_run):
     if not recorded(user, copy):
         raise StepError("claude plugin marketplace add left the record elsewhere")
     return "recorded"
+
+
+def versions(copy=None):
+    """{name: (version, dependencies)} of each plugin the copy carries in its
+    own tree, from its manifest; a plugin from another source (ci-kit, a git
+    URL) is not the copy's to say."""
+    copy = pathlib.Path(copy or COPY)
+    try:
+        listed = json.loads((copy / ".claude-plugin/marketplace.json").read_text()).get("plugins") or []
+    except (OSError, ValueError, AttributeError):
+        return {}
+    root, out = copy.resolve(), {}
+    for entry in listed:
+        source = entry.get("source") if isinstance(entry, dict) else None
+        if not (isinstance(source, str) and source.startswith("./")):
+            continue
+        tree = (copy / source).resolve()
+        if tree != root and root not in tree.parents:
+            continue
+        try:
+            manifest = json.loads((tree / ".claude-plugin/plugin.json").read_text())
+        except (OSError, ValueError):
+            continue
+        version = manifest.get("version") or entry.get("version")
+        if isinstance(manifest.get("name"), str) and isinstance(version, str):
+            deps = [d for d in manifest.get("dependencies") or [] if isinstance(d, str)]
+            out[manifest["name"]] = (version, deps)
+    return out
+
+
+def outdated(user, copy=None):
+    """[(key, scope, installed, wanted)] for each of the user's records of a
+    copy's plugin, at user or managed scope, whose version is not the copy's;
+    a plugin's dependencies come before it. Project and local records belong
+    to a directory and are left to the sessions there."""
+    wanted = versions(copy)
+    try:
+        installed = json.loads((user.home / ".claude/plugins/installed_plugins.json").read_text())["plugins"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return []
+    found = {}
+    for key, records in (installed.items() if isinstance(installed, dict) else ()):
+        name, _, market = key.partition("@")
+        if market != NAME or name not in wanted or not isinstance(records, list):
+            continue
+        for record in records:
+            if isinstance(record, dict) and record.get("scope") in ("user", "managed") \
+                    and record.get("version") != wanted[name][0]:
+                found[name] = (key, record["scope"], record.get("version"), wanted[name][0])
+    ordered, done = [], set()
+    while len(done) < len(found):
+        ready = sorted(n for n in found if n not in done
+                       and all(d in done or d not in found for d in wanted[n][1]))
+        for name in ready or sorted(set(found) - done):   # a cycle: the rest as they come
+            ordered.append(found[name])
+            done.add(name)
+    return ordered
+
+
+def update(user, env, copy=None, run=proc_run):
+    """`claude plugin update` as the user for each plugin installed at a
+    version the copy no longer carries, so a host's installs follow the copy
+    as the Macs' follow their marketplace: the engine installs new versions
+    only at a session's start, and a session that keeps running would never
+    get them. Its sessions' reload mod sees installed_plugins.json change and
+    reloads. Returns a note; a failed update is named, never raised."""
+    done, failed = [], []
+    for key, scope, old, new in outdated(user, copy):
+        try:
+            run(["claude", "plugin", "update", key, "--scope", scope], user=user, env=env, log="plugins",
+                cwd=str(user.home), timeout=180)
+            done.append(f"{key} {old} to {new}")
+        except StepError as error:
+            failed.append(f"{key} ({error})")
+    if not done and not failed:
+        return "plugins current"
+    return "; ".join(filter(None, ["updated " + ", ".join(done) if done else "",
+                                   "update failed: " + ", ".join(failed) if failed else ""]))
 
 
 def managed(settings, copy=None):
