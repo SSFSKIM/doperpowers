@@ -1081,8 +1081,8 @@ def plugins_seated():
     managed = json.loads(out(SEATED, "cat /etc/claude-code/managed-settings.json"))
     check(managed["prependPlugins"] == ["to-human@doperpowers", "sminos@doperpowers", "doperpowers@doperpowers"],
           f"managed prependPlugins {managed.get('prependPlugins')}")
-    check(managed["extraKnownMarketplaces"]["doperpowers"] == {"source": {"source": "directory",
-                                                                          "path": MARKETPLACE_COPY}}, str(managed))
+    check(managed["extraKnownMarketplaces"]["doperpowers"] == {
+        "source": {"source": "directory", "path": MARKETPLACE_COPY}, "autoUpdate": True}, str(managed))
     known = json.loads(out(SEATED, f"cat {HOME}/.claude/plugins/known_marketplaces.json"))["doperpowers"]
     check(known["installLocation"] == MARKETPLACE_COPY, f"the record {known}")
     check(out(SEATED, f"stat -c '%U' {MARKETPLACE_COPY}").strip() == "root", "the copy is not root's")
@@ -1102,6 +1102,8 @@ def plugins_seated():
     log = out(SEATED, f"cat {debug}")
     check(session.returncode == 0, f"the session exited {session.returncode}: {session.stdout[-500:]} "
           f"{session.stderr[-800:]}")
+    known = json.loads(out(SEATED, f"cat {HOME}/.claude/plugins/known_marketplaces.json"))["doperpowers"]
+    check(known.get("autoUpdate") is True, f"the engine did not honor managed autoUpdate: {known}")
     check("the bridge is off" not in log, "the bridge turned itself off: " + "\n".join(
         line for line in log.splitlines() if "bridge" in line)[-1500:])
     results = [r for line in out(FX, "cat /srv/fakes/gateway.jsonl").splitlines()
