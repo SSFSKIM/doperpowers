@@ -1,3 +1,4 @@
+import { forgetReceiptRows } from './bridge-receipts'
 import { BLOCK_TAIL, capped, isEffort, isRecord, loopKey, message, state } from './bridge-state'
 import type { Block, BridgeEvent, Override, Refusal, Request, Streaming } from './bridge-state'
 
@@ -354,6 +355,8 @@ function wholeResync(): BridgeEvent {
  * terminal's own choice of model does across a /clear.
  */
 export function forgetLive() {
+  // The receipt markers its rows carried (O12 M4b): reports name their sessions and stay.
+  forgetReceiptRows()
   state.turns.clear()
   state.messages.clear()
   // Its agents were set aside first (bridge-agents.tsx, forgetAgents).

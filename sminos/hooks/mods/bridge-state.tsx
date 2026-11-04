@@ -1,6 +1,6 @@
-import type { HookStream, HttpResponse, ProcessSpawnChunk, ProcessSpawnResult, Timer } from 'claude-code'
+import type { EngineInterface, HookStream, HttpResponse, ProcessSpawnChunk, ProcessSpawnResult, Timer } from 'claude-code'
 
-import type { MediaAttachment, ModeKept } from '../../types/sminos'
+import type { MediaAttachment, ModeKept, ReceiptReport, StoppedReceipt } from '../../types/sminos'
 
 import type { Place } from './bridge-place'
 import type { Catalog } from './bridge-catalog'
@@ -250,7 +250,7 @@ export type HolderAsked = 'written' | 'moot' | 'failed'
  * fence key; one that failed is dropped, to be asked again), and the host's
  * answer to each (`stop` with its reason, else proceed).
  */
-export type FencedStep = { turnId: string; turns: Map<string, Promise<HolderAsked>>; answers: Map<string, { stop?: string }>; wake?: () => void }
+export type FencedStep = { turnId: string; entered: number; turns: Map<string, Promise<HolderAsked>>; answers: Map<string, { stop?: string }>; wake?: () => void }
 /**
  * A prompt seen entering the main loop, by its engine-stamped origin, at its
  * submission or as its row: `seq` orders it among the turns' starts, and
@@ -258,6 +258,34 @@ export type FencedStep = { turnId: string; turns: Map<string, Promise<HolderAske
  * it came (a delivery into that turn, which starts none).
  */
 export type PromptSeen = { kind: string; text: string; uuid?: string; seq: number; isTaken: boolean }
+/** A receipt's marker as a row carries it (O12 M4b): the receipt's id, and which delivery attempt of it the row is. */
+/** A receipt's marker as a row names it: its attempt, and whether that attempt is a wake (no body of its own: sminos_holder_deliveries.WAKE_MARKER). */
+export type ReceiptMark = { id: string; attempt: number; isWake?: boolean }
+/**
+ * What the observer knows of the receipts its process was handed (O12 M4b,
+ * bridge-receipts.tsx): which rows carry markers and where each came among
+ * the main turns' starts and requests (`seq`, the holder's order), the
+ * markers the conversation held before this module saw any row
+ * (`preload`, highest attempt by id and whether a body of it was there, for a conversation this module did not
+ * watch begin), the ids nothing more is owed for, the reports the child has
+ * not acknowledged, and the stopped receipts awaiting their release.
+ */
+export type ReceiptsState = {
+  rows: Map<string, { marks: ReceiptMark[]; seq: number }>
+  preload: Map<string, { attempt: number; hasBody: boolean }>
+  /** Every receipt id the live conversation held at the scan: an activation's `retained`. */
+  retained: string[]
+  scan?: Promise<void>
+  /** The scan read the conversation (a failed one is tried again by the next request that may carry a receipt). */
+  isScanned: boolean
+  /** The receipts no admission is owed for any more, by session and id (receiptKey): an admission of any attempt settles; a release is no admission. */
+  done: Set<string>
+  reports: ReceiptReport[]
+  stopped: StoppedReceipt[]
+  isPumping: boolean
+  isRetryArmed: boolean
+  isReleasing: boolean
+}
 /** The observer's state (bridge-holder.tsx): what a module keeps of the gate, reloaded from `$.state`. */
 export type HolderState = {
   /** This module instance's mark on what it keeps, for diagnosis: a reload's module writes its own. */
@@ -280,8 +308,25 @@ export type HolderState = {
   prompts: PromptSeen[]
   /** Each main turn running, by id: its text at its start, where it started among the prompts seen (`seq`), and its origin once correlated. */
   turns: Map<string, { text: string; seq: number; origin?: TurnOrigin }>
-  /** Orders prompts seen and turns started. */
+  /** Orders prompts seen, turns started, main requests entered and rows carrying receipt markers. */
   seq: number
+  /**
+   * Whether the process is a fresh one (O12 M4b, bridge-holder.tsx's
+   * restore and bootstrap): one whose first module knew receipts may
+   * activate them; any other is an existing process, `legacy` for
+   * settlement, observed only if an observer served it before. Undefined
+   * until decided: from what a module before this one kept, else at the
+   * first bootstrap from the process's age.
+   */
+  fresh?: boolean
+  /** This module handled the process's own SessionStart (`startup`, `resume`, `fork`): its first load's evidence. */
+  isProcessStart: boolean
+  /** A first bootstrap waiting for that evidence. */
+  onProcessStart?: () => void
+  receipts: ReceiptsState
+  /** The child loop's report pump and release (the session start's `$`, which outlives every hook), set at its bootstrap. */
+  pumpReports?: () => void
+  releaseStopped?: () => void
 }
 
 export type BridgeState = {
@@ -486,6 +531,12 @@ export type BridgeState = {
    */
   launch?: string
   /**
+   * Where `launch` came from: `kept` by a module before this one (this
+   * process ran before this module), `new` (none was kept: a new process),
+   * `unread` (the kept state could not be read: taken as kept).
+   */
+  launchFrom?: 'kept' | 'new' | 'unread'
+  /**
    * The main loop's permission mode as the engine last reported it, absent
    * until it has (bridge.tsx, `observeMode`); kept in `$.state` for a reload.
    * `modeReports` counts the reports, so one read after a later one never
@@ -572,6 +623,8 @@ const freshHolder = (): HolderState => {
     prompts: [],
     turns: new Map(),
     seq: 0,
+    isProcessStart: false,
+    receipts: { rows: new Map(), preload: new Map(), retained: [], isScanned: false, done: new Set(), reports: [], stopped: [], isPumping: false, isRetryArmed: false, isReleasing: false },
   }
 }
 

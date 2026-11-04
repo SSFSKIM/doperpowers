@@ -1,7 +1,9 @@
 import type { EngineInterface, HookStream, TurnStepChunk, TurnStepInput, TurnStepResult } from 'claude-code'
 
-import type { HolderKept } from '../../types/sminos'
+import type { HolderKept, ReceiptReport, StoppedReceipt } from '../../types/sminos'
 
+import { REPORTS_KEPT, admitCarried, holdReleases, liveMarks, releaseStoppedNow, reportAnswered, scanConversation, stopCarried, turnDelivery } from './bridge-receipts'
+import type { Carried } from './bridge-receipts'
 import { isRecord, message, parsed, state } from './bridge-state'
 import type { FencedStep, HolderAsked, HolderFence, HolderRelay, HolderState, PromptSeen, TurnOrigin } from './bridge-state'
 
@@ -43,9 +45,52 @@ import type { FencedStep, HolderAsked, HolderFence, HolderRelay, HolderState, Pr
  *   when prompts of its text disagree. It is diagnostic: every origin is
  *   fenced alike.
  *
- * M4a changes no delivery and no settlement: a peer's message is settled at
- * its inbox handoff as before, and a turn's `turn` carries no `delivery`.
+ * Receipts (O12 M4b; bridge-receipts.tsx decides which a request carries):
+ *
+ * - The child's first ready asks it to activate receipts for this process
+ *   before its first hello, on positive evidence that the process is a
+ *   fresh one: this module handled the process's own classic SessionStart
+ *   (`startup`, `resume`, `fork`: the engine raises it as the process
+ *   starts its session, never at a plugin reload or a worker respawn, and a
+ *   /clear's or a compaction's is no start) with no trace of a module before
+ *   it (a kept launch, kept holder state), or a module before this one found
+ *   it so (`fresh`, kept). Then with the process's launch and the receipts
+ *   the live conversation holds (`retained`). Any other process is an
+ *   existing one, its absent bookkeeping no evidence that nothing was
+ *   handed off: an upgrade the child records `legacy`, observed if an
+ *   observer served it before (an M4a observer goes on), never observed
+ *   otherwise (no hello: the host keeps its lineage registration). A first
+ *   bootstrap with no evidence either way waits STARTUP_WAIT_MS for the
+ *   SessionStart (the engine runs it while the first session.start is
+ *   still settling), then decides. The SessionStart is one witness; the
+ *   child's `processAge`, under FRESH_PROCESS_S, the other: both, or the
+ *   process is an existing one.
+ * - A main-loop request the module admits (a `proceed`, no fence, a lease's
+ *   expiry) reports the receipts it carries, decided with no await before
+ *   its `next`; the report is kept in `$.state` and replayed on the child's
+ *   route until the child answers it recorded, whatever the stream does. A
+ *   request the gate stopped reports nothing; its receipts are released for
+ *   a retry in this launch once no fence holds (the matching disarm, every
+ *   lease and margin run out), never on a welcome alone.
+ * - A main turn whose own text carries a receipt names it in its `turn`
+ *   (`delivery`, the first of several).
  */
+
+/**
+ * How long a first bootstrap with no evidence of the process's start waits
+ * for its SessionStart before the process is taken for an existing one (O12
+ * M4b): the engine raises it beside the first session.start, which spawns
+ * the child, so on a start it is there at once or within moments; a module
+ * reloaded into a running process waits this long once, before its hello.
+ */
+export const STARTUP_WAIT_MS = 5_000
+
+/**
+ * The age under which a process whose SessionStart this module handled is
+ * taken for a fresh one (the second witness): the engine starts the module,
+ * the module its child, before the first prompt, in seconds.
+ */
+export const FRESH_PROCESS_S = 60
 
 /** The observer's fallback past a lease: one heartbeat, OX10's production margin. */
 export const HOLDER_MARGIN_MS = 5_000
@@ -81,6 +126,20 @@ const log = (text: string) => state.log?.(`bridge: holder: ${text}`)
 
 // -- what the process keeps
 
+const isId = (v: unknown): v is string => typeof v === 'string' && /^[0-9a-f]{24}\.[0-9a-f]{16}$/.test(v)
+const isSession = (v: unknown): v is string => typeof v === 'string' && v !== '' && v.length <= 64
+
+function isReport(r: unknown): r is ReceiptReport {
+  return (
+    isRecord(r) &&
+    isSession(r.session) &&
+    ((r.kind === 'admit' && Array.isArray(r.ids) && r.ids.length > 0 && r.ids.every(isId)) ||
+      (r.kind === 'release' && Array.isArray(r.items) && r.items.length > 0 && r.items.every((i) => isRecord(i) && isId(i.id) && isCount(i.attempt, 1) && typeof i.present === 'boolean')))
+  )
+}
+
+const isStopped = (s: unknown): s is StoppedReceipt => isRecord(s) && isSession(s.session) && isId(s.id) && isCount(s.attempt, 1) && (s.bodiless === undefined || typeof s.bodiless === 'boolean')
+
 function isKept(value: unknown): value is HolderKept {
   return (
     isRecord(value) &&
@@ -88,7 +147,9 @@ function isKept(value: unknown): value is HolderKept {
     typeof value.observerStarted === 'boolean' &&
     isCount(value.armGenerations) &&
     Array.isArray(value.fences) &&
-    value.fences.every((f) => isRecord(f) && typeof f.epoch === 'string' && isCount(f.fence) && isCount(f.armGeneration) && isLease(f.leaseMs))
+    value.fences.every((f) => isRecord(f) && typeof f.epoch === 'string' && isCount(f.fence) && isCount(f.armGeneration) && isLease(f.leaseMs)) &&
+    (value.receipts === undefined || (isRecord(value.receipts) && Array.isArray(value.receipts.reports) && value.receipts.reports.every(isReport) && Array.isArray(value.receipts.stopped) && value.receipts.stopped.every(isStopped))) &&
+    (value.fresh === undefined || typeof value.fresh === 'boolean')
   )
 }
 
@@ -98,6 +159,8 @@ const snapshot = (h: HolderState): HolderKept => ({
   observerStarted: h.observerStarted,
   armGenerations: h.armGenerations,
   fences: [...h.fences.values()].map((f) => ({ epoch: f.epoch, fence: f.fence, armGeneration: f.armGeneration, leaseMs: f.leaseMs })),
+  receipts: { reports: h.receipts.reports, stopped: h.receipts.stopped },
+  ...(h.fresh !== undefined && { fresh: h.fresh }),
 })
 
 /**
@@ -155,7 +218,14 @@ export function holderLoaded($: EngineInterface): Promise<void> {
 /** Whether the kept state was restored already: a request then needs no await for it. */
 export const isHolderLoaded = () => state.holder.isLoaded
 
-/** A session no gate serves (no marker, or one this process controls) has nothing to restore. */
+/**
+ * A session no gate serves (no marker, or one this process controls) has
+ * nothing to restore. What a module before this one left says whether the
+ * process is a fresh one (O12 M4b): the `fresh` it decided; or, with none,
+ * an existing one (an M4a module's state, a launch kept with no holder
+ * state, a state it cannot read). Nothing at all left decides nothing: the
+ * process's own SessionStart, or its absence, does at the first bootstrap.
+ */
 async function restore($: EngineInterface, h: HolderState): Promise<void> {
   let kept: unknown
   try {
@@ -168,11 +238,19 @@ async function restore($: EngineInterface, h: HolderState): Promise<void> {
     return
   }
   if (kept === undefined) {
+    if (state.launchFrom !== 'new') {
+      h.fresh = false
+    }
     return
   }
   if (!isKept(kept)) {
     holdUnread($, h, 'the kept state is not one this module reads')
     return
+  }
+  h.fresh = kept.fresh === true
+  if (kept.receipts !== undefined) {
+    h.receipts.reports.push(...kept.receipts.reports.slice(-REPORTS_KEPT))
+    h.receipts.stopped.push(...kept.receipts.stopped)
   }
   h.observerStarted ||= kept.observerStarted
   h.armGenerations = Math.max(h.armGenerations, kept.armGenerations)
@@ -195,6 +273,8 @@ function holdUnread($: EngineInterface, h: HolderState, why: string) {
     return
   }
   h.observerStarted = true
+  // What it kept of receipts is lost too: an existing process, observed.
+  h.fresh = false
   install($, UNREAD.epoch, UNREAD.fence, PRODUCTION_LEASE_MS)
   log(`${why}: main requests are held ${PRODUCTION_LEASE_MS + HOLDER_MARGIN_MS} ms from now (one production lease and margin), then admitted`)
 }
@@ -226,6 +306,7 @@ function expire($: EngineInterface, f: HolderFence, generation: number) {
   log(`fence ${key}: no answer within its lease and the margin`)
   void keep($)
   wakeStep()
+  void releaseStopped($)
 }
 
 function release($: EngineInterface, key: string) {
@@ -238,6 +319,7 @@ function release($: EngineInterface, key: string) {
   h.fences.delete(key)
   void keep($)
   wakeStep()
+  void releaseStopped($)
 }
 
 const wakeStep = () => state.holder.step?.wake?.()
@@ -307,12 +389,50 @@ async function takeBootstrap($: EngineInterface, b: Record<string, unknown>) {
     log(`a bootstrap with no route: ${JSON.stringify(b).slice(0, 200)}`)
     return
   }
+  // When its age was sampled, on both clocks, for the age at the decision.
+  const sampledMono = performance.now()
+  const sampledWall = $.clock.now().catch(() => NaN)
   const h = state.holder
   const relay: HolderRelay = { socket: b.socket, nonce: b.nonce, generation: b.generation, pid: pid(b.pid), childPid: pid(b.childPid), child: state.generation }
   h.relay = relay
+  // The reports and releases run on this loop's `$`, the session start's,
+  // which outlives every hook: a hook reaches them through these (a module
+  // keeps no `$` of its own; the engine refuses one assigned).
+  h.pumpReports = () => void pumpReports($)
+  h.releaseStopped = () => void releaseStopped($)
   // What a module before this one kept is in before anything is written.
   await h.loaded
-  h.observerStarted = true
+  // A fresh process, or an existing one (O12 M4b): decided once per process.
+  if (h.fresh === undefined && !h.isProcessStart) {
+    await new Promise<void>((resolve) => {
+      h.onProcessStart = resolve
+      $.clock.after(STARTUP_WAIT_MS, resolve)
+    })
+    h.onProcessStart = undefined
+  }
+  if (h.fresh === undefined) {
+    // Two witnesses, each insufficient alone. The SessionStart says a session
+    // started, which a mid-process /resume says too; the age (the claude
+    // process's, on the boot clock the child read at its bootstrap) says the
+    // process is seconds old. A process with no trace of a module before
+    // this one started under one older than M7, so it is old: a /resume in it
+    // fails the age, a reload in it raises no SessionStart, and a real start
+    // or `claude --resume` passes both. An unknown age is an old one. The age
+    // is the process's now, at the decision, which comes at or after its
+    // SessionStart: the sampled age plus what passed since the bootstrap, the
+    // larger of the monotonic and the engine's clock (neither a wall-clock
+    // step back nor a clock unread makes the process younger).
+    const passedMs = Math.max(performance.now() - sampledMono, (await $.clock.now().catch(() => NaN)) - (await sampledWall))
+    const age = typeof b.processAge === 'number' && b.processAge >= 0 ? b.processAge + passedMs / 1000 : NaN
+    h.fresh = h.isProcessStart && age < FRESH_PROCESS_S
+    log(`the process is ${h.fresh ? 'a fresh one' : 'an existing one'}: ${h.isProcessStart ? 'its SessionStart came' : 'no SessionStart of its own came'}, its age ${Number.isNaN(age) ? 'unknown' : `${age.toFixed(1)} s`}`)
+  }
+  if (!isCurrent(relay)) {
+    return
+  }
+  // An existing process no observer served stays unobserved.
+  const observe = h.fresh || h.observerStarted
+  h.observerStarted = observe
   while (!(await keep($))) {
     if (!isCurrent(relay)) {
       return
@@ -320,13 +440,19 @@ async function takeBootstrap($: EngineInterface, b: Record<string, unknown>) {
     log(`observerStarted is not kept: the gate waits, tried again in ${HOLDER_RETRY_MS} ms`)
     await new Promise<void>((resolve) => $.clock.after(HOLDER_RETRY_MS, resolve))
   }
+  // The receipts the conversation holds already (a resume's retained rows).
+  await scanConversation($)
   if (!isCurrent(relay)) {
     return
   }
-  const ready = await post($, relay, { kind: 'ready' })
+  const activation = !h.fresh ? { upgrade: true, observe } : state.launch !== undefined ? { launch: state.launch, retained: h.receipts.retained } : {}
+  const ready = await post($, relay, { kind: 'ready', ...activation })
   log(ready?.status === 200 ? `ready (child ${relay.childPid ?? '?'}, lane ${String(ready.answer?.lane)})` : `the child did not take ready (${ready?.status ?? 'no answer'})`)
   // A request waiting at the fence holds its wait on this route from now.
   wakeStep()
+  // What the child before this one did not acknowledge goes to this one.
+  void pumpReports($)
+  void releaseStopped($)
 }
 
 function onArm($: EngineInterface, relay: HolderRelay, epoch: string, arm: number, fence: number, leaseMs: number) {
@@ -400,9 +526,9 @@ function answer(key: string, a: { stop?: string }) {
 }
 
 /** POST /holder on the child's route, naming its generation; undefined when the child never answered. */
-async function post($: EngineInterface, relay: HolderRelay, body: Record<string, unknown>): Promise<{ status: number; answer?: Record<string, unknown> } | undefined> {
+async function post($: EngineInterface, relay: HolderRelay, body: Record<string, unknown>, attempts = POST_TRIES): Promise<{ status: number; answer?: Record<string, unknown> } | undefined> {
   let failure: unknown
-  for (let tries = 0; tries < POST_TRIES && isCurrent(relay); tries++) {
+  for (let tries = 0; tries < attempts && isCurrent(relay); tries++) {
     try {
       const res = await $.http.fetch('http://holder/holder', {
         method: 'POST',
@@ -436,12 +562,14 @@ function askTurn($: EngineInterface, epoch: string, fence: number): Promise<Hold
   if (asked !== undefined) {
     return asked
   }
-  const origin = originOf(step?.turnId ?? state.mainTurn)
+  const turnId = step?.turnId ?? state.mainTurn
+  const origin = originOf(turnId)
+  const delivery = turnDelivery(turnId)
   const relay = h.relay
   const turn: Promise<HolderAsked> =
     relay === undefined || !epoch.startsWith(`${relay.generation}.`)
       ? Promise.resolve('moot')
-      : post($, relay, { kind: 'turn', epoch, fence, origin }).then((r) => (r === undefined ? 'failed' : r.status === 200 ? 'written' : 'moot'))
+      : post($, relay, { kind: 'turn', epoch, fence, origin, ...(delivery !== undefined && { delivery }) }).then((r) => (r === undefined ? 'failed' : r.status === 200 ? 'written' : 'moot'))
   if (step !== undefined) {
     step.turns.set(key, turn)
     void turn.then((t) => {
@@ -455,7 +583,7 @@ function askTurn($: EngineInterface, epoch: string, fence: number): Promise<Hold
 
 /** A main-loop request entering: from now an arm tells the host of its turn before acknowledging. */
 export function enterStep(turnId: string): FencedStep {
-  const step: FencedStep = { turnId, turns: new Map(), answers: new Map() }
+  const step: FencedStep = { turnId, entered: ++state.holder.seq, turns: new Map(), answers: new Map() }
   state.holder.step = step
   return step
 }
@@ -535,6 +663,125 @@ export function abandonedStep(e: TurnStepInput): HookStream<TurnStepChunk, TurnS
     return result
   })()
   return Object.assign(stream, { result: Promise.resolve(result) })
+}
+
+// -- receipts (O12 M4b)
+
+/** The classic SessionStart: a start, a resume or a fork is a session's start (one witness of a first load, the process's age the other); a /clear's or a compaction's is none. */
+export function sessionStarted(source: string) {
+  const h = state.holder
+  if (source === 'startup' || source === 'resume' || source === 'fork') {
+    h.isProcessStart = true
+    h.onProcessStart?.()
+  }
+}
+
+/**
+ * The module's final admission of a main-loop request carrying these
+ * receipts: the report queued at once (the caller enters `next` with no
+ * await after this), then kept and sent.
+ */
+export function receiptsAdmitted($: EngineInterface, carried: Carried) {
+  if (admitCarried(carried)) {
+    void keep($)
+    state.holder.pumpReports?.()
+    // A wake whose body was gone waits among the stopped: released at once
+    // if no fence holds.
+    if (carried.bodiless.length > 0) {
+      state.holder.releaseStopped?.()
+    }
+  }
+}
+
+/** A request the gate's `stop` ended: its receipts wait, kept, for their release in this launch. */
+export function receiptsStopped($: EngineInterface, carried: Carried) {
+  if (stopCarried(carried)) {
+    void keep($)
+    state.holder.releaseStopped?.()
+  }
+}
+
+/**
+ * The reports the child has not acknowledged, sent one after another on its
+ * route, each until the child answers it recorded (or moot): one with no
+ * answer, or one the child could not record, is tried again after
+ * HOLDER_RETRY_MS; a new child takes them up at its ready. On the child's
+ * own route, never behind the stream's posts.
+ */
+async function pumpReports($: EngineInterface): Promise<void> {
+  const h = state.holder
+  const r = h.receipts
+  if (r.isPumping) {
+    return
+  }
+  r.isPumping = true
+  try {
+    for (;;) {
+      const report = r.reports[0]
+      const relay = h.relay
+      if (report === undefined || relay === undefined || !isCurrent(relay) || h !== state.holder) {
+        return
+      }
+      // A release goes only while no fence holds (checked at each replay):
+      // under a newer one it waits among the stopped again.
+      if (report.kind === 'release' && h.fences.size > 0) {
+        holdReleases()
+        void keep($)
+        continue
+      }
+      // A release is one attempt per fence check: its retry is this loop's,
+      // which checks the fences again first.
+      const got = await post($, relay, report.kind === 'admit' ? { kind: 'admit', session: report.session, ids: report.ids } : { kind: 'release', session: report.session, items: report.items }, report.kind === 'release' ? 1 : POST_TRIES)
+      if (h !== state.holder) {
+        return
+      }
+      if (reportAnswered(report, got) === 'retry') {
+        void keep($)
+        if (!r.isRetryArmed) {
+          r.isRetryArmed = true
+          $.clock.after(HOLDER_RETRY_MS, () => {
+            r.isRetryArmed = false
+            void pumpReports($)
+          })
+        }
+        return
+      }
+      if (r.reports[0] === report) {
+        r.reports.shift()
+      }
+      void keep($)
+    }
+  } finally {
+    r.isPumping = false
+  }
+}
+
+/**
+ * The stopped receipts, released for their retry in this launch once no
+ * fence holds: the one that stopped them disarmed or run out, and no newer
+ * or renewed one standing. A welcome changes no fence, so it releases
+ * nothing. Each says whether its row is still in the live conversation.
+ */
+async function releaseStopped($: EngineInterface): Promise<void> {
+  const h = state.holder
+  const r = h.receipts
+  if (r.isReleasing || r.stopped.length === 0 || h.fences.size > 0 || !h.isLoaded) {
+    return
+  }
+  r.isReleasing = true
+  try {
+    const live = await liveMarks($)
+    // A hold that came while the conversation was read keeps them pending.
+    if (h !== state.holder || h.fences.size > 0 || r.stopped.length === 0) {
+      return
+    }
+    log(`${r.stopped.length} stopped receipt(s) released for a retry in this launch: no fence holds`)
+    releaseStoppedNow(live)
+    void keep($)
+    void pumpReports($)
+  } finally {
+    r.isReleasing = false
+  }
 }
 
 // -- origins

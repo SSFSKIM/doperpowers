@@ -180,7 +180,7 @@ def supervisor_reply(short, text, session=""):
 # ------------------------------------------------------------------ delivery
 
 
-def push_live(peer, session, text, event=None, project=None, words=None):
+def push_live(peer, session, text, event=None, project=None, words=None, marker=None):
     """A delivery's last hop to a live session, `event` the last log event the
     text carries (None for a frame no log holds; every event of one push is
     one writer's, so one side's) and `project` the id of the project whose
@@ -193,18 +193,37 @@ def push_live(peer, session, text, event=None, project=None, words=None):
     decides a person's words but the verdict: a log-backed `human` event
     with none raises SendFailed("before"), nothing pushed. Raises SendFailed
     as send_frame does: "before" when nothing reached the session, "after"
-    when it may have."""
-    if words is None and event is not None and event.get("kind") == "human" \
-            and S.sibling_module("sminos_rl10").cut_over():
-        raise S.SendFailed("before", "%s is a person's words on a machine cut over to its endpoint: only its "
-                           "verdict delivers them" % S.event_ref(event))
-    owner = words if words is not None else event is not None and S.owner_event(event)
-    if owner and deliver(session, project, event, text):
-        return
-    if owner and bg_job(peer):
-        took = supervisor_reply(bg_job(peer), text, session)
-        if took is True:
+    when it may have.
+
+    A log-backed delivery is a handoff to the session's process, whose
+    delivery mode decides it (O12 M4b, sminos_holder_deliveries): `legacy`
+    (or no record, which records `legacy` first) takes it as above; a
+    `gate` process takes it only with its receipt's `marker` (the line
+    naming the receipt and attempt its caller prepared under the session's
+    delivery lock, S.holder_carry), which goes straight to the inbox as the
+    text's first line — a lane B observer's bridge refuses every `deliver` (M3), and the
+    verdict was applied when the receipt was prepared — and anything else
+    raises SendFailed("before"), nothing handed off. (A peer record naming
+    no pid names no process to hold a mode; every live one names one.)"""
+    if marker is not None:
+        text = "%s\n%s" % (marker, text)
+    else:
+        if words is None and event is not None and event.get("kind") == "human" \
+                and S.sibling_module("sminos_rl10").cut_over():
+            raise S.SendFailed("before", "%s is a person's words on a machine cut over to its endpoint: only its "
+                               "verdict delivers them" % S.event_ref(event))
+        if event is not None and peer.get("pid") is not None:
+            mode = S.holder_module().handoff(peer.get("pid"), session)
+            if mode != "legacy":
+                raise S.SendFailed("before", "session %s's process takes %s only with a receipt (%s)" % (
+                    session[:8], S.event_ref(event), mode))
+        owner = words if words is not None else event is not None and S.owner_event(event)
+        if owner and deliver(session, project, event, text):
             return
+        if owner and bg_job(peer):
+            took = supervisor_reply(bg_job(peer), text, session)
+            if took is True:
+                return
     sender = str(event.get("via") or event.get("from") or "") if event is not None else ""
     # from_project arrives in synced events and lands in a shell argument: only an id-shaped one is used
     origin = event.get("from_project") if event is not None else None

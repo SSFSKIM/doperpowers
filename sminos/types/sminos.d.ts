@@ -117,8 +117,16 @@ export type ModeKept = { mode: string; at: number; from: string }
  * moves with every arm of it) and that arm's lease; the module that loads
  * after a reload holds each before any model request passes, for its lease
  * plus the heartbeat margin from the load. `owner` is the module instance
- * that wrote it last: an older instance that finds another's stops writing.
- * Only sminos writes or reads it.
+ * that wrote it last, for diagnosis.
+ *
+ * `receipts` (O12 M4b; hooks/mods/bridge-receipts.tsx) is written by every
+ * module that knows receipts, so its absence beside `observerStarted` says an
+ * M4a observer's module kept the state: that process stays `legacy` for
+ * settlement. `reports` are the admission and release reports the child has
+ * not durably acknowledged, each naming the session it was made in, replayed
+ * until it has; `stopped` the receipts whose request the gate's `stop`
+ * ended, released for a retry in this launch once no fence holds. Only
+ * sminos writes or reads it.
  */
 export type HolderKept = {
   shape: 1
@@ -126,7 +134,30 @@ export type HolderKept = {
   observerStarted: boolean
   armGenerations: number
   fences: { epoch: string; fence: number; armGeneration: number; leaseMs: number }[]
+  receipts?: { reports: ReceiptReport[]; stopped: StoppedReceipt[] }
+  /**
+   * Whether the process is a fresh one, whose first module was this plugin's
+   * M4b or later (O12 M4b): decided once, at the first bootstrap, from the
+   * child's word on the process's age, and kept so every later module of the
+   * process decides alike. Absent from an M4a module's.
+   */
+  fresh?: boolean
 }
+
+/** A report to the bridge child's route (POST /holder `admit` or `release`), as the mod keeps it until acknowledged. */
+export type ReceiptReport =
+  | { kind: 'admit'; session: string; ids: string[] }
+  | { kind: 'release'; session: string; items: { id: string; attempt: number; present: boolean }[] }
+
+/**
+ * A receipt held for its release in this launch: its id, the attempt its row
+ * named, the session it was delivered to. A request's `stop` ended it, or a
+ * request judged its wake `bodiless` (no body among what it included): that
+ * verdict is released `present` false whatever the conversation shows then,
+ * so its retry is the full body, the release and the admission reading the
+ * same evidence.
+ */
+export type StoppedReceipt = { session: string; id: string; attempt: number; bodiless?: boolean }
 
 declare module 'claude-code' {
   interface PluginState {

@@ -600,6 +600,10 @@ CHAT_KINDS = ("say", "human")
 # then settled with a line in $SMINOS_HOME/daemon.log.
 DELIVERY_ATTEMPTS = 60
 PUSHED = ("sent", "woken", "sent?", "woken?")
+# A delivery to a `gate` process (O12 M4b) handed to its inbox with a
+# receipt, or waiting for it: owed until the receipt's admission, no attempt
+# counted. "held:<why>": its process's mode cannot be read (fail closed).
+HOLDER_AWAITING = "awaiting-admission"
 # A session's membership is its latest of these, in its own file, by seq.
 MEMBERSHIP = ("joined", "retired")
 # The facts about a session the projection reads; whoever writes one for a
@@ -2574,8 +2578,12 @@ def revoke_owed(project, member, revoked):
     """What a revocation stops at once: every event owed to the member whose
     stored signer the set names (sminos_rl10.event_revoked), asked or not,
     marked revoked (delivered_revoke), under its delivery lock. One whose
-    push is noted was delivered before the revocation, and is left to its
-    settlement. The events marked."""
+    push is noted, or whose receipt went to its `gate` process (O12 M4b:
+    an attempt reached its inbox, or it was admitted), was delivered before
+    the revocation, and is left to its settlement; a receipt only prepared
+    is marked like any owed event, and removed; one that cannot be read is
+    deferred, kept, its event left owed (its delivery holds while it stays
+    so, and a push after takes the revocation check). The events marked."""
     session = member.session
     if not session:
         return []
@@ -2585,9 +2593,11 @@ def revoke_owed(project, member, revoked):
         record = delivered_load(project, session)
         for e in _owed(log_read(project, to_session=session), session, record):
             noted = _delivery(record, e["writer"]).get("pushed")
-            if not rl10.event_revoked(e, revoked) or (noted and noted[0] == e["seq"]):
+            if not rl10.event_revoked(e, revoked) or (noted and noted[0] == e["seq"]) \
+                    or holder_module().handed(project.id, session, e) is not False:
                 continue
             if delivered_revoke(project, session, e["writer"], e["seq"]):
+                holder_module().settled(project.id, session, e)
                 marked.append(e)
     return marked
 
@@ -4113,7 +4123,17 @@ def deliver_next(project, member):
     which is left owed for the uplink to ask `words?` about and deliver on
     the verdict (deliver_verdict) and is listed in `gated`; a `human` event
     no one may ask about goes as a peer's; and an event whose stored signer
-    is revoked is marked, never pushed (delivered_revoke)."""
+    is revoked is marked, never pushed (delivered_revoke).
+
+    A recipient process recorded `gate` (O12 M4b, sminos_holder_deliveries)
+    settles nothing at the handoff: each event is pushed to its inbox with a
+    receipt prepared first, and is HOLDER_AWAITING — owed, its writer
+    stopped there, no attempt counted — until the bridge child records the
+    receipt's admission; this pass or a later one then settles it like a
+    push (holder_owed, before any other check). A receipt proves it was
+    prepared, not handed off: one whose next step pushes (a retry, or a
+    push that failed before) takes the revocation and read-only checks
+    first, as a fresh push does; its words verdict was taken with it."""
     session = member.session
     result = {"delivered": 0, "pending": 0, "outcomes": []}
     if not session:
@@ -4136,29 +4156,34 @@ def deliver_next(project, member):
             for i, e in enumerate(queue):
                 if noted and noted[0] == e["seq"]:
                     outcome = noted[1]
+                elif (owed := holder_owed(project, member, session, e, events, cursor)) not in (None, HOLDER_RETRY):
+                    outcome = owed
                 else:
                     held = gate.held(e, session) if gate is not None else None
                     if held == "revoked":
                         result["outcomes"].append((e, outcomes.REFUSED_REVOKED))
+                        holder_module().settled(project.id, session, e)
                         continue
                     if held is not None:
                         result["pending"] += len(queue) - i
                         break
                     if outside and policy.read_only():
                         outcome = outcomes.READ_ONLY
-                    elif gate is not None and gate.gated(e):
+                    elif gate is not None and owed is None and gate.gated(e):
                         result["gated"].append(e)
                         result["pending"] += len(queue) - i
                         break
                     else:
-                        outcome = push_event(project, member, session, e, events, cursor,
-                                             words=gate.words(e) if gate is not None else None)
+                        outcome = holder_push(project, member, session, e, events, cursor,
+                                              words=gate.words(e) if gate is not None else None,
+                                              retry=owed is not None)
                         if gate is not None:
                             gate.said(e, outcome)
                 result["outcomes"].append((e, outcome))
                 if not _conclude(project, member, session, e, outcome, outside):
                     result["pending"] += len(queue) - i
                     break
+                holder_module().settled(project.id, session, e)
                 if outcome in PUSHED:
                     result["delivered"] += 1
     return result
@@ -4170,8 +4195,12 @@ def _conclude(project, member, session, e, outcome, outside):
     given up with a daemon.log line and settled. An outside-origin event is
     settled only once its outcome is kept: else it stays pending and the
     next pass records it again — a push noted, so never made twice. The
-    caller holds the session's delivery lock."""
+    caller holds the session's delivery lock. A delivery whose receipt
+    awaits its admission (O12 M4b), or whose process's mode cannot be read,
+    stays owed with no attempt counted."""
     outcomes = sibling_module("sminos_outcomes")
+    if holder_waiting(outcome):
+        return False
     if outcome.startswith("failed"):
         if delivered_fail(project, session, e["writer"], e["seq"]) < DELIVERY_ATTEMPTS:
             return False
@@ -4183,6 +4212,114 @@ def _conclude(project, member, session, e, outcome, outside):
         return False
     delivered_settle(project, session, e["writer"], e["seq"])
     return True
+
+
+# Receipts (O12 M4b, sminos_holder_deliveries): a log event handed to the
+# inbox of a process recorded `gate` — a MAWS lane B observer's, whose
+# bridge activated them before any legacy handoff — is settled at the first
+# model request its bridge mod admits with the event's row in it, not at the
+# handoff, and stays owed on the host's `stop`. The receipt is prepared
+# before the inbox write, under the session's delivery lock; the process's
+# mode is read from its record alone, never from whether its bridge answers.
+
+
+def holder_module():
+    return sibling_module("sminos_holder_deliveries")
+
+
+def holder_waiting(outcome):
+    """Whether a delivery's outcome leaves it owed with no attempt counted:
+    its receipt awaits its admission (HOLDER_AWAITING), or its process's
+    mode cannot be read (`held:`)."""
+    return outcome == HOLDER_AWAITING or outcome.startswith("held:")
+
+
+# What holder_owed answers for a held receipt whose next step is a push (a
+# retry under its id, a push that failed before it reached, or a handoff to
+# a process now `legacy`): the deliverer checks its policy, then pushes it
+# through holder_push. Never an outcome.
+HOLDER_RETRY = "holder-retry"
+
+
+def holder_owed(project, member, session, e, events, cursor):
+    """An event a receipt is held for, as far as it goes without a push:
+    `sent` once admitted (admission alone settles it, whatever the policy
+    says since: it reached the model); HOLDER_AWAITING while it waits (a
+    hold, no live process, a process that may yet activate); `held:<why>`
+    when its mode or receipt cannot be read; HOLDER_RETRY when its next step
+    pushes (nothing written or chosen yet: the caller checks the revocation
+    and read-only policy first, then holder_push(retry=True)). None when no
+    receipt is held for it. Checked before any other rule. The caller holds
+    the session's delivery lock."""
+    hd = holder_module()
+    if not hd.exists(project.id, session, e):
+        return None
+    peer = peer_for_session(session)
+    plan = hd.plan(project.id, session, e, event_hash(e), peer.get("pid") if peer else None, existing_only=True,
+                   prepare=False)
+    if plan is None:
+        return None
+    if plan.kind in ("push", "legacy"):
+        return HOLDER_RETRY
+    return holder_carry(plan, project, member, session, e, events, cursor, peer)
+
+
+def holder_push(project, member, session, e, events, cursor, words=None, retry=False):
+    """push_event behind the receipt boundary: to a live process recorded
+    `gate`, the event goes to its inbox with a receipt prepared first, and
+    is HOLDER_AWAITING; a live process with no record is recorded `legacy`
+    (unless it may yet activate: sminos_holder_deliveries.handoff) and the
+    event pushed as today, as it is to a `legacy` one or to no live process.
+    `words` as push_event. `retry`: a held receipt holder_owed found due,
+    its policy checked — carried on under its id. The caller holds the
+    session's delivery lock."""
+    peer = peer_for_session(session)
+    if not retry and (peer is None or peer.get("pid") is None
+                      or (member.seat is None and latest_membership(_own_events(project, session)) == "retired")):
+        return push_event(project, member, session, e, events, cursor, words=words)
+    # A retry's process may have ended since holder_owed saw it: no pid,
+    # and plan() leaves the receipt owed for a later launch.
+    plan = holder_module().plan(project.id, session, e, event_hash(e), peer.get("pid") if peer else None,
+                                words=words)
+    return holder_carry(plan, project, member, session, e, events, cursor, peer)
+
+
+_HOLDER_SAID = {}   # session → why its deliveries are held, as last said in daemon.log
+
+
+def holder_carry(plan, project, member, session, e, events, cursor, peer):
+    """A receipt plan (sminos_holder_deliveries.plan) carried out; the
+    delivery's outcome."""
+    if plan.kind != "held":
+        _HOLDER_SAID.pop(session, None)
+    if plan.kind == "settle":
+        return "sent"
+    if plan.kind == "awaiting":
+        return HOLDER_AWAITING
+    if plan.kind == "held":
+        if _HOLDER_SAID.get(session) != plan.why:
+            _HOLDER_SAID[session] = plan.why
+            daemon_log("delivery: what is owed to %s waits: %s" % (session, plan.why))
+        return "held:%s" % plan.why
+    if plan.kind == "legacy":
+        return push_event(project, member, session, e, events, cursor, words=plan.words)
+    text = frame_of(project, e, events, session, cursor) if plan.body == "full" else holder_wake(project, e)
+    try:
+        control_module().push_live(peer, session, text, e, project.id,
+                                   marker=holder_module().marker(plan.receipt, plan.attempt, plan.body))
+    except SendFailed as err:
+        if err.phase == "before":
+            return "failed:%s" % err
+    holder_module().pushed(plan.receipt, plan.attempt)
+    return HOLDER_AWAITING
+
+
+def holder_wake(project, e):
+    """The text of a retry whose body the conversation already holds (a row
+    its bridge found retained): a pointer to it, the same receipt's marker
+    put before it by push_live."""
+    return "[sminos chat %s %s from %s → @you, again]\nIt is above in this conversation, delivered before: read it " \
+           "there." % (project.name, event_ref(e), str(e.get("via") or e.get("from") or ""))
 
 
 # A person's words on a machine cut over to its endpoint (O12 M6). The
@@ -4312,7 +4449,11 @@ def deliver_verdict(project, member, event, verdict):
     (the bridge, then a --bg job's supervisor), `peer` as an inbox frame,
     `refuse` not at all: it settles `refused-words`, its outcome kept for
     the uplink. The revocation set and the read-only policy are read again
-    first. The outcome, or None."""
+    first. To a process recorded `gate` (O12 M4b) the push prepares a
+    receipt first and the outcome is HOLDER_AWAITING (holder_push); an
+    event whose receipt is held already is carried on under its id
+    (holder_owed), its retry checked against the revocation set and the
+    read-only policy as a fresh push is. The outcome, or None."""
     session = member.session
     if not session or verdict not in WORDS_VERDICTS:
         return None
@@ -4326,11 +4467,15 @@ def deliver_verdict(project, member, event, verdict):
             return None
         outside = policy.outside_origin(e)
         noted = _delivery(record, e["writer"]).get("pushed")
+        cursor = cursor_load(project, session)
         if noted and noted[0] == e["seq"]:
             outcome = noted[1]
+        elif (owed := holder_owed(project, member, session, e, events, cursor)) not in (None, HOLDER_RETRY):
+            outcome = owed
         else:
             held = WordsGate(project).held(e, session)
             if held == "revoked":
+                holder_module().settled(project.id, session, e)
                 return outcomes.REFUSED_REVOKED
             if held is not None:
                 return None
@@ -4341,9 +4486,10 @@ def deliver_verdict(project, member, event, verdict):
                 daemon_log("the endpoint refused %s (%s) as words into %s: nothing delivered" % (
                     event_ref(e), project.name, session))
             else:
-                outcome = push_event(project, member, session, e, events, cursor_load(project, session),
-                                     words=verdict == "words")
-        _conclude(project, member, session, e, outcome, outside)
+                outcome = holder_push(project, member, session, e, events, cursor, words=verdict == "words",
+                                      retry=owed is not None)
+        if _conclude(project, member, session, e, outcome, outside):
+            holder_module().settled(project.id, session, e)
         return outcome
 
 
@@ -4368,13 +4514,16 @@ def words_unanswered(project, member, event, why):
 def words_due(project, members):
     """{session: [event]}: for each of the members, the first owed event of
     each words-gated writer (words_route "ask") that no deliverer holds —
-    none noted as pushed, none another event of its writer stands before.
+    none noted as pushed or holding a receipt (O12 M4b: handed to a `gate`
+    process, awaiting its admission), none another event of its writer
+    stands before.
     The project's log read once, and split by addressee once (addressees),
     as the daemon's delivery pass splits it: each member's owed events are
     read from its own share, not from the whole log again. What the uplink
     asks `words?` about. An outside event on a read-only machine is none:
     deliver_next settles it `refused-read-only` unasked."""
     policy = sibling_module("sminos_policy")
+    holder = holder_module()
     read_only = policy.read_only()
     to = addressees(log_read(project))
     out = {}
@@ -4387,7 +4536,7 @@ def words_due(project, members):
             firsts.setdefault(e["writer"], e)
         due = [e for w, e in sorted(firsts.items())
                if words_route(project, e) == "ask" and (_delivery(record, w).get("pushed") or [None])[0] != e["seq"]
-               and not (read_only and policy.outside_origin(e))]
+               and not (read_only and policy.outside_origin(e)) and not holder.exists(project.id, m.session, e)]
         if due:
             out[m.session] = due
     return out
@@ -9956,6 +10105,16 @@ def send_to_member(project, m, sender, via, text, msg_id):
     if not delivery.queue:
         delivery.release()
         print("sent to %s (delivered by a concurrent delivery)" % m.alias)
+        return
+    if holder_module().handoff(peer.get("pid"), m.session) != "legacy":
+        # O12 M4b: the process takes log-backed deliveries only with
+        # receipts (or its mode is not chosen yet, or cannot be read): the
+        # boundary every deliverer shares delivers the writer's owed events,
+        # each with its own, this send among them.
+        delivery.release()
+        got = deliver_next(project, m)
+        mine = [o for ev, o in got["outcomes"] if (ev["writer"], ev["seq"]) == (delivery.writer, delivery.event["seq"])]
+        print("sent to %s (%s)" % (m.alias, mine[0] if mine else "owed behind an earlier message"))
         return
     try:
         control_module().push_live(peer, m.session, delivery.payload(True), delivery.queue[-1], project.id)

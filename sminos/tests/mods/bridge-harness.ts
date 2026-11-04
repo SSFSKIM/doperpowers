@@ -131,6 +131,12 @@ export function harness(
      * first row does.
      */
     verdictPending?: boolean
+    /**
+     * The `source` of the classic SessionStart the engine raises as the
+     * process starts its session (`startup` by default; `resume`, `fork`), or
+     * null for a module loaded with none (a reload, a worker respawn).
+     */
+    processStart?: 'startup' | 'resume' | 'fork' | null
     /** What devcloud's marker reads as (`$.state.get`): by default nothing, at version 0, as with devcloud not loaded. */
     marker?: { value: unknown; version: number }
     /** The user settings enable `cua@cua`. */
@@ -246,6 +252,8 @@ export function harness(
   /** What `$.session.messages({ as: "api" })` answers when a test set it; and how many times it was read. */
   let apiConversation: unknown[] | undefined
   let apiReads = 0
+  /** Reads of the api conversation still to fail, as a test asked (`failApiReads`). */
+  let apiFailures = 0
   /** While held (`holdApiReads`), `$.session.messages({ as: "api" })` waits. */
   let apiGate: Promise<void> = Promise.resolve()
   let listedAgents = options.agents ?? []
@@ -287,6 +295,10 @@ export function harness(
         }
         apiReads++
         await apiGate
+        if (apiFailures > 0) {
+          apiFailures--
+          throw new Error('the conversation is not readable now')
+        }
         return apiConversation ?? conversation.map((m) => ({ role: 'user', content: m.content }))
       },
       usage: async () => ({ startedAt: 0, context: { tokens: 5000, window: 200000, percent: 2 }, rateLimits: [] }),
@@ -535,6 +547,10 @@ export function harness(
   const ofType = (type: string) => events().filter((e) => e.type === type)
   const start = async () => {
     await hook('session.start', { cwd: '/w' })(engine, { cwd: '/w', surface: 'terminal', isInteractive: true }, async () => ({ cwd: '/w' }))
+    const processStart = options.processStart === undefined ? 'startup' : options.processStart
+    if (processStart !== null) {
+      await classicStart(processStart)
+    }
     if (!options.verdictPending) {
       // The session's first row, kept beneath both guards, lands the bridge's
       // verdict on its place. Refused here, so it posts no notice and each
@@ -544,6 +560,9 @@ export function harness(
     }
     await settle()
   }
+  /** The classic SessionStart hooks, as the engine raises them at a start, a resume, a fork, a /clear or a compaction. */
+  const classicStart = (source: string) =>
+    hook('classic.SessionStart', { hook_event_name: 'SessionStart', source })(engine, { hook_event_name: 'SessionStart', source, session_id: session, transcript_path: '/t.jsonl', cwd: '/w' }, async () => ({}))
   const ready = async () => {
     await start()
     children[0]!.write(hello())
@@ -732,6 +751,7 @@ export function harness(
     complete,
     posts,
     holderPosts,
+    classicStart,
     /** The private route's posts of these kinds, their bodies, in the order made. */
     holderBodies: (...kinds: string[]) => holderPosts.map((p) => p.body).filter((b) => kinds.length === 0 || kinds.includes(String(b.kind))),
     timers,
@@ -759,6 +779,8 @@ export function harness(
     spawns,
     queries,
     setApiConversation: (messages: unknown[] | undefined) => (apiConversation = messages),
+    /** The next `n` reads of the api conversation reject. */
+    failApiReads: (n: number) => (apiFailures = n),
     /** Holds the next reads of the conversation as the requests read it until the returned function is called. */
     holdApiReads: () => {
       let release: () => void = () => undefined
