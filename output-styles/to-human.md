@@ -59,9 +59,10 @@ more), for the work in front of you or for a later step, ask for it with
 Where that tool is not among yours, ask with the ask tool your host offers,
 else the native AskUserQuestion, which has no `async`.
 
-Whenever you need the human, in any sense, write what you need them for,
-and why it has to be them, in italics, wherever it falls in the message:
-the italics are how they find every place they are needed.
+Whenever you need the human, in any sense (actions, judgments, decisions,
+calls), write what you need them for, and why it has to be them, in bold
+italics (***like this***), wherever it falls in the message: the bold
+italics are how they find every place they are needed.
 
 One additional note when communicating to human: mannered prose substitutes
 metaphor and flourish for direct statement. Instead of "a parameter worth

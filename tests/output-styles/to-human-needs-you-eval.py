@@ -22,7 +22,8 @@ critical block.
       [--reps 4] [--scenarios asked,login,value,clean,emphasis] [--out results.json]
 
 e.g. control=<(git show HEAD~1:output-styles/to-human.md) variant=output-styles/to-human.md.
-It calls api.anthropic.com directly with ANTHROPIC_API_KEY.
+It calls the local gateway (`mid_turn.gateway_client`: ANTHROPIC_BASE_URL,
+ANTHROPIC_AUTH_TOKEN) in Claude Code's request shape.
 
 Results, 2026-10-25, claude-opus-5-5 at high effort, judge at low effort, 4
 reps per arm and scenario (a run that is still calling tools after three
@@ -49,18 +50,28 @@ Final wording (7.208.0), mended histories:
                        needs left in roman were follow-ups of the italic one
                        ("tell me when you've signed in"); no block; no
                        stray italics; clean and emphasis 0 spans
+Bold italics (7.217.0), 2026-11-04, through the gateway, 3 reps; spans are
+now the bold-italic ones (***x***, **_x_**), the rule naming "actions,
+judgments, decisions, calls":
+  shipped              the core need in bold italics in 7 of 7 reports with
+                       a need (asked 1 of 3 reported, login 3, value 3);
+                       the needs left plain were follow-ups ("tell me to
+                       continue") or second decisions; no block; no stray
+                       spans; clean and emphasis 0 spans
 """
 import argparse, importlib.util, json, re, sys, concurrent.futures as cf
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
-from mid_turn import MESSAGE_TOOL, MESSAGE_TOOL_DEF, MESSAGE_RESULT, spans  # noqa: E402
+from mid_turn import (MESSAGE_TOOL, MESSAGE_TOOL_DEF, MESSAGE_RESULT, CC_BETA, CC_SYSTEM,  # noqa: E402
+                      claude_code_system, gateway_client, spans)
 
 _spec = importlib.util.spec_from_file_location("to_human_affected_eval", HERE / "to-human-affected-eval.py")
 affected = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(affected)
-client, convo, style_body, PREAMBLE = affected.client, affected.convo, affected.style_body, affected.PREAMBLE
+convo, style_body, PREAMBLE = affected.convo, affected.style_body, affected.PREAMBLE
+client = gateway_client()
 ASK = "mcp__sminos__AskUserQuestion"
 TOOLS = affected.TOOLS + [MESSAGE_TOOL_DEF]
 ASKED = "Asked. The question waits in the human's view; their answer arrives in a later message."
@@ -146,11 +157,11 @@ def canned(block):
 
 
 def run(arm, style, scenario, rep, max_steps=3):
-    system = PREAMBLE + style
+    system = claude_code_system(PREAMBLE + style)
     msgs, steps = SCENARIOS[scenario], []
     for _ in range(max_steps):
-        resp = client.messages.create(model="claude-opus-5-5", max_tokens=16000, output_config={"effort": "high"},
-                                      system=system, tools=TOOLS, messages=msgs)
+        resp = client.beta.messages.create(model="claude-opus-5-5", max_tokens=16000, output_config={"effort": "high"},
+                                           system=system, betas=[CC_BETA], tools=TOOLS, messages=msgs)
         blocks = []
         for b in resp.content:
             if b.type == "text":
@@ -179,14 +190,14 @@ def messages(x):
 
 
 CODE = re.compile(r"```.*?```|`[^`\n]*`", re.S)
-ITALIC = re.compile(r"(?<![*\w\\])\*(?![*\s])((?:(?!\n\n)[^*])+?)(?<![\s\\])\*(?![*\w])"
-                    r"|(?<![_\w\\])_(?![_\s])((?:(?!\n\n)(?:[^_]|(?<=\w)_(?=\w)))+?)(?<![\s\\])_(?![_\w])", re.S)
+MARKED = re.compile(r"\*\*\*(?!\s)((?:(?!\n\n).)+?)(?<!\s)\*\*\*|___(?!\s)((?:(?!\n\n).)+?)(?<!\s)___"
+                    r"|\*\*_(?!\s)((?:(?!\n\n).)+?)(?<!\s)_\*\*|_\*\*(?!\s)((?:(?!\n\n).)+?)(?<!\s)\*\*_", re.S)
 
 
 def italics(text):
-    """The italic spans of a message: emphasis by one marker, bold markers removed first, markers in code masked."""
-    prose = CODE.sub(lambda m: m.group(0).replace("*", "\x00").replace("_", "\x01"), text).replace("**", "").replace("__", "")
-    return [(a or b).strip().replace("\x00", "*").replace("\x01", "_") for a, b in ITALIC.findall(prose)]
+    """The bold-italic spans of a message (***x***, ___x___, **_x_**, _**x**_), markers in code masked."""
+    prose = CODE.sub(lambda m: m.group(0).replace("*", "\x00").replace("_", "\x01"), text)
+    return [next(g for g in m if g).strip().replace("\x00", "*").replace("\x01", "_") for m in MARKED.findall(prose)]
 
 
 def own_block(text):
@@ -197,8 +208,8 @@ def own_block(text):
 
 JUDGE = """An agent sent its human the messages below; the human reads only these, not the agent's work. Answer from what the messages say.
 
-needs: everything the messages need of the human: an action only they can take, a decision, access, a value, an answer to a question put to them. An optional offer they may take or leave ("I can also do X if you want") is not a need. For each, a few words for what it is, and whether the messages write that need (what is needed of them) in italics, as *text* or _text_ (bold, **text**, is not italics).
-spans: for each italic span listed under <italics>, in that order, whether it states (part of) a need of the human.
+needs: everything the messages need of the human: an action only they can take, a decision, access, a value, an answer to a question put to them. An optional offer they may take or leave ("I can also do X if you want") is not a need. For each, a few words for what it is, and whether the messages write that need (what is needed of them) in bold italics, as ***text*** or **_text_** (bold alone, **text**, or italics alone, *text*, is not).
+spans: for each bold-italic span listed under <italics>, in that order, whether it states (part of) a need of the human.
 
 Reply with only a JSON object: {"needs": [{"what": ..., "italic": true|false}], "spans": [true|false, ...]}
 
@@ -212,8 +223,8 @@ Reply with only a JSON object: {"needs": [{"what": ..., "italic": true|false}], 
 
 
 def judge(text, spans_found):
-    resp = client.messages.create(
-        model="claude-opus-5-5", max_tokens=4000, output_config={"effort": "low"},
+    resp = client.beta.messages.create(
+        model="claude-opus-5-5", max_tokens=4000, output_config={"effort": "low"}, system=CC_SYSTEM, betas=[CC_BETA],
         messages=[{"role": "user", "content": JUDGE % (text, "\n".join(f"- {s}" for s in spans_found) or "(none)")}],
     )
     out = "".join(b.text for b in resp.content if b.type == "text")
