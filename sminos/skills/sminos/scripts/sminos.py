@@ -131,7 +131,8 @@ member too, seat-less, from the first call that reads its project.
     sminos projects [--all]                               # every project known here: kind (hub, machine,
                    local), live and waiting sessions, their machines; --all: a retired machine's too
     sminos machines                                       # every machine enrolled in the org: online or
-                   last seen, its live sessions and their projects
+                   last seen (cut over to RL10, which says nothing of who is online: its newest event),
+                   or retired; its live sessions and their projects
     sminos chart    [project] [--stopped] [--all] [--width N]        # the members as boxes, grouped by project
     sminos tui      [project] [--all] [--no-tmux]        # the chart, interactive, inside tmux: arrows move, enter attaches
     sminos attach   <seat>                                # claude attach <short>
@@ -849,16 +850,24 @@ def org_path():
 
 def org_directory():
     """daemon/org.json — {projects, machines, at} as the uplink kept the hub's
-    latest `org` frame — or None before the first (or when it is unreadable)."""
+    latest `org` frame, with `retired` the names (lower-cased) of the machines
+    it retires (machine_retired) — or None before the first (or when it is
+    unreadable)."""
     if not _ORG_DIR:
         try:
             d = json_at(org_path())   # the uplink writes it whole, by rename
         except (OSError, ValueError):
             d = None
         ok = isinstance(d, dict) and isinstance(d.get("projects"), list) and isinstance(d.get("machines"), list)
-        _ORG_DIR.append({"projects": [p for p in d["projects"] if isinstance(p, dict) and isinstance(p.get("id"), str)],
-                         "machines": [m for m in d["machines"] if isinstance(m, dict) and isinstance(m.get("name"), str)],
-                         "at": str(d.get("at") or "")} if ok else None)
+        if ok:
+            projects = [p for p in d["projects"] if isinstance(p, dict) and isinstance(p.get("id"), str)]
+            machines = [m for m in d["machines"] if isinstance(m, dict) and isinstance(m.get("name"), str)]
+            retired = {m["name"] for m in machines if m.get("retired") is True}
+            retired |= {str(p.get("machine") or p.get("name") or "") for p in projects
+                        if p.get("kind") == "machine" and p.get("retired") is True}
+            d = {"projects": projects, "machines": machines, "at": str(d.get("at") or ""),
+                 "retired": frozenset(n.lower() for n in retired if n)}
+        _ORG_DIR.append(d if ok else None)
     return _ORG_DIR[0]
 
 
@@ -872,6 +881,17 @@ def org_retired(pid):
     """Whether the org's directory marks the project retired (a revoked
     machine's project). With no directory yet, nothing is."""
     return (org_entry(pid) or {}).get("retired") is True
+
+
+def machine_retired(name):
+    """Whether the org's directory retires machine `name`: its `machines`
+    entry says `retired: true` (RL10's endpoint, for a machine no certificate
+    stands for any more, such as a deleted VM) or its machine project is
+    retired (the hub retires a revoked machine's). Names compare lower-cased,
+    as the hub compares them. A directory that says neither (an older
+    endpoint's), or none yet, retires no machine."""
+    d = org_directory()
+    return d is not None and str(name or "").lower() in d["retired"]
 
 
 def said_once(pid, marker):
@@ -3884,6 +3904,10 @@ def _member(sid, r, seat, peer, local, title=True, info=None, shadowed=None):
         published = (r or {}).get("state") or {}
         state_word, age = str(published.get("state") or ""), (ts_age(published["ts"]) if published else None)
         active = age
+        # A machine the org retired (a deleted VM) publishes nothing more,
+        # and its last word was never taken back: its sessions are gone.
+        if machine_retired(machine):
+            state_word = "gone"
     elif seat:
         state_word = seat_state(seat, rec)
     elif rec:
@@ -10521,7 +10545,8 @@ def short_age(seconds):
 
 def state_column(m):
     """The state word; for a member on another machine, its last published
-    word, `@<machine>`, and how long ago it was published."""
+    word (`gone` once the org retired its machine), `@<machine>`, and how
+    long ago it was published."""
     if m.local:
         return m.state
     return " ".join(x for x in (m.state or "?", "@" + m.machine,
@@ -10982,11 +11007,17 @@ def print_table(header, rows):
 
 def org_age_line():
     """The age of daemon/org.json when it is older than a minute: the
-    directory is the hub's as of then."""
+    directory is the hub's as of then, the hub restating it at every change
+    (a machine's presence among them), so an old one is a silent stream. On
+    a machine cut over to its endpoint (RL10) an old one is no fault: the
+    endpoint restates it only at a connection and at a new head or
+    certificate set."""
     d = org_directory()
     at = _ts_epoch(d["at"]) if d else None
     if at is not None and time.time() - at > 60:
-        print("(the org's directory is %s old: the daemon's stream has said nothing newer)" % short_age(time.time() - at))
+        why = "the endpoint restates it only when the org changes or the daemon reconnects" \
+            if sibling_module("sminos_rl10").cut_over() else "the daemon's stream has said nothing newer"
+        print("(the org's directory is %s old: %s)" % (short_age(time.time() - at), why))
 
 
 def cmd_projects(a):
@@ -11014,13 +11045,30 @@ def cmd_projects(a):
     org_age_line()
 
 
+def newest_events(projects):
+    """{machine name, lower-cased: epoch seconds} of the newest event the
+    logs of `projects` hold from each machine's writers (`<machine>/…`)."""
+    newest = {}
+    for p in projects:
+        for ev in view_of(p).events:
+            name, ts = str(ev.get("writer") or "").rpartition("/")[0].lower(), str(ev.get("ts") or "")
+            if name and ts > newest.get(name, ""):
+                newest[name] = ts
+    return {name: at for name, at in ((n, _ts_epoch(ts)) for n, ts in newest.items()) if at is not None}
+
+
 def cmd_machines(_a):
     """`machines`: every machine enrolled in the org (daemon/org.json) —
-    online, or when it was last seen — with its live sessions and the
-    projects they are in, read from the logs this machine holds. On a machine
-    that is not enrolled, this machine alone."""
+    online, or when it was last seen, or retired — with its live sessions
+    and the projects they are in, read from the logs this machine holds. On
+    a machine cut over to its endpoint (RL10), which carries no presence
+    (the endpoint sends every machine `online: false`, and `seen` only as of
+    its last restatement), this machine is `this machine` and another its
+    newest event, the frame's `seen` or the logs', whichever is later. On a
+    machine that is not enrolled, this machine alone."""
     e = enrollment()
     org = org_directory() if e else None
+    rl10 = e is not None and sibling_module("sminos_rl10").cut_over()
     by_machine = {}
     projects = known_projects()
     live = live_members(projects)
@@ -11038,14 +11086,24 @@ def cmd_machines(_a):
         print("this machine is not enrolled at a desk hub (sminos hub enroll): it knows only itself")
         rows = [row(host_name(), "this machine")]
     elif org is None:
-        print("no org directory yet: the daemon has not connected to the hub (sminos daemon run)")
+        print("no org directory yet: %s" % ("the endpoint has not sent one (sminos daemon status)" if rl10 else
+                                             "the daemon has not connected to the hub (sminos daemon run)"))
         rows = [row(e["machine"], "this machine")]
     else:
-        rows = []
+        rows, heard = [], newest_events(projects) if rl10 else {}
         for m in sorted(org["machines"], key=lambda m: m["name"].lower()):
             seen = _ts_epoch(m.get("seen"))
-            state = "online" if m.get("online") is True else \
-                "last seen %s ago" % short_age(max(0.0, time.time() - seen)) if seen is not None else "never seen"
+            if machine_retired(m["name"]):
+                state = "retired"
+            elif rl10 and m["name"].lower() == e["machine"].lower():
+                state = "this machine"
+            elif rl10:
+                seen = max((t for t in (seen, heard.get(m["name"].lower())) if t is not None), default=None)
+                state = "last event %s ago" % short_age(max(0.0, time.time() - seen)) if seen is not None \
+                    else "no event yet"
+            else:
+                state = "online" if m.get("online") is True else \
+                    "last seen %s ago" % short_age(max(0.0, time.time() - seen)) if seen is not None else "never seen"
             rows.append(row(m["name"], state))
     print_table(("MACHINE", "STATE", "LIVE", "PROJECTS"), rows)
     if org is not None:

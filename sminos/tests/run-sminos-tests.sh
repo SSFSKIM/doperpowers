@@ -354,6 +354,8 @@ run_suites() {
     fail "pending TUI sends survive stopped folding (test_tui_pending_send.py)"; fi
   if python3 "$SCRIPT_DIR/test_list_fold.py"; then pass "stopped members fold only in text views (test_list_fold.py)"; else
     fail "stopped members fold only in text views (test_list_fold.py)"; fi
+  if python3 -B "$SCRIPT_DIR/test_org_retired.py"; then pass "a retired machine's sessions read gone; machines says what the hub and RL10 carry (test_org_retired.py)"; else
+    fail "a retired machine's sessions read gone; machines says what the hub and RL10 carry (test_org_retired.py)"; fi
   if python3 -B "$SCRIPT_DIR/test_manager.py"; then pass "the session manager's command: windows, pending, subscriptions (test_manager.py)"; else
     fail "the session manager's command: windows, pending, subscriptions (test_manager.py)"; fi
   if python3 -B "$SCRIPT_DIR/test_manager_serve.py"; then pass "the session manager's page: serve, install, status (test_manager_serve.py)"; else
