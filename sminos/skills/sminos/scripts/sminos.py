@@ -9417,9 +9417,12 @@ def spawn_provenance(settings, merged):
       their principal, origin `maws` naming them the requester;
     - from inside a session: its record's owners, proofs, principal and
       inference copied, origin `sminos-spawn` naming it, provisional when
-      its record is (or when it has none);
+      its record is (or when it has none); its access and shares copied
+      too, so a spawn never widens reach (O18 D10), and private with no
+      shares when its record file cannot be read (its policy unknown); the
+      child's policyRev its own, from 0;
     - from an operator's terminal: the machine's owners, origin
-      `sminos-spawn`.
+      `sminos-spawn`; the default policy, as for a desk spawn.
     A seat launched with settings of its own runs on them: its inference is
     the merged launch file (`merged`), never its content. Otherwise the
     spawner's slot, or the parent's inference, stands."""
@@ -9432,8 +9435,12 @@ def spawn_provenance(settings, merged):
                 "owners": [member], "ownersProof": desk_proof(), "principal": member,
                 "inference": route or records.slot()}
     if UUID_RE.fullmatch(caller):
-        parent = records.read(caller) or records.default_provenance()
-        return {**{k: parent[k] for k in records.PROVENANCE}, "origin": {"kind": "sminos-spawn", "spawnerSession": caller},
+        parent = records.read(caller)
+        policy = {"access": "private", "shares": []} if parent is None and records.unreadable(caller) \
+            else {k: v for k, v in records.policy_carried(parent or {}).items() if k != "policyRev"}
+        parent = parent or records.default_provenance()
+        return {**{k: parent[k] for k in records.PROVENANCE}, **policy,
+                "origin": {"kind": "sminos-spawn", "spawnerSession": caller},
                 "inference": route or parent["inference"], "source": "launch" if records.is_final(parent) else "default",
                 "basis": "launch"}
     return {**records.default_provenance("launch"), "origin": {"kind": "sminos-spawn"},

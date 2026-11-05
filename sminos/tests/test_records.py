@@ -1253,5 +1253,207 @@ class TheSpawner(unittest.TestCase):
         self.assertEqual(self.said(m), [])
 
 
+PRIVATE = {"access": "private", "shares": [{"member": OTHER, "grade": "view"}], "policyRev": 1}
+
+
+def policy(rec):
+    """A record's policy fields, as written."""
+    return {k: rec[k] for k in ("access", "shares", "policyRev") if k in (rec or {})}
+
+
+def set_private(m, sid):
+    """The session made private with one share, through the setter (M4's
+    set_visibility calls it), in the machine's own environment."""
+    m.py("import sminos_records as R\n"
+         "R.set_policy(sys.argv[1], lambda a, s: ('private', [{'member': sys.argv[2], 'grade': 'view'}]))",
+         sid, OTHER)
+
+
+class ThePolicy(unittest.TestCase):
+    """O18 D10: a session's access, shares and policyRev are the session's,
+    kept when stronger evidence replaces its provenance, carried to a
+    continuation (a background copy, a resume) and to a seat it spawns, and
+    changed by one locked write that a reconciliation racing it never loses."""
+
+    def store(self):
+        TheStore.setUp(self)
+        return self.R
+
+    def test_a_replaced_provenance_keeps_the_policy(self):
+        R = self.store()
+        R.establish(T0, R.default_provenance(source="hook"))
+        R.set_controller(T0, "A", since="2026-10-27T00:00:00Z")
+        rec, changed = R.set_policy(T0, lambda a, s: ("private", [{"member": OTHER, "grade": "view"}]))
+        self.assertTrue(changed)
+        self.assertEqual(policy(rec), PRIVATE)
+        # Lineage evidence replaces the hook's provenance; the policy, as the controller, stays.
+        listed = dict(R.default_provenance(source="lineage"), owners=[MEMBER], access="listed", shares=[],
+                      policyRev=7)
+        rec, changed = R.establish(T0, listed)
+        self.assertTrue(changed)
+        self.assertEqual((rec["owners"], rec["basis"]), ([MEMBER], "lineage"))
+        self.assertEqual(policy(rec), PRIVATE, "the record's own policy, not the evidence's")
+        self.assertEqual(rec["controller"]["lane"], "A")
+        self.assertEqual(policy(R.read(T0)), PRIVATE)
+        # And a launch's claim over it keeps it too.
+        R.write_pending("c" * 32, dict(R.default_provenance(source="launch"), owners=[OTHER]))
+        R.bind("c" * 32, T0)
+        self.assertEqual(policy(R.claim("c" * 32, T0)), PRIVATE)
+        # A record with none takes the provenance's: a spawn's pending launch claimed over its hook record.
+        R.establish(TB, R.default_provenance(source="hook"))
+        R.write_pending("d" * 32, dict(R.default_provenance(source="launch"), **PRIVATE))
+        R.bind("d" * 32, TB)
+        self.assertEqual(policy(R.claim("d" * 32, TB)), PRIVATE)
+        # One that has none, from a provenance that has none, has none: the defaults.
+        R.establish(TX, R.default_provenance(source="hook"))
+        self.assertEqual(policy(R.establish(TX, dict(R.default_provenance(source="lineage")))[0]), {})
+
+    def test_the_setter(self):
+        R = self.store()
+        with self.assertRaises(R.NoRecord):
+            R.set_policy(T0, lambda a, s: ("private", s))
+        self.assertIsNone(R.read(T0), "nothing written for a session with no record")
+        R.establish(T0, R.default_provenance(source="hook"))
+        seen = []
+        rec, changed = R.set_policy(T0, lambda a, s: seen.append((a, s)) or (a, s))
+        self.assertEqual((seen, changed, policy(rec)), ([("listed", [])], False, {}), "no change, no write")
+        rec, _ = R.set_policy(T0, lambda a, s: ("org-view", s + [{"member": OTHER, "grade": "approve"},
+                                                                  {"member": MEMBER, "grade": "list"}]))
+        self.assertEqual(policy(rec), {"access": "org-view", "policyRev": 1, "shares": [
+            {"member": MEMBER, "grade": "list"}, {"member": OTHER, "grade": "approve"}]}, "sorted by member")
+        rec, _ = R.set_policy(T0, lambda a, s: ("private", [x for x in s if x["member"] != OTHER]))
+        self.assertEqual(policy(rec), {"access": "private", "shares": [{"member": MEMBER, "grade": "list"}],
+                                       "policyRev": 2})
+        before = Path(R.record_path(T0)).read_bytes()
+        for bad in (("public", []), ("private", [{"member": OTHER, "grade": "own"}]),
+                    ("private", [{"member": OTHER, "grade": "view"}, {"member": OTHER, "grade": "list"}]),
+                    ("private", {"member": OTHER})):
+            with self.assertRaises(ValueError):
+                R.set_policy(T0, lambda a, s, bad=bad: bad)
+        self.assertEqual(Path(R.record_path(T0)).read_bytes(), before)
+        # A record whose policy does not read is no record: fail closed, never read as listed.
+        Path(R.record_path(TB)).write_text(json.dumps(dict(R.read(T0), session=TB, access="org-list")))
+        self.assertIsNone(R.read(TB))
+        self.assertTrue(R.unreadable(TB))
+        with self.assertRaises(R.NoRecord):
+            R.set_policy(TB, lambda a, s: ("private", []))
+        Path(R.record_path(TB)).write_text("{")
+        with self.assertRaises(R.NoRecord):
+            R.set_policy(TB, lambda a, s: ("private", []))
+        self.assertEqual(Path(R.record_path(TB)).read_text(), "{", "never written over")
+
+    def test_a_setter_holding_the_lock_is_waited_for_by_a_reconciliation(self):
+        import threading
+        R = self.store()
+        R.establish(T0, R.default_provenance(source="hook"))
+        inside, done = threading.Event(), threading.Event()
+
+        def slow(a, s):
+            inside.set()
+            time.sleep(0.4)
+            return "private", [{"member": OTHER, "grade": "view"}]
+
+        setter = threading.Thread(target=R.set_policy, args=(T0, slow))
+        setter.start()
+        self.assertTrue(inside.wait(5))
+        reconciler = threading.Thread(target=lambda: (R.establish(T0, dict(R.default_provenance(source="lineage"),
+                                                                           owners=[MEMBER])), done.set()))
+        reconciler.start()
+        self.assertFalse(done.wait(0.15), "the reconciliation waits for the records' lock")
+        setter.join(5)
+        reconciler.join(5)
+        rec = R.read(T0)
+        self.assertEqual((rec["owners"], rec["basis"]), ([MEMBER], "lineage"), "the reconciliation's change")
+        self.assertEqual(policy(rec), PRIVATE, "and the setter's")
+
+    def test_setters_and_reconciliations_racing_across_processes_keep_both(self):
+        R = self.store()
+        sids = ["7e%06x-0000-4000-8000-%012x" % (n, n) for n in range(40)]
+        for sid in sids:
+            R.establish(sid, R.default_provenance(source="hook"))
+        gate = os.path.join(self.dir, "go")
+        prelude = ("import os, sys, time\nsys.path.insert(0, %r)\nimport sminos_records as R\n"
+                   "while not os.path.exists(%r): time.sleep(0.005)\n" % (str(SCRIPTS), gate))
+        setter = prelude + ("for sid in sys.argv[1:]:\n"
+                            "    R.set_policy(sid, lambda a, s: ('private', [{'member': %r, 'grade': 'view'}]))\n"
+                            % OTHER)
+        reconciler = prelude + ("for sid in sys.argv[1:]:\n"
+                                "    R.establish(sid, dict(R.default_provenance(source='lineage'), owners=[%r]))\n"
+                                % MEMBER)
+        env = {**clean_env(), "SMINOS_HOME": self.dir, "HOME": self.dir}
+        procs = [subprocess.Popen([sys.executable, "-B", "-c", code, *order], env=env)
+                 for code, order in ((setter, sids), (reconciler, sids), (setter, sids[::-1]))]
+        Path(gate).touch()
+        self.assertEqual([p.wait(60) for p in procs], [0, 0, 0])
+        for sid in sids:
+            rec = R.read(sid)
+            self.assertEqual((rec["owners"], rec["basis"]), ([MEMBER], "lineage"), sid)
+            self.assertEqual(policy(rec), PRIVATE, "the second setter changed nothing; neither change lost: " + sid)
+
+    def test_a_background_copy_keeps_its_predecessors_policy(self):
+        m = Machine(self)
+        m.peer(T0, "handy")
+        m.hook("SessionStart", T0)
+        set_private(m, T0)
+        m.hand_off_transcript(T0, TB)
+        m.peer(TB, "handyjob", kind="bg", name_source="auto")
+        m.hook("SessionStart", TB)
+        rec = m.record(TB)
+        self.assertEqual((rec["former"], rec["source"]), ([T0], "lineage"))
+        self.assertEqual(policy(rec), PRIVATE)
+
+    def test_a_job_whose_hook_ran_first_takes_its_predecessors_policy(self):
+        m = Machine(self)
+        m.peer(T0, "handy")
+        m.hook("SessionStart", T0)
+        set_private(m, T0)
+        m.peer(TB, "job", kind="bg", name_source="auto")
+        m.hook("SessionStart", TB)
+        self.assertEqual(policy(m.record(TB)), {}, "its hook's record, before the hand-off: the defaults")
+        m.hand_off_transcript(T0, TB)
+        m.hook("Stop", TB, source="")
+        self.assertEqual((m.record(TB)["former"], policy(m.record(TB))), ([T0], PRIVATE))
+
+    def test_a_resume_into_a_fresh_session_keeps_its_predecessors_policy(self):
+        m = Machine(self)
+        spawner = TheSpawner()
+        pid = spawner.engine(m, T0)
+        var = spawner.launch(m, "app-one")
+        m.hook("SessionStart", T0, env=spawner.env(var))
+        set_private(m, T0)
+        spawner.engine(m, TB, pid=pid)
+        m.hook("SessionStart", TB, source="resume", env=spawner.env(var))
+        rec = m.record(TB)
+        self.assertEqual((rec["former"], rec["basis"]), ([T0], "lineage"))
+        self.assertEqual(policy(rec), PRIVATE)
+
+    def test_a_seat_takes_its_spawners_access_and_shares(self):
+        m = Machine(self)
+        m.peer(T0, "parent")
+        m.hook("SessionStart", T0)
+        set_private(m, T0)
+        m.py("import sminos_records as R\nR.set_policy(sys.argv[1], lambda a, s: (a, s + "
+             "[{'member': sys.argv[2], 'grade': 'list'}]))", T0, MEMBER)
+        self.assertEqual(m.record(T0)["policyRev"], 2)
+        child = m.spawn("kid", env={"CLAUDE_CODE_SESSION_ID": T0})
+        self.assertEqual(policy(m.record(child)), {"access": "private", "shares": [
+            {"member": MEMBER, "grade": "list"}, {"member": OTHER, "grade": "view"}]},
+            "its spawner's reach; its policyRev its own, from 0")
+        self.assertEqual(policy(m.record(m.spawn("byhand"))), {}, "an operator's spawn: the defaults")
+
+    @unittest.skipIf(os.geteuid() == 0, "root reads a file of mode 000")
+    def test_a_seat_of_a_spawner_whose_record_cannot_be_read_is_private(self):
+        m = Machine(self)
+        m.peer(T0, "parent")
+        m.hook("SessionStart", T0)
+        os.chmod(m.record_path(T0), 0)
+        try:
+            child = m.spawn("kid", env={"CLAUDE_CODE_SESSION_ID": T0})
+        finally:
+            os.chmod(m.record_path(T0), 0o600)
+        self.assertEqual(policy(m.record(child)), {"access": "private", "shares": []},
+                         "its spawner's reach unknown: its owners alone, never listed")
+
+
 if __name__ == "__main__":
     unittest.main()

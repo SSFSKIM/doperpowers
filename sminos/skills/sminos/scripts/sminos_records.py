@@ -7,7 +7,7 @@ runs on.
 atomically (sminos._write_record) under one lock for every change here:
 
     {session, source, origin, owners, ownersProof, principal, inference,
-     controller?, created, former}
+     controller?, access?, shares?, policyRev?, created, former}
 
 - The provenance (`origin`, `owners`, `ownersProof`, `principal`,
   `inference`, `created`, `former`) rests on one kind of evidence, its
@@ -24,6 +24,16 @@ atomically (sminos._write_record) under one lock for every change here:
   times and never back.
 - `controller {lane, since}` is current state, not provenance: set at each
   launch by the bridge's lane verdict (set_controller) and never copied.
+- The policy (O18 D10): `access` (ACCESS, absent: listed), `shares`
+  ([{member, grade}], GRADES) and `policyRev` (absent: 0), read with those
+  defaults by sminos_audience.policy_of. It is the session's, not its
+  evidence's: a record replaced by stronger evidence keeps its own, taking
+  the provenance's only when it carries none (_record); a continuation's
+  provenance carries its predecessor's (inherited), and a sminos spawn its
+  spawner's access and shares (sminos.spawn_provenance), so a background
+  copy, a resume or a seat never widens reach. It changes only through
+  set_policy, which bumps policyRev. A record whose policy fields do not
+  read as these is no record (read gives None: unreadable, fail closed).
 - `@machine`, as an owner or a principal, stands for this machine's owners,
   and as an owner it stands alone: a list that mixes it with member ids is
   refused by every writer here (checked_owners), since `joined` leaves the
@@ -68,6 +78,7 @@ if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
 import sminos  # noqa: E402
+import sminos_audience  # noqa: E402
 
 LAUNCH_ENV = "SMINOS_LAUNCH"
 LAUNCH_RE = re.compile(r"[0-9a-f]{32}")
@@ -76,6 +87,7 @@ SOURCES = ("launch", "hook", "lineage", "default")
 RANK = {"default": 0, "hook": 1, "lineage": 2, "launch": 3}   # a basis's strength
 LANES = ("A", "B")
 PROVENANCE = ("origin", "owners", "ownersProof", "principal", "inference")
+POLICY = ("access", "shares", "policyRev")
 PENDING_KEPT_S = 86400
 LAUNCHED_ENV = "MAWS_LAUNCHED_BY"
 LAUNCHED_KEYS = ("appSessionId", "member", "device", "opId", "proofFile")
@@ -94,9 +106,52 @@ def pending_path(launch):
     return os.path.join(records_dir(), "pending", launch + ".json")
 
 
+class NoRecord(LookupError):
+    """A policy change for a session with no record, or one that cannot be read."""
+
+
 def _valid(rec):
-    return (isinstance(rec, dict) and isinstance(rec.get("owners"), list) and rec["owners"]
-            and isinstance(rec.get("origin"), dict) and rec.get("source") in SOURCES)
+    if not (isinstance(rec, dict) and isinstance(rec.get("owners"), list) and rec["owners"]
+            and isinstance(rec.get("origin"), dict) and rec.get("source") in SOURCES):
+        return False
+    try:
+        policy_carried(rec)
+    except ValueError:
+        return False
+    return True
+
+
+def checked_policy(access, shares):
+    """(access, shares) when they are a record's: `access` one of ACCESS,
+    `shares` a list of {member, grade}, one per member, grade one of GRADES;
+    the shares as written, sorted by member. Otherwise ValueError."""
+    if access not in sminos_audience.ACCESS:
+        raise ValueError("access is one of %s: %r" % ("|".join(sminos_audience.ACCESS), access))
+    if not isinstance(shares, list):
+        raise ValueError("shares must be a list: %r" % (shares,))
+    out = {}
+    for s in shares:
+        if not (isinstance(s, dict) and isinstance(s.get("member"), str) and s["member"]
+                and s.get("grade") in sminos_audience.GRADES):
+            raise ValueError("a share is {member, grade: %s}: %r" % ("|".join(sminos_audience.GRADES), s))
+        if s["member"] in out:
+            raise ValueError("two shares for %s" % s["member"])
+        out[s["member"]] = {"member": s["member"], "grade": s["grade"]}
+    return access, [out[m] for m in sorted(out)]
+
+
+def policy_carried(src):
+    """The policy fields (POLICY) a record or a provenance carries, as a
+    dict of those present ({} for none); ValueError for one that does not
+    read as a record's (checked_policy; policyRev an int >= 0)."""
+    got = {k: src[k] for k in POLICY if k in src}
+    if "access" in got:
+        checked_policy(got["access"], [])
+    if "shares" in got:
+        got["shares"] = checked_policy(sminos_audience.DEFAULT_ACCESS, got["shares"])[1]
+    if "policyRev" in got and not (type(got["policyRev"]) is int and got["policyRev"] >= 0):
+        raise ValueError("policyRev must be an int >= 0: %r" % (got["policyRev"],))
+    return got
 
 
 def read(sid):
@@ -163,13 +218,18 @@ def checked_owners(owners):
     return owners
 
 
-def _record(sid, prov, created=None, controller=None):
+def _record(sid, prov, created=None, have=None):
+    """A record of `prov`, replacing `have` (the session's record, or None):
+    its `controller` kept, and its policy kept whole when it carries one,
+    else the provenance's (a continuation's or a spawn's)."""
     checked_owners(prov.get("owners"))
     rec = {"session": sid, "source": prov.get("source") or "default", "basis": basis(prov)}
     for k in PROVENANCE:
         rec[k] = prov[k]
+    controller = (have or {}).get("controller")
     if controller:
         rec["controller"] = controller
+    rec.update(policy_carried(have or {}) or policy_carried(prov))
     rec["created"] = created or prov.get("created") or sminos.now()
     rec["former"] = list(prov.get("former") or [])
     return rec
@@ -187,7 +247,7 @@ def establish(sid, prov, deadline=None):
             return None, False
         if not stronger(prov, have):
             return have, False
-        rec = _record(sid, prov, controller=(have or {}).get("controller"))
+        rec = _record(sid, prov, have=have)
         sminos._write_record(record_path(sid), rec)
         return rec, True
 
@@ -205,6 +265,29 @@ def set_controller(sid, lane, since=None):
         rec["controller"] = {"lane": lane, "since": since or sminos.now()}
         sminos._write_record(record_path(sid), rec)
         return True
+
+
+def set_policy(sid, mutate, deadline=None):
+    """(record, changed): the session's policy changed under the records'
+    lock, the one write of it (O18 D10; set_visibility's). `mutate(access,
+    shares)` is given the record's (sminos_audience.policy_of, the shares a
+    fresh list) and returns the new (access, shares) (checked_policy); a
+    change bumps policyRev and writes the record whole, everything else in
+    it as read; no change writes nothing. NoRecord when the session has no
+    record or its record file cannot be read: a policy is never set on
+    nothing, nor over owners a record may hold."""
+    with _locked(deadline):
+        rec = read(sid)
+        if rec is None:
+            raise NoRecord("session %s has %s" % (str(sid)[:8], "a record that cannot be read"
+                                                   if unreadable(sid) else "no record"))
+        access, shares, rev = sminos_audience.policy_of(rec)
+        new = checked_policy(*mutate(access, [dict(s) for s in shares]))
+        if new == checked_policy(access, shares):
+            return rec, False
+        rec["access"], rec["shares"], rec["policyRev"] = new[0], new[1], rev + 1
+        sminos._write_record(record_path(sid), rec)
+        return rec, True
 
 
 def new_launch():
@@ -297,10 +380,11 @@ def claim(launch, sid, deadline=None):
             if not (isinstance(prov, dict) and all(k in prov for k in PROVENANCE)):
                 raise ValueError("not a provenance")
             checked_owners(prov["owners"])
+            policy_carried(prov)
         except ValueError:
             # Not a provenance this code wrote: the claim stands, its content does not.
             prov = default_provenance()
-        rec = _record(sid, {**prov, "basis": "launch"}, controller=(have or {}).get("controller"))
+        rec = _record(sid, {**prov, "basis": "launch"}, have=have)
         sminos._write_record(record_path(sid), rec)
         return rec
 
@@ -519,8 +603,10 @@ def bind_launched(app, sid, deadline=None):
 
 def inherited(rec, former):
     """A continuation's provenance: its predecessor's record, provisional
-    when that one is, with the sessions it continues (`former`, newest first)."""
-    return {**{k: rec[k] for k in PROVENANCE}, "source": "lineage" if is_final(rec) else "default",
+    when that one is, its policy included, with the sessions it continues
+    (`former`, newest first)."""
+    return {**{k: rec[k] for k in PROVENANCE}, **policy_carried(rec),
+            "source": "lineage" if is_final(rec) else "default",
             "basis": "lineage", "former": list(dict.fromkeys(list(former) + list(rec.get("former") or [])))}
 
 
