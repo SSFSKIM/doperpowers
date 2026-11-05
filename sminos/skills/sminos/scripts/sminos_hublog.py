@@ -984,7 +984,7 @@ class HubLog:
         prefix = self.machine + "/"
         if not writer.startswith(prefix):
             return False
-        rest = writer[len(prefix):]
+        rest = sminos.writer_base(writer)[len(prefix):]
         return rest == "human" or bool(sminos.UUID_RE.match(rest))
 
     def spend_own(self, writer, seq):

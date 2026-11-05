@@ -1831,8 +1831,44 @@ def writer_id(session_uuid=None):
     return "%s/%s" % (host_name(), session_uuid or "human")
 
 
+# Audience streams (P5 O18 D6; MAWS docs/doperpowers/plans/2026-11-05-p5-o18-message-reach.md, Interfaces §A): an
+# event with an audience (the sorted member ids who may read it) is written under a writer of its own,
+# `<writer>~<digest>`, the digest the first 16 hex characters of SHA-256 over the JSON of its audience, so the hub
+# serves each reader a whole writer or none of it. MAWS's `streamOf` and `audienceDigest`
+# (apps/org-protocol/src/names.ts), pinned to these by sminos/tests/audience-vectors.json.
+STREAM_RE = re.compile(r"^([^/]+/[^~]+)~([0-9a-f]{16})$")
+
+
+def stream_of(writer):
+    """(the plain writer, the audience's digest) of a writer: (writer, None)
+    for a plain one."""
+    m = STREAM_RE.match(writer) if isinstance(writer, str) else None
+    return (m.group(1), m.group(2)) if m else (writer, None)
+
+
+def writer_base(writer):
+    """The plain writer a writer is a stream of, or the writer itself."""
+    return stream_of(writer)[0]
+
+
+def is_stream(writer):
+    return stream_of(writer)[1] is not None
+
+
+def audience_digest(members):
+    """The digest a stream's writer ends in (`audienceDigest`)."""
+    text = json.dumps(sorted(set(members)), separators=(",", ":"))
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
+def stream_writer(base, audience):
+    """The writer of `base`'s events for `audience`: its stream, or `base`
+    itself for none (the whole org)."""
+    return base if audience is None else "%s~%s" % (base, audience_digest(audience))
+
+
 def writer_session(writer):
-    last = writer.rsplit("/", 1)[-1]
+    last = writer_base(writer).rsplit("/", 1)[-1]
     return last if UUID_RE.match(last) else ""
 
 
@@ -1842,7 +1878,7 @@ def owner_event(e):
     or the hub's `hub/<member>` (a send from the desk, which the hub stores
     only as a `human`). A session's `say`, and anything else, is a peer's:
     it reaches a session as a peer message, never as the human's words."""
-    writer = str(e.get("writer") or "")
+    writer = writer_base(str(e.get("writer") or ""))
     return e.get("kind") == "human" and (writer.startswith("hub/") or writer.rsplit("/", 1)[-1] == "human")
 
 
@@ -2303,7 +2339,7 @@ def own_operator_event(e):
     """Whether an event claims this machine's operator writer — a `human`
     event of `<name>/human`, `name` this machine's name now or a former one
     — which only its append receipt bears out (receipted)."""
-    head, _, tail = str(e.get("writer") or "").rpartition("/")
+    head, _, tail = writer_base(str(e.get("writer") or "")).rpartition("/")
     name, former = machine_identity()
     return e.get("kind") == "human" and tail == "human" and (head == name or head in former)
 
@@ -5971,13 +6007,24 @@ def export_host(project, session, tpath, alias):
 
 
 def _writer_events(project, host, session, store="log"):
-    """The events of the writer `<host>/<session>`, read directly."""
-    path = os.path.join(project.home, store, "%s.%s.jsonl" % (host, session))
-    try:
-        with open(path, encoding="utf-8", errors="replace") as f:
-            return [e for e in map(parse_event, f) if e]
-    except OSError:
-        return []
+    """The events of the writer `<host>/<session>` and of its audience
+    streams (`<host>/<session>~<digest>`, P5 O18 D6), read directly: the
+    plain file's, then each stream's, merged by ts, each file in its own
+    order."""
+    where = os.path.join(project.home, store)
+    paths = [os.path.join(where, "%s.%s.jsonl" % (host, session))]
+    if store == "log":
+        paths += sorted(glob.glob(os.path.join(glob.escape(where), "%s.%s~*.jsonl" % (host, session))))
+    files = []
+    for path in paths:
+        try:
+            with open(path, encoding="utf-8", errors="replace") as f:
+                files.append([e for e in map(parse_event, f) if e])
+        except OSError:
+            continue
+    if len(files) <= 1:
+        return files[0] if files else []
+    return list(heapq.merge(*files, key=lambda e: e["ts"]))
 
 
 def _former_events(project, session, store="log"):
