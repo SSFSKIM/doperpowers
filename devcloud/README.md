@@ -344,12 +344,17 @@ finishes the rest at the next:
    fails naming the kernel and the branch.
 2. **Docker Engine**: `docker-ce` and `containerd.io` from the Docker source
    the image configured (the image has only the client), the daemon enabled,
-   the user in the `docker` group (from its next login: a session the sminos
-   daemon started before then uses `sudo docker`).
+   the user in the `docker` group: what the boot runs as the user after the
+   step (a project's `devenv up`) has it at once, since every command run as
+   the user carries its groups from the group database; a login has it from
+   then on, and a session the sminos daemon started before uses `sudo docker`
+   until the next boot.
 3. **NVIDIA's container toolkit**: its key fetched and checked against the
    pinned fingerprint before it is written to
    `/etc/apt/keyrings/nvidia-container-toolkit.asc`, then its source and
-   `nvidia-container-toolkit`.
+   `nvidia-container-toolkit`. It is present when both `nvidia-ctk` and
+   `nvidia-container-runtime-hook` are: `nvidia-ctk` alone is the base
+   package of a CDI-only install, which lacks the hook Docker's `--gpus` runs.
 4. **The runtime**: `nvidia-ctk runtime configure --runtime=docker`, and the
    daemon restarted when that changed `/etc/docker/daemon.json` (a restart
    that failed stays owed until one succeeds).
@@ -803,7 +808,9 @@ default subnets; a spot request is a one-time spot instance that terminates on
 interruption, and needs the account's `AWSServiceRoleForEC2Spot` role. Since
 EC2 gives a spot instance two minutes' notice and does not run its shutdown in
 time, a spot host runs `devcloud-spot-notice.service`, which asks IMDS for the
-notice every 5 seconds and departs fast once it appears. Images are AMIs with
+notice every 5 seconds and departs fast once it appears; a job holding the
+lifecycle lock then (a pull or a reconcile) is waited out, asked again every 5
+seconds, while the notice's two minutes still leave the departure its 25. Images are AMIs with
 their snapshots, deleted together; `images` also deletes devcloud snapshots
 older than a day that no AMI names (left by an interrupted deletion). A provider of the person's own lives in the profile's
 `providers/<name>`: the person registers it once (`provider register

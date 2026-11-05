@@ -62,6 +62,15 @@ class User:
         env.update(extra or {})
         return env
 
+    def groups(self):
+        """The user's groups as a login gets them, from the group database
+        read now: a group a step added this boot (the GPU step's `docker`)
+        counts at once for what runs as the user after it."""
+        try:
+            return os.getgrouplist(self.name, self.gid)
+        except (KeyError, OSError):
+            return [self.gid]
+
     def bus_env(self, env):
         """`env` with XDG_RUNTIME_DIR, where `systemctl --user` finds the user
         manager's bus. Nothing run as the user here sets it, and without it
@@ -135,7 +144,7 @@ def run(argv, *, user=None, env=None, log=None, input=None, capture=False, timeo
     label = " ".join(pathlib.Path(argv[0]).name if i == 0 else a for i, a in enumerate(argv[:2]))
     kwargs = {}
     if _drops(user):
-        kwargs.update(user=user.uid, group=user.gid, extra_groups=[])
+        kwargs.update(user=user.uid, group=user.gid, extra_groups=user.groups())
     where = f" (log {log_path(log)})" if log else ""
     try:
         result = subprocess.run(
@@ -164,7 +173,7 @@ def call(argv, *, user=None, env=None, log=None, input=None, timeout=600, cwd=No
     timeout is exit 124, a missing command 127."""
     kwargs = {}
     if _drops(user):
-        kwargs.update(user=user.uid, group=user.gid, extra_groups=[])
+        kwargs.update(user=user.uid, group=user.gid, extra_groups=user.groups())
     try:
         result = subprocess.run(
             argv, env=env, cwd=cwd, timeout=timeout,

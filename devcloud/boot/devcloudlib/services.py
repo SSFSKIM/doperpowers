@@ -428,7 +428,8 @@ class Supervisor:
         s = slot.service
         kwargs = {}
         if s.as_user and self.user and os.geteuid() == 0:
-            kwargs = dict(user=self.user.uid, group=self.user.gid, extra_groups=[], cwd=str(self.user.home))
+            kwargs = dict(user=self.user.uid, group=self.user.gid, extra_groups=self.user.groups(),
+                          cwd=str(self.user.home))
         read, write = os.pipe()
         try:
             slot.proc = subprocess.Popen(list(s.argv), env=self._env(s), start_new_session=True,

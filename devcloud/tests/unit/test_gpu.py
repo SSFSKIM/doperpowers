@@ -38,7 +38,10 @@ TOOLKIT = "nvidia-container-toolkit"
 COMMANDS = ("apt-get", "apt-cache", "dpkg-query", "modprobe", "nvidia-smi", "nvidia-ctk", "docker", "dockerd",
             "systemctl", "getent", "usermod", "curl")
 # What a package puts on the PATH.
-PROVIDES = {UTILS: "nvidia-smi", "docker-ce": "dockerd", TOOLKIT: "nvidia-ctk"}
+TOOLKIT_BASE = "nvidia-container-toolkit-base"
+# The toolkit's base package (CDI's) has nvidia-ctk but not the hook Docker's --gpus runs.
+PROVIDES = {UTILS: ["nvidia-smi"], "docker-ce": ["dockerd"], TOOLKIT_BASE: ["nvidia-ctk"],
+            TOOLKIT: ["nvidia-ctk", "nvidia-container-runtime-hook"]}
 
 FAKE = r'''#!PYTHON
 import json, os, pathlib, sys
@@ -88,8 +91,8 @@ if cmd == "apt-get":
             done(100, err=f"E: Unable to locate package {package}\n")
     for package in packages:
         s["installed"].append(package)
-        if package in s["provides"]:
-            put(s["provides"][package])
+        for command in s["provides"].get(package, []):
+            put(command)
         if package == s["meta"]:
             # The flavour's metapackage: the newer kernel and its modules.
             s["installed"].append(s["exact_next"])
@@ -146,6 +149,8 @@ if cmd == "docker":
     runtime = path.exists() and "nvidia" in json.loads(path.read_text()).get("runtimes", {})
     # The daemon runs the runtime it read when it last (re)started.
     runtime = runtime and "nvidia" in json.loads(s["restarted_with"] or "{}").get("runtimes", {})
+    # The runtime runs the toolkit's hook, which only the full package ships.
+    runtime = runtime and os.path.lexists(os.path.join(s["bin"], "nvidia-container-runtime-hook"))
     if not (s["docker_active"] and runtime and (s["loaded"] or s["own_driver"])) or s["container_blind"]:
         done(125, err='docker: Error response from daemon: could not select device driver "" with capabilities: '
                       '[[gpu]].\n')
@@ -225,8 +230,9 @@ class Machine:
         state["installed"] += packages
         self.state_path.write_text(json.dumps(state))
         for package in packages:
-            if package in PROVIDES and not self.has(PROVIDES[package]):
-                (self.bin / PROVIDES[package]).symlink_to(self.fake)
+            for command in PROVIDES.get(package, []):
+                if not self.has(command):
+                    (self.bin / command).symlink_to(self.fake)
 
     def calls(self, command=None):
         return [c for c in self.read()["calls"] if command is None or c[0] == command]
@@ -258,7 +264,8 @@ class GpuStepTest(unittest.TestCase):
             patch.start()
             self.addCleanup(patch.stop)
         for patch in (mock.patch.object(proc, "LOG_DIR", self.root / "log"),
-                      mock.patch.object(gpu, "APT_ENV", dict(gpu.APT_ENV, PATH=self.m.path, FAKE_GPU_STATE=str(self.m.state_path))),
+                      mock.patch.object(gpu, "APT_ENV", dict(gpu.APT_ENV, PATH=self.m.path,
+                                                             FAKE_GPU_STATE=str(self.m.state_path))),
                       mock.patch.dict(os.environ, {"PATH": self.m.path, "FAKE_GPU_STATE": str(self.m.state_path)})):
             patch.start()
             self.addCleanup(patch.stop)
@@ -355,6 +362,7 @@ class GpuStepTest(unittest.TestCase):
         if missing == "toolkit":
             state["installed"].remove(TOOLKIT)
             (self.m.bin / "nvidia-ctk").unlink()
+            (self.m.bin / "nvidia-container-runtime-hook").unlink()
         if missing == "runtime":
             gpu.DAEMON_JSON.unlink()
             state["restarted_with"] = None
@@ -405,6 +413,15 @@ class GpuStepTest(unittest.TestCase):
         self.assertEqual(outcome.state, "ok", outcome.detail)
         self.assertIn("(driver 550.163.01)", outcome.detail)
         self.assertEqual(self.m.installs(), [[TOOLKIT]])
+
+    def test_a_toolkit_base_alone_is_completed_with_the_docker_hook(self):
+        # NVIDIA's CDI-only install: nvidia-ctk is there, the hook Docker's --gpus needs is not.
+        self.m.device("0000:00:1e.0")
+        self.m.install_already(TOOLKIT_BASE)
+        outcome = self.step()
+        self.assertEqual(outcome.state, "ok", outcome.detail)
+        self.assertIn([TOOLKIT], self.m.installs())
+        self.assertIn("installed NVIDIA's container toolkit", outcome.detail)
 
     def test_an_adopted_machines_older_driver_passes_the_container_check(self):
         # R525 supports CUDA 12.0; the check image asks for 13.0, which the check does not need.

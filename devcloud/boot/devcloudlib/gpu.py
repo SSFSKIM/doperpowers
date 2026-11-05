@@ -229,8 +229,9 @@ def _flavour_meta(apt, kernel):
         candidate = f"linux-modules-nvidia-{BRANCH}-server-open-{meta[len('linux-image-'):]}"
         if apt.has(candidate):
             return candidate
+    flavours = ", ".join(metas) or "no linux-image metapackage installed"
     raise StepError(f"Ubuntu's archive has no linux-modules-nvidia-{BRANCH}-server-open package for the running "
-                    f"kernel {kernel}, nor for its flavour ({', '.join(metas) or 'no linux-image metapackage installed'})")
+                    f"kernel {kernel}, nor for its flavour ({flavours})")
 
 
 # --- 2. Docker Engine ------------------------------------------------------------
@@ -256,7 +257,9 @@ def _docker_group():
 # --- 3. the container toolkit ----------------------------------------------------
 
 def _toolkit(apt, did):
-    if shutil.which("nvidia-ctk") is not None:
+    # nvidia-ctk alone is the base package (CDI's); Docker's --gpus runs the
+    # hook only the full package ships, which --no-remove installs over it.
+    if all(shutil.which(command) is not None for command in ("nvidia-ctk", "nvidia-container-runtime-hook")):
         return
     key = proc.run(["curl", "-fsSL", "--retry", "3", TOOLKIT_KEY_URL], log=LOG, capture=True, timeout=120)
     found = primary_fingerprints(key)
