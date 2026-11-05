@@ -29,7 +29,10 @@
                              sessions that keep starting)
   devcloud depart --preempted
                              the spot reclaim's (devcloud-spot.service at shutdown): a
-                             fast departure, only when GCE says this VM is reclaimed
+                             fast departure, only when GCE or EC2 says this VM is reclaimed
+  devcloud depart --spot-notice
+                             EC2's spot watch (devcloud-spot-notice.service): asks for the
+                             interruption notice every 5 s, and departs fast once it appears
   devcloud release [--force] [--no-hold]
                              an adopted machine's departure: devcloud removed, the
                              machine left running with the access it had
@@ -124,11 +127,14 @@ def lifecycle(argv):
         return usage()
     host = departure.Host(user=user, allow_http=ALLOW_HTTP)
     if command == "depart":
-        given = flags(args, ("--force", "--no-hold", "--no-poweroff", "--preempted"))
-        if given is None or ("--preempted" in given and len(given) > 1):
+        given = flags(args, ("--force", "--no-hold", "--no-poweroff", "--preempted", "--spot-notice"))
+        if given is None or (given & {"--preempted", "--spot-notice"} and len(given) > 1):
             return usage()
         if "--preempted" in given:
             return departure.depart_preempted(host)
+        if "--spot-notice" in given:
+            from devcloudlib import ec2spot
+            return ec2spot.watch(ec2spot.Imds(), lambda: departure.depart_preempted(host), say=host.say)
         return departure.depart(host, force="--force" in given, no_hold="--no-hold" in given,
                                 no_poweroff="--no-poweroff" in given)
     given = flags(args, ("--force", "--no-hold"))

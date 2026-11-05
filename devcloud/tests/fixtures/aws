@@ -1,0 +1,326 @@
+#!/usr/bin/env python3
+"""The stand-in `aws` CLI v2 for the aws provider's tests: state in the JSON file $FAKE_AWS_STATE,
+per region under `regions` (instance_types, offerings, vpcs, subnets, security_groups, instances,
+images, snapshots, ssm), the price list under `products` (one dict per product, served as the JSON
+strings `get-products` returns), and `calls`, `fail`, `next_id`, `now`.
+
+Every invocation's argv is appended to `calls`, with the AWS_* environment it saw (the secret's
+value replaced by its length). It exits 99 unless the configuration and credentials files are named,
+empty and not the person's (~/.aws), and AWS_PROFILE is unset, so a provider that would read the
+person's own profiles or sign-in fails loudly; 253 without the key; 252 without --region,
+`--output json` or `--no-cli-pager`.
+
+`fail["<service> <op>"]` is a list of {"code", "stderr"} (or {"code", "error", "message"}, shaped
+as the CLI prints a service error), each consumed by one call of that command, so a test can fail
+the first run-instances and let the second through. Structured arguments are JSON, as the provider
+passes them; `fileb://<path>` is read as bytes and kept base64. An instance in state `stopping`
+becomes `stopped` after `stopping_reads` describes (default 1)."""
+import base64
+import fnmatch
+import json
+import os
+import pathlib
+import sys
+
+ARGV = sys.argv[1:]
+STATE_PATH = os.environ["FAKE_AWS_STATE"]
+with open(STATE_PATH) as f:
+    state = json.load(f)
+SECRET = os.environ.get("AWS_SECRET_ACCESS_KEY")
+state.setdefault("calls", []).append({"argv": ARGV, "env": {
+    k: (f"<{len(v)} chars>" if k == "AWS_SECRET_ACCESS_KEY" else v)
+    for k, v in os.environ.items() if k.startswith("AWS_")}})
+
+
+def save():
+    with open(STATE_PATH, "w") as f:
+        json.dump(state, f, indent=1)
+
+
+def die(code, message):
+    save()
+    sys.stderr.write(message.rstrip("\n") + "\n")
+    sys.exit(code)
+
+
+def error(code, op, message):
+    die(254, f"\nAn error occurred ({code}) when calling the {op} operation: {message}")
+
+
+def out(value):
+    save()
+    if value is not None:
+        print(json.dumps(value, indent=4))
+    sys.exit(0)
+
+
+home_aws = (pathlib.Path.home() / ".aws").resolve()
+for var in ("AWS_CONFIG_FILE", "AWS_SHARED_CREDENTIALS_FILE"):
+    path = os.environ.get(var)
+    if not path:
+        die(99, f"fake aws: {var} must name a private, empty file")
+    resolved = pathlib.Path(path).expanduser().resolve()
+    if resolved == home_aws or home_aws in resolved.parents or not resolved.is_file() or resolved.stat().st_size:
+        die(99, f"fake aws: {var} must name a private, empty file, not {path}")
+if "AWS_PROFILE" in os.environ or "AWS_DEFAULT_PROFILE" in os.environ:
+    die(99, "fake aws: a profile is named; the provider must use its key alone")
+if not os.environ.get("AWS_ACCESS_KEY_ID") or not SECRET:
+    die(253, "\nUnable to locate credentials. You can configure credentials by running \"aws login\".")
+
+BOOLEAN = {"--no-reboot", "--delete-associated-snapshots", "--no-cli-pager", "--dry-run"}
+words, flags, i = [], {}, 0
+while i < len(ARGV):
+    a = ARGV[i]
+    if a.startswith("--"):
+        if a in BOOLEAN:
+            flags[a] = True
+        else:
+            if i + 1 >= len(ARGV):
+                die(252, f"aws: error: argument {a}: expected one argument")
+            value = ARGV[i + 1]
+            if value[:1] in "[{":
+                value = json.loads(value)
+            elif value.startswith("fileb://"):
+                value = {"fileb": base64.b64encode(pathlib.Path(value[8:]).read_bytes()).decode()}
+            flags[a] = value
+            i += 1
+    else:
+        words.append(a)
+    i += 1
+
+if flags.get("--output") != "json" or "--no-cli-pager" not in flags:
+    die(252, "fake aws: every call passes --output json and --no-cli-pager")
+REGION = flags.get("--region")
+if not REGION:
+    die(252, "\nYou must specify a region. You can also configure your region by running \"aws configure\".")
+service, op = (words + ["", ""])[:2]
+command = f"{service} {op}"
+queue = state.get("fail", {}).get(command) or []
+if queue:
+    failure = queue.pop(0)
+    if "error" in failure:
+        error(failure["error"], failure.get("operation", op), failure.get("message", "made-up failure"))
+    die(failure.get("code", 254), failure["stderr"])
+
+NOW = state.get("now", "2026-11-04T10:00:00+00:00")
+region = state.setdefault("regions", {}).setdefault(REGION, {})
+for key in ("instance_types", "offerings", "vpcs", "subnets", "security_groups", "instances", "images", "snapshots"):
+    region.setdefault(key, [])
+
+
+def new_id(prefix):
+    n = state.get("next_id", 1000)
+    state["next_id"] = n + 1
+    return f"{prefix}-{n:017x}"
+
+
+def tags_of(item):
+    return {t["Key"]: t["Value"] for t in item.get("Tags") or []}
+
+
+def tag_spec(kind):
+    for spec in flags.get("--tag-specifications") or []:
+        if spec["ResourceType"] == kind:
+            return [dict(t) for t in spec["Tags"]]
+    return []
+
+
+ATTRS = {
+    "instance-state-name": lambda x: [x["State"]["Name"]],
+    "instance-type": lambda x: [x["InstanceType"]],
+    "processor-info.supported-architecture": lambda x: x["ProcessorInfo"]["SupportedArchitectures"],
+    "location": lambda x: [x.get("Location")],
+    "is-default": lambda x: [str(x.get("IsDefault")).lower()],
+    "vpc-id": lambda x: [x.get("VpcId")],
+    "default-for-az": lambda x: [str(x.get("DefaultForAz")).lower()],
+    "group-name": lambda x: [x.get("GroupName")],
+    "tag-key": lambda x: list(tags_of(x)),
+}
+
+
+def keep(item, filters):
+    for f in filters or []:
+        name, values = f["Name"], f["Values"]
+        if name.startswith("tag:"):
+            have = [tags_of(item)[name[4:]]] if name[4:] in tags_of(item) else []
+        elif name in ATTRS:
+            have = ATTRS[name](item)
+        else:
+            die(252, f"fake aws: unsupported filter {name}")
+        if not any(fnmatch.fnmatchcase(h or "", v) for h in have for v in values):
+            return False
+    return True
+
+
+def find(kind, key, value, code, opname):
+    for item in region[kind]:
+        if item[key] == value:
+            return item
+    error(code, opname, f"The {key} '{value}' does not exist")
+
+
+def instance_ids(opname):
+    ids = flags.get("--instance-ids")
+    ids = [ids] if isinstance(ids, str) else ids or []
+    for iid in ids:
+        if not iid.startswith("i-"):
+            error("InvalidInstanceID.Malformed", opname, f"Invalid id: \"{iid}\"")
+    return ids
+
+
+if command == "ec2 describe-instance-types":
+    out({"InstanceTypes": [t for t in region["instance_types"] if keep(t, flags.get("--filters"))]})
+elif command == "ec2 describe-instance-type-offerings":
+    if flags.get("--location-type") != "region":
+        die(252, "fake aws: only --location-type region")
+    offers = [{"InstanceType": t, "LocationType": "region", "Location": REGION} for t in region["offerings"]]
+    out({"InstanceTypeOfferings": [o for o in offers if keep(o, flags.get("--filters"))]})
+elif command == "ec2 describe-vpcs":
+    out({"Vpcs": [v for v in region["vpcs"] if keep(v, flags.get("--filters"))]})
+elif command == "ec2 describe-subnets":
+    out({"Subnets": [s for s in region["subnets"] if keep(s, flags.get("--filters"))]})
+elif command == "ec2 describe-security-groups":
+    out({"SecurityGroups": [g for g in region["security_groups"] if keep(g, flags.get("--filters"))]})
+elif command == "ec2 create-security-group":
+    vpc, name = flags["--vpc-id"], flags["--group-name"]
+    if any(g["VpcId"] == vpc and g["GroupName"] == name for g in region["security_groups"]):
+        error("InvalidGroup.Duplicate", "CreateSecurityGroup", f"The security group '{name}' already exists for VPC "
+                                                               f"'{vpc}'")
+    gid = new_id("sg")
+    region["security_groups"].append({"GroupId": gid, "GroupName": name, "VpcId": vpc,
+                                      "Description": flags["--description"], "Tags": tag_spec("security-group"),
+                                      "IpPermissions": [], "IpPermissionsEgress": [{"IpProtocol": "-1"}]})
+    out({"GroupId": gid})
+elif command == "ec2 authorize-security-group-ingress":
+    group = find("security_groups", "GroupId", flags["--group-id"], "InvalidGroup.NotFound",
+                 "AuthorizeSecurityGroupIngress")
+    for perm in flags["--ip-permissions"]:
+        if perm in group["IpPermissions"]:
+            error("InvalidPermission.Duplicate", "AuthorizeSecurityGroupIngress", "the rule already exists")
+        group["IpPermissions"].append(perm)
+    out({"Return": True})
+elif command == "ec2 run-instances":
+    image = flags["--image-id"]
+    if not any(i["ImageId"] == image for i in region["images"] + region.get("public_images", [])):
+        error("InvalidAMIID.NotFound", "RunInstances", f"The image id '[{image}]' does not exist")
+    known = {t["InstanceType"] for t in region["instance_types"]}
+    if flags["--instance-type"] not in known:
+        error("InvalidParameterValue", "RunInstances", f"Invalid value '{flags['--instance-type']}' for InstanceType.")
+    [nic] = flags["--network-interfaces"]
+    subnet = find("subnets", "SubnetId", nic["SubnetId"], "InvalidSubnetID.NotFound", "RunInstances")
+    iid = new_id("i")
+    root = flags["--block-device-mappings"][0]["DeviceName"]
+    made = {
+        "InstanceId": iid, "InstanceType": flags["--instance-type"], "ImageId": image,
+        "State": {"Code": 16, "Name": "running"}, "LaunchTime": NOW,
+        "Placement": {"AvailabilityZone": subnet["AvailabilityZone"]}, "SubnetId": subnet["SubnetId"],
+        "VpcId": subnet["VpcId"], "PublicIpAddress": f"192.0.2.{state['next_id'] % 256}",
+        "RootDeviceName": root, "Tags": tag_spec("instance"),
+        "BlockDeviceMappings": [{"DeviceName": root, "Ebs": {"AttachTime": NOW, "DeleteOnTermination": True,
+                                                             "Status": "attached", "VolumeId": new_id("vol")}}],
+        "SecurityGroups": [{"GroupId": g} for g in nic.get("Groups", [])],
+        "_request": {k: v for k, v in flags.items() if k not in ("--region", "--output", "--no-cli-pager")},
+        "_volume_tags": tag_spec("volume"),
+    }
+    if (flags.get("--instance-market-options") or {}).get("MarketType") == "spot":
+        made["InstanceLifecycle"] = "spot"
+    region["instances"].append(made)
+    shown = {k: v for k, v in made.items() if not k.startswith("_") and k != "PublicIpAddress"}
+    shown["State"] = {"Code": 0, "Name": "pending"}
+    out({"Instances": [shown], "OwnerId": "000000000000"})
+elif command == "ec2 describe-instances":
+    ids = instance_ids("DescribeInstances")
+    for iid in ids:
+        find("instances", "InstanceId", iid, "InvalidInstanceID.NotFound", "DescribeInstances")
+    found = [x for x in region["instances"] if (not ids or x["InstanceId"] in ids) and keep(x, flags.get("--filters"))]
+    for x in found:
+        if x["State"]["Name"] == "stopping":
+            x["_reads"] = x.get("_reads", 0) + 1
+            if x["_reads"] > x.get("stopping_reads", 1):
+                x["State"] = {"Code": 80, "Name": "stopped"}
+    shown = [{k: v for k, v in x.items() if not k.startswith("_") and k != "stopping_reads"} for x in found]
+    out({"Reservations": [{"Instances": shown}] if shown else []})
+elif command in ("ec2 create-tags", "ec2 delete-tags"):
+    resource = flags["--resources"]
+    item = find("instances", "InstanceId", resource, "InvalidInstanceID.NotFound",
+                "CreateTags" if op == "create-tags" else "DeleteTags")
+    tags = tags_of(item)
+    for t in flags["--tags"]:
+        if op == "create-tags":
+            tags[t["Key"]] = t["Value"]
+        else:
+            tags.pop(t["Key"], None)
+    item["Tags"] = [{"Key": k, "Value": v} for k, v in tags.items()]
+    out(None)
+elif command == "ec2 terminate-instances":
+    [iid] = instance_ids("TerminateInstances")
+    item = find("instances", "InstanceId", iid, "InvalidInstanceID.NotFound", "TerminateInstances")
+    before = item["State"]
+    item["State"] = {"Code": 48, "Name": "terminated"}
+    out({"TerminatingInstances": [{"InstanceId": iid, "PreviousState": before, "CurrentState": item["State"]}]})
+elif command == "ec2 create-image":
+    item = find("instances", "InstanceId", flags["--instance-id"], "InvalidInstanceID.NotFound", "CreateImage")
+    if item["State"]["Name"] not in ("running", "stopped"):
+        error("IncorrectInstanceState", "CreateImage", f"The instance '{item['InstanceId']}' is not in a state from "
+                                                       "which it can be imaged.")
+    ami, snap = new_id("ami"), new_id("snap")
+    region["images"].append({"ImageId": ami, "Name": flags["--name"], "State": state.get("image_state", "available"),
+                             "CreationDate": NOW.replace("+00:00", ".000Z"), "OwnerId": "000000000000",
+                             "Tags": tag_spec("image"), "_from": item["InstanceId"],
+                             "_no_reboot": bool(flags.get("--no-reboot")),
+                             "BlockDeviceMappings": [{"DeviceName": item["RootDeviceName"],
+                                                      "Ebs": {"SnapshotId": snap, "VolumeSize": 50}}]})
+    region["snapshots"].append({"SnapshotId": snap, "StartTime": NOW, "OwnerId": "000000000000",
+                                "Tags": tag_spec("snapshot")})
+    out({"ImageId": ami})
+elif command == "ec2 describe-images":
+    ids = flags.get("--image-ids")
+    ids = [ids] if isinstance(ids, str) else ids or []
+    pool = region["images"] + ([] if flags.get("--owners") == "self" else region.get("public_images", []))
+    for iid in ids:
+        if not any(x["ImageId"] == iid for x in pool):
+            error("InvalidAMIID.NotFound", "DescribeImages", f"The image id '[{iid}]' does not exist")
+    found = [x for x in pool if (not ids or x["ImageId"] in ids) and keep(x, flags.get("--filters"))]
+    out({"Images": [{k: v for k, v in x.items() if not k.startswith("_")} for x in found]})
+elif command == "ec2 deregister-image":
+    item = find("images", "ImageId", flags["--image-id"], "InvalidAMIID.NotFound", "DeregisterImage")
+    region["images"].remove(item)
+    results = []
+    if flags.get("--delete-associated-snapshots"):
+        named = {m["Ebs"]["SnapshotId"] for m in item["BlockDeviceMappings"] if "SnapshotId" in m.get("Ebs", {})}
+        region["snapshots"] = [s for s in region["snapshots"] if s["SnapshotId"] not in named]
+        results = [{"SnapshotId": s, "ReturnCode": "success"} for s in sorted(named)]
+    out({"Return": True, "DeleteSnapshotResults": results})
+elif command == "ec2 describe-snapshots":
+    if flags.get("--owner-ids") != "self":
+        die(252, "fake aws: describe-snapshots only for --owner-ids self")
+    out({"Snapshots": [s for s in region["snapshots"] if keep(s, flags.get("--filters"))]})
+elif command == "ec2 delete-snapshot":
+    item = find("snapshots", "SnapshotId", flags["--snapshot-id"], "InvalidSnapshot.NotFound", "DeleteSnapshot")
+    region["snapshots"].remove(item)
+    out(None)
+elif command == "ssm get-parameter":
+    name = flags["--name"]
+    if name not in region.get("ssm", {}):
+        error("ParameterNotFound", "GetParameter", "")
+    out({"Parameter": {"Name": name, "Type": "String", "Value": region["ssm"][name], "Version": 1}})
+elif command == "pricing get-products":
+    if REGION != "us-east-1" or flags.get("--service-code") != "AmazonEC2":
+        die(252, "fake aws: the price list is read from us-east-1, service AmazonEC2")
+    matched = []
+    for product in state.get("products", []):
+        attrs = product["product"]["attributes"]
+        ok = True
+        for f in flags["--filters"]:
+            have = attrs.get(f["Field"])
+            if f["Type"] == "TERM_MATCH":
+                ok = ok and have == f["Value"]
+            elif f["Type"] == "ANY_OF":
+                ok = ok and have in f["Value"].split(",")
+            else:
+                die(252, f"fake aws: unsupported price filter {f['Type']}")
+        if ok:
+            matched.append(json.dumps(product))
+    out({"FormatVersion": "aws_v1", "PriceList": matched})
+else:
+    die(252, f"fake aws: unsupported command: {' '.join(words)}")

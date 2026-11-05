@@ -57,6 +57,7 @@ class SecondGuardTest(unittest.TestCase):
         self.units = tmp / "units"
         self.units.mkdir()
         (self.units / services.SPOT_UNIT).write_text("")
+        (self.units / services.SPOT_NOTICE_UNIT).write_text("")
         self.pending = tmp / "pending"
         booted = tmp / "booted"
         booted.write_text("")
@@ -122,6 +123,20 @@ class SecondGuardTest(unittest.TestCase):
         calls, _ = self.apply(spot=False)
         self.assertIn(["systemctl", "disable", services.SPOT_UNIT], calls)
         self.assertFalse(any(c[:2] == ["systemctl", "enable"] and services.SPOT_UNIT in c for c in calls))
+
+    def test_the_ec2_spot_notice_watch_runs_on_a_spot_vm_only(self):
+        calls, detail = self.apply(spot=True)
+        self.assertIn(["systemctl", "enable", "--now", "--no-block", services.SPOT_NOTICE_UNIT], calls)
+        self.assertIn(f"{services.SPOT_NOTICE_UNIT} enabled", detail)
+        calls, _ = self.apply(spot=False)
+        self.assertIn(["systemctl", "disable", "--now", services.SPOT_NOTICE_UNIT], calls)
+        self.assertFalse(any(c[:2] == ["systemctl", "enable"] and services.SPOT_NOTICE_UNIT in c for c in calls))
+
+    def test_an_image_without_the_watch_unit_still_enables_the_spot_unit(self):
+        (self.units / services.SPOT_NOTICE_UNIT).unlink()
+        calls, _ = self.apply(spot=True)
+        self.assertIn(["systemctl", "enable", "--now", "--no-block", services.SPOT_UNIT], calls)
+        self.assertFalse(any(services.SPOT_NOTICE_UNIT in c for c in calls))
 
 
 class ServicesStepTest(unittest.TestCase):

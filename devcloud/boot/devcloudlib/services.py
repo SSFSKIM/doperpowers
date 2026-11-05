@@ -31,8 +31,11 @@ INTERVAL = 1800
 # The lease and enroll services' interval (Design §4.1, §10): fixed, whatever
 # the jobs' interval.
 LIFECYCLE_INTERVAL = 300
-# Shipped disabled by the image; the boot enables it only on a spot VM (§4.2).
+# Shipped disabled by the image; the boot enables them only on a spot VM: the
+# reclaim's departure at shutdown (GCE, §4.2), and the watch of EC2's
+# interruption notice, which comes before any shutdown (§6.6).
 SPOT_UNIT = "devcloud-spot.service"
+SPOT_NOTICE_UNIT = "devcloud-spot-notice.service"
 # Written by a boot that made the host (exit 0, or 3 when only projects
 # failed), removed when a boot starts: a continuous unit runs only on a host
 # a boot made. Under /run, so a reboot starts without it.
@@ -201,6 +204,11 @@ def apply_systemd(user, env_changed, run=run, unit_dir=UNIT_DIR, pending_dir=PEN
         # unit this runs in, so a start waited for here would never end.
         run(["systemctl", "enable", "--now", "--no-block", SPOT_UNIT] if spot
             else ["systemctl", "disable", SPOT_UNIT], log="services", timeout=60)
+    if persistent and (unit_dir / SPOT_NOTICE_UNIT).exists():
+        # Stopped as well as disabled when not spot: its stop departs nothing,
+        # unlike the reclaim unit's.
+        run(["systemctl", "enable", "--now", "--no-block", SPOT_NOTICE_UNIT] if spot
+            else ["systemctl", "disable", "--now", SPOT_NOTICE_UNIT], log="services", timeout=60)
     if BOOTED.exists():
         start_gated(user, run=run, pending_dir=pending_dir, lifecycle=lifecycle)
     detail = "systemd: " + (", ".join(started) or "nothing")
@@ -209,6 +217,8 @@ def apply_systemd(user, env_changed, run=run, unit_dir=UNIT_DIR, pending_dir=PEN
                    f"{', '.join(held_back)} not started")
     if persistent and spot:
         detail += f"; {SPOT_UNIT} enabled"
+        if (unit_dir / SPOT_NOTICE_UNIT).exists():
+            detail += f", {SPOT_NOTICE_UNIT} enabled"
     if not BOOTED.exists():
         detail += f" ({', '.join(s.name for s in listed if s.every is None)} once the boot has made the host)"
     if gone:

@@ -78,6 +78,19 @@ class BuilderTypeTest(unittest.TestCase):
         self.assertEqual(images.builder_type(types)["type"], "cax11")
         self.assertEqual(images.builder_type(types, arch="x86")["type"], "cx22")
 
+    def test_a_builder_has_at_least_1_gb_of_memory(self):
+        # setup.sh does not fit in EC2's t3.nano (0.5 GB); every provider's builder gets the floor.
+        types = [{"type": "t3.nano", "vcpus": 2, "memory_gb": 0.5, "disk_gb": 50, "available": True,
+                  "hourly_price": 0.0052, "architecture": "x86"},
+                 {"type": "t3.micro", "vcpus": 2, "memory_gb": 1.0, "disk_gb": 50, "available": True,
+                  "hourly_price": 0.0104, "architecture": "x86"},
+                 {"type": "t3.small", "vcpus": 2, "memory_gb": 2.0, "disk_gb": 50, "available": True,
+                  "hourly_price": 0.0208, "architecture": "x86"}]
+        self.assertEqual(images.builder_type(types, arch="x86")["type"], "t3.micro")
+        with self.assertRaises(DriverError) as caught:
+            images.builder_type(types[:1])
+        self.assertEqual(caught.exception.code, 3)
+
     def test_nothing_available_is_a_refusal(self):
         with self.assertRaises(DriverError) as caught:
             images.builder_type([{"type": "gone", "vcpus": 1, "disk_gb": 20, "available": False}])

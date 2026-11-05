@@ -711,6 +711,8 @@ def under_systemd():
         wait_active(unit)
     check(out(VM, "systemctl is-enabled devcloud-spot.service || true").strip() == "disabled",
           "the spot unit is enabled on a VM that is not spot")
+    check(out(VM, "systemctl is-enabled devcloud-spot-notice.service || true").strip() == "disabled",
+          "EC2's spot notice watch is enabled on a VM that is not spot")
     check("ConditionPathExists=/etc/devcloud/boot.env" in out(VM, "systemctl cat devcloud-boot.service"),
           "the boot unit runs without a descriptor")
     check(sh(VM, "command -v nft", check_rc=False).returncode == 0, "nft is not installed")
@@ -1001,6 +1003,20 @@ def spot_vm_boots():
               + out(SPOT, "systemctl status devcloud-spot.service --no-pager || true"))
         time.sleep(1)
     check("devcloud-spot.service enabled" in steps(SPOT)["services"]["detail"], steps(SPOT)["services"]["detail"])
+    # EC2's notice watch polls on: no IMDS here gives a notice, so it departs nothing.
+    check(out(SPOT, "systemctl is-enabled devcloud-spot-notice.service || true").strip() == "enabled",
+          "EC2's spot notice watch is not enabled on a spot VM")
+    end = time.monotonic() + 30
+    while out(SPOT, "systemctl is-active devcloud-spot-notice.service || true").strip() != "active":
+        check(time.monotonic() < end, "EC2's spot notice watch never started: "
+              + out(SPOT, "systemctl status devcloud-spot-notice.service --no-pager || true"))
+        time.sleep(1)
+    time.sleep(12)
+    check(out(SPOT, "systemctl is-active devcloud-spot-notice.service || true").strip() == "active",
+          "EC2's spot notice watch stopped polling: "
+          + out(SPOT, "journalctl -u devcloud-spot-notice --no-pager -n 20 || true"))
+    check(json.loads(out(SPOT, "cat /var/lib/devcloud/status.json")).get("lifecycle") is None,
+          "the spot VM departed with no notice")
     docker("rm", "-f", SPOT)
 
 

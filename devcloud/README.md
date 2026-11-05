@@ -740,7 +740,31 @@ disk (`GCE_DISK_GB`, 50 by default) and any custom machine types to offer
 types with at least 2 dedicated vCPUs and 2 GB and no accelerator, priced
 from the Cloud Billing catalog (cached a week), creates every instance with
 `block-project-ssh-keys=TRUE`, a spot request with termination action
-`DELETE`, and images in the family from a stopped builder's boot disk. A provider of the person's own lives in the profile's
+`DELETE`, and images in the family from a stopped builder's boot disk.
+`driver/providers/aws` ships as well: it drives the `aws` CLI v2 with the
+account's own IAM user (`env` names the two Secret Manager ids for
+`AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`) and nothing else — its
+`AWS_CONFIG_FILE` and `AWS_SHARED_CREDENTIALS_FILE` are empty files under
+`~/.local/state/devcloud/aws/`, and every other `AWS_*` variable is removed —
+so the person's own profiles and `aws login` session are never read. An
+account is one region: its `location` is the region, and `vars` must repeat
+it as `AWS_REGION`, since the operations without a location (the reaper's
+`list` among them) need it too; `AWS_FAMILIES` (default
+`t3,m7i,c7i,r7i,g6,g6e,g5`) and `AWS_DISK_GB` (the gp3 root volume, 50 by
+default) are optional. It offers the families' x86-64 types, priced from the
+Pricing API (cached a week), and creates each instance from Canonical's
+Ubuntu 24.04 AMI (or the account's devcloud AMI) in the region's default VPC
+with a public IPv4 address, IMDSv2 required, its labels as tags on the
+instance and its volume, and the security group `devcloud` (tagged
+`devcloud=network`, inbound TCP 22 and UDP 41641, found or made at create
+time and never deleted). A capacity refusal is retried in the region's other
+default subnets; a spot request is a one-time spot instance that terminates on
+interruption, and needs the account's `AWSServiceRoleForEC2Spot` role. Since
+EC2 gives a spot instance two minutes' notice and does not run its shutdown in
+time, a spot host runs `devcloud-spot-notice.service`, which asks IMDS for the
+notice every 5 seconds and departs fast once it appears. Images are AMIs with
+their snapshots, deleted together; `images` also deletes devcloud snapshots
+older than a day that no AMI names (left by an interrupted deletion). A provider of the person's own lives in the profile's
 `providers/<name>`: the person registers it once (`provider register
 <account> --confirmed` records its sha256 in `driver.toml`), and `provider
 test <account>` runs it through the conformance sequence on a real server; a
@@ -781,8 +805,9 @@ public half written to the profile's `driver-keys/<machine>.pub`, which the
 configuration sync pushes and every host authorizes), a `known_hosts` keyed
 by the server rather than its address (an adopted machine by its name), the
 reap log, when the reaper last tried each account's image build
-(`image-builds.json`), the adoption records (`adopted/`) and the gce
-provider's private gcloud configuration and price cache (`gce/`).
+(`image-builds.json`), the adoption records (`adopted/`), the gce
+provider's private gcloud configuration and price cache (`gce/`), and the aws
+provider's empty configuration files and price cache (`aws/`).
 
 ## Developing
 

@@ -169,6 +169,28 @@ TimeoutStopSec=28
 WantedBy=multi-user.target
 UNIT
 
+# EC2's spot interruption notice comes two minutes before the instance goes,
+# and EC2 does not run the guest's shutdown in time for a departure as GCE
+# does: this watch asks IMDS every 5 seconds and departs fast once the notice
+# appears (the driver's §6.6). Shipped disabled; the boot enables it on a spot
+# VM (DEVCLOUD_SPOT=1). A resident loop, not a 5-second timer, so the journal
+# does not record a start every 5 seconds.
+cat > /etc/systemd/system/devcloud-spot-notice.service <<'UNIT'
+[Unit]
+Description=devcloud: depart fast when EC2 schedules this spot VM's interruption
+Wants=network-online.target
+After=network-online.target tailscaled.service user.slice systemd-user-sessions.service devcloud-boot.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/devcloud depart --spot-notice
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
 rm -rf /root/.cache "$DEVCLOUD_HOME/.cache"
 
 # What the image never carries (acceptance 6): no descriptor, no credential, no checkout, no enrollment.

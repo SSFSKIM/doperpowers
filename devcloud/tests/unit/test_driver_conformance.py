@@ -12,6 +12,7 @@ from driver.provider import pass_paths, sha256_file
 
 from driver_fixtures import FIXTURES, NOW, DriverBase, vm_labels
 
+import test_aws_provider as aws
 import test_gce_provider as gce
 import test_hetzner_provider as hz
 
@@ -255,3 +256,44 @@ class GceConformanceTest(DriverBase):
         self.assertEqual(data["activated"], [str(self.seed)])
         self.assertEqual({c["env"]["CLOUDSDK_CONFIG"] for c in data["calls"]},
                          {str(home / ".local/state/devcloud/gce/gcloud")})
+
+
+class AwsConformanceTest(DriverBase):
+    """The shipped aws script through the whole sequence, its image
+    operations included, against the stand-in aws CLI: the account's key
+    reaches the CLI from Secret Manager, and nothing reaches the person's
+    own AWS configuration."""
+
+    def test_passes(self):
+        bin_dir = self.tmp / "bin"
+        bin_dir.mkdir()
+        (bin_dir / "aws").symlink_to(FIXTURES / "aws")
+        state = self.tmp / "aws.json"
+        state.write_text(json.dumps({"regions": {aws.REGION: aws.region_state(aws.REGION)},
+                                     "products": [aws.product("t3.nano", 0.0052)], "calls": [], "fail": {},
+                                     "next_id": 4096, "now": aws.NOW}))
+        self.secrets.values.update({"aws-key-id-secret": aws.KEY_ID, "aws-secret-key-secret": aws.SECRET + "\n"})
+        toml = self.profile_dir / "driver.toml"
+        text = toml.read_text().replace('provider = "fake"', 'provider = "aws"').replace(
+            'location = "here"', f'location = "{aws.REGION}"').replace('type = "medium"', 'type = "m7i.xlarge"').replace(
+            'env = { FAKE_TOKEN = "fake-token-secret" }',
+            'env = { AWS_ACCESS_KEY_ID = "aws-key-id-secret", AWS_SECRET_ACCESS_KEY = "aws-secret-key-secret" }').replace(
+            f'vars = {{ FAKE_PROVIDER_STATE = "{self.state_file}" }}',
+            f'vars = {{ FAKE_AWS_STATE = "{state}", AWS_REGION = "{aws.REGION}" }}')
+        toml.write_text(text)
+        home = self.tmp / "home"
+        ctx = self.make_ctx(env={"PATH": f"{bin_dir}:{os.environ['PATH']}", "HOME": str(home),
+                                 "AWS_PROFILE": "persons-profile"})
+        self.assertEqual(conformance.test(ctx, "main", gone_window=3, running_window=3, poll=1), 0)
+        out = self.out.getvalue()
+        self.assertIn("types ok (t3.nano", out)
+        self.assertIn("images ok", out)
+        data = json.loads(state.read_text())
+        region = data["regions"][aws.REGION]
+        self.assertEqual([i["State"]["Name"] for i in region["instances"]], ["terminated"])
+        self.assertEqual(region["images"], [])
+        self.assertEqual(region["snapshots"], [])
+        self.assertEqual({c["env"]["AWS_CONFIG_FILE"] for c in data["calls"]},
+                         {str(home / ".local/state/devcloud/aws/config")})
+        self.assertEqual({c["env"]["AWS_ACCESS_KEY_ID"] for c in data["calls"]}, {aws.KEY_ID})
+        self.assertNotIn(aws.SECRET, out + self.err.getvalue())

@@ -410,6 +410,16 @@ class DepartTest(DepartureBase):
         self.assertLessEqual(self.world.clock, departure.PREEMPT_BUDGET, "the session wait outlasted the window")
         self.assertEqual(self.lifecycle()["state"], "departed")
 
+    def test_a_reclaim_already_departed_departs_nothing_again(self):
+        # EC2's notice starts the departure two minutes ahead; its shutdown then stops the spot unit too.
+        self.write_descriptor(LATER)
+        self.world.preempted = True
+        self.assertEqual(departure.depart_preempted(self.host()), departure.DONE)
+        before = len(self.world.runs())
+        self.assertEqual(departure.depart_preempted(self.host()), departure.DONE)
+        self.assertEqual(len(self.world.runs()), before, "a second reclaim departure ran steps")
+        self.assertEqual(self.lifecycle()["state"], "departed")
+
 
 class RedactionTest(DepartureBase):
     """A lifecycle command is a process of its own: it learns the host's

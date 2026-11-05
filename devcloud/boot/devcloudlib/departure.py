@@ -46,8 +46,8 @@ import sys
 import time
 import urllib.request
 
-from . import descriptor, envfile, ledger, lease, maws_host, nodekind, proc, secretmanager, services, sminos_host, \
-    status, steps, tsapi
+from . import descriptor, ec2spot, envfile, ledger, lease, maws_host, nodekind, proc, secretmanager, services, \
+    sminos_host, status, steps, tsapi
 from .proc import StepError
 
 DONE, FAILED, USAGE, NOT_OVER, HELD = 0, 1, 2, 3, 4
@@ -67,7 +67,8 @@ UNIT_DIR = pathlib.Path("/etc/systemd/system")
 # endpoint's keys are gone it would otherwise read as nothing to leave.
 # Written before a retirement starts; removed only when one is confirmed.
 DESK_RESIDUE = "desk-residue"
-# The spot reclaim's window: steps 0-4 within 25 of the provider's ~30 seconds.
+# The spot reclaim's window: steps 0-4 within 25 of GCE's ~30 seconds (EC2's
+# notice comes two minutes ahead; the same bound serves it).
 PREEMPT_BUDGET = 25
 
 
@@ -174,7 +175,12 @@ def _alive(pid):
 
 
 def _preempted():
-    """GCE's word that this spot VM is being reclaimed."""
+    """The provider's word that this spot VM is being reclaimed: GCE's
+    metadata server, else EC2's scheduled interruption (§6.6)."""
+    return _gce_preempted() or ec2spot.Imds().instance_action() is not None
+
+
+def _gce_preempted():
     root = os.environ.get("GCE_METADATA_HOST", "metadata.google.internal")
     request = urllib.request.Request(f"http://{root}/computeMetadata/v1/instance/preempted",
                                      headers={"Metadata-Flavor": "Google"})
@@ -605,6 +611,11 @@ def depart_preempted(host):
         host.say("devcloud depart: a departure already holds the lifecycle lock")
         return DONE
     try:
+        record = status.lifecycle(host.status_path)
+        if record and record.get("op") == "depart" and record.get("state") == "departed":
+            # EC2's notice departed this VM ahead of its shutdown, which stops this unit too.
+            host.say(f"devcloud depart: already done ({record['at']})")
+            return DONE
         try:
             d = descriptor.load(host.desc_path, allow_http=host.allow_http)
         except descriptor.DescriptorError as error:
