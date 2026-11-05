@@ -2282,6 +2282,26 @@ commit 5168e433 on its branch, 2026-10-21):
   - **No EC2 key pair**: the core's user-data authorizes the driver keys, so the policy needs no
     `ec2:ImportKeyPair`. Prices come from the Pricing API filtered `ANY_OF` on the families' types.
   Date/Author: 2026-11-04, the M8/M9 plan executor, from M8's executor.
+- Decision: M9's build, against stubs (d9e3397f, devcloud 0.16.0, the branch's one bump).
+  - **Where the GPU step runs**: at the end of a boot, after `services` and before `projects` and
+    `maws`, unnumbered; a failure is recorded and the boot exits 3 with the services started, as
+    those two do. Only a boot runs it, never a reconcile or a job.
+  - **The one reboot**: the step reports `deferred`, the boot runs `systemctl reboot` and exits 0,
+    so the driver keeps waiting. The marker holds the boot id: a rerun in the same boot asks again,
+    a later boot still without the driver fails with the kernel and branch named; the marker is
+    cleared once the driver answers.
+  - **The pin**: branch 615 (615.71.09), the newest `-server-open` branch in noble-updates whose
+    modaliases cover the L4, L40S and A10G; the CUDA check runs `nvidia/cuda:13.0.3-base-ubuntu24.04`.
+    The live VM's `ubuntu-drivers list --gpgpu` confirms or moves it. 580, NVIDIA's long-term branch
+    (in restricted, supported to 2028), is the alternative should a shorter-lived 615 prove the wrong
+    pin; switching is one constant.
+  - **What counts**: an NVIDIA device is vendor `0x10de` with a display class (`0x03xxxx`), so an
+    NVIDIA audio function alone does nothing. A part is present when its command answers
+    (`nvidia-smi` lists a GPU, `dockerd` or `nvidia-ctk` on PATH); every install passes
+    `--no-remove`, so an adopted machine's own packages are never replaced. The toolkit key is
+    written armored with its fingerprint checked, and the user joins `docker` (from its next
+    login).
+  Date/Author: 2026-11-04, the M8/M9 plan executor, from M9's executor.
 - Decision: Provider-agnostic from the first version, with Hetzner, GCE and adopt adapters and a
   per-project `devenv/host.toml`, instead of the Hetzner-only driver first proposed.
   Rationale: the person asked that each project be able to use the provider it prefers, or a server
