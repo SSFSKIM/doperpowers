@@ -2233,6 +2233,21 @@ commit 5168e433 on its branch, 2026-10-21):
   these sections and the two milestones by `doperpowers:adversarial-reviewer`, and the branch at
   the high rung of doperpowers:review-code (a credential with spending power, a public port).
   Date/Author: 2026-11-04, design session.
+- Decision: M8/M9 execution pre-flight.
+  - **Order.** M8, then M9, one executor at a time, M8 reviewed clean before M9 dispatches: their
+    code is independent (M9 consumes only M8's account, for its live proof), but both edit the
+    boot (`departure.py` and the spot unit against `steps.py` and the status), which a shared
+    worktree cannot build twice at once.
+  - **The always-on Mac's reaper before merge.** Its scheduled job runs the plugin's marketplace
+    checkout, which is `main`, so until this branch merges it skips the AWS account as unusable
+    (`aws` is not in that copy's `SHIPPED`; an unusable account is named on stderr and skipped).
+    M8's "the reaper's next run on the always-on Mac" is therefore proved by `devcloud vm reap`
+    run there from a checkout of this branch, under the scheduled job's own `PATH` (H15: it
+    holds `~/.local/bin`, checked 2026-11-04); the scheduled job itself lists the account from
+    the merge on. Adding the account to the profile before the merge breaks nothing on `main`.
+  - **The version** is bumped once for the branch (`scripts/bump-version.sh --plugin devcloud`),
+    and compared with `origin/main`'s just before merging.
+  Date/Author: 2026-11-04, the M8/M9 plan executor.
 - Decision: Provider-agnostic from the first version, with Hetzner, GCE and adopt adapters and a
   per-project `devenv/host.toml`, instead of the Hetzner-only driver first proposed.
   Rationale: the person asked that each project be able to use the provider it prefers, or a server
