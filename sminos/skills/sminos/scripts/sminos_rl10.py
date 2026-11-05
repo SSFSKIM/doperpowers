@@ -288,11 +288,16 @@ class Connection:
         self.sock.close()
 
 
+# What this sminos can do beyond RL10's major (OX1). `audience` (P5 O18 D9): an audience stream may come down to it,
+# since its archive copies only the hub-admitted public projection (sminos_archive), never a stream.
+CAPABILITIES = ("audience",)
+
+
 def hello_frame(token, version, policy):
     """RL10's hello: the first line, carrying the token, this sminos's
-    version, and the machine's policy as its file says (the endpoint takes it
-    only when it holds none)."""
-    return {"t": "hello", "protocol": dict(PROTOCOL), "capabilities": [], "token": token,
+    version and capabilities, and the machine's policy as its file says (the
+    endpoint takes it only when it holds none)."""
+    return {"t": "hello", "protocol": dict(PROTOCOL), "capabilities": list(CAPABILITIES), "token": token,
             "sminos": {"version": version}, "policy": policy}
 
 

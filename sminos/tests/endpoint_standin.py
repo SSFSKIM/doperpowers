@@ -59,9 +59,17 @@ event wrapped `{event, signer, owners?}`), `resend`; and `rpc`, `query`,
 `tombstone` (§D's frames, the RPC nested under `rpc` as DX2 nests it); a
 `spent {project, writer, seq, reason}` is sent as any frame (`send`).
 
+P5 O18 (message reach): `capabilities` is what the welcome advertises (an
+O18 endpoint's `["access", "reach"]`; none by default, an older
+endpoint), and `audiences` the bodies of the `audience {session, owners,
+members, digest, policyRev}` frames sent after each welcome, only to an
+sminos whose hello advertises `audience`, as the endpoint sends them
+(`audience_frame` builds one); a later one is sent as any frame (`send`).
+
 Fields (constructor keywords, `set`'s keys): token, identity, policy,
 revoked, org, build, state_version, refuse_reason, ask_legacy,
-persist_legacy, answer_policy, ack_results, verdicts, verdict, relay.
+persist_legacy, answer_policy, ack_results, verdicts, verdict, relay,
+capabilities, audiences.
 """
 
 import base64
@@ -76,7 +84,8 @@ import time
 
 LINE_MAX = 1 << 20   # a line at most 1 MiB of UTF-8 (O10 §D); larger text goes as `part`s
 FIELDS = ("token", "identity", "policy", "revoked", "org", "build", "state_version", "refuse_reason", "ask_legacy",
-          "persist_legacy", "answer_policy", "ack_results", "verdicts", "verdict", "relay")
+          "persist_legacy", "answer_policy", "ack_results", "verdicts", "verdict", "relay", "capabilities",
+          "audiences")
 TS_MS = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z")
 TS_S = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
 
@@ -121,6 +130,16 @@ def upload_form(e):
     if created is None or e.get("created", created) != created:
         return None
     return {**e, "created": created}
+
+
+def audience_frame(session, owners, members=None, policy_rev=0):
+    """An `audience` frame's body as the endpoint sends it (O18 Interfaces
+    §B): members None for a listed session, its digest beside them."""
+    import hashlib
+    digest = None if members is None else hashlib.sha256(
+        json.dumps(sorted(set(members)), separators=(",", ":")).encode()).hexdigest()[:16]
+    return {"session": session, "owners": list(owners), "members": None if members is None else sorted(set(members)),
+            "digest": digest, "policyRev": policy_rev}
 
 
 def b64url(data):
@@ -218,6 +237,8 @@ class Endpoint:
         self.verdict = None
         self.members = {}   # session → its last `member` frame (the member state an action's context is read from)
         self.relay = True
+        self.capabilities = []   # the welcome's (an O18 endpoint's: ["access", "reach"])
+        self.audiences = []      # `audience` frames' bodies, sent after each welcome to an sminos whose hello says `audience`
         self.handler = None
         self.set(**fields)
         self.cv = threading.Condition()
@@ -349,13 +370,17 @@ class Endpoint:
             if self.policy is None and isinstance(hello.get("policy"), dict):
                 self.policy = hello["policy"]
                 write_private(os.path.join(self.dir, "policy.json"), self.policy)
-            conn.write({"t": "welcome", "protocol": {"major": 1, "minor": 0}, "capabilities": [], "build": self.build,
-                        "identity": self.identity, "policy": self.policy, "stateVersion": self.state_version})
+            conn.write({"t": "welcome", "protocol": {"major": 1, "minor": 0}, "capabilities": list(self.capabilities),
+                        "build": self.build, "identity": self.identity, "policy": self.policy,
+                        "stateVersion": self.state_version})
             conn.write({"t": "revoked", **self.revoked})
             if self.org is not None:
                 conn.write({"t": "org", **self.org})
             if self.ask_legacy and self.legacy() is None:
                 conn.write({"t": "legacy-key?"})
+            if "audience" in (hello.get("capabilities") or []):
+                for body in self.audiences:
+                    conn.write({"t": "audience", **body})
             while True:
                 line = conn.read_line()
                 if line is None:

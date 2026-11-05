@@ -1,7 +1,8 @@
 {
-  "what": "rl10-conversation.json is O10's RL10 conversation fixture, copied byte for byte; rl10_conformance.py checks the copy against `blob` before it replays it.",
+  "what": "rl10-conversation.json is O10's RL10 conversation fixture, copied byte for byte; rl10_conformance.py checks the copy against `blob` before it replays it. Pending (P5 O18 M3): the copy carries the O18 capabilities and member visibility fields ahead of MAWS's M2; re-pinned to M2's commit once it lands, its MAWS file then byte for byte this one.",
   "repository": "MAWS",
-  "commit": "a05b853317a4fbb27e816851731d089594224035",
+  "commit": "pending-o18-m2",
   "path": "test/endpoint/rl10/conversation.json",
-  "blob": "4d91747bb65a5e8ee1b00c0c19150900a6650bee"
+  "blob": "11073d6865fc16874146d779639dc5b776c12f2f",
+  "based_on": "a05b853317a4fbb27e816851731d089594224035"
 }

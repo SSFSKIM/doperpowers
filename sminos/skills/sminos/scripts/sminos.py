@@ -2263,6 +2263,26 @@ def log_append(project, writer, kind, **fields):
     return _append(project, writer, [{"kind": kind, **fields}])[0]
 
 
+def addressed_append(project, session, recipients, kind, fields, why):
+    """One event of `session`'s (the operator's: "") naming `recipients`
+    ([{session, alias}]), under the writer the stream choice gives it
+    (streams_for): it must give one, since nothing here splits. Dies when
+    the choice refuses (D4) or cannot be made (D10), saying `why`. Returns
+    the event appended (seq None when it waits for the head)."""
+    au = audience_module()
+    try:
+        choice = streams_for(project, session, recipients)
+    except au.Unreachable as e:
+        die(str(e), EXIT_UNKNOWN)
+    except au.StreamUnknown as e:
+        die("%s: %s" % (why, e), 1)
+    if len(choice) != 1:
+        die("%s: its recipients' audiences differ; send to each on its own" % why, EXIT_UNKNOWN)
+    writer, aud, _, _ = choice[0]
+    keep_stream(project, writer, aud)
+    return _append(project, writer, [{"kind": kind, **fields}])[0]
+
+
 # Append receipts (O12 M6): the provenance of this machine's operator words.
 # The writer name is not provenance — a git mirror's merge can bring a
 # `<thisname>/human` line no one here wrote — so each `human` event _append
@@ -2841,6 +2861,52 @@ def records_module():
     return sibling_module("sminos_records")
 
 
+def audience_module():
+    return sibling_module("sminos_audience")
+
+
+def streams_here(project):
+    """Whether the project's events may go under audience streams (P5 O18
+    D6): a project the hub syncs (a hub project, or a machine's own). A
+    git-mirrored or local project's log never reaches the hub, which is what
+    filters streams, so it keeps every event under its plain writer."""
+    return project is not None and project_kind(project) != "local"
+
+
+def own_stream(project, session):
+    """(writer, audience): where the session's own events go in `project`'s
+    log now (sminos_audience.own_writer); the plain writer outside a hub
+    project. StreamUnknown, the audience module's, when it cannot be told."""
+    base = writer_id(session or None)
+    if not session or not streams_here(project):
+        return base, None
+    aud = audience_module().own_audience(session)
+    return stream_writer(base, aud), aud
+
+
+def streams_for(project, session, recipients, text=None, raws=None):
+    """[(writer, audience, recipients, text)]: the events an addressed
+    append makes (sminos_audience.stream_for, D4), split by audience; one,
+    under the plain writer, outside a hub project. Unreachable or
+    StreamUnknown as there."""
+    if not streams_here(project):
+        return [(writer_id(session or None), None, list(recipients), text)]
+    return audience_module().stream_for(project, session, recipients, text, raws)
+
+
+def keep_stream(project, writer, audience):
+    """A stream writer's audience, kept before its first event (the
+    uplink's voids claim it); nothing for a plain writer."""
+    if audience is not None:
+        audience_module().keep_stream(project, writer, audience)
+
+
+def published_redacted(event, audience):
+    """`event` with its provenance references that would widen what a
+    session's id reaches written null (sminos_audience.redact); in place."""
+    return audience_module().redact(event, audience)
+
+
 def session_record(sid):
     """The session's record on this machine (RL6), or None."""
     return records_module().read(sid)
@@ -2879,7 +2945,17 @@ def published_provenance(sid):
     if not records.is_final(rec):
         return {}
     owners = list(rec["owners"])
-    return {**({"owners": owners} if records.MACHINE not in owners else {}), "origin": dict(rec["origin"])}
+    pub = {**({"owners": owners} if records.MACHINE not in owners else {}), "origin": dict(rec["origin"])}
+    if isinstance(pub["origin"].get("spawnerSession"), str):
+        # A spawner whose audience does not contain the session's own is named to no one (P5 O18 D4): the
+        # session's `joined` carries it null. A session whose own audience cannot be told carries it null too.
+        try:
+            aud = audience_module().own_audience(sid)
+        except audience_module().StreamUnknown:
+            pub["origin"]["spawnerSession"] = None
+        else:
+            published_redacted(pub, aud)
+    return pub
 
 
 _LINEAGE_INDEX = [None, -1, None]   # the events last indexed, their count, (continuations, publications, memberships)
@@ -3112,17 +3188,31 @@ def lifecycle(log_project, session, kind, guard=None, required=True, **fields):
     retirement's, is one of `fields`.)"""
     if log_project is None or not session:
         return []
-    before = _former_events(log_project, session) if guard is not None else []
+    try:
+        writer, aud = own_stream(log_project, session)
+    except audience_module().StreamUnknown as e:
+        # Fail closed (P5 O18 D10): a session whose stream cannot be chosen writes nothing.
+        msg = "%s of %s is not recorded in %s's log: %s" % (kind, session[:8], log_project.name, e)
+        if required:
+            raise LogWriteFailed(msg)
+        warn(msg)
+        return []
+    # A guard reads the session's whole own history: its former names', and its other streams' (a policy change
+    # moves where its lifecycle goes on, P5 O18 D6), merged with the file it appends to by ts.
+    before = _own_events_but(log_project, session, writer) if guard is not None else []
     if before:
-        guard = (lambda inner: lambda evs: inner(before + evs))(guard)
+        guard = (lambda inner: lambda evs: inner(list(heapq.merge(before, evs, key=lambda e: e["ts"]))))(guard)
     event = {"kind": kind, "session": session, **fields}
     if kind == "joined":
         # What a joined publishes of the session's record was read before the
         # file's lock; under it, it is read again, so a writer that paused
         # between never appends provenance older than a publication since.
         guard = (lambda inner: lambda evs: _fresh_publication(event) and (inner is None or inner(evs)))(guard)
+    elif kind == "retired" and isinstance(event.get("to"), str):
+        published_redacted(event, aud)   # a successor named to no one its audience does not hold
     try:
-        return _append(log_project, writer_id(session), [event], guard=guard)
+        keep_stream(log_project, writer, aud)
+        return _append(log_project, writer, [event], guard=guard)
     except OSError as e:
         msg = "recording %s of %s in %s's log failed: %s" % (kind, session[:8], log_project.name, e)
         if required:
@@ -3702,9 +3792,9 @@ def hand_off(project, old, new, old_peer=None):
     try:
         carried = cursor_load(project, old)
         mine = writer_id(old)
-        seqs = [e["seq"] for e in _own_events(project, old) if e["writer"] == mine]
-        if seqs:
-            carried[mine] = max(carried.get(mine, 0), max(seqs))
+        for e in _own_events(project, old):
+            if writer_base(e["writer"]) == mine:   # its plain writer and its streams (P5 O18 D6)
+                carried[e["writer"]] = max(carried.get(e["writer"], 0), e["seq"])
         if carried:
             cursor_save(project, new, carried)
     except OSError as e:
@@ -4938,13 +5028,16 @@ def _resolve_tag(project, t):
               [(p, m) for p, m in match_members(name, "", org_scope(), ids=False) if p.id != project.id])
 
 
-def resolve_tags(project, text):
+def resolve_tags(project, text, raws=None):
     """Resolve a message's leading tags at submission (resolve_tag). Returns
     (destination, recipients [{session, alias}], text, wake). The destination
     is the sender's project, or the one the tags reach; tags reaching two
     projects are refused, as are a tag matching no member and one matching
     several (named as alias#short). `@all` is the members of the sender's
-    project live at submission."""
+    project live at submission. `raws`, a list given, is filled with each
+    recipient's tags as [(their place in the run, their raw text)], for a
+    split's text (sminos_audience.stream_for); left empty for `@all`, which
+    names no session."""
     tags = leading_tags(text)
     if not tags:
         return project, [], text, False
@@ -4959,12 +5052,19 @@ def resolve_tags(project, text):
         live = [m for m in members(project) if m.state in FILLED]
         return project, [{"session": m.session, "alias": m.alias} for m in live], text, True
 
-    destinations, recipients = {}, []
-    for t in tags:
+    destinations, recipients, held = {}, [], []
+    run = audience_module().leading_run(text)[0]
+    for i, t in enumerate(tags):
         p, m = resolve_tag(project, t)
         destinations[p.id] = p
-        if all(r["session"] != m.session for r in recipients):
+        at = next((j for j, r in enumerate(recipients) if r["session"] == m.session), None)
+        if at is None:
             recipients.append({"session": m.session, "alias": m.alias})
+            held.append([])
+            at = len(recipients) - 1
+        held[at].append((i, run[i] if i < len(run) else t["raw"]))
+    if raws is not None:
+        raws[:] = held
     if len(destinations) > 1:
         die("one message, one project: the tags name %s" % ", ".join(sorted(p.name for p in destinations.values())))
     return next(iter(destinations.values())), recipients, text, False
@@ -5093,6 +5193,12 @@ def record_copy(home, delivered):
     those when several projects' events deliver it — no one is owed it
     (addressed_to). Written after the delivering events; one that cannot be
     written is a warning, since the message was delivered."""
+    groups = {}
+    for dest, e in delivered:
+        groups.setdefault(e["writer"], []).append((dest, e))
+    if len(groups) > 1:
+        # One copy per audience among the delivering events (P5 O18 D4): each under its own stream, as theirs.
+        return [c for group in groups.values() for c in [record_copy(home, group)] if c is not None]
     first = delivered[0][1]
     fields = {k: v for k, v in first.items() if k not in ("writer", "seq", "kind", "from_project")}
     fields["to"] = [dict(r, project=dest.id) for dest, e in delivered for r in e["to"] if isinstance(r, dict)]
@@ -5220,26 +5326,35 @@ def say_scoped(a, home, sender, writer, kind, sid):
             % label, EXIT_UNKNOWN)
     print("%s: %d session%s in %s" % (label, count, "" if count == 1 else "s", ", ".join(p.name for p, _ in groups)))
     delivered, lost = [], False
+    au = audience_module()
     for dest, ms in groups:
-        fields = {"from": sender, "to": [{"session": m.session, "alias": m.alias} for m in ms], "text": a.text,
-                  "wake": True, "scope": scope}
-        if home is not None and home.id != dest.id:
-            fields["from_project"] = home.id  # the sender's own project, where a reply finds it
         try:
-            e = log_append(dest, writer, kind, **fields)
-        except OSError as err:
+            # A broadcast wakes only what it may reach: each audience its own event (P5 O18 D4).
+            splits = streams_for(dest, sid, [{"session": m.session, "alias": m.alias} for m in ms], a.text)
+        except (au.Unreachable, au.StreamUnknown) as err:
             warn("not recorded in %s, so not sent to its %d: %s" % (dest.name, len(ms), err))
             lost = True
             continue
-        if e["seq"] is None:
-            print(waits_line(dest, writer))
-            continue
-        delivered.append((dest, e))
-        print("recorded %s in %s" % (event_ref(e), dest.name))
+        for split_writer, aud, rs, _text in splits:
+            fields = {"from": sender, "to": rs, "text": a.text, "wake": True, "scope": scope}
+            if home is not None and home.id != dest.id:
+                fields["from_project"] = home.id  # the sender's own project, where a reply finds it
+            try:
+                keep_stream(dest, split_writer, aud)
+                e = log_append(dest, split_writer, kind, **fields)
+            except OSError as err:
+                warn("not recorded in %s, so not sent to its %d: %s" % (dest.name, len(rs), err))
+                lost = True
+                continue
+            if e["seq"] is None:
+                print(waits_line(dest, split_writer))
+                continue
+            delivered.append((dest, e))
+            print("recorded %s in %s" % (event_ref(e), dest.name))
     if home is not None and delivered and all(p.id != home.id for p, _ in groups):
         record_copy(home, delivered)
     for dest, e in delivered:
-        deliver_say(dest, e, writer, e["to"], lambda r: "%s#%s" % (r["alias"], r["session"][:8]))
+        deliver_say(dest, e, e["writer"], e["to"], lambda r: "%s#%s" % (r["alias"], r["session"][:8]))
     if lost:
         sys.exit(1)
 
@@ -5267,7 +5382,8 @@ def cmd_say(a):
     if scoped:
         say_scoped(a, home if sid else None, sender, writer, kind, sid)
         return
-    dest, recipients, _text, wake = resolve_tags(home, a.text)
+    raws = []
+    dest, recipients, _text, wake = resolve_tags(home, a.text, raws)
     if dest is None:
         die("say outside a project: run it in a project's directory, or name one with --in <project>")
     if sid:
@@ -5275,22 +5391,36 @@ def cmd_say(a):
             recipients = [r for r in recipients if r["session"] != sid]
         elif any(r["session"] == sid for r in recipients):
             die("you cannot tag yourself")
-    fields = {"from": sender, "to": recipients if (recipients or wake) else "*", "text": a.text}
-    if wake:
-        fields["wake"] = True
-    if sid and home is not None and home.id != dest.id:
-        fields["from_project"] = home.id  # the sender's own project, where a reply finds it
+    # One event per audience its recipients give, each with only its own recipients' tags (P5 O18 D4), refused
+    # whole before anything is written when one of them is out of reach.
+    au = audience_module()
     try:
-        e = log_append(dest, writer, kind, **fields)
-    except OSError as err:
+        splits = streams_for(dest, sid, recipients, a.text, None if wake else raws)
+    except au.Unreachable as err:
+        die(str(err), EXIT_UNKNOWN)
+    except au.StreamUnknown as err:
         die("say could not be recorded: %s" % err, 1)
-    if e["seq"] is None:
-        print(waits_line(dest, writer))
-        return
-    print("recorded %s in %s" % (event_ref(e), dest.name))
-    if "from_project" in fields:
-        record_copy(home, [(dest, e)])
-    deliver_say(dest, e, writer, recipients)
+    recorded = []
+    for split_writer, aud, rs, text in splits:
+        fields = {"from": sender, "to": rs if (rs or wake) else "*", "text": text}
+        if wake:
+            fields["wake"] = True
+        if sid and home is not None and home.id != dest.id:
+            fields["from_project"] = home.id  # the sender's own project, where a reply finds it
+        try:
+            keep_stream(dest, split_writer, aud)
+            e = log_append(dest, split_writer, kind, **fields)
+        except OSError as err:
+            die("say could not be recorded: %s" % err, 1)
+        if e["seq"] is None:
+            print(waits_line(dest, split_writer))
+            continue
+        print("recorded %s in %s" % (event_ref(e), dest.name))
+        recorded.append((e, rs))
+    if recorded and sid and home is not None and home.id != dest.id:
+        record_copy(home, [(dest, e) for e, _ in recorded])
+    for e, rs in recorded:
+        deliver_say(dest, e, e["writer"], rs)
 
 
 def target_label(e):
@@ -5377,7 +5507,7 @@ def cmd_chat(a):
     else:
         cursor = cursor_load(project, sid)
         mine = writer_id(sid or None)
-        above = [e for e in pool if e["writer"] != mine and e["seq"] > cursor.get(e["writer"], 0)]
+        above = [e for e in pool if writer_base(e["writer"]) != mine and e["seq"] > cursor.get(e["writer"], 0)]
         window = above[-30:]
         earlier = len(above) - len(window)
         head = "%d new" % len(above)
@@ -6037,8 +6167,15 @@ def _former_events(project, session, store="log"):
 
 def _own_events(project, session, store="log"):
     """The session's own writer files, read directly (the hook reads nothing
-    else of the log): under this machine's former names, then its name now."""
+    else of the log): under this machine's former names, then its name now
+    (its plain writer and its audience streams, merged by ts)."""
     return _former_events(project, session, store) + _writer_events(project, host_name(), session, store)
+
+
+def _own_events_but(project, session, writer):
+    """The session's own events but those of `writer`'s file: what a guard
+    on that file reads beside it (lifecycle)."""
+    return [e for e in _own_events(project, session) if e["writer"] != writer]
 
 
 def host_store_holds(project):
@@ -6633,13 +6770,14 @@ def cmd_charge(a):
             lifecycle(project, m.session, "in-charge", text=line, source="set")
         else:
             # Another machine's session file is that machine's to write (§3).
+            why = "the line of %s was not recorded in %s's log" % (m.alias, project.name)
             try:
-                got = _append(project, writer_id(sid or None),
-                              [{"kind": "in-charge", "session": m.session, "text": line, "source": "set"}])
+                got = addressed_append(project, sid, [{"session": m.session, "alias": m.alias}], "in-charge",
+                                       {"session": m.session, "text": line, "source": "set"}, why)
             except OSError as e:
-                die("the line of %s was not recorded in %s's log: %s" % (m.alias, project.name, e), 1)
-            if got and got[0]["seq"] is None:
-                print(waits_line(project, writer_id(sid or None)))
+                die("%s: %s" % (why, e), 1)
+            if got["seq"] is None:
+                print(waits_line(project, got["writer"]))
         name = m.alias
     print("%s in charge of: %s" % (name, line or "(cleared)"))
 
@@ -10129,7 +10267,6 @@ def record_message(project, session, alias, sender, via, text, msg_id, deliver=T
     deliver, open its SendDelivery. A message the log cannot hold is not
     sent: exit 1 first."""
     sid = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
-    writer = writer_id(sid or None)
     fields = {"from": sender, "to": [{"session": session, "alias": alias}], "text": text, "msg_id": msg_id}
     if via and via != sender:
         fields["via"] = via
@@ -10137,7 +10274,9 @@ def record_message(project, session, alias, sender, via, text, msg_id, deliver=T
     if home is not None and home.id != project.id:
         fields["from_project"] = home.id  # the sender's own project, where a reply finds it
     try:
-        event = log_append(project, writer, "say" if sid else "human", **fields)
+        event = addressed_append(project, sid, fields["to"], "say" if sid else "human", fields,
+                                 "send not delivered: it could not be recorded in %s's log" % project.name)
+        writer = event["writer"]
         if event["seq"] is None:
             return WaitingSend(project, writer, event)
         if "from_project" in fields:
@@ -10407,11 +10546,14 @@ def cmd_status(a):
         else:
             # Another machine's session file is that machine's to write: the
             # line goes in this caller's own file, and the later ts wins (§3).
-            writer = writer_id(os.environ.get("CLAUDE_CODE_SESSION_ID") or None)
+            why = "status of %s not recorded in %s's log" % (m.alias, project.name)
             try:
-                got = _append(project, writer, [{"kind": "status", "session": m.session, "text": line}])
+                got = [addressed_append(project, os.environ.get("CLAUDE_CODE_SESSION_ID") or "",
+                                        [{"session": m.session, "alias": m.alias}], "status",
+                                        {"session": m.session, "text": line}, why)]
             except OSError as e:
-                die("status of %s not recorded in %s's log: %s" % (m.alias, project.name, e), 1)
+                die("%s: %s" % (why, e), 1)
+            writer = got[0]["writer"]
             if got and got[0]["seq"] is None:
                 print(waits_line(project, writer))
         print("%s now: %s" % (m.alias, line or "(cleared)"))

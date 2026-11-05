@@ -124,6 +124,7 @@ import urllib.parse
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import sminos  # noqa: E402
 import sminos_archive as archive  # noqa: E402
+import sminos_audience as audience  # noqa: E402
 import sminos_codes as codes  # noqa: E402
 import sminos_daemon as daemon  # noqa: E402
 import sminos_hublog as hublog  # noqa: E402
@@ -1353,7 +1354,7 @@ def joined_dirs(here):
 # ------------------------------------------------------------- one stream
 
 
-def member_frame(pid, m, launch=None):
+def member_frame(pid, m, launch=None, visibility=False):
     """RL10's `member` for a local member's row (Plane.member_rows): its record's
     provenance and ownership (sminos.session_record; the defaults, `@machine`
     and a terminal origin, with no principal or inference, while it has
@@ -1361,9 +1362,12 @@ def member_frame(pid, m, launch=None):
     is set yet and the engine host launched it (origin `maws`), else A —
     what the row says of it, and `launch`, the launch its bridge names (O12
     M7: what a remote action's context is fenced to), absent with no bridge.
-    O8's `access` and `shares` are not sent yet. `principal` and `inference`
-    cross because the endpoint is this machine; they never ride a log
-    event."""
+    `visibility` (the endpoint's welcome advertised `access`, P5 O18 D9):
+    the record's `access`, `shares` and `policyRev` too, the defaults where
+    it says nothing (sminos_audience.policy_of); an older endpoint rejects a
+    whole frame on a share grade it does not know, so none is sent to it.
+    `principal` and `inference` cross because the endpoint is this machine;
+    they never ride a log event."""
     rec = m.record or {}
     origin = rec.get("origin") if isinstance(rec.get("origin"), dict) else dict(sminos.DEFAULT_ORIGIN)
     controller = rec.get("controller") if isinstance(rec.get("controller"), dict) else None
@@ -1384,6 +1388,8 @@ def member_frame(pid, m, launch=None):
     for key in ("principal", "inference", "controller"):
         if rec.get(key) is not None:
             frame[key] = rec[key]
+    if visibility:
+        frame["access"], frame["shares"], frame["policyRev"] = audience.policy_of(rec)
     return frame
 
 
@@ -1454,6 +1460,7 @@ class Link:
         self.revoked_whole = False  # RL10: the next revocation set is the welcome's, kept whole
         self.revoked_due = False  # RL10: a revocation set was kept that the owed events have not been marked by
         self.members_sent = {}    # RL10: session → the `member` frame last sent on this connection
+        self.visibility = False   # RL10: the endpoint's welcome advertised `access` (P5 O18 D9): member frames carry it
         self.members_unsent = set()   # RL10: the sessions whose frame is due and not yet queued (publish_members)
         self.member_read_for = None   # RL10: the running sessions the projects known here were last listed for
         self.next_member_read = 0.0   # RL10: when they are read again (monotonic) when none came or went
@@ -1515,7 +1522,7 @@ class Link:
             self.handlers.update({"policy": self.on_policy, "revoked": self.on_revoked,
                                   "legacy-key?": self.on_legacy_key, "query": self.on_query,
                                   "tombstone": self.on_tombstone, "words": self.on_words,
-                                  "spent": self.on_spent})
+                                  "spent": self.on_spent, "audience": self.on_audience})
 
     def post_session(self, messages):
         if messages:
@@ -1643,6 +1650,15 @@ class Link:
         is kept whole either way."""
         self.policy_asked = None
         self.revoked_whole = True
+        # What the endpoint can do beyond RL10's major (OX1): with `access`, member frames carry the sessions'
+        # visibility and the CLI's writers choose audience streams (P5 O18 D9), from the capabilities kept here.
+        caps = frame.get("capabilities")
+        caps = [c for c in caps if isinstance(c, str)] if isinstance(caps, list) else []
+        self.visibility = "access" in caps
+        try:
+            audience.keep_capabilities(caps)
+        except OSError as e:
+            log("the endpoint's capabilities could not be kept (%s): this machine's writers read the last kept" % e)
         if isinstance(frame.get("revoked"), dict):
             self.on_revoked(frame["revoked"], None)
         self.on_policy(frame.get("policy"), None, welcome=True)
@@ -1704,6 +1720,20 @@ class Link:
             return
         sminos.deliver_verdict(held["project"], held["member"], held["event"], verdict)
         self.next_upload = 0.0   # its outcome goes up on the next pass
+
+    def on_audience(self, frame, _stream):
+        """The endpoint's word on one session's audience (P5 O18 D7): its
+        owners, its members (none: listed) and policyRev, kept in
+        daemon/audiences.json for the CLI's writers (sminos_audience). A
+        frame that is no such frame is said and passed by."""
+        try:
+            taken = audience.keep_audience(frame)
+        except OSError as e:
+            log("an audience frame could not be kept (%s): the writers read the last kept" % e)
+            return
+        if not taken:
+            log("an audience frame from the endpoint that is none (session %r): passed by"
+                % (str(frame.get("session"))[:40],))
 
     def on_legacy_key(self, _frame, _stream):
         """`legacy-key?`: hub.json's DX1 key handed to the endpoint, which
@@ -2333,7 +2363,11 @@ class Link:
                     # presence carries it); asked here too, so a session of
                     # a project not open on the stream has it as well.
                     self.plane.bridges.answers(sid, now, socks)
-                    current[sid] = member_frame(pid, m, self.plane.bridges.launch(sid))
+                    if sminos.records_module().unreadable(sid):
+                        # An established record that cannot be read (P5 O18 D10): its policy is unknown, so no
+                        # frame goes, and one sent before is withdrawn (`gone` below), until it reads again.
+                        continue
+                    current[sid] = member_frame(pid, m, self.plane.bridges.launch(sid), self.visibility)
         frames = [f for sid, f in current.items() if self.members_sent.get(sid) != f]
         frames += [{"t": "member", "session": sid, "gone": True} for sid in self.members_sent if sid not in current]
         batch, size, unsent = [], 0, set()
@@ -2392,7 +2426,8 @@ class Link:
             if sid in rows:
                 rows[sid] = rows[sid]._replace(record=sminos.session_record(sid))
                 changed = changed or self.members_sent.get(sid) != member_frame(at, rows[sid],
-                                                                                self.plane.bridges.launch(sid))
+                                                                                self.plane.bridges.launch(sid),
+                                                                                self.visibility)
         if changed or sessions & self.members_unsent:
             self.publish_members(time.monotonic())
         return not sessions & self.members_unsent
