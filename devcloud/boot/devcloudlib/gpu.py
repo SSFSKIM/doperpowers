@@ -57,9 +57,10 @@ TOOLKIT_KEY = pathlib.Path("/etc/apt/keyrings/nvidia-container-toolkit.asc")
 TOOLKIT_SOURCE = pathlib.Path("/etc/apt/sources.list.d/nvidia-container-toolkit.list")
 TOOLKIT_REPO = "https://nvidia.github.io/libnvidia-container/stable/deb/$(ARCH) /"
 DAEMON_JSON = pathlib.Path("/etc/docker/daemon.json")
-# The runtime's configuration changed and Docker has not yet restarted onto
-# it: kept until a restart succeeds, so a retry in the same boot still owes
-# it. Under /run: a reboot restarts the daemon anyway.
+# Docker has not yet restarted onto the runtime's changed configuration, or
+# onto the toolkit's hook this run installed: kept until a restart succeeds,
+# so a retry in the same boot still owes it. Under /run: a reboot restarts the
+# daemon anyway.
 RESTART_OWED = pathlib.Path("/run/devcloud/gpu-docker-restart-owed")
 # The check container. Its NVIDIA_REQUIRE_CUDA (cuda>=13.0) is turned off with
 # NVIDIA_DISABLE_REQUIRE: the check proves the GPU reaches a container, and an
@@ -270,6 +271,10 @@ def _toolkit(apt, did):
     proc.write_file(TOOLKIT_SOURCE, f"deb [signed-by={TOOLKIT_KEY}] {TOOLKIT_REPO}\n", mode=0o644, dir_mode=0o755)
     apt.update(again=True)
     apt.install("nvidia-container-toolkit")
+    # Docker registers its NVIDIA device driver only as it starts, and only
+    # when the hook exists then: the daemon the Docker part started owes a
+    # restart even when the runtime's configuration does not change.
+    proc.write_file(RESTART_OWED, "", mode=0o600, dir_mode=0o711)
     did.append("installed NVIDIA's container toolkit")
 
 
@@ -309,10 +314,11 @@ def _runtime(did):
     proc.run(["nvidia-ctk", "runtime", "configure", "--runtime=docker"], log=LOG, timeout=120)
     if _read(DAEMON_JSON) != before:
         proc.write_file(RESTART_OWED, "", mode=0o600, dir_mode=0o711)
+        did.append("configured the NVIDIA runtime for Docker")
     if RESTART_OWED.exists():
         proc.run(["systemctl", "restart", "docker.service"], log=LOG, timeout=300)
         RESTART_OWED.unlink()
-        did.append("configured the NVIDIA runtime for Docker")
+        did.append("restarted Docker onto the NVIDIA runtime")
 
 
 def _check_container(listed):

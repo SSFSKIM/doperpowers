@@ -356,8 +356,10 @@ finishes the rest at the next:
    `nvidia-container-runtime-hook` are: `nvidia-ctk` alone is the base
    package of a CDI-only install, which lacks the hook Docker's `--gpus` runs.
 4. **The runtime**: `nvidia-ctk runtime configure --runtime=docker`, and the
-   daemon restarted when that changed `/etc/docker/daemon.json` (a restart
-   that failed stays owed until one succeeds).
+   daemon restarted when that changed `/etc/docker/daemon.json`, or when this
+   run installed the toolkit (Docker registers its NVIDIA device driver only
+   as it starts, and only when the hook exists then); a restart that failed
+   stays owed until one succeeds.
 
 The step then runs `nvidia/cuda:13.0.3-base-ubuntu24.04` with `--gpus all`
 and `NVIDIA_DISABLE_REQUIRE=true` (the check is that the GPU reaches a
