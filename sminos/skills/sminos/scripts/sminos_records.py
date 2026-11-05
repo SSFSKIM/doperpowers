@@ -343,6 +343,7 @@ def write_pending(launch, prov):
     if not LAUNCH_RE.fullmatch(launch):
         raise ValueError("bad launch id: %r" % (launch,))
     checked_owners(prov.get("owners"))
+    policy_carried(prov)
     os.makedirs(os.path.dirname(pending_path(launch)), mode=0o700, exist_ok=True)
     sminos._write_record(pending_path(launch), {**prov, "created": prov.get("created") or sminos.now()})
 
