@@ -89,7 +89,7 @@ so far, and the unconfirmed count against the cap.
 
 ## A cloud devcloud does not ship
 
-devcloud ships Hetzner Cloud and Google Compute Engine. Any other cloud is
+devcloud ships Hetzner Cloud, Google Compute Engine and Amazon EC2. Any other cloud is
 a **provider** the session can write: an executable, in any language, at
 `<profile>/providers/<name>` (a name no shipped provider has), used by an
 account in `<profile>/driver.toml` whose `provider` is that name; the

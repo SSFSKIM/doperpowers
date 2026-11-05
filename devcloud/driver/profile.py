@@ -12,7 +12,7 @@ from devcloudlib import envfile
 
 from .errors import USAGE, DriverError
 
-SHIPPED = ("hetzner", "gce")
+SHIPPED = ("hetzner", "gce", "aws")
 _ACCOUNT = re.compile(r"[a-z0-9][a-z0-9-]{0,39}\Z")
 _PROVIDER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
 _SECRET_ID = re.compile(r"[A-Za-z0-9_-]{1,255}\Z")

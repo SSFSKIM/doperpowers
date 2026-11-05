@@ -350,7 +350,7 @@ def stand_ins():
 
 # --- acceptance 3: one boot, a working host -----------------------------------------
 
-@case("a container boots to every step ok, projects and maws skipped (acceptance 3)", "host")
+@case("a container boots to every step ok, the GPU step, projects and maws skipped (acceptance 3)", "host")
 def boot():
     docker("run", "-d", "--name", HOST, "--hostname", "sbx-test", "--network", NET, *ENV,
            "-e", "DEVCLOUD_JOB_INTERVAL=40", "-v", f"{descriptor()}:/etc/devcloud/boot.env:ro", IMAGE)
@@ -359,10 +359,10 @@ def boot():
     print(f"  (healthy after {time.monotonic() - started:.0f}s)")
     got = {name: s["state"] for name, s in steps(HOST).items()}
     want = {name: "ok" for name in got}
-    want["projects"] = want["maws"] = "skipped"
-    check(got == want and len(got) == 13, f"states {got}")
+    want["gpu"] = want["projects"] = want["maws"] = "skipped"
+    check(got == want and len(got) == 14, f"states {got}")
     lines = out(HOST, "devcloud status").splitlines()
-    check(len(lines) == 13 and lines[0].startswith("identity"), "devcloud status prints a line per step")
+    check(len(lines) == 14 and lines[0].startswith("identity"), "devcloud status prints a line per step")
 
 
 @case("identity and the environment file", "host")
@@ -616,7 +616,7 @@ def project_fails():
     projects = got.get("projects", {})
     check(rc == 3 and projects.get("state") == "failed", f"rc={rc} projects={projects}")
     check(projects["detail"].startswith("example/app ok; example/missing failed (devenv up exited"), projects["detail"])
-    check(all(s["state"] == "ok" for name, s in got.items() if name not in ("projects", "maws")), str(got))
+    check(all(s["state"] == "ok" for name, s in got.items() if name not in ("gpu", "projects", "maws")), str(got))
     check(got.get("maws", {}).get("state") == "skipped", str(got.get("maws")))
     # Through the image's own entrypoint: the supervisor runs after a boot that exited 3.
     name = f"{TAG}-noproj"
@@ -704,6 +704,9 @@ def under_systemd():
            "-v", f"{desc}:/etc/devcloud/boot.env:ro", SYSTEMD_IMAGE)
     wait_systemd_boot()
     check(sh(VM, "devcloud status", check_rc=False).returncode == 0, out(VM, "devcloud status"))
+    # A VM's GPU step reads the PCI devices the kernel sees: the runner has no NVIDIA GPU.
+    gpu = steps(VM)["gpu"]
+    check(gpu["state"] == "skipped" and gpu["detail"] == "no NVIDIA GPU", str(gpu))
     check("3" in out(VM, "systemctl show -p SuccessExitStatus devcloud-boot.service"),
           "the boot unit does not count exit 3 (only projects failed) as success")
     for unit in ("devcloud-session-mirror.service", "devcloud-pull-config.timer", "devcloud-refresh-secrets.timer",
@@ -711,6 +714,8 @@ def under_systemd():
         wait_active(unit)
     check(out(VM, "systemctl is-enabled devcloud-spot.service || true").strip() == "disabled",
           "the spot unit is enabled on a VM that is not spot")
+    check(out(VM, "systemctl is-enabled devcloud-spot-notice.service || true").strip() == "disabled",
+          "EC2's spot notice watch is enabled on a VM that is not spot")
     check("ConditionPathExists=/etc/devcloud/boot.env" in out(VM, "systemctl cat devcloud-boot.service"),
           "the boot unit runs without a descriptor")
     check(sh(VM, "command -v nft", check_rc=False).returncode == 0, "nft is not installed")
@@ -1001,6 +1006,20 @@ def spot_vm_boots():
               + out(SPOT, "systemctl status devcloud-spot.service --no-pager || true"))
         time.sleep(1)
     check("devcloud-spot.service enabled" in steps(SPOT)["services"]["detail"], steps(SPOT)["services"]["detail"])
+    # EC2's notice watch polls on: no IMDS here gives a notice, so it departs nothing.
+    check(out(SPOT, "systemctl is-enabled devcloud-spot-notice.service || true").strip() == "enabled",
+          "EC2's spot notice watch is not enabled on a spot VM")
+    end = time.monotonic() + 30
+    while out(SPOT, "systemctl is-active devcloud-spot-notice.service || true").strip() != "active":
+        check(time.monotonic() < end, "EC2's spot notice watch never started: "
+              + out(SPOT, "systemctl status devcloud-spot-notice.service --no-pager || true"))
+        time.sleep(1)
+    time.sleep(12)
+    check(out(SPOT, "systemctl is-active devcloud-spot-notice.service || true").strip() == "active",
+          "EC2's spot notice watch stopped polling: "
+          + out(SPOT, "journalctl -u devcloud-spot-notice --no-pager -n 20 || true"))
+    check(json.loads(out(SPOT, "cat /var/lib/devcloud/status.json")).get("lifecycle") is None,
+          "the spot VM departed with no notice")
     docker("rm", "-f", SPOT)
 
 

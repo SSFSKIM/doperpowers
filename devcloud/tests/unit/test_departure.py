@@ -3,6 +3,7 @@ stand-in host: its `claude` processes, its commands, its clock. Every command
 goes through one recorder, which also takes the lines the departure prints, so
 the order of everything a run did is one list."""
 
+import datetime
 import json
 import os
 import pathlib
@@ -13,7 +14,7 @@ import unittest
 from unittest import mock
 
 import _path  # noqa: F401
-from devcloudlib import departure, ledger, nodekind, proc, redact, status, tsapi
+from devcloudlib import departure, lease, ledger, nodekind, proc, redact, status, tsapi
 from devcloudlib.proc import StepError, User
 
 NOW = 1_792_000_000
@@ -194,10 +195,11 @@ class DepartureBase(unittest.TestCase):
                      desc_path=self.tmp / "boot.env", lock_path=self.tmp / "lifecycle.lock",
                      adopt_dir=self.tmp / "adopt", unit_dir=self.units, inbound_nft=self.tmp / "inbound.nft",
                      shipper_seen=self.tmp / "shipper-configured", state_dir=self.tmp / "state")
+        seams = dict(now=lambda: NOW, monotonic=lambda: world.clock,
+                     sleep=lambda s: setattr(world, "clock", world.clock + s))
+        paths.update(seams)
         paths.update(over)
-        host = StandIn(user=self.user, run=world.run, call=world.call, now=lambda: NOW,
-                       monotonic=lambda: world.clock, sleep=lambda s: setattr(world, "clock", world.clock + s),
-                       **paths)
+        host = StandIn(user=self.user, run=world.run, call=world.call, **paths)
         host.world = world
         return host
 
@@ -408,6 +410,97 @@ class DepartTest(DepartureBase):
         self.assertIn(["tailscale", "logout"], runs, "a failed ship held a reclaimed VM")
         self.assertNotIn(["systemctl", "poweroff"], runs)
         self.assertLessEqual(self.world.clock, departure.PREEMPT_BUDGET, "the session wait outlasted the window")
+        self.assertEqual(self.lifecycle()["state"], "departed")
+
+    def test_the_ec2_notice_watch_departs_on_the_notice_it_saw(self):
+        # The departure runs on the notice the watch observed: a second look at the metadata that
+        # misses (here: preempted() answers no) must not lose it.
+        self.write_descriptor(LATER)
+        notices = iter([None, None, {"action": "terminate", "time": "2026-11-04T10:02:00Z"}])
+
+        class Imds:
+            def instance_action(self):
+                return next(notices)
+        sleeps = []
+        self.assertEqual(departure.watch_spot_notice(self.host(), imds=Imds(), sleep=sleeps.append), 0)
+        self.assertEqual(len(sleeps), 2)
+        runs = self.world.runs()
+        self.assertIn(["tailscale", "logout"], runs, "the watch saw a notice and departed nothing")
+        self.assertNotIn(["systemctl", "poweroff"], runs)
+        self.assertEqual(self.lifecycle()["state"], "departed")
+
+    def notice_in(self, seconds):
+        when = datetime.datetime.fromtimestamp(NOW + seconds, datetime.timezone.utc)
+        return {"action": "terminate", "time": when.strftime("%Y-%m-%dT%H:%M:%SZ")}
+
+    def test_the_ec2_notice_waits_out_a_job_holding_the_lock_shared(self):
+        # A pull-config, reconcile or refresh-secrets job holds the lifecycle lock shared at the notice.
+        self.write_descriptor(LATER)
+        job = lease.locked(shared=True, path=self.tmp / "lifecycle.lock")
+        job.__enter__()
+        self.addCleanup(lambda: job.__exit__(None, None, None) if not released else None)
+        released = False
+        waits = []
+
+        def sleep(seconds):
+            nonlocal released
+            self.world.clock += seconds
+            if not released:
+                waits.append(seconds)
+                if len(waits) == 2:      # the job ends ten seconds into the notice
+                    job.__exit__(None, None, None)
+                    released = True
+        host = self.host(sleep=sleep, now=lambda: NOW + self.world.clock)
+        self.assertEqual(departure.depart_on_notice(host, self.notice_in(120)), departure.DONE)
+        self.assertEqual(waits, [departure.NOTICE_RETRY] * 2)
+        self.assertIn(["tailscale", "logout"], self.world.runs(), "the notice was thrown away on a busy lock")
+        self.assertEqual(self.lifecycle()["state"], "departed")
+
+    def test_the_ec2_notice_gives_up_once_too_little_of_its_window_is_left(self):
+        self.write_descriptor(LATER)
+        job = lease.locked(shared=True, path=self.tmp / "lifecycle.lock")
+        job.__enter__()
+        self.addCleanup(job.__exit__, None, None, None)
+        host = self.host(now=lambda: NOW + self.world.clock)
+        self.assertEqual(departure.depart_on_notice(host, self.notice_in(60)), departure.FAILED)
+        self.assertLessEqual(self.world.clock, 60 - departure.PREEMPT_BUDGET,
+                             "it waited into the departure's own 25 seconds")
+        self.assertEqual(self.world.runs(), [])
+        self.assertIsNone(self.lifecycle())
+
+    def test_the_ec2_notice_leaves_a_departure_already_under_way_to_it(self):
+        self.write_descriptor(LATER)
+        status.set_lifecycle("depart", "departing", "the lease ended", steps=[], path=self.tmp / "status.json")
+        departing = lease.locked(path=self.tmp / "lifecycle.lock")
+        departing.__enter__()
+        self.addCleanup(departing.__exit__, None, None, None)
+        host = self.host(now=lambda: NOW + self.world.clock)
+        self.assertEqual(departure.depart_on_notice(host, self.notice_in(120)), departure.DONE)
+        self.assertEqual(self.world.clock, 0, "it waited on a departure that owns the machine")
+        self.assertEqual(self.world.runs(), [])
+
+    def test_the_gce_shutdown_path_still_gives_up_on_a_held_lock(self):
+        self.write_descriptor(LATER)
+        self.world.preempted = True
+        job = lease.locked(shared=True, path=self.tmp / "lifecycle.lock")
+        job.__enter__()
+        self.addCleanup(job.__exit__, None, None, None)
+        self.assertEqual(departure.depart_preempted(self.host()), departure.DONE)
+        self.assertEqual(self.world.runs(), [])
+
+    def test_the_shutdown_unit_still_asks_the_metadata(self):
+        self.write_descriptor(LATER)
+        self.assertEqual(departure.depart_preempted(self.host()), departure.DONE)
+        self.assertEqual(self.world.runs(), [], "an ordinary shutdown departed")
+
+    def test_a_reclaim_already_departed_departs_nothing_again(self):
+        # EC2's notice starts the departure two minutes ahead; its shutdown then stops the spot unit too.
+        self.write_descriptor(LATER)
+        self.world.preempted = True
+        self.assertEqual(departure.depart_preempted(self.host()), departure.DONE)
+        before = len(self.world.runs())
+        self.assertEqual(departure.depart_preempted(self.host()), departure.DONE)
+        self.assertEqual(len(self.world.runs()), before, "a second reclaim departure ran steps")
         self.assertEqual(self.lifecycle()["state"], "departed")
 
 

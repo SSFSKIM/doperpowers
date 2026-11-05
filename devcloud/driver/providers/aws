@@ -1,0 +1,635 @@
+#!/usr/bin/env python3
+"""devcloud's shipped Amazon EC2 provider (the VM driver's Design §6.6; the protocol is I13).
+
+    aws <op>    one JSON object on stdin, one JSON value on stdout
+    exit 0 ok; exit 3 refused ({"error", "kind"} on stdout); exit 1 failure; exit 2 usage
+
+Its environment (the account's env and vars):
+    AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY   the account's own IAM user
+    AWS_REGION      the account's region, which is its location; required, since list, get, delete
+                    and the image operations carry no location
+    AWS_FAMILIES    the type families `types` offers (default t3,m7i,c7i,r7i,g6,g6e,g5)
+    AWS_DISK_GB     every type's root volume unless a request asks for more (default 50)
+
+It runs the aws CLI v2 with that key alone: AWS_CONFIG_FILE and AWS_SHARED_CREDENTIALS_FILE name
+empty files in its state directory ($HOME/.local/state/devcloud/aws), and every other AWS_*
+variable is removed, so the person's own profiles and sign-in are never read. A VM's id is the
+instance id, an image's the AMI id; a VM's location is the region (the zone is EC2's choice among
+the region's default subnets)."""
+import datetime
+import gzip
+import json
+import os
+import pathlib
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+
+UBUNTU_PARAMETER = "/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id"
+FAMILIES = "t3,m7i,c7i,r7i,g6,g6e,g5"
+DISK_GB = 50
+USER_DATA_MAX = 16 * 1024          # EC2's limit, before its base64 encoding
+GROUP = "devcloud"
+GROUP_TAG = {"Key": "devcloud", "Value": "network"}
+INGRESS = (("tcp", 22), ("udp", 41641))
+LIVE = ("pending", "running", "stopping", "stopped")     # shutting-down and terminated are gone
+PRICE_TTL = 7 * 86400
+PRICE_BUDGET = 60                  # seconds for the whole price read; `types` must not fail on it
+PRICE_CHUNK = 20
+PRICING_REGION = "us-east-1"       # the Pricing API's endpoint
+SNAPSHOT_AGE = 86400               # a create-image in flight has no AMI naming its snapshot yet
+QUOTA = ("VcpuLimitExceeded", "InstanceLimitExceeded", "MaxSpotInstanceCountExceeded")
+UNAVAILABLE = ("InsufficientInstanceCapacity", "Unsupported", "InvalidInstanceType")
+SPOT_ROLE = "AuthFailure.ServiceLinkedRoleCreationNotPermitted"
+NOT_FOUND = ("InvalidInstanceID.NotFound", "InvalidAMIID.NotFound", "InvalidAMIID.Unavailable",
+             "InvalidSnapshot.NotFound")
+_REGION = re.compile(r"[a-z]{2}(?:-[a-z]+)+-[0-9]{1,2}\Z")
+_FAMILY = re.compile(r"[a-z0-9-]{1,20}\Z")
+_INSTANCE = re.compile(r"i-[0-9a-f]{8,17}\Z")
+_IMAGE = re.compile(r"ami-[0-9a-f]{8,17}\Z")
+
+
+class Refused(Exception):
+    def __init__(self, kind, error):
+        super().__init__(error)
+        self.kind = kind
+
+
+class Failed(Exception):
+    pass
+
+
+class Usage(Exception):
+    pass
+
+
+class AwsError(Exception):
+    """A failed CLI call: the service's error code, when it names one, and its message on one line."""
+
+    def __init__(self, stderr):
+        text = " ".join(line.strip() for line in stderr.splitlines() if line.strip())
+        found = re.search(r"An error occurred \(([^)]+)\)", text)
+        self.code = found.group(1) if found else None
+        super().__init__(text[:400] or "the aws CLI failed with no message")
+
+    @property
+    def not_found(self):
+        return self.code in NOT_FOUND
+
+
+def need(name):
+    value = os.environ.get(name)
+    if not value:
+        raise Failed(f"{name} is not set")
+    return value
+
+
+def account_region():
+    region = os.environ.get("AWS_REGION") or ""
+    if not _REGION.fullmatch(region):
+        raise Usage(f"AWS_REGION must name the account's region (as in us-west-2), not {region[:40]!r}")
+    return region
+
+
+class Aws:
+    """The aws CLI with the account's key alone, under empty private configuration files."""
+
+    def __init__(self, region):
+        self.region = region
+        self.state = pathlib.Path(need("HOME")) / ".local/state/devcloud/aws"
+        self.state.mkdir(parents=True, exist_ok=True, mode=0o700)
+        self.exe = shutil.which("aws")
+        if not self.exe or os.path.realpath(self.exe) == os.path.realpath(__file__):
+            raise Failed("the aws CLI v2 is not on PATH")
+        files = {}
+        for var, name in (("AWS_CONFIG_FILE", "config"), ("AWS_SHARED_CREDENTIALS_FILE", "credentials")):
+            path = self.state / name
+            with open(path, "w") as f:      # empty, whatever was written there
+                os.fchmod(f.fileno(), 0o600)
+            files[var] = str(path)
+        self.env = {k: v for k, v in os.environ.items() if not k.startswith("AWS_")}
+        self.env.update(files, AWS_ACCESS_KEY_ID=need("AWS_ACCESS_KEY_ID"),
+                        AWS_SECRET_ACCESS_KEY=need("AWS_SECRET_ACCESS_KEY"), AWS_PAGER="",
+                        AWS_EC2_METADATA_DISABLED="true")
+
+    def run(self, service, op, *args, region=None, timeout=None):
+        argv = [self.exe, service, op, *args, "--region", region or self.region, "--output", "json", "--no-cli-pager"]
+        try:
+            r = subprocess.run(argv, env=self.env, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                               timeout=timeout)
+        except subprocess.TimeoutExpired:
+            raise AwsError(f"aws {service} {op} timed out after {timeout} s") from None
+        if r.returncode != 0:
+            raise AwsError(r.stderr)
+        try:
+            return json.loads(r.stdout) if r.stdout.strip() else {}
+        except json.JSONDecodeError:
+            raise Failed(f"aws {service} {op} printed output that is not JSON") from None
+
+    def ec2(self, op, *args, **kw):
+        return self.run("ec2", op, *args, **kw)
+
+
+def js(value):
+    return json.dumps(value, separators=(",", ":"))
+
+
+def filters(named):
+    """EC2's --filters, from {filter name: values}."""
+    return js([{"Name": name, "Values": list(values)} for name, values in named.items()])
+
+
+def unix_seconds(text):
+    return int(datetime.datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp())
+
+
+def tags_of(item):
+    return {t["Key"]: t["Value"] for t in item.get("Tags") or []}
+
+
+def labels_of(item):
+    """The I14 labels among a resource's tags: `Name` and every other tag stay out."""
+    return {k: v for k, v in tags_of(item).items() if k == "devcloud" or k.startswith("devcloud-")}
+
+
+def tag_list(labels, name=None):
+    tags = [{"Key": k, "Value": v} for k, v in labels.items()]
+    return tags + ([{"Key": "Name", "Value": name}] if name else [])
+
+
+def created(inst):
+    """The instance's creation: its root volume's attach time, which a stop and a start leave as it
+    was, where LaunchTime moves to the restart."""
+    root = inst.get("RootDeviceName")
+    attached = [m["Ebs"]["AttachTime"] for m in inst.get("BlockDeviceMappings") or []
+                if m.get("DeviceName") == root and (m.get("Ebs") or {}).get("AttachTime")]
+    return unix_seconds(attached[0] if attached else inst["LaunchTime"])
+
+
+def vm(inst, region):
+    status = inst["State"]["Name"]
+    return {"id": inst["InstanceId"], "name": tags_of(inst).get("Name") or inst["InstanceId"], "location": region,
+            "type": inst["InstanceType"], "labels": labels_of(inst), "public_ipv4": inst.get("PublicIpAddress"),
+            "state": "running" if status == "running" else status, "created": created(inst)}
+
+
+IMAGE_STATES = {"available": "ready", "pending": "pending"}
+
+
+def image(img):
+    status = img.get("State") or "unknown"
+    return {"id": img["ImageId"], "name": img.get("Name"), "labels": labels_of(img),
+            "created": unix_seconds(img["CreationDate"]), "state": IMAGE_STATES.get(status, status)}
+
+
+def disk_gb():
+    try:
+        return int(os.environ.get("AWS_DISK_GB") or DISK_GB)
+    except ValueError:
+        raise Failed("AWS_DISK_GB is not a whole number") from None
+
+
+def families():
+    named = (os.environ.get("AWS_FAMILIES") or FAMILIES).replace(",", " ").split()
+    for family in named:
+        if not _FAMILY.fullmatch(family):
+            raise Failed(f"AWS_FAMILIES names {family[:40]!r}, which is not a type family")
+    return named
+
+
+def location(aws, req):
+    if req["location"] != aws.region:
+        raise Usage(f"location {str(req['location'])[:40]!r} is not the account's region, AWS_REGION "
+                    f"{aws.region}: an AWS account is one region")
+    return aws.region
+
+
+def until(check, tries, every):
+    """`check()` until it answers something, at most `tries` times; None after."""
+    for attempt in range(tries):
+        found = check()
+        if found is not None:
+            return found
+        if attempt + 1 < tries:
+            time.sleep(every)
+    return None
+
+
+# --- prices, from the Pricing API, cached a week -----------------------------------------
+
+def price_of(item):
+    """The hourly on-demand USD price of one price-list entry, or None."""
+    prices = []
+    for term in (item.get("terms") or {}).get("OnDemand", {}).values():
+        for dim in (term.get("priceDimensions") or {}).values():
+            try:
+                if dim.get("unit") == "Hrs":
+                    prices.append(float(dim["pricePerUnit"]["USD"]))
+            except (KeyError, TypeError, ValueError):
+                continue
+    positive = [p for p in prices if p > 0]
+    return min(positive) if positive else None
+
+
+def fetch_prices(aws, region, names):
+    """{type: hourly on-demand Linux price} from the Pricing API, for `names`, within PRICE_BUDGET."""
+    deadline = time.monotonic() + PRICE_BUDGET
+    base = [{"Type": "TERM_MATCH", "Field": field, "Value": value} for field, value in (
+        ("regionCode", region), ("operatingSystem", "Linux"), ("tenancy", "Shared"), ("preInstalledSw", "NA"),
+        ("capacitystatus", "Used"), ("licenseModel", "No License required"))]
+    prices = {}
+    for start in range(0, len(names), PRICE_CHUNK):
+        left = deadline - time.monotonic()
+        if left <= 0:
+            raise AwsError("the price list did not answer in time")
+        chunk = names[start:start + PRICE_CHUNK]
+        answer = aws.run("pricing", "get-products", "--service-code", "AmazonEC2", "--filters",
+                         js(base + [{"Type": "ANY_OF", "Field": "instanceType", "Value": ",".join(chunk)}]),
+                         region=PRICING_REGION, timeout=max(1, int(left)))
+        for text in answer.get("PriceList") or []:
+            item = json.loads(text) if isinstance(text, str) else text
+            name = ((item.get("product") or {}).get("attributes") or {}).get("instanceType")
+            value = price_of(item)
+            if name in chunk and value is not None:
+                prices[name] = min(value, prices.get(name, value))
+    return prices
+
+
+def load_prices(aws, region, names):
+    """The region's prices for `names`: the cache when under a week old and covering them, else the
+    Pricing API; a stale cache, or nothing, when that fails (a type then shows no price, which never
+    fails `types`)."""
+    cache = aws.state / f"prices-{region}.json"
+    try:
+        cached = json.loads(cache.read_text())
+        if time.time() - cached["fetched"] < PRICE_TTL and set(names) <= set(cached["asked"]):
+            return cached["prices"]
+    except (OSError, ValueError, KeyError, TypeError):
+        cached = None
+    try:
+        prices = fetch_prices(aws, region, sorted(names))
+    except (AwsError, Failed, ValueError) as e:
+        print(f"aws: the price list: {e}", file=sys.stderr)
+        return cached["prices"] if cached else {}
+    cache.write_text(js({"fetched": int(time.time()), "asked": sorted(names), "prices": prices}))
+    return prices
+
+
+# --- the network: the default VPC, its default subnets, the devcloud group ------------------
+
+def default_vpc(aws):
+    vpcs = aws.ec2("describe-vpcs", "--filters", filters({"is-default": ["true"]}))["Vpcs"]
+    if not vpcs:
+        raise Failed(f"region {aws.region} has no default VPC")
+    return vpcs[0]["VpcId"]
+
+
+def default_subnets(aws, vpc):
+    found = aws.ec2("describe-subnets", "--filters", filters({"vpc-id": [vpc], "default-for-az": ["true"]}))["Subnets"]
+    if not found:
+        raise Failed(f"the default VPC of {aws.region} has no default subnet")
+    return [s["SubnetId"] for s in sorted(found, key=lambda s: s["AvailabilityZone"])]
+
+
+def _rule(protocol, port):
+    return {"IpProtocol": protocol, "FromPort": port, "ToPort": port, "IpRanges": [{"CidrIp": "0.0.0.0/0"}],
+            "Ipv6Ranges": [{"CidrIpv6": "::/0"}]}
+
+
+def _has(group, protocol, port):
+    for perm in group.get("IpPermissions") or []:
+        if perm.get("IpProtocol") == protocol and perm.get("FromPort") == port and perm.get("ToPort") == port \
+                and any(r.get("CidrIp") == "0.0.0.0/0" for r in perm.get("IpRanges") or []):
+            return True
+    return False
+
+
+def security_group(aws, vpc):
+    """The provider's group, found or made: `devcloud` in the default VPC, tagged devcloud=network,
+    inbound TCP 22 and UDP 41641 from anywhere (the host's own policy closes 22 once the tailnet is
+    up, §5). A group of that name without the tag is someone else's, and is never used."""
+    def described():
+        found = aws.ec2("describe-security-groups", "--filters", filters({"vpc-id": [vpc], "group-name": [GROUP]}))
+        return found["SecurityGroups"][0] if found["SecurityGroups"] else None
+
+    group = described()
+    if group is None:
+        try:
+            aws.ec2("create-security-group", "--group-name", GROUP, "--vpc-id", vpc, "--description",
+                    "devcloud hosts: SSH until the tailnet is up, Tailscale direct connections",
+                    "--tag-specifications", js([{"ResourceType": "security-group", "Tags": [GROUP_TAG]}]))
+        except AwsError as e:
+            if e.code != "InvalidGroup.Duplicate":     # another driver made it meanwhile
+                raise
+        group = described()
+        if group is None:
+            raise Failed(f"the {GROUP} security group was made but is not listed")
+    if tags_of(group).get("devcloud") != "network":
+        raise Failed(f"security group {group['GroupId']} is named {GROUP} but lacks the devcloud=network tag; "
+                     "rename it, or tag it if it is devcloud's")
+    missing = [_rule(p, port) for p, port in INGRESS if not _has(group, p, port)]
+    if missing:
+        try:
+            aws.ec2("authorize-security-group-ingress", "--group-id", group["GroupId"], "--ip-permissions",
+                    js(missing))
+        except AwsError as e:
+            if e.code != "InvalidPermission.Duplicate":
+                raise
+    return group["GroupId"]
+
+
+# --- the operations -----------------------------------------------------------------------
+
+def op_info(req):
+    return {"protocol": 1, "capabilities": ["user_data", "images", "spot"]}
+
+
+def op_types(aws, req):
+    """The region's x86-64 types of the account's families (the recipe is amd64), each with the
+    account's root volume as its disk."""
+    region = location(aws, req)
+    wanted = [f"{family}.*" for family in families()]
+    found = aws.ec2("describe-instance-types", "--filters", filters({
+        "processor-info.supported-architecture": ["x86_64"], "instance-type": wanted}))["InstanceTypes"]
+    offered = {o["InstanceType"] for o in aws.ec2(
+        "describe-instance-type-offerings", "--location-type", "region",
+        "--filters", filters({"location": [region], "instance-type": wanted}))["InstanceTypeOfferings"]}
+    prices = load_prices(aws, region, sorted(t["InstanceType"] for t in found))
+    disk = disk_gb()
+    out = [{"type": t["InstanceType"], "vcpus": t["VCpuInfo"]["DefaultVCpus"],
+            "memory_gb": round(t["MemoryInfo"]["SizeInMiB"] / 1024, 2), "disk_gb": disk,
+            "available": t["InstanceType"] in offered, "hourly_price": prices.get(t["InstanceType"]),
+            "currency": "USD", "architecture": "x86"} for t in found]
+    return sorted(out, key=lambda t: (t["vcpus"], t["memory_gb"], t["type"]))
+
+
+def user_data_bytes(text):
+    """What EC2 receives: the core's user-data, gzip-compressed when it is over 16 KB (cloud-init on
+    EC2 reads either); never truncated."""
+    if text is None:
+        return None
+    data = text.encode()
+    if len(data) > USER_DATA_MAX:
+        data = gzip.compress(data, mtime=0)
+        if len(data) > USER_DATA_MAX:
+            raise Refused("other", f"user-data is {len(text.encode())} bytes, {len(data)} compressed: over EC2's "
+                                   f"{USER_DATA_MAX} bytes")
+    return data
+
+
+def root_device(aws, image_id):
+    """The AMI's root device and its snapshot's size, which the root volume may not be below."""
+    try:
+        images = aws.ec2("describe-images", "--image-ids", image_id)["Images"]
+    except AwsError as e:
+        if e.not_found:
+            raise Failed(f"image {image_id} does not exist in {aws.region}") from None
+        raise
+    if not images:
+        raise Failed(f"image {image_id} does not exist in {aws.region}")
+    img = images[0]
+    root = img.get("RootDeviceName") or "/dev/sda1"
+    size = next((m["Ebs"].get("VolumeSize") or 0 for m in img.get("BlockDeviceMappings") or []
+                 if m.get("DeviceName") == root and m.get("Ebs")), 0)
+    return root, size
+
+
+def describe(aws, iid):
+    """The raw instance, or None when EC2 has no such instance (or none yet: its API is eventually
+    consistent, so a fresh instance can be unknown for some seconds)."""
+    try:
+        found = aws.ec2("describe-instances", "--instance-ids", iid)
+    except AwsError as e:
+        if e.not_found:
+            return None
+        raise
+    return next((i for r in found.get("Reservations") or [] for i in r.get("Instances") or []), None)
+
+
+def op_create(aws, req):
+    region = location(aws, req)
+    data = user_data_bytes(req.get("user_data"))
+    image_id = req.get("image") or aws.run("ssm", "get-parameter", "--name", UBUNTU_PARAMETER)["Parameter"]["Value"]
+    root, least = root_device(aws, image_id)
+    vpc = default_vpc(aws)
+    group = security_group(aws, vpc)
+    tags = tag_list(req["labels"], req["name"])
+    argv = ["--image-id", image_id, "--instance-type", req["type"], "--count", "1",
+            "--metadata-options",
+            js({"HttpTokens": "required", "HttpPutResponseHopLimit": 2, "HttpEndpoint": "enabled"}),
+            "--block-device-mappings", js([{"DeviceName": root, "Ebs": {
+                "VolumeSize": max(disk_gb(), req.get("disk_gb") or 0, least), "VolumeType": "gp3",
+                "DeleteOnTermination": True}}]),
+            "--tag-specifications", js([{"ResourceType": "instance", "Tags": tags},
+                                        {"ResourceType": "volume", "Tags": tags}])]
+    if req.get("spot"):
+        argv += ["--instance-market-options", js({"MarketType": "spot", "SpotOptions": {
+            "SpotInstanceType": "one-time", "InstanceInterruptionBehavior": "terminate"}})]
+    with tempfile.TemporaryDirectory(prefix="devcloud-aws-") as tmp:
+        if data is not None:
+            path = pathlib.Path(tmp) / "user-data"
+            path.write_bytes(data)
+            argv += ["--user-data", f"fileb://{path}"]
+        last = None
+        for subnet in default_subnets(aws, vpc):
+            nic = js([{"DeviceIndex": 0, "SubnetId": subnet, "Groups": [group], "AssociatePublicIpAddress": True,
+                       "DeleteOnTermination": True}])
+            try:
+                made = aws.ec2("run-instances", *argv, "--network-interfaces", nic)["Instances"][0]
+                break
+            except AwsError as e:
+                if e.code in QUOTA:
+                    raise Refused("quota", str(e)) from None
+                if e.code == SPOT_ROLE:
+                    raise Refused("other", "a spot instance needs the account's AWSServiceRoleForEC2Spot "
+                                           "service-linked role, which this credential may not create: create it "
+                                           "once with `aws iam create-service-linked-role --aws-service-name "
+                                           "spot.amazonaws.com`") from None
+                if e.code in UNAVAILABLE:
+                    last = e        # capacity is per zone: the next default subnet's
+                    continue
+                raise
+        else:
+            raise Refused("unavailable", f"{req['type']} in none of {region}'s default subnets: {last}")
+    found = until(lambda: describe(aws, made["InstanceId"]), tries=30, every=2)
+    if found is None:
+        made.setdefault("Tags", tags)
+        found = made
+    return vm(found, region)
+
+
+def instance_id(req):
+    iid = str(req["id"])
+    if not _INSTANCE.fullmatch(iid):
+        raise Usage(f"an instance id is i- and hex: {iid[:40]!r}")
+    return iid
+
+
+def live(inst):
+    return inst if inst is not None and inst["State"]["Name"] in LIVE else None
+
+
+def op_list(aws, req):
+    found = aws.ec2("describe-instances", "--filters", filters({"tag-key": ["devcloud"], "instance-state-name": LIVE}))
+    return [vm(i, aws.region) for r in found.get("Reservations") or [] for i in r.get("Instances") or []
+            if live(i) is not None]
+
+
+def op_get(aws, req):
+    inst = live(describe(aws, instance_id(req)))
+    return vm(inst, aws.region) if inst is not None else None
+
+
+def op_set_labels(aws, req):
+    iid, labels = instance_id(req), req["labels"]
+    inst = live(describe(aws, iid))
+    if inst is None:
+        raise Failed(f"instance {iid} not found")
+    gone = [k for k in labels_of(inst) if k not in labels]
+    if gone:
+        aws.ec2("delete-tags", "--resources", iid, "--tags", js([{"Key": k} for k in gone]))
+    if labels:
+        aws.ec2("create-tags", "--resources", iid, "--tags", js(tag_list(labels)))
+    def showing():
+        found = describe(aws, iid)
+        return found if found is not None and labels_of(found) == labels else None
+    # Tags are eventually consistent: the answer is the instance once it shows the set asked for.
+    now = until(showing, tries=10, every=1)
+    return vm(now or describe(aws, iid) or inst, aws.region)
+
+
+def op_delete(aws, req):
+    try:
+        aws.ec2("terminate-instances", "--instance-ids", instance_id(req))
+    except AwsError as e:
+        if not e.not_found:
+            raise
+    return {}
+
+
+def op_image_create(aws, req):
+    """An AMI of the instance, tagged on the image and its snapshot. A builder the core powered off
+    may still be stopping, which CreateImage refuses: it is waited for."""
+    iid = instance_id(req)
+
+    def settled():
+        found = live(describe(aws, iid))
+        if found is None:
+            raise Failed(f"instance {iid} not found")
+        return None if found["State"]["Name"] == "stopping" else found
+    if until(settled, tries=300, every=2) is None:
+        raise Failed(f"instance {iid} did not finish stopping")
+    tags = tag_list(req["labels"])
+    made = aws.ec2("create-image", "--instance-id", iid, "--name", req["name"], "--no-reboot",
+                   "--tag-specifications", js([{"ResourceType": "image", "Tags": tags},
+                                               {"ResourceType": "snapshot", "Tags": tags}]))
+    ami = made["ImageId"]
+
+    def described():
+        try:
+            images = aws.ec2("describe-images", "--image-ids", ami)["Images"]
+        except AwsError as e:
+            if e.not_found:
+                return None
+            raise
+        return images[0] if images else None
+    found = until(described, tries=15, every=2)
+    if found is None:
+        return {"id": ami, "name": req["name"], "labels": dict(req["labels"]), "created": int(time.time()),
+                "state": "pending"}
+    return image(found)
+
+
+def sweep_snapshots(aws, owned):
+    """Snapshots an interrupted image-delete left: the account's, tagged by devcloud (an image's or a
+    provider test's), older than a day, named by none of the account's AMIs. A failure is reported
+    on stderr and fails nothing."""
+    named = {m["Ebs"]["SnapshotId"] for img in owned for m in img.get("BlockDeviceMappings") or []
+             if (m.get("Ebs") or {}).get("SnapshotId")}
+    try:
+        snapshots = aws.ec2("describe-snapshots", "--owner-ids", "self",
+                            "--filters", filters({"tag:devcloud": ["image", "test"]}))["Snapshots"]
+    except (AwsError, Failed) as e:
+        print(f"aws: the orphan snapshot sweep did not run: {e}", file=sys.stderr)
+        return
+    cutoff = time.time() - SNAPSHOT_AGE
+    for snap in snapshots:
+        if snap["SnapshotId"] in named or tags_of(snap).get("devcloud") not in ("image", "test") \
+                or unix_seconds(snap["StartTime"]) >= cutoff:
+            continue
+        try:
+            aws.ec2("delete-snapshot", "--snapshot-id", snap["SnapshotId"])
+            print(f"aws: deleted orphan snapshot {snap['SnapshotId']}", file=sys.stderr)
+        except AwsError as e:
+            if not e.not_found:
+                print(f"aws: the orphan snapshot {snap['SnapshotId']} could not be deleted: {e}", file=sys.stderr)
+
+
+def op_images(aws, req):
+    """Every devcloud AMI the account owns, whatever its state: the listing is also the fence for
+    deleting one, so a failed image must stay in it."""
+    owned = aws.ec2("describe-images", "--owners", "self")["Images"]
+    sweep_snapshots(aws, owned)
+    return [image(i) for i in owned if "devcloud" in tags_of(i)]
+
+
+def op_image_delete(aws, req):
+    ami = str(req["id"])
+    if not _IMAGE.fullmatch(ami):
+        raise Usage(f"an image id is ami- and hex: {ami[:40]!r}")
+    try:
+        answer = aws.ec2("deregister-image", "--image-id", ami, "--delete-associated-snapshots")
+    except AwsError as e:
+        if not e.not_found:
+            raise
+        return {}
+    # The AMI is gone either way; a snapshot it could not delete fails the call (a snapshot another
+    # AMI still uses is `skipped`, which is right). The orphan sweep deletes it later.
+    failed = [f"{r.get('SnapshotId')} ({r.get('ReturnCode')})" for r in answer.get("DeleteSnapshotResults") or []
+              if r.get("ReturnCode") not in ("success", "skipped")]
+    if failed:
+        raise Failed(f"image {ami} is deregistered, but not its snapshots {', '.join(failed)}; `images` deletes "
+                     "them once they are a day old")
+    return {}
+
+
+OPS = {"types": op_types, "create": op_create, "list": op_list, "get": op_get, "set-labels": op_set_labels,
+       "delete": op_delete, "image-create": op_image_create, "images": op_images, "image-delete": op_image_delete}
+
+
+def main(argv):
+    try:
+        if len(argv) != 1 or (argv[0] not in OPS and argv[0] != "info"):
+            raise Usage(f"usage: aws <op> with one JSON object on stdin; ops: info, {', '.join(OPS)}")
+        try:
+            req = json.loads(sys.stdin.read())
+        except json.JSONDecodeError:
+            raise Usage("stdin is not JSON") from None
+        if not isinstance(req, dict):
+            raise Usage("stdin is not a JSON object")
+        region = account_region()
+        result = op_info(req) if argv[0] == "info" else OPS[argv[0]](Aws(region), req)
+    except Usage as e:
+        print(f"aws: {e}", file=sys.stderr)
+        return 2
+    except Refused as e:
+        print(json.dumps({"error": str(e), "kind": e.kind}))
+        return 3
+    except (Failed, AwsError) as e:
+        print(f"aws: {e}", file=sys.stderr)
+        return 1
+    except KeyError as e:
+        print(f"aws: missing field {e}", file=sys.stderr)
+        return 1
+    except Exception as e:  # one line, never a traceback that could carry the environment
+        print(f"aws: {type(e).__name__}: {e}".splitlines()[0], file=sys.stderr)
+        return 1
+    print(json.dumps(result))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

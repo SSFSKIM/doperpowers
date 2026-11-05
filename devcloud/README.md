@@ -313,15 +313,63 @@ boot with the step named, and the next run starts again from the top:
 | 9 | `apply` | runs the configuration's `sync/apply.py` as the user |
 | 10 | `settings-and-env` | writes `/etc/claude-code/managed-settings.json` and `/etc/devcloud/env`; `TZ` sets the system time zone; seats the plugins from the marketplace copy (`/var/lib/devcloud/marketplaces/doperpowers`, at its declared source's head) and marks the directory marketplace `autoUpdate`; the reload mod updates its enabled user and managed installs in interactive sessions |
 | 11 | `services` | installs or starts the services; restarts one whose unit or environment changed; on a persistent host that is a sminos machine, the sminos daemon (below); refuses a sandbox that carries a sminos machine identity |
+| — | `gpu` | on a VM or adopted machine with an NVIDIA GPU, the driver, Docker Engine, NVIDIA's container toolkit and its runtime, each completed if missing, then a CUDA container that must list the GPU; `skipped` in a container or microVM, or with no NVIDIA GPU (see "GPU hosts"); run by a boot only |
 | 12 | `projects` | `devenv up` per `DEVCLOUD_PROJECTS` entry, as the user; `skipped` when none (see "Projects") |
 | 13 | `maws` | provisions MAWS's endpoint with the code `DEVCLOUD_MAWS_SECRET` names; `skipped` without it or without `mawsd`, `deferred` while its certificate is not yet listed (see "MAWS's endpoint") |
 
 `devcloud-boot` exits 0 when every step is `ok`, 1 when a step of 1–11
-failed, and 3 when the host is made and only step 12 or 13 failed: the host works
-without a project, so the container entrypoint starts its services on 3 as on
+failed, and 3 when the host is made and only the GPU step, step 12 or 13 failed:
+the host works without its GPU or a project, so the container entrypoint starts its services on 3 as on
 0, and the boot unit counts 3 as success (`SuccessExitStatus=3`) so the units
 ordered after it start. A driver sees a non-zero exit, the step records which
 project failed, and `devcloud status` exits 1.
+
+**GPU hosts.** The `gpu` step (`boot/devcloudlib/gpu.py`, the VM driver's
+§6.7) makes an NVIDIA GPU usable without anyone asking: `nvidia-smi` and
+`docker run --gpus all` work for the user. It runs on a VM or an adopted
+machine (`DEVCLOUD_KIND=vm`) that has an NVIDIA display-class PCI device, after
+the services and before the projects, at every boot. Each of its four parts is
+checked and completed on its own, so a part a machine already has (an adopted
+machine's own driver or Docker) is kept, and a boot that stopped halfway
+finishes the rest at the next:
+
+1. **The driver**: when `nvidia-smi` lists no GPU, Ubuntu's precompiled,
+   signed modules of NVIDIA's long-term branch, 580, as `-server-open`, for
+   the running kernel (`linux-modules-nvidia-580-server-open-$(uname -r)`,
+   with `nvidia-utils-580-server`), loaded at once. When the archive has none for
+   the running kernel, the flavour's metapackage
+   (`linux-modules-nvidia-580-server-open-<flavour>`) brings a newer kernel
+   with them, and the boot reboots into it once (the marker
+   `/var/lib/devcloud/gpu-reboot.json`); still missing afterwards, the step
+   fails naming the kernel and the branch.
+2. **Docker Engine**: `docker-ce` and `containerd.io` from the Docker source
+   the image configured (the image has only the client), the daemon enabled,
+   the user in the `docker` group: what the boot runs as the user after the
+   step (a project's `devenv up`) has it at once, since every command run as
+   the user carries its groups from the group database; a login has it from
+   then on, and a session the sminos daemon started before uses `sudo docker`
+   until the next boot.
+3. **NVIDIA's container toolkit**: its key fetched and checked against the
+   pinned fingerprint before it is written to
+   `/etc/apt/keyrings/nvidia-container-toolkit.asc`, then its source and
+   `nvidia-container-toolkit`. It is present when both `nvidia-ctk` and
+   `nvidia-container-runtime-hook` are: `nvidia-ctk` alone is the base
+   package of a CDI-only install, which lacks the hook Docker's `--gpus` runs.
+4. **The runtime**: `nvidia-ctk runtime configure --runtime=docker`, and the
+   daemon restarted when that changed `/etc/docker/daemon.json`, or when this
+   run installed the toolkit (Docker registers its NVIDIA device driver only
+   as it starts, and only when the hook exists then); a restart that failed
+   stays owed until one succeeds.
+
+The step then runs `nvidia/cuda:13.0.3-base-ubuntu24.04` with `--gpus all`
+and `NVIDIA_DISABLE_REQUIRE=true` (the check is that the GPU reaches a
+container, so an adopted machine's older driver passes it), which must list
+the GPU: `ok` names it and its driver version, `failed` names
+the part and the reason. apt never removes a package here (`--no-remove`), so
+a conflict on an adopted machine fails the step rather than replacing what is
+installed. The reboot is asked for only while no departure or release has
+started. The image is unchanged: a GPU VM's first boot takes some minutes
+longer for the downloads, and the output goes to `/var/log/devcloud/gpu.log`.
 
 **Projects.** A repository describes its own environment in `devenv/` at its
 root (the `devenv` skill writes it):
@@ -740,7 +788,33 @@ disk (`GCE_DISK_GB`, 50 by default) and any custom machine types to offer
 types with at least 2 dedicated vCPUs and 2 GB and no accelerator, priced
 from the Cloud Billing catalog (cached a week), creates every instance with
 `block-project-ssh-keys=TRUE`, a spot request with termination action
-`DELETE`, and images in the family from a stopped builder's boot disk. A provider of the person's own lives in the profile's
+`DELETE`, and images in the family from a stopped builder's boot disk.
+`driver/providers/aws` ships as well: it drives the `aws` CLI v2 with the
+account's own IAM user (`env` names the two Secret Manager ids for
+`AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`) and nothing else — its
+`AWS_CONFIG_FILE` and `AWS_SHARED_CREDENTIALS_FILE` are empty files under
+`~/.local/state/devcloud/aws/`, and every other `AWS_*` variable is removed —
+so the person's own profiles and `aws login` session are never read. An
+account is one region: its `location` is the region, and `vars` must repeat
+it as `AWS_REGION`, since the operations without a location (the reaper's
+`list` among them) need it too; `AWS_FAMILIES` (default
+`t3,m7i,c7i,r7i,g6,g6e,g5`) and `AWS_DISK_GB` (the gp3 root volume, 50 by
+default) are optional. It offers the families' x86-64 types, priced from the
+Pricing API (cached a week), and creates each instance from Canonical's
+Ubuntu 24.04 AMI (or the account's devcloud AMI) in the region's default VPC
+with a public IPv4 address, IMDSv2 required, its labels as tags on the
+instance and its volume, and the security group `devcloud` (tagged
+`devcloud=network`, inbound TCP 22 and UDP 41641, found or made at create
+time and never deleted). A capacity refusal is retried in the region's other
+default subnets; a spot request is a one-time spot instance that terminates on
+interruption, and needs the account's `AWSServiceRoleForEC2Spot` role. Since
+EC2 gives a spot instance two minutes' notice and does not run its shutdown in
+time, a spot host runs `devcloud-spot-notice.service`, which asks IMDS for the
+notice every 5 seconds and departs fast once it appears; a job holding the
+lifecycle lock then (a pull or a reconcile) is waited out, asked again every 5
+seconds, while the notice's two minutes still leave the departure its 25. Images are AMIs with
+their snapshots, deleted together; `images` also deletes devcloud snapshots
+older than a day that no AMI names (left by an interrupted deletion). A provider of the person's own lives in the profile's
 `providers/<name>`: the person registers it once (`provider register
 <account> --confirmed` records its sha256 in `driver.toml`), and `provider
 test <account>` runs it through the conformance sequence on a real server; a
@@ -781,8 +855,9 @@ public half written to the profile's `driver-keys/<machine>.pub`, which the
 configuration sync pushes and every host authorizes), a `known_hosts` keyed
 by the server rather than its address (an adopted machine by its name), the
 reap log, when the reaper last tried each account's image build
-(`image-builds.json`), the adoption records (`adopted/`) and the gce
-provider's private gcloud configuration and price cache (`gce/`).
+(`image-builds.json`), the adoption records (`adopted/`), the gce
+provider's private gcloud configuration and price cache (`gce/`), and the aws
+provider's empty configuration files and price cache (`aws/`).
 
 ## Developing
 

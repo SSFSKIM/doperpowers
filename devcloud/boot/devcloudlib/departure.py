@@ -37,6 +37,7 @@ host's secrets before its first step, so no child's output reaches its log
 unscrubbed."""
 
 import dataclasses
+import datetime
 import json
 import os
 import pathlib
@@ -46,11 +47,14 @@ import sys
 import time
 import urllib.request
 
-from . import descriptor, envfile, ledger, lease, maws_host, nodekind, proc, secretmanager, services, sminos_host, \
-    status, steps, tsapi
+from . import descriptor, ec2spot, envfile, ledger, lease, maws_host, nodekind, proc, secretmanager, services, \
+    sminos_host, status, steps, tsapi
 from .proc import StepError
 
 DONE, FAILED, USAGE, NOT_OVER, HELD = 0, 1, 2, 3, 4
+# depart_preempted on EC2's notice, internal: the lifecycle lock is held, and
+# by no departure (an ordinary job holds it shared); depart_on_notice retries.
+BUSY = "busy"
 READY = "devcloud-depart: ready-to-logout"
 ROUNDS = 3
 SESSION_GRACE = 30
@@ -67,8 +71,13 @@ UNIT_DIR = pathlib.Path("/etc/systemd/system")
 # endpoint's keys are gone it would otherwise read as nothing to leave.
 # Written before a retirement starts; removed only when one is confirmed.
 DESK_RESIDUE = "desk-residue"
-# The spot reclaim's window: steps 0-4 within 25 of the provider's ~30 seconds.
+# The spot reclaim's window: steps 0-4 within 25 of GCE's ~30 seconds (EC2's
+# notice comes two minutes ahead; the same bound serves it).
 PREEMPT_BUDGET = 25
+# EC2's notice: two minutes ahead of the interruption, asked again every 5 s
+# while an ordinary job holds the lifecycle lock.
+NOTICE_LEAD = 120
+NOTICE_RETRY = 5
 
 
 @dataclasses.dataclass
@@ -174,7 +183,12 @@ def _alive(pid):
 
 
 def _preempted():
-    """GCE's word that this spot VM is being reclaimed."""
+    """The provider's word that this spot VM is being reclaimed: GCE's
+    metadata server, else EC2's scheduled interruption (§6.6)."""
+    return _gce_preempted() or ec2spot.Imds().instance_action() is not None
+
+
+def _gce_preempted():
     root = os.environ.get("GCE_METADATA_HOST", "metadata.google.internal")
     request = urllib.request.Request(f"http://{root}/computeMetadata/v1/instance/preempted",
                                      headers={"Metadata-Flavor": "Google"})
@@ -590,21 +604,68 @@ def depart(host, force=False, no_hold=False, no_poweroff=False):
         return DONE
 
 
-def depart_preempted(host):
-    """The spot reclaim's departure: only when the metadata server says this
-    VM is being reclaimed, and then steps 0-4 within 25 seconds, one round,
-    no hold, no lease check; the provider deletes the VM."""
-    if not host.preempted():
+def watch_spot_notice(host, imds=None, sleep=time.sleep):
+    """`devcloud depart --spot-notice`: EC2's notice watch (§6.6), whose
+    departure runs on the notice it saw rather than on a second look."""
+    return ec2spot.watch(imds or ec2spot.Imds(), lambda notice: depart_on_notice(host, notice),
+                         say=host.say, sleep=sleep)
+
+
+def _notice_left(host, notice):
+    """Seconds until the interruption EC2's notice names; its two minutes
+    when the time does not parse."""
+    try:
+        when = datetime.datetime.strptime(notice.get("time") or "", "%Y-%m-%dT%H:%M:%SZ")
+    except ValueError:
+        return NOTICE_LEAD
+    return when.replace(tzinfo=datetime.timezone.utc).timestamp() - host.now()
+
+
+def depart_on_notice(host, notice):
+    """The fast departure on EC2's notice. A lifecycle lock an ordinary job
+    holds (pull-config, a reconcile, refresh-secrets: shared, and possibly
+    for minutes) is waited out, asked again every 5 s, until the departure
+    runs, a departure already started owns the machine, or what is left of
+    EC2's two minutes would not fit the departure's own 25 seconds."""
+    give_up = host.monotonic() + _notice_left(host, notice) - PREEMPT_BUDGET
+    said = False
+    while True:
+        code = depart_preempted(host, notice=notice)
+        if code != BUSY:
+            return code
+        if host.monotonic() + NOTICE_RETRY > give_up:
+            host.say("devcloud depart: the lifecycle lock stayed held through EC2's notice; no departure ran")
+            return FAILED
+        if not said:
+            host.say(f"devcloud depart: a job holds the lifecycle lock; asking again every {NOTICE_RETRY} s")
+            said = True
+        host.sleep(NOTICE_RETRY)
+
+
+def depart_preempted(host, notice=None):
+    """The spot reclaim's departure: only when the provider says this VM is
+    being reclaimed — the metadata asked here (the shutdown unit), or the
+    `notice` EC2's watch already saw — and then steps 0-4 within 25 seconds,
+    one round, no hold, no lease check; the provider deletes the VM."""
+    if notice is None and not host.preempted():
         host.say("devcloud depart: not preempted; an ordinary shutdown departs nothing")
         return DONE
     deadline = host.monotonic() + PREEMPT_BUDGET
     try:
-        lock = lease.locked(path=host.lock_path, timeout=2)
+        # GCE's shutdown has seconds: a held lock is taken for a departure under way.
+        lock = lease.locked(path=host.lock_path, timeout=2 if notice is None else 0)
         lock.__enter__()
     except TimeoutError:
+        if notice is not None and not status.departure_started(host.status_path):
+            return BUSY
         host.say("devcloud depart: a departure already holds the lifecycle lock")
         return DONE
     try:
+        record = status.lifecycle(host.status_path)
+        if record and record.get("op") == "depart" and record.get("state") == "departed":
+            # EC2's notice departed this VM ahead of its shutdown, which stops this unit too.
+            host.say(f"devcloud depart: already done ({record['at']})")
+            return DONE
         try:
             d = descriptor.load(host.desc_path, allow_http=host.allow_http)
         except descriptor.DescriptorError as error:

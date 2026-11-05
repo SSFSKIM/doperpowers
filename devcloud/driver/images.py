@@ -21,6 +21,7 @@ BUILD_EVERY = 24 * 3600     # the reaper's build, per account, at most this ofte
 SSH_WAIT = 5 * 60
 OFF_WAIT = 5 * 60
 POLL = 5
+BUILDER_MEMORY_GB = 1
 # What makes one machine's disk every VM's first boot: cloud-init runs again
 # (its per-instance state gone, new SSH host keys), a new machine id, a new
 # tailnet machine key, no driver key in root's authorized_keys (each VM's
@@ -49,8 +50,10 @@ def current(images, recipe, arch=ANY):
 def builder_type(types, arch=None):
     """The smallest available type whose disk is the least the provider
     offers, so the image fits every type (§7); of architecture `arch` when
-    given."""
-    offered = [t for t in types if t.get("available") and (arch is None or t.get("architecture") == arch)]
+    given; and with BUILDER_MEMORY_GB at least, which setup.sh needs (EC2's
+    smallest type has half that)."""
+    offered = [t for t in types if t.get("available") and (arch is None or t.get("architecture") == arch)
+               and (t.get("memory_gb") is None or t["memory_gb"] >= BUILDER_MEMORY_GB)]
     if not offered:
         raise DriverError(REFUSED, "the provider offers no available type for a builder here")
     least = min(t["disk_gb"] for t in offered)
