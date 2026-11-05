@@ -426,6 +426,16 @@ def streams_path(project):
     return os.path.join(project.home, STREAMS)
 
 
+def streams_of(project):
+    """{stream writer: audience} as kept in the project's home (keep_stream);
+    {} when none is, or the file cannot be read."""
+    try:
+        d = sminos.json_at(streams_path(project))
+    except (OSError, ValueError):
+        return {}
+    return {w: a for w, a in d.items() if isinstance(w, str) and is_audience(a)} if isinstance(d, dict) else {}
+
+
 def stream_audience(project, writer):
     """A stream writer's audience as kept (keep_stream), or None."""
     try:

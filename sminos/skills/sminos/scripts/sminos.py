@@ -6144,7 +6144,11 @@ def _writer_events(project, host, session, store="log"):
     where = os.path.join(project.home, store)
     paths = [os.path.join(where, "%s.%s.jsonl" % (host, session))]
     if store == "log":
-        paths += sorted(glob.glob(os.path.join(glob.escape(where), "%s.%s~*.jsonl" % (host, session))))
+        # Its streams are those this machine kept the audience of as it wrote their first event (keep_stream): a
+        # stat while the project's streams.json holds, never a listing of the log on every read.
+        base = "%s/%s" % (host, session)
+        paths += [writer_path(project, w) for w in sorted(audience_module().streams_of(project))
+                  if writer_base(w) == base]
     files = []
     for path in paths:
         try:
