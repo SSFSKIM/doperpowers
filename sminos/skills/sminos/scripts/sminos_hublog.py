@@ -54,11 +54,25 @@ the endpoint refused for good never comes down: its position does, as
 `spent {project, writer, seq, reason}`, recorded as a position refused here
 (`spend`), each said once in daemon.log.
 
+Message reach (P5 O18 D5, D6). The hub only refuses: a `not-reachable`
+refusal leaves a tombstone `{writer, seq, withheld: true}` at the position
+and the writer goes on (an arriving tombstone is a spent position here,
+never reported); a `state-unavailable` one on a direct stream pauses the
+writer and sends the position again after ASK_MS (on RL10 the endpoint
+rewinds); an `audience` one — the stream the event went under is not its
+session's now — stops the writer past the stream (`dead`), until an event
+appended to it says the CLI chose it again: then each refused position goes
+up as a content-free `void {ts, writer, seq, kind: void, of, audience?}`
+(`voided`, for good; the local file keeps the body) and the rest as stored.
+
 Its state between streams lives in the project's home, `uplink.json`: the
 spent positions, the rejections not yet reported (a report whose POST
-failed is sent again after the next `hello`), whether the hub's latest
-`have` named this machine the project's archive machine, with when it said
-so (`archive`, `archive_at`: what sminos_archive runs on). Beside it,
+failed is sent again after the next `hello`), the dead writers and the
+voided positions, whether the hub's latest `have` named this machine the
+project's archive machine, with when it said so, and what that same `have`
+admitted of this machine's own writers — its vector and its withheld
+positions (`archive`, `archive_at`, `archive_have`: what sminos_archive
+runs on, admitted_have). Beside it,
 `uplink-taken.json` (TAKEN_FILE) holds what `sminos daemon owed` reads:
 how far each of this machine's writers no longer has to be sent (`taken`),
 never more than the uplink's own resume state — each opening `have` sets it
@@ -84,6 +98,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import sminos  # noqa: E402
+import sminos_audience  # noqa: E402
 import sminos_codes as codes  # noqa: E402
 import sminos_daemon as daemon  # noqa: E402
 import sminos_policy as policy  # noqa: E402
@@ -112,8 +127,15 @@ RAN_KEEP = 256   # sessions past HOT_FOR the hot look's memory may hold before i
 CONFLICT_REASON = "conflict"
 # What the endpoint adds to an event this machine wrote when it returns it
 # (RL10): the `created` it derived from `ts` and signed, its signature, the
-# owner attestation; and DX1's code while it dual-codes.
-ENDPOINT_ADDS = ("created", "mac", "sig", "attest")
+# owner attestation, the audience and policyRev it signs into every event
+# (P5 O18; sminos never stores either itself); and DX1's code while it
+# dual-codes.
+ENDPOINT_ADDS = ("created", "mac", "sig", "attest", "audience", "policyRev")
+# A position the hub's policy registry could not check (`state-unavailable`,
+# P5 O18 D5) is sent again after this wait, the endpoint's ASK_MS (30 s):
+# one retry per writer per wait, for as long as the stream is open.
+# SMINOS_ASK_MS overrides it, in milliseconds.
+ASK_MS = 30_000
 
 
 def log(line):
@@ -246,6 +268,84 @@ def frontier(last, spent):
     return last
 
 
+def ask_wait():
+    """The wait before a `state-unavailable` position goes up again, in
+    seconds (ASK_MS; SMINOS_ASK_MS)."""
+    try:
+        return max(0.0, float(os.environ.get("SMINOS_ASK_MS") or ASK_MS) / 1000)
+    except ValueError:
+        return ASK_MS / 1000
+
+
+def is_tombstone(e):
+    """The hub's tombstone of a position it withheld (P5 O18 D5), exactly:
+    `{writer, seq, withheld: true}` (isWithheldTombstone)."""
+    return isinstance(e, dict) and set(e) == {"writer", "seq", "withheld"} and isinstance(e["writer"], str) \
+        and codes.is_log_seq(e["seq"]) and e["withheld"] is True
+
+
+def tombstone(writer, seq):
+    """The line the archive holds at a position the hub withheld, or this
+    machine recorded refused or voided."""
+    return {"writer": writer, "seq": seq, "withheld": True}
+
+
+def runs_of(raw):
+    """A withheld list as the hub's `have` carries it, `[seq | [from, to],
+    ...]`, as sorted (from, to) runs; ValueError for anything else."""
+    if not isinstance(raw, list):
+        raise ValueError("not a list")
+    out = []
+    for r in raw:
+        if codes.is_log_seq(r):
+            out.append((int(r), int(r)))
+        elif isinstance(r, list) and len(r) == 2 and all(codes.is_log_seq(x) for x in r) and r[0] <= r[1]:
+            out.append((int(r[0]), int(r[1])))
+        else:
+            raise ValueError("%r is no seq or [from, to]" % (r,))
+    return sorted(out)
+
+
+def in_runs(seq, runs):
+    return any(a <= seq <= b for a, b in runs)
+
+
+def admitted_have(have, raw, own):
+    """What a `have` confirms of this machine's own writers for the archive
+    (D6): (`archive_have` — {have: {writer: seq}, withheld: {writer: [seq |
+    [from, to], ...]}}, the own writers alone, `own` telling — or None, why
+    not). The hub lists the positions it withheld whole, in the one frame
+    (withheldOf), and a frame arrives whole or not at all: DX2's parts are
+    joined into the frame they carry, the endpoint passes the hub's `have`
+    down unchanged, and an assembler that cannot hold a frame (the endpoint's
+    and the hub's, 16 MiB) drops it whole. So a list that does arrive is the
+    hub's whole list, and a list too large for one frame never arrives: no
+    `have`, no confirmation, and the archive does not run. What sminos can
+    still tell is a list that disagrees with the vector beside it — not a
+    list of seqs and runs, or a position past its writer's head in that
+    same `have` (a withheld position is held, as its tombstone, and counted
+    there) — and such a `have` confirms nothing: the run it would start
+    fails, never taking a cut or garbled list as complete."""
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, dict):
+        return None, "its withheld is not {writer: [seq | [from, to], ...]}"
+    withheld = {}
+    for w, entries in raw.items():
+        if not (isinstance(w, str) and own(w)):
+            continue
+        try:
+            runs = runs_of(entries)
+        except ValueError as e:
+            return None, "its withheld list of %s is not seqs and [from, to] runs (%s)" % (w, e)
+        if runs and runs[-1][1] > have.get(w, 0):
+            return None, "it withholds %s:%d, past that writer's head in the same have (%d)" % (
+                w, runs[-1][1], have.get(w, 0))
+        if runs:
+            withheld[w] = [a if a == b else [a, b] for a, b in runs]
+    return {"have": {w: s for w, s in have.items() if own(w)}, "withheld": withheld}, ""
+
+
 def append_verbatim(project, e, spent=(), same=same_event):
     """Append an imported event to its writer's file as it came, under the
     locks every appender takes (`.sync.lock` shared, the file's own lock):
@@ -357,6 +457,8 @@ class HubLog:
         self.bounds = {}     # own writer → the seq `taken` may not pass on this stream (bound), until an upload sent
         #                      after it is answered
         self.head_waits = True   # the operator writer may wait for its head (release_heads): False once it is not
+        self.paused = {}     # own writer → (when it goes up again, monotonic; the lowest seq the hub could not check):
+        #                      a `state-unavailable` refusal on a direct stream (on_refused)
 
     # ---------------------------------------------------- what is held here
 
@@ -387,6 +489,31 @@ class HubLog:
     def spent(self):
         """{writer: {seq}}: the positions of events refused here."""
         raw = self.state().get("spent")
+        return {w: {s for s in ss if type(s) is int} for w, ss in raw.items() if isinstance(ss, list)} \
+            if isinstance(raw, dict) else {}
+
+    def dead(self):
+        """{writer: {"at": {seq}, "last": seq}}: this machine's writers the
+        upstream refused `audience` (P5 O18: the stream is not the session's
+        now), each stopped for good at the refused positions until an event
+        is appended to it past `last`, its file's last seq when it was
+        stopped (stop_dead; revive)."""
+        raw = self.state().get("dead")
+        out = {}
+        for w, held in (raw.items() if isinstance(raw, dict) else ()):
+            if isinstance(held, dict) and isinstance(held.get("at"), list) and type(held.get("last")) is int:
+                at = {s for s in held["at"] if type(s) is int and s >= 1}
+                if at:
+                    out[w] = {"at": at, "last": held["last"]}
+        return out
+
+    def voided(self):
+        """{writer: {seq}}: the positions of this machine's writers it
+        uploaded a content-free `void` at in place of the event its file
+        holds there (revive), kept for good: every upload of the position
+        sends the void again, its echo reads present, and the archive holds
+        its tombstone."""
+        raw = self.state().get("voided")
         return {w: {s for s in ss if type(s) is int} for w, ss in raw.items() if isinstance(ss, list)} \
             if isinstance(raw, dict) else {}
 
@@ -726,15 +853,24 @@ class HubLog:
             for w, s in have.items():
                 if self.own(w) and s > self.sent.get(w, 0):
                     self.sent[w] = s
-        # The designation as the hub said it now: the tick loop's archive
-        # duty (sminos_archive) runs on it.
+        # The designation as the hub said it now, and what the same `have`
+        # admitted of this machine's own writers (archive_have, D6): the tick
+        # loop's archive duty (sminos_archive) runs on both, never on `sent`
+        # or `taken`.
         if not opening:
             self.keep_taken(have)   # what the hub holds of this machine's writers is taken, up to its bounds
+        admitted, why = admitted_have(have, frame.get("withheld"), self.is_own)
         d = self.state()
         if d.get("archive") != self.archive:
             log("the hub says this machine %s the archive of %s" % ("writes" if self.archive else "does not write",
                                                                    self.project.name))
-        d.update(archive=self.archive, archive_at=time.time())
+        if why and d.get("archive_have_error") != why:
+            log("the hub's have for %s confirms nothing for the archive: %s" % (self.project.name, why))
+        d.update(archive=self.archive, archive_at=time.time(), archive_have=admitted)
+        if why:
+            d["archive_have_error"] = why
+        else:
+            d.pop("archive_have_error", None)
         self.save(d)
         self.release_heads()
 
@@ -796,21 +932,90 @@ class HubLog:
     def on_refused(self, frame):
         """The hub refused what this machine sent; said in daemon.log. A
         writer refused stops uploading on this stream (sending it again would
-        be refused again)."""
+        be refused again). An `audience` refusal (P5 O18: the stream the
+        event went under is not its session's now) stops the writer past the
+        stream (stop_dead). A `state-unavailable` one on a direct stream (the
+        policy registry could not check the event; on RL10 the endpoint
+        rewinds) pauses the writer: its position goes up again after
+        ask_wait, with no reconnect and no further write, once per wait for
+        as long as the stream is open, never given up. A `not-reachable` one
+        (the hub withheld the event, a tombstone in its place) stops
+        nothing: the writer goes on at the next seq."""
         r = frame.get("refusal") if isinstance(frame.get("refusal"), dict) else {}
         reason, writer = r.get("reason"), r.get("writer")
         self.drawing = None   # what was drawn may hold a writer stopped now
         log("the hub refused in %s: %s%s%s" % (
             self.project.name, reason, " %s:%s" % (writer, r.get("seq")) if writer else "",
             " — %s" % " ".join(str(r.get("message") or "").split())[:300] if r.get("message") else ""))
-        stops = ("conflict", "writer-not-yours", "bad-shape", "too-large") + (() if self.coded else ("malformed",))
+        stops = ("conflict", "writer-not-yours", "bad-shape", "too-large", "audience") + \
+            (() if self.coded else ("malformed",))
+        seq = r.get("seq")
+        at = seq if type(seq) is int and seq >= 1 else 0
         if isinstance(writer, str) and self.own(writer) and reason in stops:
             self.stuck.add(writer)
-            seq = r.get("seq")
-            at = seq if type(seq) is int and seq >= 1 else 0
             self.refused[writer] = min(at, self.refused.get(writer, at))
             # Owed again from what it refused; a conflict (the upstream holds another event there) past the stream.
             self.bound(writer, max(at - 1, 0), conflict=reason == "conflict")
+            if reason == "audience" and at:
+                self.stop_dead(writer, at)
+        elif isinstance(writer, str) and self.own(writer) and reason == "state-unavailable" and self.coded and at:
+            held = self.paused.get(writer)
+            due = held[0] if held else time.monotonic() + ask_wait()
+            self.paused[writer] = (due, min(at, held[1]) if held else at)
+            self.bound(writer, at - 1)
+
+    def stop_dead(self, writer, seq):
+        """An `audience` refusal of an own writer at seq: the writer is dead
+        (dead) — never uploaded again, on this stream or a later one, while
+        its stream is not its session's — until an event is appended to it
+        after this (the CLI's stream choice chose it again: revive). Kept in
+        uplink.json with the file's last seq now."""
+        try:
+            with open(sminos.writer_path(self.project, writer), "rb") as f:
+                last = sminos._last_seq(f)
+        except OSError:
+            last = 0
+        d = self.state()
+        dead = d.get("dead") if isinstance(d.get("dead"), dict) else {}
+        held = self.dead().get(writer, {"at": set(), "last": 0})
+        dead[writer] = {"at": sorted(held["at"] | {seq}), "last": max(last, held["last"])}
+        d["dead"] = dead
+        self.save(d)
+        log("%s of %s was refused audience at %d: not uploaded again until an event is appended to it"
+            % (writer, self.project.name, seq))
+
+    def revive(self, writer, held):
+        """A dead writer that took an event since it was stopped: current
+        again. Its refused positions go up as `void`s (voided, for good), the
+        rest of it as stored, from the first of them on."""
+        d = self.state()
+        dead = d.get("dead") if isinstance(d.get("dead"), dict) else {}
+        dead.pop(writer, None)
+        voided = d.get("voided") if isinstance(d.get("voided"), dict) else {}
+        voided[writer] = sorted(self.voided().get(writer, set()) | held["at"])
+        d.update(dead=dead, voided=voided)
+        self.save(d)
+        self.sent[writer] = min(self.sent.get(writer, 0), min(held["at"]) - 1)
+        self.stuck.discard(writer)
+        self.refused.pop(writer, None)
+        log("%s of %s took an event since it was refused audience: it goes up again, a void at %s"
+            % (writer, self.project.name, ", ".join(map(str, sorted(held["at"])))))
+        return set(voided[writer])
+
+    def void_of(self, e):
+        """The content-free event uploaded at a voided position in place of
+        the event the file holds there: `{ts, writer, seq, kind: void, of,
+        audience}`, `audience` this machine's claim of its stream's audience
+        (sminos_audience.stream_audience, kept when the stream's first event
+        was written), none under a plain writer. None when a stream's
+        audience is not known here."""
+        v = {"ts": e["ts"], "writer": e["writer"], "seq": e["seq"], "kind": "void", "of": e["seq"]}
+        if sminos.is_stream(e["writer"]):
+            audience = sminos_audience.stream_audience(self.project, e["writer"])
+            if audience is None:
+                return None
+            v["audience"] = audience
+        return v
 
     def own(self, writer):
         return writer.startswith(self.machine + "/") or (self.archive and writer.startswith(LEGACY))
@@ -824,15 +1029,37 @@ class HubLog:
         if self.have is None:
             return
         batch, reach, size = [], {}, 0
+        dead, voided = self.dead(), self.voided()
 
         def frame():
             return {"t": "events", "project": self.project.id, "events": batch}, reach
 
         for writer, (last, path) in sorted(self.writers(own=True, live=live).items()):
-            if not self.own(writer) or writer in self.stuck or last <= self.sent.get(writer, 0):
+            if not self.own(writer):
                 continue
+            if writer in self.paused:
+                due, seq = self.paused[writer]
+                if time.monotonic() < due:
+                    continue
+                del self.paused[writer]
+                self.sent[writer] = min(self.sent.get(writer, 0), seq - 1)
+                log("%s of %s goes up again from %d, which the hub could not check" % (writer, self.project.name, seq))
+            if writer in dead:
+                if last <= dead[writer]["last"]:
+                    continue
+                voided[writer] = self.revive(writer, dead[writer])
+            if writer in self.stuck or last <= self.sent.get(writer, 0):
+                continue
+            voids = voided.get(writer, ())
             for e in sorted((e for e in read_events(path) if e["seq"] > self.sent.get(writer, 0)),
                             key=lambda e: e["seq"]):
+                if e["seq"] in voids:
+                    e = self.void_of(e)
+                    if e is None:
+                        log("%s of %s: its stream's audience is not known here, so no void can stand at a position "
+                            "it refused; it and the rest of its writer stay here" % (writer, self.project.name))
+                        self.stuck.add(writer)
+                        break
                 try:
                     sealed = seal(self.key, self.project.id, e) if self.coded else self.as_uploaded(e)
                     n = len(codes.canonical(sealed).encode("utf-8"))
@@ -905,6 +1132,12 @@ class HubLog:
         return writer.split("/", 1)[0] in {self.machine, *sminos.machine_identity()[1]}
 
     def same(self, held, e):
+        """Whether an arriving event is the one held at its position: an own
+        voided position holds the event this machine's session wrote, and the
+        `void` uploaded in its place is its copy upstream."""
+        if e.get("kind") == "void" and e.get("of") == e["seq"] and self.is_own(e["writer"]) \
+                and e["seq"] in self.voided().get(e["writer"], ()):
+            return True
         if self.coded:
             return same_event(held, e)
         return same_uncoded(held, e, self.is_own(e["writer"]))
@@ -920,6 +1153,12 @@ class HubLog:
         appended, out, spent = 0, [], self.spent()
         newly, conflicts = {}, self.conflicts()
         for raw in events:
+            if self.coded and is_tombstone(raw):
+                # A position the hub withheld (P5 O18 D5): content-free, carrying no code, and spent here as a
+                # position refused is, never reported.
+                if self.spend(raw["writer"], raw["seq"], "withheld", by="the hub"):
+                    newly.setdefault(raw["writer"], set()).add(int(raw["seq"]))
+                continue
             if self.coded:
                 named, verified, (reason, why) = raw, None, refusal(self.key, self.project, raw)
             else:
@@ -1011,7 +1250,7 @@ class HubLog:
             self.save(d)
         return True
 
-    def spend(self, writer, seq, reason):
+    def spend(self, writer, seq, reason, by="the endpoint"):
         """RL10's `spent {project, writer, seq, reason}`: the endpoint refused
         an arriving event for good (rejected up to the hub already) and sends
         its position with no content (O10 M6). Recorded as a position refused
@@ -1033,8 +1272,8 @@ class HubLog:
             return False   # said when it was spent
         if self.is_own(writer):
             if not self.spend_own(writer, seq):
-                log("the endpoint spent %s: %s; an event of this machine holds that position, so it is not spent"
-                    % (where, why))
+                log("%s spent %s: %s; an event of this machine holds that position, so it is not spent"
+                    % (by, where, why))
                 return False
         else:
             d = self.state()
@@ -1042,8 +1281,8 @@ class HubLog:
             held[writer] = sorted(set(held.get(writer) or []) | {seq})
             d["spent"] = held
             self.save(d)
-        log("the endpoint spent %s: %s; refused for good, never stored or delivered here, and the writer's later "
-            "events are not held behind it" % (where, why))
+        log("%s spent %s: %s; refused for good, never stored or delivered here, and the writer's later "
+            "events are not held behind it" % (by, where, why))
         self.release_heads()
         return True
 

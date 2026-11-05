@@ -21,7 +21,8 @@ As a subprocess (the shell suites):
 presence says the stand-in is up. `ctl`'s ops: `state` (everything below,
 as JSON), `send` {frames}, `set` {field: value} (the fields below), `drop`,
 `restart`, `rl10` {field: value, mode?} (rl10.json rewritten with those
-fields; `mode` its permission bits), `unlink-rl10`, `stop`.
+fields; `mode` its permission bits), `refuse` {project, writer, seq,
+reason?}, `unlink-rl10`, `stop`.
 
 What it does on each connection, one at a time (a new one replaces the last,
 as sminos's reconnect does):
@@ -59,9 +60,22 @@ event wrapped `{event, signer, owners?}`), `resend`; and `rpc`, `query`,
 `tombstone` (§D's frames, the RPC nested under `rpc` as DX2 nests it); a
 `spent {project, writer, seq, reason}` is sent as any frame (`send`).
 
+The hub's admission, as the endpoint passes the hub's `have` down unchanged
+(P5 O18 D6): `admit` (on by default) off holds admission back — an upload is
+taken (kept, so an echo can be built) but counts in no `have` until `admit`
+is set on again; `withheld` ({project: {writer: [seq | [from, to], ...]}})
+is the hub's tombstones, sent as the `have`'s `withheld` and counted in its
+vector; `archive` (a boolean, or {project: boolean}) is the `have`'s archive
+designation. `refuse_audience` (a list of writers) refuses each upload of
+those writers `audience`, the writer's later events in the frame passed
+over, as the endpoint refuses a stream it does not sign. `refused` (ctl
+`refuse` {project, writer, seq, reason?}) sends `refused {project, refusal:
+{reason, writer, seq}}`, `not-reachable` by default, with no message.
+
 Fields (constructor keywords, `set`'s keys): token, identity, policy,
 revoked, org, build, state_version, refuse_reason, ask_legacy,
-persist_legacy, answer_policy, ack_results, verdicts, verdict, relay.
+persist_legacy, answer_policy, ack_results, verdicts, verdict, relay,
+admit, withheld, archive, refuse_audience.
 """
 
 import base64
@@ -76,7 +90,8 @@ import time
 
 LINE_MAX = 1 << 20   # a line at most 1 MiB of UTF-8 (O10 §D); larger text goes as `part`s
 FIELDS = ("token", "identity", "policy", "revoked", "org", "build", "state_version", "refuse_reason", "ask_legacy",
-          "persist_legacy", "answer_policy", "ack_results", "verdicts", "verdict", "relay")
+          "persist_legacy", "answer_policy", "ack_results", "verdicts", "verdict", "relay", "admit", "withheld",
+          "archive", "refuse_audience")
 TS_MS = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z")
 TS_S = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
 
@@ -218,9 +233,14 @@ class Endpoint:
         self.verdict = None
         self.members = {}   # session → its last `member` frame (the member state an action's context is read from)
         self.relay = True
+        self.admit = True
+        self.withheld = {}
+        self.archive = False
+        self.refuse_audience = []
+        self.unadmitted = {}    # project id → {writer: {seq}}: taken while admission was held back
         self.handler = None
-        self.set(**fields)
         self.cv = threading.Condition()
+        self.set(**fields)
         self.received = []      # [(connection number, frame)], in order, hellos included
         self.lines = []         # [(connection number, line)]: every line after a connection's hello, as it came
         self.logs = {}          # project id → {writer: {seq: the event in its upload form}}
@@ -252,10 +272,14 @@ class Endpoint:
         write_private(self.rl10_path(), d, mode)
 
     def set(self, **fields):
-        for k, v in fields.items():
+        for k in fields:
             if k not in FIELDS:
                 raise KeyError("no field %s" % k)
-            setattr(self, k, v)
+        with self.cv:
+            for k, v in fields.items():
+                setattr(self, k, v)
+            if fields.get("admit") is True:
+                self.unadmitted.clear()   # what was held back is admitted
 
     # ---------------------------------------------------- running
 
@@ -403,32 +427,69 @@ class Endpoint:
             if verdict is not None:
                 out.append({"t": "words", "id": frame.get("id"), "verdict": verdict})
         elif t == "hello" and isinstance(frame.get("project"), str) and self.relay:
-            held = self.logs.get(frame["project"], {})
-            out.append({"t": "have", "project": frame["project"], "have": {w: max(ss) for w, ss in held.items() if ss}})
+            out.append(self.have(frame["project"]))
         elif t == "events" and isinstance(frame.get("project"), str) and isinstance(frame.get("events"), list):
             out += self.take(frame["project"], frame["events"])
         for f in out:
             conn.write(f)
 
+    def have(self, project):
+        """The `have` the hub answers a hello with, as the endpoint passes it
+        down: its vector (an upload held back from admission not in it, a
+        withheld position in it), the archive designation, its withheld
+        positions."""
+        with self.cv:
+            held = self.logs.get(project, {})
+            back = self.unadmitted.get(project, {})
+            withheld = (self.withheld or {}).get(project) or {}
+            vector = {}
+            for w, ss in held.items():
+                admitted = [s for s in ss if s not in back.get(w, ())]
+                if admitted:
+                    vector[w] = max(admitted)
+            for w, runs in withheld.items():
+                top = max((r if isinstance(r, int) else r[1] for r in runs), default=0)
+                if top:
+                    vector[w] = max(vector.get(w, 0), top)
+            archive = self.archive.get(project, False) if isinstance(self.archive, dict) else bool(self.archive)
+            return {"t": "have", "project": project, "have": vector, "archive": archive,
+                    **({"withheld": withheld} if withheld else {})}
+
     def take(self, project, events):
         """Events uploaded: each kept in its upload form, or refused (the
         frames that say so)."""
-        out = []
+        out, stopped = [], set()
         with self.cv:
             held = self.logs.setdefault(project, {})
             for e in events:
                 form = upload_form(e) if isinstance(e, dict) else None
                 writer, seq = (e.get("writer"), e.get("seq")) if isinstance(e, dict) else (None, None)
+                if writer in stopped:
+                    continue
+                message = None
                 if form is None:
                     reason = "malformed"
+                elif writer in (self.refuse_audience or ()):
+                    reason, message = "audience", "the stream's audience is not this session's"
+                    stopped.add(writer)
                 elif seq in held.get(writer, {}) and held[writer][seq] != form:
                     reason = "conflict"
                 else:
                     held.setdefault(writer, {})[seq] = form
+                    if not self.admit:
+                        self.unadmitted.setdefault(project, {}).setdefault(writer, set()).add(seq)
                     continue
                 out.append({"t": "refused", "project": project,
-                            "refusal": {"reason": reason, "writer": writer, "seq": seq}})
+                            "refusal": {"reason": reason, "writer": writer, "seq": seq,
+                                        **({"message": message} if message else {})}})
         return out
+
+    def refused(self, project, writer, seq, reason="not-reachable"):
+        """The hub's refusal of an upload as the endpoint passes it down, with
+        no message (a `not-reachable` never carries one). Sent, and returned."""
+        frame = {"t": "refused", "project": project, "refusal": {"reason": reason, "writer": writer, "seq": seq}}
+        self.send(frame)
+        return frame
 
     # ---------------------------------------------------- frames down, built for a test
 
@@ -570,6 +631,8 @@ def control(ep, req):
     elif op == "rl10":
         mode = int(str(arg.pop("mode", "600")), 8)
         ep.write_rl10(mode, **arg)
+    elif op == "refuse":
+        ep.refused(arg["project"], arg["writer"], arg["seq"], arg.get("reason", "not-reachable"))
     elif op == "unlink-rl10":
         os.unlink(ep.rl10_path())
     elif op == "stop":
