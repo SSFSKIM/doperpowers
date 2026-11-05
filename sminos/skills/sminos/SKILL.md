@@ -50,8 +50,8 @@ shows or hides all three states. Inside a session `list` says who you are
 and ends with how many of your own subagents run.
 States: `busy` (its turn runs), `idle`,
 `waiting` (on a question or a permission prompt), `stopped` (no process;
-`send` resumes a seat), `gone` (no transcript here), `vacant` (a seat
-with no session), `retired`.
+`send` resumes a seat), `gone` (no transcript here, or its machine
+retired), `vacant` (a seat with no session), `retired`.
 
 ## Speaking
 
