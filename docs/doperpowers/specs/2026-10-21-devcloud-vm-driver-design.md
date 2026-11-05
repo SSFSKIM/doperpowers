@@ -2307,6 +2307,19 @@ commit 5168e433 on its branch, 2026-10-21):
   The L4, L40S and A10G are all on 580. §6.7 and M9's Decisions are revised; the live VM's
   `ubuntu-drivers list --gpgpu` confirms 580-server-open for its running kernel.
   Date/Author: 2026-11-04, the design session, from M9's executor's concern.
+- Decision: M9's review fixes (1a12455c).
+  - **The one reboot is asked for under the lifecycle lock**, held shared, and only while no
+    departure or release has started; otherwise the boot ends without rebooting. Without that, a
+    release taking the lock between the GPU step and the reboot could have an adopted server
+    rebooted mid-release.
+  - **The check container runs with `NVIDIA_DISABLE_REQUIRE=true`**: it proves a container sees
+    the device, not that the driver supports the image's CUDA, so an adopted machine's older
+    working driver (R525, CUDA 12) passes.
+  - **A runtime change owes a Docker restart** (`/run/devcloud/gpu-docker-restart-owed`) until one
+    succeeds, so a failed restart is retried within the same boot.
+  - The 580 packages were checked against noble-updates' restricted index (2026-11-05): every
+    current flavour's kernel has an exact `linux-modules-nvidia-580-server-open-*` package.
+  Date/Author: 2026-11-05, the M8/M9 plan executor, from M9's review.
 - Decision: Provider-agnostic from the first version, with Hetzner, GCE and adopt adapters and a
   per-project `devenv/host.toml`, instead of the Hetzner-only driver first proposed.
   Rationale: the person asked that each project be able to use the provider it prefers, or a server
