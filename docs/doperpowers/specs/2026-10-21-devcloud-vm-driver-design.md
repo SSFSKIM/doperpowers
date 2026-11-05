@@ -123,7 +123,13 @@ desk no longer counts it.
     showed IDLE `3d0h`, and the VM was downed.
 
 - [ ] M8 — The AWS provider (the person's request, 2026-11-04; §6.6).
+  - (2026-11-05 06:45Z) Built and reviewed clean against the fake `aws`: a583dbe9, with fixes
+    6866b6ed and 2f063d68 (two review rounds). Unit suite 927, the six gates green. The live
+    proofs wait on H13.
 - [ ] M9 — GPU hosts (§6.7).
+  - (2026-11-05 06:30Z) Built and reviewed clean against stubs: d9e3397f (devcloud 0.16.0), with
+    fix 1a12455c (one review round; the driver pin moved to 580). The live proof waits on H13 and
+    H14.
 
 Human steps this initiative needs. The executor prepares each (the exact command, the page, what to
 check) and escalates it at the milestone named; the person runs it when an automated attempt is
