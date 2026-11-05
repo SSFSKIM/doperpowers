@@ -993,8 +993,8 @@ or microVM, whose kernel is not theirs; and it does nothing on a machine with no
 a boot that failed halfway finishes the rest at the next boot, and an adopted machine with a
 driver of its own keeps it:
 
-1. **The driver.** Loaded when `nvidia-smi` lists the device. Otherwise the step installs the
-   pinned `-server-open` branch from Ubuntu's archive as precompiled, signed modules for the exact
+1. **The driver.** Loaded when `nvidia-smi` lists the device. Otherwise the step installs
+   NVIDIA's current long-term branch (580), `-server-open`, from Ubuntu's archive as precompiled, signed modules for the exact
    running kernel (`linux-modules-nvidia-<branch>-server-open-$(uname -r)`, with
    `nvidia-utils-<branch>-server`), so there is no DKMS build and Secure Boot is no issue, and
    loads it. When the archive has no package for the running kernel (an image baked before a
@@ -1706,9 +1706,9 @@ better), the boot's status output, the `devcloud` gate's tests, the README's hos
 
 Interfaces: consumes M8's AWS account for the live proof; no driver change.
 
-Decisions: the driver branch is pinned in the step (the newest `-server-open` branch Ubuntu 24.04
-ships for the L4, L40S and A10G at build time, checked against `ubuntu-drivers list --gpgpu` on
-the live VM); the container toolkit's apt key and source are written by the step with the key's
+Decisions: the driver branch is pinned in the step (NVIDIA's current long-term branch, 580, as
+`-server-open`, which covers the L4, L40S and A10G; the live VM's `ubuntu-drivers list --gpgpu`
+confirms that 580-server-open exists for its running kernel); the container toolkit's apt key and source are written by the step with the key's
 fingerprint checked.
 
 Proves: the gate's tests, against stubbed `apt-get`, `nvidia-smi`, `nvidia-ctk`, `docker` and a
@@ -2290,11 +2290,9 @@ commit 5168e433 on its branch, 2026-10-21):
     so the driver keeps waiting. The marker holds the boot id: a rerun in the same boot asks again,
     a later boot still without the driver fails with the kernel and branch named; the marker is
     cleared once the driver answers.
-  - **The pin**: branch 615 (615.71.09), the newest `-server-open` branch in noble-updates whose
-    modaliases cover the L4, L40S and A10G; the CUDA check runs `nvidia/cuda:13.0.3-base-ubuntu24.04`.
-    The live VM's `ubuntu-drivers list --gpgpu` confirms or moves it. 580, NVIDIA's long-term branch
-    (in restricted, supported to 2028), is the alternative should a shorter-lived 615 prove the wrong
-    pin; switching is one constant.
+  - **The pin**: built as branch 615 (615.71.09), the newest `-server-open` branch in
+    noble-updates; the CUDA check runs `nvidia/cuda:13.0.3-base-ubuntu24.04`, which 580 also runs.
+    Moved to 580 the same day (the next entry).
   - **What counts**: an NVIDIA device is vendor `0x10de` with a display class (`0x03xxxx`), so an
     NVIDIA audio function alone does nothing. A part is present when its command answers
     (`nvidia-smi` lists a GPU, `dockerd` or `nvidia-ctk` on PATH); every install passes
@@ -2302,6 +2300,13 @@ commit 5168e433 on its branch, 2026-10-21):
     written armored with its fingerprint checked, and the user joins `docker` (from its next
     login).
   Date/Author: 2026-11-04, the M8/M9 plan executor, from M9's executor.
+- Decision: The GPU driver pin is 580, NVIDIA's current long-term branch, as `-server-open`; not
+  615, the newest. Hosts are long-lived (kept by default), so a branch in Ubuntu's restricted
+  component supported to 2028, needing no yearly bump, beats the newest one, which sits in
+  multiverse and goes end-of-life wholesale within about a year (590 already only points to 595).
+  The L4, L40S and A10G are all on 580. §6.7 and M9's Decisions are revised; the live VM's
+  `ubuntu-drivers list --gpgpu` confirms 580-server-open for its running kernel.
+  Date/Author: 2026-11-04, the design session, from M9's executor's concern.
 - Decision: Provider-agnostic from the first version, with Hetzner, GCE and adopt adapters and a
   per-project `devenv/host.toml`, instead of the Hetzner-only driver first proposed.
   Rationale: the person asked that each project be able to use the provider it prefers, or a server
