@@ -2247,10 +2247,11 @@ commit 5168e433 on its branch, 2026-10-21):
   the high rung of doperpowers:review-code (a credential with spending power, a public port).
   Date/Author: 2026-11-04, design session.
 - Decision: M8/M9 execution pre-flight.
-  - **Order.** M8, then M9, one executor at a time, M8 reviewed clean before M9 dispatches: their
-    code is independent (M9 consumes only M8's account, for its live proof), but both edit the
-    boot (`departure.py` and the spot unit against `steps.py` and the status), which a shared
-    worktree cannot build twice at once.
+  - **Order.** M8, then M9, one executor at a time: their code is independent (M9 consumes only
+    M8's account, for its live proof), but both edit the boot (`departure.py` and the spot unit
+    against `steps.py` and the status), which a shared worktree cannot build twice at once. M9
+    dispatched while M8's read-only review ran in its own worktree, since both live proofs wait
+    on the person's AWS login; a fix to M8 waits for M9's executor to return.
   - **The always-on Mac's reaper before merge.** Its scheduled job runs the plugin's marketplace
     checkout, which is `main`, so until this branch merges it skips the AWS account as unusable
     (`aws` is not in that copy's `SHIPPED`; an unusable account is named on stderr and skipped).
