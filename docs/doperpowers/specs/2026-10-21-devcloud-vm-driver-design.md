@@ -2269,8 +2269,9 @@ commit 5168e433 on its branch, 2026-10-21):
     GCE first and the watch must not race GCE's shutdown departure; it departs once and exits 0.
     `depart_preempted` does nothing when the status already says departed, which covers EC2's
     shutdown stopping the spot unit after the watch departed.
-  - **The same 25 s bounded departure** serves EC2's two-minute notice. A longer EC2 budget would
-    give the ship more time; left as a follow-up.
+  - **The same 25 s bounded departure** serves EC2's two-minute notice. A longer EC2 budget (up to
+    about 90 s) would give the ship more time; kept at 25 s for now and logged in TECH-DEBT, by
+    the design session's ruling.
   - **A Vm's `location` is the region**, because `ls` prices a VM through `types(vm.location)`.
   - **`created` is the root volume's attach time**, not `LaunchTime`, which a stop and start
     move, and which would expose an old VM to the reaper's "excess, made in the last 2 hours"
