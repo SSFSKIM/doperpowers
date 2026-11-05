@@ -31,6 +31,7 @@ STEPS = (
     "apply",              # 9
     "settings-and-env",   # 10
     "services",           # 11
+    "gpu",                # the GPU step (the VM driver's §6.7), unnumbered
     "projects",           # 12
     "maws",               # 13
 )

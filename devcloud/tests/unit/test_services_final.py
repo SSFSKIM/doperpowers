@@ -198,7 +198,7 @@ class OwedRestartTest(unittest.TestCase):
             stack.enter_context(mock.patch.object(steps, "_locked", contextlib.nullcontext))
             stack.enter_context(mock.patch.object(steps.status, "reset", lambda: None))
             stack.enter_context(mock.patch.object(steps, "_run", lambda steps_, r, done=None, guard=None: 0))
-            stack.enter_context(mock.patch.object(steps, "Run", lambda kind: mock.Mock(user=self.user)))
+            stack.enter_context(mock.patch.object(steps, "Run", lambda kind: mock.Mock(user=self.user, reboot=False)))
             stack.enter_context(mock.patch.object(services, "systemd_is_init", lambda: True))
             stack.enter_context(mock.patch.object(services, "start_gated", lambda user, **_: calls.append(
                 ("start_gated", self.booted.exists()))))

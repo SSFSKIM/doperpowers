@@ -1,4 +1,5 @@
-"""The boot steps (Design §4) and the runs made of them: a boot (1-13), a
+"""The boot steps (Design §4) and the runs made of them: a boot (1-11, the GPU
+step, 12-13), a
 reconcile (5-11, then 13), the config pull job (5, then 6-11 when the commit
 moved), the secrets refresh (7, 10, 11), the mirror refresh (no step of its
 own) and the enroll job (what 11 or 13 deferred).
@@ -23,16 +24,16 @@ import urllib.error
 import urllib.request
 import uuid
 
-from . import descriptor, envfile, inbound, lease, ledger, maws_host, nodekind, plugins, proc, \
+from . import descriptor, envfile, gpu, inbound, lease, ledger, maws_host, nodekind, plugins, proc, \
     profile as profile_mod, projects as projects_mod, secrets, services, sminos_host, status, tsapi
 from .descriptor import DescriptorError
 from .proc import StepError, User, as_user, run, write_file
 from .secretmanager import AccessError, Tokens
 
 RUN_DIR = pathlib.Path("/run/devcloud")
-# devcloud-boot's exit status when steps 1-11 made the host and only step 12
-# (projects) or 13 (maws) failed: the entrypoint and the boot unit still start
-# the services.
+# devcloud-boot's exit status when steps 1-11 made the host and only the GPU
+# step, step 12 (projects) or 13 (maws) failed: the entrypoint and the boot
+# unit still start the services.
 PROJECTS_FAILED = 3
 STATE_DIR = pathlib.Path("/var/lib/devcloud")
 IDENTITY_ENV = STATE_DIR / "identity.env"
@@ -67,6 +68,7 @@ class Run:
         self.commit = None
         self.secret_env = {}
         self.env_changed = False
+        self.reboot = False     # the GPU step installed a newer kernel for its driver
 
     def load(self):
         if self.desc is None:
@@ -797,6 +799,15 @@ def _devcloud_services(r, lifecycle=None):
     return f"{', '.join(names)}: devcloud-services starts them when the boot ends{note}"
 
 
+def gpu_step(r):
+    """The GPU step (the VM driver's §6.7, `gpu`): after the services, so a
+    host whose GPU part fails still works, and before the projects, so their
+    `devenv up` finds the GPU and Docker. Only a boot runs it: it may reboot."""
+    outcome = gpu.reconcile(r.desc.kind, r.user)
+    r.reboot = outcome.reboot
+    return (outcome.state, outcome.detail)
+
+
 def projects(r):
     return projects_mod.set_up(r.user, r.desc, r.user.env(_read_env(ENV_PATH)),
                                user_manager=services.systemd_is_init())
@@ -897,13 +908,18 @@ def boot():
         try:
             guard = lambda: _unless_released(r)  # noqa: E731
             code = _run(BOOT, r, done=lambda: _mark_applied(r), guard=guard)
-            # The host works without a project or its endpoint: a failure is
-            # recorded, and its own exit status lets the services start all the
-            # same. Step 13 runs whatever step 12 did: the project that installs
-            # mawsd may have come through where another failed.
-            for name, fn in (("projects", projects), ("maws", maws)):
+            # The host works without its GPU, a project or its endpoint: a
+            # failure is recorded, and its own exit status lets the services
+            # start all the same. Step 13 runs whatever step 12 did: the
+            # project that installs mawsd may have come through where another
+            # failed.
+            for name, fn in (("gpu", gpu_step), ("projects", projects), ("maws", maws)):
                 if code in (0, PROJECTS_FAILED) and _run(((name, fn),), r, guard=guard):
                     code = PROJECTS_FAILED
+                if r.reboot:
+                    if _reboot():
+                        return 0
+                    r.reboot, code = False, PROJECTS_FAILED
         except ReleaseStarted:
             _say(RELEASE_NOTE)
             return 0
@@ -919,6 +935,23 @@ def boot():
                 _say(f"services: failed — {proc.KNOWN.scrub(str(error))}")
                 return 1
         return code
+
+
+def _reboot():
+    """The GPU step's one reboot, into the kernel the driver's modules are
+    for: asked of systemd, which stops the boot's unit and whatever waits on
+    it; the next boot runs every step again and starts the services. Exit 0
+    leaves the unit not failed, so a driver waiting on the boot goes on
+    waiting. False, the step recorded failed, when systemd refuses."""
+    try:
+        run(["systemctl", "reboot"], log="gpu", timeout=120)
+    except StepError as error:
+        detail = proc.KNOWN.scrub(f"the driver: the reboot into the newer kernel could not be asked for ({error})")
+        status.record("gpu", "failed", detail)
+        _say(f"gpu: failed — {detail}")
+        return False
+    _say("gpu: rebooting into the kernel the NVIDIA driver's modules are for")
+    return True
 
 
 @contextlib.contextmanager
