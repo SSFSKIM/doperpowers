@@ -11,6 +11,7 @@ import random
 import shutil
 import subprocess
 import tempfile
+import time
 import unittest
 
 HERE = pathlib.Path(__file__).resolve()
@@ -21,8 +22,16 @@ UBUNTU_PARAM = "/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/
 UBUNTU_AMI = "ami-0ubuntu2404west2"
 KEY_ID = "AKIAEXAMPLEEXAMPLE00"
 SECRET = "made-up-secret-access-key-0123456789abcdef"
-NOW = "2026-11-04T10:00:00+00:00"
-EPOCH = 1793786400          # NOW as Unix seconds
+# The provider reads the real clock (the price cache's week, the snapshot sweep's day), so the
+# stand-in's times are the real clock's too, at a whole minute: no test depends on the calendar.
+EPOCH = int(time.time()) // 60 * 60
+
+
+def iso(seconds):
+    return datetime.datetime.fromtimestamp(seconds, datetime.timezone.utc).isoformat()
+
+
+NOW = iso(EPOCH)            # as EC2's LaunchTime reads, "…+00:00"
 
 
 def itype(name, vcpus, mib, arch=("x86_64",)):
@@ -411,7 +420,7 @@ class ServersTest(AwsBase):
                 instance("i-0000000000000a01", "dc-a", {"devcloud": "vm", "devcloud-lifetime": "keep"}),
                 instance("i-0000000000000a02", "personal", {"purpose": "other"}),
                 instance("i-0000000000000a03", "dc-b", {"devcloud": "builder"}, state="stopped", ip=None,
-                         launch="2026-11-04T12:00:00+00:00", attach="2026-11-04T09:00:00+00:00"),
+                         launch=iso(EPOCH + 7200), attach=iso(EPOCH - 3600)),
                 instance("i-0000000000000a04", "dc-gone", {"devcloud": "vm"}, state="terminated", ip=None),
                 instance("i-0000000000000a05", "dc-going", {"devcloud": "vm"}, state="shutting-down", ip=None)]
             east["instances"] += [instance("i-0000000000000e01", "dc-east", {"devcloud": "vm"}, region="us-east-1")]
@@ -500,10 +509,7 @@ class ImagesTest(AwsBase):
         self.assertEqual(self.flag(argv, "--owners"), "self")
 
     def test_the_orphan_snapshot_sweep(self):
-        # The provider ages snapshots by the real clock, so these times are relative to it.
-        now = datetime.datetime.now(datetime.timezone.utc)
-        day_old = (now - datetime.timedelta(hours=25)).isoformat()
-        fresh = (now - datetime.timedelta(hours=1)).isoformat()
+        day_old, fresh = iso(EPOCH - 25 * 3600), iso(EPOCH - 3600)
 
         def snapshots(s):
             west = s["regions"][REGION]

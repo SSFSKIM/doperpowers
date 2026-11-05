@@ -2,7 +2,8 @@
 """The stand-in `aws` CLI v2 for the aws provider's tests: state in the JSON file $FAKE_AWS_STATE,
 per region under `regions` (instance_types, offerings, vpcs, subnets, security_groups, instances,
 images, snapshots, ssm), the price list under `products` (one dict per product, served as the JSON
-strings `get-products` returns), and `calls`, `fail`, `next_id`, `now`.
+strings `get-products` returns), and `calls`, `fail`, `next_id`, `now` (the time every resource it makes carries; the real
+clock's when unset, as the provider's own clock is).
 
 Every invocation's argv is appended to `calls`, with the AWS_* environment it saw (the secret's
 value replaced by its length). It exits 99 unless the configuration and credentials files are named,
@@ -18,6 +19,7 @@ becomes `stopped` after `stopping_reads` describes (default 1). `snapshot_result
 to the ReturnCode `deregister-image --delete-associated-snapshots` gives it (default `success`; any
 other code leaves the snapshot)."""
 import base64
+import datetime
 import fnmatch
 import json
 import os
@@ -104,7 +106,7 @@ if queue:
         error(failure["error"], failure.get("operation", op), failure.get("message", "made-up failure"))
     die(failure.get("code", 254), failure["stderr"])
 
-NOW = state.get("now", "2026-11-04T10:00:00+00:00")
+NOW = state.get("now") or datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat()
 region = state.setdefault("regions", {}).setdefault(REGION, {})
 for key in ("instance_types", "offerings", "vpcs", "subnets", "security_groups", "instances", "images", "snapshots"):
     region.setdefault(key, [])
