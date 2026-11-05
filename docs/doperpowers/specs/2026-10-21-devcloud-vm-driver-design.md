@@ -2326,6 +2326,18 @@ commit 5168e433 on its branch, 2026-10-21):
   - The 580 packages were checked against noble-updates' restricted index (2026-11-05): every
     current flavour's kernel has an exact `linux-modules-nvidia-580-server-open-*` package.
   Date/Author: 2026-11-05, the M8/M9 plan executor, from M9's review.
+- Decision: The whole-branch review's fixes (high rung, round 1; 0162074c).
+  - **EC2's notice outlasts a busy lock.** With a notice in hand the departure tries the lifecycle
+    lock without waiting; held by an ordinary job (pull-config, reconcile, refresh-secrets) with no
+    departure started, the watch asks again every 5 s until the notice's time would leave less than
+    the departure's 25 s, then gives up and says so. GCE's shutdown path keeps its 2 s wait.
+  - **A boot's user processes carry the user's supplementary groups** (`os.getgrouplist`), as a
+    login does, so a project's `devenv up` right after the GPU step reaches Docker; `as_user`,
+    which only writes files in the home, still drops every group.
+  - **The toolkit is present only with `nvidia-container-runtime-hook` beside `nvidia-ctk`**:
+    NVIDIA's `nvidia-container-toolkit-base` (a CDI setup) ships the CLI without the hook Docker's
+    `--gpus` needs.
+  Date/Author: 2026-11-05, the M8/M9 plan executor, from the whole-branch review.
 - Decision: Provider-agnostic from the first version, with Hetzner, GCE and adopt adapters and a
   per-project `devenv/host.toml`, instead of the Hetzner-only driver first proposed.
   Rationale: the person asked that each project be able to use the provider it prefers, or a server
