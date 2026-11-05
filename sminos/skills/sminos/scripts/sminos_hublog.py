@@ -979,8 +979,10 @@ class HubLog:
     def allocated_here(self, writer):
         """Whether this machine's appenders allocate `writer`: its operator
         writer or one of its sessions' (`sminos.writer_id`), exactly
-        `<machine>/human` or `<machine>/<session uuid>`. Any other name, even
-        one under this machine's prefix, is no file the allocator opens."""
+        `<machine>/human` or `<machine>/<session uuid>`, or an audience
+        stream of either (`<writer>~<digest>`, P5 O18 D6). Any other name,
+        even one under this machine's prefix, is no file the allocator
+        opens."""
         prefix = self.machine + "/"
         if not writer.startswith(prefix):
             return False
