@@ -410,6 +410,28 @@ class DepartTest(DepartureBase):
         self.assertLessEqual(self.world.clock, departure.PREEMPT_BUDGET, "the session wait outlasted the window")
         self.assertEqual(self.lifecycle()["state"], "departed")
 
+    def test_the_ec2_notice_watch_departs_on_the_notice_it_saw(self):
+        # The departure runs on the notice the watch observed: a second look at the metadata that
+        # misses (here: preempted() answers no) must not lose it.
+        self.write_descriptor(LATER)
+        notices = iter([None, None, {"action": "terminate", "time": "2026-11-04T10:02:00Z"}])
+
+        class Imds:
+            def instance_action(self):
+                return next(notices)
+        sleeps = []
+        self.assertEqual(departure.watch_spot_notice(self.host(), imds=Imds(), sleep=sleeps.append), 0)
+        self.assertEqual(len(sleeps), 2)
+        runs = self.world.runs()
+        self.assertIn(["tailscale", "logout"], runs, "the watch saw a notice and departed nothing")
+        self.assertNotIn(["systemctl", "poweroff"], runs)
+        self.assertEqual(self.lifecycle()["state"], "departed")
+
+    def test_the_shutdown_unit_still_asks_the_metadata(self):
+        self.write_descriptor(LATER)
+        self.assertEqual(departure.depart_preempted(self.host()), departure.DONE)
+        self.assertEqual(self.world.runs(), [], "an ordinary shutdown departed")
+
     def test_a_reclaim_already_departed_departs_nothing_again(self):
         # EC2's notice starts the departure two minutes ahead; its shutdown then stops the spot unit too.
         self.write_descriptor(LATER)

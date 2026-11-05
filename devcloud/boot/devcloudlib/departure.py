@@ -596,11 +596,19 @@ def depart(host, force=False, no_hold=False, no_poweroff=False):
         return DONE
 
 
-def depart_preempted(host):
-    """The spot reclaim's departure: only when the metadata server says this
-    VM is being reclaimed, and then steps 0-4 within 25 seconds, one round,
-    no hold, no lease check; the provider deletes the VM."""
-    if not host.preempted():
+def watch_spot_notice(host, imds=None, sleep=time.sleep):
+    """`devcloud depart --spot-notice`: EC2's notice watch (§6.6), whose
+    departure runs on the notice it saw rather than on a second look."""
+    return ec2spot.watch(imds or ec2spot.Imds(), lambda notice: depart_preempted(host, notice=notice),
+                         say=host.say, sleep=sleep)
+
+
+def depart_preempted(host, notice=None):
+    """The spot reclaim's departure: only when the provider says this VM is
+    being reclaimed — the metadata asked here (the shutdown unit), or the
+    `notice` EC2's watch already saw — and then steps 0-4 within 25 seconds,
+    one round, no hold, no lease check; the provider deletes the VM."""
+    if notice is None and not host.preempted():
         host.say("devcloud depart: not preempted; an ordinary shutdown departs nothing")
         return DONE
     deadline = host.monotonic() + PREEMPT_BUDGET

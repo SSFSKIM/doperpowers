@@ -69,13 +69,13 @@ class Imds:
 
 def watch(imds, depart, say, sleep=time.sleep, every=EVERY):
     """Asks for the notice every `every` seconds; when it appears, runs
-    `depart` once and returns 0 whatever its outcome, so the unit is not
-    started again (the departure's status says how it went)."""
+    `depart(notice)` once and returns 0 whatever its outcome, so the unit is
+    not started again (the departure's status says how it went)."""
     while True:
         action = imds.instance_action()
         if action is not None:
             say(f"devcloud depart: EC2 scheduled this spot VM's {action['action']} at {action.get('time', '?')}; "
                 "departing")
-            say(f"devcloud depart: the reclaim departure exited {depart()}")
+            say(f"devcloud depart: the reclaim departure exited {depart(action)}")
             return 0
         sleep(every)

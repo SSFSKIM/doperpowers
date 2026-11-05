@@ -133,8 +133,7 @@ def lifecycle(argv):
         if "--preempted" in given:
             return departure.depart_preempted(host)
         if "--spot-notice" in given:
-            from devcloudlib import ec2spot
-            return ec2spot.watch(ec2spot.Imds(), lambda: departure.depart_preempted(host), say=host.say)
+            return departure.watch_spot_notice(host)
         return departure.depart(host, force="--force" in given, no_hold="--no-hold" in given,
                                 no_poweroff="--no-poweroff" in given)
     given = flags(args, ("--force", "--no-hold"))

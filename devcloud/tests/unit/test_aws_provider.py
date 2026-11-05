@@ -2,6 +2,7 @@
 against the stand-in `aws` CLI in tests/fixtures, whose state is a JSON file."""
 
 import base64
+import datetime
 import gzip
 import json
 import os
@@ -119,7 +120,7 @@ class AwsBase(unittest.TestCase):
         fn(state)
         self.write_state(state)
 
-    def fail(self, command, *failures):
+    def fail_next(self, command, *failures):
         self.edit(lambda s: s["fail"].setdefault(command, []).extend(failures))
 
     def run_op(self, op, payload=None, *, argv=None, extra=None, keys=True):
@@ -237,11 +238,11 @@ class InfoAndTypesTest(AwsBase):
         data = json.loads(cache.read_text())
         data["fetched"] -= 8 * 86400
         cache.write_text(json.dumps(data))
-        self.fail("pricing get-products", {"error": "AccessDeniedException", "message": "no"})
+        self.fail_next("pricing get-products", {"error": "AccessDeniedException", "message": "no"})
         types = {t["type"]: t for t in self.ok("types", {"location": REGION})}
         self.assertEqual(types["m7i.xlarge"]["hourly_price"], 0.2016, "a stale cache beats none")
         cache.unlink()
-        self.fail("pricing get-products", {"error": "AccessDeniedException", "message": "no"})
+        self.fail_next("pricing get-products", {"error": "AccessDeniedException", "message": "no"})
         types = {t["type"]: t for t in self.ok("types", {"location": REGION})}
         self.assertIsNone(types["m7i.xlarge"]["hourly_price"])
 
@@ -363,12 +364,12 @@ class CreateTest(AwsBase):
         for code in ("VcpuLimitExceeded", "InstanceLimitExceeded", "MaxSpotInstanceCountExceeded"):
             with self.subTest(code=code):
                 self.edit(lambda s: s["calls"].clear())
-                self.fail("ec2 run-instances", {"error": code, "message": "You have requested more vCPU capacity"})
+                self.fail_next("ec2 run-instances", {"error": code, "message": "You have requested more vCPU capacity"})
                 self.refused("create", create_payload(), "quota")
                 self.assertEqual(len(self.calls_of("ec2", "run-instances")), 1, "a quota is not retried elsewhere")
 
     def test_a_capacity_refusal_tries_the_other_default_subnets_in_turn(self):
-        self.fail("ec2 run-instances",
+        self.fail_next("ec2 run-instances",
                   {"error": "InsufficientInstanceCapacity", "message": "We currently do not have sufficient capacity"},
                   {"error": "Unsupported", "message": "Your requested instance type is not supported in your "
                                                       "requested Availability Zone (us-west-2b)."})
@@ -378,7 +379,7 @@ class CreateTest(AwsBase):
         self.assertEqual(vm["name"], "dc-new-7f3a")
 
     def test_no_subnet_with_capacity_is_unavailable(self):
-        self.fail("ec2 run-instances", *[{"error": "InsufficientInstanceCapacity", "message": "none here"}] * 2,
+        self.fail_next("ec2 run-instances", *[{"error": "InsufficientInstanceCapacity", "message": "none here"}] * 2,
                   {"error": "InvalidInstanceType", "message": "not offered in this zone"})
         answer = self.refused("create", create_payload(), "unavailable")
         self.assertIn("m7i.xlarge", answer["error"])
@@ -386,14 +387,14 @@ class CreateTest(AwsBase):
         self.assertEqual(self.region()["instances"], [])
 
     def test_a_missing_spot_role_names_it(self):
-        self.fail("ec2 run-instances", {"error": "AuthFailure.ServiceLinkedRoleCreationNotPermitted",
+        self.fail_next("ec2 run-instances", {"error": "AuthFailure.ServiceLinkedRoleCreationNotPermitted",
                                         "message": "The provided credentials do not have permission to create the "
                                                    "service-linked role for EC2 Spot Instances."})
         answer = self.refused("create", create_payload(spot=True), "other")
         self.assertIn("AWSServiceRoleForEC2Spot", answer["error"])
 
     def test_another_failure_is_exit_1_with_its_line(self):
-        self.fail("ec2 run-instances", {"error": "UnauthorizedOperation",
+        self.fail_next("ec2 run-instances", {"error": "UnauthorizedOperation",
                                         "message": "You are not authorized to perform this operation."})
         r = self.run_op("create", create_payload())
         self.assertEqual(r.returncode, 1)
@@ -499,7 +500,10 @@ class ImagesTest(AwsBase):
         self.assertEqual(self.flag(argv, "--owners"), "self")
 
     def test_the_orphan_snapshot_sweep(self):
-        day_old = "2026-11-03T09:00:00+00:00"
+        # The provider ages snapshots by the real clock, so these times are relative to it.
+        now = datetime.datetime.now(datetime.timezone.utc)
+        day_old = (now - datetime.timedelta(hours=25)).isoformat()
+        fresh = (now - datetime.timedelta(hours=1)).isoformat()
 
         def snapshots(s):
             west = s["regions"][REGION]
@@ -512,15 +516,46 @@ class ImagesTest(AwsBase):
                 {"SnapshotId": "snap-kept", "StartTime": day_old, "Tags": image_tag},     # its AMI names it
                 {"SnapshotId": "snap-orphan", "StartTime": day_old, "Tags": image_tag},   # an interrupted delete
                 {"SnapshotId": "snap-test", "StartTime": day_old, "Tags": [{"Key": "devcloud", "Value": "test"}]},
-                {"SnapshotId": "snap-fresh", "StartTime": NOW, "Tags": image_tag},        # a create in flight
+                {"SnapshotId": "snap-fresh", "StartTime": fresh, "Tags": image_tag},      # a create in flight
                 {"SnapshotId": "snap-theirs", "StartTime": day_old, "Tags": []}]
         self.edit(snapshots)
         self.assertEqual([i["id"] for i in self.ok("images")], ["ami-0kept"])
         left = sorted(s["SnapshotId"] for s in self.region()["snapshots"])
         self.assertEqual(left, ["snap-fresh", "snap-kept", "snap-theirs"])
 
+    def test_a_snapshot_the_deregistration_could_not_delete_fails_the_call(self):
+        image = self.ok("image-create", {"id": "i-0000000000000b01", "name": "dc-img-x", "labels": {"devcloud": "image"}})
+        [snap] = [s["SnapshotId"] for s in self.region()["snapshots"]]
+        self.edit(lambda s: s.update(snapshot_results={snap: "missing-permissions"}))
+        r = self.run_op("image-delete", {"id": image["id"]})
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn(snap, r.stderr)
+        self.assertIn("missing-permissions", r.stderr)
+        self.assertEqual(self.ok("images"), [], "the AMI itself is gone")
+        self.assertEqual([s["SnapshotId"] for s in self.region()["snapshots"]], [snap], "left for the sweep")
+
+    def test_a_snapshot_skipped_because_another_ami_uses_it_is_no_failure(self):
+        image = self.ok("image-create", {"id": "i-0000000000000b01", "name": "dc-img-x", "labels": {"devcloud": "image"}})
+        [snap] = [s["SnapshotId"] for s in self.region()["snapshots"]]
+        self.edit(lambda s: s.update(snapshot_results={snap: "skipped"}))
+        self.assertEqual(self.ok("image-delete", {"id": image["id"]}), {})
+
+    def test_images_in_two_regions_from_independent_invocations_with_empty_state(self):
+        def amis(s):
+            for region, ami in ((REGION, "ami-0west"), ("us-east-1", "ami-0east")):
+                s["regions"][region]["images"].append(
+                    {"ImageId": ami, "Name": f"dc-img-{region}", "State": "available", "CreationDate": NOW,
+                     "Tags": [{"Key": "devcloud", "Value": "image"}], "BlockDeviceMappings": []})
+        self.edit(amis)
+        west = self.ok("images")
+        shutil.rmtree(self.home / ".local/state/devcloud/aws")
+        self.vars["AWS_REGION"] = "us-east-1"
+        east = self.ok("images")
+        self.assertEqual([i["id"] for i in west], ["ami-0west"])
+        self.assertEqual([i["id"] for i in east], ["ami-0east"])
+
     def test_a_failing_sweep_never_fails_images(self):
-        self.fail("ec2 describe-snapshots", {"error": "UnauthorizedOperation", "message": "no"})
+        self.fail_next("ec2 describe-snapshots", {"error": "UnauthorizedOperation", "message": "no"})
         r = self.run_op("images")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("snapshot", r.stderr)

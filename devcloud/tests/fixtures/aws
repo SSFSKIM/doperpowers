@@ -14,7 +14,9 @@ person's own profiles or sign-in fails loudly; 253 without the key; 252 without 
 as the CLI prints a service error), each consumed by one call of that command, so a test can fail
 the first run-instances and let the second through. Structured arguments are JSON, as the provider
 passes them; `fileb://<path>` is read as bytes and kept base64. An instance in state `stopping`
-becomes `stopped` after `stopping_reads` describes (default 1)."""
+becomes `stopped` after `stopping_reads` describes (default 1). `snapshot_results` maps a snapshot id
+to the ReturnCode `deregister-image --delete-associated-snapshots` gives it (default `success`; any
+other code leaves the snapshot)."""
 import base64
 import fnmatch
 import json
@@ -288,8 +290,9 @@ elif command == "ec2 deregister-image":
     results = []
     if flags.get("--delete-associated-snapshots"):
         named = {m["Ebs"]["SnapshotId"] for m in item["BlockDeviceMappings"] if "SnapshotId" in m.get("Ebs", {})}
-        region["snapshots"] = [s for s in region["snapshots"] if s["SnapshotId"] not in named]
-        results = [{"SnapshotId": s, "ReturnCode": "success"} for s in sorted(named)]
+        codes = {snap: state.get("snapshot_results", {}).get(snap, "success") for snap in named}
+        region["snapshots"] = [s for s in region["snapshots"] if codes.get(s["SnapshotId"], "kept") != "success"]
+        results = [{"SnapshotId": snap, "ReturnCode": codes[snap]} for snap in sorted(named)]
     out({"Return": True, "DeleteSnapshotResults": results})
 elif command == "ec2 describe-snapshots":
     if flags.get("--owner-ids") != "self":

@@ -581,10 +581,18 @@ def op_image_delete(aws, req):
     if not _IMAGE.fullmatch(ami):
         raise Usage(f"an image id is ami- and hex: {ami[:40]!r}")
     try:
-        aws.ec2("deregister-image", "--image-id", ami, "--delete-associated-snapshots")
+        answer = aws.ec2("deregister-image", "--image-id", ami, "--delete-associated-snapshots")
     except AwsError as e:
         if not e.not_found:
             raise
+        return {}
+    # The AMI is gone either way; a snapshot it could not delete fails the call (a snapshot another
+    # AMI still uses is `skipped`, which is right). The orphan sweep deletes it later.
+    failed = [f"{r.get('SnapshotId')} ({r.get('ReturnCode')})" for r in answer.get("DeleteSnapshotResults") or []
+              if r.get("ReturnCode") not in ("success", "skipped")]
+    if failed:
+        raise Failed(f"image {ami} is deregistered, but not its snapshots {', '.join(failed)}; `images` deletes "
+                     "them once they are a day old")
     return {}
 
 

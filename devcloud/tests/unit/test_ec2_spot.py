@@ -116,15 +116,15 @@ class WatchTest(ImdsBase):
             if len(sleeps) >= polls:
                 raise StopIteration
         try:
-            code = ec2spot.watch(self.imds(), lambda: departed.append(1) or departure.FAILED, say=lambda line: None,
-                                 sleep=sleep)
+            code = ec2spot.watch(self.imds(), lambda notice: departed.append(notice["action"]) or departure.FAILED,
+                                 say=lambda line: None, sleep=sleep)
         except StopIteration:
             code = None
         return code, departed, sleeps
 
     def test_a_notice_starts_one_departure_and_the_watch_ends(self):
         code, departed, sleeps = self.watch(appear_after=3)
-        self.assertEqual((code, departed), (0, [1]), "once, whatever the departure's outcome")
+        self.assertEqual((code, departed), (0, ["terminate"]), "once, on the notice seen, whatever its outcome")
         self.assertEqual(sleeps, [ec2spot.EVERY] * 3)
         self.assertEqual(self.world.issued, 1)
 
