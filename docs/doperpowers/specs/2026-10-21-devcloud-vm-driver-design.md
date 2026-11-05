@@ -122,6 +122,9 @@ desk no longer counts it.
     delivered the notice to its creating session at the lease service's next scheduled run. `vm ls`
     showed IDLE `3d0h`, and the VM was downed.
 
+- [ ] M8 — The AWS provider (the person's request, 2026-11-04; §6.6).
+- [ ] M9 — GPU hosts (§6.7).
+
 Human steps this initiative needs. The executor prepares each (the exact command, the page, what to
 check) and escalates it at the milestone named; the person runs it when an automated attempt is
 refused or it needs a browser or their judgment.
@@ -140,6 +143,9 @@ refused or it needs a browser or their judgment.
 | H10 | Board #115's live test: one `up --keep --confirmed` GCE VM (about $0.11/h), and one adoption of a hand-made e2-small with `adopt --confirmed`, released by its lease service; both deleted the same day | the person | approved by the person through the main session, 2026-10-22 ("Approve (Recommended)", each); used once each, deleted 01:50Z and 02:16Z |
 | H11 | A Tailscale OAuth client with `auth_keys` and `devices:core` on `tag:devcloud` (§4.1's node removal), as a new version of the hosts' Secret Manager secret; the old, broader client revoked | the person, carried out by the main session | done 2026-10-22 |
 | H12 | Board #118's live test: one `up --keep --confirmed` GCE VM, and one adoption of a hand-made plain Ubuntu 24.04 e2-small with `adopt --confirmed`; then a second kept VM for the unreachable `down --force` case; all deleted the same day | the person | approved by the person through the main session, 2026-10-22: the first two "Start, approve both (Recommended)", the second VM "Approve (Recommended)"; each used once, all deleted by 06:30Z |
+| H13 | A dedicated IAM user in the person's AWS account with §6.6's policy, its access key stored in Secret Manager as the two secrets the profile's AWS account names, without being printed | the main session, after the person's `aws login` | approved by the person 2026-11-04 ("Yes, go ahead (Recommended)") |
+| H14 | GPU quota in us-west-2: "Running On-Demand G and VT instances" and "All G and VT Spot Instance Requests" raised to 16 vCPUs (a new account has 0) | the main session files it; AWS approves | before M9's live proof |
+| H15 | The `aws` CLI v2 on every driver Mac, on the PATH the reaper's agent runs with | the executor checks; the person installs if missing | M8 (both Macs had it 2026-11-04) |
 
 ## Terms
 
@@ -902,6 +908,86 @@ after `~/`, no `..`, not the home itself. The release never removes the home its
   release repeats the lines of the steps it skips, marked "(an earlier run)", so that a leave
   confirmed on the first run still reads as confirmed.
 
+**6.6 Amazon EC2** (the shipped `aws` provider; added 2026-11-04, Decision Log). One account is
+one AWS account and one region: `location` is the region (`us-west-2`), and the zone is EC2's
+choice among the region's default subnets. Capabilities: `user_data`, `images`, `spot`; no
+`metadata_seed`, so the seed is delivered over SSH at the public address, as on Hetzner. A
+keyless seed on EC2 (an instance role federated into Google) is the same deferral as Hetzner's
+(Out of scope). The script calls the `aws` CLI v2 with `AWS_ACCESS_KEY_ID` and
+`AWS_SECRET_ACCESS_KEY` from its environment (the account's `env`, two Secret Manager ids) and
+`AWS_CONFIG_FILE` and `AWS_SHARED_CREDENTIALS_FILE` pointed at empty files in its own state
+directory, with `AWS_PROFILE` and every other `AWS_*` variable it did not set removed, so the
+person's own profiles and their `aws login` session are never read. The credential is a
+dedicated IAM user whose one policy allows the EC2 calls below, the SSM public parameter read
+for the base image, and `pricing:GetProducts`, and nothing else: no IAM, no instance profiles,
+so a host never holds an AWS credential.
+
+- **Labels are tags.** I14's label set is stored as tags with the same keys and values, applied
+  by `TagSpecifications` in `run-instances` itself (instance and volume), never afterwards.
+  `Name` is also set to the VM's name, and `list` and `get` return only the I14 keys, so `Name`
+  never reaches the core as a label. `list` is `describe-instances` filtered on `tag-key=devcloud`;
+  an instance `shutting-down` or `terminated` is gone (EC2 lists terminated instances for about an
+  hour), so `get` returns null for it and `list` leaves it out. State `running` maps to
+  `running`; `created` is `LaunchTime`.
+- **The base image** for `image: null` is Canonical's Ubuntu 24.04 amd64 AMI for the region, read
+  at create time from the public SSM parameter
+  `/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id`. Only
+  x86_64 types are offered (the image's packages are amd64), so `types` leaves Graviton out.
+- **Disk.** EC2 types carry no disk, so every type reports `disk_gb` as the account's root volume,
+  `AWS_DISK_GB` (default 50, matching GCE), and a create's `disk_gb` sizes the gp3 root volume,
+  deleted with the instance. The disk cap applies as it does everywhere (beyond the type's own).
+- **Network.** Each create runs in the region's default VPC with a public IPv4 address, IMDSv2
+  required and a hop limit of 2 (containers on the host can reach it; nothing on the host needs
+  it). The security group is the provider's to keep: `devcloud`, in the default VPC, tagged
+  `devcloud=network`, allowing inbound TCP 22 and UDP 41641 from anywhere and all outbound,
+  found or created at create time. The host's nftables policy (§5) closes port 22 once the tailnet
+  is up, as on every provider. The group is never deleted by the driver (there is no operation for
+  it), and the IAM policy's create, authorize and delete permissions on groups are conditioned on
+  that tag, so the credential cannot open or remove another group.
+- **Types and prices.** `types` lists the region's x86_64 types in the families of `AWS_FAMILIES`
+  (default `t3,m7i,c7i,r7i,g6,g6e,g5`), with vCPUs and memory from `describe-instance-types` and
+  `available` from `describe-instance-type-offerings`. Hourly on-demand Linux prices come from the
+  Pricing API (its endpoint is in `us-east-1`), cached a week in the provider's state directory as
+  the gce provider caches its catalog; a type the catalog does not price shows none, which never
+  fails `types`. `t3` types are burstable, the analogue of shared-core types elsewhere. The
+  account's default type is `m7i.xlarge` (4 vCPU, 16 GB), not a `t3`: a burstable type throttles
+  under the sustained builds and test runs a VM exists for.
+- **Spot** creates a one-time spot instance that terminates on interruption, the GCE behavior.
+- **Refusals.** `VcpuLimitExceeded`, `InstanceLimitExceeded` and `MaxSpotInstanceCountExceeded`
+  exit 3 with kind `quota`; `InsufficientInstanceCapacity`, `Unsupported` and
+  `InvalidInstanceType`-for-the-zone exit 3 with kind `unavailable`, after the provider has tried
+  the region's other default subnets in turn (capacity is per zone, and the zone is the
+  provider's choice, not the core's; the core still never changes the type).
+- **Images** are AMIs owned by the account, tagged as I14 says through `create-image`'s
+  `TagSpecifications` (image and snapshot); `images` lists the account's own AMIs carrying the
+  `devcloud` tag, and `image-delete` deregisters the AMI and deletes its snapshots. An AMI is
+  regional, which matches an account being one region.
+
+**6.7 GPU hosts** (added 2026-11-04). A VM whose type has an NVIDIA GPU (on EC2 today: `g6` L4,
+`g6e` L40S, `g5` A10G) gets a working driver and container runtime without anyone asking: the
+boot's GPU step, which runs on every host and does nothing on a machine with no NVIDIA PCI device
+(vendor `10de`), installs Ubuntu's signed precompiled server driver for the running kernel's
+flavor (`ubuntu-drivers install --gpgpu` with the `-server-open` branch the step names, plus the
+matching `linux-modules-nvidia-…` package, so no DKMS build and Secure Boot is no issue),
+`nvidia-utils`, and NVIDIA's container toolkit from NVIDIA's apt repository, configures Docker's
+runtime with `nvidia-ctk`, loads the module, and checks that `nvidia-smi` lists the device; its
+status line is `ok` with the GPU's name, or `failed` with the reason. It is idempotent: on a
+later boot with the driver loaded it only checks. The step lives on the host, not in the image,
+because the image is baked once per account on the smallest type, which has no GPU, and because
+the same step serves a GPU on any provider or an adopted machine. The image's recipe is
+unchanged: a CPU VM pays nothing. A GPU VM's first boot takes a few minutes longer for the
+download; that cost is accepted over a second image per account.
+
+The caps need no change: the vCPU cap counts a GPU type's vCPUs (`g6.2xlarge` has 8), and a GPU
+type is the person's choice like any other type (`--type`, or a project's `host.toml`). What
+differs is the price: a GPU VM costs about ten times a CPU one, and VMs are kept by default, so
+`ls` and the idle notice (§4.5) are how an idle one gets noticed. The notice is the same for every
+type; a shorter one for GPU types is left open (Out of scope).
+
+EC2 accepts at most 16 KB of user-data before its base64 encoding. The provider measures what
+the core composed and, when it is larger, sends it gzip-compressed, which Ubuntu's cloud-init
+reads on EC2; past 16 KB compressed it fails with that reason rather than truncating.
+
 ### 7. Images
 
 `devcloud vm image build [--account A]`, for an account whose provider has `images`, creates a
@@ -1069,8 +1155,11 @@ with doperpowers:writing-skills and sanity-tested in a session before it ships.
 
 ## Out of scope
 
-- Shipped providers beyond Hetzner Cloud and GCE (Vultr, AWS, Firecracker hosts); the provider
+- Shipped providers beyond Hetzner Cloud, GCE and AWS (Vultr, Firecracker hosts); the provider
   protocol is their extension point, and a session can write one as a profile provider (§6.2).
+  AWS was here until 2026-11-04 (§6.6).
+- A shorter idle notice for GPU types (§6.7): one notice for every type until an idle GPU VM is
+  seen costing more than it should.
 - Hosts as drivers: it needs a path for registering a host's public key in the profile, which a host
   never pushes to.
 - Sandbox containers created by the driver on a host (the parent's sandbox role); `adopt` and VMs
@@ -1086,7 +1175,7 @@ with doperpowers:writing-skills and sanity-tested in a session before it ships.
   `tag:devcloud`, and nothing else (Decision Log). This line first said the client had only the
   auth-keys scope, but a token read on 2026-10-22 showed `devices:core:read devices:posture_attributes
   policy_file dns auth_keys users`. That client was revoked the same day.
-- Workload identity federation for Hetzner hosts (a keyless seed off GCE), deferred by the parent.
+- Workload identity federation for Hetzner and AWS hosts (a keyless seed off GCE), deferred by the parent.
 
 ## Execution
 
@@ -1527,6 +1616,64 @@ Proves: the unit suite, with the idle clock driven by an injected time; one live
 person's default account, made by `up` within the caps, with `idle.json`'s `active_at` set back
 three days by hand, delivers the notice to the creating session at the next lease-service run, and
 is then `down`ed.
+
+### M8 — The AWS provider
+
+The person's request of 2026-11-04 (Decision Log). What exists at its end: `up` on an AWS account
+works on the slow path and from an image, on demand and spot; AWS images build; the reaper on the
+always-on Mac lists and cleans up AWS VMs; the skill and the README name AWS as shipped.
+
+Touches: the shipped provider `devcloud/driver/providers/aws` (an executable Python 3.11 script,
+standard library only, driving the `aws` CLI under the private configuration of §6.6), its tests
+with a fake `aws` (the calls of §6.6 and the arguments each was given), `devcloud/driver/profile.py`
+(`aws` in `SHIPPED`), `devcloud/skills/vm/SKILL.md` and `devcloud/README.md` (shipped providers;
+the AWS account's settings), the profile's AWS account (H13–H15).
+
+Interfaces: implements I13 once more; consumes nothing new from the core. If the core assumes a
+Hetzner- or GCE-only fact anywhere (a location shape, a type name pattern, the first contact user),
+the fix is in the core, with a test, and is named in the report.
+
+Decisions:
+- The account in the person's profile: `name = "aws"`, `provider = "aws"`, `location =
+  "us-west-2"`, `type = "m7i.xlarge"`, `env` naming H13's two secrets for `AWS_ACCESS_KEY_ID` and
+  `AWS_SECRET_ACCESS_KEY`, `vars` for `AWS_FAMILIES` and
+  `AWS_DISK_GB` only when they differ from the defaults. The default account stays `gce`.
+- The first contact over SSH is as root, as on Hetzner: the core's user-data already sets
+  `disable_root: false`; the live run proves Canonical's AMI honors it.
+- The image builder is §7's smallest available type, which on AWS would be `t3.nano` (0.5 GB),
+  too little for `setup.sh`. `builder_type` gains a floor of 1 GB of memory for every provider,
+  with a test; on AWS it picks `t3.micro`, and the live bake proves that is enough (else the floor
+  rises, recorded in Surprises).
+
+Proves: the aws script's command line for a `create` request (tag specifications on instance and
+volume, the security group found or created with its tag, IMDSv2, the root volume size, spot
+options, user-data, gzip past 16 KB), the refusal mapping and the subnet retry on a capacity
+refusal, terminated instances absent from `list` and null from `get`, all against the fake `aws`;
+the conformance test against the fake and live on the AWS account; live: `up` on the slow path and
+from an image to every step `ok` (times recorded), a spot `up`, `ls` with prices, a relabel by
+`lease`, `down`, and the reaper's next run on the always-on Mac listing the account without error.
+Every live resource is deleted the same day; the security group stays (it costs nothing).
+
+### M9 — GPU hosts
+
+What exists at its end: §6.7's GPU step on every host, and one live GPU VM on AWS where
+`nvidia-smi` lists the GPU and `docker run --gpus all` sees it.
+
+Touches: `devcloud/boot/devcloudlib/steps.py` (the GPU step, in its own module if that reads
+better), the boot's status output, the `devcloud` gate's container tests (the step is a no-op with
+no NVIDIA device, and its install path runs against stubbed `ubuntu-drivers`, `apt-get`,
+`nvidia-ctk` and `nvidia-smi`), the README's host section.
+
+Interfaces: consumes M8's AWS account for the live proof; no driver change.
+
+Decisions: the driver branch is pinned in the step (the newest `-server-open` branch Ubuntu 24.04
+ships for the L4, L40S and A10G at build time, checked against `ubuntu-drivers list --gpgpu` on
+the live VM); the container toolkit's apt key and source are written by the step with the key's
+fingerprint checked.
+
+Proves: the gate's tests; live: one `g6.xlarge` (on demand, about $0.80/h) made by `up --type
+g6.xlarge`, every step `ok` with the GPU step naming the L4, `nvidia-smi` and a CUDA container
+seeing the device, a reboot keeping it, and the VM deleted the same day. H14 comes first.
 
 ### Concrete Steps
 
@@ -2031,6 +2178,20 @@ commit 5168e433 on its branch, 2026-10-21):
   moves a service-account key, opens and closes public ports, and spends money on its own.
   Rationale: execspec's default for a multi-milestone spec; the rung follows the stakes.
   Date/Author: 2026-10-21, design session.
+- Decision: AWS becomes a shipped provider, in us-west-2, with GPU types (§6.6, §6.7, M8, M9).
+  The person asked for AWS for a visual expression engineer session that will likely need a GPU,
+  chose GPU support, the region (the same area as the other accounts), and a dedicated IAM user
+  the main session creates (H13). Shipped rather than a profile provider: the protocol and its
+  conformance test make either possible, but a shipped one is reviewed, versioned with the plugin
+  and needs no registration, and AWS is common enough that other users of the public plugin want
+  it. The GPU driver is installed by a boot step on GPU hardware, not baked into the image: the
+  image is baked on a CPU builder, the step also serves GCE and adopted GPUs, and CPU VMs pay
+  nothing; the cost is a few minutes on a GPU VM's first boot. AWS's GPU-ready Deep Learning AMI
+  was the alternative and lost: it is a second base image per account outside the recipe hash,
+  and its contents change on Amazon's schedule. Verification: one independent spec review of
+  these sections and the two milestones by `doperpowers:adversarial-reviewer`, and the branch at
+  the high rung of doperpowers:review-code (a credential with spending power, a public port).
+  Date/Author: 2026-11-04, design session.
 - Decision: Provider-agnostic from the first version, with Hetzner, GCE and adopt adapters and a
   per-project `devenv/host.toml`, instead of the Hetzner-only driver first proposed.
   Rationale: the person asked that each project be able to use the provider it prefers, or a server
