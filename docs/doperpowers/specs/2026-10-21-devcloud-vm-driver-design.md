@@ -3117,3 +3117,18 @@ driver, so the driver checks the outcome itself instead of trusting a report it 
 **Left open:** H6 (the parent's `devcloud-m5` at the desk) is the person's step. The deferred items
 and residue are in `docs/doperpowers/TECH-DEBT.md`, under "the devcloud VM driver". After merge, the
 always-on Mac's reaper is moved onto the installed plugin (the PR's post-merge steps).
+
+**M8 and M9 (2026-11-05, interim; the live proofs wait on H13 and H14).** AWS is built as a third
+shipped provider and every VM host gains a GPU step, both proved against fakes and stubs (937 unit
+tests, the six gates green) and reviewed clean: two task-review rounds each, and the whole-branch
+review at the high rung in three. What reviews caught that the first builds did not:
+- **A test helper that silently disabled assertions** (`fail` shadowing `TestCase.fail`) and two
+  tests that would have turned red on the calendar. A green suite is evidence only once a
+  deliberate break is seen to fail it.
+- **Seams with the lifecycle lock**: an EC2 notice lost to a routine job holding the lock, and a
+  GPU reboot asked for outside the release guard. Both are the board #115 lesson again: a new
+  path that acts on the machine has to pass through the same lock as everything else.
+- **What "installed" means for a third party's package**: a base-only NVIDIA toolkit, and Docker
+  reading the hook only at its start. Each became a fake that behaves as the real one does.
+The driver pin moved from the newest branch (615) to the long-term one (580), because hosts are
+kept. Left open: the live proofs (M8's and M9's Proves), and this section's final form after them.
